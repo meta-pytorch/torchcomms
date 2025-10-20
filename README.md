@@ -1,5 +1,9 @@
 <p align="center">
-  <img width="500" height="216" alt="torchcomms" src="logo.png">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="logo-light.png">
+    <img width="500" height="216" alt="torchcomms" src="logo-light.png">
+  </picture>
 </p>
 
 
