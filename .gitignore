@@ -1,0 +1,6 @@
+build/
+third-party/
+*.egg-info
+__pycache__/
+*.so
+dist/

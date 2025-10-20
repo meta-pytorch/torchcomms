@@ -1,0 +1,21 @@
+sphinx==7.2.6
+-e git+https://github.com/pytorch/pytorch_sphinx_theme.git@pytorch_sphinx_theme2#egg=pytorch_sphinx_theme2
+sphinxcontrib.katex==0.9.10
+matplotlib
+papermill
+ipykernel
+nbsphinx
+jupytext
+ipython_genutils
+pytorch-sphinx-theme2==0.1.0
+jinja2>=3.1.4
+apache-airflow==2.10.5
+breathe==4.36.0  # only if generating C++
+exhale==0.2.3  # only if generating C++ docs
+docutils==0.18.1,<0.21
+sphinx-design==0.6.1
+sphinxcontrib-mermaid==1.0.0
+myst-parser==2.0.0  # if want to contribute in markdown
+sphinx-gallery==0.19.0
+sphinx-sitemap==2.7.1
+numpy>=1.20,<2.0
