@@ -158,7 +158,8 @@ html_theme_options = {
     "navigation_with_keys": False,
     "analytics_id": "GTM-NPLPKN5G",
     "logo": {
-        "text": "Home",
+        "image_light": "_static/logo-light.png",
+        "image_dark": "_static/logo-dark.png",
     },
     "icon_links": [
         {
