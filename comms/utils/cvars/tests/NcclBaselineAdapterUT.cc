@@ -135,7 +135,7 @@ TEST_F(NcclLoadParamTest, LoadFromStringMapInvalidNumber) {
 }
 
 TEST_F(NcclLoadParamTest, LoadFromStringMapEmptyString) {
-  std::string value = "";
+  std::string value;
   ncclx::env_string_values["TEST_STRING"] = &value;
 
   int64_t cache = 0; // uninitialized value
@@ -686,7 +686,7 @@ TEST_F(NcclGetEnvTest, LargeNumbers) {
 }
 
 TEST_F(NcclGetEnvTest, EmptyString) {
-  std::string emptyValue = "";
+  std::string emptyValue;
   ncclx::env_string_values["TEST_EMPTY"] = &emptyValue;
 
   const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_EMPTY");
