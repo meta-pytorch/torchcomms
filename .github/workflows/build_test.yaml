@@ -55,7 +55,7 @@ jobs:
         ./build_ncclx.sh
 
         # Build pybindings
-        pip install -v '.[dev]'
+        pip install --no-build-isolation -v '.[dev]'
         python -c "import torchcomms"
 
         # Run tests
