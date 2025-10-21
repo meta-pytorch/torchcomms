@@ -158,6 +158,17 @@ torchrun --nproc_per_node=2 example.py
 python -m torch.distributed.launch --nproc_per_node=2 example.py
 ```
 
+To run this example with multiple nodes:
+
+- Node 0
+```bash
+torchrun --nnodes=2 --nproc_per_node=8 --node_rank=0 --rdzv-endpoint="<master-node>:<master-port>" example.py
+```
+- Node 1
+```bash
+torchrun --nnodes=2 --nproc_per_node=8 --node_rank=1 --rdzv-endpoint="<master-node>:<master-port>" example.py
+```
+
 In the example above, we perform the following steps:
 
 1. `new_comm()` creates a communicator with the specified backend
