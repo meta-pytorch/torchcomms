@@ -4,9 +4,10 @@ from typing import Any, cast, Optional
 
 import torch
 import torch.distributed as dist
+
 from torch.distributed.device_mesh import _mesh_resources
 
-from torchcomms._comms import _BackendWrapper, new_comm, TorchComm
+from torchcomms._comms import _BackendWrapper, _get_store, new_comm, TorchComm
 
 
 def _create_torchcomm_process_group(
@@ -66,6 +67,14 @@ def _create_torchcomm_process_group(
     return pg
 
 
+def _get_store_for_pg() -> dist.Store:
+    if not hasattr(_get_store_for_pg, "_store"):
+        _get_store_for_pg._store = _get_store(  # pyre-ignore[16]
+            "torchcomm", "store_dist"
+        )
+    return _get_store_for_pg._store
+
+
 def init_device_mesh(
     mesh_dim_comms: tuple[TorchComm, ...],  # noqa: F405
     mesh_dim_names: tuple[str, ...],
@@ -85,7 +94,7 @@ def init_device_mesh(
 
     local_ranks = [comm.get_rank() for comm in mesh_dim_comms]
     global_rank = cast(int, mesh[tuple(local_ranks)].item())
-    prefix_store = None
+    prefix_store = _get_store_for_pg()
     backend_str = "torchcomm"
     # Register the backend
     dist.Backend.register_backend(backend_str, new_comm)
@@ -95,7 +104,7 @@ def init_device_mesh(
         global_pg = _create_torchcomm_process_group(
             comm=_global_comm,
             group_name=_global_comm.get_name(),
-            prefix_store=prefix_store,
+            prefix_store=dist.PrefixStore("default", prefix_store),
             global_ranks_mapping=None,  # Will use default mapping
         )
     elif len(mesh_dim_comms) != 1:
@@ -118,7 +127,7 @@ def init_device_mesh(
             comm=comm,
             group_name=group_name,
             backend_str=backend_str,
-            prefix_store=prefix_store,
+            prefix_store=dist.PrefixStore(name, prefix_store),
             global_ranks_mapping=global_ranks_mapping,
         )
         if _global_comm is None and idx == 0:
@@ -150,7 +159,8 @@ def _flatten_with_comm(
     layout: Any,  # noqa: F405
 ) -> dist.DeviceMesh:
     backend_str = "torchcomm"
-    prefix_store = None
+    prefix_store = _get_store_for_pg()
+    prefix_store = dist.PrefixStore(mesh_dim_name, prefix_store)
     global_ranks_mapping = {global_ranks[i]: i for i in range(comm.get_size())}
     # We still need to register the process group for the flattened mesh
     _create_torchcomm_process_group(
