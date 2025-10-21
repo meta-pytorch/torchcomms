@@ -2,7 +2,6 @@
 
 #include "AllReduceTest.hpp"
 
-#include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAGraph.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <gtest/gtest.h>

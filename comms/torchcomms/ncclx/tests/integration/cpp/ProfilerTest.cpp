@@ -2,7 +2,6 @@
 
 #include "ProfilerTest.hpp"
 
-#include <ATen/cuda/CUDAContext.h>
 #include <gtest/gtest.h>
 #include <json/reader.h>
 #include <json/value.h>

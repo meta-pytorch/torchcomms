@@ -2,7 +2,6 @@
 
 #include "comms/torchcomms/gloo/TorchWorkGloo.hpp"
 
-#include <chrono>
 #include <thread>
 
 #include "comms/torchcomms/TorchCommLogging.hpp"
