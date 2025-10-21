@@ -138,6 +138,10 @@ function build_third_party {
   else
     if [[ -z "${NCCL_SKIP_CONDA_INSTALL}" ]]; then
       DEPS=(
+        cmake
+        ninja
+        jemalloc
+        gtest
         boost
         double-conversion
         libevent
@@ -216,15 +220,6 @@ THIRD_PARTY_LDFLAGS=""
 
 if [[ -z "${NCCL_BUILD_SKIP_DEPS}" ]]; then
   echo "Building dependencies"
-  if [[ -z "${NCCL_SKIP_CONDA_INSTALL}" ]]; then
-    DEPS=(
-      cmake
-      ninja
-      jemalloc
-      gtest
-    )
-    conda install "${DEPS[@]}" --yes
-  fi
   build_third_party
   build_comms_tracing_service
 fi

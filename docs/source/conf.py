@@ -158,7 +158,8 @@ html_theme_options = {
     "navigation_with_keys": False,
     "analytics_id": "GTM-NPLPKN5G",
     "logo": {
-        "text": "Home",
+        "image_light": "_static/logo-light.png",
+        "image_dark": "_static/logo-dark.png",
     },
     "icon_links": [
         {
@@ -205,7 +206,7 @@ html_context = {
 html_static_path = ["_static"]
 
 
-html_css_files = []
+html_css_files = ["custom.css"]
 html_js_files = []
 
 html_baseurl = "https://meta-pytorch.org/torchcomms"
