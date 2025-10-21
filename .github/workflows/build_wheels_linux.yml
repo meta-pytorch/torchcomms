@@ -1,0 +1,42 @@
+name: Build Linux Wheels
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - nightly
+  workflow_dispatch:
+
+jobs:
+  generate-matrix:
+    uses: pytorch/test-infra/.github/workflows/generate_binary_build_matrix.yml@main
+    with:
+      package-type: wheel
+      os: linux
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      with-cuda: enable
+      with-rocm: disable
+      with-cpu: disable
+      # TODO: Python free threading builds are broken due to newer openssl
+      # requirements.
+      python-versions: '["3.10","3.11","3.12","3.13","3.14"]'
+  build:
+    needs: generate-matrix
+    name: ${{ matrix.repository }}
+    uses: pytorch/test-infra/.github/workflows/build_wheels_linux.yml@main
+    with:
+      repository: meta-pytorch/torchcomms
+      ref: ""
+      pre-script: ""
+      post-script: ""
+      build-platform: "python-build-package"
+      build-command: "scripts/_build_wheel.sh"
+      smoke-test-script: "scripts/smoke_test.py"
+      package-name: torchcomms
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      build-matrix: ${{ needs.generate-matrix.outputs.matrix }}
+      trigger-event: ${{ github.event_name }}
+      runner: linux.g5.12xlarge.nvidia.gpu

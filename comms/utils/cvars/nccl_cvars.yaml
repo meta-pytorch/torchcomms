@@ -1,0 +1,2717 @@
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+#
+# NCCLX CVARS - Strongly typed configurable knobs for NCCLX. All
+# configuration knobs are defined here, and can be used in source
+# file by including `nccl_cvars.h` and use typed CVAR by its name.
+#
+# Developer Notes
+# - Execute `cd ~/fbsource/fbcode && buck2 run comms/utils/cvars:extractcvars` to auto generate cvar code
+#
+cvars:
+ - name        : NCCL_CVARS_LOG_INFO
+   type        : bool
+   default     : false
+   description : |-
+     Decides whether to log info level messages to stderr during CVAR
+     initialization. Since we cannot have CVARs to control read cvars
+     behavior, the env var is read during cvar logger initialization.
+     Please change this line when you change the default value of
+     NCCL_CVARS_LOG_INFO: https://fburl.com/code/d5f77k3d
+
+ - name        : NCCL_HPC_JOB_IDS
+   type        : stringlist
+   default     : ""
+   description : |-
+     Comma separated list of <job-name>:<job-version>:<job-attempt>.
+
+ -  name        : NCCL_FILTER_MEM_LOGGING_BY_RANKS
+    type        : stringlist
+    default     : "0"
+    description : |-
+      Filtering excessive logging by ranks. Currently only support global
+      ranks. Default is logging only on rank 0.
+
+ -  name        : NCCL_FILTER_MEM_REG_LOGGING_BY_RANKS
+    type        : stringlist
+    default     : ""
+    description : |-
+      Filtering excessive logging by ranks. Currently only support global
+      ranks. Default is no filtering.
+
+
+ - name        : NCCL_COMM_EVENT_LOGGING
+   type        : string
+   default     : ""
+   description : |-
+      File location for logging communicator events.
+      scuba:<table_name>  - Log to a scuba table (Fb internal only)
+      pipe:<table_name>   - Log to local files under /logs/, and then
+                            upload to scuba (Conda job only)
+      <local_dir>         - Log to local directory, creating directories
+                            on the path if not exist
+      (No logging will occur for other inputs or NCCL_LOGGER_MODE is not async)
+
+ - name        : NCCL_COLL_EVENT_LOGGING
+   type        : string
+   default     : ""
+   description : |-
+      File location for logging collective events.
+      (the same format with NCCL_COMM_EVENT_LOGGING)
+
+ - name        : NCCL_SLOW_RANK_LOGGING
+   type        : string
+   default     : "scuba:nccl_profiler_slow_rank"
+   description : |-
+      File location for logging communicator profiler events. By default,
+      all data is logged to scuba table nccl_profiler_slow_rank.
+      (the same format with NCCL_COMM_EVENT_LOGGING)
+
+ - name        : NCCL_CTRAN_ALGO_PROFILING_LOGGING
+   type        : string
+   default     : "scuba:nccl_profiler_algo"
+   description : |-
+      File location for logging communicator profiler events. By default,
+      all data is logged to scuba table nccl_profiler_algo.
+      (the same format with NCCL_COMM_EVENT_LOGGING)
+
+ - name        : NCCL_MEMORY_EVENT_LOGGING
+   type        : string
+   default     : ""
+   description : |-
+      File location for logging memory related events.
+      (the same format with NCCL_COMM_EVENT_LOGGING)
+
+ - name        : NCCL_SLOW_COLL_LOGGING
+   type        : string
+   default     : "pipe:nccl_slow_coll"
+   description : |-
+      File location for logging slow collectives.
+      (the same format with NCCL_COMM_EVENT_LOGGING)
+
+ - name        : NCCL_COLL_STATS_LOGGING
+   type        : string
+   default     : "pipe:nccl_collective_stats"
+   description : |-
+      File location for logging collective stats.
+      (the same format with NCCL_COMM_EVENT_LOGGING)
+
+ - name        : NCCL_MEM_ENABLE_MC_ALIGNMENT
+   type        : bool
+   default     : False
+   description : |-
+      For some NCCL memory allocation calls (In ncclMemAlloc & NVLS setup), devices with
+      CU_DEVICE_ATTRIBUTE_MULTICAST_SUPPORTED will align allocation calls to around 500MBs.
+      When this flag is False, those memory allocation calls will align to minimum granuality instead.
+
+ - name        : NCCL_MEM_POOL_SIZE
+   type        : size_t
+   default     : 0
+   description : |-
+      Memory, in bytes, to be pre-allocated at init time for memory pool.
+      The memory pool will attemp to use this pre-allocated memory first
+      and only allocate new memory at runtime if no more memory available in the pool.
+
+
+ - name        : NCCL_USE_MEM_CACHE
+   type        : bool
+   default     : False
+   description : |-
+      Direct all NCCLX internal memory use case (staging buffer, channel metadata) to ncclx internal time sharing buffer cache.
+
+ - name        : NCCL_USE_SHARED_BUFFER_POOL
+   type        : bool
+   default     : True
+   description : |-
+      Whether internal buffer pool can be shared. If false, a new memory region
+      will always be allocated upon request. Mainly used for testing and debugging purpose.
+
+ - name        : NCCL_TRANSPORT_RECONNECT_OPCOUNT_LIMIT
+   type        : uint64_t
+   default     : 0
+   description : |-
+      When internal buffer sharing is enabled, this variable controls the maximum number of p2p/coll operations
+      that would perform transport information exchange with peers and re-setup the connection if any peer
+      changes buffers at runtime. Once the number of operations proceeds without transport re-setup, NCCLX assumes no more
+      buffer changes is required and will not perform buffer information exchange with peers for best performance.
+      In the case of unexpected buffer unavailability, collective operations will wait until the allocated resources are ready.
+      If set to 0, NCCLX will always perform buffer information exchange with peers and re-setup the connection, if needed.
+
+ - name        : NCCL_TRANSPORT_PREP_TRAINER_ITERATION_LIMIT
+   type        : int64_t
+   default     : 0
+   description : |-
+      When internal buffer sharing is enabled, this variable controls the maximum number of trainer iterations
+      that NCCLX would perform transport information exchange and re-setup the connections in case any peer
+      changes buffers at runtime. Once a job hints the completion of the specificed number of iterations,
+      NCCLX assumes no more buffer changes is required and will not skip transport information exchange for best performance.
+      In the case of unexpected buffer unavailability, collective operations will be blocked until the allocated resources are ready.
+      If set to 0, NCCLX will always perform transport information exchange with peers and re-setup the connections, if needed.
+
+ - name        : NCCL_USE_TRANSPORT_PROXY
+   type        : enum
+   default     : unset
+   choices     : unset, none, comm, shared
+   description : |-
+      This variable controls whether or not to use a dedicated transport proxy thread
+      and the scope of this proxy thread usage.
+      unset - Let NCCLX decide whether to use a proxy thread or not. Default is typically 'none',
+              and 'shared' if internal buffer pool is enabled for optimal performance.
+      none - proxy thread would never be created, the caller thread will do the work, if any.
+      comm - proxy thread is created for each communicator.
+      shared - proxy thread is shared with the parent communicator.
+
+ - name        : NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES
+   type        : int
+   default     : 20
+   description : |-
+     Prefix for all scuba log files that will be piped to scuba.
+
+
+ - name        : NCCL_SCUBA_LOG_FILE_PREFIX
+   type        : string
+   default     : /logs
+   description : |-
+     Prefix for all scuba log files that will be piped to scuba.
+ - name        : NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED
+   type        : bool
+   default     : False
+   description : |-
+     Capture and log stack trace to scuba for errors. The stack trace
+     capture is very expensive and should be enabled when errors are
+     not expected.
+ - name        : NCCL_SCUBA_ENABLE_INCLUDE_BACKEND_TOPOLOGY
+   type        : bool
+   default     : False
+   description : |-
+     Enable logging of backend topology information to scuba.
+
+
+ - name        : NCCL_SET_THREAD_NAME
+   type        : int64_t
+   default     : 0
+   description : |-
+     Change the name of NCCL threads to ease debugging and analysis.
+     For more information:
+     https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-set-thread-name
+
+ - name        : NCCL_DEBUG
+   type        : string
+   default     : ""
+   description : |-
+     The NCCL_DEBUG variable controls the debug information that is
+     displayed from NCCL. This variable is commonly used for
+     debugging. For more information:
+     https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-debug
+
+ - name        : NCCL_DEBUG_SUBSYS
+   type        : string
+   default     : ""
+   description : |-
+     The NCCL_DEBUG_SUBSYS variable allows the user to filter the
+     NCCL_DEBUG=INFO output based on subsystems. A comma separated
+     list of the subsystems to include in the NCCL debug log traces.
+     For more information:
+     https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-debug-subsys
+
+ - name        : NCCL_DEBUG_FILE
+   type        : string
+   default     : ""
+   description : |-
+     The NCCL_DEBUG_FILE variable directs the NCCL debug logging
+     output to a file. The filename format can be set to
+     filename.%h.%p where %h is replaced with the hostname and %p is
+     replaced with the process PID. This does not accept the "~"
+     character as part of the path, please convert to a relative or
+     absolute path first. For more information:
+     https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-debug-file
+
+ - name        : NCCL_WARN_ENABLE_DEBUG_INFO
+   type        : int64_t
+   default     : 0
+   description : |-
+    Hidden variable. No description provided.
+
+
+ - name        : NCCL_PROXY_APPEND_BATCH_SIZE
+   type        : int64_t
+   default     : 16
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-proxy-append-batch-size
+
+ - name        : NCCL_CREATE_THREAD_CONTEXT
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-create-thread-context
+
+ - name        : NCCL_PROXY_DUMP_SIGNAL
+   type        : int64_t
+   default     : -1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-proxy-dump-signal
+
+ - name        : NCCL_PROGRESS_APPENDOP_FREQ
+   type        : int64_t
+   default     : 8
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-progress-appendop-freq
+
+
+ - name        : NCCL_CONNECT_ROUND_MAX_PEERS
+   type        : int64_t
+   default     : 128
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-connect-round-max-peers
+
+ - name        : NCCL_REPORT_CONNECT_PROGRESS
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-report-connect-progress
+
+
+ - name        : NCCL_OOB_NET_ENABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-oob-net-enable
+
+ - name        : NCCL_UID_STAGGER_RATE
+   type        : int64_t
+   default     : 7000
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-uid-stagger-rate
+
+ - name        : NCCL_UID_STAGGER_THRESHOLD
+   type        : int64_t
+   default     : 256
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-uid-stagger-threshold
+
+ - name        : NCCL_RAS_ENABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ras-enable
+
+ - name        : NCCL_OOB_NET_IFNAME
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-oob-net-ifname
+
+
+ - name        : NCCL_L1_SHARED_MEMORY_CARVEOUT
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-l1-shared-memory-carveout
+
+ - name        : NCCL_GRAPH_REGISTER
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-graph-register
+
+ - name        : NCCL_P2P_LL_THRESHOLD
+   type        : int64_t
+   default     : 16384
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-ll-threshold
+
+ - name        : NCCL_CHUNK_SIZE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-chunk-size
+
+ - name        : NCCL_MEM_SYNC_DOMAIN
+   type        : enum
+   default     : remote
+   choices     : local, remote
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-mem-sync-domain
+
+ - name        : NCCL_NVLSTREE_MAX_CHUNKSIZE
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-nvlstree-max-chunksize
+
+
+ - name        : NCCL_GROUP_CUDA_STREAM
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-group-cuda-stream
+
+ - name        : NCCL_CHECK_POINTERS
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-check-pointers
+
+ - name        : NCCL_COMM_BLOCKING
+   type        : int64_t
+   default     : -1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-comm-blocking
+
+ - name        : NCCL_RUNTIME_CONNECT
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-runtime-connect
+
+ - name        : NCCL_GDRCOPY_ENABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gdrcopy-enable
+
+ - name        : NCCL_GRAPH_HELPER_DISABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-graph-helper-disable
+
+ - name        : NCCL_GDRCOPY_FIFO_ENABLE
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gdrcopy-fifo-enable
+
+ - name        : NCCL_WORK_FIFO_BYTES
+   type        : int64_t
+   default     : 1048576
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-work-fifo-bytes
+
+ - name        : NCCL_WORK_ARGS_BYTES
+   type        : int64_t
+   default     : MAX
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-work-args-bytes
+
+ - name        : NCCL_DMABUF_ENABLE
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-dmabuf-enable
+
+ - name        : NCCL_MNNVL_UUID
+   type        : int64_t
+   default     : -1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-mnnvl-uuid
+
+ - name        : NCCL_MNNVL_CLIQUE_ID
+   type        : int64_t
+   default     : -1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-mnnvl-clique-id
+
+ - name        : NCCL_BUFFSIZE
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-buffsize
+
+ - name        : NCCL_LL_BUFFSIZE
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ll-buffsize
+
+ - name        : NCCL_LL128_BUFFSIZE
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ll128-buffsize
+
+ - name        : NCCL_P2P_NET_CHUNKSIZE
+   type        : int64_t
+   default     : 131072
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-net-chunksize
+
+ - name        : NCCL_P2P_PCI_CHUNKSIZE
+   type        : int64_t
+   default     : 131072
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-pci-chunksize
+
+ - name        : NCCL_P2P_NVL_CHUNKSIZE
+   type        : int64_t
+   default     : 524288
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-nvl-chunksize
+
+ - name        : NCCL_GRAPH_DUMP_FILE_RANK
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-graph-dump-file-rank
+
+ - name        : NCCL_COLLNET_NODE_THRESHOLD
+   type        : int64_t
+   default     : 2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-collnet-node-threshold
+
+ - name        : NCCL_NVB_PRECONNECT
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-nvb-preconnect
+
+ - name        : NCCL_ALLOC_P2P_NET_LL_BUFFERS
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-alloc-p2p-net-ll-buffers
+
+ - name        : NCCL_MNNVL_ENABLE
+   type        : int64_t
+   default     : 2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-mnnvl-enable
+
+ - name        : NCCL_SET_STACK_SIZE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-set-stack-size
+
+ - name        : NCCL_CGA_CLUSTER_SIZE
+   type        : int
+   default     : MIN
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-cga-cluster-size
+
+ - name        : NCCL_MAX_CTAS
+   type        : int
+   default     : MIN
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-max-ctas
+
+ - name        : NCCL_MIN_CTAS
+   type        : int
+   default     : MIN
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-min-ctas
+
+ - name        : NCCL_COMM_SPLIT_SHARE_RESOURCES
+   type        : int
+   default     : MIN
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-comm-split-share-resources
+
+ - name        : NCCL_TOPO_DUMP_FILE
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-topo-dump-file
+
+ - name        : NCCL_COLLNET_ENABLE
+   type        : int
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-collnet-enable
+
+ - name        : NCCL_LAUNCH_MODE
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-launch-mode
+
+ - name        : NCCL_NETWORK
+   envstr      : NCCL_NET
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net
+
+ - name        : NCCL_MIN_NRINGS
+   type        : int
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-min-nrings
+
+ - name        : NCCL_MAX_NRINGS
+   type        : int
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-max-nrings
+
+ - name        : NCCL_MIN_NCHANNELS
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-min-nchannels
+
+ - name        : NCCL_SINGLE_PROC_MEM_REG_ENABLE
+   type        : int64_t
+   default     : 0
+   description : Used to enable NVLS UB registration in the "one process, multiple ranks" case as opt in.
+                 This feature allows NCCL to directly send and receive data from user-allocated memory buffers
+                 without an intermediate copy, potentially improving performance and reducing memory usage.
+                 "One process, multiple ranks" is a common multi-GPU setup where a single process on a host
+                 manage manages and launches multiple GPU tasks (or "ranks"), each with its own data
+                 and computation. [baseline-introduced]
+
+ - name        : NCCL_MAX_NCHANNELS
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-max-nchannels
+
+ - name        : NCCL_UNPACK_DOUBLE_NCHANNELS
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-unpack-double-nchannels
+
+
+ - name        : NCCL_NVB_DISABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-nvb-disable
+
+ - name        : NCCL_IGNORE_DISABLED_P2P
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ignore-disabled-p2p
+
+ - name        : NCCL_NET_GDR_READ
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-gdr-read
+
+ - name        : NCCL_NET_FORCE_FLUSH
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-force-flush
+
+ - name        : NCCL_NET_DISABLE_INTRA
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-disable-intra
+
+ - name        : NCCL_PXN_DISABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-pxn-disable
+
+ - name        : NCCL_NCHANNELS_PER_NET_PEER
+   type        : int64_t
+   default     : -1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-nchannels-per-net-peer
+
+ - name        : NCCL_MIN_P2P_NCHANNELS
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-min-p2p-nchannels
+
+ - name        : NCCL_MAX_P2P_NCHANNELS
+   type        : int64_t
+   default     : 64
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-max-p2p-nchannels
+
+ - name        : NCCL_P2P_DISABLE
+   type        : bool
+   default     : false
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-disable
+
+ - name        : NCCL_P2P_LEVEL
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-level
+
+ - name        : NCCL_NET_GDR_LEVEL
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-gdr-level-formerly-nccl-ib-gdr-level
+
+
+ - name        : NCCL_CROSS_NIC
+   type        : int64_t
+   default     : 2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-cross-nic
+
+ - name        : NCCL_P2P_PXN_LEVEL
+   type        : int64_t
+   default     : 2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-pxn-level
+
+ - name        : NCCL_GRAPH_FILE
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-graph-file
+
+ - name        : NCCL_GRAPH_DUMP_FILE
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-graph-dump-file
+
+ - name        : NCCL_TOPO_DUMP_FILE_RANK
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-topo-dump-file-rank
+
+ - name        : NCCL_IGNORE_CPU_AFFINITY
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ignore-cpu-affinity
+
+ - name        : NCCL_TOPO_FILE
+   type        : string
+   default     : "/var/run/nvidia-topologyd/virtualTopology.xml"
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-topo-file
+
+ - name        : NCCL_NET_MERGE_LEVEL
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-merge-level
+
+ - name        : NCCL_NET_FORCE_MERGE
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-force-merge
+
+
+ - name        : NCCL_NTHREADS
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-nthreads
+
+ - name        : NCCL_LL128_NTHREADS
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ll128-nthreads
+
+ - name        : NCCL_PAT_ENABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-pat-enable
+
+ - name        : NCCL_NET_OVERHEAD
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-overhead
+
+ - name        : NCCL_PROTO
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-proto
+
+ - name        : NCCL_ALGO
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-algo
+
+ - name        : NCCL_THREAD_THRESHOLDS
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-thread-thresholds
+
+
+ - name        : NCCL_PROFILER_PLUGIN
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-profiler-plugin
+
+ - name        : NCCL_SET_CPU_STACK_SIZE
+   type        : int
+   default     : 1
+   description : Controls whether the CPU stack size should be customized / changed from its default value.
+
+ - name        : NCCL_TUNER_PLUGIN
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-tuner-plugin
+
+ - name        : NCCL_NET_PLUGIN
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-plugin
+
+ - name        : NCCL_IB_MQP_RETRY_ALL
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-mqp-retry-all
+
+ - name        : NCCL_IB_MQP_RETRY_CNT
+   type        : int64_t
+   default     : 34
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-mqp-retry-cnt
+
+ - name        : NCCL_IB_MQP_RETRY_SLEEP_MSEC
+   type        : int64_t
+   default     : 100
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-mqp-retry-sleep-msec
+
+
+ - name        : NCCL_GRAPH_MIXING_SUPPORT
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-graph-mixing-support
+
+
+ - name        : NCCL_CUMEM_ENABLE
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-cumem-enable
+
+ - name        : NCCL_CUMEM_HOST_ENABLE
+   type        : int64_t
+   default     : -1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-cumem-host-enable
+
+ - name        : NCCL_CHANNEL_METADATA_LOCATION
+   type        : enum
+   default     : unset
+   choices     : unset, host, device
+   description : |-
+     Memory location to store channel's metadata.
+     unset: Let NCCLX decides the location of the metadata (default is typically device)
+     host: Always use pinned host memory to store the metadata. This option can reduce device memory usage, while
+          it may introduce slight performance penalty for small messages.
+          This option is prefered to allow CPU thread updating the metadata at runtime to support buffer sharing.
+          Note this option automatically enables NCCL_USE_TRANSPORT_EXT.
+     device: Use device memory to store the metadata. Typically provides better performance,
+          but the metadata is not accessible from the CPU, hence buffer sharing at runtime may have performance penalty.
+
+ - name        : CUDA_LAUNCH_BLOCKING
+   type        : bool
+   default     : false
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#cuda-launch-blocking
+
+
+ - name        : NCCL_SOCKET_RETRY_CNT
+   type        : int64_t
+   default     : 34
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-retry-cnt
+
+ - name        : NCCL_SOCKET_RETRY_SLEEP_MSEC
+   type        : int64_t
+   default     : 100
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-retry-sleep-msec
+
+ - name        : NCCL_SOCKET_FAMILY
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-family
+
+ - name        : NCCL_SOCKET_IFNAME
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-ifname
+
+ - name        : NCCL_COMM_ID
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-comm-id
+
+
+ - name        : NCCL_HOSTID
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-hostid
+
+
+ - name        : NCCL_RAS_TIMEOUT_FACTOR
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ras-timeout-factor
+
+
+ - name        : NCCL_RAS_ADDR
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ras-addr
+
+
+ - name        : NCCL_LOCAL_REGISTER
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-local-register
+
+
+ - name        : NCCL_NET_SHARED_BUFFERS
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-shared-buffers
+
+ - name        : NCCL_NET_SHARED_COMMS
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-shared-comms
+
+ - name        : NCCL_NET_OPTIONAL_RECV_COMPLETION_CVAR
+   envstr      : NCCL_NET_OPTIONAL_RECV_COMPLETION
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-optional-recv-completion
+
+ - name        : NCCL_GDRCOPY_SYNC_ENABLE
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gdrcopy-sync-enable
+
+ - name        : NCCL_GDRCOPY_FLUSH_ENABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gdrcopy-flush-enable
+
+
+ - name        : NCCL_NSOCKS_PERTHREAD
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-nsocks-perthread
+
+ - name        : NCCL_SOCKET_NTHREADS
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-nthreads
+
+
+ - name        : NCCL_NVLS_ENABLE
+   type        : int64_t
+   default     : 2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-nvls-enable
+
+ - name        : NCCL_NVLS_NCHANNELS
+   type        : int
+   default     : MIN
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-nvls-nchannels
+
+ - name        : NCCL_NVLS_CHUNKSIZE
+   type        : int64_t
+   default     : 131072
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-nvls-chunksize
+
+
+ - name        : NCCL_LEGACY_CUDA_REGISTER
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-legacy-cuda-register
+
+ - name        : NCCL_P2P_USE_CUDA_MEMCPY
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-use-cuda-memcpy
+
+ - name        : NCCL_P2P_READ_ENABLE
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-read-enable
+
+ - name        : NCCL_P2P_DIRECT_DISABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-direct-disable
+
+
+ - name        : NCCL_SHM_DISABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-shm-disable
+
+ - name        : NCCL_SHM_USE_CUDA_MEMCPY
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-shm-use-cuda-memcpy
+
+ - name        : NCCL_SHM_MEMCPY_MODE
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-shm-memcpy-mode
+
+ - name        : NCCL_SHM_LOCALITY
+   type        : int64_t
+   default     : 2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-shm-locality
+
+
+ - name        : NCCL_IB_GID_INDEX
+   type        : int64_t
+   default     : -1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-gid-index
+
+ - name        : NCCL_IB_ROUTABLE_FLID_GID_INDEX
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-routable-flid-gid-index
+
+ - name        : NCCL_IB_ROCE_VERSION_NUM
+   type        : int64_t
+   default     : 2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-roce-version-num
+
+ - name        : NCCL_IB_TIMEOUT
+   type        : int64_t
+   default     : 20
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-timeout
+
+ - name        : NCCL_IB_RETRY_CNT
+   type        : int64_t
+   default     : 7
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-retry-cnt
+
+ - name        : NCCL_IB_PKEY
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-pkey
+
+ - name        : NCCL_IB_USE_INLINE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-use-inline
+
+ - name        : NCCL_IB_SL
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-sl
+
+ - name        : NCCL_IB_TC
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-tc
+
+ - name        : NCCL_IB_AR_THRESHOLD
+   type        : int64_t
+   default     : 8192
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-ar-threshold
+
+ - name        : NCCL_IB_PCI_RELAXED_ORDERING
+   type        : int64_t
+   default     : 2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-pci-relaxed-ordering
+
+ - name        : NCCL_IB_ADAPTIVE_ROUTING
+   type        : int64_t
+   default     : -2
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-adaptive-routing
+
+ - name        : NCCL_IB_FIFO_TC
+   type        : int64_t
+   default     : -1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-fifo-tc
+
+ - name        : NCCL_IB_RETURN_ASYNC_EVENTS
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-return-async-events
+
+ - name        : NCCL_IB_ECE_ENABLE
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-ece-enable
+
+ - name        : NCCL_IB_DISABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-disable
+
+ - name        : NCCL_IB_MERGE_VFS
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-merge-vfs
+
+ - name        : NCCL_IB_MERGE_NICS
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-merge-nics
+
+ - name        : NCCL_IB_QPS_PER_CONNECTION
+   type        : int64_t
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-qps-per-connection
+
+ - name        : NCCL_IB_WARN_RAIL_LOCAL
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-warn-rail-local
+
+ - name        : NCCL_GDR_FLUSH_DISABLE
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gdr-flush-disable
+
+ - name        : NCCL_IB_SPLIT_DATA_ON_QPS
+   type        : int64_t
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-split-data-on-qps
+
+ - name        : NCCL_IB_ADDR_FAMILY
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-addr-family
+
+ - name        : NCCL_IB_ADDR_RANGE
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-addr-range
+
+ - name        : NCCL_IB_HCA
+   type        : prefixed_stringlist
+   prefixes    : ^, =
+   default     :
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ib-hca
+
+ - name        : NCCL_LAZY_SETUP_CHANNELS
+   type        : bool
+   default     : false
+   description : |-
+     Enable lazily setup/initialize channel resources at runtime. Only minimal
+     required number of channels will be required based on topology and collective
+     operations and sizes used
+
+ - name        : NCCL_MEM_USE_SLAB_ALLOCATOR
+   type        : bool
+   default     : false
+   description : |-
+      Use slab allocator to group small initChannel metadata calls to save GPU memory usage
+
+ - name        : NCCL_FASTINIT_MODE
+   type        : enum
+   default     : none
+   choices     : none, ring_hybrid
+   description : |-
+     FastInit supports various mode:
+     - none: no FastInit, use baseline init
+     - ring_hybrid: use ring based all-gather O(n) to initialize both baseline transport and ctran
+     All optimizations (by meta) for Large Scale Jobs
+
+ - name        : NCCL_SKIP_TCPFORM_RING
+   type        : bool
+   default     : false
+   description : |-
+    skip the formRingViaTcpStore() call in the bootstrap process when ncclCommInitRankScalable() is called.
+
+ - name        : NCCL_USE_TRANSPORT_EXT
+   type        : bool
+   default     : false
+   description : |-
+     Toggle to enable the use of the Meta-developed extension for baseline transport-related functions.
+
+ - name        : NCCL_CTRAN_ALLGATHER_MIN_SIZE
+   type        : uint64_t
+   default     : 4096
+   description : |-
+     Minimum size for ctran all gather.
+
+
+ - name        : NCCL_CTRAN_NVL_ALLGATHERDIRECT_CHUNK_SIZE
+   type        : int
+   default     : 131072
+   description : |-
+    Number of bytes for each thread block to copy for intra-node all gather
+    direct kernel. Number of thread blocks used for each collective is
+    calculated by total bytes divided by chunk size.
+
+ - name        : NCCL_CTRAN_NVL_ALLGATHERDIRECT_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 32
+   description : |-
+     Maximum number of thread blocks used for intra-node allgather kernel. The
+     value is calculated by NCCL_CTRAN_NVL_ALLGATHERDIRECT_CHUNK_SIZE and cannot
+     exceed this number.
+
+ - name        : NCCL_CTRAN_NVL_ALLGATHERDIRECT_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 640
+   description : |-
+     Number of threads in each thread block used for intra-node
+     allgatherdirect kernel.
+
+
+ - name        : NCCL_CTRAN_AG_RING_MIN_SPLIT_SIZE
+   type        : uint64_t
+   default     : 65536
+   description : |-
+     Minimum message size to split in ring AllGather algorithm. Messages larger
+     than this will be split equally into NCCL_CTRAN_AG_RING_NUM_SPLIT messages.
+
+ - name        : NCCL_CTRAN_AG_RING_NUM_SPLIT
+   type        : int
+   default     : 2
+   description : |-
+     Split messages larger than NCCL_CTRAN_AG_RING_MIN_SPLIT_SIZE into this many
+     messages.
+
+
+ - name        : NCCL_CTRAN_AG_RD_RTR
+   type        : bool
+   default     : true
+   description : |-
+     Whether to wait for ready-to-receive at beginning of each iteration
+
+
+ - name        : NCCL_CTRAN_ALLREDUCE_DIRECT_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 32
+   description : |-
+     Maximum number of thread blocks used for the AllReduce kernel.
+     We might use fewer thread blocks, if we can achieve max occupancy
+     with them.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_DIRECT_THREAD_BLOCK_SIZE
+   type        : int
+   default     : -1
+   description : |-
+     Number of threads in each thread block used for the AllReduce
+     kernel. Default -1 to use the recommended size by CUDA runtime.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_ARG_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 32
+   description : |-
+     Maximum number of thread blocks used for the AllReduce kernel.
+     We might use fewer thread blocks, if we can achieve max occupancy
+     with them.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_ARG_THREAD_BLOCK_SIZE
+   type        : int
+   default     : -1
+   description : |-
+     Number of threads in each thread block used for the AllReduce
+     kernel. Default -1 to use the recommended size by CUDA runtime.
+
+ - name        : NCCL_CTRAN_ALLTOALL_NUM_THREAD_BLOCKS
+   type        : int
+   default     : -1
+   description : |-
+     Number of thread blocks to use for AllToAll.
+     Setting it to a negative number means that NCCL will automatically
+     pick a value.
+
+ - name        : NCCL_CTRAN_ALLTOALL_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 256
+   description : |-
+     Number of threads in each thread block to use for AllToAll.
+     Setting it to a negative number means that NCCL will automatically
+     pick a value.
+
+ - name        : NCCL_CTRAN_ALLTOALL_THRESHOLD
+   type        : uint64_t
+   default     : 32768
+   description : |-
+     Minimal message size in bytes to send to (receive from) each rank to use
+     CTran AllToAll. Messages smaller than the threshold may benefit from
+     the default eager copy based algorithm.
+
+ - name        : NCCL_CTRAN_COMPRESSED_ALLTOALLV_CHUNK_SIZE
+   type        : uint64_t
+   default     : 16777216
+   description : |-
+     The size of the temporary chunk used in the compressedAllToAllv to store
+     compressed buffer size. Setting it allows compressedAllToAllv to prevent
+     bootstraping compressed buffer sizes to reduce latency. It is set to 16MB
+     by default as it's the largest single chunk size acceptable by nvcomp.
+
+ - name        : NCCL_CTRAN_COMPRESSED_ENABLE_LOGGING
+   type        : bool
+   default     : false
+   description : |-
+     Whether to log the compression ratio of each message in the compressed collectives.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 64
+   description : |-
+     Number of thread blocks used for intra-node AllToAllv kernel.
+     Must be even number.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 256
+   description : |-
+     Number of threads in each thread block used for intra-node
+     AllToAllv kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 64
+   description : |-
+     Number of thread blocks used for intra-node AllToAllv kernel.
+     Must be even number.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DYNAMIC_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 256
+   description : |-
+     Number of threads in each thread block used for intra-node
+     AllToAllv kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALL_DEDUP_NUM_THREAD_BLOCKS_PER_RAIL_P2P
+   type        : int
+   default     : 16
+   description : |-
+     Number of thread blocks used for each rail peer AllToAllDedup kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALL_DEDUP_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 256
+   description : |-
+     Number of threads in each thread block used for AllToAllDedup kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCK_GROUPS
+   type        : int
+   default     : 1
+   description : |-
+     Number of thread block groups used for copying send data within the
+     AllToAllvDedupDP kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCKS_PER_GROUP
+   type        : int
+   default     : 1
+   description : |-
+     Number of thread blocks in sendCopy group for sending data within the
+     AllToAllvDedup kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_PREPARE_NUM_THREAD_BLOCK_GROUPS
+   type        : int
+   default     : 1
+   description : |-
+     Number of thread block groups used within the AllToAllvDedupPrepare kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCK_GROUPS
+   type        : int
+   default     : 1
+   description : |-
+     Number of thread block groups used for forwarding data within the
+     AllToAllvDedupDP kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS_PER_GROUP
+   type        : int
+   default     : 1
+   description : |-
+     Number of thread blocks in forward group for forwarding data within the
+     AllToAllvDedupDP kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCK_GROUPS
+   type        : int
+   default     : 1
+   description : |-
+     Number of thread block groups used for copying received data within
+     the AllToAllvDedupDP kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP
+   type        : int
+   default     : 1
+   description : |-
+     Number of thread blocks in recvCopy group for copying data within the
+     AllToAllvDedup kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 256
+   description : |-
+     Number of threads in each thread block used for intra-node
+     AllToAllvDedupDP kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_NUM_CHUNKS
+   type        : int
+   default     : 4
+   description : |-
+     Number of temporary chunks used in the AllToAllvDedupDP internal
+     pipeline.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_CHUNK_SIZE
+   type        : int
+   default     : 16777216
+   description : |-
+     Number of temporary chunk size in bytes used in the AllToAllvDedupDP
+     internal pipeline.
+
+ - name        : NCCL_CTRAN_NVL_BROADCAST_CHUNK_SIZE
+   type        : int
+   default     : 131072
+   description : |-
+    Number of bytes for each thread block to copy for intra-node broadcast
+    kernel. Number of thread blocks used for each collective is calculated
+    by total bytes divided by chunk size.
+
+ - name        : NCCL_CTRAN_NVL_BROADCAST_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 32
+   description : |-
+     Maximum number of thread blocks used for intra-node broadcast kernel. The
+     number of thread blocks calculated by NCCL_CTRAN_NVL_BROADCAST_CHUNK_SIZE
+     cannot exceed this number.
+
+ - name        : NCCL_CTRAN_NVL_BROADCAST_THREAD_BLOCK_SIZE
+   type        : int
+   default     : -1
+   description : |-
+     Number of threads in each thread block used for intra-node
+     broadcast kernel. Default -1 to use the recommended size by CUDA runtime.
+
+
+ - name        : NCCL_CTRAN_REDUCESCATTER_REDUCE_NELEM_PER_THREAD_BLOCK
+   type        : int
+   default     : 131072
+   description : |-
+    Number of elements for each thread block to handle the local reduce
+    operation. Number of thread blocks used for each collective is calculated
+    by total number of elements and number of local ranks divided by chunk size.
+
+ - name        : NCCL_CTRAN_REDUCESCATTER_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 640
+   description : |-
+     Number of threads in each thread block used for the local reduce
+     kernel. Set to -1 to use the recommended size by CUDA runtime.
+
+
+ - name        : NCCL_CTRAN_REDUCESCATTER_DIRECT_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 32
+   description : |-
+     Maximum number of thread blocks used for intra-node reducescatter kernel.
+     The number of thread blocks calculated by
+     NCCL_CTRAN_REDUCESCATTER_REDUCE_NELEM_PER_THREAD_BLOCK cannot exceed this
+     number.
+
+ - name        : NCCL_CTRAN_REDUCESCATTER_DIRECT_MIN_SIZE
+   type        : uint64_t
+   default     : 33554432
+   description : |-
+     Minimum recvbytes for direct zero-copy reducescatter. If recvbytes is
+     smaller than the threshold, we will use stage copy to copy the data from
+     sendbuff to a pre-allocated and IPC shared tmpBuf. It avoids overhead from
+     GPE-kernel sync and ctrl msg exchange, which can be more expensive than D2D
+     copy. Note: it must not exceed NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE /
+     number of ranks.
+
+ - name        : NCCL_CTRAN_REDUCESCATTER_RHD_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 4
+   description : |-
+     Maximum number of thread blocks used for inter-rank-only reducescatter
+     kernel. The number of thread blocks calculated by
+     NCCL_CTRAN_REDUCESCATTER_REDUCE_NELEM_PER_THREAD_BLOCK cannot exceed this
+     number.
+
+ - name        : NCCL_CTRAN_NVL_SENDRECV_CHUNK_SIZE
+   type        : int
+   default     : 131072
+   description : |-
+    Number of bytes for each thread block to copy for intra-node sendrecv
+    kernel. Number of thread blocks used for each collective is calculated
+    by total bytes divided by chunk size.
+
+ - name        : NCCL_CTRAN_NVL_SENDRECV_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 32
+   description : |-
+     Maximum number of thread blocks used for intra-node sendrecv kernel. The
+     number of thread blocks calculated by NCCL_CTRAN_NVL_SENDRECV_CHUNK_SIZE
+     cannot exceed this number.
+
+ - name        : NCCL_CTRAN_NVL_SENDRECV_THREAD_BLOCK_SIZE
+   type        : int
+   default     : -1
+   description : |-
+     Number of threads in each thread block used for intra-node
+     sendrecv kernel. Default -1 to use the recommended size by CUDA runtime.
+
+ - name        : NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable the use of copy engine in CTRAN NVL sendrecv.
+     Default to use SM based SEND/RECV for NVL.
+
+ - name        : NCCL_CTRAN_REDUCESCATTER_RING_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 4
+   description : |-
+     Maximum number of thread blocks used for inter-rank-only reducescatter
+     kernel. The number of thread blocks calculated by
+     NCCL_CTRAN_REDUCESCATTER_REDUCE_NELEM_PER_THREAD_BLOCK cannot exceed this
+     number.
+
+ - name        : NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE
+   type        : uint64_t
+   default     : 8388608
+   description : |-
+    A group of shared device memory region, each with the specified size
+    allocated for NVLink inter-GPU staged communication. A contiguous memory
+    region with NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE * (number of local ranks -
+    1) size will be allocated on each rank, and IPC shared with all the other
+    NVLink peers. It is divided into (number of local ranks - 1) chunks and
+    each is used with a dedicated NVLink peer. It serves as a bi-directional
+    point-to-point staged data copy channel between every two peers.
+
+
+ - name        : NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE
+   type        : uint64_t
+   default     : 33554432
+   description : |-
+     A single shared device memory region with the specified size allocated on
+     each rank for inter-GPU staged communication. It is used for each rank to
+     share its own data with all the other peers, similar to a bcast or incast
+     pattern.
+
+ - name        : NCCL_CTRAN_NVL_FABRIC_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable the use of NVL fabric in CTRAN.
+
+ - name        : NCCL_CTRAN_IB_DMABUF_ENABLE
+   type        : bool
+   default     : true
+   description : |-
+     Enable use of ib_reg_dmabuf_mr for ib
+
+ - name        : NCCL_CTRAN_REGISTRATION_SIZE_CHECK
+   type        : bool
+   default     : false
+   description : |-
+     This is to disable check for registration size for less than page size.
+     Page size on aarch64 is 64K.
+
+ - name        : NCCL_CTRAN_IB_ASYNC_EVENT_POLL_INTERVAL_MS
+   type        : int
+   default     : 10
+   description : |-
+     How often to poll for an IB async event in milliseconds.
+
+ - name        : NCCL_CTRAN_IB_EPOCH_LOCK_ENABLE
+   type        : bool
+   default     : true
+   description : |-
+     Enable epoch lock for ctran IB backend. This is to avoid per-object lock in
+     ctran IB backend. We recommend it to be always enabled unless for
+     performance debugging of per-object lock. Setting it to true requires all
+     code using CtranIb to explicitly call epochLock() and epochUnlock();
+     otherwise, it would be invalid usage. Setting to false would disable the
+     epoch lock even if epochLock() and epochUnlock() are called.
+
+ - name        : NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK
+   type        : bool
+   default     : false
+   description : |-
+     Enforce the check for epoch lock when NCCL_CTRAN_IB_EPOCH_LOCK_ENABLE is
+     true. It is for testing only, and would add additional cost in ctranIb
+     critical path.
+
+ - name        : NCCL_CTRAN_IB_MAX_QPS
+   type        : int
+   default     : 16
+   description : |-
+     Maximum number of QPs to enable, so data can be split across
+     multiple QPs.  This allows the communication to take multiple routes
+     and is a poor-man's version of fully adaptive routing.
+
+ - name        : NCCL_CTRAN_IB_QP_SCALING_THRESHOLD
+   type        : uint64_t
+   default     : 524288
+   description : |-
+     Messages of size min(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, remainingData)
+     will be sent round-robin on the available queue pairs until a put is
+     complete or until NCCL_CTRAN_IB_QP_MAX_MSGS are outstanding on each QP.
+     If set to 0, iputs will be split equally across QPs.
+
+ - name        : NCCL_CTRAN_IB_QP_MAX_MSGS
+   type        : uint64_t
+   default     : 128
+   description : |-
+     Maximum number of outstanding messages per QP at a given time. As messages
+     complete and CQEs are generated, new messages will be posted to keep the
+     send queue full of this many WQEs.
+
+ - name        : NCCL_CTRAN_IB_DEVICES_PER_RANK
+   type        : int
+   default     : 1
+   description : |-
+     Number of IB devices/NIC to use per rank. By default, we use only one IB device
+
+ - name        : NCCL_CTRAN_IB_DEVICE_STRIDE
+   type        : int
+   default     : 1
+   description : |-
+    The stride determines how NICs are selected for each rank. By default, NICs are chosen sequentially. On GB200 hosts, there are 4 NICs distributed across two separate planes, so ranks must select NICs with a stride of 2 to avoid cross-plane hangs. For example, rank 0 chooses NIC 0, and rank 1 chooses NIC 2 (skipping NIC 1). On GB200 platforms, either NCCL_CTRAN_IB_DEVICES_PER_RANK or NCCL_CTRAN_IB_DEVICE_STRIDE must be set to 2 to ensure proper NIC selection.
+
+
+ - name        : NCCL_CTRAN_IB_CTRL_TC
+   type        : uint64_t
+   default     : 224
+   description : |-
+     Traffic class to use for control QPs. Note: To match NCCL_IB_TC, this
+     directly sets the TC field, so multiply your DSCP value by 4.
+
+ - name        : NCCL_CTRAN_IB_VC_MODE
+   type        : enum
+   default     : dqplb
+   choices     : spray, dqplb
+   description : |-
+     Configure IBVCs to support either spray mode (uses extra QP for
+     notifications) or dqplb mode ("normal" but all writes are WRITE_WITH_IMM)
+
+ - name        : NCCL_CTRAN_IB_QP_CONFIG_XRACK
+   type        : stringlist
+   default     : "1048576,16,spray,128"
+   description : |-
+     A set of configuration for CTRAN IB over inter-rack communication:
+     <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS>
+     e.g., NCCL_CTRAN_IB_QP_CONFIG_XRACK="1048576,4,spray,6",
+     If not given, NCCLx will use values from
+     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
+     NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS respectively
+
+ - name        : NCCL_CTRAN_IB_QP_CONFIG_XZONE
+   type        : stringlist
+   default     : "1048576,16,spray,128"
+   description : |-
+     A set of configuration for CTRAN IB over inter-zone communication:
+     <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS>
+     e.g., NCCL_CTRAN_IB_QP_CONFIG_XZONE="1048576,4,spray,6"
+     If not given, NCCLx will use values from
+     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
+     NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS respectively
+
+ - name        : NCCL_CTRAN_IB_QP_CONFIG_XDC
+   type        : stringlist
+   default     : "1048576,16,spray,128"
+   description : |-
+     A set of configuration for CTRAN IB over inter-DC communication:
+     <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS>
+     e.g., NCCL_CTRAN_IB_QP_CONFIG_XDC="1048576,4,spray,6"
+     If not given, NCCLx will use values from
+     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
+     NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS respectively
+
+ - name        : NCCL_CTRAN_IB_PG_TRAFFIC_CLASS
+   type        : stringlist
+   default     :
+   description : |-
+     Specify the traffic class for each PG. The format is
+     <PG_0: VAL0>,<PG_1: VAL1>,<PG_2: VAL2>,<PG_3: VAL3>
+     e.g., NCCL_CTRAN_IB_PG_TRAFFIC_CLASS="PP_P2P_0:200,PP_P2P_1:208,DP:212"
+     If not given, NCCLx will use default traffic class 224 for all PGs
+
+ - name        : NCCL_CTRAN_IB_QP_CONFIG_ALGO
+   type        : dictlist
+   default     : alltoall:1048576,16,dqplb,128,224
+   description : |-
+     Specify the vc config for each collective. The format is
+     <ALGO0: VAL0>,<ALGO1: VAL1>,<ALGO2: VAL2>,<ALGO3: VAL3>
+     where value is a list of <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS><TRAFFIC_CLASS>
+     e.g., NCCL_CTRAN_IB_QP_CONFIG_ALGO="alltoall:1048576,4,dqplb,128,224;sendrecv:1048576,16,spray,128,224"
+     If not given, NCCLx will use the configuration specified per topology
+     (see NCCL_CTRAN_IB_QP_CONFIG_XDC, NCCL_CTRAN_IB_QP_CONFIG_XZONE, NCCL_CTRAN_IB_QP_CONFIG_XRACK),
+     or the default configuration set (see NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
+     NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS) for all collectives.
+
+ - name        : NCCL_CTRAN_EX_IB_QP_CONFIG
+   type        : stringlist
+   default     :
+   description : |-
+     A set of configuration for CTRAN_EX IB communication. e.g FTAR:
+     <QP_SCALING_THRESHOLD>,<MAX_QPS>,<VC_MODE>,<QP_MAX_MSGS>
+     e.g., NCCL_CTRAN_EX_IB_QP_CONFIG="1048576,16,spray,128"
+     If not given, NCCLx will use values from
+     NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, NCCL_CTRAN_IB_MAX_QPS,
+     NCCL_CTRAN_IB_VC_MODE, and NCCL_CTRAN_IB_QP_MAX_MSGS respectively
+
+ - name        : NCCL_CTRAN_NUM_KERNEL_ELEMS
+   type        : int
+   default     : 65536
+   description : |-
+     Size of kernel p2p elements pre-allocated for each communicator.
+     Used to pass variable number of p2p operations to the kernel.
+     Each p2p element is allocated from page-locked memory on the host.
+
+ - name        : NCCL_CTRAN_NUM_KERNEL_FLAGS
+   type        : int
+   default     : 8192
+   description : |-
+     Size of kernel flags pre-allocated for each communicator.
+     Used to pass one kernel flag to the kernel.
+     Each flag is allocated from page-locked memory on the host.
+
+ - name        : NCCL_CTRAN_NUM_CHECKSUMS
+   type        : int
+   default     : 8192
+   description : |-
+     Size of checksums pre-allocated for each communicator.
+     Each checksum is allocated from page-locked memory on the host.
+
+ - name        : NCCL_CTRAN_NUM_GPE_KERNEL_SYNCS
+   type        : int
+   default     : 1024
+   description : |-
+     Size of GpeKernelSync structs pre-allocated for each communicator.
+     Each GpeKernelSync is allocated from page-locked memory on the host.
+
+ - name        : NCCL_CTRAN_ABORT_ON_ERROR
+   type        : bool
+   default     : false
+   description : |-
+     When there is an error, abort directly, instead of setting the
+     async flag.
+
+
+ - name        : NCCL_CTRAN_PROFILING
+   type        : enum
+   default     : none
+   choices     : none, stdout, info, kineto
+   description : |-
+     Kind of ctran profiling needed.
+     none - No profiling
+     stdout - Dump profiling data to stdout
+     info   - Dump profiling data to NCCL_DEBUG INFO
+     kineto - Dump profiling data to a kineto log
+        (for kineto profiling, see also NCCL_CTRAN_KINETO_PROFILE_DIR)
+
+ - name        : NCCL_CTRAN_KINETO_PROFILE_DIR
+   type        : string
+   default     : "/tmp"
+   description : |-
+     Directory to place Ctran kineto profiling logs. Support both local
+     directory path or FB internal remote path.
+     (see also NCCL_CTRAN_PROFILING)
+
+ - name        : NCCL_CTRAN_REGISTER
+   type        : enum
+   default     : lazy
+   choices     : none, lazy, eager, async
+   description : |-
+     Kind of registration to use for ctran user buffers
+     none - No registration
+     lazy - Lazy registration (keep track of user-provided registration
+            buffers, but delay the actual registration till the buffer
+            is used for a communication operation)
+     eager - Eager registration (register buffers as soon as it is
+             provided by the user)
+     async - Asynchronous registration (in addition to lazy registration,
+             register buffers asynchronously by a background thread at
+             communication operation). When schedule a communication operation,
+             if buffer is not registered and smaller than available internal
+             pre-registered buffer (see NCCL_CTRAN_INTERNODE_TMPBUF_SIZE), the
+             communication will be stagging copied via the internal buffer while
+             the registration is handled by a background thread.
+
+ - name        : NCCL_CTRAN_REGISTER_ERROR_ON_DYNAMIC
+   type        : bool
+   default     : false
+   description : |-
+     Fails at collective scheduling time if the buffer is not pre-registered by user.
+
+ - name        : NCCL_CTRAN_BACKENDS
+   type        : enumlist
+   default     : ib, nvl, socket
+   choices     : ib, nvl, socket, tcpdm
+   description : |-
+     Backends to enable for ctran
+     ib - RoCE/IB backend
+     nvl - NVLink backend; requires ib or socket to be enabled
+     socket - Socket backend; enable it if ib is not available
+     tcpdm - TCP device memory backend
+     Usage: If the config is "ib, nvl, socket", the backend tries to enable
+     ib first. If the ib initialization fails, the backend will enable socket.
+
+ - name        : NCCL_CTRAN_PROFILING_REPORT_COUNT
+   type        : int
+   default     : 100
+   description : |-
+     Number of ops to report CTRAN profiling results periodically
+
+
+ - name        : NCCL_CTRAN_CHECKSUM_BYTES_PER_THREAD_BLOCK
+   type        : int
+   default     : 131072
+   description : |-
+    Number of bytes for each thread block to compute checksum.
+
+ - name        : NCCL_CTRAN_CHECKSUM_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 32
+   description : |-
+     Maximum number of thread blocks used for checksum kernel. The number of
+     thread blocks calculated by NCCL_CTRAN_CHECKSUM_BYTES_PER_THREAD_BLOCK
+     cannot exceed this value.
+
+ - name        : NCCL_CTRAN_ALLGATHER_CHECKSUM_SAMPLE_RATE
+   type        : int
+   default     : 0
+   description : |-
+     Checksum is disabled by default (when the sample rate is set to 0).
+     If a non-zero value is provided, 1 out of every 'N' operations on each
+     communicator will be sampled, where 'N' is the specified sample rate.
+
+ - name        : NCCL_CTRAN_SENDRECV_CHECKSUM_SAMPLE_RATE
+   type        : int
+   default     : 0
+   description : |-
+     Checksum is disabled by default (when the sample rate is set to 0).
+     If a non-zero value is provided, 1 out of every 'N' operations on each
+     communicator will be sampled, where 'N' is the specified sample rate.
+     It controls the sample rate for send/recv/sendrecv operations.
+
+
+ - name        : NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT
+   type        : int
+   default     : -1
+   description : |-
+     Manages the frequency of register snapshot reporting. Set to -1 to
+     completely disable. Set to 0 to report only at communicator destroy time.
+     Set to N to allows a snapshot to be reported whenever once every N
+     registrations. It helps understand the performance impact of registeration
+     at different period of a long running job.
+
+
+ - name        : NCCL_CTRAN_ALGO_PROFILING_OUTPUT
+   type        : string
+   default     : ""
+   description : |-
+     Output mode for algo profiling ("", "file", or "scuba"). When
+      output mode is "", algo profiling is disabled.
+
+ - name        : NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT
+   type        : int
+   default     : 1
+   description : |-
+     Sampling weight to control writing data transfers info to output. The
+     output is specified by NCCL_CTRAN_ALGO_PROFILING_OUTPUT. The sampling rate
+     is 1/NCCL_ALGO_PROFILING_SAMPLING_WEIGHT, e.g., a sampling weight of 100
+     means that 1% of the data transfers will be logged.
+
+ - name        : NCCL_CTRAN_ALGO_PROFILING_SAMPLING_MODE
+   type        : string
+   default     : "opcount"
+   description : |-
+      Sampling mode to control whether the sampling is applied at the collective
+      or opcount mode. For the collective modes, we log
+      every collective randomly according to the sampling
+      weight. For the opcount sampling mode, we log every operation deterministically
+      when the opcount is a multiple of the sampling weight.
+
+
+
+ - name        : NCCL_CTRAN_TRANSPORT_PROFILER
+   type        : bool
+   default     : false
+   description : |-
+     Enable Ctran transport profiling.
+
+ - name        : NCCL_SLOW_RANK_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Flag to enable slow rank module
+
+ - name        : NCCL_CTRAN_DEVICE_TRAFFIC_SAMPLING_WEIGHT
+   type        : int
+   default     : 100
+   description : |-
+     Sampling weight to collect device traffic data for slow rank detection module. The sampling rate
+     is 1/NCCL_CTRAN_DEVICE_TRAFFIC_SAMPLING_WEIGHT.
+
+ - name        : NCCL_SLOW_RANK_PERF_WINDOW_SIZE
+   type        : int
+   default     : 5
+   description : |-
+     This is the window for keeping track of rdma performance efficiency metric.
+     If all the samples in this window are below the threshold then we flag the
+     rank as slow.
+
+ - name        : NCCL_SLOW_RANK_WQE_WINDOW_SIZE
+   type        : int
+   default     : 1
+   description : |-
+     If the number of wqe's completed is equal to this window size we
+     calculatethe rdma perf efficiency for the window and push it in the queue.
+
+ - name        : NCCL_SLOW_RANK_RDMA_PERF_EFFICIENCY_PERC
+   type        : int
+   default     : 70
+   description : |-
+     This is the threshold for rdma perf efficiency. If efficiency drops below
+     this threshold then we flag the rank as slow.
+
+ - name        : NCCL_SLOW_RANK_SCUBA_LOGGING_INTERVAL_IN_USECS
+   type        : int
+   default     : 1000000
+   description : |-
+     Scuba logging interval in microseconds.
+
+ - name        : NCCL_SLOW_RANK_LOG_NSAMPLES
+   type        : int
+   default     : 10
+   description : |-
+     By default scuba logging is only enabled if slow rank detected. This flag
+     gives us the option to log first n slow rank stats even if rank is not
+     slow.
+
+ - name        : NCCL_SLOW_RANK_VARIANCE_PERC
+   type        : int
+   default     : 20
+   description : |-
+     Only log slow rank data if the variance is more than this percentage.
+
+ - name        : NCCL_CTRAN_ALGO_PROFILING_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Flag to enable algo profiling module
+
+ -  name        : NCCL_FILTER_ALGO_LOGGING_BY_RANKS
+    type        : stringlist
+    default     : ""
+    description : |-
+     Global ranks to log algo information from. Default is to log from all
+     ranks.
+
+ - name        : NCCL_CTRAN_QP_PROFILING_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Flag to enable QP profiling module
+
+
+ - name        : NCCL_CTRAN_QP_PROFILING_OUTPUT
+   type        : string
+   default     : ""
+   description : |-
+     Output mode for Ctran QP profiling ("", "file")
+
+ - name        : NCCL_CTRAN_QP_PROFILING_SAMPLING_WEIGHT
+   type        : int
+   default     : 1
+   description : |-
+     WQE sampling weight to control writing WQE info to output.
+     The sampling rate is 1/NCCL_QP_PROFILING_SAMPLING_WEIGHT.
+
+
+ - name        : NCCL_CTRAN_ENABLE_TRACE_LOG
+   type        : bool
+   default     : false
+   description : |-
+     Enable CTran trace level logging.
+
+ - name        : NCCL_CTRAN_ENABLE_DEV_TRACE_LOG
+   type        : bool
+   default     : false
+   description : |-
+     Enable CTran trace level logging in device kernel.
+
+
+ - name        : NCCL_BROADCAST_ALGO
+   type        : enum
+   default     : orig
+   choices     : orig, ctran, ctdirect, ctbtree
+   description : |-
+     The algorithm to use for broadcast communication
+     orig - Copy-based communication
+     ctran - Ctran-based communication auto-select
+     ctdirect - Ctran-based algorithm directly distiributing data from root
+     ctbtree - Ctran-based binomial-tree algorithm
+
+ - name        : NCCL_SENDRECV_ALGO
+   type        : enum
+   default     : orig
+   choices     : orig, ctran
+   description : |-
+     The algorithm to use for sendrecv communication
+     orig - Copy-based communication
+     ctran - Ctran-based communication
+
+ - name        : NCCL_ALLGATHER_P_ALGO
+   type        : enum
+   default     : ctpipeline
+   choices     : ctdirect, ctpipeline
+   description : |-
+     The algorithm to use for AllgatherP communication
+     ctdirect - Ctran-based direct point-to-point algorithm
+     ctpipeline - Ctran-based pipeline algorithm that pipelines
+                  inter-node rail ring and intra-node CopyEngine based copy
+
+ - name        : NCCL_ALLGATHER_ALGO
+   type        : enum
+   default     : orig
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks
+   description : |-
+     The algorithm to use for Allgather communication
+     orig - Copy-based ring algorithm
+     ctran - Picks the best ctran-based algorithm
+     ctdirect - Ctran-based direct point-to-point algorithm
+     ctring - Ctran-based ring algorithm
+     ctrd - Ctran-based recursive doubling algorithm
+
+ - name        : NCCL_REDUCESCATTER_ALGO
+   type        : enum
+   default     : orig
+   choices     : orig, ctran, ctdirect, ctring, ctrhd
+   description : |-
+     The algorithm to use for ReduceScatter communication
+     orig - Copy-based ring algorithm
+     ctran - Ctran-based algorithm automatically picked by the library
+     ctdirect - Ctran-based direct point-to-point algorithm
+     ctring - Ctran-based rail ring algorithm for inter-node only case
+     ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
+
+ - name        : NCCL_ALLTOALL_ALGO
+   type        : enum
+   default     : orig
+   choices     : orig, ctran
+   description : |-
+     The algorithm to use for alltoall communication
+     orig - Copy-based communication
+     ctran - Ctran-based communication
+
+ - name        : NCCL_ALLTOALLV_ALGO
+   type        : enum
+   default     : orig
+   choices     : orig, ctran, compCtran, bsCompCtran
+   description : |-
+     The algorithm to use for alltoallv communication
+     orig - Copy-based communication
+     ctran - Ctran-based communication
+     compCtran - Compression-based communication using IB Control message exchange
+     bsCompCtran - Compression-based communication with NCCL socket bootstrapping
+
+ - name        : NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     If enable cudagraph-aware optimization for ctran alltoall.
+
+ - name        : NCCL_CTRAN_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable Custom Transport. If it is disabled, all collectives will fallback
+     to the default transport algorithm. It is recommended to always enable it
+     unless Custom Transport initialization fails to function.
+
+ - name        : NCCL_CTRAN_INTERNODE_TMPBUF_SIZE
+   type        : uint64_t
+   default     : 33554432
+   description : |-
+     Size of device temporary buffer allocated for inter-node
+     communication.
+
+ - name        : NCCL_CTRAN_NO_ERROR_CHECK
+   type        : bool
+   default     : false
+   description : |-
+     If true, skip error checks in Ctran collectives for better performance.
+
+ - name        : NCCL_CTRAN_ENABLE_PRECONNECT
+   type        : bool
+   default     : true
+   description : |-
+     Enable CTRAN backends to pre-connect to peers at
+     the beginning of the collective call.
+
+ - name        : NCCL_CTRAN_ENABLE_PUT_FAST_PATH_FOR_SMALL_MSGS
+   type        : bool
+   default     : false
+   description : |-
+     Enable iput fast path (put can be sent through 1 WQE) for small messages
+     if possible. When set to true, only if the msg size is less than maxWqeSize
+     and there is no pending normal put in front of it, the put will go through
+     the fast path in AllToAll.
+
+ - name        : NCCL_SOCKET_TOS_CONFIG
+   type        : int
+   default     : -1
+   description : |-
+     Allow user to configure the TOS (type of service) field used by all NCCL sockets.
+     -1 means no change to the default TOS value.
+
+ - name        : NCCL_CLIENT_SOCKET_IFNAME
+   type        : string
+   default     : ""
+   description : |-
+     The NCCL_CLIENT_SOCKET_IFNAME variable specifies which IP interface to
+     bind a client socket to for communication. Value is a single NIC string.
+     Example: beth4. Default value is empty (bind nothing).
+     All optimizations (by meta) for Large Scale Jobs
+
+ - name        : NCCL_SOCKET_IPADDR_PREFIX
+   type        : string
+   default     : ""
+   description : |-
+     Specifies which IP address prefix to use for communication.
+     All optimizations (by meta) for Large Scale Jobs
+
+ - name        : NCCL_TCPSTORE_BACKOFF_INITIAL_INTERVAL
+   type        : int
+   default     : 500
+   description : |-
+     Initial interval for backoff in milliseconds.
+
+ - name        : NCCL_TCPSTORE_BACKOFF_MULTIPLIER
+   type        : double
+   default     : 1.5
+   description : |-
+     Multiplier for backoff interval for tcpstore client.
+
+ - name        : NCCL_TCPSTORE_BACKOFF_MAX_INTERVAL
+   type        : int
+   default     : 3000
+   description : |-
+     Maximum interval for backoff in milliseconds.
+
+ - name        : NCCL_TCPSTORE_BACKOFF_RANDOMIZATION_FACTOR
+   type        : double
+   default     : 0.1
+   description : |-
+     Randomization factor for backoff interval for tcpstore client.
+
+ - name        : NCCL_MASTER_ADDR
+   envstr      : MASTER_ADDR
+   type        : string
+   default     : ""
+   description : |-
+     The ip-address where TCPStore server is launched (e.g localhost, 192.168.0.1)
+     All optimizations (by meta) for Large Scale Jobs
+
+ - name        : NCCL_MASTER_PORT
+   envstr      : MASTER_PORT
+   type        : uint16_t
+   default     : 0
+   description : |-
+     The tcp port where TCPStore server is launched (e.g 8888)
+     All optimizations (by meta) for Large Scale Jobs
+
+ - name        : NCCL_TCPSTORE_CONNECT_TIMEOUT
+   type        : int
+   default     : 30
+   description : |-
+     Connection timeout for TCPStore client.
+     All optimizations (by meta) for Large Scale Jobs
+
+ - name        : NCCL_TCPSTORE_IO_TIMEOUT
+   type        : int
+   default     : 300
+   description : |-
+     IO timeout for TCPStore client.
+     All optimizations (by meta) for Large Scale Jobs
+
+ - name        : NCCL_COMM_STATE_DEBUG_TOPO
+   type        : enum
+   default     : system
+   choices     : system, nolocal, vnode
+   description : |-
+     The topology set for debug.
+     system -  System detected topology.
+     nolocal - No local rank topology (i.e., nLocalRanks = 1)
+     vnode - Custom virtual nodes to give some local ranks and some remote ranks topology
+      (i.e., nLocalRanks = NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS)
+
+ - name        : NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS
+   type        : int
+   default     : 2
+   description : |-
+      The number of local ranks when NCCL_COMM_STATE_DEBUG_TOPO is set to vnode.
+      Must be less than or equal to the number of physical gpus on the node.
+      The number of nodes will be infered as number of physical ranks / nLocalRanks.
+
+ - name        : NCCL_FIRST_COMM_AS_WORLD
+   type        : bool
+   default     : false
+   description : |-
+     When set to true, the first communicator created will be taken as the comm
+     world (assigned to NCCL_COMM_WORLD).
+     All optimizations (by meta) for Large Scale Jobs
+
+ - name        : NCCL_TOPO_FILE_PATH
+   type        : string
+   default     : "/etc/fbwhoami"
+   description : |-
+     [NCCLX] File that contains topology information in KEY=VALUE format
+
+ - name        : NCCL_IGNORE_TOPO_LOAD_FAILURE
+   type        : bool
+   default     : false
+   description : |-
+      [NCCLX] When fail to load topology(e.g. device, rtsw), ignore this failure
+      This may lead to silent failure or performance regression in some cases
+
+ - name        : NCCL_COLLSTAT_REPORT_INTERVAL
+   type        : int
+   default     : 0
+   description : |-
+     Interval in iterations after which coll stats are reported to scuba.
+     The amount of records being reported depends on parallelism being used and
+     the implementation of the parallelism.
+     If set to 0, coll stats are not reported to scuba.
+
+ - name        : NCCL_COLLTRACE
+   type        : stringlist
+   default     : ""
+   description : |-
+     Enable collective trace collection by leveraging cuda events
+     and a background thread. Valid options are comma separated list
+     of the following features. Leave empty to disable all features.
+     verbose - print every completed event as NCCL INFO log. Mostly for debug.
+     trace - Just enable collective trace.
+
+ - name        : NCCL_COLLTRACE_USE_NEW_COLLTRACE
+   type        : bool
+   default     : false
+   description : |-
+     Use new colltrace implementation. This is a temporary flag to enable
+     new colltrace implementation. We will remove this flag once the new
+     colltrace implementation is fully tested and stable.
+
+ - name        : NCCL_COLLTRACE_PENDING_QUEUE_SIZE
+   type        : int
+   default     : 4096
+   description : |-
+     How many pending collectives to keep in the pending queue. If the queue
+     is full, the newest one will be dropped. Currently this only works for new
+     colltrace implementation.
+
+ - name        : NCCL_COLLTRACE_TRACE_CUDA_GRAPH
+   type        : bool
+   default     : false
+   description : |-
+     Enable colltrace for collectives launched in cuda graph. Currently we
+     still haven't fully tested the performance impact of this feature. So
+     it is disabled by default. In the future, we will enable it by default.
+
+ - name        : NCCL_COLLTRACE_CTRAN_USE_CPU_RECORD
+   type        : bool
+   default     : true
+   description : |-
+     For all Ctran collective kernels, use CPU record instead of GPU record.
+     This is to avoid the GPU record overhead for kernels.
+     One exception is for collectives with checkSum Kernel, because we need
+     to wait for the checkSum Kernel to finish in order to get the checksum.
+
+ - name        : NCCL_COLLTRACE_RECORD_MAX
+   type        : int
+   default     : 20
+   description : |-
+     Maximum amount of past collectives CollTrace will record.
+     If the amount of collective exceeds this value, the oldest one will be
+     dropped. Set the value to -1 will make CollTrace record all collectives.
+     It serves as a very loose upper bound to ensure even if iteration count
+     is not available, we still don't record all the collectives.
+
+ - name        : NCCL_COLLTRACE_RECORD_MAX_ITERATIONS
+   type        : int
+   default     : 2
+   description : |-
+     Maximum number of iterations CollTrace will record.
+     CollTrace will record all the collectives from the last N iterations.
+     If the amount of iterations exceeds this value, the oldest one will be
+     dropped.
+     The default value is 2, meaning the current iteration and the previous
+     (e.g. current collective in iteration 5, it will keep all the collectives
+     in iteration 4 and 5).
+     Set to 0 to disable recording past collectives.
+
+ - name        : NCCL_COLLTRACE_SLOW_COLL_THRESHOLD_BY_PG
+   type        : stringlist
+   default     :
+   description : |-
+     Comma separated list of PG name and threshold in ms. If a collective takes
+     longer than the specifies threshold, it will be logged to scuba. The format
+     for each element in the stringlist is "<PG Prefix>:<thresholdInMs>".
+     To specify any PG, use "ANY" as the prefix. To specify not record any
+     collective for a specific PG, use -1 as the threshold. By default, no
+     collectives will be logged to scuba.
+     Example: "TP:100,PP:200" will log all collectives in TP group to scuba
+     if it takes longer than 100ms, and all collectives in PP group to scuba
+     if it takes longer than 200ms.
+
+ - name        : NCCL_COLLTRACE_REPORT_FIRST_N_COLL
+   type        : int64_t
+   default     : 10
+   description : |-
+     Report the first N collectives to scuba. If the value is 0, no collectives
+     will be reported. Currently we DO NOT report WaitNotify and PutNotify
+
+ - name        : NCCL_COLLTRACE_REPORT_INTERVAL_SEC
+   type        : int
+   default     : 0
+   description : |-
+     Determines the interval in seconds colltrace is reported to scuba (after the first N) .
+     If the value is 0, periodic reporting is disabled.
+
+ - name        : NCCL_COLLTRACE_CHECK_INTERVAL_MS
+   type        : int64_t
+   default     : 10
+   description : |-
+     Determines how often the colltrace thread checks for the finish of a event
+     A longer interval will reduce the overhead of the colltrace thread, but
+     may delay the reporting of collective status. A long interval should not
+     affect the precision of collective latency nor start/end time points. The
+     default value is 10ms.
+
+ - name        : NCCL_COLLTRACE_WAKEUP_INTERVAL_MS
+   type        : int64_t
+   default     : 1000
+   description : |-
+     Only used in new colltrace. Determines how often the colltrace thread wakes
+     up while waiting for the finish of a event. A longer interval will reduce
+     cpu usage. The default value is 1000ms.
+
+ - name        : NCCL_COLLTRACE_WATCHDOG_DEFAULT_TIMEOUT_SEC
+   type        : int64_t
+   default     : 600
+   description : |-
+     Default timeout in seconds for collective watchdog. If a collective
+     does not finish within the timeout, colltrace will crash the process.
+     The default value is 10 minutes. The gloalhint from the user program takes
+     precedence over this env var for the actual time colltrace will wait.
+
+ - name        : NCCL_COLLTRACE_EVENT_BLOCKING_SYNC
+   type        : bool
+   default     : False
+   description : |-
+     Determines whether colltrace uses
+     1) cudaEventSynchronize + cudaEvent created with cudaEventBlockingSync; or
+     2) periodic cudaEventQuery + current thread sleep
+     to wait for reference events to finish. By default we use 2).
+
+ - name        : NCCL_MAPPERTRACE_COLL_RECORD_MAX
+   type        : uint64_t
+   default     : 20
+   description : |-
+     Maximum amount of past collectives MapperTrace will record.
+     If the amount of collective exceeds this value, the oldest one will be
+     dropped. Set the value to 0 will make MapperTrace record all collectives.
+
+ - name        : NCCL_MAPPERTRACE_ENABLE
+   type        : bool
+   default     : true
+   description : |-
+     Whether to enable MapperTrace.
+
+ - name        : NCCL_MAPPERTRACE_EVENT_RECORD_MAX
+   type        : uint64_t
+   default     : 100000
+   description : |-
+     How many events to keep in the event history. If the number of events
+     exceeds this value, the new events will be silently dropped.
+     We are targeting 8000 ranks most, so leaving room for 100K events should
+     be sufficient.
+
+ - name        : NCCL_PROXYMOCK_NET_SEND_FAILURE
+   type        : stringlist
+   default     :
+   description : |-
+     Backdoor to mock a send failure in proxy thread following the format of
+     "<opCount>,<rank>,<remoteRank>,<step>,<num_match>,<delay_sec>".
+     Set any of <opCount>,<rank>,<remoteRank>,<step> to -1 to match any.
+     Set <delay_sec> to 0 to always skip this send as a network failure,
+     otherwise delay it in seconds to mock slow network.
+     Set <num_match> to control how many times to match the send failure.
+     Example 1: "10,1,0,5,1,30" - mock a slow send by delaying 30 seconds
+     for the send operation matching [opCount 10, channel 1, rank 0, remote
+     rank 1, starting from step 5].
+     Example 2: "10,1,-1,-1,2,0" - mock 2 send failures matching [opCount 10,
+     channel 1, rank 0, *any* remote rank, any step].
+
+ - name        : NCCL_PROXYTRACE
+   type        : stringlist
+   default     :
+   description : |-
+     Enable proxy operation trace collection on the proxy thread. Valid options
+     are comma separated list of the following features. Leave empty to disable
+     all features.
+     trace - enable trace only.
+     verbose - print every proxy operation step as NCCL INFO log.
+
+ - name        : NCCL_PROXYTRACE_RECORD_MAX
+   type        : int
+   default     : 20
+   description : |-
+     Maximum amount of past collectives ProxyTrace will record per communicator.
+     If the amount of collective exceeds this value, the oldest one will be
+     dropped. Set the value to -1 will make ProxyTrace record all collectives.
+
+ - name        : NCCL_IB_ASYNC_EVENT_LOOP
+   type        : enum
+   default     : baseline
+   choices     : baseline, ctran
+   description : |-
+     IB Async Event polling loop; only one can run.
+     baseline - original unmodified baseline loop.
+     ctran - new ctran polling loop with error handling/detection.
+     Setting ctran in pure baseline mode or baseline in pure
+     ctran mode is an error.
+
+ - name        : NCCL_IB_LINK_DOWN_TIMEOUT
+   type        : int
+   default     : 0
+   description : |-
+     Link down timeout in seconds.
+     Set to zero to disable timeout feature.
+
+ - name        : NCCL_ALLREDUCE_ALGO
+   type        : enum
+   default     : orig
+   choices     : orig, dda, ctran, ctdirect, ctarg, ctring, ctmring
+   description : |-
+     The algorithm to use for Allreduce communication
+     orig - Copy-based algorithm
+     dda - Direct Data Access algorithms
+     ctran - Picks the best ctran-based algorithm
+     ctdirect - Ctran-based direct point-to-point algorithm
+     ctarg - ctran-based direct alltoall + reduce + all gather algorithm
+     ctring - ctran-based ring algorithm
+     ctmring - ctran-based multi flat ring algorithm
+
+ - name        : NCCL_ALLREDUCE_TYPE
+   type        : enum
+   default     : orig
+   choices     : orig, ncclFloat32
+   description : |-
+     The data type used in reduction. It is used in low-preduction reduction algorithms.
+     orig - use the original data type for reduction
+     ncclFloat32 - use float32 for reduction
+
+ - name        : NCCL_DDA_TMPBUFF_SIZE
+   type        : uint64_t
+   default     : 33554432
+   description : |-
+     DDA temporary buffer size.
+
+ - name        : NCCL_DDA_ALLREDUCE_TREE_THRESHOLD
+   type        : uint64_t
+   default     : 262144
+   description : |-
+     Message size at which DDA Allreduce switches to the tree algorithm.
+
+ - name        : NCCL_DDA_ALLREDUCE_SCATGAT_THRESHOLD
+   type        : uint64_t
+   default     : 1048576
+   description : |-
+     Message size at which DDA Allreduce switches to the scatter-gather
+     algorithm.
+
+ - name        : NCCL_DDA_ALLREDUCE_MAX_BLOCKS
+   type        : int
+   default     : 24
+   description : |-
+     DDA Allreduce max number of blocks.
+
+ - name        : NCCL_ALL_REDUCE_SPARSE_BLOCK_NUM_THREAD_BLOCKS
+   type        : int
+   default     : -1
+   description : |-
+     Number of thread blocks to use for ncclAllReduceSparse.  -1 means
+     automatically pick the number of thread blocks to use.
+
+ - name        : NCCL_ALL_REDUCE_SPARSE_BLOCK_THREAD_BLOCK_SIZE
+   type        : int
+   default     : -1
+   description : |-
+     Thread block size to use for ncclAllReduceSparse.  -1 means
+     automatically pick the thread block size to use.
+
+ - name        : NCCL_COMM_DUMP_ENABLE_PROCESS_GLOBAL_ERRORS
+   type        : bool
+   default     : false
+   description : |-
+     If true, logs all process global errors in comm dumps
+
+ - name        : NCCL_COMMSMONITOR_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable comms monitor to monitor the creation and destruction of NCCL
+     communicators. This is required to be enabled for ncclCommDumpAll to
+     work.
+
+ - name        : NCCL_CTRAN_ENALBE_CLUSTER_KERNEL_LAUNCH
+   type        : bool
+   default     : false
+   description : |-
+     Enable kernel launch in cluster mode. The default cluster size is 4.
+     On SM90+ architectures (compute capability ≥ 90).
+     NCCL can group multiple thread blocks together into clusters.
+
+ - name        : NCCL_CTRAN_CGA_CLUSTER_SIZE
+   type        : int
+   default     : 4
+   description : |-
+     Cluster size for CGA kernel launch. The default cluster size is 4.
+
+ - name        : NCCL_IBVERBS_PATH
+   type        : string
+   default     : "libibverbs.so"
+   description : Path to libibverbs.so. This allows fault injection for
+     verbs APIs in NCCLx.
+
+ - name        : NCCL_COMM_ABORT_SCOPE
+   type        : enum
+   default     : comm
+   choices     : comm, job, none
+   description : |-
+     Scope of resources to destroy on ncclCommAbort.  If set to comm,
+     only the communicator is destroyed.  If set to job, the entire
+     job is force aborted. If set to none, it immediately returns and
+     no resources are destroyed. It will relies on the upper layer to
+     terminate the whole process.
+
+ - name        : NCCL_NETWORK_PERF_MONITOR_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable network perf monitor to monitor the bandwidth of NCCL.
+
+ - name        : NCCL_CTRAN_ALLOW_CUDA_GRAPH
+   type        : bool
+   default     : false
+   description : |-
+     Preallocate runtime buffers at communicator creation time,
+     allowing the communicator to be usable in CUDA graph mode
+     (runtime allocation and mapping of buffers is not CUDA graph
+     safe).
+
+ - name        : NCCL_CTRAN_ENABLE_TRACE_LOGGER
+   type        : bool
+   default     : false
+   description : |-
+     Enable profilings to trace json to allow ctran trace debugging.
+
+ - name        : NCCL_CTRAN_TRACE_LOGGER_LOCAL_DIR
+   type        : string
+   default     : "/tmp/"
+   description : |-
+     The local directory to store kineto profile json files.
+     The default value is /tmp/, and the trace file will be stored in /tmp/ctran_trace_log.*.log.
+     If want to upload to manifold, set this as /tmp/{uuid}, then manually upload to manifold.
+
+ - name        : NCCL_DEBUG_LOGGING_ASYNC
+   type        : bool
+   default     : true
+   description : |-
+     Controls if the folly logging should be async or not.
+
+ - name        : NCCL_NETWORK_PERF_MONITOR_SCUBA_LOGGING_ENABLE
+   type        : bool
+   default     : False
+   description : |-
+     Enable network perf monitor to report info to scuba.
+
+ - name        : NCCL_COMM_REGISTER_LOG_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable top level nccl comm register/deregister call logging.
+
+ - name        : NCCL_COMM_TRACING_SERVICE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable thrift server for analyzer debugging. NCCL_COMMS_TRACING_SERVICE_PORTS
+     must also be set
+
+ - name        : NCCL_COMMS_TRACING_SERVICE_PORTS
+   type        : stringlist
+   default     :
+   description : |-
+     Comma separated list of ports to use for comms tracing service.
+     Local rank i will use port i in the list.
+
+ - name        : NCCL_COMM_TRACING_SERVICE_WARN_ON_PORT_CONFLICT
+   type        : bool
+   default     : false
+   description : |-
+     By default, the tracing service will crash the main process,
+     if it cannot start due to port conflict.
+     This flag allows users to choose to only log a warning in that case,
+     and the main process will continue to run.
+
+ - name        : NCCL_NET_GDR_C2C
+   type        : bool
+   default     : false
+   description : |-
+     The NCCL_NET_GDR_C2C variable enables GPU Direct RDMA when sending
+     data via a NIC attached to a CPU (i.e. distance PHB) where the CPU
+     is connected to the GPU via a C2C interconnect. This effectively
+     overrides the NCCL_NET_GDR_LEVEL setting for this particular NIC.
+
+ - name        : NCCL_CTRAN_SOCKET_POLL_TIMEOUT
+   type        : int32_t
+   default     : 20
+   description : |-
+     Polling timeout in milliseconds for CTRAN socket.
+
+ - name        : NCCL_LAUNCH_RACE_FATAL
+   type        : bool
+   default     : true
+   description : |-
+     If true, ncclCommInitRank will fatal if it detects a race condition
+
+ - name        : NCCL_SOCKET_RCVBUF
+   type        : int
+   default     : -1
+   description : |-
+     Set the socket receive buffer size.
+
+ - name        : NCCL_SOCKET_SNDBUF
+   type        : int
+   default     : -1
+   description : |-
+     Set the socket send buffer size.
+
+ - name        : NCCL_SYM_KERNEL
+   type        : string
+   default     : ""
+   description : |-
+     Set symmetric kernel function.
+
+ - name        : NCCL_DEBUG_TIMESTAMP_LEVELS
+   type        : string
+   default     : WARN
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-debug-timestamp-levels
+
+ - name        : NCCL_DEBUG_TIMESTAMP_FORMAT
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-debug-timestamp-format
+
+ - name        : NCCL_SYM_CTAS
+   type        : int
+   default     : 0
+   description : |-
+     Set the maximal number of CTAs for symmetric kernel function.
+
+ - name        : NCCL_MNNVL_SCATTER_NETS_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable MNNVL scatter nets.
+
+ - name        : NCCL_LL128_C2C
+   type        : bool
+   default     : True
+   description : |-
+     Enable LL128 C2C.
+
+ - name        : NCCL_NET_PLUGIN_REF_COUNT
+   type        : int
+   default     : 1
+   description : |-
+     Reference count for the net plugin.
+
+ - name        : NCCL_PXN_C2C
+   type        : bool
+   default     : False
+   description : |-
+     Enable PXN C2C.
+
+ - name        : NCCL_SOCKET_INLINE
+   type        : int
+   default     : 128
+   description : |-
+     Set the socket inline size.
+
+ - name        : NCCL_SOCKET_MIN_TASKSIZE
+   type        : int
+   default     : 65536
+   description : |-
+     Set the minimum task size for socket. /*64 kiB=*/
+
+ - name        : NCCL_IB_DATA_DIRECT
+   type        : int
+   default     : 1
+   description : |-
+     NCCL IB data direct.
+
+ - name        : NCCL_LAUNCH_ORDER_IMPLICIT
+   type        : bool
+   default     : false
+   description : |-
+     Enable implicit launch order.
+
+ - name        : NCCL_NVLINK_UTIL_CENTRIC_SCHED_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable NVLINK util centric scheduling.
+
+ - name        : NCCL_WIN_STRIDE
+   type        : int
+   default     : -1
+   description : |-
+     Set win stride.
+
+ - name        : NCCL_WIN_ENABLE
+   type        : bool
+   default     : True
+   description : |-
+     Enable the win algorithm.
+
+ - name        : NCCL_COMM_SHRINK_SHARE_RESOURCES
+   type        : int
+   default     : MIN
+   description : |-
+     Set comm shrink share resources.
+
+ - name        : NCCL_ENV_CTA_POLICY
+   type        : int
+   default     : MIN
+   description : |-
+     Set the CTA policy.
+     https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-cta-policy
+
+ - name        : NCCL_NETDEVS_POLICY
+   type        : string
+   default     : ""
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-netdevs-policy
+
+ - name        : NCCL_NVTX_DISABLE
+   envstr      : NCCL_NVTX_DISABLE
+   type        : bool
+   default     : false
+   description : |-
+     Disable NVTX. NVTX (NVIDIA Tools Extension SDK) is a C-based API that allows developers
+     to annotate their applications with events, code ranges, and resource names to improve
+     performance analysis using NVIDIA profiling tools like Nsight. By integrating NVTX,
+     developers can visualize CPU and GPU activity, identify performance bottlenecks, and
+     have greater visibility of their application's execution flow on NVIDIA hardware.
+
+ - name        : NCCL_MNNVL_TRUNK_DISABLE
+   type        : bool
+   default     : false
+   description : |-
+     By default all 72 gpu's in gb200 are in a single nvlink domain. Enabling this flag
+     disables NVlink P2P access between GPU's in 2 racks connected via trunk links
+     and use RDMA instead.
+
+ - name        : NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     If false, NCCL_MNNVL_CLIQUE_SIZE would be ignored.
+     User needs to set this ENV to true explicitly to enable software NVLINK domain partition,
+     which is a prerequisite for deterministic training in MNNVL systems.
+
+ - name        : NCCL_MNNVL_CLIQUE_SIZE
+   type        : int
+   default     : 0
+   description : |-
+     The maximum number of GPUs that are considered to be within a single nvlink clique. By default it is 0,
+     which means no software overrides on the clique size.
+
+ - name        : NCCL_CTRAN_UNPACK_THREAD_BLOCK_SIZE
+   type        : uint64_t
+   default     : 256
+   description : |-
+    TCP Device Memory upack kernel: number of threads in the block.
+
+ - name        : NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS
+   type        : uint64_t
+   default     : 8
+   description : |-
+    TCP Device Memory upack kernel: number of blocks.
+
+ - name        : NCCL_CTRAN_WIN_SIGNAL_SIZE
+   type        : int32_t
+   default     : 256
+   description : |-
+     Configure the size of the signal buffer (measured in uint64_t units) allocated for each rank in Ctran window.
+     This buffer is used for synchronization between ranks during remote memory access (RMA) operations.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE
+   type        : uint64_t
+   default     : 8388608
+   description : |-
+     size in bytes of each chunk for temporary send and receive buffers used in
+     NCCL CTRAN allreduce ring. The size of each temporary buffer is
+     NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE * NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS
+   type        : uint32_t
+   default     : 4
+   description : |-
+     number of chunks allocated for temporary send and receive buffers used in
+     NCCL CTRAN allreduce ring. The size of each temporary buffer is
+     NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE * NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_MIN_SHARD_SIZE
+   type        : uint32_t
+   default     : 16
+   description : |-
+     minimal size in bytes for a ring shard. If the allreduce size divided by
+     number of ranks is smaller than this value, single-shard ring is used.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 2
+   description : |-
+     Maximum number of thread blocks used for the AllReduce kernel.
+     We might use fewer thread blocks, if we can achieve max occupancy
+     with them.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 512
+   description : |-
+     Number of threads in each thread block used for the AllReduce
+     kernel. Default -1 to use the recommended size by CUDA runtime.
+
+ - name        : NCCL_CTRAN_ENABLE_FAULT_TOLERANCE
+   type        : bool
+   default     : False
+   description : |-
+     [WIP] Enable CTran Fault Tolerance feature. The feature is wip,
+     currently no collectives support Fault Tolerance.
+
+ - name        : NCCL_PROXY_CPUSET
+   type        : string
+   default     : ""
+   description : Used to bind NCCL's network proxy threads to specific CPU cores.

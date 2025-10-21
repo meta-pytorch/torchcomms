@@ -1,0 +1,274 @@
+#include "comms/utils/cvars/nccl_cvars.h"
+
+#include <pwd.h>
+
+#include <algorithm>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <sstream>
+#include <string>
+#include <unordered_set>
+#include <vector>
+
+#include <cuda_runtime.h>
+
+#include <folly/String.h>
+#include <folly/logging/xlog.h>
+
+#if defined(__HIP_PLATFORM_AMD__)
+static const std::string ncclConfigFileName = "rccl.conf";
+#else
+static const std::string ncclConfigFileName = "nccl.conf";
+#endif
+
+static int cudaDev = -1;
+static bool logInfoLog = false;
+namespace ncclx {
+static std::unordered_map<std::string, std::string>& nccl_config() {
+  static std::unordered_map<std::string, std::string> config;
+  return config;
+};
+
+static void initEnvSet(std::unordered_set<std::string>& env);
+static void readCvarEnv();
+
+#define CVAR_INFO(fmt, ...)                 \
+  XLOGF_IF(                                 \
+      INFO,                                 \
+      logInfoLog,                           \
+      "[CudaDev: {}] NCCL INFO CVAR: " fmt, \
+      cudaDev,                              \
+      __VA_ARGS__);
+
+#define CVAR_WARN(fmt, ...) \
+  XLOGF(WARN, "[CudaDev: {}] NCCL WARN CVAR: " fmt, cudaDev, __VA_ARGS__);
+
+#define CVAR_ERROR(fmt, ...) \
+  XLOGF(FATAL, "[CudaDev: {}] NCCL ERROR CVAR: " fmt, cudaDev, __VA_ARGS__);
+
+#define CVAR_WARN_UNKNOWN_VALUE(name, value)               \
+  do {                                                     \
+    CVAR_WARN("Unknown value {} for env {}", value, name); \
+  } while (0)
+
+static bool env2bool(
+    const char* str,
+    const char* def); // Declear env2bool so we can use it in initCvarLogger
+
+static void initCvarLogger() {
+  // Used for ncclCvarInit time warning only
+  auto err = cudaGetDevice(&cudaDev);
+  if (err != cudaSuccess) {
+    CVAR_WARN(
+        "Error getting cuda device. Error: {}, ErrorStr: {}",
+        static_cast<int>(err),
+        cudaGetErrorString(err));
+  }
+  logInfoLog = env2bool("NCCL_CVARS_LOG_INFO", "false");
+}
+
+static std::vector<std::string> tokenizer(std::string str) {
+  // Split input string by comma
+  std::vector<std::string> tokens;
+  folly::split(",", str, tokens, true /* ignore empty */);
+
+  // Trim white space & check for duplicates
+  std::unordered_set<std::string> uniqueTokens;
+  for (auto& token : tokens) {
+    token = folly::trimWhitespace(token);
+    if (not uniqueTokens.insert(token).second) {
+      CVAR_WARN("Duplicate token {} found", token);
+    }
+  }
+
+  return tokens;
+}
+
+static std::unordered_map<std::string, std::vector<std::string>> parseConfigTokens(
+    const std::string& inputString) {
+  // Split input string by semicolon
+  std::unordered_map<std::string, std::vector<std::string>> configMap;
+  std::vector<std::string> tokenList;
+  folly::split(';', inputString, tokenList, true /* ignore empty */);
+
+  // Trim white space & check for duplicates
+  std::unordered_set<std::string> uniqueTokens;
+  for (auto& token : tokenList) {
+    token = folly::trimWhitespace(token);
+    std::vector<std::string> keyValuePairs;
+    folly::split(":", token, keyValuePairs, true /* ignore empty */);
+    if (keyValuePairs.size() != 2) {
+      CVAR_WARN("Invalid token {} found", token);
+    }
+    configMap[keyValuePairs.at(0)] = tokenizer(keyValuePairs.at(1));
+  }
+
+  return configMap;
+}
+
+static std::string readenv(const char *str, const char *def) {
+  std::string s;
+  if (getenv(str)) {
+    s = std::string(getenv(str));
+  } else if (ncclx::nccl_config().contains(str)) {
+    s = ncclx::nccl_config()[str];
+  } else if (def) {
+    s = std::string(def);
+  } else {
+    s = std::string("");
+  }
+
+  return s;
+}
+
+static bool env2bool(const char *str, const char *def) {
+  std::string s = readenv(str, def);
+  std::transform(s.cbegin(), s.cend(), s.begin(), [](unsigned char c) { return std::tolower(c); });
+  if (s == "y") return true;
+  else if (s == "n") return false;
+  else if (s == "yes") return true;
+  else if (s == "no") return false;
+  else if (s == "t") return true;
+  else if (s == "f") return false;
+  else if (s == "true") return true;
+  else if (s == "false") return false;
+  else if (s == "1") return true;
+  else if (s == "0") return false;
+  else CVAR_WARN_UNKNOWN_VALUE(str, s.c_str());
+  return true;
+}
+
+template <typename T>
+static T env2num(const char *str, const char *def) {
+  std::string s = readenv(str, def);
+
+  if (std::find_if(s.begin(), s.end(), ::isdigit) != s.end()) {
+    /* if the string contains a digit, try converting it normally */
+    std::stringstream sstream(s);
+    T ret;
+    sstream >> ret;
+    return ret;
+  } else {
+    /* if there are no digits, see if its a special string such as
+     * "MAX" or "MIN". */
+    std::transform(s.begin(), s.end(), s.begin(), ::toupper);
+    if (s == "MAX") {
+      return std::numeric_limits<T>::max();
+    } else if (s == "MIN") {
+      return std::numeric_limits<T>::min();
+    } else {
+      CVAR_WARN("Unrecognized numeral {}", s);
+      return 0;
+    }
+  }
+}
+
+static std::string env2str(const char *str, const char *def) {
+  return std::string(folly::trimWhitespace(readenv(str, def)));
+}
+
+static std::vector<std::string> env2strlist(const char* str, const char* def) {
+  return tokenizer(std::string(folly::trimWhitespace(readenv(str, def))));
+}
+
+static std::unordered_map<std::string, std::vector<std::string>> env2dictlist(
+    const char* str,
+    const char* def) {
+  return parseConfigTokens(std::string(folly::trimWhitespace(readenv(str, def))));
+}
+
+static std::tuple<std::string, std::vector<std::string>> env2prefixedStrlist(
+    const char* str,
+    const char* def,
+    const std::vector<std::string>& prefixes) {
+  std::string s = readenv(str, def);
+
+  // search if any prefix is specified
+  for (auto prefix : prefixes) {
+    if (!s.compare(0, prefix.size(), prefix)) {
+      // if prefix is found, convert the remaining string to stringList
+      std::string slist_s = s.substr(prefix.size());
+      return std::make_tuple(prefix, tokenizer(slist_s));
+    }
+  }
+  // if no prefix is found, convert entire string to stringList
+  return std::make_tuple("", tokenizer(s));
+}
+
+static void updateNcclConfig(const std::string& fname) {
+  std::ifstream in(fname);
+  if (!in) {
+    CVAR_INFO("NCCL config file {} doesn't exists, skipping", fname);
+    return;
+  }
+
+  std::string line;
+  while (std::getline(in, line)) {
+    // Trim the string starting with first `#`
+    auto n = line.find('#');
+    if (n != std::string::npos) {
+      line.erase(n);
+    }
+
+    line = folly::trimWhitespace(line);
+    if (line.empty()) {
+      continue;
+    }
+
+    std::vector<std::string> tokens(2);
+    folly::split<false>('=', line, tokens[0], tokens[1]);
+    if (tokens[0].empty()) {
+      CVAR_WARN("Ignoring invalid config option: {}", line);
+      continue;
+    }
+
+    CVAR_INFO(
+        "NCCL Config - Overriding CVAR {}={} from {}",
+        tokens.at(0).c_str(),
+        tokens.at(1).c_str(),
+        fname.c_str());
+
+    ncclx::nccl_config().emplace(tokens.at(0), tokens.at(1));
+  }
+}
+};
+
+extern char **environ;
+void ncclCvarInit() {
+  std::unordered_set<std::string> env;
+  ncclx::initEnvSet(env);
+
+  ncclx::initCvarLogger();
+
+  // Check if any NCCL_ env var is not in allow list
+  char **s = environ;
+  for (; *s; s++) {
+    if (!strncmp(*s, "NCCL_", strlen("NCCL_"))) {
+      std::string str(*s);
+      str = str.substr(0, str.find('='));
+      if (env.find(str) == env.end()) {
+        CVAR_WARN("Unknown env {} in the NCCL namespace", str);
+      }
+    }
+  }
+
+  CVAR_INFO("NCCL Config - ncclConfigFileName={}", ncclConfigFileName);
+  ncclx::updateNcclConfig("/etc/" + ncclConfigFileName);
+  struct passwd *pwUser = getpwuid(getuid());
+  if (pwUser) {
+    std::string fname = std::string(pwUser->pw_dir) + "/." + ncclConfigFileName;
+    ncclx::updateNcclConfig(fname);
+  }
+
+  char* settings = getenv("NCCL_CVARS_SETTINGS");
+  if (settings) {
+    throw std::runtime_error(
+      "NCCL Config - NCCL_CVARS_SETTINGS is deprecated, please migrate");
+  }
+
+  ncclx::readCvarEnv();
+}
+
+### AUTOGEN_CONTENT ###
