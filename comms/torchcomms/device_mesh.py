@@ -63,6 +63,7 @@ def _create_torchcomm_process_group(
     # Set up process group tag
     pg_tag = f"ptd:{group_name}"
     dist.distributed_c10d._world.tags_to_pg.setdefault(pg_tag, []).append(pg)
+    dist.distributed_c10d._world.pg_to_tag[pg] = pg_tag
 
     return pg
 
@@ -119,8 +120,11 @@ def init_device_mesh(
         group_name = name
 
         # Calculate global ranks mapping for this mesh dimension
-        global_ranks = mesh.transpose(idx, -1).reshape(-1, mesh.size(idx)).tolist()
-        global_ranks_mapping = {x: j for sub in global_ranks for j, x in enumerate(sub)}
+        global_ranks = mesh.transpose(idx, -1).reshape(-1, mesh.size(idx))
+        # Find the row containing the global rank
+        row_idx = int(torch.where(global_ranks == global_rank)[0].item())
+        list_rank = global_ranks[row_idx].tolist()
+        global_ranks_mapping = {x: j for j, x in enumerate(list_rank)}
 
         # Use helper function to create the process group
         pg = _create_torchcomm_process_group(
