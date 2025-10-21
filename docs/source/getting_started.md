@@ -47,12 +47,18 @@ pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/
 
 ### Building from Source
 
-Alternatively, you can build torchcomms from source.
+#### Prerequisites
+
+- CMake 3.22 or higher
+- Ninja 1.10 or higher
+
+Alternatively, you can build torchcomms from source. If you want to build the NCCLX backend, we recommend building it under a virtual conda environment.
 Run the following commands to build and install torchcomms:
 
 ```bash
-# Install PyTorch (if not already installed)
-pip install torch
+# Create a conda environment
+conda create -n torchcomms python=3.10
+conda activate torchcomms
 # Clone the repository
 git clone git@github.com:meta-pytorch/torchcomms.git
 cd torchcomms
@@ -62,8 +68,20 @@ Build the backend (choose one based on your hardware):
 
 ::::{tab-set}
 
+:::{tab-item} Standard NCCL Backend
+
+No build needed - uses the library provided by PyTorch
+
+:::
+
 :::{tab-item} NCCLX Backend
 
+If you want to install the third-party dependencies directly from conda, run the following command:
+```bash
+USE_SYSTEM_LIBS=1 ./build_ncclx.sh
+```
+
+If you want to build and install the third-party dependencies from source, run the following command:
 ```bash
 ./build_ncclx.sh
 ```
@@ -78,17 +96,13 @@ Build the backend (choose one based on your hardware):
 
 :::
 
-:::{tab-item} Standard NCCL Backend
-
-No build needed - uses the library provided by PyTorch
-
-:::
-
 ::::
 
 Install torchcomms:
 
 ```bash
+# Install PyTorch (if not already installed)
+pip install -r requirements.txt
 pip install -v .
 ```
 
@@ -107,6 +121,8 @@ export USE_RCCL=OFF   # Default: OFF
 Then run:
 
 ```bash
+# Install PyTorch (if not already installed)
+pip install -r requirements.txt
 pip install -v .
 ```
 
