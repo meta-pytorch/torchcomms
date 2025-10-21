@@ -1,0 +1,1546 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>torchcomms.objcol &#8212; meta-pytorch/torchcomms main documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="../../_static/css/theme.css?v=047068a3" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e14e8605" />
+    <link rel="stylesheet" type="text/css" href="../../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../../_static/custom.css?v=e14e8605" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../../_static/documentation_options.js?v=a8da1a53"></script>
+    <script src="../../_static/doctools.js?v=888ff710"></script>
+    <script src="../../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../../_static/design-tabs.js?v=f930bc37"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs"></script>
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs"></script>
+    <script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";import elkLayouts from "https://cdn.jsdelivr.net/npm/@mermaid-js/layout-elk@0.1.4/dist/mermaid-layout-elk.esm.min.mjs";mermaid.registerLayoutLoaders(elkLayouts);mermaid.initialize({startOnLoad:false});</script>
+    <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"></script>
+    <script type="module">
+import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.2.0/dist/mermaid.esm.min.mjs";
+window.addEventListener("load", () => mermaid.run());
+</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = '_modules/torchcomms/objcol';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/torchcomms/_modules/torchcomms/objcol.html" />
+    <link rel="index" title="Index" href="../../genindex.html" />
+    <link rel="search" title="Search" href="../../search.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="../../_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="../../_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="../../_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="../../_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="torchcomms">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', 'v0.0.1');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+<!--
+   Search engines should not index the main version of documentation.
+   Stable documentation are built without release == 'main'.
+   -->
+<meta name="robots" content="noindex">
+
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/torchcomms" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../../_static/logo-light.png" class="logo__image only-light" alt="meta-pytorch/torchcomms main documentation - Home"/>
+    <script>document.write(`<img src="../../_static/logo-dark.png" class="logo__image only-dark" alt="meta-pytorch/torchcomms main documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api.html">
+    API Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/torchcomms" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar hide-on-wide">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../../api.html">
+    API Reference
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="../../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/torchcomms" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../index.html" class="nav-link">Module code</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page">torchcomms.objcol</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <link itemprop="item" href="../index.html">
+        <meta itemprop="name" content="Module code">
+        <meta itemprop="position" content="1">
+      </div>
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="torchcomms.objcol">
+        <meta itemprop="position" content="2">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <h1>Source code for torchcomms.objcol</h1><div class="highlight"><pre>
+<span></span><span class="c1"># Copyright (c) Meta Platforms, Inc. and affiliates.</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">io</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">datetime</span><span class="w"> </span><span class="kn">import</span> <span class="n">timedelta</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">typing</span><span class="w"> </span><span class="kn">import</span> <span class="n">Any</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torch.monitor</span><span class="w"> </span><span class="kn">import</span> <span class="n">_WaitCounter</span>
+
+<span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms._comms</span><span class="w"> </span><span class="kn">import</span> <span class="n">TorchComm</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_object_to_tensor</span><span class="p">(</span>
+    <span class="n">obj</span><span class="p">:</span> <span class="nb">object</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">]:</span>
+    <span class="k">with</span> <span class="n">_WaitCounter</span><span class="p">(</span><span class="s2">&quot;pytorch.wait_counter.torchcomms._object_to_tensor&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">guard</span><span class="p">():</span>
+        <span class="n">f</span> <span class="o">=</span> <span class="n">io</span><span class="o">.</span><span class="n">BytesIO</span><span class="p">()</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">f</span><span class="p">)</span>
+        <span class="n">byte_storage</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ByteStorage</span><span class="o">.</span><span class="n">_from_buffer</span><span class="p">(</span><span class="n">f</span><span class="o">.</span><span class="n">getvalue</span><span class="p">())</span>  <span class="c1"># type: ignore[attr-defined]</span>
+        <span class="c1"># Do not replace `torch.ByteTensor` or `torch.LongTensor` with torch.tensor and specifying dtype.</span>
+        <span class="c1"># Otherwise, it will cause 100X slowdown.</span>
+        <span class="c1"># See: https://github.com/pytorch/pytorch/issues/65696</span>
+        <span class="n">byte_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ByteTensor</span><span class="p">(</span><span class="n">byte_storage</span><span class="p">)</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">local_size</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">LongTensor</span><span class="p">([</span><span class="n">byte_tensor</span><span class="o">.</span><span class="n">numel</span><span class="p">()])</span><span class="o">.</span><span class="n">to</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">byte_tensor</span><span class="p">,</span> <span class="n">local_size</span>
+
+
+<span class="k">def</span><span class="w"> </span><span class="nf">_tensor_to_object</span><span class="p">(</span>
+    <span class="n">tensor</span><span class="p">:</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">tensor_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="n">torch</span><span class="o">.</span><span class="n">Tensor</span><span class="p">,</span> <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">object</span><span class="p">:</span>
+    <span class="k">with</span> <span class="n">_WaitCounter</span><span class="p">(</span><span class="s2">&quot;pytorch.wait_counter.torchcomms._tensor_to_object&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">guard</span><span class="p">():</span>
+        <span class="n">tensor</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">cpu</span><span class="p">()</span>
+        <span class="n">buf</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tobytes</span><span class="p">()[:</span><span class="n">tensor_size</span><span class="p">]</span>
+        <span class="k">return</span> <span class="n">torch</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">io</span><span class="o">.</span><span class="n">BytesIO</span><span class="p">(</span><span class="n">buf</span><span class="p">),</span> <span class="n">weights_only</span><span class="o">=</span><span class="n">weights_only</span><span class="p">)</span>
+
+
+<div class="viewcode-block" id="all_gather_object">
+<a class="viewcode-back" href="../../api.html#torchcomms.objcol.all_gather_object">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">all_gather_object</span><span class="p">(</span>
+    <span class="n">comm</span><span class="p">:</span> <span class="n">TorchComm</span><span class="p">,</span>
+    <span class="n">object_list</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
+    <span class="n">obj</span><span class="p">:</span> <span class="nb">object</span><span class="p">,</span>
+    <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Gathers picklable objects from the whole comm into a list.</span>
+
+<span class="sd">    Similar to :func:`all_gather`, but Python objects can be passed in.</span>
+<span class="sd">    Note that the object must be picklable in order to be gathered.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        comm: The comm to work on.</span>
+<span class="sd">        object_list (list[object]): Output list. It should be correctly sized as the</span>
+<span class="sd">            size of the comm for this collective and will contain the output.</span>
+<span class="sd">        obj (object): Pickable Python object to be broadcast from current process.</span>
+<span class="sd">        timeout: (timedelta, optional): Timeout for collective operations. If</span>
+<span class="sd">            ``None``, will use the default timeout for the backend.</span>
+<span class="sd">        weights_only (bool, optional): If ``True``, only safe objects such as</span>
+<span class="sd">            weights are allowed to be deserialized.</span>
+<span class="sd">            https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        None. If the calling rank is part of this comm, the output of the</span>
+<span class="sd">        collective will be populated into the input ``object_list``. If the</span>
+<span class="sd">        calling rank is not part of the comm, the passed in ``object_list`` will</span>
+<span class="sd">        be unmodified.</span>
+
+<span class="sd">    .. note:: Note that this API differs slightly from the :func:`all_gather`</span>
+<span class="sd">        collective since it does not provide an ``async_op`` handle and thus</span>
+<span class="sd">        will be a blocking call.</span>
+
+<span class="sd">    .. note:: For NCCL-based processed comms, internal tensor representations</span>
+<span class="sd">        of objects must be moved to the GPU device before communication takes</span>
+<span class="sd">        place. In this case, the device used is given by</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
+<span class="sd">        ``torch.cuda.set_device()``.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Object collectives have a number of serious performance and scalability</span>
+<span class="sd">        limitations.  See :ref:`object_collectives` for details.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        :func:`all_gather_object` uses ``pickle`` module implicitly, which is</span>
+<span class="sd">        known to be insecure. It is possible to construct malicious pickle data</span>
+<span class="sd">        which will execute arbitrary code during unpickling. Only call this</span>
+<span class="sd">        function with data you trust.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Calling :func:`all_gather_object` with GPU tensors is not well supported</span>
+<span class="sd">        and inefficient as it incurs GPU -&gt; CPU transfer since tensors would be</span>
+<span class="sd">        pickled. Please consider using :func:`all_gather` instead.</span>
+
+<span class="sd">    Example::</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
+<span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
+<span class="sd">        &gt;&gt;&gt; # Assumes world_size of 3.</span>
+<span class="sd">        &gt;&gt;&gt; gather_objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt; output = [None for _ in gather_objects]</span>
+<span class="sd">        &gt;&gt;&gt; objcol.all_gather_object(comm, output, gather_objects[comm.get_rank()])</span>
+<span class="sd">        &gt;&gt;&gt; output</span>
+<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
+    <span class="n">input_tensor</span><span class="p">,</span> <span class="n">local_size</span> <span class="o">=</span> <span class="n">_object_to_tensor</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">current_device</span><span class="p">)</span>
+
+    <span class="c1"># Gather all local sizes. This is so that we can find the max size, and index</span>
+    <span class="c1"># until the correct size when deserializing the tensors.</span>
+    <span class="n">comm_size</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_size</span><span class="p">()</span>
+    <span class="n">object_sizes_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
+        <span class="n">comm_size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span>
+    <span class="p">)</span>
+    <span class="n">object_size_list</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">object_sizes_tensor</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="n">dim</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">comm_size</span><span class="p">)</span>
+    <span class="p">]</span>
+    <span class="c1"># Allgather tensor sizes</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">all_gather</span><span class="p">(</span><span class="n">object_size_list</span><span class="p">,</span> <span class="n">local_size</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+    <span class="n">max_object_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">object_size_list</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">())</span>  <span class="c1"># type: ignore[type-var]</span>
+    <span class="c1"># Resize tensor to max size across all ranks.</span>
+    <span class="n">input_tensor</span><span class="o">.</span><span class="n">resize_</span><span class="p">(</span><span class="n">max_object_size</span><span class="p">)</span>
+    <span class="n">coalesced_output_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
+        <span class="n">max_object_size</span> <span class="o">*</span> <span class="n">comm_size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span>
+    <span class="p">)</span>
+    <span class="c1"># Output tensors are nonoverlapping views of coalesced_output_tensor</span>
+    <span class="n">output_tensors</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">coalesced_output_tensor</span><span class="p">[</span><span class="n">max_object_size</span> <span class="o">*</span> <span class="n">i</span> <span class="p">:</span> <span class="n">max_object_size</span> <span class="o">*</span> <span class="p">(</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)]</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">comm_size</span><span class="p">)</span>
+    <span class="p">]</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">all_gather</span><span class="p">(</span><span class="n">output_tensors</span><span class="p">,</span> <span class="n">input_tensor</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+    <span class="c1"># Deserialize outputs back to object.</span>
+    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">output_tensors</span><span class="p">):</span>
+        <span class="n">tensor</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">type</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
+        <span class="n">tensor_size</span> <span class="o">=</span> <span class="n">object_size_list</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+        <span class="n">object_list</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">_tensor_to_object</span><span class="p">(</span>
+            <span class="n">tensor</span><span class="p">,</span> <span class="n">tensor_size</span><span class="p">,</span> <span class="n">weights_only</span><span class="o">=</span><span class="n">weights_only</span>
+        <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="gather_object">
+<a class="viewcode-back" href="../../api.html#torchcomms.objcol.gather_object">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">gather_object</span><span class="p">(</span>
+    <span class="n">comm</span><span class="p">:</span> <span class="n">TorchComm</span><span class="p">,</span>
+    <span class="n">obj</span><span class="p">:</span> <span class="nb">object</span><span class="p">,</span>
+    <span class="n">root</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">object_gather_list</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Gathers picklable objects from the whole comm in a single process.</span>
+
+<span class="sd">    Similar to :func:`gather`, but Python objects can be passed in. Note that the</span>
+<span class="sd">    object must be picklable in order to be gathered.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        comm: The comm to work on.</span>
+<span class="sd">        obj (object): Input object. Must be picklable.</span>
+<span class="sd">        object_gather_list (list[object]): Output list. On the ``root`` rank, it</span>
+<span class="sd">            should be correctly sized as the size of the comm for this</span>
+<span class="sd">            collective and will contain the output. Must be ``None`` on non-root</span>
+<span class="sd">            ranks. (default is ``None``)</span>
+<span class="sd">        root (int, optional): Destination rank on ``comm``.  Invalid to specify both ``root`` and ``root``</span>
+<span class="sd">        timeout: (timedelta, optional): Timeout for collective operations. If</span>
+<span class="sd">            ``None``, will use the default timeout for the backend.</span>
+<span class="sd">        weights_only (bool, optional): If ``True``, only safe objects such as</span>
+<span class="sd">            weights are allowed to be deserialized.</span>
+<span class="sd">            https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        None. On the ``root`` rank, ``object_gather_list`` will contain the</span>
+<span class="sd">        output of the collective.</span>
+
+<span class="sd">    .. note:: Note that this API differs slightly from the gather collective</span>
+<span class="sd">        since it does not provide an async_op handle and thus will be a blocking</span>
+<span class="sd">        call.</span>
+
+<span class="sd">    .. note:: For NCCL-based processed comms, internal tensor representations</span>
+<span class="sd">        of objects must be moved to the GPU device before communication takes</span>
+<span class="sd">        place. In this case, the device used is given by</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
+<span class="sd">        ``torch.cuda.set_device()``.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Object collectives have a number of serious performance and scalability</span>
+<span class="sd">        limitations.  See :ref:`object_collectives` for details.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        :func:`gather_object` uses ``pickle`` module implicitly, which is</span>
+<span class="sd">        known to be insecure. It is possible to construct malicious pickle data</span>
+<span class="sd">        which will execute arbitrary code during unpickling. Only call this</span>
+<span class="sd">        function with data you trust.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Calling :func:`gather_object` with GPU tensors is not well supported</span>
+<span class="sd">        and inefficient as it incurs GPU -&gt; CPU transfer since tensors would be</span>
+<span class="sd">        pickled. Please consider using :func:`gather` instead.</span>
+
+<span class="sd">    Example::</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
+<span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
+<span class="sd">        &gt;&gt;&gt; # Assumes world_size of 3.</span>
+<span class="sd">        &gt;&gt;&gt; gather_objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt; output = [None for _ in gather_objects]</span>
+<span class="sd">        &gt;&gt;&gt; objcol.gather_object(</span>
+<span class="sd">        ...     comm,</span>
+<span class="sd">        ...     gather_objects[comm.get_rank()],</span>
+<span class="sd">        ...     output,</span>
+<span class="sd">        ...     root=0</span>
+<span class="sd">        ... )</span>
+<span class="sd">        &gt;&gt;&gt; # On rank 0</span>
+<span class="sd">        &gt;&gt;&gt; output</span>
+<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="c1"># Ensure object_gather_list is specified appropriately.</span>
+    <span class="n">my_comm_rank</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
+    <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
+    <span class="n">input_tensor</span><span class="p">,</span> <span class="n">local_size</span> <span class="o">=</span> <span class="n">_object_to_tensor</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">current_device</span><span class="p">)</span>
+
+    <span class="c1"># Gather all local sizes. This is so that we can find the max size, and index</span>
+    <span class="c1"># until the correct size when deserializing the tensors.</span>
+    <span class="n">comm_size</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_size</span><span class="p">()</span>
+    <span class="n">object_sizes_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span>
+        <span class="n">comm_size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span>
+    <span class="p">)</span>
+    <span class="n">object_size_list</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">object_sizes_tensor</span><span class="p">[</span><span class="n">i</span><span class="p">]</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="n">dim</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">comm_size</span><span class="p">)</span>
+    <span class="p">]</span>
+    <span class="c1"># Allgather tensor sizes. An all-gather is needed here despite this being a</span>
+    <span class="c1"># gather, since each rank needs to broadcast a tensor of the same (maximal)</span>
+    <span class="c1"># size.</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">all_gather</span><span class="p">(</span><span class="n">object_size_list</span><span class="p">,</span> <span class="n">local_size</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+    <span class="n">max_object_size</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="nb">max</span><span class="p">(</span><span class="n">object_size_list</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">())</span>  <span class="c1"># type: ignore[type-var]</span>
+    <span class="c1"># Resize tensor to max size across all ranks.</span>
+    <span class="n">input_tensor</span><span class="o">.</span><span class="n">resize_</span><span class="p">(</span><span class="n">max_object_size</span><span class="p">)</span>
+
+    <span class="n">coalesced_output_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
+        <span class="n">max_object_size</span> <span class="o">*</span> <span class="n">comm_size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span>
+    <span class="p">)</span>
+    <span class="c1"># Output tensors are nonoverlapping views of coalesced_output_tensor</span>
+    <span class="n">output_tensors</span> <span class="o">=</span> <span class="p">[</span>
+        <span class="n">coalesced_output_tensor</span><span class="p">[</span><span class="n">max_object_size</span> <span class="o">*</span> <span class="n">i</span> <span class="p">:</span> <span class="n">max_object_size</span> <span class="o">*</span> <span class="p">(</span><span class="n">i</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)]</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">comm_size</span><span class="p">)</span>
+    <span class="p">]</span>
+    <span class="c1"># All ranks call gather with equal-sized tensors.</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span>
+        <span class="n">input_tensor</span><span class="o">=</span><span class="n">input_tensor</span><span class="p">,</span>
+        <span class="n">output_tensor_list</span><span class="o">=</span><span class="n">output_tensors</span><span class="p">,</span>
+        <span class="n">root</span><span class="o">=</span><span class="n">root</span><span class="p">,</span>
+        <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">my_comm_rank</span> <span class="o">!=</span> <span class="n">root</span><span class="p">:</span>
+        <span class="k">return</span>
+
+    <span class="k">assert</span> <span class="p">(</span>
+        <span class="n">object_gather_list</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+    <span class="p">),</span> <span class="s2">&quot;Must provide object_gather_list on root rank&quot;</span>
+    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">output_tensors</span><span class="p">):</span>
+        <span class="n">tensor</span> <span class="o">=</span> <span class="n">tensor</span><span class="o">.</span><span class="n">type</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
+        <span class="n">tensor_size</span> <span class="o">=</span> <span class="n">object_size_list</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+        <span class="n">object_gather_list</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">_tensor_to_object</span><span class="p">(</span>
+            <span class="n">tensor</span><span class="p">,</span> <span class="n">tensor_size</span><span class="p">,</span> <span class="n">weights_only</span><span class="o">=</span><span class="n">weights_only</span>
+        <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="send_object_list">
+<a class="viewcode-back" href="../../api.html#torchcomms.objcol.send_object_list">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">send_object_list</span><span class="p">(</span>
+    <span class="n">comm</span><span class="p">:</span> <span class="n">TorchComm</span><span class="p">,</span>
+    <span class="n">object_list</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
+    <span class="n">dst</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Sends picklable objects in ``object_list`` synchronously.</span>
+
+<span class="sd">    Similar to :func:`send`, but Python objects can be passed in.</span>
+<span class="sd">    Note that all objects in ``object_list`` must be picklable in order to be</span>
+<span class="sd">    sent.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        comm: The comm to work on.</span>
+<span class="sd">        object_list (List[object]): List of input objects to sent.</span>
+<span class="sd">            Each object must be picklable. Receiver must provide lists of equal sizes.</span>
+<span class="sd">        dst (int): Destination rank to send ``object_list`` to.</span>
+<span class="sd">        timeout: (timedelta, optional): Timeout for collective operations. If</span>
+<span class="sd">            ``None``, will use the default timeout for the backend.</span>
+<span class="sd">    Returns:</span>
+<span class="sd">        ``None``.</span>
+
+<span class="sd">    .. note:: For NCCL-based comms, internal tensor representations</span>
+<span class="sd">        of objects must be moved to the GPU device before communication takes</span>
+<span class="sd">        place. In this case, the device used is given by</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
+<span class="sd">        ``torch.cuda.set_device()``.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Object collectives have a number of serious performance and scalability</span>
+<span class="sd">        limitations.  See :ref:`object_collectives` for details.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        :func:`send_object_list` uses ``pickle`` module implicitly, which</span>
+<span class="sd">        is known to be insecure. It is possible to construct malicious pickle</span>
+<span class="sd">        data which will execute arbitrary code during unpickling. Only call this</span>
+<span class="sd">        function with data you trust.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Calling :func:`send_object_list` with GPU tensors is not well supported</span>
+<span class="sd">        and inefficient as it incurs GPU -&gt; CPU transfer since tensors would be</span>
+<span class="sd">        pickled. Please consider using :func:`send` instead.</span>
+
+<span class="sd">    Example::</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
+<span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
+<span class="sd">        &gt;&gt;&gt; # Assumes backend is not NCCL</span>
+<span class="sd">        &gt;&gt;&gt; if comm.get_rank() == 0:</span>
+<span class="sd">        &gt;&gt;&gt;     # Assumes world_size of 2.</span>
+<span class="sd">        &gt;&gt;&gt;     objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt;     objcol.send_object_list(comm, objects, dst=1)</span>
+<span class="sd">        &gt;&gt;&gt; else:</span>
+<span class="sd">        &gt;&gt;&gt;     objects = [None, None, None]</span>
+<span class="sd">        &gt;&gt;&gt;     objcol.recv_object_list(comm, objects, src=0)</span>
+<span class="sd">        &gt;&gt;&gt; objects</span>
+<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="c1"># Current device selection.</span>
+    <span class="c1"># To preserve backwards compatibility, ``device`` is default to ``None``</span>
+    <span class="c1"># in which case we run current logic of device selection, i.e.</span>
+    <span class="c1"># ``current_device`` is CUDA if backend is NCCL otherwise CPU device. In the</span>
+    <span class="c1"># case it is not ``None`` we move the size and object tensors to be</span>
+    <span class="c1"># sent to this device.</span>
+    <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
+    <span class="c1"># Serialize object_list elements to tensors on src rank.</span>
+    <span class="n">tensor_list</span><span class="p">,</span> <span class="n">size_list</span> <span class="o">=</span> <span class="nb">zip</span><span class="p">(</span>
+        <span class="o">*</span><span class="p">[</span><span class="n">_object_to_tensor</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">current_device</span><span class="p">)</span> <span class="k">for</span> <span class="n">obj</span> <span class="ow">in</span> <span class="n">object_list</span><span class="p">]</span>
+    <span class="p">)</span>
+    <span class="n">object_sizes_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">size_list</span><span class="p">)</span>
+
+    <span class="c1"># Send object sizes</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">object_sizes_tensor</span><span class="p">,</span> <span class="n">dst</span><span class="o">=</span><span class="n">dst</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+
+    <span class="c1"># Concatenate and send serialized object tensors</span>
+    <span class="c1"># Note: torch.cat will do an extra memory copy to the current device, if the tensor_list</span>
+    <span class="c1"># has only one element, we can skip the copy.</span>
+    <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">tensor_list</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>  <span class="c1"># type: ignore[possibly-undefined]</span>
+        <span class="n">object_tensor</span> <span class="o">=</span> <span class="n">tensor_list</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">object_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">tensor_list</span><span class="p">)</span>
+
+    <span class="n">comm</span><span class="o">.</span><span class="n">send</span><span class="p">(</span><span class="n">object_tensor</span><span class="p">,</span> <span class="n">dst</span><span class="o">=</span><span class="n">dst</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="recv_object_list">
+<a class="viewcode-back" href="../../api.html#torchcomms.objcol.recv_object_list">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">recv_object_list</span><span class="p">(</span>
+    <span class="n">comm</span><span class="p">:</span> <span class="n">TorchComm</span><span class="p">,</span>
+    <span class="n">object_list</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
+    <span class="n">src</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Receives picklable objects in ``object_list`` synchronously.</span>
+
+<span class="sd">    Similar to :func:`recv`, but can receive Python objects.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        comm: The comm to work on.</span>
+<span class="sd">        object_list (List[object]): List of objects to receive into.</span>
+<span class="sd">            Must provide a list of sizes equal to the size of the list being sent.</span>
+<span class="sd">        src (int): Source rank from which to recv ``object_list``.</span>
+<span class="sd">        timeout: (timedelta, optional): Timeout for collective operations. If</span>
+<span class="sd">            ``None``, will use the default timeout for the backend.</span>
+<span class="sd">        weights_only (bool, optional): If ``True``, only safe objects such as</span>
+<span class="sd">            weights are allowed to be deserialized.</span>
+<span class="sd">            https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only</span>
+
+<span class="sd">    Returns: None</span>
+
+<span class="sd">    .. note:: For NCCL-based comms, internal tensor representations</span>
+<span class="sd">        of objects must be moved to the GPU device before communication takes</span>
+<span class="sd">        place. In this case, the device used is given by</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
+<span class="sd">        ``torch.cuda.set_device()``.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Object collectives have a number of serious performance and scalability</span>
+<span class="sd">        limitations.  See :ref:`object_collectives` for details.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        :func:`recv_object_list` uses ``pickle`` module implicitly, which</span>
+<span class="sd">        is known to be insecure. It is possible to construct malicious pickle</span>
+<span class="sd">        data which will execute arbitrary code during unpickling. Only call this</span>
+<span class="sd">        function with data you trust.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Calling :func:`recv_object_list` with GPU tensors is not well supported</span>
+<span class="sd">        and inefficient as it incurs GPU -&gt; CPU transfer since tensors would be</span>
+<span class="sd">        pickled. Please consider using :func:`recv` instead.</span>
+
+<span class="sd">    Example::</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
+<span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
+<span class="sd">        &gt;&gt;&gt; # Assumes backend is not NCCL</span>
+<span class="sd">        &gt;&gt;&gt; if comm.get_rank() == 0:</span>
+<span class="sd">        &gt;&gt;&gt;     # Assumes world_size of 2.</span>
+<span class="sd">        &gt;&gt;&gt;     objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt;     objcol.send_object_list(comm, objects, dst=1)</span>
+<span class="sd">        &gt;&gt;&gt; else:</span>
+<span class="sd">        &gt;&gt;&gt;     objects = [None, None, None]</span>
+<span class="sd">        &gt;&gt;&gt;     objcol.recv_object_list(comm, objects, src=0)</span>
+<span class="sd">        &gt;&gt;&gt; objects</span>
+<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
+    <span class="n">object_sizes_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
+        <span class="nb">len</span><span class="p">(</span><span class="n">object_list</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span>
+    <span class="p">)</span>
+
+    <span class="c1"># Receive object sizes</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">recv</span><span class="p">(</span><span class="n">object_sizes_tensor</span><span class="p">,</span> <span class="n">src</span><span class="o">=</span><span class="n">src</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+
+    <span class="c1"># Tensor to receive serialized objects into.</span>
+    <span class="n">object_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>  <span class="c1"># type: ignore[call-overload]</span>
+        <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">object_sizes_tensor</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(),</span>  <span class="c1"># type: ignore[arg-type]</span>
+        <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">,</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">current_device</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="n">comm</span><span class="o">.</span><span class="n">recv</span><span class="p">(</span><span class="n">object_tensor</span><span class="p">,</span> <span class="n">src</span><span class="o">=</span><span class="n">src</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+    <span class="c1"># Deserialize objects using their stored sizes.</span>
+    <span class="n">offset</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">obj_size</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">object_sizes_tensor</span><span class="p">):</span>
+        <span class="n">obj_view</span> <span class="o">=</span> <span class="n">object_tensor</span><span class="p">[</span><span class="n">offset</span> <span class="p">:</span> <span class="n">offset</span> <span class="o">+</span> <span class="n">obj_size</span><span class="p">]</span>
+        <span class="n">obj_view</span> <span class="o">=</span> <span class="n">obj_view</span><span class="o">.</span><span class="n">type</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
+        <span class="n">offset</span> <span class="o">+=</span> <span class="n">obj_size</span>
+        <span class="n">object_list</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">_tensor_to_object</span><span class="p">(</span>
+            <span class="n">obj_view</span><span class="p">,</span> <span class="n">obj_size</span><span class="p">,</span> <span class="n">weights_only</span><span class="o">=</span><span class="n">weights_only</span>
+        <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="broadcast_object_list">
+<a class="viewcode-back" href="../../api.html#torchcomms.objcol.broadcast_object_list">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">broadcast_object_list</span><span class="p">(</span>
+    <span class="n">comm</span><span class="p">:</span> <span class="n">TorchComm</span><span class="p">,</span>
+    <span class="n">object_list</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
+    <span class="n">root</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">):</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Broadcasts picklable objects in ``object_list`` to the whole comm.</span>
+
+<span class="sd">    Similar to :func:`broadcast`, but Python objects can be passed in.</span>
+<span class="sd">    Note that all objects in ``object_list`` must be picklable in order to be</span>
+<span class="sd">    broadcasted.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        comm: The comm to work on.</span>
+<span class="sd">        object_list (List[object]): List of input objects to broadcast.</span>
+<span class="sd">            Each object must be picklable. Only objects on the ``src`` rank will</span>
+<span class="sd">            be broadcast, but each rank must provide lists of equal sizes.</span>
+<span class="sd">        root (int): Source rank from which to broadcast ``object_list``.</span>
+<span class="sd">        timeout: (timedelta, optional): Timeout for collective operations. If</span>
+<span class="sd">            ``None``, will use the default timeout for the backend.</span>
+<span class="sd">        weights_only (bool, optional): If ``True``, only safe objects such as</span>
+<span class="sd">            weights are allowed to be deserialized.</span>
+<span class="sd">            https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``None``. If rank is part of the comm, ``object_list`` will contain the</span>
+<span class="sd">        broadcasted objects from ``src`` rank.</span>
+
+<span class="sd">    .. note:: For NCCL-based comms, internal tensor representations</span>
+<span class="sd">        of objects must be moved to the GPU device before communication takes</span>
+<span class="sd">        place. In this case, the device used is given by</span>
+<span class="sd">        ``torch.cuda.current_device()`` and it is the user&#39;s responsibility to</span>
+<span class="sd">        ensure that this is set so that each rank has an individual GPU, via</span>
+<span class="sd">        ``torch.cuda.set_device()``.</span>
+
+<span class="sd">    .. note:: Note that this API differs slightly from the :func:`broadcast`</span>
+<span class="sd">        collective since it does not provide an ``async_op`` handle and thus</span>
+<span class="sd">        will be a blocking call.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Object collectives have a number of serious performance and scalability</span>
+<span class="sd">        limitations.  See :ref:`object_collectives` for details.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        :func:`broadcast_object_list` uses ``pickle`` module implicitly, which</span>
+<span class="sd">        is known to be insecure. It is possible to construct malicious pickle</span>
+<span class="sd">        data which will execute arbitrary code during unpickling. Only call this</span>
+<span class="sd">        function with data you trust.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Calling :func:`broadcast_object_list` with GPU tensors is not well supported</span>
+<span class="sd">        and inefficient as it incurs GPU -&gt; CPU transfer since tensors would be</span>
+<span class="sd">        pickled. Please consider using :func:`broadcast` instead.</span>
+
+<span class="sd">    Example::</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
+<span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
+<span class="sd">        &gt;&gt;&gt; if comm.get_rank() == 0:</span>
+<span class="sd">        &gt;&gt;&gt;     # Assumes world_size of 3.</span>
+<span class="sd">        &gt;&gt;&gt;     objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt; else:</span>
+<span class="sd">        &gt;&gt;&gt;     objects = [None, None, None]</span>
+<span class="sd">        &gt;&gt;&gt; # Assumes backend is not NCCL</span>
+<span class="sd">        &gt;&gt;&gt; objcol.broadcast_object_list(comm, objects, src=0, device=device)</span>
+<span class="sd">        &gt;&gt;&gt; objects</span>
+<span class="sd">        [&#39;foo&#39;, 12, {1: 2}]</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+    <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
+    <span class="n">my_comm_rank</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
+    <span class="c1"># Serialize object_list elements to tensors on src rank.</span>
+    <span class="k">if</span> <span class="n">my_comm_rank</span> <span class="o">==</span> <span class="n">root</span><span class="p">:</span>
+        <span class="n">tensor_list</span><span class="p">,</span> <span class="n">size_list</span> <span class="o">=</span> <span class="nb">zip</span><span class="p">(</span>
+            <span class="o">*</span><span class="p">[</span><span class="n">_object_to_tensor</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">current_device</span><span class="p">)</span> <span class="k">for</span> <span class="n">obj</span> <span class="ow">in</span> <span class="n">object_list</span><span class="p">]</span>
+        <span class="p">)</span>
+        <span class="n">object_sizes_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">size_list</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">object_sizes_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
+            <span class="nb">len</span><span class="p">(</span><span class="n">object_list</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span>
+        <span class="p">)</span>
+
+    <span class="c1"># Broadcast object sizes</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="n">object_sizes_tensor</span><span class="p">,</span> <span class="n">root</span><span class="o">=</span><span class="n">root</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+
+    <span class="c1"># Concatenate and broadcast serialized object tensors</span>
+    <span class="c1"># Note: torch.cat will do an extra memory copy to the current device, if the tensor_list</span>
+    <span class="c1"># has only one element, we can skip the copy.</span>
+    <span class="k">if</span> <span class="n">my_comm_rank</span> <span class="o">==</span> <span class="n">root</span><span class="p">:</span>
+        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">tensor_list</span><span class="p">)</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>  <span class="c1"># type: ignore[possibly-undefined]</span>
+            <span class="n">object_tensor</span> <span class="o">=</span> <span class="n">tensor_list</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>  <span class="c1"># pyre-fixme[61]</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">object_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">tensor_list</span><span class="p">)</span>  <span class="c1"># pyre-fixme[61]</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">object_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>  <span class="c1"># type: ignore[call-overload]</span>
+            <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">object_sizes_tensor</span><span class="p">)</span><span class="o">.</span><span class="n">item</span><span class="p">(),</span>  <span class="c1"># type: ignore[arg-type]</span>
+            <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">,</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">current_device</span><span class="p">,</span>
+        <span class="p">)</span>
+
+    <span class="n">comm</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="n">object_tensor</span><span class="p">,</span> <span class="n">root</span><span class="o">=</span><span class="n">root</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+    <span class="c1"># Deserialize objects using their stored sizes.</span>
+    <span class="n">offset</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">if</span> <span class="n">my_comm_rank</span> <span class="o">!=</span> <span class="n">root</span><span class="p">:</span>
+        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">obj_size</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">object_sizes_tensor</span><span class="p">):</span>
+            <span class="n">obj_view</span> <span class="o">=</span> <span class="n">object_tensor</span><span class="p">[</span><span class="n">offset</span> <span class="p">:</span> <span class="n">offset</span> <span class="o">+</span> <span class="n">obj_size</span><span class="p">]</span>
+            <span class="n">obj_view</span> <span class="o">=</span> <span class="n">obj_view</span><span class="o">.</span><span class="n">type</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">)</span>
+            <span class="n">offset</span> <span class="o">+=</span> <span class="n">obj_size</span>
+            <span class="n">object_list</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">=</span> <span class="n">_tensor_to_object</span><span class="p">(</span>
+                <span class="n">obj_view</span><span class="p">,</span> <span class="n">obj_size</span><span class="p">,</span> <span class="n">weights_only</span><span class="o">=</span><span class="n">weights_only</span>
+            <span class="p">)</span></div>
+
+
+
+<div class="viewcode-block" id="scatter_object_list">
+<a class="viewcode-back" href="../../api.html#torchcomms.objcol.scatter_object_list">[docs]</a>
+<span class="k">def</span><span class="w"> </span><span class="nf">scatter_object_list</span><span class="p">(</span>
+    <span class="n">comm</span><span class="p">:</span> <span class="n">TorchComm</span><span class="p">,</span>
+    <span class="n">root</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">scatter_object_output_list</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span>
+    <span class="n">scatter_object_input_list</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">timeout</span><span class="p">:</span> <span class="n">timedelta</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">weights_only</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
+<span class="sd">    Scatters picklable objects in ``scatter_object_input_list`` to the whole comm.</span>
+
+<span class="sd">    Similar to :func:`scatter`, but Python objects can be passed in. On</span>
+<span class="sd">    each rank, the scattered object will be stored as the first element of</span>
+<span class="sd">    ``scatter_object_output_list``. Note that all objects in</span>
+<span class="sd">    ``scatter_object_input_list`` must be picklable in order to be scattered.</span>
+
+<span class="sd">    Args:</span>
+<span class="sd">        comm: The comm to work on.</span>
+<span class="sd">        scatter_object_output_list (List[object]): Non-empty list whose first</span>
+<span class="sd">            element will store the object scattered to this rank.</span>
+<span class="sd">        scatter_object_input_list (List[object], optional): List of input objects to scatter.</span>
+<span class="sd">            Each object must be picklable. Only objects on the ``root`` rank will</span>
+<span class="sd">            be scattered, and the argument can be ``None`` for non-root ranks.</span>
+<span class="sd">        root (int): Source rank from which to scatter ``scatter_object_input_list``.</span>
+<span class="sd">        timeout: (timedelta, optional): Timeout for collective operations. If</span>
+<span class="sd">            ``None``, will use the default timeout for the backend.</span>
+<span class="sd">        weights_only (bool, optional): If ``True``, only safe objects such as</span>
+<span class="sd">            weights are allowed to be deserialized.</span>
+<span class="sd">            https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only</span>
+
+<span class="sd">    Returns:</span>
+<span class="sd">        ``None``. If rank is part of the comm, ``scatter_object_output_list``</span>
+<span class="sd">        will have its first element set to the scattered object for this rank.</span>
+
+<span class="sd">    .. note:: Note that this API differs slightly from the scatter collective</span>
+<span class="sd">        since it does not provide an ``async_op`` handle and thus will be a</span>
+<span class="sd">        blocking call.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Object collectives have a number of serious performance and scalability</span>
+<span class="sd">        limitations.  See :ref:`object_collectives` for details.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        :func:`scatter_object_list` uses ``pickle`` module implicitly, which</span>
+<span class="sd">        is known to be insecure. It is possible to construct malicious pickle</span>
+<span class="sd">        data which will execute arbitrary code during unpickling. Only call this</span>
+<span class="sd">        function with data you trust.</span>
+
+<span class="sd">    .. warning::</span>
+<span class="sd">        Calling :func:`scatter_object_list` with GPU tensors is not well supported</span>
+<span class="sd">        and inefficient as it incurs GPU -&gt; CPU transfer since tensors would be</span>
+<span class="sd">        pickled. Please consider using :func:`scatter` instead.</span>
+
+<span class="sd">    Example::</span>
+<span class="sd">        &gt;&gt;&gt; # xdoctest: +SKIP(&quot;need comm init&quot;)</span>
+<span class="sd">        &gt;&gt;&gt; # Note: comm initialization omitted on each rank.</span>
+<span class="sd">        &gt;&gt;&gt; from torchcomms import objcol</span>
+<span class="sd">        &gt;&gt;&gt; if comm.get_rank() == 0:</span>
+<span class="sd">        &gt;&gt;&gt;     # Assumes world_size of 3.</span>
+<span class="sd">        &gt;&gt;&gt;     objects = [&quot;foo&quot;, 12, {1: 2}] # any picklable object</span>
+<span class="sd">        &gt;&gt;&gt; else:</span>
+<span class="sd">        &gt;&gt;&gt;     # Can be any list on non-root ranks, elements are not used.</span>
+<span class="sd">        &gt;&gt;&gt;     objects = [None, None, None]</span>
+<span class="sd">        &gt;&gt;&gt; output_list = [None]</span>
+<span class="sd">        &gt;&gt;&gt; objcol.scatter_object_list(comm, output_list, objects, root=0)</span>
+<span class="sd">        &gt;&gt;&gt; # Rank i gets objects[i]. For example, on rank 2:</span>
+<span class="sd">        &gt;&gt;&gt; output_list</span>
+<span class="sd">        [{1: 2}]</span>
+<span class="sd">    &quot;&quot;&quot;</span>
+
+    <span class="k">if</span> <span class="p">(</span>
+        <span class="ow">not</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">scatter_object_output_list</span><span class="p">,</span> <span class="nb">list</span><span class="p">)</span>
+        <span class="ow">or</span> <span class="nb">len</span><span class="p">(</span><span class="n">scatter_object_output_list</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">1</span>
+    <span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">&quot;Expected argument scatter_object_output_list to be a list of size at least 1.&quot;</span>
+        <span class="p">)</span>
+
+    <span class="n">my_comm_rank</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">()</span>
+    <span class="n">current_device</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">get_device</span><span class="p">()</span>
+    <span class="k">if</span> <span class="n">my_comm_rank</span> <span class="o">==</span> <span class="n">root</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">scatter_object_input_list</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="s2">&quot;source rank must provide non-None scatter_object_input_list&quot;</span>
+            <span class="p">)</span>
+        <span class="n">tensor_list</span><span class="p">,</span> <span class="n">tensor_sizes</span> <span class="o">=</span> <span class="nb">zip</span><span class="p">(</span>
+            <span class="o">*</span><span class="p">[</span>
+                <span class="n">_object_to_tensor</span><span class="p">(</span><span class="n">obj</span><span class="p">,</span> <span class="n">current_device</span><span class="p">)</span>
+                <span class="k">for</span> <span class="n">obj</span> <span class="ow">in</span> <span class="n">scatter_object_input_list</span>
+            <span class="p">]</span>
+        <span class="p">)</span>
+        <span class="n">tensor_list</span><span class="p">,</span> <span class="n">tensor_sizes</span> <span class="o">=</span> <span class="nb">list</span><span class="p">(</span><span class="n">tensor_list</span><span class="p">),</span> <span class="nb">list</span><span class="p">(</span><span class="n">tensor_sizes</span><span class="p">)</span>
+
+        <span class="c1"># root rank broadcasts the maximum tensor size. This is because all ranks are</span>
+        <span class="c1"># expected to call into scatter() with equal-sized tensors.</span>
+        <span class="n">max_tensor_size</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="n">tensor_sizes</span><span class="p">)</span>  <span class="c1"># type: ignore[possibly-undefined]</span>
+        <span class="k">for</span> <span class="n">tensor</span> <span class="ow">in</span> <span class="n">tensor_list</span><span class="p">:</span>  <span class="c1"># type: ignore[possibly-undefined]</span>
+            <span class="n">tensor</span><span class="o">.</span><span class="n">resize_</span><span class="p">(</span><span class="n">max_tensor_size</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">max_tensor_size</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span><span class="p">)</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">broadcast</span><span class="p">(</span><span class="n">max_tensor_size</span><span class="p">,</span> <span class="n">root</span><span class="o">=</span><span class="n">root</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">)</span>
+
+    <span class="c1"># Scatter actual serialized objects</span>
+    <span class="n">output_tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
+        <span class="n">max_tensor_size</span><span class="o">.</span><span class="n">item</span><span class="p">(),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">uint8</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span>
+    <span class="p">)</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">scatter</span><span class="p">(</span>
+        <span class="n">output_tensor</span><span class="p">,</span>
+        <span class="n">input_tensor_list</span><span class="o">=</span><span class="p">[]</span> <span class="k">if</span> <span class="n">my_comm_rank</span> <span class="o">!=</span> <span class="n">root</span> <span class="k">else</span> <span class="n">tensor_list</span><span class="p">,</span>  <span class="c1"># type: ignore[possibly-undefined]</span>
+        <span class="n">root</span><span class="o">=</span><span class="n">root</span><span class="p">,</span>
+        <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="c1"># Scatter per-object sizes to trim tensors when deserializing back to object</span>
+    <span class="n">obj_tensor_size</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">tensor</span><span class="p">([</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">torch</span><span class="o">.</span><span class="n">long</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">current_device</span><span class="p">)</span>
+    <span class="n">comm</span><span class="o">.</span><span class="n">scatter</span><span class="p">(</span>
+        <span class="n">obj_tensor_size</span><span class="p">,</span>
+        <span class="n">input_tensor_list</span><span class="o">=</span><span class="p">[]</span> <span class="k">if</span> <span class="n">my_comm_rank</span> <span class="o">!=</span> <span class="n">root</span> <span class="k">else</span> <span class="n">tensor_sizes</span><span class="p">,</span>  <span class="c1"># type: ignore[possibly-undefined]</span>
+        <span class="n">root</span><span class="o">=</span><span class="n">root</span><span class="p">,</span>
+        <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
+        <span class="n">timeout</span><span class="o">=</span><span class="n">timeout</span><span class="p">,</span>
+    <span class="p">)</span>
+
+    <span class="c1"># Deserialize back to object</span>
+    <span class="n">scatter_object_output_list</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">_tensor_to_object</span><span class="p">(</span>
+        <span class="n">output_tensor</span><span class="p">,</span>
+        <span class="n">obj_tensor_size</span><span class="p">,</span>
+        <span class="n">weights_only</span><span class="o">=</span><span class="n">weights_only</span><span class="p">,</span>
+    <span class="p">)</span></div>
+
+</pre></div>
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="../../_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025, torchcomms Contributors.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "torchcomms.objcol",
+       "headline": "torchcomms.objcol",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/_modules/torchcomms/objcol.html",
+       "articleBody": "Source code for torchcomms.objcol # Copyright (c) Meta Platforms, Inc. and affiliates. import io from datetime import timedelta from typing import Any import torch from torch.monitor import _WaitCounter from torchcomms._comms import TorchComm def _object_to_tensor( obj: object, device: torch.device ) -\u003e tuple[torch.Tensor, torch.Tensor]: with _WaitCounter(\"pytorch.wait_counter.torchcomms._object_to_tensor\").guard(): f = io.BytesIO() torch.save(obj, f) byte_storage = torch.ByteStorage._from_buffer(f.getvalue()) # type: ignore[attr-defined] # Do not replace `torch.ByteTensor` or `torch.LongTensor` with torch.tensor and specifying dtype. # Otherwise, it will cause 100X slowdown. # See: https://github.com/pytorch/pytorch/issues/65696 byte_tensor = torch.ByteTensor(byte_storage).to(device) local_size = torch.LongTensor([byte_tensor.numel()]).to(device) return byte_tensor, local_size def _tensor_to_object( tensor: torch.Tensor, tensor_size: int | torch.Tensor, weights_only: bool ) -\u003e object: with _WaitCounter(\"pytorch.wait_counter.torchcomms._tensor_to_object\").guard(): tensor = tensor.cpu() buf = tensor.numpy().tobytes()[:tensor_size] return torch.load(io.BytesIO(buf), weights_only=weights_only) [docs] def all_gather_object( comm: TorchComm, object_list: list[Any], obj: object, timeout: timedelta | None = None, weights_only: bool = True, ) -\u003e None: \"\"\" Gathers picklable objects from the whole comm into a list. Similar to :func:`all_gather`, but Python objects can be passed in. Note that the object must be picklable in order to be gathered. Args: comm: The comm to work on. object_list (list[object]): Output list. It should be correctly sized as the size of the comm for this collective and will contain the output. obj (object): Pickable Python object to be broadcast from current process. timeout: (timedelta, optional): Timeout for collective operations. If ``None``, will use the default timeout for the backend. weights_only (bool, optional): If ``True``, only safe objects such as weights are allowed to be deserialized. https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only Returns: None. If the calling rank is part of this comm, the output of the collective will be populated into the input ``object_list``. If the calling rank is not part of the comm, the passed in ``object_list`` will be unmodified. .. note:: Note that this API differs slightly from the :func:`all_gather` collective since it does not provide an ``async_op`` handle and thus will be a blocking call. .. note:: For NCCL-based processed comms, internal tensor representations of objects must be moved to the GPU device before communication takes place. In this case, the device used is given by ``torch.cuda.current_device()`` and it is the user\u0027s responsibility to ensure that this is set so that each rank has an individual GPU, via ``torch.cuda.set_device()``. .. warning:: Object collectives have a number of serious performance and scalability limitations. See :ref:`object_collectives` for details. .. warning:: :func:`all_gather_object` uses ``pickle`` module implicitly, which is known to be insecure. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling. Only call this function with data you trust. .. warning:: Calling :func:`all_gather_object` with GPU tensors is not well supported and inefficient as it incurs GPU -\u003e CPU transfer since tensors would be pickled. Please consider using :func:`all_gather` instead. Example:: \u003e\u003e\u003e # xdoctest: +SKIP(\"need comm init\") \u003e\u003e\u003e # Note: comm initialization omitted on each rank. \u003e\u003e\u003e from torchcomms import objcol \u003e\u003e\u003e # Assumes world_size of 3. \u003e\u003e\u003e gather_objects = [\"foo\", 12, {1: 2}] # any picklable object \u003e\u003e\u003e output = [None for _ in gather_objects] \u003e\u003e\u003e objcol.all_gather_object(comm, output, gather_objects[comm.get_rank()]) \u003e\u003e\u003e output [\u0027foo\u0027, 12, {1: 2}] \"\"\" current_device = comm.get_device() input_tensor, local_size = _object_to_tensor(obj, current_device) # Gather all local sizes. This is so that we can find the max size, and index # until the correct size when deserializing the tensors. comm_size = comm.get_size() object_sizes_tensor = torch.zeros( comm_size, dtype=torch.long, device=current_device ) object_size_list = [ object_sizes_tensor[i].unsqueeze(dim=0) for i in range(comm_size) ] # Allgather tensor sizes comm.all_gather(object_size_list, local_size, async_op=False, timeout=timeout) max_object_size = int(max(object_size_list).item()) # type: ignore[type-var] # Resize tensor to max size across all ranks. input_tensor.resize_(max_object_size) coalesced_output_tensor = torch.empty( max_object_size * comm_size, dtype=torch.uint8, device=current_device ) # Output tensors are nonoverlapping views of coalesced_output_tensor output_tensors = [ coalesced_output_tensor[max_object_size * i : max_object_size * (i + 1)] for i in range(comm_size) ] comm.all_gather(output_tensors, input_tensor, async_op=False, timeout=timeout) # Deserialize outputs back to object. for i, tensor in enumerate(output_tensors): tensor = tensor.type(torch.uint8) tensor_size = object_size_list[i] object_list[i] = _tensor_to_object( tensor, tensor_size, weights_only=weights_only ) [docs] def gather_object( comm: TorchComm, obj: object, root: int, object_gather_list: list[Any] | None = None, timeout: timedelta | None = None, weights_only: bool = True, ) -\u003e None: \"\"\" Gathers picklable objects from the whole comm in a single process. Similar to :func:`gather`, but Python objects can be passed in. Note that the object must be picklable in order to be gathered. Args: comm: The comm to work on. obj (object): Input object. Must be picklable. object_gather_list (list[object]): Output list. On the ``root`` rank, it should be correctly sized as the size of the comm for this collective and will contain the output. Must be ``None`` on non-root ranks. (default is ``None``) root (int, optional): Destination rank on ``comm``. Invalid to specify both ``root`` and ``root`` timeout: (timedelta, optional): Timeout for collective operations. If ``None``, will use the default timeout for the backend. weights_only (bool, optional): If ``True``, only safe objects such as weights are allowed to be deserialized. https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only Returns: None. On the ``root`` rank, ``object_gather_list`` will contain the output of the collective. .. note:: Note that this API differs slightly from the gather collective since it does not provide an async_op handle and thus will be a blocking call. .. note:: For NCCL-based processed comms, internal tensor representations of objects must be moved to the GPU device before communication takes place. In this case, the device used is given by ``torch.cuda.current_device()`` and it is the user\u0027s responsibility to ensure that this is set so that each rank has an individual GPU, via ``torch.cuda.set_device()``. .. warning:: Object collectives have a number of serious performance and scalability limitations. See :ref:`object_collectives` for details. .. warning:: :func:`gather_object` uses ``pickle`` module implicitly, which is known to be insecure. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling. Only call this function with data you trust. .. warning:: Calling :func:`gather_object` with GPU tensors is not well supported and inefficient as it incurs GPU -\u003e CPU transfer since tensors would be pickled. Please consider using :func:`gather` instead. Example:: \u003e\u003e\u003e # xdoctest: +SKIP(\"need comm init\") \u003e\u003e\u003e # Note: comm initialization omitted on each rank. \u003e\u003e\u003e from torchcomms import objcol \u003e\u003e\u003e # Assumes world_size of 3. \u003e\u003e\u003e gather_objects = [\"foo\", 12, {1: 2}] # any picklable object \u003e\u003e\u003e output = [None for _ in gather_objects] \u003e\u003e\u003e objcol.gather_object( ... comm, ... gather_objects[comm.get_rank()], ... output, ... root=0 ... ) \u003e\u003e\u003e # On rank 0 \u003e\u003e\u003e output [\u0027foo\u0027, 12, {1: 2}] \"\"\" # Ensure object_gather_list is specified appropriately. my_comm_rank = comm.get_rank() current_device = comm.get_device() input_tensor, local_size = _object_to_tensor(obj, current_device) # Gather all local sizes. This is so that we can find the max size, and index # until the correct size when deserializing the tensors. comm_size = comm.get_size() object_sizes_tensor = torch.zeros( comm_size, dtype=torch.long, device=current_device ) object_size_list = [ object_sizes_tensor[i].unsqueeze(dim=0) for i in range(comm_size) ] # Allgather tensor sizes. An all-gather is needed here despite this being a # gather, since each rank needs to broadcast a tensor of the same (maximal) # size. comm.all_gather(object_size_list, local_size, async_op=False, timeout=timeout) max_object_size = int(max(object_size_list).item()) # type: ignore[type-var] # Resize tensor to max size across all ranks. input_tensor.resize_(max_object_size) coalesced_output_tensor = torch.empty( max_object_size * comm_size, dtype=torch.uint8, device=current_device ) # Output tensors are nonoverlapping views of coalesced_output_tensor output_tensors = [ coalesced_output_tensor[max_object_size * i : max_object_size * (i + 1)] for i in range(comm_size) ] # All ranks call gather with equal-sized tensors. comm.gather( input_tensor=input_tensor, output_tensor_list=output_tensors, root=root, async_op=False, timeout=timeout, ) if my_comm_rank != root: return assert ( object_gather_list is not None ), \"Must provide object_gather_list on root rank\" for i, tensor in enumerate(output_tensors): tensor = tensor.type(torch.uint8) tensor_size = object_size_list[i] object_gather_list[i] = _tensor_to_object( tensor, tensor_size, weights_only=weights_only ) [docs] def send_object_list( comm: TorchComm, object_list: list[Any], dst: int, timeout: timedelta | None = None, ) -\u003e None: \"\"\" Sends picklable objects in ``object_list`` synchronously. Similar to :func:`send`, but Python objects can be passed in. Note that all objects in ``object_list`` must be picklable in order to be sent. Args: comm: The comm to work on. object_list (List[object]): List of input objects to sent. Each object must be picklable. Receiver must provide lists of equal sizes. dst (int): Destination rank to send ``object_list`` to. timeout: (timedelta, optional): Timeout for collective operations. If ``None``, will use the default timeout for the backend. Returns: ``None``. .. note:: For NCCL-based comms, internal tensor representations of objects must be moved to the GPU device before communication takes place. In this case, the device used is given by ``torch.cuda.current_device()`` and it is the user\u0027s responsibility to ensure that this is set so that each rank has an individual GPU, via ``torch.cuda.set_device()``. .. warning:: Object collectives have a number of serious performance and scalability limitations. See :ref:`object_collectives` for details. .. warning:: :func:`send_object_list` uses ``pickle`` module implicitly, which is known to be insecure. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling. Only call this function with data you trust. .. warning:: Calling :func:`send_object_list` with GPU tensors is not well supported and inefficient as it incurs GPU -\u003e CPU transfer since tensors would be pickled. Please consider using :func:`send` instead. Example:: \u003e\u003e\u003e # xdoctest: +SKIP(\"need comm init\") \u003e\u003e\u003e # Note: comm initialization omitted on each rank. \u003e\u003e\u003e from torchcomms import objcol \u003e\u003e\u003e # Assumes backend is not NCCL \u003e\u003e\u003e if comm.get_rank() == 0: \u003e\u003e\u003e # Assumes world_size of 2. \u003e\u003e\u003e objects = [\"foo\", 12, {1: 2}] # any picklable object \u003e\u003e\u003e objcol.send_object_list(comm, objects, dst=1) \u003e\u003e\u003e else: \u003e\u003e\u003e objects = [None, None, None] \u003e\u003e\u003e objcol.recv_object_list(comm, objects, src=0) \u003e\u003e\u003e objects [\u0027foo\u0027, 12, {1: 2}] \"\"\" # Current device selection. # To preserve backwards compatibility, ``device`` is default to ``None`` # in which case we run current logic of device selection, i.e. # ``current_device`` is CUDA if backend is NCCL otherwise CPU device. In the # case it is not ``None`` we move the size and object tensors to be # sent to this device. current_device = comm.get_device() # Serialize object_list elements to tensors on src rank. tensor_list, size_list = zip( *[_object_to_tensor(obj, current_device) for obj in object_list] ) object_sizes_tensor = torch.cat(size_list) # Send object sizes comm.send(object_sizes_tensor, dst=dst, async_op=False, timeout=timeout) # Concatenate and send serialized object tensors # Note: torch.cat will do an extra memory copy to the current device, if the tensor_list # has only one element, we can skip the copy. if len(tensor_list) == 1: # type: ignore[possibly-undefined] object_tensor = tensor_list[0] else: object_tensor = torch.cat(tensor_list) comm.send(object_tensor, dst=dst, async_op=False, timeout=timeout) [docs] def recv_object_list( comm: TorchComm, object_list: list[Any], src: int, timeout: timedelta | None = None, weights_only: bool = True, ) -\u003e None: \"\"\" Receives picklable objects in ``object_list`` synchronously. Similar to :func:`recv`, but can receive Python objects. Args: comm: The comm to work on. object_list (List[object]): List of objects to receive into. Must provide a list of sizes equal to the size of the list being sent. src (int): Source rank from which to recv ``object_list``. timeout: (timedelta, optional): Timeout for collective operations. If ``None``, will use the default timeout for the backend. weights_only (bool, optional): If ``True``, only safe objects such as weights are allowed to be deserialized. https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only Returns: None .. note:: For NCCL-based comms, internal tensor representations of objects must be moved to the GPU device before communication takes place. In this case, the device used is given by ``torch.cuda.current_device()`` and it is the user\u0027s responsibility to ensure that this is set so that each rank has an individual GPU, via ``torch.cuda.set_device()``. .. warning:: Object collectives have a number of serious performance and scalability limitations. See :ref:`object_collectives` for details. .. warning:: :func:`recv_object_list` uses ``pickle`` module implicitly, which is known to be insecure. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling. Only call this function with data you trust. .. warning:: Calling :func:`recv_object_list` with GPU tensors is not well supported and inefficient as it incurs GPU -\u003e CPU transfer since tensors would be pickled. Please consider using :func:`recv` instead. Example:: \u003e\u003e\u003e # xdoctest: +SKIP(\"need comm init\") \u003e\u003e\u003e # Note: comm initialization omitted on each rank. \u003e\u003e\u003e from torchcomms import objcol \u003e\u003e\u003e # Assumes backend is not NCCL \u003e\u003e\u003e if comm.get_rank() == 0: \u003e\u003e\u003e # Assumes world_size of 2. \u003e\u003e\u003e objects = [\"foo\", 12, {1: 2}] # any picklable object \u003e\u003e\u003e objcol.send_object_list(comm, objects, dst=1) \u003e\u003e\u003e else: \u003e\u003e\u003e objects = [None, None, None] \u003e\u003e\u003e objcol.recv_object_list(comm, objects, src=0) \u003e\u003e\u003e objects [\u0027foo\u0027, 12, {1: 2}] \"\"\" current_device = comm.get_device() object_sizes_tensor = torch.empty( len(object_list), dtype=torch.long, device=current_device ) # Receive object sizes comm.recv(object_sizes_tensor, src=src, async_op=False, timeout=timeout) # Tensor to receive serialized objects into. object_tensor = torch.empty( # type: ignore[call-overload] torch.sum(object_sizes_tensor).item(), # type: ignore[arg-type] dtype=torch.uint8, device=current_device, ) comm.recv(object_tensor, src=src, async_op=False, timeout=timeout) # Deserialize objects using their stored sizes. offset = 0 for i, obj_size in enumerate(object_sizes_tensor): obj_view = object_tensor[offset : offset + obj_size] obj_view = obj_view.type(torch.uint8) offset += obj_size object_list[i] = _tensor_to_object( obj_view, obj_size, weights_only=weights_only ) [docs] def broadcast_object_list( comm: TorchComm, object_list: list[Any], root: int, timeout: timedelta | None = None, weights_only: bool = True, ): \"\"\" Broadcasts picklable objects in ``object_list`` to the whole comm. Similar to :func:`broadcast`, but Python objects can be passed in. Note that all objects in ``object_list`` must be picklable in order to be broadcasted. Args: comm: The comm to work on. object_list (List[object]): List of input objects to broadcast. Each object must be picklable. Only objects on the ``src`` rank will be broadcast, but each rank must provide lists of equal sizes. root (int): Source rank from which to broadcast ``object_list``. timeout: (timedelta, optional): Timeout for collective operations. If ``None``, will use the default timeout for the backend. weights_only (bool, optional): If ``True``, only safe objects such as weights are allowed to be deserialized. https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only Returns: ``None``. If rank is part of the comm, ``object_list`` will contain the broadcasted objects from ``src`` rank. .. note:: For NCCL-based comms, internal tensor representations of objects must be moved to the GPU device before communication takes place. In this case, the device used is given by ``torch.cuda.current_device()`` and it is the user\u0027s responsibility to ensure that this is set so that each rank has an individual GPU, via ``torch.cuda.set_device()``. .. note:: Note that this API differs slightly from the :func:`broadcast` collective since it does not provide an ``async_op`` handle and thus will be a blocking call. .. warning:: Object collectives have a number of serious performance and scalability limitations. See :ref:`object_collectives` for details. .. warning:: :func:`broadcast_object_list` uses ``pickle`` module implicitly, which is known to be insecure. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling. Only call this function with data you trust. .. warning:: Calling :func:`broadcast_object_list` with GPU tensors is not well supported and inefficient as it incurs GPU -\u003e CPU transfer since tensors would be pickled. Please consider using :func:`broadcast` instead. Example:: \u003e\u003e\u003e # xdoctest: +SKIP(\"need comm init\") \u003e\u003e\u003e # Note: comm initialization omitted on each rank. \u003e\u003e\u003e from torchcomms import objcol \u003e\u003e\u003e if comm.get_rank() == 0: \u003e\u003e\u003e # Assumes world_size of 3. \u003e\u003e\u003e objects = [\"foo\", 12, {1: 2}] # any picklable object \u003e\u003e\u003e else: \u003e\u003e\u003e objects = [None, None, None] \u003e\u003e\u003e # Assumes backend is not NCCL \u003e\u003e\u003e objcol.broadcast_object_list(comm, objects, src=0, device=device) \u003e\u003e\u003e objects [\u0027foo\u0027, 12, {1: 2}] \"\"\" current_device = comm.get_device() my_comm_rank = comm.get_rank() # Serialize object_list elements to tensors on src rank. if my_comm_rank == root: tensor_list, size_list = zip( *[_object_to_tensor(obj, current_device) for obj in object_list] ) object_sizes_tensor = torch.cat(size_list) else: object_sizes_tensor = torch.empty( len(object_list), dtype=torch.long, device=current_device ) # Broadcast object sizes comm.broadcast(object_sizes_tensor, root=root, async_op=False, timeout=timeout) # Concatenate and broadcast serialized object tensors # Note: torch.cat will do an extra memory copy to the current device, if the tensor_list # has only one element, we can skip the copy. if my_comm_rank == root: if len(tensor_list) == 1: # type: ignore[possibly-undefined] object_tensor = tensor_list[0] # pyre-fixme[61] else: object_tensor = torch.cat(tensor_list) # pyre-fixme[61] else: object_tensor = torch.empty( # type: ignore[call-overload] torch.sum(object_sizes_tensor).item(), # type: ignore[arg-type] dtype=torch.uint8, device=current_device, ) comm.broadcast(object_tensor, root=root, async_op=False, timeout=timeout) # Deserialize objects using their stored sizes. offset = 0 if my_comm_rank != root: for i, obj_size in enumerate(object_sizes_tensor): obj_view = object_tensor[offset : offset + obj_size] obj_view = obj_view.type(torch.uint8) offset += obj_size object_list[i] = _tensor_to_object( obj_view, obj_size, weights_only=weights_only ) [docs] def scatter_object_list( comm: TorchComm, root: int, scatter_object_output_list: list[Any], scatter_object_input_list: list[Any] | None = None, timeout: timedelta | None = None, weights_only: bool = True, ) -\u003e None: \"\"\" Scatters picklable objects in ``scatter_object_input_list`` to the whole comm. Similar to :func:`scatter`, but Python objects can be passed in. On each rank, the scattered object will be stored as the first element of ``scatter_object_output_list``. Note that all objects in ``scatter_object_input_list`` must be picklable in order to be scattered. Args: comm: The comm to work on. scatter_object_output_list (List[object]): Non-empty list whose first element will store the object scattered to this rank. scatter_object_input_list (List[object], optional): List of input objects to scatter. Each object must be picklable. Only objects on the ``root`` rank will be scattered, and the argument can be ``None`` for non-root ranks. root (int): Source rank from which to scatter ``scatter_object_input_list``. timeout: (timedelta, optional): Timeout for collective operations. If ``None``, will use the default timeout for the backend. weights_only (bool, optional): If ``True``, only safe objects such as weights are allowed to be deserialized. https://docs.pytorch.org/docs/stable/notes/serialization.html#weights-only Returns: ``None``. If rank is part of the comm, ``scatter_object_output_list`` will have its first element set to the scattered object for this rank. .. note:: Note that this API differs slightly from the scatter collective since it does not provide an ``async_op`` handle and thus will be a blocking call. .. warning:: Object collectives have a number of serious performance and scalability limitations. See :ref:`object_collectives` for details. .. warning:: :func:`scatter_object_list` uses ``pickle`` module implicitly, which is known to be insecure. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling. Only call this function with data you trust. .. warning:: Calling :func:`scatter_object_list` with GPU tensors is not well supported and inefficient as it incurs GPU -\u003e CPU transfer since tensors would be pickled. Please consider using :func:`scatter` instead. Example:: \u003e\u003e\u003e # xdoctest: +SKIP(\"need comm init\") \u003e\u003e\u003e # Note: comm initialization omitted on each rank. \u003e\u003e\u003e from torchcomms import objcol \u003e\u003e\u003e if comm.get_rank() == 0: \u003e\u003e\u003e # Assumes world_size of 3. \u003e\u003e\u003e objects = [\"foo\", 12, {1: 2}] # any picklable object \u003e\u003e\u003e else: \u003e\u003e\u003e # Can be any list on non-root ranks, elements are not used. \u003e\u003e\u003e objects = [None, None, None] \u003e\u003e\u003e output_list = [None] \u003e\u003e\u003e objcol.scatter_object_list(comm, output_list, objects, root=0) \u003e\u003e\u003e # Rank i gets objects[i]. For example, on rank 2: \u003e\u003e\u003e output_list [{1: 2}] \"\"\" if ( not isinstance(scatter_object_output_list, list) or len(scatter_object_output_list) \u003c 1 ): raise ValueError( \"Expected argument scatter_object_output_list to be a list of size at least 1.\" ) my_comm_rank = comm.get_rank() current_device = comm.get_device() if my_comm_rank == root: if scatter_object_input_list is None: raise ValueError( \"source rank must provide non-None scatter_object_input_list\" ) tensor_list, tensor_sizes = zip( *[ _object_to_tensor(obj, current_device) for obj in scatter_object_input_list ] ) tensor_list, tensor_sizes = list(tensor_list), list(tensor_sizes) # root rank broadcasts the maximum tensor size. This is because all ranks are # expected to call into scatter() with equal-sized tensors. max_tensor_size = max(tensor_sizes) # type: ignore[possibly-undefined] for tensor in tensor_list: # type: ignore[possibly-undefined] tensor.resize_(max_tensor_size) else: max_tensor_size = torch.tensor([0], dtype=torch.long, device=current_device) comm.broadcast(max_tensor_size, root=root, async_op=False, timeout=timeout) # Scatter actual serialized objects output_tensor = torch.empty( max_tensor_size.item(), dtype=torch.uint8, device=current_device ) comm.scatter( output_tensor, input_tensor_list=[] if my_comm_rank != root else tensor_list, # type: ignore[possibly-undefined] root=root, async_op=False, timeout=timeout, ) # Scatter per-object sizes to trim tensors when deserializing back to object obj_tensor_size = torch.tensor([0], dtype=torch.long, device=current_device) comm.scatter( obj_tensor_size, input_tensor_list=[] if my_comm_rank != root else tensor_sizes, # type: ignore[possibly-undefined] root=root, async_op=False, timeout=timeout, ) # Deserialize back to object scatter_object_output_list[0] = _tensor_to_object( output_tensor, obj_tensor_size, weights_only=weights_only, )",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "../../_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/_modules/torchcomms/objcol.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>
