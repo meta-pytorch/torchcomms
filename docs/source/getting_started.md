@@ -30,7 +30,6 @@ torchcomms requires the following software and hardware:
 - Python 3.10 or higher
 - PyTorch 2.8 or higher
 - CUDA-capable GPU (for NCCL/NCCLX or RCCL backends)
-- CMake 3.22 or higher
 
 ## Installation
 
