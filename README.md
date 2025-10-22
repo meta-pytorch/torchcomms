@@ -83,7 +83,7 @@ If you want to build and install the third-party dependencies from source, run t
 ```bash
 # Install PyTorch (if not already installed)
 pip install -r requirements.txt
-pip install -v .
+pip install --no-build-isolation -v .
 ```
 
 ### Build Configuration
@@ -103,7 +103,7 @@ Then run:
 ```bash
 # Install PyTorch (if not already installed)
 pip install -r requirements.txt
-pip install -v .
+pip install --no-build-isolation -v .
 ```
 
 ## Quick Start Example
