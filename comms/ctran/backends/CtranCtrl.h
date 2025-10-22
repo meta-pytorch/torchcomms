@@ -11,11 +11,8 @@
 #include <sstream>
 #include <unordered_map>
 
-#include "comms/ctran/utils/CtranIpc.h"
-
-#ifdef ENABLE_META_COMPRESSION
 #include "comms/ctran/backends/CtranAux.h"
-#endif
+#include "comms/ctran/utils/CtranIpc.h"
 
 constexpr int CTRAN_MAX_IB_DEVICES_PER_RANK{2};
 
@@ -136,9 +133,7 @@ struct ControlMsg {
     struct CmsgIbExportMem ibExp;
   };
 
-#ifdef ENABLE_META_COMPRESSION
   AuxData_t<DefaultAuxType> aux; // Used to store the remote aux data
-#endif
 
   ControlMsg(){};
   ControlMsg(int type) : type(type) {
