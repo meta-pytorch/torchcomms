@@ -12,7 +12,7 @@
 #include "comms/utils/logger/LogUtils.h"
 
 #ifdef ENABLE_META_COMPRESSION
-#include "comms/ctran/algos/AllToAll/compressed/CompressedAllToAllv.h"
+#include "comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.h"
 #endif
 
 #define RETURN_ALLTOALLV_IB_IMPL(perfconfig) \
