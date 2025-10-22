@@ -1,12 +1,14 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#pragma once
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
-using namespace ncclx;
+using ncclx::CommStateX;
 
 template <commDataType_t>
 struct CommTypeTraits;
