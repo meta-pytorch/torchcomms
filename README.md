@@ -11,8 +11,8 @@
 torchcomms is a new experimental communications API for PyTorch. This provides
 both the high level collectives API as well as several out of the box backends.
 
-* Documentation is located in the [docs/](./docs) folder.
-* Examples are located in the [comms/torchcomms/examples](./comms/torchcomms/examples) folder.
+* [Documentation](https://meta-pytorch.org/torchcomms/main/index.html)
+* [Examples](./comms/torchcomms/examples)
 
 ## Prerequisites
 
@@ -24,6 +24,17 @@ torchcomms requires the following software and hardware:
 
 ## Installation
 
+torchcomms is available on PyPI and can be installed using pip. Alternatively,
+you can build torchcomms from source.
+
+### Using pip (Nightly Builds)
+
+You can install torchcomms and PyTorch nightly builds using pip:
+
+```bash
+pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/nightly/cu128
+```
+
 ### Building from Source
 
 #### Prerequisites
@@ -31,7 +42,7 @@ torchcomms requires the following software and hardware:
 - CMake 3.22 or higher
 - Ninja 1.10 or higher
 
-You can build torchcomms from source. If you want to build the NCCLX backend, we recommend building it under a virtual conda environment.
+Alternatively, you can build torchcomms from source. If you want to build the NCCLX backend, we recommend building it under a virtual conda environment.
 Run the following commands to build and install torchcomms:
 
 ```bash
@@ -72,7 +83,7 @@ If you want to build and install the third-party dependencies from source, run t
 ```bash
 # Install PyTorch (if not already installed)
 pip install -r requirements.txt
-pip install -v .
+pip install --no-build-isolation -v .
 ```
 
 ### Build Configuration
@@ -92,7 +103,7 @@ Then run:
 ```bash
 # Install PyTorch (if not already installed)
 pip install -r requirements.txt
-pip install -v .
+pip install --no-build-isolation -v .
 ```
 
 ## Quick Start Example
@@ -156,6 +167,17 @@ torchrun --nproc_per_node=2 example.py
 
 # Or using python -m torch.distributed.launch
 python -m torch.distributed.launch --nproc_per_node=2 example.py
+```
+
+To run this example with multiple nodes:
+
+- Node 0
+```bash
+torchrun --nnodes=2 --nproc_per_node=8 --node_rank=0 --rdzv-endpoint="<master-node>:<master-port>" example.py
+```
+- Node 1
+```bash
+torchrun --nnodes=2 --nproc_per_node=8 --node_rank=1 --rdzv-endpoint="<master-node>:<master-port>" example.py
 ```
 
 In the example above, we perform the following steps:

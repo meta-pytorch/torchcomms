@@ -4,9 +4,10 @@ from typing import Any, cast, Optional
 
 import torch
 import torch.distributed as dist
+
 from torch.distributed.device_mesh import _mesh_resources
 
-from torchcomms._comms import _BackendWrapper, new_comm, TorchComm
+from torchcomms._comms import _BackendWrapper, _get_store, new_comm, TorchComm
 
 
 def _create_torchcomm_process_group(
@@ -62,8 +63,17 @@ def _create_torchcomm_process_group(
     # Set up process group tag
     pg_tag = f"ptd:{group_name}"
     dist.distributed_c10d._world.tags_to_pg.setdefault(pg_tag, []).append(pg)
+    dist.distributed_c10d._world.pg_to_tag[pg] = pg_tag
 
     return pg
+
+
+def _get_store_for_pg() -> dist.Store:
+    if not hasattr(_get_store_for_pg, "_store"):
+        _get_store_for_pg._store = _get_store(  # pyre-ignore[16]
+            "torchcomm", "store_dist"
+        )
+    return _get_store_for_pg._store
 
 
 def init_device_mesh(
@@ -85,7 +95,7 @@ def init_device_mesh(
 
     local_ranks = [comm.get_rank() for comm in mesh_dim_comms]
     global_rank = cast(int, mesh[tuple(local_ranks)].item())
-    prefix_store = None
+    prefix_store = _get_store_for_pg()
     backend_str = "torchcomm"
     # Register the backend
     dist.Backend.register_backend(backend_str, new_comm)
@@ -95,7 +105,7 @@ def init_device_mesh(
         global_pg = _create_torchcomm_process_group(
             comm=_global_comm,
             group_name=_global_comm.get_name(),
-            prefix_store=prefix_store,
+            prefix_store=dist.PrefixStore("default", prefix_store),
             global_ranks_mapping=None,  # Will use default mapping
         )
     elif len(mesh_dim_comms) != 1:
@@ -110,15 +120,18 @@ def init_device_mesh(
         group_name = name
 
         # Calculate global ranks mapping for this mesh dimension
-        global_ranks = mesh.transpose(idx, -1).reshape(-1, mesh.size(idx)).tolist()
-        global_ranks_mapping = {x: j for sub in global_ranks for j, x in enumerate(sub)}
+        global_ranks = mesh.transpose(idx, -1).reshape(-1, mesh.size(idx))
+        # Find the row containing the global rank
+        row_idx = int(torch.where(global_ranks == global_rank)[0].item())
+        list_rank = global_ranks[row_idx].tolist()
+        global_ranks_mapping = {x: j for j, x in enumerate(list_rank)}
 
         # Use helper function to create the process group
         pg = _create_torchcomm_process_group(
             comm=comm,
             group_name=group_name,
             backend_str=backend_str,
-            prefix_store=prefix_store,
+            prefix_store=dist.PrefixStore(name, prefix_store),
             global_ranks_mapping=global_ranks_mapping,
         )
         if _global_comm is None and idx == 0:
@@ -150,7 +163,8 @@ def _flatten_with_comm(
     layout: Any,  # noqa: F405
 ) -> dist.DeviceMesh:
     backend_str = "torchcomm"
-    prefix_store = None
+    prefix_store = _get_store_for_pg()
+    prefix_store = dist.PrefixStore(mesh_dim_name, prefix_store)
     global_ranks_mapping = {global_ranks[i]: i for i in range(comm.get_size())}
     # We still need to register the process group for the flattened mesh
     _create_torchcomm_process_group(

@@ -47,6 +47,21 @@ try:
 except FileNotFoundError:
     install_requires = []
 
+for i, req in enumerate(install_requires):
+    if req.startswith("torch"):
+        install_requires[i] = f"torch=={torch.__version__.partition('+')[0]}"
+
+
+def get_version() -> str:
+    with open(os.path.join(ROOT, "version.txt")) as f:
+        version = f.readline().strip()
+
+    # Overridden for nightly builds.
+    if "BUILD_VERSION" in os.environ:
+        version = os.environ["BUILD_VERSION"]
+
+    return version
+
 
 class CMakeExtension(Extension):
     def __init__(self, name):
@@ -129,7 +144,7 @@ if USE_RCCL:
 
 setup(
     name="torchcomms",
-    version="0.0.1",
+    version=get_version(),
     packages=find_packages("comms"),
     package_dir={"": "comms"},
     entry_points={

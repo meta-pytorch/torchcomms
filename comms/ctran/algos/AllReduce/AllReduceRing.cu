@@ -268,11 +268,11 @@ __global__ void ncclKernelAllReduceCtranRing(
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
+  devStateLoadToShm(&flag[bId], devState);
+
   if (flag && tId == 0) {
     ctran::device::KernelStartGpe(&flag[bId]);
   }
-
-  devStateLoadToShm(&flag[bId], devState);
 
   // Run algorithm main body
   ctran::allreduce::ring::algoFn<T, RedOp>(args);

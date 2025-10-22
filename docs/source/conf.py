@@ -82,6 +82,8 @@ delimiters : [
 ]
 """
 
+html_favicon = "_static/torchcomms-logo-favicon.png"
+
 napoleon_use_ivar = True
 theme_variables = pytorch_sphinx_theme2.get_theme_variables()
 # Add any paths that contain templates here, relative to this directory.

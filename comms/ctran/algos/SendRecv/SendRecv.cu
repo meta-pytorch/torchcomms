@@ -22,11 +22,11 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSend(
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
+  devStateLoadToShm(&flag[bId], devState);
+
   if (flag && tId == 0) {
     ctran::device::KernelStartGpe(&flag[bId]);
   }
-
-  devStateLoadToShm(&flag[bId], devState);
 
   // For now kernel always ack GPE thread once put completes for timepoint
   // tracing
@@ -50,11 +50,12 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelRecv(
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
+  devStateLoadToShm(&flag[bId], devState);
+
   if (flag && tId == 0) {
     ctran::device::KernelStartGpe(&flag[bId]);
   }
 
-  devStateLoadToShm(&flag[bId], devState);
 #ifndef CTRAN_DISABLE_TCPDM
   if (UNPACK) {
     waitUnpack(
@@ -82,11 +83,12 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecv(
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
+  devStateLoadToShm(&flag[bId], devState);
+
   if (flag && tId == 0) {
     ctran::device::KernelStartGpe(&flag[bId]);
   }
 
-  devStateLoadToShm(&flag[bId], devState);
 #ifndef CTRAN_DISABLE_TCPDM
   if (UNPACK) {
     waitUnpack(

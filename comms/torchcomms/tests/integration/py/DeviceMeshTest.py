@@ -8,6 +8,7 @@ import unittest
 
 import torch
 import torch.distributed as dist
+import torch.distributed.distributed_c10d as c10d
 import torchcomms
 from torchcomms.device_mesh import _flatten_with_comm, init_device_mesh
 
@@ -248,6 +249,10 @@ class DeviceMeshTest(unittest.TestCase):
             # No synchronization needed for CPU
 
             self.assertEqual(t[0].item(), sub_comm.get_size())
+            tag = c10d._get_group_tag(sub_group)
+            self.assertEqual(tag, f"ptd:{dim_mesh_name}")
+            pg_group_ranks = c10d.get_process_group_ranks(sub_group)
+            self.assertEqual(len(pg_group_ranks), sub_comm.get_size())
 
         for sub_comm in comm_per_dim.values():
             sub_comm.finalize()

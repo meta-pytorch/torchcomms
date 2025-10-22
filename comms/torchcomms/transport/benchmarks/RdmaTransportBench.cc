@@ -5,13 +5,10 @@
 #include <chrono>
 #include <iostream>
 #include <memory>
-#include <thread>
-#include <vector>
 
 #include <folly/futures/Future.h>
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
-#include <folly/stop_watch.h>
 
 #include "comms/torchcomms/transport/RdmaTransport.h"
 

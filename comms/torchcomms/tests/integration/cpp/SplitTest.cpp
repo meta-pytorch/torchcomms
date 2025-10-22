@@ -2,7 +2,6 @@
 
 #include "SplitTest.hpp"
 
-#include <ATen/cuda/CUDAContext.h>
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <unordered_set>
