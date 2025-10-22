@@ -125,21 +125,22 @@ static void BM_RdmaTransport_Write(benchmark::State& state) {
 //------------------------------------------------------------------------------
 
 const size_t kMinBufferSize = 8 * 1024; // 8 KB
-const size_t kMaxBufferSize = 256 * 1024 * 1024; // 256 MB
+const size_t kMaxBufferSizeMemory = 16 * 1024; // 16 KB
+const size_t kMaxBufferSizeWrite = 256 * 1024 * 1024; // 256 MB
 
 BENCHMARK(BM_RdmaMemory_Register)
     ->RangeMultiplier(2)
-    ->Range(kMinBufferSize, kMaxBufferSize)
+    ->Range(kMinBufferSize, kMaxBufferSizeMemory)
     ->UseRealTime()
     ->Unit(benchmark::kMicrosecond);
 BENCHMARK(BM_RdmaMemory_Deregister)
     ->RangeMultiplier(2)
-    ->Range(kMinBufferSize, kMaxBufferSize)
+    ->Range(kMinBufferSize, kMaxBufferSizeMemory)
     ->UseRealTime()
     ->Unit(benchmark::kMicrosecond);
 BENCHMARK(BM_RdmaTransport_Write)
     ->RangeMultiplier(2)
-    ->Range(kMinBufferSize, kMaxBufferSize)
+    ->Range(kMinBufferSize, kMaxBufferSizeWrite)
     ->UseRealTime()
     ->Unit(benchmark::kMicrosecond);
 
