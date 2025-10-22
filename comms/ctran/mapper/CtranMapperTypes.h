@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <vector>
 
+#include "comms/ctran/backends/CtranAux.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/nvl/CtranNvlBase.h"
@@ -15,10 +16,6 @@
 #include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
 #else
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmBase.h"
-#endif
-
-#ifdef ENABLE_META_COMPRESSION
-#include "comms/ctran/backends/CtranAux.h"
 #endif
 
 enum CtranMapperBackend {
@@ -197,9 +194,7 @@ class CtranMapperRequest {
   ctran::CtranTcpDmRequest tcpDmReq;
   int peer{-1};
   CtranMapperBackend backend{CtranMapperBackend::IB};
-#ifdef ENABLE_META_COMPRESSION
-  AuxData_t<DefaultAuxType> aux{0}; // Used to store a copy of AuxData
-#endif
+  AuxData_t<DefaultAuxType> aux{0};
 
   union {
     struct {

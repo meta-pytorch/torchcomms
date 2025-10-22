@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/backends/CtranAux.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/nvl/CtranNvl.h"
@@ -27,10 +28,6 @@
 #include "comms/ctran/backends/mock/CtranTcpDmMock.h"
 #else
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
-#endif
-
-#ifdef ENABLE_META_COMPRESSION
-#include "comms/ctran/backends/CtranAux.h"
 #endif
 
 // Forward declaration for MapperTrace due to NVCC's lack of concepts support
@@ -1325,9 +1322,7 @@ class CtranMapper {
       auto& msg = req.sendCtrl.msg;
       req.peer = peer;
       msg.ibExp.remoteAddr = reinterpret_cast<uint64_t>(bufs[peer]);
-#ifdef ENABLE_META_COMPRESSION
       msg.aux = reqs[idx - 1].aux;
-#endif
       CLOGF_TRACE(
           COLL,
           "CTRAN-MAPPER: Post SEND ctrlmsg to rank {} with req {} ibReq {}: {}",

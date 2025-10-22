@@ -1,10 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#ifdef ENABLE_META_COMPRESSION
 #pragma once
 
 // This file suppliments iSendCtrl/iRecvCtrl with auxiliary data to be
 // communicated between IB peers.
+
+#include <cstdint>
 
 using DefaultAuxType = uint64_t;
 
@@ -31,4 +32,3 @@ struct AuxData_t {
     return *this;
   }
 };
-#endif // ENABLE_META_COMPRESSION
