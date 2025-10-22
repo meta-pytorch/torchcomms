@@ -21,37 +21,10 @@
 #include "comms/utils/logger/alloc.h"
 
 #ifdef ENABLE_META_COMPRESSION
-#include <ai_codesign/comms/compression/CompressionManager.h>
+#include <comms/ctran/mapper/fb/IcompressionManager.h>
 #endif
 
 using namespace ncclx;
-
-// Deregister ctran comm buffer used by compression manager
-#ifdef ENABLE_META_COMPRESSION
-static inline void compressionManagerDestroy(CtranMapper* mapper) {
-  auto compressionManager = compression::CompressionManager::getInstance();
-  if (!compressionManager) {
-    // no compression manager
-    return;
-  }
-
-  void* compRecvBufHdl = compressionManager->getCtranCompRecvBufHdl();
-  if (compRecvBufHdl) {
-    FB_COMMCHECKIGNORE(mapper->deregMem(compRecvBufHdl));
-    compressionManager->setCtranCompRecvBufHdl(nullptr);
-  }
-
-  void* compSendBufHdl = compressionManager->getCtranCompSendBufHdl();
-  if (compSendBufHdl) {
-    FB_COMMCHECKIGNORE(mapper->deregMem(compSendBufHdl));
-    compressionManager->setCtranCompSendBufHdl(nullptr);
-  }
-
-  compressionManager->setCtran(nullptr);
-  // reset compression manager pointer
-  compressionManager.reset();
-}
-#endif
 
 CtranMapper::CtranMapper(CtranComm* comm) {
   const auto statex = comm->statex_.get();
