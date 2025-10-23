@@ -4,6 +4,7 @@
 #include "torch/csrc/distributed/c10d/TCPStore.hpp" // @manual=//caffe2:torch-cpp-cpu
 
 #include "comms/torchcomms/StoreManager.hpp"
+#include "comms/torchcomms/TorchCommLogging.hpp"
 
 using namespace torch::comms;
 

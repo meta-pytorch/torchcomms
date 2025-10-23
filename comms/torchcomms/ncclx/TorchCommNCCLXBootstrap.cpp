@@ -5,6 +5,7 @@
 #include <dlfcn.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/StoreManager.hpp"
+#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "nccl.h" // @manual
@@ -39,7 +40,7 @@ TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
   const char* uniqueid_xchg_env =
       std::getenv("TORCHCOMM_NCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD");
   if (uniqueid_xchg_env == nullptr) {
-    TC_LOG(INFO)
+    TC_LOG(INFO, nullptr)
         << "TORCHCOMM_NCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD not set, "
         << "defaulting to " << kUniqueidXchgMethodDefault;
     uniqueid_xchg_method_ = kUniqueidXchgMethodDefault;
@@ -60,8 +61,9 @@ TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
         "Failed to get CUDA device count");
 
     device_ = c10::Device(c10::kCUDA, rank_ % device_count);
-    TC_LOG(INFO) << "User did not provide device ID; using device cuda:"
-                 << static_cast<int>(device_.index());
+    TC_LOG(INFO, nullptr)
+        << "User did not provide device ID; using device cuda:"
+        << static_cast<int>(device_.index());
   }
 
   CUDA_CHECK(
@@ -203,56 +205,63 @@ void populateNcclConfigFromHints(
   for (const auto& [key, val] : options.hints) {
     if (key == "blocking") {
       config.blocking = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.blocking=" << config.blocking;
+      TC_LOG(INFO, nullptr) << "[comm=" << name
+                            << "] Setting config.blocking=" << config.blocking;
     } else if (key == "cgaClusterSize" || key == "cga_cluster_size") {
       config.cgaClusterSize = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name << "] Setting config.cgaClusterSize="
-                   << config.cgaClusterSize;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name
+          << "] Setting config.cgaClusterSize=" << config.cgaClusterSize;
     } else if (key == "minCTAs" || key == "min_ctas") {
       config.minCTAs = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.minCTAs=" << config.minCTAs;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name << "] Setting config.minCTAs=" << config.minCTAs;
     } else if (key == "maxCTAs" || key == "max_ctas") {
       config.maxCTAs = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.maxCTAs=" << config.maxCTAs;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name << "] Setting config.maxCTAs=" << config.maxCTAs;
     } else if (key == "netName") {
       config.netName = strdup(val.c_str());
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.netName=" << config.netName;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name << "] Setting config.netName=" << config.netName;
     } else if (key == "splitShare" || key == "split_share") {
       config.splitShare = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.splitShare=" << config.splitShare;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name
+          << "] Setting config.splitShare=" << config.splitShare;
     } else if (key == "trafficClass" || key == "traffic_class") {
       config.trafficClass = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.trafficClass=" << config.trafficClass;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name
+          << "] Setting config.trafficClass=" << config.trafficClass;
     } else if (key == "commName") {
       config.commName = strdup(val.c_str());
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.commName=" << config.commName;
+      TC_LOG(INFO, nullptr) << "[comm=" << name
+                            << "] Setting config.commName=" << config.commName;
     } else if (key == "collnetEnable" || key == "collnet_enable") {
       config.collnetEnable = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.collnetEnable=" << config.collnetEnable;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name
+          << "] Setting config.collnetEnable=" << config.collnetEnable;
     } else if (key == "CTAPolicy" || key == "cta_policy") {
       config.CTAPolicy = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.CTAPolicy=" << config.CTAPolicy;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name
+          << "] Setting config.CTAPolicy=" << config.CTAPolicy;
     } else if (key == "shrinkShare") {
       config.shrinkShare = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.shrinkShare=" << config.shrinkShare;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name
+          << "] Setting config.shrinkShare=" << config.shrinkShare;
     } else if (key == "nvlsCTAs" || key == "nvls_ctas") {
       config.nvlsCTAs = std::stoi(val);
-      TC_LOG(INFO) << "[comm=" << name
-                   << "] Setting config.nvlsCTAs=" << config.nvlsCTAs;
+      TC_LOG(INFO, nullptr) << "[comm=" << name
+                            << "] Setting config.nvlsCTAs=" << config.nvlsCTAs;
     } else if (key == "ncclAllGatherAlgo") {
       config.ncclAllGatherAlgo = strdup(val.c_str());
-      TC_LOG(INFO) << "[comm=" << name << "] Setting config.ncclAllGatherAlgo="
-                   << config.ncclAllGatherAlgo;
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name
+          << "] Setting config.ncclAllGatherAlgo=" << config.ncclAllGatherAlgo;
     } else {
       TC_LOG(WARNING)
           << "NCCL hint '" << key

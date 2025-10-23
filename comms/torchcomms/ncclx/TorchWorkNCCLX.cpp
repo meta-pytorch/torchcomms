@@ -104,9 +104,10 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLX::checkStatus() {
         start_status != cudaErrorNotReady &&
         start_status != cudaErrorStreamCaptureUnsupported) {
       // Some other error occurred with the start event
-      TC_LOG(ERROR) << "CUDA error during start event query: "
-                    << comm_->getCudaApi()->getErrorString(start_status) << " ("
-                    << start_status << ")";
+      TC_LOG(ERROR, comm_.get())
+          << "CUDA error during start event query: "
+          << comm_->getCudaApi()->getErrorString(start_status) << " ("
+          << start_status << ")";
       state_ = WorkStatus::ERROR;
     }
   }
@@ -137,9 +138,10 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLX::checkStatus() {
     }
   } else if (end_status != cudaErrorStreamCaptureUnsupported) {
     // Some other error occurred with the end event
-    TC_LOG(ERROR) << "CUDA error during end event query: "
-                  << comm_->getCudaApi()->getErrorString(end_status) << " ("
-                  << end_status << ")";
+    TC_LOG(ERROR, comm_.get())
+        << "CUDA error during end event query: "
+        << comm_->getCudaApi()->getErrorString(end_status) << " (" << end_status
+        << ")";
     state_ = WorkStatus::ERROR;
   }
   return state_;
