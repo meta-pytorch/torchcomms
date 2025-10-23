@@ -111,9 +111,11 @@ author = "torchcomms Contributors"
 # built documents.
 #
 # The short X.Y version.
-# Use "main" for both FBCODE and CI builds from main branch
-# (The GitHub workflow will handle version-specific folders for tagged releases)
-version = "main"
+if FBCODE:
+    version = "main"
+else:
+    version = f"v{metadata.version('torchcomms')}"
+
 # The full version, including alpha/beta/rc tags.
 release = "main"
 
