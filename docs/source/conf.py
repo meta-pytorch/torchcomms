@@ -212,6 +212,12 @@ html_css_files = ["custom.css"]
 html_js_files = []
 
 html_baseurl = "https://meta-pytorch.org/torchcomms"
+sitemap_locales = [None]
+sitemap_excludes = [
+    "search.html",
+    "genindex.html",
+]
+sitemap_url_scheme = "{link}"
 
 
 def process_signature(app, what, name, obj, options, signature, return_annotation):
