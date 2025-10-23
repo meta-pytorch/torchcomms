@@ -161,14 +161,17 @@ struct VirtualWc {
   struct ibv_wc wc {};
   int expectedMsgCnt{0};
   int remainingMsgCnt{0};
-  bool notifyImm{false};
+  bool sendExtraNotifyImm{
+      false}; // Whether to expect an extra notify IMM
+              // message to be sent for the current virtualWc
 };
 
 struct VirtualSendWr {
   inline VirtualSendWr(
       const ibv_send_wr& wr,
       int expectedMsgCnt,
-      int remainingMsgCnt);
+      int remainingMsgCnt,
+      bool sendExtraNotifyImm);
   VirtualSendWr() = default;
   ~VirtualSendWr() = default;
 
@@ -180,6 +183,8 @@ struct VirtualSendWr {
                           // splitting a large user messaget
   int offset{
       0}; // Address offset to be used for the next message send operation
+  bool sendExtraNotifyImm{false}; // Whether to send an extra notify IMM message
+                                  // for the current VirtualSendWr
 };
 
 struct VirtualRecvWr {
@@ -216,6 +221,7 @@ struct VirtualCqRequest {
   int expectedMsgCnt{-1};
   ibv_send_wr* sendWr{nullptr};
   ibv_recv_wr* recvWr{nullptr};
+  bool sendExtraNotifyImm{false};
 };
 
 std::ostream& operator<<(std::ostream&, Error const&);
@@ -841,7 +847,7 @@ IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
       auto virtualWc = virtualWrIdToVirtualWc_.at(response->virtualWrId);
       virtualWc->remainingMsgCnt--;
       updateVirtualWcFromPhysicalWc(physicalWc, virtualWc);
-      if (virtualWc->remainingMsgCnt == 1 && virtualWc->notifyImm) {
+      if (virtualWc->remainingMsgCnt == 1 && virtualWc->sendExtraNotifyImm) {
         VirtualQpRequest request = {
             .type = RequestType::SEND_NOTIFY,
             .wrId = response->virtualWrId,
@@ -952,8 +958,7 @@ inline void IbvVirtualCq::processRequest(VirtualCqRequest&& request) {
       virtualWc.wc.byte_len = 0;
       virtualWc.expectedMsgCnt = request.expectedMsgCnt;
       virtualWc.remainingMsgCnt = request.expectedMsgCnt;
-      virtualWc.notifyImm =
-          request.sendWr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM;
+      virtualWc.sendExtraNotifyImm = request.sendExtraNotifyImm;
       pendingSendVirtualWcQue_.push_back(std::move(virtualWc));
       virtualWcPtr = &pendingSendVirtualWcQue_.back();
     }
@@ -1023,7 +1028,7 @@ IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
       pendingSendVirtualWrQue_.pop_front();
     } else if (
         virtualSendWr.remainingMsgCnt == 1 &&
-        virtualSendWr.wr.opcode == IBV_WR_RDMA_WRITE_WITH_IMM) {
+        virtualSendWr.sendExtraNotifyImm) {
       // Move front entry from pendingSendVirtualWrQue_ to
       // pendingSendNotifyVirtualWrQue_
       pendingSendNotifyVirtualWrQue_.push_back(
@@ -1148,9 +1153,12 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
   }
 
   // Calculate the chunk number for the current message and update sendWqe
+  bool sendExtraNotifyImm =
+      (sendWr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
+       loadBalancingScheme_ == LoadBalancingScheme::SPRAY);
   int expectedMsgCnt =
       (sendWr->sg_list->length + maxMsgSize_ - 1) / maxMsgSize_;
-  if (sendWr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM) {
+  if (sendExtraNotifyImm) {
     expectedMsgCnt += 1; // After post send all data messages, will post send
                          // 1 more notification message on QP 0
   }
@@ -1160,7 +1168,8 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
       .type = RequestType::SEND,
       .virtualQpNum = (int)virtualQpNum_,
       .expectedMsgCnt = expectedMsgCnt,
-      .sendWr = sendWr};
+      .sendWr = sendWr,
+      .sendExtraNotifyImm = sendExtraNotifyImm};
   coordinator_->submitRequestToVirtualCq(std::move(request));
 
   // Set up the send work request with the completion queue entry and enqueue
@@ -1168,7 +1177,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
   // The VirtualSendWr constructor will handle deep copying of sendWr and
   // sg_list
   pendingSendVirtualWrQue_.emplace_back(
-      *sendWr, expectedMsgCnt, expectedMsgCnt);
+      *sendWr, expectedMsgCnt, expectedMsgCnt, sendExtraNotifyImm);
 
   // Map large messages from vSendQ_ to pQps_
   if (mapPendingSendQueToPhysicalQp().hasError()) {
@@ -1451,8 +1460,11 @@ inline void Coordinator::submitRequestToVirtualCq(VirtualCqRequest&& request) {
 inline VirtualSendWr::VirtualSendWr(
     const ibv_send_wr& wr,
     int expectedMsgCnt,
-    int remainingMsgCnt)
-    : expectedMsgCnt(expectedMsgCnt), remainingMsgCnt(remainingMsgCnt) {
+    int remainingMsgCnt,
+    bool sendExtraNotifyImm)
+    : expectedMsgCnt(expectedMsgCnt),
+      remainingMsgCnt(remainingMsgCnt),
+      sendExtraNotifyImm(sendExtraNotifyImm) {
   // Make an explicit copy of the ibv_send_wr structure
   this->wr = wr;
 

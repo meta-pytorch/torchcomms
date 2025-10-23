@@ -778,11 +778,12 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpUpdatePhysicalSendWrFromVirtualSendWr) {
   int expectedMsgCnt =
       (userProvidedSendWr.sg_list->length + maxMsgSizeByte - 1) /
       maxMsgSizeByte;
+  bool sendExtraNotifyImm = false;
 
   // Test setting 1: OP code is IBV_WR_SEND
   {
     VirtualSendWr virtualSendWr(
-        userProvidedSendWr, expectedMsgCnt, expectedMsgCnt);
+        userProvidedSendWr, expectedMsgCnt, expectedMsgCnt, sendExtraNotifyImm);
 
     ibv_sge sendSge{};
     ibv_send_wr sendWr{};
@@ -819,7 +820,7 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpUpdatePhysicalSendWrFromVirtualSendWr) {
     userProvidedSendWr.wr.rdma.rkey =
         0x87654321; // Use a random rkey to mock the remote rkey
     VirtualSendWr virtualSendWr(
-        userProvidedSendWr, expectedMsgCnt, expectedMsgCnt);
+        userProvidedSendWr, expectedMsgCnt, expectedMsgCnt, sendExtraNotifyImm);
 
     ibv_sge sendSge{};
     ibv_send_wr sendWr{};
@@ -863,7 +864,7 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpUpdatePhysicalSendWrFromVirtualSendWr) {
     userProvidedSendWr.wr.rdma.rkey =
         0x87654321; // Use a random rkey to mock the remote rkey
     VirtualSendWr virtualSendWr(
-        userProvidedSendWr, expectedMsgCnt, expectedMsgCnt);
+        userProvidedSendWr, expectedMsgCnt, expectedMsgCnt, sendExtraNotifyImm);
 
     ibv_sge sendSge{};
     ibv_send_wr sendWr{};
