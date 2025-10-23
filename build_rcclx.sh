@@ -204,7 +204,7 @@ if [[ -z "${NCCL_BUILD_SKIP_DEPS}" ]]; then
   echo "Building dependencies"
   if [[ -z "${NCCL_SKIP_CONDA_INSTALL}" ]]; then
     DEPS=(
-      cmake
+      cmake=3.26.4
       ninja
       jemalloc
       gtest
