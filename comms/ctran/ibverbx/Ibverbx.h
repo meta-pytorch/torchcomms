@@ -29,6 +29,7 @@ constexpr int kIbMaxCqe_ = 100;
 
 // Command types for coordinator routing and operations
 enum class RequestType { SEND = 0, RECV = 1, SEND_NOTIFY = 2 };
+enum class LoadBalancingScheme { SPRAY = 0, DQPLB = 1 };
 
 struct IbvSymbols {
   int (*ibv_internal_fork_init)(void) = nullptr;
@@ -461,6 +462,7 @@ class IbvVirtualQp {
       const IbvVirtualQpBusinessCard& businessCard =
           IbvVirtualQpBusinessCard());
   IbvVirtualQpBusinessCard getVirtualQpBusinessCard() const;
+  LoadBalancingScheme getLoadBalancingScheme() const;
 
   inline folly::Expected<folly::Unit, Error> postSend(
       ibv_send_wr* sendWr,
@@ -513,12 +515,16 @@ class IbvVirtualQp {
   uint64_t nextPhysicalWrId_{0}; // ID of the next physical work request to
                                  // be posted on the physical QP
 
+  LoadBalancingScheme loadBalancingScheme_{
+      LoadBalancingScheme::SPRAY}; // Load balancing scheme for this virtual QP
+
   IbvVirtualQp(
       std::vector<IbvQp>&& qps,
       IbvQp&& notifyQp,
       Coordinator* coordinator,
       int maxMsgCntPerQp = kIbMaxMsgCntPerQp,
-      int maxMsgSize = kIbMaxMsgSizeByte);
+      int maxMsgSize = kIbMaxMsgSizeByte,
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
 
   // mapPendingSendQueToPhysicalQp is a helper function to iterate through
   // virtualSendWr in the pendingSendVirtualWrQue_, construct physical wrs and
@@ -626,7 +632,9 @@ class IbvPd {
       IbvVirtualCq* sendCq,
       IbvVirtualCq* recvCq,
       int maxMsgCntPerQp = kIbMaxMsgCntPerQp,
-      int maxMsgSize = kIbMaxMsgSizeByte) const;
+      int maxMsgSize = kIbMaxMsgSizeByte,
+      LoadBalancingScheme loadBalancingScheme =
+          LoadBalancingScheme::SPRAY) const;
 
  private:
   friend class IbvDevice;

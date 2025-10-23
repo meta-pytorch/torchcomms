@@ -687,7 +687,8 @@ folly::Expected<IbvVirtualQp, Error> IbvPd::createVirtualQp(
     IbvVirtualCq* sendCq,
     IbvVirtualCq* recvCq,
     int maxMsgCntPerQp,
-    int maxMsgSize) const {
+    int maxMsgSize,
+    LoadBalancingScheme loadBalancingScheme) const {
   std::vector<IbvQp> qps;
   qps.reserve(totalQps);
 
@@ -726,7 +727,8 @@ folly::Expected<IbvVirtualQp, Error> IbvPd::createVirtualQp(
       std::move(*maybeNotifyQp),
       coordinator_,
       maxMsgCntPerQp,
-      maxMsgSize);
+      maxMsgSize,
+      loadBalancingScheme);
 
   // Populate the physicalQpNumToVirtualQp_ map in the coordinator
   for (const auto& qp : virtualQp.getQpsRef()) {
@@ -1132,12 +1134,14 @@ IbvVirtualQp::IbvVirtualQp(
     IbvQp&& notifyQp,
     Coordinator* coordinator,
     int maxMsgCntPerQp,
-    int maxMsgSize)
+    int maxMsgSize,
+    LoadBalancingScheme loadBalancingScheme)
     : physicalQps_(std::move(qps)),
       notifyQp_(std::move(notifyQp)),
       coordinator_(coordinator),
       maxMsgCntPerQp_(maxMsgCntPerQp),
-      maxMsgSize_(maxMsgSize) {
+      maxMsgSize_(maxMsgSize),
+      loadBalancingScheme_(loadBalancingScheme) {
   for (int i = 0; i < physicalQps_.size(); i++) {
     qpNumToIdx_[physicalQps_.at(i).qp()->qp_num] = i;
   }
@@ -1171,7 +1175,8 @@ IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
       nextRecvPhysicalQpIdx_(other.nextRecvPhysicalQpIdx_),
       coordinator_(other.coordinator_),
       maxMsgCntPerQp_(other.maxMsgCntPerQp_),
-      maxMsgSize_(other.maxMsgSize_) {
+      maxMsgSize_(other.maxMsgSize_),
+      loadBalancingScheme_(other.loadBalancingScheme_) {
   // Update all entries in coordinator that point to &other to point to this
   if (coordinator_) {
     coordinator_->updateVirtualQpMapping(&other, this);
@@ -1196,6 +1201,7 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
     maxMsgCntPerQp_ = other.maxMsgCntPerQp_;
     maxMsgSize_ = other.maxMsgSize_;
     coordinator_ = other.coordinator_;
+    loadBalancingScheme_ = other.loadBalancingScheme_;
 
     // Update all entries in coordinator that point to &other to point to this
     if (coordinator_) {
@@ -1262,6 +1268,10 @@ IbvVirtualQpBusinessCard IbvVirtualQp::getVirtualQpBusinessCard() const {
     qpNums.push_back(qp.qp()->qp_num);
   }
   return IbvVirtualQpBusinessCard(std::move(qpNums), notifyQp_.qp()->qp_num);
+}
+
+LoadBalancingScheme IbvVirtualQp::getLoadBalancingScheme() const {
+  return loadBalancingScheme_;
 }
 
 /*** IbvVirtualQpBusinessCard ***/
