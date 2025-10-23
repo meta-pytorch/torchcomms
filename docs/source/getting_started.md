@@ -89,6 +89,17 @@ If you want to build and install the third-party dependencies from source, run t
 
 :::{tab-item} RCCL Backend
 
+Install some prerequisites
+```
+conda install conda-forge::glog=0.4.0 conda-forge::gflags conda-forge::fmt -y
+```
+
+Environment variables to find rocm/rccl headers
+```
+export ROCM_HOME=/opt/rocm
+export RCCL_INCLUDE=$ROCM_HOME/include/rccl
+```
+
 ```bash
 ./build_rccl.sh
 ```

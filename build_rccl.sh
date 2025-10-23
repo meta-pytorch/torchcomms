@@ -76,4 +76,4 @@ else
 fi
 
 popd || exit 1
-# TODO build torchcomms_rccl
+pip install numpy

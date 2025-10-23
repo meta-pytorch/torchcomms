@@ -322,6 +322,21 @@ class IbvVirtualCq {
       VirtualWc* virtualWc);
   Coordinator* coordinator_{nullptr};
   std::unordered_map<uint64_t, VirtualWc*> virtualWrIdToVirtualWc_;
+
+  // Helper function for IbvVirtualCq::pollCq.
+  // Continuously polls the underlying physical Completion Queue (CQ) in a loop,
+  // retrieving all available Completion Queue Entries (CQEs) until none remain.
+  // For each physical CQE polled, the corresponding virtual CQE entries in the
+  // virtual CQ are also updated. This function ensures that all ready physical
+  // CQEs are polled, processed, and reflected in the virtual CQ state.
+  inline folly::Expected<folly::Unit, Error> loopPollPhysicalCqUntilEmpty();
+
+  // Helper function for IbvVirtualCq::pollCq.
+  // Continuously polls the underlying virtual Completion Queues (CQs) in a
+  // loop. The function collects up to numEntries virtual Completion Queue
+  // Entries (CQEs), or stops early if there are no more virtual CQEs available
+  // to poll. Returns a vector containing the polled virtual CQEs.
+  inline std::vector<ibv_wc> loopPollVirtualCqUntil(int numEntries);
 };
 
 // Ibv Queue Pair
@@ -759,6 +774,16 @@ inline folly::Expected<std::vector<ibv_wc>, Error> IbvCq::pollCq(
 // IbvVirtualCq inline functions
 inline folly::Expected<std::vector<ibv_wc>, Error> IbvVirtualCq::pollCq(
     int numEntries) {
+  auto maybeLoopPollPhysicalCq = loopPollPhysicalCqUntilEmpty();
+  if (maybeLoopPollPhysicalCq.hasError()) {
+    return folly::makeUnexpected(maybeLoopPollPhysicalCq.error());
+  }
+
+  return loopPollVirtualCqUntil(numEntries);
+}
+
+inline folly::Expected<folly::Unit, Error>
+IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
   // Poll from physical CQ one by one and process immediately
   while (true) {
     // Poll one completion at a time
@@ -773,7 +798,7 @@ inline folly::Expected<std::vector<ibv_wc>, Error> IbvVirtualCq::pollCq(
     }
 
     // Process the single completion immediately
-    const auto& physicalWc = maybePhysicalWcsVector->at(0);
+    const auto& physicalWc = maybePhysicalWcsVector->front();
 
     if (physicalWc.opcode == IBV_WC_RECV ||
         physicalWc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
@@ -813,6 +838,7 @@ inline folly::Expected<std::vector<ibv_wc>, Error> IbvVirtualCq::pollCq(
             .type = RequestType::SEND_NOTIFY,
             .wrId = response->virtualWrId,
             .physicalQpNum = physicalWc.qp_num};
+
         auto response =
             coordinator_->submitRequestToVirtualQp(std::move(request));
         if (response.hasError()) {
@@ -822,31 +848,39 @@ inline folly::Expected<std::vector<ibv_wc>, Error> IbvVirtualCq::pollCq(
     }
   }
 
+  return folly::unit;
+}
+
+inline std::vector<ibv_wc> IbvVirtualCq::loopPollVirtualCqUntil(
+    int numEntries) {
   std::vector<ibv_wc> wcs;
   wcs.reserve(numEntries);
   bool virtualSendCqPollComplete = false;
   bool virtualRecvCqPollComplete = false;
-  while (wcs.size() < static_cast<size_t>(numEntries)) {
-    if (pendingSendVirtualWcQue_.empty() ||
-        pendingSendVirtualWcQue_.front().remainingMsgCnt > 0) {
-      virtualSendCqPollComplete = true;
-    }
-    if (pendingRecvVirtualWcQue_.empty() ||
-        pendingRecvVirtualWcQue_.front().remainingMsgCnt > 0) {
-      virtualRecvCqPollComplete = true;
-    }
-    if (virtualSendCqPollComplete && virtualRecvCqPollComplete) {
-      break;
-    }
+  while (wcs.size() < static_cast<size_t>(numEntries) &&
+         (!virtualSendCqPollComplete || !virtualRecvCqPollComplete)) {
     if (!virtualSendCqPollComplete) {
-      auto vSendCqHead = pendingSendVirtualWcQue_.front();
-      wcs.push_back(std::move(vSendCqHead.wc));
-      pendingSendVirtualWcQue_.pop_front();
+      if (pendingSendVirtualWcQue_.empty() ||
+          pendingSendVirtualWcQue_.front().remainingMsgCnt > 0) {
+        virtualSendCqPollComplete = true;
+      } else {
+        auto vSendCqHead = pendingSendVirtualWcQue_.front();
+        virtualWrIdToVirtualWc_.erase(vSendCqHead.wc.wr_id);
+        wcs.push_back(std::move(vSendCqHead.wc));
+        pendingSendVirtualWcQue_.pop_front();
+      }
     }
+
     if (!virtualRecvCqPollComplete) {
-      auto vRecvCqHead = pendingRecvVirtualWcQue_.front();
-      wcs.push_back(std::move(vRecvCqHead.wc));
-      pendingRecvVirtualWcQue_.pop_front();
+      if (pendingRecvVirtualWcQue_.empty() ||
+          pendingRecvVirtualWcQue_.front().remainingMsgCnt > 0) {
+        virtualRecvCqPollComplete = true;
+      } else {
+        auto vRecvCqHead = pendingRecvVirtualWcQue_.front();
+        virtualWrIdToVirtualWc_.erase(vRecvCqHead.wc.wr_id);
+        wcs.push_back(std::move(vRecvCqHead.wc));
+        pendingRecvVirtualWcQue_.pop_front();
+      }
     }
   }
 
