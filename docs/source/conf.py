@@ -115,7 +115,6 @@ if FBCODE:
     version = "main"
 else:
     version = f"v{metadata.version('torchcomms')}"
-
 # The full version, including alpha/beta/rc tags.
 release = "main"
 
