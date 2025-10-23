@@ -10,6 +10,9 @@
 
 using ncclx::CommStateX;
 
+// TODO: migrate to the test fixture in CtranXPlatUtUtils.h and deprecate this
+// file
+
 template <commDataType_t>
 struct CommTypeTraits;
 
