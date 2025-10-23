@@ -111,10 +111,9 @@ author = "torchcomms Contributors"
 # built documents.
 #
 # The short X.Y version.
-if FBCODE:
-    version = "main"
-else:
-    version = f"v{metadata.version('torchcomms')}"
+# Use "main" for both FBCODE and CI builds from main branch
+# (The GitHub workflow will handle version-specific folders for tagged releases)
+version = "main"
 # The full version, including alpha/beta/rc tags.
 release = "main"
 
@@ -211,7 +210,7 @@ html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 html_js_files = []
 
-html_baseurl = "https://meta-pytorch.org/torchcomms"
+html_baseurl = f"https://meta-pytorch.org/torchcomms/{version}/"
 sitemap_locales = [None]
 sitemap_excludes = [
     "search.html",
