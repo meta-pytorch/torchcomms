@@ -15,11 +15,7 @@ void ProfilerTest::SetUp() {
   c10::Device device = c10::Device(device_type_);
 
   // Create TorchComm with options (but no store)
-  const char* test_backend_env = std::getenv("TEST_BACKEND");
-  if (!test_backend_env) {
-    throw std::runtime_error("TEST_BACKEND environment variable is not set");
-  }
-  std::string backend = test_backend_env;
+  std::string backend = "ncclx";
 
   torch::comms::CommOptions options;
   torchcomm_ =

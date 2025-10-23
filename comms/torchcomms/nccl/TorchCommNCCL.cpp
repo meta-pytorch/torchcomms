@@ -1435,41 +1435,18 @@ const char* NCCLException::what() const noexcept {
   return message_.c_str();
 }
 
-// Dynamic loader interface implementation for PTCommNCCL
-static TorchCommBackend* new_comm_impl() {
-  // NOLINT(facebook-hte-UnmanagedEnableSharedFromThis)
-  return new TorchCommNCCL();
-}
-
-static void destroy_comm_impl(TorchCommBackend* comm) {
-  delete comm;
-}
-
-static const char* get_supported_version_impl() {
-  return TORCHCOMM_BACKEND_ABI_VERSION;
-}
-
-// Factory function for dynamic loading
-extern "C" DynamicLoaderInterface create_dynamic_loader_nccl() {
-  DynamicLoaderInterface interface{
-      .new_comm = new_comm_impl,
-      .destroy_comm = destroy_comm_impl,
-      .get_supported_version = get_supported_version_impl,
-  };
-  return interface;
-}
+} // namespace comms
+} // namespace torch
 
 namespace {
 class NCCLRegistration {
  public:
   NCCLRegistration() {
-    TorchCommFactory::get().register_backend(
-        "nccl", []() { return std::make_shared<TorchCommNCCL>(); });
+    torch::comms::TorchCommFactory::get().register_backend("nccl", []() {
+      return std::make_shared<torch::comms::TorchCommNCCL>();
+    });
   }
 };
 
 static NCCLRegistration registration{};
 } // namespace
-
-} // namespace comms
-} // namespace torch
