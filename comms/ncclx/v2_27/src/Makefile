@@ -113,10 +113,10 @@ DEVMEM_DIR  := $(BASE_DIR)/comms/tcp_devmem
 THRIFT_FILE := $(DEVMEM_DIR)/devmgr/devmgr.thrift
 THRIFT_H    := $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_client.h
 
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgrAsyncClient.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_processmap_binary.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_processmap_compact.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgrAsyncClient.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_binary.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_compact.cpp
 LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_constants.cpp
 LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_data.cpp
 LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_metadata.cpp
@@ -133,9 +133,9 @@ $(DEVMEM_DIR)/devmgr/devmgr_client.cc: $(THRIFT_H)
 $(DEVMEM_DIR)/transport.cc: $(THRIFT_H)
 
 $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgrAsyncClient.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_processmap_binary.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_processmap_compact.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgrAsyncClient.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_binary.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_compact.cpp: $(THRIFT_H)
 $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_constants.cpp: $(THRIFT_H)
 $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_data.cpp: $(THRIFT_H)
 $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_metadata.cpp: $(THRIFT_H)
