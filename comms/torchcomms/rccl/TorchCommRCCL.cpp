@@ -1425,27 +1425,6 @@ const char* RCCLException::what() const noexcept {
 } // namespace comms
 } // namespace torch
 
-static torch::comms::TorchCommBackend* new_comm_impl() {
-  return new torch::comms::TorchCommRCCL();
-}
-
-static void destroy_comm_impl(torch::comms::TorchCommBackend* comm) {
-  delete comm;
-}
-
-static const char* get_supported_version_impl() {
-  return torch::comms::TORCHCOMM_BACKEND_ABI_VERSION;
-}
-
-extern "C" torch::comms::DynamicLoaderInterface create_dynamic_loader_rccl() {
-  torch::comms::DynamicLoaderInterface interface{
-      .new_comm = new_comm_impl,
-      .destroy_comm = destroy_comm_impl,
-      .get_supported_version = get_supported_version_impl,
-  };
-  return interface;
-}
-
 namespace {
 class RCCLRegistration {
  public:
