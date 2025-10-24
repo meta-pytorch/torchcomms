@@ -154,7 +154,7 @@ std::shared_ptr<TorchCommBackend> TorchCommFactory::create_backend(
   std::shared_ptr<TorchCommBackend> impl;
 
   for (const auto& [key, _] : backends_) {
-    TC_LOG(ERROR) << "Backend " << key << " is already registered";
+    TC_LOG(INFO) << "Backend " << key << " is registered";
   }
 
   if (auto it = backends_.find(backend); it != backends_.end()) {
