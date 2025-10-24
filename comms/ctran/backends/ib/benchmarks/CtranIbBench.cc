@@ -32,6 +32,7 @@ struct BenchmarkContext {
   void* recvBuffer{};
   void* senderRegHdl{};
   void* receiverRegHdl{};
+  CtranIbRemoteAccessKey ibSendKey;
   CtranIbRemoteAccessKey ibReceiveKey;
   size_t bufferSize;
 
@@ -43,6 +44,7 @@ struct BenchmarkContext {
       void* recvBuffer_,
       void* senderRegHdl_,
       void* receiverRegHdl_,
+      CtranIbRemoteAccessKey ibSendKey_,
       CtranIbRemoteAccessKey ibReceiveKey_,
       size_t bufferSize_)
       : senderIb(std::move(senderIb_)),
@@ -51,6 +53,7 @@ struct BenchmarkContext {
         recvBuffer(recvBuffer_),
         senderRegHdl(senderRegHdl_),
         receiverRegHdl(receiverRegHdl_),
+        ibSendKey(ibSendKey_),
         ibReceiveKey(ibReceiveKey_),
         bufferSize(bufferSize_) {}
 
@@ -119,6 +122,7 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
     throw std::runtime_error("receiverIb not connected");
   }
 
+  auto ibSendKey = CtranIb::getRemoteAccessKey(senderRegHdl);
   auto ibReceiveKey = CtranIb::getRemoteAccessKey(receiverRegHdl);
 
   return BenchmarkContext(
@@ -128,6 +132,7 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
       recvBuffer,
       senderRegHdl,
       receiverRegHdl,
+      ibSendKey,
       ibReceiveKey,
       bufferSize);
 }
@@ -185,6 +190,39 @@ benchmarkIput(benchmark::State& state, CtranIbConfig config, bool withNotify) {
   cleanupBenchmarkContext(ctx);
 }
 
+static void
+benchmarkIget(benchmark::State& state, CtranIbConfig config, bool withNotify) {
+  const size_t bufferSize = state.range(0);
+  auto ctx = setupBenchmarkContext(bufferSize);
+
+  // Benchmark the iput operation
+  for (auto _ : state) {
+    CtranIbRequest ibReq;
+    if (ctx.receiverIb->iget(
+            ctx.sendBuffer, /* sbuf */
+            ctx.recvBuffer, /* dbuf */
+            ctx.bufferSize, /* len */
+            kDummyRank, /* peerRank */
+            ctx.receiverRegHdl, /* ibRegElem */
+            ctx.ibSendKey, /* remoteAccessKey */
+            &config, /* config */
+            &ibReq, /* req */
+            false /* fast */
+            ) != commSuccess) {
+      throw std::runtime_error("iget failed");
+    }
+
+    do {
+      if (ctx.receiverIb->progress() != commSuccess) {
+        throw std::runtime_error("progress failed");
+      }
+    } while (!ibReq.isComplete());
+  }
+
+  state.SetBytesProcessed(state.iterations() * bufferSize);
+  cleanupBenchmarkContext(ctx);
+}
+
 /**
  * Benchmark CtranIb Iput operation latency with configurable CtranIbConfig
  */
@@ -204,6 +242,10 @@ static void BM_CtranIb_IputWithNotifyDqplb(
     CtranIbConfig config) {
   config.vcMode = NCCL_CTRAN_IB_VC_MODE::dqplb;
   benchmarkIput(state, config, true);
+}
+
+static void BM_CtranIb_IGet(benchmark::State& state, CtranIbConfig config) {
+  benchmarkIget(state, config, false);
 }
 
 //------------------------------------------------------------------------------
@@ -236,6 +278,13 @@ static auto* registered_benchmark_with_notify_dqplb =
         "BM_CtranIb_IputWithNotifyDqplb",
         BM_CtranIb_IputWithNotifyDqplb,
         config)
+        ->RangeMultiplier(2)
+        ->Range(kMinBufferSize, kMaxBufferSize)
+        ->UseRealTime()
+        ->Unit(benchmark::kMicrosecond);
+
+static auto* registered_benchmark_iget =
+    benchmark::RegisterBenchmark("BM_CtranIb_Iget", BM_CtranIb_IGet, config)
         ->RangeMultiplier(2)
         ->Range(kMinBufferSize, kMaxBufferSize)
         ->UseRealTime()
