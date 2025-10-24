@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
+#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
 namespace torch {
