@@ -792,12 +792,6 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
   changeVirtualQpStateToRts(
       *virtualQp, localCard, remoteCard, remoteVirtualQpBusinessCard);
 
-  // If loadBalancingScheme is DQPLB, then we need to set the DQPLB receiver
-  // state by pre-posting receive WRs
-  if (globalRank == 0 && loadBalancingScheme == LoadBalancingScheme::DQPLB) {
-    ASSERT_TRUE(virtualQp->setupDqplbReceiver());
-  }
-
   // post send/recv and poll cq
   int wr_id = 0;
   int imm_data = 16384;

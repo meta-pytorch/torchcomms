@@ -483,8 +483,6 @@ class IbvVirtualQp {
       ibv_recv_wr* ibvRecvWr,
       ibv_recv_wr* badIbvRecvWr);
 
-  inline folly::Expected<folly::Unit, Error> setupDqplbReceiver();
-
   inline int findAvailableSendQp();
   inline int findAvailableRecvQp();
 
@@ -533,10 +531,13 @@ class IbvVirtualQp {
   std::deque<VirtualSendWr> pendingSendNotifyVirtualWrQue_;
   IbvQp notifyQp_;
 
-  // DQPLB mode specific fields
+  // DQPLB mode specific fields and functions
   int sendNext_{0};
   int receiveNext_{0};
   std::unordered_map<uint32_t, bool> receivedSeqNums_;
+  bool dqplbReceiverInitialized_{
+      false}; // flag to indicate if dqplb receiver is initialized
+  inline folly::Expected<folly::Unit, Error> initializeDqplbReceiver();
 
   IbvVirtualQp(
       std::vector<IbvQp>&& qps,
@@ -1378,7 +1379,8 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvNotifyImm(
   return folly::unit;
 }
 
-inline folly::Expected<folly::Unit, Error> IbvVirtualQp::setupDqplbReceiver() {
+inline folly::Expected<folly::Unit, Error>
+IbvVirtualQp::initializeDqplbReceiver() {
   ibv_recv_wr recvWr_{};
   ibv_recv_wr badRecvWr_{};
   ibv_sge recvSg_{};
@@ -1396,6 +1398,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::setupDqplbReceiver() {
     }
   }
 
+  dqplbReceiverInitialized_ = true;
   return folly::unit;
 }
 
@@ -1510,6 +1513,11 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
       // physicalQps_. In DQPLB mode, this mapping is unnecessary because all
       // receive notify IMM operations are pre-posted to the QPs before postRecv
       // is called.
+      *recvWrBad = *recvWr;
+      return folly::makeUnexpected(Error(errno));
+    }
+  } else if (dqplbReceiverInitialized_ == false) {
+    if (initializeDqplbReceiver().hasError()) {
       *recvWrBad = *recvWr;
       return folly::makeUnexpected(Error(errno));
     }

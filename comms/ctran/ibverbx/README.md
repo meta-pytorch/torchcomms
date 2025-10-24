@@ -54,3 +54,57 @@ The conditional compilation (`#ifdef IBVERBX_BUILD_RDMA_CORE`) only affects:
 - Build dependencies and linking against rdma-core libraries
 
 This design ensures type compatibility across all build variants while maintaining clear namespace separation and avoiding conflicts with system InfiniBand installations.
+
+## IbvVirtualQp: Virtual Queue Pair Abstraction in Ibverbx
+Ibverbx introduces new abstractions to efficiently partition large messages and load balance across multiple data queue pairs in RDMA applications.
+
+### Key abstractions
+- IbvVirtualQp:
+A virtual queue pair that internally manages multiple data queue pairs (QPs). This enables partitioning a large message into sub-messages, which can be sent across multiple data QPs for higher throughput and better load balancing.
+- IbvVirtualCq:
+A virtual completion queue designed to work with IbvVirtualQp, managing work request completions from all underlying QPs.
+
+### Load Balancing Modes
+`IbvVirtualQp` supports two load balancing modes:
+
+- In DQPLB mode, all data is sent using IBV_WR_RDMA_WRITE_WITH_IMM on normal data QPs. Each message includes a sequence number in the immediate data, helping the receiver track message order and completeness. One bit in the immediate data is reserved to indicate if a WQE should trigger a higher-layer notification.
+
+- In Spray mode, all data will be sent using IBV_WR_RDMA_WRITE WQEs, and after all writes complete, a single zero-byte IBV_WR_RDMA_WRITE_WITH_IMM is posted to notify the remote side of completion.
+
+### Usage Overview
+
+In both load balancing modes, the usage of `IbvVirtualQp` is very similar to that of a standard IbvQp. The typical workflow is as follows:
+
+1. Prepare work requests. Sender prepares send work requests (ibv_send_wr). Receiver prepares receive work requests (ibv_recv_wr).
+2. Post work requests. Sender calls IbvVirtualQp::postSend, and receiver calls IbvVirtualQp::postRecv.
+3. Poll for completion. Both sender and receiver call IbvVirtualCq::pollCq to track completions.
+
+```
+// Receiver side
+ibv_recv_wr recvWr = ...; // prepare receive work request
+ibv_recv_wr recvWrBad;
+IbvVirtualQp::postRecv(&recvWr, &recvWrBad);
+
+// Sender side
+ibv_send_wr sendWr = ...; // prepare send work request
+ibv_send_wr sendWrBad;
+IbvVirtualQp::postSend(&sendWr, &sendWrBad);
+
+// Poll sender virtual CQ in a loop until one virtual CQE is polled
+while (!stop) {
+   auto maybeSendWcsVector = sendVirtualCq.pollCq(1);
+   if (maybeSendWcsVector->size() == 1) {
+      // add code to process the polled CQE
+      break;
+   }
+}
+
+// Poll receiver virtual CQ in a loop until one virtual CQE is polled
+while (!stop) {
+   auto maybeRecvWcsVector = recvVirtualCq.pollCq(1);
+   if (maybeRecvWcsVector->size() == 1) {
+      // add code to process the polled CQE
+      break;
+   }
+}
+```

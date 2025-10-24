@@ -262,14 +262,6 @@ struct BenchmarkSetup {
     receiver->changeVirtualQpStateToRts(
         *senderGid, senderVirtualQpBusinessCard);
 
-    // Setup DQPLB receiver if using DQPLB mode
-    if (loadBalancingScheme == LoadBalancingScheme::DQPLB) {
-      auto result = receiver->qp.setupDqplbReceiver();
-      if (!result) {
-        throw std::runtime_error("Failed to setup DQPLB receiver");
-      }
-    }
-
     // Allocate memory on the sender and receiver side
     ibv_access_flags access = static_cast<ibv_access_flags>(
         IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
