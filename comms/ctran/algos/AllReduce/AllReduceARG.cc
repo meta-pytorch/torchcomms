@@ -3,7 +3,10 @@
 #include <cstddef>
 
 #include <cuda.h>
+
+#if defined(__CUDA_BF16_TYPES_EXIST__)
 #include <cuda_bf16.h>
+#endif
 
 #if CUDART_VERSION >= 11080
 #include <cuda_fp8.h>

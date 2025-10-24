@@ -176,7 +176,7 @@ void TorchCommNCCLX::checkWorkQueue(bool isMainThread) {
 // The timeout thread cannot make NCCL calls.  The only CUDA call it can make
 // it cudaEventQuery.
 void TorchCommNCCLX::timeoutWatchdog() noexcept {
-  TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
   while (!shutdown_) {
     {
       std::unique_lock<std::mutex> lock(timeout_mutex_);
@@ -199,17 +199,18 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
       // communicator as it is not safe to call NCCL operations from
       // multiple threads at the same time.
       if (comm_state_ == CommState::TIMEOUT) {
-        TC_LOG(ERROR) << "Aborting process due to timeout on rank " << rank_
-                      << " - timeout watchdog detected operation timeout";
+        TC_LOG(ERROR, this)
+            << "Aborting process due to timeout on rank " << rank_
+            << " - timeout watchdog detected operation timeout";
       } else if (comm_state_ == CommState::ERROR) {
-        TC_LOG(ERROR) << "Aborting process due to error on rank " << rank_
-                      << " - timeout watchdog detected operation error. ";
+        TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
+                            << " - timeout watchdog detected operation error. ";
       }
       abort();
     }
   }
 
-  TC_LOG(INFO) << "Timeout thread exiting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread exiting for rank: " << rank_;
 }
 
 void TorchCommNCCLX::checkInitialized() const {
@@ -230,7 +231,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
   if (comm_state_ == CommState::TIMEOUT) {
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR) << "Aborting process due to timeout";
+      TC_LOG(ERROR, this) << "Aborting process due to timeout";
       abort();
     } else {
       throw std::runtime_error("NCCL operation timed out");
@@ -241,8 +242,8 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
     NCCLException ncclException(*nccl_api_, "NCCL Async Error", asyncErr);
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR) << "Aborting process due to error: "
-                    << ncclException.what();
+      TC_LOG(ERROR, this) << "Aborting process due to error: "
+                          << ncclException.what();
       abort();
     } else {
       throw ncclException;
@@ -423,12 +424,12 @@ void TorchCommNCCLX::returnEvent(cudaEvent_t event) {
 }
 
 void TorchCommNCCLX::attachMemoryHook() {
-  TC_LOG(INFO) << "Attaching memory hook comm=" << this;
+  TC_LOG(INFO, this) << "Attaching memory hook comm=" << this;
   CachingAllocatorHook::getInstance().registerComm(this);
 }
 
 void TorchCommNCCLX::detachMemoryHook() {
-  TC_LOG(INFO) << "Detaching memory hook comm=" << this;
+  TC_LOG(INFO, this) << "Detaching memory hook comm=" << this;
   CachingAllocatorHook::getInstance().deregisterComm(this);
 }
 

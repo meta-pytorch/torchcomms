@@ -181,7 +181,7 @@ void TorchCommRCCL::init(
     throw std::runtime_error("NCCL User Rank failed");
   }
 
-  tryTorchCommLoggingInit("torchcomm", rank_, name);
+  tryTorchCommLoggingInit("torchcomm");
 
   ncclErr = rccl_api_->commCount(nccl_comm_, &comm_size_);
   if (ncclErr != ncclSuccess) {

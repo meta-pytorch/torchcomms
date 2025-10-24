@@ -8,6 +8,7 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
+#include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommOptions.hpp"
 #include "comms/torchcomms/device/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"

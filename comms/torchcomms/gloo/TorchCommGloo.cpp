@@ -27,6 +27,7 @@
 
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
+#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/gloo/GlooStore.hpp"
 

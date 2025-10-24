@@ -58,6 +58,12 @@ jobs:
           set -eux
           conda activate test
           make html SPHINXOPTS="-WT --keep-going" || echo "Build completed with warnings/errors"
+      - name: Remove noindex meta tag from docs
+        working-directory: docs/build/html
+        run: |
+          # Remove the noindex meta tag from all HTML files
+          # This allows search engines to index the documentation
+          find . -name "*.html" -type f -exec sed -i '/<meta name="robots" content="noindex">/d' {} \;
       - name: Upload static files as artifact
         id: deployment
         uses: actions/upload-artifact@v4

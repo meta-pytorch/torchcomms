@@ -6,7 +6,6 @@
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
 #include <comms/torchcomms/TorchCommBatch.hpp>
-#include <comms/torchcomms/TorchCommLogging.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
 #include <comms/torchcomms/TorchCommUtils.hpp>

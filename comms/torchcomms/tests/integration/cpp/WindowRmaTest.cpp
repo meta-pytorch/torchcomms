@@ -213,6 +213,10 @@ void WindowRmaTest::verifyWindowRmaResults(
 }
 
 TEST_P(WindowRmaTest, WindowPutBasic) {
+  auto backend = std::string(getenv("TEST_BACKEND"));
+  if (backend != "ncclx") {
+    GTEST_SKIP() << "Skipping NCCLX-only window tests";
+  }
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
   bool async_op = std::get<2>(GetParam());

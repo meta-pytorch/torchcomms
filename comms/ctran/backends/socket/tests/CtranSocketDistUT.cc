@@ -8,8 +8,7 @@
 
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/socket/CtranSocket.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 
 commResult_t waitSocketReq(
     CtranSocketRequest& req,
@@ -20,22 +19,13 @@ commResult_t waitSocketReq(
   return commSuccess;
 }
 
-class CtranSocketTest : public NcclxBaseTest {
+class CtranSocketTest : public CtranDistTest {
  public:
   CtranSocketTest() = default;
   void SetUp() override {
-    NcclxBaseTest::SetUp();
-    commDeprecated = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, server.get());
-    comm = commDeprecated->ctranComm_.get();
+    CtranDistTest::SetUp();
+    comm = commRAII->ctranComm;
     ctrlMgr = std::make_unique<CtranCtrlManager>();
-  }
-
-  void TearDown() override {
-    finalizeNcclComm(globalRank, server.get());
-    NCCLCHECK_TEST(ncclCommDestroy(commDeprecated));
-    ctrlMgr.reset();
-    NcclxBaseTest::TearDown();
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
@@ -47,9 +37,6 @@ class CtranSocketTest : public NcclxBaseTest {
 
  protected:
   CtranComm* comm{nullptr};
-  // TODO: remove this once refatoring is finished
-  // !!! DO NOT USE !!!
-  ncclComm_t commDeprecated{nullptr};
   std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
 };
 
@@ -393,7 +380,7 @@ TEST_F(CtranSocketTest, CtrlMsgAndPreConnect) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

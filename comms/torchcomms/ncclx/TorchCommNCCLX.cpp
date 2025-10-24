@@ -34,8 +34,8 @@ TorchCommNCCLX::TorchCommNCCLX(const ncclComm_t nccl_comm)
 
 TorchCommNCCLX::~TorchCommNCCLX() {
   if (init_state_ == InitializationState::INITIALIZED) {
-    TC_LOG(ERROR) << "TorchCommNCCLX " << name_
-                  << " was not finalized before destruction";
+    TC_LOG(ERROR, this) << "TorchCommNCCLX " << name_
+                        << " was not finalized before destruction";
   }
 
   // We need to dteach the memory hook in case finalize is not called,
@@ -171,7 +171,7 @@ void TorchCommNCCLX::init(
     throw std::runtime_error("NCCL User Rank failed");
   }
 
-  tryTorchCommLoggingInit("torchcomm", rank_, name);
+  tryTorchCommLoggingInit("torchcomm");
 
   ncclErr = nccl_api_->commCount(nccl_comm_, &comm_size_);
   if (ncclErr != ncclSuccess) {
@@ -209,11 +209,11 @@ void TorchCommNCCLX::finalize() {
     timeout_thread_.join();
   }
 
-  TC_LOG(INFO) << "Joined timeout thread";
+  TC_LOG(INFO, this) << "Joined timeout thread";
   // Wait for all pending work objects to complete and get final status
   auto work_status = workq_.finalize();
 
-  TC_LOG(INFO) << "Finalized work queue";
+  TC_LOG(INFO, this) << "Finalized work queue";
 
   if (work_status == TorchWorkNCCLX::WorkStatus::NOT_STARTED ||
       work_status == TorchWorkNCCLX::WorkStatus::INPROGRESS) {
@@ -223,12 +223,12 @@ void TorchCommNCCLX::finalize() {
 
   // Update comm_state_ based on the work status
   if (work_status == TorchWorkNCCLX::WorkStatus::TIMEDOUT) {
-    TC_LOG(INFO) << "Aborting NCCL comm due to timeout";
+    TC_LOG(INFO, this) << "Aborting NCCL comm due to timeout";
     comm_state_ = CommState::TIMEOUT;
     abortNcclComm();
     throw std::runtime_error("Work timed out during finalize");
   } else if (work_status == TorchWorkNCCLX::WorkStatus::ERROR) {
-    TC_LOG(INFO) << "Aborting NCCL comm due to error";
+    TC_LOG(INFO, this) << "Aborting NCCL comm due to error";
     comm_state_ = CommState::ERROR;
     ncclResult_t asyncErr;
     nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
@@ -239,7 +239,7 @@ void TorchCommNCCLX::finalize() {
 
   // Clean up event pool
   {
-    TC_LOG(INFO) << "Cleanup event pool";
+    TC_LOG(INFO, this) << "Cleanup event pool";
     std::lock_guard<std::mutex> lock(event_pool_mutex_);
     while (!event_pool_.empty()) {
       cudaEvent_t event = event_pool_.front();
@@ -250,7 +250,7 @@ void TorchCommNCCLX::finalize() {
   }
 
   // Free barrier buffer. TODO: handle errors on cuda free and stream destroy
-  TC_LOG(INFO) << "Freeing barrier buffer " << barrier_buffer_;
+  TC_LOG(INFO, this) << "Freeing barrier buffer " << barrier_buffer_;
   if (barrier_buffer_) {
     CUDA_CHECK(
         cuda_api_,
@@ -294,7 +294,7 @@ void TorchCommNCCLX::abortNcclComm() {
     nccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
-    TC_LOG(ERROR) << "Aborting process due to timeout";
+    TC_LOG(ERROR, this) << "Aborting process due to timeout";
     abort();
   }
 }

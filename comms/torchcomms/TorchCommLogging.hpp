@@ -4,140 +4,127 @@
 
 #include <fmt/core.h>
 #include <glog/logging.h>
-#include <optional>
 
-#define LOG_METADATA_WITH_FUNC_NAME(prefixBuilder) \
-  fmt::format("[{}()]{}", __FUNCTION__, prefixBuilder.getPrefix())
+#include "comms/torchcomms/TorchCommBackend.hpp"
 
-#define LOG_METADATA(prefixBuilder) prefixBuilder.getPrefix()
+#define DEFAULT_RANK -1
+
+inline std::string getCommNamePrefix(torch::comms::TorchCommBackend* comm) {
+  return comm ? "[name=" + std::string(comm->getCommName()) + "]" : "";
+}
+
+inline std::string getRankPrefix(torch::comms::TorchCommBackend* comm) {
+  try {
+    return comm ? "[rank=" + std::to_string(comm->getRank()) + "]" : "";
+  } catch (...) {
+    return "";
+  }
+}
+
+#define LOG_METADATA_WITH_FUNC_NAME(comm)                   \
+  "[" << __FUNCTION__ << "()][TC]" << ::getRankPrefix(comm) \
+      << ::getCommNamePrefix(comm) << " "
+
+#define LOG_METADATA(comm) \
+  "[TC]" << ::getRankPrefix(comm) << ::getCommNamePrefix(comm) << " "
 
 // variadic arg definitions for TC_VLOG, TC_LOG, and TC_LOG_IF based on:
 // https://stackoverflow.com/questions/3046889/optional-parameters-with-c-macros
-#define TC_VLOG_WITH_PREFIX_BUILDER(vlevel, prefixBuilder) \
-  VLOG(vlevel) << LOG_METADATA_WITH_FUNC_NAME(prefixBuilder)
-#define TC_VLOG_PICKER(x, vlevel, prefixBuilder, FUNC, ...) FUNC
+#define TC_VLOG_WITH_PREFIX_BUILDER(vlevel, comm) \
+  VLOG(vlevel) << LOG_METADATA_WITH_FUNC_NAME(comm)
+#define TC_VLOG_PICKER(x, vlevel, comm, FUNC, ...) FUNC
 #define TC_VLOG(...)                            \
   TC_VLOG_PICKER(                               \
       ,                                         \
       ##__VA_ARGS__,                            \
       TC_VLOG_WITH_PREFIX_BUILDER(__VA_ARGS__), \
-      TC_VLOG_WITH_PREFIX_BUILDER(__VA_ARGS__, getDefaultPrefixBuilder()))
+      TC_VLOG_WITH_PREFIX_BUILDER(__VA_ARGS__, getDefaultCommunicator()))
 
-#define TC_VLOG_EVERY_MS_PREFIX_BUILDER(vlevel, ms, prefixBuilder) \
-  VLOG_EVERY_MS(vlevel, ms) << LOG_METADATA_WITH_FUNC_NAME(prefixBuilder)
-#define TC_VLOG_EVERY_MS_PICKER(x, vlevel, ms, prefixBuilder, FUNC, ...) FUNC
+#define TC_VLOG_EVERY_MS_PREFIX_BUILDER(vlevel, ms, comm) \
+  VLOG_EVERY_MS(vlevel, ms) << LOG_METADATA_WITH_FUNC_NAME(comm)
+#define TC_VLOG_EVERY_MS_PICKER(x, vlevel, ms, comm, FUNC, ...) FUNC
 #define TC_VLOG_EVERY_MS(...)                       \
   TC_VLOG_EVERY_MS_PICKER(                          \
       ,                                             \
       ##__VA_ARGS__,                                \
       TC_VLOG_EVERY_MS_PREFIX_BUILDER(__VA_ARGS__), \
-      TC_VLOG_EVERY_MS_PREFIX_BUILDER(__VA_ARGS__, getDefaultPrefixBuilder()))
+      TC_VLOG_EVERY_MS_PREFIX_BUILDER(__VA_ARGS__, getDefaultCommunicator()))
 
 // level is one of the following: INFO, WARNING, ERROR, FATAL
-#define TC_LOG_WITH_PREFIX_BUILDER(level, prefixBuilder) \
-  LOG(level) << LOG_METADATA(prefixBuilder)
-#define TC_LOG_PICKER(x, level, prefixBuilder, FUNC, ...) FUNC
+#define TC_LOG_WITH_PREFIX_BUILDER(level, comm) LOG(level) << LOG_METADATA(comm)
+#define TC_LOG_PICKER(x, level, comm, FUNC, ...) FUNC
 #define TC_LOG(...)                            \
   TC_LOG_PICKER(                               \
       ,                                        \
       ##__VA_ARGS__,                           \
       TC_LOG_WITH_PREFIX_BUILDER(__VA_ARGS__), \
-      TC_LOG_WITH_PREFIX_BUILDER(__VA_ARGS__, getDefaultPrefixBuilder()))
+      TC_LOG_WITH_PREFIX_BUILDER(__VA_ARGS__, getDefaultCommunicator()))
 
-#define TC_LOG_IF_WITH_PREFIX_BUILDER(level, condition, prefixBuilder) \
-  LOG_IF(level, condition) << LOG_METADATA_WITH_FUNC_NAME(prefixBuilder)
-#define TC_LOG_IF_PICKER(x, level, condition, prefixBuilder, FUNC, ...) FUNC
+#define TC_LOG_IF_WITH_PREFIX_BUILDER(level, condition, comm) \
+  LOG_IF(level, condition) << LOG_METADATA_WITH_FUNC_NAME(comm)
+#define TC_LOG_IF_PICKER(x, level, condition, comm, FUNC, ...) FUNC
 #define TC_LOG_IF(...)                            \
   TC_LOG_IF_PICKER(                               \
       ,                                           \
       ##__VA_ARGS__,                              \
       TC_LOG_IF_WITH_PREFIX_BUILDER(__VA_ARGS__), \
-      TC_LOG_IF_WITH_PREFIX_BUILDER(__VA_ARGS__, getDefaultPrefixBuilder()))
+      TC_LOG_IF_WITH_PREFIX_BUILDER(__VA_ARGS__, getDefaultCommunicator()))
 
-#define TC_LOG_EVERY_MS_PREFIX_BUILDER(level, ms, prefixBuilder) \
-  LOG_EVERY_MS(level, ms) << LOG_METADATA_WITH_FUNC_NAME(prefixBuilder)
-#define TC_LOG_EVERY_MS_PICKER(x, level, ms, prefixBuilder, FUNC, ...) FUNC
+#define TC_LOG_EVERY_MS_PREFIX_BUILDER(level, ms, comm) \
+  LOG_EVERY_MS(level, ms) << LOG_METADATA_WITH_FUNC_NAME(comm)
+#define TC_LOG_EVERY_MS_PICKER(x, level, ms, comm, FUNC, ...) FUNC
 #define TC_LOG_EVERY_MS(...)                       \
   TC_LOG_EVERY_MS_PICKER(                          \
       ,                                            \
       ##__VA_ARGS__,                               \
       TC_LOG_EVERY_MS_PREFIX_BUILDER(__VA_ARGS__), \
-      TC_LOG_EVERY_MS_PREFIX_BUILDER(__VA_ARGS__, getDefaultPrefixBuilder()))
+      TC_LOG_EVERY_MS_PREFIX_BUILDER(__VA_ARGS__, getDefaultCommunicator()))
 
 // condition should evaluate to a bool, representing the condition to check
-#define TC_CHECK_WITH_PREFIX_BUILDER(condition, prefixBuilder) \
-  CHECK(condition) << LOG_METADATA(prefixBuilder)
-#define TC_CHECK_PICKER(x, condition, prefixBuilder, FUNC, ...) FUNC
+#define TC_CHECK_WITH_PREFIX_BUILDER(condition, comm) \
+  CHECK(condition) << LOG_METADATA(comm)
+#define TC_CHECK_PICKER(x, condition, comm, FUNC, ...) FUNC
 #define TC_CHECK(...)                            \
   TC_CHECK_PICKER(                               \
       ,                                          \
       ##__VA_ARGS__,                             \
       TC_CHECK_WITH_PREFIX_BUILDER(__VA_ARGS__), \
-      TC_CHECK_WITH_PREFIX_BUILDER(__VA_ARGS__, getDefaultPrefixBuilder()))
+      TC_CHECK_WITH_PREFIX_BUILDER(__VA_ARGS__, getDefaultCommunicator()))
 
-#define TC_CHECK_NOTNULL_WITH_PREFIX_BUILDER(condition, prefixBuilder) \
-  CHECK_NOTNULL(condition) << LOG_METADATA(prefixBuilder)
-#define TC_CHECK_NOTNULL_PICKER(x, condition, prefixBuilder, FUNC, ...) FUNC
+#define TC_CHECK_NOTNULL_WITH_PREFIX_BUILDER(condition, comm) \
+  CHECK_NOTNULL(condition) << LOG_METADATA(comm)
+#define TC_CHECK_NOTNULL_PICKER(x, condition, comm, FUNC, ...) FUNC
 #define TC_CHECK_NOTNULL(...)                            \
   TC_CHECK_NOTNULL_PICKER(                               \
       ,                                                  \
       ##__VA_ARGS__,                                     \
       TC_CHECK_NOTNULL_WITH_PREFIX_BUILDER(__VA_ARGS__), \
       TC_CHECK_NOTNULL_WITH_PREFIX_BUILDER(              \
-          __VA_ARGS__, getDefaultPrefixBuilder()))
+          __VA_ARGS__, getDefaultCommunicator()))
 
-namespace torch::comms {
+// Google glog's api does not have an external function that allows one to check
+// if glog is initialized or not. It does have an internal function - so we are
+// declaring it here. This is a hack but has been used by a bunch of others too
+// (e.g. Torch).
+// Copied from https://fburl.com/code/tu9hg6gf
+namespace google::glog_internal_namespace_ {
+bool IsGoogleLoggingInitialized();
+} // namespace google::glog_internal_namespace_
 
-const google::LogSeverity kMinLogSeverity = google::ERROR;
+namespace {
 
-class LogPrefixBuilder {
- public:
-  explicit LogPrefixBuilder(int commRank) : commRank_(commRank) {
-    initializePrefix();
+void tryTorchCommLoggingInit(std::string_view name) {
+  // This trick can only be used on UNIX platforms
+  if (!::google::glog_internal_namespace_::IsGoogleLoggingInitialized()) {
+    ::google::InitGoogleLogging(name.data());
+    // This is never defined on Windows
+    ::google::InstallFailureSignalHandler();
   }
-  // Build the prefix and return it. If there was an existing prefix, it will be
-  // overwritten based on recent values set.
-  void build();
-  const std::string& getPrefix() const {
-    return prefix_;
-  }
+}
 
-  LogPrefixBuilder& setRank(int commRank) {
-    commRank_ = commRank;
-    return *this;
-  }
+torch::comms::TorchCommBackend* getDefaultCommunicator() {
+  static torch::comms::TorchCommBackend* defaultCommunicator = nullptr;
+  return defaultCommunicator;
+}
 
-  LogPrefixBuilder& setCommName(std::string_view commName) {
-    commName_ = commName;
-    return *this;
-  }
-
-  LogPrefixBuilder& resetDefaultPrefix() {
-    defaultPrefix_ = "";
-    return *this;
-  }
-
- private:
-  int commRank_ = -1;
-  std::optional<std::string> commName_ = std::nullopt;
-  std::string defaultPrefix_;
-  std::string prefix_;
-
-  const std::string& getDefaultPrefix();
-
-  void initializePrefix() {
-    getDefaultPrefix();
-    prefix_ = defaultPrefix_;
-  }
-};
-
-void tryTorchCommLoggingInit(
-    std::string_view name,
-    int commRank,
-    const std::string& commName);
-// Helper functions to create and get log prefix builder instance
-
-// Use this function when you just want to access the default prefix builder.
-// You cannot add additional metadata to this object as this is shared.
-LogPrefixBuilder& getDefaultPrefixBuilder();
-} // namespace torch::comms
+} // namespace

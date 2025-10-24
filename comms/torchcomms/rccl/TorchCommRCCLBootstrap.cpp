@@ -7,6 +7,7 @@
 #include "rccl.h" // @manual
 
 #include "comms/torchcomms/StoreManager.hpp"
+#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/rccl/TorchCommRCCL.hpp"
 

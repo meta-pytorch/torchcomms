@@ -30,7 +30,9 @@ namespace {
 
 class IbvEndPoint {
  public:
-  explicit IbvEndPoint(int nicDevId);
+  IbvEndPoint(
+      int nicDevId,
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
   ~IbvEndPoint();
   ibv_qp_init_attr makeIbvQpInitAttr();
   ibv_qp_attr makeQpAttrInit();
@@ -45,7 +47,7 @@ class IbvEndPoint {
   IbvVirtualQp qp;
 };
 
-IbvEndPoint::IbvEndPoint(int nicDevId)
+IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
     : device(([nicDevId]() {
         // Initialize ibverbx first
         auto initResult = ibvInit();
@@ -88,11 +90,17 @@ IbvEndPoint::IbvEndPoint(int nicDevId)
         }
         return std::move(*maybeVirtualCq);
       })()),
-      qp([this]() {
+      qp([this, loadBalancingScheme]() {
         auto initAttr = makeIbvQpInitAttr();
 
         auto maybeVirtualQp = pd.createVirtualQp(
-            kTotalQps, &initAttr, &cq, &cq, kMaxMsgCntPerQp, kMaxMsgSize);
+            kTotalQps,
+            &initAttr,
+            &cq,
+            &cq,
+            kMaxMsgCntPerQp,
+            kMaxMsgSize,
+            loadBalancingScheme);
         if (!maybeVirtualQp) {
           throw std::runtime_error("Failed to create virtual queue pair");
         }
@@ -228,10 +236,11 @@ struct BenchmarkSetup {
       int cudaDev0,
       int cudaDev1,
       int nicDev0,
-      int nicDev1) {
+      int nicDev1,
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY) {
     // Setup IbvEndPoint
-    sender = std::make_unique<IbvEndPoint>(nicDev0);
-    receiver = std::make_unique<IbvEndPoint>(nicDev1);
+    sender = std::make_unique<IbvEndPoint>(nicDev0, loadBalancingScheme);
+    receiver = std::make_unique<IbvEndPoint>(nicDev1, loadBalancingScheme);
     CHECK_NOTNULL(sender.get());
     CHECK_NOTNULL(receiver.get());
 
@@ -368,7 +377,9 @@ static void BM_Ibverbx_VirtualQp_RdmaWrite(benchmark::State& state) {
   }
 }
 
-static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm(benchmark::State& state) {
+static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm(
+    benchmark::State& state,
+    LoadBalancingScheme loadBalancingScheme) {
   const size_t bufferSize = state.range(0);
   const int cudaDev0 = 0;
   const int cudaDev1 = 1;
@@ -376,7 +387,8 @@ static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm(benchmark::State& state) {
   const int nicDev1 = 1;
 
   try {
-    BenchmarkSetup setup(bufferSize, cudaDev0, cudaDev1, nicDev0, nicDev1);
+    BenchmarkSetup setup(
+        bufferSize, cudaDev0, cudaDev1, nicDev0, nicDev1, loadBalancingScheme);
 
     // Construct send WRs
     int wr_id = 0;
@@ -422,6 +434,18 @@ static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm(benchmark::State& state) {
   }
 }
 
+// Spray mode benchmark for
+static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm_Spray(
+    benchmark::State& state) {
+  BM_Ibverbx_VirtualQp_RdmaWriteWithImm(state, LoadBalancingScheme::SPRAY);
+}
+
+// DQPLB mode benchmark
+static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm_Dqplb(
+    benchmark::State& state) {
+  BM_Ibverbx_VirtualQp_RdmaWriteWithImm(state, LoadBalancingScheme::DQPLB);
+}
+
 //------------------------------------------------------------------------------
 // Benchmarks
 //------------------------------------------------------------------------------
@@ -435,7 +459,13 @@ BENCHMARK(BM_Ibverbx_VirtualQp_RdmaWrite)
     ->UseRealTime()
     ->Unit(benchmark::kMicrosecond);
 
-BENCHMARK(BM_Ibverbx_VirtualQp_RdmaWriteWithImm)
+BENCHMARK(BM_Ibverbx_VirtualQp_RdmaWriteWithImm_Spray)
+    ->RangeMultiplier(2)
+    ->Range(kMinBufferSize, kMaxBufferSize)
+    ->UseRealTime()
+    ->Unit(benchmark::kMicrosecond);
+
+BENCHMARK(BM_Ibverbx_VirtualQp_RdmaWriteWithImm_Dqplb)
     ->RangeMultiplier(2)
     ->Range(kMinBufferSize, kMaxBufferSize)
     ->UseRealTime()

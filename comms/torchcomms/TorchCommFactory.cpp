@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/TorchCommFactory.hpp"
 
+#include <comms/torchcomms/TorchCommLogging.hpp>
 #include <dlfcn.h>
 #include "comms/torchcomms/TorchComm.hpp"
 

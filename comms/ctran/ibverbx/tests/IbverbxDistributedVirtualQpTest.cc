@@ -566,7 +566,7 @@ size_t getDataTypeSize(DataType dataType) {
 class IbverbxVirtualQpRdmaWriteTestFixture
     : public IbverbxVirtualQpTestFixture,
       public ::testing::WithParamInterface<
-          std::tuple<int, DataType, int, int, int>> {
+          std::tuple<int, DataType, int, int, int, LoadBalancingScheme>> {
  public:
   // Parameterized test name generator function for virtual QP RDMA write tests
   static std::string getTestName(
@@ -586,8 +586,15 @@ class IbverbxVirtualQpRdmaWriteTestFixture
         ? std::to_string(std::get<4>(info.param))
         : "nolimit";
 
+    std::string loadBalancingStr =
+        std::get<5>(info.param) == LoadBalancingScheme::DQPLB ? "DQPLB"
+                                                              : "SPRAY";
+
     baseName += fmt::format(
-        "{}_maxMsgPerQp_{}_maxMsgBytes", maxMsgPerQpStr, maxMsgBytesStr);
+        "{}_maxMsgPerQp_{}_maxMsgBytes_{}_scheme",
+        maxMsgPerQpStr,
+        maxMsgBytesStr,
+        loadBalancingStr);
     return baseName;
   }
 
@@ -603,7 +610,8 @@ class IbverbxVirtualQpRdmaWriteTestFixture
       int devBufSize,
       int numQp,
       int maxMsgPerQp = -1,
-      int maxMsgBytes = -1);
+      int maxMsgBytes = -1,
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
 };
 
 // Parameterized test class for virtual QP send/recv tests
@@ -656,7 +664,8 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     int devBufSize,
     int numQp,
     int maxMsgPerQp,
-    int maxMsgBytes) {
+    int maxMsgBytes,
+    LoadBalancingScheme loadBalancingScheme) {
   CUDA_CHECK(cudaSetDevice(localRank));
 
   int myDevId{-1};
@@ -680,7 +689,13 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
   uint32_t totalQps = numQp;
   auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
   auto virtualQp = pd->createVirtualQp(
-      totalQps, &initAttr, &virtualCq, &virtualCq, maxMsgPerQp, maxMsgBytes);
+      totalQps,
+      &initAttr,
+      &virtualCq,
+      &virtualCq,
+      maxMsgPerQp,
+      maxMsgBytes,
+      loadBalancingScheme);
   ASSERT_TRUE(virtualQp);
 
   // init device buffer
@@ -836,8 +851,10 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     const auto wc = maybeWcsVector->at(0);
     ASSERT_EQ(wc.wr_id, wr_id);
     ASSERT_EQ(wc.status, IBV_WC_SUCCESS);
-    if (globalRank == 0) {
-      // Receive checks the value of IMM field
+    if (globalRank == 0 && loadBalancingScheme == LoadBalancingScheme::SPRAY) {
+      // In spray mode, receive checks the value of the IMM field to determine
+      // status. In DQPLB mode, the IMM field is used to track sequence number
+      // completion, so it should not be checked here.
       ASSERT_EQ(wc.imm_data, imm_data);
     }
     XLOGF(DBG1, "Rank {} got a wc: wr_id {}", globalRank, wc.wr_id);
@@ -1090,34 +1107,34 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
 
 // RDMA Write Virtual QP test using template helper
 TEST_P(IbverbxVirtualQpRdmaWriteTestFixture, RdmaWriteVirtualQpWithParam) {
-  const auto& [devBufSize, dataType, numQp, maxMsgPerQp, maxMsgBytes] =
+  const auto& [devBufSize, dataType, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme] =
       GetParam();
 
   // Dispatch to the appropriate template function based on data type
   switch (dataType) {
     case DataType::INT8:
       runRdmaWriteVirtualQpTest<int8_t>(
-          devBufSize, numQp, maxMsgPerQp, maxMsgBytes);
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
       break;
     case DataType::INT16:
       runRdmaWriteVirtualQpTest<int16_t>(
-          devBufSize, numQp, maxMsgPerQp, maxMsgBytes);
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
       break;
     case DataType::INT32:
       runRdmaWriteVirtualQpTest<int32_t>(
-          devBufSize, numQp, maxMsgPerQp, maxMsgBytes);
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
       break;
     case DataType::INT64:
       runRdmaWriteVirtualQpTest<int64_t>(
-          devBufSize, numQp, maxMsgPerQp, maxMsgBytes);
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
       break;
     case DataType::FLOAT:
       runRdmaWriteVirtualQpTest<float>(
-          devBufSize, numQp, maxMsgPerQp, maxMsgBytes);
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
       break;
     case DataType::DOUBLE:
       runRdmaWriteVirtualQpTest<double>(
-          devBufSize, numQp, maxMsgPerQp, maxMsgBytes);
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
       break;
   }
 }
@@ -1166,7 +1183,10 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(DataType::INT8, DataType::INT32, DataType::FLOAT),
         testing::Values(1, 4), // QP numbers: 1, 4
         testing::Values(64, 128), // maxMsgPerQp: 64, 128
-        testing::Values(128, 256)), // maxMsgBytes: 128, 256
+        testing::Values(128, 256), // maxMsgBytes: 128, 256
+        testing::Values(
+            LoadBalancingScheme::DQPLB,
+            LoadBalancingScheme::SPRAY)), // LoadBalancingScheme
     IbverbxVirtualQpRdmaWriteTestFixture::getTestName);
 
 // Medium buffer configurations - 1MB and 8MB
@@ -1180,7 +1200,10 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(DataType::INT8, DataType::INT32, DataType::FLOAT),
         testing::Values(16, 128), // QP numbers: 16, 128
         testing::Values(128, 1024), // maxMsgPerQp: 128, 1024
-        testing::Values(1024, 16384)), // maxMsgBytes: 1024, 16384
+        testing::Values(1024, 16384), // maxMsgBytes: 1024, 16384
+        testing::Values(
+            LoadBalancingScheme::DQPLB,
+            LoadBalancingScheme::SPRAY)), // LoadBalancingScheme
     IbverbxVirtualQpRdmaWriteTestFixture::getTestName);
 
 // Large buffer configurations - 1GB
@@ -1192,7 +1215,10 @@ INSTANTIATE_TEST_SUITE_P(
         testing::Values(DataType::INT8, DataType::INT32, DataType::FLOAT),
         testing::Values(16, 128), // High QP number for maximum parallelism
         testing::Values(128, 1024), // maxMsgPerQp: 128, 1024
-        testing::Values(16384, 1048576)), // maxMsgBytes: 16KB, 1MB
+        testing::Values(16384, 1048576), // maxMsgBytes: 16KB, 1MB
+        testing::Values(
+            LoadBalancingScheme::DQPLB,
+            LoadBalancingScheme::SPRAY)), // LoadBalancingScheme
     IbverbxVirtualQpRdmaWriteTestFixture::getTestName);
 
 // Instantiate Virtual QP Send Recv test with different buffer sizes, data
