@@ -14,15 +14,13 @@
 #include <folly/logging/xlog.h>
 
 #include <gmock/gmock.h>
-#include "comm.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran::ibvwrap;
@@ -38,27 +36,20 @@ commResult_t waitIbReq(CtranIbRequest& req, std::unique_ptr<CtranIb>& ctranIb) {
   return commSuccess;
 }
 
-class CtranIbTest : public NcclxBaseTest {
+class CtranIbTest : public CtranDistTest {
  public:
   CtranIbTest() = default;
   void SetUp() override {
-    setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
-    ncclCvarInit(); // initialize cvars explicitly to take effect
-    this->commDeprecated = createNcclComm(
-        globalRank, numRanks, localRank, false, nullptr, server.get());
-    this->comm = this->commDeprecated->ctranComm_.get();
-
+    CtranDistTest::SetUp();
+    this->comm = this->commRAII->ctranComm;
     this->ctrlMgr = std::make_unique<CtranCtrlManager>();
     this->commIbRegCount = getIbRegCount();
   }
 
   void TearDown() override {
-    finalizeNcclComm(globalRank, server.get());
-    NCCLCHECK_TEST(ncclCommDestroy(this->commDeprecated));
     this->ctrlMgr.reset();
+    CtranDistTest::TearDown();
     ASSERT_EQ(getIbRegCount(), 0);
-    NcclxBaseTest::TearDown();
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
@@ -916,9 +907,6 @@ class CtranIbTest : public NcclxBaseTest {
  protected:
   CtranComm* comm{nullptr};
   std::unique_ptr<CtranIb> ctranIb{nullptr};
-  // TODO: remove this once refatoring is finished
-  // !!! DO NOT USE !!!
-  ncclComm_t commDeprecated{nullptr};
   std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
   size_t commIbRegCount{0};
   const int sendRank{0}, recvRank{1};
@@ -2361,6 +2349,28 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
   ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
 
   auto bufCount = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD / sizeof(int);
+  // NCCL_CTRAN_IB_QP_SCALING_THRESHOLD can be overridden internally in Ctran.
+  // So we get the actual threshold from vc config
+  // send control message to establish connection before checking QP
+  // config; otherwise, the internal VC would not be set
+  {
+    ControlMsg msg(ControlMsgType::SYNC);
+    CtranIbRequest ctrlReq;
+    CtranIb::CtranIbVcConfig_t config;
+    if (this->globalRank == recvRank) {
+      COMMCHECK_TEST(ctranIb->isendCtrlMsg(
+          msg.type, &msg, sizeof(msg), sendRank, ctrlReq));
+      waitIbReq(ctrlReq, ctranIb);
+      COMMCHECK_TEST(ctranIb->getVcConfig(sendRank, config));
+      bufCount = std::get<0>(config) / sizeof(int);
+    } else if (this->globalRank == sendRank) {
+      COMMCHECK_TEST(
+          ctranIb->irecvCtrlMsg(&msg, sizeof(msg), recvRank, ctrlReq));
+      waitIbReq(ctrlReq, ctranIb);
+      COMMCHECK_TEST(ctranIb->getVcConfig(recvRank, config));
+      bufCount = std::get<0>(config) / sizeof(int);
+    }
+  }
 
   CtranIbEpochRAII epochRAII(ctranIb.get());
   const int sendVal = 99, recvVal = -1;
@@ -2733,7 +2743,7 @@ class CtranIbTestWithQueuePairProfiler : public CtranIbTest {
 };
 
 TEST_F(CtranIbTestWithQueuePairProfiler, GpuMemPutNotifyMixedFastRegular) {
-  const uint64_t qpScalingThreshold = 16384UL;
+  uint64_t qpScalingThreshold = 16384UL;
 
   EnvRAII env1(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::spray);
   EnvRAII env2(NCCL_CTRAN_IB_QP_SCALING_THRESHOLD, qpScalingThreshold);
@@ -2752,20 +2762,34 @@ TEST_F(CtranIbTestWithQueuePairProfiler, GpuMemPutNotifyMixedFastRegular) {
 
   // Sanity check default VC Mode == spray
   // A dummy control message exchange to ensure QP connection
+  // NCCL_CTRAN_IB_QP_SCALING_THRESHOLD and NCCL_CTRAN_IB_QP_MAX_MSGS can be
+  // overridden internally in Ctran. So we get the actual threshold from vc
+  // config
   ControlMsg msg;
   CtranIbRequest ctrlReq;
+  CtranIb::CtranIbVcConfig_t config;
   if (this->globalRank == recvRank) {
     COMMCHECK_TEST(
         ctranIb->isendCtrlMsg(msg.type, &msg, sizeof(msg), sendRank, ctrlReq));
+    waitIbReq(ctrlReq, ctranIb);
+    COMMCHECK_TEST(ctranIb->getVcConfig(sendRank, config));
+    qpScalingThreshold = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD =
+        std::get<0>(config);
+    NCCL_CTRAN_IB_QP_MAX_MSGS = std::get<3>(config);
   } else if (this->globalRank == sendRank) {
     COMMCHECK_TEST(ctranIb->irecvCtrlMsg(&msg, sizeof(msg), recvRank, ctrlReq));
+    waitIbReq(ctrlReq, ctranIb);
+    COMMCHECK_TEST(ctranIb->getVcConfig(recvRank, config));
+    qpScalingThreshold = NCCL_CTRAN_IB_QP_SCALING_THRESHOLD =
+        std::get<0>(config);
+    NCCL_CTRAN_IB_QP_MAX_MSGS = std::get<3>(config);
   }
 
   if (this->globalRank == sendRank) {
     // send control message to establish connection before checking QP config;
     // otherwise, the internal VC would not be set
     CtranIb::CtranIbVcConfig_t config;
-    EXPECT_EQ(ctranIb->getVcConfig(this->recvRank, config), ncclSuccess);
+    EXPECT_EQ(ctranIb->getVcConfig(this->recvRank, config), commSuccess);
     EXPECT_EQ(std::get<2>(config), NCCL_CTRAN_IB_VC_MODE::spray);
   }
 
@@ -2970,7 +2994,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
