@@ -26,6 +26,8 @@ constexpr int kIbAnyPort = -1;
 constexpr int kIbMaxMsgCntPerQp = 100;
 constexpr int kIbMaxMsgSizeByte = 100;
 constexpr int kIbMaxCqe_ = 100;
+constexpr int kNotifyBit = 31;
+constexpr uint32_t kSeqNumMask = 0xFFFFFF; // 24 bits
 
 // Command types for coordinator routing and operations
 enum class RequestType { SEND = 0, RECV = 1, SEND_NOTIFY = 2 };
@@ -209,10 +211,13 @@ struct VirtualQpRequest {
   RequestType type{RequestType::SEND};
   uint64_t wrId{0};
   uint32_t physicalQpNum{0};
+  uint32_t immData{0};
 };
 
 struct VirtualQpResponse {
   uint64_t virtualWrId{0};
+  bool useDqplb{false};
+  int notifyCount{0};
 };
 
 struct VirtualCqRequest {
@@ -478,6 +483,8 @@ class IbvVirtualQp {
       ibv_recv_wr* ibvRecvWr,
       ibv_recv_wr* badIbvRecvWr);
 
+  inline folly::Expected<folly::Unit, Error> setupDqplbReceiver();
+
   inline int findAvailableSendQp();
   inline int findAvailableRecvQp();
 
@@ -500,13 +507,11 @@ class IbvVirtualQp {
   friend class IbvVirtualCq;
 
   std::deque<VirtualSendWr> pendingSendVirtualWrQue_;
-  std::deque<VirtualSendWr> pendingSendNotifyVirtualWrQue_;
   std::deque<VirtualRecvWr> pendingRecvVirtualWrQue_;
   uint32_t virtualQpNum_{
       0}; // TODO: need to think about the logic to assign this value
 
   std::vector<IbvQp> physicalQps_;
-  IbvQp notifyQp_;
   std::unordered_map<int, int> qpNumToIdx_;
 
   int nextSendPhysicalQpIdx_{0};
@@ -523,6 +528,15 @@ class IbvVirtualQp {
 
   LoadBalancingScheme loadBalancingScheme_{
       LoadBalancingScheme::SPRAY}; // Load balancing scheme for this virtual QP
+
+  // Spray mode specific fields
+  std::deque<VirtualSendWr> pendingSendNotifyVirtualWrQue_;
+  IbvQp notifyQp_;
+
+  // DQPLB mode specific fields
+  int sendNext_{0};
+  int receiveNext_{0};
+  std::unordered_map<uint32_t, bool> receivedSeqNums_;
 
   IbvVirtualQp(
       std::vector<IbvQp>&& qps,
@@ -545,8 +559,7 @@ class IbvVirtualQp {
   inline folly::Expected<folly::Unit, Error> postSendNotifyImm();
   inline folly::Expected<folly::Unit, Error> mapPendingRecvQueToPhysicalQp(
       int qpIdx = -1);
-  inline folly::Expected<folly::Unit, Error> postRecvNotifyImm(
-      VirtualRecvWr& virtualRecvWr);
+  inline folly::Expected<folly::Unit, Error> postRecvNotifyImm(int qpIdx = -1);
 };
 
 // Coordinator class responsible for routing commands and responses between
@@ -816,21 +829,34 @@ IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
 
     if (physicalWc.opcode == IBV_WC_RECV ||
         physicalWc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
-      // Only these two conditions indicate a receive message, and we should
-      // poll from receive queue
       VirtualQpRequest request = {
           .type = RequestType::RECV,
           .wrId = physicalWc.wr_id,
           .physicalQpNum = physicalWc.qp_num};
+      if (physicalWc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
+        request.immData = physicalWc.imm_data;
+      }
       auto response =
           coordinator_->submitRequestToVirtualQp(std::move(request));
       if (response.hasError()) {
         return folly::makeUnexpected(response.error());
       }
 
-      auto virtualWc = virtualWrIdToVirtualWc_.at(response->virtualWrId);
-      virtualWc->remainingMsgCnt--;
-      updateVirtualWcFromPhysicalWc(physicalWc, virtualWc);
+      if (response->useDqplb) {
+        int processedCount = 0;
+        for (int i = 0; i < pendingRecvVirtualWcQue_.size() &&
+             processedCount < response->notifyCount;
+             i++) {
+          if (pendingRecvVirtualWcQue_.at(i).remainingMsgCnt != 0) {
+            pendingRecvVirtualWcQue_.at(i).remainingMsgCnt = 0;
+            processedCount++;
+          }
+        }
+      } else {
+        auto virtualWc = virtualWrIdToVirtualWc_.at(response->virtualWrId);
+        virtualWc->remainingMsgCnt--;
+        updateVirtualWcFromPhysicalWc(physicalWc, virtualWc);
+      }
     } else {
       // Except for the above two conditions, all other conditions indicate a
       // send message, and we should poll from send queue
@@ -984,9 +1010,9 @@ IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
     // Get the front of vSendQ_ and obtain the send information
     VirtualSendWr& virtualSendWr = pendingSendVirtualWrQue_.front();
 
-    // For Send opcodes related to RDMA_WRITE operations, use DQPLB (Dynamic
-    // QP Load Balancing). For all other opcodes, default to using physical QP
-    // 0.
+    // For Send opcodes related to RDMA_WRITE operations, use user selected load
+    // balancing scheme specified in loadBalancingScheme_. For all other
+    // opcodes, default to using physical QP 0.
     auto availableQpIdx = -1;
     if (virtualSendWr.wr.opcode == IBV_WR_RDMA_WRITE ||
         virtualSendWr.wr.opcode == IBV_WR_RDMA_WRITE_WITH_IMM) {
@@ -1112,12 +1138,13 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
       sendWr->wr.rdma.rkey = virtualSendWr.wr.wr.rdma.rkey;
       break;
     case IBV_WR_RDMA_WRITE_WITH_IMM:
-      sendWr->opcode = IBV_WR_RDMA_WRITE;
+      sendWr->opcode = (loadBalancingScheme_ == LoadBalancingScheme::SPRAY)
+          ? IBV_WR_RDMA_WRITE
+          : IBV_WR_RDMA_WRITE_WITH_IMM;
       sendWr->send_flags = IBV_SEND_SIGNALED;
       sendWr->wr.rdma.remote_addr =
           virtualSendWr.wr.wr.rdma.remote_addr + virtualSendWr.offset;
       sendWr->wr.rdma.rkey = virtualSendWr.wr.wr.rdma.rkey;
-
       break;
     case IBV_WR_SEND:
       sendWr->opcode = virtualSendWr.wr.opcode;
@@ -1126,6 +1153,15 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
 
     default:
       break;
+  }
+
+  if (sendWr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
+      loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
+    sendWr->imm_data = sendNext_;
+    sendNext_ = (sendNext_ + 1) % kSeqNumMask;
+    if (virtualSendWr.remainingMsgCnt == 1) {
+      sendWr->imm_data |= (1 << kNotifyBit);
+    }
   }
 }
 
@@ -1224,7 +1260,27 @@ inline folly::Expected<VirtualQpResponse, Error> IbvVirtualQp::processRequest(
 
     response.virtualWrId = physicalRecvWrStatus.virtualWrId;
     physicalQp.physicalRecvWrStatus_.pop_front();
-    if (qpIdx != -1) {
+    if (loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
+      int notifyCount = 0;
+      receivedSeqNums_[request.immData & kSeqNumMask] =
+          request.immData & (1U << kNotifyBit);
+      auto it = receivedSeqNums_.find(receiveNext_);
+
+      while (it != receivedSeqNums_.end()) {
+        if (it->second) {
+          notifyCount++;
+        }
+        receivedSeqNums_.erase(it);
+        receiveNext_ = (receiveNext_ + 1) % kSeqNumMask;
+        it = receivedSeqNums_.find(receiveNext_);
+      }
+      if (postRecvNotifyImm(qpIdx).hasError()) {
+        return folly::makeUnexpected(
+            Error(errno, fmt::format("postRecvNotifyImm() failed!")));
+      }
+      response.notifyCount = notifyCount;
+      response.useDqplb = true;
+    } else if (qpIdx != -1) {
       if (mapPendingRecvQueToPhysicalQp(qpIdx).hasError()) {
         return folly::makeUnexpected(Error(
             errno,
@@ -1298,7 +1354,11 @@ inline int IbvVirtualQp::findAvailableRecvQp() {
 }
 
 inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvNotifyImm(
-    VirtualRecvWr& virtualRecvWr) {
+    int qpIdx) {
+  auto& qp = qpIdx == -1 ? notifyQp_ : physicalQps_.at(qpIdx);
+  auto virtualRecvWrId = loadBalancingScheme_ == LoadBalancingScheme::SPRAY
+      ? pendingRecvVirtualWrQue_.front().wr.wr_id
+      : -1;
   ibv_recv_wr recvWr_{};
   ibv_recv_wr badRecvWr_{};
   ibv_sge recvSg_{};
@@ -1306,14 +1366,36 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvNotifyImm(
   recvWr_.sg_list = &recvSg_;
   recvWr_.num_sge = 0;
   recvWr_.wr_id = nextPhysicalWrId_++;
-  auto maybeRecv = notifyQp_.postRecv(&recvWr_, &badRecvWr_);
+  auto maybeRecv = qp.postRecv(&recvWr_, &badRecvWr_);
   if (maybeRecv.hasError()) {
     return folly::makeUnexpected(maybeRecv.error());
   }
-  notifyQp_.physicalRecvWrStatus_.emplace_back(
-      recvWr_.wr_id, virtualRecvWr.wr.wr_id);
-  virtualRecvWr.remainingMsgCnt = 0;
-  pendingRecvVirtualWrQue_.pop_front();
+  qp.physicalRecvWrStatus_.emplace_back(recvWr_.wr_id, virtualRecvWrId);
+
+  if (loadBalancingScheme_ == LoadBalancingScheme::SPRAY) {
+    pendingRecvVirtualWrQue_.pop_front();
+  }
+  return folly::unit;
+}
+
+inline folly::Expected<folly::Unit, Error> IbvVirtualQp::setupDqplbReceiver() {
+  ibv_recv_wr recvWr_{};
+  ibv_recv_wr badRecvWr_{};
+  ibv_sge recvSg_{};
+  recvWr_.next = nullptr;
+  recvWr_.sg_list = &recvSg_;
+  recvWr_.num_sge = 0;
+  for (int i = 0; i < maxMsgCntPerQp_; i++) {
+    for (int j = 0; j < physicalQps_.size(); j++) {
+      recvWr_.wr_id = nextPhysicalWrId_++;
+      auto maybeRecv = physicalQps_.at(j).postRecv(&recvWr_, &badRecvWr_);
+      if (maybeRecv.hasError()) {
+        return folly::makeUnexpected(maybeRecv.error());
+      }
+      physicalQps_.at(j).physicalRecvWrStatus_.emplace_back(recvWr_.wr_id, -1);
+    }
+  }
+
   return folly::unit;
 }
 
@@ -1323,7 +1405,7 @@ IbvVirtualQp::mapPendingRecvQueToPhysicalQp(int qpIdx) {
     VirtualRecvWr& virtualRecvWr = pendingRecvVirtualWrQue_.front();
 
     if (virtualRecvWr.wr.num_sge == 0) {
-      auto maybeRecvNotifyImm = postRecvNotifyImm(virtualRecvWr);
+      auto maybeRecvNotifyImm = postRecvNotifyImm();
       if (maybeRecvNotifyImm.hasError()) {
         return folly::makeUnexpected(maybeRecvNotifyImm.error());
       }
@@ -1422,10 +1504,15 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
   pendingRecvVirtualWrQue_.emplace_back(
       *recvWr, expectedMsgCnt, expectedMsgCnt);
 
-  // Map large messages from vRecvQ_ to pQps_.
-  if (mapPendingRecvQueToPhysicalQp().hasError()) {
-    *recvWrBad = *recvWr;
-    return folly::makeUnexpected(Error(errno));
+  if (loadBalancingScheme_ != LoadBalancingScheme::DQPLB) {
+    if (mapPendingRecvQueToPhysicalQp().hasError()) {
+      // For non-DQPLB modes: map messages from pendingRecvVirtualWrQue_ to
+      // physicalQps_. In DQPLB mode, this mapping is unnecessary because all
+      // receive notify IMM operations are pre-posted to the QPs before postRecv
+      // is called.
+      *recvWrBad = *recvWr;
+      return folly::makeUnexpected(Error(errno));
+    }
   }
 
   return folly::unit;

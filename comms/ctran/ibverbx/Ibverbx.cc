@@ -1137,11 +1137,11 @@ IbvVirtualQp::IbvVirtualQp(
     int maxMsgSize,
     LoadBalancingScheme loadBalancingScheme)
     : physicalQps_(std::move(qps)),
-      notifyQp_(std::move(notifyQp)),
       coordinator_(coordinator),
       maxMsgCntPerQp_(maxMsgCntPerQp),
       maxMsgSize_(maxMsgSize),
-      loadBalancingScheme_(loadBalancingScheme) {
+      loadBalancingScheme_(loadBalancingScheme),
+      notifyQp_(std::move(notifyQp)) {
   for (int i = 0; i < physicalQps_.size(); i++) {
     qpNumToIdx_[physicalQps_.at(i).qp()->qp_num] = i;
   }
@@ -1169,14 +1169,14 @@ uint32_t IbvVirtualQp::getVirtualQpNum() const {
 
 IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
     : physicalQps_(std::move(other.physicalQps_)),
-      notifyQp_(std::move(other.notifyQp_)),
       qpNumToIdx_(std::move(other.qpNumToIdx_)),
       nextSendPhysicalQpIdx_(other.nextSendPhysicalQpIdx_),
       nextRecvPhysicalQpIdx_(other.nextRecvPhysicalQpIdx_),
       coordinator_(other.coordinator_),
       maxMsgCntPerQp_(other.maxMsgCntPerQp_),
       maxMsgSize_(other.maxMsgSize_),
-      loadBalancingScheme_(other.loadBalancingScheme_) {
+      loadBalancingScheme_(other.loadBalancingScheme_),
+      notifyQp_(std::move(other.notifyQp_)) {
   // Update all entries in coordinator that point to &other to point to this
   if (coordinator_) {
     coordinator_->updateVirtualQpMapping(&other, this);
