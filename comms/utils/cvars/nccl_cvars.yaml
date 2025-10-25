@@ -2104,7 +2104,7 @@ cvars:
 
  - name        : NCCL_COLLTRACE_USE_NEW_COLLTRACE
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Use new colltrace implementation. This is a temporary flag to enable
      new colltrace implementation. We will remove this flag once the new
