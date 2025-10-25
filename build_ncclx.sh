@@ -151,6 +151,7 @@ function build_third_party {
         conda-forge::fast_float
         libdwarf-dev
         gflags
+        glog==0.4.0
         xxhash
         zstd
         conda-forge::zlib
