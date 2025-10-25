@@ -67,6 +67,13 @@ void NcclScubaEvent::record() {
   ncclLogToScuba(type_, copySample);
 }
 
+void NcclScubaEvent::record(const std::string& stage) {
+  if (!stage.empty()) {
+    sample_.addNormal("stage", stage);
+  }
+  record();
+}
+
 void NcclScubaEvent::setLogMetatData(const CommLogData* logMetaData) {
   sample_.setCommunicatorMetadata(logMetaData);
 }
