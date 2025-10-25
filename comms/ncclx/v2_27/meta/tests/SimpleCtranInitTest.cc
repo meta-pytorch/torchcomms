@@ -14,6 +14,8 @@ class SimpleCtranInitTest : public ::testing::Test {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
     setenv("NCCL_COLLTRACE", "trace", 1);
     setenv("NCCL_USE_MEM_CACHE", "1", 1);
+    setenv("NCCL_LAZY_SETUP_CHANNELS", "1", 1);
+    setenv("NCCL_RUNTIME_CONNECT", "1", 1);
 
     ncclCvarInit();
     NCCLCHECK_TEST(ncclCudaLibraryInit());
