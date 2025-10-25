@@ -411,3 +411,49 @@ TEST_F(CollTraceTest, CheckHandleValidityWhenPendingQueueFull) {
     }
   }
 }
+
+// If multiple enqueue happened at the same time, colltrace would not be able
+// to handle them as there is only one slot for pending enqueue collectives.
+// We will change the behavior later to make sure we can enqueue from multiple
+// places, but for now let's at least make sure it won't cause segfault.
+TEST_F(CollTraceTest, CheckHandleValidityOverMultipleEnqueues) {
+  std::vector<std::shared_ptr<ICollTraceHandle>> handles;
+  for (int i = 0; i < 10; ++i) {
+    // Create metadata and wait event. We will only call recordCollective, so
+    // we don't expect getting any calls to them
+    auto metadata = std::make_unique<NiceMock<MockCollMetadata>>();
+    auto waitEvent = std::make_unique<NiceMock<MockCollWaitEvent>>();
+
+    // Set up expectations for the wait event
+    ON_CALL(*waitEvent, beforeCollKernelScheduled())
+        .WillByDefault(Return(folly::unit));
+
+    // Set up expectations for the wait event
+    ON_CALL(*metadata, toDynamic())
+        .WillByDefault(
+            Return(static_cast<folly::dynamic>(folly::dynamic::object())));
+
+    // Record a collective
+    auto handleMaybe =
+        collTrace->recordCollective(std::move(metadata), std::move(waitEvent));
+
+    // Verify that the handle was created successfully
+    EXPECT_VALUE(handleMaybe);
+    EXPECT_NE(handleMaybe.value().get(), nullptr);
+
+    // Trigger the enqueue
+    handleMaybe.value()->trigger(
+        CollTraceHandleTriggerState::BeforeEnqueueKernel);
+
+    handles.emplace_back(std::move(handleMaybe.value()));
+  }
+
+  for (auto& handle : handles) {
+    // Make sure we can get the coll record without encountering segmentation
+    // fault. Getting invalid record is expected.
+    auto res = handle->getCollRecord();
+    if (res.hasValue()) {
+      EXPECT_NE(res.value(), nullptr);
+    }
+  }
+}

@@ -3,6 +3,7 @@
 #include "comms/utils/colltrace/CollTrace.h"
 
 #include <fmt/core.h>
+#include <folly/json.h>
 #include <folly/logging/xlog.h>
 #include <folly/stop_watch.h>
 
@@ -82,6 +83,32 @@ CollTrace::~CollTrace() {
 CommsMaybe<std::shared_ptr<CollTraceHandle>> CollTrace::recordCollective(
     std::unique_ptr<ICollMetadata> metadata,
     std::unique_ptr<ICollWaitEvent> waitEvent) noexcept {
+  if (metadata == nullptr) {
+    return folly::makeUnexpected(CommsError(
+        "Received nullptr for metadata during recordCollective",
+        commInternalError));
+  }
+  if (waitEvent == nullptr) {
+    return folly::makeUnexpected(CommsError(
+        "Received nullptr for waitEvent during recordCollective",
+        commInternalError));
+  }
+  if (pendingEnqueueColl_ != nullptr) {
+    XLOG_FIRST_N(
+        ERR,
+        1,
+        fmt::format(
+            "{}: Got another collective enqueued when a previous one haven't finished, colltrace result would be inaccurate. Previous: {}, Next:{}",
+            logPrefix_,
+            folly::toJson(pendingEnqueueColl_->collRecord->toDynamic()),
+            folly::toJson(metadata->toDynamic())));
+    auto handlePtr = eventToHandleMap_.find(pendingEnqueueColl_.get());
+    if (handlePtr != eventToHandleMap_.end()) {
+      handlePtr->second->invalidate();
+      eventToHandleMap_.erase(pendingEnqueueColl_.get());
+    }
+  }
+
   pendingEnqueueColl_ = std::make_unique<CollTraceEvent>(
       std::make_shared<CollRecord>(collId_.fetch_add(1), std::move(metadata)),
       std::move(waitEvent));
