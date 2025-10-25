@@ -23,6 +23,7 @@
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
+#include "comms/utils/colltrace/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -594,7 +595,9 @@ void CtranGpe::Impl::gpeThreadFn() {
             comm,
             ncclx::colltrace::CollStart{
                 .coll = cmd->coll.collHandle != nullptr
-                    ? cmd->coll.collHandle->getCollRecord().value()
+                    ? cmd->coll.collHandle->getCollRecord().value_or(
+                          std::make_unique<meta::comms::colltrace::CollRecord>(
+                              -1, nullptr))
                     : nullptr,
             });
       }

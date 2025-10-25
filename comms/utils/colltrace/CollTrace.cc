@@ -74,7 +74,9 @@ CollTrace::~CollTrace() {
     handle->invalidate();
   }
   // Wait for the thread to finish
-  traceCollThread_.join();
+  if (traceCollThread_.joinable()) {
+    traceCollThread_.join();
+  }
 }
 
 CommsMaybe<std::shared_ptr<CollTraceHandle>> CollTrace::recordCollective(
@@ -121,9 +123,26 @@ CommsMaybeVoid CollTrace::triggerEventState(
           std::chrono::system_clock::now());
       if (pendingTraceColls_.write(std::move(pendingEnqueueColl_))) {
         return folly::unit;
-      } else {
+        // If the write fails, pendingEnqueueColl_ will not be moved. Do a
+        // check for nullptr as sanity check
+      } else if (pendingEnqueueColl_ != nullptr) {
+        // TODO: This is not safe. But I could not find a better way to do it
+        // as the caller of triggerEventState (which is CollTraceHandle itself)
+        // holds its write lock and calling invalidate here will cause deadlock.
+        eventToHandleMap_.at(pendingEnqueueColl_.get())->invalidateUnsafe();
+        eventToHandleMap_.erase(pendingEnqueueColl_.get());
+        pendingEnqueueColl_ = nullptr;
         return folly::makeUnexpected(CommsError(
             "Failed to write to pendingTraceColls_ queue", commInternalError));
+      } else {
+        // This code should not be reached
+        XLOG_FIRST_N(
+            DBG,
+            1,
+            "pendingEnqueueColl_ is nullptr after write to queue failed");
+        return folly::makeUnexpected(CommsError(
+            "pendingEnqueueColl_ is nullptr after write to pendingTraceColls_ queue",
+            commInternalError));
       }
     }
     case CollTraceHandleTriggerState::KernelStarted: {

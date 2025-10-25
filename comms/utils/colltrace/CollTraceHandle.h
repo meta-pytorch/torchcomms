@@ -53,6 +53,14 @@ class CollTraceHandle : public ICollTraceHandle {
 
   CommsMaybeVoid invalidate() noexcept override;
 
+  // This is not safe! It should only be used in the case where we are sure
+  // that the current thread is holding the **write** lock of state_.
+  // Currently it is being used in the case of
+  // trigger handle -> colltrace -> invalidate
+  // In this case, we are already holding the write lock of state_ when we
+  // call trigger handle, so it is safe to call invalidateUnsafe.
+  void invalidateUnsafe() noexcept;
+
   // Delete copy constructor and copy assignment operator
   CollTraceHandle(const CollTraceHandle&) = delete;
   CollTraceHandle& operator=(const CollTraceHandle&) = delete;

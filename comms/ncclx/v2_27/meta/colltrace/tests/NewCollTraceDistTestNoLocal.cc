@@ -5,8 +5,6 @@
 #include <cstddef>
 #include <exception>
 #include <filesystem>
-#include <iostream>
-#include <sstream>
 
 #include <folly/ScopeGuard.h>
 #include <folly/Synchronized.h>
@@ -23,13 +21,13 @@
 #include "comms/ctran/CtranEx.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
+#include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/tests/nvidia-only/CPUControlledKernel.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "comms/utils/trainer/TrainerContext.h"
-#include "meta/colltrace/CollTrace.h"
 #include "meta/commDump.h"
 #include "meta/wrapper/CtranExComm.h"
-#include "meta/wrapper/DataTypeStrUtils.h"
+
+using ::meta::comms::colltrace::CollTraceConfig;
 
 class CollTraceTest : public NcclxBaseTest {
  public:
@@ -905,6 +903,98 @@ TEST_F(CollTraceTest, CollTraceQueryInCapture) {
 
   auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   EXPECT_EQ(pastCollsJson.size(), nColl);
+}
+
+// Previously we found that if we enqueue more collectives than what the pending
+// queue can hold, we will get segfault due to colltrace handle pointing to
+// freed memory. Add a test to ensure we don't encounter this issue again.
+TEST_F(CollTraceTest, CollTraceTestEnqueueMoreThanPendingQueue) {
+  auto wakeUpGuard = EnvRAII(NCCL_COLLTRACE_WAKEUP_INTERVAL_MS, 10L);
+  auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
+
+  NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
+  ASSERT_EQ(comm->collTrace, nullptr);
+  ASSERT_EQ(comm->ctranComm_->collTrace_, nullptr);
+
+  const auto kNumElements = 8388608;
+  const auto kNumIters = CollTraceConfig::kDefaultMaxPendingQueueSize;
+  const auto cpuWin = true;
+  EXPECT_GE(kNumElements, 8192);
+  EXPECT_GE(kNumIters, 1);
+
+  auto statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
+  EXPECT_EQ(statex->nRanks(), this->numRanks);
+
+  cudaStream_t put_stream, wait_stream;
+  CUDACHECK_TEST(cudaStreamCreateWithFlags(&put_stream, cudaStreamNonBlocking));
+  CUDACHECK_TEST(
+      cudaStreamCreateWithFlags(&wait_stream, cudaStreamNonBlocking));
+
+  size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
+
+  meta::comms::Hints hints;
+  if (cpuWin) {
+    hints.set("window_buffer_location", "cpu");
+  }
+  ctran::CtranWin* win = nullptr;
+  void* winBase = nullptr;
+  auto res = ctranWinAllocate(
+      sizeBytes, comm->ctranComm_.get(), &winBase, &win, hints);
+  ASSERT_EQ(res, ncclSuccess);
+  ASSERT_NE(winBase, nullptr);
+
+  // Always allocate localBuf from GPU mem so it can be used in ctranAllReduce
+  int* localBuf = nullptr;
+  void* localHdl = nullptr;
+  ASSERT_EQ(
+      ncclMemAlloc((void**)&localBuf, kNumElements * sizeof(int)), ncclSuccess);
+  ASSERT_EQ(
+      ncclCommRegister(comm, localBuf, kNumElements * sizeof(int), &localHdl),
+      ncclSuccess);
+
+  EXPECT_THAT(win, testing::NotNull());
+
+  for (int peer = 0; peer < this->numRanks; peer++) {
+    void* remoteAddr = nullptr;
+    res = ctranWinSharedQuery(peer, win, &remoteAddr);
+    EXPECT_EQ(res, ncclSuccess);
+    if (peer == statex->rank()) {
+      EXPECT_EQ(remoteAddr, winBase);
+    } else if (!win->nvlEnabled(peer)) {
+      EXPECT_THAT(remoteAddr, testing::IsNull());
+    } else {
+      EXPECT_THAT(remoteAddr, testing::NotNull());
+    }
+  }
+
+  int nextPeer = (this->globalRank + 1) % this->numRanks;
+  int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
+
+  for (auto iter = 0; iter < kNumIters; iter++) {
+    COMMCHECK_TEST(ctranPutSignal(
+        localBuf,
+        kNumElements,
+        commInt32,
+        nextPeer,
+        kNumElements * statex->rank(),
+        win,
+        win->comm,
+        put_stream,
+        true));
+    COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, win->comm, wait_stream));
+  }
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  res = ctranWinFree(win);
+  EXPECT_EQ(res, ncclSuccess);
+
+  ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
+  ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+
+  CUDACHECK_TEST(cudaStreamDestroy(put_stream));
+  CUDACHECK_TEST(cudaStreamDestroy(wait_stream));
 }
 
 int main(int argc, char* argv[]) {

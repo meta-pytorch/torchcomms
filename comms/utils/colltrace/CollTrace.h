@@ -16,6 +16,7 @@
 namespace meta::comms::colltrace {
 
 struct CollTraceConfig {
+  static constexpr ::size_t kDefaultMaxPendingQueueSize{1024};
   // The max time CollTrace thread will be waiting before it can respond to
   // a cancellation request. This is to ensure that we don't wait forever and
   // will respond reasonably quickly during teardown. Default to 1 second.
@@ -28,7 +29,7 @@ struct CollTraceConfig {
   // Tuning parameters for the size of the pending queue.
   // If we have too many pending events, we will start dropping events.
   // 1024 should be enough for most of the cases.
-  ::size_t maxPendingQueueSize{1024};
+  ::size_t maxPendingQueueSize{kDefaultMaxPendingQueueSize};
 };
 
 class CollTrace : public ICollTrace {
