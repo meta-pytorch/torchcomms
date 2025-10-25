@@ -275,7 +275,10 @@ enum class CommFunc : int {
   SendRecv = 5,
   Send = 6,
   Recv = 7,
-  NumFuncs = 8
+  AlltoAll = 8,
+  Scatter = 9,
+  Gather = 10,
+  NumFuncs = 11
 };
 
 enum class CommAlgo {

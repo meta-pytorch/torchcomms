@@ -28,7 +28,12 @@ inline CommPattern ncclToCommPattern(ncclPattern_t ncclPattern) {
   return static_cast<CommPattern>(ncclPattern);
 }
 
-inline CommFunc ncclToCommFunc(ncclFunc_t ncclFunc) {
+constexpr CommFunc ncclToCommFunc(ncclFunc_t ncclFunc) {
+  // NCCLX2.28 adds more functions to ncclFunc_t enum, we need special handling
+  // when ncclFunc is ncclNumFuncs
+  if (ncclFunc == ncclNumFuncs) {
+    return CommFunc::NumFuncs;
+  }
   return static_cast<CommFunc>(ncclFunc);
 }
 
@@ -167,7 +172,7 @@ static_assert(
     "CommFunc::Recv must match ncclFuncRecv");
 
 static_assert(
-    static_cast<int>(CommFunc::NumFuncs) == static_cast<int>(::ncclNumFuncs),
+    CommFunc::NumFuncs == ncclToCommFunc(::ncclNumFuncs),
     "CommFunc::commNumFuncs must match ncclNumFuncs");
 
 /******************************************************************************
