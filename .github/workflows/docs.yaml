@@ -47,10 +47,9 @@ jobs:
           conda install -y -c conda-forge glog==0.4.0 gflags fmt
           pip install cmake
           pip install -r docs/requirements.txt
-          export USE_NCCL=0
           export USE_NCCLX=0
           export USE_SYSTEM_LIBS=1
-          pip install .[dev] -v
+          pip install --no-build-isolation .[dev] -v
       - name: Build Sphinx Docs
         shell: bash -l {0}
         working-directory: docs
