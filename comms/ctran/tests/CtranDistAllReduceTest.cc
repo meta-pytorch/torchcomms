@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <stdlib.h>
@@ -12,10 +13,11 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
+#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
 
 // Reduce the value range to avoid integer overflow when running large count
 constexpr size_t VAL_RANGE = 1024;
@@ -37,6 +39,10 @@ class CtranAllReduceTest : public CtranDistBaseTest {
   ncclComm_t comm;
 
   void SetUp() override {
+    setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+    // -1 for not limiting the number of colls to trace
+    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
 #ifdef CTRAN_TEST_SOCKET_ONLY_BACKEND
     setenv("NCCL_CTRAN_BACKENDS", "socket, nvl", 1);
 #endif
@@ -165,13 +171,15 @@ class CtranAllReduceTest : public CtranDistBaseTest {
     }
 
     memorySetUp(count, inplace, op, memType);
-    comm->ctranComm_->collTrace_->resetPastColls();
 
     for (auto& segment : segments) {
       void* hdl = nullptr;
       NCCLCHECK_TEST(ncclCommRegister(comm, segment.ptr, segment.size, &hdl));
       segHandles.push_back(hdl);
     }
+
+    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
+        comm->ctranComm_.get()));
 
     if (inplace == kTestInPlace) {
       auto res = allreduceFunc(
@@ -201,17 +209,26 @@ class CtranAllReduceTest : public CtranDistBaseTest {
 
     verifyResult(count, op);
 
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-    auto dump = comm->ctranComm_->collTrace_->dump();
-    EXPECT_EQ(dump.pastColls.size(), 1);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    // Sleep for a while to make sure all the colls are finished
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto lastColl = dump.pastColls.back();
-    EXPECT_EQ(lastColl.opName, "AllReduce");
-    EXPECT_EQ(lastColl.count, count);
-    EXPECT_EQ(lastColl.dataType, dt);
-    EXPECT_EQ(lastColl.algoName, allReduceAlgoName(algo));
+    ASSERT_TRUE(comm->newCollTrace != nullptr);
+    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
+    EXPECT_NE(dumpMap["CT_pastColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+
+    auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+    EXPECT_EQ(pastCollsJson.size(), 1);
+
+    auto lastColl = pastCollsJson[0];
+    EXPECT_EQ(lastColl["opName"].asString(), "AllReduce");
+    EXPECT_EQ(lastColl["count"].asInt(), count);
+    EXPECT_THAT(
+        lastColl["algoName"].asString(),
+        testing::HasSubstr(allReduceAlgoName(algo)));
 
     verifyBackendsUsed(
         comm->ctranComm_->ctran_.get(),

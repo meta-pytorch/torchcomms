@@ -2,6 +2,7 @@
 
 #include "meta/colltrace/CollTraceWrapper.h"
 
+#include "comms/utils/RankUtils.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/colltrace/CollTrace.h"
@@ -394,7 +395,11 @@ getHandleFromNcclKernelPlan(ncclKernelPlan& plan, cudaStream_t stream) {
   }
 
   if (isCapturingStream(stream)) {
-    XLOG(FATAL, "TODO: support for cuda stream");
+    if (RankUtils::getGlobalRank().value_or(0) == 0) {
+      XLOG_FIRST_N(
+          WARN, 1, "CollTrace currently doesn't support capturing streams");
+    }
+    return std::make_unique<meta::comms::colltrace::DummyCollTraceHandle>();
   }
 
   auto metadata = getMetadataFromNcclKernelPlan(plan, stream);

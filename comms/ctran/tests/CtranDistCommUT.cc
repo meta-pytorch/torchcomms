@@ -10,12 +10,15 @@
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/ctran/utils/CommGroupUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
+
+#include <folly/json/json.h>
 
 class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
  public:
@@ -25,6 +28,9 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
 
   void SetUp() override {
     setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+    // -1 for not limiting the number of colls to trace
+    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
     setenv("NCCL_CTRAN_TRANSPORT_PROFILER", "1", 0);
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
@@ -242,7 +248,14 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
       NCCLCHECK_TEST(ncclCommDeregister(comm, hdl));
     }
 
-    auto dump = comm->ctranComm_->collTrace_->dump();
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    // Sleep for a while to make sure all the colls are finished
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // Check the coll trace
+    ASSERT_TRUE(comm->newCollTrace != nullptr);
+    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
     std::string expAlgoName;
     if (globalRank == sendRank) {
       // Sender issues numRanks - 1 sends; if more than 1, the current algoName
@@ -251,23 +264,24 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     } else {
       expAlgoName = "CtranRecv";
     }
-    // when copy engine is enabled, no GPE function is submitted for
-    // Send/Recv COLLTRACE is under refactoring, need to fully support copy
-    // engine too; skip the trace check for one-to-one Send/Recv
-    if (!NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE && !oneToOne) {
-      for (auto& coll : dump.pastColls) {
-        EXPECT_EQ(coll.opName, globalRank == sendRank ? "Send" : "Recv");
-        EXPECT_EQ(coll.dataType, dt);
-        // For pure send/recv, count should be set to the count of the send/recv
-        if (globalRank == sendRank && numRanks - 1 > 1) {
-          // If sendRank sends to multiple peers, count is not set and left
-          // as nullOpt
-          EXPECT_THAT(coll.count, ::testing::Eq(std::nullopt));
-        } else {
-          EXPECT_THAT(coll.count, ::testing::Optional(count));
-        }
-        EXPECT_EQ(coll.algoName, expAlgoName);
+
+    auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+    for (const auto& coll : pastCollsJson) {
+      // Ignore handle exchange
+      if (coll["opName"].asString().find("HanldeExchange") ==
+          std::string::npos) {
+        continue;
       }
+      EXPECT_EQ(
+          coll["opName"].asString(), globalRank == sendRank ? "Send" : "Recv");
+      // For pure send/recv, count should be set to the count of the send/recv
+      if (globalRank == sendRank && numRanks - 1 > 1) {
+        // If sendRank sends to multiple peers, count is 0
+        EXPECT_EQ(coll["count"].asInt(), 0);
+      } else {
+        EXPECT_EQ(coll["count"].asInt(), count);
+      }
+      EXPECT_EQ(coll["algoName"].asString(), expAlgoName);
     }
 
     releaseBuf(base, bufSize, memType);

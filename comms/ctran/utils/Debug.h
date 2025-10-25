@@ -3,6 +3,9 @@
 #pragma once
 
 #include <sstream>
+
+#include <folly/system/ThreadName.h>
+
 #include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/logger/LoggingFormat.h"
 
@@ -12,6 +15,7 @@ inline void commNamedThreadStart(
     std::optional<uint64_t> commHash = std::nullopt,
     std::optional<std::string> commDesc = std::nullopt,
     std::optional<const char*> func = std::nullopt) {
+  folly::setThreadName(threadName);
   meta::comms::logger::initThreadMetaData(threadName);
   std::stringstream ss;
   std::vector<std::string> metaVec;

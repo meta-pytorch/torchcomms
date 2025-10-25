@@ -27,9 +27,9 @@ void initRankTopologyFrom(CommStateX* _CommStateX, void* _comm) {
     // each node is already ordered by local rank
     // NOTE: two GPUs on the same node may be with different nodeId because
     // they don't have direct NVL access. To keep same nodeId in statex, we
-    // use hostname+nodeId to make it unique
+    // use hostHash+nodeId to make it unique
     std::string host(
-        std::string(comm->peerInfo[r].hostname) +
+        std::to_string(comm->peerInfo[r].hostHash) + "_" +
         std::to_string(rankState.nodeId));
     _CommStateX->hostToRanks_[host].emplace_back(r);
 

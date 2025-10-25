@@ -30,9 +30,6 @@ commResult_t AllToAllPInit(
   const auto nRanks = statex->nRanks();
 
   SetCudaDevRAII setCudaDev(statex->cudaDev());
-  size_t size = maxRecvCount * commTypeSize(datatype);
-  void* regHdl{nullptr};
-  bool localReg = false;
   AlgoImpl* algo = new AlgoImpl(comm, stream);
   if (!algo) {
     return commSystemError;
@@ -43,29 +40,10 @@ commResult_t AllToAllPInit(
       delete algo;
     }
   });
-  // TODO: Pass-in a flag searchOnly to avoid dynamic register instead of reg
-  // then deregister.
-  FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
-      recvbuff, size, &regHdl, &localReg));
-  if (localReg) {
-    comm->ctran_->mapper->deregDynamic(regHdl);
-    CLOGF(
-        ERR,
-        "recvbuff is not registered. Pointer: {} length: {}",
-        recvbuff,
-        size);
-    return commInternalError;
-  }
-
   std::string skip_ctrl_msg;
   hints.get("ncclx_alltoallp_skip_ctrl_msg_exchange", skip_ctrl_msg);
-  algo->pArgs = {
-      .recvbuff = recvbuff,
-      .recvHdl = regHdl,
-      .maxRecvCount = maxRecvCount,
-      .datatype = datatype,
-      .skipCtrlMsg = (skip_ctrl_msg == "true"),
-  };
+  FB_COMMCHECK(algo->setPArgs(
+      recvbuff, maxRecvCount, skip_ctrl_msg == "true", datatype));
   FB_COMMCHECK(algo->init());
   request = new CtranPersistentRequest(
       CtranPersistentRequest::Type::ALLTOALL_P, comm, stream);
@@ -77,11 +55,10 @@ commResult_t AllToAllPInit(
   CLOGF_SUBSYS(
       INFO,
       COLL,
-      "AllToAllPInit: rank {} initialized request {}, recvbuff {} recvHdl {}, comm {} commHash {:x} commDesc {} [nranks={}, localRanks={}] stream={}",
+      "AllToAllPInit: rank {} initialized request {}, recvbuff {}, comm {} commHash {:x} commDesc {} [nranks={}, localRanks={}] stream={}",
       statex->rank(),
       (void*)request,
       (void*)recvbuff,
-      (void*)regHdl,
       (void*)comm,
       statex->commHash(),
       statex->commDesc(),

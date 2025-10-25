@@ -156,7 +156,8 @@ CommsMaybeVoid CommDumpPlugin::afterCollKernelEnd(
   }
 
   // ----- Move the coll to pastColls -----
-  while (lockedCollTraceDump->pastColls.size() >= config_.pastCollSize) {
+  while (config_.pastCollSize >= 0 &&
+         lockedCollTraceDump->pastColls.size() >= config_.pastCollSize) {
     lockedCollTraceDump->pastColls.pop_front();
   }
   lockedCollTraceDump->pastColls.emplace_back(
@@ -231,6 +232,13 @@ std::unordered_map<std::string, std::string> commDumpToMap(
   }
 
   return map;
+}
+
+CommsMaybeVoid CommDumpPlugin::testOnlyClearColls() noexcept {
+  collTraceDump_.exchange(CollTraceDump{});
+  newPendingColls_ =
+      folly::MPMCQueue<std::shared_ptr<CollRecord>>(config_.pendingCollSize);
+  return folly::unit;
 }
 
 } // namespace meta::comms::colltrace

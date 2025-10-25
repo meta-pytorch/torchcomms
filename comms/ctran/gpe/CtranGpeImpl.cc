@@ -6,7 +6,7 @@
 
 #include <folly/dynamic.h>
 
-#include "comms/ctran/Ctran.h"
+#include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvDynamicPImpl.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
@@ -17,12 +17,12 @@
 #include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/ctran/tracing/MapperTrace.h"
 #include "comms/ctran/utils/Checks.h"
-#include "comms/ctran/utils/CudaGraphUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
 
+#include "comms/utils/colltrace/CollRecord.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -149,7 +149,8 @@ commResult_t CtranGpe::Impl::submit(
     opFunc func,
     KernelConfig& kernelConfig,
     const void* ncclKernel,
-    std::optional<std::chrono::milliseconds> timeout) {
+    std::optional<std::chrono::milliseconds> timeout,
+    PreLaunchGraphPrepareFn graphPrepareFn) {
   commResult_t res = commSuccess;
 
   // Reclaim once to gain back available flags
@@ -249,49 +250,13 @@ commResult_t CtranGpe::Impl::submit(
       }
       cmd->coll.comm = comm;
     }
-
     if (streamCaptureInfo.status == cudaStreamCaptureStatusActive) {
+      FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
       struct cmdCbPlan* plan = new struct cmdCbPlan;
       // cudagraph-aware alltoall: transfer alltoall to alltoallPersistent for
       // perf optimization
       auto op = cmd->coll.opGroup.front().get();
       if (NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE &&
-          op->type == OpElem::opType::ALLTOALL) {
-        CtranPersistentRequest* pReq;
-        // FIXME: update alltoall API to allow passing hints to skip/not skip
-        // ctrl msg exchange.
-        meta::comms::Hints hints;
-        hints.set("ncclx_alltoallp_skip_ctrl_msg_exchange", "true");
-        // The init will submit a GPE op exchangeMemHandle that not captured by
-        // cudagraph.
-        // FIXME: for cudagraph, the sendbuff is also persistent, should record
-        // its handle in pReq and skip searchRegHandle in exec.
-        // FIXME: the gpe thread should call algo impl instead of user API to
-        // allow more flexibility in cudagraph mode.
-        ctran::AllToAllPInit(
-            op->alltoall.recvbuff,
-            op->alltoall.count * op->comm_->statex_->nRanks(),
-            hints,
-            op->alltoall.datatype,
-            op->comm_,
-            op->stream,
-            pReq);
-
-        // Capture alltoallp op instead of alltoall because alltoall under
-        // cudagraph is essentially alltoallp. A new alltoallp op will be
-        // submitted inside AllToAllPExec so we can return once it's done.
-        // Release kernel args grabbed earlier
-        if (kernelFlag != nullptr) {
-          kernelFlag->reset();
-        }
-        // Add callback for alltoallp cmd instead.
-        // FIXME: the gpe thread should call algo impl instead of user API to
-        // allow more flexibility in cudagraph mode.
-        FB_COMMCHECK(ctran::AllToAllPExec(
-            op->alltoall.sendbuff, op->alltoall.count, pReq));
-        return commSuccess;
-      } else if (
-          NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE &&
           op->type == OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG) {
         // FIXME: this should control by hints passed from user instead of CVAR
         // so we can have per-collective control
@@ -594,7 +559,9 @@ void CtranGpe::Impl::gpeThreadFn() {
             comm,
             ncclx::colltrace::CollStart{
                 .coll = cmd->coll.collHandle != nullptr
-                    ? cmd->coll.collHandle->getCollRecord().value()
+                    ? cmd->coll.collHandle->getCollRecord().value_or(
+                          std::make_unique<meta::comms::colltrace::CollRecord>(
+                              -1, nullptr))
                     : nullptr,
             });
       }

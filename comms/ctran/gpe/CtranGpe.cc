@@ -373,14 +373,16 @@ commResult_t CtranGpe::submit(
     opFunc func,
     KernelConfig& kernelConfig,
     const void* ncclKernel,
-    std::optional<std::chrono::milliseconds> timeout) {
+    std::optional<std::chrono::milliseconds> timeout,
+    PreLaunchGraphPrepareFn graphPrepareFn) {
   return this->pimpl->submit(
       CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE,
       std::move(opGroup),
       func,
       kernelConfig,
       ncclKernel,
-      timeout);
+      timeout,
+      graphPrepareFn);
 }
 
 commResult_t CtranGpe::submitHost(

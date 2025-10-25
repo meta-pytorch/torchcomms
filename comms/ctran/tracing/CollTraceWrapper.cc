@@ -4,10 +4,12 @@
 
 #include <folly/logging/xlog.h>
 
+#include "comms/utils/RankUtils.h"
 #include "comms/utils/colltrace/CPUWaitEvent.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
 #include "comms/utils/colltrace/DummyCollTraceHandle.h"
+#include "comms/utils/colltrace/plugins/CommDumpPlugin.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace meta::comms::colltrace {
@@ -182,8 +184,13 @@ CollectiveMetadata getCollectiveMetadata(
     }
     case KernelConfig::KernelType::ALLTOALL: {
       auto allToAllArgs = kernelConfig.args.collective.alltoall;
+      auto opName = "AllToAll";
+      // Special case for alltoallp
+      if (opGroup.size() > 0 && opGroup.front()->type == OpElem::ALLTOALLP) {
+        opName = "AllToAllP";
+      }
       return CollectiveMetadata{
-          .opName = "AllToAll",
+          .opName = opName,
           .algoName = kernelConfig.algoName,
           .opCount = opCount,
           .sendbuff = reinterpret_cast<uintptr_t>(allToAllArgs.sendbuff),
@@ -420,7 +427,11 @@ std::shared_ptr<ICollTraceHandle> getNewCollTraceHandle(
   }
 
   if (isCapturingStream(kernelConfig.stream)) {
-    XLOG(FATAL, "TODO: support for cuda stream");
+    if (RankUtils::getGlobalRank().value_or(0) == 0) {
+      XLOG_FIRST_N(
+          WARN, 1, "CollTrace currently doesn't support capturing streams");
+    }
+    return std::make_unique<DummyCollTraceHandle>();
   }
 
   auto metadata = getMetadata(comm, opGroup, kernelConfig);
@@ -484,6 +495,24 @@ void setCollTraceLegacyHandleFunc(
         const KernelConfig&,
         const bool)> func) {
   legacyFunc = func;
+}
+
+bool testOnlyClearCollTraceRecords(CtranComm* comm) {
+  if (comm->colltraceNew_ == nullptr) {
+    return false;
+  }
+  auto commDump = comm->colltraceNew_->getPluginByName(
+      std::string{CommDumpPlugin::kCommDumpPluginName});
+  if (commDump == nullptr) {
+    return false;
+  }
+  auto commDumpPlugin = dynamic_cast<CommDumpPlugin*>(commDump);
+  if (commDumpPlugin == nullptr) {
+    return false;
+  }
+
+  commDumpPlugin->testOnlyClearColls();
+  return true;
 }
 
 } // namespace meta::comms::colltrace

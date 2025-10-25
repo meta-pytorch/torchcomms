@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
+#include "Types.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
@@ -371,6 +372,50 @@ commResult_t AlgoImpl::exec(const void* sendbuff, const size_t count) {
       gpeFn,
       config,
       reinterpret_cast<void*>(ctran::alltoall::alltoallKerns[datatype])));
+  return commSuccess;
+}
+
+commResult_t AlgoImpl::updatePersistentFuncAndOp(
+    opFunc& opFunc,
+    struct OpElem* op) {
+  opFunc = gpeFn;
+  op->type = OpElem::opType::ALLTOALLP;
+  op->alltoallP.sendbuff = op->alltoall.sendbuff;
+  op->alltoallP.count = op->alltoall.count;
+  op->alltoallP.pArgs = &pArgs;
+  CLOGF_TRACE(
+      COLL,
+      "AllToAllP: rank {} updated op to {} and gpeFn to persistent version.",
+      comm_->statex_->rank(),
+      (void*)op);
+  return commSuccess;
+}
+
+commResult_t prepareCudagraphAwareAllToAll(
+    opFunc& opFunc,
+    struct OpElem* op,
+    PersistentObj& pObj) {
+  pObj = std::make_unique<AlgoImpl>(op->comm_, op->stream);
+  auto algoImplPtr = std::get<std::unique_ptr<AlgoImpl>>(pObj).get();
+  if (!algoImplPtr) {
+    return commSystemError;
+  }
+
+  FB_COMMCHECK(algoImplPtr->setPArgs(
+      op->alltoall.recvbuff,
+      op->alltoall.count * op->comm_->statex_->nRanks(),
+      true /* skipCtrlMsg */,
+      op->alltoall.datatype));
+
+  // Exchange mem handles and record in pArgs. This will not be captured
+  // by cudagraph.
+  FB_COMMCHECK(algoImplPtr->init());
+
+  // Replace gpe func by the persistent version (skip exchanging mem
+  // handle); and OpGroup by the persistent op which has the remote
+  // handles recorded.
+
+  FB_COMMCHECK(algoImplPtr->updatePersistentFuncAndOp(opFunc, op));
   return commSuccess;
 }
 } // namespace ctran::alltoallp

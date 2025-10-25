@@ -6,6 +6,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
+#include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -125,12 +126,17 @@ commResult_t ctranAllToAll(
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   FB_COMMCHECK(setupGpeOp(
       sendbuff, recvbuff, count, datatype, comm, stream, opCount, opGroup));
-
+  ctran::PreLaunchGraphPrepareFn graphPrepareFn = nullptr;
+  if (NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE) {
+    graphPrepareFn = ctran::alltoallp::prepareCudagraphAwareAllToAll;
+  }
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
       opIbImpl,
       config,
-      reinterpret_cast<void*>(ctran::alltoall::alltoallKerns[datatype])));
+      reinterpret_cast<void*>(ctran::alltoall::alltoallKerns[datatype]),
+      std::nullopt, /* timeout */
+      graphPrepareFn));
 
   return commSuccess;
 }

@@ -6,6 +6,7 @@
 #include <new>
 
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -14,11 +15,12 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
+#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
 
 class CtranAllToAllTest : public CtranDistBaseTest {
  public:
@@ -96,6 +98,10 @@ class CtranAllToAllTest : public CtranDistBaseTest {
   }
 
   void SetUp() override {
+    setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+    // -1 for not limiting the number of colls to trace
+    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     // Always run ctran alltoall no matter the message size
     setenv("NCCL_CTRAN_ALLTOALL_THRESHOLD", "0", 0);
 
@@ -145,7 +151,8 @@ class CtranAllToAllTest : public CtranDistBaseTest {
           DT(expectedVal + globalRank * 10 + i + 1));
     }
 
-    comm->ctranComm_->collTrace_->resetPastColls();
+    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
+        comm->ctranComm_.get()));
 
     // Run communication
     auto res = ctranAllToAll(
@@ -217,24 +224,28 @@ class CtranAllToAllTest : public CtranDistBaseTest {
           << " took " << gpuTime_ << " us" << " BusBW " << bw << std::endl;
     }
 
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    // Sleep for a while to make sure all the colls are finished
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto dump = comm->ctranComm_->collTrace_->dump();
-    if (totalColls > NCCL_COLLTRACE_RECORD_MAX) {
-      totalColls = NCCL_COLLTRACE_RECORD_MAX;
-    }
+    ASSERT_TRUE(comm->newCollTrace != nullptr);
+    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
+    EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+
+    auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
     if (count == 0) {
       totalColls = 0;
     }
-    EXPECT_EQ(dump.pastColls.size(), totalColls);
+    EXPECT_EQ(pastCollsJson.size(), totalColls);
 
-    for (auto& coll : dump.pastColls) {
-      EXPECT_EQ(coll.opName, "AllToAll");
-      EXPECT_EQ(coll.count, count);
-      EXPECT_EQ(coll.dataType, DataType);
-      EXPECT_EQ(coll.algoName, allToAllAlgoName(NCCL_ALLTOALL_ALGO::ctran));
+    for (const auto& coll : pastCollsJson) {
+      EXPECT_EQ(coll["opName"].asString(), "AllToAll");
+      EXPECT_EQ(coll["count"].asInt(), count);
+      EXPECT_THAT(
+          coll["algoName"].asString(),
+          testing::HasSubstr(allToAllAlgoName(NCCL_ALLTOALL_ALGO::ctran)));
     }
     verifyGpeLeak(comm->ctranComm_->ctran_.get());
     releaseDataBuf(sendBuf, registerFlag ? sendHdl : nullptr);
@@ -381,7 +392,8 @@ TEST_P(CtranAllToAllTestParam, CudaGraphAwareAllToAll) {
     assignChunkValue<DT>(
         sendBuf + i * count, count, DT(expectedVal + globalRank * 10 + i + 1));
   }
-  // comm->ctranComm_->collTrace_->resetPastColls();
+  ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
+      comm->ctranComm_.get()));
   cudaGraph_t graph;
   cudaGraphExec_t instance;
   // FIXME: if using the stream created in SetUp(), got error "operation not
@@ -431,29 +443,44 @@ TEST_P(CtranAllToAllTestParam, CudaGraphAwareAllToAll) {
                        << " errors";
   }
 
-  // FIXME: uncomment after colltrace hang issue resolved when ppn > 1.
-  // comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-  // auto statex = comm->ctranComm_->statex_.get();
-  // auto dump = comm->ctranComm_->collTrace_->dump();
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  // Sleep for a while to make sure all the colls are finished
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+  ASSERT_TRUE(comm->newCollTrace != nullptr);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
+  EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+
+  // FIXME: Currently colltrace does not support tracing cuda graph mode, so
+  // we check whether the past colls are empty. Once we have cuda graph enabled,
+  // we can enable the check for past colls.
+
+  EXPECT_EQ(dumpMap["CT_pastColls"], "[]");
+
+  // auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
   // constexpr int numTimesRunInit = 1;
-  // EXPECT_EQ(dump.pastColls.size(), numIters + numTimesRunInit);
+  // EXPECT_EQ(pastCollsJson.size(), numIters + numTimesRunInit);
 
+  // auto statex = comm->ctranComm_->statex_.get();
   // // Skip the check for the AllToAllPInit (first 1) colls.
-  // for (int i = numTimesRunInit; i < dump.pastColls.size(); i++) {
-  //   auto& coll = dump.pastColls[i];
+  // for (int i = numTimesRunInit; i < pastCollsJson.size(); i++) {
+  //   const auto& coll = pastCollsJson[i];
   //   if (statex->nNodes() == 1) {
   //     // If only cuda kernel is launched (no IB put), AlltoAllP is
   //     essentially
   //     // alltoall because it shares cuda kernel logic with AlltoAll.
-  //     EXPECT_EQ(coll.opName, "AllToAll");
+  //     EXPECT_EQ(coll["opName"].asString(), "AllToAll");
   //   } else {
-  //     EXPECT_EQ(coll.opName, "AllToAllP");
+  //     EXPECT_EQ(coll["opName"].asString(), "AllToAllP");
   //   }
-  //   EXPECT_THAT(coll.count, count);
-  //   EXPECT_EQ(coll.dataType, DataType);
+  //   EXPECT_EQ(coll["count"].asInt(), count);
   //   EXPECT_EQ(
-  //       coll.algoName,
+  //       coll["dataType"].asString(),
+  //       commDataTypeToString(ncclToMetaComm(ncclDataType_t(DataType))));
+  //   EXPECT_EQ(
+  //       coll["algoName"].asString(),
   //       ctran::alltoallp::AlgoImpl::algoName(NCCL_ALLTOALL_ALGO::ctran));
   // }
 

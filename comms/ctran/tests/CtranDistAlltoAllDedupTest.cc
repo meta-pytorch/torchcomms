@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/init/Init.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <nccl.h>
@@ -10,9 +11,10 @@
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllDedupImpl.h"
+#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
-#include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
 
 class ctranAllToAllDedupTest : public CtranDistBaseTest {
  public:
@@ -133,6 +135,10 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
   }
 
   void SetUp() override {
+    setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+    // -1 for not limiting the number of colls to trace
+    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     CtranDistBaseTest::SetUp();
     comm = commWorld;
     if (!ctranAllToAllDedupSupport(comm->ctranComm_.get())) {
@@ -164,7 +170,8 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
     int numSplits = nLocalRanks;
     int nNodes = comm->ctranComm_->statex_->nNodes();
 
-    comm->ctranComm_->collTrace_->resetPastColls();
+    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
+        comm->ctranComm_.get()));
 
     CtranPersistentRequest* request = nullptr;
     void* recvBuf = nullptr;
@@ -226,21 +233,27 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
     auto destroyRes = ctranAllToAllDedupDestroy(request);
     ASSERT_EQ(destroyRes, commSuccess);
 
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    // Sleep for a while to make sure all the colls are finished
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto dump = comm->ctranComm_->collTrace_->dump();
+    ASSERT_TRUE(comm->newCollTrace != nullptr);
+    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
+    EXPECT_NE(dumpMap["CT_pastColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+
+    auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
     // make sure we are collecting enough records
     EXPECT_GE(NCCL_COLLTRACE_RECORD_MAX, numTimesRunExec);
-    EXPECT_EQ(dump.pastColls.size(), numTimesRunExec);
+    EXPECT_EQ(pastCollsJson.size(), numTimesRunExec);
 
-    for (auto& coll : dump.pastColls) {
-      EXPECT_EQ(coll.opName, "AllToAllDedup");
-      // Count should be nullOpt for AllToAllV at the moment
-      EXPECT_THAT(coll.count, ::testing::Eq(std::nullopt));
-      EXPECT_EQ(coll.dataType, commInt);
-      EXPECT_EQ(coll.algoName, "ctranAllToAllDedup");
+    for (const auto& coll : pastCollsJson) {
+      EXPECT_EQ(coll["opName"].asString(), "AllToAll_Dedup");
+      EXPECT_THAT(
+          coll["algoName"].asString(),
+          testing::HasSubstr("ctranAllToAllDedup"));
     }
 
     size_t sendCount =

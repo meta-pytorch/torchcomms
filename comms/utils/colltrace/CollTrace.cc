@@ -3,6 +3,7 @@
 #include "comms/utils/colltrace/CollTrace.h"
 
 #include <fmt/core.h>
+#include <folly/json.h>
 #include <folly/logging/xlog.h>
 #include <folly/stop_watch.h>
 
@@ -74,12 +75,40 @@ CollTrace::~CollTrace() {
     handle->invalidate();
   }
   // Wait for the thread to finish
-  traceCollThread_.join();
+  if (traceCollThread_.joinable()) {
+    traceCollThread_.join();
+  }
 }
 
 CommsMaybe<std::shared_ptr<CollTraceHandle>> CollTrace::recordCollective(
     std::unique_ptr<ICollMetadata> metadata,
     std::unique_ptr<ICollWaitEvent> waitEvent) noexcept {
+  if (metadata == nullptr) {
+    return folly::makeUnexpected(CommsError(
+        "Received nullptr for metadata during recordCollective",
+        commInternalError));
+  }
+  if (waitEvent == nullptr) {
+    return folly::makeUnexpected(CommsError(
+        "Received nullptr for waitEvent during recordCollective",
+        commInternalError));
+  }
+  if (pendingEnqueueColl_ != nullptr) {
+    XLOG_FIRST_N(
+        ERR,
+        1,
+        fmt::format(
+            "{}: Got another collective enqueued when a previous one haven't finished, colltrace result would be inaccurate. Previous: {}, Next:{}",
+            logPrefix_,
+            folly::toJson(pendingEnqueueColl_->collRecord->toDynamic()),
+            folly::toJson(metadata->toDynamic())));
+    auto handlePtr = eventToHandleMap_.find(pendingEnqueueColl_.get());
+    if (handlePtr != eventToHandleMap_.end()) {
+      handlePtr->second->invalidate();
+      eventToHandleMap_.erase(pendingEnqueueColl_.get());
+    }
+  }
+
   pendingEnqueueColl_ = std::make_unique<CollTraceEvent>(
       std::make_shared<CollRecord>(collId_.fetch_add(1), std::move(metadata)),
       std::move(waitEvent));
@@ -121,9 +150,26 @@ CommsMaybeVoid CollTrace::triggerEventState(
           std::chrono::system_clock::now());
       if (pendingTraceColls_.write(std::move(pendingEnqueueColl_))) {
         return folly::unit;
-      } else {
+        // If the write fails, pendingEnqueueColl_ will not be moved. Do a
+        // check for nullptr as sanity check
+      } else if (pendingEnqueueColl_ != nullptr) {
+        // TODO: This is not safe. But I could not find a better way to do it
+        // as the caller of triggerEventState (which is CollTraceHandle itself)
+        // holds its write lock and calling invalidate here will cause deadlock.
+        eventToHandleMap_.at(pendingEnqueueColl_.get())->invalidateUnsafe();
+        eventToHandleMap_.erase(pendingEnqueueColl_.get());
+        pendingEnqueueColl_ = nullptr;
         return folly::makeUnexpected(CommsError(
             "Failed to write to pendingTraceColls_ queue", commInternalError));
+      } else {
+        // This code should not be reached
+        XLOG_FIRST_N(
+            DBG,
+            1,
+            "pendingEnqueueColl_ is nullptr after write to queue failed");
+        return folly::makeUnexpected(CommsError(
+            "pendingEnqueueColl_ is nullptr after write to pendingTraceColls_ queue",
+            commInternalError));
       }
     }
     case CollTraceHandleTriggerState::KernelStarted: {

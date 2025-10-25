@@ -229,6 +229,23 @@ struct VirtualCqRequest {
   bool sendExtraNotifyImm{false};
 };
 
+class DqplbSeqTracker {
+ public:
+  DqplbSeqTracker() = default;
+  ~DqplbSeqTracker() = default;
+
+  // This helper function calculates sender IMM message in DQPLB mode.
+  inline uint32_t getSendImm(int remainingMsgCnt);
+  // This helper function processes received IMM message and update
+  // receivedSeqNums_ map and receiveNext_ field.
+  inline int processReceivedImm(uint32_t receivedImm);
+
+ private:
+  int sendNext_{0};
+  int receiveNext_{0};
+  std::unordered_map<uint32_t, bool> receivedSeqNums_;
+};
+
 std::ostream& operator<<(std::ostream&, Error const&);
 
 /*** ibverbx APIs ***/
@@ -532,9 +549,7 @@ class IbvVirtualQp {
   IbvQp notifyQp_;
 
   // DQPLB mode specific fields and functions
-  int sendNext_{0};
-  int receiveNext_{0};
-  std::unordered_map<uint32_t, bool> receivedSeqNums_;
+  DqplbSeqTracker dqplbSeqTracker;
   bool dqplbReceiverInitialized_{
       false}; // flag to indicate if dqplb receiver is initialized
   inline folly::Expected<folly::Unit, Error> initializeDqplbReceiver();
@@ -1158,11 +1173,8 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
 
   if (sendWr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
       loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
-    sendWr->imm_data = sendNext_;
-    sendNext_ = (sendNext_ + 1) % kSeqNumMask;
-    if (virtualSendWr.remainingMsgCnt == 1) {
-      sendWr->imm_data |= (1 << kNotifyBit);
-    }
+    sendWr->imm_data =
+        dqplbSeqTracker.getSendImm(virtualSendWr.remainingMsgCnt);
   }
 }
 
@@ -1262,24 +1274,12 @@ inline folly::Expected<VirtualQpResponse, Error> IbvVirtualQp::processRequest(
     response.virtualWrId = physicalRecvWrStatus.virtualWrId;
     physicalQp.physicalRecvWrStatus_.pop_front();
     if (loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
-      int notifyCount = 0;
-      receivedSeqNums_[request.immData & kSeqNumMask] =
-          request.immData & (1U << kNotifyBit);
-      auto it = receivedSeqNums_.find(receiveNext_);
-
-      while (it != receivedSeqNums_.end()) {
-        if (it->second) {
-          notifyCount++;
-        }
-        receivedSeqNums_.erase(it);
-        receiveNext_ = (receiveNext_ + 1) % kSeqNumMask;
-        it = receivedSeqNums_.find(receiveNext_);
-      }
       if (postRecvNotifyImm(qpIdx).hasError()) {
         return folly::makeUnexpected(
             Error(errno, fmt::format("postRecvNotifyImm() failed!")));
       }
-      response.notifyCount = notifyCount;
+      response.notifyCount =
+          dqplbSeqTracker.processReceivedImm(request.immData);
       response.useDqplb = true;
     } else if (qpIdx != -1) {
       if (mapPendingRecvQueToPhysicalQp(qpIdx).hasError()) {
@@ -1596,6 +1596,32 @@ inline VirtualRecvWr::VirtualRecvWr(
     this->wr.sg_list = nullptr;
     this->wr.num_sge = 0;
   }
+}
+
+// DqplbSeqTracker inline functions
+inline uint32_t DqplbSeqTracker::getSendImm(int remainingMsgCnt) {
+  uint32_t immData = sendNext_;
+  sendNext_ = (sendNext_ + 1) % kSeqNumMask;
+  if (remainingMsgCnt == 1) {
+    immData |= (1 << kNotifyBit);
+  }
+  return immData;
+}
+
+inline int DqplbSeqTracker::processReceivedImm(uint32_t immData) {
+  int notifyCount = 0;
+  receivedSeqNums_[immData & kSeqNumMask] = immData & (1U << kNotifyBit);
+  auto it = receivedSeqNums_.find(receiveNext_);
+
+  while (it != receivedSeqNums_.end()) {
+    if (it->second) {
+      notifyCount++;
+    }
+    receivedSeqNums_.erase(it);
+    receiveNext_ = (receiveNext_ + 1) % kSeqNumMask;
+    it = receivedSeqNums_.find(receiveNext_);
+  }
+  return notifyCount;
 }
 
 } // namespace ibverbx

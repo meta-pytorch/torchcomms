@@ -76,18 +76,18 @@ CommsMaybeVoid CollTraceHandle::checkTriggerStateValidity(
 
 CommsMaybeVoid CollTraceHandle::trigger(
     CollTraceHandleTriggerState state) noexcept {
-  auto stateReadLocked = state_.rlock();
-  if (stateReadLocked->referenceInvalidated_) [[unlikely]] {
+  auto stateWriteLocked = state_.wlock();
+  if (stateWriteLocked->referenceInvalidated_) [[unlikely]] {
     return folly::makeUnexpected(
         CommsError("Handle is invalidated", commInvalidArgument));
   }
 
-  if (stateReadLocked->collTrace_ == nullptr) [[unlikely]] {
+  if (stateWriteLocked->collTrace_ == nullptr) [[unlikely]] {
     return folly::makeUnexpected(CommsError(
         "CollTrace is null, cannot trigger event state", commInternalError));
   }
 
-  if (stateReadLocked->event_ == nullptr) [[unlikely]] {
+  if (stateWriteLocked->event_ == nullptr) [[unlikely]] {
     return folly::makeUnexpected(CommsError(
         "CollTraceEvent is null, cannot trigger event state",
         commInternalError));
@@ -95,8 +95,8 @@ CommsMaybeVoid CollTraceHandle::trigger(
 
   EXPECT_CHECK(checkTriggerStateValidity(state));
 
-  auto res = stateReadLocked->collTrace_->triggerEventState(
-      *stateReadLocked->event_, state);
+  auto res = stateWriteLocked->collTrace_->triggerEventState(
+      *stateWriteLocked->event_, state);
   if (!res.hasError()) {
     lastTriggerState_.store(state);
   }
@@ -131,6 +131,10 @@ CommsMaybeVoid CollTraceHandle::invalidate() noexcept {
   state_.wlock()->referenceInvalidated_ = true;
 
   return folly::unit;
+}
+
+void CollTraceHandle::invalidateUnsafe() noexcept {
+  state_.unsafeGetUnlocked().referenceInvalidated_ = true;
 }
 
 } // namespace meta::comms::colltrace

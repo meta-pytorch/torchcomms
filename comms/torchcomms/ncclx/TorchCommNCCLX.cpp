@@ -1445,29 +1445,6 @@ const char* NCCLException::what() const noexcept {
   return message_.c_str();
 }
 
-// Dynamic loader interface implementation for PTCommNCCLX
-static TorchCommBackend* new_comm_impl() {
-  return new TorchCommNCCLX();
-}
-
-static void destroy_comm_impl(TorchCommBackend* comm) {
-  delete comm;
-}
-
-static const char* get_supported_version_impl() {
-  return TORCHCOMM_BACKEND_ABI_VERSION;
-}
-
-// Factory function for dynamic loading
-extern "C" DynamicLoaderInterface create_dynamic_loader_ncclx() {
-  DynamicLoaderInterface interface{
-      .new_comm = new_comm_impl,
-      .destroy_comm = destroy_comm_impl,
-      .get_supported_version = get_supported_version_impl,
-  };
-  return interface;
-}
-
 namespace {
 class NCCLXRegistration {
  public:
