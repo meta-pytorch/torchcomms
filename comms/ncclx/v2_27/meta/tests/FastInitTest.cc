@@ -11,6 +11,7 @@
 #include "comm.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
+#include "comms/testinfra/tests_common.cuh"
 #include "nccl.h"
 
 void printCommStateX(const ncclComm& comm) {
@@ -22,12 +23,31 @@ void printCommStateX(const ncclComm& comm) {
   VLOG(1) << "=================";
 }
 
+void validateCtranInitialization(
+    ncclComm_t comm,
+    int expectedRank,
+    int expectedNRanks,
+    int expectedCudaDev) {
+  EXPECT_EQ(comm->rank, expectedRank);
+  EXPECT_EQ(comm->nRanks, expectedNRanks);
+  EXPECT_EQ(comm->cudaDev, expectedCudaDev);
+
+  ASSERT_NE(nullptr, comm->ctranComm_);
+  ASSERT_NE(nullptr, comm->ctranComm_->statex_);
+  ASSERT_NE(nullptr, comm->ctranComm_->bootstrap_);
+  ASSERT_NE(nullptr, comm->ctranComm_->collTrace_);
+  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+  EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
+  EXPECT_EQ(comm->commHash, comm->ctranComm_->statex_->commHash());
+}
+
 TEST_P(NcclxBaseTestFixture, NcclCommInitWorldAndDestroy) {
-  ncclComm_t rootComm;
+  ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
   ASSERT_NE(nullptr, rootComm);
+  validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
   const auto statex = rootComm->ctranComm_->statex_.get();
   if (statex->nNodes() == 1) {
@@ -45,11 +65,12 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWorldAndDestroy) {
 }
 
 TEST_P(NcclxBaseTestFixture, NcclCommInitWorldAndAbort) {
-  ncclComm_t rootComm;
+  ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
   ASSERT_NE(nullptr, rootComm);
+  validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
   void* sendBuf;
   void* recvBuf;
@@ -87,13 +108,14 @@ void compareComm(const ncclComm& comm1, const ncclComm& comm2) {
 }
 
 TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
-  ncclComm_t rootComm;
+  ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
   ASSERT_NE(nullptr, rootComm);
+  validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
-  ncclComm_t childComm;
+  ncclComm_t childComm = nullptr;
   ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
   childCommConfig.commDesc = "child_communicator";
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
@@ -143,11 +165,12 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
 // we can split the same group rank multiple times
 // we should expect unique hash for each communicator
 TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
-  ncclComm_t rootComm;
+  ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
   ASSERT_NE(nullptr, rootComm);
+  validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
   const auto statex = rootComm->ctranComm_->statex_.get();
 
   if (statex->nNodes() == 1) {
@@ -166,13 +189,13 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
   childCommConfig.splitGroupRanks = groupRanks;
   childCommConfig.splitGroupSize = groupSize;
 
-  ncclComm_t childComm1;
+  ncclComm_t childComm1 = nullptr;
   NCCLCHECK_TEST(ncclCommSplit(
       rootComm, globalRank % 2, globalRank / 2, &childComm1, &childCommConfig));
   ASSERT_NE(nullptr, childComm1);
 
   // split again with same config
-  ncclComm_t childComm2;
+  ncclComm_t childComm2 = nullptr;
   NCCLCHECK_TEST(ncclCommSplit(
       rootComm, globalRank % 2, globalRank / 2, &childComm2, &childCommConfig));
   ASSERT_NE(nullptr, childComm2);
@@ -189,11 +212,12 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
 }
 
 TEST_P(NcclxBaseTestFixture, WorldCommAllGather) {
-  ncclComm_t rootComm;
+  ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
   ASSERT_NE(nullptr, rootComm);
+  validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
   const auto statex = rootComm->ctranComm_->statex_.get();
 
   if (statex->nNodes() == 1) {
@@ -238,18 +262,19 @@ TEST_P(NcclxBaseTestFixture, WorldCommAllGather) {
 }
 
 TEST_P(NcclxBaseTestFixture, ChildCommAllGather) {
-  ncclComm_t rootComm;
+  ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
   ASSERT_NE(nullptr, rootComm);
+  validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
   const auto statex = rootComm->ctranComm_->statex_.get();
   if (statex->nNodes() == 1) {
     NCCLCHECK_TEST(ncclCommDestroy(rootComm));
     GTEST_SKIP() << "Skip test since only one node provided";
   }
 
-  ncclComm_t childComm;
+  ncclComm_t childComm = nullptr;
   ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
   childCommConfig.commDesc = "child_communicator";
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
@@ -303,7 +328,7 @@ TEST_P(NcclxBaseTestFixture, ChildCommAllGather) {
 }
 
 TEST_P(NcclxBaseTestFixture, NcclCommSplitNoColor) {
-  ncclComm_t rootComm;
+  ncclComm_t rootComm = nullptr;
   ncclComm_t childComm = NCCL_COMM_NULL;
   ncclUniqueId commId;
   ncclConfig_t rootConfig = NCCL_CONFIG_INITIALIZER;
@@ -314,6 +339,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitNoColor) {
   NCCLCHECK_TEST(ncclCommInitRankConfig(
       &rootComm, numRanks, commId, globalRank, &rootConfig));
   ASSERT_NE(nullptr, rootComm);
+  validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
   const auto statex = rootComm->ctranComm_->statex_.get();
   EXPECT_NE(statex, nullptr);
@@ -360,7 +386,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitNoColor) {
 }
 
 TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
-  ncclComm_t comm1, comm2;
+  ncclComm_t comm1 = nullptr, comm2 = nullptr;
   ncclUniqueId commId1, commId2;
 
   // Create first comm with commDesc "comm_desc_1"
@@ -369,6 +395,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&comm1, numRanks, commId1, globalRank, &config1));
   ASSERT_NE(nullptr, comm1);
+  validateCtranInitialization(comm1, globalRank, numRanks, localRank);
 
   // Create second comm with commDesc "comm_desc_2"
   ncclConfig_t config2 = NCCL_CONFIG_INITIALIZER;
@@ -376,6 +403,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&comm2, numRanks, commId2, globalRank, &config2));
   ASSERT_NE(nullptr, comm2);
+  validateCtranInitialization(comm2, globalRank, numRanks, localRank);
 
   // Verify both comms are valid and have correct properties
   const auto statex1 = comm1->ctranComm_->statex_.get();
@@ -401,6 +429,8 @@ INSTANTIATE_TEST_SUITE_P(
     NcclxBaseTestFixture,
     testing::Values(NcclxEnvs({
         {"NCCL_FASTINIT_MODE", "ring_hybrid"},
+        {"NCCL_CTRAN_ENABLE", "1"},
+        {"NCCL_COLLTRACE", "trace"},
     })),
     [](const testing::TestParamInfo<NcclxBaseTestFixture::ParamType>& info) {
       // generate test-name for a given NcclxEnvs
