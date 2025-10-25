@@ -26,7 +26,7 @@ inline cudaError_t getStreamCaptureInfo(
 #endif
 }
 
-commResult_t addHostNode(
+inline commResult_t addHostNode(
     void* objectPtr,
     void* data,
     cudaHostFn_t execCallback,

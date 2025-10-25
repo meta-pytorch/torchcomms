@@ -12,6 +12,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/CtranExImpl.h"
+#include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
@@ -19,6 +20,13 @@
 
 typedef commResult_t (*opFunc)(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup);
+
+namespace ctran {
+using PersistentObj =
+    std::variant<std::monostate, std::unique_ptr<ctran::alltoallp::AlgoImpl>>;
+using PreLaunchGraphPrepareFn =
+    commResult_t (*)(opFunc& opFunc, struct OpElem* op, PersistentObj& pObj);
+} // namespace ctran
 
 struct OpElem {
   enum opType {
@@ -369,7 +377,8 @@ class CtranGpe {
       opFunc func,
       KernelConfig& kernelConfig,
       const void* ncclKernel,
-      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt,
+      ctran::PreLaunchGraphPrepareFn graphPrepareFn = nullptr);
 
   // Submit host mem communication. No kernel is launched, and only the host
   // side func will be submitted to the GPE thread. Also the op won't be
