@@ -4,6 +4,7 @@
 
 #include <folly/logging/xlog.h>
 
+#include "comms/utils/RankUtils.h"
 #include "comms/utils/colltrace/CPUWaitEvent.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
@@ -420,7 +421,11 @@ std::shared_ptr<ICollTraceHandle> getNewCollTraceHandle(
   }
 
   if (isCapturingStream(kernelConfig.stream)) {
-    XLOG(FATAL, "TODO: support for cuda stream");
+    if (RankUtils::getGlobalRank().value_or(0) == 0) {
+      XLOG_FIRST_N(
+          WARN, 1, "CollTrace currently doesn't support capturing streams");
+    }
+    return std::make_unique<DummyCollTraceHandle>();
   }
 
   auto metadata = getMetadata(comm, opGroup, kernelConfig);
