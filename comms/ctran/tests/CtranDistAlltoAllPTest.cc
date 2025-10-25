@@ -11,10 +11,13 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
+#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
+
+#include <folly/json/json.h>
 
 class ctranAllToAllPTest : public CtranDistBaseTest {
  public:
@@ -87,6 +90,10 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
   }
 
   void SetUp() override {
+    setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+    // -1 for not limiting the number of colls to trace
+    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     CtranDistBaseTest::SetUp();
     comm = commWorld;
     if (!ctran::AllToAllPSupport(comm->ctranComm_.get())) {
@@ -115,7 +122,8 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
   }
 
   void run() {
-    comm->ctranComm_->collTrace_->resetPastColls();
+    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
+        comm->ctranComm_.get()));
 
     // Initialize double persistent requests using double recv buffer allocated.
     std::array<CtranPersistentRequest*, 2> doublePRequests;
@@ -165,31 +173,37 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
       ASSERT_EQ(destroyRes, commSuccess);
     }
 
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    // Sleep for a while to make sure all the colls are finished
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-    auto dump = comm->ctranComm_->collTrace_->dump();
+    ASSERT_TRUE(comm->newCollTrace != nullptr);
+    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
+    EXPECT_NE(dumpMap["CT_pastColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+
+    auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
     auto statex = comm->ctranComm_->statex_.get();
     // If there are remote peers, AllToAllPInit submits gpe op and was recorded
     // by colltrace.
     int numTimesRunInit = statex->nNodes() == 1 ? 0 : 2;
-    EXPECT_EQ(dump.pastColls.size(), numTimesRunInit + numTimesRunExec);
+    EXPECT_EQ(pastCollsJson.size(), numTimesRunInit + numTimesRunExec);
 
     // Skip the check for the AllToAllPInit (first 2) colls.
-    for (int i = numTimesRunInit; i < dump.pastColls.size(); i++) {
-      auto& coll = dump.pastColls[i];
+    for (int i = numTimesRunInit; i < pastCollsJson.size(); i++) {
+      const auto& coll = pastCollsJson[i];
       if (statex->nNodes() == 1) {
         // If only cuda kernel is launched (no IB put), AlltoAllP is essentially
         // alltoall because it shares cuda kernel logic with AlltoAll.
-        EXPECT_EQ(coll.opName, "AllToAll");
+        EXPECT_EQ(coll["opName"].asString(), "AllToAll");
       } else {
-        EXPECT_EQ(coll.opName, "AllToAllP");
+        EXPECT_EQ(coll["opName"].asString(), "AllToAllP");
       }
-      EXPECT_THAT(coll.count, ::testing::Eq(counts[i - numTimesRunInit]));
-      EXPECT_EQ(coll.dataType, commInt);
+      EXPECT_EQ(coll["count"].asInt(), counts[i - numTimesRunInit]);
       EXPECT_EQ(
-          coll.algoName,
+          coll["algoName"].asString(),
           ctran::alltoallp::AlgoImpl::algoName(NCCL_ALLTOALL_ALGO::ctran));
     }
 

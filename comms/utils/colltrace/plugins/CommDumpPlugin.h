@@ -65,6 +65,11 @@ class CommDumpPlugin : public ICollTracePlugin {
   // CommDump specific API, supposed to be called by the dump (user) thread
   CommsMaybe<CollTraceDump> dump() noexcept;
 
+  // For testing purpose only. This API is NOT thread safe! Clears all the
+  // recorded colls. Please make sure all the previous colls are processed
+  // before calling this API. Otherwise, the result might be unexpected.
+  CommsMaybeVoid testOnlyClearColls() noexcept;
+
   static constexpr std::string_view kCommDumpPluginName = "CommDumpPlugin";
 
  private:

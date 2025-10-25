@@ -10,11 +10,14 @@
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
+#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
+
+#include <folly/json/json.h>
 
 // Reduce the value range to avoid integer overflow when running large count
 constexpr size_t VAL_RANGE = 1000;
@@ -35,6 +38,10 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
   ncclComm_t comm;
 
   void SetUp() override {
+    setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+    // -1 for not limiting the number of colls to trace
+    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     CtranDistBaseTest::SetUp();
     comm = commWorld;
     if (!ctranReduceScatterSupport(comm->ctranComm_.get())) {
@@ -184,7 +191,8 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
     }
 
     memorySetUp(memType, count, redOp, regist);
-    comm->ctranComm_->collTrace_->resetPastColls();
+    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
+        comm->ctranComm_.get()));
 
     T* recvBufComm = recvBuf;
     if (inplace == kTestInPlace) {
@@ -206,20 +214,26 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
         {CtranMapperBackend::NVL});
     verifyGpeLeak(comm->ctranComm_->ctran_.get());
 
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    // Sleep for a while to make sure all the colls are finished
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    ASSERT_TRUE(comm->newCollTrace != nullptr);
+    auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
+    EXPECT_NE(dumpMap["CT_pastColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+    EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+
+    auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+    EXPECT_EQ(pastCollsJson.size(), 1);
+
+    const auto& lastColl = pastCollsJson[0];
+    EXPECT_EQ(lastColl["opName"].asString(), "ReduceScatter");
+    EXPECT_EQ(lastColl["count"].asInt(), count);
+    EXPECT_EQ(lastColl["algoName"].asString(), reduceScatterAlgoName(algo));
+
     memoryCleanUp(memType);
-
-    // CollTrace is updated by a separate thread, need wait for it to finish to
-    // avoid flaky test
-    comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-
-    auto dump = comm->ctranComm_->collTrace_->dump();
-    EXPECT_EQ(dump.pastColls.size(), 1);
-
-    auto lastColl = dump.pastColls.back();
-    EXPECT_EQ(lastColl.opName, "ReduceScatter");
-    EXPECT_EQ(lastColl.count, count);
-    EXPECT_EQ(lastColl.dataType, dt);
-    EXPECT_EQ(lastColl.algoName, reduceScatterAlgoName(algo));
   }
 };
 

@@ -10,11 +10,14 @@
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/Broadcast/BroadcastImpl.h"
+#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
+
+#include <folly/json/json.h>
 
 class CtranBroadcastTest : public CtranDistBaseTest {
  public:
@@ -26,6 +29,10 @@ class CtranBroadcastTest : public CtranDistBaseTest {
   std::vector<void*> segHandles;
 
   void SetUp() override {
+    setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+    // -1 for not limiting the number of colls to trace
+    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
 #ifdef CTRAN_TEST_SOCKET_ONLY_BACKEND
     setenv("NCCL_CTRAN_BACKENDS", "socket, nvl", 1);
 #endif
@@ -108,7 +115,8 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
   const int sendRank = 0;
   void* base = prepareBuf(bufSize, memType, segments);
 
-  comm->ctranComm_->collTrace_->resetPastColls();
+  ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
+      comm->ctranComm_.get()));
 
   for (auto& segment : segments) {
     void* hdl = nullptr;
@@ -161,18 +169,31 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
 
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
-  comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
-  auto dump = comm->ctranComm_->collTrace_->dump();
-  ASSERT_EQ(dump.pastColls.size(), 1);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  // Sleep for a while to make sure all the colls are finished
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  auto& coll = dump.pastColls.back();
-  EXPECT_EQ(coll.opName, "Broadcast");
-  EXPECT_THAT(coll.count, ::testing::Optional(count));
-  EXPECT_EQ(coll.dataType, dt);
+  ASSERT_TRUE(comm->newCollTrace != nullptr);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
+  EXPECT_NE(dumpMap["CT_pastColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+
+  auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+  EXPECT_EQ(pastCollsJson.size(), 1);
+
+  const auto& coll = pastCollsJson[0];
+  EXPECT_EQ(coll["opName"].asString(), "Broadcast");
+  EXPECT_EQ(coll["count"].asInt(), count);
   if (binomialTreeAlgo) {
-    EXPECT_EQ(coll.algoName, broadcastAlgoName(NCCL_BROADCAST_ALGO::ctbtree));
+    EXPECT_EQ(
+        coll["algoName"].asString(),
+        broadcastAlgoName(NCCL_BROADCAST_ALGO::ctbtree));
   } else {
-    EXPECT_EQ(coll.algoName, broadcastAlgoName(NCCL_BROADCAST_ALGO::ctdirect));
+    EXPECT_EQ(
+        coll["algoName"].asString(),
+        broadcastAlgoName(NCCL_BROADCAST_ALGO::ctdirect));
   }
 
   if (globalRank == sendRank) {

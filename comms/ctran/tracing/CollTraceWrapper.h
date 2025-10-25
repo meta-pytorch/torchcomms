@@ -35,4 +35,6 @@ void setCollTraceLegacyHandleFunc(
         const KernelConfig&,
         const bool)> func);
 
+bool testOnlyClearCollTraceRecords(CtranComm* comm);
+
 } // namespace meta::comms::colltrace

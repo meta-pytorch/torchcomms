@@ -11,11 +11,14 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
+#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
-#include "meta/colltrace/CollTrace.h"
+#include "meta/commDump.h"
+
+#include <folly/json/json.h>
 
 class CtranAllgatherTest : public CtranDistBaseTest {
  public:
@@ -32,6 +35,10 @@ class CtranAllgatherTest : public CtranDistBaseTest {
   ncclComm_t comm;
 
   void SetUp() override {
+    setenv("NCCL_COLLTRACE", "trace", 0);
+    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+    // -1 for not limiting the number of colls to trace
+    setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     CtranDistBaseTest::SetUp();
     comm = commWorld;
     segments.clear();
@@ -125,9 +132,6 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
 
   // CollTrace will help check whether the specified algo is used
   EnvRAII env(NCCL_ALLGATHER_ALGO, algo);
-  // Ensure CollTrace won't drop any record
-  EnvRAII envCollTrace(
-      NCCL_COLLTRACE_RECORD_MAX, iter * (1 + (pairColl != kTestPairNone)));
 
   if (memType == kCuMemAllocDisjoint &&
       (!comm->dmaBufSupport || !NCCL_CTRAN_IB_DMABUF_ENABLE)) {
@@ -163,7 +167,8 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   std::vector<std::string> expOpNames;
   std::vector<std::string> expAlgoNames;
 
-  comm->ctranComm_->collTrace_->resetPastColls();
+  ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
+      comm->ctranComm_.get()));
 
   for (int x = 0; x < iter; x++) {
     expOpNames.push_back("AllGather");
@@ -209,18 +214,25 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
       {CtranMapperBackend::NVL});
   verifyGpeLeak(comm->ctranComm_->ctran_.get());
 
-  // CollTrace is updated by a separate thread, need wait for it to finish to
-  // avoid flaky test
-  comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  // Sleep for a while to make sure all the colls are finished
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  auto dump = comm->ctranComm_->collTrace_->dump();
-  EXPECT_EQ(dump.pastColls.size(), expOpNames.size());
+  ASSERT_TRUE(comm->newCollTrace != nullptr);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
+  EXPECT_NE(dumpMap["CT_pastColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+
+  auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+  EXPECT_EQ(pastCollsJson.size(), expOpNames.size());
   int idx = 0;
-  for (auto& coll : dump.pastColls) {
-    EXPECT_EQ(coll.opName, expOpNames.at(idx));
-    EXPECT_EQ(coll.count, count);
-    EXPECT_EQ(coll.dataType, dt);
-    EXPECT_EQ(coll.algoName, expAlgoNames.at(idx));
+  for (const auto& coll : pastCollsJson) {
+    EXPECT_EQ(coll["opName"].asString(), expOpNames.at(idx));
+    EXPECT_EQ(coll["count"].asInt(), count);
+    EXPECT_THAT(
+        coll["algoName"].asString(), testing::HasSubstr(expAlgoNames.at(idx)));
     idx++;
   }
 
@@ -384,8 +396,6 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
   // CollTrace will help check whether the specified algo is used
   EnvRAII env(NCCL_ALLGATHER_ALGO, algo);
   // Ensure CollTrace won't drop any record
-  EnvRAII envCollTrace(
-      NCCL_COLLTRACE_RECORD_MAX, iter * (1 + (pairColl != kTestPairNone)));
 
   memorySetUp(kMemNcclMemAlloc, offset, count, inplace, pairColl);
 
@@ -399,7 +409,8 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
   std::vector<std::string> expOpNames;
   std::vector<std::string> expAlgoNames;
 
-  comm->ctranComm_->collTrace_->resetPastColls();
+  ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
+      comm->ctranComm_.get()));
 
   for (int x = 0; x < iter; x++) {
     expOpNames.emplace_back("AllGather");
@@ -445,18 +456,25 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
       {CtranMapperBackend::NVL});
   verifyGpeLeak(comm->ctranComm_->ctran_.get());
 
-  // CollTrace is updated by a separate thread, need wait for it to finish to
-  // avoid flaky test
-  comm->ctranComm_->collTrace_->waitForWorkerFinishQueue();
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  // Sleep for a while to make sure all the colls are finished
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  auto dump = comm->ctranComm_->collTrace_->dump();
-  EXPECT_EQ(dump.pastColls.size(), expOpNames.size());
+  ASSERT_TRUE(comm->newCollTrace != nullptr);
+  auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
+
+  EXPECT_NE(dumpMap["CT_pastColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
+  EXPECT_EQ(dumpMap["CT_currentColl"], "null");
+
+  auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+  EXPECT_EQ(pastCollsJson.size(), expOpNames.size());
   int idx = 0;
-  for (auto& coll : dump.pastColls) {
-    EXPECT_EQ(coll.opName, expOpNames.at(idx));
-    EXPECT_EQ(coll.count, count);
-    EXPECT_EQ(coll.dataType, dt);
-    EXPECT_EQ(coll.algoName, expAlgoNames.at(idx));
+  for (const auto& coll : pastCollsJson) {
+    EXPECT_EQ(coll["opName"].asString(), expOpNames.at(idx));
+    EXPECT_EQ(coll["count"].asInt(), count);
+    EXPECT_THAT(
+        coll["algoName"].asString(), testing::HasSubstr(expAlgoNames.at(idx)));
     idx++;
   }
 
