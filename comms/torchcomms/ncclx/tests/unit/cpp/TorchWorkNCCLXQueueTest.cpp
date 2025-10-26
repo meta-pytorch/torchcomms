@@ -146,16 +146,12 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
     EXPECT_CALL(*mock_hook_, clear()).Times(times_clear);
   }
 
-  void checkWorkQueue(bool isMainThread) {
-    comm_->checkWorkQueue(isMainThread);
+  void checkWorkQueue() {
+    comm_->checkWorkQueue();
   }
 
   const auto& getStreamWorkQueues() {
     return comm_->workq_.stream_work_queues_;
-  }
-
-  const auto& getCompletedWorkQueue() {
-    return comm_->workq_.completed_work_queue_;
   }
 
   cudaEvent_t getAsyncDependencyEvent() {
@@ -180,7 +176,7 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
 
 TEST_F(TorchWorkNCCLXQueueTest, GarbageCollectEmptyQueue) {
   // Test garbage collection on empty queue
-  auto status = queue_->garbageCollect(false);
+  auto status = queue_->garbageCollect();
   EXPECT_EQ(status, TorchWorkNCCLX::WorkStatus::COMPLETED);
 }
 
@@ -191,9 +187,9 @@ TEST_F(TorchWorkNCCLXQueueTest, FinalizeEmptyQueue) {
 
 TEST_F(TorchWorkNCCLXQueueTest, MultipleGarbageCollectCalls) {
   // Multiple garbage collect calls on empty queue should be safe
-  auto status1 = queue_->garbageCollect(false);
-  auto status2 = queue_->garbageCollect(false);
-  auto status3 = queue_->garbageCollect(true);
+  auto status1 = queue_->garbageCollect();
+  auto status2 = queue_->garbageCollect();
+  auto status3 = queue_->garbageCollect();
 
   EXPECT_EQ(status1, TorchWorkNCCLX::WorkStatus::COMPLETED);
   EXPECT_EQ(status2, TorchWorkNCCLX::WorkStatus::COMPLETED);
@@ -202,7 +198,7 @@ TEST_F(TorchWorkNCCLXQueueTest, MultipleGarbageCollectCalls) {
 
 TEST_F(TorchWorkNCCLXQueueTest, MultipleFinalizeCallsAfterGarbageCollect) {
   // Garbage collect first
-  auto gc_status = queue_->garbageCollect(false);
+  auto gc_status = queue_->garbageCollect();
   EXPECT_EQ(gc_status, TorchWorkNCCLX::WorkStatus::COMPLETED);
 
   // Multiple finalize calls should be safe
@@ -215,8 +211,8 @@ TEST_F(TorchWorkNCCLXQueueTest, MultipleFinalizeCallsAfterGarbageCollect) {
 
 TEST_F(TorchWorkNCCLXQueueTest, GarbageCollectMainThreadFlag) {
   // Test that the isMainThread flag doesn't cause issues on empty queue
-  auto status1 = queue_->garbageCollect(false);
-  auto status2 = queue_->garbageCollect(true);
+  auto status1 = queue_->garbageCollect();
+  auto status2 = queue_->garbageCollect();
 
   EXPECT_EQ(status1, TorchWorkNCCLX::WorkStatus::COMPLETED);
   EXPECT_EQ(status2, TorchWorkNCCLX::WorkStatus::COMPLETED);
@@ -232,17 +228,16 @@ TEST_F(TorchWorkNCCLXQueueTest, ConcurrentGarbageCollectCalls) {
   // mutex-protected operations work correctly with multiple calls
 
   for (int i = 0; i < 10; ++i) {
-    auto status =
-        queue_->garbageCollect(i % 2 == 0); // Alternate main thread flag
+    auto status = queue_->garbageCollect();
     EXPECT_EQ(status, TorchWorkNCCLX::WorkStatus::COMPLETED);
   }
 }
 
 TEST_F(TorchWorkNCCLXQueueTest, ConcurrentFinalizeAndGarbageCollect) {
   // Test that finalize and garbage collect can be called in sequence safely
-  auto gc_status = queue_->garbageCollect(false);
+  auto gc_status = queue_->garbageCollect();
   auto finalize_status = queue_->finalize();
-  auto gc_status2 = queue_->garbageCollect(true);
+  auto gc_status2 = queue_->garbageCollect();
 
   EXPECT_EQ(gc_status, TorchWorkNCCLX::WorkStatus::COMPLETED);
   EXPECT_EQ(finalize_status, TorchWorkNCCLX::WorkStatus::COMPLETED);
@@ -278,7 +273,7 @@ TEST_F(TorchWorkNCCLXQueueTest, QueueCreationAndDestruction) {
   EXPECT_NE(queue2, nullptr);
 
   // Test basic operations on new queue
-  auto status = queue2->garbageCollect(false);
+  auto status = queue2->garbageCollect();
   EXPECT_EQ(status, TorchWorkNCCLX::WorkStatus::COMPLETED);
 
   status = queue2->finalize();
@@ -294,8 +289,8 @@ TEST_F(TorchWorkNCCLXQueueTest, MultipleQueuesIndependent) {
   auto queue3 = std::make_unique<TorchWorkNCCLXQueue>();
 
   // Operations on different queues should not interfere
-  auto status1 = queue_->garbageCollect(false);
-  auto status2 = queue2->garbageCollect(true);
+  auto status1 = queue_->garbageCollect();
+  auto status2 = queue2->garbageCollect();
   auto status3 = queue3->finalize();
 
   EXPECT_EQ(status1, TorchWorkNCCLX::WorkStatus::COMPLETED);
@@ -322,12 +317,11 @@ TEST_F(TorchWorkNCCLXQueueCommTest, NoLeakedObjectsAfterFinalize) {
   auto work = comm_->send(tensor, 1, true); // async send
 
   // Simulate the timeout thread calling checkWorkQueue
-  checkWorkQueue(/*isMainThread=*/false);
+  checkWorkQueue();
   // Comm finalize will call the work queue finalize().
   comm_->finalize();
 
   EXPECT_EQ(getStreamWorkQueues().size(), 0);
-  EXPECT_EQ(getCompletedWorkQueue().size(), 0);
 }
 
 TEST_F(TorchWorkNCCLXQueueCommTest, NoFailureUnderCudaGraphMode) {
@@ -370,12 +364,11 @@ TEST_F(TorchWorkNCCLXQueueCommTest, NoFailureUnderCudaGraphMode) {
   auto work = comm_->send(tensor, 1, true); // async send
 
   // Simulate the timeout thread calling checkWorkQueue
-  checkWorkQueue(/*isMainThread=*/false);
+  checkWorkQueue();
   // Comm finalize will call the work queue finalize().
   comm_->finalize();
 
   EXPECT_EQ(getStreamWorkQueues().size(), 0);
-  EXPECT_EQ(getCompletedWorkQueue().size(), 0);
 }
 
 } // namespace comms

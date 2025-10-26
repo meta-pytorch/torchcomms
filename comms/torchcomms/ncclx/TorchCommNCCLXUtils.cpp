@@ -157,8 +157,8 @@ NcclxWindowCmpOp TorchCommNCCLX::getNcclSignalCmpOp(SignalCmpOp op) {
 #endif
 }
 
-void TorchCommNCCLX::checkWorkQueue(bool isMainThread) {
-  TorchWorkNCCLX::WorkStatus status = workq_.garbageCollect(isMainThread);
+void TorchCommNCCLX::checkWorkQueue() {
+  TorchWorkNCCLX::WorkStatus status = workq_.garbageCollect();
 
   switch (status) {
     case TorchWorkNCCLX::WorkStatus::TIMEDOUT:
@@ -192,7 +192,7 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
     }
 
     // Check work objects for completion or timeout
-    checkWorkQueue(false);
+    checkWorkQueue();
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {
       // Log the error and abort the process.  We cannot abort the NCCL
@@ -226,7 +226,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
   }
 
   // First, check work queue status
-  checkWorkQueue(true);
+  checkWorkQueue();
 
   if (comm_state_ == CommState::TIMEOUT) {
     abortNcclComm();
