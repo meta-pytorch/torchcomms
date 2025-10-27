@@ -119,8 +119,9 @@ commResult_t ctranAllToAll(
       stream,
       allToAllAlgoName(myAlgo),
       opCount);
-  FB_COMMCHECK(ctran::alltoall::setupKernelConfig(
-      sendbuff, recvbuff, count, datatype, comm, stream, config));
+  FB_COMMCHECK(
+      ctran::alltoall::setupKernelConfig(
+          sendbuff, recvbuff, count, datatype, comm, stream, config));
 
   // prepare operation for IB path
   std::vector<std::unique_ptr<struct OpElem>> opGroup;

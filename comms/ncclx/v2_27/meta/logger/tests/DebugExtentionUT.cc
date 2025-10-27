@@ -131,16 +131,19 @@ TEST_F(DebugExtTest, TestThreeSeperateWarnLog) {
   for (int i = logCount; i < iterCount; i++) {
     EXPECT_THAT(
         output,
-        testing::Not(testing::HasSubstr(
-            fmt::format("[first] test warning for {} times", i))));
+        testing::Not(
+            testing::HasSubstr(
+                fmt::format("[first] test warning for {} times", i))));
     EXPECT_THAT(
         output,
-        testing::Not(testing::HasSubstr(
-            fmt::format("[second] test warning for {} times", i))));
+        testing::Not(
+            testing::HasSubstr(
+                fmt::format("[second] test warning for {} times", i))));
     EXPECT_THAT(
         output,
-        testing::Not(testing::HasSubstr(
-            fmt::format("[third] test warning for {} times", i))));
+        testing::Not(
+            testing::HasSubstr(
+                fmt::format("[third] test warning for {} times", i))));
   }
   finishLogging();
 }

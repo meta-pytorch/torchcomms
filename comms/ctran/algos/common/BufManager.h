@@ -144,7 +144,7 @@ class BufManager {
       : mapper_(mapper),
         statex_(statex),
         logMetaData_(logMetaData),
-        memKey_(memKey){};
+        memKey_(memKey) {};
   ~BufManager() {
     // It is recommended to call release() explicitly to catch any error
     FB_COMMCHECKIGNORE(release());

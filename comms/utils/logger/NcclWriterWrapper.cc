@@ -6,7 +6,7 @@ namespace meta::comms::logger {
 NcclWriterWrapper::NcclWriterWrapper(
     std::shared_ptr<folly::LogWriter> mainWriter,
     std::shared_ptr<folly::LogWriter> warnWriter)
-    : mainWriter_(std::move(mainWriter)), warnWriter_(std::move(warnWriter)){};
+    : mainWriter_(std::move(mainWriter)), warnWriter_(std::move(warnWriter)) {};
 
 void NcclWriterWrapper::writeMessage(
     folly::StringPiece buffer,

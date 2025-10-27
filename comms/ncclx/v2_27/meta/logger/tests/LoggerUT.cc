@@ -100,18 +100,21 @@ class NcclLoggerTest : public ::testing::Test, public ScubaLoggerTestMixin {
   }
 
   void CommEventWriteLog() {
-    NcclScubaEvent event(std::make_unique<CommEvent>(
-        &kcommLogMetadata, keventStage[0], keventStage[0]));
+    NcclScubaEvent event(
+        std::make_unique<CommEvent>(
+            &kcommLogMetadata, keventStage[0], keventStage[0]));
     event.record();
 
-    NcclScubaEvent event1(std::make_unique<CommEvent>(
-        &kcommLogMetadata, "BootStrap", "BootStrap"));
+    NcclScubaEvent event1(
+        std::make_unique<CommEvent>(
+            &kcommLogMetadata, "BootStrap", "BootStrap"));
     event1.startAndRecord();
     event1.stopAndRecord();
 
     // test logging localRank, localRanks
-    NcclScubaEvent event2(std::make_unique<CommEvent>(
-        &kcommLogMetadata, kRank / 2, kNranks / 2, keventStage[0]));
+    NcclScubaEvent event2(
+        std::make_unique<CommEvent>(
+            &kcommLogMetadata, kRank / 2, kNranks / 2, keventStage[0]));
     event2.record();
   }
 
@@ -200,8 +203,9 @@ TEST_F(NcclLoggerTest, EventStdout) {
   // no stdout event logging
   initLogging();
   testing::internal::CaptureStdout();
-  NcclScubaEvent event(std::make_unique<CommEvent>(
-      &kcommLogMetadata, "CommInit START", "CommInitRank"));
+  NcclScubaEvent event(
+      std::make_unique<CommEvent>(
+          &kcommLogMetadata, "CommInit START", "CommInitRank"));
   event.record();
   finishLogging();
 
@@ -321,8 +325,9 @@ TEST_F(NcclLoggerTest, CommConcurrentLog) {
         auto stage =
             "Bootstrap_" + std::to_string(i) + "_" + std::to_string(stageID);
 
-        NcclScubaEvent event(std::make_unique<CommEvent>(
-            &kcommLogMetadata, keventStage[0], keventStage[0]));
+        NcclScubaEvent event(
+            std::make_unique<CommEvent>(
+                &kcommLogMetadata, keventStage[0], keventStage[0]));
         event.record();
 
         NcclScubaEvent event1(
@@ -371,8 +376,9 @@ TEST_F(NcclLoggerTest, NcclScubaEventRecordStartEnd) {
   initLogging();
 
   // recordStart/recordEnd
-  NcclScubaEvent event1(std::make_unique<CommEvent>(
-      &kcommLogMetadata, keventStage[0], keventStage[0]));
+  NcclScubaEvent event1(
+      std::make_unique<CommEvent>(
+          &kcommLogMetadata, keventStage[0], keventStage[0]));
   event1.startAndRecord();
   // code to measure
   sleep(1);

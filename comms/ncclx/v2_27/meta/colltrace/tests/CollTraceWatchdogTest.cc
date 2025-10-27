@@ -133,9 +133,10 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
       fmt::format("CollTraceWatchdog{}", folly::Random::rand64())};
 
   void testDriverCheckSucceed() {
-    ASSERT_TRUE(std::holds_alternative<
-                mccl::CollectiveIntegrationTestMixin::TestDriverState>(
-        this->state_));
+    ASSERT_TRUE(
+        std::holds_alternative<
+            mccl::CollectiveIntegrationTestMixin::TestDriverState>(
+            this->state_));
     auto& testDriverState =
         std::get<mccl::CollectiveIntegrationTestMixin::TestDriverState>(
             this->state_);
@@ -145,9 +146,10 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
   }
 
   void testDriverCheckCrashedWithWatchdog() {
-    ASSERT_TRUE(std::holds_alternative<
-                mccl::CollectiveIntegrationTestMixin::TestDriverState>(
-        this->state_));
+    ASSERT_TRUE(
+        std::holds_alternative<
+            mccl::CollectiveIntegrationTestMixin::TestDriverState>(
+            this->state_));
     auto& testDriverState =
         std::get<mccl::CollectiveIntegrationTestMixin::TestDriverState>(
             this->state_);
@@ -194,8 +196,9 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   int rank = getRank();
   int worldSize = getWorldSize();
 
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
@@ -241,8 +244,9 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
   int rank = getRank();
   int worldSize = getWorldSize();
 
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
@@ -273,13 +277,15 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
   int rank = getRank();
   int worldSize = getWorldSize();
 
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.crashOnTimeout", folly::to<std::string>(true)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.crashOnTimeout", folly::to<std::string>(true)));
 
   // Set 5 seconds collective timeout
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.timeoutMs",
-      folly::to<std::string>(timeoutSec.count() * 1000)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.timeoutMs",
+          folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
@@ -323,13 +329,15 @@ TEST_F(CollTraceWatchdogTest, TestTimeoutInColl) {
   int rank = getRank();
   int worldSize = getWorldSize();
 
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.crashOnTimeout", folly::to<std::string>(true)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.crashOnTimeout", folly::to<std::string>(true)));
 
   // Set 5 seconds collective timeout
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.timeoutMs",
-      folly::to<std::string>(timeoutSec.count() * 1000)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.timeoutMs",
+          folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
@@ -371,13 +379,15 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutInColl) {
   int rank = getRank();
   int worldSize = getWorldSize();
 
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.crashOnTimeout", folly::to<std::string>(true)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.crashOnTimeout", folly::to<std::string>(true)));
 
   // Set 5 seconds collective timeout
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.timeoutMs",
-      folly::to<std::string>(timeoutSec.count() * 1000)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.timeoutMs",
+          folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);
@@ -418,13 +428,15 @@ TEST_F(CollTraceWatchdogTest, TestBelowTimeoutBeforeColl) {
   int rank = getRank();
   int worldSize = getWorldSize();
 
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.crashOnTimeout", folly::to<std::string>(true)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.crashOnTimeout", folly::to<std::string>(true)));
 
   // Set 5 seconds collective timeout
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.timeoutMs",
-      folly::to<std::string>(timeoutSec.count() * 1000)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.timeoutMs",
+          folly::to<std::string>(timeoutSec.count() * 1000)));
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);

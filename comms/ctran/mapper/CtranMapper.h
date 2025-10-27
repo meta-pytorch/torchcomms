@@ -1172,11 +1172,12 @@ class CtranMapper {
         this->exportMem(peerRank, buf, hdl, req->sendCtrl.msg, backend));
     auto& msg = req->sendCtrl.msg;
     if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(ncclx::colltrace::SendCtrlStart{
-          .buffer = const_cast<void*>(buf),
-          .mapperHandle = hdl,
-          .peerRank = peerRank,
-          .req = req});
+      this->mapperTrace->recordMapperEvent(
+          ncclx::colltrace::SendCtrlStart{
+              .buffer = const_cast<void*>(buf),
+              .mapperHandle = hdl,
+              .peerRank = peerRank,
+              .req = req});
     }
     CLOGF_TRACE(
         COLL,
@@ -1211,11 +1212,12 @@ class CtranMapper {
     req->recvCtrl.key = key;
     auto& msg = req->recvCtrl.msg;
     if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(ncclx::colltrace::RecvCtrlStart{
-          .recvBufferPtr = buf,
-          .accessKeyPtr = key,
-          .peerRank = peerRank,
-          .req = req});
+      this->mapperTrace->recordMapperEvent(
+          ncclx::colltrace::RecvCtrlStart{
+              .recvBufferPtr = buf,
+              .accessKeyPtr = key,
+              .peerRank = peerRank,
+              .req = req});
     }
     CLOGF_TRACE(
         COLL,
@@ -1248,10 +1250,11 @@ class CtranMapper {
     req->backend =
         ctranIb ? CtranMapperBackend::IB : CtranMapperBackend::SOCKET;
     if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(ncclx::colltrace::SendCtrlStart{
-          .buffer = const_cast<void*>(payload),
-          .peerRank = peerRank,
-          .req = req});
+      this->mapperTrace->recordMapperEvent(
+          ncclx::colltrace::SendCtrlStart{
+              .buffer = const_cast<void*>(payload),
+              .peerRank = peerRank,
+              .req = req});
     }
     CLOGF_TRACE(
         COLL,
@@ -1282,8 +1285,11 @@ class CtranMapper {
     req->backend =
         ctranIb ? CtranMapperBackend::IB : CtranMapperBackend::SOCKET;
     if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(ncclx::colltrace::RecvCtrlStart{
-          .recvBufferPtr = (void**)&payload, .peerRank = peerRank, .req = req});
+      this->mapperTrace->recordMapperEvent(
+          ncclx::colltrace::RecvCtrlStart{
+              .recvBufferPtr = (void**)&payload,
+              .peerRank = peerRank,
+              .req = req});
     }
     CLOGF_TRACE(
         COLL,
@@ -1331,11 +1337,12 @@ class CtranMapper {
           (void*)&req.ibReq,
           msg.toString());
       if (this->mapperTrace) {
-        this->mapperTrace->recordMapperEvent(ncclx::colltrace::SendCtrlStart{
-            .buffer = const_cast<void*>(bufs[req.peer]),
-            .mapperHandle = hdl,
-            .peerRank = req.peer,
-            .req = &req});
+        this->mapperTrace->recordMapperEvent(
+            ncclx::colltrace::SendCtrlStart{
+                .buffer = const_cast<void*>(bufs[req.peer]),
+                .mapperHandle = hdl,
+                .peerRank = req.peer,
+                .req = &req});
       }
       this->ctranIb->isendCtrlMsg<PerfConfig>(
           msg.type, &msg, sizeof(ControlMsg), req.peer, req.ibReq);
@@ -1353,8 +1360,9 @@ class CtranMapper {
     msg.setType(ControlMsgType::SYNC);
 
     if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(ncclx::colltrace::SendSyncCtrlStart{
-          .peerRank = peerRank, .req = req});
+      this->mapperTrace->recordMapperEvent(
+          ncclx::colltrace::SendSyncCtrlStart{
+              .peerRank = peerRank, .req = req});
     }
     CLOGF_TRACE(
         COLL,
@@ -1382,8 +1390,9 @@ class CtranMapper {
     msg.setType(ControlMsgType::SYNC);
 
     if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(ncclx::colltrace::RecvSyncCtrlStart{
-          .peerRank = peerRank, .req = req});
+      this->mapperTrace->recordMapperEvent(
+          ncclx::colltrace::RecvSyncCtrlStart{
+              .peerRank = peerRank, .req = req});
     }
     CLOGF_TRACE(
         COLL,
@@ -1456,14 +1465,15 @@ class CtranMapper {
       msgs.emplace_back(std::move(msg));
 
       if (this->mapperTrace) {
-        this->mapperTrace->recordMapperEvent(ncclx::colltrace::PutStart{
-            .sendBuffer = const_cast<void*>(put.sbuf),
-            .remoteBuffer = put.dbuf,
-            .length = put.len,
-            .peerRank = peerRank,
-            .sourceHandle = shdl,
-            .remoteAccessKey = remoteAccessKey,
-            .req = put.req});
+        this->mapperTrace->recordMapperEvent(
+            ncclx::colltrace::PutStart{
+                .sendBuffer = const_cast<void*>(put.sbuf),
+                .remoteBuffer = put.dbuf,
+                .length = put.len,
+                .peerRank = peerRank,
+                .sourceHandle = shdl,
+                .remoteAccessKey = remoteAccessKey,
+                .req = put.req});
       }
     }
 
@@ -1592,14 +1602,15 @@ class CtranMapper {
     }
 
     if (this->mapperTrace) {
-      this->mapperTrace->recordMapperEvent(ncclx::colltrace::PutStart{
-          .sendBuffer = const_cast<void*>(sbuf),
-          .remoteBuffer = dbuf,
-          .length = len,
-          .peerRank = peerRank,
-          .sourceHandle = shdl,
-          .remoteAccessKey = remoteAccessKey,
-          .req = req});
+      this->mapperTrace->recordMapperEvent(
+          ncclx::colltrace::PutStart{
+              .sendBuffer = const_cast<void*>(sbuf),
+              .remoteBuffer = dbuf,
+              .length = len,
+              .peerRank = peerRank,
+              .sourceHandle = shdl,
+              .remoteAccessKey = remoteAccessKey,
+              .req = req});
     }
     return commSuccess;
   }
@@ -1903,7 +1914,7 @@ class CtranMapper {
         FB_COMMCHECKTHROW(commInternalError);
       }
     };
-    ~CbCtrlRequest(){};
+    ~CbCtrlRequest() {};
     bool checkComplete() {
       if (backend == CtranMapperBackend::IB) {
         return ibReq.isComplete();

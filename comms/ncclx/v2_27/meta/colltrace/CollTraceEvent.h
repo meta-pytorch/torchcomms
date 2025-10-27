@@ -20,7 +20,7 @@ using CudaEventPtr = std::unique_ptr<
 
 class SharedPool {
  public:
-  ~SharedPool(){};
+  ~SharedPool() {};
 
   void add(CudaEventPtr item) {
     std::lock_guard<std::mutex> lock(mutex_);

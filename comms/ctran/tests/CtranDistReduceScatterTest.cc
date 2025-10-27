@@ -191,8 +191,9 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
     }
 
     memorySetUp(memType, count, redOp, regist);
-    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-        comm->ctranComm_.get()));
+    ASSERT_TRUE(
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(
+            comm->ctranComm_.get()));
 
     T* recvBufComm = recvBuf;
     if (inplace == kTestInPlace) {

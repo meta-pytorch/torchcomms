@@ -25,14 +25,15 @@ __attribute__((visibility("default"))) ncclResult_t allGatherInit(
 
   SetCudaDevRAII setCudaDev(comm->cudaDev);
   CtranPersistentRequest* pReq = nullptr;
-  NCCLCHECK(metaCommToNccl(ctran::allGatherPInit(
-      recvbuff,
-      maxRecvCount,
-      ncclToMetaComm(hints),
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
-      stream,
-      pReq)));
+  NCCLCHECK(metaCommToNccl(
+      ctran::allGatherPInit(
+          recvbuff,
+          maxRecvCount,
+          ncclToMetaComm(hints),
+          ncclToMetaComm(datatype),
+          comm->ctranComm_.get(),
+          stream,
+          pReq)));
   *request = reinterpret_cast<void*>(pReq);
 
   return ncclSuccess;
@@ -97,16 +98,17 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupInit(
   SetCudaDevRAII setCudaDev(comm->cudaDev);
   CtranPersistentRequest* pReq = nullptr;
 
-  NCCLCHECK(metaCommToNccl(::ctran::allToAllvDedupInit(
-      totalNumSendBlocks,
-      blockCount,
-      blockNumRecvBuckets,
-      numRecvBuckets,
-      ncclToMetaComm(hints),
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
-      stream,
-      pReq)));
+  NCCLCHECK(metaCommToNccl(
+      ::ctran::allToAllvDedupInit(
+          totalNumSendBlocks,
+          blockCount,
+          blockNumRecvBuckets,
+          numRecvBuckets,
+          ncclToMetaComm(hints),
+          ncclToMetaComm(datatype),
+          comm->ctranComm_.get(),
+          stream,
+          pReq)));
   *request = reinterpret_cast<void*>(pReq);
   return ncclSuccess;
 }
@@ -131,21 +133,22 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupPrepare(
   CHECK_PREQ_TYPE(pReq, CtranPersistentRequest::Type::ALLTOALLV_DEDUP);
   CHECK_VALID_CTRAN(pReq->comm_);
 
-  return metaCommToNccl(::ctran::allToAllvDedupPrepare(
-      blockRecvBuckets,
-      numSendBlocks,
-      numRecvBlocks,
-      recvOffsets,
-      numForwardBlocks,
-      totalNumRecvBlocks,
-      xnodeInputSplits,
-      xnodeOutputSplits,
-      xnodeGatherIndices,
-      localInputSplits,
-      localOutputSplits,
-      localGatherIndices,
-      eGatherIndices,
-      pReq));
+  return metaCommToNccl(
+      ::ctran::allToAllvDedupPrepare(
+          blockRecvBuckets,
+          numSendBlocks,
+          numRecvBlocks,
+          recvOffsets,
+          numForwardBlocks,
+          totalNumRecvBlocks,
+          xnodeInputSplits,
+          xnodeOutputSplits,
+          xnodeGatherIndices,
+          localInputSplits,
+          localOutputSplits,
+          localGatherIndices,
+          eGatherIndices,
+          pReq));
 }
 
 __attribute__((visibility("default"))) ncclResult_t allToAllvDedupExec(
@@ -167,20 +170,21 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupExec(
   CHECK_PREQ_TYPE(pReq, CtranPersistentRequest::Type::ALLTOALLV_DEDUP);
   CHECK_VALID_CTRAN(pReq->comm_);
 
-  return metaCommToNccl(::ctran::allToAllvDedupExec(
-      sendBuff,
-      blockRecvBuckets,
-      numSendBlocks,
-      numRecvBlocks,
-      recvOffsets,
-      numForwardBlocks,
-      totalNumRecvBlocks,
-      sendIdx,
-      fwdIdx,
-      recvIdx,
-      recvBuff,
-      blockSendRanks,
-      pReq));
+  return metaCommToNccl(
+      ::ctran::allToAllvDedupExec(
+          sendBuff,
+          blockRecvBuckets,
+          numSendBlocks,
+          numRecvBlocks,
+          recvOffsets,
+          numForwardBlocks,
+          totalNumRecvBlocks,
+          sendIdx,
+          fwdIdx,
+          recvIdx,
+          recvBuff,
+          blockSendRanks,
+          pReq));
 }
 
 __attribute__((visibility("default"))) ncclResult_t pExec(void* request) {
@@ -224,14 +228,15 @@ __attribute__((visibility("default"))) ncclResult_t AllToAllInit(
 
   SetCudaDevRAII setCudaDev(comm->cudaDev);
   CtranPersistentRequest* pReq = nullptr;
-  NCCLCHECK(metaCommToNccl(ctran::AllToAllPInit(
-      recvbuff,
-      maxRecvCount,
-      ncclToMetaComm(hints),
-      ncclToMetaComm(datatype),
-      comm->ctranComm_.get(),
-      stream,
-      pReq)));
+  NCCLCHECK(metaCommToNccl(
+      ctran::AllToAllPInit(
+          recvbuff,
+          maxRecvCount,
+          ncclToMetaComm(hints),
+          ncclToMetaComm(datatype),
+          comm->ctranComm_.get(),
+          stream,
+          pReq)));
   request = reinterpret_cast<void*>(pReq);
 
   return ncclSuccess;

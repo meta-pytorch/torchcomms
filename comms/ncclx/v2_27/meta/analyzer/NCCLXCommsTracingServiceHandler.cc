@@ -38,9 +38,10 @@ NCCLXCommsTracingServiceHandler::co_getComms(
       commHashToKeyValueMap;
   auto result = ncclCommDumpAll(commHashToKeyValueMap);
   if (result != ncclSuccess) {
-    throw std::runtime_error(fmt::format(
-        "Failed to dump all NCCL communicators, error: {}",
-        ncclGetErrorString(result)));
+    throw std::runtime_error(
+        fmt::format(
+            "Failed to dump all NCCL communicators, error: {}",
+            ncclGetErrorString(result)));
   }
 
   comms::GetCommsResponse response;

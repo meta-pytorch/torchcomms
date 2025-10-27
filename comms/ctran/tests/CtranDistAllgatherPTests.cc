@@ -120,8 +120,15 @@ class CtranAllgatherPTest : public CtranDistBaseTest {
     const auto initMaxRecvCount =
         maxRecvCount * commTypeSize(dt) / commTypeSize(commInt8);
     const auto initDt = commInt8;
-    COMMCHECK_TEST(ctran::allGatherPInit(
-        recvbuf, initMaxRecvCount, hints, initDt, ctranComm, stream, request));
+    COMMCHECK_TEST(
+        ctran::allGatherPInit(
+            recvbuf,
+            initMaxRecvCount,
+            hints,
+            initDt,
+            ctranComm,
+            stream,
+            request));
 
     constexpr int nIter = 5;
     for (int j = 0; j < nIter; j++) {
@@ -230,8 +237,15 @@ TEST_F(CtranAllgatherPTest, InvalidCount) {
   const auto initMaxRecvCount =
       maxRecvCount * commTypeSize(dt) / commTypeSize(initDt);
   // Convert to int8_t for init to mimic FSDP use case
-  COMMCHECK_TEST(ctran::allGatherPInit(
-      recvbuf, initMaxRecvCount, hints, initDt, ctranComm, stream, request));
+  COMMCHECK_TEST(
+      ctran::allGatherPInit(
+          recvbuf,
+          initMaxRecvCount,
+          hints,
+          initDt,
+          ctranComm,
+          stream,
+          request));
 
   // count * sizeof(dt) * numRanks must be less than maxRecvCount *
   // sizeof(initDt)

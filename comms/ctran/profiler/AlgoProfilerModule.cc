@@ -455,28 +455,30 @@ void AlgoProfilerModule::logCollStatsToScuba(
         "[Ctran algo profiler] One or more timestamps for calculate collDurationUs are invalid.");
   }
 
-  NcclScubaEvent scubaEvent(std::make_unique<CtranProfilerAlgoEvent>(
-      &profiler_->getComm()->logMetaData_,
-      "algoProfiling",
-      "",
-      0,
-      0,
-      crtAlgo->sendTransferStats.deviceName,
-      "",
-      profiler_->getAlgorithmName(),
-      crtAlgo->sendTransferStats.messageSizes,
-      crtAlgo->recvTransferStats.messageSizes,
-      "",
-      crtAlgo->sendTransferStats.totalBytes,
-      crtAlgo->recvTransferStats.totalBytes,
-      timeWaitingForInitUs,
-      timeWaitingForControlUs,
-      timeWaitingForDataUs,
-      opCount_ - 1, // data is collective in the previous onAlgoStarted() call
-      readyTs,
-      controlTs,
-      timeFromDataToCollEndUs,
-      collDurationUs));
+  NcclScubaEvent scubaEvent(
+      std::make_unique<CtranProfilerAlgoEvent>(
+          &profiler_->getComm()->logMetaData_,
+          "algoProfiling",
+          "",
+          0,
+          0,
+          crtAlgo->sendTransferStats.deviceName,
+          "",
+          profiler_->getAlgorithmName(),
+          crtAlgo->sendTransferStats.messageSizes,
+          crtAlgo->recvTransferStats.messageSizes,
+          "",
+          crtAlgo->sendTransferStats.totalBytes,
+          crtAlgo->recvTransferStats.totalBytes,
+          timeWaitingForInitUs,
+          timeWaitingForControlUs,
+          timeWaitingForDataUs,
+          opCount_ -
+              1, // data is collective in the previous onAlgoStarted() call
+          readyTs,
+          controlTs,
+          timeFromDataToCollEndUs,
+          collDurationUs));
   scubaEvent.record();
 }
 

@@ -27,12 +27,13 @@ void IntraProcessBootstrap::barrierNamed(
     while (state_->sense.load() != local_sense) {
       auto now = std::chrono::high_resolution_clock::now();
       if (now - startTs > timeout) {
-        throw std::runtime_error(fmt::format(
-            "rank [{}/{}] barrier '{}' timeout after {}s",
-            rank,
-            nRanks,
-            name,
-            timeoutSeconds));
+        throw std::runtime_error(
+            fmt::format(
+                "rank [{}/{}] barrier '{}' timeout after {}s",
+                rank,
+                nRanks,
+                name,
+                timeoutSeconds));
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }

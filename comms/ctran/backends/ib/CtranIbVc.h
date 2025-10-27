@@ -43,7 +43,7 @@ struct ControlPendingSendWr {
       void* payload,
       size_t size,
       CtranIbRequest& req)
-      : type(type), payload(payload), size(size), req(req){};
+      : type(type), payload(payload), size(size), req(req) {};
   ~ControlPendingSendWr() = default;
   std::string toString() {
     return fmt::format(
@@ -63,7 +63,7 @@ struct ControlPostedRecvWr {
   CtranIbRequest& req;
 
   ControlPostedRecvWr(void* payload, size_t size, CtranIbRequest& req)
-      : payload(payload), size(size), req(req){};
+      : payload(payload), size(size), req(req) {};
   ~ControlPostedRecvWr() = default;
   std::string toString() {
     return fmt::format(
@@ -587,16 +587,17 @@ class CtranIbVirtualConn {
           "CTRAN-IB: fallback to non-chained sends for batch {}",
           msgs.size());
       for (auto& put : msgs) {
-        FB_COMMCHECK(iputImpl<PerfConfig>(
-            put.sbuf,
-            put.dbuf,
-            put.len,
-            put.ibRegElem,
-            put.remoteAccessKey,
-            put.notify,
-            put.config,
-            put.req,
-            false));
+        FB_COMMCHECK(
+            iputImpl<PerfConfig>(
+                put.sbuf,
+                put.dbuf,
+                put.len,
+                put.ibRegElem,
+                put.remoteAccessKey,
+                put.notify,
+                put.config,
+                put.req,
+                false));
       }
       return commSuccess;
     }
@@ -613,8 +614,9 @@ class CtranIbVirtualConn {
 
       auto& sendPutSg = sendBatchSges[i];
       auto& sendPutWr = sendBatchWrs[i];
-      FB_COMMCHECK(processFastWriteWqe<PerfConfig>(
-          sendPutWr, sendPutSg, putId, put, device));
+      FB_COMMCHECK(
+          processFastWriteWqe<PerfConfig>(
+              sendPutWr, sendPutSg, putId, put, device));
 
       if (i == msgs.size() - 1) {
         sendPutWr.next = nullptr;
@@ -704,8 +706,9 @@ class CtranIbVirtualConn {
           dbuf,
           len);
 
-      FB_COMMCHECK(processFastWriteWqe<PerfConfig>(
-          sendPutWr_, sendPutSg_, putId, put, device));
+      FB_COMMCHECK(
+          processFastWriteWqe<PerfConfig>(
+              sendPutWr_, sendPutSg_, putId, put, device));
 
       auto maybeSend =
           ibvDataQps_[iputFastQpIdx_].postSend(&sendPutWr_, &badSendPutWr_);
@@ -720,17 +723,18 @@ class CtranIbVirtualConn {
           len,
           notify,
           vcModeName(getOpVcMode(config)));
-      pendingPuts_.push_back(std::make_unique<PutInfo>(
-          sbuf,
-          dbuf,
-          len,
-          std::move(lkeys),
-          std::move(rkeys),
-          notify,
-          req,
-          config,
-          getOpVcMode(config),
-          putId));
+      pendingPuts_.push_back(
+          std::make_unique<PutInfo>(
+              sbuf,
+              dbuf,
+              len,
+              std::move(lkeys),
+              std::move(rkeys),
+              notify,
+              req,
+              config,
+              getOpVcMode(config),
+              putId));
       FB_COMMCHECK(tryToPostOp(
           pendingPuts_,
           outstandingFastPuts_,
@@ -842,16 +846,17 @@ class CtranIbVirtualConn {
           sbuf,
           len,
           vcModeName(getOpVcMode(config)));
-      pendingGets_.push_back(std::make_unique<GetInfo>(
-          sbuf,
-          dbuf,
-          len,
-          std::move(lkeys),
-          std::move(rkeys),
-          req,
-          config,
-          getOpVcMode(config),
-          getId));
+      pendingGets_.push_back(
+          std::make_unique<GetInfo>(
+              sbuf,
+              dbuf,
+              len,
+              std::move(lkeys),
+              std::move(rkeys),
+              req,
+              config,
+              getOpVcMode(config),
+              getId));
       FB_COMMCHECK(tryToPostOp(
           pendingGets_,
           outstandingFastGets_,
@@ -1649,7 +1654,8 @@ class CtranIbVirtualConn {
   };
 
   struct FastPutInfo {
-    FastPutInfo(uint64_t putId, CtranIbRequest* req) : putId(putId), req(req){};
+    FastPutInfo(uint64_t putId, CtranIbRequest* req)
+        : putId(putId), req(req) {};
     uint64_t putId;
     CtranIbRequest* req;
   };
@@ -1661,7 +1667,8 @@ class CtranIbVirtualConn {
   std::deque<FastPutInfo> outstandingFastPuts_;
 
   struct FastGetInfo {
-    FastGetInfo(uint64_t getId, CtranIbRequest* req) : getId(getId), req(req){};
+    FastGetInfo(uint64_t getId, CtranIbRequest* req)
+        : getId(getId), req(req) {};
     uint64_t getId;
     CtranIbRequest* req;
   };

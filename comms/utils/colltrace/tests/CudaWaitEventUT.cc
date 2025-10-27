@@ -283,10 +283,10 @@ TEST_F(CudaWaitEventTest, GetCollStartTimeInMargin) {
 
   auto startTimeFromEvent =
       event->getCollStartTime().orElse([](auto err) { FAIL() << err.message; });
-  auto startTimeDiffUs =
-      std::abs(std::chrono::duration_cast<std::chrono::microseconds>(
-                   startTimeFromEvent.value() - startTimeCPU)
-                   .count());
+  auto startTimeDiffUs = std::abs(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          startTimeFromEvent.value() - startTimeCPU)
+          .count());
   // We should get reasonably close to the actual start time. Since we will see
   // error on both endTimeCPU (from GPU to CPU sync) and endTimeFromEvent (from
   // the error with Cuda Event itself), we now expect the error to be less

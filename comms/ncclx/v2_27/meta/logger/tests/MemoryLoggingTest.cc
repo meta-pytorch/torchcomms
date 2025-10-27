@@ -163,15 +163,17 @@ class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
     // Only Net p2p buffers are shared currently
     if (shared) {
       if (!p2pOnly) {
-        expectedCallsites.push_back(fmt::format(
-            "sharedNetBuffersInit:{}/{}/{}",
-            commHash,
-            tpLocalRank,
-            isSend ? 0 : 1));
+        expectedCallsites.push_back(
+            fmt::format(
+                "sharedNetBuffersInit:{}/{}/{}",
+                commHash,
+                tpLocalRank,
+                isSend ? 0 : 1));
       }
     } else if ((isSameNode || !p2pOnly) && !isP2pWrite) {
-      expectedCallsites.push_back(ncclx::memory::genKey(
-          setupMethod, isSameNode, isSend, channelId, connIndex, peerRank));
+      expectedCallsites.push_back(
+          ncclx::memory::genKey(
+              setupMethod, isSameNode, isSend, channelId, connIndex, peerRank));
     }
   }
 

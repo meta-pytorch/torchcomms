@@ -49,8 +49,9 @@ commResult_t allocateShareableBuffer(
         logMetaData,
         __func__));
   } else {
-    FB_COMMCHECK(ctran::utils::commCuMemAlloc(
-        ptr, &handle, type, size, logMetaData, use));
+    FB_COMMCHECK(
+        ctran::utils::commCuMemAlloc(
+            ptr, &handle, type, size, logMetaData, use));
   }
 
   if (type == CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {

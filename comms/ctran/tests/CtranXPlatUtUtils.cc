@@ -256,10 +256,11 @@ std::unique_ptr<TestCtranCommRAII> createDummyCtranComm() {
   auto mcclComm = std::make_unique<mccl::McclComm>(mcclCreateOpts);
   auto initURL = mcclComm->getInitURL();
   std::string uuid{"0"};
-  auto initWorkHandle = mcclComm->init(mccl::InitOpts{
-      .uuid = uuid,
-      .urls = {initURL},
-  });
+  auto initWorkHandle = mcclComm->init(
+      mccl::InitOpts{
+          .uuid = uuid,
+          .urls = {initURL},
+      });
   initWorkHandle->waitCpu();
   auto initResult = initWorkHandle->getResult();
   CHECK_EQ(initResult->code, commSuccess)

@@ -29,7 +29,7 @@ class CudaMock : public CudaApi {
   MOCK_METHOD(
       cudaError_t,
       memGetInfo,
-      (size_t * free, size_t* total),
+      (size_t* free, size_t* total),
       (override));
   MOCK_METHOD(cudaError_t, getDeviceCount, (int* count), (override));
 

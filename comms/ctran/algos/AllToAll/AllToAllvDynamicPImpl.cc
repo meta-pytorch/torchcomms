@@ -13,23 +13,24 @@ using ctran::alltoallvdynamicp::PersistArgs;
 
 #define PUT_AND_WAIT(perfconfig)                                              \
   do {                                                                        \
-    FB_COMMCHECK(peerPutNonContig<perfconfig>(                                \
-        comm,                                                                 \
-        op->alltoallv_dynamic.sendbuffs,                                      \
-        pArgs->remoteRecvBuffs,                                               \
-        sendCountsTmpbufCPU,                                                  \
-        op->alltoallv_dynamic.sendcountsLength,                               \
-        op->alltoallv_dynamic.datatype,                                       \
-        tmpRegHdls,                                                           \
-        nRanks,                                                               \
-        myRank,                                                               \
-        timestamp,                                                            \
-        pArgs->remoteAccessKeys,                                              \
-        ibPutReqs,                                                            \
-        completedIbRecvCtrlReqs,                                              \
-        pArgs->maxRecvCount,                                                  \
-        pArgs->maxSendCount,                                                  \
-        /* skipWaitRecvCtrl */ true));                                        \
+    FB_COMMCHECK(                                                             \
+        peerPutNonContig<perfconfig>(                                         \
+            comm,                                                             \
+            op->alltoallv_dynamic.sendbuffs,                                  \
+            pArgs->remoteRecvBuffs,                                           \
+            sendCountsTmpbufCPU,                                              \
+            op->alltoallv_dynamic.sendcountsLength,                           \
+            op->alltoallv_dynamic.datatype,                                   \
+            tmpRegHdls,                                                       \
+            nRanks,                                                           \
+            myRank,                                                           \
+            timestamp,                                                        \
+            pArgs->remoteAccessKeys,                                          \
+            ibPutReqs,                                                        \
+            completedIbRecvCtrlReqs,                                          \
+            pArgs->maxRecvCount,                                              \
+            pArgs->maxSendCount,                                              \
+            /* skipWaitRecvCtrl */ true));                                    \
     /* Wait for all puts to complete */                                       \
     for (auto& req : ibPutReqs) {                                             \
       FB_COMMCHECK(comm->ctran_->mapper->waitRequest<perfconfig>(req.get())); \
@@ -117,8 +118,9 @@ commResult_t gpeFn(const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
     }
     // To share the same interface with non-persisent collective, init the
     // completed ctrl reqs. The only usefuly info in it is "peer".
-    completedIbRecvCtrlReqs.push_back(std::make_unique<CtranMapperRequest>(
-        CtranMapperRequest::RECV_CTRL, peer));
+    completedIbRecvCtrlReqs.push_back(
+        std::make_unique<CtranMapperRequest>(
+            CtranMapperRequest::RECV_CTRL, peer));
     // Initialize notify flag to receive from peer
     auto notify = std::make_unique<CtranMapperNotify>();
     FB_COMMCHECK(comm->ctran_->mapper->initNotify(

@@ -28,18 +28,19 @@ namespace {
 void initUtLogger(
     const std::string& contextName,
     const std::string& logPrefix) {
-  NcclLogger::init(NcclLoggerInitConfig{
-      .contextName = contextName,
-      .logPrefix = logPrefix,
-      .logFilePath =
-          meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
-      .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
-          meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
-      .threadContextFn = []() {
-        int cudaDev = -1;
-        cudaGetDevice(&cudaDev);
-        return cudaDev;
-      }});
+  NcclLogger::init(
+      NcclLoggerInitConfig{
+          .contextName = contextName,
+          .logPrefix = logPrefix,
+          .logFilePath =
+              meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+          .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
+              meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
+          .threadContextFn = []() {
+            int cudaDev = -1;
+            cudaGetDevice(&cudaDev);
+            return cudaDev;
+          }});
 }
 folly::once_flag once;
 void initOnce() {

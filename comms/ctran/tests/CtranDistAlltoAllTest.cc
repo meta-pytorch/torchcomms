@@ -151,8 +151,9 @@ class CtranAllToAllTest : public CtranDistBaseTest {
           DT(expectedVal + globalRank * 10 + i + 1));
     }
 
-    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-        comm->ctranComm_.get()));
+    ASSERT_TRUE(
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(
+            comm->ctranComm_.get()));
 
     // Run communication
     auto res = ctranAllToAll(
@@ -392,8 +393,9 @@ TEST_P(CtranAllToAllTestParam, CudaGraphAwareAllToAll) {
     assignChunkValue<DT>(
         sendBuf + i * count, count, DT(expectedVal + globalRank * 10 + i + 1));
   }
-  ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-      comm->ctranComm_.get()));
+  ASSERT_TRUE(
+      meta::comms::colltrace::testOnlyClearCollTraceRecords(
+          comm->ctranComm_.get()));
   cudaGraph_t graph;
   cudaGraphExec_t instance;
   // FIXME: if using the stream created in SetUp(), got error "operation not

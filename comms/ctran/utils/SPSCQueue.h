@@ -26,7 +26,9 @@ class SPSCQueue {
  public:
   // Enqueue a task and notify the consumer thread to wake up.
   inline void enqueue(std::unique_ptr<T> cmd) {
-    { q_.lock()->queue.push(std::move(cmd)); }
+    {
+      q_.lock()->queue.push(std::move(cmd));
+    }
     cv_.notify_one();
   }
 

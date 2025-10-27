@@ -49,8 +49,8 @@ struct CtranIbDevice {
  */
 class CtranIbRequest {
  public:
-  CtranIbRequest(){};
-  ~CtranIbRequest(){};
+  CtranIbRequest() {};
+  ~CtranIbRequest() {};
 
   // Mark the number of expected references associated with the request (e.g.,
   // multiple references if a data is internally chunked to multiple IB packets

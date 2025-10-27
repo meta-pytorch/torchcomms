@@ -123,7 +123,7 @@ inline std::string unorderedSetToStr(
 inline std::string getUniqueFileSuffix() {
   std::time_t t = std::time(nullptr);
   std::ostringstream time_str;
-  struct tm nowTm {};
+  struct tm nowTm{};
   localtime_r(&t, &nowTm);
   time_str << std::put_time(&nowTm, "%Y%m%d-%H%M%S");
   auto threadHash = std::hash<std::thread::id>{}(std::this_thread::get_id());

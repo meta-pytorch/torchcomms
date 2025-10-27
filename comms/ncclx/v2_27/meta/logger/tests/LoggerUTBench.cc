@@ -123,22 +123,26 @@ class NcclLoggerBenchTest : public ::testing::Test {
                 std::to_string(stageID);
 
             if (useScubaEvent) {
-              NcclScubaEvent event1(std::make_unique<CommEvent>(
-                  &kcommLogMetadata, keventStage[0], keventStage[0]));
+              NcclScubaEvent event1(
+                  std::make_unique<CommEvent>(
+                      &kcommLogMetadata, keventStage[0], keventStage[0]));
               event1.record();
 
-              NcclScubaEvent event2(std::make_unique<CommEvent>(
-                  &kcommLogMetadata, keventStage[1], keventStage[1]));
+              NcclScubaEvent event2(
+                  std::make_unique<CommEvent>(
+                      &kcommLogMetadata, keventStage[1], keventStage[1]));
               event2.startAndRecord();
               event2.stopAndRecord();
 
             } else {
-              NcclScubaEvent event(std::make_unique<CommEvent>(
-                  &kcommLogMetadata, keventStage[0], keventStage[0]));
+              NcclScubaEvent event(
+                  std::make_unique<CommEvent>(
+                      &kcommLogMetadata, keventStage[0], keventStage[0]));
               event.record();
 
-              NcclScubaEvent event1(std::make_unique<CommEvent>(
-                  &kcommLogMetadata, keventStage[1], keventStage[1]));
+              NcclScubaEvent event1(
+                  std::make_unique<CommEvent>(
+                      &kcommLogMetadata, keventStage[1], keventStage[1]));
               event1.startAndRecord();
               event1.stopAndRecord();
             }

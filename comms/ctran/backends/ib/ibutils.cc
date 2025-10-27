@@ -77,13 +77,16 @@ commResult_t IbUtils::pollForAsyncEvent(
     return commSystemError;
   }
   if (ret < 0) {
-    return addToStackTrace(fmt::format(
-        "NET/IB : poll for IB async events failed with error code:{}", ret));
+    return addToStackTrace(
+        fmt::format(
+            "NET/IB : poll for IB async events failed with error code:{}",
+            ret));
   }
   if ((fdSet.revents & POLLIN) != POLLIN) {
-    return addToStackTrace(fmt::format(
-        "NET/IB : poll returned unexpected POLLERR or POLLHUP for dev={} (probably a bad device)",
-        ibvContext->device->name));
+    return addToStackTrace(
+        fmt::format(
+            "NET/IB : poll returned unexpected POLLERR or POLLHUP for dev={} (probably a bad device)",
+            ibvContext->device->name));
   }
   return commSuccess;
 }

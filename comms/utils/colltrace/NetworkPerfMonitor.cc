@@ -146,15 +146,20 @@ void NetworkPerfMonitor::reportPerfStatsToScuba(const NetworkPerfStats& stats) {
   for (const auto& [commHash, avgBw] : stats.commHashToAvgBw) {
     if (commHashToCommInfo_.find(commHash) != commHashToCommInfo_.end()) {
       const auto& commInfo = commHashToCommInfo_.at(commHash);
-      NcclScubaEvent scubaEvent(std::make_unique<NetworkPerfMonitorEvent>(
-          commInfo.logMetaData, commInfo.cudaDev, commInfo.busId, avgBw));
+      NcclScubaEvent scubaEvent(
+          std::make_unique<NetworkPerfMonitorEvent>(
+              commInfo.logMetaData, commInfo.cudaDev, commInfo.busId, avgBw));
       scubaEvent.record();
     }
   }
   if (stats.commHashToAvgBw.size() != 0) {
     const auto& commInfo = commHashToCommInfo_[0];
-    NcclScubaEvent scubaEvent(std::make_unique<NetworkPerfMonitorEvent>(
-        commInfo.logMetaData, commInfo.cudaDev, commInfo.busId, stats.avgBw));
+    NcclScubaEvent scubaEvent(
+        std::make_unique<NetworkPerfMonitorEvent>(
+            commInfo.logMetaData,
+            commInfo.cudaDev,
+            commInfo.busId,
+            stats.avgBw));
     scubaEvent.record();
   }
 }

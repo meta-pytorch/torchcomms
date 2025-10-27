@@ -20,18 +20,19 @@ folly::once_flag commLoggingInitOnceFlag;
 void initCommLoggingImpl() {
   setSubSystemMask(
       meta::comms::logger::parseDebugSubsysMask(NCCL_DEBUG_SUBSYS.c_str()));
-  NcclLogger::init(NcclLoggerInitConfig{
-      .contextName = std::string{kCommsUtilsCategory},
-      .logPrefix = "COMM",
-      .logFilePath =
-          meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
-      .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
-          meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
-      .threadContextFn = []() {
-        int cudaDev = -1;
-        (void)cudaGetDevice(&cudaDev);
-        return cudaDev;
-      }});
+  NcclLogger::init(
+      NcclLoggerInitConfig{
+          .contextName = std::string{kCommsUtilsCategory},
+          .logPrefix = "COMM",
+          .logFilePath =
+              meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+          .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
+              meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
+          .threadContextFn = []() {
+            int cudaDev = -1;
+            (void)cudaGetDevice(&cudaDev);
+            return cudaDev;
+          }});
 }
 } // anonymous namespace
 

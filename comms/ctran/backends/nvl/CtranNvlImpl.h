@@ -19,8 +19,8 @@ struct CtranNvlRegElem {
 
  public:
   CtranNvlRegElem(const void* buf, const size_t len, int cudaDev)
-      : buf(buf), len(len), ipcMem(cudaDev, "NVL RegElem"){};
-  ~CtranNvlRegElem(){};
+      : buf(buf), len(len), ipcMem(cudaDev, "NVL RegElem") {};
+  ~CtranNvlRegElem() {};
 
   commResult_t tryLoad(bool& supported) {
     return ipcMem.tryLoad(buf, len, supported);
@@ -42,7 +42,7 @@ struct CtranNvlRemRegElem {
       const ctran::utils::CtranIpcDesc& ipcDesc,
       int cudaDev,
       const struct CommLogData* logMetaData)
-      : ipcRemMem(ipcDesc, cudaDev, logMetaData, "NVL RemRegElem"){};
+      : ipcRemMem(ipcDesc, cudaDev, logMetaData, "NVL RemRegElem") {};
 
   std::string toString() const {
     return ipcRemMem.toString();

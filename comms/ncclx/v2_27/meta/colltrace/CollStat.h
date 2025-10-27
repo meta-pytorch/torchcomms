@@ -79,7 +79,7 @@ class CollTimingRecord {
 // thread (currently it should only be used by CollTrace thread).
 class CollStat {
  public:
-  CollStat(const CommLogData& logMetaData) : logMetaData_(logMetaData){};
+  CollStat(const CommLogData& logMetaData) : logMetaData_(logMetaData) {};
 
   void recordColl(const CollTraceColl& coll);
 

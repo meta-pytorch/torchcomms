@@ -90,7 +90,7 @@ struct alignas(16) KernelElem {
     alignas(16) volatile CtranAlgoDevBcastArg bcast;
   };
 
-  KernelElem(){};
+  KernelElem() {};
 
   // number of thread blocks to launch the kernel.
   // Set by algorithm when submitting a GPE kernel; status update between GPE

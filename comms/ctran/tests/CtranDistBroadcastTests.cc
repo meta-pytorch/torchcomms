@@ -115,8 +115,9 @@ TEST_P(CtranTestBroadcastFixture, Broadcast) {
   const int sendRank = 0;
   void* base = prepareBuf(bufSize, memType, segments);
 
-  ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-      comm->ctranComm_.get()));
+  ASSERT_TRUE(
+      meta::comms::colltrace::testOnlyClearCollTraceRecords(
+          comm->ctranComm_.get()));
 
   for (auto& segment : segments) {
     void* hdl = nullptr;

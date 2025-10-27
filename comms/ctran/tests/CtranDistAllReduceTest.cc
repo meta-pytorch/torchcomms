@@ -178,8 +178,9 @@ class CtranAllReduceTest : public CtranDistBaseTest {
       segHandles.push_back(hdl);
     }
 
-    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-        comm->ctranComm_.get()));
+    ASSERT_TRUE(
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(
+            comm->ctranComm_.get()));
 
     if (inplace == kTestInPlace) {
       auto res = allreduceFunc(

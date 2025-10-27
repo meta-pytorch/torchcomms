@@ -14,7 +14,7 @@
 class CtranAvlTree::TreeElem {
  public:
   TreeElem(uintptr_t addr, std::size_t len, void* val)
-      : addr(addr), len(len), val(val){};
+      : addr(addr), len(len), val(val) {};
   ~TreeElem(void);
 
   // Insert a new element into the tree and rebalance internally.

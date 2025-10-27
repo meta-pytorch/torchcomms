@@ -102,10 +102,10 @@ TEST_F(CudaWaitEventTest, GetCollEndTimeInMargin) {
 
   auto endTimeFromEvent =
       event->getCollEndTime().orElse([](auto err) { FAIL() << err.message; });
-  auto endTimeDiffUs =
-      std::abs(std::chrono::duration_cast<std::chrono::microseconds>(
-                   endTimeFromEvent.value() - endTimeCPU)
-                   .count());
+  auto endTimeDiffUs = std::abs(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          endTimeFromEvent.value() - endTimeCPU)
+          .count());
   // We should get reasonably close to the actual end time. Since we will see
   // error on both endTimeCPU (from GPU to CPU sync) and endTimeFromEvent (from
   // the error with Cuda Event itself), we now expect the error to be less

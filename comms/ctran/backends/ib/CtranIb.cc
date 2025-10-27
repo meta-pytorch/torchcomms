@@ -908,8 +908,9 @@ commResult_t CtranIb::initRemoteTransStates(void) {
       FOLLY_EXPECTED_CHECK(createCqResult);
       cqs.emplace_back(std::move(*createCqResult));
       devices[device].ibvCq = &this->cqs[device];
-      FB_COMMCHECK(ctran::PtrCheck(
-          devices[device].ibvCq, "initRemoteTransStates", "cq"));
+      FB_COMMCHECK(
+          ctran::PtrCheck(
+              devices[device].ibvCq, "initRemoteTransStates", "cq"));
     }
   }
 

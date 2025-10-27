@@ -152,16 +152,17 @@ commResult_t peerPutNonContig(
       // Skip sending sendcounts if it is second all2allv.
       // TODO: using hints instead of nonContigIndices to determine this.
       if (!nonContigIndices) {
-        puts.emplace_back(CtranMapperPutMsg{
-            .sbuf = reinterpret_cast<size_t*>(sendCountsTmpbufGPU),
-            .dbuf = &remoteTmpRecvCountsBufGPU[myRank * sendcountsLength],
-            .len = sizeof(size_t) * sendcountsLength,
-            .config =
-                CtranMapperConfig{
-                    .memHdl_ = sendcountsTmpbufRegHdl,
-                    .remoteAccessKey_ = interNodeRemoteTmpAccessKey,
-                    .notify_ = false /*notify*/},
-            .req = nullptr});
+        puts.emplace_back(
+            CtranMapperPutMsg{
+                .sbuf = reinterpret_cast<size_t*>(sendCountsTmpbufGPU),
+                .dbuf = &remoteTmpRecvCountsBufGPU[myRank * sendcountsLength],
+                .len = sizeof(size_t) * sendcountsLength,
+                .config =
+                    CtranMapperConfig{
+                        .memHdl_ = sendcountsTmpbufRegHdl,
+                        .remoteAccessKey_ = interNodeRemoteTmpAccessKey,
+                        .notify_ = false /*notify*/},
+                .req = nullptr});
       }
 
       // Handle the corner case that all the metadata and data are not sent.
@@ -187,50 +188,53 @@ commResult_t peerPutNonContig(
         // the peer may exist without receiving all the data.
         if (i == sendIndicesBlockLengthsTmpbufCPU[peer] - 1) {
           ibPutReqs.push_back(std::make_unique<CtranMapperRequest>());
-          puts.emplace_back(CtranMapperPutMsg{
-              .sbuf = sendbuffs[curIndex],
-              .dbuf =
-                  (void*)(reinterpret_cast<uintptr_t>(remoteRecvBuffs[peer]) +
-                          remoteRecvBuffsBytesOffset[curIndex]),
-              .len = totalSendcounts * commTypeSize(datatype),
-              .config =
-                  CtranMapperConfig{
-                      .memHdl_ = sendMemHdl,
-                      .remoteAccessKey_ = remoteAccessKeys[peer],
-                      .notify_ = true /*notify*/},
-              .req = ibPutReqs.back().get()});
+          puts.emplace_back(
+              CtranMapperPutMsg{
+                  .sbuf = sendbuffs[curIndex],
+                  .dbuf = (void*)(reinterpret_cast<uintptr_t>(
+                                      remoteRecvBuffs[peer]) +
+                                  remoteRecvBuffsBytesOffset[curIndex]),
+                  .len = totalSendcounts * commTypeSize(datatype),
+                  .config =
+                      CtranMapperConfig{
+                          .memHdl_ = sendMemHdl,
+                          .remoteAccessKey_ = remoteAccessKeys[peer],
+                          .notify_ = true /*notify*/},
+                  .req = ibPutReqs.back().get()});
           putNotifiedFlag = true;
         } else {
           if (totalSendcounts == 0) {
             continue;
           }
-          puts.emplace_back(CtranMapperPutMsg{
-              .sbuf = sendbuffs[curIndex],
-              .dbuf =
-                  (void*)(reinterpret_cast<uintptr_t>(remoteRecvBuffs[peer]) +
-                          remoteRecvBuffsBytesOffset[curIndex]),
-              .len = totalSendcounts * commTypeSize(datatype),
-              .config =
-                  CtranMapperConfig{
-                      .memHdl_ = sendMemHdl,
-                      .remoteAccessKey_ = remoteAccessKeys[peer],
-                      .notify_ = false /*notify*/},
-              .req = nullptr});
+          puts.emplace_back(
+              CtranMapperPutMsg{
+                  .sbuf = sendbuffs[curIndex],
+                  .dbuf = (void*)(reinterpret_cast<uintptr_t>(
+                                      remoteRecvBuffs[peer]) +
+                                  remoteRecvBuffsBytesOffset[curIndex]),
+                  .len = totalSendcounts * commTypeSize(datatype),
+                  .config =
+                      CtranMapperConfig{
+                          .memHdl_ = sendMemHdl,
+                          .remoteAccessKey_ = remoteAccessKeys[peer],
+                          .notify_ = false /*notify*/},
+                  .req = nullptr});
         }
         i++;
       }
 
       if (!putNotifiedFlag) {
-        puts.emplace_back(CtranMapperPutMsg{
-            .sbuf = reinterpret_cast<size_t*>(sendCountsTmpbufGPU),
-            .dbuf = &remoteTmpRecvCountsBufGPU[myRank * sendcountsLength],
-            .len = 0,
-            .config =
-                CtranMapperConfig{
-                    .memHdl_ = sendcountsTmpbufRegHdl,
-                    .remoteAccessKey_ = interNodeRemoteTmpAccessKey,
-                    .notify_ = true /*notify*/},
-            .req = ibPutReqs.back().get()});
+        puts.emplace_back(
+            CtranMapperPutMsg{
+                .sbuf = reinterpret_cast<size_t*>(sendCountsTmpbufGPU),
+                .dbuf = &remoteTmpRecvCountsBufGPU[myRank * sendcountsLength],
+                .len = 0,
+                .config =
+                    CtranMapperConfig{
+                        .memHdl_ = sendcountsTmpbufRegHdl,
+                        .remoteAccessKey_ = interNodeRemoteTmpAccessKey,
+                        .notify_ = true /*notify*/},
+                .req = ibPutReqs.back().get()});
       }
 
       FB_COMMCHECK(

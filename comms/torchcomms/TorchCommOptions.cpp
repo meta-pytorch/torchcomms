@@ -13,8 +13,9 @@ CommOptions::CommOptions() {
 
   // Get timeout from environment variable - using 600s as default, which is the
   // same timeout as what ProcessGroupNCCL uses
-  timeout = std::chrono::milliseconds(static_cast<int>(
-      env_to_value<float>("TORCHCOMM_TIMEOUT_SECONDS", 600.0f) * 1000));
+  timeout = std::chrono::milliseconds(
+      static_cast<int>(
+          env_to_value<float>("TORCHCOMM_TIMEOUT_SECONDS", 600.0f) * 1000));
 
   // Initialize hints to empty map (don't read from environment)
   hints = std::unordered_map<std::string, std::string>();

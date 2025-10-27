@@ -49,13 +49,15 @@ CollTrace::CollTrace(
     std::vector<std::unique_ptr<ICollTracePlugin>> plugins)
     : config_(std::move(config)),
       logMetaData_(std::move(logMetaData)),
-      logPrefix_(fmt::format(
-          "commHash {:#x} commDesc {} rank {}",
-          logMetaData_.commHash,
-          logMetaData_.commDesc,
-          logMetaData_.rank)),
-      pendingTraceColls_(folly::MPMCQueue<std::unique_ptr<CollTraceEvent>>{
-          config_.maxPendingQueueSize}),
+      logPrefix_(
+          fmt::format(
+              "commHash {:#x} commDesc {} rank {}",
+              logMetaData_.commHash,
+              logMetaData_.commDesc,
+              logMetaData_.rank)),
+      pendingTraceColls_(
+          folly::MPMCQueue<std::unique_ptr<CollTraceEvent>>{
+              config_.maxPendingQueueSize}),
       plugins_(std::move(plugins)),
       traceCollThread_(
           std::thread(&CollTrace::collTraceThread, this, threadSetupFunc)) {

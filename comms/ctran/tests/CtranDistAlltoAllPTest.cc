@@ -122,20 +122,22 @@ class ctranAllToAllPTest : public CtranDistBaseTest {
   }
 
   void run() {
-    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-        comm->ctranComm_.get()));
+    ASSERT_TRUE(
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(
+            comm->ctranComm_.get()));
 
     // Initialize double persistent requests using double recv buffer allocated.
     std::array<CtranPersistentRequest*, 2> doublePRequests;
     for (int idx = 0; idx < 2; idx++) {
-      COMMCHECK_TEST(ctran::AllToAllPInit(
-          doubleRecvbuffs[idx],
-          maxRecvCount,
-          hints,
-          commInt,
-          comm->ctranComm_.get(),
-          stream,
-          doublePRequests[idx]));
+      COMMCHECK_TEST(
+          ctran::AllToAllPInit(
+              doubleRecvbuffs[idx],
+              maxRecvCount,
+              hints,
+              commInt,
+              comm->ctranComm_.get(),
+              stream,
+              doublePRequests[idx]));
     }
 
     std::vector<size_t> counts(numTimesRunExec);
@@ -279,14 +281,15 @@ TEST_P(ctranAllToAllPTestParam, countExceedsPreregBufferSize) {
   }
 
   CtranPersistentRequest* pRequest;
-  COMMCHECK_TEST(ctran::AllToAllPInit(
-      doubleRecvbuffs[0],
-      maxRecvCount,
-      hints,
-      commInt,
-      comm->ctranComm_.get(),
-      stream,
-      pRequest));
+  COMMCHECK_TEST(
+      ctran::AllToAllPInit(
+          doubleRecvbuffs[0],
+          maxRecvCount,
+          hints,
+          commInt,
+          comm->ctranComm_.get(),
+          stream,
+          pRequest));
 
   auto res = ctran::AllToAllPExec(
       sendBuf, /* count */ maxRecvCount / numRanks + 1, pRequest);

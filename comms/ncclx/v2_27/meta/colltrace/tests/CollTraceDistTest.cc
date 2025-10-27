@@ -225,8 +225,9 @@ TEST_F(CollTraceTest, VerboseAllReduce) {
     std::string traceLog = ss.str();
     EXPECT_THAT(
         output,
-        testing::HasSubstr(fmt::format(
-            "COLLTRACE: collId {} opCount {} opName AllReduce", i, i)));
+        testing::HasSubstr(
+            fmt::format(
+                "COLLTRACE: collId {} opCount {} opName AllReduce", i, i)));
   }
 }
 
@@ -253,8 +254,9 @@ TEST_F(CollTraceTest, VerboseAllToAll) {
   for (int i = 0; i < nColl; i++) {
     EXPECT_THAT(
         output,
-        testing::HasSubstr(fmt::format(
-            "COLLTRACE: collId {} opCount {} opName SendRecv", i, i)));
+        testing::HasSubstr(
+            fmt::format(
+                "COLLTRACE: collId {} opCount {} opName SendRecv", i, i)));
   }
 }
 
@@ -285,8 +287,9 @@ TEST_F(CollTraceTest, VerboseSendRecv) {
   for (int i = 0; i < nColl; i++) {
     EXPECT_THAT(
         output,
-        testing::HasSubstr(fmt::format(
-            "COLLTRACE: collId {} opCount {} opName SendRecv", i, i)));
+        testing::HasSubstr(
+            fmt::format(
+                "COLLTRACE: collId {} opCount {} opName SendRecv", i, i)));
   }
 }
 
@@ -323,11 +326,12 @@ TEST_F(CollTraceTest, VerboseSendOrRecv) {
   for (int i = 0; i < nColl; i++) {
     EXPECT_THAT(
         output,
-        testing::HasSubstr(fmt::format(
-            "COLLTRACE: collId {} opCount {} opName {}",
-            i,
-            i,
-            this->globalRank % 2 == 0 ? "Send" : "Recv")));
+        testing::HasSubstr(
+            fmt::format(
+                "COLLTRACE: collId {} opCount {} opName {}",
+                i,
+                i,
+                this->globalRank % 2 == 0 ? "Send" : "Recv")));
   }
 }
 
@@ -736,8 +740,9 @@ TEST_F(CollTraceTest, VerboseAllToAllCtran) {
   for (int i = 0; i < nColl; i++) {
     EXPECT_THAT(
         output,
-        testing::HasSubstr(fmt::format(
-            "COLLTRACE: collId {} opCount {} opName AllToAll", i, i)));
+        testing::HasSubstr(
+            fmt::format(
+                "COLLTRACE: collId {} opCount {} opName AllToAll", i, i)));
   }
   if (sendHandle != nullptr) {
     ncclCommDeregister(comm, sendHandle);

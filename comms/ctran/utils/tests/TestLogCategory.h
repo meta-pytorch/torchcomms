@@ -19,7 +19,7 @@
 class CaptureLogHandler : public folly::LogHandler {
  public:
   explicit CaptureLogHandler(std::shared_ptr<folly::LogFormatter> formatter)
-      : formatter_(std::move(formatter)){};
+      : formatter_(std::move(formatter)) {};
 
   void handleMessage(
       const folly::LogMessage& message,

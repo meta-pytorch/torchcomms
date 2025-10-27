@@ -25,10 +25,11 @@ CommsMaybe<bool> waitCudaEventFinish(
     if (res != cudaErrorNotReady) {
       CUDA_CHECK_EXPECTED(res);
     }
-    std::this_thread::sleep_for(std::min(
-        // In case timeout is smaller than the check interval specified
-        std::chrono::milliseconds(NCCL_COLLTRACE_CHECK_INTERVAL_MS),
-        sleepTimeMs));
+    std::this_thread::sleep_for(
+        std::min(
+            // In case timeout is smaller than the check interval specified
+            std::chrono::milliseconds(NCCL_COLLTRACE_CHECK_INTERVAL_MS),
+            sleepTimeMs));
     res = cudaEventQuery(event.get());
   }
   // Check whether we get out of the while loop due to event ready or timeout

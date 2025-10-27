@@ -380,8 +380,9 @@
     if (!(statement)) {                                                        \
       CLOGF(                                                                   \
           ERR, "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__)); \
-      throw std::runtime_error(fmt::format(                                    \
-          "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__)));     \
+      throw std::runtime_error(                                                \
+          fmt::format(                                                         \
+              "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__))); \
     }                                                                          \
   } while (0)
 

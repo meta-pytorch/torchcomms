@@ -314,6 +314,6 @@ NcclLogFormatter::NcclLogFormatter(
     std::string prefix,
     std::function<int(void)> threadContextFn)
     : prefix_(std::move(prefix)),
-      threadContextFn_(std::move(threadContextFn)){};
+      threadContextFn_(std::move(threadContextFn)) {};
 
 } // namespace meta::comms::logger

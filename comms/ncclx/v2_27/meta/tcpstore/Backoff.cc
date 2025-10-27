@@ -51,8 +51,9 @@ std::chrono::milliseconds ExponentialBackoffWithJitter::nextBackoff() {
   std::chrono::milliseconds backoffInterval{dist(gen_)};
 
   // update current interval
-  currentInterval_ = std::chrono::milliseconds(static_cast<int64_t>(
-      static_cast<double>(currentInterval_.count()) * multiplier));
+  currentInterval_ = std::chrono::milliseconds(
+      static_cast<int64_t>(
+          static_cast<double>(currentInterval_.count()) * multiplier));
 
   if (currentInterval_ > maxInterval) {
     currentInterval_ = maxInterval;

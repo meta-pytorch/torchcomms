@@ -20,8 +20,9 @@ TEST(MemUtilsTest, SingleAllocationCudaMalloc) {
   void* buffer = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buffer, bufferSize));
 
-  EXPECT_FALSE(comms::utils::cumem::isBackedByMultipleCuMemAllocations(
-      buffer, devId, bufferSize))
+  EXPECT_FALSE(
+      comms::utils::cumem::isBackedByMultipleCuMemAllocations(
+          buffer, devId, bufferSize))
       << "Regular cudaMalloc should not span multiple allocations";
 
   CUDACHECK_TEST(cudaFree(buffer));
@@ -50,8 +51,9 @@ TEST(MemUtilsTest, MultipleSegmentAllocation) {
   }
 
   const size_t totalSize = segmentSize * 2;
-  EXPECT_TRUE(comms::utils::cumem::isBackedByMultipleCuMemAllocations(
-      bufBase, devId, totalSize))
+  EXPECT_TRUE(
+      comms::utils::cumem::isBackedByMultipleCuMemAllocations(
+          bufBase, devId, totalSize))
       << "Buffer spanning multiple segments should be detected as multiple allocations";
 
   // Clean up
@@ -70,8 +72,9 @@ TEST(MemUtilsTest, SingleAllocationManaged) {
   void* buffer = nullptr;
   CUDACHECK_TEST(cudaMallocManaged(&buffer, bufferSize));
 
-  EXPECT_FALSE(comms::utils::cumem::isBackedByMultipleCuMemAllocations(
-      buffer, devId, bufferSize))
+  EXPECT_FALSE(
+      comms::utils::cumem::isBackedByMultipleCuMemAllocations(
+          buffer, devId, bufferSize))
       << "Managed memory allocation should not span multiple allocations";
 
   CUDACHECK_TEST(cudaFree(buffer));
@@ -89,8 +92,9 @@ TEST(MemUtilsTest, SingleAllocationHostPinned) {
   void* buffer = nullptr;
   CUDACHECK_TEST(cudaMallocHost(&buffer, bufferSize));
 
-  EXPECT_FALSE(comms::utils::cumem::isBackedByMultipleCuMemAllocations(
-      buffer, devId, bufferSize))
+  EXPECT_FALSE(
+      comms::utils::cumem::isBackedByMultipleCuMemAllocations(
+          buffer, devId, bufferSize))
       << "Host pinned memory allocation should not span multiple allocations";
 
   CUDACHECK_TEST(cudaFreeHost(buffer));
@@ -108,8 +112,9 @@ TEST(MemUtilsTest, SingleAllocationHostUnregistered) {
   void* buffer = malloc(bufferSize);
   ASSERT_NE(buffer, nullptr) << "Failed to allocate host memory";
 
-  EXPECT_FALSE(comms::utils::cumem::isBackedByMultipleCuMemAllocations(
-      buffer, devId, bufferSize))
+  EXPECT_FALSE(
+      comms::utils::cumem::isBackedByMultipleCuMemAllocations(
+          buffer, devId, bufferSize))
       << "Unregistered host memory allocation should not span multiple allocations";
 
   free(buffer);

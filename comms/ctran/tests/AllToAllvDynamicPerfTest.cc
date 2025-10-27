@@ -316,17 +316,18 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicUnchangedEqualCounts) {
       if (i == warmupTime) {
         CUDACHECK_TEST(cudaEventRecord(eventStart, stream));
       }
-      NCCLCHECK_TEST(ncclx::alltoallvDynamic(
-          sendbuffs.data(),
-          scounts,
-          recvbuffs.data(),
-          maxSendcount,
-          maxRecvcount,
-          actualRcounts,
-          hints,
-          ncclInt,
-          comm,
-          stream));
+      NCCLCHECK_TEST(
+          ncclx::alltoallvDynamic(
+              sendbuffs.data(),
+              scounts,
+              recvbuffs.data(),
+              maxSendcount,
+              maxRecvcount,
+              actualRcounts,
+              hints,
+              ncclInt,
+              comm,
+              stream));
     }
     CUDACHECK_TEST(cudaEventRecord(eventEnd, stream));
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -397,17 +398,18 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicEqualChangedCounts) {
         if (i == warmupTime) {
           CUDACHECK_TEST(cudaEventRecord(eventStart, stream));
         }
-        NCCLCHECK_TEST(ncclx::alltoallvDynamic(
-            sendbuffs.data(),
-            scounts,
-            recvbuffs.data(),
-            maxSendcount,
-            maxRecvcount,
-            actualRcounts,
-            hints,
-            ncclInt,
-            comm,
-            stream));
+        NCCLCHECK_TEST(
+            ncclx::alltoallvDynamic(
+                sendbuffs.data(),
+                scounts,
+                recvbuffs.data(),
+                maxSendcount,
+                maxRecvcount,
+                actualRcounts,
+                hints,
+                ncclInt,
+                comm,
+                stream));
       }
       CUDACHECK_TEST(cudaEventRecord(eventEnd, stream));
       CUDACHECK_TEST(cudaStreamSynchronize(stream));

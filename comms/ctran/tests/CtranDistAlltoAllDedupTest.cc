@@ -170,8 +170,9 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
     int numSplits = nLocalRanks;
     int nNodes = comm->ctranComm_->statex_->nNodes();
 
-    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-        comm->ctranComm_.get()));
+    ASSERT_TRUE(
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(
+            comm->ctranComm_.get()));
 
     CtranPersistentRequest* request = nullptr;
     void* recvBuf = nullptr;

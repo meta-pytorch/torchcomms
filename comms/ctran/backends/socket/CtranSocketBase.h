@@ -7,8 +7,8 @@
 
 class CtranSocketRequest {
  public:
-  CtranSocketRequest(){};
-  ~CtranSocketRequest(){};
+  CtranSocketRequest() {};
+  ~CtranSocketRequest() {};
   inline commResult_t complete() {
     state_ = COMPLETE;
     return commSuccess;

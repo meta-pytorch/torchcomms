@@ -387,15 +387,15 @@ std::string ProxyTraceOp::serialize(bool quoted) {
     map["status"] = done ? "DONE" : "IN_PROGRESS";
   }
   map["transSize"] = std::to_string(transSize);
-  map["startTs"] =
-      std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                         startTs.time_since_epoch())
-                         .count());
+  map["startTs"] = std::to_string(
+      std::chrono::duration_cast<std::chrono::microseconds>(
+          startTs.time_since_epoch())
+          .count());
   if (done) {
-    map["doneTs"] =
-        std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                           doneTs.time_since_epoch())
-                           .count());
+    map["doneTs"] = std::to_string(
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            doneTs.time_since_epoch())
+            .count());
   } else {
     map["doneTs"] = "null";
   }
@@ -420,9 +420,10 @@ std::string ProxyTraceOp::StepRecord::serialize(bool quoted) {
   std::unordered_map<std::string, std::string> map;
   map["step"] = std::to_string(step);
   map["ts"] = step > 0
-      ? std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                           ts.time_since_epoch())
-                           .count())
+      ? std::to_string(
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                ts.time_since_epoch())
+                .count())
       : "null";
   return serializeMap(stepRecordKeys, map, quoted);
 }

@@ -657,11 +657,12 @@ TEST_F(CtranDistMapperTest, intraNodeDynamicRegistration) {
         << "Test requires at least 2 localRanks on each node.  Skip test.";
   }
 
-  COMMCHECK_TEST(ctran::utils::commCudaMalloc(
-      reinterpret_cast<char**>(&buf),
-      bufSize,
-      nullptr,
-      "CtranDistMapperTest.intraNodeDynamicRegistration"));
+  COMMCHECK_TEST(
+      ctran::utils::commCudaMalloc(
+          reinterpret_cast<char**>(&buf),
+          bufSize,
+          nullptr,
+          "CtranDistMapperTest.intraNodeDynamicRegistration"));
 
   void* sendHdl = nullptr;
   bool isDynamicReg = false;

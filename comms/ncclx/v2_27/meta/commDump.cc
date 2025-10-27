@@ -264,10 +264,10 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
   return ncclSuccess;
 }
 
-__attribute__((visibility("default"))) ncclResult_t
-ncclCommDumpAll(std::unordered_map<
-                std::string,
-                std::unordered_map<std::string, std::string>>& map) {
+__attribute__((visibility("default"))) ncclResult_t ncclCommDumpAll(
+    std::unordered_map<
+        std::string,
+        std::unordered_map<std::string, std::string>>& map) {
   initEnv();
   auto commDumpsMaybe = ncclx::comms_monitor::CommsMonitor::commDumpAll();
   if (!commDumpsMaybe.has_value()) {
