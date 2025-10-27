@@ -92,6 +92,105 @@ TEST_F(NcclLoggerTest, LogDisplay) {
   finishLogging();
 }
 
+TEST_F(NcclLoggerTest, GetLastCommsErrorTest) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  ncclResetDebugInit();
+
+  initLogging();
+
+  // Initially, the last error should be empty
+  auto lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::StrEq(""));
+
+  // Log an info message - should not update last error
+  std::string infoMsg = "INFO MESSAGE";
+  INFO(NCCL_ALL, "%s", infoMsg.c_str());
+  sleep(1);
+  lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::StrEq(""));
+
+  // Log a warning message - should not update last error
+  std::string warnMsg = "WARN MESSAGE";
+  WARN("%s", warnMsg.c_str());
+  sleep(1);
+  lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::StrEq(""));
+
+  // Log an error message - should update last error
+  std::string errorMsg = "ERROR MESSAGE";
+  ERR("%s", errorMsg.c_str());
+  sleep(1);
+  lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::StrEq(errorMsg));
+
+  // Log another error message - should update to the new error
+  std::string errorMsg2 = "SECOND ERROR MESSAGE";
+  ERR("%s", errorMsg2.c_str());
+  sleep(1);
+  lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::StrEq(errorMsg2));
+
+  // Log info and warn - last error should remain unchanged
+  INFO(NCCL_ALL, "Another info");
+  WARN("Another warn");
+  sleep(1);
+  lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::StrEq(errorMsg2));
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, GetLastCommsErrorMultilineTest) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  ncclResetDebugInit();
+
+  initLogging();
+
+  // Log a multiline error message
+  std::string multilineError = "First line\nSecond line\nThird line";
+  ERR("%s", multilineError.c_str());
+  sleep(1);
+
+  auto lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::StrEq(multilineError));
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, GetLastCommsErrorLongMessageTest) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  ncclResetDebugInit();
+
+  initLogging();
+
+  // Create a long error message (but within the 1024 char buffer)
+  std::string longError(500, 'X');
+  ERR("%s", longError.c_str());
+  sleep(1);
+
+  auto lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::StrEq(longError));
+
+  finishLogging();
+}
+
+TEST_F(NcclLoggerTest, GetLastCommsErrorLongMessageTestXLOG) {
+  auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  ncclResetDebugInit();
+
+  initLogging();
+
+  // Create a long error message (but within the 1024 char buffer)
+  std::string longError(500, 'X');
+  XLOG(ERR) << longError;
+  sleep(1);
+
+  auto lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_THAT(lastError, ::testing::StrEq(longError));
+
+  finishLogging();
+}
+
 TEST_F(NcclLoggerTest, WarnLogTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"WARN"});
   ncclResetDebugInit();

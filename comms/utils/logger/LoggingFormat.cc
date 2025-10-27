@@ -7,6 +7,7 @@
 
 #include <fmt/chrono.h>
 #include <fmt/format.h>
+#include <folly/Synchronized.h>
 #include <folly/logging/LogMessage.h>
 #include <folly/logging/LogName.h>
 #include <folly/synchronization/CallOnce.h>
@@ -32,6 +33,10 @@ struct ProcMetaData {
 } procMetaData;
 folly::once_flag procMetaDataInitFlag;
 static thread_local std::string myThreadName = "main";
+
+// Using char array to ensure compatibility with NCCL GetLastError API
+static folly::Synchronized<std::array<char, 1024>> lastCommsError{
+    std::array<char, 1024>{'\0'}};
 
 } // Anonymous namespace
 
@@ -229,6 +234,16 @@ std::string NcclLogFormatter::formatMessage(
     const folly::LogCategory* /* handlerCategory */) {
   initProcMetaData();
 
+  bool isErrorMessage = message.getLevel() >= folly::LogLevel::ERR;
+  if (isErrorMessage) {
+    auto lastErrorLocked = lastCommsError.wlock();
+    std::snprintf(
+        lastErrorLocked->data(),
+        lastErrorLocked->size(),
+        "%s",
+        message.getMessage().c_str());
+  }
+
   auto timeSinceEpoch = message.getTimestamp().time_since_epoch();
   auto epochSeconds =
       std::chrono::duration_cast<std::chrono::seconds>(timeSinceEpoch);
@@ -308,6 +323,10 @@ std::string NcclLogFormatter::formatMessage(
   }
 
   return buffer;
+}
+
+const char* getLastCommsError() {
+  return lastCommsError.rlock()->data();
 }
 
 NcclLogFormatter::NcclLogFormatter(
