@@ -35,7 +35,7 @@ void validateCtranInitialization(
   ASSERT_NE(nullptr, comm->ctranComm_);
   ASSERT_NE(nullptr, comm->ctranComm_->statex_);
   ASSERT_NE(nullptr, comm->ctranComm_->bootstrap_);
-  ASSERT_NE(nullptr, comm->ctranComm_->collTrace_);
+  ASSERT_NE(nullptr, comm->ctranComm_->colltraceNew_);
   ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
   EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
   EXPECT_EQ(comm->commHash, comm->ctranComm_->statex_->commHash());
@@ -431,6 +431,7 @@ INSTANTIATE_TEST_SUITE_P(
         {"NCCL_FASTINIT_MODE", "ring_hybrid"},
         {"NCCL_CTRAN_ENABLE", "1"},
         {"NCCL_COLLTRACE", "trace"},
+        {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
     })),
     [](const testing::TestParamInfo<NcclxBaseTestFixture::ParamType>& info) {
       // generate test-name for a given NcclxEnvs
