@@ -212,8 +212,9 @@ CollTrace::~CollTrace() {
         logMetaData_.commDesc.c_str(),
         logMetaData_.rank);
 
-    eventQueue_.push(std::unique_ptr<CollTraceEvent>(
-        new CollTraceEvent(CollTraceEvent::EventType::TERMINATE)));
+    eventQueue_.push(
+        std::unique_ptr<CollTraceEvent>(
+            new CollTraceEvent(CollTraceEvent::EventType::TERMINATE)));
     if (profilingWorkerThread_.joinable()) {
       profilingWorkerThread_.join();
     }
@@ -480,8 +481,9 @@ void CollTrace::enqueueEvent(std::unique_ptr<CollTraceEvent> event) {
 void CollTrace::waitForWorkerFinishQueue() {
   std::unique_lock<std::mutex> waitLock(waitQueueEmptyMutex_);
   waitingForQueueEmpty_ = true;
-  eventQueue_.push(std::unique_ptr<CollTraceEvent>(
-      new CollTraceEvent(CollTraceEvent::EventType::WAKE_UP)));
+  eventQueue_.push(
+      std::unique_ptr<CollTraceEvent>(
+          new CollTraceEvent(CollTraceEvent::EventType::WAKE_UP)));
   waitQueueEmptyCv_.wait(waitLock, [this] { return !waitingForQueueEmpty_; });
 }
 

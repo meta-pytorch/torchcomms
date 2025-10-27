@@ -14,21 +14,21 @@
 using namespace ctran;
 
 OpElem::OpElem(enum opType type, CtranComm* comm, uint64_t opCount)
-    : OpElem(type, nullptr, comm, nullptr, opCount){};
+    : OpElem(type, nullptr, comm, nullptr, opCount) {};
 
 OpElem::OpElem(
     enum opType type,
     CtranComm* comm,
     ICtran* ctran,
     uint64_t opCount)
-    : OpElem(type, nullptr, comm, ctran, opCount){};
+    : OpElem(type, nullptr, comm, ctran, opCount) {};
 
 OpElem::OpElem(
     enum opType type,
     cudaStream_t stream,
     CtranComm* comm,
     uint64_t opCount)
-    : OpElem(type, stream, comm, nullptr, opCount){};
+    : OpElem(type, stream, comm, nullptr, opCount) {};
 
 OpElem::OpElem(OpElem* op) {
   this->type = op->type;

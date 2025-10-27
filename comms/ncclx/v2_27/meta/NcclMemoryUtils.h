@@ -21,8 +21,9 @@ static ncclResult_t metaAllocateShareableBuffer(
     std::shared_ptr<ncclx::memory::memCacheAllocator> memCache,
     struct CommLogData* logMetaData) {
   ncclx::memory::allocatorIpcDesc d;
-  NCCLCHECK(metaCommToNccl(ncclx::memory::allocateShareableBuffer(
-      size, refcount, &d, ptr, memCache, logMetaData, use)));
+  NCCLCHECK(metaCommToNccl(
+      ncclx::memory::allocateShareableBuffer(
+          size, refcount, &d, ptr, memCache, logMetaData, use)));
   INFO(
       NCCL_ALLOC,
       "refCnt for key %s increased, need to release when kernel finishes",

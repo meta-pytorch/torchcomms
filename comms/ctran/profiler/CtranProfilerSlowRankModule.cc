@@ -361,21 +361,22 @@ void CtranProfilerSlowRankModule::reportProfilingResultsToScuba(
   // nccl_profiler_slow_rank is the default scuba table for logging slow rank
   // profiling data.
   stats.lastLogTs_ = std::chrono::system_clock::now();
-  NcclScubaEvent scubaEvent(std::make_unique<CtranProfilerSlowRankEvent>(
-      &profiler_->getComm()->logMetaData_,
-      "slowRankProfiling",
-      "",
-      0,
-      stats.remoteRank,
-      stats.deviceName,
-      stats.remoteHostName,
-      stats.algorithmName,
-      std::to_string(stats.messageSize),
-      "0",
-      stats.avgBWGBps,
-      stats.nReqsPerWindow,
-      stats.rooflineBWGBps,
-      stats.rdmaPerfSlidingWindow.back()));
+  NcclScubaEvent scubaEvent(
+      std::make_unique<CtranProfilerSlowRankEvent>(
+          &profiler_->getComm()->logMetaData_,
+          "slowRankProfiling",
+          "",
+          0,
+          stats.remoteRank,
+          stats.deviceName,
+          stats.remoteHostName,
+          stats.algorithmName,
+          std::to_string(stats.messageSize),
+          "0",
+          stats.avgBWGBps,
+          stats.nReqsPerWindow,
+          stats.rooflineBWGBps,
+          stats.rdmaPerfSlidingWindow.back()));
   scubaEvent.record();
 }
 

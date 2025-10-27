@@ -298,12 +298,13 @@ void TransportProxy::progress() {
 
 void TransportProxy::prepResources(std::shared_ptr<TransportRequest> req) {
   bool skipReconnect = req->state == commSuccess;
-  req->state = ncclToMetaComm(ncclx::transportReConnect(
-      req->comm,
-      req->opCount,
-      req->peerReconnInfoMap,
-      req->bufKeys,
-      skipReconnect));
+  req->state = ncclToMetaComm(
+      ncclx::transportReConnect(
+          req->comm,
+          req->opCount,
+          req->peerReconnInfoMap,
+          req->bufKeys,
+          skipReconnect));
   if (req->state != commSuccess) {
     FB_ERRORTHROW(
         commInternalError,

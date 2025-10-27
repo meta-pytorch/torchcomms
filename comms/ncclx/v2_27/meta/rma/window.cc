@@ -48,12 +48,13 @@ ncclResult_t ncclWinAllocate(
   win_->comm = comm;
 
   auto guard = folly::makeGuard([win_] { delete win_; });
-  NCCLCHECK(metaCommToNccl(ctran::ctranWinAllocate(
-      size,
-      comm->ctranComm_.get(),
-      baseptr,
-      &win_->ctranWindow,
-      ncclToMetaComm(hints))));
+  NCCLCHECK(metaCommToNccl(
+      ctran::ctranWinAllocate(
+          size,
+          comm->ctranComm_.get(),
+          baseptr,
+          &win_->ctranWindow,
+          ncclToMetaComm(hints))));
   *win = win_;
   guard.dismiss();
   return ncclSuccess;

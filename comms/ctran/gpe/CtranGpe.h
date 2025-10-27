@@ -340,7 +340,7 @@ struct KernelConfig {
       cudaStream_t stream,
       const std::string& algoName,
       const uint64_t opCount)
-      : type(type), stream(stream), algoName(algoName), opCount(opCount){};
+      : type(type), stream(stream), algoName(algoName), opCount(opCount) {};
   KernelConfig(
       enum KernelType type,
       cudaStream_t stream,
@@ -351,9 +351,9 @@ struct KernelConfig {
         stream(stream),
         algoArgs(algoArgs),
         algoName(algoName),
-        opCount(opCount){};
+        opCount(opCount) {};
   std::string toString();
-  ~KernelConfig(){};
+  ~KernelConfig() {};
 };
 
 template <>

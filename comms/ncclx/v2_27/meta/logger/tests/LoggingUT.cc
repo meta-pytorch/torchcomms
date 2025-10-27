@@ -314,14 +314,15 @@ TEST_F(NcclLoggerTest, TestUtilsLogHandler) {
   EXPECT_EQ(utilsCategory, utilsCategory2);
   EXPECT_EQ(utilsCategory->getHandlers().size(), 1);
 
-  utilsCategory->admitMessage(folly::LogMessage(
-      utilsCategory,
-      folly::LogLevel::INFO,
-      std::chrono::system_clock::now(),
-      "test",
-      123,
-      "UtilsTest",
-      "testing testing 123"));
+  utilsCategory->admitMessage(
+      folly::LogMessage(
+          utilsCategory,
+          folly::LogLevel::INFO,
+          std::chrono::system_clock::now(),
+          "test",
+          123,
+          "UtilsTest",
+          "testing testing 123"));
 
   std::string TestStr = "TESTING";
 

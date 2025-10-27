@@ -117,9 +117,10 @@ class CollTraceWatchdogTest : public mccl::CollectiveIntegrationTestMixin,
       fmt::format("CollTraceWatchdog{}", folly::Random::rand64())};
 
   void testDriverCheckCrashedWithWatchdog() {
-    ASSERT_TRUE(std::holds_alternative<
-                mccl::CollectiveIntegrationTestMixin::TestDriverState>(
-        this->state_));
+    ASSERT_TRUE(
+        std::holds_alternative<
+            mccl::CollectiveIntegrationTestMixin::TestDriverState>(
+            this->state_));
     auto& testDriverState =
         std::get<mccl::CollectiveIntegrationTestMixin::TestDriverState>(
             this->state_);
@@ -147,8 +148,9 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithIbVerbMock) {
   int rank = getRank();
   int worldSize = getWorldSize();
 
-  NCCLCHECK_FATAL(ncclx::setGlobalHint(
-      "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
+  NCCLCHECK_FATAL(
+      ncclx::setGlobalHint(
+          "ncclx.colltrace.crashOnAsyncError", folly::to<std::string>(true)));
 
   // Initialize CUDA state
   auto deviceId = mccl::CudaTestUtil::getCudaDeviceId(rank);

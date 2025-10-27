@@ -126,7 +126,7 @@ inline const std::string getHostname() {
 }
 
 template <typename T, typename U>
-T getConfigValue(const U* config, T U::*member, T defaultValue) {
+T getConfigValue(const U* config, T U::* member, T defaultValue) {
   return config ? config->*member : defaultValue;
 }
 } // namespace ctran::utils

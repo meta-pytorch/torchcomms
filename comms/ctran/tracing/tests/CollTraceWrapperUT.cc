@@ -137,8 +137,9 @@ TEST_F(
 
   // Set up expectation for recordCollective to return error
   EXPECT_CALL(*mockCollTrace_, recordCollective(_, _))
-      .WillOnce(Return(folly::makeUnexpected<CommsError>(
-          CommsError("Mocking error", commInternalError))));
+      .WillOnce(Return(
+          folly::makeUnexpected<CommsError>(
+              CommsError("Mocking error", commInternalError))));
 
   auto handle = getNewCollTraceHandle(comm_.get(), p2pOpGroup, *kernelConfig_);
 

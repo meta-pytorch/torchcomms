@@ -202,8 +202,9 @@ TEST_F(CtranNvlTest, ExportImportMem) {
 
     // Local register
     void* regElems = nullptr;
-    COMMCHECK_TEST(CtranNvl::regMem(
-        data, dataCount * sizeof(int), this->localRank, &regElems));
+    COMMCHECK_TEST(
+        CtranNvl::regMem(
+            data, dataCount * sizeof(int), this->localRank, &regElems));
     ASSERT_NE(regElems, nullptr);
 
     // Export - check export control message content and send to peer
@@ -257,7 +258,7 @@ TEST_F(CtranNvlTest, ExportImportMem) {
 
     // Import
     void* mappedData = nullptr;
-    struct CtranNvlRemoteAccessKey rkey {};
+    struct CtranNvlRemoteAccessKey rkey{};
     auto res = ctranNvl->importMem(&mappedData, &rkey, peer, msg);
     EXPECT_EQ(res, commSuccess);
     EXPECT_NE(mappedData, nullptr);

@@ -141,6 +141,23 @@ TEST_F(TorchCommNCCLXTest, InitializationFailsWithInvalidDeviceId) {
     comm->setCudaApi(cuda_mock_);
     comm->setNcclApi(nccl_mock_);
 
+    // Mock getDeviceCount to return a valid device count (needed for rank %
+    // device_count)
+    EXPECT_CALL(*cuda_mock_, getDeviceCount(_))
+        .WillOnce(DoAll(SetArgPointee<0>(1), Return(cudaSuccess)));
+
+    // Mock malloc for barrier buffer allocation in bootstrap constructor
+    EXPECT_CALL(*cuda_mock_, malloc(_, sizeof(float)))
+        .Times(2)
+        .WillRepeatedly(DoAll(
+            SetArgPointee<0>(reinterpret_cast<void*>(0x1000)),
+            Return(cudaSuccess)));
+
+    // Mock free for barrier buffer deallocation in bootstrap destructor
+    EXPECT_CALL(*cuda_mock_, free(reinterpret_cast<void*>(0x1000)))
+        .Times(2)
+        .WillRepeatedly(Return(cudaSuccess));
+
     // Mock CUDA API to be called with device ID 0, since the boostrap
     // logic will assign a device ID in this case based on the rank.
     EXPECT_CALL(*cuda_mock_, setDevice(0))

@@ -23,7 +23,7 @@ class HipMock : public HipApi {
   MOCK_METHOD(
       hipError_t,
       memGetInfo,
-      (size_t * free, size_t* total),
+      (size_t* free, size_t* total),
       (override));
   MOCK_METHOD(
       hipError_t,

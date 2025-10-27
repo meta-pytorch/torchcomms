@@ -40,8 +40,9 @@ class DevMemTypeTest : public ::testing::Test {
     } else if (type == DevMemType::kCumem) {
       CUmemAllocationHandleType handleType =
           ctran::utils::getCuMemAllocHandleType();
-      FB_COMMCHECKTHROW(ctran::utils::commCuMemAlloc(
-          &ptr, pHandle, handleType, size, nullptr, "DevMemTypeUT"));
+      FB_COMMCHECKTHROW(
+          ctran::utils::commCuMemAlloc(
+              &ptr, pHandle, handleType, size, nullptr, "DevMemTypeUT"));
     } else if (type == DevMemType::kHostUnregistered) {
       ptr = malloc(size);
       hostMemPtrs_.insert(ptr);

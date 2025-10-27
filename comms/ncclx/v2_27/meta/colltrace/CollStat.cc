@@ -65,13 +65,14 @@ void CollStatData::addScubaSampleWithPrefix(
 void CollTimingRecord::insertRecord(const CollTraceColl& coll) {
   auto latencyMs = std::chrono::duration<float, std::milli>(coll.latency);
 
-  collStats_.emplace_back(SingleCollTimingRecord{
-      .executionTime =
-          std::chrono::duration_cast<std::chrono::microseconds>(latencyMs),
-      .interCollTime = coll.interCollTime,
-      .queueingTime = std::chrono::duration_cast<std::chrono::microseconds>(
-          coll.startTs - coll.enqueueTs),
-  });
+  collStats_.emplace_back(
+      SingleCollTimingRecord{
+          .executionTime =
+              std::chrono::duration_cast<std::chrono::microseconds>(latencyMs),
+          .interCollTime = coll.interCollTime,
+          .queueingTime = std::chrono::duration_cast<std::chrono::microseconds>(
+              coll.startTs - coll.enqueueTs),
+      });
 }
 
 NcclScubaSample CollTimingRecord::toScubaSample() const {

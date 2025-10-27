@@ -224,10 +224,11 @@ MapperTrace::Dump MapperTrace::dump() {
         .unfinishedRequests = {},
     };
     for (auto& [_, eventIndex] : curCollInfo.unfinishedRequests) {
-      dump.unfinishedRequests.emplace_back(MapperRequestEventInfo{
-          .event = eventHistory_.at(eventIndex),
-          .seqNum = eventIndex,
-      });
+      dump.unfinishedRequests.emplace_back(
+          MapperRequestEventInfo{
+              .event = eventHistory_.at(eventIndex),
+              .seqNum = eventIndex,
+          });
     }
     return dump;
   });

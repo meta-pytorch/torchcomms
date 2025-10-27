@@ -263,7 +263,9 @@ class CtranGpe::Impl {
 
   // Enqueue a command and notify the GPE thread to wake up.
   inline void cmdEnqueue(CtranGpeCmd* cmd) {
-    { cmdQueue_.lock()->queue.push(cmd); }
+    {
+      cmdQueue_.lock()->queue.push(cmd);
+    }
     cmdQueueCv_.notify_one();
   }
 

@@ -115,7 +115,7 @@ ibv_qp_attr makeQpAttrRts() {
   const uint8_t kTimeout = 20;
   const uint8_t kRetryCnt = 1;
 
-  struct ibv_qp_attr qpAttr {};
+  struct ibv_qp_attr qpAttr{};
   memset(&qpAttr, 0, sizeof(struct ibv_qp_attr));
 
   qpAttr.qp_state = IBV_QPS_RTS;

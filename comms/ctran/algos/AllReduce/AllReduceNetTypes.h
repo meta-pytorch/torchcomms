@@ -67,8 +67,8 @@ struct RecvResources {
 };
 
 struct AllReducePeer {
-  struct AllReduceConnector send {};
-  struct AllReduceConnector recv {};
+  struct AllReduceConnector send{};
+  struct AllReduceConnector recv{};
   int rank;
   int refCount;
   struct ctran::algos::topo::CtranRing ring;

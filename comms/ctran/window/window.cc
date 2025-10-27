@@ -20,7 +20,7 @@ CtranWin::CtranWin(
     size_t size,
     size_t signalSize,
     DevMemType bufType)
-    : comm(comm), dataSize(size), signalSize(signalSize), bufType(bufType){};
+    : comm(comm), dataSize(size), signalSize(signalSize), bufType(bufType) {};
 
 commResult_t CtranWin::exchange() {
   auto statex = comm->statex_.get();
@@ -95,13 +95,14 @@ commResult_t CtranWin::allocate() {
     FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
     this->range = allocSize;
   } else {
-    FB_COMMCHECK(utils::commCuMemAlloc(
-        &addr,
-        &allocHandle,
-        utils::getCuMemAllocHandleType(),
-        allocSize,
-        &comm->logMetaData_,
-        "allocate"));
+    FB_COMMCHECK(
+        utils::commCuMemAlloc(
+            &addr,
+            &allocHandle,
+            utils::getCuMemAllocHandleType(),
+            allocSize,
+            &comm->logMetaData_,
+            "allocate"));
 
     // query the actually allocated range of the memory
     CUdeviceptr pbase = 0;

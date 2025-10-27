@@ -219,8 +219,9 @@ commResult_t ctranAllToAllDedupInit(
   // recvbuff is internally managed nccl memory and must be freed with
   // ctranAllToAllDedupDestroy
   size_t size = maxRecvCount * commTypeSize(datatype);
-  FB_COMMCHECK(ctran::utils::commCudaMalloc(
-      (char**)&recvbuff, size, &comm->logMetaData_, "AllToAllDedupInit"));
+  FB_COMMCHECK(
+      ctran::utils::commCudaMalloc(
+          (char**)&recvbuff, size, &comm->logMetaData_, "AllToAllDedupInit"));
 
   void* segHdl{nullptr};
   void* regHdl{nullptr};

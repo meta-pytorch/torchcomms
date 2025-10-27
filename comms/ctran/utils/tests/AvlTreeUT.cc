@@ -14,7 +14,7 @@
 
 class Range {
  public:
-  Range(uintptr_t addr, size_t len) : addr(addr), len(len){};
+  Range(uintptr_t addr, size_t len) : addr(addr), len(len) {};
   ~Range() = default;
 
   bool isOverlap(Range& other) {

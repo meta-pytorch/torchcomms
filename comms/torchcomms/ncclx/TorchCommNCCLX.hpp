@@ -297,7 +297,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
-  void checkWorkQueue(bool isMainThread);
+  void checkWorkQueue();
   void enqueueWork(std::shared_ptr<TorchWorkNCCLX> work, cudaStream_t stream);
   bool getGraphCaptureMode();
   cudaStream_t getOperationStream(bool async_op);

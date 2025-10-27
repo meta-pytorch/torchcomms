@@ -701,9 +701,10 @@ TEST(NCCLXCommsTracingServiceHandlerTest, TestPortConflict) {
 
   ASSERT_THAT(
       NCCLXCommsTracingServiceUtil::startService,
-      ThrowsMessage<std::runtime_error>(HasSubstr(fmt::format(
-          "failed to bind to async server socket: [::]:{}: Address already in use",
-          port))));
+      ThrowsMessage<std::runtime_error>(HasSubstr(
+          fmt::format(
+              "failed to bind to async server socket: [::]:{}: Address already in use",
+              port))));
 
   // now tell tracing service to warn only instead of crashing
   EnvRAII warningOnly(NCCL_COMM_TRACING_SERVICE_WARN_ON_PORT_CONFLICT, true);
@@ -812,8 +813,9 @@ TEST_F(NcclCommsTest, CollectiveMetadataMismatch) {
     PullOneJobResult analyzerExpectedResult{
         .analyzerVerdictType = {
             AnalyzerVerdict::VerdictType::JOB_CONTAINS_COLL_METADATA_MISMATCH}};
-    EXPECT_TRUE(folly::coro::blockingWait(runAnalyzerUntilResultVerdict(
-        analyzerExpectedResult, std::chrono::milliseconds(20000))));
+    EXPECT_TRUE(
+        folly::coro::blockingWait(runAnalyzerUntilResultVerdict(
+            analyzerExpectedResult, std::chrono::milliseconds(20000))));
 
   } else {
     // Wait for analyzer from rank 0 from returning
@@ -976,8 +978,9 @@ TEST_F(NcclCommsTest, CollectiveCircularDependency) {
     PullOneJobResult analyzerExpectedResult{
         .analyzerVerdictType = {
             AnalyzerVerdict::VerdictType::JOB_CONTAINS_COLL_DEADLOCK}};
-    EXPECT_TRUE(folly::coro::blockingWait(runAnalyzerUntilResultVerdict(
-        analyzerExpectedResult, std::chrono::milliseconds(20000))));
+    EXPECT_TRUE(
+        folly::coro::blockingWait(runAnalyzerUntilResultVerdict(
+            analyzerExpectedResult, std::chrono::milliseconds(20000))));
 
   } else {
     // Wait for analyzer from rank 0 from returning

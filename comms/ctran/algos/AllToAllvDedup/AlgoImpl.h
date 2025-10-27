@@ -19,7 +19,7 @@ class AlgoImpl {
       ncclx::CommStateX* statex,
       ICtran* ctran,
       cudaStream_t stream);
-  ~AlgoImpl(){};
+  ~AlgoImpl() {};
 
   enum Phase {
     kPrepare,

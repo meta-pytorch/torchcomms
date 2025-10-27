@@ -20,16 +20,17 @@ class TestFactory(unittest.TestCase):
         os.environ["MASTER_PORT"] = "0"
         os.environ["WORLD_SIZE"] = "1"
         os.environ["RANK"] = "0"
+        os.environ["TORCHCOMM_GLOO_HOSTNAME"] = "localhost"
 
-        comm = torchcomms.new_comm("ncclx", torch.device("cuda"), "my_comm")
+        comm = torchcomms.new_comm("gloo", torch.device("cpu"), "my_comm")
         comm.finalize()
         backend = comm.unsafe_get_backend()
         print(backend)
 
-        from torchcomms._comms_ncclx import TorchCommNCCLX
+        from torchcomms._comms_gloo import TorchCommGloo
 
         # if backend was lazily loaded backend will not have the right type
-        self.assertIsInstance(backend, TorchCommNCCLX)
+        self.assertIsInstance(backend, TorchCommGloo)
 
     def test_factory_missing(self):
         with self.assertRaisesRegex(ModuleNotFoundError, "failed to find backend"):

@@ -137,13 +137,14 @@ std::string getTestName(
 INSTANTIATE_TEST_SUITE_P(
     CtranKernDequantizedReducePerf,
     CtranKernDequantizedReducePerfTestParam,
-    ::testing::Values(std::make_tuple(
-        8,
-        1 << 20, // 1MB
-        1 << 26, // 32MB
-        commSum,
-        10,
-        100)),
+    ::testing::Values(
+        std::make_tuple(
+            8,
+            1 << 20, // 1MB
+            1 << 26, // 32MB
+            commSum,
+            10,
+            100)),
     getTestName);
 
 int main(int argc, char* argv[]) {

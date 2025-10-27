@@ -24,16 +24,18 @@ namespace ctran::utils {
 
   folly::split(':', busIdStr, parts);
   if (parts.size() != 3) {
-    throw std::invalid_argument(fmt::format(
-        "Can not parse busIdStr: {}, it must have a format \"0000:00:00.0\"",
-        busIdStr));
+    throw std::invalid_argument(
+        fmt::format(
+            "Can not parse busIdStr: {}, it must have a format \"0000:00:00.0\"",
+            busIdStr));
   }
   std::vector<std::string_view> subparts;
   folly::split('.', parts[2], subparts);
   if (subparts.size() != 2) {
-    throw std::invalid_argument(fmt::format(
-        "Can not parse busIdStr: {}, it must have a format \"0000:00:00.0\"",
-        busIdStr));
+    throw std::invalid_argument(
+        fmt::format(
+            "Can not parse busIdStr: {}, it must have a format \"0000:00:00.0\"",
+            busIdStr));
   }
 
   BusId val;

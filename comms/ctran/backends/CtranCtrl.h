@@ -82,7 +82,7 @@ struct CmsgIbExportMem {
 
   static const std::string name;
 
-  CmsgIbExportMem(){};
+  CmsgIbExportMem() {};
   std::string toString() const {
     std::stringstream ss;
     ss << "[" << name << "] remoteAddr: 0x" << std::hex << remoteAddr;
@@ -100,7 +100,7 @@ struct CmsgNvlExportMem {
 
   static const std::string name;
 
-  CmsgNvlExportMem(){};
+  CmsgNvlExportMem() {};
   std::string toString() const {
     std::stringstream ss;
     ss << "[" << name << "] offset: 0x" << std::hex << offset << " "
@@ -114,7 +114,7 @@ struct CmsgNvlReleaseMem {
 
   static const std::string name;
 
-  CmsgNvlReleaseMem(){};
+  CmsgNvlReleaseMem() {};
   std::string toString() const {
     std::stringstream ss;
     ss << "[" << name << "] base: " << base;
@@ -135,11 +135,11 @@ struct ControlMsg {
 
   AuxData_t<DefaultAuxType> aux; // Used to store the remote aux data
 
-  ControlMsg(){};
+  ControlMsg() {};
   ControlMsg(int type) : type(type) {
     setType(type);
   };
-  ~ControlMsg(){};
+  ~ControlMsg() {};
 
   inline void setType(int newType) {
     type = newType;

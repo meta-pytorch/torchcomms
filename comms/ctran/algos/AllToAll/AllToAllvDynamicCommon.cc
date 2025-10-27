@@ -15,22 +15,23 @@
 #define PUT_AND_WAIT(perfconfig)                                              \
   do {                                                                        \
     if (algoType == OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG) {     \
-      FB_COMMCHECK(peerPutNonContig<perfconfig>(                              \
-          comm,                                                               \
-          sendbuffs,                                                          \
-          remoteRecvBuffs,                                                    \
-          sendCountsTmpbufCPU,                                                \
-          sendcountsLength,                                                   \
-          datatype,                                                           \
-          tmpRegHdls,                                                         \
-          nRanks,                                                             \
-          myRank,                                                             \
-          timestamp,                                                          \
-          remoteAccessKeys,                                                   \
-          ibPutReqs,                                                          \
-          ibRecvCtrlReqs,                                                     \
-          maxRecvcount,                                                       \
-          maxSendcount));                                                     \
+      FB_COMMCHECK(                                                           \
+          peerPutNonContig<perfconfig>(                                       \
+              comm,                                                           \
+              sendbuffs,                                                      \
+              remoteRecvBuffs,                                                \
+              sendCountsTmpbufCPU,                                            \
+              sendcountsLength,                                               \
+              datatype,                                                       \
+              tmpRegHdls,                                                     \
+              nRanks,                                                         \
+              myRank,                                                         \
+              timestamp,                                                      \
+              remoteAccessKeys,                                               \
+              ibPutReqs,                                                      \
+              ibRecvCtrlReqs,                                                 \
+              maxRecvcount,                                                   \
+              maxSendcount));                                                 \
     } else {                                                                  \
       FB_COMMCHECK(peerPutContig(                                             \
           comm,                                                               \
@@ -171,31 +172,33 @@ static inline commResult_t peerPutContig(
       auto [sendCountsTmpbufGPU, tmpbufRegHdl] =
           comm->ctran_->algo->getTmpBufInfo(
               CtranAlgo::TmpbufType::SENDCOUNTS_TMPBUF);
-      putMsgs.emplace_back(CtranMapperPutMsg{
-          .sbuf = &reinterpret_cast<size_t*>(sendCountsTmpbufGPU)[peer],
-          .dbuf = &remoteTmpRecvCountsBufGPU[myRank],
-          .len = sizeof(size_t),
-          .config =
-              CtranMapperConfig{
-                  .memHdl_ = tmpbufRegHdl,
-                  .remoteAccessKey_ = interNodeRemoteTmpAccessKey,
-                  .notify_ = false /*notify*/},
-          .req = nullptr});
+      putMsgs.emplace_back(
+          CtranMapperPutMsg{
+              .sbuf = &reinterpret_cast<size_t*>(sendCountsTmpbufGPU)[peer],
+              .dbuf = &remoteTmpRecvCountsBufGPU[myRank],
+              .len = sizeof(size_t),
+              .config =
+                  CtranMapperConfig{
+                      .memHdl_ = tmpbufRegHdl,
+                      .remoteAccessKey_ = interNodeRemoteTmpAccessKey,
+                      .notify_ = false /*notify*/},
+              .req = nullptr});
 
       ibPutReqs.push_back(std::make_unique<CtranMapperRequest>());
 
       // Only notify the peer at the last message. If we notify every iput,
       // the peer may exist without receiving all the data.
-      putMsgs.emplace_back(CtranMapperPutMsg{
-          .sbuf = sendbuffs[peer],
-          .dbuf = remoteRecvBuffs[peer],
-          .len = sendCountsTmpbufCPU[peer] * commTypeSize(datatype),
-          .config =
-              CtranMapperConfig{
-                  .memHdl_ = sendMemHdls[peer],
-                  .remoteAccessKey_ = remoteAccessKeys[peer],
-                  .notify_ = true /*notify*/},
-          .req = ibPutReqs.back().get()});
+      putMsgs.emplace_back(
+          CtranMapperPutMsg{
+              .sbuf = sendbuffs[peer],
+              .dbuf = remoteRecvBuffs[peer],
+              .len = sendCountsTmpbufCPU[peer] * commTypeSize(datatype),
+              .config =
+                  CtranMapperConfig{
+                      .memHdl_ = sendMemHdls[peer],
+                      .remoteAccessKey_ = remoteAccessKeys[peer],
+                      .notify_ = true /*notify*/},
+              .req = ibPutReqs.back().get()});
       FB_COMMCHECK(comm->ctran_->mapper->iputBatch(std::move(putMsgs), peer));
       timestamp->putIssued.emplace_back(peer);
       it = ibRecvCtrlReqs.erase(it);

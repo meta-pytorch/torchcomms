@@ -5,8 +5,7 @@
 namespace torch {
 namespace comms {
 
-TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollect(
-    bool isMainThread) {
+TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollect() {
   std::lock_guard<std::recursive_mutex> lock(work_queues_mutex_);
 
   TorchWorkNCCLX::WorkStatus last_status =
@@ -30,7 +29,6 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollect(
       if (status == TorchWorkNCCLX::WorkStatus::COMPLETED) {
         // Work is completed, remove it from the work queue
         work_queue.pop();
-        completed_work_queue_.push_back(work);
         // Continue to the next element in the queue
       } else if (
           status == TorchWorkNCCLX::WorkStatus::TIMEDOUT ||
@@ -51,11 +49,6 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollect(
     }
   }
 
-  if (isMainThread) {
-    // If we are the main thread, clear the completed work queues
-    completed_work_queue_.clear();
-  }
-
   return last_status;
 }
 
@@ -71,7 +64,7 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::finalize() {
   // empty
   TorchWorkNCCLX::WorkStatus status = TorchWorkNCCLX::WorkStatus::COMPLETED;
   while (!stream_work_queues_.empty()) {
-    status = garbageCollect(true);
+    status = garbageCollect();
     if (status == TorchWorkNCCLX::WorkStatus::ERROR ||
         status == TorchWorkNCCLX::WorkStatus::TIMEDOUT ||
         status == TorchWorkNCCLX::WorkStatus::COMPLETED) {
@@ -84,7 +77,6 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::finalize() {
   // NOTE: finalize MUST return without holding references to any work object,
   // otherwise it may leak object and cause side effects.
   stream_work_queues_.clear();
-  completed_work_queue_.clear();
 
   return status;
 }

@@ -155,8 +155,9 @@ class ctranAllToAllvTest : public CtranDistBaseTest {
           expectedVal + globalRank * 100 + i + 1);
     }
 
-    ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-        comm->ctranComm_.get()));
+    ASSERT_TRUE(
+        meta::comms::colltrace::testOnlyClearCollTraceRecords(
+            comm->ctranComm_.get()));
 
     // Run communication
     for (int x = 0; x < 1; x++) {

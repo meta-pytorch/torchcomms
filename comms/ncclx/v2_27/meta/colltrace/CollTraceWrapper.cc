@@ -26,7 +26,7 @@ namespace meta::comms::ncclx {
 namespace {
 enum class KernelPlanType { none, single, multiple };
 
-template <typename T, T* T::*next>
+template <typename T, T* T::* next>
 KernelPlanType getKernelPlanType(ncclIntruQueue<T, next>* taskHead) {
   if (ncclIntruQueueEmpty(taskHead)) {
     return KernelPlanType::none;

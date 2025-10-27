@@ -73,9 +73,10 @@ void NcclLogger::registerHandler(const NcclLoggerInitConfig& config) {
       folly::LogLevel::MAX_LEVEL; // No messages are propagated to parent
 
   // Setup the utils using the same config
-  folly::LoggerDB::get().updateConfig(folly::LogConfig(
-      {{logHandlerName, handlerConfig}},
-      {{std::string{config.contextName}, currentCategoryConfig}}));
+  folly::LoggerDB::get().updateConfig(
+      folly::LogConfig(
+          {{logHandlerName, handlerConfig}},
+          {{std::string{config.contextName}, currentCategoryConfig}}));
 }
 
 void NcclLogger::close() noexcept {

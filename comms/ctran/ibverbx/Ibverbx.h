@@ -160,7 +160,7 @@ struct VirtualWc {
   VirtualWc() = default;
   ~VirtualWc() = default;
 
-  struct ibv_wc wc {};
+  struct ibv_wc wc{};
   int expectedMsgCnt{0};
   int remainingMsgCnt{0};
   bool sendExtraNotifyImm{

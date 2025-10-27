@@ -133,8 +133,9 @@ class CtranIbTest : public CtranDistTest {
     }
 
     // Register and export to a control msg
-    COMMCHECK_TEST(CtranIb::regMem(
-        buf, bufCount * sizeof(int) * numPuts, this->localRank, &handle));
+    COMMCHECK_TEST(
+        CtranIb::regMem(
+            buf, bufCount * sizeof(int) * numPuts, this->localRank, &handle));
     COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
     ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
@@ -761,8 +762,9 @@ class CtranIbTest : public CtranDistTest {
     ControlMsg msg;
 
     // Register and export to a control msg
-    COMMCHECK_TEST(CtranIb::regMem(
-        buf, bufCount * sizeof(uint64_t), this->localRank, &handle));
+    COMMCHECK_TEST(
+        CtranIb::regMem(
+            buf, bufCount * sizeof(uint64_t), this->localRank, &handle));
     COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
     ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
@@ -1713,8 +1715,9 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
 
     // Allocate and register buffer
     CUDACHECK_TEST(cudaMalloc(&buf, BUF_COUNT * sizeof(int)));
-    COMMCHECK_TEST(CtranIb::regMem(
-        buf, BUF_COUNT * sizeof(int), this->localRank, &handle));
+    COMMCHECK_TEST(
+        CtranIb::regMem(
+            buf, BUF_COUNT * sizeof(int), this->localRank, &handle));
     ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
     CtranIbEpochRAII epochRAII(ctranIb.get());

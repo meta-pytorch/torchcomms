@@ -96,28 +96,29 @@ void Profiler::logNcclProfilingAlgo() const {
   const uint64_t collDurationUs =
       durations_[static_cast<size_t>(ProfilerEvent::ALGO_TOTAL)];
 
-  NcclScubaEvent scubaEvent(std::make_unique<CtranProfilerAlgoEvent>(
-      &comm_->logMetaData_,
-      "algoProfilingV2",
-      "",
-      0,
-      algoContext.peerRank,
-      algoContext.deviceName,
-      "",
-      algoContext.algorithmName,
-      algoContext.sendContext.messageSizes,
-      algoContext.recvContext.messageSizes,
-      "",
-      algoContext.sendContext.totalBytes,
-      algoContext.recvContext.totalBytes,
-      bufferRegistrationTimeUs,
-      controlSyncTimeUs,
-      dataTransferTimeUs,
-      opCount_,
-      readyTs_,
-      controlTs_,
-      timeFromDataToCollEndUs,
-      collDurationUs));
+  NcclScubaEvent scubaEvent(
+      std::make_unique<CtranProfilerAlgoEvent>(
+          &comm_->logMetaData_,
+          "algoProfilingV2",
+          "",
+          0,
+          algoContext.peerRank,
+          algoContext.deviceName,
+          "",
+          algoContext.algorithmName,
+          algoContext.sendContext.messageSizes,
+          algoContext.recvContext.messageSizes,
+          "",
+          algoContext.sendContext.totalBytes,
+          algoContext.recvContext.totalBytes,
+          bufferRegistrationTimeUs,
+          controlSyncTimeUs,
+          dataTransferTimeUs,
+          opCount_,
+          readyTs_,
+          controlTs_,
+          timeFromDataToCollEndUs,
+          collDurationUs));
   scubaEvent.record();
 }
 

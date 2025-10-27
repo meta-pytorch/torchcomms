@@ -765,8 +765,9 @@ commResult_t ctranAllReduceRing(
 
   int numBlocks = 0;
   int numThreads = 0;
-  FB_COMMCHECK(ctran::allreduce::ring::getNumBlocksAndThreads(
-      &numBlocks, &numThreads, func));
+  FB_COMMCHECK(
+      ctran::allreduce::ring::getNumBlocksAndThreads(
+          &numBlocks, &numThreads, func));
 
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
 

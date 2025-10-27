@@ -65,8 +65,9 @@ commResult_t releaseBase(
   if (base.ptr) {
     switch (base.type) {
       case MemType::kDevice:
-        FB_COMMCHECK(ncclx::memory::memCacheAllocator::getInstance()->release(
-            {base.memKey}));
+        FB_COMMCHECK(
+            ncclx::memory::memCacheAllocator::getInstance()->release(
+                {base.memKey}));
         break;
       case MemType::kHostPinned:
         FB_CUDACHECK(cudaFreeHost(base.ptr));

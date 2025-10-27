@@ -24,7 +24,7 @@ struct CtranMapperSegmentRange {
       const void* buf,
       const std::size_t len,
       DevMemType type)
-      : buf(buf), len(len), type(type){};
+      : buf(buf), len(len), type(type) {};
 
   std::string toString() const {
     std::stringstream ss;
@@ -62,7 +62,7 @@ struct CtranMapperSegment {
       CtranMapperSegmentRange range,
       const int cudaDev,
       const bool ncclManaged)
-      : range(range), cudaDev(cudaDev), ncclManaged(ncclManaged){};
+      : range(range), cudaDev(cudaDev), ncclManaged(ncclManaged) {};
 
   DevMemType getType() const {
     return range.type;
@@ -134,7 +134,7 @@ struct CtranMapperRegElem {
         len(len),
         cudaDev_(cudaDev),
         isDynamic_(isDynamic),
-        type_(type){};
+        type_(type) {};
   CtranMapperRegElem(
       const void* buf,
       std::size_t len,

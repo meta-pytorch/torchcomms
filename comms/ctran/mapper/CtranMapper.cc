@@ -701,12 +701,13 @@ commResult_t CtranMapper::icopy(
   iCopyCount++;
 
   if (this->mapperTrace) {
-    this->mapperTrace->recordMapperEvent(ncclx::colltrace::CopyStart{
-        .sourceBuffer = const_cast<void*>(sbuf),
-        .destBuffer = dbuf,
-        .length = len,
-        .stream = stream,
-        .req = traceReq});
+    this->mapperTrace->recordMapperEvent(
+        ncclx::colltrace::CopyStart{
+            .sourceBuffer = const_cast<void*>(sbuf),
+            .destBuffer = dbuf,
+            .length = len,
+            .stream = stream,
+            .req = traceReq});
   }
 
   return commSuccess;

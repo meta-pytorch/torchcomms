@@ -26,6 +26,9 @@ void CudaMock::setupDefaultBehaviors() {
           SetArgPointee<1>(std::numeric_limits<int>::max()),
           Return(cudaSuccess)));
 
+  ON_CALL(*this, getDeviceCount(_))
+      .WillByDefault(DoAll(SetArgPointee<0>(1), Return(cudaSuccess)));
+
   // Stream management - return success by default
   ON_CALL(*this, getStreamPriorityRange(_, _))
       .WillByDefault(DoAll(

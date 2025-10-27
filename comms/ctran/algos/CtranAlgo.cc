@@ -72,8 +72,9 @@ CtranAlgo::~CtranAlgo() {
   FB_COMMCHECKIGNORE(deregRemoteTmpBufs());
 
   if (this->isResInitialized_) {
-    FB_COMMCHECKIGNORE(ctran::utils::commCudaFree(
-        this->devState_d_, &this->comm_->logMetaData_));
+    FB_COMMCHECKIGNORE(
+        ctran::utils::commCudaFree(
+            this->devState_d_, &this->comm_->logMetaData_));
     this->devState_d_ = nullptr;
   }
   if (ctran_->mapper && this->tmpbufSegHdl) {
@@ -259,11 +260,12 @@ commResult_t CtranAlgo::initKernelResources() {
   }
 
   // Copy contents to device
-  FB_COMMCHECK(ctran::utils::commCudaMalloc(
-      &this->devState_d_,
-      1,
-      &this->comm_->logMetaData_,
-      "initKernelResources"));
+  FB_COMMCHECK(
+      ctran::utils::commCudaMalloc(
+          &this->devState_d_,
+          1,
+          &this->comm_->logMetaData_,
+          "initKernelResources"));
   FB_CUDACHECK(cudaMemcpy(
       this->devState_d_,
       &tmpDevState,
@@ -697,11 +699,12 @@ commResult_t CtranAlgo::initTmpBufs() {
   } else {
     // `ctran::utils::commCudaMalloc` automatically decides whether to use cuMem
     // or cudaMalloc to allocate buffer based on cuMem support
-    FB_COMMCHECKTHROW(ctran::utils::commCudaMalloc(
-        (char**)&this->tmpbuf,
-        segmentManager.totalLen,
-        &this->comm_->logMetaData_,
-        "initTmpBufs"));
+    FB_COMMCHECKTHROW(
+        ctran::utils::commCudaMalloc(
+            (char**)&this->tmpbuf,
+            segmentManager.totalLen,
+            &this->comm_->logMetaData_,
+            "initTmpBufs"));
   }
   FB_COMMCHECKTHROW(ctran_->mapper->regMem(
       this->tmpbuf,

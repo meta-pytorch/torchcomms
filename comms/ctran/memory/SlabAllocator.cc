@@ -67,13 +67,14 @@ commResult_t SlabAllocator::allocateMem(
     slabSize = ctran::utils::roundUp(slabSize, granularity_);
 
     void* slabPtr = nullptr;
-    FB_COMMCHECK(ctran::utils::commCuMemAlloc(
-        &slabPtr,
-        &slabHandle_,
-        ctran::utils::getCuMemAllocHandleType(),
-        slabSize,
-        logMetaData,
-        callsite));
+    FB_COMMCHECK(
+        ctran::utils::commCuMemAlloc(
+            &slabPtr,
+            &slabHandle_,
+            ctran::utils::getCuMemAllocHandleType(),
+            slabSize,
+            logMetaData,
+            callsite));
     slabPtrs_.push_back(slabPtr);
     *ptr = slabPtr;
     freeSize_ = slabSize - numBytes;

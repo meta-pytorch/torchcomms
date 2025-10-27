@@ -32,9 +32,10 @@ std::string TimestampPoint::toJsonEntry(
       std::to_string(id) + "\", " + "\"ph\": \"X\", " + "\"pid\": \"" +
       std::to_string(pid) + "\", " + "\"args\": {" + argStr + "}," +
       "\"tid\": \"" + std::to_string(peer_) + "\", " + "\"ts\": \"" +
-      std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                         now_.time_since_epoch())
-                         .count()) +
+      std::to_string(
+             std::chrono::duration_cast<std::chrono::microseconds>(
+                 now_.time_since_epoch())
+                 .count()) +
       "\", \"dur\": \"" + std::to_string(kPointToDurUs) + "\"" + "}";
 }
 
@@ -58,9 +59,10 @@ std::string TimeInterval::toJsonEntry(
       std::to_string(pid) + "\", " + "\"args\": {" + argStr + "}," +
       "\"dur\": \"" + std::to_string(dur) + "\", " + "\"tid\": \"" +
       std::to_string(peer_) + "\", " + "\"ts\": \"" +
-      std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
-                         start_.time_since_epoch())
-                         .count()) +
+      std::to_string(
+             std::chrono::duration_cast<std::chrono::microseconds>(
+                 start_.time_since_epoch())
+                 .count()) +
       "\"}";
 }
 
@@ -159,8 +161,9 @@ std::string TraceRecord::toJsonEntry(int& id, const int pid) const {
   std::vector<std::string> argStrs;
   argStrs.reserve(metaDataKeys_.size());
   for (auto i = 0; i < metaDataKeys_.size(); i++) {
-    argStrs.push_back(fmt::format(
-        "\"{}\": \"{}\"", metaDataKeys_.at(i), metaDataVals_.at(i)));
+    argStrs.push_back(
+        fmt::format(
+            "\"{}\": \"{}\"", metaDataKeys_.at(i), metaDataVals_.at(i)));
   }
   std::string argStr = folly::join(", ", argStrs);
 

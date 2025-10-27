@@ -35,7 +35,7 @@ class NetSendFailureCond {
         proxyOpId(proxyOpId),
         rank(rank),
         remoteRank(remoteRank),
-        step(step){};
+        step(step) {};
 
   std::string toString() {
     std::stringstream ss;
@@ -90,7 +90,7 @@ class ProxyMockNetSendFailure {
 
  private:
   ProxyMockNetSendFailure();
-  ~ProxyMockNetSendFailure(){};
+  ~ProxyMockNetSendFailure() {};
 
   bool mockImpl(struct ncclProxySubArgs* sub, int step, void** request);
 

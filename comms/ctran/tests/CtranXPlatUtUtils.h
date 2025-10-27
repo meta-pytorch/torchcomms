@@ -348,11 +348,12 @@ class CtranDistTest : public ::testing::Test {
     const std::string selfUrl = mcclComm->getInitURL();
     LOG(INFO) << "Rank " << globalRank << " initURL: " << selfUrl;
     const std::string uuid{"0"};
-    auto initWorkHandle = mcclComm->init(mccl::InitOpts{
-        .uuid = uuid,
-        .urls = exchangeInitUrls(selfUrl, numRanks, globalRank),
-        .timeout = std::chrono::milliseconds(120000),
-    });
+    auto initWorkHandle = mcclComm->init(
+        mccl::InitOpts{
+            .uuid = uuid,
+            .urls = exchangeInitUrls(selfUrl, numRanks, globalRank),
+            .timeout = std::chrono::milliseconds(120000),
+        });
     initWorkHandle->waitCpu();
     auto res = initWorkHandle->getResult();
     COMMCHECK_TEST(res.value().code);

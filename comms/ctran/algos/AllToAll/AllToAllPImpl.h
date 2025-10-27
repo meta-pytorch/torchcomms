@@ -18,8 +18,8 @@ class AlgoImpl {
   PersistArgs pArgs;
 
   AlgoImpl(CtranComm* comm, cudaStream_t stream)
-      : comm_(comm), stream_(stream){};
-  ~AlgoImpl(){};
+      : comm_(comm), stream_(stream) {};
+  ~AlgoImpl() {};
 
   commResult_t init();
 

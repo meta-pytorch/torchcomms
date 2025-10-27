@@ -121,9 +121,6 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLX::checkStatus() {
   if (end_status == cudaSuccess) {
     // End event has completed, mark the work as completed
     state_ = WorkStatus::COMPLETED;
-
-    // Release the input tensors
-    inputTensors_.clear();
   } else if (end_status == cudaErrorNotReady) {
     // End event has not completed yet, check for timeout
     auto current_time = std::chrono::steady_clock::now();

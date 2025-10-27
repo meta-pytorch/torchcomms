@@ -96,8 +96,8 @@ class CtranExRequestImpl {
   std::shared_ptr<AsyncError> asyncErr{nullptr};
 
  public:
-  CtranExRequestImpl(){};
-  ~CtranExRequestImpl(){};
+  CtranExRequestImpl() {};
+  ~CtranExRequestImpl() {};
 
   // Internal initialization to avoid exposing dependencies in CtranEx.h.
   // Initialized for CtranEx transport APIs.

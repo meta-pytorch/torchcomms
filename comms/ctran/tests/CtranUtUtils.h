@@ -138,7 +138,7 @@ class CtranBaseTest {
 
 class CtranDistBaseTest : public NcclxBaseTest, public CtranBaseTest {
  public:
-  CtranDistBaseTest() : NcclxBaseTest(true){};
+  CtranDistBaseTest() : NcclxBaseTest(true) {};
 
   // Global commWorld shared by all tests running by the process.
   // Destorying in TearDownTestSuite() to ensure release commWorld only after

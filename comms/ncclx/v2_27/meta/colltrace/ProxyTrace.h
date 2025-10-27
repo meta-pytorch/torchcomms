@@ -104,7 +104,7 @@ using ProxyPastCollMap = std::unordered_map<
 class ProxyTrace {
  public:
   ProxyTrace();
-  ~ProxyTrace(){};
+  ~ProxyTrace() {};
 
   // Record when starts a send operation on proxy thread (see sendProxyProgress)
   ncclResult_t startSend(struct ncclProxyArgs* args);

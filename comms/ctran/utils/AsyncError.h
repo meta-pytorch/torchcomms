@@ -68,7 +68,7 @@ class AsyncError {
   const std::string desc{"undefined"};
 
   AsyncError(bool abortOnError, const std::string& desc)
-      : abortOnError(abortOnError), desc(desc){};
+      : abortOnError(abortOnError), desc(desc) {};
 
   inline void setAsyncException(const Exception& e) {
     asyncEx_ = e;

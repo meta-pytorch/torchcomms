@@ -651,14 +651,15 @@ ncclResult_t getP2pSyncBufPtr(
       1UL << 21);
   ALIGN_SIZE((*maxSize), CUDA_IPC_MIN);
   // Grab the cached buffer per communicator
-  NCCLCHECK(ncclx::memory::metaAllocateShareableBuffer(
-      *maxSize,
-      0,
-      ipcDesc,
-      ptr,
-      kP2pSyncBufKey,
-      comm->memCache,
-      &comm->logMetaData));
+  NCCLCHECK(
+      ncclx::memory::metaAllocateShareableBuffer(
+          *maxSize,
+          0,
+          ipcDesc,
+          ptr,
+          kP2pSyncBufKey,
+          comm->memCache,
+          &comm->logMetaData));
 
   *offset = getP2pSyncBufSlot(
       comm->maxLocalRanks, isSend, nMaxChannels, channelId, connIndex, rank);

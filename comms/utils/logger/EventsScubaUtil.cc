@@ -82,13 +82,14 @@ EventsScubaUtil::SampleGuard::SampleGuard(
     : sample_(eventName) {
   auto context = getCurrentStickyContext();
   // Add the new event name to the stack
-  context.eventNameStack.push_back(EventNameInfo{
-      .eventName = eventName,
-      .fileName = fileName,
-      .line = line,
-      .functionName = functionName,
-      .childrenLatency = std::make_shared<std::chrono::milliseconds>(0),
-  });
+  context.eventNameStack.push_back(
+      EventNameInfo{
+          .eventName = eventName,
+          .fileName = fileName,
+          .line = line,
+          .functionName = functionName,
+          .childrenLatency = std::make_shared<std::chrono::milliseconds>(0),
+      });
   setNewStickyContext(std::move(context));
 }
 
@@ -131,12 +132,13 @@ EventsScubaUtil::SampleGuard::~SampleGuard() {
   std::vector<std::string> eventNamesWithFileLine;
   for (const auto& eventNameInfo : context.eventNameStack) {
     eventNames.push_back(eventNameInfo.eventName);
-    eventNamesWithFileLine.push_back(fmt::format(
-        "{}@{}@{}:{}",
-        eventNameInfo.eventName,
-        eventNameInfo.functionName,
-        eventNameInfo.fileName,
-        eventNameInfo.line));
+    eventNamesWithFileLine.push_back(
+        fmt::format(
+            "{}@{}@{}:{}",
+            eventNameInfo.eventName,
+            eventNameInfo.functionName,
+            eventNameInfo.fileName,
+            eventNameInfo.line));
   }
   sample_.addNormVector("event_name_stack", std::move(eventNames));
   sample_.addNormVector(

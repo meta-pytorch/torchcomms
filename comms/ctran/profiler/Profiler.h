@@ -47,7 +47,7 @@ class Profiler {
       std::array<utils::StopWatch<Clock>, NUM_PROFILER_EVENT_TYPES>;
 
  public:
-  Profiler(CtranComm* comm) : comm_(comm){};
+  Profiler(CtranComm* comm) : comm_(comm) {};
   ~Profiler() = default;
 
   // This should be called at the beginning of the collective

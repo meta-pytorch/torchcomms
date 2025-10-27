@@ -23,8 +23,8 @@ class SocketSetTosTest : public ::testing::Test {
 TEST_F(SocketSetTosTest, TestOverrideTOS) {
   const int kExpectedTos = 96;
   EnvRAII<int> tosConfigGuard(NCCL_SOCKET_TOS_CONFIG, kExpectedTos);
-  struct ncclSocket sock {};
-  union ncclSocketAddress addr {};
+  struct ncclSocket sock{};
+  union ncclSocketAddress addr{};
   char bootstrapNetIfName[MAX_IF_NAME_SIZE + 1];
   int numIfs = 0;
   EXPECT_EQ(

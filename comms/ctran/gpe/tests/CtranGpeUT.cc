@@ -391,8 +391,9 @@ TEST_F(CtranGpeTest, SubmitKernelWithStartAndExit) {
   for (auto i = 0; i < nIter; i++) {
     uint64_t dummyOpCount = 100;
     std::vector<std::unique_ptr<struct OpElem>> ops;
-    auto& op = ops.emplace_back(std::make_unique<OpElem>(
-        OpElem::opType::RECV, dummyComm, dummyOpCount));
+    auto& op = ops.emplace_back(
+        std::make_unique<OpElem>(
+            OpElem::opType::RECV, dummyComm, dummyOpCount));
     op->recv.recvbuff = nullptr;
     op->recv.count = 0;
     op->recv.datatype = commInt8;

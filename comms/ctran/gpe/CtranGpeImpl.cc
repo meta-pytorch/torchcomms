@@ -229,8 +229,9 @@ commResult_t CtranGpe::Impl::submit(
       comm, opGroup, kernelConfig, ifchecksum);
 
   utils::cudagraph::StreamCaptureInfo streamCaptureInfo;
-  FB_CUDACHECK(utils::cudagraph::getStreamCaptureInfo(
-      kernelConfig.stream, streamCaptureInfo));
+  FB_CUDACHECK(
+      utils::cudagraph::getStreamCaptureInfo(
+          kernelConfig.stream, streamCaptureInfo));
 
   size_t opGroupSize = 0;
   // Enqueue op to gpeThread if any op is appended

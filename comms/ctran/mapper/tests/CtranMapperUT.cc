@@ -920,8 +920,9 @@ void runTestSome(
   commResult_t res;
   for (int i = 0; i < numReqs; i++) {
     int peer = i % 2;
-    reqs.push_back(std::make_unique<CtranMapperRequest>(
-        CtranMapperRequest::ReqType::SEND_CTRL, peer));
+    reqs.push_back(
+        std::make_unique<CtranMapperRequest>(
+            CtranMapperRequest::ReqType::SEND_CTRL, peer));
   }
 
   int completed = 0;

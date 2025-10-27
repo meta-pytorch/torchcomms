@@ -25,7 +25,7 @@ class BusId {
 
   // busId must be always initialized to a valid value so users must use
   // factories not constructor
-  BusId(){};
+  BusId() {};
 };
 
 folly::Expected<int, std::string> getCudaArch(int cudaDev);

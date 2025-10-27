@@ -36,44 +36,47 @@ folly::once_flag ctranLoggingInitOnceFlag;
 
 void initCtranLoggingImpl() {
   meta::comms::logger::initCommLogging();
-  NcclLogger::init(NcclLoggerInitConfig{
-      .contextName = std::string{kCtranCategory},
-      .logPrefix = "CTRAN",
-      .logFilePath =
-          meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
-      .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
-          meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
-      .threadContextFn = []() {
-        int cudaDev = -1;
-        cudaGetDevice(&cudaDev);
-        return cudaDev;
-      }});
+  NcclLogger::init(
+      NcclLoggerInitConfig{
+          .contextName = std::string{kCtranCategory},
+          .logPrefix = "CTRAN",
+          .logFilePath =
+              meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+          .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
+              meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
+          .threadContextFn = []() {
+            int cudaDev = -1;
+            cudaGetDevice(&cudaDev);
+            return cudaDev;
+          }});
   // Init logging for CTRAN header
-  NcclLogger::init(NcclLoggerInitConfig{
-      .contextName = std::string{kCtranHeaderCategory},
-      .logPrefix = "CTRAN",
-      .logFilePath =
-          meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
-      .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
-          meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
-      .threadContextFn = []() {
-        int cudaDev = -1;
-        cudaGetDevice(&cudaDev);
-        return cudaDev;
-      }});
+  NcclLogger::init(
+      NcclLoggerInitConfig{
+          .contextName = std::string{kCtranHeaderCategory},
+          .logPrefix = "CTRAN",
+          .logFilePath =
+              meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+          .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
+              meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
+          .threadContextFn = []() {
+            int cudaDev = -1;
+            cudaGetDevice(&cudaDev);
+            return cudaDev;
+          }});
 #if defined(USE_ROCM)
-  NcclLogger::init(NcclLoggerInitConfig{
-      .contextName = getHipCtranCategory(),
-      .logPrefix = "CTRAN",
-      .logFilePath =
-          meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
-      .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
-          meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
-      .threadContextFn = []() {
-        int cudaDev = -1;
-        cudaGetDevice(&cudaDev);
-        return cudaDev;
-      }});
+  NcclLogger::init(
+      NcclLoggerInitConfig{
+          .contextName = getHipCtranCategory(),
+          .logPrefix = "CTRAN",
+          .logFilePath =
+              meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+          .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
+              meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
+          .threadContextFn = []() {
+            int cudaDev = -1;
+            cudaGetDevice(&cudaDev);
+            return cudaDev;
+          }});
 #endif
 }
 } // anonymous namespace

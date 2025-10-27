@@ -415,22 +415,25 @@ ncclResult_t setupTransports(
     std::array<bool, NCCL_NUM_ALGORITHMS>& algoNeedReConnect) {
   // TODO: support other algorithms if needed
   if (algoNeedReConnect[NCCL_ALGO_RING]) {
-    NCCLCHECK(transport::ncclTransportP2pSetupExt(
-        comm,
-        &comm->graphs[NCCL_ALGO_RING],
-        /*connIndex=*/0,
-        /*reSetup=*/true));
+    NCCLCHECK(
+        transport::ncclTransportP2pSetupExt(
+            comm,
+            &comm->graphs[NCCL_ALGO_RING],
+            /*connIndex=*/0,
+            /*reSetup=*/true));
   }
   if (algoNeedReConnect[NCCL_ALGO_TREE]) {
-    NCCLCHECK(transport::ncclTransportP2pSetupExt(
-        comm,
-        &comm->graphs[NCCL_ALGO_TREE],
-        /*connIndex=*/0,
-        /*reSetup=*/true));
+    NCCLCHECK(
+        transport::ncclTransportP2pSetupExt(
+            comm,
+            &comm->graphs[NCCL_ALGO_TREE],
+            /*connIndex=*/0,
+            /*reSetup=*/true));
   }
   if (p2pNeedReConnect) {
-    NCCLCHECK(transport::ncclTransportP2pSetupExt(
-        comm, /*graph=*/nullptr, /*connIndex=*/1, /*reSetup=*/true));
+    NCCLCHECK(
+        transport::ncclTransportP2pSetupExt(
+            comm, /*graph=*/nullptr, /*connIndex=*/1, /*reSetup=*/true));
   }
   return ncclSuccess;
 }

@@ -167,8 +167,9 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   std::vector<std::string> expOpNames;
   std::vector<std::string> expAlgoNames;
 
-  ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-      comm->ctranComm_.get()));
+  ASSERT_TRUE(
+      meta::comms::colltrace::testOnlyClearCollTraceRecords(
+          comm->ctranComm_.get()));
 
   for (int x = 0; x < iter; x++) {
     expOpNames.push_back("AllGather");
@@ -409,8 +410,9 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
   std::vector<std::string> expOpNames;
   std::vector<std::string> expAlgoNames;
 
-  ASSERT_TRUE(meta::comms::colltrace::testOnlyClearCollTraceRecords(
-      comm->ctranComm_.get()));
+  ASSERT_TRUE(
+      meta::comms::colltrace::testOnlyClearCollTraceRecords(
+          comm->ctranComm_.get()));
 
   for (int x = 0; x < iter; x++) {
     expOpNames.emplace_back("AllGather");

@@ -182,13 +182,14 @@ TCPStore::TCPStore(std::string host, const TCPStoreOptions& opts)
       break;
     } catch (const detail::NetworkError& ex) {
       if (deadline < std::chrono::steady_clock::now()) {
-        throw std::runtime_error(fmt::format(
-            "TCP client failed to connect/validate to host {}:{} - timed out (try={}, timeout={}ms): {}",
-            addr_.host,
-            addr_.port,
-            retry,
-            opts.timeout.count(),
-            ex.what()));
+        throw std::runtime_error(
+            fmt::format(
+                "TCP client failed to connect/validate to host {}:{} - timed out (try={}, timeout={}ms): {}",
+                addr_.host,
+                addr_.port,
+                retry,
+                opts.timeout.count(),
+                ex.what()));
       }
 
       auto delayDuration = backoff->nextBackoff();
@@ -283,10 +284,11 @@ void TCPStore::doWait(
       throw std::runtime_error("wait_canceled response is expected");
     }
   }
-  throw std::runtime_error(fmt::format(
-      "doWait timeout after {}ms, keys: {}",
-      timeout.count(),
-      fmt::join(keys, ", ")));
+  throw std::runtime_error(
+      fmt::format(
+          "doWait timeout after {}ms, keys: {}",
+          timeout.count(),
+          fmt::join(keys, ", ")));
 }
 
 std::vector<uint8_t> TCPStore::doGet(
