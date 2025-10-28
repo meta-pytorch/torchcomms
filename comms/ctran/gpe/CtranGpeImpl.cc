@@ -46,41 +46,6 @@ static std::unordered_map<KernelConfig::KernelType, const std::string>
          "AllToAllvDynamicSplitNonContig"},
 };
 
-namespace {
-commResult_t updateGraphAwareAlltoAllvDynamicCmd(CtranGpeCmd* cmd) {
-  auto op = cmd->coll.opGroup.front().get();
-  ctran::alltoallvdynamicp::AlgoImpl* algo =
-      new ctran::alltoallvdynamicp::AlgoImpl(op->comm_, op->stream);
-  if (!algo) {
-    return commSystemError;
-  }
-  const int nRanks = op->comm_->statex_->nRanks();
-  std::vector<void*> recvbuffs(nRanks);
-  for (int i = 0; i < nRanks; i++) {
-    recvbuffs[i] = op->alltoallv_dynamic.recvbuffs[i];
-  }
-  // FIXME: confirm if sendbuffs are also persistent, so we don't need to
-  // search handle for sendbuffs every time
-  algo->pArgs = {
-      .recvbuffs = recvbuffs,
-      .maxSendCount = op->alltoallv_dynamic.maxSendcount,
-      .maxRecvCount = op->alltoallv_dynamic.maxRecvcount,
-      .datatype = op->alltoallv_dynamic.datatype,
-  };
-  // Exchange mem handles and record in pArgs. This will not be captured
-  // by cudagraph.
-  FB_COMMCHECK(algo->init());
-
-  // Replace gpe func by the persistent version (skip exchanging mem
-  // handle); and OpGroup by the persistent op which has the remote
-  // handles recorded.
-  std::vector<std::unique_ptr<struct OpElem>> newOpGroup;
-  FB_COMMCHECK(algo->updatePersistFuncAndOp(cmd->coll.func, newOpGroup, op));
-  cmd->coll.opGroup = std::move(newOpGroup);
-  return commSuccess;
-}
-} // namespace
-
 CtranGpe::Impl::Impl() {
   this->kernelFlagPool = std::unique_ptr<KernelFlagPool>(
       new KernelFlagPool(NCCL_CTRAN_NUM_KERNEL_FLAGS));
@@ -254,15 +219,6 @@ commResult_t CtranGpe::Impl::submit(
     if (streamCaptureInfo.status == cudaStreamCaptureStatusActive) {
       FB_COMMCHECK(preLaunchGraphPrepare(cmd, graphPrepareFn));
       struct cmdCbPlan* plan = new struct cmdCbPlan;
-      // cudagraph-aware alltoall: transfer alltoall to alltoallPersistent for
-      // perf optimization
-      auto op = cmd->coll.opGroup.front().get();
-      if (NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE &&
-          op->type == OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG) {
-        // FIXME: this should control by hints passed from user instead of CVAR
-        // so we can have per-collective control
-        updateGraphAwareAlltoAllvDynamicCmd(cmd);
-      }
       plan->cmd = cmd;
       plan->gpe = this->gpe;
       cmd->persistent = true;
