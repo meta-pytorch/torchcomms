@@ -737,6 +737,35 @@ commResult_t ctranAllReduceRing(
     CtranComm* comm,
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout) {
+  // Check for minimum message size requirement for ctring algorithm.
+  // The ctring algorithm uses a ring-based approach that shards data across all
+  // ranks. Each rank must have at least one element in its shard to avoid empty
+  // chunk transfers that can lead to synchronization deadlocks. Therefore, we
+  // need at least nRanks elements.
+  const auto& statex = comm->statex_.get();
+  const auto nRanks = statex->nRanks();
+  const auto rank = statex->rank();
+  const size_t typeSize = static_cast<size_t>(commTypeSize(datatype));
+  const size_t minRequiredElements = nRanks;
+  const size_t minRequiredBytes = minRequiredElements * typeSize;
+
+  if (count < minRequiredElements) {
+    std::string errorMsg = fmt::format(
+        "ctring algorithm requires at least {} elements ({} bytes) for {} ranks, "
+        "but rank {} got {} elements ({} bytes) with datatype size={} bytes. "
+        "Each rank needs at least one element per shard. "
+        "Please use a larger message size or a different allreduce algorithm (e.g., ctdirect).",
+        minRequiredElements,
+        minRequiredBytes,
+        nRanks,
+        rank,
+        count,
+        count * typeSize,
+        typeSize);
+    CLOGF(ERR, "{}", errorMsg);
+    throw ctran::utils::Exception(errorMsg, commInvalidArgument);
+  }
+
   auto opCount = comm->ctran_->getOpCount();
   CTRAN_REDCOLL_INFO(
       allReduceAlgoName(ctran::allreduce::ring::myAlgo),
@@ -751,10 +780,6 @@ commResult_t ctranAllReduceRing(
 
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   std::unique_ptr<struct OpElem> op;
-
-  const auto& statex = comm->statex_.get();
-  const auto nRanks = statex->nRanks();
-  const auto rank = statex->rank();
 
   FB_CHECKTHROW(
       typeToFunc.contains(std::make_pair(datatype, redOp)),
