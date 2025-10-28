@@ -94,6 +94,12 @@ class TorchCommBackend {
       ReduceOp op,
       bool async_op,
       const ReduceScatterOptions& options = {}) = 0;
+  virtual std::shared_ptr<TorchWork> reduce_scatter_v(
+      at::Tensor& output,
+      const std::vector<at::Tensor>& input_list,
+      ReduceOp op,
+      bool async_op,
+      const ReduceScatterOptions& options = {}) = 0;
   virtual std::shared_ptr<TorchWork> reduce_scatter_single(
       at::Tensor& output,
       const at::Tensor& input,

@@ -114,6 +114,15 @@ std::shared_ptr<TorchWork> TorchComm::reduce_scatter(
   return impl_->reduce_scatter(output, input_list, op, async_op, options);
 }
 
+std::shared_ptr<TorchWork> TorchComm::reduce_scatter_v(
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    ReduceOp op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  return impl_->reduce_scatter_v(output, input_list, op, async_op, options);
+}
+
 std::shared_ptr<TorchWork> TorchComm::reduce_scatter_single(
     at::Tensor& output,
     const at::Tensor& input,

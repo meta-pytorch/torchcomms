@@ -815,6 +815,16 @@ std::shared_ptr<TorchWork> TorchCommGloo::reduce_scatter(
   return reduce_scatter_single(output, input, op, async_op, singleOptions);
 }
 
+std::shared_ptr<TorchWork> TorchCommGloo::reduce_scatter_v(
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    ReduceOp op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  throw std::runtime_error(
+      "reduce_scatter_v is not supported in GLOO backend yet");
+}
+
 std::shared_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
     at::Tensor& output,
     const at::Tensor& input,

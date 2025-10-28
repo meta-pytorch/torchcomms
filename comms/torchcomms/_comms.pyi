@@ -261,6 +261,15 @@ class TorchComm:
         hints: Dict[str, str] | None = None,
         timeout: timedelta | None = None,
     ) -> TorchWork: ...
+    def reduce_scatter_v(
+        self,
+        output: Any,
+        input_list: List[Any],
+        op: ReduceOp,
+        async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> TorchWork: ...
     def reduce_scatter_single(
         self,
         output: Any,

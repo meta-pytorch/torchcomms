@@ -821,6 +821,15 @@ std::shared_ptr<TorchWork> TorchCommRCCL::reduce_scatter(
   return work;
 }
 
+std::shared_ptr<TorchWork> TorchCommRCCL::reduce_scatter_v(
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    ReduceOp op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  throw std::runtime_error("reduce_scatter_v not implemented");
+}
+
 std::shared_ptr<TorchWork> TorchCommRCCL::reduce_scatter_single(
     at::Tensor& output,
     const at::Tensor& input,

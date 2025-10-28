@@ -186,6 +186,15 @@ std::shared_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter(
   return std::make_shared<DummyTorchWork>();
 }
 
+std::shared_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_v(
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    ReduceOp op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  return std::make_shared<DummyTorchWork>();
+}
+
 std::shared_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_single(
     at::Tensor& output,
     const at::Tensor& input,

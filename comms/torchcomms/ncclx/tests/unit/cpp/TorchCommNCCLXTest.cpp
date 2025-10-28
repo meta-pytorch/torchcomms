@@ -1116,6 +1116,9 @@ TEST_F(
     comm->reduce_scatter(tensor, input_list, ReduceOp::SUM, false);
   });
   testOperation([&]() {
+    comm->reduce_scatter_v(tensor, input_list, ReduceOp::SUM, false);
+  });
+  testOperation([&]() {
     comm->reduce_scatter_single(
         tensor, large_input_tensor, ReduceOp::SUM, false);
   });

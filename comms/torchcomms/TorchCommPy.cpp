@@ -755,6 +755,43 @@ Args:
           py::arg("timeout") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "reduce_scatter_v",
+          [](TorchComm& self,
+             at::Tensor& output,
+             const std::vector<at::Tensor>& input_list,
+             ReduceOp op,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            ReduceScatterOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.reduce_scatter_v(
+                output, input_list, op, async_op, opts);
+          },
+          R"(
+Reduce, then scatter a list of tensors to all ranks, supporting variable tensor sizes per rank.
+
+Args:
+    output: Output tensor on each rank; size may differ per rank.
+    input_list: List of tensors to reduce and scatter; the list is the same on all ranks, but tensor sizes may differ between indices.
+    op: Reduction operation.
+    async_op: Whether to perform the operation asynchronously
+    hints: Dictionary of string hints for backend-specific options.
+    timeout: Timeout for the operation.
+          )",
+          py::arg("output"),
+          py::arg("input_list"),
+          py::arg("op"),
+          py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "reduce_scatter_single",
           [](TorchComm& self,
              at::Tensor& output,
