@@ -13,6 +13,7 @@ class SimpleCtranInitTest : public ::testing::Test {
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
     setenv("NCCL_COLLTRACE", "trace", 1);
+    setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 1);
     setenv("NCCL_USE_MEM_CACHE", "1", 1);
     setenv("NCCL_LAZY_SETUP_CHANNELS", "1", 1);
     setenv("NCCL_RUNTIME_CONNECT", "1", 1);
@@ -39,7 +40,7 @@ TEST_F(SimpleCtranInitTest, VerifyCtranCommStructures) {
   ASSERT_NE(nullptr, comm->ctranComm_->statex_);
   ASSERT_NE(nullptr, comm->ctranComm_->bootstrap_);
   ASSERT_NE(nullptr, comm->ctranComm_->memCache_);
-  ASSERT_NE(nullptr, comm->ctranComm_->collTrace_);
+  ASSERT_NE(nullptr, comm->ctranComm_->colltraceNew_);
   ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
   EXPECT_TRUE(ctranInitialized(comm->ctranComm_.get()));
   EXPECT_EQ(comm->commHash, comm->ctranComm_->statex_->commHash());

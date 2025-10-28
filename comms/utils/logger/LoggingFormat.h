@@ -61,6 +61,8 @@ void initThreadMetaData(std::string_view threadName);
 
 fmt::memory_buffer getLogPrefix(LogLevel level);
 
+const char* getLastCommsError();
+
 class NcclLogFormatter : public folly::LogFormatter {
  public:
   NcclLogFormatter(

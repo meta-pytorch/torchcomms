@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
+#include <stdexcept>
+
 #include <ATen/cuda/CUDAContext.h>
 #include <dlfcn.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
@@ -8,6 +9,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
+#include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 #include "nccl.h" // @manual
 
 namespace torch {
@@ -54,11 +56,16 @@ TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
       [](unsigned char c) { return std::tolower(c); });
 
   if (device_.index() == -1) {
-    int device_count;
+    int device_count{0};
     CUDA_CHECK(
         cuda_api_,
         cuda_api_->getDeviceCount(&device_count),
         "Failed to get CUDA device count");
+    if (device_count <= 0) {
+      throw std::invalid_argument(
+          "No CUDA devices found; please check your CUDA installation");
+    }
+    TC_LOG(INFO, nullptr) << "Found " << device_count << " CUDA devices";
 
     device_ = c10::Device(c10::kCUDA, rank_ % device_count);
     TC_LOG(INFO, nullptr)

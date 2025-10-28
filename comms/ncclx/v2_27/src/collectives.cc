@@ -143,7 +143,7 @@ ncclResult_t ncclBroadcast(const void* sendbuff, void* recvbuff, size_t count, n
   }
 
   SetCudaDevRAII setCudaDev(comm->cudaDev);
-  if ((NCCL_BROADCAST_ALGO == NCCL_BROADCAST_ALGO::ctran) &&
+  if ((NCCL_BROADCAST_ALGO != NCCL_BROADCAST_ALGO::orig) &&
       ctranBroadcastSupport(comm->ctranComm_.get())) {
     return metaCommToNccl(ctranBroadcast(
         sendbuff, recvbuff, count, ncclToMetaComm(datatype), root, comm->ctranComm_.get(), stream));

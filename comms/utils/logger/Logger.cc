@@ -29,6 +29,8 @@ void NcclLogger::init(const NcclLoggerInitConfig& config) {
   if (!firstInit_.test_and_set()) {
     folly::initLoggingOrDie();
     DataTableWrapper::init();
+    NcclLogFormatterFactory::registerThreadContextFn(
+        config.logPrefix, config.threadContextFn);
     NcclLogger::registerHandler(
         {.contextName = "comms.utils",
          .logPrefix = config.logPrefix,
@@ -142,7 +144,7 @@ void NcclLogFormatterFactory::registerThreadContextFn(
     std::string_view name,
     std::function<int(void)> threadContextFn) {
   if (getPrefixToThreadContextFnMap().contains(std::string{name})) {
-    XLOGF(WARN, "Prefix {} re-registering thread context fn", name);
+    XLOGF(DBG1, "Prefix {} re-registering thread context fn", name);
   }
   getPrefixToThreadContextFnMap().insert_or_assign(
       std::string{name}, threadContextFn);

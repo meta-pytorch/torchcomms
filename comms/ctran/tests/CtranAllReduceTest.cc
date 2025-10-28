@@ -14,9 +14,17 @@
 #include "comms/ctran/tests/CtranStandaloneUTUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+#include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
+
 namespace ctran::testing {
 
 using AllReduceTestParam = std::tuple<std::string, enum NCCL_ALLREDUCE_ALGO>;
+using AllReduceMinMsgSizeTestParam = std::tuple<size_t, commDataType_t>;
+
+enum class CtranAllReduceRingMinSizeTestOpt {
+  expect_sufficient,
+  expect_insufficient,
+};
 
 class CtranAllReduceTest
     : public CtranStandaloneMultiRankBaseTest,
@@ -249,5 +257,157 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<AllReduceTestParam>& info) {
       return std::get<0>(info.param);
     });
+
+// Test fixture for ctring minimum message size validation
+class CtranAllReduceRingMinSizeTest
+    : public CtranStandaloneMultiRankBaseTest,
+      public ::testing::WithParamInterface<AllReduceMinMsgSizeTestParam> {
+ protected:
+  static constexpr int kDefaultNumRanks = 4;
+  static_assert(kDefaultNumRanks % 2 == 0);
+  static constexpr commRedOp_t kReduceOpType = commSum;
+
+  void SetUp() override {
+    setenv("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal", 1);
+    setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1", 1);
+    CtranStandaloneMultiRankBaseTest::SetUp();
+  }
+
+  void startWorkers(int numRanks = kDefaultNumRanks) {
+    std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
+    aborts.reserve(numRanks);
+    for (int i = 0; i < numRanks; ++i) {
+      aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
+    }
+    CtranStandaloneMultiRankBaseTest::startWorkers(numRanks, /*aborts=*/aborts);
+  }
+
+  void runTest(
+      size_t count,
+      commDataType_t dt,
+      enum CtranAllReduceRingMinSizeTestOpt testOpt,
+      int numRanks = kDefaultNumRanks) {
+    startWorkers(numRanks);
+    for (int rank = 0; rank < numRanks; ++rank) {
+      run(rank, [this, count, dt, testOpt](PerRankState& state) {
+        ASSERT_TRUE(ctranAllReduceSupport(state.ctranComm.get()));
+
+        size_t bufferSize = count * commTypeSize(dt);
+        if (bufferSize < CTRAN_MIN_REGISTRATION_SIZE) {
+          bufferSize = CTRAN_MIN_REGISTRATION_SIZE;
+        }
+
+        void* srcHandle;
+        void* dstHandle;
+        ASSERT_EQ(
+            commSuccess,
+            state.ctranComm->ctran_->commRegister(
+                state.srcBuffer, bufferSize, &srcHandle));
+        ASSERT_EQ(
+            commSuccess,
+            state.ctranComm->ctran_->commRegister(
+                state.dstBuffer, bufferSize, &dstHandle));
+
+        if (testOpt == CtranAllReduceRingMinSizeTestOpt::expect_sufficient) {
+          // Should not throw when count >= nRanks
+          EXPECT_NO_THROW({
+            auto res = ctranAllReduceRing(
+                state.srcBuffer,
+                state.dstBuffer,
+                count,
+                dt,
+                kReduceOpType,
+                state.ctranComm.get(),
+                state.stream);
+            EXPECT_EQ(res, commSuccess);
+          });
+        } else {
+          // Expect ctran::utils::Exception when count < nRanks
+          EXPECT_THROW(
+              {
+                ctranAllReduceRing(
+                    state.srcBuffer,
+                    state.dstBuffer,
+                    count,
+                    dt,
+                    kReduceOpType,
+                    state.ctranComm.get(),
+                    state.stream);
+              },
+              ctran::utils::Exception);
+        }
+
+        // ensure async execution completion and no error
+        EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
+
+        // deregistering will happen after streamSync below
+        ASSERT_EQ(
+            commSuccess, state.ctranComm->ctran_->commDeregister(dstHandle));
+        ASSERT_EQ(
+            commSuccess, state.ctranComm->ctran_->commDeregister(srcHandle));
+      });
+    }
+  }
+};
+
+TEST_P(CtranAllReduceRingMinSizeTest, InsufficientElements_1Element) {
+  auto [numRanks, dt] = GetParam();
+  ASSERT_FALSE(numRanks <= 1) << "Need at least 2 ranks for this test";
+  runTest(
+      1, dt, CtranAllReduceRingMinSizeTestOpt::expect_insufficient, numRanks);
+}
+
+TEST_P(CtranAllReduceRingMinSizeTest, InsufficientElements_NRanksMinus1) {
+  auto [numRanks, dt] = GetParam();
+  ASSERT_FALSE(numRanks <= 1) << "Need at least 2 ranks for this test";
+  runTest(
+      numRanks - 1,
+      dt,
+      CtranAllReduceRingMinSizeTestOpt::expect_insufficient,
+      numRanks);
+}
+
+TEST_P(CtranAllReduceRingMinSizeTest, SufficientElements_ExactlyNRanks) {
+  auto [numRanks, dt] = GetParam();
+  XLOG(INFO) << "SufficientElements_ExactlyNRanks: numRanks: " << numRanks
+             << ", dt: " << dt;
+  runTest(
+      numRanks,
+      dt,
+      CtranAllReduceRingMinSizeTestOpt::expect_sufficient,
+      numRanks);
+}
+
+TEST_P(CtranAllReduceRingMinSizeTest, SufficientElements_NRanksPlus1) {
+  auto [numRanks, dt] = GetParam();
+  runTest(
+      numRanks + 1,
+      dt,
+      CtranAllReduceRingMinSizeTestOpt::expect_sufficient,
+      numRanks);
+}
+
+TEST_P(CtranAllReduceRingMinSizeTest, SufficientElements_LargeMessage) {
+  auto [numRanks, dt] = GetParam();
+  runTest(
+      1024, dt, CtranAllReduceRingMinSizeTestOpt::expect_sufficient, numRanks);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllDataTypes,
+    CtranAllReduceRingMinSizeTest,
+    ::testing::Values(
+        std::make_tuple<>(2, commFloat),
+        std::make_tuple<>(2, commInt32),
+        std::make_tuple<>(2, commInt8),
+        std::make_tuple<>(4, commFloat),
+        std::make_tuple<>(4, commInt32),
+        std::make_tuple<>(4, commInt8),
+        std::make_tuple<>(6, commFloat),
+        std::make_tuple<>(6, commInt32),
+        std::make_tuple<>(6, commInt8),
+        std::make_tuple<>(8, commFloat),
+        std::make_tuple<>(8, commInt32),
+        std::make_tuple<>(8, commInt8)));
 
 } // namespace ctran::testing

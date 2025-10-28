@@ -51,9 +51,9 @@ TEST_F(TorchCommNCCLXTest, InitializationRank0GetUniqueId) {
   // Clear - 1 (destructor)
   setupCCAExpectations(1, 2, 1);
 
-  auto comm = createMockedTorchComm();
-
   cuda_mock_->setupDefaultBehaviors();
+
+  auto comm = createMockedTorchComm();
 
   // Expect rank 0 to get unique ID and store it
   ncclUniqueId expected_id{};
@@ -133,6 +133,8 @@ TEST_F(TorchCommNCCLXTest, InitializationFailsWithInvalidDeviceId) {
 
   // Setup CCA expectations - first init (device -1) should succeed
   setupCCAExpectations(1, 2, 0);
+
+  cuda_mock_->setupDefaultBehaviors();
 
   // Test with negative device ID
   {

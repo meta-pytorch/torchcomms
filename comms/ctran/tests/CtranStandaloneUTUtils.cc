@@ -56,7 +56,7 @@ void initOnce() {
 } // namespace
 
 void CtranStandaloneBaseTest::setupBase() {
-  setenv("NCCL_CTRAN_ENABLE", "INFO", 1);
+  setenv("NCCL_CTRAN_ENABLE", "1", 1);
   setenv("NCCL_DEBUG", "INFO", 1);
 
   rank = 0;

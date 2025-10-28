@@ -48,6 +48,7 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
+#include "comms/utils/logger/LoggingFormat.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/Utils.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -2845,7 +2846,7 @@ const char* ncclGetErrorString(ncclResult_t code) {
  */
 NCCL_API(const char*, ncclGetLastError, const ncclComm_t comm);
 const char* ncclGetLastError(ncclComm_t comm) {
-  return ncclLastError;
+  return meta::comms::logger::getLastCommsError();
 }
 
 NCCL_API(ncclResult_t, ncclCommGetAsyncError, ncclComm_t comm, ncclResult_t *asyncError);
