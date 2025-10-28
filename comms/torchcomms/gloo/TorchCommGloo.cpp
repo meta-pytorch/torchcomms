@@ -719,6 +719,14 @@ std::shared_ptr<TorchWork> TorchCommGloo::all_gather(
       async_op);
 }
 
+std::shared_ptr<TorchWork> TorchCommGloo::all_gather_v(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  throw std::runtime_error("all_gather_v is not supported in GLOO backend yet");
+}
+
 std::shared_ptr<TorchWork> TorchCommGloo::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,

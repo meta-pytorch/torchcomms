@@ -710,6 +710,65 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather(
   return work;
 }
 
+std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  if (tensor_list.size() != static_cast<size_t>(comm_size_)) {
+    throw std::runtime_error(
+        "tensor_list size must equal comm_size for all_gather");
+  }
+
+  // Ensure input tensor is contiguous
+  ensureTensorContiguous(tensor);
+
+  for (const auto& t : tensor_list) {
+    ensureTensorContiguous(t);
+  }
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+
+  work->recordStart();
+
+  // Use multiple broadcast operations for all_gather
+  nccl_api_->groupStart();
+
+  for (int i = 0; i < comm_size_; ++i) {
+    // assign inpu/output tensors to support vector all_gather (all_gather_v)
+    // where unevenly sized inputs are gathered among participating ranks
+    auto& output = tensor_list[i];
+    auto& input = (i == rank_) ? tensor : output;
+    if (input.numel() != output.numel()) {
+      throw std::runtime_error(
+          "Output tensor size must equal input tensor size for all_gather_v");
+    }
+    nccl_api_->broadcast(
+        input.data_ptr(),
+        output.data_ptr(),
+        input.numel(),
+        getNcclDataType(output),
+        i,
+        nccl_comm_,
+        stream);
+  }
+
+  nccl_api_->groupEnd();
+
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
 std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,

@@ -649,6 +649,41 @@ Args:
           py::arg("timeout") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "all_gather_v",
+          [](TorchComm& self,
+             const std::vector<at::Tensor>& tensor_list,
+             const at::Tensor& tensor,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            AllGatherOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.all_gather_v(tensor_list, tensor, async_op, opts);
+          },
+          R"(
+Gather a tensor from all ranks in the communicator, supporting variable tensor sizes per rank.
+
+Output will be available on all ranks.
+
+Args:
+    tensor_list: the list of tensors to gather into; the list is the same on all ranks, but tensor sizes may differ between indices.
+    tensor: the input tensor to share; size may differ per rank.
+    async_op: whether to perform the operation asynchronously
+    hints: dictionary of string hints for backend-specific options
+    timeout: timeout for the operation
+          )",
+          py::arg("tensor_list"),
+          py::arg("tensor"),
+          py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "all_gather_single",
           [](TorchComm& self,
              at::Tensor& output,

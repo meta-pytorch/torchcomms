@@ -89,6 +89,14 @@ std::shared_ptr<TorchWork> TorchComm::all_gather(
   return impl_->all_gather(tensor_list, tensor, async_op, options);
 }
 
+std::shared_ptr<TorchWork> TorchComm::all_gather_v(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  return impl_->all_gather_v(tensor_list, tensor, async_op, options);
+}
+
 std::shared_ptr<TorchWork> TorchComm::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,

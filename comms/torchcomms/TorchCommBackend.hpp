@@ -78,6 +78,11 @@ class TorchCommBackend {
       const at::Tensor& tensor,
       bool async_op,
       const AllGatherOptions& options = {}) = 0;
+  virtual std::shared_ptr<TorchWork> all_gather_v(
+      const std::vector<at::Tensor>& tensor_list,
+      const at::Tensor& tensor,
+      bool async_op,
+      const AllGatherOptions& options = {}) = 0;
   virtual std::shared_ptr<TorchWork> all_gather_single(
       at::Tensor& output,
       const at::Tensor& input,

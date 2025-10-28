@@ -693,6 +693,14 @@ std::shared_ptr<TorchWork> TorchCommRCCL::all_gather(
   return work;
 }
 
+std::shared_ptr<TorchWork> TorchCommRCCL::all_gather_v(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  throw std::runtime_error("all_gather_v not implemented");
+}
+
 std::shared_ptr<TorchWork> TorchCommRCCL::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,
