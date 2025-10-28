@@ -653,17 +653,25 @@ static commResult_t impl(
                algoCtx.opRounds[Op::kSendTrans].totalRounds ||
            algoCtx.opRounds[Op::kRecvRedCopy].done <
                algoCtx.opRounds[Op::kRecvRedCopy].totalRounds) {
-      // TODO: enable other data types
-      switch (op->allreduce.datatype) {
-        case commFloat32:
-        case commUint64:
-        case commInt32:
-        case commInt8:
-          break;
-        default:
-          throw ctran::utils::Exception(
-              fmt::format("Unsupported data type {}", op->allreduce.datatype),
-              commInvalidArgument);
+      if (op->allreduce.datatype == commInt8 ||
+          op->allreduce.datatype == commChar ||
+          op->allreduce.datatype == commUint8 ||
+          op->allreduce.datatype == commInt32 ||
+          op->allreduce.datatype == commInt ||
+          op->allreduce.datatype == commUint32 ||
+          op->allreduce.datatype == commInt64 ||
+          op->allreduce.datatype == commUint64 ||
+          op->allreduce.datatype == commFloat16 ||
+          op->allreduce.datatype == commHalf ||
+          op->allreduce.datatype == commFloat32 ||
+          op->allreduce.datatype == commFloat ||
+          op->allreduce.datatype == commFloat64 ||
+          op->allreduce.datatype == commDouble) {
+        // TODO: enable other data types
+      } else {
+        throw ctran::utils::Exception(
+            fmt::format("Unsupported data type {}", op->allreduce.datatype),
+            commInvalidArgument);
       }
       progressSend(args, resource, algoCtx, dataSResps, bufSyncRResps);
       HOST_ABORT();
