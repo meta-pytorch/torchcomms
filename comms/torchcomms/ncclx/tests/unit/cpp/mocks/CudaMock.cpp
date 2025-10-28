@@ -16,6 +16,9 @@ void CudaMock::setupDefaultBehaviors() {
   // Device management - return success by default
   ON_CALL(*this, setDevice(_)).WillByDefault(Return(cudaSuccess));
 
+  ON_CALL(*this, getDeviceCount(_))
+      .WillByDefault(DoAll(SetArgPointee<0>(1), Return(cudaSuccess)));
+
   ON_CALL(*this, getDeviceProperties(_, _))
       .WillByDefault(
           DoAll(SetArgPointee<0>(cudaDeviceProp{}), Return(cudaSuccess)));
