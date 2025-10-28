@@ -12,9 +12,10 @@ docker stop torchcomms || true
 docker rm torchcomms || true
 
 docker run --name torchcomms \
+    --arch=aarch64 \
     --net=host \
     -i \
     -t \
     -v ".:/torchcomms" \
-    pytorch/manylinux2_28-builder:cuda12.8-main \
+    pytorch/manylinuxaarch64-builder:cuda12.9 \
     bash /torchcomms/scripts/_emulate_build_wheel.sh
