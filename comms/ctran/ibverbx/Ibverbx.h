@@ -645,6 +645,7 @@ class IbvPd {
   IbvPd& operator=(IbvPd&& other) noexcept;
 
   ibv_pd* pd() const;
+  bool useDataDirect() const;
 
   folly::Expected<IbvMr, Error>
   regMr(void* addr, size_t length, ibv_access_flags access) const;

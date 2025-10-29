@@ -744,15 +744,6 @@ commResult_t CtranIb::regMem(
   const auto dmaBufSupport = s.getDevToDmaBufSupport(cudaDev);
 
   bool useDmaBuf = dmaBufSupport && NCCL_CTRAN_IB_DMABUF_ENABLE;
-  int dmaBufFd = -1;
-  if (useDmaBuf) {
-    // Check if the buffer is backed by cumem if dmaBuf is enabled;
-    // As of now, it would return a valid fd if the buffer is backed by cumem
-    // and is aligned with 4KB; otherwise -1 is returned. In such a case, we
-    // would fall back to ibv_reg_mr.
-    dmaBufFd = ctran::utils::getCuMemDmaBufFd(buf, len);
-    useDmaBuf = (dmaBufFd != -1);
-  }
 
   CLOGF_TRACE(
       ALLOC,
@@ -772,8 +763,12 @@ commResult_t CtranIb::regMem(
     const auto pdIdx =
         cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE +
         device;
-    if (useDmaBuf) {
-      auto maybeDmabufMr = s.ibvPds.rlock()->at(pdIdx).regDmabufMr(
+    const auto& pd = s.ibvPds.rlock()->at(pdIdx);
+    int dmaBufFd = useDmaBuf
+        ? ctran::utils::getCuMemDmaBufFd(buf, len, pd.useDataDirect())
+        : -1;
+    if (useDmaBuf && dmaBufFd != -1) {
+      auto maybeDmabufMr = pd.regDmabufMr(
           0, len, reinterpret_cast<uint64_t>(buf), dmaBufFd, access);
       FOLLY_EXPECTED_CHECKGOTO(maybeDmabufMr, fail);
       mrs->emplace_back(std::move(*maybeDmabufMr));
@@ -788,14 +783,15 @@ commResult_t CtranIb::regMem(
             len);
         return commInvalidUsage;
       }
-      auto maybeMr = s.ibvPds.rlock()->at(pdIdx).regMr((void*)buf, len, access);
+      auto maybeMr = pd.regMr((void*)buf, len, access);
       FOLLY_EXPECTED_CHECKGOTO(maybeMr, fail);
       mrs->emplace_back(std::move(*maybeMr));
     }
+    if (dmaBufFd != -1) {
+      (void)close(dmaBufFd);
+    }
   }
-  if (dmaBufFd != -1) {
-    (void)close(dmaBufFd);
-  }
+
   *ibRegElem = reinterpret_cast<void*>(mrs);
   s.incActiveRegCount();
 
@@ -804,10 +800,9 @@ commResult_t CtranIb::regMem(
 fail:
   CLOGF(
       ERR,
-      "CTRAN-IB: buffer registration failed: buf = {}, len = {}, dmaBufFd = {}, dmaBufSupport = {}, NCCL_CTRAN_IB_DMABUF_ENABLE = {}, useDmaBuf = {}",
+      "CTRAN-IB: buffer registration failed: buf = {}, len = {}, dmaBufSupport = {}, NCCL_CTRAN_IB_DMABUF_ENABLE = {}, useDmaBuf = {}",
       buf,
       len,
-      dmaBufFd,
       dmaBufSupport,
       NCCL_CTRAN_IB_DMABUF_ENABLE,
       useDmaBuf);
