@@ -675,7 +675,7 @@ class IbvPd {
  private:
   friend class IbvDevice;
 
-  IbvPd(ibv_pd* pd, Coordinator* coordinator, bool dataDirect);
+  IbvPd(ibv_pd* pd, Coordinator* coordinator, bool dataDirect = false);
 
   ibv_pd* pd_{nullptr};
   Coordinator* coordinator_{nullptr};
