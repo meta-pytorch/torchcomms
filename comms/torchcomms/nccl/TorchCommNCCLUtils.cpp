@@ -175,8 +175,8 @@ TorchCommNCCL::RedOpRAII TorchCommNCCL::getNcclReduceOp(
   }
 }
 
-void TorchCommNCCL::checkWorkQueue(bool isMainThread) {
-  TorchWorkNCCL::WorkStatus status = workq_.garbageCollect(isMainThread);
+void TorchCommNCCL::checkWorkQueue() {
+  TorchWorkNCCL::WorkStatus status = workq_.garbageCollect();
 
   switch (status) {
     case TorchWorkNCCL::WorkStatus::TIMEDOUT:
@@ -210,7 +210,7 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
     }
 
     // Check work objects for completion or timeout
-    checkWorkQueue(false);
+    checkWorkQueue();
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {
       // Log the error and abort the process.  We cannot abort the NCCL
@@ -243,7 +243,7 @@ void TorchCommNCCL::checkAndAbortIfTimedOutOrError() {
   }
 
   // First, check work queue status
-  checkWorkQueue(true);
+  checkWorkQueue();
 
   if (comm_state_ == CommState::TIMEOUT) {
     abortNcclComm();
