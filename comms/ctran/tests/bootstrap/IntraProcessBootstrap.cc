@@ -37,9 +37,9 @@ void IntraProcessBootstrap::barrierNamed(
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-
-    CLOGF(INFO, "rank [{}/{}] barrier '{}' leave", rank, nRanks, name);
   }
+
+  CLOGF(INFO, "rank [{}/{}] barrier '{}' leave", rank, nRanks, name);
 }
 
 folly::SemiFuture<int>
