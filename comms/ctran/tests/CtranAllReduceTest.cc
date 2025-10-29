@@ -410,4 +410,91 @@ INSTANTIATE_TEST_SUITE_P(
         std::make_tuple<>(8, commInt32),
         std::make_tuple<>(8, commInt8)));
 
+class CtranAllReduceRingOneRankTest : public CtranStandaloneMultiRankBaseTest {
+ protected:
+  static constexpr int kNRanks = 1;
+  static constexpr commRedOp_t kReduceOpType = commSum;
+  static constexpr commDataType_t kDataType = commInt32;
+  static constexpr size_t kTypeSize = sizeof(int);
+  static constexpr size_t kBufferNElem = kBufferSize / kTypeSize;
+
+  void SetUp() override {
+    setenv("NCCL_ALLREDUCE_ALGO", "ctring", 1);
+
+    CtranStandaloneMultiRankBaseTest::SetUp();
+  }
+};
+
+TEST_F(CtranAllReduceRingOneRankTest, Basic) {
+  ASSERT_EQ(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::ctring);
+
+  CtranStandaloneMultiRankBaseTest::startWorkers(
+      kNRanks, /*aborts=*/{ctran::utils::createAbort(/*enabled=*/true)});
+
+  run(/*rank=*/0, [this](PerRankState& state) {
+    // set up src buffer to hold magic values, and zero out dst buffers
+    int magic = 0xdeadbeef;
+    int srcHost[kBufferNElem];
+    int dstHost[kBufferNElem];
+    for (int i = 0; i < kBufferNElem; ++i) {
+      srcHost[i] = magic + i;
+    }
+    memset(dstHost, 0, kBufferSize);
+    ASSERT_EQ(
+        cudaSuccess,
+        cudaMemcpy(
+            state.srcBuffer, srcHost, kBufferSize, cudaMemcpyHostToDevice));
+    ASSERT_EQ(cudaSuccess, cudaMemset(state.dstBuffer, 0, kBufferSize));
+
+    // warmup
+    void* srcHandle;
+    void* dstHandle;
+    ASSERT_EQ(
+        commSuccess,
+        state.ctranComm->ctran_->commRegister(
+            state.srcBuffer, kBufferSize, &srcHandle));
+    ASSERT_EQ(
+        commSuccess,
+        state.ctranComm->ctran_->commRegister(
+            state.dstBuffer, kBufferSize, &dstHandle));
+    SCOPE_EXIT {
+      // deregistering will happen after streamSync below
+      state.ctranComm->ctran_->commDeregister(dstHandle);
+      state.ctranComm->ctran_->commDeregister(srcHandle);
+    };
+
+    CLOGF(INFO, "rank {} allReduce completed registration", state.rank);
+
+    EXPECT_EQ(
+        commSuccess,
+        ctranAllReduce(
+            state.srcBuffer,
+            state.dstBuffer,
+            kBufferNElem,
+            kDataType,
+            kReduceOpType,
+            state.ctranComm.get(),
+            state.stream,
+            std::nullopt,
+            /*timeout=*/std::nullopt));
+
+    CLOGF(INFO, "rank {} allReduce scheduled", state.rank);
+
+    // ensure async execution completion and no error
+    EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
+    EXPECT_EQ(commSuccess, state.ctranComm->getAsyncResult());
+
+    CLOGF(INFO, "rank {} allReduce task completed", state.rank);
+
+    // validate results
+    ASSERT_EQ(
+        cudaSuccess,
+        cudaMemcpy(
+            dstHost, state.dstBuffer, kBufferSize, cudaMemcpyDeviceToHost));
+    for (int i = 0; i < kBufferNElem; ++i) {
+      EXPECT_EQ(srcHost[i], dstHost[i]);
+    }
+  });
+}
+
 } // namespace ctran::testing

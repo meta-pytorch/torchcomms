@@ -1109,10 +1109,14 @@ TEST_F(
   testOperation([&]() { comm->all_reduce(tensor, ReduceOp::SUM, false); });
   testOperation([&]() { comm->reduce(tensor, 0, ReduceOp::SUM, false); });
   testOperation([&]() { comm->all_gather(tensor_list, tensor, false); });
+  testOperation([&]() { comm->all_gather_v(tensor_list, tensor, false); });
   testOperation(
       [&]() { comm->all_gather_single(output_tensor, input_tensor, false); });
   testOperation([&]() {
     comm->reduce_scatter(tensor, input_list, ReduceOp::SUM, false);
+  });
+  testOperation([&]() {
+    comm->reduce_scatter_v(tensor, input_list, ReduceOp::SUM, false);
   });
   testOperation([&]() {
     comm->reduce_scatter_single(
@@ -1185,6 +1189,7 @@ TEST_F(TorchCommNCCLXTest, CollectiveOperationsAfterFinalizeThrowException) {
   testOperation([&]() { comm->all_reduce(tensor, ReduceOp::SUM, false); });
   testOperation([&]() { comm->reduce(tensor, 0, ReduceOp::SUM, false); });
   testOperation([&]() { comm->all_gather(tensor_list, tensor, false); });
+  testOperation([&]() { comm->all_gather_v(tensor_list, tensor, false); });
   testOperation(
       [&]() { comm->all_gather_single(output_tensor, input_tensor, false); });
   testOperation([&]() {

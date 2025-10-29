@@ -9,8 +9,8 @@
 #include <vector>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
+#include "comms/ctran/backends/ib/CtranIbQpUtils.h"
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
-#include "comms/ctran/backends/ib/CtranIbVcImpl.h"
 #include "comms/ctran/backends/ib/IbvWrap.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
@@ -24,7 +24,63 @@
 // a QpUniqueId is defined by a pair of <qpnum, ibDeviceId>
 typedef std::pair<int, int> QpUniqueId;
 
-using ctran::ib::CtrlPacket;
+// Fix-sized payload buffer for IB transport to prepare and register the
+// temporary buffers for control messages
+constexpr int MAX_PAYLOAD_SIZE{4096};
+struct CtrlPacket {
+  int type{0}; // for callback check
+  size_t size{0}; // size of actual data in payload
+  char payload[MAX_PAYLOAD_SIZE];
+
+  inline void
+  copyFrom(const int srcType, const void* srcPayload, const size_t srcSize) {
+    FB_CHECKABORT(
+        srcSize <= sizeof(payload),
+        "Unexpected payload size {} > packet max payload size {}",
+        srcSize,
+        sizeof(payload));
+
+    memcpy(payload, srcPayload, srcSize);
+    size = srcSize;
+    type = srcType;
+  }
+
+  inline void copyTo(void* dstPayload, const size_t dstSize) {
+    FB_CHECKABORT(
+        size == dstSize,
+        "Unexpected packet payload size {} != input payload size {}",
+        size,
+        dstSize);
+
+    memcpy(dstPayload, payload, dstSize);
+  }
+
+  inline void copyFrom(const CtrlPacket& src) {
+    type = src.type;
+    size = src.size;
+    memcpy(payload, src.payload, src.size);
+  }
+
+  inline void copyTo(CtrlPacket& dst) {
+    dst.type = type;
+    dst.size = size;
+    memcpy(dst.payload, payload, size);
+  }
+
+  inline size_t getPacketSize() const {
+    return offsetof(CtrlPacket, payload) +
+        size; // transfer header + actual size of payload
+  }
+
+  std::string toString() const {
+    return fmt::format(
+        "addr {} type {} payloadSize {} packetSize {}",
+        (void*)this,
+        type,
+        size,
+        getPacketSize());
+  }
+};
 
 /**
  * Virtual connection internal work request (WR) structure holding a pending

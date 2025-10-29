@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/algos/AllToAll/AllToAllvDynamicPImpl.h"
+#include "Types.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvDynamicCommon.h"
 #include "comms/ctran/algos/CtranAlgo.h"
@@ -224,22 +225,16 @@ commResult_t AlgoImpl::init() {
 
 commResult_t AlgoImpl::updatePersistFuncAndOp(
     opFunc& opFunc,
-    std::vector<std::unique_ptr<struct OpElem>>& opGroup,
     struct OpElem* op) {
   opFunc = gpeFn;
-  auto new_op = std::make_unique<OpElem>(op);
-  // The original op is not needed and will/may be destroyed. So set kElem to
-  // nullptr to avoid it be freed.
-  op->alltoallv_dynamic.kElem = nullptr;
   // FIXME: only support split_non_contig for now
-  new_op->type = OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P;
-  new_op->alltoallv_dynamic.pArgs = &pArgs;
-  opGroup.push_back(std::move(new_op));
+  op->type = OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P;
+  op->alltoallv_dynamic.pArgs = &pArgs;
   CLOGF_TRACE(
       COLL,
       "AllToAllvDynamicP: rank {} updated op to {} and gpeFn to persistent version.",
       comm_->statex_->rank(),
-      (void*)opGroup.front().get());
+      (void*)op);
   return commSuccess;
 }
 } // namespace ctran::alltoallvdynamicp

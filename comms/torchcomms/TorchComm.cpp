@@ -89,6 +89,14 @@ std::shared_ptr<TorchWork> TorchComm::all_gather(
   return impl_->all_gather(tensor_list, tensor, async_op, options);
 }
 
+std::shared_ptr<TorchWork> TorchComm::all_gather_v(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  return impl_->all_gather_v(tensor_list, tensor, async_op, options);
+}
+
 std::shared_ptr<TorchWork> TorchComm::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,
@@ -104,6 +112,15 @@ std::shared_ptr<TorchWork> TorchComm::reduce_scatter(
     bool async_op,
     const ReduceScatterOptions& options) {
   return impl_->reduce_scatter(output, input_list, op, async_op, options);
+}
+
+std::shared_ptr<TorchWork> TorchComm::reduce_scatter_v(
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    ReduceOp op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  return impl_->reduce_scatter_v(output, input_list, op, async_op, options);
 }
 
 std::shared_ptr<TorchWork> TorchComm::reduce_scatter_single(

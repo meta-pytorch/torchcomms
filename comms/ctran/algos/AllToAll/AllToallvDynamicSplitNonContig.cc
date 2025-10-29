@@ -3,8 +3,10 @@
 #include <cuda_fp16.h>
 #include <cstddef>
 
+#include "Types.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvDynamicCommon.h"
+#include "comms/ctran/algos/AllToAll/AllToAllvDynamicPImpl.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 
@@ -88,11 +90,19 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
   XCHECK(alltoallvDynamicSplitNonContigKerns.contains(datatype))
       << "alltoallvDynamicSplitNonContigKerns does not contain datatype "
       << datatype;
+
+  ctran::PreLaunchGraphPrepareFn graphPrepareFn = nullptr;
+  if (NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE) {
+    graphPrepareFn =
+        ctran::alltoallvdynamicp::prepareCudagraphAwareAllToAllvDynamic;
+  }
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
       opIbImpl,
       config,
-      alltoallvDynamicSplitNonContigKerns.at(datatype)));
+      alltoallvDynamicSplitNonContigKerns.at(datatype),
+      std::nullopt, /* timeout */
+      graphPrepareFn));
 
   return commSuccess;
 }

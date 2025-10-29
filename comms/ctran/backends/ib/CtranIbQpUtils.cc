@@ -1,7 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-#include "comms/ctran/backends/ib/CtranIbVcImpl.h"
-#include "comms/ctran/utils/Checks.h"
+
 #include "comms/utils/cvars/nccl_cvars.h"
+
+#include "comms/ctran/backends/ib/CtranIbQpUtils.h"
 
 namespace ctran::ib {
 folly::Expected<ibverbx::IbvQp, ibverbx::Error> ctranIbQpCreate(

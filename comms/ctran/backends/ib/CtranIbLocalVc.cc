@@ -2,7 +2,7 @@
 
 #include "comms/ctran/backends/ib/CtranIbLocalVc.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
-#include "comms/ctran/backends/ib/CtranIbVcImpl.h"
+#include "comms/ctran/backends/ib/CtranIbQpUtils.h"
 #include "comms/ctran/backends/ib/IbvWrap.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/logger/LogUtils.h"

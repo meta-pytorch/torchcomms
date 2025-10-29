@@ -710,6 +710,65 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather(
   return work;
 }
 
+std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  if (tensor_list.size() != static_cast<size_t>(comm_size_)) {
+    throw std::runtime_error(
+        "tensor_list size must equal comm_size for all_gather");
+  }
+
+  // Ensure input tensor is contiguous
+  ensureTensorContiguous(tensor);
+
+  for (const auto& t : tensor_list) {
+    ensureTensorContiguous(t);
+  }
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+
+  work->recordStart();
+
+  // Use multiple broadcast operations for all_gather
+  nccl_api_->groupStart();
+
+  for (int i = 0; i < comm_size_; ++i) {
+    // assign inpu/output tensors to support vector all_gather (all_gather_v)
+    // where unevenly sized inputs are gathered among participating ranks
+    auto& output = tensor_list[i];
+    auto& input = (i == rank_) ? tensor : output;
+    if (input.numel() != output.numel()) {
+      throw std::runtime_error(
+          "Output tensor size must equal input tensor size for all_gather_v");
+    }
+    nccl_api_->broadcast(
+        input.data_ptr(),
+        output.data_ptr(),
+        input.numel(),
+        getNcclDataType(output),
+        i,
+        nccl_comm_,
+        stream);
+  }
+
+  nccl_api_->groupEnd();
+
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
 std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,
@@ -800,6 +859,86 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
           input_list[i].data_ptr(),
           output.data_ptr(),
           output.numel(),
+          dataType,
+          getNcclReduceOp(op, nccl_comm_, dataType),
+          i,
+          nccl_comm_,
+          stream);
+    } else {
+      // Other ranks contribute to the reduction
+      nccl_api_->reduce(
+          input_list[i].data_ptr(),
+          nullptr, // Non-root ranks don't receive
+          input_list[i].numel(),
+          dataType,
+          getNcclReduceOp(op, nccl_comm_, dataType),
+          i,
+          nccl_comm_,
+          stream);
+    }
+  }
+
+  nccl_api_->groupEnd();
+
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+std::shared_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    ReduceOp op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(output);
+
+  if (input_list.size() != static_cast<size_t>(comm_size_)) {
+    throw std::runtime_error(
+        "input_list size must equal comm_size for reduce_scatter");
+  }
+
+  // Check that all input tensors are contiguous and have correct size
+  for (const auto& t : input_list) {
+    ensureTensorContiguous(t);
+  }
+
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream,
+      getOperationTimeout(options.timeout, options_.timeout),
+      input_list);
+
+  work->recordStart();
+
+  // Use multiple reduce operations for reduce_scatter
+  nccl_api_->groupStart();
+
+  for (int i = 0; i < comm_size_; ++i) {
+    const auto dataType = getNcclDataType(input_list[i]);
+    if (i == rank_) {
+      // This rank receives the reduced result
+      // assign input/output tensor to support vector reduce_scatter
+      // (reduce_scatter_v) where inputs are reduced and scattered unevenly
+      // among participating ranks
+      auto& input_tensor = input_list[i];
+      auto& output_tensor = output;
+      if (input_tensor.numel() != output_tensor.numel()) {
+        throw std::runtime_error(
+            "Output tensor size must equal input tensor size for all_gather");
+      }
+      nccl_api_->reduce(
+          input_tensor.data_ptr(),
+          output_tensor.data_ptr(),
+          output_tensor.numel(),
           dataType,
           getNcclReduceOp(op, nccl_comm_, dataType),
           i,

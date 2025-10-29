@@ -22,8 +22,10 @@ typedef commResult_t (*opFunc)(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup);
 
 namespace ctran {
-using PersistentObj =
-    std::variant<std::monostate, std::unique_ptr<ctran::alltoallp::AlgoImpl>>;
+using PersistentObj = std::variant<
+    std::monostate,
+    std::unique_ptr<alltoallp::AlgoImpl>,
+    std::unique_ptr<alltoallvdynamicp::AlgoImpl>>;
 using PreLaunchGraphPrepareFn =
     commResult_t (*)(opFunc& opFunc, struct OpElem* op, PersistentObj& pObj);
 } // namespace ctran

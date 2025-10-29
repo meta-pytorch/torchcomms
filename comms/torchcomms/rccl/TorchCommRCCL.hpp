@@ -103,12 +103,23 @@ class TorchCommRCCL : public TorchCommBackend,
       const at::Tensor& tensor,
       bool async_op,
       const AllGatherOptions& options = {}) override;
+  std::shared_ptr<TorchWork> all_gather_v(
+      const std::vector<at::Tensor>& tensor_list,
+      const at::Tensor& tensor,
+      bool async_op,
+      const AllGatherOptions& options = {}) override;
   std::shared_ptr<TorchWork> all_gather_single(
       at::Tensor& output,
       const at::Tensor& input,
       bool async_op,
       const AllGatherSingleOptions& options = {}) override;
   std::shared_ptr<TorchWork> reduce_scatter(
+      at::Tensor& output,
+      const std::vector<at::Tensor>& input_list,
+      ReduceOp op,
+      bool async_op,
+      const ReduceScatterOptions& options = {}) override;
+  std::shared_ptr<TorchWork> reduce_scatter_v(
       at::Tensor& output,
       const std::vector<at::Tensor>& input_list,
       ReduceOp op,

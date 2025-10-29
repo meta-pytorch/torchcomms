@@ -691,6 +691,14 @@ std::shared_ptr<TorchWork> TorchCommNCCL::all_gather(
   return work;
 }
 
+std::shared_ptr<TorchWork> TorchCommNCCL::all_gather_v(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  throw std::runtime_error("all_gather_v is not supported in NCCL backend");
+}
+
 std::shared_ptr<TorchWork> TorchCommNCCL::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,
@@ -808,6 +816,15 @@ std::shared_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
   enqueueWork(work, stream);
 
   return work;
+}
+
+std::shared_ptr<TorchWork> TorchCommNCCL::reduce_scatter_v(
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    ReduceOp op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  throw std::runtime_error("reduce_scatter_v is not supported in NCCL backend");
 }
 
 std::shared_ptr<TorchWork> TorchCommNCCL::reduce_scatter_single(

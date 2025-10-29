@@ -288,9 +288,9 @@ class CtranDistTest : public ::testing::Test {
     return globalRank == 0;
   }
 
-  std::unordered_set<std::string>
+  std::vector<std::string>
   exchangeInitUrls(const std::string& selfUrl, int numRanks, int selfRank) {
-    std::unordered_set<std::string> res;
+    std::vector<std::string> res(numRanks);
     if (getInitEnvType() == InitEnvType::TCP_STORE) {
       std::vector<std::string> rankKeys(numRanks);
       const auto keyUid = getTcpStoreKey(TcpStorePhase::INIT);
@@ -305,8 +305,9 @@ class CtranDistTest : public ::testing::Test {
       tcpStore_->wait(rankKeys);
       if (tcpStore_->check(rankKeys)) {
         auto rankUrls = tcpStore_->multiGet(rankKeys);
-        for (const auto& url : rankUrls) {
-          res.emplace(std::string(url.begin(), url.end()));
+        for (int i = 0; i < numRanks; ++i) {
+          const auto& url = rankUrls.at(i);
+          res[i] = std::string(url.begin(), url.end());
         }
       } else {
         LOG(FATAL) << "TCPStore key check returned false";
@@ -326,7 +327,9 @@ class CtranDistTest : public ::testing::Test {
           MPI_CHAR,
           MPI_COMM_WORLD);
       for (int i = 0; i < numRanks; ++i) {
-        res.emplace(std::string(urls.data() + kMaxUrlLen * i));
+        const char* start = urls.data() + kMaxUrlLen * i;
+        size_t len = strnlen(start, kMaxUrlLen);
+        res[i] = std::string(start, len);
       }
     }
     return res;
@@ -339,7 +342,6 @@ class CtranDistTest : public ::testing::Test {
     // TODO: refactor mccl comm creation to generic ctran comm creation
     COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
     mccl::McclCommCreateOpts opts{
-        .rank = globalRank,
         .cudaDeviceId = cudaDev,
         .timeout = std::chrono::seconds(5),
     };

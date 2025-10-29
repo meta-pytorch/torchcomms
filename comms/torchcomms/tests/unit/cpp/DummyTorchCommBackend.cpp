@@ -161,6 +161,14 @@ std::shared_ptr<TorchWork> DummyTorchCommBackend::all_gather(
   return std::make_shared<DummyTorchWork>();
 }
 
+std::shared_ptr<TorchWork> DummyTorchCommBackend::all_gather_v(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  return std::make_shared<DummyTorchWork>();
+}
+
 std::shared_ptr<TorchWork> DummyTorchCommBackend::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,
@@ -170,6 +178,15 @@ std::shared_ptr<TorchWork> DummyTorchCommBackend::all_gather_single(
 }
 
 std::shared_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter(
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    ReduceOp op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  return std::make_shared<DummyTorchWork>();
+}
+
+std::shared_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_v(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
     ReduceOp op,

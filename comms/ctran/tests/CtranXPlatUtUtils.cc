@@ -248,7 +248,6 @@ TestCtranCommRAII::TestCtranCommRAII(std::unique_ptr<mccl::McclComm> mcclComm)
 std::unique_ptr<TestCtranCommRAII> createDummyCtranComm() {
   CHECK_EQ(ctran::utils::commCudaLibraryInit(), commSuccess);
   mccl::McclCommCreateOpts mcclCreateOpts{
-      .rank = 0,
       .cudaDeviceId = 0,
       .enableFaultTolerance = false,
   };
@@ -259,7 +258,7 @@ std::unique_ptr<TestCtranCommRAII> createDummyCtranComm() {
   auto initWorkHandle = mcclComm->init(
       mccl::InitOpts{
           .uuid = uuid,
-          .urls = {initURL},
+          .urls = std::unordered_set<mccl::InitURL>{initURL},
       });
   initWorkHandle->waitCpu();
   auto initResult = initWorkHandle->getResult();

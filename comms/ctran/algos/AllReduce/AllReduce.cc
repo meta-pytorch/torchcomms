@@ -34,6 +34,11 @@ commResult_t ctranAllReduce(
       return ctranAllReduceARG(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
     case NCCL_ALLREDUCE_ALGO::ctring:
+      if (comm->statex_->nRanks() == 1) {
+        // TODO(T242570177): this is a temp workaround for nRanks == 1.
+        return ctranAllReduceDirect(
+            sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
+      }
       return ctranAllReduceRing(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
     case NCCL_ALLREDUCE_ALGO::ctdirect:

@@ -236,6 +236,14 @@ class TorchComm:
         hints: Dict[str, str] | None = None,
         timeout: timedelta | None = None,
     ) -> TorchWork: ...
+    def all_gather_v(
+        self,
+        tensor_list: List[Any],
+        tensor: Any,
+        async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> TorchWork: ...
     def all_gather_single(
         self,
         output: Any,
@@ -245,6 +253,15 @@ class TorchComm:
         timeout: timedelta | None = None,
     ) -> TorchWork: ...
     def reduce_scatter(
+        self,
+        output: Any,
+        input_list: List[Any],
+        op: ReduceOp,
+        async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> TorchWork: ...
+    def reduce_scatter_v(
         self,
         output: Any,
         input_list: List[Any],
