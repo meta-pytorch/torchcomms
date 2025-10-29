@@ -8,8 +8,8 @@
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
+#include "comms/ctran/backends/ib/CtranIbQpUtils.h"
 #include "comms/ctran/backends/ib/CtranIbVc.h"
-#include "comms/ctran/backends/ib/CtranIbVcImpl.h"
 #include "comms/ctran/utils/Checks.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
