@@ -109,7 +109,7 @@ TEST_P(MultiStreamAllGatherTestParam, Test) {
   }
 
   // Run communication
-  for (int i = 0; i < numIter; i++) {
+  for (int iter = 0; iter < numIter; iter++) {
     for (int i = 0; i < numStreams; i++) {
       auto& buf = bufs[i];
       int* sendBuf = buf + counts[i] * this->globalRank;
