@@ -187,6 +187,26 @@ TorchCommTracingGuard::TorchCommTracingGuard(
     int comm_size,
     const std::string& collective_name,
     int collective_rank,
+    const at::Tensor& input_tensor,
+    const at::Tensor& output_tensor) {
+  record_function_guard_.emplace(at::RecordScope::FUNCTION);
+  if (!record_function_guard_->isActive()) {
+    return;
+  }
+  initializeTracingCommon(
+      comm_name,
+      comm_size,
+      collective_name,
+      collective_rank,
+      {input_tensor},
+      {output_tensor});
+}
+
+TorchCommTracingGuard::TorchCommTracingGuard(
+    const std::string& comm_name,
+    int comm_size,
+    const std::string& collective_name,
+    int collective_rank,
     const std::vector<at::Tensor>& input_tensor_list,
     const std::vector<at::Tensor>& output_tensor_list) {
   record_function_guard_.emplace(at::RecordScope::FUNCTION);
