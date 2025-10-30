@@ -13,6 +13,7 @@
 #include <ATen/ATen.h>
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <vector>
+#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
 namespace torch {
@@ -87,7 +88,7 @@ class TorchWorkNCCLX : public TorchWork {
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
 
-  std::function<void()> recordFunctionEndCallback_;
+  std::optional<at::RecordFunction> recordFunction_;
 };
 
 class TorchWorkNCCLXQueue {

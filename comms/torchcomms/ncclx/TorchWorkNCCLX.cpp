@@ -38,25 +38,21 @@ TorchWorkNCCLX::~TorchWorkNCCLX() {
 }
 
 void TorchWorkNCCLX::recordFunctionStart() {
-  auto recordingFunction =
-      std::make_shared<at::RecordFunction>(at::RecordScope::USER_SCOPE);
-  if (recordingFunction->isActive()) {
-    // Passing input tensor to recordFunction allows for shape information in
-    // profiling output.
-    std::vector<c10::IValue> inputs;
-    inputs.reserve(inputTensors_.size());
-    for (const auto& tensor : inputTensors_) {
-      inputs.emplace_back(tensor);
-    }
-    // TODO: pass the collective name to be added
-    recordingFunction->before(
-        "torchcomms:work",
-        c10::ArrayRef<const c10::IValue>(inputs.data(), inputs.size()));
-    std::function<void()> end_handler = [recordingFunction]() {
-      recordingFunction->end();
-    };
-    recordFunctionEndCallback_ = at::wrapPropagateTLSState(end_handler);
+  recordFunction_.emplace(at::RecordScope::USER_SCOPE);
+  if (!recordFunction_->isActive()) {
+    return;
   }
+  // Passing input tensor to recordFunction allows for shape information in
+  // profiling output.
+  std::vector<c10::IValue> inputs;
+  inputs.reserve(inputTensors_.size());
+  for (const auto& tensor : inputTensors_) {
+    inputs.emplace_back(tensor);
+  }
+  // TODO: pass the collective name to be added
+  recordFunction_->before(
+      "torchcomms:work",
+      c10::ArrayRef<const c10::IValue>(inputs.data(), inputs.size()));
 }
 
 void TorchWorkNCCLX::recordStart() {
@@ -74,9 +70,8 @@ void TorchWorkNCCLX::recordEnd() {
       comm_->getCudaApi()->eventRecord(end_event_, stream_),
       "Failed to record end event");
 
-  if (recordFunctionEndCallback_) {
-    recordFunctionEndCallback_();
-    recordFunctionEndCallback_ = nullptr;
+  if (recordFunction_ && recordFunction_->isActive()) {
+    recordFunction_->end();
   }
 }
 
