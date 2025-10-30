@@ -151,9 +151,7 @@ void TorchWorkNCCLX::wait() {
       std::string(comm_->getCommName()),
       comm_->getSize(),
       "wait",
-      comm_->getRank(),
-      {},
-      {});
+      comm_->getRank());
 
   // Get the current stream using the device from the comm object
   cudaStream_t current_stream =
