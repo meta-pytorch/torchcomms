@@ -15,10 +15,17 @@
 #include <thread>
 #include <vector>
 
+#include <folly/init/Init.h>
+#include <folly/logging/Init.h>
+
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ibverbx;
+
+FOLLY_INIT_LOGGING_CONFIG(
+    ".=WARNING"
+    ";default:async=true,sync_level=WARNING");
 
 // use broadcom nic for AMD platform, use mellanox nic for NV platform
 #if defined(__HIP_PLATFORM_AMD__) && !defined(USE_FE_NIC)
@@ -496,6 +503,7 @@ int main(int argc, char** argv) {
 
   // Initialize and run benchmark
   ::benchmark::Initialize(&argc, argv);
+  folly::init(&argc, &argv);
   ::benchmark::RunSpecifiedBenchmarks();
 
   // Cleanup
