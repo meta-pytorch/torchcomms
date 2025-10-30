@@ -56,11 +56,23 @@ ncclResult_t DefaultNcclApi::commRegister(
     void* buffer,
     size_t size,
     void** handle) {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 19, 0)
   return ncclCommRegister(comm, buffer, size, handle);
+#else
+  throw std::runtime_error(
+      "NCCL version " + std::to_string(NCCL_VERSION_CODE) +
+      " does not support ncclCommRegister API");
+#endif
 }
 
 ncclResult_t DefaultNcclApi::commDeregister(ncclComm_t comm, void* handle) {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 19, 0)
   return ncclCommDeregister(comm, handle);
+#else
+  throw std::runtime_error(
+      "NCCL version " + std::to_string(NCCL_VERSION_CODE) +
+      " does not support ncclCommDeregister API");
+#endif
 }
 
 ncclResult_t DefaultNcclApi::send(
