@@ -44,6 +44,13 @@ class TorchWorkNCCLX : public TorchWork {
       cudaStream_t stream,
       std::chrono::milliseconds timeout_ms,
       const std::vector<at::Tensor>& inputTensors);
+
+  TorchWorkNCCLX(
+      std::shared_ptr<TorchCommNCCLX> comm,
+      cudaStream_t stream,
+      std::chrono::milliseconds timeout_ms,
+      const at::Tensor& inputTensor);
+
   ~TorchWorkNCCLX() override;
 
   // Delete copy and move operations
@@ -74,7 +81,12 @@ class TorchWorkNCCLX : public TorchWork {
   std::chrono::milliseconds getTimeout() {
     return timeout_ms_;
   }
+
+  // Tensors supplied might either be a vector of tensors,
+  // or a single tensor. In case it is a single tensor, we
+  // can avoid allocating space for a vector of tensors.
   std::vector<at::Tensor> inputTensors_;
+  at::Tensor inputTensor_;
 
   std::shared_ptr<TorchCommNCCLX> comm_;
   cudaEvent_t start_event_;

@@ -28,6 +28,24 @@ TorchWorkNCCLX::TorchWorkNCCLX(
   // Events will be recorded around the actual NCCL operations
 }
 
+TorchWorkNCCLX::TorchWorkNCCLX(
+    std::shared_ptr<TorchCommNCCLX> comm,
+    cudaStream_t stream,
+    std::chrono::milliseconds timeout_ms,
+    const at::Tensor& inputTensor)
+    : inputTensor_(inputTensor),
+      comm_(std::move(comm)),
+      stream_(stream),
+      timeout_ms_(timeout_ms),
+      state_(WorkStatus::NOT_STARTED) {
+  // If not in graph capture mode, create the events for start and end
+  // recording
+  start_event_ = comm_->getEvent();
+  end_event_ = comm_->getEvent();
+
+  // Events will be recorded around the actual NCCL operations
+}
+
 TorchWorkNCCLX::~TorchWorkNCCLX() {
   if (!comm_) {
     return;
