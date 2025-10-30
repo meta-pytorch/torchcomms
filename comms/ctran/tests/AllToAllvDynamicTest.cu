@@ -3,6 +3,14 @@
 #include <stdio.h>
 #include <cstddef>
 
+__device__ void trap() {
+#if defined(__HIP_PLATFORM_AMD__)
+  __builtin_trap();
+#else
+  asm("trap;");
+#endif
+}
+
 /* numblocks = numRanks or numSendSplitLengths*/
 __global__ void initializeDataBuffersKernel(
     size_t maxCount,
@@ -53,12 +61,12 @@ __global__ void checkDataBuffersKernel(
             i,
             recvbuffs[r][i],
             globalRank + i);
-        asm("trap;");
+        trap();
       }
     } else {
       if (recvbuffs[r][i] != -1) {
         printf("recvbuffs[%d][%lu]=%d, expected=-1\n", r, i, recvbuffs[r][i]);
-        asm("trap;");
+        trap();
       }
     }
   }
@@ -86,7 +94,7 @@ __global__ void checkDataBuffersNonContigKernel(
       for (size_t k = curRecvbuffOffset; k < maxCount * maxNumExperts; k++) {
         if (recvbuffs[r][k] != -1) {
           printf("recvbuffs[%d][%lu]=%d, expected=-1\n", r, k, recvbuffs[r][k]);
-          asm("trap;");
+          trap();
         }
       }
     } else {
@@ -98,7 +106,7 @@ __global__ void checkDataBuffersNonContigKernel(
           if (recvbuffs[r][k] != -1) {
             printf(
                 "recvbuffs[%d][%lu]=%d, expected=-1\n", r, k, recvbuffs[r][k]);
-            asm("trap;");
+            trap();
           }
         }
         curRecvbuffOffset += recvSplits[r * numSendSplitLengths + j];
@@ -114,7 +122,7 @@ __global__ void checkDataBuffersNonContigKernel(
               k,
               recvbuffs[r][k],
               curIndex + k - curRecvbuffOffset);
-          asm("trap;");
+          trap();
         }
       }
       curRecvbuffOffset += recvSplits[r * numSendSplitLengths + curIndex];
@@ -136,7 +144,7 @@ __global__ void checkEqualCountsKernel(size_t* recvCounts, size_t count) {
         threadIdx.x,
         recvCounts[threadIdx.x],
         count);
-    asm("trap;");
+    trap();
   }
 }
 
@@ -163,7 +171,7 @@ __global__ void checkRandomCountsKernel(
         threadIdx.x,
         recvCounts[threadIdx.x],
         randomCountsMatrix[x]);
-    asm("trap;");
+    trap();
   }
 }
 
@@ -184,7 +192,7 @@ __global__ void checkRandomCountsNonContigKernel(
         recvSplits[r * numSendSplitLengths + i],
         randomCountsMatrix[r * numRanks * maxNumExperts + i],
         r * numSendSplitLengths + i);
-    asm("trap;");
+    trap();
   }
 }
 
