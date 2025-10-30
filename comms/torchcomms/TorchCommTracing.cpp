@@ -130,7 +130,7 @@ std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
       comm_size);
 }
 
-TorchCommTracingGuard::TorchCommTracingGuard(
+void TorchCommTracingGuard::initializeTracingCommon(
     const std::string& comm_name,
     int comm_size,
     const std::string& collective_name,
@@ -158,32 +158,48 @@ TorchCommTracingGuard::TorchCommTracingGuard(
           in_split_sizes,
           out_split_sizes));
 
-  std::initializer_list<const c10::IValue> paramList = {
-      c10::IValue(input_tensor_list),
-      std::make_tuple(++sequence_number_, false),
-      std::make_tuple(comm_name, ""),
-      collective_rank,
-      collective_name,
-      in_split_sizes,
-      out_split_sizes,
-      -1, // Global rank start isn't set in TorchComms.
-      -1, // Global rank stride isn't set in TorchComms.
-      comm_size};
-  c10::ArrayRef<const c10::IValue> paramInputs(paramList);
-
-  record_function_guard_ =
-      std::make_unique<at::RecordFunction>(at::RecordScope::FUNCTION);
-  if (record_function_guard_->isActive()) {
-    if (record_function_guard_->needsInputs()) {
-      record_function_guard_->before(at::kParamCommsCallName, paramInputs);
-    } else {
-      record_function_guard_->before(at::kParamCommsCallName);
-    }
-    if (record_function_guard_->needsOutputs()) {
-      record_function_guard_->setOutputs(
-          std::vector<c10::IValue>(1, c10::IValue(output_tensor_list)));
-    }
+  if (record_function_guard_->needsInputs()) {
+    std::initializer_list<const c10::IValue> paramList = {
+        c10::IValue(input_tensor_list),
+        std::make_tuple(++sequence_number_, false),
+        std::make_tuple(comm_name, ""),
+        collective_rank,
+        collective_name,
+        in_split_sizes,
+        out_split_sizes,
+        -1, // Global rank start isn't set in TorchComms.
+        -1, // Global rank stride isn't set in TorchComms.
+        comm_size};
+    c10::ArrayRef<const c10::IValue> paramInputs(paramList);
+    record_function_guard_->before(
+        at::kParamCommsCallName, std::move(paramInputs));
+  } else {
+    record_function_guard_->before(at::kParamCommsCallName);
   }
+  if (record_function_guard_->needsOutputs()) {
+    record_function_guard_->setOutputs(
+        std::vector<c10::IValue>(1, c10::IValue(output_tensor_list)));
+  }
+}
+
+TorchCommTracingGuard::TorchCommTracingGuard(
+    const std::string& comm_name,
+    int comm_size,
+    const std::string& collective_name,
+    int collective_rank,
+    const std::vector<at::Tensor>& input_tensor_list,
+    const std::vector<at::Tensor>& output_tensor_list) {
+  record_function_guard_.emplace(at::RecordScope::FUNCTION);
+  if (!record_function_guard_->isActive()) {
+    return;
+  }
+  initializeTracingCommon(
+      comm_name,
+      comm_size,
+      collective_name,
+      collective_rank,
+      input_tensor_list,
+      output_tensor_list);
 }
 
 } // namespace comms
