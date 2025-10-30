@@ -59,12 +59,12 @@ commResult_t checkEpochLock(CtranIb* ctranIb) {
   return commSuccess;
 }
 
-CtranIbSingleton& CtranIbSingleton::getInstance(void) {
+CtranIbSingleton& CtranIbSingleton::getInstance() {
   static CtranIbSingleton s;
   return s;
 }
 
-CtranIbSingleton::CtranIbSingleton(void) {
+CtranIbSingleton::CtranIbSingleton() {
   auto ibvInitResult = ibverbx::ibvInit();
   FOLLY_EXPECTED_CHECKTHROW(ibvInitResult);
   auto maybeDeviceList = ibverbx::IbvDevice::ibvGetDeviceList(
@@ -84,7 +84,7 @@ CtranIbSingleton::CtranIbSingleton(void) {
   for (auto i = 0; i < this->ibvDevices.size(); i++) {
     auto maybePd = this->ibvDevices[i].allocPd();
     FOLLY_EXPECTED_CHECKTHROW(maybePd);
-    this->ibvPds.wlock()->push_back(std::move(*maybePd));
+    this->ibvPds_.push_back(std::move(*maybePd));
   }
 
   if (NCCL_IB_ASYNC_EVENT_LOOP == NCCL_IB_ASYNC_EVENT_LOOP::ctran) {
@@ -181,6 +181,10 @@ size_t CtranIbSingleton::getDeviceTrafficSnapshot(const int cudaDev) {
 }
 
 /* static */
+const ibverbx::IbvPd& CtranIbSingleton::getIbvPd(size_t idx) const {
+  return ibvPds_.at(idx);
+}
+
 IVerbsWrapper* CtranIbSingleton::getVerbsPtr() {
   CtranIbSingleton& s = CtranIbSingleton::getInstance();
   return s.verbsUtils->verbsPtr.get();
@@ -426,7 +430,7 @@ void CtranIb::init(
         cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE +
         device;
     devices[device].ibvDevice = &s.ibvDevices[singletonDevIdx];
-    devices[device].ibvPd = &s.ibvPds.rlock()->at(singletonDevIdx);
+    devices[device].ibvPd = &s.getIbvPd(singletonDevIdx);
 
     ibverbx::ibv_device_attr devAttr;
     auto maybeDeviceAttr = devices[device].ibvDevice->queryDevice();
@@ -763,7 +767,7 @@ commResult_t CtranIb::regMem(
     const auto pdIdx =
         cudaDev * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE +
         device;
-    const auto& pd = s.ibvPds.rlock()->at(pdIdx);
+    const auto& pd = s.getIbvPd(pdIdx);
     int dmaBufFd = useDmaBuf
         ? ctran::utils::getCuMemDmaBufFd(buf, len, pd.useDataDirect())
         : -1;
