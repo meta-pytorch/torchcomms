@@ -5,9 +5,7 @@
 namespace torch {
 namespace comms {
 
-TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollect() {
-  std::lock_guard<std::recursive_mutex> lock(work_queues_mutex_);
-
+TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollectLocked() {
   TorchWorkNCCLX::WorkStatus last_status =
       TorchWorkNCCLX::WorkStatus::COMPLETED;
 
@@ -52,19 +50,24 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollect() {
   return last_status;
 }
 
+TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollect() {
+  std::lock_guard<std::mutex> lock(work_queues_mutex_);
+  return garbageCollectLocked();
+}
+
 TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::finalize() {
   // Because this function is typically called after the timeout thread has
   // already joined, we might not need to lock here.  But doing the lock anyway,
   // as defensive programming, just in case someone moves the thread join order
   // later.  The cost of the lock itself should be small on modern linux systems
   // (uncontended locks are typically just an atomic operation).
-  std::lock_guard<std::recursive_mutex> lock(work_queues_mutex_);
+  std::lock_guard<std::mutex> lock(work_queues_mutex_);
 
   // Initialize the status to COMPLETED to cover the case where the queue is
   // empty
   TorchWorkNCCLX::WorkStatus status = TorchWorkNCCLX::WorkStatus::COMPLETED;
   while (!stream_work_queues_.empty()) {
-    status = garbageCollect();
+    status = garbageCollectLocked();
     if (status == TorchWorkNCCLX::WorkStatus::ERROR ||
         status == TorchWorkNCCLX::WorkStatus::TIMEDOUT ||
         status == TorchWorkNCCLX::WorkStatus::COMPLETED) {
@@ -85,8 +88,8 @@ void TorchWorkNCCLXQueue::enqueueWork(
     std::shared_ptr<TorchWorkNCCLX> work,
     cudaStream_t stream) {
   // Add work to stream's queue after events have been recorded
-  std::lock_guard<std::recursive_mutex> lock(work_queues_mutex_);
-  stream_work_queues_[stream].push(work);
+  std::lock_guard<std::mutex> lock(work_queues_mutex_);
+  stream_work_queues_[stream].push(std::move(work));
 }
 
 } // namespace comms
