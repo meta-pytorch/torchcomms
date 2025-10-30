@@ -9,35 +9,38 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include "comm.h"
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/backends/nvl/CtranNvlImpl.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 
-class CtranNvlTest : public NcclxBaseTest {
+#include "comms/testinfra/TestsCuUtils.h"
+#if !defined(USE_ROCM)
+// needed because we use ncclMemAlloc to test kMemNcclMemAlloc mem type.
+// cuMem API is not supported on AMD so we don't test it on AMD.
+#include "comms/testinfra/TestUtils.h"
+#endif
+
+class CtranNvlTest : public CtranDistTest {
  public:
   CtranNvlTest() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
+    CtranDistTest::SetUp();
 
     // Check epoch lock for the entire test
     NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK = true;
 
-    std::tie(this->localRank, this->globalRank, this->numRanks) = getMpiInfo();
-    CUDACHECK_TEST(cudaSetDevice(this->localRank));
-    this->commDeprecated =
-        createNcclComm(this->globalRank, this->numRanks, this->localRank);
-    this->comm = this->commDeprecated->ctranComm_.get();
+    CUDACHECK_TEST(cudaSetDevice(localRank));
+
+    comm = commRAII->ctranComm;
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(this->commDeprecated));
-    NcclxBaseTest::TearDown();
+    CtranDistTest::TearDown();
   }
 
   commResult_t
@@ -71,18 +74,13 @@ class CtranNvlTest : public NcclxBaseTest {
   }
 
  protected:
-  int localRank{0};
-  int globalRank{0};
-  int numRanks{0};
   CtranComm* comm{nullptr};
-
-  // TODO: make it private after refactoring CtranIb
-  // TODO: delete it once we can initialize CtranComm independently
-  // Please, don't use this field
-  ncclComm_t commDeprecated;
 };
 
-TEST_F(CtranNvlTest, NormalInitialize) {
+class CtranNvlTestSuite : public CtranNvlTest,
+                          public ::testing::WithParamInterface<MemAllocType> {};
+
+TEST_P(CtranNvlTestSuite, NormalInitialize) {
   // Expect CtranNvl to be initialized without internal error
   try {
     auto ctranNvl = std::make_unique<CtranNvl>(this->comm);
@@ -91,9 +89,11 @@ TEST_F(CtranNvlTest, NormalInitialize) {
   }
 }
 
-TEST_F(CtranNvlTest, RegMem) {
+TEST_P(CtranNvlTestSuite, RegMem) {
   // Expect CtranNvl can locally register and deregister GPU buffer without
   // internal error
+  const auto memType = GetParam();
+
   std::unique_ptr<CtranNvl> ctranNvl;
   try {
     ctranNvl = std::make_unique<CtranNvl>(this->comm);
@@ -105,7 +105,15 @@ TEST_F(CtranNvlTest, RegMem) {
   constexpr int numThreads = 10;
   std::vector<void*> bufs(numThreads, nullptr);
   for (int i = 0; i < numThreads; i++) {
-    NCCLCHECK_TEST(ncclMemAlloc(&bufs[i], size));
+    if (memType == kMemCudaMalloc) {
+      CUDACHECK_TEST(cudaMalloc(&bufs[i], size));
+    } else {
+#if !defined(USE_ROCM)
+      NCCLCHECK_TEST(ncclMemAlloc(&bufs[i], size));
+#else
+      GTEST_SKIP() << "CuMem API is not supported on AMD, skip test";
+#endif
+    };
     ASSERT_NE(bufs[i], nullptr);
   }
 
@@ -119,10 +127,18 @@ TEST_F(CtranNvlTest, RegMem) {
 
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          ncclSetMyThreadLoggingName(threadName.c_str());
+          commSetMyThreadLoggingName(threadName.c_str());
 
-          COMMCHECK_TEST(
-              CtranNvl::regMem(bufs[tid], size, this->localRank, &nvlRegElem));
+          if (memType == kMemCudaMalloc) {
+            COMMCHECK_TEST(
+                CtranNvl::regMem(
+                    bufs[tid], size, this->localRank, &nvlRegElem, true));
+          } else {
+            COMMCHECK_TEST(
+                CtranNvl::regMem(
+                    bufs[tid], size, this->localRank, &nvlRegElem));
+          }
+
           ASSERT_NE(nvlRegElem, nullptr);
           COMMCHECK_TEST(CtranNvl::deregMem(nvlRegElem));
         },
@@ -135,13 +151,27 @@ TEST_F(CtranNvlTest, RegMem) {
   }
 
   for (int i = 0; i < numThreads; i++) {
-    NCCLCHECK_TEST(ncclMemFree(bufs[i]));
+    if (memType == kMemCudaMalloc) {
+      CUDACHECK_TEST(cudaFree(bufs[i]));
+    } else {
+#if !defined(USE_ROCM)
+      NCCLCHECK_TEST(ncclMemFree(bufs[i]));
+#else
+      GTEST_SKIP() << "CuMem API is not supported on AMD, skip test";
+#endif
+    };
   }
 }
 
-TEST_F(CtranNvlTest, CudaMallocRegMem) {
+TEST_P(CtranNvlTestSuite, CudaMallocRegMem) {
   // Expect regMem return success but nvlRegElem is empty, since cudaMalloc-ed
   // buffer is not supported
+  const auto memType = GetParam();
+
+  if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skip test";
+  }
+
   try {
     auto ctranNvl = std::make_unique<CtranNvl>(this->comm);
     const size_t size = 1024;
@@ -161,7 +191,7 @@ TEST_F(CtranNvlTest, CudaMallocRegMem) {
   }
 }
 
-TEST_F(CtranNvlTest, ExportImportMem) {
+TEST_P(CtranNvlTestSuite, ExportImportMem) {
   // - Expect rank 0 can export the buffer and share with rank 1 for importing
   // via control message.
   // - After importing, rank 1 confirms remote access to the
@@ -169,6 +199,9 @@ TEST_F(CtranNvlTest, ExportImportMem) {
   // - Finally, rank 0 releases the buffer and notifies rank 1 for the
   // remote release via another control message.
   // Require IB backend for control message exchange and notify for ACK.
+
+  const auto memType = GetParam();
+
   std::unique_ptr<CtranNvl> ctranNvl;
   std::unique_ptr<CtranIb> ctranIb;
   try {
@@ -179,6 +212,7 @@ TEST_F(CtranNvlTest, ExportImportMem) {
     GTEST_SKIP() << "NVL or IB backend failed to allocate. Skip test";
   }
   const size_t bufSize = 8192, dataCount = 100, dataOffset = 50;
+  size_t dataRange = dataCount * sizeof(int);
   std::vector<int> assignVals(dataCount);
   for (int i = 0; i < dataCount; i++) {
     assignVals[i] = dataCount + i + 1;
@@ -191,7 +225,15 @@ TEST_F(CtranNvlTest, ExportImportMem) {
   if (statex->rank() == 0) {
     const int peer = 1;
     void* dataBase = nullptr;
-    NCCLCHECK_TEST(ncclMemAlloc(&dataBase, bufSize));
+    if (memType == kMemCudaMalloc) {
+      CUDACHECK_TEST(cudaMalloc(&dataBase, bufSize));
+    } else {
+#if !defined(USE_ROCM)
+      NCCLCHECK_TEST(ncclMemAlloc(&dataBase, bufSize));
+#else
+      GTEST_SKIP() << "CuMem API is not supported on AMD, skip test";
+#endif
+    };
     ASSERT_NE(dataBase, nullptr);
 
     // Register a buffer in the middle of the cumem allocation
@@ -202,16 +244,28 @@ TEST_F(CtranNvlTest, ExportImportMem) {
 
     // Local register
     void* regElems = nullptr;
-    COMMCHECK_TEST(
-        CtranNvl::regMem(
-            data, dataCount * sizeof(int), this->localRank, &regElems));
+    if (memType == kMemCudaMalloc) {
+      COMMCHECK_TEST(
+          CtranNvl::regMem(
+              dataBase,
+              dataCount * sizeof(int),
+              this->localRank,
+              &regElems,
+              true));
+    } else {
+      COMMCHECK_TEST(
+          CtranNvl::regMem(
+              data, dataCount * sizeof(int), this->localRank, &regElems));
+    }
     ASSERT_NE(regElems, nullptr);
 
     // Export - check export control message content and send to peer
     CtranNvlRegElem* nvlRegElem = reinterpret_cast<CtranNvlRegElem*>(regElems);
-
     ControlMsg msg(ControlMsgType::NVL_EXPORT_MEM);
+
     COMMCHECK_TEST(ctranNvl->exportMem(data, regElems, msg));
+    dataRange = nvlRegElem->ipcMem.getRange();
+
     EXPECT_EQ(msg.type, ControlMsgType::NVL_EXPORT_MEM);
     EXPECT_EQ(
         reinterpret_cast<void*>(msg.nvlExp.ipcDesc.base),
@@ -238,7 +292,15 @@ TEST_F(CtranNvlTest, ExportImportMem) {
 
     // Local deregister
     COMMCHECK_TEST(ctranNvl->deregMem(regElems));
-    NCCLCHECK_TEST(ncclMemFree(dataBase));
+    if (memType == kMemCudaMalloc) {
+      CUDACHECK_TEST(cudaFree(dataBase));
+    } else {
+#if !defined(USE_ROCM)
+      NCCLCHECK_TEST(ncclMemFree(dataBase));
+#else
+      GTEST_SKIP() << "CuMem API is not supported on AMD, skip test";
+#endif
+    };
 
   } else if (statex->rank() == 1) {
     // Rank 1 imports a buffer from rank 0
@@ -254,7 +316,7 @@ TEST_F(CtranNvlTest, ExportImportMem) {
     EXPECT_EQ(msg.nvlExp.ipcDesc.numSegments, 1);
     EXPECT_NE(msg.nvlExp.ipcDesc.segments[0].sharedHandle.fd, 0);
     EXPECT_GT(msg.nvlExp.ipcDesc.segments[0].range, 0);
-    EXPECT_GE(msg.nvlExp.ipcDesc.range, bufSize);
+    EXPECT_GE(msg.nvlExp.ipcDesc.range, dataRange);
 
     // Import
     void* mappedData = nullptr;
@@ -295,9 +357,18 @@ TEST_F(CtranNvlTest, ExportImportMem) {
   }
 }
 
+INSTANTIATE_TEST_SUITE_P(
+    CtranNvlTestInstance,
+    CtranNvlTestSuite,
+#if !defined(USE_ROCM)
+    ::testing::Values(kMemNcclMemAlloc, kMemCudaMalloc));
+#else
+    ::testing::Values(kMemCudaMalloc));
+#endif
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

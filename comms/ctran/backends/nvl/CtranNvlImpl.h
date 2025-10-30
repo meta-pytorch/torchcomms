@@ -22,8 +22,8 @@ struct CtranNvlRegElem {
       : buf(buf), len(len), ipcMem(cudaDev, "NVL RegElem") {};
   ~CtranNvlRegElem() {};
 
-  commResult_t tryLoad(bool& supported) {
-    return ipcMem.tryLoad(buf, len, supported);
+  commResult_t tryLoad(bool& supported, bool shouldSupportCudaMalloc) {
+    return ipcMem.tryLoad(buf, len, supported, shouldSupportCudaMalloc);
   }
 
   std::string toString() const {
