@@ -43,7 +43,8 @@ class CtranNvl {
       const void* buf,
       const size_t len,
       const int cudaDev,
-      void** nvlRegElem);
+      void** nvlRegElem,
+      bool shouldSupportCudaMalloc = false);
 
   // Deregister memory to be used for NVL operations.
   // Input arguments:

@@ -1,34 +1,31 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <comm.h>
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
 #include <cstddef>
-#include "comms/ctran/Ctran.h"
+
+#if !defined(USE_ROCM)
+// needed because we use ncclMemAlloc to test kMemNcclMemAlloc mem type.
+// cuMem API is not supported on AMD so we don't use test it on AMD.
+#include <nccl.h>
 #include "comms/testinfra/TestUtils.h"
+#endif
+
+#include "comms/ctran/Ctran.h"
+#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 #include "comms/testinfra/tests_common.cuh"
 
 __global__ void halfCountKernel(size_t* sendCounts, int numRanks);
 
-class AllToAllvDynamicPerfTestCommon : public NcclxBaseTest {
+class AllToAllvDynamicPerfTestCommon : public CtranDistTest {
  public:
   AllToAllvDynamicPerfTestCommon() = default;
   void SetUp() override {
-    setenv("NCCL_CTRAN_ENABLE", "1", 0); // enable ctran
-
-    NcclxBaseTest::SetUp();
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    CtranDistTest::SetUp();
+    comm = commRAII->ctranComm;
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -44,9 +41,8 @@ class AllToAllvDynamicPerfTestCommon : public NcclxBaseTest {
     CUDACHECK_TEST(cudaFree(actualRcounts));
     CUDACHECK_TEST(cudaFreeHost(scountsHost));
 
-    NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    NcclxBaseTest::TearDown();
+    CtranDistTest::TearDown();
   }
 
   void AllocateBuffers(MemAllocType memType, size_t maxCount, bool registFlag) {
@@ -62,14 +58,22 @@ class AllToAllvDynamicPerfTestCommon : public NcclxBaseTest {
       if (memType == kMemCudaMalloc) {
         CUDACHECK_TEST(cudaMalloc(&buf, maxCountBuff * sizeof(int)));
       } else {
+#if !defined(USE_ROCM)
         NCCLCHECK_TEST(ncclMemAlloc(&buf, maxCountBuff * sizeof(int)));
+#else
+        CHECK(false) << "cuMem API is not supported on AMD";
+#endif
       }
       sendbuffs.push_back(buf);
 
       if (memType == kMemCudaMalloc) {
         CUDACHECK_TEST(cudaMalloc(&buf, maxCountBuff * sizeof(int)));
       } else {
+#if !defined(USE_ROCM)
         NCCLCHECK_TEST(ncclMemAlloc(&buf, maxCountBuff * sizeof(int)));
+#else
+        CHECK(false) << "cuMem API is not supported on AMD";
+#endif
       }
       recvbuffs.push_back(buf);
     }
@@ -84,23 +88,23 @@ class AllToAllvDynamicPerfTestCommon : public NcclxBaseTest {
       void* hdl;
 
       for (auto buf : sendbuffs) {
-        NCCLCHECK_TEST(
-            ncclCommRegister(comm, buf, maxCountBuff * sizeof(int), &hdl));
+        COMMCHECK_TEST(
+            comm->ctran_->commRegister(buf, maxCountBuff * sizeof(int), &hdl));
         sendhdls.push_back(hdl);
       }
 
       for (auto buf : recvbuffs) {
-        NCCLCHECK_TEST(
-            ncclCommRegister(comm, buf, maxCountBuff * sizeof(int), &hdl));
+        COMMCHECK_TEST(
+            comm->ctran_->commRegister(buf, maxCountBuff * sizeof(int), &hdl));
         recvhdls.push_back(hdl);
       }
 
-      NCCLCHECK_TEST(ncclCommRegister(
-          comm, sendBufContig, numRanks * maxCountBuff * sizeof(int), &hdl));
+      COMMCHECK_TEST(comm->ctran_->commRegister(
+          sendBufContig, numRanks * maxCountBuff * sizeof(int), &hdl));
       sendhdls.push_back(hdl);
 
-      NCCLCHECK_TEST(ncclCommRegister(
-          comm, recvBufContig, numRanks * maxCountBuff * sizeof(int), &hdl));
+      COMMCHECK_TEST(comm->ctran_->commRegister(
+          recvBufContig, numRanks * maxCountBuff * sizeof(int), &hdl));
       recvhdls.push_back(hdl);
     }
   }
@@ -109,10 +113,10 @@ class AllToAllvDynamicPerfTestCommon : public NcclxBaseTest {
     // Deregister and free buffers
     if (registFlag) {
       for (auto h : sendhdls) {
-        NCCLCHECK_TEST(ncclCommDeregister(comm, h));
+        COMMCHECK_TEST(comm->ctran_->commDeregister(h));
       }
       for (auto h : recvhdls) {
-        NCCLCHECK_TEST(ncclCommDeregister(comm, h));
+        COMMCHECK_TEST(comm->ctran_->commDeregister(h));
       }
     }
 
@@ -120,14 +124,22 @@ class AllToAllvDynamicPerfTestCommon : public NcclxBaseTest {
       if (memType == kMemCudaMalloc) {
         CUDACHECK_TEST(cudaFree(buf));
       } else {
+#if !defined(USE_ROCM)
         NCCLCHECK_TEST(ncclMemFree(buf));
+#else
+        CHECK(false) << "cuMem API is not supported on AMD";
+#endif
       }
     }
     for (auto buf : recvbuffs) {
       if (memType == kMemCudaMalloc) {
         CUDACHECK_TEST(cudaFree(buf));
       } else {
+#if !defined(USE_ROCM)
         NCCLCHECK_TEST(ncclMemFree(buf));
+#else
+        CHECK(false) << "cuMem API is not supported on AMD";
+#endif
       }
     }
 
@@ -179,7 +191,7 @@ class AllToAllvDynamicPerfTestCommon : public NcclxBaseTest {
   }
 
  protected:
-  ncclComm_t comm;
+  CtranComm* comm{nullptr};
   cudaStream_t stream;
   std::vector<void*> sendbuffs;
   std::vector<void*> recvbuffs;
@@ -191,7 +203,7 @@ class AllToAllvDynamicPerfTestCommon : public NcclxBaseTest {
   size_t* scountsHost{nullptr};
   size_t* actualRcounts{nullptr};
   int warmupTime = 5, totalTimes = 1000;
-  ncclx::Hints hints;
+  meta::comms::Hints hints;
   size_t maxCountBuff{0};
   size_t maxSendcount{0};
   size_t maxRecvcount{0};
@@ -254,7 +266,7 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvBaseline) {
           scountsHost,
           recvDispls.data(),
           commInt,
-          comm->ctranComm_.get(),
+          comm,
           stream));
     }
     CUDACHECK_TEST(cudaEventRecord(eventEnd, stream));
@@ -316,18 +328,17 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicUnchangedEqualCounts) {
       if (i == warmupTime) {
         CUDACHECK_TEST(cudaEventRecord(eventStart, stream));
       }
-      NCCLCHECK_TEST(
-          ncclx::alltoallvDynamic(
-              sendbuffs.data(),
-              scounts,
-              recvbuffs.data(),
-              maxSendcount,
-              maxRecvcount,
-              actualRcounts,
-              hints,
-              ncclInt,
-              comm,
-              stream));
+      COMMCHECK_TEST(ctranAllToAllvDynamic(
+          sendbuffs.data(),
+          scounts,
+          recvbuffs.data(),
+          maxSendcount,
+          maxRecvcount,
+          actualRcounts,
+          hints,
+          commInt,
+          comm,
+          stream));
     }
     CUDACHECK_TEST(cudaEventRecord(eventEnd, stream));
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -398,18 +409,17 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicEqualChangedCounts) {
         if (i == warmupTime) {
           CUDACHECK_TEST(cudaEventRecord(eventStart, stream));
         }
-        NCCLCHECK_TEST(
-            ncclx::alltoallvDynamic(
-                sendbuffs.data(),
-                scounts,
-                recvbuffs.data(),
-                maxSendcount,
-                maxRecvcount,
-                actualRcounts,
-                hints,
-                ncclInt,
-                comm,
-                stream));
+        COMMCHECK_TEST(ctranAllToAllvDynamic(
+            sendbuffs.data(),
+            scounts,
+            recvbuffs.data(),
+            maxSendcount,
+            maxRecvcount,
+            actualRcounts,
+            hints,
+            commInt,
+            comm,
+            stream));
       }
       CUDACHECK_TEST(cudaEventRecord(eventEnd, stream));
       CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -436,7 +446,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

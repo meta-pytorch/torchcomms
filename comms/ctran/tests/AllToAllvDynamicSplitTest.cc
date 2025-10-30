@@ -1,17 +1,21 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <comm.h>
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <nccl.h>
 #include <stdlib.h>
 #include <cstddef>
 
-#include "comms/ctran/Ctran.h"
+#if !defined(USE_ROCM)
+// needed because we use ncclMemAlloc to test kMemNcclMemAlloc mem type.
+// cuMem API is not supported on AMD so we don't use test it on AMD.
+#include <nccl.h>
 #include "comms/testinfra/TestUtils.h"
+#endif
+
+#include "comms/ctran/Ctran.h"
+#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
 
 #define dceil(x, y) ((x / y) + !!(x % y))
 
@@ -59,19 +63,12 @@ __global__ void checkRandomCountsKernel(
     int globalRank,
     int numRanks);
 
-class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
+class AllToAllvDynamicSplitTestCommon : public CtranDistTest {
  public:
   AllToAllvDynamicSplitTestCommon() = default;
   void SetUp() override {
-    setenv("NCCL_CTRAN_ENABLE", "1", 0); // enable ctran
-    NcclxBaseTest::SetUp();
-    this->comm = createNcclComm(
-        this->globalRank,
-        this->numRanks,
-        this->localRank,
-        false,
-        nullptr,
-        server.get());
+    CtranDistTest::SetUp();
+    comm = commRAII->ctranComm;
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -80,9 +77,8 @@ class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    NcclxBaseTest::TearDown();
+    CtranDistTest::TearDown();
   }
 
   void AllocateBuffers(MemAllocType memType, size_t maxCount, bool registFlag) {
@@ -106,12 +102,16 @@ class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
             cudaMalloc(&recvbuffsHost[i], maxCountBuff * sizeof(int)));
       }
     } else {
+#if !defined(USE_ROCM)
       NCCLCHECK_TEST(
           ncclMemAlloc(&sendbuffDev, maxCountBuff * numRanks * sizeof(int)));
       for (int i = 0; i < numRanks; i++) {
         NCCLCHECK_TEST(
             ncclMemAlloc(&recvbuffsHost[i], maxCountBuff * sizeof(int)));
       }
+#else
+      CHECK(false) << "cuMem API is not supported on AMD";
+#endif
     }
     CUDACHECK_TEST(cudaMalloc(&sendbuffsDev, numRanks * sizeof(void*)));
     CUDACHECK_TEST(cudaMalloc(&recvbuffsDev, numRanks * sizeof(void*)));
@@ -124,13 +124,13 @@ class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
     if (registFlag) {
       void* hdl = nullptr;
       for (int i = 0; i < numRanks; i++) {
-        NCCLCHECK_TEST(ncclCommRegister(
-            comm, recvbuffsHost[i], maxCountBuff * sizeof(int), &hdl));
+        COMMCHECK_TEST(comm->ctran_->commRegister(
+            recvbuffsHost[i], maxCountBuff * sizeof(int), &hdl));
         recvhdls.push_back(hdl);
       }
 
-      NCCLCHECK_TEST(ncclCommRegister(
-          comm, sendbuffDev, maxCountBuff * numRanks * sizeof(int), &hdl));
+      COMMCHECK_TEST(comm->ctran_->commRegister(
+          sendbuffDev, maxCountBuff * numRanks * sizeof(int), &hdl));
       sendhdls.push_back(hdl);
     }
   }
@@ -139,10 +139,10 @@ class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
     // Deregister and free data buffers
     if (registFlag) {
       for (auto h : recvhdls) {
-        NCCLCHECK_TEST(ncclCommDeregister(comm, h));
+        COMMCHECK_TEST(comm->ctran_->commDeregister(h));
       }
       for (auto h : sendhdls) {
-        NCCLCHECK_TEST(ncclCommDeregister(comm, h));
+        COMMCHECK_TEST(comm->ctran_->commDeregister(h));
       }
     }
 
@@ -152,10 +152,14 @@ class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
         CUDACHECK_TEST(cudaFree(recvbuffsHost[i]));
       }
     } else {
+#if !defined(USE_ROCM)
       NCCLCHECK_TEST(ncclMemFree(sendbuffDev));
       for (int i = 0; i < numRanks; i++) {
         NCCLCHECK_TEST(ncclMemFree(recvbuffsHost[i]));
       }
+#else
+      CHECK(false) << "cuMem API is not supported on AMD";
+#endif
     }
 
     CUDACHECK_TEST(cudaFree(sendbuffsDev));
@@ -215,7 +219,7 @@ class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
   }
 
   void EnqueueAllToAllvDynamicSplit() {
-    auto res = ncclx::alltoallvDynamicSplit(
+    auto res = ctranAlltoallvDynamicSplit(
         sendbuffDev,
         sendSplitLengthsDev,
         recvbuffsHost,
@@ -223,10 +227,10 @@ class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
         maxRecvcount,
         actualRcountsDev,
         hints,
-        ncclInt,
+        commInt32,
         comm,
         stream);
-    ASSERT_EQ(res, ncclSuccess);
+    ASSERT_EQ(res, commSuccess);
   }
 
   enum class CountType {
@@ -341,7 +345,7 @@ class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
   }
 
  protected:
-  ncclComm_t comm{};
+  CtranComm* comm{nullptr};
   cudaStream_t stream{};
   int numExperts{1};
 
@@ -362,7 +366,7 @@ class AllToAllvDynamicSplitTestCommon : public NcclxBaseTest {
 
   std::vector<size_t*> randomCountsMatricesDev;
 
-  ncclx::Hints hints;
+  meta::comms::Hints hints;
   size_t maxAllowedCount{};
 };
 
@@ -654,7 +658,7 @@ TEST_P(AllToAllvDynamicSplitTestSuite, UnchangedEqualCountsGraph) {
   constexpr int numIters = 10;
   for (int i = 0; i < numIters; i++) {
     CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
-    auto nelems = comm->ctranComm_->ctran_->gpe->numInUseKernelElems();
+    auto nelems = comm->ctran_->gpe->numInUseKernelElems();
     EXPECT_NE(nelems, 0);
   }
 
@@ -714,7 +718,7 @@ TEST_P(AllToAllvDynamicSplitTestSuite, MultipleRandomCountsGraph) {
     constexpr int numIters = 10;
     for (int i = 0; i < numIters; i++) {
       CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
-      auto nelems = comm->ctranComm_->ctran_->gpe->numInUseKernelElems();
+      auto nelems = comm->ctran_->gpe->numInUseKernelElems();
       EXPECT_NE(nelems, 0);
     }
 
@@ -752,7 +756,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

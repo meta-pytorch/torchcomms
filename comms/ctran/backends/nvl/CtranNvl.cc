@@ -140,11 +140,12 @@ commResult_t CtranNvl::regMem(
     const void* buf,
     const size_t len,
     const int cudaDev,
-    void** nvlRegElem) {
+    void** nvlRegElem,
+    bool shouldSupportCudaMalloc) {
   auto reg = new CtranNvlRegElem(buf, len, cudaDev);
   bool supported = false;
 
-  FB_COMMCHECK(reg->tryLoad(supported));
+  FB_COMMCHECK(reg->tryLoad(supported, shouldSupportCudaMalloc));
   if (supported) {
     CLOGF_TRACE(COLL, "CTRAN-NVL: Registered memory {}", reg->toString());
 

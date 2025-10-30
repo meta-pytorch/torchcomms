@@ -327,7 +327,7 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
     return false;
   }
   if (dev_fail) {
-    XLOGF(INFO, "Kernel DMA-BUF is not supported.");
+    XLOGF(INFO, "Kernel DMA-BUF is not supported on device {}", device->name);
     return false;
   }
 
@@ -646,6 +646,10 @@ ibv_pd* IbvPd::pd() const {
   return pd_;
 }
 
+bool IbvPd::useDataDirect() const {
+  return dataDirect_;
+}
+
 folly::Expected<IbvMr, Error>
 IbvPd::regMr(void* addr, size_t length, ibv_access_flags access) const {
   ibv_mr* mr;
@@ -663,8 +667,19 @@ folly::Expected<IbvMr, Error> IbvPd::regDmabufMr(
     int fd,
     ibv_access_flags access) const {
   ibv_mr* mr;
-  mr = ibvSymbols.ibv_internal_reg_dmabuf_mr(
-      pd_, offset, length, iova, fd, access);
+  if (dataDirect_) {
+    mr = ibvSymbols.mlx5dv_internal_reg_dmabuf_mr(
+        pd_,
+        offset,
+        length,
+        iova,
+        fd,
+        access,
+        MLX5DV_REG_DMABUF_ACCESS_DATA_DIRECT);
+  } else {
+    mr = ibvSymbols.ibv_internal_reg_dmabuf_mr(
+        pd_, offset, length, iova, fd, access);
+  }
   if (!mr) {
     return folly::makeUnexpected(Error(errno));
   }

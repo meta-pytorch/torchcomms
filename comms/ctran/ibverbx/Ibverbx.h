@@ -645,6 +645,7 @@ class IbvPd {
   IbvPd& operator=(IbvPd&& other) noexcept;
 
   ibv_pd* pd() const;
+  bool useDataDirect() const;
 
   folly::Expected<IbvMr, Error>
   regMr(void* addr, size_t length, ibv_access_flags access) const;
@@ -674,7 +675,7 @@ class IbvPd {
  private:
   friend class IbvDevice;
 
-  IbvPd(ibv_pd* pd, Coordinator* coordinator, bool dataDirect);
+  IbvPd(ibv_pd* pd, Coordinator* coordinator, bool dataDirect = false);
 
   ibv_pd* pd_{nullptr};
   Coordinator* coordinator_{nullptr};

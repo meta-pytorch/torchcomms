@@ -409,10 +409,18 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
   size_t* recvCountsTmpbufGPU =
       reinterpret_cast<size_t*>(args.recvCountsTmpbufGPU);
 
-  ctranKernCopy<size_t>(
-      sendcounts, sendCountsTmpbufCPU, sendcountsLength, blockIdx.x, gridDim.x);
-  ctranKernCopy<size_t>(
-      sendcounts, sendCountsTmpbufGPU, sendcountsLength, blockIdx.x, gridDim.x);
+  // only use one block to do the copy so that we can sync inside the block
+  // and then signal the GPE thread
+  if (blockIdx.x == 0) {
+    ctranKernCopy<size_t>(
+        sendcounts, sendCountsTmpbufCPU, sendcountsLength, blockIdx.x, 1);
+    ctranKernCopy<size_t>(
+        sendcounts, sendCountsTmpbufGPU, sendcountsLength, blockIdx.x, 1);
+    __syncthreads();
+    // Memory fence to ensure the writes to sendCountsTmpbufCPU are visible to
+    // GPE thread
+    __threadfence_system();
+  }
 
   if (flag && gtIdx == 0) {
     ctran::device::KernelStartGpe(flag);

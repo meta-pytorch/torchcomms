@@ -374,20 +374,30 @@ inline CUmemGenericAllocationHandle toFormattableHandle(
 
 #endif
 
-inline int getCuMemDmaBufFd(const void* buf, const size_t len) {
+inline int getCuMemDmaBufFd(
+    const void* buf,
+    const size_t len,
+    bool dataDirectPci = false) {
 #if defined(__HIP_PLATFORM_AMD__)
   // TODO: Implement this feature for HIP with ROCm 7.0.
   // `cuMemGetHandleForAddressRange` will be supported in ROCm 7.0
   // (https://ontrack.amd.com/browse/FBA-621).
   return -1;
 #else
+  int flags = 0;
+#if CUDA_VERSION >= 12080
+  // Force mapping on PCIe on systems with both PCI and C2C attachments.
+  if (dataDirectPci) {
+    flags = CU_MEM_RANGE_FLAG_DMA_BUF_MAPPING_TYPE_PCIE;
+  }
+#endif
   int dmabufFd = -1;
   FB_CUPFN(cuMemGetHandleForAddressRange(
       &dmabufFd,
       reinterpret_cast<CUdeviceptr>(buf),
       len,
       CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD,
-      0));
+      flags));
   return dmabufFd;
 #endif
 }
