@@ -900,7 +900,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
 
   if (input_list.size() != static_cast<size_t>(comm_size_)) {
     throw std::runtime_error(
-        "input_list size must equal comm_size for reduce_scatter");
+        "input_list size must equal comm_size for reduce_scatter_v");
   }
 
   // Check that all input tensors are contiguous and have correct size
@@ -909,7 +909,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
   }
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
+      name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
