@@ -783,6 +783,58 @@ class IbverbxVirtualQpRdmaWriteTestFixture
       LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
 };
 
+// Parameterized test class for virtual QP RDMA read tests
+class IbverbxVirtualQpRdmaReadTestFixture
+    : public IbverbxVirtualQpTestFixture,
+      public ::testing::WithParamInterface<
+          std::tuple<int, DataType, int, int, int, LoadBalancingScheme>> {
+ public:
+  // Parameterized test name generator function for virtual QP RDMA read tests
+  static std::string getTestName(
+      const testing::TestParamInfo<ParamType>& info) {
+    std::string baseName = fmt::format(
+        "{}_devBufSize_{}_dataType_{}_numQp_",
+        std::get<0>(info.param),
+        dataTypeToString(std::get<1>(info.param)),
+        std::get<2>(info.param));
+
+    // Always include both maxMsgPerQp and maxMsgBytes values to avoid
+    // duplicates
+    std::string maxMsgPerQpStr = std::get<3>(info.param) > 0
+        ? std::to_string(std::get<3>(info.param))
+        : "nolimit";
+    std::string maxMsgBytesStr = std::get<4>(info.param) > 0
+        ? std::to_string(std::get<4>(info.param))
+        : "nolimit";
+
+    std::string loadBalancingStr =
+        std::get<5>(info.param) == LoadBalancingScheme::DQPLB ? "DQPLB"
+                                                              : "SPRAY";
+
+    baseName += fmt::format(
+        "{}_maxMsgPerQp_{}_maxMsgBytes_{}_scheme",
+        maxMsgPerQpStr,
+        maxMsgBytesStr,
+        loadBalancingStr);
+    return baseName;
+  }
+
+ protected:
+  void SetUp() override {
+    IbverbxVirtualQpTestFixture::SetUp();
+  }
+
+  // Helper template function to run virtual QP RDMA read test with specific
+  // data type
+  template <typename T>
+  void runRdmaReadVirtualQpTest(
+      int devBufSize,
+      int numQp,
+      int maxMsgPerQp = -1,
+      int maxMsgBytes = -1,
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
+};
+
 // Parameterized test class for virtual QP send/recv tests
 class IbverbxVirtualQpSendRecvTestFixture
     : public IbverbxVirtualQpTestFixture,
@@ -933,6 +985,107 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
   XLOGF(DBG1, "rank {} RDMA-WRITE OK", globalRank);
 }
 
+// Template helper function implementation for Virtual QP RDMA Read
+template <typename T>
+void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
+    int devBufSize,
+    int numQp,
+    int maxMsgPerQp,
+    int maxMsgBytes,
+    LoadBalancingScheme loadBalancingScheme) {
+  // Use common setup function to initialize IB resources and devBuf
+  auto setup = setupVirtualQp<T>(
+      devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+
+  // RDMA Read is a one-sided operation, so both ranks must be synchronized
+  // before proceeding. Typically, a separate control QP is used for
+  // coordination, but in this case, we rely on MPI setup. We use MPI_Barrier to
+  // ensure both ranks are ready before continuing, since a control QP is not
+  // available.
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Post a send operation and poll the completion queue (CQ).
+  // Note: RDMA READ is a one-sided operation, meaning only the receiver
+  // (the side initiating the read from the remote memory) is actively involved.
+  // The remote side does not participate in the postSend and pollCq operations.
+  int wr_id = 0;
+  if (globalRank == 0) {
+    // reader - does the work in RDMA Read
+
+    ibv_sge sgList = {
+        .addr = (uint64_t)setup.devBuf,
+        .length = static_cast<uint32_t>(devBufSize),
+        .lkey = setup.mr.mr()->lkey};
+    ibv_send_wr sendWr = {
+        .wr_id = static_cast<uint64_t>(wr_id),
+        .next = nullptr,
+        .sg_list = &sgList,
+        .num_sge = 1,
+        .opcode = IBV_WR_RDMA_READ,
+        .send_flags = IBV_SEND_SIGNALED};
+    // set rdma remote fields for READ operation
+    sendWr.wr.rdma.remote_addr = setup.remoteCard.remoteAddr;
+    sendWr.wr.rdma.rkey = setup.remoteCard.rkey;
+
+    ibv_send_wr sendWrBad{};
+    ASSERT_TRUE(setup.virtualQp.postSend(&sendWr, &sendWrBad));
+
+    // poll cq and check cq
+    int numEntries{20};
+    while (true) {
+      auto maybeWcsVector = setup.virtualCq.pollCq(numEntries);
+      ASSERT_TRUE(maybeWcsVector);
+      auto numWc = maybeWcsVector->size();
+      ASSERT_GE(numWc, 0);
+      if (numWc == 0) {
+        // CQ empty, sleep and retry
+        XLOGF(WARN, "rank {}: cq empty, retry in 500ms", globalRank);
+        /* sleep override */
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        continue;
+      }
+
+      ASSERT_EQ(numWc, 1);
+
+      // got a WC
+      const auto wc = maybeWcsVector->at(0);
+      ASSERT_EQ(wc.wr_id, wr_id);
+      ASSERT_EQ(wc.status, IBV_WC_SUCCESS);
+      XLOGF(DBG1, "Rank {} got a wc: wr_id {}", globalRank, wc.wr_id);
+      break;
+    }
+
+    // check data
+    size_t numElements = devBufSize / sizeof(T);
+    std::vector<T> hostExpectedBuf(numElements);
+    if constexpr (std::is_integral_v<T>) {
+      std::iota(hostExpectedBuf.begin(), hostExpectedBuf.end(), T(1));
+    } else {
+      // For floating point types, use incremental values
+      T val = T(1);
+      for (auto& elem : hostExpectedBuf) {
+        elem = val;
+        val += T(1);
+      }
+    }
+
+    std::vector<T> hostRecvBuf(numElements);
+    CUDA_CHECK(cudaMemcpy(
+        hostRecvBuf.data(), setup.devBuf, devBufSize, cudaMemcpyDefault));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    ASSERT_EQ(hostExpectedBuf, hostRecvBuf);
+  }
+
+  // RDMA Read is a one-sided operation, so both ranks must be synchronized
+  // before finishing the test, otherwise, the IB resources on one rank might
+  // get lost. Typically, a separate control QP is used for coordination, but in
+  // this case, we rely on MPI setup. We use MPI_Barrier to ensure both ranks
+  // are ready before continuing, since a control QP is not available.
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  XLOGF(DBG1, "rank {} RDMA-READ OK", globalRank);
+}
+
 // Template helper function implementation for Virtual QP Send/Recv
 template <typename T>
 void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
@@ -1037,6 +1190,40 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
   XLOGF(DBG1, "rank {} send/recv OK", globalRank);
 }
 
+// RDMA Read Virtual QP test using template helper
+TEST_P(IbverbxVirtualQpRdmaReadTestFixture, RdmaReadVirtualQpWithParam) {
+  const auto& [devBufSize, dataType, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme] =
+      GetParam();
+
+  // Dispatch to the appropriate template function based on data type
+  switch (dataType) {
+    case DataType::INT8:
+      runRdmaReadVirtualQpTest<int8_t>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::INT16:
+      runRdmaReadVirtualQpTest<int16_t>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::INT32:
+      runRdmaReadVirtualQpTest<int32_t>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::INT64:
+      runRdmaReadVirtualQpTest<int64_t>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::FLOAT:
+      runRdmaReadVirtualQpTest<float>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::DOUBLE:
+      runRdmaReadVirtualQpTest<double>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+  }
+}
+
 // RDMA Write Virtual QP test using template helper
 TEST_P(IbverbxVirtualQpRdmaWriteTestFixture, RdmaWriteVirtualQpWithParam) {
   const auto& [devBufSize, dataType, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme] =
@@ -1104,6 +1291,75 @@ TEST_P(IbverbxVirtualQpSendRecvTestFixture, SendRecvVirtualQpWithParam) {
       break;
   }
 }
+
+// Instantiate Virtual QP Rdma Read test with different buffer sizes, data
+// Small buffer configurations - 1KB and 8KB
+INSTANTIATE_TEST_SUITE_P(
+    VirtualQpRdmaReadTestSmallBuffer,
+    IbverbxVirtualQpRdmaReadTestFixture,
+    ::testing::Combine(
+        testing::Values(1024, 8192), // Small buffer sizes: 1KB, 8KB
+        testing::Values(DataType::INT8, DataType::INT32, DataType::FLOAT),
+        testing::Values(1, 4), // QP numbers: 1, 4
+        testing::Values(64, 128), // maxMsgPerQp: 64, 128
+        testing::Values(128, 256), // maxMsgBytes: 128, 256
+        testing::Values(
+            LoadBalancingScheme::SPRAY)), // LoadBalancingScheme: Spray and
+                                          // DQPLB should provide same behavior
+                                          // for RDMA READ since there's no
+                                          // notification in RDMA READ
+    IbverbxVirtualQpRdmaReadTestFixture::getTestName);
+
+// Medium buffer configurations - 1MB and 8MB
+INSTANTIATE_TEST_SUITE_P(
+    VirtualQpRdmaReadTestMediumBuffer,
+    IbverbxVirtualQpRdmaReadTestFixture,
+    ::testing::Combine(
+        testing::Values(
+            1048576,
+            8388608), // Medium buffer sizes: 1MB, 8MB
+        testing::Values(DataType::INT8, DataType::INT32, DataType::FLOAT),
+        testing::Values(16, 128), // QP numbers: 16, 128
+        testing::Values(128, 1024), // maxMsgPerQp: 128, 1024
+        testing::Values(1024, 16384), // maxMsgBytes: 1024, 16384
+        testing::Values(
+            LoadBalancingScheme::SPRAY)), // LoadBalancingScheme: Spray and
+                                          // DQPLB should provide same behavior
+                                          // for RDMA READ since there's no
+                                          // notification in RDMA READ
+    IbverbxVirtualQpRdmaReadTestFixture::getTestName);
+
+// Large buffer configurations - 1GB
+INSTANTIATE_TEST_SUITE_P(
+    VirtualQpRdmaReadTestLargeBuffer,
+    IbverbxVirtualQpRdmaReadTestFixture,
+    ::testing::Combine(
+        testing::Values(1073741824), // Large buffer size: 1GB
+        testing::Values(DataType::INT8, DataType::INT32, DataType::FLOAT),
+        testing::Values(16, 128), // High QP number for maximum parallelism
+        testing::Values(128, 1024), // maxMsgPerQp: 128, 1024
+        testing::Values(16384, 1048576), // maxMsgBytes: 16KB, 1MB
+        testing::Values(
+            LoadBalancingScheme::SPRAY)), // LoadBalancingScheme: Spray and
+                                          // DQPLB should provide same behavior
+                                          // for RDMA READ since there's no
+                                          // notification in RDMA READ
+    IbverbxVirtualQpRdmaReadTestFixture::getTestName);
+
+// Large buffer configurations - 1GB with DQPLB mode
+INSTANTIATE_TEST_SUITE_P(
+    VirtualQpRdmaReadTestLargeBufferDqplb,
+    IbverbxVirtualQpRdmaReadTestFixture,
+    ::testing::Combine(
+        testing::Values(1073741824), // Large buffer size: 1GB
+        testing::Values(DataType::INT8),
+        testing::Values(128), // High QP number for maximum parallelism
+        testing::Values(1024), // maxMsgPerQp: 128, 1024
+        testing::Values(1048576), // maxMsgBytes: 16KB, 1MB
+        testing::Values(
+            LoadBalancingScheme::DQPLB)), // check DQPLB scheme is providing
+                                          // same behavior as Spray
+    IbverbxVirtualQpRdmaReadTestFixture::getTestName);
 
 // Instantiate Virtual QP Rdma Write test with different buffer sizes, data
 // Small buffer configurations - 1KB and 8KB
