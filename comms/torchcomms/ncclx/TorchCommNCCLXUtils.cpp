@@ -181,10 +181,11 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
     {
       std::unique_lock<std::mutex> lock(timeout_mutex_);
       // Wait for a shorter interval to check work objects periodically
-      // Wake up either after 60 seconds or immediately if shutdown is requested
-      timeout_cv_.wait_for(lock, std::chrono::seconds(60), [this]() {
-        return shutdown_.load();
-      });
+      // Wake up either after some time or immediately if shutdown is requested
+      timeout_cv_.wait_for(
+          lock,
+          std::chrono::milliseconds(garbage_collect_interval_ms_),
+          [this]() { return shutdown_.load(); });
 
       // If we're shutting down, exit the loop
       if (shutdown_) {

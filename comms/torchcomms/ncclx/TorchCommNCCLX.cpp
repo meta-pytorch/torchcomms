@@ -157,6 +157,14 @@ void TorchCommNCCLX::init(
     max_event_pool_size_ = kMaxEventPoolSize;
   }
 
+  if (options_.hints.contains(
+          "torchcomm::ncclx::garbage_collect_interval_ms")) {
+    garbage_collect_interval_ms_ = std::stoull(
+        options_.hints.at("torchcomm::ncclx::garbage_collect_interval_ms"));
+  } else {
+    garbage_collect_interval_ms_ = kGarbageCollectIntervalMs;
+  }
+
   // Give up our internal reference to the store object here.  The caller
   // would still need to keep a reference to the store object till the init
   // call returns, at which point the NCCL communicator would already be

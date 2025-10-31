@@ -29,6 +29,7 @@ namespace torch {
 namespace comms {
 
 constexpr size_t kMaxEventPoolSize = 1000;
+constexpr size_t kGarbageCollectIntervalMs = 100;
 
 // Custom exception class for better error handling
 class NCCLException : public std::exception {
@@ -331,6 +332,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   int rank_{};
   CommOptions options_;
   size_t max_event_pool_size_{};
+  size_t garbage_collect_interval_ms_{};
   cudaStream_t internal_stream_{};
   void* barrier_buffer_{}; // Pre-allocated CUDA buffer for barrier operations
   enum class InitializationState {
