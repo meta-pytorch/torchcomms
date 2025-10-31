@@ -100,7 +100,7 @@ std::shared_ptr<TorchWork> TorchCommWindowNCCLX::put(
     cuda_api_->streamWaitEvent(stream, rma_event_, 0);
   }
   auto work = torch_comm_->createWork(stream, kDefaultTimeout, {data});
-  work->recordStart();
+  work->recordStart("put");
   CHECK_EQ(
       nccl_api_->winPut(
           reinterpret_cast<void*>(data.data_ptr()),
@@ -167,7 +167,7 @@ std::shared_ptr<TorchWork> TorchCommWindowNCCLX::signal(
     cuda_api_->streamWaitEvent(stream, rma_event_, 0);
   }
   auto work = torch_comm_->createWork(stream, kDefaultTimeout);
-  work->recordStart();
+  work->recordStart("signal");
   CHECK_EQ(
       nccl_api_->winSignal(signalDisp, signalVal, dstRank, win_, stream),
       ncclSuccess);
@@ -192,7 +192,7 @@ std::shared_ptr<TorchWork> TorchCommWindowNCCLX::waitSignal(
     cuda_api_->streamWaitEvent(stream, rma_event_, 0);
   }
   auto work = torch_comm_->createWork(stream, kDefaultTimeout);
-  work->recordStart();
+  work->recordStart("waitSignal");
   CHECK_EQ(
       nccl_api_->winWaitSignal(signalDisp, cmpVal, nccl_cmp_op, win_, stream),
       ncclSuccess);

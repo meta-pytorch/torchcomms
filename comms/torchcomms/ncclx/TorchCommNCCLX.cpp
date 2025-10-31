@@ -357,7 +357,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::send(
       stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("send");
 
   ncclResult_t result = nccl_api_->send(
       tensor.data_ptr(),
@@ -397,7 +397,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::recv(
       stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("recv");
 
   ncclResult_t result = nccl_api_->recv(
       tensor.data_ptr(),
@@ -465,7 +465,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
       input_tensors);
 
   // Record start event before NCCL operations
-  work->recordStart();
+  work->recordStart("batch_op_issue");
 
   // Start NCCL group for batched operations
   ncclResult_t result = nccl_api_->groupStart();
@@ -540,7 +540,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::broadcast(
       stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("broadcast");
 
   ncclResult_t result = nccl_api_->bcast(
       tensor.data_ptr(),
@@ -580,7 +580,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_reduce(
       stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("all_reduce");
 
   const auto dataType = getNcclDataType(tensor);
   ncclResult_t result = nccl_api_->allReduce(
@@ -627,7 +627,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce(
       stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("reduce");
 
   const auto dataType = getNcclDataType(tensor);
   ncclResult_t result = nccl_api_->reduce(
@@ -684,7 +684,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather(
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
-  work->recordStart();
+  work->recordStart("all_gather");
 
   // Use multiple broadcast operations for all_gather
   nccl_api_->groupStart();
@@ -735,7 +735,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
-  work->recordStart();
+  work->recordStart("all_gather_v");
 
   // Use multiple broadcast operations for all_gather
   nccl_api_->groupStart();
@@ -791,7 +791,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), input);
 
-  work->recordStart();
+  work->recordStart("all_gather_single");
 
   ncclResult_t result = nccl_api_->allGather(
       input.data_ptr(),
@@ -846,7 +846,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
       getOperationTimeout(options.timeout, options_.timeout),
       input_list);
 
-  work->recordStart();
+  work->recordStart("reduce_scatter");
 
   // Use multiple reduce operations for reduce_scatter
   nccl_api_->groupStart();
@@ -917,7 +917,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
       getOperationTimeout(options.timeout, options_.timeout),
       input_list);
 
-  work->recordStart();
+  work->recordStart("reduce_scatter_v");
 
   // Use multiple reduce operations for reduce_scatter
   nccl_api_->groupStart();
@@ -992,7 +992,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
       stream, getOperationTimeout(options.timeout, options_.timeout), input);
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("reduce_scatter_single");
 
   const auto dataType = getNcclDataType(input);
   ncclResult_t result = nccl_api_->reduceScatter(
@@ -1045,7 +1045,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
       stream, getOperationTimeout(options.timeout, options_.timeout), input);
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("all_to_all_single");
 
   size_t chunk_size = input.numel() / comm_size_;
 
@@ -1101,7 +1101,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
       stream, getOperationTimeout(options.timeout, options_.timeout), input);
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("all_to_all_v_single");
 
   // Convert split sizes to arrays and calculate displacements
   std::vector<size_t> sendcounts(comm_size_);
@@ -1183,7 +1183,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_to_all(
       input_tensor_list);
 
   // Record start event before NCCL operations
-  work->recordStart();
+  work->recordStart("all_to_all");
 
   nccl_api_->groupStart();
 
@@ -1231,7 +1231,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::barrier(
       stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("barrier");
 
   // Use pre-allocated CUDA buffer for barrier
   ncclResult_t result = nccl_api_->allReduce(
@@ -1296,7 +1296,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::scatter(
       input_tensors);
 
   // Record start event before NCCL operations
-  work->recordStart();
+  work->recordStart("scatter");
 
   // Implement scatter using point-to-point operations
   if (rank_ == root) {
@@ -1386,7 +1386,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::gather(
       input_tensor);
 
   // Record start event before NCCL operations
-  work->recordStart();
+  work->recordStart("gather");
 
   if (rank_ == root) {
     // Root receives from all ranks (except itself)

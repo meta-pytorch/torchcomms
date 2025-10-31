@@ -64,7 +64,7 @@ class TorchWorkNCCLX : public TorchWork {
   void wait() override;
 
  protected:
-  void recordStart();
+  void recordStart(const std::string& coll_name);
   void recordEnd();
 
   friend class TorchCommNCCLX;
@@ -76,7 +76,7 @@ class TorchWorkNCCLX : public TorchWork {
   // Check the status of the work object
   WorkStatus checkStatus();
 
-  void recordFunctionStart();
+  void recordFunctionStart(const std::string& coll_name);
 
   std::chrono::milliseconds getTimeout() {
     return timeout_ms_;
