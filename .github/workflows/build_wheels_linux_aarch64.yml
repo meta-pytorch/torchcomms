@@ -19,9 +19,6 @@ jobs:
       with-cuda: enable
       with-rocm: disable
       with-cpu: disable
-      # TODO: Python free threading builds are broken due to newer openssl
-      # requirements.
-      python-versions: '["3.10","3.11","3.12","3.13","3.14"]'
   build:
     needs: generate-matrix
     name: ${{ matrix.repository }}
