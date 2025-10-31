@@ -43,8 +43,6 @@ static inline const std::string allReduceAlgoName(
       return "CtranAllReduceDirect";
     case NCCL_ALLREDUCE_ALGO::ctran:
       return "CtranAuto";
-    case NCCL_ALLREDUCE_ALGO::dda:
-      return "DDA";
     case NCCL_ALLREDUCE_ALGO::orig:
       return "Baseline";
     case NCCL_ALLREDUCE_ALGO::ctarg:

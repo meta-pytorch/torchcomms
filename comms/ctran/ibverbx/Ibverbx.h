@@ -1032,7 +1032,8 @@ IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
     // opcodes, default to using physical QP 0.
     auto availableQpIdx = -1;
     if (virtualSendWr.wr.opcode == IBV_WR_RDMA_WRITE ||
-        virtualSendWr.wr.opcode == IBV_WR_RDMA_WRITE_WITH_IMM) {
+        virtualSendWr.wr.opcode == IBV_WR_RDMA_WRITE_WITH_IMM ||
+        virtualSendWr.wr.opcode == IBV_WR_RDMA_READ) {
       // Find an available Qp to send
       availableQpIdx = qpIdx == -1 ? findAvailableSendQp() : qpIdx;
       qpIdx = -1; // If qpIdx is provided, it indicates that one slot has been
@@ -1148,6 +1149,7 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
   // we'll handle the notification message separately
   switch (virtualSendWr.wr.opcode) {
     case IBV_WR_RDMA_WRITE:
+    case IBV_WR_RDMA_READ:
       sendWr->opcode = virtualSendWr.wr.opcode;
       sendWr->send_flags = virtualSendWr.wr.send_flags;
       sendWr->wr.rdma.remote_addr =
@@ -1191,12 +1193,11 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
   // Report error if opcode is not supported by Ibverbx virtualQp
   switch (sendWr->opcode) {
     case IBV_WR_SEND_WITH_IMM:
-    case IBV_WR_RDMA_READ:
     case IBV_WR_ATOMIC_CMP_AND_SWP:
     case IBV_WR_ATOMIC_FETCH_AND_ADD:
       return folly::makeUnexpected(Error(
           EINVAL,
-          "In IbvVirtualQp::postSend, opcode IBV_WR_SEND_WITH_IMM, IBV_WR_RDMA_READ, IBV_WR_ATOMIC_CMP_AND_SWP, IBV_WR_ATOMIC_FETCH_AND_ADD are not supported"));
+          "In IbvVirtualQp::postSend, opcode IBV_WR_SEND_WITH_IMM, IBV_WR_ATOMIC_CMP_AND_SWP, IBV_WR_ATOMIC_FETCH_AND_ADD are not supported"));
 
     default:
       break;

@@ -223,7 +223,6 @@ pushd "${NCCL_HOME}"
 
 ./install.sh \
     --prefix build \
-    -i \
     --amdgpu_targets "$AMDGPU_TARGETS" \
     --disable-colltrace \
     --disable-msccl-kernel \

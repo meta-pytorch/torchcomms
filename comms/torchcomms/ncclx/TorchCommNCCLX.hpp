@@ -245,10 +245,17 @@ class TorchCommNCCLX : public TorchCommBackend,
   void register_address(const AddressWithLen& addr);
   void deregister_address(const Address& addr);
   ncclDataType_t getNcclDataType(const at::Tensor& tensor);
+
   std::shared_ptr<TorchWorkNCCLX> createWork(
       cudaStream_t stream,
       std::chrono::milliseconds timeout,
-      const std::vector<at::Tensor>& inputTensors);
+      const std::vector<at::Tensor>& inputTensors = {});
+
+  std::shared_ptr<TorchWorkNCCLX> createWork(
+      cudaStream_t stream,
+      std::chrono::milliseconds timeout,
+      const at::Tensor& inputTensor);
+
   NcclxWindowCmpOp getNcclSignalCmpOp(SignalCmpOp op);
 
  private:

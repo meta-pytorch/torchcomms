@@ -278,6 +278,16 @@ std::shared_ptr<TorchWorkNCCLX> TorchCommNCCLX::createWork(
   return work;
 }
 
+std::shared_ptr<TorchWorkNCCLX> TorchCommNCCLX::createWork(
+    cudaStream_t stream,
+    std::chrono::milliseconds timeout,
+    const at::Tensor& inputTensor) {
+  // Only create the work object without enqueuing it
+  auto work = std::make_shared<TorchWorkNCCLX>(
+      shared_from_this(), stream, timeout, inputTensor);
+  return work;
+}
+
 void TorchCommNCCLX::enqueueWork(
     std::shared_ptr<TorchWorkNCCLX> work,
     cudaStream_t stream) {

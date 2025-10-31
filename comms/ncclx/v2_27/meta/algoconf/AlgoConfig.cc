@@ -66,8 +66,6 @@ inline const std::string algoValToStr(enum NCCL_ALLREDUCE_ALGO val) {
   switch (val) {
     case NCCL_ALLREDUCE_ALGO::orig:
       return "orig";
-    case NCCL_ALLREDUCE_ALGO::dda:
-      return "dda";
     case NCCL_ALLREDUCE_ALGO::ctran:
       return "ctran";
     case NCCL_ALLREDUCE_ALGO::ctdirect:
@@ -76,17 +74,13 @@ inline const std::string algoValToStr(enum NCCL_ALLREDUCE_ALGO val) {
       return "ctarg";
     case NCCL_ALLREDUCE_ALGO::ctring:
       return "ctring";
-    case NCCL_ALLREDUCE_ALGO::ctmring:
-      return "ctmring";
   }
 }
 
 inline void algoStrToVal(
     const std::string& str,
     enum NCCL_ALLREDUCE_ALGO& val) {
-  if (str == "dda") {
-    val = NCCL_ALLREDUCE_ALGO::dda;
-  } else if (str == "ctran") {
+  if (str == "ctran") {
     val = NCCL_ALLREDUCE_ALGO::ctran;
   } else if (str == "ctdirect") {
     val = NCCL_ALLREDUCE_ALGO::ctdirect;
@@ -94,8 +88,6 @@ inline void algoStrToVal(
     val = NCCL_ALLREDUCE_ALGO::ctarg;
   } else if (str == "ctring") {
     val = NCCL_ALLREDUCE_ALGO::ctring;
-  } else if (str == "ctmring") {
-    val = NCCL_ALLREDUCE_ALGO::ctmring;
   } else {
     val = NCCL_ALLREDUCE_ALGO::orig;
   }

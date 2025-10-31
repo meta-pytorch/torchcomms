@@ -13,6 +13,7 @@
 #include <ATen/ATen.h>
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <vector>
+#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
 namespace torch {
@@ -43,6 +44,13 @@ class TorchWorkNCCLX : public TorchWork {
       cudaStream_t stream,
       std::chrono::milliseconds timeout_ms,
       const std::vector<at::Tensor>& inputTensors);
+
+  TorchWorkNCCLX(
+      std::shared_ptr<TorchCommNCCLX> comm,
+      cudaStream_t stream,
+      std::chrono::milliseconds timeout_ms,
+      const at::Tensor& inputTensor);
+
   ~TorchWorkNCCLX() override;
 
   // Delete copy and move operations
@@ -73,7 +81,12 @@ class TorchWorkNCCLX : public TorchWork {
   std::chrono::milliseconds getTimeout() {
     return timeout_ms_;
   }
+
+  // Tensors supplied might either be a vector of tensors,
+  // or a single tensor. In case it is a single tensor, we
+  // can avoid allocating space for a vector of tensors.
   std::vector<at::Tensor> inputTensors_;
+  at::Tensor inputTensor_;
 
   std::shared_ptr<TorchCommNCCLX> comm_;
   cudaEvent_t start_event_;
@@ -87,7 +100,7 @@ class TorchWorkNCCLX : public TorchWork {
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
 
-  std::function<void()> recordFunctionEndCallback_;
+  std::optional<at::RecordFunction> recordFunction_;
 };
 
 class TorchWorkNCCLXQueue {
@@ -101,9 +114,11 @@ class TorchWorkNCCLXQueue {
   void enqueueWork(std::shared_ptr<TorchWorkNCCLX> work, cudaStream_t stream);
 
  private:
+  TorchWorkNCCLX::WorkStatus garbageCollectLocked();
+
   std::unordered_map<cudaStream_t, std::queue<std::shared_ptr<TorchWorkNCCLX>>>
       stream_work_queues_;
-  std::recursive_mutex work_queues_mutex_;
+  std::mutex work_queues_mutex_;
 
   friend class TorchWorkNCCLXQueueCommTest;
 };

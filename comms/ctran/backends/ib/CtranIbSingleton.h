@@ -19,7 +19,8 @@ class CtranIbSingleton {
   CtranIbSingleton(const CtranIbSingleton& obj) = delete;
   static CtranIbSingleton& getInstance();
   std::vector<ibverbx::IbvDevice> ibvDevices;
-  folly::Synchronized<std::vector<ibverbx::IbvPd>> ibvPds;
+
+  const ibverbx::IbvPd& getIbvPd(size_t idx) const;
 
   // Record traffic in bytes whenever IB data transfer happens.
   // Accumulate per device (identified by cudaDev), QP, or both.
@@ -61,6 +62,7 @@ class CtranIbSingleton {
  private:
   CtranIbSingleton();
   ~CtranIbSingleton();
+  std::vector<ibverbx::IbvPd> ibvPds_;
   std::vector<std::unique_ptr<std::atomic<size_t>>> devBytes_;
 
   std::unordered_map<int, bool> devToDmaBufSupport;

@@ -2300,16 +2300,14 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, dda, ctran, ctdirect, ctarg, ctring, ctmring
+   choices     : orig, ctran, ctdirect, ctarg, ctring
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
-     dda - Direct Data Access algorithms
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
      ctarg - ctran-based direct alltoall + reduce + all gather algorithm
      ctring - ctran-based ring algorithm
-     ctmring - ctran-based multi flat ring algorithm
 
  - name        : NCCL_ALLREDUCE_TYPE
    type        : enum

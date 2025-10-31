@@ -178,7 +178,7 @@ void TorchCommNCCLX::init(
     throw std::runtime_error("NCCL Count failed");
   }
 
-  TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_, {}, {});
+  TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommNCCLX::timeoutWatchdog, this);
@@ -350,11 +350,11 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::send(
   ensureTensorContiguous(tensor);
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "send", dst, {tensor}, {tensor});
+      name_, comm_size_, "send", dst, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   // Record start event before NCCL operation
   work->recordStart();
@@ -390,11 +390,11 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::recv(
   ensureTensorContiguous(tensor);
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "recv", src, {tensor}, {tensor});
+      name_, comm_size_, "recv", src, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {});
+      stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart();
@@ -532,12 +532,12 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::broadcast(
   ensureTensorContiguous(tensor);
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "broadcast", rank_, {tensor}, {tensor});
+      name_, comm_size_, "broadcast", rank_, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
 
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   // Record start event before NCCL operation
   work->recordStart();
@@ -573,11 +573,11 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_reduce(
   ensureTensorContiguous(tensor);
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "all_reduce", rank_, {tensor}, {tensor});
+      name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   // Record start event before NCCL operation
   work->recordStart();
@@ -616,7 +616,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce(
   ensureTensorContiguous(tensor);
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "reduce", root, {tensor}, {tensor});
+      name_, comm_size_, "reduce", root, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   std::vector<at::Tensor> output_tensors;
@@ -624,7 +624,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce(
     output_tensors.push_back(tensor);
   }
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   // Record start event before NCCL operation
   work->recordStart();
@@ -682,7 +682,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather(
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   work->recordStart();
 
@@ -733,7 +733,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
 
   work->recordStart();
 
@@ -785,11 +785,11 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
   }
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "all_gather_single", rank_, {input}, {output});
+      name_, comm_size_, "all_gather_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+      stream, getOperationTimeout(options.timeout, options_.timeout), input);
 
   work->recordStart();
 
@@ -985,11 +985,11 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
   }
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "reduce_scatter_single", rank_, {input}, {output});
+      name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+      stream, getOperationTimeout(options.timeout, options_.timeout), input);
 
   // Record start event before NCCL operation
   work->recordStart();
@@ -1038,11 +1038,11 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
   }
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "all_to_all_single", rank_, {input}, {output});
+      name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+      stream, getOperationTimeout(options.timeout, options_.timeout), input);
 
   // Record start event before NCCL operation
   work->recordStart();
@@ -1094,11 +1094,11 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
   }
 
   TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "all_to_all_v_single", rank_, {input}, {output});
+      name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+      stream, getOperationTimeout(options.timeout, options_.timeout), input);
 
   // Record start event before NCCL operation
   work->recordStart();
@@ -1224,12 +1224,11 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::barrier(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "barrier", rank_, {}, {});
+  TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {});
+      stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart();
@@ -1384,7 +1383,7 @@ std::shared_ptr<TorchWork> TorchCommNCCLX::gather(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      {input_tensor});
+      input_tensor);
 
   // Record start event before NCCL operations
   work->recordStart();

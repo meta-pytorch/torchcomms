@@ -7,7 +7,7 @@
 #include <numeric>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
-#include "comms/testinfra/MpiTestUtils.h"
+#include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/checks.h"
 
 using namespace ibverbx;
@@ -167,6 +167,175 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
     ASSERT_TRUE(ibvInit());
+  }
+
+  // Common setup structure to hold all initialized resources
+  struct VirtualQpSetup {
+    std::vector<IbvDevice> devices;
+    IbvPd pd;
+    IbvVirtualCq virtualCq;
+    IbvVirtualQp virtualQp;
+    void* devBuf;
+    size_t devBufSize;
+    IbvMr mr;
+    BusinessCard localCard;
+    BusinessCard remoteCard;
+    IbvVirtualQpBusinessCard remoteVirtualQpBusinessCard;
+  };
+
+  // Common setup function for parameterized tests
+  template <typename T>
+  VirtualQpSetup setupVirtualQp(
+      int devBufSize,
+      int numQp,
+      int maxMsgPerQp = -1,
+      int maxMsgBytes = -1,
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY) {
+    CUDA_CHECK(cudaSetDevice(localRank));
+
+    int myDevId{-1};
+    CUDA_CHECK(cudaGetDevice(&myDevId));
+
+    // get device
+    auto maybeDevices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+    EXPECT_TRUE(maybeDevices);
+    auto devices = std::move(*maybeDevices);
+    auto& device = devices.at(myDevId);
+    auto maybePd = device.allocPd();
+    EXPECT_TRUE(maybePd);
+    auto pd = std::move(*maybePd);
+
+    // make cq
+    int cqe = 2 * numQp * maxMsgPerQp;
+    auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+    EXPECT_TRUE(maybeVirtualCq);
+    EXPECT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+    auto virtualCq = std::move(*maybeVirtualCq);
+
+    // make qp group
+    uint32_t totalQps = numQp;
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+    auto maybeVirtualQp = pd.createVirtualQp(
+        totalQps,
+        &initAttr,
+        &virtualCq,
+        &virtualCq,
+        maxMsgPerQp,
+        maxMsgBytes,
+        loadBalancingScheme);
+    EXPECT_TRUE(maybeVirtualQp);
+    auto virtualQp = std::move(*maybeVirtualQp);
+
+    // init device buffer
+    void* devBuf{nullptr};
+    CUDA_CHECK(cudaMalloc(&devBuf, devBufSize));
+
+    // Initialize host buffer and copy to device
+    size_t numElements = devBufSize / sizeof(T);
+    std::vector<T> hostBuf(numElements);
+
+    if (globalRank == 0) {
+      // receiver: fill up with 0s
+      std::fill(hostBuf.begin(), hostBuf.end(), T{});
+    } else if (globalRank == 1) {
+      // sender/writer: initialize with sequence number (1, 2, 3, ...)
+      if constexpr (std::is_integral_v<T>) {
+        std::iota(hostBuf.begin(), hostBuf.end(), T(1));
+      } else {
+        // For floating point types, use incremental values
+        T val = T(1);
+        for (auto& elem : hostBuf) {
+          elem = val;
+          val += T(1);
+        }
+      }
+    }
+    CUDA_CHECK(
+        cudaMemcpy(devBuf, hostBuf.data(), devBufSize, cudaMemcpyDefault));
+    CUDA_CHECK(cudaDeviceSynchronize());
+
+    // register memory region
+    ibv_access_flags access = static_cast<ibv_access_flags>(
+        IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
+        IBV_ACCESS_REMOTE_READ);
+    auto maybeMr = pd.regMr(devBuf, devBufSize, access);
+    EXPECT_TRUE(maybeMr);
+    auto mr = std::move(*maybeMr);
+
+    // create local business card and exchange
+    auto gid = device.queryGid(kPortNum, kGidIndex);
+    EXPECT_TRUE(gid);
+
+    BusinessCard localCard = {
+        .mtu = IBV_MTU_4096,
+        .port = kPortNum,
+        .subnetPrefix = gid->global.subnet_prefix,
+        .interfaceId = gid->global.interface_id,
+        .rank = globalRank,
+        .remoteAddr = reinterpret_cast<uint64_t>(devBuf),
+        .rkey = mr.mr()->rkey,
+    };
+    std::vector<BusinessCard> cards(numRanks);
+    MPI_CHECK(MPI_Allgather(
+        &localCard,
+        sizeof(BusinessCard),
+        MPI_BYTE,
+        cards.data(),
+        sizeof(BusinessCard),
+        MPI_BYTE,
+        MPI_COMM_WORLD));
+    for (int i = 0; i < numRanks; ++i) {
+      const auto& card = cards.at(i);
+      XLOG(DBG1) << "rank " << globalRank << ": got card " << card;
+    }
+    const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
+
+    // Get the business card and serialize it to JSON
+    std::string serializedCard =
+        virtualQp.getVirtualQpBusinessCard().serialize();
+
+    // Since all hosts have the same number of QPs, the serialized string size
+    // should be consistent Use the local string size directly
+    size_t bufferSize = serializedCard.size();
+
+    // Gather all serialized cards
+    std::vector<char> allSerializedCards(bufferSize * numRanks);
+    MPI_CHECK(MPI_Allgather(
+        serializedCard.data(),
+        bufferSize,
+        MPI_CHAR,
+        allSerializedCards.data(),
+        bufferSize,
+        MPI_CHAR,
+        MPI_COMM_WORLD));
+
+    // Extract remote card's serialized string
+    std::string remoteSerializedCard(
+        allSerializedCards.data() + (globalRank == 0 ? bufferSize : 0),
+        bufferSize);
+
+    auto maybeRemoteVirtualQpBusinessCard =
+        IbvVirtualQpBusinessCard::deserialize(remoteSerializedCard);
+    EXPECT_TRUE(maybeRemoteVirtualQpBusinessCard);
+    auto remoteVirtualQpBusinessCard =
+        std::move(*maybeRemoteVirtualQpBusinessCard);
+
+    // init qp group
+    changeVirtualQpStateToRts(
+        virtualQp, localCard, remoteCard, remoteVirtualQpBusinessCard);
+
+    return VirtualQpSetup{
+        .devices = std::move(devices),
+        .pd = std::move(pd),
+        .virtualCq = std::move(virtualCq),
+        .virtualQp = std::move(virtualQp),
+        .devBuf = devBuf,
+        .devBufSize = static_cast<size_t>(devBufSize),
+        .mr = std::move(mr),
+        .localCard = localCard,
+        .remoteCard = remoteCard,
+        .remoteVirtualQpBusinessCard = std::move(remoteVirtualQpBusinessCard),
+    };
   }
 };
 
@@ -614,6 +783,58 @@ class IbverbxVirtualQpRdmaWriteTestFixture
       LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
 };
 
+// Parameterized test class for virtual QP RDMA read tests
+class IbverbxVirtualQpRdmaReadTestFixture
+    : public IbverbxVirtualQpTestFixture,
+      public ::testing::WithParamInterface<
+          std::tuple<int, DataType, int, int, int, LoadBalancingScheme>> {
+ public:
+  // Parameterized test name generator function for virtual QP RDMA read tests
+  static std::string getTestName(
+      const testing::TestParamInfo<ParamType>& info) {
+    std::string baseName = fmt::format(
+        "{}_devBufSize_{}_dataType_{}_numQp_",
+        std::get<0>(info.param),
+        dataTypeToString(std::get<1>(info.param)),
+        std::get<2>(info.param));
+
+    // Always include both maxMsgPerQp and maxMsgBytes values to avoid
+    // duplicates
+    std::string maxMsgPerQpStr = std::get<3>(info.param) > 0
+        ? std::to_string(std::get<3>(info.param))
+        : "nolimit";
+    std::string maxMsgBytesStr = std::get<4>(info.param) > 0
+        ? std::to_string(std::get<4>(info.param))
+        : "nolimit";
+
+    std::string loadBalancingStr =
+        std::get<5>(info.param) == LoadBalancingScheme::DQPLB ? "DQPLB"
+                                                              : "SPRAY";
+
+    baseName += fmt::format(
+        "{}_maxMsgPerQp_{}_maxMsgBytes_{}_scheme",
+        maxMsgPerQpStr,
+        maxMsgBytesStr,
+        loadBalancingStr);
+    return baseName;
+  }
+
+ protected:
+  void SetUp() override {
+    IbverbxVirtualQpTestFixture::SetUp();
+  }
+
+  // Helper template function to run virtual QP RDMA read test with specific
+  // data type
+  template <typename T>
+  void runRdmaReadVirtualQpTest(
+      int devBufSize,
+      int numQp,
+      int maxMsgPerQp = -1,
+      int maxMsgBytes = -1,
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
+};
+
 // Parameterized test class for virtual QP send/recv tests
 class IbverbxVirtualQpSendRecvTestFixture
     : public IbverbxVirtualQpTestFixture,
@@ -666,131 +887,9 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     int maxMsgPerQp,
     int maxMsgBytes,
     LoadBalancingScheme loadBalancingScheme) {
-  CUDA_CHECK(cudaSetDevice(localRank));
-
-  int myDevId{-1};
-  CUDA_CHECK(cudaGetDevice(&myDevId));
-
-  // get device
-  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
-  ASSERT_TRUE(devices);
-  auto& device = devices->at(myDevId);
-  auto pd = device.allocPd();
-  ASSERT_TRUE(pd);
-
-  // make cq
-  int cqe = 2 * numQp * maxMsgPerQp;
-  auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
-  ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
-  auto virtualCq = std::move(*maybeVirtualCq);
-
-  // make qp group
-  uint32_t totalQps = numQp;
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
-  auto virtualQp = pd->createVirtualQp(
-      totalQps,
-      &initAttr,
-      &virtualCq,
-      &virtualCq,
-      maxMsgPerQp,
-      maxMsgBytes,
-      loadBalancingScheme);
-  ASSERT_TRUE(virtualQp);
-
-  // init device buffer
-  void* devBuf{nullptr};
-  CUDA_CHECK(cudaMalloc(&devBuf, devBufSize));
-  size_t numElements = devBufSize / sizeof(T);
-  std::vector<T> hostBuf(numElements);
-
-  if (globalRank == 0) {
-    // receiver: fill up with 0s
-    std::fill(hostBuf.begin(), hostBuf.end(), T{});
-  } else if (globalRank == 1) {
-    // writer: initialize with sequence number (1, 2, 3, ...)
-    if constexpr (std::is_integral_v<T>) {
-      std::iota(hostBuf.begin(), hostBuf.end(), T(1));
-    } else {
-      // For floating point types, use incremental values
-      T val = T(1);
-      for (auto& elem : hostBuf) {
-        elem = val;
-        val += T(1);
-      }
-    }
-  }
-  CUDA_CHECK(cudaMemcpy(devBuf, hostBuf.data(), devBufSize, cudaMemcpyDefault));
-  CUDA_CHECK(cudaDeviceSynchronize());
-
-  // register mr
-  ibv_access_flags access = static_cast<ibv_access_flags>(
-      IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-      IBV_ACCESS_REMOTE_READ);
-  auto mr = pd->regMr(devBuf, devBufSize, access);
-  ASSERT_TRUE(mr);
-
-  // create local business card and exchange
-  auto gid = device.queryGid(kPortNum, kGidIndex);
-  ASSERT_TRUE(gid);
-
-  BusinessCard localCard = {
-      .mtu = IBV_MTU_4096,
-      .port = kPortNum,
-      .subnetPrefix = gid->global.subnet_prefix,
-      .interfaceId = gid->global.interface_id,
-      .rank = globalRank,
-      .remoteAddr = reinterpret_cast<uint64_t>(devBuf),
-      .rkey = mr->mr()->rkey,
-  };
-  std::vector<BusinessCard> cards(numRanks);
-  MPI_CHECK(MPI_Allgather(
-      &localCard,
-      sizeof(BusinessCard),
-      MPI_BYTE,
-      cards.data(),
-      sizeof(BusinessCard),
-      MPI_BYTE,
-      MPI_COMM_WORLD));
-  for (int i = 0; i < numRanks; ++i) {
-    const auto& card = cards.at(i);
-    XLOG(DBG1) << "rank " << globalRank << ": got card " << card;
-  }
-  const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
-
-  // Get the business card and serialize it to JSON
-  std::string serializedCard =
-      virtualQp->getVirtualQpBusinessCard().serialize();
-
-  // Since all hosts have the same number of QPs, the serialized string size
-  // should be consistent Use the local string size directly
-  size_t bufferSize = serializedCard.size();
-
-  // Gather all serialized cards
-  std::vector<char> allSerializedCards(bufferSize * numRanks);
-  MPI_CHECK(MPI_Allgather(
-      serializedCard.data(),
-      bufferSize,
-      MPI_CHAR,
-      allSerializedCards.data(),
-      bufferSize,
-      MPI_CHAR,
-      MPI_COMM_WORLD));
-
-  // Extract remote card's serialized string
-  std::string remoteSerializedCard(
-      allSerializedCards.data() + (globalRank == 0 ? bufferSize : 0),
-      bufferSize);
-
-  auto maybeRemoteVirtualQpBusinessCard =
-      IbvVirtualQpBusinessCard::deserialize(remoteSerializedCard);
-  ASSERT_TRUE(maybeRemoteVirtualQpBusinessCard);
-  auto remoteVirtualQpBusinessCard =
-      std::move(*maybeRemoteVirtualQpBusinessCard);
-
-  // init qp group
-  changeVirtualQpStateToRts(
-      *virtualQp, localCard, remoteCard, remoteVirtualQpBusinessCard);
+  // Use common setup function to initialize IB resources and devBuf
+  auto setup = setupVirtualQp<T>(
+      devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
 
   // post send/recv and poll cq
   int wr_id = 0;
@@ -805,14 +904,14 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
         .sg_list = &sgList,
         .num_sge = 0};
     ibv_recv_wr recvWrBad{};
-    ASSERT_TRUE(virtualQp->postRecv(&recvWr, &recvWrBad));
+    ASSERT_TRUE(setup.virtualQp.postRecv(&recvWr, &recvWrBad));
   } else if (globalRank == 1) {
     // writer
 
     ibv_sge sgList = {
-        .addr = (uint64_t)devBuf,
+        .addr = (uint64_t)setup.devBuf,
         .length = static_cast<uint32_t>(devBufSize),
-        .lkey = mr->mr()->lkey};
+        .lkey = setup.mr.mr()->lkey};
     ibv_send_wr sendWr = {
         .wr_id = static_cast<uint64_t>(wr_id),
         .next = nullptr,
@@ -821,19 +920,19 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
         .opcode = IBV_WR_RDMA_WRITE_WITH_IMM,
         .send_flags = IBV_SEND_SIGNALED};
     // set rdma remote fields for WRITE operation
-    sendWr.wr.rdma.remote_addr = remoteCard.remoteAddr;
-    sendWr.wr.rdma.rkey = remoteCard.rkey;
+    sendWr.wr.rdma.remote_addr = setup.remoteCard.remoteAddr;
+    sendWr.wr.rdma.rkey = setup.remoteCard.rkey;
     sendWr.imm_data = imm_data;
 
     ibv_send_wr sendWrBad{};
-    ASSERT_TRUE(virtualQp->postSend(&sendWr, &sendWrBad));
+    ASSERT_TRUE(setup.virtualQp.postSend(&sendWr, &sendWrBad));
   }
 
   // poll cq and check cq
   int numEntries{20};
   bool stop = false;
   while (!stop) {
-    auto maybeWcsVector = virtualCq.pollCq(numEntries);
+    auto maybeWcsVector = setup.virtualCq.pollCq(numEntries);
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
     ASSERT_GE(numWc, 0);
@@ -864,6 +963,7 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
   // receiver check data
   if (globalRank == 0) {
     // check data
+    size_t numElements = devBufSize / sizeof(T);
     std::vector<T> hostExpectedBuf(numElements);
     if constexpr (std::is_integral_v<T>) {
       std::iota(hostExpectedBuf.begin(), hostExpectedBuf.end(), T(1));
@@ -877,12 +977,113 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     }
 
     std::vector<T> hostRecvBuf(numElements);
-    CUDA_CHECK(
-        cudaMemcpy(hostRecvBuf.data(), devBuf, devBufSize, cudaMemcpyDefault));
+    CUDA_CHECK(cudaMemcpy(
+        hostRecvBuf.data(), setup.devBuf, devBufSize, cudaMemcpyDefault));
     CUDA_CHECK(cudaDeviceSynchronize());
     ASSERT_EQ(hostExpectedBuf, hostRecvBuf);
   }
   XLOGF(DBG1, "rank {} RDMA-WRITE OK", globalRank);
+}
+
+// Template helper function implementation for Virtual QP RDMA Read
+template <typename T>
+void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
+    int devBufSize,
+    int numQp,
+    int maxMsgPerQp,
+    int maxMsgBytes,
+    LoadBalancingScheme loadBalancingScheme) {
+  // Use common setup function to initialize IB resources and devBuf
+  auto setup = setupVirtualQp<T>(
+      devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+
+  // RDMA Read is a one-sided operation, so both ranks must be synchronized
+  // before proceeding. Typically, a separate control QP is used for
+  // coordination, but in this case, we rely on MPI setup. We use MPI_Barrier to
+  // ensure both ranks are ready before continuing, since a control QP is not
+  // available.
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Post a send operation and poll the completion queue (CQ).
+  // Note: RDMA READ is a one-sided operation, meaning only the receiver
+  // (the side initiating the read from the remote memory) is actively involved.
+  // The remote side does not participate in the postSend and pollCq operations.
+  int wr_id = 0;
+  if (globalRank == 0) {
+    // reader - does the work in RDMA Read
+
+    ibv_sge sgList = {
+        .addr = (uint64_t)setup.devBuf,
+        .length = static_cast<uint32_t>(devBufSize),
+        .lkey = setup.mr.mr()->lkey};
+    ibv_send_wr sendWr = {
+        .wr_id = static_cast<uint64_t>(wr_id),
+        .next = nullptr,
+        .sg_list = &sgList,
+        .num_sge = 1,
+        .opcode = IBV_WR_RDMA_READ,
+        .send_flags = IBV_SEND_SIGNALED};
+    // set rdma remote fields for READ operation
+    sendWr.wr.rdma.remote_addr = setup.remoteCard.remoteAddr;
+    sendWr.wr.rdma.rkey = setup.remoteCard.rkey;
+
+    ibv_send_wr sendWrBad{};
+    ASSERT_TRUE(setup.virtualQp.postSend(&sendWr, &sendWrBad));
+
+    // poll cq and check cq
+    int numEntries{20};
+    while (true) {
+      auto maybeWcsVector = setup.virtualCq.pollCq(numEntries);
+      ASSERT_TRUE(maybeWcsVector);
+      auto numWc = maybeWcsVector->size();
+      ASSERT_GE(numWc, 0);
+      if (numWc == 0) {
+        // CQ empty, sleep and retry
+        XLOGF(WARN, "rank {}: cq empty, retry in 500ms", globalRank);
+        /* sleep override */
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        continue;
+      }
+
+      ASSERT_EQ(numWc, 1);
+
+      // got a WC
+      const auto wc = maybeWcsVector->at(0);
+      ASSERT_EQ(wc.wr_id, wr_id);
+      ASSERT_EQ(wc.status, IBV_WC_SUCCESS);
+      XLOGF(DBG1, "Rank {} got a wc: wr_id {}", globalRank, wc.wr_id);
+      break;
+    }
+
+    // check data
+    size_t numElements = devBufSize / sizeof(T);
+    std::vector<T> hostExpectedBuf(numElements);
+    if constexpr (std::is_integral_v<T>) {
+      std::iota(hostExpectedBuf.begin(), hostExpectedBuf.end(), T(1));
+    } else {
+      // For floating point types, use incremental values
+      T val = T(1);
+      for (auto& elem : hostExpectedBuf) {
+        elem = val;
+        val += T(1);
+      }
+    }
+
+    std::vector<T> hostRecvBuf(numElements);
+    CUDA_CHECK(cudaMemcpy(
+        hostRecvBuf.data(), setup.devBuf, devBufSize, cudaMemcpyDefault));
+    CUDA_CHECK(cudaDeviceSynchronize());
+    ASSERT_EQ(hostExpectedBuf, hostRecvBuf);
+  }
+
+  // RDMA Read is a one-sided operation, so both ranks must be synchronized
+  // before finishing the test, otherwise, the IB resources on one rank might
+  // get lost. Typically, a separate control QP is used for coordination, but in
+  // this case, we rely on MPI setup. We use MPI_Barrier to ensure both ranks
+  // are ready before continuing, since a control QP is not available.
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  XLOGF(DBG1, "rank {} RDMA-READ OK", globalRank);
 }
 
 // Template helper function implementation for Virtual QP Send/Recv
@@ -892,125 +1093,8 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     int numQp,
     int maxMsgPerQp,
     int maxMsgBytes) {
-  CUDA_CHECK(cudaSetDevice(localRank));
-
-  int myDevId{-1};
-  CUDA_CHECK(cudaGetDevice(&myDevId));
-
-  // get device
-  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
-  ASSERT_TRUE(devices);
-  auto& device = devices->at(myDevId);
-  auto pd = device.allocPd();
-  ASSERT_TRUE(pd);
-
-  // make cq
-  int cqe = 2 * numQp * maxMsgPerQp;
-  auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
-  ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
-  auto virtualCq = std::move(*maybeVirtualCq);
-
-  // make qp group
-  uint32_t totalQps = numQp;
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
-  auto virtualQp = pd->createVirtualQp(
-      totalQps, &initAttr, &virtualCq, &virtualCq, maxMsgPerQp, maxMsgBytes);
-  ASSERT_TRUE(virtualQp);
-
-  // init device buffer
-  void* devBuf{nullptr};
-  CUDA_CHECK(cudaMalloc(&devBuf, devBufSize));
-  size_t numElements = devBufSize / sizeof(T);
-  std::vector<T> hostBuf(numElements);
-
-  if (globalRank == 0) {
-    // receiver: fill up with 0s
-    std::fill(hostBuf.begin(), hostBuf.end(), T{});
-  } else if (globalRank == 1) {
-    // sender: initialize with sequence number (1, 2, 3, ...)
-    if constexpr (std::is_integral_v<T>) {
-      std::iota(hostBuf.begin(), hostBuf.end(), T(1));
-    } else {
-      // For floating point types, use incremental values
-      T val = T(1);
-      for (auto& elem : hostBuf) {
-        elem = val;
-        val += T(1);
-      }
-    }
-  }
-  CUDA_CHECK(cudaMemcpy(devBuf, hostBuf.data(), devBufSize, cudaMemcpyDefault));
-  CUDA_CHECK(cudaDeviceSynchronize());
-
-  // register mr
-  ibv_access_flags access = static_cast<ibv_access_flags>(
-      IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-      IBV_ACCESS_REMOTE_READ);
-  auto mr = pd->regMr(devBuf, devBufSize, access);
-  ASSERT_TRUE(mr);
-
-  // create local business card and exchange
-  auto gid = device.queryGid(kPortNum, kGidIndex);
-  ASSERT_TRUE(gid);
-
-  BusinessCard localCard = {
-      .mtu = IBV_MTU_4096,
-      .port = kPortNum,
-      .subnetPrefix = gid->global.subnet_prefix,
-      .interfaceId = gid->global.interface_id,
-      .rank = globalRank,
-      .remoteAddr = reinterpret_cast<uint64_t>(devBuf),
-      .rkey = mr->mr()->rkey,
-  };
-  std::vector<BusinessCard> cards(numRanks);
-  MPI_CHECK(MPI_Allgather(
-      &localCard,
-      sizeof(BusinessCard),
-      MPI_BYTE,
-      cards.data(),
-      sizeof(BusinessCard),
-      MPI_BYTE,
-      MPI_COMM_WORLD));
-  for (int i = 0; i < numRanks; ++i) {
-    const auto& card = cards.at(i);
-    XLOG(DBG1) << "rank " << globalRank << ": got card " << card;
-  }
-  const auto& remoteCard = globalRank == 0 ? cards.at(1) : cards.at(0);
-
-  // Get the business card and serialize it to JSON
-  std::string serializedCard =
-      virtualQp->getVirtualQpBusinessCard().serialize();
-
-  // Since all hosts have the same number of QPs, the serialized string size
-  // should be consistent Use the local string size directly
-  size_t bufferSize = serializedCard.size();
-
-  // Gather all serialized cards
-  std::vector<char> allSerializedCards(bufferSize * numRanks);
-  MPI_CHECK(MPI_Allgather(
-      serializedCard.data(),
-      bufferSize,
-      MPI_CHAR,
-      allSerializedCards.data(),
-      bufferSize,
-      MPI_CHAR,
-      MPI_COMM_WORLD));
-
-  // Extract remote card's serialized string
-  std::string remoteSerializedCard(
-      allSerializedCards.data() + (globalRank == 0 ? bufferSize : 0),
-      bufferSize);
-
-  auto maybeRemoteVirtualQpBusinessCard =
-      IbvVirtualQpBusinessCard::deserialize(remoteSerializedCard);
-  ASSERT_TRUE(maybeRemoteVirtualQpBusinessCard);
-  auto remoteVirtualQpBusinessCard =
-      std::move(*maybeRemoteVirtualQpBusinessCard);
-
-  // init qp group
-  changeVirtualQpStateToRts(
-      *virtualQp, localCard, remoteCard, remoteVirtualQpBusinessCard);
+  // Use common setup function to initialize IB resources and devBuf
+  auto setup = setupVirtualQp<T>(devBufSize, numQp, maxMsgPerQp, maxMsgBytes);
 
   // post send/recv within each virtual qp and poll cq
   int wr_id = 0;
@@ -1019,23 +1103,23 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     ibv_recv_wr recvWr{};
     ibv_recv_wr recvWrBad{};
     struct ibv_sge sge = {
-        .addr = (uint64_t)devBuf,
+        .addr = (uint64_t)setup.devBuf,
         .length = static_cast<uint32_t>(devBufSize),
-        .lkey = mr->mr()->lkey,
+        .lkey = setup.mr.mr()->lkey,
     };
     recvWr.wr_id = wr_id;
     recvWr.sg_list = &sge;
     recvWr.num_sge = 1;
     recvWr.next = nullptr;
-    ASSERT_TRUE(virtualQp->postRecv(&recvWr, &recvWrBad));
+    ASSERT_TRUE(setup.virtualQp.postRecv(&recvWr, &recvWrBad));
   } else if (globalRank == 1) {
     // sender
     ibv_send_wr sendWr{};
     ibv_send_wr sendWrBad{};
     struct ibv_sge sge = {
-        .addr = (uint64_t)devBuf,
+        .addr = (uint64_t)setup.devBuf,
         .length = static_cast<uint32_t>(devBufSize),
-        .lkey = mr->mr()->lkey,
+        .lkey = setup.mr.mr()->lkey,
     };
     sendWr.wr_id = wr_id;
     sendWr.sg_list = &sge;
@@ -1043,14 +1127,14 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     sendWr.opcode = IBV_WR_SEND;
     sendWr.send_flags = IBV_SEND_SIGNALED;
     sendWr.next = nullptr;
-    ASSERT_TRUE(virtualQp->postSend(&sendWr, &sendWrBad));
+    ASSERT_TRUE(setup.virtualQp.postSend(&sendWr, &sendWrBad));
   }
 
   // poll cq and check cq
   int numEntries{20};
   bool stop = false;
   while (!stop) {
-    auto maybeWcsVector = virtualCq.pollCq(numEntries);
+    auto maybeWcsVector = setup.virtualCq.pollCq(numEntries);
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
     ASSERT_GE(numWc, 0);
@@ -1084,6 +1168,7 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
   // receiver check data
   if (globalRank == 0) {
     // check data
+    size_t numElements = devBufSize / sizeof(T);
     std::vector<T> hostExpectedBuf(numElements);
     if constexpr (std::is_integral_v<T>) {
       std::iota(hostExpectedBuf.begin(), hostExpectedBuf.end(), T(1));
@@ -1097,12 +1182,46 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     }
 
     std::vector<T> hostRecvBuf(numElements);
-    CUDA_CHECK(
-        cudaMemcpy(hostRecvBuf.data(), devBuf, devBufSize, cudaMemcpyDefault));
+    CUDA_CHECK(cudaMemcpy(
+        hostRecvBuf.data(), setup.devBuf, devBufSize, cudaMemcpyDefault));
     CUDA_CHECK(cudaDeviceSynchronize());
     ASSERT_EQ(hostExpectedBuf, hostRecvBuf);
   }
   XLOGF(DBG1, "rank {} send/recv OK", globalRank);
+}
+
+// RDMA Read Virtual QP test using template helper
+TEST_P(IbverbxVirtualQpRdmaReadTestFixture, RdmaReadVirtualQpWithParam) {
+  const auto& [devBufSize, dataType, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme] =
+      GetParam();
+
+  // Dispatch to the appropriate template function based on data type
+  switch (dataType) {
+    case DataType::INT8:
+      runRdmaReadVirtualQpTest<int8_t>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::INT16:
+      runRdmaReadVirtualQpTest<int16_t>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::INT32:
+      runRdmaReadVirtualQpTest<int32_t>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::INT64:
+      runRdmaReadVirtualQpTest<int64_t>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::FLOAT:
+      runRdmaReadVirtualQpTest<float>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+    case DataType::DOUBLE:
+      runRdmaReadVirtualQpTest<double>(
+          devBufSize, numQp, maxMsgPerQp, maxMsgBytes, loadBalancingScheme);
+      break;
+  }
 }
 
 // RDMA Write Virtual QP test using template helper
@@ -1172,6 +1291,75 @@ TEST_P(IbverbxVirtualQpSendRecvTestFixture, SendRecvVirtualQpWithParam) {
       break;
   }
 }
+
+// Instantiate Virtual QP Rdma Read test with different buffer sizes, data
+// Small buffer configurations - 1KB and 8KB
+INSTANTIATE_TEST_SUITE_P(
+    VirtualQpRdmaReadTestSmallBuffer,
+    IbverbxVirtualQpRdmaReadTestFixture,
+    ::testing::Combine(
+        testing::Values(1024, 8192), // Small buffer sizes: 1KB, 8KB
+        testing::Values(DataType::INT8, DataType::INT32, DataType::FLOAT),
+        testing::Values(1, 4), // QP numbers: 1, 4
+        testing::Values(64, 128), // maxMsgPerQp: 64, 128
+        testing::Values(128, 256), // maxMsgBytes: 128, 256
+        testing::Values(
+            LoadBalancingScheme::SPRAY)), // LoadBalancingScheme: Spray and
+                                          // DQPLB should provide same behavior
+                                          // for RDMA READ since there's no
+                                          // notification in RDMA READ
+    IbverbxVirtualQpRdmaReadTestFixture::getTestName);
+
+// Medium buffer configurations - 1MB and 8MB
+INSTANTIATE_TEST_SUITE_P(
+    VirtualQpRdmaReadTestMediumBuffer,
+    IbverbxVirtualQpRdmaReadTestFixture,
+    ::testing::Combine(
+        testing::Values(
+            1048576,
+            8388608), // Medium buffer sizes: 1MB, 8MB
+        testing::Values(DataType::INT8, DataType::INT32, DataType::FLOAT),
+        testing::Values(16, 128), // QP numbers: 16, 128
+        testing::Values(128, 1024), // maxMsgPerQp: 128, 1024
+        testing::Values(1024, 16384), // maxMsgBytes: 1024, 16384
+        testing::Values(
+            LoadBalancingScheme::SPRAY)), // LoadBalancingScheme: Spray and
+                                          // DQPLB should provide same behavior
+                                          // for RDMA READ since there's no
+                                          // notification in RDMA READ
+    IbverbxVirtualQpRdmaReadTestFixture::getTestName);
+
+// Large buffer configurations - 1GB
+INSTANTIATE_TEST_SUITE_P(
+    VirtualQpRdmaReadTestLargeBuffer,
+    IbverbxVirtualQpRdmaReadTestFixture,
+    ::testing::Combine(
+        testing::Values(1073741824), // Large buffer size: 1GB
+        testing::Values(DataType::INT8, DataType::INT32, DataType::FLOAT),
+        testing::Values(16, 128), // High QP number for maximum parallelism
+        testing::Values(128, 1024), // maxMsgPerQp: 128, 1024
+        testing::Values(16384, 1048576), // maxMsgBytes: 16KB, 1MB
+        testing::Values(
+            LoadBalancingScheme::SPRAY)), // LoadBalancingScheme: Spray and
+                                          // DQPLB should provide same behavior
+                                          // for RDMA READ since there's no
+                                          // notification in RDMA READ
+    IbverbxVirtualQpRdmaReadTestFixture::getTestName);
+
+// Large buffer configurations - 1GB with DQPLB mode
+INSTANTIATE_TEST_SUITE_P(
+    VirtualQpRdmaReadTestLargeBufferDqplb,
+    IbverbxVirtualQpRdmaReadTestFixture,
+    ::testing::Combine(
+        testing::Values(1073741824), // Large buffer size: 1GB
+        testing::Values(DataType::INT8),
+        testing::Values(128), // High QP number for maximum parallelism
+        testing::Values(1024), // maxMsgPerQp: 128, 1024
+        testing::Values(1048576), // maxMsgBytes: 16KB, 1MB
+        testing::Values(
+            LoadBalancingScheme::DQPLB)), // check DQPLB scheme is providing
+                                          // same behavior as Spray
+    IbverbxVirtualQpRdmaReadTestFixture::getTestName);
 
 // Instantiate Virtual QP Rdma Write test with different buffer sizes, data
 // Small buffer configurations - 1KB and 8KB

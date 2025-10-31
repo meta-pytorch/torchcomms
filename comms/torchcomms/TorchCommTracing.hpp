@@ -44,6 +44,22 @@ class TorchCommTracingGuard {
       int comm_size,
       const std::string& collective_name,
       int collective_rank,
+      const std::vector<at::Tensor>& input_tensor_list = {},
+      const std::vector<at::Tensor>& output_tensor_list = {});
+
+  TorchCommTracingGuard(
+      const std::string& comm_name,
+      int comm_size,
+      const std::string& collective_name,
+      int collective_rank,
+      const at::Tensor& input_tensor,
+      const at::Tensor& output_tensor);
+
+  void initializeTracingCommon(
+      const std::string& comm_name,
+      int comm_size,
+      const std::string& collective_name,
+      int collective_rank,
       const std::vector<at::Tensor>& input_tensor_list,
       const std::vector<at::Tensor>& output_tensor_list);
 
@@ -59,7 +75,7 @@ class TorchCommTracingGuard {
 
  private:
   std::unique_ptr<c10::DebugInfoGuard> debug_info_guard_;
-  std::unique_ptr<at::RecordFunction> record_function_guard_;
+  std::optional<at::RecordFunction> record_function_guard_;
 
   inline static int sequence_number_ = 0;
 };
