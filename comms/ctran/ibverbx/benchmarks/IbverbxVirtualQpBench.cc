@@ -342,6 +342,48 @@ struct BenchmarkSetup {
  * Ibverbx virtualQp RdmaWrite benchmark latency
  */
 
+static void BM_Ibverbx_VirtualQp_RdmaRead(benchmark::State& state) {
+  const size_t bufferSize = state.range(0);
+  const int cudaDev0 = 0;
+  const int cudaDev1 = 1;
+  const int nicDev0 = 0;
+  const int nicDev1 = 1;
+
+  try {
+    BenchmarkSetup setup(bufferSize, cudaDev0, cudaDev1, nicDev0, nicDev1);
+
+    // Construct send WRs
+    int wr_id = 0;
+    ibv_sge senderSgList = {
+        .addr = (uint64_t)setup.recvBuffer,
+        .length = static_cast<uint32_t>(bufferSize),
+        .lkey = setup.recvMr->mr()->lkey};
+    ibv_send_wr sendWr = {
+        .wr_id = static_cast<uint64_t>(wr_id),
+        .next = nullptr,
+        .sg_list = &senderSgList,
+        .num_sge = 1,
+        .opcode = IBV_WR_RDMA_READ,
+        .send_flags = IBV_SEND_SIGNALED};
+    sendWr.wr.rdma.remote_addr = (uint64_t)setup.sendBuffer;
+    sendWr.wr.rdma.rkey = setup.sendMr->mr()->rkey;
+    ibv_send_wr sendWrBad{};
+
+    // Benchmark the postSend operation
+    for (auto _ : state) {
+      setup.receiver->qp.postSend(&sendWr, &sendWrBad);
+
+      // Poll receiver cq until completion
+      BenchmarkSetup::pollCqUntilCompletion(setup.receiver->cq, "Receiver");
+    }
+
+    state.SetBytesProcessed(state.iterations() * bufferSize);
+  } catch (const std::exception& e) {
+    XLOGF(FATAL, "Benchmark setup failed: {}", e.what());
+    return;
+  }
+}
+
 static void BM_Ibverbx_VirtualQp_RdmaWrite(benchmark::State& state) {
   const size_t bufferSize = state.range(0);
   const int cudaDev0 = 0;
@@ -459,6 +501,12 @@ static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm_Dqplb(
 
 const size_t kMinBufferSize = 8 * 1024; // 8 KB
 const size_t kMaxBufferSize = 256 * 1024 * 1024; // 256 MB
+
+BENCHMARK(BM_Ibverbx_VirtualQp_RdmaRead)
+    ->RangeMultiplier(2)
+    ->Range(kMinBufferSize, kMaxBufferSize)
+    ->UseRealTime()
+    ->Unit(benchmark::kMicrosecond);
 
 BENCHMARK(BM_Ibverbx_VirtualQp_RdmaWrite)
     ->RangeMultiplier(2)
