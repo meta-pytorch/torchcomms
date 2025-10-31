@@ -7,7 +7,7 @@
 #include <numeric>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
-#include "comms/testinfra/MpiTestUtils.h"
+#include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/checks.h"
 
 using namespace ibverbx;
