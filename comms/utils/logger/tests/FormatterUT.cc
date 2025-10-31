@@ -179,6 +179,165 @@ TEST(GlogFormatter, logThreadNameChanged) {
 }
 #endif
 
+TEST(LoggingFormat, getLastCommsErrorBasic) {
+  LoggerDB db{LoggerDB::TESTING};
+  auto* category = db.getCategory("test.error");
+  meta::comms::logger::NcclLogFormatter formatter("NCCL", []() { return 0; });
+
+  std::chrono::system_clock::time_point logTimePoint{
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(
+          std::chrono::nanoseconds{1492436756123456789ULL})};
+  LogMessage errorMsg{
+      category,
+      LogLevel::ERR,
+      logTimePoint,
+      "test.cpp",
+      100,
+      "testFunc",
+      "Test error message"};
+
+  formatter.formatMessage(errorMsg, category);
+
+  const char* lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_NE(lastError, nullptr);
+  std::string errorStr(lastError);
+  EXPECT_TRUE(errorStr.find("Test error message") != std::string::npos);
+  EXPECT_TRUE(errorStr.find("NCCL Stack trace:") != std::string::npos);
+}
+
+TEST(LoggingFormat, getLastCommsErrorWithStack) {
+  LoggerDB db{LoggerDB::TESTING};
+  auto* category = db.getCategory("test.error");
+  meta::comms::logger::NcclLogFormatter formatter("NCCL", []() { return 0; });
+
+  std::chrono::system_clock::time_point logTimePoint{
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(
+          std::chrono::nanoseconds{1492436756123456789ULL})};
+  LogMessage errorMsg{
+      category,
+      LogLevel::ERR,
+      logTimePoint,
+      "test.cpp",
+      100,
+      "testFunc",
+      "Error with stack"};
+
+  formatter.formatMessage(errorMsg, category);
+
+  meta::comms::logger::appendErrorToStack("Stack frame 1");
+  meta::comms::logger::appendErrorToStack("Stack frame 2");
+  meta::comms::logger::appendErrorToStack("Stack frame 3");
+
+  const char* lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_NE(lastError, nullptr);
+  std::string errorStr(lastError);
+  EXPECT_TRUE(errorStr.find("Error with stack") != std::string::npos);
+  EXPECT_TRUE(errorStr.find("NCCL Stack trace:") != std::string::npos);
+  EXPECT_TRUE(errorStr.find("Stack frame 1") != std::string::npos);
+  EXPECT_TRUE(errorStr.find("Stack frame 2") != std::string::npos);
+  EXPECT_TRUE(errorStr.find("Stack frame 3") != std::string::npos);
+}
+
+TEST(LoggingFormat, appendErrorToStackOrder) {
+  LoggerDB db{LoggerDB::TESTING};
+  auto* category = db.getCategory("test.error");
+  meta::comms::logger::NcclLogFormatter formatter("NCCL", []() { return 0; });
+
+  std::chrono::system_clock::time_point logTimePoint{
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(
+          std::chrono::nanoseconds{1492436756123456789ULL})};
+  LogMessage errorMsg{
+      category,
+      LogLevel::ERR,
+      logTimePoint,
+      "test.cpp",
+      200,
+      "testFunc2",
+      "Error for stack order test"};
+
+  formatter.formatMessage(errorMsg, category);
+
+  meta::comms::logger::appendErrorToStack("First");
+  meta::comms::logger::appendErrorToStack("Second");
+  meta::comms::logger::appendErrorToStack("Third");
+
+  const char* lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_NE(lastError, nullptr);
+  std::string errorStr(lastError);
+
+  size_t firstPos = errorStr.find("First");
+  size_t secondPos = errorStr.find("Second");
+  size_t thirdPos = errorStr.find("Third");
+
+  EXPECT_NE(firstPos, std::string::npos);
+  EXPECT_NE(secondPos, std::string::npos);
+  EXPECT_NE(thirdPos, std::string::npos);
+  EXPECT_LT(firstPos, secondPos);
+  EXPECT_LT(secondPos, thirdPos);
+}
+
+TEST(LoggingFormat, getLastCommsErrorEmptyStack) {
+  LoggerDB db{LoggerDB::TESTING};
+  auto* category = db.getCategory("test.error");
+  meta::comms::logger::NcclLogFormatter formatter("NCCL", []() { return 0; });
+
+  std::chrono::system_clock::time_point logTimePoint{
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(
+          std::chrono::nanoseconds{1492436756123456789ULL})};
+  LogMessage errorMsg{
+      category,
+      LogLevel::ERR,
+      logTimePoint,
+      "test.cpp",
+      300,
+      "testFunc3",
+      "Error without stack"};
+
+  formatter.formatMessage(errorMsg, category);
+
+  const char* lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_NE(lastError, nullptr);
+  std::string errorStr(lastError);
+  EXPECT_TRUE(errorStr.find("Error without stack") != std::string::npos);
+  EXPECT_TRUE(errorStr.find("NCCL Stack trace:") != std::string::npos);
+}
+
+TEST(LoggingFormat, nonErrorMessageDoesNotUpdateLastError) {
+  LoggerDB db{LoggerDB::TESTING};
+  auto* category = db.getCategory("test.info");
+  meta::comms::logger::NcclLogFormatter formatter("NCCL", []() { return 0; });
+
+  std::chrono::system_clock::time_point logTimePoint{
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(
+          std::chrono::nanoseconds{1492436756123456789ULL})};
+
+  LogMessage errorMsg{
+      category,
+      LogLevel::ERR,
+      logTimePoint,
+      "test.cpp",
+      100,
+      "testFunc",
+      "Initial error"};
+  formatter.formatMessage(errorMsg, category);
+
+  LogMessage infoMsg{
+      category,
+      LogLevel::INFO,
+      logTimePoint,
+      "test.cpp",
+      200,
+      "testFunc",
+      "This is just info"};
+  formatter.formatMessage(infoMsg, category);
+
+  const char* lastError = meta::comms::logger::getLastCommsError();
+  EXPECT_NE(lastError, nullptr);
+  std::string errorStr(lastError);
+  EXPECT_TRUE(errorStr.find("Initial error") != std::string::npos);
+  EXPECT_FALSE(errorStr.find("This is just info") != std::string::npos);
+}
+
 int main(int argc, char* argv[]) {
   testing::InitGoogleTest(&argc, argv);
   folly::Init init(&argc, &argv);

@@ -7,6 +7,7 @@
 
 #include <fmt/chrono.h>
 #include <fmt/format.h>
+#include <folly/String.h>
 #include <folly/Synchronized.h>
 #include <folly/logging/LogMessage.h>
 #include <folly/logging/LogName.h>
@@ -34,10 +35,22 @@ struct ProcMetaData {
 folly::once_flag procMetaDataInitFlag;
 static thread_local std::string myThreadName = "main";
 
-// Using char array to ensure compatibility with NCCL GetLastError API
-static folly::Synchronized<std::array<char, 1024>> lastCommsError{
-    std::array<char, 1024>{'\0'}};
+struct LastErrorInfo {
+  std::string lastErrorMessage;
+  std::vector<std::string> lastErrorStack;
+};
 
+static folly::Synchronized<LastErrorInfo> lastCommsError{};
+
+// Using char array to ensure compatibility with NCCL GetLastError API. Note
+// that since we will return the pointer to the array, reading the array while
+// another thread is writing to it is not safe.
+static folly::Synchronized<std::array<char, 4096>> lastCommsErrorStr{
+    std::array<char, 4096>{'\0'}};
+
+void logLastError(std::string_view message) {
+  lastCommsError.wlock()->lastErrorMessage = message;
+}
 } // Anonymous namespace
 
 namespace meta::comms::logger {
@@ -236,12 +249,7 @@ std::string NcclLogFormatter::formatMessage(
 
   bool isErrorMessage = message.getLevel() >= folly::LogLevel::ERR;
   if (isErrorMessage) {
-    auto lastErrorLocked = lastCommsError.wlock();
-    std::snprintf(
-        lastErrorLocked->data(),
-        lastErrorLocked->size(),
-        "%s",
-        message.getMessage().c_str());
+    logLastError(message.getMessage());
   }
 
   auto timeSinceEpoch = message.getTimestamp().time_since_epoch();
@@ -326,7 +334,31 @@ std::string NcclLogFormatter::formatMessage(
 }
 
 const char* getLastCommsError() {
-  return lastCommsError.rlock()->data();
+  // Only write the error message to the buffer once requested
+  // TODO: Currently we have quite a few string copies during the process. Try
+  // eliminating them.
+  std::string fullError = {};
+  {
+    auto lastCommsErrorRLocked = lastCommsError.rlock();
+    auto stackTrace = folly::join('\n', lastCommsErrorRLocked->lastErrorStack);
+    fullError = fmt::format(
+        "{}\nNCCL Stack trace:\n{}",
+        lastCommsErrorRLocked->lastErrorMessage,
+        stackTrace);
+  }
+
+  // Write the error message to the buffer
+  auto lastCommsErrorStrWLocked = lastCommsErrorStr.wlock();
+  std::snprintf(
+      lastCommsErrorStrWLocked->data(),
+      lastCommsErrorStrWLocked->size(),
+      "%s",
+      fullError.c_str());
+  return lastCommsErrorStrWLocked->data();
+}
+
+void appendErrorToStack(std::string error) {
+  lastCommsError.wlock()->lastErrorStack.push_back(std::move(error));
 }
 
 NcclLogFormatter::NcclLogFormatter(

@@ -60,6 +60,7 @@ void ncclMetaDebugLogWithScuba(ncclDebugLogLevel level, unsigned long flags, con
   va_start(vargs, fmt);
   (void) vsnprintf(buffer, sizeof(buffer), fmt, vargs);
   va_end(vargs);
+  ::meta::comms::logger::appendErrorToStack(std::string{buffer});
   ErrorStackTraceUtil::logErrorMessage(std::string{buffer});
   ncclMetaDebugLog(level, flags, file, func, line, "%s", buffer);
 }
