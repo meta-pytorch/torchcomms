@@ -33,11 +33,12 @@ class RMATest : public ::testing::Test {
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
   }
 
-  void barrier(ncclComm_t comm, cudaStream_t stream) {
+  void barrier(ncclComm_t ncclComm, cudaStream_t stream) {
     // simple Allreduce as barrier before get data from other ranks
     void* buf;
     CUDACHECK_TEST(cudaMalloc(&buf, sizeof(char)));
-    NCCLCHECK_TEST(ncclAllReduce(buf, buf, 1, ncclChar, ncclSum, comm, stream));
+    NCCLCHECK_TEST(
+        ncclAllReduce(buf, buf, 1, ncclChar, ncclSum, ncclComm, stream));
     CUDACHECK_TEST(cudaDeviceSynchronize());
     CUDACHECK_TEST(cudaFree(buf));
   }
