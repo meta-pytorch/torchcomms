@@ -97,9 +97,10 @@ class TorchWorkNCCLQueue {
   void enqueueWork(std::shared_ptr<TorchWorkNCCL> work, cudaStream_t stream);
 
  private:
+  TorchWorkNCCL::WorkStatus garbageCollectLocked();
   std::unordered_map<cudaStream_t, std::queue<std::shared_ptr<TorchWorkNCCL>>>
       stream_work_queues_;
-  std::recursive_mutex work_queues_mutex_;
+  std::mutex work_queues_mutex_;
 };
 
 } // namespace comms
