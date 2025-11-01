@@ -268,6 +268,8 @@ __global__ void ncclKernelAllReduceCtranRing(
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
   devStateLoadToShm(&flag[bId], devState);
 
   if (flag && tId == 0) {
