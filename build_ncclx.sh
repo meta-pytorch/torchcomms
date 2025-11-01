@@ -134,7 +134,7 @@ function build_third_party {
     build_fb_oss_library "https://github.com/fastfloat/fast_float.git" "v8.0.2" fast_float "-DFASTFLOAT_INSTALL=ON"
     build_fb_oss_library "https://github.com/libevent/libevent.git" "release-2.1.12-stable" event
     build_fb_oss_library "https://github.com/google/double-conversion.git" "v3.3.1" double-conversion
-    build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly "-DUSE_STATIC_DEPS_ON_UNIX=ON"
+    build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly "-DUSE_STATIC_DEPS_ON_UNIX=ON -DOPENSSL_USE_STATIC_LIBS=ON"
   else
     if [[ -z "${NCCL_SKIP_CONDA_INSTALL}" ]]; then
       DEPS=(

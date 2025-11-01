@@ -1,4 +1,4 @@
-name: Build Linux Wheels
+name: Build Linux Aarch64 Wheels
 
 on:
   pull_request:
@@ -13,7 +13,7 @@ jobs:
     uses: pytorch/test-infra/.github/workflows/generate_binary_build_matrix.yml@main
     with:
       package-type: wheel
-      os: linux
+      os: linux-aarch64
       test-infra-repository: pytorch/test-infra
       test-infra-ref: main
       with-cuda: enable
@@ -36,4 +36,6 @@ jobs:
       test-infra-ref: main
       build-matrix: ${{ needs.generate-matrix.outputs.matrix }}
       trigger-event: ${{ github.event_name }}
-      runner: linux.g5.12xlarge.nvidia.gpu
+      architecture: aarch64
+      #setup-miniconda: false
+      runner: linux.arm64.r7g.12xlarge.memory

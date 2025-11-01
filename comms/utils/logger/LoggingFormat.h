@@ -63,6 +63,8 @@ fmt::memory_buffer getLogPrefix(LogLevel level);
 
 const char* getLastCommsError();
 
+void appendErrorToStack(std::string error);
+
 class NcclLogFormatter : public folly::LogFormatter {
  public:
   NcclLogFormatter(

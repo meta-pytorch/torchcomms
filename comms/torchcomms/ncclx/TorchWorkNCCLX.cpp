@@ -55,7 +55,7 @@ TorchWorkNCCLX::~TorchWorkNCCLX() {
   comm_->returnEvent(end_event_);
 }
 
-void TorchWorkNCCLX::recordFunctionStart() {
+void TorchWorkNCCLX::recordFunctionStart(const std::string& coll_name) {
   recordFunction_.emplace(at::RecordScope::USER_SCOPE);
   if (!recordFunction_->isActive()) {
     return;
@@ -69,12 +69,12 @@ void TorchWorkNCCLX::recordFunctionStart() {
   }
   // TODO: pass the collective name to be added
   recordFunction_->before(
-      "torchcomms:work",
+      coll_name,
       c10::ArrayRef<const c10::IValue>(inputs.data(), inputs.size()));
 }
 
-void TorchWorkNCCLX::recordStart() {
-  recordFunctionStart();
+void TorchWorkNCCLX::recordStart(const std::string& coll_name) {
+  recordFunctionStart(coll_name);
 
   CUDA_CHECK(
       comm_->getCudaApi(),

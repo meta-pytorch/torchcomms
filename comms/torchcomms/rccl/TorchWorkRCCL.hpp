@@ -36,6 +36,12 @@ class TorchWorkRCCL : public TorchWork {
       std::chrono::milliseconds timeout_ms,
       const std::vector<at::Tensor>& inputTensors,
       std::shared_ptr<TorchCommTracing> tracing);
+  TorchWorkRCCL(
+      std::shared_ptr<TorchCommRCCL> comm,
+      hipStream_t stream,
+      std::chrono::milliseconds timeout_ms,
+      const at::Tensor& inputTensor,
+      std::shared_ptr<TorchCommTracing> tracing);
   ~TorchWorkRCCL() override;
 
   // We delete the copy constructor and assignment operator to prevent 2 work
@@ -68,6 +74,7 @@ class TorchWorkRCCL : public TorchWork {
 
  private:
   std::vector<at::Tensor> inputTensors_;
+  at::Tensor inputTensor_;
 
   std::shared_ptr<TorchCommRCCL> comm_;
   hipEvent_t start_event_;

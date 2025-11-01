@@ -8,6 +8,9 @@ namespace ctran::allgatherp {
 __global__ void ncclKernelAllGatherPDirect(
     int* flag,
     CtranAlgoDeviceState* devState) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   if (flag) {
     ctran::device::KernelStartGpe(flag);
   }

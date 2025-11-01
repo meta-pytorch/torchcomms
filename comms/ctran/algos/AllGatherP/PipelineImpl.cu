@@ -18,6 +18,9 @@ namespace ctran::allgatherp {
 __global__ void ncclKernelAllGatherPPipeStart(
     int* flag,
     CtranAlgoDeviceState* devState) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   if (flag) {
     ctran::device::KernelStartGpeAndExit(flag);
   }
@@ -31,6 +34,13 @@ __global__ void ncclKernelAllGatherPPipeSync(
     int* flag,
     CtranAlgoDeviceState* devState,
     PipeSyncKernArgs args) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
+  if (threadIdx.x == 0) {
+    kernelFlag = flag;
+    kernelDoAbort = false;
+  }
   // wait till GPE thread post the current stepId
   GpeKernelSyncDev::waitPost(args.pipeSync, 0, args.stepId);
 }
@@ -40,6 +50,9 @@ __global__ void ncclKernelAllGatherPPipeSync(
 __global__ void ncclKernelAllGatherPPipe(
     int* flag,
     CtranAlgoDeviceState* devState) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   if (flag) {
     ctran::device::KernelStartGpe(flag);
 

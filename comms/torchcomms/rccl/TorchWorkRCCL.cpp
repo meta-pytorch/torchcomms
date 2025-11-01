@@ -25,8 +25,27 @@ TorchWorkRCCL::TorchWorkRCCL(
   // Events will be recorded around the actual RCCL operations
 }
 
+TorchWorkRCCL::TorchWorkRCCL(
+    std::shared_ptr<TorchCommRCCL> comm,
+    hipStream_t stream,
+    std::chrono::milliseconds timeout_ms,
+    const at::Tensor& inputTensor,
+    std::shared_ptr<TorchCommTracing> tracing)
+    : inputTensor_(inputTensor),
+      comm_(std::move(comm)),
+      stream_(stream),
+      timeout_ms_(timeout_ms),
+      state_(WorkStatus::NOT_STARTED),
+      tracing_(tracing) {
+  start_event_ = comm_->getEvent();
+  end_event_ = comm_->getEvent();
+
+  // Events will be recorded around the actual RCCL operations
+}
+
 TorchWorkRCCL::TorchWorkRCCL(TorchWorkRCCL&& other) noexcept
     : inputTensors_(std::move(other.inputTensors_)),
+      inputTensor_(std::move(other.inputTensor_)),
       comm_(std::move(other.comm_)),
       start_event_(other.start_event_),
       end_event_(other.end_event_),

@@ -17,6 +17,9 @@ __global__ void ncclKernelPutNotify(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelPutNotifyArgs args) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::KernelStartGpe(flag);
@@ -47,6 +50,9 @@ __global__ void ncclKernelWaitNotify(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelWaitNotifyArgs args) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::KernelStartGpe(flag);
@@ -76,6 +82,9 @@ __global__ void ncclKernelPutSignal(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelPutSignalArgs args) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::KernelStartGpe(flag);
@@ -98,6 +107,9 @@ __global__ void ncclKernelPutSignal(
 }
 
 __global__ void ncclKernelPut(int* flag, CtranAlgoDeviceState* devState) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::KernelStartGpe(flag);
@@ -109,6 +121,9 @@ __global__ void ncclKernelWaitSignal(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelWaitSignalArgs args) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::KernelStartGpe(flag);
@@ -147,6 +162,9 @@ __global__ void ncclKernelSignal(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelSignalArgs args) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::KernelStartGpe(flag);
