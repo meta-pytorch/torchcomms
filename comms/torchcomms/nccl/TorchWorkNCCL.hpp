@@ -44,6 +44,12 @@ class TorchWorkNCCL : public TorchWork {
       std::chrono::milliseconds timeout_ms,
       const std::vector<at::Tensor>& inputTensors,
       std::shared_ptr<TorchCommTracing> tracing);
+  TorchWorkNCCL(
+      std::shared_ptr<TorchCommNCCL> comm,
+      cudaStream_t stream,
+      std::chrono::milliseconds timeout_ms,
+      const at::Tensor& inputTensor,
+      std::shared_ptr<TorchCommTracing> tracing);
   ~TorchWorkNCCL() override;
 
   // Delete copy and move operations
@@ -71,6 +77,7 @@ class TorchWorkNCCL : public TorchWork {
     return timeout_ms_;
   }
   std::vector<at::Tensor> inputTensors_;
+  at::Tensor inputTensor_;
 
   std::shared_ptr<TorchCommNCCL> comm_;
   cudaEvent_t start_event_;
