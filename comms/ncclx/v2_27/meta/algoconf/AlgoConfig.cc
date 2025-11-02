@@ -93,6 +93,33 @@ inline void algoStrToVal(
   }
 }
 
+inline const std::string algoValToStr(enum NCCL_ALLTOALLV_ALGO val) {
+  switch (val) {
+    case ::NCCL_ALLTOALLV_ALGO::orig:
+      return "orig";
+    case NCCL_ALLTOALLV_ALGO::ctran:
+      return "ctran";
+    case NCCL_ALLTOALLV_ALGO::compCtran:
+      return "compCtran";
+    case NCCL_ALLTOALLV_ALGO::bsCompCtran:
+      return "bsCompCtran";
+  }
+}
+
+inline void algoStrToVal(
+    const std::string& str,
+    enum NCCL_ALLTOALLV_ALGO& val) {
+  if (str == "ctran") {
+    val = NCCL_ALLTOALLV_ALGO::ctran;
+  } else if (str == "compCtran") {
+    val = NCCL_ALLTOALLV_ALGO::compCtran;
+  } else if (str == "bsCompCtran") {
+    val = NCCL_ALLTOALLV_ALGO::bsCompCtran;
+  } else {
+    val = NCCL_ALLTOALLV_ALGO::orig;
+  }
+}
+
 class AlgoConfig {
  public:
   AlgoConfig();
@@ -105,6 +132,7 @@ class AlgoConfig {
   std::atomic<enum NCCL_SENDRECV_ALGO> sendrecv = NCCL_SENDRECV_ALGO_DEFAULT;
   std::atomic<enum NCCL_ALLGATHER_ALGO> allgather = NCCL_ALLGATHER_ALGO_DEFAULT;
   std::atomic<enum NCCL_ALLREDUCE_ALGO> allreduce = NCCL_ALLREDUCE_ALGO_DEFAULT;
+  std::atomic<enum NCCL_ALLTOALLV_ALGO> alltoallv = NCCL_ALLTOALLV_ALGO_DEFAULT;
 };
 
 template <typename T>
@@ -123,6 +151,7 @@ void AlgoConfig::reset() {
   sendrecv.store(NCCL_SENDRECV_ALGO);
   allgather.store(NCCL_ALLGATHER_ALGO);
   allreduce.store(NCCL_ALLREDUCE_ALGO);
+  alltoallv.store(NCCL_ALLTOALLV_ALGO);
 
   // Register algo hints
   auto hintsMngr = GlobalHints::getInstance();
@@ -140,6 +169,11 @@ void AlgoConfig::reset() {
       .setHook = setAlgo<enum NCCL_ALLREDUCE_ALGO>,
       .resetHook = resetAlgo<enum NCCL_ALLREDUCE_ALGO>};
   hintsMngr->regHintEntry("algo_allreduce", allreduceEntry);
+
+  ncclx::GlobalHintEntry alltoallvEntry = {
+      .setHook = setAlgo<enum NCCL_ALLTOALLV_ALGO>,
+      .resetHook = resetAlgo<enum NCCL_ALLTOALLV_ALGO>};
+  hintsMngr->regHintEntry("algo_alltoallv", alltoallvEntry);
 }
 
 folly::Singleton<AlgoConfig> algoConfigSingleton;
@@ -169,6 +203,10 @@ void setAlgo(
     enum NCCL_ALLREDUCE_ALGO val;
     algoStrToVal(valStr, val);
     algoConfig->allreduce.store(val);
+  } else if (std::is_same<T, enum NCCL_ALLTOALLV_ALGO>::value) {
+    enum NCCL_ALLTOALLV_ALGO val;
+    algoStrToVal(valStr, val);
+    algoConfig->alltoallv.store(val);
   }
 }
 
@@ -181,6 +219,8 @@ void resetAlgo(const std::string& key __attribute__((unused))) {
     algoConfig->allgather.store(NCCL_ALLGATHER_ALGO);
   } else if (std::is_same<T, enum NCCL_ALLREDUCE_ALGO>::value) {
     algoConfig->allreduce.store(NCCL_ALLREDUCE_ALGO);
+  } else if (std::is_same<T, enum NCCL_ALLTOALLV_ALGO>::value) {
+    algoConfig->alltoallv.store(NCCL_ALLTOALLV_ALGO);
   }
 }
 } // namespace
@@ -201,6 +241,11 @@ enum NCCL_ALLREDUCE_ALGO getAllReduceAlgo() {
   return algoConfig->allreduce.load();
 }
 
+enum NCCL_ALLTOALLV_ALGO getAllToAllVAlgo() {
+  auto algoConfig = AlgoConfig::getInstance();
+  return algoConfig->alltoallv.load();
+}
+
 std::string getAlgoHintValue(enum NCCL_SENDRECV_ALGO algo) {
   return algoValToStr(algo);
 }
@@ -208,6 +253,9 @@ std::string getAlgoHintValue(enum NCCL_ALLGATHER_ALGO algo) {
   return algoValToStr(algo);
 }
 std::string getAlgoHintValue(enum NCCL_ALLREDUCE_ALGO algo) {
+  return algoValToStr(algo);
+}
+std::string getAlgoHintValue(enum NCCL_ALLTOALLV_ALGO algo) {
   return algoValToStr(algo);
 }
 
@@ -233,6 +281,11 @@ void testOnlySetAlgo(enum NCCL_ALLGATHER_ALGO algo) {
 void testOnlySetAlgo(enum NCCL_ALLREDUCE_ALGO algo) {
   auto algoConfig = AlgoConfig::getInstance();
   algoConfig->allreduce.store(algo);
+}
+
+void testOnlySetAlgo(enum NCCL_ALLTOALLV_ALGO algo) {
+  auto algoConfig = AlgoConfig::getInstance();
+  algoConfig->alltoallv.store(algo);
 }
 
 void setupGlobalHints() {

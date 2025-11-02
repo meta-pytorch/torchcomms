@@ -10,6 +10,7 @@
 
 using ncclx::algoconf::getAllGatherAlgo;
 using ncclx::algoconf::getAllReduceAlgo;
+using ncclx::algoconf::getAllToAllVAlgo;
 using ncclx::algoconf::getSendRecvAlgo;
 using ncclx::algoconf::testOnlyResetAlgoConfig;
 
@@ -135,6 +136,45 @@ TEST_F(AlgoConfigUT, AllReduceAlgoHintOverride) {
       ASSERT_FALSE(getHintVal.has_value());
 
       ASSERT_EQ(getAllReduceAlgo(), NCCL_ALLREDUCE_ALGO::orig);
+    }
+  }
+}
+
+TEST_F(AlgoConfigUT, AlltoAllVAlgoHintOverride) {
+  setenv("NCCL_ALLTOALLV_ALGO", "orig", 1);
+  CLOGF(WARN, "before testOnlyResetGlobalHints");
+  ncclx::testOnlyResetGlobalHints();
+  CLOGF(WARN, "after testOnlyResetGlobalHints");
+  testOnlyResetAlgoConfig();
+  CLOGF(WARN, "after testOnlyResetAlgoConfig");
+
+  const char* hintName = "algo_alltoallv";
+  ASSERT_EQ(getAllToAllVAlgo(), NCCL_ALLTOALLV_ALGO::orig);
+  CLOGF(WARN, "after getAllToAllVAlgo");
+
+  // set/reset multiple times
+  std::unordered_map<enum NCCL_ALLTOALLV_ALGO, const char*> overrideAlgos = {
+      {NCCL_ALLTOALLV_ALGO::ctran, "ctran"},
+      {NCCL_ALLTOALLV_ALGO::compCtran, "compCtran"},
+      {NCCL_ALLTOALLV_ALGO::bsCompCtran, "bsCompCtran"},
+  };
+
+  const int iter = 10;
+  for (int i = 0; i < iter; i++) {
+    for (auto& [algo, hintVal] : overrideAlgos) {
+      ASSERT_TRUE(ncclx::setGlobalHint(hintName, hintVal));
+
+      auto getHintVal = ncclx::getGlobalHint(hintName);
+      ASSERT_TRUE(getHintVal.has_value());
+      ASSERT_EQ(getHintVal.value(), hintVal);
+
+      ASSERT_EQ(getAllToAllVAlgo(), algo);
+
+      ASSERT_TRUE(ncclx::resetGlobalHint(hintName));
+      getHintVal = ncclx::getGlobalHint(hintName);
+      ASSERT_FALSE(getHintVal.has_value());
+
+      ASSERT_EQ(getAllToAllVAlgo(), NCCL_ALLTOALLV_ALGO::orig);
     }
   }
 }
