@@ -88,7 +88,7 @@ class build_ext(build_ext_orig):
 
         pybind11_build_flags = _get_pybind11_abi_build_flags()
 
-        cfg = os.environ.get("CMAKE_BUILD_TYPE", "Release")
+        cfg = os.environ.get("CMAKE_BUILD_TYPE", "RelWithDebInfo")
         print(f"- Building with {cfg} configuration")
 
         cmake_args = [
