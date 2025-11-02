@@ -106,14 +106,14 @@ class SendRecvTest : public NcclxBaseTest {
     CUDACHECK_TEST(cudaFree(recvBuf));
   }
 
-  uint64_t getOpCount(ncclComm_t comm) const {
+  uint64_t getOpCount(ncclComm_t ncclComm) const {
     // Since we may override algo from hints, let each test case sets whether
     // isCtranAlgo is true
     if (expectCtranAlgo_) {
       // Use Ctran-only opCount to track Ctran sendrecv is called
-      return comm->ctranComm_->ctran_->getCtranOpCount();
+      return ncclComm->ctranComm_->ctran_->getCtranOpCount();
     } else {
-      return comm->opCount;
+      return ncclComm->opCount;
     }
   }
 

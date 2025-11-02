@@ -1060,6 +1060,69 @@ folly::Expected<folly::Unit, Error> IbvDevice::destroyCompChannel(
   return folly::unit;
 }
 
+folly::Expected<bool, Error> IbvDevice::isPortActive(
+    uint8_t portNum,
+    std::unordered_set<int> linkLayers) const {
+  auto maybePortAttr = queryPort(portNum);
+  if (maybePortAttr.hasError()) {
+    return folly::makeUnexpected(maybePortAttr.error());
+  }
+
+  auto portAttr = maybePortAttr.value();
+
+  // Check if port is active
+  if (portAttr.state != IBV_PORT_ACTIVE) {
+    return false;
+  }
+
+  // Check if link layer matches (if specified)
+  if (!linkLayers.empty() &&
+      linkLayers.find(portAttr.link_layer) == linkLayers.end()) {
+    return false;
+  }
+
+  return true;
+}
+
+folly::Expected<uint8_t, Error> IbvDevice::findActivePort(
+    std::unordered_set<int> const& linkLayers) const {
+  // If specific port requested, check if it is active
+  if (port_ != kIbAnyPort) {
+    auto maybeActive = isPortActive(port_, linkLayers);
+    if (maybeActive.hasError()) {
+      return folly::makeUnexpected(maybeActive.error());
+    }
+
+    if (!maybeActive.value()) {
+      return folly::makeUnexpected(Error(
+          EINVAL,
+          fmt::format(
+              "Port {} is not active on device {}", port_, device_->name)));
+    }
+    return port_;
+  }
+
+  // No specific port requested, find any active port
+  auto maybeDeviceAttr = queryDevice();
+  if (maybeDeviceAttr.hasError()) {
+    return folly::makeUnexpected(maybeDeviceAttr.error());
+  }
+
+  for (uint8_t port = 1; port <= maybeDeviceAttr->phys_port_cnt; port++) {
+    auto maybeActive = isPortActive(port, linkLayers);
+    if (maybeActive.hasError()) {
+      continue; // Skip ports we can't query
+    }
+
+    if (maybeActive.value()) {
+      return port;
+    }
+  }
+
+  return folly::makeUnexpected(Error(
+      ENODEV, fmt::format("No active port found on device {}", device_->name)));
+}
+
 /*** IbvQp ***/
 IbvQp::IbvQp(ibv_qp* qp) : qp_(qp) {}
 

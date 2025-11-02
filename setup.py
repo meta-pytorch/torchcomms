@@ -88,7 +88,11 @@ class build_ext(build_ext_orig):
 
         pybind11_build_flags = _get_pybind11_abi_build_flags()
 
+        cfg = os.environ.get("CMAKE_BUILD_TYPE", "RelWithDebInfo")
+        print(f"- Building with {cfg} configuration")
+
         cmake_args = [
+            f"-DCMAKE_BUILD_TYPE={cfg}",
             f"-DCMAKE_LIBRARY_OUTPUT_DIRECTORY={extdir.parent.absolute()}",
             f"-DCMAKE_ARCHIVE_OUTPUT_DIRECTORY={extdir.parent.absolute()}",
             f"-DCMAKE_INSTALL_PREFIX={extdir.parent.absolute()}",

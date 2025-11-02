@@ -437,6 +437,12 @@ TEST_F(IbverbxTestFixture, IbvDeviceQueries) {
   auto gid = device.queryGid(kPortNum, kGidIndex);
   ASSERT_TRUE(gid);
   ASSERT_NE(gid->raw, nullptr);
+
+  // find active port
+  auto activePort = device.findActivePort(
+      {IBV_LINK_LAYER_INFINIBAND, IBV_LINK_LAYER_ETHERNET});
+  ASSERT_TRUE(activePort);
+  EXPECT_GT(activePort.value(), 0);
 }
 
 TEST_F(IbverbxTestFixture, IbvCq) {

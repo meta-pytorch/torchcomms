@@ -234,8 +234,7 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaMalloc(&sendBuf, sendCount * sizeof(int)));
     CUDACHECK_TEST(cudaMalloc(&recvBuf, recvCount * sizeof(int)));
 
-    int expectedVal = 32;
-    assignChunkValue(sendBuf, sendCount, expectedVal);
+    assignChunkValue(sendBuf, sendCount, 32);
     assignChunkValue(recvBuf, recvCount, -1);
 
     if (registFlag) {

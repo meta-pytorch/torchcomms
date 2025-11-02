@@ -740,6 +740,12 @@ class IbvDevice {
       ibv_comp_channel* channel,
       int comp_vector);
 
+  folly::Expected<bool, Error> isPortActive(
+      uint8_t portNum,
+      std::unordered_set<int> linkLayers) const;
+  folly::Expected<uint8_t, Error> findActivePort(
+      std::unordered_set<int> const& linkLayers) const;
+
   Coordinator coordinator_{};
 
  private:
