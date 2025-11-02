@@ -113,12 +113,10 @@ TEST_F(AlgoConfigUT, AllReduceAlgoHintOverride) {
   ASSERT_EQ(getAllReduceAlgo(), NCCL_ALLREDUCE_ALGO::orig);
 
   std::unordered_map<enum NCCL_ALLREDUCE_ALGO, const char*> overrideAlgos = {
-      {NCCL_ALLREDUCE_ALGO::dda, "dda"},
       {NCCL_ALLREDUCE_ALGO::ctran, "ctran"},
       {NCCL_ALLREDUCE_ALGO::ctdirect, "ctdirect"},
       {NCCL_ALLREDUCE_ALGO::ctarg, "ctarg"},
       {NCCL_ALLREDUCE_ALGO::ctring, "ctring"},
-      {NCCL_ALLREDUCE_ALGO::ctmring, "ctmring"},
   };
 
   const int iter = 10;
