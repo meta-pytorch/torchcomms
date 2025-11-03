@@ -1,12 +1,10 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-
 #include "comms/torchcomms/xccl/TorchWorkXCCL.hpp"
 
 namespace torch {
 namespace comms {
 
-TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::garbageCollect(
-    bool isMainThread) {
+TorchWorkXCCL::WorkStatus
+TorchWorkXCCLQueue::garbageCollect(bool isMainThread) {
   std::lock_guard<std::recursive_mutex> lock(work_queues_mutex_);
 
   TorchWorkXCCL::WorkStatus last_status = TorchWorkXCCL::WorkStatus::COMPLETED;
@@ -16,7 +14,7 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::garbageCollect(
   // Use an iterator to safely remove empty queues while iterating
   auto it = stream_work_queues_.begin();
   while (it != stream_work_queues_.end()) {
-    auto& work_queue = it->second;
+    auto &work_queue = it->second;
 
     while (!work_queue.empty()) {
       // Get the first work object in the queue
@@ -31,9 +29,8 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::garbageCollect(
         work_queue.pop();
         completed_work_queue_.push_back(work);
         // Continue to the next element in the queue
-      } else if (
-          status == TorchWorkXCCL::WorkStatus::TIMEDOUT ||
-          status == TorchWorkXCCL::WorkStatus::ERROR) {
+      } else if (status == TorchWorkXCCL::WorkStatus::TIMEDOUT ||
+                 status == TorchWorkXCCL::WorkStatus::ERROR) {
         // Return the error status immediately
         return status;
       } else {
@@ -88,9 +85,8 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::finalize() {
   return status;
 }
 
-void TorchWorkXCCLQueue::enqueueWork(
-    std::shared_ptr<TorchWorkXCCL> work,
-    xpuStream_t stream) {
+void TorchWorkXCCLQueue::enqueueWork(std::shared_ptr<TorchWorkXCCL> work,
+                                     xpuStream_t stream) {
   // Add work to stream's queue after events have been recorded
   std::lock_guard<std::recursive_mutex> lock(work_queues_mutex_);
   stream_work_queues_[stream].push(work);

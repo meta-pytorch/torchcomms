@@ -1,5 +1,3 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-
 #pragma once
 
 #include <atomic>
@@ -11,7 +9,6 @@
 #include <unordered_map>
 
 #include <ATen/ATen.h>
-// #include <xpu_runtime.h> // @manual=third-party//xpu:xpu-lazy
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 #include "comms/torchcomms/device/XpuApi.hpp"
@@ -29,48 +26,44 @@ class TorchCommXCCLTest;
 }
 
 class TorchWorkXCCL : public TorchWork {
- public:
+public:
   // Status of a work object
   enum class WorkStatus {
     NOT_STARTED, // Work has not started yet
-    INPROGRESS, // Work is still in progress,
-    COMPLETED, // Work has completed successfully
-    TIMEDOUT, // Work has timed out
-    ERROR // Work has encountered an error
+    INPROGRESS,  // Work is still in progress,
+    COMPLETED,   // Work has completed successfully
+    TIMEDOUT,    // Work has timed out
+    ERROR        // Work has encountered an error
   };
 
-  TorchWorkXCCL(
-      std::shared_ptr<TorchCommXCCL> comm,
-      xpuStream_t stream,
-      std::chrono::milliseconds timeout_ms,
-      const std::vector<at::Tensor>& inputTensors,
-      std::shared_ptr<TorchCommTracing> tracing);
+  TorchWorkXCCL(std::shared_ptr<TorchCommXCCL> comm, xpuStream_t stream,
+                std::chrono::milliseconds timeout_ms,
+                const std::vector<at::Tensor> &inputTensors,
+                std::shared_ptr<TorchCommTracing> tracing);
   ~TorchWorkXCCL() override;
 
   // Delete copy and move operations
-  TorchWorkXCCL(const TorchWorkXCCL&) = delete;
-  TorchWorkXCCL(TorchWorkXCCL&&) = delete;
-  TorchWorkXCCL& operator=(const TorchWorkXCCL&) = delete;
-  TorchWorkXCCL& operator=(TorchWorkXCCL&&) = delete;
+  TorchWorkXCCL(const TorchWorkXCCL &) = delete;
+  TorchWorkXCCL(TorchWorkXCCL &&) = delete;
+  TorchWorkXCCL &operator=(const TorchWorkXCCL &) = delete;
+  TorchWorkXCCL &operator=(TorchWorkXCCL &&) = delete;
 
   // Override virtual functions from TorchWork
   bool isCompleted() override;
   void wait() override;
 
- protected:
+protected:
   void recordStart();
   void recordEnd();
 
   friend class TorchCommXCCL;
   friend class TorchWorkXCCLQueue;
 
- private:
+private:
   // Check the status of the work object
   WorkStatus checkStatus();
 
-  std::chrono::milliseconds getTimeout() const {
-    return timeout_ms_;
-  }
+  std::chrono::milliseconds getTimeout() const { return timeout_ms_; }
   std::vector<at::Tensor> inputTensors_;
 
   std::shared_ptr<TorchCommXCCL> comm_;
@@ -88,7 +81,7 @@ class TorchWorkXCCL : public TorchWork {
 };
 
 class TorchWorkXCCLQueue {
- public:
+public:
   TorchWorkXCCLQueue() = default;
   ~TorchWorkXCCLQueue() = default;
 
@@ -97,7 +90,7 @@ class TorchWorkXCCLQueue {
   TorchWorkXCCL::WorkStatus finalize();
   void enqueueWork(std::shared_ptr<TorchWorkXCCL> work, xpuStream_t stream);
 
- private:
+private:
   std::unordered_map<xpuStream_t, std::queue<std::shared_ptr<TorchWorkXCCL>>>
       stream_work_queues_;
   std::vector<std::shared_ptr<TorchWorkXCCL>> completed_work_queue_;

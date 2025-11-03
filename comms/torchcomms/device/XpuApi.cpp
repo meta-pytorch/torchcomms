@@ -1,5 +1,3 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-
 #include "comms/torchcomms/device/XpuApi.hpp"
 #include <ATen/xpu/XPUContext.h>
 #include <c10/xpu/XPUFunctions.h>
@@ -9,10 +7,6 @@
 
 namespace torch {
 namespace comms {
-
-// ============================================================================
-// Device Management Implementation
-// ============================================================================
 
 xpu_result_t DefaultXpuApi::setDevice(int device) {
     try {
@@ -29,20 +23,21 @@ xpu_result_t DefaultXpuApi::getDeviceProperties(xpuDeviceProp* prop, int device)
     }
     
     try {
-        ::c10::xpu::DeviceProp device_prop;
-        ::c10::xpu::get_device_properties(&device_prop, device);
+        sycl::device sycl_device = ::c10::xpu::get_raw_device(device);
         
-        // Map c10::xpu::DeviceProp to xpuDeviceProp
-        strncpy(prop->name, device_prop.name.c_str(), 255);
+        // Get device name
+        std::string device_name = sycl_device.get_info<sycl::info::device::name>();
+        strncpy(prop->name, device_name.c_str(), 255);
         prop->name[255] = '\0';
-        prop->totalGlobalMem = device_prop.global_mem_size;
         
-        // Extract major/minor version from device_id
-        prop->major = (device_prop.device_id >> 16) & 0xFFFF;
-        prop->minor = device_prop.device_id & 0xFFFF;
+        // Get memory info
+        prop->totalGlobalMem = sycl_device.get_info<sycl::info::device::global_mem_size>();
         
-        // Get SYCL device for additional properties
-        sycl::device& sycl_device = ::c10::xpu::get_raw_device(device);
+        // Set version info (XPU doesn't have major/minor version like CUDA)
+        prop->major = 1;
+        prop->minor = 0;
+        
+        // Get compute capabilities
         auto max_work_group_size = sycl_device.get_info<sycl::info::device::max_work_group_size>();
         auto max_work_item_sizes = sycl_device.get_info<sycl::info::device::max_work_item_sizes<3>>();
         auto max_compute_units = sycl_device.get_info<sycl::info::device::max_compute_units>();
@@ -94,10 +89,6 @@ xpu_result_t DefaultXpuApi::getDeviceCount(int* count) {
         return XPU_ERROR_INVALID_VALUE;
     }
 }
-
-// ============================================================================
-// Stream Management Implementation
-// ============================================================================
 
 xpu_result_t DefaultXpuApi::streamCreateWithPriority(
     xpuStream_t& stream,
@@ -170,10 +161,6 @@ xpu_result_t DefaultXpuApi::streamGetCaptureInfo(
     return XPU_SUCCESS;
 }
 
-// ============================================================================
-// Memory Management Implementation
-// ============================================================================
-
 xpu_result_t DefaultXpuApi::malloc(void** devPtr, size_t size) {
     if (!devPtr) {
         return XPU_ERROR_INVALID_VALUE;
@@ -237,9 +224,6 @@ xpu_result_t DefaultXpuApi::memcpyAsync(
     }
 }
 
-// ============================================================================
-// Event Management Implementation
-// ============================================================================
 
 xpu_result_t DefaultXpuApi::eventCreate(xpuEvent_t& event) {
     try {
@@ -285,10 +269,7 @@ xpu_result_t DefaultXpuApi::eventQuery(const xpuEvent_t& event) {
     }
 }
 
-// ============================================================================
 // Graph Operations (Unsupported)
-// ============================================================================
-
 xpu_result_t DefaultXpuApi::userObjectCreate(
     xpuUserObject_t* object_out,
     void* ptr,
@@ -334,10 +315,7 @@ xpu_result_t DefaultXpuApi::streamGetCaptureInfo_v2(
     return XPU_SUCCESS;
 }
 
-// ============================================================================
 // Error Handling
-// ============================================================================
-
 const char* DefaultXpuApi::getErrorString(xpu_result_t error) {
     switch (error) {
         case XPU_SUCCESS:

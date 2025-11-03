@@ -1,5 +1,3 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-
 #pragma once
 
 #include <sycl/sycl.hpp>
@@ -11,11 +9,9 @@
 namespace torch {
 namespace comms {
 
-// Use PyTorch XPU types directly as value types
 using xpuStream_t = ::c10::xpu::XPUStream;
 using xpuEvent_t = ::at::xpu::XPUEvent;
 
-// Device properties structure - mapped from SYCL
 struct xpuDeviceProp {
     char name[256];
     size_t totalGlobalMem;
@@ -135,9 +131,6 @@ class XpuApi {
   virtual const char* getErrorString(xpu_result_t error) = 0;
 };
 
-/**
- * Default implementation that uses SYCL and PyTorch XPU APIs.
- */
 class DefaultXpuApi : public XpuApi {
  public:
   ~DefaultXpuApi() override = default;
