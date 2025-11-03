@@ -254,6 +254,10 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
 }
 
 bool TorchCommNCCLX::getGraphCaptureMode() {
+  if (!enable_cuda_graph_support_) {
+    return false;
+  }
+
   cudaStream_t current_stream =
       cuda_api_->getCurrentCUDAStream(device_.index());
   cudaStreamCaptureStatus capture_status;

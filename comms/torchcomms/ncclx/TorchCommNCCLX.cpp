@@ -165,6 +165,13 @@ void TorchCommNCCLX::init(
     garbage_collect_interval_ms_ = kGarbageCollectIntervalMs;
   }
 
+  if (options_.hints.contains("torchcomm::ncclx::enable_cuda_graph_support")) {
+    enable_cuda_graph_support_ = string_to_bool(
+        options_.hints.at("torchcomm::ncclx::enable_cuda_graph_support"));
+  } else {
+    enable_cuda_graph_support_ = kEnableCudaGraphSupport;
+  }
+
   // Give up our internal reference to the store object here.  The caller
   // would still need to keep a reference to the store object till the init
   // call returns, at which point the NCCL communicator would already be
