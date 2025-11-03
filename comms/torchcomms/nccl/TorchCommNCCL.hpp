@@ -28,7 +28,7 @@
 namespace torch {
 namespace comms {
 
-constexpr size_t kMaxEventPoolSize = 1000;
+constexpr size_t kDefaultMaxEventPoolSize = 1000;
 
 // Custom exception class for better error handling
 class NCCLException : public std::exception {

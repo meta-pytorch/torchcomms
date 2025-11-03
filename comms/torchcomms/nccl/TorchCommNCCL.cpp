@@ -151,7 +151,7 @@ void TorchCommNCCL::init(
     max_event_pool_size_ =
         std::stoull(options_.hints.at("torchcomm::nccl::max_event_pool_size"));
   } else {
-    max_event_pool_size_ = kMaxEventPoolSize;
+    max_event_pool_size_ = kDefaultMaxEventPoolSize;
   }
 
   // Give up our internal reference to the store object here.  The caller
