@@ -1,8 +1,6 @@
-# Copyright (c) Meta Platforms, Inc. and affiliates.
 # Extension: torchcomms._comms_xccl
 file(GLOB TORCHCOMMS_XCCL_SOURCES "comms/torchcomms/xccl/*.cpp")
 file(GLOB TORCHCOMMS_XPU_API_SOURCE "comms/torchcomms/device/XpuApi.cpp")
-# find_package(XPU)
 
 set(XCCL_INCLUDE "$ENV{CCL_ROOT}/include")
 set(XCCL_SHARED_LIB "$ENV{CCL_ROOT}/lib/libccl.so.2")
