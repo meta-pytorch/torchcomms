@@ -1,5 +1,3 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
-
 #pragma once
 
 #include <atomic>
@@ -32,35 +30,34 @@ constexpr size_t kMaxEventPoolSize = 1000;
 
 // Custom exception class for better error handling
 class XCCLException : public std::exception {
- public:
-  XCCLException(XcclApi& api, const std::string& message, onecclResult_t result);
+public:
+  XCCLException(XcclApi &api, const std::string &message,
+                onecclResult_t result);
 
-  const char* what() const noexcept override;
+  const char *what() const noexcept override;
   onecclResult_t getResult() const;
 
- private:
+private:
   std::string message_;
   onecclResult_t result_;
 };
 
 class TorchCommXCCL : public TorchCommBackend,
                       public std::enable_shared_from_this<TorchCommXCCL> {
- public:
+public:
   static constexpr std::string_view kBackendName = "xccl";
 
   TorchCommXCCL();
   ~TorchCommXCCL() override;
 
   // Delete copy and move operations
-  TorchCommXCCL(const TorchCommXCCL&) = delete;
-  TorchCommXCCL(TorchCommXCCL&&) = delete;
-  TorchCommXCCL& operator=(const TorchCommXCCL&) = delete;
-  TorchCommXCCL& operator=(TorchCommXCCL&&) = delete;
+  TorchCommXCCL(const TorchCommXCCL &) = delete;
+  TorchCommXCCL(TorchCommXCCL &&) = delete;
+  TorchCommXCCL &operator=(const TorchCommXCCL &) = delete;
+  TorchCommXCCL &operator=(TorchCommXCCL &&) = delete;
 
-  void init(
-      at::Device device,
-      const std::string& name,
-      const CommOptions& options = {}) override;
+  void init(at::Device device, const std::string &name,
+            const CommOptions &options = {}) override;
   void finalize() override;
   int getRank() const override;
   int getSize() const override;
@@ -68,102 +65,71 @@ class TorchCommXCCL : public TorchCommBackend,
   std::string_view getCommName() const override;
 
   // Point-to-Point Operations
-  std::shared_ptr<TorchWork> send(
-      const at::Tensor& tensor,
-      int dst,
-      bool async_op,
-      const SendOptions& options = {}) override;
-  std::shared_ptr<TorchWork> recv(
-      at::Tensor& tensor,
-      int src,
-      bool async_op,
-      const RecvOptions& options = {}) override;
+  std::shared_ptr<TorchWork> send(const at::Tensor &tensor, int dst,
+                                  bool async_op,
+                                  const SendOptions &options = {}) override;
+  std::shared_ptr<TorchWork> recv(at::Tensor &tensor, int src, bool async_op,
+                                  const RecvOptions &options = {}) override;
 
   // Batch P2P Operations
-  std::shared_ptr<TorchWork> batch_op_issue(
-      const std::vector<BatchSendRecv::P2POp>& ops,
-      bool async_op,
-      const BatchP2POptions& options = {}) override;
+  std::shared_ptr<TorchWork>
+  batch_op_issue(const std::vector<BatchSendRecv::P2POp> &ops, bool async_op,
+                 const BatchP2POptions &options = {}) override;
 
   // Collective Operations
-  std::shared_ptr<TorchWork> broadcast(
-      at::Tensor& tensor,
-      int root,
-      bool async_op,
-      const BroadcastOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_reduce(
-      at::Tensor& tensor,
-      ReduceOp op,
-      bool async_op,
-      const AllReduceOptions& options = {}) override;
-  std::shared_ptr<TorchWork> reduce(
-      const at::Tensor& tensor,
-      int root,
-      ReduceOp op,
-      bool async_op,
-      const ReduceOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_gather(
-      const std::vector<at::Tensor>& tensor_list,
-      const at::Tensor& tensor,
-      bool async_op,
-      const AllGatherOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_gather_single(
-      at::Tensor& output,
-      const at::Tensor& input,
-      bool async_op,
-      const AllGatherSingleOptions& options = {}) override;
-  std::shared_ptr<TorchWork> reduce_scatter(
-      at::Tensor& output,
-      const std::vector<at::Tensor>& input_list,
-      ReduceOp op,
-      bool async_op,
-      const ReduceScatterOptions& options = {}) override;
+  std::shared_ptr<TorchWork>
+  broadcast(at::Tensor &tensor, int root, bool async_op,
+            const BroadcastOptions &options = {}) override;
+  std::shared_ptr<TorchWork>
+  all_reduce(at::Tensor &tensor, ReduceOp op, bool async_op,
+             const AllReduceOptions &options = {}) override;
+  std::shared_ptr<TorchWork> reduce(const at::Tensor &tensor, int root,
+                                    ReduceOp op, bool async_op,
+                                    const ReduceOptions &options = {}) override;
+  std::shared_ptr<TorchWork>
+  all_gather(const std::vector<at::Tensor> &tensor_list,
+             const at::Tensor &tensor, bool async_op,
+             const AllGatherOptions &options = {}) override;
+  std::shared_ptr<TorchWork>
+  all_gather_single(at::Tensor &output, const at::Tensor &input, bool async_op,
+                    const AllGatherSingleOptions &options = {}) override;
+  std::shared_ptr<TorchWork>
+  reduce_scatter(at::Tensor &output, const std::vector<at::Tensor> &input_list,
+                 ReduceOp op, bool async_op,
+                 const ReduceScatterOptions &options = {}) override;
   std::shared_ptr<TorchWork> reduce_scatter_single(
-      at::Tensor& output,
-      const at::Tensor& input,
-      ReduceOp op,
-      bool async_op,
-      const ReduceScatterSingleOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_to_all_single(
-      at::Tensor& output,
-      const at::Tensor& input,
-      bool async_op,
-      const AllToAllSingleOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_to_all_v_single(
-      at::Tensor& output,
-      const at::Tensor& input,
-      const std::vector<uint64_t>& output_split_sizes,
-      const std::vector<uint64_t>& input_split_sizes,
-      bool async_op,
-      const AllToAllvSingleOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_to_all(
-      const std::vector<at::Tensor>& output_tensor_list,
-      const std::vector<at::Tensor>& input_tensor_list,
-      bool async_op,
-      const AllToAllOptions& options = {}) override;
-  std::shared_ptr<TorchWork> barrier(
-      bool async_op,
-      const BarrierOptions& options = {}) override;
+      at::Tensor &output, const at::Tensor &input, ReduceOp op, bool async_op,
+      const ReduceScatterSingleOptions &options = {}) override;
+  std::shared_ptr<TorchWork>
+  all_to_all_single(at::Tensor &output, const at::Tensor &input, bool async_op,
+                    const AllToAllSingleOptions &options = {}) override;
+  std::shared_ptr<TorchWork>
+  all_to_all_v_single(at::Tensor &output, const at::Tensor &input,
+                      const std::vector<uint64_t> &output_split_sizes,
+                      const std::vector<uint64_t> &input_split_sizes,
+                      bool async_op,
+                      const AllToAllvSingleOptions &options = {}) override;
+  std::shared_ptr<TorchWork>
+  all_to_all(const std::vector<at::Tensor> &output_tensor_list,
+             const std::vector<at::Tensor> &input_tensor_list, bool async_op,
+             const AllToAllOptions &options = {}) override;
+  std::shared_ptr<TorchWork>
+  barrier(bool async_op, const BarrierOptions &options = {}) override;
 
   // Scatter and Gather Operations
-  std::shared_ptr<TorchWork> scatter(
-      at::Tensor& output_tensor,
-      const std::vector<at::Tensor>& input_tensor_list,
-      int root,
-      bool async_op,
-      const ScatterOptions& options = {}) override;
-  std::shared_ptr<TorchWork> gather(
-      const std::vector<at::Tensor>& output_tensor_list,
-      const at::Tensor& input_tensor,
-      int root,
-      bool async_op,
-      const GatherOptions& options = {}) override;
+  std::shared_ptr<TorchWork>
+  scatter(at::Tensor &output_tensor,
+          const std::vector<at::Tensor> &input_tensor_list, int root,
+          bool async_op, const ScatterOptions &options = {}) override;
+  std::shared_ptr<TorchWork>
+  gather(const std::vector<at::Tensor> &output_tensor_list,
+         const at::Tensor &input_tensor, int root, bool async_op,
+         const GatherOptions &options = {}) override;
 
   // Communicator Management
-  std::shared_ptr<TorchCommBackend> split(
-      const std::vector<int>& ranks,
-      const std::string& name,
-      const CommOptions& options = {}) override;
+  std::shared_ptr<TorchCommBackend>
+  split(const std::vector<int> &ranks, const std::string &name,
+        const CommOptions &options = {}) override;
 
   // Friend access for TorchCommXCCL
   friend class TorchWorkXCCL;
@@ -172,37 +138,25 @@ class TorchCommXCCL : public TorchCommBackend,
   friend class TorchCommWindowXCCL;
 
   // Getter for CUDA API (for friend classes)
-  XpuApi* getXpuApi() const {
-    return xpu_api_.get();
-  }
+  XpuApi *getXpuApi() const { return xpu_api_.get(); }
 
   // Getter for XCCL API (for friend classes)
-  XcclApi* getXcclApi() const {
-    return xccl_api_.get();
-  }
+  XcclApi *getXcclApi() const { return xccl_api_.get(); }
 
   // Method to override the XCCL API implementation for testing
-  void setXcclApi(std::shared_ptr<XcclApi> api) {
-    xccl_api_ = std::move(api);
-  }
+  void setXcclApi(std::shared_ptr<XcclApi> api) { xccl_api_ = std::move(api); }
 
   // Method to override the CUDA API implementation for testing
-  void setXpuApi(std::shared_ptr<XpuApi> api) {
-    xpu_api_ = std::move(api);
-  }
+  void setXpuApi(std::shared_ptr<XpuApi> api) { xpu_api_ = std::move(api); }
 
-  const CommOptions& getOptions() const override {
-    return options_;
-  }
+  const CommOptions &getOptions() const override { return options_; }
 
-  const at::Device& getDevice() const override {
-    return device_;
-  }
+  const at::Device &getDevice() const override { return device_; }
 
- protected:
+protected:
   // Event management for friend classes
   xpuEvent_t getEvent();
-  void returnEvent(xpuEvent_t&& event);
+  void returnEvent(xpuEvent_t &&event);
   void abortXcclComm();
 
   enum class CommState {
@@ -212,47 +166,42 @@ class TorchCommXCCL : public TorchCommBackend,
   };
 
   struct Address {
-    void* addr;
+    void *addr;
   };
 
   struct AddressWithLen {
-    void* addr;
+    void *addr;
     size_t len;
   };
 
   std::atomic<CommState> comm_state_{
       CommState::NORMAL}; // State of the communicator
 
-  void register_address(const AddressWithLen& addr);
-  void deregister_address(const Address& addr);
-  onecclDataType_t getXcclDataType(const at::Tensor& tensor);
-  std::shared_ptr<TorchWorkXCCL> createWork(
-      xpuStream_t stream,
-      std::chrono::milliseconds timeout,
-      const std::vector<at::Tensor>& inputTensors);
+  void register_address(const AddressWithLen &addr);
+  void deregister_address(const Address &addr);
+  onecclDataType_t getXcclDataType(const at::Tensor &tensor);
+  std::shared_ptr<TorchWorkXCCL>
+  createWork(xpuStream_t stream, std::chrono::milliseconds timeout,
+             const std::vector<at::Tensor> &inputTensors);
 
- private:
+private:
   // Helper that automatically cleans up premul sums.
   struct RedOpRAII {
     /* implicit */ RedOpRAII(onecclRedOp_t op);
 
     // Constructor for Premulsum Reduction
-    explicit RedOpRAII(
-        const ReduceOp& op,
-        const onecclComm_t comm,
-        const onecclDataType_t dataType,
-        std::shared_ptr<XcclApi> xccl_api);
+    explicit RedOpRAII(const ReduceOp &op, const onecclComm_t comm,
+                       const onecclDataType_t dataType,
+                       std::shared_ptr<XcclApi> xccl_api);
 
     RedOpRAII() = delete;
-    RedOpRAII(const RedOpRAII&) = delete;
-    RedOpRAII& operator=(const RedOpRAII&) = delete;
-    RedOpRAII(RedOpRAII&& tmp) = delete;
-    RedOpRAII& operator=(RedOpRAII&&) = delete;
+    RedOpRAII(const RedOpRAII &) = delete;
+    RedOpRAII &operator=(const RedOpRAII &) = delete;
+    RedOpRAII(RedOpRAII &&tmp) = delete;
+    RedOpRAII &operator=(RedOpRAII &&) = delete;
     ~RedOpRAII();
 
-    operator onecclRedOp_t() const {
-      return xcclRedOp_;
-    }
+    operator onecclRedOp_t() const { return xcclRedOp_; }
 
     onecclRedOp_t xcclRedOp_{onecclMaxRedOp};
     onecclComm_t comm_{nullptr};
@@ -261,18 +210,18 @@ class TorchCommXCCL : public TorchCommBackend,
 
   // Struct to hold the registration handle for a buffer
   struct RegistrationHandle {
-    void* regHandle;
+    void *regHandle;
 
-    explicit RegistrationHandle(void* regHandle) : regHandle{regHandle} {}
+    explicit RegistrationHandle(void *regHandle) : regHandle{regHandle} {}
 
-    RegistrationHandle(RegistrationHandle&& other) noexcept
+    RegistrationHandle(RegistrationHandle &&other) noexcept
         : regHandle{other.regHandle} {
       other.regHandle = nullptr;
     }
 
-    RegistrationHandle(const RegistrationHandle&) = delete;
-    RegistrationHandle& operator=(const RegistrationHandle&) = delete;
-    RegistrationHandle& operator=(RegistrationHandle&&) = delete;
+    RegistrationHandle(const RegistrationHandle &) = delete;
+    RegistrationHandle &operator=(const RegistrationHandle &) = delete;
+    RegistrationHandle &operator=(RegistrationHandle &&) = delete;
 
     ~RegistrationHandle() = default;
   };
@@ -282,19 +231,15 @@ class TorchCommXCCL : public TorchCommBackend,
 
   // Private utility methods
   size_t wordSize(onecclDataType_t type) const;
-  RedOpRAII getXcclReduceOp(
-      const ReduceOp& op,
-      const onecclComm_t comm,
-      const onecclDataType_t dataType);
+  RedOpRAII getXcclReduceOp(const ReduceOp &op, const onecclComm_t comm,
+                            const onecclDataType_t dataType);
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
   void checkWorkQueue(bool isMainThread);
   void enqueueWork(std::shared_ptr<TorchWorkXCCL> work, xpuStream_t stream);
-  // XPU doesn't support graph capture yet
-  // bool getGraphCaptureMode();
   xpuStream_t getOperationStream(bool async_op);
-  void ensureTensorContiguous(const at::Tensor& tensor);
+  void ensureTensorContiguous(const at::Tensor &tensor);
 
   void attachMemoryHook();
   void detachMemoryHook();
@@ -308,8 +253,8 @@ class TorchCommXCCL : public TorchCommBackend,
   size_t max_event_pool_size_{};
   std::optional<xpuStream_t> internal_stream_; // Initialized in init()
   std::optional<xpuEvent_t>
-      dependency_event_; // Pre-allocated event for stream dependencies
-  void* barrier_buffer_{}; // Pre-allocated CUDA buffer for barrier operations
+      dependency_event_;   // Pre-allocated event for stream dependencies
+  void *barrier_buffer_{}; // Pre-allocated CUDA buffer for barrier operations
   enum class InitializationState {
     UNINITIALIZED,
     INITIALIZED,
@@ -318,7 +263,7 @@ class TorchCommXCCL : public TorchCommBackend,
 
   // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
   // buffer address to the registeration handle
-  std::map<void*, RegistrationHandle> memoryRegistrationHandles_;
+  std::map<void *, RegistrationHandle> memoryRegistrationHandles_;
 
   // XCCL API abstraction
   std::shared_ptr<XcclApi> xccl_api_;
@@ -346,26 +291,26 @@ class TorchCommXCCL : public TorchCommBackend,
   // Graph capture mode work references
   // Keep references to work objects during graph capture to prevent premature
   // destruction, organized per graph using capture ID
-  std::unordered_map<
-      unsigned long long,
-      std::vector<std::shared_ptr<TorchWorkXCCL>>>
+  std::unordered_map<unsigned long long,
+                     std::vector<std::shared_ptr<TorchWorkXCCL>>>
       graph_capture_work_refs_;
   std::mutex graph_capture_work_mutex_;
 
   // Structure to hold cleanup data for XPU user objects
   // NOTE: Graph capture cleanup is currently disabled for XPU/SYCL
-  // as the required APIs (userObjectCreate, graphRetainUserObject) are not yet available
+  // as the required APIs (userObjectCreate, graphRetainUserObject) are not yet
+  // available
   struct GraphCleanupData {
-    TorchCommXCCL* comm;
+    TorchCommXCCL *comm;
     unsigned long long graph_id;
 
-    GraphCleanupData(TorchCommXCCL* comm_, unsigned long long id)
+    GraphCleanupData(TorchCommXCCL *comm_, unsigned long long id)
         : comm(comm_), graph_id(id) {}
   };
 
   // Static callback function for XPU user object cleanup
-  // NOTE: Currently disabled - XPU/SYCL does not have equivalent callback mechanism
-  // static void graphCleanupCallback(void* userData);
+  // NOTE: Currently disabled - XPU/SYCL does not have equivalent callback
+  // mechanism static void graphCleanupCallback(void* userData);
 
   friend class TorchWorkXCCLQueueCommTest;
 };
