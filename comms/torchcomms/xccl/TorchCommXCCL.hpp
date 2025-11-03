@@ -137,7 +137,7 @@ public:
   // friend class CachingAllocatorHookImpl;
   friend class TorchCommWindowXCCL;
 
-  // Getter for CUDA API (for friend classes)
+  // Getter for XPU API (for friend classes)
   XpuApi *getXpuApi() const { return xpu_api_.get(); }
 
   // Getter for XCCL API (for friend classes)
@@ -146,7 +146,7 @@ public:
   // Method to override the XCCL API implementation for testing
   void setXcclApi(std::shared_ptr<XcclApi> api) { xccl_api_ = std::move(api); }
 
-  // Method to override the CUDA API implementation for testing
+  // Method to override the XPU API implementation for testing
   void setXpuApi(std::shared_ptr<XpuApi> api) { xpu_api_ = std::move(api); }
 
   const CommOptions &getOptions() const override { return options_; }
@@ -254,7 +254,7 @@ private:
   std::optional<xpuStream_t> internal_stream_; // Initialized in init()
   std::optional<xpuEvent_t>
       dependency_event_;   // Pre-allocated event for stream dependencies
-  void *barrier_buffer_{}; // Pre-allocated CUDA buffer for barrier operations
+  void *barrier_buffer_{}; // Pre-allocated XPU buffer for barrier operations
   enum class InitializationState {
     UNINITIALIZED,
     INITIALIZED,
