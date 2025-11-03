@@ -184,7 +184,7 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
       // Wake up either after some time or immediately if shutdown is requested
       timeout_cv_.wait_for(
           lock,
-          std::chrono::milliseconds(garbage_collect_interval_ms_),
+          std::chrono::milliseconds(configs_.garbage_collect_interval_ms_),
           [this]() { return shutdown_.load(); });
 
       // If we're shutting down, exit the loop
@@ -254,7 +254,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
 }
 
 bool TorchCommNCCLX::getGraphCaptureMode() {
-  if (!enable_cuda_graph_support_) {
+  if (!configs_.enable_cuda_graph_support_) {
     return false;
   }
 
@@ -430,7 +430,7 @@ cudaEvent_t TorchCommNCCLX::getEvent() {
 void TorchCommNCCLX::returnEvent(cudaEvent_t event) {
   std::lock_guard<std::mutex> lock(event_pool_mutex_);
 
-  if (event_pool_.size() < max_event_pool_size_) {
+  if (event_pool_.size() < configs_.max_event_pool_size_) {
     event_pool_.push(event);
   } else {
     // Pool is full, destroy the event

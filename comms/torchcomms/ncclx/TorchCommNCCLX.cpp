@@ -151,25 +151,19 @@ void TorchCommNCCLX::init(
       "Failed to allocate barrier buffer");
 
   if (options_.hints.contains("torchcomm::ncclx::max_event_pool_size")) {
-    max_event_pool_size_ =
+    configs_.max_event_pool_size_ =
         std::stoull(options_.hints.at("torchcomm::ncclx::max_event_pool_size"));
-  } else {
-    max_event_pool_size_ = kMaxEventPoolSize;
   }
 
   if (options_.hints.contains(
           "torchcomm::ncclx::garbage_collect_interval_ms")) {
-    garbage_collect_interval_ms_ = std::stoull(
+    configs_.garbage_collect_interval_ms_ = std::stoull(
         options_.hints.at("torchcomm::ncclx::garbage_collect_interval_ms"));
-  } else {
-    garbage_collect_interval_ms_ = kGarbageCollectIntervalMs;
   }
 
   if (options_.hints.contains("torchcomm::ncclx::enable_cuda_graph_support")) {
-    enable_cuda_graph_support_ = string_to_bool(
+    configs_.enable_cuda_graph_support_ = string_to_bool(
         options_.hints.at("torchcomm::ncclx::enable_cuda_graph_support"));
-  } else {
-    enable_cuda_graph_support_ = kEnableCudaGraphSupport;
   }
 
   // Give up our internal reference to the store object here.  The caller
