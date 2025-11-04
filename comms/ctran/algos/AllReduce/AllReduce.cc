@@ -39,6 +39,15 @@ commResult_t ctranAllReduce(
         return ctranAllReduceDirect(
             sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
       }
+      if (count < comm->statex_->nRanks()) {
+        CLOGF(
+            WARN,
+            "AllReduce ctring requires count {} > nRanks {}, fallback to ctdirect",
+            count,
+            comm->statex_->nRanks());
+        return ctranAllReduceDirect(
+            sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
+      }
       return ctranAllReduceRing(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
     case NCCL_ALLREDUCE_ALGO::ctdirect:
