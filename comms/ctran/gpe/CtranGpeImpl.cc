@@ -779,6 +779,14 @@ void KernelElem::wait(int groupId) {
   }
 }
 
+void KernelElem::wait(std::shared_ptr<ctran::utils::Abort> abort, int groupId) {
+  // wait for all thread blocks to complete
+  while (!this->isComplete(groupId) && !abort->Test()) {
+    // friendly spin so we don't hog CPU
+    std::this_thread::yield();
+  }
+}
+
 KernelElemPool::KernelElemPool(size_t capacity) : capacity_(capacity) {
   FB_CUDACHECKTHROW(cudaHostAlloc(
       &this->memPtr_,
