@@ -29,8 +29,7 @@ CtranNvl::CtranNvl(CtranComm* comm) {
       myLocalRank,
       nLocalRanks,
       statex->localRankToRanks());
-  FB_COMMCHECKGOTO(
-      static_cast<commResult_t>(std::move(resFuture).get()), res, fail);
+  FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
 
   this->pimpl_ = std::make_unique<Impl>();
   this->pimpl_->comm = comm;
