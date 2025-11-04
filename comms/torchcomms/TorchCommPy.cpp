@@ -97,7 +97,7 @@ PYBIND11_MODULE(_comms, m) {
       .def_readwrite("timeout", &BatchP2POptions::timeout, "Timeout");
 
   // Bind TorchWork class
-  py::class_<TorchWork, std::shared_ptr<TorchWork>>(
+  intrusive_ptr_class_<TorchWork>(
       m,
       "TorchWork",
       R"(

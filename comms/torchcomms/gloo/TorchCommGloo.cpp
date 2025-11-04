@@ -373,19 +373,19 @@ std::string_view TorchCommGloo::getBackendName() const {
 std::string_view TorchCommGloo::getCommName() const {
   return name_;
 }
-std::shared_ptr<TorchWork> TorchCommGloo::createWork(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::createWork(
     std::function<void()> fn,
     bool async_op) {
   if (async_op) {
-    return std::make_shared<TorchWorkThread>(std::move(fn));
+    return c10::make_intrusive<TorchWorkThread>(std::move(fn));
   }
 
   fn();
-  return std::make_shared<TorchWorkCompleted>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 // Point-to-Point Operations
-std::shared_ptr<TorchWork> TorchCommGloo::send(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::send(
     const at::Tensor& tensor,
     int dst,
     bool async_op,
@@ -424,7 +424,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::send(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::recv(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
     at::Tensor& tensor,
     int src,
     bool async_op,
@@ -474,7 +474,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::recv(
 }
 
 // Batch P2P Operations
-std::shared_ptr<TorchWork> TorchCommGloo::batch_op_issue(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::batch_op_issue(
     const std::vector<BatchSendRecv::P2POp>& ops,
     bool /*async_op*/,
     const BatchP2POptions& /*options*/) {
@@ -510,7 +510,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::batch_op_issue(
 }
 
 // Collective Operations
-std::shared_ptr<TorchWork> TorchCommGloo::broadcast(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::broadcast(
     at::Tensor& tensor,
     int root,
     bool async_op,
@@ -551,7 +551,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::broadcast(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::all_reduce(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
     at::Tensor& tensor,
     ReduceOp op,
     bool async_op,
@@ -594,7 +594,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::all_reduce(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::reduce(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
     const at::Tensor& tensor,
     int root,
     ReduceOp op,
@@ -640,7 +640,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::reduce(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::all_gather(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
     const std::vector<at::Tensor>& tensor_list,
     const at::Tensor& tensor,
     bool async_op,
@@ -719,7 +719,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::all_gather(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::all_gather_v(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_v(
     const std::vector<at::Tensor>& tensor_list,
     const at::Tensor& tensor,
     bool async_op,
@@ -727,7 +727,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::all_gather_v(
   throw std::runtime_error("all_gather_v is not supported in GLOO backend yet");
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::all_gather_single(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,
     bool async_op,
@@ -779,7 +779,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::all_gather_single(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::reduce_scatter(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
     ReduceOp op,
@@ -815,7 +815,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::reduce_scatter(
   return reduce_scatter_single(output, input, op, async_op, singleOptions);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::reduce_scatter_v(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_v(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
     ReduceOp op,
@@ -825,7 +825,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::reduce_scatter_v(
       "reduce_scatter_v is not supported in GLOO backend yet");
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
     at::Tensor& output,
     const at::Tensor& input,
     ReduceOp op,
@@ -885,7 +885,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::all_to_all_single(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_single(
     at::Tensor& output,
     const at::Tensor& input,
     bool async_op,
@@ -942,7 +942,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::all_to_all_single(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
     at::Tensor& output,
     const at::Tensor& input,
     const std::vector<uint64_t>& output_split_sizes,
@@ -1039,7 +1039,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::all_to_all(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all(
     const std::vector<at::Tensor>& output_tensor_list,
     const std::vector<at::Tensor>& input_tensor_list,
     bool async_op,
@@ -1122,7 +1122,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::all_to_all(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::barrier(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::barrier(
     bool async_op,
     const BarrierOptions& options) {
   checkInitialized();
@@ -1142,7 +1142,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::barrier(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::scatter(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::scatter(
     at::Tensor& output_tensor,
     const std::vector<at::Tensor>& input_tensor_list,
     int root,
@@ -1219,7 +1219,7 @@ std::shared_ptr<TorchWork> TorchCommGloo::scatter(
       async_op);
 }
 
-std::shared_ptr<TorchWork> TorchCommGloo::gather(
+c10::intrusive_ptr<TorchWork> TorchCommGloo::gather(
     const std::vector<at::Tensor>& output_tensor_list,
     const at::Tensor& input_tensor,
     int root,

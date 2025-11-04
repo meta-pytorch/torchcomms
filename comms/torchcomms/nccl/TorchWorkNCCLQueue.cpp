@@ -84,7 +84,7 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCLQueue::finalize() {
 }
 
 void TorchWorkNCCLQueue::enqueueWork(
-    std::shared_ptr<TorchWorkNCCL> work,
+    c10::intrusive_ptr<TorchWorkNCCL> work,
     cudaStream_t stream) {
   // Add work to stream's queue after events have been recorded
   std::lock_guard<std::mutex> lock(work_queues_mutex_);

@@ -111,12 +111,16 @@ class TorchWorkNCCLXQueue {
   TorchWorkNCCLX::WorkStatus garbageCollect();
   // Finalize function can only be called from the main thread
   TorchWorkNCCLX::WorkStatus finalize();
-  void enqueueWork(std::shared_ptr<TorchWorkNCCLX> work, cudaStream_t stream);
+  void enqueueWork(
+      c10::intrusive_ptr<TorchWorkNCCLX> work,
+      cudaStream_t stream);
 
  private:
   TorchWorkNCCLX::WorkStatus garbageCollectLocked();
 
-  std::unordered_map<cudaStream_t, std::queue<std::shared_ptr<TorchWorkNCCLX>>>
+  std::unordered_map<
+      cudaStream_t,
+      std::queue<c10::intrusive_ptr<TorchWorkNCCLX>>>
       stream_work_queues_;
   std::mutex work_queues_mutex_;
 

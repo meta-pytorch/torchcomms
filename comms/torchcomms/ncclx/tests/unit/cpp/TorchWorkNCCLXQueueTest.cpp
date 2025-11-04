@@ -252,7 +252,7 @@ TEST_F(TorchWorkNCCLXQueueTest, EnqueueNullWorkDoesNotCrash) {
   // Test that enqueueing null work doesn't crash during enqueue
   // Note: We don't call garbageCollect after this because that would
   // cause a segfault when trying to call checkStatus() on null work
-  std::shared_ptr<TorchWorkNCCLX> null_work = nullptr;
+  c10::intrusive_ptr<TorchWorkNCCLX> null_work = nullptr;
 
   // This should not crash the queue during enqueue
   EXPECT_NO_THROW(queue_->enqueueWork(null_work, stream1_));
