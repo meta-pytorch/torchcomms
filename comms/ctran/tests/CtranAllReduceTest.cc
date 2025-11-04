@@ -253,7 +253,9 @@ TEST_P(CtranAllReduceTest, Rank2AbsentTimeout) {
 INSTANTIATE_TEST_SUITE_P(
     AllCombinations,
     CtranAllReduceTest,
-    ::testing::Values(std::make_tuple("ctring", NCCL_ALLREDUCE_ALGO::ctring)),
+    ::testing::Values(
+        std::make_tuple("ctring", NCCL_ALLREDUCE_ALGO::ctring),
+        std::make_tuple("ctdirect", NCCL_ALLREDUCE_ALGO::ctdirect)),
     [](const ::testing::TestParamInfo<AllReduceTestParam>& info) {
       return std::get<0>(info.param);
     });

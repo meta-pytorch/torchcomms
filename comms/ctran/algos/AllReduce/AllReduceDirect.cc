@@ -52,6 +52,14 @@ static const auto myAlgo = NCCL_ALLREDUCE_ALGO::ctdirect;
  *         registers and reduces them into the receive buffer.
  */
 
+#define THROW_IF_ABORTED(code)                                        \
+  do {                                                                \
+    code;                                                             \
+    if (comm->testAbort()) {                                          \
+      throw ctran::utils::Exception("comm aborted", commRemoteError); \
+    }                                                                 \
+  } while (0)
+
 static commResult_t impl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   struct OpElem* op = opGroup.front().get();
@@ -250,7 +258,7 @@ static commResult_t impl(
     }
 
     elem->post();
-    elem->wait();
+    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
 
     /* Step 2: Inter-node Reduce-scatter */
     /* wait for inter-node data transfer to perform local reduction */
@@ -305,7 +313,7 @@ static commResult_t impl(
     elem->stridedReduce.stride = chunkCount;
     /* poke kernel to start the local reduction */
     elem->post();
-    elem->wait();
+    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
 
     /* Step 3: Inter-node Allgather */
     /* wait for inter-node data transfer to perform local reduction */
@@ -346,6 +354,7 @@ static commResult_t impl(
         }
       }
     }
+    THROW_IF_ABORTED();
 
     /* Step 4: Intra-node Allgather */
     elem = op->allreduce.kElemStepMap.at(
@@ -363,7 +372,7 @@ static commResult_t impl(
 
     /* poke kernel to start the allgather */
     elem->post();
-    elem->wait();
+    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
 
     op->allreduce.sendbuff =
         BUFOFFSET(op->allreduce.sendbuff, stepCount * typeSize);
@@ -407,7 +416,7 @@ static commResult_t impl(
       }
     }
     elem->post();
-    elem->wait();
+    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
 
     /* Step 6: Intra-node bcast */
     elem = op->allreduce.kElemStepMap.at(
@@ -421,7 +430,7 @@ static commResult_t impl(
       }
     }
     elem->post();
-    elem->wait();
+    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
 
     /* Step 7: Inter-node allreduce */
     /* wait for inter-node data transfer to perform local reduction */
@@ -472,7 +481,7 @@ static commResult_t impl(
     elem->stridedReduce.blockCount = remCount;
     elem->stridedReduce.stride = remCount;
     elem->post();
-    elem->wait();
+    THROW_IF_ABORTED(elem->wait(comm->getAbort()));
   }
 
   if (localRegSend == true) {
@@ -693,8 +702,8 @@ commResult_t ctranAllReduceDirect(
 
   opGroup.push_back(std::move(op));
 
-  FB_COMMCHECK(
-      comm->ctran_->gpe->submit(std::move(opGroup), impl, config, func));
+  FB_COMMCHECK(comm->ctran_->gpe->submit(
+      std::move(opGroup), impl, config, func, timeout));
 
   if (count * typeSize < CTRAN_MIN_REGISTRATION_SIZE) {
     FB_CUDACHECK(cudaMemcpyAsync(

@@ -79,11 +79,11 @@ __global__ void ncclKernelAllReduceCtranDirect(
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
+  devStateLoadToShm(&flag[bId], devState);
+
   if (flag && tId == 0) {
     ctran::device::KernelStartGpe(&flag[bId]);
   }
-
-  devStateLoadToShm(devState);
 
   const auto nLocalRanks = statex->nLocalRanks();
   const auto localRank = statex->localRank();

@@ -43,9 +43,6 @@ commResult_t ctranAllReduce(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
     case NCCL_ALLREDUCE_ALGO::ctdirect:
     default:
-      if (timeout != std::nullopt) {
-        CLOGF(WARN, "timeout is ignored for AllReduce ctdirect algorithm");
-      }
       return ctranAllReduceDirect(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
   }
