@@ -66,7 +66,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::broadcast(
 
 c10::intrusive_ptr<TorchWork> TorchComm::all_reduce(
     at::Tensor& tensor,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const AllReduceOptions& options) {
   return impl_->all_reduce(tensor, op, async_op, options);
@@ -75,7 +75,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_reduce(
 c10::intrusive_ptr<TorchWork> TorchComm::reduce(
     const at::Tensor& tensor,
     int root,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceOptions& options) {
   return impl_->reduce(tensor, root, op, async_op, options);
@@ -108,7 +108,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::all_gather_single(
 c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
   return impl_->reduce_scatter(output, input_list, op, async_op, options);
@@ -117,7 +117,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter(
 c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter_v(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
   return impl_->reduce_scatter_v(output, input_list, op, async_op, options);
@@ -126,7 +126,7 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter_v(
 c10::intrusive_ptr<TorchWork> TorchComm::reduce_scatter_single(
     at::Tensor& output,
     const at::Tensor& input,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterSingleOptions& options) {
   return impl_->reduce_scatter_single(output, input, op, async_op, options);

@@ -95,13 +95,13 @@ class TorchCommNCCLX : public TorchCommBackend,
       const BroadcastOptions& options = {}) override;
   c10::intrusive_ptr<TorchWork> all_reduce(
       at::Tensor& tensor,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const AllReduceOptions& options = {}) override;
   c10::intrusive_ptr<TorchWork> reduce(
       const at::Tensor& tensor,
       int root,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceOptions& options = {}) override;
   c10::intrusive_ptr<TorchWork> all_gather(
@@ -122,19 +122,19 @@ class TorchCommNCCLX : public TorchCommBackend,
   c10::intrusive_ptr<TorchWork> reduce_scatter(
       at::Tensor& output,
       const std::vector<at::Tensor>& input_list,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceScatterOptions& options = {}) override;
   c10::intrusive_ptr<TorchWork> reduce_scatter_v(
       at::Tensor& output,
       const std::vector<at::Tensor>& input_list,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceScatterOptions& options = {}) override;
   c10::intrusive_ptr<TorchWork> reduce_scatter_single(
       at::Tensor& output,
       const at::Tensor& input,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceScatterSingleOptions& options = {}) override;
   c10::intrusive_ptr<TorchWork> all_to_all_single(

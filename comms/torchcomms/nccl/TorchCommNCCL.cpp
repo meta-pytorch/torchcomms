@@ -548,7 +548,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::broadcast(
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_reduce(
     at::Tensor& tensor,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const AllReduceOptions& options) {
   checkInitialized();
@@ -590,7 +590,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_reduce(
 c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce(
     const at::Tensor& tensor,
     int root,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceOptions& options) {
   checkInitialized();
@@ -746,7 +746,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather_single(
 c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
   checkInitialized();
@@ -821,7 +821,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
 c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter_v(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
   throw std::runtime_error("reduce_scatter_v is not supported in NCCL backend");
@@ -830,7 +830,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter_v(
 c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter_single(
     at::Tensor& output,
     const at::Tensor& input,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterSingleOptions& options) {
   checkInitialized();
