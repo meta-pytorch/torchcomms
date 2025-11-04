@@ -1,5 +1,5 @@
 sphinx==7.2.6
--e git+https://github.com/pytorch/pytorch_sphinx_theme.git@pytorch_sphinx_theme2#egg=pytorch_sphinx_theme2
+pytorch_sphinx_theme2==0.2.0
 sphinxcontrib.katex==0.9.10
 matplotlib
 papermill
