@@ -394,7 +394,7 @@ ncclResult_t ncclAllToAllv(
         recvbuff);
   }
 
-  if ((NCCL_ALLTOALLV_ALGO == NCCL_ALLTOALLV_ALGO::ctran) &&
+  if ((ncclx::algoconf::getAllToAllVAlgo() == NCCL_ALLTOALLV_ALGO::ctran) &&
       ctranAllToAllvSupport(comm->ctranComm_.get())) {
     return metaCommToNccl(ctranAllToAllv(
         sendbuff,

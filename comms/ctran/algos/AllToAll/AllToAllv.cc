@@ -24,6 +24,7 @@
       op->alltoallv.recvcounts,              \
       op->alltoallv.rdispls,                 \
       op->alltoallv.datatype,                \
+      op->opCount,                           \
       comm,                                  \
       std::move(timestamp));
 

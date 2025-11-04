@@ -4,9 +4,11 @@
 #define CTRAN_ALL_TO_ALLV_IMPL_H_
 
 #include <folly/synchronization/CallOnce.h>
+
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/profiler/Profiler.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 static inline const std::string allToAllAlgoName(enum NCCL_ALLTOALL_ALGO algo) {
@@ -60,6 +62,7 @@ commResult_t ctranAllToAllvIbImpl(
     std::vector<size_t>& recvCounts,
     std::vector<size_t>& rDispls,
     commDataType_t datatype,
+    uint64_t opCount,
     CtranComm* comm,
     std::unique_ptr<CtranMapperTimestamp> timestamp) {
   const auto& statex = comm->statex_;
@@ -82,6 +85,12 @@ commResult_t ctranAllToAllvIbImpl(
   std::vector<int> ibRecvPeers, ibSendPeers;
   std::unordered_set<int> ibPeers;
 
+  ctran::Profiler* profiler = comm->ctran_->profiler.get();
+  if (profiler) {
+    profiler->initForEachColl(
+        opCount, NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT);
+  }
+
   if (sendCounts.size() > 0) {
     std::vector<size_t> sendSizes(nRanks, 0);
     for (int i = 0; i < nRanks; i++) {
@@ -93,6 +102,13 @@ commResult_t ctranAllToAllvIbImpl(
     }
     CtranMapperContext context(algoName, sendSizes, recvSizes);
     comm->ctran_->mapper->setContext(std::move(context));
+
+    CTRAN_PROFILER_IF(profiler, {
+      auto& algoContext = profiler->algoContext;
+      algoContext.algorithmName = algoName;
+      algoContext.sendContext.messageSizes = folly::join(',', sendSizes);
+      algoContext.recvContext.messageSizes = folly::join(',', recvSizes);
+    });
   }
 
   // Prepare buffers shifted with displacement, and set ctrl/put/notify
@@ -135,13 +151,22 @@ commResult_t ctranAllToAllvIbImpl(
   // Search for the handle only when there are RecvPeers to avoid attempting to
   // search/register with a buffer size of 0.
   if (!ibRecvPeers.empty()) {
+    CTRAN_PROFILER_IF(
+        profiler, profiler->startEvent(ctran::ProfilerEvent::BUF_REG));
+
     FB_COMMCHECK(searchRegHandle(
         comm,
         recvbuff,
         contigRecvBufSize * commTypeSize(datatype),
         tmpHdl,
         tmpRegHdls));
+
+    CTRAN_PROFILER_IF(
+        profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
   }
+
+  CTRAN_PROFILER_IF(
+      profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_CTRL));
 
   FB_COMMCHECK(comm->ctran_->mapper->isendCtrlBatch<PerfConfig>(
       recvBuffs, tmpHdl, ibRecvPeers, ibSendCtrlReqs, CtranMapperBackend::IB));
@@ -151,12 +176,18 @@ commResult_t ctranAllToAllvIbImpl(
   // Search for the handle only when there are SendPeers to avoid attempting to
   // search/register with a buffer size of 0.
   if (!ibSendPeers.empty()) {
+    CTRAN_PROFILER_IF(
+        profiler, profiler->startEvent(ctran::ProfilerEvent::BUF_REG));
+
     FB_COMMCHECK(searchRegHandle(
         comm,
         sendbuff,
         contigSendBufSize * commTypeSize(datatype),
         tmpHdl,
         tmpRegHdls));
+
+    CTRAN_PROFILER_IF(
+        profiler, profiler->endEvent(ctran::ProfilerEvent::BUF_REG));
   }
   int idx = 0;
   for (auto peer : ibSendPeers) {
@@ -178,11 +209,26 @@ commResult_t ctranAllToAllvIbImpl(
   idx = 0;
   for (auto& recvCtrlReq : ibRecvCtrlReqs) {
     FB_COMMCHECK(comm->ctran_->mapper->waitRequest<PerfConfig>(&recvCtrlReq));
+
+    // Check whether it is the last request. We should end the algo ctrl event
+    // after finish waiting the last request.
+    if (&recvCtrlReq == &ibRecvCtrlReqs.back()) {
+      CTRAN_PROFILER_IF(
+          profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_CTRL));
+    }
+
     const int peer = recvCtrlReq.peer;
     if (useProfiler) {
       timestamp->recvCtrl.push_back(CtranMapperTimestampPoint(peer));
     }
     auto sendSize = sendCounts[peer] * commTypeSize(datatype);
+
+    // Check whether it is the first request. We should start timing the data
+    // event after finish waiting the first request.
+    if (&recvCtrlReq == &ibRecvCtrlReqs.front()) {
+      CTRAN_PROFILER_IF(
+          profiler, profiler->startEvent(ctran::ProfilerEvent::ALGO_DATA));
+    }
     // FIXME: we should compare sendSize with real maxWqeSize:
     // NCCL_CTRAN_IB_QP_SCALING_THRESHOLD may not be maxWqeSize if user
     // specified NCCL_CTRAN_IB_QP_CONFIG_ALGO to overwrite qp_scaling_threshold
@@ -212,11 +258,16 @@ commResult_t ctranAllToAllvIbImpl(
   // Wait for all receives (i.e., remote IB puts) to complete
   FB_COMMCHECK(comm->ctran_->mapper->waitAllNotifies<PerfConfig>(notifyVec));
 
+  CTRAN_PROFILER_IF(
+      profiler, profiler->endEvent(ctran::ProfilerEvent::ALGO_DATA));
+
   // Always wait for all sendCtrlReqs to complete so that the memory can be
   // safely reused in next collective; otherwise, ibvc may complete the previous
   // request while the memory has already been assigned to a new request.
   FB_COMMCHECK(
       comm->ctran_->mapper->waitAllRequests<PerfConfig>(ibSendCtrlReqs));
+
+  CTRAN_PROFILER_IF(profiler, { profiler->reportToScuba(); });
 
   if (useProfiler) {
     comm->ctran_->mapper->timestamps.emplace_back(std::move(timestamp));

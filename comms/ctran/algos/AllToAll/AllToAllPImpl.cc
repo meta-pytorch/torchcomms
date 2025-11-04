@@ -21,6 +21,7 @@ using ctran::alltoallp::PersistArgs;
       counts,                                \
       displs,                                \
       pArgs->datatype,                       \
+      op->opCount,                           \
       comm,                                  \
       std::move(timestamp));
 

@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/algos/DevCommon.cuh"
+#include "comms/ctran/algos/DevShmState.cuh"
 // FIXME [REBASE]: update the path once moved to fbcode/comms
 #include "comms/ctran/gpe/tests/KernelElemPoolUTKernels.h"
 
@@ -13,6 +14,9 @@ __global__ void KElemConsumerKernel(KernelElem* elemList) {
 }
 
 __global__ void KElemPostRevokeKernel(KernelElem* elemList, int unuseIdx) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = false;
   KernelElem* elem = elemList;
   int i = 0;
   while (elem) {
@@ -42,6 +46,9 @@ __global__ void KElemPostRevokeKernel(KernelElem* elemList, int unuseIdx) {
 
 __global__ void
 KElemPostWaitKernel(KernelElem* elem, size_t count, int* vec1, int* vec2) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = false;
   bool revoked = false;
   elemWaitPostOrRevokeByGroup(elem, blockIdx.x, &revoked);
 
@@ -63,6 +70,9 @@ __global__ void KElemPostMultiGroupsKernel(
     int nGroupSets,
     int* vec1,
     int* vec2) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = false;
   bool revoked = false;
   auto nGroupsPerSet = gridDim.x / nGroupSets;
   auto groupSetId = blockIdx.x / nGroupsPerSet;

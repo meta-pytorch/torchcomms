@@ -6,6 +6,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
+#include "comms/ctran/utils/CudaWrap.h"
 // FIXME [REBASE]: update the path once moved to fbcode/comms
 #include "comms/ctran/gpe/tests/KernelElemPoolUTKernels.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
@@ -149,12 +150,17 @@ TEST_F(KernelElemPoolTest, PostRevokeComplete) {
   dim3 grid = {ngroups, 1, 1};
   dim3 blocks = {640, 1, 1};
   void* args[] = {&elemList, &unuseIdx};
+
+  CUDACHECK_TEST(cudaFuncSetAttribute(
+      (void*)KElemPostRevokeKernel,
+      cudaFuncAttributeMaxDynamicSharedMemorySize,
+      sizeof(CtranAlgoDeviceState)));
   CUDACHECK_TEST(cudaLaunchKernel(
       reinterpret_cast<void*>(KElemPostRevokeKernel),
       grid,
       blocks,
       args,
-      0,
+      sizeof(CtranAlgoDeviceState),
       0));
 
   // Now host side posts the elems, revoke only 1 elem in the middle
@@ -224,8 +230,18 @@ TEST_F(KernelElemPoolTest, PostWait) {
   dim3 grid = {ngroups, 1, 1};
   dim3 blocks = {640, 1, 1};
   void* args[] = {&elem, &count, &vec1, &vec2};
+
+  CUDACHECK_TEST(cudaFuncSetAttribute(
+      (void*)KElemPostWaitKernel,
+      cudaFuncAttributeMaxDynamicSharedMemorySize,
+      sizeof(CtranAlgoDeviceState)));
   CUDACHECK_TEST(cudaLaunchKernel(
-      reinterpret_cast<void*>(KElemPostWaitKernel), grid, blocks, args, 0, 0));
+      reinterpret_cast<void*>(KElemPostWaitKernel),
+      grid,
+      blocks,
+      args,
+      sizeof(CtranAlgoDeviceState),
+      0));
 
   // Host side posts the elems
   elem->post();
@@ -282,12 +298,17 @@ TEST_F(KernelElemPoolTest, PostMultiGroupSets) {
   dim3 grid = {nGroups * nGroupsSets, 1, 1};
   dim3 blocks = {256, 1, 1};
   void* args[] = {&elemList, &countPerGroupSet, &nGroupsSets, &vec1, &vec2};
+
+  CUDACHECK_TEST(cudaFuncSetAttribute(
+      (void*)KElemPostMultiGroupsKernel,
+      cudaFuncAttributeMaxDynamicSharedMemorySize,
+      sizeof(CtranAlgoDeviceState)));
   CUDACHECK_TEST(cudaLaunchKernel(
       reinterpret_cast<void*>(KElemPostMultiGroupsKernel),
       grid,
       blocks,
       args,
-      0,
+      sizeof(CtranAlgoDeviceState),
       0));
 
   auto elem = elemList;
