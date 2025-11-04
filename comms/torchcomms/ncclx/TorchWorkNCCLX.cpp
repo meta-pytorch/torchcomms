@@ -60,17 +60,24 @@ void TorchWorkNCCLX::recordFunctionStart(const std::string& coll_name) {
   if (!recordFunction_->isActive()) {
     return;
   }
+
   // Passing input tensor to recordFunction allows for shape information in
   // profiling output.
-  std::vector<c10::IValue> inputs;
-  inputs.reserve(inputTensors_.size());
-  for (const auto& tensor : inputTensors_) {
-    inputs.emplace_back(tensor);
+  if (!inputTensors_.empty()) {
+    std::vector<c10::IValue> inputs;
+    inputs.reserve(inputTensors_.size());
+    for (const auto& tensor : inputTensors_) {
+      inputs.emplace_back(tensor);
+    }
+    recordFunction_->before(
+        coll_name,
+        c10::ArrayRef<const c10::IValue>(inputs.data(), inputs.size()));
+  } else if (inputTensor_.defined()) {
+    recordFunction_->before(
+        coll_name, c10::ArrayRef<const c10::IValue>(inputTensor_));
+  } else {
+    recordFunction_->before(coll_name, c10::ArrayRef<const c10::IValue>{});
   }
-  // TODO: pass the collective name to be added
-  recordFunction_->before(
-      coll_name,
-      c10::ArrayRef<const c10::IValue>(inputs.data(), inputs.size()));
 }
 
 void TorchWorkNCCLX::recordStart(const std::string& coll_name) {
