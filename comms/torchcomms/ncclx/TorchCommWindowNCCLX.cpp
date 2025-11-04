@@ -79,7 +79,7 @@ void TorchCommWindowNCCLX::allocate(
       << "[TorchCommWindowNCCLX]: NCCLX window allocation failed.";
 }
 
-std::shared_ptr<TorchWork> TorchCommWindowNCCLX::put(
+c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
     const at::Tensor& data,
     int dstRank,
     size_t targetDisp,
@@ -150,7 +150,7 @@ at::Tensor TorchCommWindowNCCLX::getTensor(
   return t;
 }
 
-std::shared_ptr<TorchWork> TorchCommWindowNCCLX::signal(
+c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::signal(
     size_t signalDisp,
     uint64_t signalVal,
     int dstRank,
@@ -176,7 +176,7 @@ std::shared_ptr<TorchWork> TorchCommWindowNCCLX::signal(
   return work;
 }
 
-std::shared_ptr<TorchWork> TorchCommWindowNCCLX::waitSignal(
+c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::waitSignal(
     size_t signalDisp,
     uint64_t cmpVal,
     SignalCmpOp cmpOp,

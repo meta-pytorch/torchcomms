@@ -64,7 +64,7 @@ class ProfilerTest : public ::testing::Test {
       Json::Value& json_value,
       std::map<std::string, std::vector<Json::Value>>& events);
 
-  std::shared_ptr<torch::comms::TorchWork> runAllCollectiveOperations();
+  c10::intrusive_ptr<torch::comms::TorchWork> runAllCollectiveOperations();
 
  protected:
   void SetUp() override;

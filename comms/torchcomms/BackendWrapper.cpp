@@ -51,7 +51,7 @@ std::vector<uint64_t> toVecUint64(const std::vector<int64_t>& vec) {
 
 } // namespace
 
-WorkWrapper::WorkWrapper(std::shared_ptr<TorchWork> work)
+WorkWrapper::WorkWrapper(c10::intrusive_ptr<TorchWork> work)
     : work_(std::move(work)) {}
 
 bool WorkWrapper::isCompleted() {

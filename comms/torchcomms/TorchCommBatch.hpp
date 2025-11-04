@@ -27,7 +27,7 @@ class BatchSendRecv {
 
   void send(const at::Tensor& tensor, int dst);
   void recv(at::Tensor& tensor, int src);
-  std::shared_ptr<TorchWork> issue(
+  c10::intrusive_ptr<TorchWork> issue(
       bool async_op,
       const BatchP2POptions& options = {});
 

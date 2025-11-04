@@ -33,17 +33,17 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   TorchCommWindowNCCLX& operator=(TorchCommWindowNCCLX&& other) noexcept =
       delete;
 
-  std::shared_ptr<TorchWork> put(
+  c10::intrusive_ptr<TorchWork> put(
       const at::Tensor& data,
       int dstRank,
       size_t targetDisp,
       bool asyncOp) override;
-  std::shared_ptr<TorchWork> signal(
+  c10::intrusive_ptr<TorchWork> signal(
       size_t signalDisp,
       uint64_t signalVal,
       int dstRank,
       bool asyncOp) override;
-  std::shared_ptr<TorchWork> waitSignal(
+  c10::intrusive_ptr<TorchWork> waitSignal(
       size_t signalDisp,
       uint64_t cmpVal,
       SignalCmpOp cmpOp,

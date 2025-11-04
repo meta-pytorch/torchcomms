@@ -35,8 +35,8 @@ void SendRecvTest::testSyncSendRecv(int count, at::ScalarType dtype) {
   // Alternate send/recv order based on rank to avoid deadlock
   // Even ranks send first, then receive
   // Odd ranks receive first, then send
-  std::shared_ptr<torch::comms::TorchWork> send_work;
-  std::shared_ptr<torch::comms::TorchWork> recv_work;
+  c10::intrusive_ptr<torch::comms::TorchWork> send_work;
+  c10::intrusive_ptr<torch::comms::TorchWork> recv_work;
 
   if (rank_ % 2 == 0) {
     // Even ranks: send first, then receive
@@ -90,8 +90,8 @@ void SendRecvTest::testAsyncSendRecv(int count, at::ScalarType dtype) {
   // Alternate send/recv order based on rank to avoid deadlock
   // Even ranks send first, then receive
   // Odd ranks receive first, then send
-  std::shared_ptr<torch::comms::TorchWork> send_work;
-  std::shared_ptr<torch::comms::TorchWork> recv_work;
+  c10::intrusive_ptr<torch::comms::TorchWork> send_work;
+  c10::intrusive_ptr<torch::comms::TorchWork> recv_work;
 
   if (rank_ % 2 == 0) {
     // Even ranks: send first, then receive
@@ -126,8 +126,8 @@ void SendRecvTest::testAsyncSendRecvEarlyReset(
   // Alternate send/recv order based on rank to avoid deadlock
   // Even ranks send first, then receive
   // Odd ranks receive first, then send
-  std::shared_ptr<torch::comms::TorchWork> send_work;
-  std::shared_ptr<torch::comms::TorchWork> recv_work;
+  c10::intrusive_ptr<torch::comms::TorchWork> send_work;
+  c10::intrusive_ptr<torch::comms::TorchWork> recv_work;
 
   if (rank_ % 2 == 0) {
     // Even ranks: send first, then receive
@@ -165,8 +165,8 @@ void SendRecvTest::testSendRecvInputDeleted(int count, at::ScalarType dtype) {
   int recv_rank = (rank_ + num_ranks_ - 1) % num_ranks_;
 
   // Create work objects to hold the async operations
-  std::shared_ptr<torch::comms::TorchWork> send_work;
-  std::shared_ptr<torch::comms::TorchWork> recv_work;
+  c10::intrusive_ptr<torch::comms::TorchWork> send_work;
+  c10::intrusive_ptr<torch::comms::TorchWork> recv_work;
 
   {
     // Create send tensor in a limited scope

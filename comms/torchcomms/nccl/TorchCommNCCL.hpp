@@ -68,102 +68,102 @@ class TorchCommNCCL : public TorchCommBackend,
   std::string_view getCommName() const override;
 
   // Point-to-Point Operations
-  std::shared_ptr<TorchWork> send(
+  c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,
       int dst,
       bool async_op,
       const SendOptions& options = {}) override;
-  std::shared_ptr<TorchWork> recv(
+  c10::intrusive_ptr<TorchWork> recv(
       at::Tensor& tensor,
       int src,
       bool async_op,
       const RecvOptions& options = {}) override;
 
   // Batch P2P Operations
-  std::shared_ptr<TorchWork> batch_op_issue(
+  c10::intrusive_ptr<TorchWork> batch_op_issue(
       const std::vector<BatchSendRecv::P2POp>& ops,
       bool async_op,
       const BatchP2POptions& options = {}) override;
 
   // Collective Operations
-  std::shared_ptr<TorchWork> broadcast(
+  c10::intrusive_ptr<TorchWork> broadcast(
       at::Tensor& tensor,
       int root,
       bool async_op,
       const BroadcastOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_reduce(
+  c10::intrusive_ptr<TorchWork> all_reduce(
       at::Tensor& tensor,
       ReduceOp op,
       bool async_op,
       const AllReduceOptions& options = {}) override;
-  std::shared_ptr<TorchWork> reduce(
+  c10::intrusive_ptr<TorchWork> reduce(
       const at::Tensor& tensor,
       int root,
       ReduceOp op,
       bool async_op,
       const ReduceOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_gather(
+  c10::intrusive_ptr<TorchWork> all_gather(
       const std::vector<at::Tensor>& tensor_list,
       const at::Tensor& tensor,
       bool async_op,
       const AllGatherOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_gather_v(
+  c10::intrusive_ptr<TorchWork> all_gather_v(
       const std::vector<at::Tensor>& tensor_list,
       const at::Tensor& tensor,
       bool async_op,
       const AllGatherOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_gather_single(
+  c10::intrusive_ptr<TorchWork> all_gather_single(
       at::Tensor& output,
       const at::Tensor& input,
       bool async_op,
       const AllGatherSingleOptions& options = {}) override;
-  std::shared_ptr<TorchWork> reduce_scatter(
+  c10::intrusive_ptr<TorchWork> reduce_scatter(
       at::Tensor& output,
       const std::vector<at::Tensor>& input_list,
       ReduceOp op,
       bool async_op,
       const ReduceScatterOptions& options = {}) override;
-  std::shared_ptr<TorchWork> reduce_scatter_v(
+  c10::intrusive_ptr<TorchWork> reduce_scatter_v(
       at::Tensor& output,
       const std::vector<at::Tensor>& input_list,
       ReduceOp op,
       bool async_op,
       const ReduceScatterOptions& options = {}) override;
-  std::shared_ptr<TorchWork> reduce_scatter_single(
+  c10::intrusive_ptr<TorchWork> reduce_scatter_single(
       at::Tensor& output,
       const at::Tensor& input,
       ReduceOp op,
       bool async_op,
       const ReduceScatterSingleOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_to_all_single(
+  c10::intrusive_ptr<TorchWork> all_to_all_single(
       at::Tensor& output,
       const at::Tensor& input,
       bool async_op,
       const AllToAllSingleOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_to_all_v_single(
+  c10::intrusive_ptr<TorchWork> all_to_all_v_single(
       at::Tensor& output,
       const at::Tensor& input,
       const std::vector<uint64_t>& output_split_sizes,
       const std::vector<uint64_t>& input_split_sizes,
       bool async_op,
       const AllToAllvSingleOptions& options = {}) override;
-  std::shared_ptr<TorchWork> all_to_all(
+  c10::intrusive_ptr<TorchWork> all_to_all(
       const std::vector<at::Tensor>& output_tensor_list,
       const std::vector<at::Tensor>& input_tensor_list,
       bool async_op,
       const AllToAllOptions& options = {}) override;
-  std::shared_ptr<TorchWork> barrier(
+  c10::intrusive_ptr<TorchWork> barrier(
       bool async_op,
       const BarrierOptions& options = {}) override;
 
   // Scatter and Gather Operations
-  std::shared_ptr<TorchWork> scatter(
+  c10::intrusive_ptr<TorchWork> scatter(
       at::Tensor& output_tensor,
       const std::vector<at::Tensor>& input_tensor_list,
       int root,
       bool async_op,
       const ScatterOptions& options = {}) override;
-  std::shared_ptr<TorchWork> gather(
+  c10::intrusive_ptr<TorchWork> gather(
       const std::vector<at::Tensor>& output_tensor_list,
       const at::Tensor& input_tensor,
       int root,
@@ -236,7 +236,7 @@ class TorchCommNCCL : public TorchCommBackend,
   void register_address(const AddressWithLen& addr);
   void deregister_address(const Address& addr);
   ncclDataType_t getNcclDataType(const at::Tensor& tensor);
-  std::shared_ptr<TorchWorkNCCL> createWork(
+  c10::intrusive_ptr<TorchWorkNCCL> createWork(
       cudaStream_t stream,
       std::chrono::milliseconds timeout,
       const std::vector<at::Tensor>& inputTensors);
@@ -300,7 +300,7 @@ class TorchCommNCCL : public TorchCommBackend,
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
   void checkWorkQueue();
-  void enqueueWork(std::shared_ptr<TorchWorkNCCL> work, cudaStream_t stream);
+  void enqueueWork(c10::intrusive_ptr<TorchWorkNCCL> work, cudaStream_t stream);
   bool getGraphCaptureMode();
   cudaStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
@@ -357,7 +357,7 @@ class TorchCommNCCL : public TorchCommBackend,
   // destruction, organized per graph using capture ID
   std::unordered_map<
       unsigned long long,
-      std::vector<std::shared_ptr<TorchWorkNCCL>>>
+      std::vector<c10::intrusive_ptr<TorchWorkNCCL>>>
       graph_capture_work_refs_;
   std::mutex graph_capture_work_mutex_;
 

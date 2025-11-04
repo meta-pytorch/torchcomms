@@ -245,7 +245,7 @@ void TorchCommRCCL::checkAndAbortIfTimedOutOrError() {
 
     // Create an empty queue and swap with the completed_works_ queue
     // This is more efficient than calling clear() as it deallocates memory
-    std::queue<std::shared_ptr<TorchWorkRCCL>> empty;
+    std::queue<c10::intrusive_ptr<TorchWorkRCCL>> empty;
     std::swap(completed_works_, empty);
     // The old queue will be destroyed when this scope exits
   }
@@ -262,18 +262,18 @@ void TorchCommRCCL::checkAndAbortIfTimedOutOrError() {
   }
 }
 
-std::shared_ptr<TorchWorkRCCL> TorchCommRCCL::createWork(
+c10::intrusive_ptr<TorchWorkRCCL> TorchCommRCCL::createWork(
     hipStream_t stream,
     std::chrono::milliseconds timeout,
     const std::vector<at::Tensor>& inputTensors) {
   // Only create the work object without enqueuing it
-  auto work = std::make_shared<TorchWorkRCCL>(
+  auto work = c10::make_intrusive<TorchWorkRCCL>(
       shared_from_this(), stream, timeout, inputTensors, tracing_);
   return work;
 }
 
 void TorchCommRCCL::enqueueWork(
-    std::shared_ptr<TorchWorkRCCL> work,
+    c10::intrusive_ptr<TorchWorkRCCL> work,
     hipStream_t stream) {
   // Add work to stream's queue after events have been recorded
   std::lock_guard<std::mutex> lock(work_queues_mutex_);
