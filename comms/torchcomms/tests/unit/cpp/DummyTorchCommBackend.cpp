@@ -138,7 +138,7 @@ c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::broadcast(
 
 c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_reduce(
     at::Tensor& tensor,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const AllReduceOptions& options) {
   return c10::make_intrusive<DummyTorchWork>();
@@ -147,7 +147,7 @@ c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_reduce(
 c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce(
     const at::Tensor& tensor,
     int root,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceOptions& options) {
   return c10::make_intrusive<DummyTorchWork>();
@@ -180,7 +180,7 @@ c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_gather_single(
 c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
   return c10::make_intrusive<DummyTorchWork>();
@@ -189,7 +189,7 @@ c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter(
 c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_v(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
   return c10::make_intrusive<DummyTorchWork>();
@@ -198,7 +198,7 @@ c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_v(
 c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_single(
     at::Tensor& output,
     const at::Tensor& input,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterSingleOptions& options) {
   return c10::make_intrusive<DummyTorchWork>();
