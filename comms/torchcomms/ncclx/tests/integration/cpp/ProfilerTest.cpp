@@ -65,7 +65,7 @@ void ProfilerTest::sanityCheckProfilerMeta(
   }
 }
 
-std::shared_ptr<torch::comms::TorchWork>
+c10::intrusive_ptr<torch::comms::TorchWork>
 ProfilerTest::runAllCollectiveOperations() {
   auto options = at::TensorOptions().dtype(kTensorDtype).device(device_type_);
 

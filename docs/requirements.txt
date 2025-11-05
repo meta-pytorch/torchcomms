@@ -1,5 +1,5 @@
 sphinx==7.2.6
--e git+https://github.com/pytorch/pytorch_sphinx_theme.git@pytorch_sphinx_theme2#egg=pytorch_sphinx_theme2
+pytorch_sphinx_theme2==0.2.0
 sphinxcontrib.katex==0.9.10
 matplotlib
 papermill
@@ -7,7 +7,6 @@ ipykernel
 nbsphinx
 jupytext
 ipython_genutils
-pytorch-sphinx-theme2==0.1.0
 jinja2>=3.1.4
 apache-airflow==2.10.5
 breathe==4.36.0  # only if generating C++

@@ -40,101 +40,101 @@ class TorchCommBackend {
   virtual std::string_view getCommName() const = 0;
 
   // Point-to-Point Operations
-  virtual std::shared_ptr<TorchWork> send(
+  virtual c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,
       int dst,
       bool async_op,
       const SendOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> recv(
+  virtual c10::intrusive_ptr<TorchWork> recv(
       at::Tensor& tensor,
       int src,
       bool async_op,
       const RecvOptions& options = {}) = 0;
 
-  virtual std::shared_ptr<TorchWork> batch_op_issue(
+  virtual c10::intrusive_ptr<TorchWork> batch_op_issue(
       const std::vector<BatchSendRecv::P2POp>& ops,
       bool async_op,
       const BatchP2POptions& options = {}) = 0;
 
   // Collective Operations
-  virtual std::shared_ptr<TorchWork> broadcast(
+  virtual c10::intrusive_ptr<TorchWork> broadcast(
       at::Tensor& tensor,
       int root,
       bool async_op,
       const BroadcastOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> all_reduce(
+  virtual c10::intrusive_ptr<TorchWork> all_reduce(
       at::Tensor& tensor,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const AllReduceOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> reduce(
+  virtual c10::intrusive_ptr<TorchWork> reduce(
       const at::Tensor& tensor,
       int root,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> all_gather(
+  virtual c10::intrusive_ptr<TorchWork> all_gather(
       const std::vector<at::Tensor>& tensor_list,
       const at::Tensor& tensor,
       bool async_op,
       const AllGatherOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> all_gather_v(
+  virtual c10::intrusive_ptr<TorchWork> all_gather_v(
       const std::vector<at::Tensor>& tensor_list,
       const at::Tensor& tensor,
       bool async_op,
       const AllGatherOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> all_gather_single(
+  virtual c10::intrusive_ptr<TorchWork> all_gather_single(
       at::Tensor& output,
       const at::Tensor& input,
       bool async_op,
       const AllGatherSingleOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> reduce_scatter(
+  virtual c10::intrusive_ptr<TorchWork> reduce_scatter(
       at::Tensor& output,
       const std::vector<at::Tensor>& input_list,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceScatterOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> reduce_scatter_v(
+  virtual c10::intrusive_ptr<TorchWork> reduce_scatter_v(
       at::Tensor& output,
       const std::vector<at::Tensor>& input_list,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceScatterOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> reduce_scatter_single(
+  virtual c10::intrusive_ptr<TorchWork> reduce_scatter_single(
       at::Tensor& output,
       const at::Tensor& input,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceScatterSingleOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> all_to_all_single(
+  virtual c10::intrusive_ptr<TorchWork> all_to_all_single(
       at::Tensor& output,
       const at::Tensor& input,
       bool async_op,
       const AllToAllSingleOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> all_to_all_v_single(
+  virtual c10::intrusive_ptr<TorchWork> all_to_all_v_single(
       at::Tensor& output,
       const at::Tensor& input,
       const std::vector<uint64_t>& output_split_sizes,
       const std::vector<uint64_t>& input_split_sizes,
       bool async_op,
       const AllToAllvSingleOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> all_to_all(
+  virtual c10::intrusive_ptr<TorchWork> all_to_all(
       const std::vector<at::Tensor>& output_tensor_list,
       const std::vector<at::Tensor>& input_tensor_list,
       bool async_op,
       const AllToAllOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> barrier(
+  virtual c10::intrusive_ptr<TorchWork> barrier(
       bool async_op,
       const BarrierOptions& options = {}) = 0;
 
   // Scatter and Gather Operations
-  virtual std::shared_ptr<TorchWork> scatter(
+  virtual c10::intrusive_ptr<TorchWork> scatter(
       at::Tensor& output_tensor,
       const std::vector<at::Tensor>& input_tensor_list,
       int root,
       bool async_op,
       const ScatterOptions& options = {}) = 0;
-  virtual std::shared_ptr<TorchWork> gather(
+  virtual c10::intrusive_ptr<TorchWork> gather(
       const std::vector<at::Tensor>& output_tensor_list,
       const at::Tensor& input_tensor,
       int root,

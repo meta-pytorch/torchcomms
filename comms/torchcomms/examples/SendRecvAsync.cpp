@@ -54,8 +54,8 @@ int main() {
 
   // Perform asynchronous send/recv operations
   // Use alternating pattern to avoid deadlock
-  std::shared_ptr<TorchWork> send_work = nullptr;
-  std::shared_ptr<TorchWork> recv_work = nullptr;
+  c10::intrusive_ptr<TorchWork> send_work = nullptr;
+  c10::intrusive_ptr<TorchWork> recv_work = nullptr;
 
   if (rank % 2 == 0) {
     // Even ranks: send first, then receive

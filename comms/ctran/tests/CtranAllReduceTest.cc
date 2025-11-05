@@ -149,6 +149,17 @@ TEST_P(CtranAllReduceTest, BasicRunAbortEnabled) {
   }
 }
 
+TEST_P(CtranAllReduceTest, SmallMessageSize) {
+  auto [algoName, algo] = GetParam();
+  NCCL_ALLREDUCE_ALGO = algo;
+
+  startWorkers(/*abortEnabled=*/true);
+  for (int rank = 0; rank < kNRanks; ++rank) {
+    run(rank,
+        [this](PerRankState& state) { runAllReduce(/*nElem=*/1, state); });
+  }
+}
+
 void CtranAllReduceTest::runTestRanksAbsent(
     std::vector<int> ranksToRunCollective,
     std::vector<int> ranksAbsent,
@@ -253,7 +264,9 @@ TEST_P(CtranAllReduceTest, Rank2AbsentTimeout) {
 INSTANTIATE_TEST_SUITE_P(
     AllCombinations,
     CtranAllReduceTest,
-    ::testing::Values(std::make_tuple("ctring", NCCL_ALLREDUCE_ALGO::ctring)),
+    ::testing::Values(
+        std::make_tuple("ctring", NCCL_ALLREDUCE_ALGO::ctring),
+        std::make_tuple("ctdirect", NCCL_ALLREDUCE_ALGO::ctdirect)),
     [](const ::testing::TestParamInfo<AllReduceTestParam>& info) {
       return std::get<0>(info.param);
     });
@@ -423,78 +436,89 @@ class CtranAllReduceRingOneRankTest : public CtranStandaloneMultiRankBaseTest {
 
     CtranStandaloneMultiRankBaseTest::SetUp();
   }
+
+  void runAllReduce(size_t nElem) {
+    ASSERT_EQ(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::ctring);
+
+    CtranStandaloneMultiRankBaseTest::startWorkers(
+        kNRanks, /*aborts=*/{ctran::utils::createAbort(/*enabled=*/true)});
+
+    run(/*rank=*/0, [this, nElem](PerRankState& state) {
+      // set up src buffer to hold magic values, and zero out dst buffers
+      int magic = 0xdeadbeef;
+      int srcHost[kBufferNElem];
+      int dstHost[kBufferNElem];
+      for (int i = 0; i < kBufferNElem; ++i) {
+        srcHost[i] = magic + i;
+      }
+      memset(dstHost, 0, kBufferSize);
+      ASSERT_EQ(
+          cudaSuccess,
+          cudaMemcpy(
+              state.srcBuffer, srcHost, kBufferSize, cudaMemcpyHostToDevice));
+      ASSERT_EQ(cudaSuccess, cudaMemset(state.dstBuffer, 0, kBufferSize));
+
+      // warmup
+      void* srcHandle;
+      void* dstHandle;
+      ASSERT_EQ(
+          commSuccess,
+          state.ctranComm->ctran_->commRegister(
+              state.srcBuffer, kBufferSize, &srcHandle));
+      ASSERT_EQ(
+          commSuccess,
+          state.ctranComm->ctran_->commRegister(
+              state.dstBuffer, kBufferSize, &dstHandle));
+      SCOPE_EXIT {
+        // deregistering will happen after streamSync below
+        state.ctranComm->ctran_->commDeregister(dstHandle);
+        state.ctranComm->ctran_->commDeregister(srcHandle);
+      };
+
+      CLOGF(INFO, "rank {} allReduce completed registration", state.rank);
+
+      EXPECT_EQ(
+          commSuccess,
+          ctranAllReduce(
+              state.srcBuffer,
+              state.dstBuffer,
+              nElem,
+              kDataType,
+              kReduceOpType,
+              state.ctranComm.get(),
+              state.stream,
+              std::nullopt,
+              /*timeout=*/std::nullopt));
+
+      CLOGF(INFO, "rank {} allReduce scheduled", state.rank);
+
+      // ensure async execution completion and no error
+      EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
+      EXPECT_EQ(commSuccess, state.ctranComm->getAsyncResult());
+
+      CLOGF(INFO, "rank {} allReduce task completed", state.rank);
+
+      // validate results
+      ASSERT_EQ(
+          cudaSuccess,
+          cudaMemcpy(
+              dstHost, state.dstBuffer, kBufferSize, cudaMemcpyDeviceToHost));
+      for (int i = 0; i < nElem; ++i) {
+        EXPECT_EQ(srcHost[i], dstHost[i]);
+      }
+      for (int i = nElem; i < kBufferNElem; ++i) {
+        EXPECT_EQ(dstHost[i], 0);
+      }
+    });
+  }
 };
 
 TEST_F(CtranAllReduceRingOneRankTest, Basic) {
-  ASSERT_EQ(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::ctring);
+  this->runAllReduce(/*nElem=*/kBufferNElem);
+}
 
-  CtranStandaloneMultiRankBaseTest::startWorkers(
-      kNRanks, /*aborts=*/{ctran::utils::createAbort(/*enabled=*/true)});
-
-  run(/*rank=*/0, [this](PerRankState& state) {
-    // set up src buffer to hold magic values, and zero out dst buffers
-    int magic = 0xdeadbeef;
-    int srcHost[kBufferNElem];
-    int dstHost[kBufferNElem];
-    for (int i = 0; i < kBufferNElem; ++i) {
-      srcHost[i] = magic + i;
-    }
-    memset(dstHost, 0, kBufferSize);
-    ASSERT_EQ(
-        cudaSuccess,
-        cudaMemcpy(
-            state.srcBuffer, srcHost, kBufferSize, cudaMemcpyHostToDevice));
-    ASSERT_EQ(cudaSuccess, cudaMemset(state.dstBuffer, 0, kBufferSize));
-
-    // warmup
-    void* srcHandle;
-    void* dstHandle;
-    ASSERT_EQ(
-        commSuccess,
-        state.ctranComm->ctran_->commRegister(
-            state.srcBuffer, kBufferSize, &srcHandle));
-    ASSERT_EQ(
-        commSuccess,
-        state.ctranComm->ctran_->commRegister(
-            state.dstBuffer, kBufferSize, &dstHandle));
-    SCOPE_EXIT {
-      // deregistering will happen after streamSync below
-      state.ctranComm->ctran_->commDeregister(dstHandle);
-      state.ctranComm->ctran_->commDeregister(srcHandle);
-    };
-
-    CLOGF(INFO, "rank {} allReduce completed registration", state.rank);
-
-    EXPECT_EQ(
-        commSuccess,
-        ctranAllReduce(
-            state.srcBuffer,
-            state.dstBuffer,
-            kBufferNElem,
-            kDataType,
-            kReduceOpType,
-            state.ctranComm.get(),
-            state.stream,
-            std::nullopt,
-            /*timeout=*/std::nullopt));
-
-    CLOGF(INFO, "rank {} allReduce scheduled", state.rank);
-
-    // ensure async execution completion and no error
-    EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
-    EXPECT_EQ(commSuccess, state.ctranComm->getAsyncResult());
-
-    CLOGF(INFO, "rank {} allReduce task completed", state.rank);
-
-    // validate results
-    ASSERT_EQ(
-        cudaSuccess,
-        cudaMemcpy(
-            dstHost, state.dstBuffer, kBufferSize, cudaMemcpyDeviceToHost));
-    for (int i = 0; i < kBufferNElem; ++i) {
-      EXPECT_EQ(srcHost[i], dstHost[i]);
-    }
-  });
+TEST_F(CtranAllReduceRingOneRankTest, SmallMessageSize) {
+  this->runAllReduce(/*nElem=*/1);
 }
 
 } // namespace ctran::testing

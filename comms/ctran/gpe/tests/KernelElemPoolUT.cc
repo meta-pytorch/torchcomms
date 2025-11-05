@@ -1,8 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <csignal>
+#include <thread>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include <csignal>
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
@@ -10,6 +13,7 @@
 // FIXME [REBASE]: update the path once moved to fbcode/comms
 #include "comms/ctran/gpe/tests/KernelElemPoolUTKernels.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/utils/Abort.h"
 
 class KernelElemPoolTest : public ::testing::Test {
  public:
@@ -394,4 +398,107 @@ TEST_F(KernelElemPoolAbortTest, CheckFreeWithInvalidNGroups) {
   elem->ngroups = -1;
   ASSERT_EXIT(elem->isFree(), testing::KilledBySignal(SIGABRT), "")
       << "Expect abort when revoking with invalid ngroups";
+}
+
+TEST_F(KernelElemPoolTest, WaitWithoutAbortCtrl) {
+  constexpr int poolSize = 10;
+  auto elemPool = std::make_unique<KernelElemPool>(poolSize);
+  ASSERT_NE(elemPool, nullptr);
+
+  constexpr int ngroups = 5;
+  KernelElem* elem = elemPool->pop(ngroups);
+  ASSERT_NE(elem, nullptr);
+
+  // Set elem status to simulate completion
+  for (int i = 0; i < ngroups; i++) {
+    elem->status[i] = KernelElem::ElemStatus::INUSE;
+  }
+
+  std::thread completer([elem, ngroups]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    for (int i = 0; i < ngroups; i++) {
+      elem->status[i] = KernelElem::ElemStatus::DONE;
+    }
+  });
+  elem->wait();
+  EXPECT_TRUE(elem->isComplete());
+
+  completer.join();
+
+  // Clean up
+  elem->free();
+  elemPool->reclaim();
+}
+
+TEST_F(KernelElemPoolTest, WaitWithAbortCtrlWithoutSet) {
+  constexpr int poolSize = 10;
+  auto elemPool = std::make_unique<KernelElemPool>(poolSize);
+  ASSERT_NE(elemPool, nullptr);
+
+  constexpr int ngroups = 5;
+  KernelElem* elem = elemPool->pop(ngroups);
+  ASSERT_NE(elem, nullptr);
+
+  // Enable abortCtrl
+  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  EXPECT_TRUE(abortCtrl->Enabled());
+  EXPECT_FALSE(abortCtrl->Test());
+
+  // Set elem status to simulate ongoing work
+  for (int i = 0; i < ngroups; i++) {
+    elem->status[i] = KernelElem::ElemStatus::INUSE;
+  }
+
+  std::thread completer([elem, ngroups]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    for (int i = 0; i < ngroups; i++) {
+      elem->status[i] = KernelElem::ElemStatus::DONE;
+    }
+  });
+  elem->wait(abortCtrl);
+  EXPECT_TRUE(elem->isComplete());
+  EXPECT_FALSE(abortCtrl->Test());
+
+  completer.join();
+
+  // Clean up
+  elem->free();
+  elemPool->reclaim();
+}
+
+TEST_F(KernelElemPoolTest, WaitWithAbortCtrlUnblockOnSet) {
+  constexpr int poolSize = 10;
+  auto elemPool = std::make_unique<KernelElemPool>(poolSize);
+  ASSERT_NE(elemPool, nullptr);
+
+  constexpr int ngroups = 5;
+  KernelElem* elem = elemPool->pop(ngroups);
+  ASSERT_NE(elem, nullptr);
+
+  // Enable abortCtrl
+  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  EXPECT_TRUE(abortCtrl->Enabled());
+  EXPECT_FALSE(abortCtrl->Test());
+
+  // Set elem status to simulate ongoing work that won't complete
+  for (int i = 0; i < ngroups; i++) {
+    elem->status[i] = KernelElem::ElemStatus::INUSE;
+  }
+
+  std::thread aborter([abortCtrl]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    abortCtrl->Set();
+  });
+  elem->wait(abortCtrl);
+  EXPECT_FALSE(elem->isComplete());
+  EXPECT_TRUE(abortCtrl->Test());
+
+  aborter.join();
+
+  // Clean up - since abort is set and element is not complete,
+  // we need to manually set status to allow free
+  for (int i = 0; i < ngroups; i++) {
+    elem->status[i] = KernelElem::ElemStatus::RESET;
+  }
+  elemPool->reclaim();
 }

@@ -26,7 +26,7 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)signal_size;
     win_size_ = window_size;
   }
-  std::shared_ptr<TorchWork> put(
+  c10::intrusive_ptr<TorchWork> put(
       const at::Tensor& data,
       int dstRank,
       size_t targetDisp,
@@ -35,7 +35,7 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)dstRank;
     (void)targetDisp;
     (void)asyncOp;
-    return std::make_shared<DummyTorchWork>();
+    return c10::make_intrusive<DummyTorchWork>();
   }
   at::Tensor getTensor(
       int rank,
@@ -48,7 +48,7 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)storageOffset;
     return at::Tensor();
   }
-  std::shared_ptr<TorchWork> signal(
+  c10::intrusive_ptr<TorchWork> signal(
       size_t signalDisp,
       uint64_t signalVal,
       int dstRank,
@@ -57,9 +57,9 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)signalVal;
     (void)dstRank;
     (void)asyncOp;
-    return std::make_shared<DummyTorchWork>();
+    return c10::make_intrusive<DummyTorchWork>();
   }
-  virtual std::shared_ptr<TorchWork> waitSignal(
+  virtual c10::intrusive_ptr<TorchWork> waitSignal(
       size_t signalDisp,
       uint64_t cmpVal,
       SignalCmpOp cmpOp,
@@ -68,7 +68,7 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)cmpVal;
     (void)cmpOp;
     (void)asyncOp;
-    return std::make_shared<DummyTorchWork>();
+    return c10::make_intrusive<DummyTorchWork>();
   }
 };
 
@@ -105,153 +105,153 @@ std::string_view DummyTorchCommBackend::getBackendName() const {
   return kBackendName;
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::send(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::send(
     const at::Tensor& tensor,
     int dst,
     bool async_op,
     const SendOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::recv(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::recv(
     at::Tensor& tensor,
     int src,
     bool async_op,
     const RecvOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::batch_op_issue(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::batch_op_issue(
     const std::vector<BatchSendRecv::P2POp>& ops,
     bool async_op,
     const BatchP2POptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::broadcast(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::broadcast(
     at::Tensor& tensor,
     int root,
     bool async_op,
     const BroadcastOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::all_reduce(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_reduce(
     at::Tensor& tensor,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const AllReduceOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::reduce(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce(
     const at::Tensor& tensor,
     int root,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::all_gather(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_gather(
     const std::vector<at::Tensor>& tensor_list,
     const at::Tensor& tensor,
     bool async_op,
     const AllGatherOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::all_gather_v(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_gather_v(
     const std::vector<at::Tensor>& tensor_list,
     const at::Tensor& tensor,
     bool async_op,
     const AllGatherOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::all_gather_single(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_gather_single(
     at::Tensor& output,
     const at::Tensor& input,
     bool async_op,
     const AllGatherSingleOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_v(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_v(
     at::Tensor& output,
     const std::vector<at::Tensor>& input_list,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_single(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::reduce_scatter_single(
     at::Tensor& output,
     const at::Tensor& input,
-    ReduceOp op,
+    const ReduceOp& op,
     bool async_op,
     const ReduceScatterSingleOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::all_to_all_single(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_to_all_single(
     at::Tensor& output,
     const at::Tensor& input,
     bool async_op,
     const AllToAllSingleOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::all_to_all_v_single(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_to_all_v_single(
     at::Tensor& output,
     const at::Tensor& input,
     const std::vector<uint64_t>& output_split_sizes,
     const std::vector<uint64_t>& input_split_sizes,
     bool async_op,
     const AllToAllvSingleOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::all_to_all(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::all_to_all(
     const std::vector<at::Tensor>& output_tensor_list,
     const std::vector<at::Tensor>& input_tensor_list,
     bool async_op,
     const AllToAllOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::barrier(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::barrier(
     bool async_op,
     const BarrierOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::scatter(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::scatter(
     at::Tensor& output_tensor,
     const std::vector<at::Tensor>& input_tensor_list,
     int root,
     bool async_op,
     const ScatterOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
-std::shared_ptr<TorchWork> DummyTorchCommBackend::gather(
+c10::intrusive_ptr<TorchWork> DummyTorchCommBackend::gather(
     const std::vector<at::Tensor>& output_tensor_list,
     const at::Tensor& input_tensor,
     int root,
     bool async_op,
     const GatherOptions& options) {
-  return std::make_shared<DummyTorchWork>();
+  return c10::make_intrusive<DummyTorchWork>();
 }
 
 std::shared_ptr<TorchCommWindow> DummyTorchCommBackend::window_allocate(

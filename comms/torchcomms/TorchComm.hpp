@@ -32,96 +32,96 @@ class TorchComm {
   std::string_view getCommName() const;
 
   // Point-to-Point Operations
-  std::shared_ptr<TorchWork> send(
+  c10::intrusive_ptr<TorchWork> send(
       const at::Tensor& tensor,
       int dst,
       bool async_op,
       const SendOptions& options = {});
-  std::shared_ptr<TorchWork> recv(
+  c10::intrusive_ptr<TorchWork> recv(
       at::Tensor& tensor,
       int src,
       bool async_op,
       const RecvOptions& options = {});
 
   // Collective Operations
-  std::shared_ptr<TorchWork> broadcast(
+  c10::intrusive_ptr<TorchWork> broadcast(
       at::Tensor& tensor,
       int root,
       bool async_op,
       const BroadcastOptions& options = {});
-  std::shared_ptr<TorchWork> all_reduce(
+  c10::intrusive_ptr<TorchWork> all_reduce(
       at::Tensor& tensor,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const AllReduceOptions& options = {});
-  std::shared_ptr<TorchWork> reduce(
+  c10::intrusive_ptr<TorchWork> reduce(
       const at::Tensor& tensor,
       int root,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceOptions& options = {});
-  std::shared_ptr<TorchWork> all_gather(
+  c10::intrusive_ptr<TorchWork> all_gather(
       const std::vector<at::Tensor>& tensor_list,
       const at::Tensor& tensor,
       bool async_op,
       const AllGatherOptions& options = {});
-  std::shared_ptr<TorchWork> all_gather_v(
+  c10::intrusive_ptr<TorchWork> all_gather_v(
       const std::vector<at::Tensor>& tensor_list,
       const at::Tensor& tensor,
       bool async_op,
       const AllGatherOptions& options = {});
-  std::shared_ptr<TorchWork> all_gather_single(
+  c10::intrusive_ptr<TorchWork> all_gather_single(
       at::Tensor& output,
       const at::Tensor& input,
       bool async_op,
       const AllGatherSingleOptions& options = {});
-  std::shared_ptr<TorchWork> reduce_scatter(
+  c10::intrusive_ptr<TorchWork> reduce_scatter(
       at::Tensor& output,
       const std::vector<at::Tensor>& input_list,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceScatterOptions& options = {});
-  std::shared_ptr<TorchWork> reduce_scatter_v(
+  c10::intrusive_ptr<TorchWork> reduce_scatter_v(
       at::Tensor& output,
       const std::vector<at::Tensor>& input_list,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceScatterOptions& options = {});
-  std::shared_ptr<TorchWork> reduce_scatter_single(
+  c10::intrusive_ptr<TorchWork> reduce_scatter_single(
       at::Tensor& output,
       const at::Tensor& input,
-      ReduceOp op,
+      const ReduceOp& op,
       bool async_op,
       const ReduceScatterSingleOptions& options = {});
-  std::shared_ptr<TorchWork> all_to_all_single(
+  c10::intrusive_ptr<TorchWork> all_to_all_single(
       at::Tensor& output,
       const at::Tensor& input,
       bool async_op,
       const AllToAllSingleOptions& options = {});
-  std::shared_ptr<TorchWork> all_to_all_v_single(
+  c10::intrusive_ptr<TorchWork> all_to_all_v_single(
       at::Tensor& output,
       const at::Tensor& input,
       const std::vector<uint64_t>& output_split_sizes,
       const std::vector<uint64_t>& input_split_sizes,
       bool async_op,
       const AllToAllvSingleOptions& options = {});
-  std::shared_ptr<TorchWork> all_to_all(
+  c10::intrusive_ptr<TorchWork> all_to_all(
       const std::vector<at::Tensor>& output_tensor_list,
       const std::vector<at::Tensor>& input_tensor_list,
       bool async_op,
       const AllToAllOptions& options = {});
-  std::shared_ptr<TorchWork> barrier(
+  c10::intrusive_ptr<TorchWork> barrier(
       bool async_op,
       const BarrierOptions& options = {});
 
   // Scatter and Gather Operations
-  std::shared_ptr<TorchWork> scatter(
+  c10::intrusive_ptr<TorchWork> scatter(
       at::Tensor& output_tensor,
       const std::vector<at::Tensor>& input_tensor_list,
       int root,
       bool async_op,
       const ScatterOptions& options = {});
-  std::shared_ptr<TorchWork> gather(
+  c10::intrusive_ptr<TorchWork> gather(
       const std::vector<at::Tensor>& output_tensor_list,
       const at::Tensor& input_tensor,
       int root,

@@ -26,16 +26,16 @@ class TorchCommWindow {
       const size_t window_size,
       bool cpu_buf = false,
       const size_t signal_size = 256) = 0;
-  virtual std::shared_ptr<TorchWork>
+  virtual c10::intrusive_ptr<TorchWork>
   put(const at::Tensor& data, int dstRank, size_t targetDisp, bool asyncOp) = 0;
   virtual at::Tensor getTensor(
       int rank,
       at::IntArrayRef sizes,
       at::ScalarType dtype,
       int64_t storageOffset) = 0;
-  virtual std::shared_ptr<TorchWork>
+  virtual c10::intrusive_ptr<TorchWork>
   signal(size_t signalDisp, uint64_t signalVal, int dstRank, bool asyncOp) = 0;
-  virtual std::shared_ptr<TorchWork> waitSignal(
+  virtual c10::intrusive_ptr<TorchWork> waitSignal(
       size_t signalDisp,
       uint64_t cmpVal,
       SignalCmpOp cmpOp,

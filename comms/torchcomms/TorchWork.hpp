@@ -2,13 +2,14 @@
 
 #pragma once
 
+#include <c10/util/intrusive_ptr.h>
 #include <functional>
 #include <future>
 
 namespace torch {
 namespace comms {
 
-class TorchWork {
+class TorchWork : public c10::intrusive_ptr_target {
  public:
   TorchWork() = default;
   virtual ~TorchWork() = default;

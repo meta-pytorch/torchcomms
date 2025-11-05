@@ -130,7 +130,7 @@ void BroadcastTest::testBroadcastInputDeleted(int count, at::ScalarType dtype) {
   const int root_value = 42;
 
   // Create work object to hold the async operation
-  std::shared_ptr<torch::comms::TorchWork> work;
+  c10::intrusive_ptr<torch::comms::TorchWork> work;
 
   {
     // Create tensor in a limited scope

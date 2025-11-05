@@ -8,6 +8,7 @@
 
 #include "comms/ctran/algos/CtranAlgoArgDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/utils/Abort.h"
 #include "comms/utils/commSpecs.h"
 
 #ifdef CTRAN_DISABLE_TCPDM
@@ -139,6 +140,7 @@ struct alignas(16) KernelElem {
   // need make progress. It can be safely called only when algorithm ensures no
   // network progress is needed.
   void wait(int groupId = -1);
+  void wait(std::shared_ptr<ctran::utils::Abort> abort, int groupId = -1);
 };
 
 template <>
