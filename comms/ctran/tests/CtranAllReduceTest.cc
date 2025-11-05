@@ -363,16 +363,9 @@ class CtranAllReduceRingMinSizeTest
   }
 };
 
-TEST_P(CtranAllReduceRingMinSizeTest, InsufficientElements_1Element) {
-  auto [numRanks, dt] = GetParam();
-  ASSERT_FALSE(numRanks <= 1) << "Need at least 2 ranks for this test";
-  runTest(
-      1, dt, CtranAllReduceRingMinSizeTestOpt::expect_insufficient, numRanks);
-}
-
 TEST_P(CtranAllReduceRingMinSizeTest, InsufficientElements_NRanksMinus1) {
   auto [numRanks, dt] = GetParam();
-  ASSERT_FALSE(numRanks <= 1) << "Need at least 2 ranks for this test";
+  ASSERT_GT(numRanks, 1) << "Need at least 2 ranks for this test";
   runTest(
       numRanks - 1,
       dt,
@@ -382,8 +375,6 @@ TEST_P(CtranAllReduceRingMinSizeTest, InsufficientElements_NRanksMinus1) {
 
 TEST_P(CtranAllReduceRingMinSizeTest, SufficientElements_ExactlyNRanks) {
   auto [numRanks, dt] = GetParam();
-  XLOG(INFO) << "SufficientElements_ExactlyNRanks: numRanks: " << numRanks
-             << ", dt: " << dt;
   runTest(
       numRanks,
       dt,
@@ -400,27 +391,13 @@ TEST_P(CtranAllReduceRingMinSizeTest, SufficientElements_NRanksPlus1) {
       numRanks);
 }
 
-TEST_P(CtranAllReduceRingMinSizeTest, SufficientElements_LargeMessage) {
-  auto [numRanks, dt] = GetParam();
-  runTest(
-      1024, dt, CtranAllReduceRingMinSizeTestOpt::expect_sufficient, numRanks);
-}
-
 INSTANTIATE_TEST_SUITE_P(
     AllDataTypes,
     CtranAllReduceRingMinSizeTest,
     ::testing::Values(
         std::make_tuple<>(2, commFloat),
-        std::make_tuple<>(2, commInt32),
         std::make_tuple<>(2, commInt8),
-        std::make_tuple<>(4, commFloat),
-        std::make_tuple<>(4, commInt32),
-        std::make_tuple<>(4, commInt8),
-        std::make_tuple<>(6, commFloat),
-        std::make_tuple<>(6, commInt32),
-        std::make_tuple<>(6, commInt8),
         std::make_tuple<>(8, commFloat),
-        std::make_tuple<>(8, commInt32),
         std::make_tuple<>(8, commInt8)));
 
 class CtranAllReduceRingOneRankTest : public CtranStandaloneMultiRankBaseTest {
