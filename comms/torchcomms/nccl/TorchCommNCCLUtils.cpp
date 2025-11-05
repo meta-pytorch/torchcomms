@@ -284,18 +284,18 @@ bool TorchCommNCCL::getGraphCaptureMode() {
       std::string(cuda_api_->getErrorString(err)));
 }
 
-std::shared_ptr<TorchWorkNCCL> TorchCommNCCL::createWork(
+c10::intrusive_ptr<TorchWorkNCCL> TorchCommNCCL::createWork(
     cudaStream_t stream,
     std::chrono::milliseconds timeout,
     const std::vector<at::Tensor>& inputTensors) {
   // Only create the work object without enqueuing it
-  auto work = std::make_shared<TorchWorkNCCL>(
+  auto work = c10::make_intrusive<TorchWorkNCCL>(
       shared_from_this(), stream, timeout, inputTensors, tracing_);
   return work;
 }
 
 void TorchCommNCCL::enqueueWork(
-    std::shared_ptr<TorchWorkNCCL> work,
+    c10::intrusive_ptr<TorchWorkNCCL> work,
     cudaStream_t stream) {
   // In graph capture mode, keep a reference to the work object to prevent
   // premature destruction until the graph gets destroyed, organized per graph

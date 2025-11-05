@@ -141,7 +141,7 @@ void ReduceTest::testReduceInputDeleted(
   const int root_rank = 0;
 
   // Create work object to hold the async operation
-  std::shared_ptr<torch::comms::TorchWork> work;
+  c10::intrusive_ptr<torch::comms::TorchWork> work;
 
   {
     // Create input tensor in a limited scope

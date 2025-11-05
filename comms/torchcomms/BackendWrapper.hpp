@@ -12,7 +12,7 @@ namespace comms {
 
 class WorkWrapper : public c10d::Work {
  public:
-  explicit WorkWrapper(std::shared_ptr<TorchWork> work);
+  explicit WorkWrapper(c10::intrusive_ptr<TorchWork> work);
   ~WorkWrapper() override = default;
 
   bool isCompleted() override;
@@ -23,7 +23,7 @@ class WorkWrapper : public c10d::Work {
   std::vector<at::Tensor> result() override;
 
  private:
-  std::shared_ptr<TorchWork> work_;
+  c10::intrusive_ptr<TorchWork> work_;
 };
 
 using c10d::kUnsetTimeout;
