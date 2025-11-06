@@ -37,9 +37,6 @@ jobs:
         # TODO: remove dependency on fbwhoami
         echo "DEVICE_NAME=$(hostname)" > /etc/fbwhoami
         cat /etc/fbwhoami
-        export PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
-        export CC=/opt/rh/gcc-toolset-11/root/usr/bin/cc
-        export CXX=/opt/rh/gcc-toolset-11/root/usr/bin/c++
         conda create -n venv python=${{ matrix.python-version }} -y
         conda activate venv
         python -m pip install --upgrade pip
