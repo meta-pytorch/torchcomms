@@ -276,7 +276,7 @@ xpu_result_t DefaultXpuApi::graphRetainUserObject(
     xpuUserObject_t object,
     unsigned int count,
     unsigned int flags) {
-    // XPU/SYCL doesn't support graphs
+    // Currently, XPU/SYCL doesn't support graphs
     return XPU_ERROR_UNSUPPORTED;
 }
 
@@ -287,23 +287,8 @@ xpu_result_t DefaultXpuApi::streamGetCaptureInfo_v2(
     xpuGraph_t* graph_out,
     const xpuGraphNode_t** dependencies_out,
     size_t* numDependencies_out) {
-    if (captureStatus_out) {
-        *captureStatus_out = xpuStreamCaptureStatusNone;
-    }
-    if (id_out) {
-        *id_out = 0;
-    }
-    if (graph_out) {
-        *graph_out = nullptr;
-    }
-    if (dependencies_out) {
-        *dependencies_out = nullptr;
-    }
-    if (numDependencies_out) {
-        *numDependencies_out = 0;
-    }
-    
-    return XPU_SUCCESS;
+    // Currently, XPU/SYCL doesn't support graphs
+    return XPU_ERROR_UNSUPPORTED;
 }
 
 // Error Handling
