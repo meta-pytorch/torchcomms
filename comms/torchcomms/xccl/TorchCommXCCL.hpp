@@ -177,8 +177,6 @@ protected:
   std::atomic<CommState> comm_state_{
       CommState::NORMAL}; // State of the communicator
 
-  void register_address(const AddressWithLen &addr);
-  void deregister_address(const Address &addr);
   onecclDataType_t getXcclDataType(const at::Tensor &tensor);
   std::shared_ptr<TorchWorkXCCL>
   createWork(xpuStream_t stream, std::chrono::milliseconds timeout,
