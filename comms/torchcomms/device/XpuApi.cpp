@@ -33,10 +33,6 @@ xpu_result_t DefaultXpuApi::getDeviceProperties(xpuDeviceProp* prop, int device)
         // Get memory info
         prop->totalGlobalMem = sycl_device.get_info<sycl::info::device::global_mem_size>();
         
-        // Set version info (XPU doesn't have major/minor version like CUDA)
-        prop->major = 1;
-        prop->minor = 0;
-        
         // Get compute capabilities
         auto max_work_group_size = sycl_device.get_info<sycl::info::device::max_work_group_size>();
         auto max_work_item_sizes = sycl_device.get_info<sycl::info::device::max_work_item_sizes<3>>();
@@ -47,11 +43,6 @@ xpu_result_t DefaultXpuApi::getDeviceProperties(xpuDeviceProp* prop, int device)
         prop->maxThreadsDim[0] = max_work_item_sizes[0];
         prop->maxThreadsDim[1] = max_work_item_sizes[1];
         prop->maxThreadsDim[2] = max_work_item_sizes[2];
-        
-        // Max grid size - not directly available in SYCL, use reasonable defaults
-        prop->maxGridSize[0] = 2147483647;
-        prop->maxGridSize[1] = 65535;
-        prop->maxGridSize[2] = 65535;
         
         return XPU_SUCCESS;
     } catch (const std::exception& e) {

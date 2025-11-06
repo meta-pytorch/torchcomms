@@ -314,14 +314,12 @@ void TorchCommXCCL::returnEvent(xpuEvent_t &&event) {
 }
 
 void TorchCommXCCL::attachMemoryHook() {
-  // NOTE: CachingAllocatorHook is not implemented for XPU/SYCL yet
-  // TODO: Implement XPU caching allocator hook when available
+  // NOTE: Currently, oneCCL doesn't support memory register and deregister
   // CachingAllocatorHook::getInstance().registerComm(this);
 }
 
 void TorchCommXCCL::detachMemoryHook() {
-  // NOTE: CachingAllocatorHook is not implemented for XPU/SYCL yet
-  // TODO: Implement XPU caching allocator hook when available
+  // NOTE: Currently, oneCCL doesn't support memory register and deregister
   // CachingAllocatorHook::getInstance().deregisterComm(this);
 }
 

@@ -15,12 +15,9 @@ using xpuEvent_t = ::at::xpu::XPUEvent;
 struct xpuDeviceProp {
     char name[256];
     size_t totalGlobalMem;
-    int major;
-    int minor;
     int multiProcessorCount;
     int maxThreadsPerBlock;
     int maxThreadsDim[3];
-    int maxGridSize[3];
 };
 
 // Graph-related types (placeholder - unsupported in XPU)
