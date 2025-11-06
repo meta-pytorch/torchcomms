@@ -51,9 +51,6 @@ jobs:
 
         pip install -r requirements.txt
 
-        # Build C++
-        ./build_ncclx.sh
-
         # Build pybindings
         pip install --no-build-isolation -v '.[dev]'
         python -c "import torchcomms"
