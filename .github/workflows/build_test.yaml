@@ -16,12 +16,10 @@ jobs:
             gpu-arch-type: "cuda"
             gpu-arch-version: "12.8"
             torch-version: "stable"
-            cmake-version: "3.22.1"
           - runs-on: "linux.g5.12xlarge.nvidia.gpu"
             gpu-arch-type: "cuda"
             gpu-arch-version: "12.8"
             torch-version: "nightly"
-            cmake-version: "latest"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     with:
@@ -31,22 +29,30 @@ jobs:
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
       script: |
         set -ex
+
+        # install build tools to system
+        dnf config-manager --set-enabled powertools
+        dnf install -y almalinux-release-devel
+        dnf install -y ninja-build cmake
+
+        # Remove old cmake/ninja
+        rm -f "/opt/conda/bin/ninja" || true
+        rm -f "/opt/conda/bin/cmake" || true
+        rm -f "/usr/local/bin/cmake" || true
+
         # use faster libmamba solver
         conda config --set solver libmamba
 
-        conda create -n venv python=3.12 ninja -y
+        conda create -n venv python=3.12 -y
         conda activate venv
         python -m pip install --upgrade pip
+
+        # Nuke conda libstd++ to avoid conflicts with system toolset
+        rm -f "$CONDA_PREFIX/lib/libstdc"* || true
 
         # Optionally install torch nightly, pulls latest CUDA from pip otherwise
         if [ "${{ matrix.torch-version }}" = "nightly" ]; then
           pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
-        fi
-
-        if [ "${{ matrix.cmake-version }}" = "latest" ]; then
-          conda install -y cmake
-        else # default to latest
-          conda install -y cmake==${{ matrix.cmake-version }}
         fi
 
         pip install -r requirements.txt
