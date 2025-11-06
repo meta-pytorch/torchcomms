@@ -81,7 +81,7 @@ function build_automake_library() {
   pushd "$library_name"
   ./configure --prefix="$CMAKE_PREFIX_PATH" --disable-pie
 
-  make
+  make -j
   make install
   popd
 }
@@ -106,6 +106,27 @@ function build_boost() {
   popd
 }
 
+function build_openssl() {
+  local repo_url="https://github.com/openssl/openssl.git"
+  local repo_tag="openssl-3.5.1"
+  local library_name="openssl"
+  local extra_flags=""
+
+  # clean up existing boost
+  clean_third_party "$library_name"
+
+  if [ ! -e "$library_name" ]; then
+    git clone -j 10 --recurse-submodules --depth 1 -b "$repo_tag" "$repo_url" "$library_name"
+  fi
+
+  pushd "$library_name"
+  ./config no-shared --prefix="$CMAKE_PREFIX_PATH" --openssldir="$CMAKE_PREFIX_PATH" --libdir=lib
+
+  make -j
+  make install
+  popd
+}
+
 function build_third_party {
   # build third-party libraries
   if [ "$CLEAN_THIRD_PARTY" == 1 ]; then
@@ -120,6 +141,7 @@ function build_third_party {
     build_fb_oss_library "https://github.com/fmtlib/fmt.git" "11.2.0" fmt "-DFMT_INSTALL=ON -DFMT_TEST=OFF -DFMT_DOC=OFF -DBUILD_SHARED_LIBS=ON"
     build_fb_oss_library "https://github.com/madler/zlib.git" "v1.2.13" zlib "-DZLIB_BUILD_TESTING=OFF"
     build_boost
+    build_openssl
     build_fb_oss_library "https://github.com/Cyan4973/xxHash.git" "v0.8.0" xxhash
     # we need both static and dynamic gflags since thrift generator can't
     # statically link against glog.
@@ -155,6 +177,7 @@ function build_third_party {
         xxhash
         zstd
         conda-forge::zlib
+        conda-forge::libopenssl-static
         fmt
       )
       conda install "${DEPS[@]}" --yes

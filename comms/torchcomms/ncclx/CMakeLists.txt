@@ -19,6 +19,18 @@ else()
     set(NCCLX_STATIC_LIB "${NCCLX_BUILD_DIR}/lib/libnccl_static.a")
     set(NCCLX_SHARED_LIB "${NCCLX_BUILD_DIR}/lib/libnccl.so")
     set(FMT_INCLUDE "${ROOT}/third-party/fmt/include")
+
+    if (NOT EXISTS "${NCCLX_BUILD_DIR}")
+        execute_process(
+            COMMAND ${ROOT}/build_ncclx.sh
+            WORKING_DIRECTORY ${ROOT}
+            RESULT_VARIABLE result
+            OUTPUT_VARIABLE output
+        )
+        if(result)
+            message(FATAL_ERROR "NCCLX build failed: ${result}")
+        endif()
+    endif()
 endif()
 
 # Get folly LDFLAGS using pkg-config
