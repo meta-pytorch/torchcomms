@@ -1,6 +1,4 @@
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
-// #include "comms/torchcomms/xccl/TorchCommXCCLCCA.hpp"
-
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include <oneapi/ccl.h>
 #include <oneapi/ccl.hpp>
@@ -219,7 +217,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
   checkWorkQueue(true);
 
   if (comm_state_ == CommState::TIMEOUT) {
-    abortXcclComm();
+//    abortXcclComm(); // cannot abort oneCCL communicator
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR) << "Aborting process due to timeout";
       abort();
@@ -230,7 +228,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
     onecclResult_t asyncErr;
     xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
     XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
-    abortXcclComm();
+//    abortXcclComm(); // cannot abort oneCCL communicator
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR) << "Aborting process due to error: "
                     << xcclException.what();
@@ -312,16 +310,5 @@ void TorchCommXCCL::returnEvent(xpuEvent_t &&event) {
               "Failed to destroy event");
   }
 }
-
-void TorchCommXCCL::attachMemoryHook() {
-  // NOTE: Currently, oneCCL doesn't support memory register and deregister
-  // CachingAllocatorHook::getInstance().registerComm(this);
-}
-
-void TorchCommXCCL::detachMemoryHook() {
-  // NOTE: Currently, oneCCL doesn't support memory register and deregister
-  // CachingAllocatorHook::getInstance().deregisterComm(this);
-}
-
 } // namespace comms
 } // namespace torch

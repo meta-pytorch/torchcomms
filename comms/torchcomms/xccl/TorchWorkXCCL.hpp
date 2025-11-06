@@ -18,12 +18,6 @@ namespace comms {
 
 // Forward declaration
 class TorchCommXCCL;
-class TorchCommWindowXCCL;
-
-// Forward declaration for test class
-namespace test {
-class TorchCommXCCLTest;
-}
 
 class TorchWorkXCCL : public TorchWork {
 public:

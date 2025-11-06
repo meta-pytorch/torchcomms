@@ -133,9 +133,6 @@ public:
 
   // Friend access for TorchCommXCCL
   friend class TorchWorkXCCL;
-  // NOTE: CachingAllocatorHook is not implemented for XPU/SYCL yet
-  // friend class CachingAllocatorHookImpl;
-  friend class TorchCommWindowXCCL;
 
   // Getter for XPU API (for friend classes)
   XpuApi *getXpuApi() const { return xpu_api_.get(); }
@@ -163,15 +160,6 @@ protected:
     NORMAL,
     ERROR,
     TIMEOUT,
-  };
-
-  struct Address {
-    void *addr;
-  };
-
-  struct AddressWithLen {
-    void *addr;
-    size_t len;
   };
 
   std::atomic<CommState> comm_state_{
@@ -206,24 +194,6 @@ private:
     std::shared_ptr<XcclApi> xccl_api_;
   };
 
-  // Struct to hold the registration handle for a buffer
-  struct RegistrationHandle {
-    void *regHandle;
-
-    explicit RegistrationHandle(void *regHandle) : regHandle{regHandle} {}
-
-    RegistrationHandle(RegistrationHandle &&other) noexcept
-        : regHandle{other.regHandle} {
-      other.regHandle = nullptr;
-    }
-
-    RegistrationHandle(const RegistrationHandle &) = delete;
-    RegistrationHandle &operator=(const RegistrationHandle &) = delete;
-    RegistrationHandle &operator=(RegistrationHandle &&) = delete;
-
-    ~RegistrationHandle() = default;
-  };
-
   // Constructor for split communicators
   explicit TorchCommXCCL(const onecclComm_t xccl_comm);
 
@@ -238,9 +208,6 @@ private:
   void enqueueWork(std::shared_ptr<TorchWorkXCCL> work, xpuStream_t stream);
   xpuStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor &tensor);
-
-  void attachMemoryHook();
-  void detachMemoryHook();
 
   // Member variables
   onecclComm_t xccl_comm_{};
@@ -258,10 +225,6 @@ private:
     INITIALIZED,
     FINALIZED,
   } init_state_;
-
-  // List of [comm, regHandlesMap] pairs.  Each regHandlesMap is a map from the
-  // buffer address to the registeration handle
-  std::map<void *, RegistrationHandle> memoryRegistrationHandles_;
 
   // XCCL API abstraction
   std::shared_ptr<XcclApi> xccl_api_;
@@ -285,32 +248,6 @@ private:
   std::shared_ptr<TorchCommTracing> tracing_;
   bool high_priority_stream_{false};
   std::string name_;
-
-  // Graph capture mode work references
-  // Keep references to work objects during graph capture to prevent premature
-  // destruction, organized per graph using capture ID
-  std::unordered_map<unsigned long long,
-                     std::vector<std::shared_ptr<TorchWorkXCCL>>>
-      graph_capture_work_refs_;
-  std::mutex graph_capture_work_mutex_;
-
-  // Structure to hold cleanup data for XPU user objects
-  // NOTE: Graph capture cleanup is currently disabled for XPU/SYCL
-  // as the required APIs (userObjectCreate, graphRetainUserObject) are not yet
-  // available
-  struct GraphCleanupData {
-    TorchCommXCCL *comm;
-    unsigned long long graph_id;
-
-    GraphCleanupData(TorchCommXCCL *comm_, unsigned long long id)
-        : comm(comm_), graph_id(id) {}
-  };
-
-  // Static callback function for XPU user object cleanup
-  // NOTE: Currently disabled - XPU/SYCL does not have equivalent callback
-  // mechanism static void graphCleanupCallback(void* userData);
-
-  friend class TorchWorkXCCLQueueCommTest;
 };
 
 } // namespace comms
