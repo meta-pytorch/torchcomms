@@ -2245,6 +2245,13 @@ cvars:
      We are targeting 8000 ranks most, so leaving room for 100K events should
      be sufficient.
 
+ - name        : NCCL_GIN_TYPE
+   type        : int64_t
+   default     : 0
+   description : |-
+     GPU-Initiated Network (GIN) type configuration. This controls the type
+     of GIN implementation to use for network operations.
+
  - name        : NCCL_PROXYMOCK_NET_SEND_FAILURE
    type        : stringlist
    default     :

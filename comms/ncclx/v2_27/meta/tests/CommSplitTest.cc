@@ -39,7 +39,7 @@ class CommSplitTest : public ::testing::Test {
         cudaMemcpyHostToDevice));
   }
 
-  int checkAllReduceResult(int numRanks) {
+  int checkAllReduceResult(int commNumRanks) {
     std::vector<int> observedVals(this->dataCount, -1);
     CUDACHECK_TEST(cudaMemcpy(
         observedVals.data(),
@@ -47,7 +47,7 @@ class CommSplitTest : public ::testing::Test {
         this->dataCount * sizeof(int),
         cudaMemcpyDefault));
 
-    const int sumRanks = numRanks * (numRanks - 1) / 2;
+    const int sumRanks = commNumRanks * (commNumRanks - 1) / 2;
     int errs = 0;
     // Use manual print rather than EXPECT_THAT to print failing location
     for (auto i = 0; i < this->dataCount; i++) {

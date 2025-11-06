@@ -2,7 +2,6 @@
 
 #include "comms/torchcomms/rccl/TorchCommRCCLBootstrap.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
-#include <dlfcn.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "rccl.h" // @manual
 
