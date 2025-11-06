@@ -31,10 +31,6 @@ TorchCommXCCL::~TorchCommXCCL() {
       timeout_thread_.join();
     }
   }
-
-  // We need to detach the memory hook in case finalize is not called,
-  // so that we don't encounter a memory corruption.
-  detachMemoryHook();
 }
 
 void TorchCommXCCL::init(at::Device device, const std::string &name,
@@ -152,9 +148,6 @@ void TorchCommXCCL::init(at::Device device, const std::string &name,
 
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommXCCL::timeoutWatchdog, this);
-
-  // Register comm with CachingAllocator
-  attachMemoryHook();
 }
 
 void TorchCommXCCL::finalize() {
@@ -237,15 +230,12 @@ void TorchCommXCCL::finalize() {
   // Destroy XCCL communicator
   // TODO: should probably not call this after calling abort.
   if (xccl_comm_) {
-    detachMemoryHook();
-    // Deregister comm from the CachingAllocator
     xccl_api_->commDestroy(xccl_comm_);
     xccl_comm_ = nullptr;
   }
 }
 
 void TorchCommXCCL::abortXcclComm() {
-  detachMemoryHook();
   if (xccl_comm_) {
     xccl_api_->commAbort(xccl_comm_);
     xccl_comm_ = nullptr;
