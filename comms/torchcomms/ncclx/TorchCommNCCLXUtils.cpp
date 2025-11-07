@@ -15,24 +15,34 @@ namespace {
 
 ncclDataType_t getNcclDataTypeInternal(const at::Tensor& tensor) {
   switch (tensor.scalar_type()) {
-    case at::ScalarType::Float:
-      return ncclFloat32;
-    case at::ScalarType::Double:
-      return ncclFloat64;
-    case at::ScalarType::Half:
-      return ncclFloat16;
-    case at::ScalarType::BFloat16:
-      return ncclBfloat16;
+    case at::ScalarType::Byte:
+      return ncclUint8;
+    case at::ScalarType::Char:
+      return ncclInt8;
     case at::ScalarType::Int:
       return ncclInt32;
     case at::ScalarType::Long:
       return ncclInt64;
-    case at::ScalarType::Char:
-      return ncclInt8;
-    case at::ScalarType::Byte:
+    case at::ScalarType::Half:
+      return ncclFloat16;
+    case at::ScalarType::Float:
+      return ncclFloat32;
+    case at::ScalarType::Double:
+      return ncclFloat64;
+    case at::ScalarType::Bool:
       return ncclUint8;
+    case at::ScalarType::BFloat16:
+      return ncclBfloat16;
+    case at::ScalarType::Float8_e5m2:
+      return ncclFloat8e5m2;
+    case at::ScalarType::Float8_e4m3fn:
+      return ncclFloat8e4m3;
+    case at::ScalarType::UInt32:
+      return ncclUint32;
+    case at::ScalarType::UInt64:
+      return ncclUint64;
     default:
-      throw std::runtime_error("Unsupported tensor data type for NCCL");
+      throw std::runtime_error("Unsupported tensor data type for NCCLX");
   }
 }
 
