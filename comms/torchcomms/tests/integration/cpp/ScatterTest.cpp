@@ -174,24 +174,26 @@ void ScatterTest::testGraphScatter(int count, at::ScalarType dtype) {
       ::testing::Message() << "Testing CUDA Graph scatter with count=" << count
                            << " and dtype=" << getDtypeName(dtype));
 
-  // Root rank will send data to all ranks
-  const int root_rank = 0;
-
-  // Only the root rank needs to create input tensors BEFORE graph capture
-  std::vector<at::Tensor> inputs;
-  if (rank_ == root_rank) {
-    inputs = createInputTensors(count, dtype);
-  }
-
-  // Create output tensor to receive data BEFORE graph capture
-  at::Tensor output = createOutputTensor(count, dtype);
-  at::Tensor original_output = output.clone();
-
   // Create a non-default CUDA stream (required for CUDA graph capture)
   at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
 
   // Set the stream as current for graph capture
   at::cuda::CUDAStreamGuard guard(stream);
+
+  // Root rank will send data to all ranks
+  const int root_rank = 0;
+
+  // Only the root rank needs to create input tensors AFTER setting non-default
+  // stream but BEFORE graph capture
+  std::vector<at::Tensor> inputs;
+  if (rank_ == root_rank) {
+    inputs = createInputTensors(count, dtype);
+  }
+
+  // Create output tensor to receive data AFTER setting non-default stream but
+  // BEFORE graph capture
+  at::Tensor output = createOutputTensor(count, dtype);
+  at::Tensor original_output = output.clone();
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;
@@ -225,18 +227,18 @@ void ScatterTest::testGraphScatterInputDeleted(
       << "Testing CUDA Graph scatter with input deleted after graph creation with count="
       << count << " and dtype=" << getDtypeName(dtype));
 
+  // Create a non-default CUDA stream (required for CUDA graph capture)
+  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
+
+  // Set the stream as current for graph capture
+  at::cuda::CUDAStreamGuard guard(stream);
+
   // Root rank will send data to all ranks
   const int root_rank = 0;
 
   // Create output tensor to receive data that persists throughout the test
   at::Tensor output = createOutputTensor(count, dtype);
   at::Tensor original_output = output.clone();
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;

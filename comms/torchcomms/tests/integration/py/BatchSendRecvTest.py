@@ -230,30 +230,30 @@ class BatchSendRecvTest(unittest.TestCase):
             f"Testing CUDA Graph batch SendRecv with count={count} and dtype={get_dtype_name(dtype)}"
         )
 
-        # Each rank sends to next rank and receives from previous rank
-        next_rank = (self.rank + 1) % self.num_ranks
-        prev_rank = (self.rank + self.num_ranks - 1) % self.num_ranks
-
-        # Create tensors for batch operations BEFORE graph capture
-        send_tensors = []
-        recv_tensors = []
-        original_recv_tensors = []
-
-        for i in range(2):
-            # Create send tensor with unique values
-            send_tensor = self._create_send_tensor(count, dtype, i)
-            send_tensors.append(send_tensor)
-
-            # Create recv tensor
-            recv_tensor = self._create_recv_tensor(count, dtype)
-            recv_tensors.append(recv_tensor)
-            original_recv_tensors.append(recv_tensor.clone())
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Each rank sends to next rank and receives from previous rank
+            next_rank = (self.rank + 1) % self.num_ranks
+            prev_rank = (self.rank + self.num_ranks - 1) % self.num_ranks
+
+            # Create tensors for batch operations AFTER setting non-default stream but BEFORE graph capture
+            send_tensors = []
+            recv_tensors = []
+            original_recv_tensors = []
+
+            for i in range(2):
+                # Create send tensor with unique values
+                send_tensor = self._create_send_tensor(count, dtype, i)
+                send_tensors.append(send_tensor)
+
+                # Create recv tensor
+                recv_tensor = self._create_recv_tensor(count, dtype)
+                recv_tensors.append(recv_tensor)
+                original_recv_tensors.append(recv_tensor.clone())
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 
@@ -286,23 +286,23 @@ class BatchSendRecvTest(unittest.TestCase):
             f"Testing CUDA Graph batch SendRecv with input deleted after graph creation with count={count} and dtype={get_dtype_name(dtype)}"
         )
 
-        # Each rank sends to next rank and receives from previous rank
-        next_rank = (self.rank + 1) % self.num_ranks
-        prev_rank = (self.rank + self.num_ranks - 1) % self.num_ranks
-
-        # Create recv tensors that persist throughout the test
-        recv_tensors = []
-        original_recv_tensors = []
-        for _ in range(2):
-            recv_tensor = self._create_recv_tensor(count, dtype)
-            recv_tensors.append(recv_tensor)
-            original_recv_tensors.append(recv_tensor.clone())
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Each rank sends to next rank and receives from previous rank
+            next_rank = (self.rank + 1) % self.num_ranks
+            prev_rank = (self.rank + self.num_ranks - 1) % self.num_ranks
+
+            # Create recv tensors that persist throughout the test
+            recv_tensors = []
+            original_recv_tensors = []
+            for _ in range(2):
+                recv_tensor = self._create_recv_tensor(count, dtype)
+                recv_tensors.append(recv_tensor)
+                original_recv_tensors.append(recv_tensor.clone())
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 

@@ -152,18 +152,18 @@ class AllToAllvSingleTest(unittest.TestCase):
             f"Testing CUDA Graph all_to_all_v_single with dtype={get_dtype_name(dtype)}"
         )
 
-        # Create input and output tensors BEFORE graph capture
-        input_tensor = self._create_input_tensor(input_split_sizes, dtype)
-        output_tensor = self._create_output_tensor(output_split_sizes, dtype)
-
-        # Store original values to reset with
-        original_output_tensor = output_tensor.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Create input and output tensors AFTER setting non-default stream but BEFORE graph capture
+            input_tensor = self._create_input_tensor(input_split_sizes, dtype)
+            output_tensor = self._create_output_tensor(output_split_sizes, dtype)
+
+            # Store original values to reset with
+            original_output_tensor = output_tensor.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 
@@ -199,17 +199,17 @@ class AllToAllvSingleTest(unittest.TestCase):
             f"Testing CUDA Graph all_to_all_v_single with input deleted after graph creation with dtype={get_dtype_name(dtype)}"
         )
 
-        # Create output tensor that persists throughout the test
-        output_tensor = self._create_output_tensor(output_split_sizes, dtype)
-
-        # Store original values to reset with
-        original_output_tensor = output_tensor.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Create output tensor that persists throughout the test
+            output_tensor = self._create_output_tensor(output_split_sizes, dtype)
+
+            # Store original values to reset with
+            original_output_tensor = output_tensor.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 

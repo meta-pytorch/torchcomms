@@ -134,7 +134,14 @@ void AllToAllTest::testGraphAllToAll(int count, at::ScalarType dtype) {
       ::testing::Message() << "Testing CUDA Graph all_to_all with count="
                            << count << " and dtype=" << getDtypeName(dtype));
 
-  // Create input and output tensors BEFORE graph capture
+  // Create a non-default CUDA stream (required for CUDA graph capture)
+  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
+
+  // Set the stream as current for graph capture
+  at::cuda::CUDAStreamGuard guard(stream);
+
+  // Create input and output tensors AFTER setting non-default stream but BEFORE
+  // graph capture
   auto input_tensors = createInputTensors(count, dtype);
   auto output_tensors = createOutputTensors(count, dtype);
   std::vector<at::Tensor> original_output_tensors;
@@ -143,12 +150,6 @@ void AllToAllTest::testGraphAllToAll(int count, at::ScalarType dtype) {
     original_output_tensors.push_back(output_tensor.clone());
   }
   auto expected_output = createExpectedOutput();
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;
@@ -185,6 +186,12 @@ void AllToAllTest::testGraphAllToAllInputDeleted(
       << "Testing CUDA Graph all_to_all with input deleted after graph creation with count="
       << count << " and dtype=" << getDtypeName(dtype));
 
+  // Create a non-default CUDA stream (required for CUDA graph capture)
+  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
+
+  // Set the stream as current for graph capture
+  at::cuda::CUDAStreamGuard guard(stream);
+
   // Create output tensors that persist throughout the test
   auto output_tensors = createOutputTensors(count, dtype);
   std::vector<at::Tensor> original_output_tensors;
@@ -193,12 +200,6 @@ void AllToAllTest::testGraphAllToAllInputDeleted(
     original_output_tensors.push_back(output_tensor.clone());
   }
   auto expected_output = createExpectedOutput();
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;

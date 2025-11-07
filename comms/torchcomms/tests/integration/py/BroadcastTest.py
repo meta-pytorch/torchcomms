@@ -148,20 +148,20 @@ class BroadcastTest(unittest.TestCase):
             f"Testing CUDA Graph broadcast with count={count} and dtype={get_dtype_name(dtype)}"
         )
 
-        root_rank = 0
-        root_value = 99
-
-        # Create tensor with different values based on rank BEFORE graph capture
-        tensor = self._create_broadcast_tensor(root_rank, root_value, count, dtype)
-        # For non-root ranks, create original tensor to reset to
-        if self.rank != root_rank:
-            original_tensor = tensor.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            root_rank = 0
+            root_value = 99
+
+            # Create tensor with different values based on rank AFTER setting non-default stream but BEFORE graph capture
+            tensor = self._create_broadcast_tensor(root_rank, root_value, count, dtype)
+            # For non-root ranks, create original tensor to reset to
+            if self.rank != root_rank:
+                original_tensor = tensor.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 

@@ -139,16 +139,16 @@ class AllToAllSingleTest(unittest.TestCase):
             f"Testing CUDA Graph all_to_all_single with count={count} and dtype={get_dtype_name(dtype)}"
         )
 
-        # Create input and output tensors BEFORE graph capture
-        input_tensor = self._create_input_tensor(count, dtype)
-        output_tensor = self._create_output_tensor(count, dtype)
-        original_output_tensor = output_tensor.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Create input and output tensors AFTER setting non-default stream but BEFORE graph capture
+            input_tensor = self._create_input_tensor(count, dtype)
+            output_tensor = self._create_output_tensor(count, dtype)
+            original_output_tensor = output_tensor.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 
@@ -173,15 +173,15 @@ class AllToAllSingleTest(unittest.TestCase):
             f"Testing CUDA Graph all_to_all_single with input deleted after graph creation with count={count} and dtype={get_dtype_name(dtype)}"
         )
 
-        # Create output tensor that persists throughout the test
-        output_tensor = self._create_output_tensor(count, dtype)
-        original_output_tensor = output_tensor.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Create output tensor that persists throughout the test
+            output_tensor = self._create_output_tensor(count, dtype)
+            original_output_tensor = output_tensor.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 

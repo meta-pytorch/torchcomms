@@ -219,19 +219,20 @@ void BatchSendRecvTest::testGraphBatchSendRecv(
       ::testing::Message() << "Testing CUDA Graph batch SendRecv with count="
                            << count << " and dtype=" << getDtypeName(dtype));
 
-  // Create batch send/recv parameters BEFORE graph capture
+  // Create a non-default CUDA stream (required for CUDA graph capture)
+  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
+
+  // Set the stream as current for graph capture
+  at::cuda::CUDAStreamGuard guard(stream);
+
+  // Create batch send/recv parameters AFTER setting non-default stream but
+  // BEFORE graph capture
   auto params = createBatchSendRecvParams(count, dtype);
   std::vector<at::Tensor> original_recv_tensors;
   original_recv_tensors.reserve(params.recv_tensors.size());
   for (const auto& recv_tensor : params.recv_tensors) {
     original_recv_tensors.push_back(recv_tensor.clone());
   }
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;
@@ -281,6 +282,12 @@ void BatchSendRecvTest::testGraphBatchSendRecvInputDeleted(
       << "Testing CUDA Graph batch SendRecv with input deleted after graph creation with count="
       << count << " and dtype=" << getDtypeName(dtype));
 
+  // Create a non-default CUDA stream (required for CUDA graph capture)
+  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
+
+  // Set the stream as current for graph capture
+  at::cuda::CUDAStreamGuard guard(stream);
+
   // Create recv tensors that persist throughout the test
   std::vector<at::Tensor> recv_tensors;
   std::vector<int> recv_ranks;
@@ -297,12 +304,6 @@ void BatchSendRecvTest::testGraphBatchSendRecvInputDeleted(
   for (const auto& recv_tensor : recv_tensors) {
     original_recv_tensors.push_back(recv_tensor.clone());
   }
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;
