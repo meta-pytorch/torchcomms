@@ -14,6 +14,15 @@
 
 namespace ctran::device {
 
+// TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+// channels.
+static inline __device__ void devLoadAbortFlags(
+    int* flag,
+    CtranAlgoDeviceState* devState) {
+  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
+  kernelFlag = flag;
+  kernelDoAbort = false;
+}
 static inline __device__ bool KernelTestHostAbort(volatile int* flag);
 
 static inline __device__ void KernelStartGpe(volatile int* flag) {

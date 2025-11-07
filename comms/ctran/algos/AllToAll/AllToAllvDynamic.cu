@@ -422,6 +422,9 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
     __threadfence_system();
   }
 
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = false;
   if (flag && gtIdx == 0) {
     ctran::device::KernelStartGpe(flag);
   }

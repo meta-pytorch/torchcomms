@@ -135,6 +135,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterDirect(
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
+    ctran::device::devLoadAbortFlags(flag, devState);
     ctran::device::KernelStartGpe(flag);
   }
 
