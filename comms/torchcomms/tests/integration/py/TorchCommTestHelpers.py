@@ -218,11 +218,13 @@ class TorchCommTestWrapper:
         if device := os.environ.get("TEST_DEVICE"):
             return torch.device(device)
 
-        # Check for CUDA availability and abort if not available
-        if not torch.cuda.is_available():
+        # Check for accelerator availability and abort if not available
+        if not torch.accelerator.is_available():
             return torch.device("cpu")
 
-        device_id = rank % torch.cuda.device_count()
+        device_id = rank % torch.accelerator.device_count()
+        if os.getenv("TEST_BACKEND") == "xccl":
+            return torch.device(f"xpu:{device_id}")
         return torch.device(f"cuda:{device_id}")
 
     def __init__(self, store=None):
