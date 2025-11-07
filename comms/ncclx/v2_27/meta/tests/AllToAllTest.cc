@@ -12,7 +12,6 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
-#include "comms/testinfra/tests_common.cuh"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTrace.h"
 

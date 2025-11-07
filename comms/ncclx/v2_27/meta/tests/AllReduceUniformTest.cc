@@ -12,7 +12,6 @@
 
 #include <comm.h>
 #include <nccl.h>
-#include "checks.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 

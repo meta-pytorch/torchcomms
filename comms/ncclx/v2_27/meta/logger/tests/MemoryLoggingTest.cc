@@ -23,7 +23,6 @@
 #include "meta/colltrace/CollTrace.h"
 
 #include "LoggerUtil.h"
-#include "ScubaLoggerTestMixin.h"
 #include "comm.h" // @manual
 #include "debug.h" // @manual
 #include "nccl.h" // @manual

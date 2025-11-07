@@ -10,7 +10,6 @@
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
 #include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
