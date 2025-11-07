@@ -16,16 +16,19 @@
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 
+using meta::comms::CommBackend;
 struct ctranConfig {
   int blocking{-1};
   const char* commDesc{nullptr};
   const char* ncclAllGatherAlgo{nullptr};
+  std::vector<enum CommBackend> backends = {};
 
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
         commDesc == other.commDesc &&
-        ncclAllGatherAlgo == other.ncclAllGatherAlgo);
+        ncclAllGatherAlgo == other.ncclAllGatherAlgo &&
+        backends == other.backends);
   }
 };
 
@@ -46,8 +49,9 @@ class CtranComm {
   // For real communicationator we should use factory method to create.
   explicit CtranComm(
       std::shared_ptr<Abort> abort =
-          ctran::utils::createAbort(/*enabled=*/false))
-      : abort_(abort) {
+          ctran::utils::createAbort(/*enabled=*/false),
+      ctranConfig commConfig = ctranConfig{})
+      : config_(commConfig), abort_(abort) {
     asyncErr_ =
         std::make_shared<AsyncError>(NCCL_CTRAN_ABORT_ON_ERROR, "CtranComm");
     if (!abort_) {
@@ -58,11 +62,12 @@ class CtranComm {
     opCount_ = &ctranOpCount_;
   }
 
-  // The MemCache allocator is destroyed in a different time than all other
-  // Ctran resources. To accommodate this, we split the CtranComm destructor
-  // into two parts. In the first part, we destroy all resources except for
-  // MemCache. The second part is moved to the destructor, where it is safe to
-  // destroy MemCache and reset its reference.
+  // The MemCache allocator is destroyed in a different time than all
+  // other Ctran resources. To accommodate this, we split the CtranComm
+  // destructor into two parts. In the first part, we destroy all
+  // resources except for MemCache. The second part is moved to the
+  // destructor, where it is safe to destroy MemCache and reset its
+  // reference.
   void destroy() {
     // All smart pointers are automatically de-initialized, but we want to
     // ensure they do so in a specific order. Therefore, we manually handle
@@ -72,8 +77,8 @@ class CtranComm {
     collTrace_.reset();
     colltraceNew_.reset();
     statex_.reset();
-    // NOTE: memCache needs to be destroyed after transportProxy_ to release all
-    // buffers
+    // NOTE: memCache needs to be destroyed after transportProxy_ to release
+    // all buffers
     memCache_.reset();
 
     this->logMetaData_.commDesc.clear();

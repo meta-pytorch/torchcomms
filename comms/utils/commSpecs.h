@@ -299,6 +299,15 @@ enum class CommProtocol {
   NumProtocols = 3 // Simple/LL/LL128
 };
 
+enum class CommBackend {
+  UNSET = 0,
+  IB = 1,
+  NVL = 2,
+  SOCKET = 3,
+  TCPDM = 4,
+  NUM_BACKENDS = 5
+};
+
 class CommsError {
  public:
   CommsError(std::string msg, commResult_t code)

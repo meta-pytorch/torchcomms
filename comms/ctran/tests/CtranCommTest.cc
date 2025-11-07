@@ -49,4 +49,17 @@ TEST(CtranCommTest, AbortAvailableAndDisabled) {
   EXPECT_FALSE(comm.testAbort());
 }
 
+TEST(CtranCommTest, ctranCommConfigTest) {
+  auto abort = ctran::utils::createAbort(/*enabled=*/true);
+  ctranConfig config = {
+      .backends = {CommBackend::IB, CommBackend::NVL, CommBackend::SOCKET}};
+
+  CtranComm comm(abort, config);
+  EXPECT_EQ(comm.config_.backends.size(), 3);
+
+  /// Explictly create comm with false abort as first argument is unommitable
+  CtranComm comm2(ctran::utils::createAbort(false));
+  EXPECT_EQ(comm2.config_.backends.size(), 0);
+}
+
 } // namespace ctran::testing
