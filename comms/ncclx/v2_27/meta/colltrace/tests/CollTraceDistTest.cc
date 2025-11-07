@@ -24,7 +24,6 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/trainer/TrainerContext.h"
 #include "meta/colltrace/CollTrace.h"
-#include "meta/commDump.h"
 
 #include "meta/wrapper/CtranExComm.h"
 #include "meta/wrapper/DataTypeStrUtils.h"

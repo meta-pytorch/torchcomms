@@ -8,7 +8,6 @@
 #include "comms/ctran/CtranEx.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
-#include "comms/testinfra/tests_common.cuh"
 #include "meta/wrapper/CtranExComm.h"
 
 #include "gmock/gmock.h"

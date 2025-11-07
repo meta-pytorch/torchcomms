@@ -12,7 +12,6 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
-#include "comms/testinfra/tests_common.cuh"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
