@@ -166,15 +166,14 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
     const size_t* sendIndices,
     const size_t* sendIndicesBlockLengths,
     void* const* recvbuffs,
-    size_t* recvAllSplitLengths,
-    size_t* recvIndices,
-    size_t* recvIndicesBlockLengths,
     size_t maxSendcount,
     size_t maxRecvcount,
     const meta::comms::Hints& hints,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    bool combine,
+    size_t* recvAllSplitLengths = nullptr);
 
 commResult_t ctranAllToAllvDynamicSupport(
     CtranComm* comm,

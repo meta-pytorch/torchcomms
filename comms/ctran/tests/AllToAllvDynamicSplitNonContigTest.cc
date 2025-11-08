@@ -311,6 +311,7 @@ class AllToAllvDynamicSplitNonContigTestCommon
         stream));
   }
 
+  // TODO: will need to add unit test for combine. Now only have dispatch.
   void EnqueueAllToAllvDynamicSplitNonContig() {
 #ifdef TEST_NCCLX_RCCLX_INTEGRATION
     auto res = ncclx::alltoallvDynamicSplitNonContig(
@@ -338,15 +339,14 @@ class AllToAllvDynamicSplitNonContigTestCommon
         sendIndicesDev,
         sendIndicesBlockLengthsDev,
         recvbuffsHost,
-        recvSplitsDev,
-        recvIndicesDev,
-        recvIndicesBlockLengthsDev,
         maxSendcount,
         maxRecvcount,
         hints,
         commInt32,
         ctranComm,
-        stream);
+        stream,
+        false,
+        recvSplitsDev);
     ASSERT_EQ(res, commSuccess);
 #endif
   }
