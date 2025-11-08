@@ -28,15 +28,15 @@ std::string TimestampPoint::toJsonEntry(
     argStrs.push_back(fmt::format("\"{}\": \"{}\"", key, value));
   }
   std::string argStr = folly::join(", ", argStrs);
-  return "{\"name\": \"" + name + "\", " + "\"cat\": \"COL\", " + "\"id\": \"" +
-      std::to_string(id) + "\", " + "\"ph\": \"X\", " + "\"pid\": \"" +
-      std::to_string(pid) + "\", " + "\"args\": {" + argStr + "}," +
-      "\"tid\": \"" + std::to_string(peer_) + "\", " + "\"ts\": \"" +
+  return "{\"name\": \"" + name + "\", " + "\"cat\": \"COL\", " +
+      "\"id\": " + std::to_string(id) + ", " + "\"ph\": \"X\", " +
+      "\"pid\": " + std::to_string(pid) + ", " + "\"args\": {" + argStr + "}," +
+      "\"tid\": " + std::to_string(peer_) + ", " + "\"ts\": " +
       std::to_string(
              std::chrono::duration_cast<std::chrono::microseconds>(
                  now_.time_since_epoch())
                  .count()) +
-      "\", \"dur\": \"" + std::to_string(kPointToDurUs) + "\"" + "}";
+      ", \"dur\": " + std::to_string(kPointToDurUs) + "}";
 }
 
 std::string TimeInterval::toJsonEntry(
@@ -54,16 +54,16 @@ std::string TimeInterval::toJsonEntry(
   if (dur == 0) {
     dur = 1; // Ensure always visible in trace
   }
-  return "{\"name\": \"" + name + "\", " + "\"cat\": \"COL\", " + "\"id\": \"" +
-      std::to_string(id) + "\", " + "\"ph\": \"X\", " + "\"pid\": \"" +
-      std::to_string(pid) + "\", " + "\"args\": {" + argStr + "}," +
-      "\"dur\": \"" + std::to_string(dur) + "\", " + "\"tid\": \"" +
-      std::to_string(peer_) + "\", " + "\"ts\": \"" +
+  return "{\"name\": \"" + name + "\", " + "\"cat\": \"COL\", " +
+      "\"id\": " + std::to_string(id) + ", " + "\"ph\": \"X\", " +
+      "\"pid\": " + std::to_string(pid) + ", " + "\"args\": {" + argStr + "}," +
+      "\"dur\": " + std::to_string(dur) + ", " +
+      "\"tid\": " + std::to_string(peer_) + ", " + "\"ts\": " +
       std::to_string(
              std::chrono::duration_cast<std::chrono::microseconds>(
                  start_.time_since_epoch())
                  .count()) +
-      "\"}";
+      "}";
 }
 
 TraceRecord::TraceRecord(const std::string& algo, const int rank)
@@ -168,14 +168,14 @@ std::string TraceRecord::toJsonEntry(int& id, const int pid) const {
   std::string argStr = folly::join(", ", argStrs);
 
   std::string recordEntry = "{\"name\": \"" + algo + "\", " +
-      "\"cat\": \"COL\", " + "\"id\": \"" + std::to_string(id) + "\", " +
-      "\"ph\": \"X\", " + "\"pid\": \"" + std::to_string(pid) + "\", " +
-      "\"dur\": \"" + std::to_string(durationUs()) + "\", " + "\"args\": {" +
-      argStr + "}," + "\"tid\": \"-1\", " + "\"ts\": \"" +
+      "\"cat\": \"COL\", " + "\"id\": " + std::to_string(id) + ", " +
+      "\"ph\": \"X\", " + "\"pid\": " + std::to_string(pid) + ", " +
+      "\"dur\": " + std::to_string(durationUs()) + ", " + "\"args\": {" +
+      argStr + "}," + "\"tid\": -1, " + "\"ts\": " +
       std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(
                          start_.time_since_epoch())
                          .count()) +
-      "\"}";
+      "}";
   id++;
   jsonEntries.push_back(recordEntry);
 
