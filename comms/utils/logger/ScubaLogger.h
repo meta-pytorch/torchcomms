@@ -12,12 +12,12 @@
 #include "comms/utils/logger/EventMgr.h"
 #include "comms/utils/logger/NcclScubaSample.h"
 
-class NcclScubaEvent {
- public:
+struct NcclScubaEvent {
   void startAndRecord();
   void stopAndRecord();
   void lapAndRecord(const std::string& stage = "");
   void record();
+  void record(const std::string& stage);
   void setLogMetatData(const CommLogData* logMetaData);
 
   explicit NcclScubaEvent(const std::string& stage);
@@ -26,7 +26,6 @@ class NcclScubaEvent {
 
   NcclScubaEvent(const std::string& stage, const CommLogData* logMetaData);
 
- private:
   NcclScubaSample sample_;
   folly::stop_watch<std::chrono::microseconds> timer_;
   std::string stage_{};
