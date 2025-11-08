@@ -157,7 +157,14 @@ void GatherTest::testGraphGather(int count, at::ScalarType dtype) {
       ::testing::Message() << "Testing CUDA Graph gather with count=" << count
                            << " and dtype=" << getDtypeName(dtype));
 
-  // Create input tensor with rank-specific values BEFORE graph capture
+  // Create a non-default CUDA stream (required for CUDA graph capture)
+  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
+
+  // Set the stream as current for graph capture
+  at::cuda::CUDAStreamGuard guard(stream);
+
+  // Create input tensor with rank-specific values AFTER setting non-default
+  // stream but BEFORE graph capture
   at::Tensor input = createInputTensor(count, dtype);
 
   // Root rank will receive data from all ranks
@@ -169,12 +176,6 @@ void GatherTest::testGraphGather(int count, at::ScalarType dtype) {
   for (const auto& output : outputs) {
     original_outputs.push_back(output.clone());
   }
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;
@@ -208,6 +209,12 @@ void GatherTest::testGraphGatherInputDeleted(int count, at::ScalarType dtype) {
       << "Testing CUDA Graph gather with input deleted after graph creation with count="
       << count << " and dtype=" << getDtypeName(dtype));
 
+  // Create a non-default CUDA stream (required for CUDA graph capture)
+  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
+
+  // Set the stream as current for graph capture
+  at::cuda::CUDAStreamGuard guard(stream);
+
   // Root rank will receive data from all ranks
   const int root_rank = 0;
   std::vector<at::Tensor> outputs =
@@ -217,12 +224,6 @@ void GatherTest::testGraphGatherInputDeleted(int count, at::ScalarType dtype) {
   for (const auto& output : outputs) {
     original_outputs.push_back(output.clone());
   }
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;

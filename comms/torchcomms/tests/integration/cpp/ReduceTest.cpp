@@ -213,17 +213,18 @@ void ReduceTest::testGraphReduce(
                            << " and dtype=" << getDtypeName(dtype)
                            << " and op=" << getOpName(op));
 
-  const int root_rank = 0;
-
-  // Everyone creates the input tensor BEFORE graph capture
-  at::Tensor tensor = createInputTensor(count, dtype);
-  at::Tensor original_values = tensor.clone();
-
   // Create a non-default CUDA stream (required for CUDA graph capture)
   at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
 
   // Set the stream as current for graph capture
   at::cuda::CUDAStreamGuard guard(stream);
+
+  const int root_rank = 0;
+
+  // Everyone creates the input tensor AFTER setting non-default stream but
+  // BEFORE graph capture
+  at::Tensor tensor = createInputTensor(count, dtype);
+  at::Tensor original_values = tensor.clone();
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;
@@ -259,13 +260,13 @@ void ReduceTest::testGraphReduceInputDeleted(
       << count << " and dtype=" << getDtypeName(dtype)
       << " and op=" << getOpName(op));
 
-  const int root_rank = 0;
-
   // Create a non-default CUDA stream (required for CUDA graph capture)
   at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
 
   // Set the stream as current for graph capture
   at::cuda::CUDAStreamGuard guard(stream);
+
+  const int root_rank = 0;
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;

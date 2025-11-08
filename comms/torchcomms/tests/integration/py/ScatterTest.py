@@ -172,19 +172,19 @@ class ScatterTest(unittest.TestCase):
             f"Testing CUDA Graph scatter with count={count} and dtype={get_dtype_name(dtype)}"
         )
 
-        # Create input and output tensors BEFORE graph capture
-        root_rank = 0
-        inputs = []
-        if self.rank == root_rank:
-            inputs = self._create_input_tensors(count, dtype)
-        output = self._create_output_tensor(count, dtype)
-        original_output = output.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Create input and output tensors AFTER setting non-default stream but BEFORE graph capture
+            root_rank = 0
+            inputs = []
+            if self.rank == root_rank:
+                inputs = self._create_input_tensors(count, dtype)
+            output = self._create_output_tensor(count, dtype)
+            original_output = output.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 
@@ -209,18 +209,18 @@ class ScatterTest(unittest.TestCase):
             f"Testing CUDA Graph scatter with input deleted after graph creation with count={count} and dtype={get_dtype_name(dtype)}"
         )
 
-        # Root rank will send data to all ranks
-        root_rank = 0
-
-        # Create output tensor that persists throughout the test
-        output = self._create_output_tensor(count, dtype)
-        original_output = output.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Root rank will send data to all ranks
+            root_rank = 0
+
+            # Create output tensor that persists throughout the test
+            output = self._create_output_tensor(count, dtype)
+            original_output = output.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 

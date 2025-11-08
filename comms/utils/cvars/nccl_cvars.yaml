@@ -2720,3 +2720,14 @@ cvars:
    type        : string
    default     : ""
    description : Used to bind NCCL's network proxy threads to specific CPU cores.
+
+ - name        : MCCL_CTRAN_BACKENDS
+   type        : enumlist
+   default     : not_set
+   choices     : not_set, ib, nvl, socket, tcpdm
+   description : |-
+     MCCL Backend override to enable for ctran. It should uses the same format
+     as NCCL_CTRAN_BACKENDS. By deafult, it is not_set, which means it will use whatever
+     backends specified by NCCL_CTRAN_BACKENDS.
+     Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
+     this config will allow MCCL to override backends.

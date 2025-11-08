@@ -744,6 +744,8 @@ bool CtranMapper::hasBackend(int rank, CtranMapperBackend specified) {
     return this->ctranIb != nullptr;
   } else if (specified == CtranMapperBackend::TCPDM) {
     return this->ctranTcpDm != nullptr;
+  } else if (specified == CtranMapperBackend::SOCKET) {
+    return this->ctranSock != nullptr;
   } else {
     return false;
   }

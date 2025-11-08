@@ -144,19 +144,19 @@ class AllToAllTest(unittest.TestCase):
             f"Testing CUDA Graph all_to_all with count={count} and dtype={get_dtype_name(dtype)}"
         )
 
-        # Create input and output tensors BEFORE graph capture
-        input_tensors = self._create_input_tensors(count, dtype)
-        output_tensors = self._create_output_tensors(count, dtype)
-        expected_output = self._create_expected_output()
-
-        # Store original values to reset with
-        original_output_tensors = [tensor.clone() for tensor in output_tensors]
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Create input and output tensors AFTER setting non-default stream but BEFORE graph capture
+            input_tensors = self._create_input_tensors(count, dtype)
+            output_tensors = self._create_output_tensors(count, dtype)
+            expected_output = self._create_expected_output()
+
+            # Store original values to reset with
+            original_output_tensors = [tensor.clone() for tensor in output_tensors]
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 
@@ -182,18 +182,18 @@ class AllToAllTest(unittest.TestCase):
             f"Testing CUDA Graph all_to_all with input deleted after graph creation with count={count} and dtype={get_dtype_name(dtype)}"
         )
 
-        # Create output tensors that persist throughout the test
-        output_tensors = self._create_output_tensors(count, dtype)
-        expected_output = self._create_expected_output()
-
-        # Store original values to reset with
-        original_output_tensors = [tensor.clone() for tensor in output_tensors]
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Create output tensors that persist throughout the test
+            output_tensors = self._create_output_tensors(count, dtype)
+            expected_output = self._create_expected_output()
+
+            # Store original values to reset with
+            original_output_tensors = [tensor.clone() for tensor in output_tensors]
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 

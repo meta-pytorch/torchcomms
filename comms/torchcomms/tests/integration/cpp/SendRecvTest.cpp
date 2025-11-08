@@ -229,15 +229,16 @@ void SendRecvTest::testGraphSendRecv(int count, at::ScalarType dtype) {
       ::testing::Message() << "Testing CUDA Graph send/recv with count="
                            << count << " and dtype=" << getDtypeName(dtype));
 
-  // Create send/recv parameters BEFORE graph capture
-  auto params = createSendRecvParams(count, dtype);
-  at::Tensor original_recv_tensor = params.recv_tensor.clone();
-
   // Create a non-default CUDA stream (required for CUDA graph capture)
   at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
 
   // Set the stream as current for graph capture
   at::cuda::CUDAStreamGuard guard(stream);
+
+  // Create send/recv parameters AFTER setting non-default stream but BEFORE
+  // graph capture
+  auto params = createSendRecvParams(count, dtype);
+  at::Tensor original_recv_tensor = params.recv_tensor.clone();
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;
@@ -281,18 +282,18 @@ void SendRecvTest::testGraphSendRecvInputDeleted(
       << "Testing CUDA Graph send/recv with input deleted after graph creation with count="
       << count << " and dtype=" << getDtypeName(dtype));
 
+  // Create a non-default CUDA stream (required for CUDA graph capture)
+  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
+
+  // Set the stream as current for graph capture
+  at::cuda::CUDAStreamGuard guard(stream);
+
   // Create recv tensor that persists throughout the test
   at::Tensor recv_tensor = createRecvTensor(count, dtype);
   at::Tensor original_recv_tensor = recv_tensor.clone();
 
   // Create recv parameters
   int recv_rank = (rank_ + num_ranks_ - 1) % num_ranks_;
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;

@@ -125,12 +125,10 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelSendRecvArgs args) {
-  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
-  // channels.
-  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
+    ctran::device::devLoadAbortFlags(flag, devState);
     ctran::device::KernelStartGpe(flag);
   }
 
@@ -155,12 +153,10 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelSendArgs args) {
-  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
-  // channels.
-  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
+    ctran::device::devLoadAbortFlags(flag, devState);
     ctran::device::KernelStartGpe(flag);
   }
 
@@ -180,12 +176,10 @@ __global__ void __launch_bounds__(1, 1) ncclKernelRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelRecvArgs args) {
-  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
-  // channels.
-  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
+    ctran::device::devLoadAbortFlags(flag, devState);
     ctran::device::KernelStartGpe(flag);
   }
 

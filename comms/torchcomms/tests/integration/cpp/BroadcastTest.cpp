@@ -156,19 +156,20 @@ void BroadcastTest::testGraphBroadcast(int count, at::ScalarType dtype) {
       ::testing::Message() << "Testing CUDA Graph broadcast with count="
                            << count << " and dtype=" << getDtypeName(dtype));
 
-  const int root_rank = 0;
-  const int root_value = 99;
-
-  // Create tensor with different values based on rank BEFORE graph capture
-  at::Tensor tensor =
-      createBroadcastTensor(root_rank, root_value, count, dtype);
-  at::Tensor original_values = tensor.clone();
-
   // Create a non-default CUDA stream (required for CUDA graph capture)
   at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
 
   // Set the stream as current for graph capture
   at::cuda::CUDAStreamGuard guard(stream);
+
+  const int root_rank = 0;
+  const int root_value = 99;
+
+  // Create tensor with different values based on rank AFTER setting non-default
+  // stream but BEFORE graph capture
+  at::Tensor tensor =
+      createBroadcastTensor(root_rank, root_value, count, dtype);
+  at::Tensor original_values = tensor.clone();
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;
@@ -203,14 +204,14 @@ void BroadcastTest::testGraphBroadcastInputDeleted(
       << "Testing CUDA Graph broadcast with input deleted after graph creation with count="
       << count << " and dtype=" << getDtypeName(dtype));
 
-  const int root_rank = 0;
-  const int root_value = 99;
-
   // Create a non-default CUDA stream (required for CUDA graph capture)
   at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
 
   // Set the stream as current for graph capture
   at::cuda::CUDAStreamGuard guard(stream);
+
+  const int root_rank = 0;
+  const int root_value = 99;
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;

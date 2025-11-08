@@ -146,17 +146,17 @@ class ReduceTest(unittest.TestCase):
             f"Testing CUDA Graph reduce with count={count}, dtype={get_dtype_name(dtype)}, and op={get_op_name(op)}"
         )
 
-        root_rank = 0
-
-        # Create input tensor BEFORE graph capture
-        tensor = self._create_input_tensor(count, dtype)
-        original_values = tensor.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            root_rank = 0
+
+            # Create input tensor AFTER setting non-default stream but BEFORE graph capture
+            tensor = self._create_input_tensor(count, dtype)
+            original_values = tensor.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 

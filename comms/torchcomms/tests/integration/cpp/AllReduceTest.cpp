@@ -149,15 +149,16 @@ void AllReduceTest::testGraphAllReduce(
                            << count << " and dtype=" << getDtypeName(dtype)
                            << " and op=" << getOpName(op));
 
-  // Create input tensor BEFORE graph capture
-  at::Tensor input = createInputTensor(count, dtype);
-  at::Tensor original_values = input.clone();
-
   // Create a non-default CUDA stream (required for CUDA graph capture)
   at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
 
   // Set the stream as current for graph capture
   at::cuda::CUDAStreamGuard guard(stream);
+
+  // Create input tensor AFTER setting non-default stream but BEFORE graph
+  // capture
+  at::Tensor input = createInputTensor(count, dtype);
+  at::Tensor original_values = input.clone();
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;

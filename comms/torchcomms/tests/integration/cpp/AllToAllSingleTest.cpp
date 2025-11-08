@@ -147,16 +147,17 @@ void AllToAllSingleTest::testGraphAllToAllSingle(
       ::testing::Message() << "Testing CUDA Graph all_to_all_single with count="
                            << count << " and dtype=" << getDtypeName(dtype));
 
-  // Create input and output tensors BEFORE graph capture
-  at::Tensor input = createInputTensor(count, dtype);
-  at::Tensor output = createOutputTensor(count, dtype);
-  at::Tensor original_output = output.clone();
-
   // Create a non-default CUDA stream (required for CUDA graph capture)
   at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
 
   // Set the stream as current for graph capture
   at::cuda::CUDAStreamGuard guard(stream);
+
+  // Create input and output tensors AFTER setting non-default stream but BEFORE
+  // graph capture
+  at::Tensor input = createInputTensor(count, dtype);
+  at::Tensor output = createOutputTensor(count, dtype);
+  at::Tensor original_output = output.clone();
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;
@@ -191,15 +192,15 @@ void AllToAllSingleTest::testGraphAllToAllSingleInputDeleted(
       << "Testing CUDA Graph all_to_all_single with input deleted after graph creation with count="
       << count << " and dtype=" << getDtypeName(dtype));
 
-  // Create output tensor that persists throughout the test
-  at::Tensor output = createOutputTensor(count, dtype);
-  at::Tensor original_output = output.clone();
-
   // Create a non-default CUDA stream (required for CUDA graph capture)
   at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
 
   // Set the stream as current for graph capture
   at::cuda::CUDAStreamGuard guard(stream);
+
+  // Create output tensor that persists throughout the test
+  at::Tensor output = createOutputTensor(count, dtype);
+  at::Tensor original_output = output.clone();
 
   // Create PyTorch CUDA graph
   at::cuda::CUDAGraph graph;

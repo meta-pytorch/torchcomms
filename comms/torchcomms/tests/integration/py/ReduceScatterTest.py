@@ -142,16 +142,16 @@ class ReduceScatterTest(unittest.TestCase):
             f"Testing CUDA Graph reduce_scatter with count={count}, dtype={get_dtype_name(dtype)}, and op={get_op_name(op)}"
         )
 
-        # Create input and output tensors BEFORE graph capture
-        input_tensors = self._create_input_tensors(count, dtype)
-        output_tensor = self._create_output_tensor(count, dtype)
-        original_output_tensor = output_tensor.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Create input and output tensors AFTER setting non-default stream but BEFORE graph capture
+            input_tensors = self._create_input_tensors(count, dtype)
+            output_tensor = self._create_output_tensor(count, dtype)
+            original_output_tensor = output_tensor.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 
@@ -176,15 +176,15 @@ class ReduceScatterTest(unittest.TestCase):
             f"Testing CUDA Graph reduce_scatter with input deleted after graph creation with count={count}, dtype={get_dtype_name(dtype)}, and op={get_op_name(op)}"
         )
 
-        # Create output tensor that persists throughout the test
-        output_tensor = self._create_output_tensor(count, dtype)
-        original_output_tensor = output_tensor.clone()
-
         # Create a non-default CUDA stream (required for CUDA graph capture)
         stream = torch.cuda.Stream()
 
         # Set the stream as current for graph capture
         with torch.cuda.stream(stream):
+            # Create output tensor that persists throughout the test
+            output_tensor = self._create_output_tensor(count, dtype)
+            original_output_tensor = output_tensor.clone()
+
             # Create PyTorch CUDA graph
             graph = torch.cuda.CUDAGraph()
 

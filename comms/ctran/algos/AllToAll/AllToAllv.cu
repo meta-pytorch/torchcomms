@@ -140,12 +140,10 @@ __global__ void ncclKernelAllToAllv(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelAllToAllvArgs args) {
-  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
-  // channels.
-  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
+    ctran::device::devLoadAbortFlags(flag, devState);
     ctran::device::KernelStartGpe(flag);
   }
 
