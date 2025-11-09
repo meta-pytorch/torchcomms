@@ -530,6 +530,14 @@ void CtranGpe::Impl::gpeThreadFn() {
             ctranInitialized(comm) ? comm->ctran_->mapper.get() : nullptr;
         CtranMapperEpochRAII epochRAII(mapper);
 
+        // Ensure the host communication request completes, irrespective of
+        // outcome of collective function - success, failure, or an exception
+        SCOPE_EXIT {
+          if (cmd->exReq) {
+            cmd->exReq->complete();
+          }
+        };
+
         /* run collective */
         // TODO: lost peerRank info which would be useful for some errors (e.g.,
         // commRemoteError). We may want to enrich commResult_t to contain such
@@ -581,14 +589,6 @@ void CtranGpe::Impl::gpeThreadFn() {
               }
             }
           }
-        }
-      } else {
-        // This is a host memory communication, so we can complete it here
-        if (!cmd->allowNullReq) {
-          FB_CHECKABORT(
-              cmd->exReq,
-              "CTranGPE: ExReq is nullptr but required for host memory communication");
-          cmd->exReq->complete();
         }
       }
 

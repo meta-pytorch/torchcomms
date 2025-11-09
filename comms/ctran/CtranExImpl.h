@@ -86,7 +86,7 @@ class CtranExRequestImpl {
     } recvSyncCtrl;
     struct {
       // completion is set by GPE thread and checked by calling thread.
-      std::atomic<bool> complete{false};
+      std::atomic_flag complete;
     } bcast;
   };
 
