@@ -57,7 +57,7 @@ class CtranAlgo {
       size_t count,
       commDataType_t datatype,
       int root,
-      std::atomic_flag* cpuFlag);
+      std::shared_ptr<std::atomic_flag> cpuFlag);
 
   commResult_t initTmpBufs();
   commResult_t initAllReduceDirectResource(int nBlocks, cudaStream_t stream);

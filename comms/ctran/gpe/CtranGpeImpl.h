@@ -124,7 +124,7 @@ class CtranGpeCmd {
   // kernelFlag to assist device mem communication
   KernelFlagItem* kernelFlag{nullptr};
   // cpuFlag to track completion of host mem communication
-  std::atomic_flag* cpuFlag{nullptr};
+  std::shared_ptr<std::atomic_flag> cpuFlag{nullptr};
 
   bool persistent{false};
 
@@ -202,7 +202,7 @@ class CtranGpe::Impl {
       std::vector<std::unique_ptr<struct OpElem>> opGroup,
       opFunc func,
       KernelConfig& kernelConfig,
-      std::atomic_flag* cpuFlag);
+      std::shared_ptr<std::atomic_flag> cpuFlag);
 
   // start the GPE thread.
   void start();

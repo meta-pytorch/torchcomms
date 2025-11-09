@@ -392,7 +392,7 @@ class CtranGpe {
       std::vector<std::unique_ptr<struct OpElem>> opGroup,
       opFunc func,
       KernelConfig& kernelConfig,
-      std::atomic_flag* cpuFlag);
+      std::shared_ptr<std::atomic_flag> cpuFlag);
 
   // Allocate numElems number of p2pElem objects from internal pool.
   // When free objects are not enough, it will be in blocking wait and reclaim

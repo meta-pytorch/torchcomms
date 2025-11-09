@@ -394,13 +394,13 @@ commResult_t CtranGpe::Impl::submitHost(
     std::vector<std::unique_ptr<struct OpElem>> opGroup,
     opFunc func,
     KernelConfig& kernelConfig,
-    std::atomic_flag* cpuFlag) {
+    std::shared_ptr<std::atomic_flag> cpuFlag) {
   // Enqueue op to gpeThread if any op is appended
   if (!opGroup.empty()) {
     class CtranGpeCmd* cmd = new class CtranGpeCmd;
     cmd->type = type;
     cmd->kernelFlag = nullptr;
-    cmd->cpuFlag = cpuFlag;
+    cmd->cpuFlag = std::move(cpuFlag);
 
     if (type == CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE) {
       cmd->coll.opGroup = std::move(opGroup);

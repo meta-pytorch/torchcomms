@@ -389,13 +389,13 @@ commResult_t CtranGpe::submitHost(
     std::vector<std::unique_ptr<struct OpElem>> opGroup,
     opFunc func,
     KernelConfig& kernelConfig,
-    std::atomic_flag* cpuFlag) {
+    std::shared_ptr<std::atomic_flag> cpuFlag) {
   return this->pimpl->submitHost(
       CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE,
       std::move(opGroup),
       func,
       kernelConfig,
-      cpuFlag);
+      std::move(cpuFlag));
 }
 
 commResult_t CtranGpe::allocKernelElems(

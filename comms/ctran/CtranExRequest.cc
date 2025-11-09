@@ -58,7 +58,8 @@ void CtranExRequestImpl::initialize(Type type, CtranIb* ctranIb) {
 void CtranExRequestImpl::initialize(Type type, CtranComm* ctranComm) {
   switch (type) {
     case BCAST:
-      bcast.complete.clear();
+      bcast.complete = std::make_shared<std::atomic_flag>();
+      bcast.complete->clear();
       break;
     default:
       FB_CHECKABORT(
@@ -75,7 +76,7 @@ void CtranExRequestImpl::initialize(Type type, CtranComm* ctranComm) {
 void CtranExRequestImpl::complete() {
   switch (type) {
     case BCAST:
-      bcast.complete.test_and_set();
+      bcast.complete->test_and_set();
       break;
     // no op for other types
     default:
@@ -113,7 +114,7 @@ void CtranExRequestImpl::atComplete(CtranExRequest* req) {
 bool CtranExRequest::isComplete() const {
   auto reqImpl = reinterpret_cast<CtranExRequestImpl*>(impl_);
   if (reqImpl->type == CtranExRequestImpl::BCAST) {
-    return reqImpl->bcast.complete.test();
+    return reqImpl->bcast.complete->test();
   }
   return reqImpl->ibReq.isComplete();
 }
@@ -125,7 +126,7 @@ commResult_t CtranExRequest::test(bool& complete) {
   // marks completion. Thus, no need to polling backend progress by the calling
   // thread.
   if (reqImpl->type == CtranExRequestImpl::BCAST) {
-    complete = reqImpl->bcast.complete.test();
+    complete = reqImpl->bcast.complete->test();
 
     // Check if there is any error reported by the GPE thread;
     // if so, return the error code.
@@ -162,7 +163,7 @@ commResult_t CtranExRequest::wait() {
 
   if (reqImpl->type == CtranExRequestImpl::BCAST) {
     // GPE thread is handling the communcation, wait for it to complete
-    reqImpl->bcast.complete.wait(true);
+    reqImpl->bcast.complete->wait(true);
     // Check if there is any error reported by the GPE thread;
     // if so, return the error code.
     if (reqImpl->asyncErr) {

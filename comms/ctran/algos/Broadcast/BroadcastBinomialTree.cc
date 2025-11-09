@@ -440,7 +440,7 @@ commResult_t CtranAlgo::broadcastBinomialTree(
     size_t count,
     commDataType_t datatype,
     int root,
-    std::atomic_flag* cpuFlag) {
+    std::shared_ptr<std::atomic_flag> cpuFlag) {
   auto opCount = ctran_->getOpCount();
   CTRAN_HOST_COLL_INFO(
       broadcastAlgoName(myAlgo).c_str(),
