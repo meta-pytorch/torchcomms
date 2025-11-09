@@ -394,13 +394,13 @@ commResult_t CtranGpe::Impl::submitHost(
     std::vector<std::unique_ptr<struct OpElem>> opGroup,
     opFunc func,
     KernelConfig& kernelConfig,
-    CtranExRequestImpl* exReq) {
+    std::atomic_flag* cpuFlag) {
   // Enqueue op to gpeThread if any op is appended
   if (!opGroup.empty()) {
     class CtranGpeCmd* cmd = new class CtranGpeCmd;
     cmd->type = type;
     cmd->kernelFlag = nullptr;
-    cmd->exReq = exReq;
+    cmd->cpuFlag = cpuFlag;
 
     if (type == CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE) {
       cmd->coll.opGroup = std::move(opGroup);
@@ -531,8 +531,8 @@ void CtranGpe::Impl::gpeThreadFn() {
         // Ensure the host communication request completes, irrespective of
         // outcome of collective function - success, failure, or an exception
         SCOPE_EXIT {
-          if (cmd->exReq) {
-            cmd->exReq->complete();
+          if (cmd->cpuFlag) {
+            cmd->cpuFlag->test_and_set();
           }
         };
 

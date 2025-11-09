@@ -139,7 +139,12 @@ ncclResult_t CtranExComm::broadcast(
 
   // TODO: only tree supports host mem for now. Add support for direct.
   NCCLCHECK(metaCommToNccl(ctranComm->ctran_->algo->broadcastBinomialTree(
-      sendbuff, recvbuff, count, ncclToMetaComm(datatype), root, reqImpl)));
+      sendbuff,
+      recvbuff,
+      count,
+      ncclToMetaComm(datatype),
+      root,
+      &reqImpl->bcast.complete)));
 
   *req = reqPtr;
   return ncclSuccess;
