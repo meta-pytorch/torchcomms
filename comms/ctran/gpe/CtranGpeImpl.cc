@@ -394,15 +394,13 @@ commResult_t CtranGpe::Impl::submitHost(
     std::vector<std::unique_ptr<struct OpElem>> opGroup,
     opFunc func,
     KernelConfig& kernelConfig,
-    CtranExRequestImpl* exReq,
-    bool allowNullReq) {
+    CtranExRequestImpl* exReq) {
   // Enqueue op to gpeThread if any op is appended
   if (!opGroup.empty()) {
     class CtranGpeCmd* cmd = new class CtranGpeCmd;
     cmd->type = type;
     cmd->kernelFlag = nullptr;
     cmd->exReq = exReq;
-    cmd->allowNullReq = allowNullReq;
 
     if (type == CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE) {
       cmd->coll.opGroup = std::move(opGroup);

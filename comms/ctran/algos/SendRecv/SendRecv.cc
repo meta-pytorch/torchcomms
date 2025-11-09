@@ -648,8 +648,7 @@ commResult_t submitHandleExchangeToGpe(const std::vector<OpElem*>& ops) {
       std::move(exchangeOpGroup),
       exchangeSendRecvHandles,
       config,
-      nullptr, /* exReq */
-      true /* allowNullReq */));
+      nullptr /* exReq */));
 
   return commSuccess;
 }

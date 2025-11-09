@@ -389,15 +389,13 @@ commResult_t CtranGpe::submitHost(
     std::vector<std::unique_ptr<struct OpElem>> opGroup,
     opFunc func,
     KernelConfig& kernelConfig,
-    CtranExRequestImpl* exReq,
-    bool allowNullReq) {
+    CtranExRequestImpl* exReq) {
   return this->pimpl->submitHost(
       CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE,
       std::move(opGroup),
       func,
       kernelConfig,
-      exReq,
-      allowNullReq);
+      exReq);
 }
 
 commResult_t CtranGpe::allocKernelElems(
