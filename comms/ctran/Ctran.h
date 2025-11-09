@@ -40,14 +40,7 @@ class Ctran : public ICtran {
 };
 
 bool ctranSendRecvSupport(int peer, CtranComm* comm);
-commResult_t ctranSendSchedule(
-    const void* sendbuff,
-    size_t count,
-    commDataType_t datatype,
-    int peer,
-    CtranComm* comm,
-    cudaStream_t stream,
-    std::deque<OpElem*>& opGroup);
+
 commResult_t ctranSend(
     const void* sendbuff,
     size_t count,
@@ -55,14 +48,7 @@ commResult_t ctranSend(
     int peer,
     CtranComm* comm,
     cudaStream_t stream);
-commResult_t ctranRecvSchedule(
-    void* recvbuff,
-    size_t count,
-    commDataType_t datatype,
-    int peer,
-    CtranComm* comm,
-    cudaStream_t stream,
-    std::deque<OpElem*>& opGroup);
+
 commResult_t ctranRecv(
     void* recvbuff,
     size_t count,
@@ -166,15 +152,14 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
     const size_t* sendIndices,
     const size_t* sendIndicesBlockLengths,
     void* const* recvbuffs,
-    size_t* recvAllSplitLengths,
-    size_t* recvIndices,
-    size_t* recvIndicesBlockLengths,
     size_t maxSendcount,
     size_t maxRecvcount,
     const meta::comms::Hints& hints,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    bool combine,
+    size_t* recvAllSplitLengths = nullptr);
 
 commResult_t ctranAllToAllvDynamicSupport(
     CtranComm* comm,

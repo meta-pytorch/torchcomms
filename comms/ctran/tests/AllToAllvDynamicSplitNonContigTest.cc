@@ -14,7 +14,6 @@
 #endif
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranCclxIntegrationTestUtils.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/tests_common.cuh"
@@ -88,18 +87,12 @@ __global__ void initRecvIndicesBlockLengthKernel(
     size_t* recvIndicesBlockLengths,
     size_t myIndicesBlockLengths);
 
-class AllToAllvDynamicSplitNonContigTestCommon
-    : public CtranCclxIntegrationTestUtils {
+class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
  public:
   AllToAllvDynamicSplitNonContigTestCommon() = default;
   void SetUp() override {
-    CtranCclxIntegrationTestUtils::SetUp();
-
-#ifdef TEST_NCCLX_RCCLX_INTEGRATION
-    setTestCclxAPI(true);
-#else
-    setTestCclxAPI(false);
-#endif
+    CtranDistTest::SetUp();
+    comm = commRAII->ctranComm;
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
@@ -109,7 +102,7 @@ class AllToAllvDynamicSplitNonContigTestCommon
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    CtranCclxIntegrationTestUtils::TearDown();
+    CtranDistTest::TearDown();
   }
 
   void InitTestSetup(size_t maxCount_, int numExperts_, bool dupExpertFlag) {
@@ -202,17 +195,17 @@ class AllToAllvDynamicSplitNonContigTestCommon
     if (registFlag) {
       void* hdl = nullptr;
       for (int i = 0; i < numRanks; i++) {
-        ncclOrCtranRegister(
+        COMMCHECK_TEST(comm->ctran_->commRegister(
             recvbuffsHost[i],
             maxCountBuff * maxNumExperts * numRanks * sizeof(int),
-            &hdl);
+            &hdl));
         recvhdls.push_back(hdl);
       }
 
-      ncclOrCtranRegister(
+      COMMCHECK_TEST(comm->ctran_->commRegister(
           sendbuffDev,
           maxCountBuff * maxNumExperts * numRanks * sizeof(int),
-          &hdl);
+          &hdl));
       sendhdls.push_back(hdl);
     }
   }
@@ -221,10 +214,10 @@ class AllToAllvDynamicSplitNonContigTestCommon
     // Deregister and free data buffers
     if (registFlag) {
       for (auto h : recvhdls) {
-        ncclOrCtranDeregister(h);
+        COMMCHECK_TEST(comm->ctran_->commDeregister(h));
       }
       for (auto h : sendhdls) {
-        ncclOrCtranDeregister(h);
+        COMMCHECK_TEST(comm->ctran_->commDeregister(h));
       }
     }
 
@@ -311,26 +304,8 @@ class AllToAllvDynamicSplitNonContigTestCommon
         stream));
   }
 
+  // TODO: will need to add unit test for combine. Now only have dispatch.
   void EnqueueAllToAllvDynamicSplitNonContig() {
-#ifdef TEST_NCCLX_RCCLX_INTEGRATION
-    auto res = ncclx::alltoallvDynamicSplitNonContig(
-        sendbuffDev,
-        sendSplitLengthsDev,
-        numSendSplitLengths,
-        sendIndicesDev,
-        sendIndicesBlockLengthsDev,
-        recvbuffsHost,
-        recvSplitsDev,
-        recvIndicesDev,
-        recvIndicesBlockLengthsDev,
-        maxSendcount,
-        maxRecvcount,
-        hints,
-        ncclInt,
-        ncclComm,
-        stream);
-    ASSERT_EQ(res, ncclSuccess);
-#else
     auto res = ctranAlltoallvDynamicSplitNonContig(
         sendbuffDev,
         sendSplitLengthsDev,
@@ -338,17 +313,15 @@ class AllToAllvDynamicSplitNonContigTestCommon
         sendIndicesDev,
         sendIndicesBlockLengthsDev,
         recvbuffsHost,
-        recvSplitsDev,
-        recvIndicesDev,
-        recvIndicesBlockLengthsDev,
         maxSendcount,
         maxRecvcount,
         hints,
         commInt32,
-        ctranComm,
-        stream);
+        comm,
+        stream,
+        false,
+        recvSplitsDev);
     ASSERT_EQ(res, commSuccess);
-#endif
   }
 
   enum class CountType {
@@ -553,6 +526,7 @@ class AllToAllvDynamicSplitNonContigTestCommon
   }
 
  protected:
+  CtranComm* comm{nullptr};
   cudaStream_t stream{};
   int numExperts{0};
   int maxNumExperts{0};
@@ -591,11 +565,7 @@ class AllToAllvDynamicSplitNonContigTestCommon
 
   std::vector<size_t*> randomCountsMatricesDev;
 
-#ifdef TEST_NCCLX_RCCLX_INTEGRATION
-  ncclx::Hints hints;
-#else
   meta::comms::Hints hints;
-#endif
   size_t maxAllowedCount{0};
 
   size_t* actualRcountsDev{nullptr};
@@ -928,11 +898,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedEqualCountsGraph) {
   constexpr int numIters = 10;
   for (int i = 0; i < numIters; i++) {
     CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
-#ifdef TEST_NCCLX_RCCLX_INTEGRATION
-    auto nelems = ncclComm->ctranComm_->ctran_->gpe->numInUseKernelElems();
-#else
-    auto nelems = ctranComm->ctran_->gpe->numInUseKernelElems();
-#endif
+    auto nelems = comm->ctran_->gpe->numInUseKernelElems();
     EXPECT_NE(nelems, 0);
   }
 
@@ -999,11 +965,7 @@ TEST_P(
   constexpr int numIters = 1;
   for (int i = 0; i < numIters; i++) {
     CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
-#ifdef TEST_NCCLX_RCCLX_INTEGRATION
-    auto nelems = ncclComm->ctranComm_->ctran_->gpe->numInUseKernelElems();
-#else
-    auto nelems = ctranComm->ctran_->gpe->numInUseKernelElems();
-#endif
+    auto nelems = comm->ctran_->gpe->numInUseKernelElems();
     EXPECT_NE(nelems, 0);
   }
 
