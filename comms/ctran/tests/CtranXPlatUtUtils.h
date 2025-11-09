@@ -268,9 +268,6 @@ class CtranDistTest : public ::testing::Test {
   int localSize{0};
   bool enableNolocal{false};
 
- protected:
-  std::unique_ptr<c10d::TCPStore> tcpStore_{nullptr};
-
  private:
   void initWorldInfo() {
     WorldInfo info;
@@ -364,4 +361,6 @@ class CtranDistTest : public ::testing::Test {
     COMMCHECK_TEST(res.value().code);
     return std::make_unique<TestCtranCommRAII>(std::move(mcclComm));
   }
+
+  std::unique_ptr<c10d::TCPStore> tcpStore_{nullptr};
 };

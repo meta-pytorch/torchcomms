@@ -14,7 +14,6 @@
 #endif
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranCclxIntegrationTestUtils.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 
@@ -59,18 +58,12 @@ __global__ void checkRandomCountsKernel(
     int globalRank,
     int numRanks);
 
-class AllToAllvDynamicTestCommon : public CtranCclxIntegrationTestUtils {
+class AllToAllvDynamicTestCommon : public CtranDistTest {
  public:
   AllToAllvDynamicTestCommon() = default;
   void SetUp() override {
-    CtranCclxIntegrationTestUtils::SetUp();
-
-#ifdef TEST_NCCLX_RCCLX_INTEGRATION
-    setTestCclxAPI(true);
-#else
-    setTestCclxAPI(false);
-#endif
-
+    CtranDistTest::SetUp();
+    comm = commRAII->ctranComm;
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));
 
@@ -79,7 +72,7 @@ class AllToAllvDynamicTestCommon : public CtranCclxIntegrationTestUtils {
 
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
-    CtranCclxIntegrationTestUtils::TearDown();
+    CtranDistTest::TearDown();
   }
 
   void AllocateBuffers(MemAllocType memType, size_t maxCount, bool registFlag) {
@@ -131,9 +124,11 @@ class AllToAllvDynamicTestCommon : public CtranCclxIntegrationTestUtils {
     if (registFlag) {
       for (int i = 0; i < numRanks; i++) {
         void* hdl = nullptr;
-        ncclOrCtranRegister(sendbuffsHost[i], maxCountBuff * sizeof(int), &hdl);
+        COMMCHECK_TEST(comm->ctran_->commRegister(
+            sendbuffsHost[i], maxCountBuff * sizeof(int), &hdl));
         sendhdls.push_back(hdl);
-        ncclOrCtranRegister(recvbuffsHost[i], maxCountBuff * sizeof(int), &hdl);
+        COMMCHECK_TEST(comm->ctran_->commRegister(
+            recvbuffsHost[i], maxCountBuff * sizeof(int), &hdl));
         recvhdls.push_back(hdl);
       }
     }
@@ -143,8 +138,8 @@ class AllToAllvDynamicTestCommon : public CtranCclxIntegrationTestUtils {
     // Deregister and free data buffers
     if (registFlag) {
       for (int i = 0; i < numRanks; i++) {
-        ncclOrCtranDeregister(sendhdls[i]);
-        ncclOrCtranDeregister(recvhdls[i]);
+        COMMCHECK_TEST(comm->ctran_->commDeregister(sendhdls[i]));
+        COMMCHECK_TEST(comm->ctran_->commDeregister(recvhdls[i]));
       }
     }
 
@@ -204,20 +199,6 @@ class AllToAllvDynamicTestCommon : public CtranCclxIntegrationTestUtils {
   }
 
   void EnqueueAllToAllvDynamic() {
-#ifdef TEST_NCCLX_RCCLX_INTEGRATION
-    auto res = ncclx::alltoallvDynamic(
-        sendbuffsHost,
-        scountsDev,
-        recvbuffsHost,
-        maxSendcount,
-        maxRecvcount,
-        actualRcountsDev,
-        hints,
-        ncclInt,
-        ncclComm,
-        stream);
-    ASSERT_EQ(res, ncclSuccess);
-#else
     auto res = ctranAllToAllvDynamic(
         sendbuffsHost,
         scountsDev,
@@ -227,10 +208,9 @@ class AllToAllvDynamicTestCommon : public CtranCclxIntegrationTestUtils {
         actualRcountsDev,
         hints,
         commInt32,
-        ctranComm,
+        comm,
         stream);
     ASSERT_EQ(res, commSuccess);
-#endif
   }
 
   enum class CountType {
@@ -345,6 +325,7 @@ class AllToAllvDynamicTestCommon : public CtranCclxIntegrationTestUtils {
   }
 
  protected:
+  CtranComm* comm{nullptr};
   cudaStream_t stream;
   int numExperts{1};
 
@@ -366,11 +347,7 @@ class AllToAllvDynamicTestCommon : public CtranCclxIntegrationTestUtils {
 
   std::vector<size_t*> randomCountsMatricesDev;
 
-#ifdef TEST_NCCLX_RCCLX_INTEGRATION
-  ncclx::Hints hints;
-#else
   meta::comms::Hints hints;
-#endif
   size_t maxAllowedCount;
 };
 
@@ -650,12 +627,7 @@ TEST_P(AllToAllvDynamicTestSuite, UnchangedEqualCountsGraph) {
   constexpr int numIters = 10;
   for (int i = 0; i < numIters; i++) {
     CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
-#ifdef TEST_NCCLX_RCCLX_INTEGRATION
-    auto nelems = ncclComm->ctranComm_->ctran_->gpe->numInUseKernelElems();
-#else
-    auto nelems = ctranComm->ctran_->gpe->numInUseKernelElems();
-#endif
-
+    auto nelems = comm->ctran_->gpe->numInUseKernelElems();
     EXPECT_NE(nelems, 0);
   }
 
