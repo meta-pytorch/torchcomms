@@ -376,14 +376,13 @@ bool ctranSendRecvSupport(int peer, CtranComm* comm) {
   }
 }
 
-commResult_t ctranSendSchedule(
+commResult_t ctranSend(
     const void* sendbuff,
     size_t count,
     commDataType_t datatype,
     int peer,
     CtranComm* comm,
-    cudaStream_t stream,
-    std::deque<OpElem*>& opGroup) {
+    cudaStream_t stream) {
   auto opCount = comm->ctran_->getOpCount();
   CTRAN_COLL_INFO(
       "CtranSend", sendbuff, nullptr, count, datatype, peer, comm, stream);
@@ -401,41 +400,7 @@ commResult_t ctranSendSchedule(
     op->send.recvbuff = new std::atomic<void*>();
   }
 
-  opGroup.push_back(op);
-
-  return commSuccess;
-}
-
-commResult_t ctranSend(
-    const void* sendbuff,
-    size_t count,
-    commDataType_t datatype,
-    int peer,
-    CtranComm* comm,
-    cudaStream_t stream) {
-  return ctranSendSchedule(
-      sendbuff, count, datatype, peer, comm, stream, CtranOpGroup);
-}
-
-commResult_t ctranRecvSchedule(
-    void* recvbuff,
-    size_t count,
-    commDataType_t datatype,
-    int peer,
-    CtranComm* comm,
-    cudaStream_t stream,
-    std::deque<OpElem*>& opGroup) {
-  auto opCount = comm->ctran_->getOpCount();
-  CTRAN_COLL_INFO(
-      "CtranRecv", nullptr, recvbuff, count, datatype, peer, comm, stream);
-
-  auto op = new OpElem(OpElem::opType::RECV, stream, comm, opCount);
-  op->recv.recvbuff = recvbuff;
-  op->recv.count = count;
-  op->recv.datatype = datatype;
-  op->recv.peerRank = peer;
-
-  opGroup.push_back(op);
+  CtranOpGroup.push_back(op);
 
   return commSuccess;
 }
@@ -447,8 +412,19 @@ commResult_t ctranRecv(
     int peer,
     CtranComm* comm,
     cudaStream_t stream) {
-  return ctranRecvSchedule(
-      recvbuff, count, datatype, peer, comm, stream, CtranOpGroup);
+  auto opCount = comm->ctran_->getOpCount();
+  CTRAN_COLL_INFO(
+      "CtranRecv", nullptr, recvbuff, count, datatype, peer, comm, stream);
+
+  auto op = new OpElem(OpElem::opType::RECV, stream, comm, opCount);
+  op->recv.recvbuff = recvbuff;
+  op->recv.count = count;
+  op->recv.datatype = datatype;
+  op->recv.peerRank = peer;
+
+  CtranOpGroup.push_back(op);
+
+  return commSuccess;
 }
 
 static unsigned int bestThreadBlockSize = 0;
@@ -679,9 +655,8 @@ commResult_t submitHandleExchangeToGpe(const std::vector<OpElem*>& ops) {
 }
 
 commResult_t ctranGroupEndHook(
-    std::deque<OpElem*>& opGroup,
     std::optional<std::chrono::milliseconds> timeout) {
-  while (!opGroup.empty()) {
+  while (!CtranOpGroup.empty()) {
     std::vector<OpElem*> allOps;
     std::vector<OpElem*> selfSends, selfRecvs, sendNvlOps, nvlOps, ibOps;
     std::deque<OpElem*> pending;
@@ -690,13 +665,13 @@ commResult_t ctranGroupEndHook(
     bool hasTcpDmRecv = false;
 
     // Submit ops with the same comm and stream in a single batch
-    CtranComm* comm = opGroup.front()->comm_;
-    cudaStream_t stream = opGroup.front()->stream;
+    CtranComm* comm = CtranOpGroup.front()->comm_;
+    cudaStream_t stream = CtranOpGroup.front()->stream;
     const auto statex = comm->statex_.get();
     auto mapper = comm->ctran_->mapper.get();
 
-    while (!opGroup.empty()) {
-      auto op = dequeFront(opGroup);
+    while (!CtranOpGroup.empty()) {
+      auto op = dequeFront(CtranOpGroup);
 
       if (op->comm_ == comm && op->stream == stream) {
         if (op->type == OpElem::opType::SEND) {
@@ -847,15 +822,10 @@ commResult_t ctranGroupEndHook(
     comm->ctran_->numGroupedDefaultOps = 0;
 
     // handle next batch
-    opGroup = std::move(pending);
+    CtranOpGroup = std::move(pending);
   }
 
   return commSuccess;
-}
-
-commResult_t ctranGroupEndHook(
-    std::optional<std::chrono::milliseconds> timeout) {
-  return ctranGroupEndHook(CtranOpGroup, timeout);
 }
 
 void ctranGroupTrackDefaultOp(CtranComm* comm) {
