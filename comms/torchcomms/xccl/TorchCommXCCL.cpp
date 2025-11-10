@@ -286,175 +286,27 @@ getOperationTimeout(std::chrono::milliseconds timeout,
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::send(const at::Tensor &tensor,
                                                int dst, bool async_op,
                                                const SendOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
-
-  tracing_->recordEventWithInputOutput("send", dst, {tensor}, {tensor});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
-
-  work->recordStart();
-
-  onecclResult_t result =
-      xccl_api_->send(tensor.data_ptr(), tensor.numel(),
-                      getXcclDataType(tensor), dst, xccl_comm_, stream);
-
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL Send failed", result);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+  throw std::runtime_error("XCCL send is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::recv(at::Tensor &tensor, int src,
                                                bool async_op,
                                                const RecvOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
-
-  tracing_->recordEventWithInputOutput("recv", src, {tensor}, {tensor});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {});
-
-  work->recordStart();
-
-  onecclResult_t result =
-      xccl_api_->recv(tensor.data_ptr(), tensor.numel(),
-                      getXcclDataType(tensor), src, xccl_comm_, stream);
-
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL Recv failed", result);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+  throw std::runtime_error("XCCL recv is not supported now and will be added later");
 }
 
 // Batch P2P Operations
 c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::batch_op_issue(const std::vector<BatchSendRecv::P2POp> &ops,
                               bool async_op, const BatchP2POptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-
-  if (ops.empty()) {
-    throw std::runtime_error("Cannot issue empty batch operation");
-  }
-
-  // Collect input and output tensors for work tracking
-  std::vector<at::Tensor> input_tensors;
-  std::vector<at::Tensor> output_tensors;
-
-  for (const auto &op : ops) {
-    if (op.type == BatchSendRecv::P2POp::OpType::SEND) {
-      at::Tensor tensor = op.tensor;
-      ensureTensorContiguous(tensor);
-      input_tensors.push_back(tensor);
-    } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
-      at::Tensor tensor = op.tensor;
-      ensureTensorContiguous(tensor);
-      output_tensors.push_back(tensor);
-    } else {
-      throw std::runtime_error("Unknown op type");
-    }
-  }
-
-  tracing_->recordEventWithInputOutput("batch_op_issue", rank_, input_tensors,
-                                       output_tensors);
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work =
-      createWork(stream, getOperationTimeout(options.timeout, options_.timeout),
-                 input_tensors);
-
-  work->recordStart();
-
-  // Start XCCL group for batched operations
-  onecclResult_t result = xccl_api_->groupStart();
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL GroupStart failed", result);
-  }
-
-  // Issue each operation individually
-  for (const auto &op : ops) {
-    if (op.type == BatchSendRecv::P2POp::OpType::SEND) {
-      result = xccl_api_->send(op.tensor.data_ptr(), op.tensor.numel(),
-                               getXcclDataType(op.tensor), op.peer, xccl_comm_,
-                               stream);
-
-      if (result != onecclSuccess) {
-        xccl_api_->groupEnd(); // Clean up group on error
-        throw XCCLException(*xccl_api_, "XCCL Send failed in batch operation",
-                            result);
-      }
-    } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
-      result = xccl_api_->recv(op.tensor.data_ptr(), op.tensor.numel(),
-                               getXcclDataType(op.tensor), op.peer, xccl_comm_,
-                               stream);
-
-      if (result != onecclSuccess) {
-        xccl_api_->groupEnd(); // Clean up group on error
-        throw XCCLException(*xccl_api_, "XCCL Recv failed in batch operation",
-                            result);
-      }
-    }
-  }
-
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL GroupEnd failed", result);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+  throw std::runtime_error("XCCL batch_op_issue is not supported now and will be added later");
 }
 
 // Collective Operations
 c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::broadcast(at::Tensor &tensor, int root, bool async_op,
                          const BroadcastOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
-
-  tracing_->recordEventWithInputOutput("broadcast", root, {tensor}, {tensor});
-
-  xpuStream_t stream = getOperationStream(async_op);
-
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
-
-  work->recordStart();
-
-  onecclResult_t result =
-      xccl_api_->bcast(tensor.data_ptr(), tensor.numel(),
-                       getXcclDataType(tensor), root, xccl_comm_, stream);
-
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL Broadcast failed", result);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+  throw std::runtime_error("XCCL broadcast is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork>
@@ -494,85 +346,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(const at::Tensor &tensor,
                                                  int root, const ReduceOp &op,
                                                  bool async_op,
                                                  const ReduceOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(tensor);
-
-  tracing_->recordEventWithInputOutput("reduce", root, {tensor}, {tensor});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  std::vector<at::Tensor> output_tensors;
-  if (rank_ == root) {
-    output_tensors.push_back(tensor);
-  }
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
-
-  work->recordStart();
-
-  const auto dataType = getXcclDataType(tensor);
-  onecclResult_t result = xccl_api_->reduce(
-      tensor.data_ptr(),
-      tensor.data_ptr(), // Use same buffer for all ranks
-      tensor.numel(), dataType, getXcclReduceOp(op, xccl_comm_, dataType), root,
-      xccl_comm_, stream);
-
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL Reduce failed", result);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL reduce is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::all_gather(const std::vector<at::Tensor> &tensor_list,
                           const at::Tensor &tensor, bool async_op,
                           const AllGatherOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  if (tensor_list.size() != static_cast<size_t>(comm_size_)) {
-    throw std::runtime_error(
-        "tensor_list size must equal comm_size for all_gather");
-  }
-
-  ensureTensorContiguous(tensor);
-
-  for (const auto &t : tensor_list) {
-    ensureTensorContiguous(t);
-    if (t.numel() != tensor.numel()) {
-      throw std::runtime_error(
-          "All tensors in tensor_list must have same size as input tensor");
-    }
-  }
-
-  tracing_->recordEventWithInputOutput("all_gather", rank_, tensor_list,
-                                       {tensor});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
-
-  work->recordStart();
-
-  xccl_api_->groupStart();
-
-  for (int i = 0; i < comm_size_; ++i) {
-    xccl_api_->broadcast(tensor.data_ptr(), tensor_list[i].data_ptr(),
-                         tensor.numel(), getXcclDataType(tensor_list[i]), i,
-                         xccl_comm_, stream);
-  }
-
-  xccl_api_->groupEnd();
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL all_gather is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork>
@@ -586,90 +367,13 @@ c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::all_gather_single(at::Tensor &output, const at::Tensor &input,
                                  bool async_op,
                                  const AllGatherSingleOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-  ensureTensorContiguous(input);
-
-  if (output.numel() != input.numel() * comm_size_) {
-    throw std::runtime_error("Output tensor size must be input_size * "
-                             "comm_size for all_gather_single");
-  }
-
-  tracing_->recordEventWithInputOutput("all_gather_single", rank_, {input},
-                                       {output});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
-
-  work->recordStart();
-
-  onecclResult_t result =
-      xccl_api_->allGather(input.data_ptr(), output.data_ptr(), input.numel(),
-                           getXcclDataType(input), xccl_comm_, stream);
-
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL AllGather failed", result);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL all_gather_single is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
     at::Tensor &output, const std::vector<at::Tensor> &input_list, const ReduceOp &op,
     bool async_op, const ReduceScatterOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-
-  if (input_list.size() != static_cast<size_t>(comm_size_)) {
-    throw std::runtime_error(
-        "input_list size must equal comm_size for reduce_scatter");
-  }
-
-  // Check that all input tensors are contiguous and have correct size
-  for (const auto &t : input_list) {
-    ensureTensorContiguous(t);
-    if (t.numel() != output.numel()) {
-      throw std::runtime_error(
-          "All input tensors must have same size as output tensor");
-    }
-  }
-
-  tracing_->recordEventWithInputOutput("reduce_scatter", rank_, input_list,
-                                       {output});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work =
-      createWork(stream, getOperationTimeout(options.timeout, options_.timeout),
-                 input_list);
-
-  work->recordStart();
-
-  // Use multiple reduce operations for reduce_scatter
-  xccl_api_->groupStart();
-
-  for (int i = 0; i < comm_size_; ++i) {
-    const auto dataType = getXcclDataType(input_list[i]);
-    xccl_api_->reduce(input_list[i].data_ptr(),
-                      i == rank_ ? output.data_ptr() : input_list[i].data_ptr(),
-                      i == rank_ ? output.numel() : input_list[i].numel(),
-                      dataType, getXcclReduceOp(op, xccl_comm_, dataType), i,
-                      xccl_comm_, stream);
-  }
-
-  xccl_api_->groupEnd();
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL reduce_scatter is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
@@ -681,84 +385,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
     at::Tensor &output, const at::Tensor &input, const ReduceOp &op, bool async_op,
     const ReduceScatterSingleOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-  ensureTensorContiguous(input);
-
-  if (input.numel() != output.numel() * comm_size_) {
-    throw std::runtime_error("Input tensor size must be output_size * "
-                             "comm_size for reduce_scatter_single");
-  }
-
-  tracing_->recordEventWithInputOutput("reduce_scatter_single", rank_, {input},
-                                       {output});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
-
-  work->recordStart();
-
-  const auto dataType = getXcclDataType(input);
-  onecclResult_t result = xccl_api_->reduceScatter(
-      input.data_ptr(), output.data_ptr(), output.numel(), dataType,
-      getXcclReduceOp(op, xccl_comm_, dataType), xccl_comm_, stream);
-
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL ReduceScatter failed", result);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL reduce_scatter_single is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::all_to_all_single(at::Tensor &output, const at::Tensor &input,
                                  bool async_op,
                                  const AllToAllSingleOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-  ensureTensorContiguous(input);
-
-  if (input.numel() != output.numel()) {
-    throw std::runtime_error(
-        "Input and output tensors must have same size for all_to_all_single");
-  }
-
-  if (input.numel() % comm_size_ != 0) {
-    throw std::runtime_error(
-        "Tensor size must be divisible by comm_size for all_to_all_single");
-  }
-
-  tracing_->recordEventWithInputOutput("all_to_all_single", rank_, {input},
-                                       {output});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
-
-  work->recordStart();
-
-  size_t chunk_size = input.numel() / comm_size_;
-  const auto data_type = getXcclDataType(input);
-
-  onecclResult_t result =
-      xccl_api_->allToAll(input.data_ptr(), output.data_ptr(), chunk_size,
-                          data_type, xccl_comm_, stream);
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL AllToAll failed", result);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL all_to_all_single is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
@@ -766,300 +400,39 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
     const std::vector<uint64_t> &output_split_sizes,
     const std::vector<uint64_t> &input_split_sizes, bool async_op,
     const AllToAllvSingleOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output);
-  ensureTensorContiguous(input);
-
-  // Validate split sizes vectors
-  if (input_split_sizes.size() != static_cast<size_t>(comm_size_)) {
-    throw std::runtime_error("input_split_sizes length must equal comm_size "
-                             "for all_to_all_v_single");
-  }
-
-  if (output_split_sizes.size() != static_cast<size_t>(comm_size_)) {
-    throw std::runtime_error("output_split_sizes length must equal comm_size "
-                             "for all_to_all_v_single");
-  }
-
-  tracing_->recordEventWithInputOutput("all_to_all_v_single", rank_, {input},
-                                       {output});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
-
-  work->recordStart();
-
-  // Convert split sizes to arrays and calculate displacements
-  std::vector<size_t> sendcounts(comm_size_);
-  std::vector<size_t> recvcounts(comm_size_);
-  std::vector<size_t> senddispls(comm_size_);
-  std::vector<size_t> recvdispls(comm_size_);
-
-  // Calculate the number of elements per slice along the first dimension
-  // For a tensor with shape [N, D1, D2, ..., Dk], each slice of size S along
-  // dim 0 contains S * D1 * D2 * ... * Dk elements
-  size_t elements_per_slice = input.numel() ? input.numel() / input.size(0) : 0;
-  const auto data_type = getXcclDataType(input);
-  const size_t type_size = wordSize(data_type);
-
-  size_t sendoffset = 0;
-  size_t recvoffset = 0;
-  for (int i = 0; i < comm_size_; ++i) {
-    sendcounts[i] = input_split_sizes[i] * elements_per_slice;
-    recvcounts[i] = output_split_sizes[i] * elements_per_slice;
-    senddispls[i] = sendoffset;
-    recvdispls[i] = recvoffset;
-    sendoffset += sendcounts[i];
-    recvoffset += recvcounts[i];
-  }
-
-  char *sptr = static_cast<char *>(input.data_ptr());
-  char *rptr = static_cast<char *>(output.data_ptr());
-
-  xccl_api_->groupStart();
-
-  for (int i = 0; i < comm_size_; ++i) {
-    xccl_api_->send(sptr + senddispls[i] * type_size, sendcounts[i], data_type,
-                    i, xccl_comm_, stream);
-    xccl_api_->recv(rptr + recvdispls[i] * type_size, recvcounts[i], data_type,
-                    i, xccl_comm_, stream);
-  }
-
-  xccl_api_->groupEnd();
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL all_to_all_v_single is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::all_to_all(const std::vector<at::Tensor> &output_tensor_list,
                           const std::vector<at::Tensor> &input_tensor_list,
                           bool async_op, const AllToAllOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  if (output_tensor_list.size() != static_cast<size_t>(comm_size_) ||
-      input_tensor_list.size() != static_cast<size_t>(comm_size_)) {
-    throw std::runtime_error(
-        "Tensor list sizes must equal comm_size for all_to_all");
-  }
-
-  // Validate all tensors
-  for (int i = 0; i < comm_size_; ++i) {
-    ensureTensorContiguous(input_tensor_list[i]);
-    ensureTensorContiguous(output_tensor_list[i]);
-  }
-
-  tracing_->recordEventWithInputOutput("all_to_all", rank_, input_tensor_list,
-                                       output_tensor_list);
-
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work =
-      createWork(stream, getOperationTimeout(options.timeout, options_.timeout),
-                 input_tensor_list);
-
-  work->recordStart();
-
-  xccl_api_->groupStart();
-
-  for (int i = 0; i < comm_size_; ++i) {
-    // Send to rank i
-    xccl_api_->send(
-        input_tensor_list[i].data_ptr(), input_tensor_list[i].numel(),
-        getXcclDataType(input_tensor_list[i]), i, xccl_comm_, stream);
-
-    // Receive from rank i
-    xccl_api_->recv(
-        output_tensor_list[i].data_ptr(), output_tensor_list[i].numel(),
-        getXcclDataType(output_tensor_list[i]), i, xccl_comm_, stream);
-  }
-
-  xccl_api_->groupEnd();
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL all_to_all is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::barrier(bool async_op, const BarrierOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-
-  tracing_->recordEvent("barrier");
-  xpuStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {});
-
-  work->recordStart();
-
-  // Use pre-allocated XPU buffer for barrier
-  onecclResult_t result =
-      xccl_api_->allReduce(barrier_buffer_, barrier_buffer_, 1, onecclFloat32,
-                           onecclSum, xccl_comm_, stream);
-
-  if (result != onecclSuccess) {
-    throw XCCLException(*xccl_api_, "XCCL Barrier failed", result);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL barrier is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::scatter(at::Tensor &output_tensor,
                        const std::vector<at::Tensor> &input_tensor_list,
                        int root, bool async_op, const ScatterOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(output_tensor);
-
-  // Only the root rank needs valid input tensors
-  if (rank_ == root) {
-    if (input_tensor_list.size() != static_cast<size_t>(comm_size_)) {
-      throw std::runtime_error(
-          "input_tensor_list size must equal comm_size for scatter");
-    }
-
-    for (const auto &t : input_tensor_list) {
-      ensureTensorContiguous(t);
-      if (t.numel() != output_tensor.numel()) {
-        throw std::runtime_error(
-            "All input tensors must have same size as output tensor");
-      }
-    }
-  }
-
-  tracing_->recordEventWithInputOutput("scatter", root, input_tensor_list,
-                                       {output_tensor});
-
-  xpuStream_t stream = getOperationStream(async_op);
-  std::vector<at::Tensor> input_tensors;
-  if (rank_ == root) {
-    input_tensors = input_tensor_list;
-  }
-  auto work =
-      createWork(stream, getOperationTimeout(options.timeout, options_.timeout),
-                 input_tensors);
-
-  work->recordStart();
-
-  // Implement scatter using point-to-point operations
-  if (rank_ == root) {
-    // Root sends to all ranks (except itself)
-    xccl_api_->groupStart();
-    for (int i = 0; i < comm_size_; ++i) {
-      if (i != root) {
-        xccl_api_->send(
-            input_tensor_list[i].data_ptr(), input_tensor_list[i].numel(),
-            getXcclDataType(input_tensor_list[i]), i, xccl_comm_, stream);
-      }
-    }
-    xccl_api_->groupEnd();
-
-    // Root copies its own data using xpuMemcpyAsync
-    XPU_CHECK(xpu_api_,
-              xpu_api_->memcpyAsync(output_tensor.data_ptr(),
-                                    input_tensor_list[root].data_ptr(),
-                                    input_tensor_list[root].numel() *
-                                        input_tensor_list[root].element_size(),
-                                    stream),
-              "memcpyAsync failed");
-  } else {
-    // Non-root ranks receive from root
-    xccl_api_->recv(output_tensor.data_ptr(), output_tensor.numel(),
-                    getXcclDataType(output_tensor), root, xccl_comm_, stream);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL scatter is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::gather(const std::vector<at::Tensor> &output_tensor_list,
                       const at::Tensor &input_tensor, int root, bool async_op,
                       const GatherOptions &options) {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  ensureTensorContiguous(input_tensor);
-
-  // Only the root rank needs valid output tensors
-  if (rank_ == root) {
-    if (output_tensor_list.size() != static_cast<size_t>(comm_size_)) {
-      throw std::runtime_error(
-          "output_tensor_list size must equal comm_size for gather");
-    }
-
-    for (const auto &t : output_tensor_list) {
-      ensureTensorContiguous(t);
-      if (t.numel() != input_tensor.numel()) {
-        throw std::runtime_error(
-            "All output tensors must have same size as input tensor");
-      }
-    }
-  }
-
-  tracing_->recordEventWithInputOutput("gather", root, {input_tensor},
-                                       output_tensor_list);
-
-  xpuStream_t stream = getOperationStream(async_op);
-  std::vector<at::Tensor> output_tensors;
-  if (rank_ == root) {
-    output_tensors = output_tensor_list;
-  }
-  auto work =
-      createWork(stream, getOperationTimeout(options.timeout, options_.timeout),
-                 {input_tensor});
-
-  work->recordStart();
-
-  if (rank_ == root) {
-    // Root receives from all ranks (except itself)
-    xccl_api_->groupStart();
-    for (int i = 0; i < comm_size_; ++i) {
-      if (i != root) {
-        xccl_api_->recv(
-            output_tensor_list[i].data_ptr(), output_tensor_list[i].numel(),
-            getXcclDataType(output_tensor_list[i]), i, xccl_comm_, stream);
-      }
-    }
-    xccl_api_->groupEnd();
-
-    // Root copies its own data using xpuMemcpyAsync
-    XPU_CHECK(xpu_api_,
-              xpu_api_->memcpyAsync(
-                  output_tensor_list[root].data_ptr(), input_tensor.data_ptr(),
-                  input_tensor.numel() * input_tensor.element_size(), stream),
-              "memcpyAsync failed");
-  } else {
-    // Non-root ranks send to root
-    xccl_api_->send(input_tensor.data_ptr(), input_tensor.numel(),
-                    getXcclDataType(input_tensor), root, xccl_comm_, stream);
-  }
-
-  work->recordEnd();
-
-  enqueueWork(work, stream);
-
-  return work;
+    throw std::runtime_error("XCCL gather is not supported now and will be added later");
 }
 
 std::shared_ptr<TorchCommBackend>
 TorchCommXCCL::split(const std::vector<int> &ranks, const std::string &name,
                      const CommOptions &options) {
-  throw std::runtime_error("Split is not supported now in XCCL");
+  throw std::runtime_error("XCCL split is not supported now and will be added later");
 }
 
 XCCLException::XCCLException(XcclApi &xccl_api, const std::string &message,
