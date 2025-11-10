@@ -385,15 +385,14 @@ class CtranGpe {
   // Submit host mem communication. No kernel is launched, and only the host
   // side func will be submitted to the GPE thread. Also the op won't be
   // captured by cudagraph.
-  // Completion of the operation is tracked by exReq. exReq can be nullptr if
-  // allowNullReq is true, inicating that the caller doesn't care about the
-  // completion of the operation.
+  // Completion of the operation is tracked by cpuFlag. cpuFlag can be nullptr,
+  // indicating that the caller doesn't care about the completion of the
+  // operation.
   commResult_t submitHost(
       std::vector<std::unique_ptr<struct OpElem>> opGroup,
       opFunc func,
       KernelConfig& kernelConfig,
-      ::ctran::CtranExRequestImpl* exReq,
-      bool allowNullReq = false);
+      std::shared_ptr<std::atomic_flag> cpuFlag);
 
   // Allocate numElems number of p2pElem objects from internal pool.
   // When free objects are not enough, it will be in blocking wait and reclaim

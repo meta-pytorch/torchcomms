@@ -315,8 +315,7 @@ commResult_t AlgoImpl::init() {
       std::move(opGroup),
       exchangeMemHdl,
       config,
-      /* exReq */ nullptr,
-      /* allowNullReq */ true));
+      /* exReq */ nullptr));
   return commSuccess;
 }
 

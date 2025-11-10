@@ -136,8 +136,7 @@ TEST_F(CtranGpeTest, SubmitHostAllowNullReq) {
       std::move(ops),
       &CtranGpeTestAlgoFunc,
       kernelConfig,
-      /* exReq */ nullptr,
-      /* allowNullReq */ true);
+      /* exReq */ nullptr);
   EXPECT_EQ(res, commSuccess);
 
   // Expect no flag is consumed

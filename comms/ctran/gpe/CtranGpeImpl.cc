@@ -394,15 +394,13 @@ commResult_t CtranGpe::Impl::submitHost(
     std::vector<std::unique_ptr<struct OpElem>> opGroup,
     opFunc func,
     KernelConfig& kernelConfig,
-    CtranExRequestImpl* exReq,
-    bool allowNullReq) {
+    std::shared_ptr<std::atomic_flag> cpuFlag) {
   // Enqueue op to gpeThread if any op is appended
   if (!opGroup.empty()) {
     class CtranGpeCmd* cmd = new class CtranGpeCmd;
     cmd->type = type;
     cmd->kernelFlag = nullptr;
-    cmd->exReq = exReq;
-    cmd->allowNullReq = allowNullReq;
+    cmd->cpuFlag = std::move(cpuFlag);
 
     if (type == CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE) {
       cmd->coll.opGroup = std::move(opGroup);
@@ -530,6 +528,14 @@ void CtranGpe::Impl::gpeThreadFn() {
             ctranInitialized(comm) ? comm->ctran_->mapper.get() : nullptr;
         CtranMapperEpochRAII epochRAII(mapper);
 
+        // Ensure the host communication request completes, irrespective of
+        // outcome of collective function - success, failure, or an exception
+        SCOPE_EXIT {
+          if (cmd->cpuFlag) {
+            cmd->cpuFlag->test_and_set();
+          }
+        };
+
         /* run collective */
         // TODO: lost peerRank info which would be useful for some errors (e.g.,
         // commRemoteError). We may want to enrich commResult_t to contain such
@@ -581,14 +587,6 @@ void CtranGpe::Impl::gpeThreadFn() {
               }
             }
           }
-        }
-      } else {
-        // This is a host memory communication, so we can complete it here
-        if (!cmd->allowNullReq) {
-          FB_CHECKABORT(
-              cmd->exReq,
-              "CTranGPE: ExReq is nullptr but required for host memory communication");
-          cmd->exReq->complete();
         }
       }
 

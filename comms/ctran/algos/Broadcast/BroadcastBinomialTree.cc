@@ -440,7 +440,7 @@ commResult_t CtranAlgo::broadcastBinomialTree(
     size_t count,
     commDataType_t datatype,
     int root,
-    CtranExRequestImpl* exReq) {
+    std::shared_ptr<std::atomic_flag> cpuFlag) {
   auto opCount = ctran_->getOpCount();
   CTRAN_HOST_COLL_INFO(
       broadcastAlgoName(myAlgo).c_str(),
@@ -451,7 +451,7 @@ commResult_t CtranAlgo::broadcastBinomialTree(
       root,
       comm_,
       ctran_,
-      exReq);
+      cpuFlag);
   const auto statex = comm_->statex_.get();
 
   if (sendbuff != recvbuff && statex->rank() == root) {
@@ -489,8 +489,8 @@ commResult_t CtranAlgo::broadcastBinomialTree(
   config.args.collective.broadcast.datatype = datatype;
   config.args.collective.broadcast.count = count;
 
-  FB_COMMCHECK(
-      comm_->ctran_->gpe->submitHost(std::move(opGroup), impl, config, exReq));
+  FB_COMMCHECK(comm_->ctran_->gpe->submitHost(
+      std::move(opGroup), impl, config, cpuFlag));
 
   return commSuccess;
 }
