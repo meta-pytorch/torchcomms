@@ -19,7 +19,8 @@ constexpr uint16_t kTCPStorePort = 29500;
 class TorchCommXCCLBootstrap {
 public:
   TorchCommXCCLBootstrap(c10::intrusive_ptr<c10d::Store> store,
-                         c10::Device device, std::shared_ptr<XcclApi> xccl_api,
+                         c10::Device device,
+                         std::shared_ptr<XcclApi> xccl_api,
                          std::shared_ptr<XpuApi> xpu_api,
                          std::chrono::milliseconds timeout);
   ~TorchCommXCCLBootstrap();

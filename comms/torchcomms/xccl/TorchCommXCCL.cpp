@@ -283,7 +283,7 @@ getOperationTimeout(std::chrono::milliseconds timeout,
 }
 
 // Point-to-Point Operations
-std::shared_ptr<TorchWork> TorchCommXCCL::send(const at::Tensor &tensor,
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::send(const at::Tensor &tensor,
                                                int dst, bool async_op,
                                                const SendOptions &options) {
   checkInitialized();
@@ -313,7 +313,7 @@ std::shared_ptr<TorchWork> TorchCommXCCL::send(const at::Tensor &tensor,
   return work;
 }
 
-std::shared_ptr<TorchWork> TorchCommXCCL::recv(at::Tensor &tensor, int src,
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::recv(at::Tensor &tensor, int src,
                                                bool async_op,
                                                const RecvOptions &options) {
   checkInitialized();
@@ -344,7 +344,7 @@ std::shared_ptr<TorchWork> TorchCommXCCL::recv(at::Tensor &tensor, int src,
 }
 
 // Batch P2P Operations
-std::shared_ptr<TorchWork>
+c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::batch_op_issue(const std::vector<BatchSendRecv::P2POp> &ops,
                               bool async_op, const BatchP2POptions &options) {
   checkInitialized();
@@ -426,7 +426,7 @@ TorchCommXCCL::batch_op_issue(const std::vector<BatchSendRecv::P2POp> &ops,
 }
 
 // Collective Operations
-std::shared_ptr<TorchWork>
+c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::broadcast(at::Tensor &tensor, int root, bool async_op,
                          const BroadcastOptions &options) {
   checkInitialized();
@@ -457,8 +457,8 @@ TorchCommXCCL::broadcast(at::Tensor &tensor, int root, bool async_op,
   return work;
 }
 
-std::shared_ptr<TorchWork>
-TorchCommXCCL::all_reduce(at::Tensor &tensor, ReduceOp op, bool async_op,
+c10::intrusive_ptr<TorchWork>
+TorchCommXCCL::all_reduce(at::Tensor &tensor, const ReduceOp &op, bool async_op,
                           const AllReduceOptions &options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
@@ -490,8 +490,8 @@ TorchCommXCCL::all_reduce(at::Tensor &tensor, ReduceOp op, bool async_op,
   return work;
 }
 
-std::shared_ptr<TorchWork> TorchCommXCCL::reduce(const at::Tensor &tensor,
-                                                 int root, ReduceOp op,
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(const at::Tensor &tensor,
+                                                 int root, const ReduceOp &op,
                                                  bool async_op,
                                                  const ReduceOptions &options) {
   checkInitialized();
@@ -528,7 +528,7 @@ std::shared_ptr<TorchWork> TorchCommXCCL::reduce(const at::Tensor &tensor,
   return work;
 }
 
-std::shared_ptr<TorchWork>
+c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::all_gather(const std::vector<at::Tensor> &tensor_list,
                           const at::Tensor &tensor, bool async_op,
                           const AllGatherOptions &options) {
@@ -575,7 +575,14 @@ TorchCommXCCL::all_gather(const std::vector<at::Tensor> &tensor_list,
   return work;
 }
 
-std::shared_ptr<TorchWork>
+c10::intrusive_ptr<TorchWork>
+TorchCommXCCL::all_gather_v(const std::vector<at::Tensor> &tensor_list,
+                            const at::Tensor &tensor, bool async_op,
+                            const AllGatherOptions &options) {
+  throw std::runtime_error("all_gather_v is not supported in XCCL backend");
+}
+
+c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::all_gather_single(at::Tensor &output, const at::Tensor &input,
                                  bool async_op,
                                  const AllGatherSingleOptions &options) {
@@ -613,8 +620,8 @@ TorchCommXCCL::all_gather_single(at::Tensor &output, const at::Tensor &input,
   return work;
 }
 
-std::shared_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
-    at::Tensor &output, const std::vector<at::Tensor> &input_list, ReduceOp op,
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
+    at::Tensor &output, const std::vector<at::Tensor> &input_list, const ReduceOp &op,
     bool async_op, const ReduceScatterOptions &options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
@@ -665,8 +672,14 @@ std::shared_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
   return work;
 }
 
-std::shared_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
-    at::Tensor &output, const at::Tensor &input, ReduceOp op, bool async_op,
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
+    at::Tensor &output, const std::vector<at::Tensor> &input_list,
+    const ReduceOp &op, bool async_op, const ReduceScatterOptions &options) {
+  throw std::runtime_error("reduce_scatter_v is not supported in XCCL backend");
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
+    at::Tensor &output, const at::Tensor &input, const ReduceOp &op, bool async_op,
     const ReduceScatterSingleOptions &options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
@@ -703,7 +716,7 @@ std::shared_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
   return work;
 }
 
-std::shared_ptr<TorchWork>
+c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::all_to_all_single(at::Tensor &output, const at::Tensor &input,
                                  bool async_op,
                                  const AllToAllSingleOptions &options) {
@@ -748,7 +761,7 @@ TorchCommXCCL::all_to_all_single(at::Tensor &output, const at::Tensor &input,
   return work;
 }
 
-std::shared_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
     at::Tensor &output, const at::Tensor &input,
     const std::vector<uint64_t> &output_split_sizes,
     const std::vector<uint64_t> &input_split_sizes, bool async_op,
@@ -823,7 +836,7 @@ std::shared_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
   return work;
 }
 
-std::shared_ptr<TorchWork>
+c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::all_to_all(const std::vector<at::Tensor> &output_tensor_list,
                           const std::vector<at::Tensor> &input_tensor_list,
                           bool async_op, const AllToAllOptions &options) {
@@ -874,7 +887,7 @@ TorchCommXCCL::all_to_all(const std::vector<at::Tensor> &output_tensor_list,
   return work;
 }
 
-std::shared_ptr<TorchWork>
+c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::barrier(bool async_op, const BarrierOptions &options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
@@ -902,7 +915,7 @@ TorchCommXCCL::barrier(bool async_op, const BarrierOptions &options) {
   return work;
 }
 
-std::shared_ptr<TorchWork>
+c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::scatter(at::Tensor &output_tensor,
                        const std::vector<at::Tensor> &input_tensor_list,
                        int root, bool async_op, const ScatterOptions &options) {
@@ -974,7 +987,7 @@ TorchCommXCCL::scatter(at::Tensor &output_tensor,
   return work;
 }
 
-std::shared_ptr<TorchWork>
+c10::intrusive_ptr<TorchWork>
 TorchCommXCCL::gather(const std::vector<at::Tensor> &output_tensor_list,
                       const at::Tensor &input_tensor, int root, bool async_op,
                       const GatherOptions &options) {
