@@ -8,10 +8,10 @@
 #include <queue>
 #include <unordered_map>
 
-#include <ATen/ATen.h>
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 #include "comms/torchcomms/device/XpuApi.hpp"
+#include <ATen/ATen.h>
 
 namespace torch {
 namespace comms {
@@ -82,12 +82,12 @@ public:
   TorchWorkXCCL::WorkStatus garbageCollect(bool isMainThread);
   // Finalize function can only be called from the main thread
   TorchWorkXCCL::WorkStatus finalize();
-  void enqueueWork(std::shared_ptr<TorchWorkXCCL> work, xpuStream_t stream);
+  void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
 
 private:
-  std::unordered_map<xpuStream_t, std::queue<std::shared_ptr<TorchWorkXCCL>>>
+  std::unordered_map<xpuStream_t, std::queue<c10::intrusive_ptr<TorchWorkXCCL>>>
       stream_work_queues_;
-  std::vector<std::shared_ptr<TorchWorkXCCL>> completed_work_queue_;
+  std::vector<c10::intrusive_ptr<TorchWorkXCCL>> completed_work_queue_;
   std::recursive_mutex work_queues_mutex_;
 };
 

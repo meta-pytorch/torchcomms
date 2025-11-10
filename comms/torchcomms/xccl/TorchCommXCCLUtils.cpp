@@ -1,5 +1,5 @@
-#include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 #include <oneapi/ccl.h>
 #include <oneapi/ccl.hpp>
 #include <stdexcept>
@@ -217,7 +217,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
   checkWorkQueue(true);
 
   if (comm_state_ == CommState::TIMEOUT) {
-//    abortXcclComm(); // cannot abort oneCCL communicator
+    //    abortXcclComm(); // cannot abort oneCCL communicator
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR) << "Aborting process due to timeout";
       abort();
@@ -228,7 +228,7 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
     onecclResult_t asyncErr;
     xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
     XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
-//    abortXcclComm(); // cannot abort oneCCL communicator
+    //    abortXcclComm(); // cannot abort oneCCL communicator
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR) << "Aborting process due to error: "
                     << xcclException.what();
@@ -239,16 +239,16 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
   }
 }
 
-std::shared_ptr<TorchWorkXCCL>
+c10::intrusive_ptr<TorchWorkXCCL>
 TorchCommXCCL::createWork(xpuStream_t stream, std::chrono::milliseconds timeout,
                           const std::vector<at::Tensor> &inputTensors) {
   // Only create the work object without enqueuing it
-  auto work = std::make_shared<TorchWorkXCCL>(shared_from_this(), stream,
-                                              timeout, inputTensors, tracing_);
+  auto work = c10::make_intrusive<TorchWorkXCCL>(shared_from_this(), stream,
+                                                  timeout, inputTensors, tracing_);
   return work;
 }
 
-void TorchCommXCCL::enqueueWork(std::shared_ptr<TorchWorkXCCL> work,
+void TorchCommXCCL::enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work,
                                 xpuStream_t stream) {
   // Add work to stream's queue after events have been recorded
   workq_.enqueueWork(std::move(work), stream);
