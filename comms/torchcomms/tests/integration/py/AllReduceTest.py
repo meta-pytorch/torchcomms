@@ -21,9 +21,6 @@ class AllReduceTest(unittest.TestCase):
     # Class variables for test parameters
     counts = [0, 4, 1024, 1024 * 1024]
     dtypes = [torch.float, torch.int, torch.int8]
-    if os.environ.get("TEST_BACKEND") == "xccl":
-        counts = [4, 1024, 1024 * 1024]
-        dtypes = [torch.float, torch.int]
     ops = [ReduceOp.SUM, ReduceOp.MAX]
     num_replays = 4
 
