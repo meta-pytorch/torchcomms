@@ -85,7 +85,7 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::finalize() {
   return status;
 }
 
-void TorchWorkXCCLQueue::enqueueWork(std::shared_ptr<TorchWorkXCCL> work,
+void TorchWorkXCCLQueue::enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work,
                                      xpuStream_t stream) {
   // Add work to stream's queue after events have been recorded
   std::lock_guard<std::recursive_mutex> lock(work_queues_mutex_);
