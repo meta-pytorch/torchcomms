@@ -25,6 +25,48 @@
 #endif
 
 using namespace ncclx;
+namespace {
+std::vector<CtranMapperBackend> getToEnableBackends(
+    const std::vector<CommBackend>& overrideBackend) {
+  const std::unordered_map<enum CommBackend, CtranMapperBackend>
+      CommBackendMap = {
+          {CommBackend::UNSET, CtranMapperBackend::UNSET},
+          {CommBackend::IB, CtranMapperBackend::IB},
+          {CommBackend::NVL, CtranMapperBackend::NVL},
+          {CommBackend::SOCKET, CtranMapperBackend::SOCKET},
+          {CommBackend::TCPDM, CtranMapperBackend::TCPDM}};
+
+  const std::unordered_map<enum NCCL_CTRAN_BACKENDS, CtranMapperBackend>
+      NCCLCtranBackendMap = {
+          {NCCL_CTRAN_BACKENDS::ib, CtranMapperBackend::IB},
+          {NCCL_CTRAN_BACKENDS::nvl, CtranMapperBackend::NVL},
+          {NCCL_CTRAN_BACKENDS::socket, CtranMapperBackend::SOCKET},
+          {NCCL_CTRAN_BACKENDS::tcpdm, CtranMapperBackend::TCPDM}};
+
+  std::vector<CtranMapperBackend> enableBackends;
+
+  if (overrideBackend.size() == 0 ||
+      (overrideBackend.size() == 1 &&
+       overrideBackend[0] == CommBackend::UNSET)) {
+    for (auto& b : NCCL_CTRAN_BACKENDS) {
+      enableBackends.emplace_back(NCCLCtranBackendMap.at(b));
+    }
+  } else {
+    CLOGF(
+        WARN,
+        "CTRAN-MAPPER: Try to override backends through Ctran Config. Currently it is specific config for MCCL. If you are using NCCL with NCCL_CTRAN_BACKENDS, please report this to MCCL team");
+    for (auto& b : overrideBackend) {
+      if (b == CommBackend::UNSET) {
+        FB_ERRORTHROW(
+            commInvalidUsage, "CTRAN-MAPPER: Invalid override backend UNSET");
+      }
+      enableBackends.emplace_back(CommBackendMap.at(b));
+    }
+  }
+
+  return enableBackends;
+}
+} // namespace
 
 CtranMapper::CtranMapper(CtranComm* comm) {
   const auto statex = comm->statex_.get();
@@ -39,26 +81,15 @@ CtranMapper::CtranMapper(CtranComm* comm) {
       statex->nRanks()};
 
   this->comm = comm;
-
+  auto backendsToEnable = getToEnableBackends(comm->config_.backends);
   /* check user preference for backends */
   std::vector<bool> enableBackends(CtranMapperBackend::NUM_BACKENDS, false);
   iPutCount = std::vector<int>(CtranMapperBackend::NUM_BACKENDS, 0);
   iGetCount = std::vector<int>(CtranMapperBackend::NUM_BACKENDS, 0);
   std::vector<std::string> enableBackendsStrs;
-  for (auto b : NCCL_CTRAN_BACKENDS) {
-    if (b == NCCL_CTRAN_BACKENDS::ib) {
-      enableBackends[CtranMapperBackend::IB] = true;
-      enableBackendsStrs.push_back(backendToStr(CtranMapperBackend::IB));
-    } else if (b == NCCL_CTRAN_BACKENDS::nvl) {
-      enableBackends[CtranMapperBackend::NVL] = true;
-      enableBackendsStrs.push_back(backendToStr(CtranMapperBackend::NVL));
-    } else if (b == NCCL_CTRAN_BACKENDS::socket) {
-      enableBackends[CtranMapperBackend::SOCKET] = true;
-      enableBackendsStrs.push_back(backendToStr(CtranMapperBackend::SOCKET));
-    } else if (b == NCCL_CTRAN_BACKENDS::tcpdm) {
-      enableBackends[CtranMapperBackend::TCPDM] = true;
-      enableBackendsStrs.push_back(backendToStr(CtranMapperBackend::TCPDM));
-    }
+  for (auto b : backendsToEnable) {
+    enableBackends.at(b) = true;
+    enableBackendsStrs.push_back(backendToStr(b));
   }
 
   CLOGF_SUBSYS(

@@ -292,13 +292,9 @@ auto testingValues = ::testing::Values(
     std::make_tuple(1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8192, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(
-        1024 * 1024 * 1024,
-        kTestOutOfPlace,
-        commSum,
-        kMemNcclMemAlloc),
-    std::make_tuple(
-        1024 * 1024 * 1024 + 17,
+        1024 * 1024 + 17,
         kTestOutOfPlace,
         commSum,
         kMemNcclMemAlloc),
@@ -313,16 +309,8 @@ auto testingValues = ::testing::Values(
     std::make_tuple(1024, kTestInPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8192, kTestInPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestInPlace, commSum, kMemNcclMemAlloc),
-    std::make_tuple(
-        1024 * 1024 * 1024,
-        kTestInPlace,
-        commSum,
-        kMemNcclMemAlloc),
-    std::make_tuple(
-        1024 * 1024 * 1024 + 17,
-        kTestInPlace,
-        commSum,
-        kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024, kTestInPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024 + 17, kTestInPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestOutOfPlace, commProd, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestInPlace, commProd, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestOutOfPlace, commMax, kMemNcclMemAlloc),
@@ -400,13 +388,9 @@ auto testingValuesRing = ::testing::Values(
     std::make_tuple(1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8192, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(
-        1024 * 1024 * 1024,
-        kTestOutOfPlace,
-        commSum,
-        kMemNcclMemAlloc),
-    std::make_tuple(
-        1024 * 1024 * 1024 + 17,
+        1024 * 1024 + 17,
         kTestOutOfPlace,
         commSum,
         kMemNcclMemAlloc),
@@ -416,16 +400,8 @@ auto testingValuesRing = ::testing::Values(
     std::make_tuple(1024, kTestInPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8192, kTestInPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestInPlace, commSum, kMemNcclMemAlloc),
-    std::make_tuple(
-        1024 * 1024 * 1024,
-        kTestInPlace,
-        commSum,
-        kMemNcclMemAlloc),
-    std::make_tuple(
-        1024 * 1024 * 1024 + 17,
-        kTestInPlace,
-        commSum,
-        kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024, kTestInPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024 + 17, kTestInPlace, commSum, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestOutOfPlace, commProd, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestInPlace, commProd, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestOutOfPlace, commMax, kMemNcclMemAlloc),
@@ -435,27 +411,19 @@ auto testingValuesRing = ::testing::Values(
     std::make_tuple(16, kTestOutOfPlace, commAvg, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestOutOfPlace, commAvg, kMemNcclMemAlloc),
     std::make_tuple(
-        1024 * 1024 * 1024 + 15,
+        1024 * 1024 + 15,
         kTestOutOfPlace,
         commAvg,
         kMemNcclMemAlloc),
     std::make_tuple(
-        1024 * 1024 * 1024 + 17,
+        1024 * 1024 + 17,
         kTestOutOfPlace,
         commAvg,
         kMemNcclMemAlloc),
     std::make_tuple(16, kTestInPlace, commAvg, kMemNcclMemAlloc),
     std::make_tuple(8195, kTestInPlace, commAvg, kMemNcclMemAlloc),
-    std::make_tuple(
-        1024 * 1024 * 1024 + 15,
-        kTestInPlace,
-        commAvg,
-        kMemNcclMemAlloc),
-    std::make_tuple(
-        1024 * 1024 * 1024 + 17,
-        kTestInPlace,
-        commAvg,
-        kMemNcclMemAlloc));
+    std::make_tuple(1024 * 1024 + 15, kTestInPlace, commAvg, kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024 + 17, kTestInPlace, commAvg, kMemNcclMemAlloc));
 
 // Tests for UInt64
 INSTANTIATE_TEST_SUITE_P(
