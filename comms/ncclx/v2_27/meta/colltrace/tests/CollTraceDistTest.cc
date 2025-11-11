@@ -832,7 +832,7 @@ TEST_F(CollTraceTest, MixedCtranBaseline) {
   constexpr int count = 1048576;
   constexpr int nColl = 10;
 
-  if (!ctranAllGatherSupport(comm->ctranComm_.get())) {
+  if (!ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO)) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran AllGather support.";
   }

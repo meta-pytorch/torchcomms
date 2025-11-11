@@ -83,7 +83,7 @@ class AllGatherTest : public NcclxBaseTest {
 
     if (algo != NCCL_ALLGATHER_ALGO::orig) {
 #ifdef TEST_ENABLE_CTRAN
-      if (!ctranAllGatherAlgoSupport(comm->ctranComm_.get(), algo)) {
+      if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
         GTEST_SKIP() << "Ctran algorithm is not supported, skip test";
       }
 
