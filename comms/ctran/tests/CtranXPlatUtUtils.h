@@ -44,6 +44,15 @@ class TestCtranCommRAII {
   TestCtranCommRAII(std::unique_ptr<mccl::McclComm> mcclComm);
   CtranComm* ctranComm{nullptr};
 
+  ~TestCtranCommRAII() {
+    if (mcclComm_) {
+      mcclComm_.reset();
+    }
+    if (ctranComm) {
+      ctranComm->destroy();
+    }
+  }
+
  private:
   std::unique_ptr<mccl::McclComm> mcclComm_;
 };

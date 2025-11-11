@@ -57,6 +57,63 @@ class CtranMapperTest : public ::testing::Test {
     logGpuMemoryStats(cudaDev);
   }
 };
+TEST(CtranMapperUT, EnableBackendThroughCVARs) {
+  setenv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket", 1);
+  ncclCvarInit();
+  auto commRAII = createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm;
+  auto mapper = std::make_unique<CtranMapper>(dummyComm);
+  auto rank = dummyComm->statex_->rank();
+  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::IB));
+  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
+  // Socket is disabled if ib is enabled
+  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
+}
+
+TEST(CtranMapperUT, EnableBackendThroughCVARsWithoutIB) {
+  setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
+  ncclCvarInit();
+  auto commRAII = createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm;
+  auto mapper = std::make_unique<CtranMapper>(dummyComm);
+  auto rank = dummyComm->statex_->rank();
+  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));
+  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
+  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
+}
+TEST(CtranMapperUT, EnableBackendWithMCCLBackendUNSET) {
+  setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
+  setenv("MCCL_CTRAN_BACKENDS", "not_set", 1);
+  ncclCvarInit();
+  auto commRAII = createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm;
+  auto mapper = std::make_unique<CtranMapper>(dummyComm);
+  auto rank = dummyComm->statex_->rank();
+  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));
+  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
+  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
+  unsetenv("MCCL_CTRAN_BACKENDS");
+}
+
+TEST(CtranMapperUT, EnableBackendWithMCCLBackendOverride) {
+  setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
+  setenv("MCCL_CTRAN_BACKENDS", "ib", 1);
+  ncclCvarInit();
+  auto commRAII = createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm;
+  auto mapper = std::make_unique<CtranMapper>(dummyComm);
+  auto rank = dummyComm->statex_->rank();
+  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::IB));
+  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
+  EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
+  unsetenv("MCCL_CTRAN_BACKENDS");
+}
+
+TEST(CtranMapperUT, EnableBackendThroughCVARsWithTCPandIB) {
+  setenv("NCCL_CTRAN_BACKENDS", "nvl, ib, socket, tcpdm", 1);
+  ncclCvarInit();
+  EXPECT_THROW(createDummyCtranComm(), std::runtime_error);
+}
 
 TEST(CtranMapperUT, BackendEnum) {
   for (int i = 0; i < CtranMapperBackend::NUM_BACKENDS; ++i) {
