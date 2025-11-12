@@ -3,11 +3,19 @@
 
 namespace ctran {
 
-folly::Singleton<::comms::tcp_devmem::Transport> tcpTransport;
+// Use a LeakySingleton to avoid shutdown order issues where CtranMapper
+// objects may outlive the singleton's destruction phase. LeakySingleton
+// intentionally leaks the object at shutdown to prevent crashes.
+folly::LeakySingleton<std::shared_ptr<::comms::tcp_devmem::Transport>>
+    tcpTransportPtr([] {
+      return new std::shared_ptr<::comms::tcp_devmem::Transport>(
+          std::make_shared<::comms::tcp_devmem::Transport>());
+    });
 
 std::shared_ptr<::comms::tcp_devmem::Transport>
 CtranTcpDmSingleton::getTransport() {
-  return tcpTransport.try_get();
+  return folly::LeakySingleton<
+      std::shared_ptr<::comms::tcp_devmem::Transport>>::get();
 }
 
 } // namespace ctran
