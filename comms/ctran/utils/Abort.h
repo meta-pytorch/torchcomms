@@ -24,7 +24,7 @@ class Abort final {
     abort_.store(true, std::memory_order_release);
   }
 
-  inline bool Test() const {
+  inline bool Test() {
     if (!enabled_) {
       return false;
     }
@@ -34,13 +34,56 @@ class Abort final {
       return true;
     }
 
+    if (!hasTimeout_.load(std::memory_order_acquire)) {
+      return false;
+    }
+
+    return TimedOut();
+  }
+
+  inline bool HasTimeout() const {
+    return hasTimeout_.load(std::memory_order_acquire);
+  }
+
+  inline bool TimedOut() {
+    if (!hasTimeout_.load(std::memory_order_acquire)) {
+      return false;
+    }
+
+    if (timedOut_.load(std::memory_order_acquire)) {
+      return true;
+    }
+
     // Check for timeout if timeout is set
-    if (hasTimeout_.load(std::memory_order_acquire)) {
-      auto now = std::chrono::steady_clock::now();
-      return now >= timeoutTime_.load(std::memory_order_acquire);
+    auto now = std::chrono::steady_clock::now();
+    if (now >= timeoutTime_.load(std::memory_order_acquire)) {
+      abort_.store(true, std::memory_order_release);
+      timedOut_.store(true, std::memory_order_release);
+      return true;
     }
 
     return false;
+  }
+
+  // Returns the time remaining until the timeout is hit.
+  // Returns -1 if no timeout is set.
+  inline std::chrono::milliseconds TimeRemaining() {
+    if (!enabled_) {
+      return std::chrono::milliseconds{-1};
+    }
+
+    if (!hasTimeout_.load(std::memory_order_acquire)) {
+      return std::chrono::milliseconds{-1};
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    auto timeoutTime = timeoutTime_.load(std::memory_order_acquire);
+    if (now >= timeoutTime) {
+      return std::chrono::milliseconds{0};
+    }
+
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        timeoutTime - now);
   }
 
   inline void SetTimeout(std::chrono::milliseconds duration) {
@@ -68,6 +111,7 @@ class Abort final {
 
   std::atomic<bool> abort_{false};
   std::atomic<bool> hasTimeout_{false};
+  std::atomic<bool> timedOut_{false};
   std::atomic<std::chrono::steady_clock::time_point> timeoutTime_{
       std::chrono::steady_clock::time_point{}};
 
