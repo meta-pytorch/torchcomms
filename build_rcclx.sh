@@ -169,6 +169,8 @@ function build_third_party {
       xxhash
       zstd
       conda-forge::zlib
+      fmt
+      glog==0.4.0
     )
     conda install "${DEPS[@]}" --yes
     build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly
