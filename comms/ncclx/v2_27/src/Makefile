@@ -132,7 +132,7 @@ $(THRIFT_H): $(THRIFT_FILE)
 $(DEVMEM_DIR)/devmgr/devmgr_client.cc: $(THRIFT_H)
 $(DEVMEM_DIR)/transport.cc: $(THRIFT_H)
 
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr.cpp: $(THRIFT_H)
 $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgrAsyncClient.cpp: $(THRIFT_H)
 $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_binary.cpp: $(THRIFT_H)
 $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_compact.cpp: $(THRIFT_H)
