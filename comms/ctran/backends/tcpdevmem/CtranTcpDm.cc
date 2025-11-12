@@ -197,6 +197,8 @@ CtranTcpDm::CtranTcpDm(
   commDesc_ = comm->statex_->commDesc();
   netdev_ = transport_->getDeviceFor(cudaDev_);
 
+  transport_->open(netdev_);
+
   bootstrapPrepare(comm->bootstrap_.get());
 
   CLOGF_SUBSYS(
