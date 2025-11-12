@@ -340,9 +340,117 @@ TEST_F(AbortableSocketTest, BindAndUnbind) {
   EXPECT_EQ(-1, server3.getFd());
 }
 
+TEST_F(AbortableServerSocketTest, AcceptTimeout) {
+  std::chrono::milliseconds timeout{250ms};
+  serverAbort->SetTimeout(timeout);
+
+  auto startTime = std::chrono::steady_clock::now();
+  auto maybeClient = server->acceptSocket();
+  auto elapsedMilliseconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - startTime);
+
+  EXPECT_TRUE(maybeClient.hasError());
+  EXPECT_TRUE(
+      maybeClient.error() == ETIMEDOUT || maybeClient.error() == ECONNABORTED);
+  ASSERT_GE(elapsedMilliseconds, 100ms)
+      << "Elapsed milliseconds: " << elapsedMilliseconds.count();
+  ASSERT_LT(elapsedMilliseconds, timeout + 100ms)
+      << "Elapsed milliseconds: " << elapsedMilliseconds.count();
+}
+
+//
+// Test Group #4: Timeout Functionality
+//
+
+// Helper function to test timeout on blocking I/O operations
+// Sets a timeout on the abort object, runs the operation, measures elapsed
+// time, and verifies the operation timed out within the expected bounds
+template <typename OperationFn>
+void testTimeoutOperation(
+    std::shared_ptr<ctran::utils::Abort> abortObj,
+    std::chrono::milliseconds timeout,
+    OperationFn operation,
+    std::optional<std::chrono::milliseconds> minElapsed = std::nullopt,
+    std::optional<std::chrono::milliseconds> maxElapsed = std::nullopt) {
+  abortObj->SetTimeout(timeout);
+  ASSERT_TRUE(abortObj->HasTimeout());
+
+  auto startTime = std::chrono::steady_clock::now();
+  int result = operation();
+  auto elapsedMilliseconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - startTime);
+
+  EXPECT_TRUE(result == ECONNABORTED || result == ETIMEDOUT)
+      << "Result: " << result;
+
+  if (minElapsed) {
+    EXPECT_GE(elapsedMilliseconds, *minElapsed)
+        << "Elapsed milliseconds: " << elapsedMilliseconds.count();
+  }
+
+  if (maxElapsed) {
+    EXPECT_LT(elapsedMilliseconds, *maxElapsed)
+        << "Elapsed milliseconds: " << elapsedMilliseconds.count();
+  }
+}
+
+TEST_F(AbortableSocketTest, SendTimeout) {
+  const size_t largeSize = 10 * 1024 * 1024;
+  std::vector<uint8_t> largeBuffer(largeSize, 0xAB);
+
+  std::atomic<bool> continueRecv{true};
+  std::thread clientThread([&]() {
+    while (continueRecv.load()) {
+      char buffer[1024];
+      acceptedClient->recv(buffer, sizeof(buffer));
+      std::this_thread::sleep_for(25ms);
+    }
+  });
+
+  testTimeoutOperation(
+      clientAbort,
+      50ms,
+      [&]() { return client.send(largeBuffer.data(), largeBuffer.size()); },
+      std::nullopt,
+      500ms);
+
+  continueRecv = false;
+  clientThread.join();
+}
+
+TEST_F(AbortableSocketTest, RecvTimeout) {
+  auto timeout = 100ms;
+
+  testTimeoutOperation(
+      serverAbort,
+      timeout,
+      [&]() {
+        char buffer[1024];
+        return acceptedClient->recv(buffer, sizeof(buffer));
+      },
+      timeout,
+      timeout * 2);
+}
+
 //
 // Test Group #5: Close, Shutdown, and Resource Management
 //
+
+TEST_F(AbortableSocketTest, CloseWhileOperationPending) {
+  std::thread recvThread([&]() {
+    char buffer[100];
+    int result = acceptedClient->recv(buffer, sizeof(buffer));
+    EXPECT_NE(result, 0);
+    XLOG(INFO, "RecvThread is exiting");
+  });
+
+  std::this_thread::sleep_for(100ms);
+  client.close();
+
+  recvThread.join();
+}
 
 TEST_F(AbortableServerSocketTest, AcceptErrorOnShutdown) {
   folly::Baton listenStarted;
@@ -555,21 +663,153 @@ TEST_F(AbortableSocketTest, ConnectTimeout) {
   EXPECT_LT(elapsed, 500ms);
 }
 
-TEST_F(AbortableServerSocketTest, AcceptTimeout) {
-  std::chrono::milliseconds timeout{250ms};
-  serverAbort->SetTimeout(timeout);
+TEST_F(AbortableSocketTest, AbortOnSend) {
+  const size_t largeSize = 10 * 1024 * 1024;
+  std::vector<uint8_t> largeBuffer(largeSize, 0xAB);
+
+  testAbortBlockingOperation(
+      clientAbort,
+      [&]() { return client.send(largeBuffer.data(), largeBuffer.size()); },
+      50ms);
+}
+
+TEST_F(AbortableSocketTest, AbortOnRecv) {
+  const size_t bufferSize = 2 * 1024 * 1024;
+  std::vector<uint8_t> buffer(bufferSize);
+
+  testAbortBlockingOperation(
+      serverAbort,
+      [&]() { return acceptedClient->recv(buffer.data(), buffer.size()); },
+      50ms);
+}
+
+// Test aborting send/recv operation concurrently
+TEST_F(AbortableSocketTest, AbortSendRecvConcurrent) {
+  std::atomic<int> recvResult{0};
+  std::atomic<int> numSends{0};
+  std::atomic<int> numRecvs{0};
+  std::binary_semaphore recvStarted{0};
+  std::binary_semaphore sendStarted{0};
+  int messageLimit = 25;
+
+  // Start send in separate thread
+  std::thread sendThread([&]() {
+    int sendResult = 0;
+    sendStarted.release();
+
+    do {
+      const size_t sendSize = 2048;
+      std::vector<uint8_t> sendBuffer(sendSize, 0xAB);
+      sendResult = acceptedClient->send(sendBuffer.data(), sendBuffer.size());
+      if (sendResult != 0 || numSends.load() >= messageLimit) {
+        break;
+      }
+      std::this_thread::sleep_for(10ms);
+      numSends += 1;
+      XLOG(INFO) << "Sent message #" << numSends.load()
+                 << ". sendResult=" << sendResult;
+    } while (true);
+  });
+
+  // Start recv in separate thread
+  std::thread recvThread([&]() {
+    recvStarted.release();
+    do {
+      char buffer[2048];
+      recvResult = client.recv(buffer, sizeof(buffer));
+      numRecvs += 1;
+      XLOG(INFO) << "Received message #" << numRecvs.load()
+                 << ". recvResult=" << recvResult;
+      if (recvResult.load() != 0 || numRecvs.load() >= messageLimit) {
+        break;
+      }
+      std::this_thread::sleep_for(10ms);
+    } while (true);
+  });
+
+  recvStarted.acquire();
+  sendStarted.acquire();
+
+  std::this_thread::sleep_for(50ms);
+
+  clientAbort->Set();
+  serverAbort->Set();
+  EXPECT_TRUE(clientAbort->Test());
+
+  if (recvThread.joinable()) {
+    recvThread.join();
+  }
+  if (sendThread.joinable()) {
+    sendThread.join();
+  }
+
+  ASSERT_GT(numSends.load(), 0);
+  ASSERT_GT(numRecvs.load(), 0);
+
+  ASSERT_LT(
+      numRecvs.load(),
+      messageLimit); // Should have aborted before receiving all
+                     // 'messageLimit' messages.
+
+  ASSERT_LT(
+      numSends.load(), messageLimit); // Should have aborted before sending
+                                      // all 'messageLimit' messages.
+
+  // Verify recv was affected by abort
+  EXPECT_TRUE(recvResult.load() == ECONNABORTED || recvResult.load() == EBADF)
+      << "recvResult: " << recvResult.load();
+}
+
+// Helper function to test that operations fail immediately after abort is set
+// Sets the abort, runs the operation, and verifies it fails quickly with
+// ECONNABORTED
+template <typename OperationFn>
+void testOperationAfterAbort(
+    std::shared_ptr<ctran::utils::Abort> abortObj,
+    OperationFn operation,
+    std::chrono::milliseconds maxElapsed = 500ms) {
+  abortObj->Set();
 
   auto startTime = std::chrono::steady_clock::now();
-  auto maybeClient = server->acceptSocket();
-  auto elapsedMilliseconds =
-      std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now() - startTime);
+  int result = operation();
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - startTime);
 
-  EXPECT_TRUE(maybeClient.hasError());
-  EXPECT_TRUE(
-      maybeClient.error() == ETIMEDOUT || maybeClient.error() == ECONNABORTED);
-  ASSERT_GE(elapsedMilliseconds, 100ms)
-      << "Elapsed milliseconds: " << elapsedMilliseconds.count();
-  ASSERT_LT(elapsedMilliseconds, timeout + 100ms)
-      << "Elapsed milliseconds: " << elapsedMilliseconds.count();
+  EXPECT_EQ(result, ECONNABORTED);
+  EXPECT_LT(elapsed, maxElapsed)
+      << "Operation should fail quickly after abort, elapsed: "
+      << elapsed.count() << "ms";
+}
+
+TEST_F(AbortableSocketTest, SendAfterAbort) {
+  const std::string message = "test";
+  testOperationAfterAbort(clientAbort, [&]() {
+    return client.send(message.data(), message.size());
+  });
+}
+
+TEST_F(AbortableSocketTest, RecvAfterAbort) {
+  char buffer[1024];
+  testOperationAfterAbort(serverAbort, [&]() {
+    return acceptedClient->recv(buffer, sizeof(buffer));
+  });
+}
+
+TEST_F(AbortableSocketTest, ConnectAfterAbort) {
+  auto abortObj = ctran::utils::createAbort(/*enabled=*/true);
+  ctran::bootstrap::AbortableSocket client(abortObj);
+  folly::SocketAddress unreachableAddr("::1", 9999);
+
+  testOperationAfterAbort(abortObj, [&]() {
+    return client.connect(unreachableAddr, "lo", 0ms, 0);
+  });
+
+  EXPECT_EQ(0, client.close());
+}
+
+TEST_F(AbortableSocketTest, AcceptAfterAbort) {
+  testOperationAfterAbort(serverAbort, [&]() {
+    auto maybeClient = server->acceptSocket();
+    return maybeClient.hasError() ? maybeClient.error() : 0;
+  });
 }

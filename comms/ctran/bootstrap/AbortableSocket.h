@@ -22,11 +22,14 @@ namespace ctran::bootstrap {
  */
 class AbortableSocket : public ISocket {
 // TODO(T243405238): Improve error reporting.
-#define CHECK_ABORT_RETURN() \
-  do {                       \
-    if (abort_->Test()) {    \
-      return ECONNABORTED;   \
-    }                        \
+#define CHECK_ABORT_RETURN()    \
+  do {                          \
+    if (abort_->Test()) {       \
+      if (abort_->TimedOut()) { \
+        return ETIMEDOUT;       \
+      }                         \
+      return ECONNABORTED;      \
+    }                           \
   } while (0);
 
  public:

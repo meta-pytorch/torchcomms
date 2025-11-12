@@ -240,14 +240,18 @@ int AbortableSocket::close() {
 
 int AbortableSocket::send(const void* buf, const size_t len) {
   size_t totalSent{0};
-  do {
-    int sent = ::send(fd_, (uint8_t*)buf + totalSent, len - totalSent, 0);
+  auto remaining = abort_->HasTimeout()
+      ? abort_->TimeRemaining() + std::chrono::milliseconds(1)
+      : std::chrono::milliseconds(-1);
+  while (totalSent < len && waitForWritable(remaining)) {
+    int sent =
+        ::send(fd_.load(), (const uint8_t*)buf + totalSent, len - totalSent, 0);
     if (sent == -1 &&
         (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)) {
       XLOGF(
           ERR,
           "Failed to write to socket fd={}. errno={}, {}",
-          fd_,
+          fd_.load(),
           errno,
           strerror(errno));
       return errno;
@@ -255,21 +259,39 @@ int AbortableSocket::send(const void* buf, const size_t len) {
     if (sent > 0) {
       totalSent += sent;
     }
-    // Keep looping until we've sent all the data
-  } while (totalSent < len);
+    if (abort_->HasTimeout() > 0) {
+      remaining = abort_->TimeRemaining();
+    }
+  }
+
+  CHECK_ABORT_RETURN();
+  if (totalSent < len) {
+    return ETIMEDOUT;
+  }
   return 0;
 }
 
 int AbortableSocket::recv(void* buf, const size_t len) {
   size_t totalRecvd{0};
-  do {
-    int rcvd = ::recv(fd_, (uint8_t*)buf + totalRecvd, len - totalRecvd, 0);
+
+  auto remaining = abort_->HasTimeout()
+      ? (abort_->TimeRemaining() + std::chrono::milliseconds(1))
+      : std::chrono::milliseconds(-1);
+  while (totalRecvd < len && waitForReadable(remaining)) {
+    int rcvd =
+        ::recv(fd_.load(), (uint8_t*)buf + totalRecvd, len - totalRecvd, 0);
+
+    if (rcvd == 0) {
+      // Other side closed.
+      return ECONNRESET;
+    }
+
     if (rcvd == -1 &&
         (errno != EINTR && errno != EWOULDBLOCK && errno != EAGAIN)) {
       XLOGF(
           ERR,
           "Failed to read from socket fd={}. errno={}, {}",
-          fd_,
+          fd_.load(),
           errno,
           strerror(errno));
       return errno;
@@ -277,9 +299,21 @@ int AbortableSocket::recv(void* buf, const size_t len) {
     if (rcvd > 0) {
       totalRecvd += rcvd;
     }
-    // Keep looping until we've received all the data
-  } while (totalRecvd < len);
+    if (abort_->HasTimeout() > 0) {
+      remaining = abort_->TimeRemaining();
+    }
+  }
+
+  CHECK_ABORT_RETURN();
+  if (totalRecvd < len) {
+    return ETIMEDOUT;
+  }
+
   return 0;
+}
+
+bool AbortableSocket::waitForReadable(const std::chrono::milliseconds timeout) {
+  return waitForEvent(POLLIN, timeout);
 }
 
 bool AbortableSocket::waitForWritable(const std::chrono::milliseconds timeout) {
