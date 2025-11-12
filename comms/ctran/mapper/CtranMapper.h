@@ -13,6 +13,7 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/backends/socket/CtranSocket.h"
+#include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
@@ -770,9 +771,26 @@ class CtranMapper {
    * the data into its final destination. This method prepares the producer
    * of the scatter-gather chunks.
    */
-  commResult_t prepareUnpackConsumer(SQueues* sqs, size_t blocks) {
+  template <typename T = OpElem*>
+  commResult_t prepareUnpackConsumer(
+      SQueues* sqs,
+      size_t blocks,
+      const std::vector<T>& opGroup,
+      KernelConfig& config) {
     if (this->ctranTcpDm != nullptr) {
-      return this->ctranTcpDm->prepareUnpackConsumer(sqs, blocks);
+      auto ret = this->ctranTcpDm->prepareUnpackConsumer(
+          sqs, blocks, &config.unpackPoolId);
+      for (auto& op : opGroup) {
+        op->unpackPoolId = config.unpackPoolId;
+      }
+      return ret;
+    }
+    return commSuccess;
+  }
+
+  commResult_t teardownUnpackConsumer(int poolIndex) {
+    if (this->ctranTcpDm != nullptr) {
+      return this->ctranTcpDm->teardownUnpackConsumer(poolIndex);
     }
     return commSuccess;
   }
@@ -1761,7 +1779,12 @@ class CtranMapper {
       }
 
       FB_COMMCHECK(this->ctranTcpDm->irecv(
-          peerRank, regElem->tcpRegElem, (void*)rbuff, len, notify->tcpDmReq));
+          peerRank,
+          regElem->tcpRegElem,
+          (void*)rbuff,
+          len,
+          notify->tcpDmReq,
+          this->context.unpackPoolId));
     }
 
     notify->update(peerRank, kernElem, backend, notifyCnt);

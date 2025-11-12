@@ -291,6 +291,11 @@ class CtranMapperContext {
   std::vector<size_t> recvMessageSizes;
   size_t sendMessageSize{0};
   size_t recvMessageSize{0};
+
+  // TCP Device Memory unpack pool index for this context.
+  // Set by prepareUnpackConsumer() and used by initNotify() to pass to irecv().
+  // This allows concurrent GPU unpack kernels on the same device.
+  int unpackPoolId{-1};
 };
 
 class CtranMapperTimestampPoint {

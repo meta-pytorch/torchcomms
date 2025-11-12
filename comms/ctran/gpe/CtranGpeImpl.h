@@ -129,6 +129,9 @@ class CtranGpeCmd {
   bool persistent{false};
 
   std::optional<std::chrono::milliseconds> timeout{std::nullopt};
+
+  // Unpack queue to teardown after kernel completes (for TcpDM backend)
+  int unpackPoolId{-1};
 };
 
 /**
