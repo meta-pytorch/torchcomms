@@ -11,6 +11,7 @@
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/backends/nvl/CtranNvlBase.h"
 #include "comms/ctran/backends/socket/CtranSocketBase.h"
+#include "comms/utils/commSpecs.h"
 
 #ifdef CTRAN_DISABLE_TCPDM
 #include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
@@ -18,28 +19,21 @@
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDmBase.h"
 #endif
 
-enum CtranMapperBackend {
-  UNSET, // a rank not supported by any backend
-  IB,
-  NVL,
-  SOCKET,
-  TCPDM,
-  NUM_BACKENDS
-};
+using CtranMapperBackend = meta::comms::CommBackend;
 
 constexpr const char* CtranMapperBackendToString(CtranMapperBackend backend) {
   switch (backend) {
-    case UNSET:
+    case CtranMapperBackend::UNSET:
       return "UNSET";
-    case IB:
+    case CtranMapperBackend::IB:
       return "IB";
-    case NVL:
+    case CtranMapperBackend::NVL:
       return "NVL";
-    case SOCKET:
+    case CtranMapperBackend::SOCKET:
       return "SOCKET";
-    case TCPDM:
+    case CtranMapperBackend::TCPDM:
       return "TCPDM";
-    case NUM_BACKENDS:
+    case CtranMapperBackend::NUM_BACKENDS:
       return "NUM_BACKENDS";
     default:
       return "Unknown";

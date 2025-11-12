@@ -1918,8 +1918,8 @@ class CtranMapper {
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
   std::unique_ptr<class CtranCtrlManager> ctrlMgr{nullptr};
-  std::vector<enum CtranMapperBackend> rankBackendMap;
-  std::vector<enum CtranMapperBackend> backends;
+  std::vector<CtranMapperBackend> rankBackendMap;
+  std::vector<CtranMapperBackend> backends;
 
   // Lightweight request object to track mapper internal callback ctrl msgs
   class CbCtrlRequest {
