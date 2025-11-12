@@ -95,7 +95,8 @@ TEST_F(CtranTest, CTranDisabled) {
   EXPECT_EQ(comm->ctranComm_->colltraceNew_, nullptr);
 
   // Expect all CTran collective support to be false
-  EXPECT_FALSE(ctranAllGatherSupport(comm->ctranComm_.get()));
+  EXPECT_FALSE(
+      ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO));
   EXPECT_FALSE(ctranAllReduceSupport(comm->ctranComm_.get()));
   EXPECT_FALSE(ctranBroadcastSupport(comm->ctranComm_.get()));
   EXPECT_FALSE(ctranReduceScatterSupport(comm->ctranComm_.get()));
@@ -322,7 +323,8 @@ TEST_F(CtranTest, RegMemReuseInMultiComms) {
     ASSERT_NE(nullptr, comms[c]);
     ASSERT_NE(nullptr, comms[c]->ctranComm_->ctran_);
 
-    if (!ctranAllGatherSupport(comms[c]->ctranComm_.get())) {
+    if (!ctranAllGatherSupport(
+            comms[c]->ctranComm_.get(), NCCL_ALLGATHER_ALGO)) {
       finalizeNcclComm(globalRank, server.get());
       ncclCommAbort(comms[c]);
       GTEST_SKIP() << "ctranAllGather is not supported. Skip test";
@@ -453,7 +455,7 @@ TEST_F(CtranTest, CommAbortWithRegMem) {
   ncclCommRegister(comm, buf, bufSize, &hdl);
   ASSERT_NE(hdl, nullptr);
 
-  if (!ctranAllGatherSupport(comm->ctranComm_.get())) {
+  if (!ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO)) {
     finalizeNcclComm(globalRank, server.get());
     ncclCommAbort(comm);
     GTEST_SKIP() << "ctranAllGather is not supported. Skip test";

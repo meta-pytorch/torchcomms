@@ -585,7 +585,8 @@ TEST_F(CommDumpTest, DumpAfterCtranAllGather) {
   auto res = ncclSuccess;
   std::unordered_map<std::string, std::string> dump;
 
-  if (!ctranAllGatherSupport(this->comm->ctranComm_.get())) {
+  if (!ctranAllGatherSupport(
+          this->comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO)) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran AllGather support.";
   }
