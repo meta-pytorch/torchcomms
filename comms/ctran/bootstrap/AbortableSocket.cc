@@ -16,6 +16,8 @@
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+using namespace std::literals::chrono_literals;
+
 namespace ctran::bootstrap {
 namespace {
 // Helper to wrap compare_exchange_strong for readability
@@ -100,31 +102,53 @@ int AbortableSocket::connect(
     const std::chrono::milliseconds timeout,
     size_t numRetries,
     bool async) {
+  if (!async) {
+    XLOG(
+        DBG,
+        "AbortableSocket::connect() called with async=false; ignoring flag.");
+  }
   // Create socket
-  fd_ = ::socket(addr.getFamily(), SOCK_STREAM, 0);
-  if (fd_ < 0) {
-    throw std::runtime_error("Failed to create socket");
+  fd_.store(::socket(addr.getFamily(), SOCK_STREAM, 0));
+  if (fd_.load() < 0) {
+    XLOGF(ERR, "Failed to create socket. errno={}, {}", errno, strerror(errno));
+    return errno;
   }
   prepareSocket();
 
   // Bind the socket to the specified interface name
   if (!ifName.empty()) {
     if (setsockopt(
-            fd_, SOL_SOCKET, SO_BINDTODEVICE, ifName.c_str(), ifName.size()) <
-        0) {
-      throw std::runtime_error("Failed to bind socket to interface " + ifName);
+            fd_.load(),
+            SOL_SOCKET,
+            SO_BINDTODEVICE,
+            ifName.c_str(),
+            ifName.size()) < 0) {
+      XLOGF(
+          ERR,
+          "Failed to bind socket to interface {}. errno={}, {}",
+          ifName,
+          errno,
+          strerror(errno));
+      return errno;
     }
   }
 
-  // Connect to specified address
   sockaddr_storage sockAddr;
   const auto sockLen = addr.getAddress(&sockAddr);
   size_t retryCount{0};
-  do {
+
+  while (!abort_->Test()) {
     XLOGF(DBG, "Connecting to {} via {}", addr.describe(), ifName);
-    if (::connect(fd_, (const struct sockaddr*)&sockAddr, sockLen) == 0) {
-      break;
+    int ret = ::connect(fd_.load(), (const struct sockaddr*)&sockAddr, sockLen);
+
+    if (ret == 0) {
+      break; // Unlikely (connected immediately).
     }
+
+    if (errno == EINPROGRESS && !waitForConnect(-1ms)) {
+      break; // Connected successfully.
+    }
+
     XLOGF(
         WARN,
         "Failed to connect to {} via {}. errno={}, {}",
@@ -133,58 +157,61 @@ int AbortableSocket::connect(
         errno,
         strerror(errno));
 
-    // Break the loop on non-retryable errors
     if (!shouldRetry(errno)) {
       XLOGF(ERR, "Connection attempt terminating on non-retryable error");
-      break;
-    }
-
-    // Break the loop if we've exhausted all retries
-    if (retryCount >= numRetries) {
-      XLOGF(ERR, "Connection attempt terminating as we exhausted all retries");
+      int err = errno;
       close();
-      return errno;
+      return err;
     }
 
-    // Retry after a delay
-    const auto retryTimeout = retryCount * timeout;
-    XLOGF(INFO, "Will retry connecting in {}ms", retryTimeout.count());
-    // Wait for a bit before retrying
+    const auto sleepInterval = std::chrono::milliseconds(
+        static_cast<int64_t>(std::min(100.0 * retryCount, 500.0)));
     retryCount++;
-    std::this_thread::sleep_for(retryCount * timeout);
-  } while (true);
+    std::this_thread::sleep_for(sleepInterval);
+  }
+
+  CHECK_ABORT_RETURN();
 
   peerAddr_ = addr;
-  localAddr_ = getSocketAddress(fd_);
+  localAddr_ = getSocketAddress(fd_.load());
 
-  XLOGF(INFO, "Connected to {} via {}, fd={}", addr.describe(), ifName, fd_);
+  XLOGF(
+      INFO,
+      "Connected to {} via {}, fd={}",
+      addr.describe(),
+      ifName,
+      fd_.load());
   return 0;
 }
 
 void AbortableSocket::prepareSocket() {
   // Set the default socket buffer size to 1MB
   const int bufSize = 1 << 20;
-  if (::setsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &bufSize, sizeof(int)) < 0) {
-    throw std::runtime_error("Failed to set socket send buffer size");
+  int fd = fd_.load();
+  if (::setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &bufSize, sizeof(int)) < 0) {
+    throw ctran::utils::Exception(
+        "Failed to set socket send buffer size", commSystemError);
   }
-  if (::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &bufSize, sizeof(int)) < 0) {
-    throw std::runtime_error("Failed to set socket receive buffer size");
-  }
-  // Set the socket to blocking mode
-  int flags = ::fcntl(fd_, F_GETFL, 0);
-  if (flags < 0) {
-    throw std::runtime_error("Failed to get socket flags");
-  }
-  flags = flags | O_NONBLOCK;
-  if (::fcntl(fd_, F_SETFL, flags) < 0) {
-    throw std::runtime_error("Failed to set socket to non-blocking mode");
+  if (::setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufSize, sizeof(int)) < 0) {
+    throw ctran::utils::Exception(
+        "Failed to set socket receive buffer size", commSystemError);
   }
 
-  // Set TCP_NODELAY to disable Nagle's algorithm, to improve latency
+  int flags = ::fcntl(fd, F_GETFL, 0);
+  if (flags < 0) {
+    throw ctran::utils::Exception(
+        "Failed to get socket flags", commSystemError);
+  }
+  flags |= O_NONBLOCK;
+  if (::fcntl(fd, F_SETFL, flags) < 0) {
+    throw ctran::utils::Exception(
+        "Failed to set socket to non-blocking mode", commSystemError);
+  }
+
   const int noDelay = 1;
-  if (::setsockopt(
-          fd_, IPPROTO_TCP, TCP_NODELAY, (char*)&noDelay, sizeof(int)) < 0) {
-    throw std::runtime_error("Failed to set TCP_NODELAY");
+  if (::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (char*)&noDelay, sizeof(int)) <
+      0) {
+    throw ctran::utils::Exception("Failed to set TCP_NODELAY", commSystemError);
   }
 }
 
@@ -252,6 +279,103 @@ int AbortableSocket::recv(void* buf, const size_t len) {
     }
     // Keep looping until we've received all the data
   } while (totalRecvd < len);
+  return 0;
+}
+
+bool AbortableSocket::waitForWritable(const std::chrono::milliseconds timeout) {
+  return waitForEvent(POLLOUT, timeout);
+}
+
+bool AbortableSocket::waitForEvent(
+    short events,
+    const std::chrono::milliseconds timeout) {
+  int fd = fd_.load();
+  if (fd < 0) {
+    XLOG(INFO, "fd_ is < 0");
+    return false;
+  }
+
+  const auto maxPollTimeout = std::chrono::milliseconds(50);
+  auto startTime = std::chrono::steady_clock::now();
+
+  while (!abort_->Test()) {
+    struct pollfd pfd{
+        .fd = fd,
+        .events = events,
+        .revents = 0,
+    };
+
+    std::chrono::milliseconds remaining = maxPollTimeout;
+    if (timeout.count() >= 0) {
+      auto elapsed = std::chrono::steady_clock::now() - startTime;
+      remaining = timeout -
+          std::chrono::duration_cast<std::chrono::milliseconds>(elapsed);
+    }
+
+    if (remaining.count() <= 0) {
+      return false;
+    }
+
+    // Use short poll timeouts to allow checking abort flag frequently
+    if (remaining > maxPollTimeout) {
+      remaining = maxPollTimeout;
+    }
+
+    int ret = ::poll(&pfd, 1, remaining.count());
+    if (ret < 0) {
+      XLOGF(
+          ERR,
+          "poll failed on fd={}. errno={}, {}",
+          fd,
+          errno,
+          strerror(errno));
+      return false;
+    }
+
+    if (ret == 0) {
+      // Timeout, continue loop to check abort flag
+      continue;
+    }
+
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+      XLOGF(WARN, "poll returned error events: {}", pfd.revents);
+      return false;
+    }
+
+    if (pfd.revents & events) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+int AbortableSocket::waitForConnect(const std::chrono::milliseconds timeout) {
+  if (!waitForWritable(timeout)) {
+    return ETIMEDOUT;
+  }
+
+  // Check if the connection succeeded
+  int error = 0;
+  socklen_t len = sizeof(error);
+  if (getsockopt(fd_.load(), SOL_SOCKET, SO_ERROR, &error, &len) < 0) {
+    XLOGF(
+        ERR,
+        "Failed to get socket error status. errno={}, {}",
+        errno,
+        strerror(errno));
+    return errno;
+  }
+
+  if (error != 0) {
+    XLOGF(
+        WARN,
+        "Connection failed with error: errno={}, {}",
+        error,
+        strerror(error));
+    return error;
+  }
+
   return 0;
 }
 

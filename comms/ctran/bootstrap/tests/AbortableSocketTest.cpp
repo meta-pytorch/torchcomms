@@ -10,6 +10,8 @@
 #include <gtest/gtest.h>
 
 #include <folly/logging/xlog.h>
+#include <folly/synchronization/Baton.h>
+#include <folly/synchronization/Latch.h>
 
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 
@@ -119,4 +121,455 @@ TEST_F(AbortableSocketTest, MoveSemantics) {
   ctran::bootstrap::AbortableSocket client2 = std::move(client1);
   EXPECT_EQ(client1.getFd(), -1);
   EXPECT_EQ(client2.getFd(), fd1);
+}
+
+//
+// Test Group #2: Multi-Client and Connection Management
+//
+
+TEST_F(AbortableServerSocketTest, MultipleClients) {
+  ctran::bootstrap::AbortableSocket client1;
+  ctran::bootstrap::AbortableSocket client2;
+
+  ASSERT_EQ(0, client1.connect(serverAddr, "lo"));
+  ASSERT_EQ(0, client2.connect(serverAddr, "lo"));
+
+  auto maybeAccepted1 = server->acceptSocket();
+  ASSERT_FALSE(maybeAccepted1.hasError());
+  auto& accepted1 = maybeAccepted1.value();
+
+  auto maybeAccepted2 = server->acceptSocket();
+  ASSERT_FALSE(maybeAccepted2.hasError());
+  auto& accepted2 = maybeAccepted2.value();
+
+  const std::string msg1 = "client1";
+  const std::string msg2 = "client2";
+
+  ASSERT_EQ(0, client1.send(msg1.data(), msg1.size()));
+  ASSERT_EQ(0, client2.send(msg2.data(), msg2.size()));
+
+  char buffer1[msg1.size()];
+  char buffer2[msg2.size()];
+
+  int err1 = accepted1->recv(buffer1, sizeof(buffer1));
+  EXPECT_EQ(err1, 0);
+
+  int err2 = accepted2->recv(buffer2, sizeof(buffer2));
+  EXPECT_EQ(err2, 0);
+
+  EXPECT_EQ(std::string(buffer1), msg1);
+  EXPECT_EQ(std::string(buffer2), msg2);
+
+  EXPECT_EQ(0, client1.close());
+  EXPECT_EQ(0, client2.close());
+  EXPECT_EQ(0, accepted1->close());
+  EXPECT_EQ(0, accepted2->close());
+}
+
+TEST_F(AbortableSocketTest, ConnectionRefused) {
+  std::binary_semaphore sem{0};
+
+  std::thread connectThread([&]() {
+    folly::SocketAddress unreachableAddr("::1", 9999);
+    int result = client.connect(unreachableAddr, "lo", 100ms, 1);
+    EXPECT_EQ(result, ECONNABORTED);
+    sem.release();
+  });
+
+  for (int i = 0; i < 10; i++) {
+    std::this_thread::sleep_for(100ms);
+    if (sem.try_acquire_for(1ms)) {
+      ASSERT_FALSE(true) << "Connection should not have succeeded";
+    }
+  }
+
+  clientAbort->Set();
+  connectThread.join();
+  EXPECT_TRUE(sem.try_acquire_for(1ms));
+  EXPECT_TRUE(clientAbort->Test());
+}
+
+TEST_F(AbortableSocketTest, MultipleConnectionAttempts) {
+  ctran::bootstrap::AbortableServerSocket server{1};
+
+  // Bind server on the loopback interface but do not listen
+  XLOG(INFO) << "Binding server..";
+  ASSERT_EQ(0, server.bind(folly::SocketAddress("::1", 0), "lo"));
+  const auto& maybeServerAddr = server.getListenAddress();
+  ASSERT_FALSE(maybeServerAddr.hasError());
+  auto& serverAddr = maybeServerAddr.value();
+
+  // Connect client to the server. It may experience few connect errors but
+  // retry will eventually make it succeed
+  XLOG(INFO) << "Connecting to server..";
+  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  ctran::bootstrap::AbortableSocket client1(abortCtrl);
+  std::atomic<int> result{-1};
+  std::thread connectThread([&]() {
+    result = client1.connect(serverAddr, "lo", 0ms /*ignored*/, 0 /*ignored*/);
+  });
+
+  std::this_thread::sleep_for(500ms);
+  EXPECT_EQ(result.load(), -1);
+  abortCtrl->Set();
+  connectThread.join();
+  EXPECT_EQ(result.load(), ECONNABORTED);
+}
+
+TEST_F(AbortableSocketTest, ConnectionEventuallySucceeds) {
+  ctran::bootstrap::AbortableServerSocket server{1};
+
+  // Bind server on the loopback interface but do not listen
+  XLOG(INFO) << "Binding server..";
+  ASSERT_EQ(0, server.bind(folly::SocketAddress("::1", 0), "lo"));
+  const auto& maybeServerAddr = server.getListenAddress();
+  ASSERT_FALSE(maybeServerAddr.hasError());
+  auto& serverAddr = maybeServerAddr.value();
+
+  folly::Baton connecting;
+
+  // Delay the listen in a separate thread to simulate a connect error
+  std::thread listenThread([&]() {
+    connecting.wait();
+    std::this_thread::sleep_for(100ms);
+    XLOG(INFO) << "Starting to listen on server";
+    ASSERT_EQ(0, server.listen());
+  });
+
+  ctran::bootstrap::AbortableSocket client2;
+  std::this_thread::sleep_for(100ms);
+  connecting.post();
+
+  // Attempt to connect to server again .. we may succeed after few more retries
+  XLOG(INFO) << "Attempting to connect to server again..";
+  ASSERT_EQ(
+      0, client2.connect(serverAddr, "lo", 0ms /*ignored*/, 0 /*ignored*/));
+  EXPECT_NE(client2.getFd(), -1);
+
+  // Accept client connection on server
+  listenThread.join();
+  auto maybeClient = server.acceptSocket();
+  ASSERT_FALSE(maybeClient.hasError()) << maybeClient.error();
+  auto& acceptedClient = maybeClient.value();
+  EXPECT_NE(acceptedClient, nullptr);
+  EXPECT_NE(acceptedClient->getFd(), -1);
+
+  // Close the sockets
+  EXPECT_EQ(0, server.shutdown());
+  EXPECT_EQ(0, client2.close());
+  EXPECT_EQ(0, acceptedClient->close());
+}
+
+TEST_F(AbortableSocketTest, LargeDataTransfer) {
+  const size_t dataSize = 1 * 1024 * 1024;
+  std::vector<uint8_t> sendData(dataSize);
+  for (size_t i = 0; i < dataSize; i++) {
+    sendData[i] = i % 256;
+  }
+
+  std::vector<uint8_t> recvData(dataSize);
+
+  std::thread sendThread(
+      [&]() { ASSERT_EQ(0, client.send(sendData.data(), sendData.size())); });
+
+  ASSERT_EQ(0, acceptedClient->recv(recvData.data(), recvData.size()));
+
+  sendThread.join();
+
+  EXPECT_EQ(sendData, recvData);
+}
+
+//
+// Test Group #3: Socket Binding and Port Management
+//
+
+TEST_F(AbortableSocketTest, ReusePort) {
+  ctran::bootstrap::AbortableServerSocket server1{1};
+  ctran::bootstrap::AbortableServerSocket server2{1};
+
+  ASSERT_EQ(0, server1.bind(folly::SocketAddress("::1", 0), "lo", true));
+  const auto maybeAddr1 = server1.getListenAddress();
+  ASSERT_FALSE(maybeAddr1.hasError());
+  auto addr1 = maybeAddr1.value();
+
+  ASSERT_EQ(0, server2.bind(addr1, "lo"));
+  const auto maybeAddr2 = server2.getListenAddress();
+  ASSERT_FALSE(maybeAddr2.hasError());
+  auto addr2 = maybeAddr2.value();
+
+  EXPECT_EQ(addr1.getPort(), addr2.getPort());
+
+  EXPECT_EQ(0, server1.shutdown());
+  EXPECT_EQ(0, server2.shutdown());
+}
+
+TEST_F(AbortableSocketTest, BindAndUnbind) {
+  ctran::bootstrap::AbortableServerSocket server1{1};
+  ctran::bootstrap::AbortableServerSocket server2{1};
+
+  // Bind server1 on the loopback interface with SO_REUSEPORT
+  ASSERT_EQ(0, server1.bind(folly::SocketAddress("::1", 0), "lo", true));
+  EXPECT_NE(server1.getFd(), -1);
+
+  // Get the server1 address and validate it
+  const auto maybeServer1Addr = server1.getListenAddress();
+  ASSERT_FALSE(maybeServer1Addr.hasError());
+  auto server1Addr = maybeServer1Addr.value();
+  EXPECT_EQ(server1Addr.getFamily(), AF_INET6);
+  EXPECT_NE(server1Addr.getPort(), 0);
+  EXPECT_EQ(server1Addr.getIPAddress().str(), "::1");
+
+  // Bind server2 to the same address as server1 (works due to SO_REUSEPORT)
+  ASSERT_EQ(0, server2.bind(server1Addr, "lo"));
+  EXPECT_NE(server2.getFd(), -1);
+  EXPECT_EQ(server2.getListenAddress().value(), server1Addr);
+
+  // Shutdown server1 and create a new server3 to bind to the same address
+  ASSERT_EQ(0, server1.shutdown());
+  EXPECT_EQ(-1, server1.getFd());
+
+  ctran::bootstrap::AbortableServerSocket server3{1};
+  ASSERT_EQ(0, server3.bind(server1Addr, "lo"));
+  EXPECT_NE(server3.getFd(), -1);
+  EXPECT_EQ(server3.getListenAddress().value(), server1Addr);
+
+  // Close the remaining sockets
+  EXPECT_EQ(0, server2.shutdown());
+  EXPECT_EQ(-1, server2.getFd());
+  EXPECT_EQ(0, server3.shutdown());
+  EXPECT_EQ(-1, server3.getFd());
+}
+
+//
+// Test Group #5: Close, Shutdown, and Resource Management
+//
+
+TEST_F(AbortableServerSocketTest, AcceptErrorOnShutdown) {
+  folly::Baton listenStarted;
+
+  std::thread listenThread([this, &listenStarted]() {
+    listenStarted.post();
+    auto maybeClient = server->acceptSocket();
+    ASSERT_TRUE(maybeClient.hasError());
+    EXPECT_TRUE(
+        maybeClient.error() == EBADF || maybeClient.error() == EINVAL ||
+        maybeClient.error() == EIO || maybeClient.error() == ETIMEDOUT)
+        << "Error: " << maybeClient.error();
+  });
+  listenStarted.wait();
+  std::this_thread::sleep_for(50ms);
+  server->shutdown();
+  listenThread.join();
+}
+
+TEST_F(AbortableSocketTest, CloseThreadSafety) {
+  EXPECT_NE(acceptedClient->getFd(), -1);
+
+  // Launch multiple threads that all try to close the same socket
+  constexpr int kNumThreads = 10;
+  folly::Latch sync_point(kNumThreads);
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+
+  std::vector<int> results(kNumThreads);
+  std::atomic<int> successCount{0};
+
+  for (int i = 0; i < kNumThreads; i++) {
+    threads.emplace_back([this, &results, i, &successCount, &sync_point]() {
+      sync_point.arrive_and_wait();
+      results[i] = acceptedClient->close();
+      XLOGF(INFO, "Thread #{} closed socket with result={}", i, results[i]);
+      if (results[i] == 0) {
+        successCount++;
+      }
+    });
+  }
+
+  // Wait for all threads to complete
+  for (auto& thread : threads) {
+    thread.join();
+  }
+
+  // Verify thread safety:
+  // At least one thread should successfully close (return 0)
+  EXPECT_GE(successCount.load(), 1)
+      << "Expected at least one thread to successfully close";
+
+  // The socket should be closed (fd == -1)
+  EXPECT_EQ(acceptedClient->getFd(), -1);
+}
+
+TEST_F(AbortableServerSocketTest, ShutdownThreadSafety) {
+  EXPECT_FALSE(server->hasShutDown());
+
+  // Launch multiple threads that all try to shutdown the same server
+  constexpr int kNumThreads = 10;
+  folly::Latch sync_point(kNumThreads);
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+
+  std::vector<int> results(kNumThreads);
+  std::atomic<int> successCount{0};
+
+  for (int i = 0; i < kNumThreads; i++) {
+    threads.emplace_back([this, &results, i, &successCount, &sync_point]() {
+      sync_point.arrive_and_wait();
+      results[i] = server->shutdown();
+      if (results[i] == 0) {
+        successCount++;
+      }
+    });
+  }
+
+  // Wait for all threads to complete
+  for (auto& thread : threads) {
+    thread.join();
+  }
+
+  // Verify thread safety:
+  // 1. Exactly one thread should have succeeded (returned 0)
+  EXPECT_GE(successCount.load(), 1)
+      << "Expected at least one thread to successfully shutdown";
+
+  // 2. The server should be marked as shut down
+  EXPECT_TRUE(server->hasShutDown());
+
+  // 3. The file descriptor should be invalidated
+  EXPECT_EQ(server->getFd(), -1);
+}
+
+//
+// Test Group #6: Abort Functionality
+//
+
+// Helper function to test aborting blocking operations
+// Takes an operation function and an abort object, runs the operation in a
+// separate thread, aborts it after a delay, and verifies it was aborted
+template <typename OperationFn>
+void testAbortBlockingOperation(
+    std::shared_ptr<ctran::utils::Abort> abortObj,
+    OperationFn operation,
+    std::chrono::milliseconds delayBeforeAbort = 150ms) {
+  std::atomic<int> operationResult{-1};
+  std::binary_semaphore operationStarted{0};
+
+  // Start operation in a separate thread
+  std::thread operationThread([&]() {
+    operationStarted.release();
+    operationResult = operation();
+  });
+
+  // Wait for operation to start
+  operationStarted.acquire();
+
+  // Give it some time to get into blocking state
+  std::this_thread::sleep_for(delayBeforeAbort);
+
+  EXPECT_FALSE(abortObj->Test());
+
+  // Abort the operation
+  abortObj->Set();
+
+  // Wait for operation thread to complete
+  operationThread.join();
+
+  // Verify that operation was aborted
+  EXPECT_TRUE(
+      operationResult.load() == ECONNABORTED ||
+      operationResult.load() == ETIMEDOUT);
+}
+
+// Test aborting connect operation with retries
+TEST_F(AbortableSocketTest, AbortOnConnectWaiting) {
+  auto abortObj = ctran::utils::createAbort(/*enabled=*/true);
+  ctran::bootstrap::AbortableSocket client(abortObj);
+  folly::SocketAddress unreachableAddr("::1", 9999);
+
+  testAbortBlockingOperation(abortObj, [&]() {
+    return client.connect(unreachableAddr, "lo", 0ms, 0);
+  });
+
+  EXPECT_EQ(0, client.close());
+  EXPECT_EQ(client.getFd(), -1);
+}
+
+TEST_F(AbortableSocketTest, AbortOnAcceptWaiting) {
+  testAbortBlockingOperation(
+      serverAbort,
+      [&]() {
+        auto maybeClient = server->acceptSocket();
+        return maybeClient.hasError() ? maybeClient.error() : 0;
+      },
+      250ms);
+}
+
+TEST_F(AbortableSocketTest, AbortAcceptConcurrent) {
+  std::atomic<int> acceptError{-1};
+
+  // Start accept in a separate thread
+  std::thread acceptThread([&]() {
+    auto maybeClient = server->acceptSocket();
+    if (maybeClient.hasError()) {
+      acceptError = maybeClient.error();
+    } else {
+      acceptError = 0;
+    }
+  });
+
+  std::this_thread::sleep_for(250ms);
+  serverAbort->Set();
+
+  // Wait for threads to complete
+  acceptThread.join();
+
+  // Verify that accept was aborted
+  EXPECT_TRUE(
+      acceptError.load() == ECONNABORTED || acceptError.load() == ETIMEDOUT);
+}
+
+// Test timeout during connect operation
+// This validates that the timeout mechanism properly triggers abort during
+// connection establishment attempts
+TEST_F(AbortableSocketTest, ConnectTimeout) {
+  auto abort = ctran::utils::createAbort(/*enabled=*/true);
+  ctran::bootstrap::AbortableSocket client(abort);
+
+  // Try to connect to unreachable address with short timeout
+  folly::SocketAddress unreachableAddr("::1", 9999);
+
+  // Set timeout that will expire during connection attempts
+  abort->SetTimeout(100ms);
+
+  auto startTime = std::chrono::steady_clock::now();
+  int result = client.connect(unreachableAddr, "lo");
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - startTime);
+
+  // Should have timed out via the abort mechanism
+  EXPECT_TRUE(result == ECONNABORTED || result == ETIMEDOUT);
+  EXPECT_TRUE(abort->Test());
+  EXPECT_TRUE(abort->TimedOut());
+
+  // Should complete within reasonable time after timeout
+  EXPECT_GE(elapsed, 100ms);
+  EXPECT_LT(elapsed, 500ms);
+}
+
+TEST_F(AbortableServerSocketTest, AcceptTimeout) {
+  std::chrono::milliseconds timeout{250ms};
+  serverAbort->SetTimeout(timeout);
+
+  auto startTime = std::chrono::steady_clock::now();
+  auto maybeClient = server->acceptSocket();
+  auto elapsedMilliseconds =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - startTime);
+
+  EXPECT_TRUE(maybeClient.hasError());
+  EXPECT_TRUE(
+      maybeClient.error() == ETIMEDOUT || maybeClient.error() == ECONNABORTED);
+  ASSERT_GE(elapsedMilliseconds, 100ms)
+      << "Elapsed milliseconds: " << elapsedMilliseconds.count();
+  ASSERT_LT(elapsedMilliseconds, timeout + 100ms)
+      << "Elapsed milliseconds: " << elapsedMilliseconds.count();
 }

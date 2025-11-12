@@ -71,26 +71,49 @@ class AbortableSocket : public ISocket {
    */
   ~AbortableSocket();
 
-  // Will close socket and return errno on error.
+  /**
+   * Connect to specified address and ifName asynchronously.
+   * Returns immediately and connection may still be in progress.
+   * Use isConnected() or waitForConnect() to check/wait for completion.
+   *
+   * Will close the socket if there is an error while connecting.
+   *
+   * @param addr - Target address to connect to
+   * @param ifName - Interface name to bind to
+   * @param timeout - Ignored; exists for consistency with Socket API.
+   * @param numRetries - Ignored; exists for consistency with Socket API.
+   * @param async - Ignored; exists for consistency with Socket API.
+   * @return 0 on success or errno on error
+   */
   int connect(
       const folly::SocketAddress& addr,
       const std::string& ifName,
-      const std::chrono::milliseconds timeout = std::chrono::milliseconds(1000),
-      size_t numRetries = 10,
-      bool async = false) override;
+      [[maybe_unused]] const std::chrono::milliseconds timeout =
+          std::chrono::milliseconds(-1),
+      [[maybe_unused]] size_t numRetries = -1,
+      [[maybe_unused]] bool async = false) override;
 
   /**
    * Send all data. Blocks until all data is sent or timeout/abort.
+   * Note: calling close concurrently with send/recv is not
+   * thread-safe and may result in send/recv returning EBADF.
    * @return 0 on success, errno on error/timeout
    */
   int send(const void* buf, const size_t len) override;
 
   /**
    * Receive all data. Blocks until all data is received or timeout/abort.
+   * Note: calling close concurrently with send/recv is not
+   * thread-safe and may result in send/recv returning EBADF.
    * @return 0 on success, errno on error/timeout
    */
   int recv(void* buf, const size_t len) override;
 
+  /**
+   * Shutdown the socket. Calling close concurrently with send/recv is not
+   * thread-safe and may result in send/recv returning EBADF.
+   * @return 0 on success, errno on error.
+   */
   int close() override;
 
   int getFd() const override {
@@ -109,21 +132,25 @@ class AbortableSocket : public ISocket {
   void prepareSocket();
 
   /**
+   * Pass negative timeout to block until success (or abort).
    * @return true if readable, false on timeout or error
    */
   bool waitForReadable(const std::chrono::milliseconds timeout);
 
   /**
+   * Pass negative timeout to block until success (or abort).
    * @return true if writable, false on timeout or error
    */
   bool waitForWritable(const std::chrono::milliseconds timeout);
 
   /**
+   * Pass negative timeout to block until success (or abort).
    * @return 0 if connected, errno on error
    */
   int waitForConnect(const std::chrono::milliseconds timeout);
 
   /**
+   * Pass negative timeout to block until success (or abort).
    * @return true if event occurred, false on timeout or error
    */
   bool waitForEvent(short events, const std::chrono::milliseconds timeout);
