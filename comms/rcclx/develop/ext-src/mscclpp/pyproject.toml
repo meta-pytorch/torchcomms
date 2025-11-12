@@ -1,0 +1,26 @@
+# Copyright (c) Microsoft Corporation.
+# Licensed under the MIT license.
+
+[build-system]
+requires = ["scikit-build-core"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "mscclpp"
+version = "0.6.0"
+
+[tool.scikit-build]
+cmake.version = ">=3.25.0"
+cmake.build-type = "Release"
+build-dir = "build/{wheel_tag}"
+wheel.packages = ["python/mscclpp", "python/mscclpp_benchmark"]
+wheel.install-dir = "mscclpp"
+
+[tool.scikit-build.cmake.define]
+MSCCLPP_BUILD_PYTHON_BINDINGS = "ON"
+MSCCLPP_BUILD_TESTS = "OFF"
+
+[tool.black]
+line-length = 120
+target-version = ['py38']
+include = '\.pyi?$'
