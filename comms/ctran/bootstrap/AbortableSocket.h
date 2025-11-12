@@ -9,6 +9,7 @@
 #include <folly/IPAddress.h>
 #include <folly/SocketAddress.h>
 #include "comms/ctran/bootstrap/ISocket.h"
+#include "comms/ctran/bootstrap/ISocketFactory.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/Exception.h"
 
@@ -249,6 +250,23 @@ class AbortableServerSocket : public IServerSocket {
   std::shared_ptr<Abort> abort_;
   std::atomic_bool shuttingDown_{false};
   std::atomic_bool hasShutDown_{false};
+};
+
+class AbortableSocketFactory : public ISocketFactory {
+ public:
+  explicit AbortableSocketFactory() {};
+
+  std::unique_ptr<ISocket> createClientSocket(
+      std::shared_ptr<Abort> abort = nullptr) override;
+
+  std::unique_ptr<ISocket> createClientSocket(
+      int sockFd,
+      const folly::SocketAddress& peerAddr,
+      std::shared_ptr<Abort> abort = nullptr) override;
+
+  std::unique_ptr<IServerSocket> createServerSocket(
+      int acceptRetryCnt,
+      std::shared_ptr<Abort> abort = nullptr) override;
 };
 
 } // namespace ctran::bootstrap

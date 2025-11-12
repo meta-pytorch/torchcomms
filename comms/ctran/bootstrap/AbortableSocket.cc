@@ -12,8 +12,6 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/logging/xlog.h>
-#include "comms/ctran/utils/Exception.h"
-#include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace std::literals::chrono_literals;
@@ -723,6 +721,24 @@ void AbortableServerSocket::prepareSocket() {
     throw ctran::utils::Exception(
         "Failed to set socket to non-blocking mode", commSystemError);
   }
+}
+
+std::unique_ptr<ISocket> AbortableSocketFactory::createClientSocket(
+    std::shared_ptr<Abort> abort) {
+  return std::make_unique<AbortableSocket>(abort);
+}
+
+std::unique_ptr<ISocket> AbortableSocketFactory::createClientSocket(
+    int sockFd,
+    const folly::SocketAddress& peerAddr,
+    std::shared_ptr<Abort> abort) {
+  return std::make_unique<AbortableSocket>(sockFd, peerAddr, abort);
+}
+
+std::unique_ptr<IServerSocket> AbortableSocketFactory::createServerSocket(
+    int acceptRetryCnt,
+    std::shared_ptr<ctran::utils::Abort> abort) {
+  return std::make_unique<AbortableServerSocket>(acceptRetryCnt, abort);
 }
 
 } // namespace ctran::bootstrap
