@@ -264,8 +264,14 @@ AbortableServerSocket::~AbortableServerSocket() {
 }
 
 AbortableServerSocket::AbortableServerSocket(
-    AbortableServerSocket&& other) noexcept {
-  *this = std::move(other);
+    AbortableServerSocket&& other) noexcept
+    : isV4_(other.isV4_),
+      acceptRetryCnt_(other.acceptRetryCnt_),
+      fd_(other.fd_),
+      abort_(std::move(other.abort_)),
+      shuttingDown_(other.shuttingDown_.load()),
+      hasShutDown_(other.hasShutDown_.load()) {
+  other.fd_ = -1;
 }
 
 AbortableServerSocket& AbortableServerSocket::operator=(
@@ -273,7 +279,9 @@ AbortableServerSocket& AbortableServerSocket::operator=(
   if (this != &other) {
     shutdown(); // Close the current socket if open
     isV4_ = other.isV4_;
+    acceptRetryCnt_ = other.acceptRetryCnt_;
     fd_ = other.fd_;
+    abort_ = std::move(other.abort_);
     other.fd_ = -1; // Reset the file descriptor of the moved-from object
   }
   return *this;
@@ -295,6 +303,7 @@ int AbortableServerSocket::bind(
     return errno;
   }
 
+  prepareSocket();
   // Bind the socket to the specified interface name
   if (!ifName.empty()) {
     if (setsockopt(
@@ -418,18 +427,13 @@ AbortableServerSocket::getListenAddress() {
 }
 
 folly::Expected<std::unique_ptr<ISocket>, int>
-AbortableServerSocket::acceptSocket() {
+AbortableServerSocket::acceptAsync() {
   int retryCnt = 0;
-  XCHECK(acceptRetryCnt_ > 0) << "accept retry count must be positive";
   sockaddr_storage sockAddr;
   socklen_t sockLen =
       isV4_ ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
-  int clientFd = -1;
-  while (retryCnt < acceptRetryCnt_) {
-    clientFd = ::accept(fd_, (struct sockaddr*)&sockAddr, &sockLen);
-    if (clientFd >= 0) {
-      break;
-    }
+  int clientFd = ::accept(fd_, (struct sockaddr*)&sockAddr, &sockLen);
+  if (clientFd < 0) {
     if (shouldRetry(errno)) {
       /* per accept's man page, for linux sockets, the following errors might
        * be already pending errors and should be considered as EAGAIN and
@@ -442,7 +446,7 @@ AbortableServerSocket::acceptSocket() {
           strerror(errno),
           retryCnt,
           acceptRetryCnt_);
-      continue;
+      return folly::makeUnexpected(EAGAIN);
     }
     if (errno != EAGAIN && errno != EWOULDBLOCK) {
       if (!hasShutDown_) {
@@ -454,9 +458,14 @@ AbortableServerSocket::acceptSocket() {
       }
       return folly::makeUnexpected(errno);
     } else {
-      XLOGF(INFO, "Received {} and will perform a free retry", strerror(errno));
+      XLOGF(
+          INFO,
+          "Received error \"{}\" and will perform a free retry",
+          strerror(errno));
+      return folly::makeUnexpected(EAGAIN); // Treat as EAGAIN to retry
     }
   }
+
   folly::SocketAddress addr;
   addr.setFromSockaddr((struct sockaddr*)&sockAddr);
   XLOGF(
@@ -464,14 +473,58 @@ AbortableServerSocket::acceptSocket() {
       "Accepted a new incoming connection {}, fd={}",
       addr.describe(),
       clientFd);
-  return std::make_unique<AbortableSocket>(clientFd, addr);
+  return std::make_unique<AbortableSocket>(clientFd, addr, abort_);
+}
+
+folly::Expected<std::unique_ptr<ISocket>, int>
+AbortableServerSocket::acceptSocket() {
+  while (!abort_->Test()) {
+    auto maybeSocket = acceptAsync();
+    if (!maybeSocket.hasError() || maybeSocket.error() != EAGAIN) {
+      return maybeSocket;
+    }
+
+    struct pollfd pfd;
+    pfd.fd = fd_;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+
+    auto pollTimeout = std::chrono::milliseconds(10);
+
+    int ret = ::poll(&pfd, 1, pollTimeout.count());
+
+    if (ret < 0) {
+      if (!hasShutDown_) {
+        XLOGF(
+            ERR,
+            "poll failed on fd={}. errno={}, {}",
+            fd_,
+            errno,
+            strerror(errno));
+      }
+
+      return folly::makeUnexpected(errno);
+    }
+
+    if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+      XLOGF(WARN, "poll returned error events: {}", pfd.revents);
+      return folly::makeUnexpected(EIO);
+    }
+  }
+
+  return folly::makeUnexpected(ECONNABORTED);
 }
 
 int AbortableServerSocket::shutdown() {
-  if (!setShuttingDown(false, true) || hasShutDown_) {
+  if (!setShuttingDown(false, true)) {
     setShuttingDown(true, false);
     return EALREADY;
   }
+
+  if (hasShutDown_.load()) {
+    return 0;
+  }
+
   // shutdown fd_ would fail accept on the listen thread. To avoid misleading
   // error logging at accept failure, mark intentional shutdown
   if (fd_ >= 0) {
@@ -481,18 +534,37 @@ int AbortableServerSocket::shutdown() {
         getListenAddress()->describe(),
         fd_);
     if (::shutdown(fd_, SHUT_RDWR) < 0 && errno != ENOTCONN) {
+      XLOGF(
+          WARN,
+          "Failed to cleanly shutdown AbortableServerSocket. errno={}, {}",
+          errno,
+          strerror(errno));
       ::close(fd_);
       fd_ = -1;
       hasShutDown_ = true;
       setShuttingDown(true, false);
       return errno;
     }
+
     ::close(fd_);
     fd_ = -1;
   }
   hasShutDown_ = true;
   setShuttingDown(true, false);
   return 0;
+}
+
+void AbortableServerSocket::prepareSocket() {
+  int flags = ::fcntl(fd_, F_GETFL, 0);
+  if (flags < 0) {
+    throw ctran::utils::Exception(
+        "Failed to get socket flags", commSystemError);
+  }
+  flags |= O_NONBLOCK;
+  if (::fcntl(fd_, F_SETFL, flags) < 0) {
+    throw ctran::utils::Exception(
+        "Failed to set socket to non-blocking mode", commSystemError);
+  }
 }
 
 } // namespace ctran::bootstrap
