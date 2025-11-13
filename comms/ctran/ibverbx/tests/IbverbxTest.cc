@@ -1208,6 +1208,185 @@ TEST_F(IbverbxTestFixture, Coordinator) {
   ASSERT_EQ(coordinator->getVirtualQpByPhysicalQpNum(notifyQpNum), &virtualQp);
 }
 
+TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {
+  // Common setup for all test scenarios
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+  int cqe = 100;
+  auto coordinator = Coordinator::getCoordinator();
+  ASSERT_NE(coordinator, nullptr);
+
+  // Test 1: Test that destructors properly unregister objects
+  {
+    uint32_t virtualQpNum1;
+    uint32_t virtualQpNum2;
+    uint32_t virtualCqNum1;
+    uint32_t virtualCqNum2;
+
+    // Create objects within a nested scope.
+    // Each object is automatically constructed and registered upon creation.
+    // When the scope ends, the object's destructor is called, which
+    // automatically unregisters and destroys the object.
+    {
+      auto maybeVirtualCq1 = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+      ASSERT_TRUE(maybeVirtualCq1);
+      auto virtualCq1 = std::move(*maybeVirtualCq1);
+      virtualCqNum1 = virtualCq1.getVirtualCqNum();
+
+      auto maybeVirtualCq2 = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+      ASSERT_TRUE(maybeVirtualCq2);
+      auto virtualCq2 = std::move(*maybeVirtualCq2);
+      virtualCqNum2 = virtualCq2.getVirtualCqNum();
+
+      auto initAttr = makeIbvQpInitAttr(virtualCq1.getPhysicalCqRef().cq());
+      auto pd = device.allocPd();
+      ASSERT_TRUE(pd);
+
+      int totalQps = 4;
+      auto maybeVirtualQp1 =
+          pd->createVirtualQp(totalQps, &initAttr, &virtualCq1, &virtualCq1);
+      ASSERT_TRUE(maybeVirtualQp1);
+      auto virtualQp1 = std::move(*maybeVirtualQp1);
+      virtualQpNum1 = virtualQp1.getVirtualQpNum();
+
+      auto maybeVirtualQp2 =
+          pd->createVirtualQp(totalQps, &initAttr, &virtualCq2, &virtualCq2);
+      ASSERT_TRUE(maybeVirtualQp2);
+      auto virtualQp2 = std::move(*maybeVirtualQp2);
+      virtualQpNum2 = virtualQp2.getVirtualQpNum();
+
+      // Verify registration while objects are alive
+      const auto& sendCqMap = coordinator->getVirtualQpToVirtualSendCqMap();
+      const auto& recvCqMap = coordinator->getVirtualQpToVirtualRecvCqMap();
+      const auto& virtualQpMap = coordinator->getVirtualQpMap();
+      const auto& virtualCqMap = coordinator->getVirtualCqMap();
+
+      ASSERT_GE(sendCqMap.size(), 2);
+      ASSERT_GE(recvCqMap.size(), 2);
+      ASSERT_EQ(sendCqMap.at(virtualQpNum1), virtualCqNum1);
+      ASSERT_EQ(recvCqMap.at(virtualQpNum1), virtualCqNum1);
+      ASSERT_EQ(sendCqMap.at(virtualQpNum2), virtualCqNum2);
+      ASSERT_EQ(recvCqMap.at(virtualQpNum2), virtualCqNum2);
+      ASSERT_EQ(virtualQpMap.at(virtualQpNum1), &virtualQp1);
+      ASSERT_EQ(virtualQpMap.at(virtualQpNum2), &virtualQp2);
+      ASSERT_EQ(virtualCqMap.at(virtualCqNum1), &virtualCq1);
+      ASSERT_EQ(virtualCqMap.at(virtualCqNum2), &virtualCq2);
+    } // Objects destroyed here - destructors should call unregister
+
+    // Verify that all objects were unregistered by their destructors
+    const auto& sendCqMapAfter = coordinator->getVirtualQpToVirtualSendCqMap();
+    const auto& recvCqMapAfter = coordinator->getVirtualQpToVirtualRecvCqMap();
+    const auto& virtualQpMapAfter = coordinator->getVirtualQpMap();
+    const auto& virtualCqMapAfter = coordinator->getVirtualCqMap();
+
+    // All entries should be removed
+    ASSERT_EQ(sendCqMapAfter.count(virtualQpNum1), 0);
+    ASSERT_EQ(recvCqMapAfter.count(virtualQpNum1), 0);
+    ASSERT_EQ(sendCqMapAfter.count(virtualQpNum2), 0);
+    ASSERT_EQ(recvCqMapAfter.count(virtualQpNum2), 0);
+    ASSERT_EQ(virtualQpMapAfter.count(virtualQpNum1), 0);
+    ASSERT_EQ(virtualQpMapAfter.count(virtualQpNum2), 0);
+    ASSERT_EQ(virtualCqMapAfter.count(virtualCqNum1), 0);
+    ASSERT_EQ(virtualCqMapAfter.count(virtualCqNum2), 0);
+  }
+
+  // Test 2: Pointer-based Unregister - Test that unregister with wrong pointer
+  // does nothing
+  {
+    auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+    ASSERT_TRUE(maybeVirtualCq);
+    auto virtualCq = std::move(*maybeVirtualCq);
+
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+    auto pd = device.allocPd();
+    ASSERT_TRUE(pd);
+
+    int totalQps = 4;
+    auto maybeVirtualQp =
+        pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq);
+    ASSERT_TRUE(maybeVirtualQp);
+    auto virtualQp = std::move(*maybeVirtualQp);
+
+    uint32_t virtualQpNum = virtualQp.getVirtualQpNum();
+    uint32_t virtualCqNum = virtualCq.getVirtualCqNum();
+
+    // Verify registration
+    const auto& virtualQpMap = coordinator->getVirtualQpMap();
+    const auto& virtualCqMap = coordinator->getVirtualCqMap();
+    ASSERT_EQ(virtualQpMap.at(virtualQpNum), &virtualQp);
+    ASSERT_EQ(virtualCqMap.at(virtualCqNum), &virtualCq);
+
+    // Try to unregister with a different pointer - should do nothing
+    IbvVirtualQp* wrongQpPtr = reinterpret_cast<IbvVirtualQp*>(0x1234);
+    IbvVirtualCq* wrongCqPtr = reinterpret_cast<IbvVirtualCq*>(0x5678);
+
+    coordinator->unregisterVirtualQp(virtualQpNum, wrongQpPtr);
+    coordinator->unregisterVirtualCq(virtualCqNum, wrongCqPtr);
+
+    // Verify nothing was unregistered (pointers didn't match)
+    const auto& virtualQpMapAfter = coordinator->getVirtualQpMap();
+    const auto& virtualCqMapAfter = coordinator->getVirtualCqMap();
+    ASSERT_EQ(virtualQpMapAfter.at(virtualQpNum), &virtualQp);
+    ASSERT_EQ(virtualCqMapAfter.at(virtualCqNum), &virtualCq);
+
+    // When objects go out of scope, destructors will properly unregister
+    // with the correct pointers and clean up resources
+  }
+
+  // Test 3: Test move constructors for both IbvVirtualCq and IbvVirtualQp
+  {
+    auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+    ASSERT_TRUE(maybeVirtualCq);
+    auto virtualCq1 = std::move(*maybeVirtualCq);
+
+    auto initAttr = makeIbvQpInitAttr(virtualCq1.getPhysicalCqRef().cq());
+    auto pd = device.allocPd();
+    ASSERT_TRUE(pd);
+
+    int totalQps = 4;
+    auto maybeVirtualQp =
+        pd->createVirtualQp(totalQps, &initAttr, &virtualCq1, &virtualCq1);
+    ASSERT_TRUE(maybeVirtualQp);
+    auto virtualQp1 = std::move(*maybeVirtualQp);
+
+    uint32_t virtualQpNum = virtualQp1.getVirtualQpNum();
+    uint32_t virtualCqNum = virtualCq1.getVirtualCqNum();
+
+    // Verify initial pointers are correctly registered
+    ASSERT_EQ(coordinator->getVirtualQpById(virtualQpNum), &virtualQp1);
+    ASSERT_EQ(coordinator->getVirtualCqById(virtualCqNum), &virtualCq1);
+
+    // The move constructor automatically calls updateVirtualCqPointer,
+    // and we verify CQ pointer was updated in coordinator
+    IbvVirtualCq virtualCq2(std::move(virtualCq1));
+    ASSERT_EQ(coordinator->getVirtualCqById(virtualCqNum), &virtualCq2);
+
+    // Try to unregister with old CQ pointer (should fail - pointer doesn't
+    // match)
+    coordinator->unregisterVirtualCq(virtualCqNum, &virtualCq1);
+
+    // Verify CQ wasn't unregistered (pointer didn't match)
+    const auto& virtualCqMapAfter = coordinator->getVirtualCqMap();
+    ASSERT_EQ(virtualCqMapAfter.count(virtualCqNum), 1);
+    ASSERT_EQ(virtualCqMapAfter.at(virtualCqNum), &virtualCq2);
+
+    // The move constructor automatically calls updateVirtualQpPointer,
+    // and we verify QP pointer was updated in coordinator
+    IbvVirtualQp virtualQp2(std::move(virtualQp1));
+    ASSERT_EQ(coordinator->getVirtualQpById(virtualQpNum), &virtualQp2);
+
+    // Try to unregister with old QP pointer (should fail - pointer doesn't
+    // match)
+    coordinator->unregisterVirtualQp(virtualQpNum, &virtualQp1);
+
+    // Verify QP wasn't unregistered (pointer didn't match)
+    const auto& virtualQpMapAfter = coordinator->getVirtualQpMap();
+    ASSERT_EQ(virtualQpMapAfter.count(virtualQpNum), 1);
+    ASSERT_EQ(virtualQpMapAfter.at(virtualQpNum), &virtualQp2);
+  }
+}
+
 TEST_F(IbverbxTestFixture, DqplbSeqTrackerGetSendImm) {
   DqplbSeqTracker tracker;
 
