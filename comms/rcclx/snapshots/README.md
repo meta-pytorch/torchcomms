@@ -92,19 +92,45 @@ There are three main build targets for rcclx:
 
 ## Usage
 
+### Using Constraints for Automatic Target Selection (Recommended)
+
+The simplest and recommended way to use rcclx is with the `-m` constraint flags, which automatically select the appropriate target:
+
+```bash
+# Build from source (default)
+buck2 build @fbcode//mode/opt-amd-gpu fbcode//comms/rcclx:rcclx
+buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev fbcode//comms/rcclx:rcclx
+
+# Use stable snapshot (fast, validated builds)
+buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_stable fbcode//comms/rcclx:rcclx
+
+# Use last-stable snapshot (for rollback)
+buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_last_stable fbcode//comms/rcclx:rcclx
+```
+
+You can combine the rcclx constraint with ROCm version constraints:
+
+```bash
+# Use stable snapshot with ROCm 6.4
+buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_stable -m rocm64 fbcode//comms/rcclx:rcclx
+
+# Use last-stable snapshot with ROCm 7.0
+buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_last_stable -m rocm70 fbcode//comms/rcclx:rcclx
+```
+
 ### Using Stable Snapshots (rcclx-stable)
 
 The `rcclx-stable` target allows you to use pre-built stable snapshots instead of building from source. This is faster and ensures you're using validated builds. The artifacts are automatically fetched from Manifold during the build:
 
 ```bash
 # Use stable snapshot for ROCm 6.2
-buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m ovr_config//third-party/rocm/constraints:6.2.1 fbcode//comms/rcclx:rcclx-stable
+buck2 build @fbcode//mode/opt-amd-gpu -m ovr_config//third-party/rocm/constraints:6.2.1 fbcode//comms/rcclx:rcclx-stable
 
 # Use stable snapshot for ROCm 6.4
-buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m ovr_config//third-party/rocm/constraints:6.4.2 fbcode//comms/rcclx:rcclx-stable
+buck2 build @fbcode//mode/opt-amd-gpu -m ovr_config//third-party/rocm/constraints:6.4.2 fbcode//comms/rcclx:rcclx-stable
 
 # Use stable snapshot for ROCm 7.0
-buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m ovr_config//third-party/rocm/constraints:7.0 fbcode//comms/rcclx:rcclx-stable
+buck2 build @fbcode//mode/opt-amd-gpu -m ovr_config//third-party/rocm/constraints:7.0 fbcode//comms/rcclx:rcclx-stable
 ```
 
 The build system automatically:
@@ -120,13 +146,13 @@ The `rcclx-last-stable` target provides quick rollback capability by using the p
 
 ```bash
 # Rollback to last-stable snapshot for ROCm 6.2
-buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m ovr_config//third-party/rocm/constraints:6.2.1 fbcode//comms/rcclx:rcclx-last-stable
+buck2 build @fbcode//mode/opt-amd-gpu -m ovr_config//third-party/rocm/constraints:6.2.1 fbcode//comms/rcclx:rcclx-last-stable
 
 # Rollback to last-stable snapshot for ROCm 6.4
-buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m ovr_config//third-party/rocm/constraints:6.4.2 fbcode//comms/rcclx:rcclx-last-stable
+buck2 build @fbcode//mode/opt-amd-gpu -m ovr_config//third-party/rocm/constraints:6.4.2 fbcode//comms/rcclx:rcclx-last-stable
 
 # Rollback to last-stable snapshot for ROCm 7.0
-buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m ovr_config//third-party/rocm/constraints:7.0 fbcode//comms/rcclx:rcclx-last-stable
+buck2 build @fbcode//mode/opt-amd-gpu -m ovr_config//third-party/rocm/constraints:7.0 fbcode//comms/rcclx:rcclx-last-stable
 ```
 
 The build system automatically:
