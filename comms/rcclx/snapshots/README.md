@@ -71,7 +71,7 @@ The snapshot system allows you to:
 
 ### Build Targets
 
-There are two main build targets for rcclx:
+There are three main build targets for rcclx:
 
 - **`rcclx-dev`**: Builds rcclx from source (current top-of-tree)
   - Use when you're developing new features or testing changes
@@ -83,6 +83,12 @@ There are two main build targets for rcclx:
   - Much faster as it skips compilation
   - Automatically selects the correct snapshot based on ROCm version constraint
   - Requires that a stable snapshot exists for the specified ROCm version
+
+- **`rcclx-last-stable`**: Uses the previous stable snapshot (for rollback)
+  - Use when issues are found with the current stable build
+  - Provides a quick rollback to the last known good build
+  - Automatically selects the correct snapshot based on ROCm version constraint
+  - Requires that a last-stable snapshot exists for the specified ROCm version
 
 ## Usage
 
@@ -107,6 +113,28 @@ The build system automatically:
 3. Uses the downloaded artifact for linking
 
 If a stable snapshot doesn't exist in Manifold for the specified version, the build will fail with a clear error message.
+
+### Using Last-Stable Snapshots (rcclx-last-stable)
+
+The `rcclx-last-stable` target provides quick rollback capability by using the previous stable snapshot. Use this when issues are discovered with the current stable build. The artifacts are automatically fetched from Manifold during the build:
+
+```bash
+# Rollback to last-stable snapshot for ROCm 6.2
+buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m ovr_config//third-party/rocm/constraints:6.2.1 fbcode//comms/rcclx:rcclx-last-stable
+
+# Rollback to last-stable snapshot for ROCm 6.4
+buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m ovr_config//third-party/rocm/constraints:6.4.2 fbcode//comms/rcclx:rcclx-last-stable
+
+# Rollback to last-stable snapshot for ROCm 7.0
+buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m ovr_config//third-party/rocm/constraints:7.0 fbcode//comms/rcclx:rcclx-last-stable
+```
+
+The build system automatically:
+1. Selects the correct last-stable snapshot based on the ROCm version constraint
+2. Downloads the artifact from Manifold at `rcclx_prebuilt_artifacts/tree/last_stable/<version>/librcclx-dev.a`
+3. Uses the downloaded artifact for linking
+
+This is particularly useful for quickly reverting to a known good state while investigating issues with the current stable build.
 
 ### Creating a Snapshot
 
