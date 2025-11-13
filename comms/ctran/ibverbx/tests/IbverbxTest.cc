@@ -3,6 +3,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
+#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <random>
@@ -14,6 +15,10 @@
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/utils/checks.h"
+
+FOLLY_INIT_LOGGING_CONFIG(
+    ".=WARNING"
+    ";default:async=true,sync_level=WARNING");
 
 namespace ibverbx {
 // use broadcom nic for AMD platform, use mellanox nic for NV platform
