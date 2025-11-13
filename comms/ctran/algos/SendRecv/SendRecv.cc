@@ -211,6 +211,7 @@ static commResult_t sendRecvImpl(
       peerRank = op->recv.peerRank;
     }
     CtranMapperContext context(algoName, sendSizes, recvSizes);
+    context.unpackPoolId = opGroup.front()->unpackPoolId;
     comm->ctran_->mapper->setContext(std::move(context));
 
     CTRAN_PROFILER_IF(profiler, {
@@ -540,7 +541,9 @@ static inline commResult_t setupPlan(
     config.args.collective.sendrecv.waitNotifyList = waitNotifyList.head;
     FB_COMMCHECK(comm->ctran_->mapper->prepareUnpackConsumer(
         &config.args.collective.sendrecv.unpack,
-        NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS));
+        NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS,
+        opGroup,
+        config));
   } else if (
       config.type == KernelConfig::KernelType::SEND ||
       config.type == KernelConfig::KernelType::SEND_NOTIFY) {
@@ -566,7 +569,9 @@ static inline commResult_t setupPlan(
     }
     FB_COMMCHECK(comm->ctran_->mapper->prepareUnpackConsumer(
         &config.args.collective.recv.unpack,
-        NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS));
+        NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS,
+        opGroup,
+        config));
   }
 
   return commSuccess;

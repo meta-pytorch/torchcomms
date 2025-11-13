@@ -44,7 +44,8 @@ class CtranTcpDm {
       void* handle,
       void* data,
       size_t size,
-      CtranTcpDmRequest& req) {
+      CtranTcpDmRequest& req,
+      int unpackPoolId) {
     return commInvalidUsage;
   }
 
@@ -82,6 +83,12 @@ class CtranTcpDm {
   }
 
   // Export the location of GPU kernel consumer queues.
-  commResult_t prepareUnpackConsumer(SQueues* sqs, size_t blocks) {}
+  commResult_t
+  prepareUnpackConsumer(SQueues* sqs, size_t blocks, int* poolIndex = nullptr) {
+    return commInvalidUsage;
+  }
+  commResult_t teardownUnpackConsumer(int poolIndex) {
+    return commInvalidUsage;
+  }
 };
 } // namespace ctran

@@ -28,14 +28,6 @@ using namespace ncclx;
 namespace {
 std::vector<CtranMapperBackend> getToEnableBackends(
     const std::vector<CommBackend>& overrideBackend) {
-  const std::unordered_map<enum CommBackend, CtranMapperBackend>
-      CommBackendMap = {
-          {CommBackend::UNSET, CtranMapperBackend::UNSET},
-          {CommBackend::IB, CtranMapperBackend::IB},
-          {CommBackend::NVL, CtranMapperBackend::NVL},
-          {CommBackend::SOCKET, CtranMapperBackend::SOCKET},
-          {CommBackend::TCPDM, CtranMapperBackend::TCPDM}};
-
   const std::unordered_map<enum NCCL_CTRAN_BACKENDS, CtranMapperBackend>
       NCCLCtranBackendMap = {
           {NCCL_CTRAN_BACKENDS::ib, CtranMapperBackend::IB},
@@ -60,7 +52,7 @@ std::vector<CtranMapperBackend> getToEnableBackends(
         FB_ERRORTHROW(
             commInvalidUsage, "CTRAN-MAPPER: Invalid override backend UNSET");
       }
-      enableBackends.emplace_back(CommBackendMap.at(b));
+      enableBackends.emplace_back(b);
     }
   }
 

@@ -139,7 +139,9 @@ static inline commResult_t setupPlan(
 
     FB_COMMCHECK(comm->ctran_->mapper->prepareUnpackConsumer(
         &config.args.collective.broadcast.unpack,
-        NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS));
+        NCCL_CTRAN_UNPACK_NUM_THREAD_BLOCKS,
+        opGroup,
+        config));
   } else {
     sendOffset = 1;
   }
@@ -216,6 +218,7 @@ static commResult_t impl(
   auto& waitNotifyMap = op->broadcast.waitNotifyMap;
 
   CtranMapperContext context("CtranBroadcastBinomialTree", sendSize, sendSize);
+  context.unpackPoolId = op->unpackPoolId;
   mapper->setContext(std::move(context));
   for (int p = 0; p < nRanks; ++p) {
     remoteAccessKeys.emplace_back();

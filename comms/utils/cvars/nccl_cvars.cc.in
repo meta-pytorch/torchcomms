@@ -17,8 +17,6 @@
 #include <folly/String.h>
 #include <folly/logging/xlog.h>
 
-#include "comms/utils/cvars/nccl_cvars_cpu.h"
-
 #if defined(__HIP_PLATFORM_AMD__)
 static const std::string ncclConfigFileName = "rccl.conf";
 #else
@@ -73,8 +71,8 @@ static void initCvarLogger() {
 
 static std::vector<std::string> tokenizer(std::string str) {
   // Split input string by comma
-  auto tokens = ncclx::cvar::detail::split(
-      ',', str, folly::SplitOptions{}.ignore_empty(true));
+  std::vector<std::string> tokens;
+  folly::split(",", str, tokens, true /* ignore empty */);
 
   // Trim white space & check for duplicates
   std::unordered_set<std::string> uniqueTokens;
@@ -92,15 +90,15 @@ static std::unordered_map<std::string, std::vector<std::string>> parseConfigToke
     const std::string& inputString) {
   // Split input string by semicolon
   std::unordered_map<std::string, std::vector<std::string>> configMap;
-  auto tokenList = ncclx::cvar::detail::split(
-      ';', inputString, folly::SplitOptions{}.ignore_empty(true));
+  std::vector<std::string> tokenList;
+  folly::split(';', inputString, tokenList, true /* ignore empty */);
 
   // Trim white space & check for duplicates
   std::unordered_set<std::string> uniqueTokens;
   for (auto& token : tokenList) {
     token = folly::trimWhitespace(token);
-    auto keyValuePairs = ncclx::cvar::detail::split(
-        ':', token, folly::SplitOptions{}.ignore_empty(true));
+    std::vector<std::string> keyValuePairs;
+    folly::split(":", token, keyValuePairs, true /* ignore empty */);
     if (keyValuePairs.size() != 2) {
       CVAR_WARN("Invalid token {} found", token);
     }
@@ -219,7 +217,8 @@ static void updateNcclConfig(const std::string& fname) {
       continue;
     }
 
-    auto tokens = ncclx::cvar::detail::split_noexact_2('=', line);
+    std::vector<std::string> tokens(2);
+    folly::split<false>('=', line, tokens[0], tokens[1]);
     if (tokens[0].empty()) {
       CVAR_WARN("Ignoring invalid config option: {}", line);
       continue;
