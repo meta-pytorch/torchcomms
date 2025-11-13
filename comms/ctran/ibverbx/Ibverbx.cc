@@ -1220,6 +1220,9 @@ IbvVirtualQp::IbvVirtualQp(
       maxMsgSize_(maxMsgSize),
       loadBalancingScheme_(loadBalancingScheme),
       notifyQp_(std::move(notifyQp)) {
+  virtualQpNum_ =
+      nextVirtualQpNum_.fetch_add(1); // Assign unique virtual QP number
+
   for (int i = 0; i < physicalQps_.size(); i++) {
     qpNumToIdx_[physicalQps_.at(i).qp()->qp_num] = i;
   }
@@ -1246,15 +1249,23 @@ uint32_t IbvVirtualQp::getVirtualQpNum() const {
 }
 
 IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
-    : physicalQps_(std::move(other.physicalQps_)),
+    : pendingSendVirtualWrQue_(std::move(other.pendingSendVirtualWrQue_)),
+      pendingRecvVirtualWrQue_(std::move(other.pendingRecvVirtualWrQue_)),
+      virtualQpNum_(std::move(other.virtualQpNum_)),
+      physicalQps_(std::move(other.physicalQps_)),
       qpNumToIdx_(std::move(other.qpNumToIdx_)),
-      nextSendPhysicalQpIdx_(other.nextSendPhysicalQpIdx_),
-      nextRecvPhysicalQpIdx_(other.nextRecvPhysicalQpIdx_),
-      coordinator_(other.coordinator_),
-      maxMsgCntPerQp_(other.maxMsgCntPerQp_),
-      maxMsgSize_(other.maxMsgSize_),
-      loadBalancingScheme_(other.loadBalancingScheme_),
-      notifyQp_(std::move(other.notifyQp_)) {
+      nextSendPhysicalQpIdx_(std::move(other.nextSendPhysicalQpIdx_)),
+      nextRecvPhysicalQpIdx_(std::move(other.nextRecvPhysicalQpIdx_)),
+      coordinator_(std::move(other.coordinator_)),
+      maxMsgCntPerQp_(std::move(other.maxMsgCntPerQp_)),
+      maxMsgSize_(std::move(other.maxMsgSize_)),
+      nextPhysicalWrId_(std::move(other.nextPhysicalWrId_)),
+      loadBalancingScheme_(std::move(other.loadBalancingScheme_)),
+      pendingSendNotifyVirtualWrQue_(
+          std::move(other.pendingSendNotifyVirtualWrQue_)),
+      notifyQp_(std::move(other.notifyQp_)),
+      dqplbSeqTracker(std::move(other.dqplbSeqTracker)),
+      dqplbReceiverInitialized_(std::move(other.dqplbReceiverInitialized_)) {
   // Update all entries in coordinator that point to &other to point to this
   if (coordinator_) {
     coordinator_->updateVirtualQpMapping(&other, this);
@@ -1273,13 +1284,21 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
   if (this != &other) {
     physicalQps_ = std::move(other.physicalQps_);
     notifyQp_ = std::move(other.notifyQp_);
-    nextSendPhysicalQpIdx_ = other.nextSendPhysicalQpIdx_;
-    nextRecvPhysicalQpIdx_ = other.nextRecvPhysicalQpIdx_;
+    nextSendPhysicalQpIdx_ = std::move(other.nextSendPhysicalQpIdx_);
+    nextRecvPhysicalQpIdx_ = std::move(other.nextRecvPhysicalQpIdx_);
     qpNumToIdx_ = std::move(other.qpNumToIdx_);
-    maxMsgCntPerQp_ = other.maxMsgCntPerQp_;
-    maxMsgSize_ = other.maxMsgSize_;
-    coordinator_ = other.coordinator_;
-    loadBalancingScheme_ = other.loadBalancingScheme_;
+    maxMsgCntPerQp_ = std::move(other.maxMsgCntPerQp_);
+    maxMsgSize_ = std::move(other.maxMsgSize_);
+    coordinator_ = std::move(other.coordinator_);
+    loadBalancingScheme_ = std::move(other.loadBalancingScheme_);
+    pendingSendVirtualWrQue_ = std::move(other.pendingSendVirtualWrQue_);
+    pendingRecvVirtualWrQue_ = std::move(other.pendingRecvVirtualWrQue_);
+    virtualQpNum_ = std::move(other.virtualQpNum_);
+    nextPhysicalWrId_ = std::move(other.nextPhysicalWrId_);
+    pendingSendNotifyVirtualWrQue_ =
+        std::move(other.pendingSendNotifyVirtualWrQue_);
+    dqplbSeqTracker = std::move(other.dqplbSeqTracker);
+    dqplbReceiverInitialized_ = std::move(other.dqplbReceiverInitialized_);
 
     // Update all entries in coordinator that point to &other to point to this
     if (coordinator_) {
@@ -1447,7 +1466,10 @@ IbvVirtualCq::IbvVirtualCq(
     Coordinator* coordinator)
     : physicalCq_(std::move(physicalCq)),
       maxCqe_(maxCqe),
-      coordinator_(coordinator) {}
+      coordinator_(coordinator) {
+  virtualCqNum_ =
+      nextVirtualCqNum_.fetch_add(1); // Assign unique virtual CQ number
+}
 
 IbvVirtualCq::IbvVirtualCq(IbvVirtualCq&& other) noexcept {
   physicalCq_ = std::move(other.physicalCq_);
@@ -1455,6 +1477,8 @@ IbvVirtualCq::IbvVirtualCq(IbvVirtualCq&& other) noexcept {
   pendingRecvVirtualWcQue_ = std::move(other.pendingRecvVirtualWcQue_);
   maxCqe_ = other.maxCqe_;
   coordinator_ = other.coordinator_;
+  virtualWrIdToVirtualWc_ = std::move(other.virtualWrIdToVirtualWc_);
+  virtualCqNum_ = other.virtualCqNum_;
 
   // Update all entries in coordinator that point to &other to point to this
   if (coordinator_) {
@@ -1474,6 +1498,8 @@ IbvVirtualCq& IbvVirtualCq::operator=(IbvVirtualCq&& other) noexcept {
     pendingRecvVirtualWcQue_ = std::move(other.pendingRecvVirtualWcQue_);
     maxCqe_ = other.maxCqe_;
     coordinator_ = other.coordinator_;
+    virtualWrIdToVirtualWc_ = std::move(other.virtualWrIdToVirtualWc_);
+    virtualCqNum_ = other.virtualCqNum_;
 
     // Update all entries in coordinator that point to &other to point to this
     if (coordinator_) {
@@ -1490,6 +1516,10 @@ IbvVirtualCq& IbvVirtualCq::operator=(IbvVirtualCq&& other) noexcept {
 
 IbvCq& IbvVirtualCq::getPhysicalCqRef() {
   return physicalCq_;
+}
+
+uint32_t IbvVirtualCq::getVirtualCqNum() const {
+  return virtualCqNum_;
 }
 
 void IbvVirtualCq::enqueSendCq(VirtualWc virtualWc) {

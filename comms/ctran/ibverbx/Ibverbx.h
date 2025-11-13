@@ -234,6 +234,10 @@ class DqplbSeqTracker {
   DqplbSeqTracker() = default;
   ~DqplbSeqTracker() = default;
 
+  // Explicitly default move constructor and move assignment operator
+  DqplbSeqTracker(DqplbSeqTracker&&) = default;
+  DqplbSeqTracker& operator=(DqplbSeqTracker&&) = default;
+
   // This helper function calculates sender IMM message in DQPLB mode.
   inline uint32_t getSendImm(int remainingMsgCnt);
   // This helper function processes received IMM message and update
@@ -330,18 +334,22 @@ class IbvVirtualCq {
   inline folly::Expected<std::vector<ibv_wc>, Error> pollCq(int numEntries);
 
   IbvCq& getPhysicalCqRef();
+  uint32_t getVirtualCqNum() const;
 
   void enqueSendCq(VirtualWc virtualWc);
   void enqueRecvCq(VirtualWc virtualWc);
-
-  uint32_t virtualCqNum_{
-      0}; // TODO: need to think about the logic to assign this value
 
   inline void processRequest(VirtualCqRequest&& request);
 
  private:
   friend class IbvPd;
   friend class IbvVirtualQp;
+
+  inline static std::atomic<uint32_t> nextVirtualCqNum_{
+      0}; // Static counter for assigning unique virtual CQ numbers
+  uint32_t virtualCqNum_{
+      0}; // The unique virtual CQ number assigned to instance of IbvVirtualCq
+
   IbvCq physicalCq_;
   int maxCqe_{0};
   std::deque<VirtualWc> pendingSendVirtualWcQue_;
@@ -523,8 +531,11 @@ class IbvVirtualQp {
 
   std::deque<VirtualSendWr> pendingSendVirtualWrQue_;
   std::deque<VirtualRecvWr> pendingRecvVirtualWrQue_;
-  uint32_t virtualQpNum_{
-      0}; // TODO: need to think about the logic to assign this value
+
+  inline static std::atomic<uint32_t> nextVirtualQpNum_{
+      0}; // Static counter for assigning unique virtual QP numbers
+  uint32_t virtualQpNum_{0}; // The unique virtual QP number assigned to
+                             // instance of IbvVirtualQp.
 
   std::vector<IbvQp> physicalQps_;
   std::unordered_map<int, int> qpNumToIdx_;

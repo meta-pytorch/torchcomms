@@ -588,6 +588,65 @@ TEST_F(IbverbxTestFixture, IbvVirtualQp) {
   ASSERT_EQ(qpg2.getNotifyQpRef().qp(), notifyQpPtr); // Notify QP should match
 }
 
+TEST_F(IbverbxTestFixture, IbvVirtualQpMultiThreadUniqueQpNum) {
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  constexpr int kNumThreads = 4;
+  constexpr int kVirtualQpsPerThread = 10;
+  constexpr int kTotalVirtualQps = kNumThreads * kVirtualQpsPerThread;
+
+  std::set<uint32_t> virtualQpNums;
+  std::set<uint32_t> virtualCqNums;
+  std::mutex numsMutex;
+
+  auto createVirtualQps = [&]() {
+    std::vector<uint32_t> localQpNums;
+    std::vector<uint32_t> localCqNums;
+    localQpNums.reserve(kVirtualQpsPerThread);
+    localCqNums.reserve(kVirtualQpsPerThread);
+
+    for (int i = 0; i < kVirtualQpsPerThread; i++) {
+      int cqe = 100;
+      auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+      ASSERT_TRUE(maybeVirtualCq);
+      auto virtualCq = std::move(*maybeVirtualCq);
+
+      auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+      auto pd = device.allocPd();
+      ASSERT_TRUE(pd);
+
+      int totalQps = 4;
+      auto virtualQp =
+          pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq);
+      ASSERT_TRUE(virtualQp);
+
+      localQpNums.push_back(virtualQp->getVirtualQpNum());
+      localCqNums.push_back(virtualCq.getVirtualCqNum());
+    }
+
+    std::lock_guard<std::mutex> lock(numsMutex);
+    virtualQpNums.insert(localQpNums.begin(), localQpNums.end());
+    virtualCqNums.insert(localCqNums.begin(), localCqNums.end());
+  };
+
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (int i = 0; i < kNumThreads; i++) {
+    threads.emplace_back(createVirtualQps);
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  ASSERT_EQ(virtualQpNums.size(), kTotalVirtualQps)
+      << "All virtual QP numbers should be distinct";
+  ASSERT_EQ(virtualCqNums.size(), kTotalVirtualQps)
+      << "All virtual CQ numbers should be distinct";
+}
+
 TEST_F(IbverbxTestFixture, IbvVirtualQpFindAvailableSendQp) {
   auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
   ASSERT_TRUE(devices);
