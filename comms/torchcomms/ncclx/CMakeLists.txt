@@ -1,6 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Extension: torchcomms._comms_ncclx
-file(GLOB TORCHCOMMS_NCCLX_SOURCES "comms/torchcomms/ncclx/*.cpp")
+file(GLOB TORCHCOMMS_NCCLX_SOURCES
+    "comms/torchcomms/ncclx/*.cpp"
+    "comms/torchcomms/transport/*.cc"
+)
 file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/CudaApi.cpp")
 
 find_package(CUDA)
@@ -58,6 +61,7 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_API_SOURCE}
 )
+target_compile_definitions(torchcomms_comms_ncclx PRIVATE MOCK_SCUBA_DATA CTRAN_DISABLE_TCPDM)
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""
     OUTPUT_NAME "_comms_ncclx"
