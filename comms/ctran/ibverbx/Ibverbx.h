@@ -320,8 +320,8 @@ class IbvCq {
 // the Virtual QP through this virtual CQ.
 class IbvVirtualCq {
  public:
-  IbvVirtualCq(IbvCq&& cq, int maxCqe, Coordinator* coordinator);
-  ~IbvVirtualCq() = default;
+  IbvVirtualCq(IbvCq&& cq, int maxCqe);
+  ~IbvVirtualCq();
 
   // disable copy constructor
   IbvVirtualCq(const IbvVirtualCq&) = delete;
@@ -357,7 +357,6 @@ class IbvVirtualCq {
   inline void updateVirtualWcFromPhysicalWc(
       const ibv_wc& physicalWc,
       VirtualWc* virtualWc);
-  Coordinator* coordinator_{nullptr};
   std::unordered_map<uint64_t, VirtualWc*> virtualWrIdToVirtualWc_;
 
   // Helper function for IbvVirtualCq::pollCq.
@@ -471,7 +470,7 @@ struct IbvVirtualQpBusinessCard {
 // Ibv Virtual Queue Pair
 class IbvVirtualQp {
  public:
-  ~IbvVirtualQp() = default;
+  ~IbvVirtualQp();
 
   // disable copy constructor
   IbvVirtualQp(const IbvVirtualQp&) = delete;
@@ -542,7 +541,6 @@ class IbvVirtualQp {
 
   int nextSendPhysicalQpIdx_{0};
   int nextRecvPhysicalQpIdx_{0};
-  Coordinator* coordinator_{nullptr};
 
   int maxMsgCntPerQp_{
       -1}; // Maximum number of messages that can be sent on each physical QP. A
@@ -568,7 +566,6 @@ class IbvVirtualQp {
   IbvVirtualQp(
       std::vector<IbvQp>&& qps,
       IbvQp&& notifyQp,
-      Coordinator* coordinator,
       int maxMsgCntPerQp = kIbMaxMsgCntPerQp,
       int maxMsgSize = kIbMaxMsgSizeByte,
       LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
@@ -636,6 +633,12 @@ class Coordinator {
   void updateVirtualSendCqMapping(IbvVirtualCq* oldPtr, IbvVirtualCq* newPtr);
   void updateVirtualRecvCqMapping(IbvVirtualCq* oldPtr, IbvVirtualCq* newPtr);
 
+  // Unregister API for cleanup during destruction
+  void unregisterVirtualQp(IbvVirtualQp* virtualQp);
+  void unregisterVirtualCq(IbvVirtualCq* virtualCq);
+
+  static std::shared_ptr<Coordinator> getCoordinator();
+
  private:
   std::unordered_map<int, IbvVirtualCq*> virtualQpNumToVirtualSendCq_;
   std::unordered_map<int, IbvVirtualCq*> virtualQpNumToVirtualRecvCq_;
@@ -686,10 +689,9 @@ class IbvPd {
  private:
   friend class IbvDevice;
 
-  IbvPd(ibv_pd* pd, Coordinator* coordinator, bool dataDirect = false);
+  IbvPd(ibv_pd* pd, bool dataDirect = false);
 
   ibv_pd* pd_{nullptr};
-  Coordinator* coordinator_{nullptr};
   bool dataDirect_{false}; // Relevant only to mlx5
 };
 
@@ -756,8 +758,6 @@ class IbvDevice {
       std::unordered_set<int> linkLayers) const;
   folly::Expected<uint8_t, Error> findActivePort(
       std::unordered_set<int> const& linkLayers) const;
-
-  Coordinator coordinator_{};
 
  private:
   ibv_device* device_{nullptr};
@@ -870,8 +870,9 @@ IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
       if (physicalWc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
         request.immData = physicalWc.imm_data;
       }
-      auto response =
-          coordinator_->submitRequestToVirtualQp(std::move(request));
+      auto coordinator = Coordinator::getCoordinator();
+      CHECK(coordinator) << "Coordinator should not be nullptr during pollCq!";
+      auto response = coordinator->submitRequestToVirtualQp(std::move(request));
       if (response.hasError()) {
         return folly::makeUnexpected(response.error());
       }
@@ -898,8 +899,9 @@ IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
           .type = RequestType::SEND,
           .wrId = physicalWc.wr_id,
           .physicalQpNum = physicalWc.qp_num};
-      auto response =
-          coordinator_->submitRequestToVirtualQp(std::move(request));
+      auto coordinator = Coordinator::getCoordinator();
+      CHECK(coordinator) << "Coordinator should not be nullptr during pollCq!";
+      auto response = coordinator->submitRequestToVirtualQp(std::move(request));
       if (response.hasError()) {
         return folly::makeUnexpected(response.error());
       }
@@ -913,8 +915,11 @@ IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
             .wrId = response->virtualWrId,
             .physicalQpNum = physicalWc.qp_num};
 
+        auto coordinator = Coordinator::getCoordinator();
+        CHECK(coordinator)
+            << "Coordinator should not be nullptr during pollCq!";
         auto response =
-            coordinator_->submitRequestToVirtualQp(std::move(request));
+            coordinator->submitRequestToVirtualQp(std::move(request));
         if (response.hasError()) {
           return folly::makeUnexpected(response.error());
         }
@@ -1238,7 +1243,9 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
       .expectedMsgCnt = expectedMsgCnt,
       .sendWr = sendWr,
       .sendExtraNotifyImm = sendExtraNotifyImm};
-  coordinator_->submitRequestToVirtualCq(std::move(request));
+  auto coordinator = Coordinator::getCoordinator();
+  CHECK(coordinator) << "Coordinator should not be nullptr during postSend!";
+  coordinator->submitRequestToVirtualCq(std::move(request));
 
   // Set up the send work request with the completion queue entry and enqueue
   // Note: virtualWcPtr can be nullptr - this is intentional and supported
@@ -1520,7 +1527,9 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
       .virtualQpNum = (int)virtualQpNum_,
       .expectedMsgCnt = expectedMsgCnt,
       .recvWr = recvWr};
-  coordinator_->submitRequestToVirtualCq(std::move(request));
+  auto coordinator = Coordinator::getCoordinator();
+  CHECK(coordinator) << "Coordinator should not be nullptr during postRecv!";
+  coordinator->submitRequestToVirtualCq(std::move(request));
 
   // Set up the recv work request with the completion queue entry and enqueue
   pendingRecvVirtualWrQue_.emplace_back(

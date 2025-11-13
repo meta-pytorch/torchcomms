@@ -1157,25 +1157,26 @@ TEST_F(IbverbxTestFixture, Coordinator) {
   ASSERT_EQ(virtualQp.getTotalQps(), totalQps);
 
   // Test coordinator mappings are correctly established
-  const auto& coordinator = device.coordinator_;
+  auto coordinator = Coordinator::getCoordinator();
+  ASSERT_NE(coordinator, nullptr);
   uint32_t virtualQpNum = virtualQp.getVirtualQpNum();
 
   // 1. Test virtualQpNumToVirtualSendCq_ mapping
-  const auto& sendCqMap = coordinator.getVirtualSendCqMap();
+  const auto& sendCqMap = coordinator->getVirtualSendCqMap();
   ASSERT_EQ(sendCqMap.size(), 1);
   auto sendCqIt = sendCqMap.find(virtualQpNum);
   ASSERT_NE(sendCqIt, sendCqMap.end());
   ASSERT_EQ(sendCqIt->second, &virtualCq);
 
   // 2. Test virtualQpNumToVirtualRecvCq_ mapping
-  const auto& recvCqMap = coordinator.getVirtualRecvCqMap();
+  const auto& recvCqMap = coordinator->getVirtualRecvCqMap();
   ASSERT_EQ(recvCqMap.size(), 1);
   auto recvCqIt = recvCqMap.find(virtualQpNum);
   ASSERT_NE(recvCqIt, recvCqMap.end());
   ASSERT_EQ(recvCqIt->second, &virtualCq);
 
   // 3. Test physicalQpNumToVirtualQp_ mapping
-  const auto& physicalQpMap = coordinator.getPhysicalQpMap();
+  const auto& physicalQpMap = coordinator->getPhysicalQpMap();
   ASSERT_EQ(
       physicalQpMap.size(), totalQps + 1); // totalQos + 1 to consider notifyQp
   for (const auto& physicalQp : virtualQp.getQpsRef()) {
@@ -1195,10 +1196,10 @@ TEST_F(IbverbxTestFixture, Coordinator) {
     uint32_t physicalQpNum = physicalQp.qp()->qp_num;
     ASSERT_TRUE(
         physicalQpNums.insert(physicalQpNum).second); // Should be unique
-    ASSERT_EQ(coordinator.getVirtualQp(physicalQpNum), &virtualQp);
+    ASSERT_EQ(coordinator->getVirtualQp(physicalQpNum), &virtualQp);
   }
   ASSERT_TRUE(physicalQpNums.insert(notifyQpNum).second); // Should be unique
-  ASSERT_EQ(coordinator.getVirtualQp(notifyQpNum), &virtualQp);
+  ASSERT_EQ(coordinator->getVirtualQp(notifyQpNum), &virtualQp);
 }
 
 TEST_F(IbverbxTestFixture, DqplbSeqTrackerGetSendImm) {

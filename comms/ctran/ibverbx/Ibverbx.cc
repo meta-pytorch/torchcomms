@@ -9,6 +9,7 @@
 
 #include <dlfcn.h>
 #include <folly/ScopeGuard.h>
+#include <folly/Singleton.h>
 #include <folly/String.h>
 #include <folly/logging/xlog.h>
 #include <folly/synchronization/CallOnce.h>
@@ -18,6 +19,8 @@
 namespace ibverbx {
 
 namespace {
+
+folly::Singleton<Coordinator> coordinatorSingleton{};
 
 IbvSymbols ibvSymbols;
 folly::once_flag initIbvSymbolOnce;
@@ -613,23 +616,18 @@ ibv_mr* IbvMr::mr() const {
 
 /*** IbvPd ***/
 
-IbvPd::IbvPd(ibv_pd* pd, Coordinator* coordinator, bool dataDirect)
-    : pd_(pd), coordinator_(coordinator), dataDirect_(dataDirect) {}
+IbvPd::IbvPd(ibv_pd* pd, bool dataDirect) : pd_(pd), dataDirect_(dataDirect) {}
 
 IbvPd::IbvPd(IbvPd&& other) noexcept {
   pd_ = other.pd_;
-  coordinator_ = other.coordinator_;
   dataDirect_ = other.dataDirect_;
   other.pd_ = nullptr;
-  other.coordinator_ = nullptr;
 }
 
 IbvPd& IbvPd::operator=(IbvPd&& other) noexcept {
   pd_ = other.pd_;
-  coordinator_ = other.coordinator_;
   dataDirect_ = other.dataDirect_;
   other.pd_ = nullptr;
-  other.coordinator_ = nullptr;
   return *this;
 }
 
@@ -740,23 +738,23 @@ folly::Expected<IbvVirtualQp, Error> IbvPd::createVirtualQp(
   IbvVirtualQp virtualQp(
       std::move(qps),
       std::move(*maybeNotifyQp),
-      coordinator_,
       maxMsgCntPerQp,
       maxMsgSize,
       loadBalancingScheme);
 
   // Populate the physicalQpNumToVirtualQp_ map in the coordinator
+  auto coordinator = Coordinator::getCoordinator();
   for (const auto& qp : virtualQp.getQpsRef()) {
-    coordinator_->registerPhysicalQpNumToVirtualQp(qp.qp()->qp_num, &virtualQp);
+    coordinator->registerPhysicalQpNumToVirtualQp(qp.qp()->qp_num, &virtualQp);
   }
-  coordinator_->registerPhysicalQpNumToVirtualQp(
+  coordinator->registerPhysicalQpNumToVirtualQp(
       virtualQp.getNotifyQpRef().qp()->qp_num, &virtualQp);
 
   // Populate virtualQpNumToVirtualSendCq_ and virtualQpNumToVirtualRecvCq_ map
   // in the coordinator
-  coordinator_->registerVirtualQpNumToVirtualSendCq(
+  coordinator->registerVirtualQpNumToVirtualSendCq(
       virtualQp.getVirtualQpNum(), sendCq);
-  coordinator_->registerVirtualQpNumToVirtualRecvCq(
+  coordinator->registerVirtualQpNumToVirtualRecvCq(
       virtualQp.getVirtualQpNum(), recvCq);
 
   return virtualQp;
@@ -919,7 +917,6 @@ IbvDevice::IbvDevice(IbvDevice&& other) noexcept {
   device_ = other.device_;
   context_ = other.context_;
   port_ = other.port_;
-  coordinator_ = std::move(other.coordinator_);
   dataDirect_ = other.dataDirect_;
 
   other.device_ = nullptr;
@@ -930,7 +927,6 @@ IbvDevice& IbvDevice::operator=(IbvDevice&& other) noexcept {
   device_ = other.device_;
   context_ = other.context_;
   port_ = other.port_;
-  coordinator_ = std::move(other.coordinator_);
   dataDirect_ = other.dataDirect_;
 
   other.device_ = nullptr;
@@ -956,7 +952,7 @@ folly::Expected<IbvPd, Error> IbvDevice::allocPd() {
   if (!pd) {
     return folly::makeUnexpected(Error(errno));
   }
-  return IbvPd(pd, &coordinator_, dataDirect_);
+  return IbvPd(pd, dataDirect_);
 }
 
 folly::Expected<IbvPd, Error> IbvDevice::allocParentDomain(
@@ -972,7 +968,7 @@ folly::Expected<IbvPd, Error> IbvDevice::allocParentDomain(
   if (!pd) {
     return folly::makeUnexpected(Error(errno));
   }
-  return IbvPd(pd, &coordinator_, dataDirect_);
+  return IbvPd(pd, dataDirect_);
 }
 
 folly::Expected<ibv_device_attr, Error> IbvDevice::queryDevice() const {
@@ -1028,7 +1024,7 @@ folly::Expected<IbvVirtualCq, Error> IbvDevice::createVirtualCq(
   if (maybeCq.hasError()) {
     return folly::makeUnexpected(maybeCq.error());
   }
-  return IbvVirtualCq(std::move(*maybeCq), cqe, &coordinator_);
+  return IbvVirtualCq(std::move(*maybeCq), cqe);
 }
 
 folly::Expected<IbvCq, Error> IbvDevice::createCq(
@@ -1210,12 +1206,10 @@ bool IbvQp::isRecvQueueAvailable(int maxMsgCntPerQp) const {
 IbvVirtualQp::IbvVirtualQp(
     std::vector<IbvQp>&& qps,
     IbvQp&& notifyQp,
-    Coordinator* coordinator,
     int maxMsgCntPerQp,
     int maxMsgSize,
     LoadBalancingScheme loadBalancingScheme)
     : physicalQps_(std::move(qps)),
-      coordinator_(coordinator),
       maxMsgCntPerQp_(maxMsgCntPerQp),
       maxMsgSize_(maxMsgSize),
       loadBalancingScheme_(loadBalancingScheme),
@@ -1256,7 +1250,6 @@ IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
       qpNumToIdx_(std::move(other.qpNumToIdx_)),
       nextSendPhysicalQpIdx_(std::move(other.nextSendPhysicalQpIdx_)),
       nextRecvPhysicalQpIdx_(std::move(other.nextRecvPhysicalQpIdx_)),
-      coordinator_(std::move(other.coordinator_)),
       maxMsgCntPerQp_(std::move(other.maxMsgCntPerQp_)),
       maxMsgSize_(std::move(other.maxMsgSize_)),
       nextPhysicalWrId_(std::move(other.nextPhysicalWrId_)),
@@ -1267,9 +1260,10 @@ IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
       dqplbSeqTracker(std::move(other.dqplbSeqTracker)),
       dqplbReceiverInitialized_(std::move(other.dqplbReceiverInitialized_)) {
   // Update all entries in coordinator that point to &other to point to this
-  if (coordinator_) {
-    coordinator_->updateVirtualQpMapping(&other, this);
-  }
+  auto coordinator = Coordinator::getCoordinator();
+  CHECK(coordinator)
+      << "Coordinator should not be nullptr during IbvVirtualQp move construction!";
+  coordinator->updateVirtualQpMapping(&other, this);
 
   other.physicalQps_.clear();
   other.nextSendPhysicalQpIdx_ = 0;
@@ -1277,7 +1271,6 @@ IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
   other.qpNumToIdx_.clear();
   other.maxMsgCntPerQp_ = 0;
   other.maxMsgSize_ = 0;
-  other.coordinator_ = nullptr;
 }
 
 IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
@@ -1289,7 +1282,6 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
     qpNumToIdx_ = std::move(other.qpNumToIdx_);
     maxMsgCntPerQp_ = std::move(other.maxMsgCntPerQp_);
     maxMsgSize_ = std::move(other.maxMsgSize_);
-    coordinator_ = std::move(other.coordinator_);
     loadBalancingScheme_ = std::move(other.loadBalancingScheme_);
     pendingSendVirtualWrQue_ = std::move(other.pendingSendVirtualWrQue_);
     pendingRecvVirtualWrQue_ = std::move(other.pendingRecvVirtualWrQue_);
@@ -1301,9 +1293,10 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
     dqplbReceiverInitialized_ = std::move(other.dqplbReceiverInitialized_);
 
     // Update all entries in coordinator that point to &other to point to this
-    if (coordinator_) {
-      coordinator_->updateVirtualQpMapping(&other, this);
-    }
+    auto coordinator = Coordinator::getCoordinator();
+    CHECK(coordinator)
+        << "Coordinator should not be nullptr during IbvVirtualQp move construction!";
+    coordinator->updateVirtualQpMapping(&other, this);
 
     other.physicalQps_.clear();
     other.nextSendPhysicalQpIdx_ = 0;
@@ -1311,9 +1304,21 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
     other.qpNumToIdx_.clear();
     other.maxMsgCntPerQp_ = 0;
     other.maxMsgSize_ = 0;
-    other.coordinator_ = nullptr;
   }
   return *this;
+}
+
+IbvVirtualQp::~IbvVirtualQp() {
+  // Since Coordinator is a singleton, we must clean up entries when
+  // IbvVirtualQp is destroyed. Only unregister if this object has not been
+  // moved-from (physicalQps_ is cleared during moves), because in the
+  // moved-from case, the map update occurs as part of the move operation.
+  if (!physicalQps_.empty()) {
+    auto coordinator = Coordinator::getCoordinator();
+    CHECK(coordinator)
+        << "Coordinator should not be nullptr during IbvVirtualQp destruction!";
+    coordinator->unregisterVirtualQp(this);
+  }
 }
 
 folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
@@ -1460,13 +1465,8 @@ IbvVirtualQpBusinessCard::deserialize(const std::string& jsonStr) {
 
 /*** IbvVirtualCq ***/
 
-IbvVirtualCq::IbvVirtualCq(
-    IbvCq&& physicalCq,
-    int maxCqe,
-    Coordinator* coordinator)
-    : physicalCq_(std::move(physicalCq)),
-      maxCqe_(maxCqe),
-      coordinator_(coordinator) {
+IbvVirtualCq::IbvVirtualCq(IbvCq&& physicalCq, int maxCqe)
+    : physicalCq_(std::move(physicalCq)), maxCqe_(maxCqe) {
   virtualCqNum_ =
       nextVirtualCqNum_.fetch_add(1); // Assign unique virtual CQ number
 }
@@ -1476,19 +1476,19 @@ IbvVirtualCq::IbvVirtualCq(IbvVirtualCq&& other) noexcept {
   pendingSendVirtualWcQue_ = std::move(other.pendingSendVirtualWcQue_);
   pendingRecvVirtualWcQue_ = std::move(other.pendingRecvVirtualWcQue_);
   maxCqe_ = other.maxCqe_;
-  coordinator_ = other.coordinator_;
   virtualWrIdToVirtualWc_ = std::move(other.virtualWrIdToVirtualWc_);
   virtualCqNum_ = other.virtualCqNum_;
 
   // Update all entries in coordinator that point to &other to point to this
-  if (coordinator_) {
-    coordinator_->updateVirtualSendCqMapping(&other, this);
-    coordinator_->updateVirtualRecvCqMapping(&other, this);
-  }
+  auto coordinator = Coordinator::getCoordinator();
+  CHECK(coordinator)
+      << "Coordinator should not be nullptr during IbvVirtualCq move construction!";
+  coordinator->updateVirtualSendCqMapping(&other, this);
+  coordinator->updateVirtualRecvCqMapping(&other, this);
 
-  // Reset the moved-from object
+  // Reset the moved-from object - maxCqe_ = 0 will be used to detect
+  // moved-from state in destructor
   other.maxCqe_ = 0;
-  other.coordinator_ = nullptr;
 }
 
 IbvVirtualCq& IbvVirtualCq::operator=(IbvVirtualCq&& other) noexcept {
@@ -1497,19 +1497,19 @@ IbvVirtualCq& IbvVirtualCq::operator=(IbvVirtualCq&& other) noexcept {
     pendingSendVirtualWcQue_ = std::move(other.pendingSendVirtualWcQue_);
     pendingRecvVirtualWcQue_ = std::move(other.pendingRecvVirtualWcQue_);
     maxCqe_ = other.maxCqe_;
-    coordinator_ = other.coordinator_;
     virtualWrIdToVirtualWc_ = std::move(other.virtualWrIdToVirtualWc_);
     virtualCqNum_ = other.virtualCqNum_;
 
     // Update all entries in coordinator that point to &other to point to this
-    if (coordinator_) {
-      coordinator_->updateVirtualSendCqMapping(&other, this);
-      coordinator_->updateVirtualRecvCqMapping(&other, this);
-    }
+    auto coordinator = Coordinator::getCoordinator();
+    CHECK(coordinator)
+        << "Coordinator should not be nullptr during IbvVirtualCq move construction!";
+    coordinator->updateVirtualSendCqMapping(&other, this);
+    coordinator->updateVirtualRecvCqMapping(&other, this);
 
-    // Reset the moved-from object
+    // Reset the moved-from object - maxCqe_ = 0 will be used to detect
+    // moved-from state in destructor
     other.maxCqe_ = 0;
-    other.coordinator_ = nullptr;
   }
   return *this;
 }
@@ -1530,7 +1530,24 @@ void IbvVirtualCq::enqueRecvCq(VirtualWc virtualWc) {
   pendingRecvVirtualWcQue_.push_back(std::move(virtualWc));
 }
 
+IbvVirtualCq::~IbvVirtualCq() {
+  // Since Coordinator is a singleton, we must clean up entries when
+  // IbvVirtualCq is destroyed. Only unregister if this object has not been
+  // moved-from (maxCqe_ is set to 0 during moves), because in the moved-from
+  // case, the map update occurs as part of the move operation.
+  if (maxCqe_ > 0) {
+    auto coordinator = Coordinator::getCoordinator();
+    CHECK(coordinator)
+        << "Coordinator should not be nullptr during IbvVirtualCq destruction!";
+    coordinator->unregisterVirtualCq(this);
+  }
+}
+
 /*** Coordinator ***/
+
+std::shared_ptr<Coordinator> Coordinator::getCoordinator() {
+  return coordinatorSingleton.try_get();
+}
 
 // Register APIs for mapping management
 void Coordinator::registerVirtualQpNumToVirtualSendCq(
@@ -1598,6 +1615,47 @@ void Coordinator::updateVirtualRecvCqMapping(
   for (auto& entry : virtualQpNumToVirtualRecvCq_) {
     if (entry.second == oldPtr) {
       entry.second = newPtr;
+    }
+  }
+}
+
+void Coordinator::unregisterVirtualQp(IbvVirtualQp* virtualQp) {
+  // Remove all entries in physicalQpNumToVirtualQp_ that point to virtualQp
+  for (auto it = physicalQpNumToVirtualQp_.begin();
+       it != physicalQpNumToVirtualQp_.end();) {
+    if (it->second == virtualQp) {
+      it = physicalQpNumToVirtualQp_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  // Remove entries in virtualQpNumToVirtualSendCq_ and
+  // virtualQpNumToVirtualRecvCq_ where the key matches virtualQp's
+  // virtualQpNum_
+  auto virtualQpNum = virtualQp->getVirtualQpNum();
+  virtualQpNumToVirtualSendCq_.erase(virtualQpNum);
+  virtualQpNumToVirtualRecvCq_.erase(virtualQpNum);
+}
+
+void Coordinator::unregisterVirtualCq(IbvVirtualCq* virtualCq) {
+  // Remove all entries in virtualQpNumToVirtualSendCq_ that point to virtualCq
+  for (auto it = virtualQpNumToVirtualSendCq_.begin();
+       it != virtualQpNumToVirtualSendCq_.end();) {
+    if (it->second == virtualCq) {
+      it = virtualQpNumToVirtualSendCq_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  // Remove all entries in virtualQpNumToVirtualRecvCq_ that point to virtualCq
+  for (auto it = virtualQpNumToVirtualRecvCq_.begin();
+       it != virtualQpNumToVirtualRecvCq_.end();) {
+    if (it->second == virtualCq) {
+      it = virtualQpNumToVirtualRecvCq_.erase(it);
+    } else {
+      ++it;
     }
   }
 }
