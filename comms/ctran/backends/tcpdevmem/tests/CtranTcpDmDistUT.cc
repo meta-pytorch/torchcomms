@@ -151,7 +151,7 @@ TEST_F(CtranTcpTest, SendRecv) {
         CtranTcpDm::regMem(&recv, sizeof(recv), cudaDev, &memHandle));
 
     COMMCHECK_TEST(
-        ctranTcpDm->irecv(sendRank, memHandle, &recv, sizeof(recv), req));
+        ctranTcpDm->irecv(sendRank, memHandle, &recv, sizeof(recv), req, 0));
     COMMCHECK_TEST(waitTcpReq(req, ctranTcpDm));
     EXPECT_EQ(send, recv);
   } else if (this->globalRank == sendRank) {

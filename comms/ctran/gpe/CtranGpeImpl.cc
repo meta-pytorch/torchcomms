@@ -207,6 +207,7 @@ commResult_t CtranGpe::Impl::submit(
     cmd->type = type;
     cmd->kernelFlag = kernelFlag;
     cmd->timeout = timeout;
+    cmd->unpackPoolId = kernelConfig.unpackPoolId;
 
     if (type == CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE) {
       cmd->coll.opGroup = std::move(opGroup);
@@ -401,6 +402,7 @@ commResult_t CtranGpe::Impl::submitHost(
     cmd->type = type;
     cmd->kernelFlag = nullptr;
     cmd->cpuFlag = std::move(cpuFlag);
+    cmd->unpackPoolId = kernelConfig.unpackPoolId;
 
     if (type == CtranGpeCmd::TypeEnum::GRAPH_ENQUEUE) {
       cmd->coll.opGroup = std::move(opGroup);
@@ -587,6 +589,14 @@ void CtranGpe::Impl::gpeThreadFn() {
               }
             }
           }
+        }
+        // Teardown unpack queue if it was allocated for this operation (TcpDM
+        // backend). Don't wait for kernel to finish, the pool manages
+        // the allocations in the round robin fashion to avoid immediate
+        // reuse.
+        if (cmd->unpackPoolId >= 0) {
+          FB_COMMCHECKTHROW(
+              comm->ctran_->mapper->teardownUnpackConsumer(cmd->unpackPoolId));
         }
       }
 

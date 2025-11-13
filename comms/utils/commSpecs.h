@@ -299,7 +299,7 @@ enum class CommProtocol {
   NumProtocols = 3 // Simple/LL/LL128
 };
 
-enum class CommBackend {
+enum CommBackend {
   UNSET = 0,
   IB = 1,
   NVL = 2,

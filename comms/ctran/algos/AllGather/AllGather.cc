@@ -1,21 +1,16 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+// #include <mutex>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllGather/AllGatherImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-bool ctranAllGatherSupport(CtranComm* comm) {
-  return ctranInitialized(comm) && comm->ctran_->mapper->hasBackend();
-}
-
-// Check if a specific algo is supported by CTRAN.
+// Check if CTRAN is supported and if a specific algo is supported by CTRAN.
 // If user sets a specific algo, it should check to avoid unexpected abort in
 // ctranAllGather.
-bool ctranAllGatherAlgoSupport(
-    CtranComm* comm,
-    const enum NCCL_ALLGATHER_ALGO algo) {
-  if (!ctranAllGatherSupport(comm)) {
+bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo) {
+  if (!ctranInitialized(comm) || !comm->ctran_->mapper->hasBackend()) {
     return false;
   }
 
@@ -23,13 +18,15 @@ bool ctranAllGatherAlgoSupport(
   bool supported = false;
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctring:
-      supported = statex->nLocalRanks() == 1;
-      break;
     case NCCL_ALLGATHER_ALGO::ctbrucks:
-      supported = statex->nLocalRanks() == 1;
-      break;
     case NCCL_ALLGATHER_ALGO::ctrd:
       supported = statex->nLocalRanks() == 1;
+      if (!supported) {
+        CLOGF_SUBSYS(
+            WARN,
+            COLL,
+            "AllGather algorithms ctring, ctbrucks, and ctrd only support nLocalRanks=1. Falling back to baseline");
+      }
       break;
     case NCCL_ALLGATHER_ALGO::ctdirect:
     case NCCL_ALLGATHER_ALGO::ctran:
@@ -63,32 +60,26 @@ commResult_t ctranAllGather(
   if (algo == NCCL_ALLGATHER_ALGO::ctran) {
     if (statex->nLocalRanks() > 1) {
       algo = NCCL_ALLGATHER_ALGO::ctdirect;
+      CLOGF_SUBSYS(
+          INFO, COLL, "Running AllGather ctdirect algorithm for nLocalRanks>1");
     }
     // pick ctring for nLocalRanks=1 if user doesn't provide specific algo
     else if (statex->nLocalRanks() == 1) {
       algo = NCCL_ALLGATHER_ALGO::ctring;
+      CLOGF_SUBSYS(
+          INFO, COLL, "Running AllGather ctring algorithm for nLocalRanks=1");
     }
   }
-
   switch (algo) {
     case NCCL_ALLGATHER_ALGO::ctring:
-      FB_CHECKABORT(
-          comm->statex_->nLocalRanks() == 1,
-          "CTRing only supports nLocalRanks=1");
       return ctranAllGatherRing(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
 
     case NCCL_ALLGATHER_ALGO::ctbrucks:
-      FB_CHECKABORT(
-          comm->statex_->nLocalRanks() == 1,
-          "CTBrucks only supports nLocalRanks=1");
       return ctranAllGatherBrucksFF(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
 
     case NCCL_ALLGATHER_ALGO::ctrd:
-      FB_CHECKABORT(
-          comm->statex_->nLocalRanks() == 1,
-          "CTRD only supports nLocalRanks=1");
       return ctranAllGatherRd(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
     case NCCL_ALLGATHER_ALGO::ctdirect:

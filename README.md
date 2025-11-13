@@ -99,6 +99,26 @@ export RCCL_INCLUDE=$ROCM_HOME/include/rccl
 ./build_rccl.sh
 ```
 
+##### RCCLX Backend
+
+Install some prerequisites
+```
+conda install conda-forge::glog=0.4.0 conda-forge::gflags conda-forge::fmt -y
+```
+
+Environment variables to find rocm/rcclx headers
+```
+export BUILD_DIR=${PWD}/comms/rcclx/develop/build/release/build
+export ROCM_HOME=/opt/rocm
+export RCCLX_INCLUDE=${BUILD_DIR}/include/rccl
+export RCCLX_LIB=${BUILD_DIR}/lib
+```
+
+```bash
+./build_rcclx.sh
+```
+
+
 #### Install torchcomms:
 
 ```bash
@@ -117,6 +137,7 @@ export USE_NCCL=ON    # Default: ON
 export USE_NCCLX=ON   # Default: ON
 export USE_GLOO=ON    # Default: ON
 export USE_RCCL=OFF   # Default: OFF
+export USE_RCCLX=OFF  # Default: OFF
 ```
 
 Then run:

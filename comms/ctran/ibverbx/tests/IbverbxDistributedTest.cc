@@ -3,15 +3,21 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
+#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include <numeric>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ibverbx;
 using namespace meta::comms;
+
+FOLLY_INIT_LOGGING_CONFIG(
+    ".=WARNING"
+    ";default:async=true,sync_level=WARNING");
 
 namespace {
 // use broadcom nic for AMD platform, use mellanox nic for NV platform
@@ -206,6 +212,7 @@ class IbverbxSingleQpTestFixture : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
+    ncclCvarInit();
     ASSERT_TRUE(ibvInit());
   }
 };
@@ -290,7 +297,7 @@ void IbverbxSingleQpTestFixtureWithParam::runSendRecvTest(int devBufSize) {
   CUDA_CHECK(cudaGetDevice(&myDevId));
 
   // get device
-  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  auto devices = IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
   ASSERT_TRUE(devices);
   auto& device = devices->at(myDevId);
   auto pd = device.allocPd();
@@ -420,6 +427,8 @@ void IbverbxSingleQpTestFixtureWithParam::runSendRecvTest(int devBufSize) {
     pollOneWcFromCq(globalRank, *cq);
   }
   XLOGF(DBG1, "rank {} send/recv OK", globalRank);
+
+  CUDA_CHECK(cudaFree(devBuf));
 }
 
 // Template helper function implementation for RDMA Write
@@ -431,7 +440,7 @@ void IbverbxSingleQpTestFixtureWithParam::runRdmaWriteTest(int devBufSize) {
   CUDA_CHECK(cudaGetDevice(&myDevId));
 
   // get device
-  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  auto devices = IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
   ASSERT_TRUE(devices);
   auto& device = devices->at(myDevId);
   auto pd = device.allocPd();
@@ -569,10 +578,12 @@ void IbverbxSingleQpTestFixtureWithParam::runRdmaWriteTest(int devBufSize) {
     // us
   }
   XLOGF(DBG1, "rank {} RDMA-WRITE OK", globalRank);
+
+  CUDA_CHECK(cudaFree(devBuf));
 }
 
 TEST_F(IbverbxSingleQpTestFixture, IbvQpModifyQp) {
-  auto devices = IbvDevice::ibvGetDeviceList();
+  auto devices = IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
   ASSERT_TRUE(devices);
   auto& device = devices->at(0);
 

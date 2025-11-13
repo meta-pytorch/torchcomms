@@ -43,7 +43,15 @@ class CtranAllgatherTest : public CtranDistBaseTest {
     comm = commWorld;
     segments.clear();
     segHandles.clear();
-    if (!ctranAllGatherSupport(comm->ctranComm_.get())) {
+
+    // Set algo to global config
+    auto algo = NCCL_ALLGATHER_ALGO;
+    // Override algo if comm config is set
+    if (ctranInitialized(comm->ctranComm_.get())) {
+      algo = comm->ctranComm_->ctran_->algo->getAllGatherAlgo();
+    }
+
+    if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
       GTEST_SKIP() << "ctranAllGatherSupport returns fails, skip test";
     }
   }

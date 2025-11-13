@@ -175,4 +175,9 @@ __device__ __forceinline__ float castTo<__nv_bfloat16, float>(__nv_bfloat16 x) {
 }
 #endif
 
+template <typename T>
+__device__ __forceinline__ T atomicRead(T* a) {
+  return atomicAdd(a, 0);
+}
+
 } // namespace ctran::utils

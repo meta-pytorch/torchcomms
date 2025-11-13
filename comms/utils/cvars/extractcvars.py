@@ -3,6 +3,7 @@
 
 # pyre-unsafe
 
+import functools
 import os
 import pathlib
 import subprocess
@@ -28,6 +29,11 @@ size_t_cvar_for_unit_tests: str = "__NCCL_UNIT_TEST_SIZE_T_CVAR__"
 int_cvar_for_unit_tests: str = "__NCCL_UNIT_TEST_INT_CVAR__"
 bool_cvar_for_unit_tests: str = "__NCCL_UNIT_TEST_BOOL_CVAR__"
 double_cvar_for_unit_tests: str = "__NCCL_UNIT_TEST_DOUBLE_CVAR__"
+
+
+@functools.lru_cache(maxsize=1)
+def fbsource_root():
+    return subprocess.check_output(["hg", "root"]).decode("utf-8").strip()
 
 
 def static_vars(**kwargs):
@@ -410,10 +416,9 @@ class enumlist(basetype):
 
 def sign_source(file):
     """
-    Adds a comment with a SignedSource using current hg commit id as a token.
+    Adds a comment with a SignedSource. Fill with zeros now. Actually sign later.
     """
-    hgId = subprocess.check_output(["hg", "whereami"]).decode("utf-8").strip()
-    file.write("// @" + "generated SignedSource<<%s>>\n" % hgId)
+    file.write("// @" + "generated SignedSource<<%s>>\n" % ("0" * 32))
 
 
 def printAutogenStart(file):
@@ -608,6 +613,12 @@ def format_file(path):
     subprocess.run(["clang-format", "-i", path])
 
 
+def codesign_file(path):
+    return subprocess.check_call(
+        [os.path.join(fbsource_root(), "tools/signedsource"), "sign", path]
+    )
+
+
 def append_unit_test_cvars(allcvars: list) -> None:
     allcvars.append(
         string(
@@ -734,6 +745,7 @@ def main():
         "comms/utils/cvars/nccl_cvars.h",
     ]:
         format_file(f)
+        codesign_file(f)
 
 
 if __name__ == "__main__":

@@ -40,10 +40,6 @@ commResult_t ctranAllGatherBrucksFF(
     CtranComm* comm,
     cudaStream_t stream);
 
-bool ctranAllGatherAlgoSupport(
-    CtranComm* comm,
-    const enum NCCL_ALLGATHER_ALGO algo);
-
 static inline const std::string allGatherAlgoName(
     enum NCCL_ALLGATHER_ALGO algo) {
   switch (algo) {

@@ -64,7 +64,7 @@ commResult_t ctranGroupEndHook(
 commResult_t ctranGroupEndHook(
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
-bool ctranAllGatherSupport(CtranComm* comm);
+bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo);
 commResult_t ctranAllGather(
     const void* sendbuff,
     void* recvbuff,

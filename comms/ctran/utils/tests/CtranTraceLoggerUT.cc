@@ -79,6 +79,8 @@ TEST_F(CtranTraceLoggerTest, TraceTimestampPointWithSeqNum) {
   seqNum++;
   ts->addPoint("recvCtrl", seqNum, peer);
 
+  ts->end();
+
   // Dump the json report for verification
   int id = 0;
   std::string json = "[" + ts->toJsonEntry(id, 0) + "]";
@@ -91,12 +93,12 @@ TEST_F(CtranTraceLoggerTest, TraceTimestampPointWithSeqNum) {
 
   // Expect first record is the entire algo
   EXPECT_EQ(parsed[0]["name"], "Ring");
-  EXPECT_EQ(parsed[0]["tid"], "-1");
+  EXPECT_EQ(parsed[0]["tid"], -1);
 
   for (int i = 1; i < parsed.size(); i++) {
     auto& p = parsed[i];
     EXPECT_EQ(p["name"], "recvCtrl");
-    EXPECT_EQ(p["tid"], std::to_string(peer));
+    EXPECT_EQ(p["tid"], peer);
     EXPECT_NE(p["args"], nullptr);
     EXPECT_NE(p["args"]["seqNum"], nullptr);
 
@@ -133,6 +135,8 @@ TEST_F(CtranTraceLoggerTest, TraceTimeIntervalWithSeqNum) {
 
   EXPECT_TRUE(ts->hasInterval("sendTrans", seqNum));
 
+  ts->end();
+
   // Dump the json report for verification
   int id = 0;
   std::string json = "[" + ts->toJsonEntry(id, 0) + "]";
@@ -145,12 +149,12 @@ TEST_F(CtranTraceLoggerTest, TraceTimeIntervalWithSeqNum) {
 
   // Expect first record is the entire algo
   EXPECT_EQ(parsed[0]["name"], "Ring");
-  EXPECT_EQ(parsed[0]["tid"], "-1");
+  EXPECT_EQ(parsed[0]["tid"], -1);
 
   for (int i = 1; i < parsed.size(); i++) {
     auto& p = parsed[i];
     EXPECT_EQ(p["name"], "sendTrans");
-    EXPECT_EQ(p["tid"], std::to_string(peer));
+    EXPECT_EQ(p["tid"], peer);
     EXPECT_NE(p["args"], nullptr);
     EXPECT_NE(p["args"]["seqNum"], nullptr);
 
@@ -183,6 +187,8 @@ TEST_F(CtranTraceLoggerTest, TraceTimeIntervalWithMetaData) {
   std::this_thread::sleep_for(std::chrono::milliseconds(expectedDurMS));
   ts->endInterval("sendTrans", seqNum);
 
+  ts->end();
+
   // Dump the json report for verification
   int id = 0;
   std::string json = "[" + ts->toJsonEntry(id, 0) + "]";
@@ -196,7 +202,7 @@ TEST_F(CtranTraceLoggerTest, TraceTimeIntervalWithMetaData) {
   for (int i = 1; i < parsed.size(); i++) {
     auto& p = parsed[i];
     EXPECT_EQ(p["name"], "sendTrans");
-    EXPECT_EQ(p["tid"], std::to_string(peer));
+    EXPECT_EQ(p["tid"], peer);
     EXPECT_NE(p["args"], nullptr);
     EXPECT_EQ(p["args"]["seqNum"], "1");
     EXPECT_EQ(p["args"]["step"], "1");

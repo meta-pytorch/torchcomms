@@ -4,8 +4,8 @@
 
 #include "ncclx/trainer/trainer.h" // @manual
 
-void setTrainingIterationWrapper(int64_t iteration) {
-  setTrainingIteration(iteration);
+void setTrainingIterationWrapper(int64_t iter) {
+  setTrainingIteration(iter);
 }
 
 int64_t getTrainingIterationWrapper(void) {

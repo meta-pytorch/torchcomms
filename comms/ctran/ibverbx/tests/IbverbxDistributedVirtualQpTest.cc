@@ -3,15 +3,21 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <folly/init/Init.h>
+#include <folly/logging/Init.h>
 #include <gtest/gtest.h>
 #include <numeric>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ibverbx;
 using namespace meta::comms;
+
+FOLLY_INIT_LOGGING_CONFIG(
+    ".=WARNING"
+    ";default:async=true,sync_level=WARNING");
 
 namespace {
 // use broadcom nic for AMD platform, use mellanox nic for NV platform
@@ -166,6 +172,7 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
+    ncclCvarInit();
     ASSERT_TRUE(ibvInit());
   }
 
@@ -197,7 +204,8 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
     CUDA_CHECK(cudaGetDevice(&myDevId));
 
     // get device
-    auto maybeDevices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+    auto maybeDevices =
+        IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
     EXPECT_TRUE(maybeDevices);
     auto devices = std::move(*maybeDevices);
     auto& device = devices.at(myDevId);
@@ -432,7 +440,7 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
   CUDA_CHECK(cudaGetDevice(&myDevId));
 
   // get device
-  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  auto devices = IbvDevice::ibvGetDeviceList(NCCL_IB_HCA, NCCL_IB_HCA_PREFIX);
   ASSERT_TRUE(devices);
   auto& device = devices->at(myDevId);
   auto pd = device.allocPd();
@@ -681,7 +689,8 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
       "rank {} multiple RDMA writes test completed successfully",
       globalRank);
 
-  // Clean up sender buffers
+  // Clean up device buffers
+  CUDA_CHECK(cudaFree(devBuf));
   if (globalRank == 1) {
     CUDA_CHECK(cudaFree(devBuf1));
     CUDA_CHECK(cudaFree(devBuf2));
@@ -983,6 +992,9 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     ASSERT_EQ(hostExpectedBuf, hostRecvBuf);
   }
   XLOGF(DBG1, "rank {} RDMA-WRITE OK", globalRank);
+
+  // Clean up device buffer
+  CUDA_CHECK(cudaFree(setup.devBuf));
 }
 
 // Template helper function implementation for Virtual QP RDMA Read
@@ -1084,6 +1096,9 @@ void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
   XLOGF(DBG1, "rank {} RDMA-READ OK", globalRank);
+
+  // Clean up device buffer
+  CUDA_CHECK(cudaFree(setup.devBuf));
 }
 
 // Template helper function implementation for Virtual QP Send/Recv
@@ -1188,6 +1203,9 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     ASSERT_EQ(hostExpectedBuf, hostRecvBuf);
   }
   XLOGF(DBG1, "rank {} send/recv OK", globalRank);
+
+  // Clean up device buffer
+  CUDA_CHECK(cudaFree(setup.devBuf));
 }
 
 // RDMA Read Virtual QP test using template helper

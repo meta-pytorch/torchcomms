@@ -24,17 +24,6 @@ commResult_t ctranBroadcastBinomialTree(
     CtranComm* comm,
     cudaStream_t stream);
 
-// API to broadcast between host memory.
-// Use request to track completion
-commResult_t ctranBroadcastBinomialTree(
-    const void* sendbuff,
-    void* recvbuff,
-    size_t count,
-    commDataType_t datatype,
-    int root,
-    CtranComm* comm,
-    ::ctran::CtranExRequestImpl* req);
-
 static inline const std::string broadcastAlgoName(
     enum NCCL_BROADCAST_ALGO algo) {
   switch (algo) {

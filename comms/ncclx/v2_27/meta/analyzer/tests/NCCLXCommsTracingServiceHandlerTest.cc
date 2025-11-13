@@ -288,9 +288,9 @@ waitUntilCommsForRank(int rank, Func func, std::chrono::milliseconds timeout) {
   folly::stop_watch<std::chrono::milliseconds> timer;
   while (timer.elapsed() < timeout) {
     auto analyzerPortForRank = getCommServicePortNumberForRank(rank);
-    auto client = getClient<comms::CommsTracingService>(analyzerPortForRank);
-    comms::GetCommsRequest request;
-    comms::GetCommsResponse response;
+    auto client = getClient<::comms::CommsTracingService>(analyzerPortForRank);
+    ::comms::GetCommsRequest request;
+    ::comms::GetCommsResponse response;
     client->sync_getComms(response, request);
     XLOG(DBG2) << "Comm state: " << apache::thrift::debugString(response);
 
@@ -380,9 +380,10 @@ TEST_F(NcclCommsTest, AnalyzerSuccess) {
 
       // Get the comm dump state for each rank
       auto analyzerPortForRank = getCommServicePortNumberForRank(i);
-      auto client = getClient<comms::CommsTracingService>(analyzerPortForRank);
-      comms::GetCommsRequest request;
-      comms::GetCommsResponse response;
+      auto client =
+          getClient<::comms::CommsTracingService>(analyzerPortForRank);
+      ::comms::GetCommsRequest request;
+      ::comms::GetCommsResponse response;
       client->sync_getComms(response, request);
       XLOG(INFO) << "Comm state: " << apache::thrift::debugString(response);
 
@@ -549,7 +550,10 @@ TEST_F(NcclCommsTest, OneRankHangs) {
   }
 }
 
-TEST_F(NcclCommsTest, OneRankHangsCudaGraph) {
+// Disabled due to we currently disabled CUDA Graph support for CollTrace due
+// to difficulties in ensuring the correct behavior during capture
+// (e.g. Graph + normal Launch). Will enable once added back support.
+TEST_F(NcclCommsTest, DISABLED_OneRankHangsCudaGraph) {
   if (isTestDriverProcess()) {
     return;
   }

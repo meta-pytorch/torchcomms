@@ -244,8 +244,8 @@ TEST(AbortTest, cancelTimeoutAfterExpiry) {
 
   abort.CancelTimeout();
 
-  // CancelTimeout resets timeout state
-  EXPECT_FALSE(abort.Test());
+  // CancelTimeout does not reset timeout state
+  EXPECT_TRUE(abort.Test());
 }
 
 TEST(AbortTest, cancelTimeoutDisabledNoop) {
@@ -360,6 +360,105 @@ TEST(AbortTest, cancelTimeoutThreadSafety) {
   // Timeout should not be detected as it was cancelled
   EXPECT_FALSE(timeoutDetected.load());
   EXPECT_GT(testCallCount.load(), 0);
+}
+
+TEST(AbortTest, hasTimeoutInitiallyFalse) {
+  Abort abort{/*enabled=*/true};
+  EXPECT_FALSE(abort.HasTimeout());
+}
+
+TEST(AbortTest, hasTimeoutTrueAfterSet) {
+  Abort abort{/*enabled=*/true};
+  abort.SetTimeout(std::chrono::milliseconds(1000));
+  EXPECT_TRUE(abort.HasTimeout());
+}
+
+TEST(AbortTest, hasTimeoutFalseAfterCancel) {
+  Abort abort{/*enabled=*/true};
+  abort.SetTimeout(std::chrono::milliseconds(30000));
+  EXPECT_TRUE(abort.HasTimeout());
+
+  abort.CancelTimeout();
+  EXPECT_FALSE(abort.HasTimeout());
+}
+
+TEST(AbortTest, hasTimeoutDisabledNoop) {
+  Abort abort{/*enabled=*/false};
+  abort.SetTimeout(std::chrono::milliseconds(1000));
+  EXPECT_FALSE(abort.HasTimeout());
+}
+
+TEST(AbortTest, timedOutInitiallyFalse) {
+  Abort abort{/*enabled=*/true};
+  EXPECT_FALSE(abort.TimedOut());
+}
+
+TEST(AbortTest, timedOutFalseBeforeExpiry) {
+  Abort abort{/*enabled=*/true};
+  abort.SetTimeout(std::chrono::milliseconds(1000));
+  EXPECT_FALSE(abort.TimedOut());
+}
+
+TEST(AbortTest, timedOutTrueAfterExpiry) {
+  Abort abort{/*enabled=*/true};
+  abort.SetTimeout(std::chrono::milliseconds(1));
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  EXPECT_TRUE(abort.TimedOut());
+}
+
+TEST(AbortTest, timedOutFalseForExplicitSet) {
+  Abort abort{/*enabled=*/true};
+  abort.Set();
+  EXPECT_TRUE(abort.Test());
+  EXPECT_FALSE(abort.TimedOut());
+}
+
+TEST(AbortTest, timeRemainingNoTimeout) {
+  Abort abort{/*enabled=*/true};
+  EXPECT_EQ(abort.TimeRemaining(), std::chrono::milliseconds{-1});
+}
+
+TEST(AbortTest, timeRemainingDisabled) {
+  Abort abort{/*enabled=*/false};
+  abort.SetTimeout(std::chrono::milliseconds(1000));
+  EXPECT_EQ(abort.TimeRemaining(), std::chrono::milliseconds{-1});
+}
+
+TEST(AbortTest, timeRemainingAfterSet) {
+  Abort abort{/*enabled=*/true};
+  abort.SetTimeout(std::chrono::milliseconds(100));
+
+  auto remaining = abort.TimeRemaining();
+  EXPECT_GT(remaining, std::chrono::milliseconds{0});
+  EXPECT_LE(remaining, std::chrono::milliseconds{100});
+}
+
+TEST(AbortTest, timeRemainingDecreases) {
+  Abort abort{/*enabled=*/true};
+  abort.SetTimeout(std::chrono::milliseconds(100));
+
+  auto remaining1 = abort.TimeRemaining();
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  auto remaining2 = abort.TimeRemaining();
+
+  EXPECT_LT(remaining2, remaining1);
+}
+
+TEST(AbortTest, timeRemainingZeroAfterExpiry) {
+  Abort abort{/*enabled=*/true};
+  abort.SetTimeout(std::chrono::milliseconds(1));
+
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+  EXPECT_EQ(abort.TimeRemaining(), std::chrono::milliseconds{0});
+}
+
+TEST(AbortTest, timeRemainingAfterCancel) {
+  Abort abort{/*enabled=*/true};
+  abort.SetTimeout(std::chrono::milliseconds(1000));
+  abort.CancelTimeout();
+  EXPECT_EQ(abort.TimeRemaining(), std::chrono::milliseconds{-1});
 }
 
 } // namespace ctran::testing
