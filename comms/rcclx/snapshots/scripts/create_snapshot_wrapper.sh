@@ -84,9 +84,14 @@ esac
 
 echo "Creating snapshot for ROCm $ROCM_VERSION..."
 echo "Building rcclx-dev library..."
+echo "Note: First-time builds will take 20-30 minutes as we build from source without cache"
 
 # Build the rcclx-dev library
-buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m "$ROCM_CONSTRAINT" fbcode//comms/rcclx:rcclx-dev
+# Use --no-remote-cache to disable remote cache queries/writes
+# Use --local-only to force local execution, preventing use of remote execution
+# which could otherwise provide prebuilt artifacts. This ensures we always do a
+# fresh local build when creating snapshots.
+buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m "$ROCM_CONSTRAINT" --no-remote-cache --local-only fbcode//comms/rcclx:rcclx-dev
 
 # Get the library path from buck2 (relative to fbsource root)
 LIBRARY_PATH_RELATIVE=$(buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m "$ROCM_CONSTRAINT" fbcode//comms/rcclx:rcclx-dev --show-output | grep -oP 'fbcode//comms/rcclx:rcclx-dev\s+\K.*')
@@ -101,6 +106,16 @@ if [[ ! -f "$LIBRARY_PATH" ]]; then
 fi
 
 echo "Library built at: $LIBRARY_PATH"
+
+# Define header path
+HEADER_PATH="$(pwd)/comms/rcclx/develop/src/rccl.h"
+
+if [[ ! -f "$HEADER_PATH" ]]; then
+    echo "Error: Could not find rccl.h header at $HEADER_PATH"
+    exit 1
+fi
+
+echo "Header found at: $HEADER_PATH"
 echo "Running snapshot script..."
 
 # Run the snapshot creation script using buck2 run to get proper Python dependencies
@@ -108,7 +123,8 @@ buck2 run fbcode//comms/rcclx/snapshots/scripts:create_snapshot -- \
     --library "$LIBRARY_PATH" \
     --rocm-version "$ROCM_VERSION" \
     --snapshots-root "$(pwd)/comms/rcclx/snapshots" \
-    --rcclx-repo "$(pwd)/comms/rcclx"
+    --rcclx-repo "$(pwd)/comms/rcclx" \
+    --header "$HEADER_PATH"
 
 echo "Snapshot created successfully for ROCm $ROCM_VERSION"
 echo ""

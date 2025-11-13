@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # pyre-strict
 """
-Script to create snapshots of rcclx static libraries.
+Script to create snapshots of rcclx static libraries and headers.
 
 This script handles:
-1. Moving last-stable to archives with timestamp (metadata in repo, artifacts in Manifold)
-2. Moving stable to last-stable (metadata in repo, artifacts in Manifold)
-3. Copying newly built library to stable (metadata in repo, artifacts in Manifold)
+1. Moving last-stable to archives with timestamp (metadata and headers in repo, artifacts in Manifold)
+2. Moving stable to last-stable (metadata and headers in repo, artifacts in Manifold)
+3. Copying newly built library to stable (metadata and headers in repo, artifacts in Manifold)
 4. Creating metadata file with commit hashes
 
 Artifacts (.a files) are stored in Manifold at:
@@ -14,10 +14,13 @@ Artifacts (.a files) are stored in Manifold at:
   rcclx_prebuilt_artifacts/tree/last_stable/{rocm_version}/librcclx-dev.a
   rcclx_prebuilt_artifacts/tree/archives/{rocm_version}/{timestamp}_librcclx-dev.a
 
-Metadata files are stored in the repo at:
+Metadata and header files are stored in the repo at:
   snapshots/stable/{rocm_version}/metadata.txt
+  snapshots/stable/{rocm_version}/rccl.h
   snapshots/last-stable/{rocm_version}/metadata.txt
+  snapshots/last-stable/{rocm_version}/rccl.h
   snapshots/archives/{rocm_version}/{timestamp}_metadata.txt
+  snapshots/archives/{rocm_version}/{timestamp}_rccl.h
 """
 
 import argparse
@@ -368,24 +371,29 @@ def create_snapshot(
     rocm_version: str,
     snapshots_root: Path,
     rcclx_repo_path: Path,
+    header_path: Path,
 ) -> None:
     """
-    Create a snapshot of the rcclx library.
+    Create a snapshot of the rcclx library and header.
 
     This function handles the rotation of snapshots and saves artifacts to Manifold
-    while keeping metadata in the repo.
+    while keeping metadata and headers in the repo.
 
     Args:
         library_path: Path to the built library file (e.g., librcclx-dev.a)
         rocm_version: ROCm version (e.g., "6.2", "6.4", "7.0")
         snapshots_root: Root path of the snapshots directory
         rcclx_repo_path: Path to the rcclx repository for getting commit info
+        header_path: Path to the rccl.h header file to snapshot
     """
     logger.info(f"Creating snapshot for ROCm {rocm_version}")
 
     # Validate inputs
     if not library_path.exists():
         raise FileNotFoundError(f"Library file not found: {library_path}")
+
+    if not header_path.exists():
+        raise FileNotFoundError(f"Header file not found: {header_path}")
 
     if not snapshots_root.exists():
         raise FileNotFoundError(f"Snapshots directory not found: {snapshots_root}")
@@ -401,6 +409,7 @@ def create_snapshot(
     archives_dir.mkdir(parents=True, exist_ok=True)
 
     library_name = library_path.name
+    header_name = header_path.name
 
     # Step 1: Move last-stable to archives with timestamp-prefixed filenames
     # Check if last-stable metadata exists in repo
@@ -461,7 +470,12 @@ def create_snapshot(
     stable_manifold_path = get_manifold_path("stable", rocm_version, library_name)
     upload_file_to_manifold(library_path, stable_manifold_path)
 
-    # Step 5: Create metadata file in repo stable with checksums
+    # Step 5: Copy header file to repo stable
+    stable_header_path = stable_dir / header_name
+    shutil.copy2(header_path, stable_header_path)
+    logger.info(f"Copied {header_name} to {stable_header_path}")
+
+    # Step 6: Create metadata file in repo stable with checksums
     deps_info = get_dependency_info(str(rcclx_repo_path))
     metadata_path = stable_dir / "metadata.txt"
     create_metadata_file(metadata_path, rocm_version, deps_info, checksums)
@@ -470,12 +484,13 @@ def create_snapshot(
     logger.info(
         f"Artifact stored in Manifold at: {MANIFOLD_BUCKET}/{stable_manifold_path}"
     )
+    logger.info(f"Header stored in repo at: {stable_header_path}")
     logger.info(f"Metadata stored in repo at: {metadata_path}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Create a snapshot of rcclx static library"
+        description="Create a snapshot of rcclx static library and header"
     )
     parser.add_argument(
         "--library",
@@ -501,6 +516,12 @@ def main() -> int:
         required=True,
         help="Path to the rcclx repository root",
     )
+    parser.add_argument(
+        "--header",
+        type=Path,
+        required=True,
+        help="Path to the rccl.h header file to snapshot",
+    )
 
     args = parser.parse_args()
 
@@ -510,6 +531,7 @@ def main() -> int:
             rocm_version=args.rocm_version,
             snapshots_root=args.snapshots_root,
             rcclx_repo_path=args.rcclx_repo,
+            header_path=args.header,
         )
         return 0
     except Exception as e:
