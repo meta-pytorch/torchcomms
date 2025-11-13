@@ -1160,35 +1160,40 @@ TEST_F(IbverbxTestFixture, Coordinator) {
   auto coordinator = Coordinator::getCoordinator();
   ASSERT_NE(coordinator, nullptr);
   uint32_t virtualQpNum = virtualQp.getVirtualQpNum();
+  uint32_t virtualCqNum = virtualCq.getVirtualCqNum();
 
-  // 1. Test virtualQpNumToVirtualSendCq_ mapping
-  const auto& sendCqMap = coordinator->getVirtualSendCqMap();
-  ASSERT_EQ(sendCqMap.size(), 1);
-  auto sendCqIt = sendCqMap.find(virtualQpNum);
-  ASSERT_NE(sendCqIt, sendCqMap.end());
-  ASSERT_EQ(sendCqIt->second, &virtualCq);
+  // 1. Test virtualQpNumToVirtualSendCqNum_ mapping
+  const auto& virtualQpToSendCqMap =
+      coordinator->getVirtualQpToVirtualSendCqMap();
+  ASSERT_EQ(virtualQpToSendCqMap.size(), 1);
+  auto sendCqIt = virtualQpToSendCqMap.find(virtualQpNum);
+  ASSERT_NE(sendCqIt, virtualQpToSendCqMap.end());
+  ASSERT_EQ(sendCqIt->second, virtualCqNum);
 
-  // 2. Test virtualQpNumToVirtualRecvCq_ mapping
-  const auto& recvCqMap = coordinator->getVirtualRecvCqMap();
-  ASSERT_EQ(recvCqMap.size(), 1);
-  auto recvCqIt = recvCqMap.find(virtualQpNum);
-  ASSERT_NE(recvCqIt, recvCqMap.end());
-  ASSERT_EQ(recvCqIt->second, &virtualCq);
+  // 2. Test virtualQpNumToVirtualRecvCqNum_ mapping
+  const auto& virtualQpToRecvCqMap =
+      coordinator->getVirtualQpToVirtualRecvCqMap();
+  ASSERT_EQ(virtualQpToRecvCqMap.size(), 1);
+  auto recvCqIt = virtualQpToRecvCqMap.find(virtualQpNum);
+  ASSERT_NE(recvCqIt, virtualQpToRecvCqMap.end());
+  ASSERT_EQ(recvCqIt->second, virtualCqNum);
 
-  // 3. Test physicalQpNumToVirtualQp_ mapping
-  const auto& physicalQpMap = coordinator->getPhysicalQpMap();
+  // 3. Test physicalQpNumToVirtualQpNum_ mapping
+  const auto& physicalQpToVirtualQpMap =
+      coordinator->getPhysicalQpToVirtualQpMap();
   ASSERT_EQ(
-      physicalQpMap.size(), totalQps + 1); // totalQos + 1 to consider notifyQp
+      physicalQpToVirtualQpMap.size(),
+      totalQps + 1); // totalQps + 1 to consider notifyQp
   for (const auto& physicalQp : virtualQp.getQpsRef()) {
     uint32_t physicalQpNum = physicalQp.qp()->qp_num;
-    auto virtualQpIt = physicalQpMap.find(physicalQpNum);
-    ASSERT_NE(virtualQpIt, physicalQpMap.end());
-    ASSERT_EQ(virtualQpIt->second, &virtualQp);
+    auto virtualQpNumIt = physicalQpToVirtualQpMap.find(physicalQpNum);
+    ASSERT_NE(virtualQpNumIt, physicalQpToVirtualQpMap.end());
+    ASSERT_EQ(virtualQpNumIt->second, virtualQpNum);
   }
   uint32_t notifyQpNum = virtualQp.getNotifyQpRef().qp()->qp_num;
-  auto notifyQpIt = physicalQpMap.find(notifyQpNum);
-  ASSERT_NE(notifyQpIt, physicalQpMap.end());
-  ASSERT_EQ(notifyQpIt->second, &virtualQp);
+  auto notifyQpIt = physicalQpToVirtualQpMap.find(notifyQpNum);
+  ASSERT_NE(notifyQpIt, physicalQpToVirtualQpMap.end());
+  ASSERT_EQ(notifyQpIt->second, virtualQpNum);
 
   // 4. Test that all physical QP numbers are unique and properly mapped
   std::set<uint32_t> physicalQpNums;
@@ -1196,10 +1201,11 @@ TEST_F(IbverbxTestFixture, Coordinator) {
     uint32_t physicalQpNum = physicalQp.qp()->qp_num;
     ASSERT_TRUE(
         physicalQpNums.insert(physicalQpNum).second); // Should be unique
-    ASSERT_EQ(coordinator->getVirtualQp(physicalQpNum), &virtualQp);
+    ASSERT_EQ(
+        coordinator->getVirtualQpByPhysicalQpNum(physicalQpNum), &virtualQp);
   }
   ASSERT_TRUE(physicalQpNums.insert(notifyQpNum).second); // Should be unique
-  ASSERT_EQ(coordinator->getVirtualQp(notifyQpNum), &virtualQp);
+  ASSERT_EQ(coordinator->getVirtualQpByPhysicalQpNum(notifyQpNum), &virtualQp);
 }
 
 TEST_F(IbverbxTestFixture, DqplbSeqTrackerGetSendImm) {
