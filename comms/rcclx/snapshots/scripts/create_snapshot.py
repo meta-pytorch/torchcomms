@@ -21,6 +21,7 @@ Metadata files are stored in the repo at:
 """
 
 import argparse
+import hashlib
 import io
 import logging
 import shutil
@@ -107,24 +108,55 @@ def get_dependency_info(rcclx_repo_path: str) -> Dict[str, str]:
     return deps_info
 
 
+def calculate_file_checksums(file_path: Path) -> Dict[str, str]:
+    """
+    Calculate SHA1 and SHA256 checksums for a file.
+
+    Args:
+        file_path: Path to the file to checksum
+
+    Returns:
+        Dictionary with 'sha1' and 'sha256' keys
+    """
+    sha1_hash = hashlib.sha1()
+    sha256_hash = hashlib.sha256()
+
+    with open(file_path, "rb") as f:
+        # Read in chunks to handle large files
+        for chunk in iter(lambda: f.read(4096 * 1024), b""):
+            sha1_hash.update(chunk)
+            sha256_hash.update(chunk)
+
+    return {
+        "sha1": sha1_hash.hexdigest(),
+        "sha256": sha256_hash.hexdigest(),
+    }
+
+
 def create_metadata_file(
     metadata_path: Path,
     rocm_version: str,
     deps_info: Dict[str, str],
+    checksums: Dict[str, str],
 ) -> None:
     """
-    Create metadata file with commit hashes and build information.
+    Create metadata file with commit hashes, checksums, and build information.
 
     Args:
         metadata_path: Path where metadata.txt should be created
         rocm_version: ROCm version used for the build
         deps_info: Dictionary of dependency commit hashes
+        checksums: Dictionary with 'sha1' and 'sha256' checksums
     """
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC")
 
     with open(metadata_path, "w") as f:
         f.write(f"Snapshot created: {timestamp}\n")
         f.write(f"ROCm version: {rocm_version}\n")
+        f.write("\n")
+        f.write("Checksums:\n")
+        f.write(f"  sha1: {checksums['sha1']}\n")
+        f.write(f"  sha256: {checksums['sha256']}\n")
         f.write("\n")
         f.write("Commit Hashes:\n")
         for repo_name, commit_hash in sorted(deps_info.items()):
@@ -419,14 +451,20 @@ def create_snapshot(
                 f"Moved artifact in Manifold to last_stable/{rocm_version}/{library_name}"
             )
 
-    # Step 3: Upload newly built library to Manifold stable
+    # Step 3: Calculate checksums for the library before uploading
+    logger.info(f"Calculating checksums for {library_path}")
+    checksums = calculate_file_checksums(library_path)
+    logger.info(f"SHA1: {checksums['sha1']}")
+    logger.info(f"SHA256: {checksums['sha256']}")
+
+    # Step 4: Upload newly built library to Manifold stable
     stable_manifold_path = get_manifold_path("stable", rocm_version, library_name)
     upload_file_to_manifold(library_path, stable_manifold_path)
 
-    # Step 4: Create metadata file in repo stable
+    # Step 5: Create metadata file in repo stable with checksums
     deps_info = get_dependency_info(str(rcclx_repo_path))
     metadata_path = stable_dir / "metadata.txt"
-    create_metadata_file(metadata_path, rocm_version, deps_info)
+    create_metadata_file(metadata_path, rocm_version, deps_info, checksums)
 
     logger.info(f"Snapshot creation completed successfully for ROCm {rocm_version}")
     logger.info(

@@ -111,3 +111,18 @@ buck2 run fbcode//comms/rcclx/snapshots/scripts:create_snapshot -- \
     --rcclx-repo "$(pwd)/comms/rcclx"
 
 echo "Snapshot created successfully for ROCm $ROCM_VERSION"
+echo ""
+echo "Generating stable_checksums.bzl from metadata files..."
+
+# Generate the checksums.bzl file from metadata
+buck2 run fbcode//comms/rcclx/snapshots/scripts:generate_checksums_bzl -- \
+    --snapshots-root "$(pwd)/comms/rcclx/snapshots" \
+    --output "$(pwd)/comms/rcclx/stable_checksums.bzl"
+
+echo ""
+echo "✓ Snapshot creation completed successfully!"
+echo "  - Artifact uploaded to Manifold: rcclx_prebuilt_artifacts/tree/stable/$ROCM_VERSION/librcclx-dev.a"
+echo "  - Metadata saved to: comms/rcclx/snapshots/stable/$ROCM_VERSION/metadata.txt"
+echo "  - Checksums updated in: comms/rcclx/stable_checksums.bzl"
+echo ""
+echo "The BUCK file will automatically use the checksum from stable_checksums.bzl"
