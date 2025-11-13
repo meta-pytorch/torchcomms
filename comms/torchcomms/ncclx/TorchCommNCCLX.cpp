@@ -728,7 +728,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
   checkAndAbortIfTimedOutOrError();
   if (tensor_list.size() != static_cast<size_t>(comm_size_)) {
     throw std::runtime_error(
-        "tensor_list size must equal comm_size for all_gather");
+        "tensor_list size must equal comm_size for all_gather_v");
   }
 
   // Ensure input tensor is contiguous
