@@ -690,26 +690,54 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather(
       name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
+
+  // Allocate temporary contiguous tensor to receive all gathered data
+  // PyTorch's caching allocator will manage and reuse this buffer
+  const int64_t total_elements = tensor.numel() * comm_size_;
+  at::Tensor temp_tensor = at::empty(
+      {total_elements},
+      at::TensorOptions()
+          .dtype(tensor.dtype())
+          .device(tensor.device())
+          .requires_grad(false));
+
+  // Pass both input tensor and temp_tensor to createWork for refcounting
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+      stream,
+      getOperationTimeout(options.timeout, options_.timeout),
+      {tensor, temp_tensor});
 
   work->recordStart("all_gather");
 
-  // Use multiple broadcast operations for all_gather
-  nccl_api_->groupStart();
+  // Use NCCL allGather to receive data into temporary tensor
+  ncclResult_t result = nccl_api_->allGather(
+      tensor.data_ptr(),
+      temp_tensor.data_ptr(),
+      tensor.numel(),
+      getNcclDataType(tensor),
+      nccl_comm_,
+      stream);
 
-  for (int i = 0; i < comm_size_; ++i) {
-    nccl_api_->broadcast(
-        tensor.data_ptr(),
-        tensor_list[i].data_ptr(),
-        tensor.numel(),
-        getNcclDataType(tensor_list[i]),
-        i,
-        nccl_comm_,
-        stream);
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL AllGather failed", result);
   }
 
-  nccl_api_->groupEnd();
+  // Copy data from temporary tensor to individual output tensors
+  const size_t element_size = tensor.element_size();
+  const size_t per_rank_bytes = tensor.numel() * element_size;
+  for (int i = 0; i < comm_size_; ++i) {
+    void* src_ptr =
+        static_cast<char*>(temp_tensor.data_ptr()) + (i * per_rank_bytes);
+    CUDA_CHECK(
+        cuda_api_,
+        cuda_api_->memcpyAsync(
+            tensor_list[i].data_ptr(),
+            src_ptr,
+            per_rank_bytes,
+            cudaMemcpyDeviceToDevice,
+            stream),
+        "Failed to copy from temporary tensor to output tensor");
+  }
 
   work->recordEnd();
 
