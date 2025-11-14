@@ -133,7 +133,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
     int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
     for (auto iter = 0; iter < kNumIters; iter++) {
-      NCCLCHECK_TEST(ncclPutSignal(
+      NCCLCHECK_TEST(ncclPutSignal_old(
           localbuf + numElements * statex->rank(),
           numElements,
           ncclInt32,
@@ -141,7 +141,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
           numElements * statex->rank(),
           win,
           put_stream));
-      NCCLCHECK_TEST(ncclWaitSignal(prevPeer, win, wait_stream));
+      NCCLCHECK_TEST(ncclWaitSignal_old(prevPeer, win, wait_stream));
     }
     // Barrier to ensure all peers have finished put
     this->barrier(comm, main_stream);
@@ -238,7 +238,7 @@ TEST_P(RMATestParam, winPutWait) {
   int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
   for (auto iter = 0; iter < kNumIters; iter++) {
-    NCCLCHECK_TEST(ncclPutSignal(
+    NCCLCHECK_TEST(ncclPutSignal_old(
         localBuf,
         kNumElements,
         ncclInt32,
@@ -246,7 +246,7 @@ TEST_P(RMATestParam, winPutWait) {
         kNumElements * statex->rank(),
         win,
         put_stream));
-    NCCLCHECK_TEST(ncclWaitSignal(prevPeer, win, wait_stream));
+    NCCLCHECK_TEST(ncclWaitSignal_old(prevPeer, win, wait_stream));
     if (iter == 0) {
       // Skip first iteration to avoid any warmup overhead
       CUDACHECK_TEST(cudaEventRecord(start_event, put_stream));

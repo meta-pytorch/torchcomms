@@ -11,7 +11,7 @@
 
 NCCL_API(
     ncclResult_t,
-    ncclPutSignal,
+    ncclPutSignal_old,
     const void* origin_buff,
     size_t count,
     ncclDataType_t datatype,
@@ -19,7 +19,7 @@ NCCL_API(
     size_t target_disp,
     ncclWin_t win,
     cudaStream_t stream);
-ncclResult_t ncclPutSignal(
+ncclResult_t ncclPutSignal_old(
     const void* origin_buff,
     size_t count,
     ncclDataType_t datatype,
@@ -29,7 +29,8 @@ ncclResult_t ncclPutSignal(
     cudaStream_t stream) {
   auto comm = win->comm->ctranComm_.get();
   if (!ctranInitialized(comm)) {
-    FB_ERRORRETURN(ncclInternalError, "ncclPutSignal requires Ctran support");
+    FB_ERRORRETURN(
+        ncclInternalError, "ncclPutSignal_old requires Ctran support");
   }
   return metaCommToNccl(ctranPutSignal(
       origin_buff,
@@ -111,21 +112,22 @@ ncclResult_t ncclGet(
 
 NCCL_API(
     ncclResult_t,
-    ncclWaitSignal,
+    ncclWaitSignal_old,
     int peer,
     ncclWin_t win,
     cudaStream_t stream);
-ncclResult_t ncclWaitSignal(int peer, ncclWin_t win, cudaStream_t stream) {
+ncclResult_t ncclWaitSignal_old(int peer, ncclWin_t win, cudaStream_t stream) {
   auto comm = win->comm->ctranComm_.get();
   if (!ctranInitialized(comm)) {
-    FB_ERRORRETURN(ncclInternalError, "ncclWaitSignal requires Ctran support");
+    FB_ERRORRETURN(
+        ncclInternalError, "ncclWaitSignal_old requires Ctran support");
   }
   return metaCommToNccl(ctranWaitSignal(peer, win->ctranWindow, comm, stream));
 }
 
 NCCL_API(
     ncclResult_t,
-    ncclPutSignal_v2,
+    ncclPutSignal,
     const void* origin_buff,
     size_t target_disp,
     size_t count,
@@ -135,7 +137,7 @@ NCCL_API(
     int peer,
     ncclWin_t win,
     cudaStream_t stream);
-ncclResult_t ncclPutSignal_v2(
+ncclResult_t ncclPutSignal(
     const void* origin_buff,
     size_t target_disp,
     size_t count,
@@ -164,13 +166,13 @@ ncclResult_t ncclPutSignal_v2(
 
 NCCL_API(
     ncclResult_t,
-    ncclWaitSignal_v2,
+    ncclWaitSignal,
     size_t signal_disp,
     uint64_t cmp_val,
     ncclCmpOp_t cmp_op,
     ncclWin_t win,
     cudaStream_t stream);
-ncclResult_t ncclWaitSignal_v2(
+ncclResult_t ncclWaitSignal(
     size_t signal_disp,
     uint64_t cmp_val,
     ncclCmpOp_t cmp_op,
