@@ -15,9 +15,6 @@ __global__ void MultiTbSyncTestResetKernel(int* shmCnts, int numCnts) {
   }
 }
 
-#define WORKER_ID_TO_VAL(workerId, count, bid, x) \
-  (workerId * count + bid + 100000 * x)
-
 template <TestSyncType syncType>
 __global__ void MultiTbSyncTestKernel(
     const int numWorkers,
@@ -106,6 +103,36 @@ __global__ void MultiTbSyncTestKernel(
   }
 }
 
+__global__ void MultiTbBcastTestKernel(
+    const int numWorkers,
+    const int numIter,
+    const int count, // always 1
+    int* shmData,
+    int* shmCnts,
+    int* outData) {
+  const auto workerId = blockIdx.x % numWorkers;
+  int dispatchVal = 1, joinVal = 1;
+  // different type of sync should use different counters
+  const int dispCntId = 0, joinCntId = 1;
+
+  for (int x = 0; x < numIter; x++) {
+    // every worker asigns a different value, but will be overwritten by value
+    // from worker 0 in bcast
+    int val = WORKER_ID_TO_VAL(workerId, count, 0, x);
+    MultiTbSyncDev::bcast(
+        &shmCnts[dispCntId],
+        &shmCnts[joinCntId],
+        shmData,
+        workerId,
+        numWorkers,
+        dispatchVal++,
+        joinVal++ * numWorkers,
+        val);
+
+    outData[numWorkers * x + workerId] = val;
+  }
+}
+
 template <PerfSyncType syncType>
 __global__ void MultiTbSyncTestPerfKernel(
     const int numWorkers,
@@ -149,6 +176,18 @@ __global__ void MultiTbSyncTestPerfKernel(
           ;
       }
       stepVal++;
+    } else if constexpr (syncType == PerfSyncType::kBcast) {
+      int val = 0;
+      MultiTbSyncDev::bcast(
+          &shmCnt[0], // dispatch sync
+          &shmCnt[1], // join sync
+          &shmCnt[2], // value
+          workerId,
+          numWorkers,
+          stepVal,
+          stepVal,
+          val);
+      stepVal++;
     } else if constexpr (syncType == PerfSyncType::kClusterSync) {
 #if __CUDA_ARCH__ >= 900
       cg::cluster_group cluster = cg::this_cluster();
@@ -173,6 +212,7 @@ DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kFence);
 DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kSignal);
 DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kSignalWithSync);
 DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kClusterSync);
+DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kBcast);
 
 #define DECL_MULTI_TB_SYNC_TEST_KERN(SYNC)              \
   template __global__ void MultiTbSyncTestKernel<SYNC>( \
