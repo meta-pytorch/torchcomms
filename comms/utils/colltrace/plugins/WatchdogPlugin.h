@@ -4,6 +4,8 @@
 
 #include "comms/utils/colltrace/CollTracePlugin.h"
 
+#include <thread>
+
 #include <folly/stop_watch.h>
 
 namespace meta::comms::colltrace {
@@ -15,13 +17,17 @@ struct WatchdogPluginConfig {
   bool checkAsyncError{true};
   std::function<bool(void)> funcIfError{[]() { return false; }};
   std::function<void(CollTraceEvent&)> funcTriggerOnError{
-      [](CollTraceEvent& event) { logFatalError(event, "AsyncError"); }};
+      [](CollTraceEvent& event) {
+        // Sleep for 60 seconds to allow Analyzer to collect the error.
+        std::this_thread::sleep_for(std::chrono::seconds(60));
+        logFatalError(event, "AsyncError");
+      }};
 
   // Timeout config
   bool checkTimeout{false};
   std::chrono::milliseconds timeout{std::chrono::minutes{10}};
   std::function<void(CollTraceEvent&)> funcTriggerOnTimeout{
-      [](CollTraceEvent& event) { logFatalError(event, "Timeout"); }};
+      [](CollTraceEvent& event) { logFatalError(event, "watchdog timeout"); }};
 };
 
 class WatchdogPlugin : public ICollTracePlugin {
