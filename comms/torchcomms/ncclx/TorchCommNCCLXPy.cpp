@@ -29,6 +29,9 @@ PYBIND11_MODULE(_comms_ncclx, m) {
   py::class_<TorchCommNCCLX, std::shared_ptr<TorchCommNCCLX>>(
       m, "TorchCommNCCLX");
 
+  py::class_<RdmaRemoteBuffer, std::shared_ptr<RdmaRemoteBuffer>>(
+      m, "RdmaRemoteBuffer");
+
   py::class_<RdmaTransport, std::shared_ptr<RdmaTransport>>(m, "RdmaTransport")
       // initialize a new RDMATransport using a custom init fn
       .def(py::init([](at::Device device) {
@@ -45,5 +48,37 @@ PYBIND11_MODULE(_comms_ncclx, m) {
             std::string peerUrlStr = peerUrl.cast<std::string>();
             return static_cast<int>(self.connect(peerUrlStr));
           })
-      .def("connected", &RdmaTransport::connected);
+      .def("connected", &RdmaTransport::connected)
+      .def(
+          "write",
+          [](RdmaTransport& self,
+             const RdmaMemory::View& localBuffer,
+             const RdmaRemoteBuffer& remoteBuffer) {
+            return static_cast<int>(
+                self.write(localBuffer, remoteBuffer, false).get());
+          });
+
+  py::class_<RdmaMemory::View, std::shared_ptr<RdmaMemory::View>>(
+      m, "RdmaMemoryView")
+      .def("size", &RdmaMemory::View::size);
+
+  py::class_<RdmaMemory, std::shared_ptr<RdmaMemory>>(m, "RdmaMemory")
+      .def(py::init([](const at::Tensor& tensor) {
+        TORCH_CHECK(
+            tensor.is_contiguous(),
+            "RdmaMemory currently requires a contiguous tensor");
+        // If CPU memory is passed, use device 0 for NIC discovery
+        const auto device = tensor.get_device() < 0 ? 0 : tensor.get_device();
+        return std::make_shared<RdmaMemory>(
+            tensor.data_ptr(), tensor.nbytes(), device);
+      }))
+      .def(
+          "to_view",
+          [](RdmaMemory& self) {
+            return self.createView(size_t(0), self.length());
+          })
+      .def("to_remote_buffer", [](RdmaMemory& self) {
+        return RdmaRemoteBuffer{
+            const_cast<void*>(self.data()), self.remoteKey()};
+      });
 }
