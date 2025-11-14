@@ -47,8 +47,14 @@ class CtranMultiTbSyncTest : public ::testing::Test {
   cudaEvent_t stop_;
 };
 
-std::vector<std::string> kPerfSyncTypeStrs =
-    {"Barrier", "Fence", "Dispatch", "Join", "Cluster"};
+std::vector<std::string> kPerfSyncTypeStrs = {
+    "Barrier",
+    "Fence",
+    "Dispatch",
+    "Join",
+    "Signal",
+    "SignalWithSync",
+    "Cluster"};
 
 std::unordered_map<PerfSyncType, void*> kSyncTypeToPerfKernel = {
     {PerfSyncType::kBarrier,
@@ -59,15 +65,24 @@ std::unordered_map<PerfSyncType, void*> kSyncTypeToPerfKernel = {
      (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kDispatch>},
     {PerfSyncType::kJoin,
      (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kJoin>},
+    {PerfSyncType::kSignal,
+     (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kSignal>},
+    {PerfSyncType::kSignalWithSync,
+     (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kSignalWithSync>},
     {PerfSyncType::kClusterSync,
      (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kClusterSync>}};
 
-std::vector<std::string> kTestSyncTypeStrs = {"FullBarrier", "DispatchJoin"};
+std::vector<std::string> kTestSyncTypeStrs = {
+    "FullBarrier",
+    "DispatchJoin",
+    "OneSideSignal"};
 std::unordered_map<TestSyncType, void*> kSyncTypeToTestKernel = {
     {TestSyncType::kFullBarrier,
      (void*)MultiTbSyncTestKernel<TestSyncType::kFullBarrier>},
     {TestSyncType::kDispatchJoin,
-     (void*)MultiTbSyncTestKernel<TestSyncType::kDispatchJoin>}};
+     (void*)MultiTbSyncTestKernel<TestSyncType::kDispatchJoin>},
+    {TestSyncType::kOneSideSignal,
+     (void*)MultiTbSyncTestKernel<TestSyncType::kOneSideSignal>}};
 
 void launchPerfReset(
     const int numWorkers,
@@ -215,7 +230,8 @@ TEST_P(MultiTbSyncTestParamFixture, Test) {
   const int count = 16805;
 
   int* shmCnts = nullptr;
-  int numCnts = 2; // at most 2 counters needed for each test
+  // at most numWorkers counters (only for signal) or 1-2 for others
+  int numCnts = std::max(numWorkers, 2);
   ASSERT_EQ(cudaMalloc((void**)&shmCnts, sizeof(int) * numCnts), cudaSuccess);
 
   int *shmData = nullptr, *outputData = nullptr;
@@ -284,7 +300,8 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(2, 4, 8, 16, 32),
         ::testing::Values(
             TestSyncType::kFullBarrier,
-            TestSyncType::kDispatchJoin)),
+            TestSyncType::kDispatchJoin,
+            TestSyncType::kOneSideSignal)),
     [&](const testing::TestParamInfo<MultiTbSyncTestParamFixture::ParamType>&
             info) {
       const auto syncType = std::get<1>(info.param);
@@ -304,6 +321,8 @@ INSTANTIATE_TEST_SUITE_P(
             PerfSyncType::kFence,
             PerfSyncType::kDispatch,
             PerfSyncType::kJoin,
+            PerfSyncType::kSignal,
+            PerfSyncType::kSignalWithSync,
             PerfSyncType::kClusterSync)),
     [&](const testing::TestParamInfo<MultiTbSyncPerfParamFixture::ParamType>&
             info) {

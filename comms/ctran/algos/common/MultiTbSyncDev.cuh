@@ -88,4 +88,43 @@ dispatch(T* cnt, const int blkIdx, const int numBlks, const int goal) {
   __syncthreads();
 }
 
+// Single thread block signals to the other thread block via a shared counter.
+// Optionally skip sync within the thread block by setting withSync
+// to false, if callsite has already synced.
+// The other thread block should call checkSignal to check if the signal has
+// been posted.
+// Example usage: producer consumer synchronization
+template <typename T, bool withSync>
+__device__ inline void signal(T* cnt, const T goal) {
+  if (withSync) {
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    atomicExch(cnt, goal);
+  }
+}
+
+// Single thread block to check a signal from the other thread block via a
+// shared counter.
+template <typename T>
+__device__ inline bool checkSignal(T* cnt, const T goal) {
+  __shared__ bool posted;
+  if (threadIdx.x == 0) {
+    auto cur = utils::atomicRead(cnt);
+    posted = cur >= goal;
+  }
+  __syncthreads();
+  return posted;
+}
+
+template <typename T>
+__device__ inline void waitSignal(T* cnt, const T goal) {
+  if (threadIdx.x == 0) {
+    T cur;
+    do {
+      cur = utils::atomicRead(cnt);
+    } while (cur < goal);
+  }
+  __syncthreads();
+}
 } // namespace ctran::algos::MultiTbSyncDev

@@ -31,14 +31,30 @@ __global__ void MultiTbSyncTestKernel(
   // different type of sync should use different counters
   const int syncCntId = 0, dispCntId = 0, joinCntId = 1;
 
+  const auto prevWorkerId = (workerId + numWorkers - 1) % numWorkers;
+  const auto nextWorkerId = (workerId + 1) % numWorkers;
+
   for (int x = 0; x < numIter; x++) {
     // Ensure all reads have finished before next iteration writes to shmData
     if (syncType == TestSyncType::kFullBarrier) {
       MultiTbSyncDev::barrier(
           &shmCnts[syncCntId], workerId, numWorkers, syncVal++ * numWorkers);
-    } else {
+    } else if (syncType == TestSyncType::kDispatchJoin) {
       MultiTbSyncDev::dispatch(
           &shmCnts[dispCntId], workerId, numWorkers, dispatchVal++);
+    } else {
+      // Every worker signals for previous iteration data read by itself, and
+      // waits for the previous worker's signal on whether they have finished
+      // read for shmData to be updated by this worker
+      MultiTbSyncDev::signal<int, true>(&shmCnts[workerId], syncVal);
+      MultiTbSyncDev::waitSignal(&shmCnts[prevWorkerId], syncVal);
+
+      // FIXME: mode/dev seems compiling `while
+      // (MultiTbSyncDev::checkSignal(&shmCnts[prevWorkerId], syncVal) ==
+      // false);` differently than mode/opt, which worker overrides shmData
+      // while the prevWorkerId is still reading for previous round. Need
+      // followup to understand the compiled code difference.
+      syncVal++;
     }
 
     // each worker group assigns different range of the shmData buffer
@@ -51,13 +67,20 @@ __global__ void MultiTbSyncTestKernel(
     if (syncType == TestSyncType::kFullBarrier) {
       MultiTbSyncDev::barrier(
           &shmCnts[syncCntId], workerId, numWorkers, syncVal++ * numWorkers);
-    } else {
+    } else if (syncType == TestSyncType::kDispatchJoin) {
       MultiTbSyncDev::join(
           &shmCnts[joinCntId], workerId, numWorkers, joinVal++ * numWorkers);
+    } else {
+      // Every worker signals for shmData updated by itself, and waits for the
+      // next worker's signal
+      MultiTbSyncDev::signal<int, true>(&shmCnts[workerId], syncVal);
+      MultiTbSyncDev::waitSignal(&shmCnts[nextWorkerId], syncVal);
+      syncVal++;
     }
     __threadfence();
 
-    if (syncType == TestSyncType::kFullBarrier) {
+    if (syncType == TestSyncType::kFullBarrier ||
+        syncType == TestSyncType::kOneSideSignal) {
       // Every worker copies the data written by the next worker. Result
       // from all iterations will be returned to host side for checking.
       const auto nextOffset = ((workerId + 1) % numWorkers) * count;
@@ -110,6 +133,22 @@ __global__ void MultiTbSyncTestPerfKernel(
       MultiTbSyncDev::join(
           shmCnt, workerId, numWorkers, stepVal++ * numWorkers);
 
+    } else if constexpr (syncType == PerfSyncType::kSignalWithSync) {
+      if (workerId == 0) {
+        MultiTbSyncDev::signal<int, true>(shmCnt, stepVal);
+      } else {
+        while (MultiTbSyncDev::checkSignal(shmCnt, stepVal) == false)
+          ;
+      }
+      stepVal++;
+    } else if constexpr (syncType == PerfSyncType::kSignal) {
+      if (workerId == 0) {
+        MultiTbSyncDev::signal<int, false>(shmCnt, stepVal);
+      } else {
+        while (MultiTbSyncDev::checkSignal(shmCnt, stepVal) == false)
+          ;
+      }
+      stepVal++;
     } else if constexpr (syncType == PerfSyncType::kClusterSync) {
 #if __CUDA_ARCH__ >= 900
       cg::cluster_group cluster = cg::this_cluster();
@@ -131,6 +170,8 @@ DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kBarrier);
 DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kDispatch);
 DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kJoin);
 DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kFence);
+DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kSignal);
+DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kSignalWithSync);
 DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kClusterSync);
 
 #define DECL_MULTI_TB_SYNC_TEST_KERN(SYNC)              \
@@ -144,3 +185,4 @@ DECL_MULTI_TB_SYNC_PERF_KERN(PerfSyncType::kClusterSync);
 
 DECL_MULTI_TB_SYNC_TEST_KERN(TestSyncType::kFullBarrier);
 DECL_MULTI_TB_SYNC_TEST_KERN(TestSyncType::kDispatchJoin);
+DECL_MULTI_TB_SYNC_TEST_KERN(TestSyncType::kOneSideSignal);
