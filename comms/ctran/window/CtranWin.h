@@ -74,12 +74,12 @@ struct CtranWin {
   bool nvlEnabled(int rank) const;
 
   inline bool isGpuMem() const {
-    return this->bufType == DevMemType::kCudaMalloc ||
-        this->bufType == DevMemType::kCumem;
+    return bufType_ == DevMemType::kCudaMalloc ||
+        bufType_ == DevMemType::kCumem;
   }
 
  private:
-  DevMemType bufType{DevMemType::kCumem};
+  DevMemType bufType_{DevMemType::kCumem};
   // rank: window::OpCountType as key
   folly::Synchronized<
       std::unordered_map<std::pair<int, window::OpCountType>, uint64_t>>
