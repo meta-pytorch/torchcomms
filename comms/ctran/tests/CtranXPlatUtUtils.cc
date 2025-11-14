@@ -245,10 +245,13 @@ TestCtranCommRAII::TestCtranCommRAII(std::unique_ptr<mccl::McclComm> mcclComm)
   ctranComm = mcclComm_->comm_.get();
 }
 
-std::unique_ptr<TestCtranCommRAII> createDummyCtranComm() {
+std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId) {
+  CUDACHECK_TEST(cudaSetDevice(devId));
+
   CHECK_EQ(ctran::utils::commCudaLibraryInit(), commSuccess);
+
   mccl::McclCommCreateOpts mcclCreateOpts{
-      .cudaDeviceId = 0,
+      .cudaDeviceId = devId,
       .enableFaultTolerance = false,
   };
 

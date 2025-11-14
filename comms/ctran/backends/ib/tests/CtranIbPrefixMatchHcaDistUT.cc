@@ -4,21 +4,20 @@
 #include <gtest/gtest.h>
 #include <nccl.h>
 #include <iostream>
-#include "comm.h"
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran::ibvwrap;
 
-class CtranIbHcaTest : public NcclxBaseTest {
+class CtranIbHcaTest : public CtranDistTest {
  public:
   CtranIbHcaTest() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
+    CtranDistTest::SetUp();
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
@@ -38,7 +37,11 @@ TEST_F(CtranIbHcaTest, IbHcaPrefixMatchDev) {
   int nDevices;
   CUDACHECK_TEST(cudaGetDeviceCount(&nDevices));
 
+#if !defined(USE_ROCM)
   std::string ibHcaStr = "mlx5_";
+#else
+  std::string ibHcaStr = "bnxt_re";
+#endif
   setenv("NCCL_IB_HCA", ibHcaStr.c_str(), 1);
   // Reinitialize CVAR after setenv
   ncclCvarInit();
@@ -46,12 +49,8 @@ TEST_F(CtranIbHcaTest, IbHcaPrefixMatchDev) {
   // Rank 0 creates comm with differen local GPU, to check whether all used
   // devices match the condition
   for (int devId = 0; devId < nDevices; devId++) {
-    int myDevId = this->globalRank == 0 ? devId : this->localRank;
     auto ctrlMgr = std::make_unique<CtranCtrlManager>();
-    // TODO: remove this once CtranComm has proper constructor
-    auto commDeprecated =
-        createNcclComm(this->globalRank, this->numRanks, myDevId);
-    CtranComm* comm = commDeprecated->ctranComm_.get();
+    CtranComm* comm = this->commRAII->ctranComm;
 
     EXPECT_EQ(NCCL_IB_HCA_PREFIX, "");
 
@@ -68,13 +67,12 @@ TEST_F(CtranIbHcaTest, IbHcaPrefixMatchDev) {
     } catch (const std::bad_alloc& e) {
       printf("CtranIbTest: IB backend not enabled. Skip test\n");
     }
-    NCCLCHECK_TEST(ncclCommDestroy(commDeprecated));
   }
 }
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

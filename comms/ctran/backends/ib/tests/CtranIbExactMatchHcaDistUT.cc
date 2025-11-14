@@ -4,21 +4,20 @@
 #include <gtest/gtest.h>
 #include <nccl.h>
 #include <iostream>
-#include "comm.h"
+
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
-#include "comms/testinfra/TestUtils.h"
-#include "comms/testinfra/TestsDistUtils.h"
+#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran::ibvwrap;
 
-class CtranIbHcaTest : public NcclxBaseTest {
+class CtranIbHcaTest : public CtranDistTest {
  public:
   CtranIbHcaTest() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    NcclxBaseTest::SetUp();
+    CtranDistTest::SetUp();
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
@@ -38,17 +37,31 @@ TEST_F(CtranIbHcaTest, IbHcaExactMatchDev) {
   int nDevices;
   CUDACHECK_TEST(cudaGetDeviceCount(&nDevices));
 
+#if !defined(USE_ROCM)
   std::string ibHcaStr =
-      "=mlx5_10:1,mlx5_0:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_9:1,mlx5_11:1";
+      "=mlx5_0:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_9:1,mlx5_10:1,mlx5_11:1";
   std::vector<std::string> ibHcaExactDevs{
-      "mlx5_10",
       "mlx5_0",
       "mlx5_3",
       "mlx5_4",
       "mlx5_5",
       "mlx5_6",
       "mlx5_9",
+      "mlx5_10",
       "mlx5_11"};
+#else
+  std::string ibHcaStr =
+      "=bnxt_re0:1,bnxt_re1:1,bnxt_re2:1,bnxt_re3:1,bnxt_re4:1,bnxt_re5:1,bnxt_re6:1,bnxt_re7:1";
+  std::vector<std::string> ibHcaExactDevs{
+      "bnxt_re0",
+      "bnxt_re1",
+      "bnxt_re2",
+      "bnxt_re3",
+      "bnxt_re4",
+      "bnxt_re5",
+      "bnxt_re6",
+      "bnxt_re7"};
+#endif
   setenv("NCCL_IB_HCA", ibHcaStr.c_str(), 1);
   // Reinitialize CVAR after setenv
   ncclCvarInit();
@@ -57,12 +70,11 @@ TEST_F(CtranIbHcaTest, IbHcaExactMatchDev) {
   // devices match the condition
   nDevices = std::min(nDevices, (int)ibHcaExactDevs.size());
   for (int devId = 0; devId < nDevices; devId++) {
-    int myDevId = this->globalRank == 0 ? devId : this->localRank;
     auto ctrlMgr = std::make_unique<CtranCtrlManager>();
-    // TODO: remove this once CtranComm has proper constructor
-    auto commDeprecated =
-        createNcclComm(this->globalRank, this->numRanks, myDevId);
-    CtranComm* comm = commDeprecated->ctranComm_.get();
+    // CtranComm* comm = this->commRAII->ctranComm;
+
+    std::unique_ptr<TestCtranCommRAII> commRAII_ = createDummyCtranComm(devId);
+    CtranComm* comm = commRAII_->ctranComm;
 
     EXPECT_EQ(NCCL_IB_HCA_PREFIX, "=");
 
@@ -78,13 +90,15 @@ TEST_F(CtranIbHcaTest, IbHcaExactMatchDev) {
     } catch (const std::bad_alloc& e) {
       printf("CtranIbTest: IB backend not enabled. Skip test\n");
     }
-    NCCLCHECK_TEST(ncclCommDestroy(commDeprecated));
+
+    commRAII.reset();
+    comm->destroy();
   }
 }
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

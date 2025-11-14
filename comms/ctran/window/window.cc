@@ -20,7 +20,7 @@ CtranWin::CtranWin(
     size_t size,
     size_t signalSize,
     DevMemType bufType)
-    : comm(comm), dataSize(size), signalSize(signalSize), bufType(bufType) {};
+    : comm(comm), dataSize(size), signalSize(signalSize), bufType_(bufType) {};
 
 commResult_t CtranWin::exchange() {
   auto statex = comm->statex_.get();
@@ -34,12 +34,12 @@ commResult_t CtranWin::exchange() {
 
   // Registration via ctran mapper.
   FB_COMMCHECK(comm->ctran_->mapper->regMem(
-      this->winBasePtr,
-      this->range,
-      &(this->segHdl),
+      winBasePtr,
+      range,
+      &(segHdl),
       true,
       true, /* NCCL managed buffer */
-      &this->regHdl));
+      &regHdl));
 
   // Handshake with other peers for registration exchange and network
   // connection setup
@@ -83,7 +83,7 @@ commResult_t CtranWin::allocate() {
   auto statex = comm->statex_.get();
   const auto myRank = statex->rank();
 
-  if (this->winBasePtr != nullptr) {
+  if (winBasePtr != nullptr) {
     FB_ERRORRETURN(commInternalError, "CtranWin already allocated.");
   }
 
@@ -91,9 +91,9 @@ commResult_t CtranWin::allocate() {
   CUmemGenericAllocationHandle allocHandle;
 
   size_t allocSize = dataSize + signalSize * sizeof(uint64_t);
-  if (this->bufType == DevMemType::kHostPinned) {
+  if (bufType_ == DevMemType::kHostPinned) {
     FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
-    this->range = allocSize;
+    range = allocSize;
   } else {
     FB_COMMCHECK(
         utils::commCuMemAlloc(
@@ -106,10 +106,10 @@ commResult_t CtranWin::allocate() {
 
     // query the actually allocated range of the memory
     CUdeviceptr pbase = 0;
-    FB_CUCHECK(cuMemGetAddressRange(&pbase, &this->range, (CUdeviceptr)addr));
+    FB_CUCHECK(cuMemGetAddressRange(&pbase, &range, (CUdeviceptr)addr));
   }
 
-  this->winBasePtr = addr;
+  winBasePtr = addr;
   winBaseSignalPtr =
       reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr) + dataSize);
 
@@ -119,7 +119,7 @@ commResult_t CtranWin::allocate() {
       "CTRAN-WINDOW: Rank {} allocated local winBase {} winSigBase {} "
       "dataSize {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}]",
       myRank,
-      this->winBasePtr,
+      winBasePtr,
       (void*)winBaseSignalPtr,
       dataSize,
       signalSize,
@@ -155,9 +155,9 @@ commResult_t CtranWin::free() {
   // are launched.
   FB_COMMCHECK(comm->ctran_->mapper->barrier());
 
-  if (this->segHdl != nullptr) {
-    FB_COMMCHECK(comm->ctran_->mapper->deregMem(
-        this->segHdl, true /* skipRemRelease */));
+  if (segHdl != nullptr) {
+    FB_COMMCHECK(
+        comm->ctran_->mapper->deregMem(segHdl, true /* skipRemRelease */));
   }
 
   // Deregister remote memory for ctran mapper
@@ -168,8 +168,8 @@ commResult_t CtranWin::free() {
     }
   }
   // Release local memory
-  if (this->bufType == DevMemType::kHostPinned) {
-    FB_CUDACHECK(cudaFreeHost(this->winBasePtr));
+  if (bufType_ == DevMemType::kHostPinned) {
+    FB_CUDACHECK(cudaFreeHost(winBasePtr));
   } else {
     FB_COMMCHECK(utils::commCuMemFree(remWinInfo[statex->rank()].addr));
   }
@@ -178,7 +178,7 @@ commResult_t CtranWin::free() {
 }
 
 bool CtranWin::nvlEnabled(int rank) const {
-  return this->bufType != DevMemType::kHostPinned &&
+  return bufType_ != DevMemType::kHostPinned &&
       comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
 }
 
@@ -205,17 +205,17 @@ commResult_t ctranWinAllocate(
   hints.get("window_buffer_location", locationRes);
   hints.get("window_signal_bufsize", sigBufSize);
 
-  CtranWin* win_ = new struct CtranWin(
+  CtranWin* newWin = new CtranWin(
       comm,
       size,
       sigBufSize.empty() ? NCCL_CTRAN_WIN_SIGNAL_SIZE : std::stoi(sigBufSize),
       locationRes == "cpu" ? DevMemType::kHostPinned : DevMemType::kCumem);
-  FB_COMMCHECK(win_->allocate());
-  FB_COMMCHECK(win_->exchange());
+  FB_COMMCHECK(newWin->allocate());
+  FB_COMMCHECK(newWin->exchange());
   if (baseptr) {
-    *baseptr = win_->winBasePtr;
+    *baseptr = newWin->winBasePtr;
   }
-  *win = win_;
+  *win = newWin;
   return commSuccess;
 }
 

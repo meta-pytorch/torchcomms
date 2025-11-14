@@ -28,7 +28,7 @@ std::string_view getCollectiveStateStr(CollTraceEvent& curEvent) {
 void logFatalError(CollTraceEvent& curEvent, std::string_view errorType) {
   auto metadataDynamic = curEvent.collRecord->toDynamic();
   auto errorString = fmt::format(
-      "Collective (OpCount={}, OpType={}, Count={}, DataType={} CurrentState={}) for Comm {} raised {}",
+      "FatalError: Collective (OpCount={}, OpType={}, Count={}, DataType={} CurrentState={}) for Comm {} raised {}",
       metadataDynamic.getDefault("opCount", "Unknown").asString(),
       metadataDynamic.getDefault("opName", "Unknown").asString(),
       metadataDynamic.getDefault("count", "N/A").asString(),

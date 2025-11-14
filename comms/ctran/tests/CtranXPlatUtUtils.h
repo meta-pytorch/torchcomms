@@ -57,7 +57,7 @@ class TestCtranCommRAII {
   std::unique_ptr<mccl::McclComm> mcclComm_;
 };
 
-std::unique_ptr<TestCtranCommRAII> createDummyCtranComm();
+std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId = 0);
 
 enum class InitEnvType { MPI, TCP_STORE };
 inline InitEnvType getInitEnvType() {
