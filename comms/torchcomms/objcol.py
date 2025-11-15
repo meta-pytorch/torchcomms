@@ -1,5 +1,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+
+# pyre-strict
+
+import functools
 import io
+import os
+
+import pickle
 from datetime import timedelta
 from typing import Any
 
@@ -9,12 +16,38 @@ from torch.monitor import _WaitCounter
 from torchcomms._comms import TorchComm
 
 
+class _Serialization:
+    """Serialization helper with serialize and deserialize methods."""
+
+    def __init__(self) -> None:
+        self.use_pickle: bool = os.getenv("TORCHCOMMS_SERIALIZATION") == "pickle"
+
+    def serialize(self, f: io.BytesIO, obj: object) -> None:
+        if self.use_pickle:
+            pickle.Pickler(f).dump(obj)
+        else:
+            torch.save(obj, f)
+
+    def deserialize(self, f: io.BytesIO, weights_only: bool) -> object:
+        if self.use_pickle:
+            return pickle.Unpickler(f).load()
+        else:
+            return torch.load(f, weights_only=weights_only)
+
+
+@functools.lru_cache(maxsize=None)
+def get_serialization() -> _Serialization:
+    """Returns a cached serialization object with serialize and deserialize methods."""
+    return _Serialization()
+
+
 def _object_to_tensor(
     obj: object, device: torch.device
 ) -> tuple[torch.Tensor, torch.Tensor]:
     with _WaitCounter("pytorch.wait_counter.torchcomms._object_to_tensor").guard():
         f = io.BytesIO()
-        torch.save(obj, f)
+        serialization = get_serialization()
+        serialization.serialize(f, obj)
         byte_storage = torch.ByteStorage._from_buffer(f.getvalue())  # type: ignore[attr-defined]
         # Do not replace `torch.ByteTensor` or `torch.LongTensor` with torch.tensor and specifying dtype.
         # Otherwise, it will cause 100X slowdown.
@@ -30,7 +63,8 @@ def _tensor_to_object(
     with _WaitCounter("pytorch.wait_counter.torchcomms._tensor_to_object").guard():
         tensor = tensor.cpu()
         buf = tensor.numpy().tobytes()[:tensor_size]
-        return torch.load(io.BytesIO(buf), weights_only=weights_only)
+        serialization = get_serialization()
+        return serialization.deserialize(io.BytesIO(buf), weights_only=weights_only)
 
 
 def all_gather_object(
@@ -445,7 +479,7 @@ def broadcast_object_list(
     root: int,
     timeout: timedelta | None = None,
     weights_only: bool = True,
-):
+) -> None:
     """
     Broadcasts picklable objects in ``object_list`` to the whole comm.
 
