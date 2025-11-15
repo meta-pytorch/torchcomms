@@ -457,15 +457,12 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
 
   tracing_->recordEventWithInputOutput("recv", src, {tensor}, {tensor});
 
-  auto originalDevice = tensor.device();
-
   // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
 
   return createWork(
       [tensor,
        tensorCPU,
-       originalDevice,
        src,
        options,
        context = context_,
@@ -482,7 +479,10 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
             tag,
             options.timeout);
 
-        tensor.copy_(tensorCPU);
+        if (tensorCPU.device() != tensor.device()) {
+          // Copy back to original device if needed
+          tensor.copy_(tensorCPU);
+        }
       },
       async_op);
 }
@@ -535,13 +535,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::broadcast(
 
   tracing_->recordEventWithInputOutput("broadcast", root, {tensor}, {tensor});
 
-  auto originalDevice = tensor.device();
   auto tensorCPU = tensor.to(at::kCPU);
 
   return createWork(
       [tensor,
        tensorCPU,
-       originalDevice,
        root,
        options,
        context = context_,
@@ -557,7 +555,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::broadcast(
 
         gloo::broadcast(opts);
 
-        tensor.copy_(tensorCPU);
+        if (tensorCPU.device() != tensor.device()) {
+          // This will block the CPU thread so we don't need to synchronize the
+          // streams.
+          tensor.copy_(tensorCPU);
+        }
       },
       async_op);
 }
@@ -573,14 +575,12 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
 
   tracing_->recordEventWithInputOutput("all_reduce", rank_, {tensor}, {tensor});
 
-  auto originalDevice = tensor.device();
-  auto tensorCPU = tensor.to(at::kCPU).contiguous().clone();
+  auto tensorCPU = tensor.to(at::kCPU);
   auto opCPU = convertReduceOpToCPU(op);
 
   return createWork(
       [tensor,
        tensorCPU,
-       originalDevice,
        opCPU,
        options,
        context = context_,
@@ -598,7 +598,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
         gloo::allreduce(opts);
         postReduce(tensorCPU, opCPU);
 
-        tensor.copy_(tensorCPU);
+        if (tensorCPU.device() != tensor.device()) {
+          // This will block the CPU thread so we don't need to synchronize the
+          // streams.
+          tensor.copy_(tensorCPU);
+        }
       },
       async_op);
 }
@@ -615,14 +619,12 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
 
   tracing_->recordEventWithInputOutput("reduce", root, {tensor}, {tensor});
 
-  auto originalDevice = tensor.device();
-  auto tensorCPU = tensor.to(at::kCPU).contiguous().clone();
+  auto tensorCPU = tensor.to(at::kCPU);
   auto opCPU = convertReduceOpToCPU(op);
 
   return createWork(
       [tensor,
        tensorCPU,
-       originalDevice,
        root,
        opCPU,
        options,
@@ -642,7 +644,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
         gloo::reduce(opts);
         postReduce(tensorCPU, opCPU);
 
-        tensor.copy_(tensorCPU);
+        if (tensorCPU.device() != tensor.device()) {
+          // This will block the CPU thread so we don't need to synchronize the
+          // streams.
+          tensor.copy_(tensorCPU);
+        }
       },
       async_op);
 }
@@ -674,7 +680,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
   tracing_->recordEventWithInputOutput(
       "all_gather", rank_, tensor_list, {tensor});
 
-  auto originalDevice = tensor.device();
   auto tensorCPU = tensor.to(at::kCPU);
   std::vector<at::Tensor> tensorListCPU;
   tensorListCPU.reserve(tensor_list.size());
@@ -687,7 +692,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
        tensor_list,
        tensorCPU,
        tensorListCPU,
-       originalDevice,
        options,
        size = comm_size_,
        context = context_,
@@ -717,7 +721,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
           tensorListCPU[i].copy_(chunk);
         }
 
-        // Copy results back to original tensors
+        // Copy results back to original tensors (works for both CPU and CUDA)
         for (size_t i = 0; i < tensorListCPU.size(); ++i) {
           tensor_list[i].copy_(tensorListCPU[i]);
         }
@@ -751,7 +755,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_single(
   tracing_->recordEventWithInputOutput(
       "all_gather_single", rank_, {input}, {output});
 
-  auto originalDevice = output.device();
   auto inputCPU = input.to(at::kCPU);
   auto outputCPU = output.to(at::kCPU);
 
@@ -760,7 +763,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_single(
        output,
        inputCPU,
        outputCPU,
-       originalDevice,
        options,
        context = context_,
        tag = nextTag()]() mutable {
@@ -777,7 +779,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_single(
 
         gloo::allgather(opts);
 
-        output.copy_(outputCPU);
+        if (outputCPU.device() != output.device()) {
+          // This will block the CPU thread so we don't need to synchronize the
+          // streams.
+          output.copy_(outputCPU);
+        }
       },
       async_op);
 }
@@ -848,7 +854,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
       "reduce_scatter_single", rank_, {input}, {output});
 
   // Convert tensors to CPU (noop if already on CPU)
-  auto inputCPU = input.to(at::kCPU).contiguous().clone();
+  auto inputCPU = input.to(at::kCPU);
   auto opCPU = convertReduceOpToCPU(op);
 
   return createWork(
@@ -912,7 +918,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_single(
   tracing_->recordEventWithInputOutput(
       "all_to_all_single", rank_, {input}, {output});
 
-  auto originalDevice = output.device();
+  // Convert tensors to CPU
   auto inputCPU = input.to(at::kCPU);
   auto outputCPU = output.to(at::kCPU);
 
@@ -921,7 +927,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_single(
        output,
        inputCPU,
        outputCPU,
-       originalDevice,
        options,
        context = context_,
        tag = nextTag()]() mutable {
@@ -938,7 +943,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_single(
 
         gloo::alltoall(opts);
 
-        output.copy_(outputCPU);
+        if (outputCPU.device() != output.device()) {
+          // This will block the CPU thread so we don't need to synchronize the
+          // streams.
+          output.copy_(outputCPU);
+        }
       },
       async_op);
 }
@@ -987,7 +996,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
   tracing_->recordEventWithInputOutput(
       "all_to_all_v_single", rank_, {input}, {output});
 
-  auto originalDevice = output.device();
   auto inputCPU = input.to(at::kCPU);
   auto outputCPU = output.to(at::kCPU);
 
@@ -996,7 +1004,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
        output,
        inputCPU,
        outputCPU,
-       originalDevice,
        input_split_sizes,
        output_split_sizes,
        options,
@@ -1032,7 +1039,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
 
         gloo::alltoallv(opts);
 
-        output.copy_(outputCPU);
+        if (outputCPU.device() != output.device()) {
+          // This will block the CPU thread so we don't need to synchronize the
+          // streams.
+          output.copy_(outputCPU);
+        }
       },
       async_op);
 }
@@ -1169,7 +1180,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::scatter(
   tracing_->recordEventWithInputOutput(
       "scatter", root, input_tensor_list, {output_tensor});
 
-  auto originalDevice = output_tensor.device();
   auto outputCPU = output_tensor.to(at::kCPU);
 
   // Only root rank needs to prepare input list
@@ -1184,7 +1194,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::scatter(
   return createWork(
       [output_tensor,
        outputCPU,
-       originalDevice,
        inputListCPU,
        root,
        options,
@@ -1209,7 +1218,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::scatter(
 
         gloo::scatter(opts);
 
-        output_tensor.copy_(outputCPU);
+        if (outputCPU.device() != output_tensor.device()) {
+          // This will block the CPU thread so we don't need to synchronize the
+          // streams.
+          output_tensor.copy_(outputCPU);
+        }
       },
       async_op);
 }
@@ -1243,7 +1256,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::gather(
   tracing_->recordEventWithInputOutput(
       "gather", root, {input_tensor}, output_tensor_list);
 
-  auto originalDevice = input_tensor.device();
   auto inputCPU = input_tensor.to(at::kCPU);
 
   // Only root rank needs to prepare output
@@ -1267,7 +1279,6 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::gather(
        inputCPU,
        outputConcatCPU,
        outputListCPU,
-       originalDevice,
        root,
        options,
        rank = rank_,
@@ -1301,7 +1312,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::gather(
             outputListCPU[i].copy_(chunk);
           }
 
-          // Copy results back to original tensors
+          // Copy results back to original tensors (works for both CPU and CUDA)
           for (size_t i = 0; i < outputListCPU.size(); ++i) {
             output_tensor_list[i].copy_(outputListCPU[i]);
           }
