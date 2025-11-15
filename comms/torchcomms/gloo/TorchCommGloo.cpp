@@ -721,9 +721,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
           tensorListCPU[i].copy_(chunk);
         }
 
-        // Copy results back to original tensors (works for both CPU and CUDA)
+        // Copy results back to original device if needed
         for (size_t i = 0; i < tensorListCPU.size(); ++i) {
-          tensor_list[i].copy_(tensorListCPU[i]);
+          if (tensorListCPU[i].device() != tensor_list[i].device()) {
+            tensor_list[i].copy_(tensorListCPU[i]);
+          }
         }
       },
       async_op);
@@ -1312,9 +1314,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::gather(
             outputListCPU[i].copy_(chunk);
           }
 
-          // Copy results back to original tensors (works for both CPU and CUDA)
+          // Copy results back to original device if needed
           for (size_t i = 0; i < outputListCPU.size(); ++i) {
-            output_tensor_list[i].copy_(outputListCPU[i]);
+            if (outputListCPU[i].device() != output_tensor_list[i].device()) {
+              output_tensor_list[i].copy_(outputListCPU[i]);
+            }
           }
         }
       },
