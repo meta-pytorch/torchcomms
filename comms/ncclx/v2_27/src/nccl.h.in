@@ -689,23 +689,23 @@ ncclResult_t pncclWinFree(ncclComm_t comm, ncclWin_t win);
  * One-side put operation from a local buffer to a remote peer's pre-allocated
  * and registered buffer within a NCCL window.
  */
+ncclResult_t ncclPutSignal_old(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWin_t win,
+    cudaStream_t stream);
+ncclResult_t pncclPutSignal_old(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWin_t win,
+    cudaStream_t stream);
 ncclResult_t ncclPutSignal(
-    const void* originBuff,
-    size_t count,
-    ncclDataType_t datatype,
-    int peer,
-    size_t targetDisp,
-    ncclWin_t win,
-    cudaStream_t stream);
-ncclResult_t pncclPutSignal(
-    const void* originBuff,
-    size_t count,
-    ncclDataType_t datatype,
-    int peer,
-    size_t targetDisp,
-    ncclWin_t win,
-    cudaStream_t stream);
-ncclResult_t ncclPutSignal_v2(
     const void* originBuff,
     size_t targetDisp,
     size_t count,
@@ -745,13 +745,13 @@ ncclResult_t ncclPutSignal_v2(
 /*
  * Wait for a signal from remote peer to complete the put operation.
  */
-ncclResult_t ncclWaitSignal(int peer, ncclWin_t win, cudaStream_t stream);
-ncclResult_t pncclWaitSignal(int peer, ncclWin_t win, cudaStream_t stream);
+ncclResult_t ncclWaitSignal_old(int peer, ncclWin_t win, cudaStream_t stream);
+ncclResult_t pncclWaitSignal_old(int peer, ncclWin_t win, cudaStream_t stream);
 
 /*
  * Wait for a signal given the local signal displacement, the signal value, and the comparison op.
  */
-ncclResult_t ncclWaitSignal_v2(
+ncclResult_t ncclWaitSignal(
     size_t signalDisp,
     uint64_t cmpVal,
     ncclCmpOp_t cmpOp,

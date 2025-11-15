@@ -259,7 +259,7 @@ ncclResult_t DefaultNcclxApi::winWaitSignal(
     NcclxWindow win,
     cudaStream_t stream) {
 #ifdef NCCL_RMA_SUPPORTED
-  return ncclWaitSignal_v2(signal_disp, cmp_val, cmp_op, win, stream);
+  return ncclWaitSignal(signal_disp, cmp_val, cmp_op, win, stream);
 #else
   throw std::logic_error(
       "NCCL does not support window, NCCL_RMA_SUPPORTED is not set");
