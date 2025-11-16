@@ -622,7 +622,7 @@ TEST_F(CollTraceTest, winPutWait) {
   int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
   for (auto iter = 0; iter < kNumIters; iter++) {
-    NCCLCHECK_TEST(ncclPutSignal(
+    NCCLCHECK_TEST(ncclPutSignal_old(
         localbuf + kNumElements * statex->rank(),
         kNumElements,
         ncclInt32,
@@ -630,7 +630,7 @@ TEST_F(CollTraceTest, winPutWait) {
         kNumElements * statex->rank(),
         win,
         put_stream));
-    NCCLCHECK_TEST(ncclWaitSignal(prevPeer, win, wait_stream));
+    NCCLCHECK_TEST(ncclWaitSignal_old(prevPeer, win, wait_stream));
   }
 
   int errs = 0;
