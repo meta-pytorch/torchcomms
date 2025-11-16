@@ -182,5 +182,14 @@ class ObjColTest(unittest.TestCase):
         self.assertEqual(scatter_output[0], expected_object)
 
 
+class ObjColTestWithPickle(ObjColTest):
+    def setUp(self):
+        """Set up test environment before each test."""
+        import os
+
+        os.environ["TORCHCOMMS_SERIALIZATION"] = "pickle"
+        super().setUp()
+
+
 if __name__ == "__main__":
     unittest.main()

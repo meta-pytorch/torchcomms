@@ -17,6 +17,14 @@ extern __global__ void MultiTbSyncTestKernel(
     int* shmCnts,
     int* outData);
 
+extern __global__ void MultiTbBcastTestKernel(
+    const int numWorkers,
+    const int numIter,
+    const int count,
+    int* shmData,
+    int* shmCnts,
+    int* outData);
+
 template <PerfSyncType syncType>
 extern __global__ void MultiTbSyncTestPerfKernel(
     const int numWorkers,
@@ -47,8 +55,15 @@ class CtranMultiTbSyncTest : public ::testing::Test {
   cudaEvent_t stop_;
 };
 
-std::vector<std::string> kPerfSyncTypeStrs =
-    {"Barrier", "Fence", "Dispatch", "Join", "Cluster"};
+std::vector<std::string> kPerfSyncTypeStrs = {
+    "Barrier",
+    "Fence",
+    "Dispatch",
+    "Join",
+    "Signal",
+    "SignalWithSync",
+    "Bcast",
+    "Cluster"};
 
 std::unordered_map<PerfSyncType, void*> kSyncTypeToPerfKernel = {
     {PerfSyncType::kBarrier,
@@ -59,15 +74,28 @@ std::unordered_map<PerfSyncType, void*> kSyncTypeToPerfKernel = {
      (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kDispatch>},
     {PerfSyncType::kJoin,
      (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kJoin>},
+    {PerfSyncType::kSignal,
+     (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kSignal>},
+    {PerfSyncType::kSignalWithSync,
+     (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kSignalWithSync>},
+    {PerfSyncType::kBcast,
+     (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kBcast>},
     {PerfSyncType::kClusterSync,
      (void*)MultiTbSyncTestPerfKernel<PerfSyncType::kClusterSync>}};
 
-std::vector<std::string> kTestSyncTypeStrs = {"FullBarrier", "DispatchJoin"};
+std::vector<std::string> kTestSyncTypeStrs = {
+    "FullBarrier",
+    "DispatchJoin",
+    "OneSideSignal",
+    "BcastVal"};
 std::unordered_map<TestSyncType, void*> kSyncTypeToTestKernel = {
     {TestSyncType::kFullBarrier,
      (void*)MultiTbSyncTestKernel<TestSyncType::kFullBarrier>},
     {TestSyncType::kDispatchJoin,
-     (void*)MultiTbSyncTestKernel<TestSyncType::kDispatchJoin>}};
+     (void*)MultiTbSyncTestKernel<TestSyncType::kDispatchJoin>},
+    {TestSyncType::kOneSideSignal,
+     (void*)MultiTbSyncTestKernel<TestSyncType::kOneSideSignal>},
+    {TestSyncType::kBcastVal, (void*)MultiTbBcastTestKernel}};
 
 void launchPerfReset(
     const int numWorkers,
@@ -158,7 +186,7 @@ TEST_P(MultiTbSyncPerfParamFixture, Perf) {
   }
 
   int* shmCnts = nullptr;
-  int numCnts = 1;
+  int numCnts = 3; // bcast require 3
   ASSERT_EQ(cudaMalloc((void**)&shmCnts, sizeof(int)), cudaSuccess);
   void* resetArgs[2] = {(void*)&shmCnts, (void*)&numCnts};
   void* execArgs[4] = {
@@ -212,10 +240,13 @@ TEST_P(MultiTbSyncTestParamFixture, Test) {
   auto [numWorkers, syncType] = GetParam();
 
   const int numIter = 1000;
-  const int count = 16805;
+  // bcast uses shmData to exchange single integer, others use shmData for
+  // multi-element data
+  const int count = syncType == TestSyncType::kBcastVal ? 1 : 16805;
 
   int* shmCnts = nullptr;
-  int numCnts = 2; // at most 2 counters needed for each test
+  // at most numWorkers counters (only for signal) or 1-2 for others
+  int numCnts = std::max(numWorkers, 2);
   ASSERT_EQ(cudaMalloc((void**)&shmCnts, sizeof(int) * numCnts), cudaSuccess);
 
   int *shmData = nullptr, *outputData = nullptr;
@@ -265,7 +296,9 @@ TEST_P(MultiTbSyncTestParamFixture, Test) {
 
       const auto nextWorkerId = (workerId + 1) % numWorkers;
       for (auto i = 0; i < count; i++) {
-        expData[i] = WORKER_ID_TO_VAL(nextWorkerId, count, i, x);
+        expData[i] = syncType == TestSyncType::kBcastVal
+            ? WORKER_ID_TO_VAL(0, count, i, x)
+            : WORKER_ID_TO_VAL(nextWorkerId, count, i, x);
       }
       ASSERT_EQ(dataP, expData) << fmt::format(
           "workerId {}/{} at iteration {}", workerId, numWorkers, x);
@@ -284,7 +317,9 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(2, 4, 8, 16, 32),
         ::testing::Values(
             TestSyncType::kFullBarrier,
-            TestSyncType::kDispatchJoin)),
+            TestSyncType::kDispatchJoin,
+            TestSyncType::kOneSideSignal,
+            TestSyncType::kBcastVal)),
     [&](const testing::TestParamInfo<MultiTbSyncTestParamFixture::ParamType>&
             info) {
       const auto syncType = std::get<1>(info.param);
@@ -304,6 +339,9 @@ INSTANTIATE_TEST_SUITE_P(
             PerfSyncType::kFence,
             PerfSyncType::kDispatch,
             PerfSyncType::kJoin,
+            PerfSyncType::kSignal,
+            PerfSyncType::kSignalWithSync,
+            PerfSyncType::kBcast,
             PerfSyncType::kClusterSync)),
     [&](const testing::TestParamInfo<MultiTbSyncPerfParamFixture::ParamType>&
             info) {

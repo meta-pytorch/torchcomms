@@ -50,12 +50,14 @@ void CachingAllocatorHookImpl::regDeregMem(
     if (registeredMemMap_.find(addr) != registeredMemMap_.end()) {
       throw std::runtime_error("Memory already registered with NCCL");
     } else {
-      registeredMemMap_[addr] = len;
+      registeredMemMap_.emplace(addr, MemInfo{len, te.device_});
     }
 
     // Register the memory through ncclCommRegister and add to commRegHandles_
     for (auto& comm : registeredComms_) {
-      comm->register_address(TorchCommRCCLX::AddressWithLen{addr, len});
+      if (te.device_ == comm->getDevice().index()) {
+        comm->register_address(TorchCommRCCLX::AddressWithLen{addr, len});
+      }
     }
   } else if (unregister_mem) {
     // Memory got freed, deregister it with NCCL
@@ -69,7 +71,9 @@ void CachingAllocatorHookImpl::regDeregMem(
     }
 
     for (auto& comm : registeredComms_) {
-      comm->deregister_address(TorchCommRCCLX::Address{addr});
+      if (te.device_ == comm->getDevice().index()) {
+        comm->deregister_address(TorchCommRCCLX::Address{addr});
+      }
     }
   }
 }
@@ -83,8 +87,11 @@ void CachingAllocatorHookImpl::registerComm(TorchCommRCCLX* comm) {
   }
 
   // Register all memory that has already been allocated
-  for (const auto& [addr, len] : registeredMemMap_) {
-    comm->register_address(TorchCommRCCLX::AddressWithLen{addr, len});
+  for (const auto& [addr, mem_info] : registeredMemMap_) {
+    if (mem_info.device == comm->getDevice().index()) {
+      comm->register_address(
+          TorchCommRCCLX::AddressWithLen{addr, mem_info.len});
+    }
   }
 
   registeredComms_.insert(comm);
@@ -99,8 +106,10 @@ void CachingAllocatorHookImpl::deregisterComm(TorchCommRCCLX* comm) {
   }
 
   // De-register all memory that has already been allocated
-  for (const auto& [addr, len] : registeredMemMap_) {
-    comm->deregister_address(TorchCommRCCLX::Address{addr});
+  for (const auto& [addr, mem_info] : registeredMemMap_) {
+    if (mem_info.device == comm->getDevice().index()) {
+      comm->deregister_address(TorchCommRCCLX::Address{addr});
+    }
   }
 
   registeredComms_.erase(comm);
@@ -109,8 +118,10 @@ void CachingAllocatorHookImpl::deregisterComm(TorchCommRCCLX* comm) {
 void CachingAllocatorHookImpl::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto& comm : registeredComms_) {
-    for (const auto& [addr, len] : registeredMemMap_) {
-      comm->deregister_address(TorchCommRCCLX::Address{addr});
+    for (const auto& [addr, mem_info] : registeredMemMap_) {
+      if (mem_info.device == comm->getDevice().index()) {
+        comm->deregister_address(TorchCommRCCLX::Address{addr});
+      }
     }
   }
   registeredMemMap_.clear();

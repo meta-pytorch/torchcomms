@@ -25,8 +25,15 @@ class CachingAllocatorHookImpl {
  private:
   std::mutex mutex_;
 
-  // Map of registered memory addresses to their sizes
-  std::unordered_map<void*, size_t> registeredMemMap_;
+  struct MemInfo {
+    size_t len;
+    int32_t device;
+
+    MemInfo(size_t l, int32_t d) : len(l), device(d) {}
+  };
+
+  // Map of registered memory addresses to their sizes and device
+  std::unordered_map<void*, MemInfo> registeredMemMap_;
   // Set of registered communicators. TorchComms, manages it's membership inside
   // this set.
   std::set<TorchCommNCCL*> registeredComms_;

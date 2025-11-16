@@ -98,6 +98,14 @@ class RdmaMemory : folly::MoveOnly {
     return cudaDev_;
   }
 
+  size_t length() const {
+    return len_;
+  }
+
+  const void* data() const {
+    return buf_;
+  }
+
   /*
    * Check if the given buffer and length are contained within this memory
    * region.
