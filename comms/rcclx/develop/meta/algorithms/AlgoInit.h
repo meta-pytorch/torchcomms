@@ -8,6 +8,8 @@
 #include "param.h"
 
 // Meta custom algorithm configs
+RCCL_PARAM(DdaMaxBlocks, "DDA_MAX_BLOCKS", 24);
+
 RCCL_PARAM(EnableDdaAllReduce, "ENABLE_DDA_ALL_REDUCE", 0);
 RCCL_PARAM(
     DdaAllReduceSendbufBytes,
@@ -22,14 +24,19 @@ RCCL_PARAM(
     "DDA_ALL_REDUCE_TREE_MAX_BYTES",
     29 * 1024 * 1024);
 
-RCCL_PARAM(DdaAllReduceMaxBlocks, "DDA_ALL_REDUCE_MAX_BLOCKS", 24);
+RCCL_PARAM(EnableDdaAllGather, "ENABLE_DDA_ALL_GATHER", 0);
+RCCL_PARAM(
+    DdaAllGatherSendbufBytes,
+    "DDA_ALL_GATHER_SENDBUF_BYTES",
+    2 * 1024 * 1024);
+RCCL_PARAM(DdaAllGatherMaxBytes, "DDA_ALL_GATHER_MAX_BYTES", 16 * 1024 * 1024);
 
 std::unique_ptr<meta::comms::AlgoFactory> initAlgoFactory(ncclComm_t comm) {
   return std::make_unique<::meta::comms::AlgoFactory>(
       std::make_shared<::rcclx::BaselineBootstrap>(comm),
       comm->nRanks,
       comm->rank,
-      rcclParamDdaAllReduceMaxBlocks(),
+      rcclParamDdaMaxBlocks(),
       ::meta::comms::AlgoFactory::AllReduceOptions{
           .enableDda = static_cast<bool>(rcclParamEnableDdaAllReduce()),
           .ddaSendbufSizeBytes =
@@ -37,5 +44,11 @@ std::unique_ptr<meta::comms::AlgoFactory> initAlgoFactory(ncclComm_t comm) {
           .ddaFlatMaxThresholdBytes =
               static_cast<int>(rcclParamDdaAllReduceFlatMaxBytes()),
           .ddaTreeMaxThresholdBytes =
-              static_cast<int>(rcclParamDdaAllReduceTreeMaxBytes())});
+              static_cast<int>(rcclParamDdaAllReduceTreeMaxBytes())},
+      ::meta::comms::AlgoFactory::AllGatherOptions{
+          .enableDda = static_cast<bool>(rcclParamEnableDdaAllGather()),
+          .ddaSendbufSizeBytes =
+              static_cast<int>(rcclParamDdaAllGatherSendbufBytes()),
+          .ddaMaxThresholdBytes =
+              static_cast<int>(rcclParamDdaAllGatherMaxBytes())});
 }

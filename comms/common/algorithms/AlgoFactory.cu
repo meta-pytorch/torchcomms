@@ -12,9 +12,10 @@ AlgoFactory::AlgoFactory(
     int nRanks,
     int selfRank,
     int maxBlocks,
-    const AllReduceOptions& allReduceOpts) {
-  if (allReduceOpts.enableDda) {
-    XLOG(DBG) << "Initializing AllReduceAlgoManager";
+    const AllReduceOptions& allReduceOpts,
+    const AllGatherOptions& allGatherOpts) {
+  if (allReduceOpts.enableDda || allGatherOpts.enableDda) {
+    XLOG(DBG) << "Initializing AllReduceAlgoManager / AllGatherAlgoManager";
     for (int i = 0; i < nRanks; ++i) {
       if (i == selfRank) {
         continue;
@@ -24,7 +25,9 @@ AlgoFactory::AlgoFactory(
         CUDA_CHECK(e);
       }
     }
+  }
 
+  if (allReduceOpts.enableDda) {
     allReduceMgr_ = std::make_unique<AllReduceAlgoManager>(
         bootstrap,
         nRanks,
@@ -34,6 +37,17 @@ AlgoFactory::AlgoFactory(
         allReduceOpts.ddaFlatMaxThresholdBytes,
         allReduceOpts.ddaTreeMaxThresholdBytes);
     XLOG(DBG) << "Successfully initialized AllReduceAlgoManager";
+  }
+
+  if (allGatherOpts.enableDda) {
+    allGatherMgr_ = std::make_unique<AllGatherAlgoManager>(
+        bootstrap,
+        nRanks,
+        selfRank,
+        maxBlocks,
+        allGatherOpts.ddaSendbufSizeBytes,
+        allGatherOpts.ddaMaxThresholdBytes);
+    XLOG(DBG) << "Successfully initialized AllGatherAlgoManager";
   }
 }
 
