@@ -4,3 +4,5 @@ third-party/
 __pycache__/
 *.so
 dist/
+.lintbin/
+.pyre/
