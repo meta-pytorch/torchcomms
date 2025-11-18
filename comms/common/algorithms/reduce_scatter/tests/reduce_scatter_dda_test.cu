@@ -171,8 +171,7 @@ TYPED_TEST_P(ReduceScatterDdaTest, ddaReduceScatterIpcTest) {
           cnt,
           sendbuf_d,
           this->globalRank,
-          this->barrier,
-          accbuf_d);
+          this->barrier);
 
   cudaDeviceSynchronize();
 

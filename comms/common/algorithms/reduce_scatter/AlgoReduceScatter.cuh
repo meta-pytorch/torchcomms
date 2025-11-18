@@ -29,8 +29,7 @@ class AlgoReduceScatter {
       int nRanks,
       int selfRank,
       int maxBlocks,
-      IpcGpuBarrier* barrier,
-      const void* acc);
+      IpcGpuBarrier* barrier);
 
   virtual ~AlgoReduceScatter() = default;
 
@@ -47,7 +46,6 @@ class AlgoReduceScatter {
   int selfRank_{0};
   const size_t maxBlocks_{0};
   IpcGpuBarrier* barrier_;
-  const void* acc_{nullptr};
 };
 
 class AlgoReduceScatterDdaIpc : public AlgoReduceScatter {
@@ -74,8 +72,7 @@ class AlgoReduceScatterDdaIpc : public AlgoReduceScatter {
         &count_,
         &sendbuff_,
         &selfRank_,
-        barrier_,
-        &acc_};
+        barrier_};
     CUDA_CHECK(cudaLaunchKernel(func, grid, block, args, 0, stream_));
   }
 };

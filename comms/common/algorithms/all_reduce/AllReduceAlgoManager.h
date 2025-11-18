@@ -13,13 +13,14 @@ namespace meta::comms {
 class AllReduceAlgoManager {
  public:
   AllReduceAlgoManager(
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
       int nRanks,
       int selfRank,
       int maxBlocks,
       int ddaSendbufSizeBytes,
       int ddaFlatMaxThresholdBytes,
-      int ddaTreeMaxThresholdBytes);
+      int ddaTreeMaxThresholdBytes,
+      void** allRankDdaSendbuffs,
+      IpcGpuBarrier* barrier);
   AllReduceAlgoManager(const AllReduceAlgoManager&) = delete;
   AllReduceAlgoManager(AllReduceAlgoManager&&) = delete;
 
@@ -38,12 +39,8 @@ class AllReduceAlgoManager {
   int ddaSendbufSizeBytes_{0};
   int ddaFlatMaxThresholdBytes_{0};
   int ddaTreeMaxThresholdBytes_{0};
-  std::unique_ptr<IpcGpuBarrierResources> barrierResources_;
-  IpcGpuBarrier barrier_;
-  std::unique_ptr<DeviceBuffer> ddaSendbuf_;
-  std::unique_ptr<IpcMemHandler> memHandler_;
-  // arrary of void* (all ranks' ipc enabled sendbuf) in device memory
-  std::unique_ptr<DeviceBuffer> allRankDdaSendbuffs_;
+  void** allRankDdaSendbuffs_{nullptr};
+  IpcGpuBarrier* barrier_;
 };
 
 } // namespace meta::comms

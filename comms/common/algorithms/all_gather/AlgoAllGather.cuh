@@ -29,8 +29,7 @@ class AlgoAllGather {
       int nRanks,
       int selfRank,
       int maxBlocks,
-      IpcGpuBarrier* barrier,
-      const void* acc);
+      IpcGpuBarrier* barrier);
 
   virtual ~AlgoAllGather() = default;
 
@@ -47,7 +46,6 @@ class AlgoAllGather {
   int selfRank_{0};
   const size_t maxBlocks_{0};
   IpcGpuBarrier* barrier_;
-  const void* acc_{nullptr};
 };
 
 class AlgoAllGatherDdaIpc : public AlgoAllGather {
@@ -74,8 +72,7 @@ class AlgoAllGatherDdaIpc : public AlgoAllGather {
         &count_,
         &sendbuff_,
         &selfRank_,
-        barrier_,
-        &acc_};
+        barrier_};
     CUDA_CHECK(cudaLaunchKernel(func, grid, block, args, 0, stream_));
   }
 };

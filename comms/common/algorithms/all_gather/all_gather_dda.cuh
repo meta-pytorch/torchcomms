@@ -17,8 +17,7 @@ __launch_bounds__(512)
         size_t count,
         const T* __restrict__ sendbuff,
         int selfRank,
-        IpcGpuBarrier barrier,
-        const T* __restrict__ acc) {
+        IpcGpuBarrier barrier) {
   // use uint4 to do 16-byte loads to maximize memory efficiency
   // We assume that count % countPerThread == 0. This assumption is enforced
   // before kernel launch

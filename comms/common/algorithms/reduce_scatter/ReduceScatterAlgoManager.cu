@@ -5,39 +5,20 @@
 namespace meta::comms {
 
 ReduceScatterAlgoManager::ReduceScatterAlgoManager(
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
     int nRanks,
     int selfRank,
     int maxBlocks,
     int ddaSendbufSizeBytes,
-    int ddaMaxThresholdBytes)
+    int ddaMaxThresholdBytes,
+    void** allRankDdaSendbuffs,
+    IpcGpuBarrier* barrier)
     : nRanks_(nRanks),
       selfRank_(selfRank),
       maxBlocks_(maxBlocks),
       ddaSendbufSizeBytes_(ddaSendbufSizeBytes),
-      ddaMaxThresholdBytes_(ddaMaxThresholdBytes) {
-  auto [barrierResources, barrier] =
-      IpcGpuBarrier::mallocAndInit(nRanks_, maxBlocks_, selfRank_, bootstrap);
-  barrierResources_ = std::move(barrierResources);
-  barrier_ = barrier;
-
-  ddaSendbuf_ = std::make_unique<DeviceBuffer>(ddaSendbufSizeBytes_);
-  memHandler_ = std::make_unique<IpcMemHandler>(bootstrap, selfRank_, nRanks_);
-  memHandler_->addSelfDeviceMemPtr(ddaSendbuf_->get());
-  memHandler_->exchangeMemPtrs();
-
-  std::vector<void*> ipcSendbufs(nRanks_);
-  for (int i = 0; i < nRanks_; ++i) {
-    ipcSendbufs[i] = memHandler_->getPeerDeviceMemPtr(i);
-  }
-
-  allRankDdaSendbuffs_ =
-      std::make_unique<DeviceBuffer>(sizeof(void*) * nRanks_);
-  CUDA_CHECK(cudaMemcpy(
-      allRankDdaSendbuffs_->get(),
-      ipcSendbufs.data(),
-      sizeof(void*) * nRanks_,
-      cudaMemcpyDefault));
+      ddaMaxThresholdBytes_(ddaMaxThresholdBytes),
+      allRankDdaSendbuffs_(allRankDdaSendbuffs),
+      barrier_(barrier) {
   XLOG(DBG) << "Successfully initialized ReduceScatterAlgoManager";
 }
 
@@ -47,10 +28,9 @@ ReduceScatterAlgoManager::getReduceScatterAlgo(
     void* recvbuff,
     size_t count,
     commDataType_t datatype,
-    cudaStream_t stream,
-    const void* acc) {
-  if (count * commTypeSize(datatype) > ddaSendbufSizeBytes_) {
-    // msg size must fit into the dda sendbuf
+    cudaStream_t stream) {
+  if ((nRanks_ * count * commTypeSize(datatype)) > ddaSendbufSizeBytes_) {
+    // RS: msgSize = (nRanks_ x count x datatype) must fit into the dda sendbuf
     XLOG(DBG) << "Not using custom reduce scatter algo because message size "
               << count * commTypeSize(datatype)
               << " is larger than ddaSendbufSizeBytes " << ddaSendbufSizeBytes_;
@@ -73,20 +53,22 @@ ReduceScatterAlgoManager::getReduceScatterAlgo(
   }
 
   std::unique_ptr<AlgoReduceScatter> algo;
-  if (count * commTypeSize(datatype) > ddaMaxThresholdBytes_) {
+  if ((nRanks_ * count * commTypeSize(datatype)) > ddaMaxThresholdBytes_) {
+    // RS: msgSize = (nRanks_ x count x datatype) must less than algo threshold
     XLOG(DBG) << "Not using custom reduce scatter algo because msg size "
-              << count * commTypeSize(datatype)
+              << nRanks_ * count * commTypeSize(datatype)
               << " is larger than DDA algo threshold " << ddaMaxThresholdBytes_;
     return nullptr;
   } else {
-    if ((count * commTypeSize(datatype)) % 16) {
+    if (((count * commTypeSize(datatype)) % 16) ||
+        ((nRanks_ * count * commTypeSize(datatype)) % 16)) {
       XLOG(DBG) << "Not using DDA reduce scatter algo because send/recv buff "
                    "or msg size is not 16-byte aligned for each rank";
       return nullptr;
     }
     algo = std::make_unique<AlgoReduceScatterDdaIpc>(
         sendbuff,
-        reinterpret_cast<void**>(allRankDdaSendbuffs_->get()),
+        allRankDdaSendbuffs_,
         recvbuff,
         count,
         datatype,
@@ -94,8 +76,7 @@ ReduceScatterAlgoManager::getReduceScatterAlgo(
         nRanks_,
         selfRank_,
         maxBlocks_,
-        &barrier_,
-        acc);
+        barrier_);
   }
   return algo;
 }
