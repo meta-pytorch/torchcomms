@@ -23,10 +23,16 @@ run_tests
 export TEST_BACKEND=ncclx
 run_tests
 
-# Gloo
+# Gloo with CPU
 export TEST_BACKEND=gloo
 export TEST_DEVICE=cpu
 export CUDA_VISIBLE_DEVICES=""
 run_tests
 unset TEST_DEVICE
 unset CUDA_VISIBLE_DEVICES
+
+# Gloo with CUDA
+export TEST_BACKEND=gloo
+export TEST_DEVICE=cuda
+run_tests
+unset TEST_DEVICE
