@@ -28,6 +28,13 @@ AlgoReduceScatter::AlgoReduceScatter(
       barrier_(barrier) {}
 
 void AlgoReduceScatterDdaIpc::reduceScatter() {
+  // copy src to tmp buffers
+  CUDA_CHECK(cudaMemcpyAsync(
+      allRankDdaSendbuffs_[selfRank_],
+      sendbuff_,
+      nRanks_ * count_ * commTypeSize(datatype_),
+      cudaMemcpyDefault,
+      stream_));
   TYPED_CALL(datatype_, launchKernel);
 }
 
