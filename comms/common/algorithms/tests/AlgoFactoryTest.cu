@@ -49,6 +49,10 @@ class AlgoFactoryTest : public RcclxBaseTestFixture {
         AlgoFactory::AllGatherOptions{
             .enableDda = true,
             .ddaSendbufSizeBytes = ddaSendbufSizeBytes,
+            .ddaMaxThresholdBytes = ddaThresholdBytes},
+        AlgoFactory::ReduceScatterOptions{
+            .enableDda = true,
+            .ddaSendbufSizeBytes = ddaSendbufSizeBytes,
             .ddaMaxThresholdBytes = ddaThresholdBytes});
   }
 
@@ -219,6 +223,40 @@ TEST_F(AlgoFactoryTest, allGatherAlgoSelection) {
   auto algo = factory->getAllGatherAlgo(
       sendbuf.get(), recvbuf.get(), maxCnt, dataType, stream.get());
   EXPECT_NE(dynamic_cast<AlgoAllGatherDdaIpc*>(algo.get()), nullptr);
+}
+
+TEST_F(AlgoFactoryTest, reduceScatterAlgoSelection) {
+  CudaStream stream;
+  // if msg size is within the dda threshold, we will use DDA
+  EXPECT_NE(
+      factory->getReduceScatterAlgo(
+          sendbuf.get(), recvbuf.get(), maxOneshotCnt, dataType, stream.get()),
+      nullptr);
+  // if msg size exceeds the dda threshold, we won't use DDA
+  EXPECT_EQ(
+      factory->getReduceScatterAlgo(
+          sendbuf.get(), recvbuf.get(), maxCnt + 16, dataType, stream.get()),
+      nullptr);
+  // if sendbuf is not aligned with 16-byte, we won't do DDA
+  EXPECT_EQ(
+      factory->getReduceScatterAlgo(
+          sendbuf.get(), recvbuf.get(), maxCnt - 1, dataType, stream.get()),
+      nullptr);
+  EXPECT_EQ(
+      factory->getReduceScatterAlgo(
+          sendbuf.get(), recvbuf.get(), maxCnt - 1, dataType, stream.get()),
+      nullptr);
+  // DDA currently doesn't support int type
+  // DDA only supports SUM op
+  EXPECT_EQ(
+      factory->getReduceScatterAlgo(
+          sendbuf.get(), recvbuf.get(), maxCnt, commInt8, stream.get()),
+      nullptr);
+
+  // validate dda algo selection
+  auto algo = factory->getReduceScatterAlgo(
+      sendbuf.get(), recvbuf.get(), maxCnt, dataType, stream.get());
+  EXPECT_NE(dynamic_cast<AlgoReduceScatterDdaIpc*>(algo.get()), nullptr);
 }
 
 int main(int argc, char* argv[]) {
