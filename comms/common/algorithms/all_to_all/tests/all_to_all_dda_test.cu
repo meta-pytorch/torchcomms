@@ -6,7 +6,7 @@
 #include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
 #include "comms/common/IpcGpuBarrier.cuh"
-#include "comms/common/algorithms/all_gather/all_gather_dda.cuh"
+#include "comms/common/algorithms/all_to_all/all_to_all_dda.cuh"
 #include "comms/common/tests/TestBaselineBootstrap.h"
 #include "comms/rcclx/develop/meta/lib/tests/RcclxTestUtils.h"
 #include "comms/utils/CudaRAII.h"
@@ -22,7 +22,7 @@ const int nThreads = 128;
 } // namespace
 
 template <typename ElementType>
-class AllGatherDdaTest : public RcclxBaseTestFixture {
+class AllToAllDdaTest : public RcclxBaseTestFixture {
  public:
   void SetUp() override {
     RcclxBaseTestFixture::SetUp();
@@ -38,7 +38,8 @@ class AllGatherDdaTest : public RcclxBaseTestFixture {
     auto bootstrap = std::make_shared<TestBaselineBootstrap>(comm);
     memHandler =
         std::make_unique<IpcMemHandler>(bootstrap, globalRank, NUMRANKS);
-    ipcBuf = std::make_unique<DeviceBuffer>(sizeof(ElementType) * cnt);
+    ipcBuf =
+        std::make_unique<DeviceBuffer>(sizeof(ElementType) * NUMRANKS * cnt);
     memHandler->addSelfDeviceMemPtr(ipcBuf->get());
     memHandler->exchangeMemPtrs();
 
@@ -75,7 +76,7 @@ class AllGatherDdaTest : public RcclxBaseTestFixture {
   IpcGpuBarrier barrier;
 };
 
-TYPED_TEST_SUITE_P(AllGatherDdaTest);
+TYPED_TEST_SUITE_P(AllToAllDdaTest);
 
 // The range of the elements in the data arrary
 const int RAND_RANGE = 100;
@@ -108,21 +109,19 @@ __global__ void genData(
     int size) {
   for (auto idx = blockIdx.x * blockDim.x + threadIdx.x; idx < size;
        idx += gridDim.x * blockDim.x) {
+    // double val = curand_uniform_double(&randStates[idx]) * RAND_RANGE;
+    double val = 1 * RAND_RANGE;
     for (int i = 0; i < nRanks; ++i) {
-      // populate data and then compute ground truth of the all reduce
-      double val =
-          curand_uniform_double(&randStates[idx * nRanks + i]) * RAND_RANGE;
-      // downcast to T
-      T hval = val + i;
+      T hval = val;
       if (i == selfRank) {
         data[idx] = hval;
       }
-      groundTruth[idx + i * size] = hval;
+      groundTruth[idx] = hval;
     }
   }
 }
 
-TYPED_TEST_P(AllGatherDdaTest, ddaAllGatherIpcTest) {
+TYPED_TEST_P(AllToAllDdaTest, ddaAllToAllIpcTest) {
   using ElementType = TypeParam;
 
   // The IpcGpuBarrier requires numThreads >= numRanks
@@ -138,10 +137,10 @@ TYPED_TEST_P(AllGatherDdaTest, ddaAllGatherIpcTest) {
       reinterpret_cast<curandState_t*>(randStateBuf.get());
   initRand<<<nBlocks, nThreads>>>(randStates_d, cnt, NUMRANKS);
 
-  DeviceBuffer sendbuf(sizeof(ElementType) * cnt);
+  DeviceBuffer sendbuf(sizeof(ElementType) * NUMRANKS * cnt);
   ElementType* sendbuf_d = reinterpret_cast<ElementType*>(sendbuf.get());
 
-  DeviceBuffer accbuf(sizeof(ElementType) * cnt);
+  DeviceBuffer accbuf(sizeof(ElementType) * NUMRANKS * cnt);
   ElementType* accbuf_d = reinterpret_cast<ElementType*>(accbuf.get());
 
   DeviceBuffer groundTruth(sizeof(ElementType) * NUMRANKS * cnt);
@@ -155,11 +154,19 @@ TYPED_TEST_P(AllGatherDdaTest, ddaAllGatherIpcTest) {
       groundTruth_d,
       this->globalRank,
       NUMRANKS,
-      cnt);
+      NUMRANKS * cnt);
 
   DeviceBuffer recvbuff(sizeof(ElementType) * NUMRANKS * cnt);
   ElementType* recvbuff_d = reinterpret_cast<ElementType*>(recvbuff.get());
-  ddaAllGatherIpc<ElementType, NUMRANKS, false /*hasAcc*/>
+
+  CUDA_CHECK(cudaMemcpy(
+      reinterpret_cast<ElementType**>(
+          this->allRankIpcBufs->get())[this->globalRank],
+      sendbuf_d,
+      sizeof(ElementType) * NUMRANKS * cnt,
+      cudaMemcpyDefault));
+
+  ddaAllToAllIpc<ElementType, NUMRANKS, false /*hasAcc*/>
       <<<nBlocks, nThreads>>>(
           (ElementType**)this->allRankIpcBufs->get(),
           recvbuff_d,
@@ -177,12 +184,9 @@ TYPED_TEST_P(AllGatherDdaTest, ddaAllGatherIpcTest) {
   }
 }
 
-REGISTER_TYPED_TEST_SUITE_P(AllGatherDdaTest, ddaAllGatherIpcTest);
+REGISTER_TYPED_TEST_SUITE_P(AllToAllDdaTest, ddaAllToAllIpcTest);
 using TypesToTest = ::testing::Types<half, __nv_bfloat16>;
-INSTANTIATE_TYPED_TEST_SUITE_P(
-    AllGatherDdaTests,
-    AllGatherDdaTest,
-    TypesToTest);
+INSTANTIATE_TYPED_TEST_SUITE_P(AllToAllDdaTests, AllToAllDdaTest, TypesToTest);
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
