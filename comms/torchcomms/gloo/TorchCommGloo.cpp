@@ -1024,8 +1024,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
         outputElements.reserve(output_split_sizes.size());
 
         // Calculate number of elements in each dim 0 chunk.
-        auto dim0Numel =
-            inputCPU.numel() / std::max(inputCPU.size(0), static_cast<int64_t>(1));
+        auto dim0Numel = inputCPU.numel() /
+            std::max(inputCPU.size(0), static_cast<int64_t>(1));
         for (auto size : input_split_sizes) {
           inputElements.push_back(static_cast<int64_t>(size) * dim0Numel);
         }
