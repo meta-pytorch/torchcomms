@@ -40,13 +40,62 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
             - 'bases': list of algorithm base names (e.g., ["AllReduceDirect"])
             - 'dir': subdirectory under algos (e.g., "AllReduce")
             - 'has_ops': whether algorithm needs reduction operations
+            - 'variants': list of variant suffixes (e.g., ["", "Split", "NonContig"])
+                         defaults to [""] for algorithms without variants
     """
+    variants = algo_info.get("variants", [""])
+
     for base in algo_info["bases"]:
-        for type in types:
-            if algo_info["has_ops"]:
-                # Generate files with operations (e.g., AllReduceDirect_float_sum.cu)
-                for op in ops:
-                    file = base + "_" + type + "_" + op
+        for variant in variants:
+            # Construct the full name with variant (e.g., "AllToAllvDynamic" + "Split")
+            full_name = base + variant
+            variant = f"_{variant}" if variant else variant
+
+            for type in types:
+                if algo_info["has_ops"]:
+                    # Generate files with operations (e.g., AllReduceDirect_float_sum.cu)
+                    for op in ops:
+                        file = full_name + "_" + type + "_" + op
+                        f = open(os.path.join(gensrc, file + ".cu"), "w")
+
+                        f.write(header)
+                        f.write("\n\n")
+                        f.write(
+                            f'#include "comms/ctran/algos/{algo_info["dir"]}/{base}.cuh"'
+                        )
+                        f.write("\n\n")
+
+                        if type == "__nv_bfloat16":
+                            f.write("#if defined(__CUDA_BF16_TYPES_EXIST__)")
+                            f.write("\n")
+                        elif type == "__nv_fp8_e4m3" or type == "__nv_fp8_e5m2":
+                            f.write(
+                                "#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)"
+                            )
+                            f.write("\n")
+
+                        # Construct macro name with variant suffix
+                        macro_name = (
+                            "DECL_CTRAN_" + base.upper() + variant.upper() + "_KERN"
+                        )
+                        f.write(
+                            macro_name + "(" + type + ", comm" + op.capitalize() + ");"
+                        )
+                        f.write("\n")
+
+                        if (
+                            type == "__nv_bfloat16"
+                            or type == "__nv_fp8_e4m3"
+                            or type == "__nv_fp8_e5m2"
+                        ):
+                            f.write("#endif")
+                            f.write("\n")
+
+                        f.close()
+                        srcs += [file + ".cu"]
+                else:
+                    # Generate files without operations (e.g., AllGatherDirect_float.cu)
+                    file = full_name + "_" + type
                     f = open(os.path.join(gensrc, file + ".cu"), "w")
 
                     f.write(header)
@@ -65,13 +114,11 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
                         )
                         f.write("\n")
 
-                    f.write(
-                        f"DECL_CTRAN_{base.upper()}_KERN("
-                        + type
-                        + ", comm"
-                        + op.capitalize()
-                        + ");"
+                    # Construct macro name with variant suffix
+                    macro_name = (
+                        "DECL_CTRAN_" + base.upper() + variant.upper() + "_KERN"
                     )
+                    f.write(macro_name + "(" + type + ");")
                     f.write("\n")
 
                     if (
@@ -84,38 +131,6 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
 
                     f.close()
                     srcs += [file + ".cu"]
-            else:
-                # Generate files without operations (e.g., AllGatherDirect_float.cu)
-                file = base + "_" + type
-                f = open(os.path.join(gensrc, file + ".cu"), "w")
-
-                f.write(header)
-                f.write("\n\n")
-                f.write(f'#include "comms/ctran/algos/{algo_info["dir"]}/{base}.cuh"')
-                f.write("\n\n")
-
-                if type == "__nv_bfloat16":
-                    f.write("#if defined(__CUDA_BF16_TYPES_EXIST__)")
-                    f.write("\n")
-                elif type == "__nv_fp8_e4m3" or type == "__nv_fp8_e5m2":
-                    f.write(
-                        "#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)"
-                    )
-                    f.write("\n")
-
-                f.write(f"DECL_CTRAN_{base.upper()}_KERN(" + type + ");")
-                f.write("\n")
-
-                if (
-                    type == "__nv_bfloat16"
-                    or type == "__nv_fp8_e4m3"
-                    or type == "__nv_fp8_e5m2"
-                ):
-                    f.write("#endif")
-                    f.write("\n")
-
-                f.close()
-                srcs += [file + ".cu"]
 
 
 def gen_allreduce_files(gensrc, srcs, rules):
@@ -123,7 +138,12 @@ def gen_allreduce_files(gensrc, srcs, rules):
         gensrc,
         srcs,
         rules,
-        {"bases": ["AllReduceDirect"], "dir": "AllReduce", "has_ops": True},
+        {
+            "bases": ["AllReduceDirect"],
+            "dir": "AllReduce",
+            "has_ops": True,
+            "variants": [""],  # No variants
+        },
     )
 
 
@@ -132,7 +152,12 @@ def gen_allgather_files(gensrc, srcs, rules):
         gensrc,
         srcs,
         rules,
-        {"bases": ["AllGatherDirect"], "dir": "AllGather", "has_ops": False},
+        {
+            "bases": ["AllGatherDirect"],
+            "dir": "AllGather",
+            "has_ops": False,
+            "variants": [""],  # No variants
+        },
     )
 
 
@@ -145,11 +170,13 @@ def gen_reduce_scatter_files(gensrc, srcs, rules):
             "bases": ["ReduceScatterDirect", "ReduceScatterRing", "ReduceScatterRHD"],
             "dir": "ReduceScatter",
             "has_ops": True,
+            "variants": [""],  # No variants
         },
     )
 
 
 def gen_alltoall_files(gensrc, srcs, rules):
+    # Generate for regular AllToAll, AllToAllDedup, AllToAllv kernels (no variants)
     gen_algo_files(
         gensrc,
         srcs,
@@ -158,6 +185,20 @@ def gen_alltoall_files(gensrc, srcs, rules):
             "bases": ["AllToAll", "AllToAllDedup", "AllToAllv"],
             "dir": "AllToAll",
             "has_ops": False,
+            "variants": [""],  # No variants, just the base algorithms
+        },
+    )
+
+    # Generate for AllToAllvDynamic with three variants
+    gen_algo_files(
+        gensrc,
+        srcs,
+        rules,
+        {
+            "bases": ["AllToAllvDynamic"],
+            "dir": "AllToAll",
+            "has_ops": False,
+            "variants": ["", "Split", "SplitNonContig"],
         },
     )
 

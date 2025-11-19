@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#pragma once
 #include <stdio.h>
 #include <cstddef>
 #include "comms/ctran/algos/CtranAlgoDev.h"
@@ -633,71 +634,20 @@ __global__ void ncclKernelAllToAllvDynamicSplitNonContig(
       flag, args, DYNAMIC_SPLIT_NON_CONTIG, nonContigIndices);
 }
 
-#define DECL_ALLTOALLV_DYNAMIC_KERN(T)                    \
+#define DECL_CTRAN_ALLTOALLVDYNAMIC_KERN(T)               \
   template __global__ void ncclKernelAllToAllvDynamic<T>( \
       int* flag,                                          \
       CtranAlgoDeviceState* devState,                     \
       CtranKernelAllToAllvDynamicArgs args)
 
-DECL_ALLTOALLV_DYNAMIC_KERN(int8_t);
-DECL_ALLTOALLV_DYNAMIC_KERN(uint8_t);
-DECL_ALLTOALLV_DYNAMIC_KERN(int32_t);
-DECL_ALLTOALLV_DYNAMIC_KERN(uint32_t);
-DECL_ALLTOALLV_DYNAMIC_KERN(int64_t);
-DECL_ALLTOALLV_DYNAMIC_KERN(uint64_t);
-DECL_ALLTOALLV_DYNAMIC_KERN(half);
-DECL_ALLTOALLV_DYNAMIC_KERN(float);
-DECL_ALLTOALLV_DYNAMIC_KERN(double);
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-DECL_ALLTOALLV_DYNAMIC_KERN(__nv_bfloat16);
-#endif
-#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
-DECL_ALLTOALLV_DYNAMIC_KERN(__nv_fp8_e4m3);
-DECL_ALLTOALLV_DYNAMIC_KERN(__nv_fp8_e5m2);
-#endif
-
-#define DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(T)                   \
+#define DECL_CTRAN_ALLTOALLVDYNAMIC_SPLIT_KERN(T)              \
   template __global__ void ncclKernelAllToAllvDynamicSplit<T>( \
       int* flag,                                               \
       CtranAlgoDeviceState* devState,                          \
       CtranKernelAllToAllvDynamicArgs args)
 
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(int8_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(uint8_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(int32_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(uint32_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(int64_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(uint64_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(half);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(float);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(double);
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(__nv_bfloat16);
-#endif
-#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(__nv_fp8_e4m3);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_KERN(__nv_fp8_e5m2);
-#endif
-
-#define DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(T)                 \
+#define DECL_CTRAN_ALLTOALLVDYNAMIC_SPLITNONCONTIG_KERN(T)              \
   template __global__ void ncclKernelAllToAllvDynamicSplitNonContig<T>( \
       int* flag,                                                        \
       CtranAlgoDeviceState* devState,                                   \
       CtranKernelAllToAllvDynamicArgs args)
-
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(int8_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(uint8_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(int32_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(uint32_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(int64_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(uint64_t);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(half);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(float);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(double);
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(__nv_bfloat16);
-#endif
-#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(__nv_fp8_e4m3);
-DECL_ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_KERN(__nv_fp8_e5m2);
-#endif

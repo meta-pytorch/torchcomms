@@ -102,7 +102,6 @@ $(OBJDIR)/gensrc/symmetric/rules.mk: $(OBJDIR)/gensrc/symmetric ;
 
 SRCS = common.cu onerank.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllPImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllvDynamic.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRing.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRecDbl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceARG.cu
