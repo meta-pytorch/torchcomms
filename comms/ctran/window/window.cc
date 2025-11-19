@@ -221,6 +221,18 @@ commResult_t ctranWinAllocate(
 
 commResult_t ctranWinSharedQuery(int rank, CtranWin* win, void** addr) {
   CtranComm* comm = win->comm;
+
+  // Validate rank is within valid bounds
+  if (rank < 0 || rank >= comm->statex_->nRanks()) {
+    CLOGF(
+        ERR,
+        "CTRAN-WINDOW: Invalid rank {} for sharedQuery (valid range: [0, {}))",
+        rank,
+        comm->statex_->nRanks());
+    *addr = nullptr;
+    return commInvalidArgument;
+  }
+
   if (rank == comm->statex_->rank() || win->nvlEnabled(rank)) {
     *addr = win->remWinInfo[rank].addr;
   } else {
