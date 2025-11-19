@@ -17,6 +17,7 @@ class CachingAllocatorHookImpl {
   virtual void regDeregMem(const c10::hip::HIPCachingAllocator::TraceEntry& te);
   virtual void registerComm(TorchCommRCCLX* comm);
   virtual void deregisterComm(TorchCommRCCLX* comm);
+  virtual void registerMemPreHook();
   virtual void clear();
 
   virtual bool isCommRegistered(TorchCommRCCLX* comm);

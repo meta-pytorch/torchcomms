@@ -14,7 +14,7 @@ namespace test {
  * This class provides mock implementations of all CachingAllocatorHookImpl
  * operations for testing purposes.
  */
-class CachingAllocatorHookMock : public CachingAllocatorHookImpl {
+class CachingAllocatorHookMock : public DefaultCachingAllocatorHookImpl {
  public:
   CachingAllocatorHookMock() = default;
   virtual ~CachingAllocatorHookMock() override = default;

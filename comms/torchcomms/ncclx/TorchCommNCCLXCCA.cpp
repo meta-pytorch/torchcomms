@@ -29,8 +29,28 @@ CachingAllocatorHookImpl& CachingAllocatorHook::getInstance() {
 DefaultCachingAllocatorHookImpl::DefaultCachingAllocatorHookImpl() {
   // Setup memory registration hooks
   at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
+  registerMemPreHook();
   c10::cuda::CUDACachingAllocator::attachAllocatorTraceTracker(
       &cachingAllocatorHookFn);
+}
+
+void CachingAllocatorHookImpl::registerMemPreHook() {
+  int device = c10::cuda::current_device();
+  // We assume no mem pool and no comm has been created yet, we just loop up the
+  // snapshot of the default pool for the current device.
+  auto snapshot = c10::cuda::CUDACachingAllocator::snapshot({device, 0});
+  for (const auto& segmentInfo : snapshot.segments) {
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    void* addr = reinterpret_cast<void*>(segmentInfo.address);
+    size_t len = segmentInfo.total_size;
+
+    if (registeredMemMap_.contains(addr)) {
+      throw std::runtime_error("Memory already registered with NCCLX");
+    } else {
+      registeredMemMap_.emplace(addr, MemInfo{len, segmentInfo.device});
+    }
+  }
+  mem_pre_hook_registered_ = true;
 }
 
 void CachingAllocatorHookImpl::regDeregMem(
@@ -131,6 +151,10 @@ void CachingAllocatorHookImpl::clear() {
 bool CachingAllocatorHookImpl::isCommRegistered(TorchCommNCCLX* comm) {
   std::lock_guard<std::mutex> lock(mutex_);
   return registeredComms_.contains(comm);
+}
+
+bool CachingAllocatorHookImpl::isMemRegisteredCalled() {
+  return mem_pre_hook_registered_;
 }
 
 } // namespace comms

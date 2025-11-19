@@ -29,8 +29,27 @@ CachingAllocatorHookImpl& CachingAllocatorHook::getInstance() {
 DefaultCachingAllocatorHookImpl::DefaultCachingAllocatorHookImpl() {
   // Setup memory registration hooks
   at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
+  registerMemPreHook();
   c10::hip::HIPCachingAllocator::attachAllocatorTraceTracker(
       &cachingAllocatorHookFn);
+}
+
+void CachingAllocatorHookImpl::registerMemPreHook() {
+  int device = c10::hip::current_device();
+  // We assume no mem pool and no comm has been created yet, we just loop up the
+  // snapshot of the default pool for the current device.
+  auto snapshot = c10::hip::HIPCachingAllocator::snapshot({device, 0});
+  for (const auto& segmentInfo : snapshot.segments) {
+    // NOLINTNEXTLINE(performance-no-int-to-ptr)
+    void* addr = reinterpret_cast<void*>(segmentInfo.address);
+    size_t len = segmentInfo.total_size;
+
+    if (registeredMemMap_.find(addr) != registeredMemMap_.end()) {
+      throw std::runtime_error("Memory already registered with RCCLX");
+    } else {
+      registeredMemMap_.emplace(addr, MemInfo{len, segmentInfo.device});
+    }
+  }
 }
 
 void CachingAllocatorHookImpl::regDeregMem(
