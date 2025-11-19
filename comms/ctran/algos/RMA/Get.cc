@@ -34,7 +34,7 @@ static commResult_t getImpl(
   size_t getSize = op->get.count * commTypeSize(op->get.datatype);
   size_t targetDispNbytes = op->get.targetDisp * commTypeSize(op->get.datatype);
   void* srcPtr = reinterpret_cast<void*>(
-      reinterpret_cast<size_t>(win->remWinInfo[peerRank].addr) +
+      reinterpret_cast<size_t>(win->remWinInfo[peerRank].dataAddr) +
       targetDispNbytes);
 
   // Get registration handle for local send buffer
@@ -48,7 +48,7 @@ static commResult_t getImpl(
       "getImpl: dstbuf {}, srcbuf {} (base {} + offset {}), size {}",
       op->get.recvbuff,
       srcPtr,
-      win->remWinInfo[peerRank].addr,
+      win->remWinInfo[peerRank].dataAddr,
       targetDispNbytes,
       getSize);
 
@@ -60,7 +60,7 @@ static commResult_t getImpl(
       peerRank,
       CtranMapperConfig{
           .memHdl_ = localMemHdl,
-          .remoteAccessKey_ = win->remWinInfo[peerRank].rkey,
+          .remoteAccessKey_ = win->remWinInfo[peerRank].dataRkey,
       },
       &req));
 
@@ -129,7 +129,7 @@ commResult_t ctranGet(
     // Single-node direct cudaMemcpy
     if (count > 0) {
       void* srcPtr = reinterpret_cast<void*>(
-          reinterpret_cast<size_t>(win->remWinInfo[peer].addr) +
+          reinterpret_cast<size_t>(win->remWinInfo[peer].dataAddr) +
           targetDispNbytes);
       // CollTrace tracing logic for local + no signal case. In this case the
       // get will not trigger gpe->submit, so we need to record manually in the

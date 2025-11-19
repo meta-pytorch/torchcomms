@@ -19,8 +19,9 @@ enum OpCountType {
 };
 
 struct RemWinInfo {
-  void* addr{nullptr};
+  void* dataAddr{nullptr};
   uint64_t* signalAddr{nullptr};
-  CtranMapperRemoteAccessKey rkey{CtranMapperBackend::UNSET};
+  CtranMapperRemoteAccessKey dataRkey{CtranMapperBackend::UNSET};
+  CtranMapperRemoteAccessKey signalRkey{CtranMapperBackend::UNSET};
 };
 } // namespace ctran::window
