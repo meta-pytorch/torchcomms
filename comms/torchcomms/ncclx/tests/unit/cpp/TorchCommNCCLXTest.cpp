@@ -1213,6 +1213,36 @@ TEST_F(TorchCommNCCLXTest, CollectiveOperationsAfterFinalizeThrowException) {
   testOperation([&]() { comm->barrier(true); });
 }
 
+// Test class with pre-hook memory allocation
+class TorchCommNCCLXPreHookTest : public TorchCommNCCLXTest {
+ protected:
+  void SetUp() override {
+    // Set up device. make it the cpu device because we're mocking cuda.
+    device_ = at::Device(at::DeviceType::CPU, 0);
+
+    // Create tensors before setting up the CachingAllocatorHookMock
+    // This simulates memory being allocated before the hook is attached
+    createTestTensor({10, 10});
+
+    // Now call the parent SetUp which will create the hook mock
+    TorchCommNCCLXTest::SetUp();
+  }
+};
+
+TEST_F(TorchCommNCCLXPreHookTest, MemAllocatedBeforeCommRegistered) {
+  // Setup CCA expectations - init and finalize calls
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+
+  // Initialize and then finalize the communicator
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  comm->init(*device_, "test_name", default_options_);
+  EXPECT_TRUE(mock_hook_->isMemRegisteredCalled());
+  comm->finalize();
+}
 } // namespace test
 } // namespace comms
 } // namespace torch

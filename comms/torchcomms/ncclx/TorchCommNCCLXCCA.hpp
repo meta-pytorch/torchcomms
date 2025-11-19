@@ -18,9 +18,13 @@ class CachingAllocatorHookImpl {
       const c10::cuda::CUDACachingAllocator::TraceEntry& te);
   virtual void registerComm(TorchCommNCCLX* comm);
   virtual void deregisterComm(TorchCommNCCLX* comm);
+  virtual void registerMemPreHook();
   virtual void clear();
 
   virtual bool isCommRegistered(TorchCommNCCLX* comm);
+
+  // For testing purposes.
+  bool isMemRegisteredCalled();
 
  private:
   std::mutex mutex_;
@@ -37,6 +41,10 @@ class CachingAllocatorHookImpl {
   // Set of registered communicators. TorchComms, manages it's membership inside
   // this set.
   std::set<TorchCommNCCLX*> registeredComms_;
+
+  // Flag to indicate if the memory pre hook is registered. (For testing
+  // purposes)
+  bool mem_pre_hook_registered_ = false;
 };
 
 class DefaultCachingAllocatorHookImpl : public CachingAllocatorHookImpl {

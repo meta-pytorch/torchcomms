@@ -18,6 +18,7 @@ class CachingAllocatorHookImpl {
       const c10::cuda::CUDACachingAllocator::TraceEntry& te);
   virtual void registerComm(TorchCommNCCL* comm);
   virtual void deregisterComm(TorchCommNCCL* comm);
+  virtual void registerMemPreHook();
   virtual void clear();
 
   virtual bool isCommRegistered(TorchCommNCCL* comm);
