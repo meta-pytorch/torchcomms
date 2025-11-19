@@ -3,6 +3,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import os
+import pickle
 import unittest
 
 import torch
@@ -129,6 +130,36 @@ class TransportTest(unittest.TestCase):
     def test_write_cpu_to_cpu(self) -> None:
         self.check_multi_gpu()
         self.run_send_recv("cpu", "cpu")
+
+    def test_rdma_remote_buffer_pickle(self) -> None:
+        self.check_multi_gpu()
+
+        transport1 = RdmaTransport(torch.device("cuda:0"))
+        transport2 = RdmaTransport(torch.device("cuda:1"))
+        self.bind_and_connect(transport1, transport2)
+
+        tensor1 = torch.arange(1024, dtype=torch.uint8, device="cuda:0")
+        tensor2 = torch.zeros_like(tensor1, device="cuda:1")
+
+        tensor1_mem = RdmaMemory(tensor1)
+        tensor2_mem = RdmaMemory(tensor2)
+        remote_buffer = tensor2_mem.to_remote_buffer()
+
+        pickled = pickle.dumps(remote_buffer)
+        unpickled_remote_buffer = pickle.loads(pickled)
+
+        res = transport1.write(tensor1_mem.to_view(), unpickled_remote_buffer)
+
+        self.assertEqual(res, 0, "Write transfer should succeed")
+        self.assertTrue(
+            torch.allclose(tensor1.cpu(), tensor2.cpu()),
+            "Data should be correctly transferred after unpickling",
+        )
+
+        del transport1
+        del transport2
+        del tensor1_mem
+        del tensor2_mem
 
 
 if __name__ == "__main__" and os.environ["TEST_BACKEND"] == "ncclx":

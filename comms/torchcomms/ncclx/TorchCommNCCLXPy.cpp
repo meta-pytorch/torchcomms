@@ -30,7 +30,22 @@ PYBIND11_MODULE(_comms_ncclx, m) {
       m, "TorchCommNCCLX");
 
   py::class_<RdmaRemoteBuffer, std::shared_ptr<RdmaRemoteBuffer>>(
-      m, "RdmaRemoteBuffer");
+      m, "RdmaRemoteBuffer")
+      .def(
+          py::pickle(
+              [](const RdmaRemoteBuffer& buffer) { // __getstate__
+                return py::make_tuple(
+                    reinterpret_cast<uintptr_t>(buffer.ptr), buffer.accessKey);
+              },
+              [](const py::tuple& t) { // __setstate__
+                if (t.size() != 2) {
+                  throw std::runtime_error(
+                      "Invalid state for RdmaRemoteBuffer");
+                }
+                return RdmaRemoteBuffer{
+                    reinterpret_cast<void*>(t[0].cast<uintptr_t>()),
+                    t[1].cast<std::string>()};
+              }));
 
   py::class_<RdmaTransport, std::shared_ptr<RdmaTransport>>(m, "RdmaTransport")
       // initialize a new RDMATransport using a custom init fn
