@@ -149,12 +149,22 @@ def gen_reduce_scatter_files(gensrc, srcs, rules):
     )
 
 
+def gen_alltoall_files(gensrc, srcs, rules):
+    gen_algo_files(
+        gensrc,
+        srcs,
+        rules,
+        {"bases": ["AllToAll"], "dir": "AllToAll", "has_ops": False},
+    )
+
+
 def genalgos(gensrc):
     srcs = []
     rules = open(os.path.join(gensrc, "ctran_rules.mk"), "w")
     gen_allreduce_files(gensrc, srcs, rules)
     gen_allgather_files(gensrc, srcs, rules)
     gen_reduce_scatter_files(gensrc, srcs, rules)
+    gen_alltoall_files(gensrc, srcs, rules)
 
     rules.write("CTRAN_GEN_SRCS = ")
     for src in srcs:

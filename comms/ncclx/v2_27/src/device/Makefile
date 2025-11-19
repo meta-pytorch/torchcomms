@@ -101,7 +101,6 @@ $(OBJDIR)/gensrc/symmetric/rules.mk: $(OBJDIR)/gensrc/symmetric ;
 # "gensrc/symmetric/rules.mk" populates $(LIB_OBJS_SYM_GEN)
 
 SRCS = common.cu onerank.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAll.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllPImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllv.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllvDynamic.cu
