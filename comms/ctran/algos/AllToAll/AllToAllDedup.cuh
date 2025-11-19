@@ -1,7 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <stdio.h>
-#include <cstddef>
+#pragma once
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -81,25 +80,8 @@ __global__ void ncclKernelAllToAllDedup(
   }
 }
 
-#define DECL_ALLTOALLDEDUP_KERN(T)                     \
+#define DECL_CTRAN_ALLTOALLDEDUP_KERN(T)               \
   template __global__ void ncclKernelAllToAllDedup<T>( \
       int* flag,                                       \
       CtranAlgoDeviceState* devState,                  \
       CtranKernelAllToAllDedupArgs args)
-
-DECL_ALLTOALLDEDUP_KERN(int8_t);
-DECL_ALLTOALLDEDUP_KERN(uint8_t);
-DECL_ALLTOALLDEDUP_KERN(int32_t);
-DECL_ALLTOALLDEDUP_KERN(uint32_t);
-DECL_ALLTOALLDEDUP_KERN(int64_t);
-DECL_ALLTOALLDEDUP_KERN(uint64_t);
-DECL_ALLTOALLDEDUP_KERN(half);
-DECL_ALLTOALLDEDUP_KERN(float);
-DECL_ALLTOALLDEDUP_KERN(double);
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-DECL_ALLTOALLDEDUP_KERN(__nv_bfloat16);
-#endif
-#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
-DECL_ALLTOALLDEDUP_KERN(__nv_fp8_e4m3);
-DECL_ALLTOALLDEDUP_KERN(__nv_fp8_e5m2);
-#endif

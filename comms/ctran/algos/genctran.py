@@ -154,7 +154,7 @@ def gen_alltoall_files(gensrc, srcs, rules):
         gensrc,
         srcs,
         rules,
-        {"bases": ["AllToAll"], "dir": "AllToAll", "has_ops": False},
+        {"bases": ["AllToAll", "AllToAllDedup"], "dir": "AllToAll", "has_ops": False},
     )
 
 
