@@ -1,8 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#pragma once
 #include <stdio.h>
 #include <cstddef>
-
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -188,25 +188,8 @@ __global__ void ncclKernelAllToAllv(
   }
 }
 
-#define DECL_ALLTOALLV_KERN(T)                     \
+#define DECL_CTRAN_ALLTOALLV_KERN(T)               \
   template __global__ void ncclKernelAllToAllv<T>( \
       int* flag,                                   \
       CtranAlgoDeviceState* devState,              \
       CtranKernelAllToAllvArgs args)
-
-DECL_ALLTOALLV_KERN(int8_t);
-DECL_ALLTOALLV_KERN(uint8_t);
-DECL_ALLTOALLV_KERN(int32_t);
-DECL_ALLTOALLV_KERN(uint32_t);
-DECL_ALLTOALLV_KERN(int64_t);
-DECL_ALLTOALLV_KERN(uint64_t);
-DECL_ALLTOALLV_KERN(half);
-DECL_ALLTOALLV_KERN(float);
-DECL_ALLTOALLV_KERN(double);
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-DECL_ALLTOALLV_KERN(__nv_bfloat16);
-#endif
-#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
-DECL_ALLTOALLV_KERN(__nv_fp8_e4m3);
-DECL_ALLTOALLV_KERN(__nv_fp8_e5m2);
-#endif
