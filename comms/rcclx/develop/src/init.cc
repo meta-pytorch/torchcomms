@@ -200,7 +200,7 @@ ncclResult_t checkHostUncacheMemSetting(struct ncclComm* comm) {
     else {
       return ncclSuccess;
     }
-  #endif   
+  #endif
 }
 
 static void initOnceFunc() {
@@ -362,6 +362,8 @@ static ncclResult_t commFree(ncclComm_t comm) {
   }
 
   if (comm->memPool) CUDACHECK(cudaMemPoolDestroy(comm->memPool));
+
+  if (comm->algoFactory) comm->algoFactory.reset();
 
   delete[] comm->userRedOps;
 
