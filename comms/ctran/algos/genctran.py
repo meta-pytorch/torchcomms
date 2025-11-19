@@ -31,16 +31,67 @@ ops = ["avg", "max", "min", "prod", "sum"]
 header = "// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary."
 
 
-def gen_allreduce_files(gensrc, srcs, rules):
-    for base in ["AllReduceDirect"]:
+def gen_algo_files(gensrc, srcs, rules, algo_info):
+    """
+    Generic function to generate kernel instantiation files.
+
+    Args:
+        algo_info: dict with keys:
+            - 'bases': list of algorithm base names (e.g., ["AllReduceDirect"])
+            - 'dir': subdirectory under algos (e.g., "AllReduce")
+            - 'has_ops': whether algorithm needs reduction operations
+    """
+    for base in algo_info["bases"]:
         for type in types:
-            for op in ops:
-                file = base + "_" + type + "_" + op
+            if algo_info["has_ops"]:
+                # Generate files with operations (e.g., AllReduceDirect_float_sum.cu)
+                for op in ops:
+                    file = base + "_" + type + "_" + op
+                    f = open(os.path.join(gensrc, file + ".cu"), "w")
+
+                    f.write(header)
+                    f.write("\n\n")
+                    f.write(
+                        f'#include "comms/ctran/algos/{algo_info["dir"]}/{base}.cuh"'
+                    )
+                    f.write("\n\n")
+
+                    if type == "__nv_bfloat16":
+                        f.write("#if defined(__CUDA_BF16_TYPES_EXIST__)")
+                        f.write("\n")
+                    elif type == "__nv_fp8_e4m3" or type == "__nv_fp8_e5m2":
+                        f.write(
+                            "#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)"
+                        )
+                        f.write("\n")
+
+                    f.write(
+                        f"DECL_CTRAN_{base.upper()}_KERN("
+                        + type
+                        + ", comm"
+                        + op.capitalize()
+                        + ");"
+                    )
+                    f.write("\n")
+
+                    if (
+                        type == "__nv_bfloat16"
+                        or type == "__nv_fp8_e4m3"
+                        or type == "__nv_fp8_e5m2"
+                    ):
+                        f.write("#endif")
+                        f.write("\n")
+
+                    f.close()
+                    srcs += [file + ".cu"]
+            else:
+                # Generate files without operations (e.g., AllGatherDirect_float.cu)
+                file = base + "_" + type
                 f = open(os.path.join(gensrc, file + ".cu"), "w")
 
                 f.write(header)
                 f.write("\n\n")
-                f.write('#include "comms/ctran/algos/AllReduce/' + base + '.cuh"')
+                f.write(f'#include "comms/ctran/algos/{algo_info["dir"]}/{base}.cuh"')
                 f.write("\n\n")
 
                 if type == "__nv_bfloat16":
@@ -52,13 +103,7 @@ def gen_allreduce_files(gensrc, srcs, rules):
                     )
                     f.write("\n")
 
-                f.write(
-                    f"DECL_CTRAN_{base.upper()}_KERN("
-                    + type
-                    + ", comm"
-                    + op.capitalize()
-                    + ");"
-                )
+                f.write(f"DECL_CTRAN_{base.upper()}_KERN(" + type + ");")
                 f.write("\n")
 
                 if (
@@ -70,57 +115,45 @@ def gen_allreduce_files(gensrc, srcs, rules):
                     f.write("\n")
 
                 f.close()
-
                 srcs += [file + ".cu"]
+
+
+def gen_allreduce_files(gensrc, srcs, rules):
+    gen_algo_files(
+        gensrc,
+        srcs,
+        rules,
+        {"bases": ["AllReduceDirect"], "dir": "AllReduce", "has_ops": True},
+    )
+
+
+def gen_allgather_files(gensrc, srcs, rules):
+    gen_algo_files(
+        gensrc,
+        srcs,
+        rules,
+        {"bases": ["AllGatherDirect"], "dir": "AllGather", "has_ops": False},
+    )
 
 
 def gen_reduce_scatter_files(gensrc, srcs, rules):
-    for base in ["ReduceScatterDirect", "ReduceScatterRing", "ReduceScatterRHD"]:
-        for type in types:
-            for op in ops:
-                file = base + "_" + type + "_" + op
-                f = open(os.path.join(gensrc, file + ".cu"), "w")
-
-                f.write(header)
-                f.write("\n\n")
-                f.write('#include "comms/ctran/algos/ReduceScatter/' + base + '.cuh"')
-                f.write("\n\n")
-
-                if type == "__nv_bfloat16":
-                    f.write("#if defined(__CUDA_BF16_TYPES_EXIST__)")
-                    f.write("\n")
-                elif type == "__nv_fp8_e4m3" or type == "__nv_fp8_e5m2":
-                    f.write(
-                        "#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)"
-                    )
-                    f.write("\n")
-
-                f.write(
-                    f"DECL_CTRAN_{base.upper()}_KERN("
-                    + type
-                    + ", comm"
-                    + op.capitalize()
-                    + ");"
-                )
-                f.write("\n")
-
-                if (
-                    type == "__nv_bfloat16"
-                    or type == "__nv_fp8_e4m3"
-                    or type == "__nv_fp8_e5m2"
-                ):
-                    f.write("#endif")
-                    f.write("\n")
-
-                f.close()
-
-                srcs += [file + ".cu"]
+    gen_algo_files(
+        gensrc,
+        srcs,
+        rules,
+        {
+            "bases": ["ReduceScatterDirect", "ReduceScatterRing", "ReduceScatterRHD"],
+            "dir": "ReduceScatter",
+            "has_ops": True,
+        },
+    )
 
 
 def genalgos(gensrc):
     srcs = []
     rules = open(os.path.join(gensrc, "ctran_rules.mk"), "w")
     gen_allreduce_files(gensrc, srcs, rules)
+    gen_allgather_files(gensrc, srcs, rules)
     gen_reduce_scatter_files(gensrc, srcs, rules)
 
     rules.write("CTRAN_GEN_SRCS = ")

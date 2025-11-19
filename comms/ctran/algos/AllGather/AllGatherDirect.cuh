@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#pragma once
 #include <stdio.h>
 #include <cstddef>
 #include <iostream>
@@ -8,7 +9,7 @@
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
-__device__ void prepareBcastArg(
+__device__ inline void prepareBcastArg(
     KernelElem* elemH,
     CtranKernelAllGatherArgs& args,
     CtranAlgoDevBcastArg& bcastArg) {
@@ -66,25 +67,8 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelAllGatherCtranDirect(
   }
 }
 
-#define DECL_ALLGATHER_KERN(T)                                \
+#define DECL_CTRAN_ALLGATHERDIRECT_KERN(T)                    \
   template __global__ void ncclKernelAllGatherCtranDirect<T>( \
       int* flag,                                              \
       CtranAlgoDeviceState* devState,                         \
       CtranKernelAllGatherArgs args)
-
-DECL_ALLGATHER_KERN(int8_t);
-DECL_ALLGATHER_KERN(uint8_t);
-DECL_ALLGATHER_KERN(int32_t);
-DECL_ALLGATHER_KERN(uint32_t);
-DECL_ALLGATHER_KERN(int64_t);
-DECL_ALLGATHER_KERN(uint64_t);
-DECL_ALLGATHER_KERN(half);
-DECL_ALLGATHER_KERN(float);
-DECL_ALLGATHER_KERN(double);
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-DECL_ALLGATHER_KERN(__nv_bfloat16);
-#endif
-#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
-DECL_ALLGATHER_KERN(__nv_fp8_e4m3);
-DECL_ALLGATHER_KERN(__nv_fp8_e5m2);
-#endif
