@@ -13,6 +13,21 @@ __device__ __forceinline__ void reset(GpeKernelSync* sync, const int workerId) {
   }
 }
 
+__device__ __forceinline__ void resetWarp(
+    GpeKernelSync* sync,
+    const int nworkers) {
+  const auto laneId = threadIdx.x & (kWarpSize - 1);
+  if (laneId == 0) {
+    sync->nworkers = nworkers;
+  }
+
+  for (auto i = laneId; i < nworkers; i += kWarpSize) {
+    sync->postFlag[i] = GpeKernelSync::Status::kUnset;
+    sync->completeFlag[i] = GpeKernelSync::Status::kUnset;
+  }
+  syncwarp();
+}
+
 __device__ __forceinline__ void
 waitPost(GpeKernelSync* sync, const int workerId, const int step) {
   if (threadIdx.x == 0) {
