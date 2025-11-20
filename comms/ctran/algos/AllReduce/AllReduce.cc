@@ -27,12 +27,14 @@ commResult_t ctranAllReduce(
   auto algo = algoSpecified.value_or(NCCL_ALLREDUCE_ALGO);
 
   switch (algo) {
+#if !defined(USE_ROCM)
     case NCCL_ALLREDUCE_ALGO::ctarg:
       if (timeout != std::nullopt) {
         CLOGF(WARN, "timeout is ignored for AllReduce ctarg algorithm");
       }
       return ctranAllReduceARG(
           sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
+#endif
     case NCCL_ALLREDUCE_ALGO::ctring:
       if (comm->statex_->nRanks() == 1) {
         // TODO(T242570177): this is a temp workaround for nRanks == 1.

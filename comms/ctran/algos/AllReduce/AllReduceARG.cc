@@ -1,4 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+#if !defined(USE_ROCM)
 
 #include <cstddef>
 
@@ -654,3 +655,5 @@ commResult_t ctranAllReduceARG(
 
   return commSuccess;
 }
+
+#endif // !defined(USE_ROCM)
