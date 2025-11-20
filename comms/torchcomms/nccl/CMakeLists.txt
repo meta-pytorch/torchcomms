@@ -20,6 +20,7 @@ add_library(torchcomms_comms_nccl MODULE
     ${TORCHCOMMS_NCCL_SOURCES}
     ${TORCHCOMMS_CUDA_API_SOURCE}
 )
+target_compile_definitions(torchcomms_comms_nccl PRIVATE TORCHCOMMS_CONDA_BUILD)
 set_target_properties(torchcomms_comms_nccl PROPERTIES
     PREFIX ""
     OUTPUT_NAME "_comms_nccl"

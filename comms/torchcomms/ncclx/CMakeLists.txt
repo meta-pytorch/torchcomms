@@ -61,7 +61,11 @@ add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_API_SOURCE}
 )
-target_compile_definitions(torchcomms_comms_ncclx PRIVATE MOCK_SCUBA_DATA CTRAN_DISABLE_TCPDM)
+target_compile_definitions(torchcomms_comms_ncclx PRIVATE
+    MOCK_SCUBA_DATA
+    CTRAN_DISABLE_TCPDM
+    TORCHCOMMS_CONDA_BUILD
+)
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""
     OUTPUT_NAME "_comms_ncclx"
