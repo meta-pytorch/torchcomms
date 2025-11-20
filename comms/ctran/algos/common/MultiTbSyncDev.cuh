@@ -133,7 +133,7 @@ __device__ inline void waitSignal(T* cnt, const T goal) {
 // dispatch and join. Compared to separate calls into dispatch and join, this
 // function saves 2 __syncthreads() calls.
 template <typename T1, typename T2, typename T3>
-__device__ inline T2 bcast(
+__device__ inline void bcast(
     T1* dispatchCnt,
     T2* joinCnt,
     T3* valFlag,
