@@ -8,18 +8,6 @@
 // Test Kernel
 //------------------------------------------------------------------------------
 
-__global__ void devSyncWaitNotifyKernel(
-    CtranAlgoDeviceSync* localSync,
-    int nGroups) {
-  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
-  // channels.
-  shmDevState.enableCancellableWaits = false;
-  // Receiver waits for notification - sync is pre-initialized to NOTIFY_SET
-  if (blockIdx.x == 0) {
-    devSyncWaitNotify(localSync, nGroups);
-  }
-}
-
 // Call KernelElem-related funcs to measure time consumed by KernelElem in
 // putNotify.
 __global__ void
