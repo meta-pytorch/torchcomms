@@ -77,20 +77,19 @@ class RdmaTransportTest : public ::testing::Test {
     EXPECT_EQ(connectResult, commSuccess);
     EXPECT_TRUE(transport->connected());
 
-    // Wait for connection to be established
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
     // Allocate and register memory buffer
     void* buffer = nullptr;
     EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+    void* testData;
+    EXPECT_EQ(cudaMallocHost(&testData, bufferSize), cudaSuccess);
+
     torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
 
     if (isServer) {
       // Server: Initialize buffer with test data
-      std::vector<uint8_t> testData(bufferSize, 0xCD);
+      memset(testData, 0xCD, bufferSize);
       EXPECT_EQ(
-          cudaMemcpy(
-              buffer, testData.data(), bufferSize, cudaMemcpyHostToDevice),
+          cudaMemcpy(buffer, testData, bufferSize, cudaMemcpyHostToDevice),
           cudaSuccess);
 
       // Wait for client's memory information
@@ -108,10 +107,9 @@ class RdmaTransportTest : public ::testing::Test {
 
     } else {
       // Client: Initialize buffer with different data
-      std::vector<uint8_t> zeroData(bufferSize, 0x00);
+      memset(testData, 0x00, bufferSize);
       EXPECT_EQ(
-          cudaMemcpy(
-              buffer, zeroData.data(), bufferSize, cudaMemcpyHostToDevice),
+          cudaMemcpy(buffer, testData, bufferSize, cudaMemcpyHostToDevice),
           cudaSuccess);
 
       // Export client's buffer information to server
@@ -143,6 +141,7 @@ class RdmaTransportTest : public ::testing::Test {
     }
 
     // Cleanup
+    EXPECT_EQ(cudaFreeHost(testData), cudaSuccess);
     EXPECT_EQ(cudaFree(buffer), cudaSuccess);
   }
 
