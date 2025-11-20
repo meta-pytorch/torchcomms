@@ -109,6 +109,9 @@ class CtranAllGatherTest : public CtranStandaloneMultiRankBaseTest,
 
     CLOGF(INFO, "rank {} allGather completed registration", state.rank);
 
+    if (!ctranAllGatherSupport(state.ctranComm.get(), NCCL_ALLGATHER_ALGO)) {
+      GTEST_SKIP() << "ctranAllGatherSupport returns fails, skip test";
+    }
     auto result = ctranAllGather(
         state.srcBuffer,
         state.dstBuffer,
