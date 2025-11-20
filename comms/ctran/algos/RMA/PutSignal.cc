@@ -101,7 +101,7 @@ static commResult_t putNotifyImpl(
   size_t targetDispNbytes =
       op->putnotify.targetDisp * commTypeSize(op->putnotify.datatype);
   void* dstPtr = reinterpret_cast<void*>(
-      reinterpret_cast<size_t>(win->remWinInfo[peerRank].addr) +
+      reinterpret_cast<size_t>(win->remWinInfo[peerRank].dataAddr) +
       targetDispNbytes);
 
   // Get registration handle for local send buffer
@@ -115,7 +115,7 @@ static commResult_t putNotifyImpl(
       "putNotifyImpl: sbuf {}, rbuf {} (base {} + offset {}), size {}",
       op->putnotify.sendbuff,
       dstPtr,
-      win->remWinInfo[peerRank].addr,
+      win->remWinInfo[peerRank].dataAddr,
       targetDispNbytes,
       putSize);
 
@@ -127,7 +127,7 @@ static commResult_t putNotifyImpl(
       peerRank,
       CtranMapperConfig{
           .memHdl_ = localMemHdl,
-          .remoteAccessKey_ = win->remWinInfo[peerRank].rkey,
+          .remoteAccessKey_ = win->remWinInfo[peerRank].dataRkey,
           .notify_ = op->putnotify.notify,
       },
       &req));
@@ -193,7 +193,7 @@ static commResult_t putSignalImpl(
   size_t targetDispNbytes =
       op->putsignal.targetDisp * commTypeSize(op->putsignal.datatype);
   void* dstPtr = reinterpret_cast<void*>(
-      reinterpret_cast<size_t>(win->remWinInfo[peerRank].addr) +
+      reinterpret_cast<size_t>(win->remWinInfo[peerRank].dataAddr) +
       targetDispNbytes);
 
   // Get registration handle for local send buffer
@@ -207,7 +207,7 @@ static commResult_t putSignalImpl(
       "putSignalImpl: sbuf {}, rbuf {} (base {} + offset {}), size {}, signalAddr {} signalVal {}",
       op->putsignal.sendbuff,
       dstPtr,
-      win->remWinInfo[peerRank].addr,
+      win->remWinInfo[peerRank].dataAddr,
       targetDispNbytes,
       putSize,
       (void*)op->putsignal.signalAddr,
@@ -222,7 +222,7 @@ static commResult_t putSignalImpl(
       peerRank,
       CtranMapperConfig{
           .memHdl_ = localMemHdl,
-          .remoteAccessKey_ = win->remWinInfo[peerRank].rkey,
+          .remoteAccessKey_ = win->remWinInfo[peerRank].dataRkey,
       },
       &req));
 
@@ -236,7 +236,8 @@ static commResult_t putSignalImpl(
         op->putsignal.signalAddr,
         op->putsignal.signalVal,
         peerRank,
-        CtranMapperConfig{.remoteAccessKey_ = win->remWinInfo[peerRank].rkey},
+        CtranMapperConfig{
+            .remoteAccessKey_ = win->remWinInfo[peerRank].signalRkey},
         &signalReq));
     FB_COMMCHECK(comm->ctran_->mapper->waitRequest(&signalReq));
   }
@@ -275,7 +276,8 @@ static commResult_t signalImpl(
       op->signal.signalAddr,
       op->signal.signalVal,
       peerRank,
-      CtranMapperConfig{.remoteAccessKey_ = win->remWinInfo[peerRank].rkey},
+      CtranMapperConfig{
+          .remoteAccessKey_ = win->remWinInfo[peerRank].signalRkey},
       &signalReq));
   FB_COMMCHECK(comm->ctran_->mapper->waitRequest(&signalReq));
 
@@ -370,7 +372,7 @@ commResult_t ctranPutSignal(
     // Single-node direct cudaMemcpy
     if (count > 0) {
       void* dstPtr = reinterpret_cast<void*>(
-          reinterpret_cast<size_t>(win->remWinInfo[peer].addr) +
+          reinterpret_cast<size_t>(win->remWinInfo[peer].dataAddr) +
           targetDispNbytes);
       // CollTrace tracing logic for local + no signal case. In this case the
       // put will not trigger gpe->submit, so we need to record manually in the
@@ -524,7 +526,7 @@ commResult_t ctranPutSignal_v2(
     // Single-node direct cudaMemcpy
     if (count > 0) {
       void* dstPtr = reinterpret_cast<void*>(
-          reinterpret_cast<size_t>(win->remWinInfo[peer].addr) +
+          reinterpret_cast<size_t>(win->remWinInfo[peer].dataAddr) +
           targetDispNbytes);
       // CollTrace tracing logic for local + no signal case. In this case the
       // put will not trigger gpe->submit, so we need to record manually in the

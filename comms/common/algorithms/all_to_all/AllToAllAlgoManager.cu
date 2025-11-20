@@ -44,8 +44,9 @@ std::unique_ptr<AlgoAllToAll> AllToAllAlgoManager::getAllToAllAlgo(
     return nullptr;
   }
 
-  if (datatype != commBfloat16 && datatype != commFloat16) {
-    // we currently only support bf16 and half
+  if (datatype != commBfloat16 && datatype != commFloat16 &&
+      datatype != commFloat) {
+    // we currently only support bf16, half, float
     XLOG(DBG)
         << "Not using custom all-to-all algo because cudaDataType_t datatype "
         << static_cast<int>(datatype) << " is not supported";

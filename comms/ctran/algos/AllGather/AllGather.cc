@@ -25,7 +25,8 @@ bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo) {
         CLOGF_SUBSYS(
             WARN,
             COLL,
-            "AllGather algorithms ctring, ctbrucks, and ctrd only support nLocalRanks=1. Falling back to baseline");
+            "AllGather algorithm {} only support nLocalRanks=1. Falling back to baseline",
+            allGatherAlgoName(algo));
       }
       break;
     case NCCL_ALLGATHER_ALGO::ctdirect:
@@ -46,14 +47,9 @@ commResult_t ctranAllGather(
     size_t sendcount,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    enum NCCL_ALLGATHER_ALGO algo) {
   const auto statex = comm->statex_.get();
-  // Set algo to global config
-  auto algo = NCCL_ALLGATHER_ALGO;
-  // Override algo if comm config is set
-  if (ctranInitialized(comm)) {
-    algo = comm->ctran_->algo->getAllGatherAlgo();
-  }
 
   // Only ctdirect supports nLocalRanks>1 case.
   // Force to use ctdirect if nLocalRanks>1.

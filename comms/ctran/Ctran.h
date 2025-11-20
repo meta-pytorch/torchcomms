@@ -71,7 +71,8 @@ commResult_t ctranAllGather(
     size_t sendcount,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_ALLGATHER_ALGO algo);
 
 bool ctranReduceScatterSupport(CtranComm* comm);
 commResult_t ctranReduceScatter(

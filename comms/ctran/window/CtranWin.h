@@ -31,8 +31,6 @@ struct CtranWin {
   size_t dataSize{0};
   // User specified signal buffer size(in uint64_t) per rank in this window
   size_t signalSize{0};
-  // Actual size allocated for the total buffer per rank in this window
-  size_t range{0};
   // The ctran mapper handles for caching the segment
   void* segHdl{nullptr};
   // The ctran mapper handles for caching the registration
@@ -84,6 +82,8 @@ struct CtranWin {
   folly::Synchronized<
       std::unordered_map<std::pair<int, window::OpCountType>, uint64_t>>
       opCountMap_;
+  // Actual size allocated for the total buffer per rank in this window
+  size_t range_{0};
 };
 
 commResult_t ctranWinAllocate(

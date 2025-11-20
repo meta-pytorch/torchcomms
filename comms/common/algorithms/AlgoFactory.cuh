@@ -68,6 +68,10 @@ class AlgoFactory {
       const ReduceScatterOptions& reduceScatterOpts,
       const AllToAllOptions& allToAllOpts);
 
+  AlgoFactory(const AlgoFactory&) = delete;
+  AlgoFactory(AlgoFactory&&) = delete;
+  ~AlgoFactory();
+
   std::unique_ptr<AlgoAllReduce> getAllReduceAlgo(
       const void* sendbuff,
       void* recvbuff,
@@ -127,12 +131,12 @@ class AlgoFactory {
   int maxBlocks_{0};
   int ddaSendbufSizeBytes_{0};
 
-  std::unique_ptr<IpcGpuBarrierResources> barrierResources_;
+  std::unique_ptr<IpcGpuBarrierResources> barrierResources_{nullptr};
   IpcGpuBarrier barrier_;
-  std::unique_ptr<DeviceBuffer> ddaSendbuf_;
-  std::unique_ptr<IpcMemHandler> memHandler_;
+  std::unique_ptr<DeviceBuffer> ddaSendbuf_{nullptr};
+  std::unique_ptr<IpcMemHandler> memHandler_{nullptr};
   // arrary of void* (all ranks' ipc enabled sendbuf) in device memory
-  std::unique_ptr<DeviceBuffer> allRankDdaSendbuffs_;
+  std::unique_ptr<DeviceBuffer> allRankDdaSendbuffs_{nullptr};
 
   std::unique_ptr<AllReduceAlgoManager> allReduceMgr_{nullptr};
   std::unique_ptr<AllGatherAlgoManager> allGatherMgr_{nullptr};

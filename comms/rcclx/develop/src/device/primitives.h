@@ -11,24 +11,25 @@
 #include <type_traits>
 #include "rccl_metadata.h"
 #include "reduce_kernel.h" // for reduction funcs
+#include "rccl_metadata.h"
 #include "common_kernel.h"
 #include "common.h"
 
-#define NCCL_SPINS_BEFORE_CHECK_ABORT 1000000
+#define NCCL_SPINS_BEFORE_CHECK_ABORT 10000
 
-#define barrier_by_group_common(__THREAD_FENCE) do { \
+#define barrier_generic(__THREAD_FENCE, NWORKERS, BARRIER_NEXT, BARRIERS_PTR) do { \
   if (nthreads == NCCL_MAX_NTHREADS) { \
     __THREAD_FENCE; __builtin_amdgcn_s_barrier(); \
   } else { \
-    const int w = threadIdx.x/WARP_SIZE; \
+    /**const int w = threadIdx.x/WARP_SIZE //unused variable - compiler warning**/;\
     const int wid = threadIdx.x%WARP_SIZE; \
     if (wid == 0) { \
-      barrier_next += nthreads/WARP_SIZE; \
+      (BARRIER_NEXT) += (NWORKERS) / WARP_SIZE; \
       __THREAD_FENCE; \
-      __hip_atomic_fetch_add(barriers, 1, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_WORKGROUP); \
+      __hip_atomic_fetch_add((BARRIERS_PTR), 1, __ATOMIC_RELEASE, __HIP_MEMORY_SCOPE_WORKGROUP); \
       int spins = 0; \
       int rate_limit = 50; \
-      while (__hip_atomic_load(barriers, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_WORKGROUP) < barrier_next) { \
+      while (__hip_atomic_load((BARRIERS_PTR), __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_WORKGROUP) < (BARRIER_NEXT)) { \
         spins++; \
         if (spins == NCCL_SPINS_BEFORE_CHECK_ABORT) { \
           if (__atomic_load_n(ncclShmem.comm.abortFlag, __ATOMIC_SEQ_CST)) { \
@@ -38,8 +39,8 @@
           spins = 0; \
         } \
         if (spins == 0 && rate_limit > 0) { \
-          rate_limit --; \
-          traceData(__LINE__, threadIdx.x, __hip_atomic_load(barriers, __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_WORKGROUP), barrier_next); \
+          rate_limit--; \
+          traceData(__LINE__, threadIdx.x, __hip_atomic_load((BARRIERS_PTR), __ATOMIC_ACQUIRE, __HIP_MEMORY_SCOPE_WORKGROUP), (BARRIER_NEXT)); \
         } \
         __builtin_amdgcn_s_sleep(1); \
       } \
@@ -48,12 +49,6 @@
   } \
 } while (0)
 
-#define barrier_by_group() barrier_by_group_common(__threadfence())
-
-#if defined(__gfx942__) || defined(__gfx950__)
-#define barrier_by_group_block() barrier_by_group_common(__threadfence_block())
-#endif
-
 /* Protocol classes: ProtoSimple, ProtoLL, ProtoLL128
  * We use these as template args to the Primtiives class instead of integral
  * enums (e.g. NCCL_PROTO_LL) because for SIMPLE we need to carry a few extra
@@ -61,7 +56,7 @@
  * to how that protocol operates with a consistent interface so that our
  * algorithm code can operate protocol parametrically.
  */
-template<int SlicePerChunk_1, int StepPerSlice_1, int Unroll_1, int MultimemSrcs_1 = 0, int MultimemDsts_1 = 0>
+template<int SlicePerChunk_1, int StepPerSlice_1, int useAcc, int Unroll_1, int MultimemSrcs_1 = 0, int MultimemDsts_1 = 0>
 struct ProtoSimple {
   static constexpr int Id = NCCL_PROTO_SIMPLE;
   static constexpr int SlicePerChunk = SlicePerChunk_1;
@@ -143,7 +138,7 @@ struct FanSymmetric {
 };
 
 // The primitives class. Specialized per protocol in the other headers.
-template<typename T, typename RedOp, typename Fan, int Direct, typename Proto, int P2p, bool isNetOffload = false, int Metadata = RCCL_METADATA_EMPTY>
+template<typename T, typename RedOp, typename Fan, int Direct, typename Proto, int P2p, bool isNetOffload = false, int Metadata = RCCL_METADATA_EMPTY, int Pipeline = 0, int useAcc = 0>
 class Primitives;
 
 // Used by LL & LL128 to implement direct members in the naive way.
@@ -155,7 +150,7 @@ struct PrimitivesWithoutDirect {
   __device__ void directSendFromOutput(intptr_t outIx, int eltN) {
     static_cast<RealPrimitives*>(this)->sendFromOutput(outIx, eltN);
   }
-  __device__ void directRecv(intptr_t inpIx, intptr_t outIx, int eltN) {
+  __device__ void directRecv(intptr_t outIx, int eltN) {
     static_cast<RealPrimitives*>(this)->recv(outIx, eltN, /*postOp=*/false);
   }
   __device__ void directCopySend(intptr_t inpIx, intptr_t outIx, int eltN, bool postOp=false) {
@@ -178,6 +173,18 @@ struct PrimitivesWithoutDirect {
     static_cast<RealPrimitives*>(this)->recvReduceCopySend(inpIx, outIx, eltN, postOp);
   }
 };
+
+__device__ inline int checkAbort(int &abortCache, const int abortValue, int &spins) {
+  if (abortCache & abortValue) return 1;
+  if (++spins < NCCL_SPINS_BEFORE_CHECK_ABORT) return 0;
+  spins = 0;
+  int abort = __atomic_load_n((ncclShmem.comm.abortFlag), __ATOMIC_SEQ_CST);
+  if (abort) {
+    __atomic_store_n(&ncclShmem.aborted, abort, __ATOMIC_SEQ_CST);
+    abortCache |= abortValue;
+  }
+  return abort;
+}
 
 #include "prims_simple.h"
 #include "prims_ll.h"

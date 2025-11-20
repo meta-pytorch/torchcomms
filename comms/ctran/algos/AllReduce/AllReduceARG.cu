@@ -1,4 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+#if !defined(USE_ROCM)
 
 #include <stdio.h>
 #include <cstddef>
@@ -257,3 +258,5 @@ DECL_ALL_REDUCE_ARG_SELF(__nv_fp8_e5m2);
 // kernel where dequantization type is FP32
 DECL_ALL_REDUCE_ARG_KERN_ALL_TYPES(float);
 #endif
+
+#endif // !defined(USE_ROCM)

@@ -95,6 +95,7 @@ ncclResult_t bootstrapNetInit() {
     pthread_mutex_lock(&bootstrapNetLock);
     if (bootstrapNetInitDone == 0) {
       const char* env = ncclGetEnv("NCCL_COMM_ID");
+      int nIfs = 0;
       if (env) {
         union ncclSocketAddress remoteAddr;
         if (ncclSocketGetAddrFromString(&remoteAddr, env) != ncclSuccess) {
@@ -102,13 +103,15 @@ ncclResult_t bootstrapNetInit() {
           pthread_mutex_unlock(&bootstrapNetLock);
           return ncclInvalidArgument;
         }
-        if (ncclFindInterfaceMatchSubnet(bootstrapNetIfName, &bootstrapNetIfAddr, &remoteAddr, MAX_IF_NAME_SIZE, 1) <= 0) {
+        NCCLCHECK(ncclFindInterfaceMatchSubnet(bootstrapNetIfName, &bootstrapNetIfAddr, &remoteAddr, MAX_IF_NAME_SIZE,
+                                               &nIfs));
+        if (nIfs <= 0) {
           WARN("NET/Socket : No usable listening interface found");
           pthread_mutex_unlock(&bootstrapNetLock);
           return ncclSystemError;
         }
       } else {
-        int nIfs = ncclFindInterfaces(bootstrapNetIfName, &bootstrapNetIfAddr, MAX_IF_NAME_SIZE, 1);
+        NCCLCHECK(ncclFindInterfaces(bootstrapNetIfName, &bootstrapNetIfAddr, MAX_IF_NAME_SIZE, 1, &nIfs));
         if (nIfs <= 0) {
           WARN("Bootstrap : no socket interface found");
           pthread_mutex_unlock(&bootstrapNetLock);
@@ -154,7 +157,7 @@ static ncclResult_t netIsend(ncclNet_t* net, void* sendComm, void* data, int siz
                              int* done) {
   if (*done) return ncclSuccess;
   if (!*sendReq) {
-    NCCLCHECK(net->isend(sendComm, data, (size_t)size, tag, dataHandle, sendReq));
+    NCCLCHECK(net->isend(sendComm, data, (size_t)size, tag, dataHandle, NULL, sendReq));
   }
   if (*sendReq) {
     NCCLCHECK(net->test(*sendReq, done, NULL));
@@ -168,8 +171,8 @@ static ncclResult_t netIrecv(ncclNet_t* net, void* recvComm, void* data, int siz
                              int* done) {
   if (*done) return ncclSuccess;
   if (!*recvReq) {
-    size_t size64 = size; 
-    NCCLCHECK(net->irecv(recvComm, 1, &data, &size64, &tag, &dataHandle, recvReq));
+    size_t size64 = size;
+    NCCLCHECK(net->irecv(recvComm, 1, &data, &size64, &tag, &dataHandle, NULL, recvReq));
   }
   if (*recvReq) {
     NCCLCHECK(net->test(*recvReq, done, NULL));
@@ -485,7 +488,7 @@ static ncclResult_t netGetDevice(int rank, struct ncclComm* comm, int* dev) {
   if (devOOB < 0) {
     pthread_mutex_lock(&bootstrapNetLock);
     if (devOOB < 0) {
-      char* userIfEnv = getenv("NCCL_OOB_NET_IFNAME");
+      const char* userIfEnv = ncclGetEnv("NCCL_OOB_NET_IFNAME");
       if (userIfEnv && strlen(userIfEnv) > 0) {
         INFO(NCCL_BOOTSTRAP | NCCL_ENV, "NCCL_OOB_NET_IFNAME set to %s", userIfEnv);
         bool searchNot = userIfEnv && userIfEnv[0] == '^';
@@ -541,7 +544,7 @@ static ncclResult_t netRingConnect(ncclNet_t* net, struct bootstrapListen_t* lis
   do {
     NCCLCHECK(checkAbort(abortFlag, &abortCounter));
     if (!*sendComm)
-      NCCLCHECK(net->connect(listen->net.dev, peerHandle, sendComm, sendDevHandle));
+      NCCLCHECK(net->connect(listen->net.dev, NULL, peerHandle, sendComm, sendDevHandle));
     if (!*recvComm)
       NCCLCHECK(net->accept(listen->net.comm, recvComm, recvDevHandle));
   } while (!*sendComm || !*recvComm);
@@ -741,6 +744,8 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
     rasRanks[rank].pid = getpid();
     rasRanks[rank].cudaDev = comm->cudaDev;
     rasRanks[rank].nvmlDev = comm->nvmlDev;
+    rasRanks[rank].hostHash = getHostHash();
+    rasRanks[rank].pidHash = getPidHash();
     if (ncclRasCommInit(comm, rasRanks+rank) != ncclSuccess) {
       INFO(NCCL_INIT|NCCL_RAS, "Continuing in spite of a RAS initialization error");
       // We should still participate in the ringAllInfo below as the peers will be waiting for us.
@@ -831,7 +836,7 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
 
   NCCLCHECKGOTO(ncclCalloc(&state->peerP2pAddresses, nranks), ret, fail);
   memcpy(state->peerP2pAddresses + rank, &peerSocketAddress, sizeof(union ncclSocketAddress));
-  if (parent->config.splitShare) {
+  if (parent->shareResources) {
     /* map local rank to top parent local rank. */
     for (int i = 0; i < nranks; ++i) {
       comm->topParentRanks[i] = parent->topParentRanks[parentRanks[i]];
@@ -972,7 +977,7 @@ ncclResult_t bootstrapRecv(void* commState, int peer, int tag, void* data, int s
   NCCLCHECK(socketAccept(commState, peer, tag, &sock));
   TRACE(NCCL_BOOTSTRAP, "Receiving tag=%d peer=%d size=%d", tag, peer, size);
   NCCLCHECKGOTO(socketRecv(&sock, ((char*)data), size), ret, fail);
-  NCCLCHECK(ncclSocketClose(&sock));
+  NCCLCHECKGOTO(ncclSocketClose(&sock, /*wait*/true), ret, fail);
   return ret;
 fail:
   (void)ncclSocketClose(&sock);
@@ -1067,7 +1072,7 @@ static ncclResult_t bootstrapP2PBarrier(void* commState, int* ranks, int rank, i
    * Based on the dissemination algorithm by Debra Hensgen, Raphael Finkel, and Udi Manbet,
    * "Two Algorithms for Barrier Synchronization," International Journal of Parallel Programming, 17(1):1-17, 1988"
    */
-  int data[1];
+  int data[1] = {0};
   for (int mask = 1; mask < nranks; mask <<= 1) {
     int src = (rank - mask + nranks) % nranks;
     int dst = (rank + mask) % nranks;

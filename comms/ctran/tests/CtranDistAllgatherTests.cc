@@ -43,17 +43,6 @@ class CtranAllgatherTest : public CtranDistBaseTest {
     comm = commWorld;
     segments.clear();
     segHandles.clear();
-
-    // Set algo to global config
-    auto algo = NCCL_ALLGATHER_ALGO;
-    // Override algo if comm config is set
-    if (ctranInitialized(comm->ctranComm_.get())) {
-      algo = comm->ctranComm_->ctran_->algo->getAllGatherAlgo();
-    }
-
-    if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
-      GTEST_SKIP() << "ctranAllGatherSupport returns fails, skip test";
-    }
   }
 
   void TearDown() override {
@@ -155,9 +144,7 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   }
 
   const int nLocalRanks = comm->ctranComm_->statex_->nLocalRanks();
-  if ((algo == NCCL_ALLGATHER_ALGO::ctrd ||
-       algo == NCCL_ALLGATHER_ALGO::ctring) &&
-      nLocalRanks != 1) {
+  if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
     GTEST_SKIP() << "Test with " << allGatherAlgoName(algo)
                  << " only supports nLocalRanks=1, but got " << nLocalRanks
                  << ", skip test";
@@ -183,8 +170,11 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
     expOpNames.push_back("AllGather");
     expAlgoNames.push_back(allGatherAlgoName(algo));
 
+    if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
+      GTEST_SKIP() << "ctranAllGatherSupport returns fails, skip test";
+    }
     auto res = ctranAllGather(
-        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream);
+        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream, algo);
     EXPECT_EQ(res, commSuccess);
 
     if (pairColl == kTestPairAllReduce) {
@@ -426,8 +416,12 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
     expOpNames.emplace_back("AllGather");
     expAlgoNames.push_back(allGatherAlgoName(algo));
 
+    if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
+      GTEST_SKIP() << "ctranAllGatherSupport returns fails, skip test";
+    }
     auto res = ctranAllGather(
-        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream);
+        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream, algo);
+
     EXPECT_EQ(res, commSuccess);
 
     if (pairColl == kTestPairAllReduce) {

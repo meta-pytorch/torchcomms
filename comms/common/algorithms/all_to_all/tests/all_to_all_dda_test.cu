@@ -185,7 +185,7 @@ TYPED_TEST_P(AllToAllDdaTest, ddaAllToAllIpcTest) {
 }
 
 REGISTER_TYPED_TEST_SUITE_P(AllToAllDdaTest, ddaAllToAllIpcTest);
-using TypesToTest = ::testing::Types<half, __nv_bfloat16>;
+using TypesToTest = ::testing::Types<float, half, __nv_bfloat16>;
 INSTANTIATE_TYPED_TEST_SUITE_P(AllToAllDdaTests, AllToAllDdaTest, TypesToTest);
 
 int main(int argc, char* argv[]) {

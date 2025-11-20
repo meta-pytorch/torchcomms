@@ -20,7 +20,7 @@ CtranWin::CtranWin(
     size_t size,
     size_t signalSize,
     DevMemType bufType)
-    : comm(comm), dataSize(size), signalSize(signalSize), bufType_(bufType) {};
+    : comm(comm), dataSize(size), signalSize(signalSize), bufType_(bufType) {}
 
 commResult_t CtranWin::exchange() {
   auto statex = comm->statex_.get();
@@ -32,10 +32,12 @@ commResult_t CtranWin::exchange() {
   auto mapper = comm->ctran_->mapper.get();
   CtranMapperEpochRAII epochRAII(mapper);
 
+  auto signalByteSize = signalSize * sizeof(uint64_t);
+
   // Registration via ctran mapper.
   FB_COMMCHECK(comm->ctran_->mapper->regMem(
       winBasePtr,
-      range,
+      dataSize + signalByteSize,
       &(segHdl),
       true,
       true, /* NCCL managed buffer */
@@ -48,10 +50,12 @@ commResult_t CtranWin::exchange() {
   FB_COMMCHECK(
       mapper->allGatherCtrl(winBasePtr, regHdl, remoteBufs, remoteAccessKeys));
   for (auto r = 0; r < nRanks; r++) {
-    remWinInfo[r].addr = remoteBufs[r];
-    remWinInfo[r].rkey = remoteAccessKeys[r];
+    remWinInfo[r].dataAddr = remoteBufs[r];
     remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(
         reinterpret_cast<size_t>(remoteBufs[r]) + dataSize);
+
+    remWinInfo[r].dataRkey = remoteAccessKeys[r];
+    remWinInfo[r].signalRkey = remoteAccessKeys[r];
   }
 
   CLOGF_SUBSYS(
@@ -69,8 +73,8 @@ commResult_t CtranWin::exchange() {
         INIT,
         "CTRAN-WINDOW     Peer {}: addr {} rkey {}",
         i,
-        (void*)remWinInfo[i].addr,
-        myRank == i ? "(local)" : remWinInfo[i].rkey.toString());
+        (void*)remWinInfo[i].dataAddr,
+        myRank == i ? "(local)" : remWinInfo[i].dataRkey.toString());
   }
 
   // A barrier among ranks after importing handles to prevent accessing window
@@ -93,7 +97,7 @@ commResult_t CtranWin::allocate() {
   size_t allocSize = dataSize + signalSize * sizeof(uint64_t);
   if (bufType_ == DevMemType::kHostPinned) {
     FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
-    range = allocSize;
+    range_ = allocSize;
   } else {
     FB_COMMCHECK(
         utils::commCuMemAlloc(
@@ -106,7 +110,7 @@ commResult_t CtranWin::allocate() {
 
     // query the actually allocated range of the memory
     CUdeviceptr pbase = 0;
-    FB_CUCHECK(cuMemGetAddressRange(&pbase, &range, (CUdeviceptr)addr));
+    FB_CUCHECK(cuMemGetAddressRange(&pbase, &range_, (CUdeviceptr)addr));
   }
 
   winBasePtr = addr;
@@ -164,14 +168,14 @@ commResult_t CtranWin::free() {
   auto nRanks = statex->nRanks();
   for (auto i = 0; i < nRanks; ++i) {
     if (i != statex->rank()) {
-      FB_COMMCHECK(comm->ctran_->mapper->deregRemReg(&remWinInfo[i].rkey));
+      FB_COMMCHECK(comm->ctran_->mapper->deregRemReg(&remWinInfo[i].dataRkey));
     }
   }
   // Release local memory
   if (bufType_ == DevMemType::kHostPinned) {
     FB_CUDACHECK(cudaFreeHost(winBasePtr));
   } else {
-    FB_COMMCHECK(utils::commCuMemFree(remWinInfo[statex->rank()].addr));
+    FB_COMMCHECK(utils::commCuMemFree(remWinInfo[statex->rank()].dataAddr));
   }
 
   return commSuccess;
@@ -221,8 +225,20 @@ commResult_t ctranWinAllocate(
 
 commResult_t ctranWinSharedQuery(int rank, CtranWin* win, void** addr) {
   CtranComm* comm = win->comm;
+
+  // Validate rank is within valid bounds
+  if (rank < 0 || rank >= comm->statex_->nRanks()) {
+    CLOGF(
+        ERR,
+        "CTRAN-WINDOW: Invalid rank {} for sharedQuery (valid range: [0, {}))",
+        rank,
+        comm->statex_->nRanks());
+    *addr = nullptr;
+    return commInvalidArgument;
+  }
+
   if (rank == comm->statex_->rank() || win->nvlEnabled(rank)) {
-    *addr = win->remWinInfo[rank].addr;
+    *addr = win->remWinInfo[rank].dataAddr;
   } else {
     // If the remote rank is not supported by NVL path (either on a different
     // node, or it is CPU memory), return nullptr so that user should not

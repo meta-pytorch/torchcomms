@@ -194,7 +194,7 @@ __device__ __forceinline__ void mscclRunInterpreter(
   }
 
   RedOp redFn(mscclShmem.work.redOpArg);
-  Primitives<T, RedOp, FanAsymmetric<1,1>, 1, Proto, 0> prims
+  Primitives<T, RedOp, FanAsymmetric<1,1>, 1, Proto, 0, 0, RCCL_METADATA_MSCCL> prims
     (tid, nthreads, &recvPeer, &sendPeer, thisInput, thisOutput, mscclShmem.work.redOpArg);
 
 #if defined(ENABLE_NPKIT)
@@ -376,7 +376,7 @@ __global__ void MSCCL_KERNEL_ENTRY_NAME(devredop, type, LL128, fullOps)(struct n
   mscclRunInterpreter<type, Func##devredop<type>, ProtoLL128, fullOps>(comm, algo, work); \
 } \
 __global__ void MSCCL_KERNEL_ENTRY_NAME(devredop, type, Simple, fullOps)(struct ncclDevComm* comm, struct mscclAlgo* algo, struct mscclWork* work) { \
-  mscclRunInterpreter<type, Func##devredop<type>, ProtoSimple<MSCCL_CHUNKSTEPS/MSCCL_SLICESTEPS, MSCCL_SLICESTEPS, 2>, fullOps>(comm, algo, work); \
+  mscclRunInterpreter<type, Func##devredop<type>, ProtoSimple<MSCCL_CHUNKSTEPS/MSCCL_SLICESTEPS, MSCCL_SLICESTEPS, 0, 2>, fullOps>(comm, algo, work); \
 }
 
 #define MSCCL_IMPL_KERNEL_ENTRY_FUNC_DEVREDOP(devredop, fullOps) \

@@ -184,24 +184,15 @@ TYPED_TEST_P(ReduceScatterDdaTest, ddaReduceScatterIpcTest) {
   cudaDeviceSynchronize();
 
   // compare with ground truth
-  ElementType myresults_h[cnt];
-  ElementType groundTruth_h[cnt];
-  CUDA_CHECK(cudaMemcpy(
-      myresults_h, recvbuff_d, sizeof(ElementType) * cnt, cudaMemcpyDefault));
-  CUDA_CHECK(cudaMemcpy(
-      groundTruth_h,
-      groundTruth_d,
-      sizeof(ElementType) * cnt,
-      cudaMemcpyDefault));
   for (int i = 0; i < cnt; ++i) {
     EXPECT_EQ(
-        static_cast<double>(myresults_h[i]),
-        static_cast<double>(groundTruth_h[i]));
+        static_cast<double>(recvbuff_d[i]),
+        static_cast<double>(groundTruth_d[i]));
   }
 }
 
 REGISTER_TYPED_TEST_SUITE_P(ReduceScatterDdaTest, ddaReduceScatterIpcTest);
-using TypesToTest = ::testing::Types<half, __nv_bfloat16>;
+using TypesToTest = ::testing::Types<float, half, __nv_bfloat16>;
 INSTANTIATE_TYPED_TEST_SUITE_P(
     ReduceScatterDdaTests,
     ReduceScatterDdaTest,
