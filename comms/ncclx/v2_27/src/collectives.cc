@@ -103,7 +103,7 @@ ncclResult_t ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcoun
   // Use ctran allgather if user specified and ctran is supported
   if (algo != NCCL_ALLGATHER_ALGO::orig && ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
     return metaCommToNccl(ctranAllGather(
-        sendbuff, recvbuff, sendcount, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream));
+        sendbuff, recvbuff, sendcount, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, algo));
   }
 
   struct ncclInfo info = { ncclFuncAllGather, "AllGather",
@@ -554,7 +554,7 @@ ncclResult_t ncclx::alltoallvDynamicDispatch(
       ncclToMetaComm(hints),
       ncclToMetaComm(datatype),
       comm->ctranComm_.get(),
-      stream,   
+      stream,
       false,
       recvAllSplitLengths));
 }

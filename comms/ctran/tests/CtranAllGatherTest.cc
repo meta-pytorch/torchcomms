@@ -115,7 +115,8 @@ class CtranAllGatherTest : public CtranStandaloneMultiRankBaseTest,
         sendCount,
         kDataType,
         state.ctranComm.get(),
-        state.stream);
+        state.stream,
+        NCCL_ALLGATHER_ALGO);
     EXPECT_EQ(commSuccess, result);
 
     CLOGF(INFO, "rank {} allGather scheduled", state.rank);

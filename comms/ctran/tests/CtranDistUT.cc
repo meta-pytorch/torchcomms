@@ -377,7 +377,8 @@ TEST_F(CtranTest, RegMemReuseInMultiComms) {
         count,
         commInt,
         comms[c]->ctranComm_.get(),
-        streams[c]));
+        streams[c],
+        NCCL_ALLGATHER_ALGO));
   }
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -461,8 +462,14 @@ TEST_F(CtranTest, CommAbortWithRegMem) {
     GTEST_SKIP() << "ctranAllGather is not supported. Skip test";
   }
   // Run a collective to ensure buffer has been remote registered
-  COMMCHECK_TEST(
-      ctranAllGather(buf, buf, count, commInt, comm->ctranComm_.get(), 0));
+  COMMCHECK_TEST(ctranAllGather(
+      buf,
+      buf,
+      count,
+      commInt,
+      comm->ctranComm_.get(),
+      0,
+      NCCL_ALLGATHER_ALGO));
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   allHandles = regCache->getSegments();

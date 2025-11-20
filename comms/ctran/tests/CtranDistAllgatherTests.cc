@@ -155,9 +155,7 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
   }
 
   const int nLocalRanks = comm->ctranComm_->statex_->nLocalRanks();
-  if ((algo == NCCL_ALLGATHER_ALGO::ctrd ||
-       algo == NCCL_ALLGATHER_ALGO::ctring) &&
-      nLocalRanks != 1) {
+  if (!ctranAllGatherSupport(comm->ctranComm_.get(), algo)) {
     GTEST_SKIP() << "Test with " << allGatherAlgoName(algo)
                  << " only supports nLocalRanks=1, but got " << nLocalRanks
                  << ", skip test";
@@ -184,7 +182,7 @@ TEST_P(CtranAllgatherTestParam, AllgatherAlgo) {
     expAlgoNames.push_back(allGatherAlgoName(algo));
 
     auto res = ctranAllGather(
-        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream);
+        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream, algo);
     EXPECT_EQ(res, commSuccess);
 
     if (pairColl == kTestPairAllReduce) {
@@ -427,7 +425,7 @@ TEST_P(CtranSocketAllgatherTestParam, AllgatherAlgo) {
     expAlgoNames.push_back(allGatherAlgoName(algo));
 
     auto res = ctranAllGather(
-        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream);
+        sCommBuf, rCommBuf, count, dt, comm->ctranComm_.get(), stream, algo);
     EXPECT_EQ(res, commSuccess);
 
     if (pairColl == kTestPairAllReduce) {
