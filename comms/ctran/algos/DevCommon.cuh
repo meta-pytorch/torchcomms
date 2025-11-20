@@ -8,21 +8,35 @@
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/utils/DevUtils.cuh"
 
-#define CTRAN_DEV_TRACE(fmt, ...)                                                                              \
-  do {                                                                                                         \
-    if (shmDevState.enableTraceLog) {                                                                          \
-      printf(                                                                                                  \
-          "[DEVTRACE] %s [commHash %lx rank %d localRank %d pid %d blockIdx %d gridDim %d opCount %ld]: " fmt, \
-          __func__,                                                                                            \
-          statex->commHash(),                                                                                  \
-          statex->rank(),                                                                                      \
-          statex->localRank(),                                                                                 \
-          statex->pid(),                                                                                       \
-          blockIdx.x,                                                                                          \
-          gridDim.x,                                                                                           \
-          shmDevState.opCount,                                                                                 \
-          ##__VA_ARGS__);                                                                                      \
-    }                                                                                                          \
+#define CTRAN_DEV_LOG(fmt, ...)                                                                    \
+  do {                                                                                             \
+    printf(                                                                                        \
+        " %s [commHash %lx rank %d localRank %d pid %d blockIdx %d gridDim %d opCount %ld]: " fmt, \
+        __func__,                                                                                  \
+        statex->commHash(),                                                                        \
+        statex->rank(),                                                                            \
+        statex->localRank(),                                                                       \
+        statex->pid(),                                                                             \
+        blockIdx.x,                                                                                \
+        gridDim.x,                                                                                 \
+        shmDevState.opCount,                                                                       \
+        ##__VA_ARGS__);                                                                            \
+  } while (0);
+
+#define CTRAN_DEV_TRACE(fmt, ...)                  \
+  if (shmDevState.enableTraceLog) {                \
+    CTRAN_DEV_LOG("[DEVTRACE]" fmt, ##__VA_ARGS__) \
+  }
+
+#define CTRAN_DEV_TRACE_IF(cond, fmt, ...)          \
+  if ((cond) && shmDevState.enableTraceLog) {       \
+    CTRAN_DEV_LOG("[DEVTRACE]" fmt, ##__VA_ARGS__); \
+  }
+
+#define CTRAN_DEV_FATAL(fmt, ...)                                              \
+  do {                                                                         \
+    CTRAN_DEV_LOG("[DEVFATAL] %s:%d " fmt, __FILE__, __LINE__, ##__VA_ARGS__); \
+    trap();                                                                    \
   } while (0);
 
 /**
