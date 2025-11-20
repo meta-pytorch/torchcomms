@@ -11,6 +11,9 @@
 __global__ void devSyncWaitNotifyKernel(
     CtranAlgoDeviceSync* localSync,
     int nGroups) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = false;
   // Receiver waits for notification - sync is pre-initialized to NOTIFY_SET
   if (blockIdx.x == 0) {
     devSyncWaitNotify(localSync, nGroups);
@@ -21,10 +24,12 @@ __global__ void devSyncWaitNotifyKernel(
 // putNotify.
 __global__ void
 KernelElemPutNotifyKernel(KernelElem* elem, int nGroups, int iters) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = false;
   const auto groupIdx = blockIdx.x;
   for (int i = 0; i < iters; i++) {
     bool revoked = false;
-
     uint64_t recvbuffAddr =
         elemWaitPostOrRevokeByGroupForMultiPut(elem, groupIdx, &revoked);
 
@@ -38,6 +43,9 @@ KernelElemPutNotifyKernel(KernelElem* elem, int nGroups, int iters) {
 // Call KernelElem-related funcs to measure time consumed by KernelElem in
 // waitNotify.
 __global__ void KernelElemWaitNotifyKernel(KernelElem* elem, int iters) {
+  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
+  // channels.
+  shmDevState.enableCancellableWaits = false;
   const auto groupIdx = blockIdx.x;
   if (groupIdx != 0) {
     return;

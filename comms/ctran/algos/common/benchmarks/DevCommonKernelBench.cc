@@ -1,16 +1,18 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <benchmark/benchmark.h>
 #include <cuda_runtime.h>
-#include <chrono>
 #include <memory>
 #include <thread>
 #include <vector>
+
+#include <folly/Benchmark.h>
+#include <folly/init/Init.h>
 
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/ctran/utils/CudaWrap.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/logger/Logger.h"
 
 using namespace ctran;
@@ -73,9 +75,8 @@ struct KernelElemBenchmarkSetup {
   int nGroups;
 
   KernelElemBenchmarkSetup(int nGroups) : nGroups(nGroups) {
-    CHECK_EQ(
-        cudaHostAlloc(&elem, sizeof(KernelElem), cudaHostAllocDefault),
-        cudaSuccess);
+    CUDACHECK_TEST(
+        cudaHostAlloc(&elem, sizeof(KernelElem), cudaHostAllocDefault));
     elem->ngroups = nGroups;
   }
 
@@ -97,12 +98,11 @@ struct KernelElemBenchmarkSetup {
 //------------------------------------------------------------------------------
 
 /**
- * Benchmark devSyncWaitNotify latency with varying number of groups
+ * Benchmark devSyncWaitNotify with varying number of groups
  */
-static void BM_DevSyncWaitNotify_Latency(benchmark::State& state) {
-  const int nGroups = state.range(0);
+static void
+DevSyncWaitNotify(uint32_t iters, int nGroups, folly::UserCounters& counters) {
   const int cudaDev = 0;
-
   CHECK_EQ(cudaSetDevice(cudaDev), cudaSuccess);
 
   // Allocate sync structure on device
@@ -110,12 +110,13 @@ static void BM_DevSyncWaitNotify_Latency(benchmark::State& state) {
   CHECK_EQ(cudaMalloc(&deviceSync, sizeof(CtranAlgoDeviceSync)), cudaSuccess);
 
   CudaBenchmarkResources resources;
+  float totalTimeMs = 0.0f;
 
-  for (auto _ : state) {
+  for (uint32_t i = 0; i < iters; ++i) {
     // Initialize sync structure with NOTIFY_SET for all groups
     CtranAlgoDeviceSync initSync;
-    for (int i = 0; i < CTRAN_ALGO_MAX_THREAD_BLOCKS; i++) {
-      initSync.syncs[i].stepOnSameBlockIdx = CTRAN_ALGO_NOTIFY_SET;
+    for (int j = 0; j < CTRAN_ALGO_MAX_THREAD_BLOCKS; j++) {
+      initSync.syncs[j].stepOnSameBlockIdx = CTRAN_ALGO_NOTIFY_SET;
     }
     CHECK_EQ(
         cudaMemcpyAsync(
@@ -143,52 +144,53 @@ static void BM_DevSyncWaitNotify_Latency(benchmark::State& state) {
               grid,
               blocks,
               kernArgs.data(),
-              0,
+              sizeof(CtranAlgoDeviceState), // Dynamic shared memory size
               resources.stream),
           cudaSuccess);
     }
 
-    // Record stop event and measure time
+    // Stop timing and measure
     resources.stopTiming();
-    float devDeltaMs = resources.measureTime();
-
-    // SetIterationTime expects seconds
-    state.SetIterationTime(devDeltaMs / 1000.0f);
-
-    // Set custom counter for the benchmark
-    state.counters["nGroups"] = nGroups;
+    totalTimeMs += resources.measureTime();
   }
 
-  // Cleanup
+  float avgTimeUs = (totalTimeMs / iters) * 1000.0f; // Convert ms to us
+  counters["deviceTimeUs"] =
+      folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
+  counters["nGroups"] =
+      folly::UserMetric(nGroups, folly::UserMetric::Type::METRIC);
+
   CHECK_EQ(cudaFree(deviceSync), cudaSuccess);
 }
 
 /**
- * Benchmark KernelElem latency in putNotify with varying number of groups
+ * Benchmark KernelElem in putNotify with varying number of groups
  */
-static void BM_KernelElemPutNotify_Latency(benchmark::State& state) {
-  const int nGroups = state.range(0);
+static void KernelElemPutNotify(
+    uint32_t iters,
+    int nGroups,
+    folly::UserCounters& counters) {
   const int cudaDev = 0;
-  const int iters = 1;
+  const int innerIters = 50;
 
   CHECK_EQ(cudaSetDevice(cudaDev), cudaSuccess);
 
   KernelElemBenchmarkSetup kernelElem(nGroups);
   CudaBenchmarkResources resources;
+  float totalTimeMs = 0.0f;
 
-  for (auto _ : state) {
+  for (uint32_t i = 0; i < iters; ++i) {
     // Initialize status with INUSE for all groups
     kernelElem.initializeStatus(KernelElem::ElemStatus::INUSE);
 
     // Start timing the kernelElem kernel
     resources.startTiming();
 
-    // Launch kernelElem kernel
     {
       std::array<void*, 3> kernArgs;
       kernArgs[0] = &kernelElem.elem;
       kernArgs[1] = (void*)&nGroups;
-      kernArgs[2] = (void*)&iters;
+      kernArgs[2] = (void*)&innerIters;
       dim3 grid = {(unsigned int)nGroups, 1, 1};
       dim3 blocks = {1024, 1, 1};
 
@@ -198,56 +200,56 @@ static void BM_KernelElemPutNotify_Latency(benchmark::State& state) {
               grid,
               blocks,
               kernArgs.data(),
-              0,
+              sizeof(CtranAlgoDeviceState), // Dynamic shared memory size
               resources.stream),
           cudaSuccess);
-
-      for (int i = 0; i < iters; i++) {
+      for (int j = 0; j < innerIters; j++) {
         kernelElem.elem->post();
-        // wait for kernel to finish
         while (!kernelElem.elem->isComplete()) {
         }
       }
     }
 
-    // Record stop event and measure time
+    // Stop timing and measure
     resources.stopTiming();
-    float devDeltaMs = resources.measureTime();
-
-    // SetIterationTime expects seconds
-    state.SetIterationTime(devDeltaMs / iters / 1000.0f);
-
-    // Set custom counter for the benchmark
-    state.counters["nGroups"] = nGroups;
+    totalTimeMs += resources.measureTime();
   }
+
+  float avgTimeUs =
+      (totalTimeMs / iters / innerIters) * 1000.0f; // Convert ms to us
+  counters["deviceTimeUs"] =
+      folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
+  counters["nGroups"] =
+      folly::UserMetric(nGroups, folly::UserMetric::Type::METRIC);
 }
 
 /**
- * Benchmark KernelElem latency in waitNotify with varying number of threads and
+ * Benchmark KernelElem in waitNotify with varying number of threads and
  * multiple iterations
  */
-static void BM_KernelElemWaitNotify_Latency(benchmark::State& state) {
+static void KernelElemWaitNotify(
+    uint32_t iters,
+    int nThreads,
+    folly::UserCounters& counters) {
   const int nGroups = 1;
-  const int nThreads = state.range(0);
   const int cudaDev = 0;
-  const int iters = 50; // Add multiple iterations like PutNotify
-
   CHECK_EQ(cudaSetDevice(cudaDev), cudaSuccess);
 
+  const int innerIters = 50;
   KernelElemBenchmarkSetup kernelElem(nGroups);
   CudaBenchmarkResources resources;
+  float totalTimeMs = 0.0f;
 
-  for (auto _ : state) {
-    // Initialize status with INUSE for all groups
+  for (uint32_t i = 0; i < iters; ++i) {
     kernelElem.initializeStatus(KernelElem::ElemStatus::INUSE);
-    // Start timing the kernelElem waitnotify kernel
+
+    // Start timing the kernel
     resources.startTiming();
 
-    // Launch kernelElem waitnotify kernel
     {
       std::array<void*, 2> kernArgs;
       kernArgs[0] = &kernelElem.elem;
-      kernArgs[1] = (void*)&iters;
+      kernArgs[1] = (void*)&innerIters;
       dim3 grid = {(unsigned int)nGroups, 1, 1};
       dim3 blocks = {(unsigned int)nThreads, 1, 1};
 
@@ -257,53 +259,66 @@ static void BM_KernelElemWaitNotify_Latency(benchmark::State& state) {
               grid,
               blocks,
               kernArgs.data(),
-              0,
+              sizeof(CtranAlgoDeviceState), // Dynamic shared memory size
               resources.stream),
           cudaSuccess);
-      for (int i = 0; i < iters; i++) {
+      for (int j = 0; j < innerIters; j++) {
         kernelElem.elem->post();
-        // wait for kernel to finish
         while (!kernelElem.elem->isComplete()) {
         }
       }
     }
 
-    // Record stop event and measure time
+    // Stop timing and measure
     resources.stopTiming();
-    float devDeltaMs = resources.measureTime();
-
-    // SetIterationTime expects seconds - divide by iters for per-iteration time
-    state.SetIterationTime(devDeltaMs / iters / 1000.0f);
-
-    // Set custom counters for the benchmark
-    state.counters["nThreads"] = nThreads;
+    totalTimeMs += resources.measureTime();
   }
+
+  float avgTimeUs =
+      (totalTimeMs / iters / innerIters) * 1000.0f; // Convert ms to us
+  counters["deviceTimeUs"] =
+      folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
+  counters["nThreads"] =
+      folly::UserMetric(nThreads, folly::UserMetric::Type::METRIC);
 }
 
 //------------------------------------------------------------------------------
 // Benchmark Registration
 //------------------------------------------------------------------------------
 
-// Test with different numbers of thread block groups
-BENCHMARK(BM_DevSyncWaitNotify_Latency)
-    ->RangeMultiplier(2)
-    ->Range(1, 64)
-    ->UseManualTime()
-    ->Unit(benchmark::kMicrosecond);
+#define BENCHMARK_PARAM_COUNTERS(name, param)                     \
+  BENCHMARK_IMPL_COUNTERS(                                        \
+      FB_CONCATENATE(name, FB_CONCATENATE(_, param)),             \
+      FOLLY_PP_STRINGIZE(name) "(" FOLLY_PP_STRINGIZE(param) ")", \
+      counters,                                                   \
+      iters,                                                      \
+      unsigned,                                                   \
+      iters) {                                                    \
+    name(iters, param, counters);                                 \
+  }
 
 // Test with different numbers of thread block groups
-BENCHMARK(BM_KernelElemPutNotify_Latency)
-    ->RangeMultiplier(2)
-    ->Range(1, 64)
-    ->UseManualTime()
-    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 1);
+BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 2);
+BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 4);
+BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 8);
+BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 16);
+BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 32);
+BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 64);
+
+// Test with different numbers of thread block groups
+BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 1);
+BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 2);
+BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 4);
+BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 8);
+BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 16);
+BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 32);
+BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 64);
 
 // Test with different numbers of threads per group
-BENCHMARK(BM_KernelElemWaitNotify_Latency)
-    ->RangeMultiplier(2)
-    ->Range(64, 1024)
-    ->UseManualTime()
-    ->Unit(benchmark::kMicrosecond);
+BENCHMARK_PARAM_COUNTERS(KernelElemWaitNotify, 256);
+BENCHMARK_PARAM_COUNTERS(KernelElemWaitNotify, 512);
+BENCHMARK_PARAM_COUNTERS(KernelElemWaitNotify, 1024);
 
 // Custom main function to handle initialization
 int main(int argc, char** argv) {
@@ -320,9 +335,8 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  // Initialize and run benchmark
-  ::benchmark::Initialize(&argc, argv);
-  ::benchmark::RunSpecifiedBenchmarks();
+  folly::Init init(&argc, &argv);
+  folly::runBenchmarks();
 
   // Cleanup
   cudaSetDevice(0);
