@@ -84,11 +84,10 @@ class CtranExRequestImpl {
     struct {
       ControlMsg msg;
     } recvSyncCtrl;
-    struct {
-      // completion is set by GPE thread and checked by calling thread.
-      std::shared_ptr<std::atomic_flag> complete;
-    } bcast;
   };
+  // Note: using shared_ptr inside union can introduce undefined behaviour.
+  // Set and used only when type == BCAST
+  std::shared_ptr<std::atomic_flag> bcast_complete{nullptr};
 
   // Pointer to ctranIb object in CtranExImpl. We should never see user checks a
   // request if ctranIb has already been released.

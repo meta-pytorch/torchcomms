@@ -144,7 +144,7 @@ ncclResult_t CtranExComm::broadcast(
       count,
       ncclToMetaComm(datatype),
       root,
-      reqImpl->bcast.complete)));
+      reqImpl->bcast_complete)));
 
   *req = reqPtr;
   return ncclSuccess;
