@@ -22,16 +22,23 @@
 
 #pragma once
 
-#include <rccl/rccl.h>
+#include <rccl.h>
 
 #include <stddef.h>
 #include <stdint.h>
+
+// Forward declaration for ncclWindow_t if not already defined in rccl.h
+// This type was added in newer versions of RCCL and may not be present in older system headers
+#ifndef _NCCL_WINDOW_TYPE_DEFINED
+typedef struct ncclWindow* ncclWindow_t;
+#define _NCCL_WINDOW_TYPE_DEFINED
+#endif
 
 // should only be increased if fundamental changes to dispatch table(s)
 #define RCCL_API_TRACE_VERSION_MAJOR 0
 
 // should be increased every time new members are added to existing dispatch tables
-#define RCCL_API_TRACE_VERSION_PATCH 0
+#define RCCL_API_TRACE_VERSION_PATCH 2
 
 #if !defined(RCCL_EXTERN_C_INIT)
 #    ifdef __cplusplus
@@ -122,6 +129,10 @@ typedef ncclResult_t (*ncclCommDestroy_fn_t)(ncclComm_t comm);
 
 typedef ncclResult_t (*ncclCommAbort_fn_t)(ncclComm_t comm);
 
+typedef ncclResult_t (*ncclCommShrink_fn_t)(ncclComm_t comm, int* excludeRanksList,
+                                            int excludeRanksCount, ncclComm_t *newcomm,
+                                            ncclConfig_t* config, int shrinkFlags);
+
 typedef ncclResult_t (*ncclCommSplit_fn_t)(ncclComm_t comm, int color, int key,
                                            ncclComm_t* newcomm, ncclConfig_t* config);
 
@@ -158,8 +169,13 @@ typedef ncclResult_t (*ncclCommRegister_fn_t)(const ncclComm_t comm, void* buff,
 
 typedef ncclResult_t (*ncclCommDeregister_fn_t)(const ncclComm_t comm, void* handle);
 
+typedef ncclResult_t (*ncclCommWindowRegister_fn_t)(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
+
+typedef ncclResult_t (*ncclCommWindowDeregister_fn_t)(ncclComm_t comm, ncclWindow_t win);
+
 typedef struct rcclApiFuncTable
 {
+    // ADD NEW FUNCTIONS AT BOTTOM ONLY
     uint64_t                      size;
     ncclAllGather_fn_t            ncclAllGather_fn;
     ncclAllReduce_fn_t            ncclAllReduce_fn;
@@ -199,7 +215,10 @@ typedef struct rcclApiFuncTable
     ncclCommRegister_fn_t         ncclCommRegister_fn;
     ncclCommDeregister_fn_t       ncclCommDeregister_fn;
     ncclAllReduceWithBias_fn_t    ncclAllReduceWithBias_fn;
-
+    ncclCommShrink_fn_t           ncclCommShrink_fn;
+    ncclCommWindowRegister_fn_t   ncclCommWindowRegister_fn;
+    ncclCommWindowDeregister_fn_t ncclCommWindowDeregister_fn;
+    // ADD NEW FUNCTIONS HERE ONLY
 } rcclApiFuncTable;
 
 RCCL_EXTERN_C_FINI

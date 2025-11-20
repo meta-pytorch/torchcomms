@@ -82,7 +82,7 @@ namespace RcclUnitTesting
         CHECK_CALL(this->inputGpu.AllocateGpuMem(this->numInputBytesAllocated, useManagedMem, userRegistered));
         this->outputGpu.Attach(this->inputGpu.U1 + (this->globalRank  * this->numOutputBytesAllocated));
       }
-      else if (this->funcType == ncclCollGather)
+      else if (this->funcType == ncclCollGather || this->funcType == ncclCollAllGather)
       {
         CHECK_CALL(this->outputGpu.AllocateGpuMem(this->numOutputBytesAllocated, useManagedMem, userRegistered));
         this->inputGpu.Attach(this->outputGpu.U1 + (this->globalRank * this->numInputBytesAllocated));
@@ -201,10 +201,10 @@ namespace RcclUnitTesting
         case ncclUint32:     ss << scalarsPerRank.U4[this->globalRank]; break;
         case ncclInt64:      ss << scalarsPerRank.I8[this->globalRank]; break;
         case ncclUint64:     ss << scalarsPerRank.U8[this->globalRank]; break;
-        case ncclFloat8e4m3: ss << scalarsPerRank.F1[this->globalRank]; break;
+        case ncclFloat8e4m3: ss << (float)scalarsPerRank.F1[this->globalRank]; break;
         case ncclFloat32:    ss << scalarsPerRank.F4[this->globalRank]; break;
         case ncclFloat64:    ss << scalarsPerRank.F8[this->globalRank]; break;
-        case ncclFloat8e5m2: ss << scalarsPerRank.B1[this->globalRank]; break;
+        case ncclFloat8e5m2: ss << (float)scalarsPerRank.B1[this->globalRank]; break;
         case ncclBfloat16:   ss << scalarsPerRank.B2[this->globalRank]; break;
         default:             ss << "(UNKNOWN)";
         }

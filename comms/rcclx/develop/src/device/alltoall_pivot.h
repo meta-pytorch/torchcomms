@@ -9,7 +9,7 @@
 #include "primitives.h"
 
 namespace {
-  template<typename T, typename RedOp, typename Proto, int COLL_UNROLL>
+  template<typename T, typename RedOp, typename Proto, int USE_ACC, int COLL_UNROLL, int Pipeline>
 #if defined(USE_INDIRECT_FUNCTION_CALL) && !defined(__gfx942__) && !defined(__gfx950__)
   __device__ void runRing(int tid, int nthreads, struct ncclDevWorkColl* work) {
 #else
@@ -52,7 +52,7 @@ namespace {
       if (num_hops == 0 && work->sendbuff != work->recvbuff) {
         const T* sendbuff = (const T*)work->sendbuff + send_offset;
         T* recvbuff = (T *)work->recvbuff + recv_offset;
-        reduceCopy<COLL_UNROLL, RedOp, T, 0,1, 1, 0, 1, 1, 0>(
+        reduceCopy<COLL_UNROLL, USE_ACC, RedOp, T, 0,1, 1, 0, 1, 1, 0>(
             tid, nthreads, 0, nullptr, false, 1, (void **)&sendbuff, 1, (void **)&recvbuff, send_recv_size);
       } else {
         for (ssize_t prims_offset = 0; prims_offset < send_recv_size; prims_offset += prims_size) {
@@ -74,10 +74,10 @@ namespace {
   }
 }
 
-template<typename T, typename RedOp, int COLL_UNROLL>
-struct RunWorkColl<ncclFuncAllToAllPivot, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE, COLL_UNROLL> {
+template<typename T, typename RedOp, int USE_ACC, int COLL_UNROLL, int Pipeline>
+struct RunWorkColl<ncclFuncAllToAllPivot, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPLE, USE_ACC, COLL_UNROLL, Pipeline> {
   __device__ __forceinline__ void run(int tid, int nThreads, struct ncclDevWorkColl* work) {
-    using Proto = ProtoSimple<ALLTOALL_PIVOT_CHUNKSTEPS/ALLTOALL_PIVOT_SLICESTEPS, ALLTOALL_PIVOT_SLICESTEPS, COLL_UNROLL>;
-    runRing<T, RedOp, Proto, COLL_UNROLL>(tid, nThreads, work);
+    using Proto = ProtoSimple<ALLTOALL_PIVOT_CHUNKSTEPS/ALLTOALL_PIVOT_SLICESTEPS, ALLTOALL_PIVOT_SLICESTEPS, USE_ACC, COLL_UNROLL>;
+    runRing<T, RedOp, Proto, USE_ACC, COLL_UNROLL, Pipeline>(tid, nThreads, work);
   }
 };
