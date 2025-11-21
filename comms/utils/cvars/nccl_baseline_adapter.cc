@@ -16,8 +16,12 @@
 #include "comms/utils/cvars/nccl_baseline_adapter.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-#define NCCL_ADAPTER_INFO(fmt, ...) \
-  XLOGF(INFO, "NcclBaselineAdapter INFO CVAR: " fmt, __VA_ARGS__);
+#define NCCL_ADAPTER_INFO(fmt, ...)          \
+  XLOGF_IF(                                  \
+      INFO,                                  \
+      logNcclBaselineAdapterInfo,            \
+      "NcclBaselineAdapter INFO CVAR: " fmt, \
+      __VA_ARGS__);
 
 namespace nccl_baseline_adapter {
 void ncclLoadParam(

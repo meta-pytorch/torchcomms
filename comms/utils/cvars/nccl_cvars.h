@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <vector>
 
+extern bool logNcclBaselineAdapterInfo;
 extern bool CUDA_LAUNCH_BLOCKING;
 extern bool CUDA_LAUNCH_BLOCKING_DEFAULTCVARVALUE;
 

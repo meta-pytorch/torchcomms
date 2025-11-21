@@ -597,6 +597,10 @@ def populateHFile(allcvars, outputFilename):
 
     file.write("\n")
 
+    file.write("extern bool logNcclBaselineAdapterInfo;")
+
+    file.write("\n")
+
     # Generate extern declaration
     for cvar in allcvars:
         cvar.externDecl(file)

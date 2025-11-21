@@ -30,6 +30,7 @@ static const std::string ncclConfigFileName = "nccl.conf";
 
 static int cudaDev = -1;
 static bool logInfoLog = false;
+bool logNcclBaselineAdapterInfo = false;
 namespace ncclx {
 static std::unordered_map<std::string, std::string>& nccl_config() {
   static std::unordered_map<std::string, std::string> config;
@@ -72,6 +73,7 @@ static void initCvarLogger() {
         cudaGetErrorString(err));
   }
   logInfoLog = env2bool("NCCL_CVARS_LOG_INFO", "false");
+  logNcclBaselineAdapterInfo = logInfoLog;
 }
 
 static std::vector<std::string> tokenizer(std::string str) {
