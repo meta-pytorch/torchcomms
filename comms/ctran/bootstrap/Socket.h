@@ -8,6 +8,8 @@
 #include <folly/Expected.h>
 #include <folly/IPAddress.h>
 #include <folly/SocketAddress.h>
+#include "comms/ctran/bootstrap/ISocket.h"
+#include "comms/ctran/bootstrap/ISocketFactory.h"
 
 namespace ctran::bootstrap {
 
@@ -26,7 +28,7 @@ folly::Expected<folly::IPAddress, int> getInterfaceAddress(
  * C++ wrapper over socket interface for communicating with the peer.
  * All APIs are blocking. All APIs return standard system error codes.
  */
-class Socket {
+class Socket : public ISocket {
  public:
   /*
    * Create new unconnected socket. `connect(..)` must be called to
@@ -69,7 +71,7 @@ class Socket {
       const std::string& ifName,
       const std::chrono::milliseconds timeout = std::chrono::milliseconds(1000),
       size_t numRetries = 10,
-      bool async = false);
+      bool async = false) override;
 
   /**
    * Send provided bytes synchronously. Return 0 on success or errno
@@ -82,21 +84,22 @@ class Socket {
   int recv(void* buf, const size_t len);
 
   /**
-   * Receive from the socket. Returns 0 on success or errno
+   * Receive from the socket. On success, returns the number of bytes read. On
+   * failure, returns -1 and sets errno.
    */
   int recvAsync(void* buf, const size_t len);
 
-  int close();
+  int close() override;
 
-  int getFd() const {
+  int getFd() const override {
     return fd_;
   }
 
-  folly::SocketAddress getPeerAddress() const {
+  folly::SocketAddress getPeerAddress() const override {
     return peerAddr_;
   }
 
-  folly::SocketAddress getLocalAddress() const {
+  folly::SocketAddress getLocalAddress() const override {
     return localAddr_;
   }
 
@@ -114,7 +117,7 @@ class Socket {
 /**
  * Server socket to bind on the interface
  */
-class ServerSocket {
+class ServerSocket : public IServerSocket {
  public:
   explicit ServerSocket(int acceptRetryCnt) : acceptRetryCnt_(acceptRetryCnt) {}
 
@@ -145,31 +148,34 @@ class ServerSocket {
   int bind(
       const folly::SocketAddress& addr,
       const std::string& ifName,
-      bool reusePort = false);
-  int listen();
-  int bindAndListen(
-      const folly::SocketAddress& addr,
-      const std::string& ifName);
+      bool reusePort = false) override;
+  int listen() override;
+  int bindAndListen(const folly::SocketAddress& addr, const std::string& ifName)
+      override;
 
   /*
    * Get the listen port of the socket. Socket must be set to startListen
    * before this API call.
    */
-  folly::Expected<folly::SocketAddress, int> getListenAddress();
+  folly::Expected<folly::SocketAddress, int> getListenAddress() override;
 
   /**
-   * Accept new incoming connection synchronously or an error code
-   * Configure the accepted socket as async or not
+   * @return ISocket on success, errno on error/timeout
+   */
+  folly::Expected<std::unique_ptr<ISocket>, int> acceptSocket() override;
+
+  /**
+   * @return ISocket on success, errno on error/timeout
    */
   folly::Expected<Socket, int> accept(bool async = false);
 
-  int shutdown();
+  int shutdown() override;
 
-  int getFd() const {
+  int getFd() const override {
     return fd_;
   }
 
-  inline bool hasShutDown() const {
+  inline bool hasShutDown() const override {
     return hasShutDown_;
   }
 
@@ -183,6 +189,23 @@ class ServerSocket {
   int acceptRetryCnt_;
   int fd_{-1};
   std::atomic_bool hasShutDown_{false};
+};
+
+class SocketFactory : public ISocketFactory {
+ public:
+  explicit SocketFactory() {};
+
+  std::unique_ptr<ISocket> createClientSocket(
+      std::shared_ptr<ctran::utils::Abort> abort = nullptr) override;
+
+  std::unique_ptr<ISocket> createClientSocket(
+      int sockFd,
+      const folly::SocketAddress& peerAddr,
+      std::shared_ptr<ctran::utils::Abort> abort = nullptr) override;
+
+  std::unique_ptr<IServerSocket> createServerSocket(
+      int acceptRetryCnt,
+      std::shared_ptr<ctran::utils::Abort> abort = nullptr) override;
 };
 
 } // namespace ctran::bootstrap

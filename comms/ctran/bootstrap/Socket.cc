@@ -513,6 +513,16 @@ folly::Expected<Socket, int> ServerSocket::accept(bool async) {
   return Socket(clientFd, async, addr);
 }
 
+folly::Expected<std::unique_ptr<ISocket>, int> ServerSocket::acceptSocket() {
+  // For blocking ServerSocket, acceptSocket is equivalent to accept
+  auto maybeSocket = accept(false);
+  if (maybeSocket.hasError()) {
+    return folly::makeUnexpected(maybeSocket.error());
+  }
+
+  return std::make_unique<Socket>(std::move(maybeSocket.value()));
+}
+
 int ServerSocket::shutdown() {
   // shutdown fd_ would fail accept on the listen thread. To avoid misleading
   // error logging at accept failure, mark intentional shutdown
@@ -528,7 +538,26 @@ int ServerSocket::shutdown() {
     }
     fd_ = -1;
   }
+
   return 0;
+}
+
+std::unique_ptr<ISocket> SocketFactory::createClientSocket(
+    std::shared_ptr<ctran::utils::Abort> abort) {
+  return std::make_unique<Socket>();
+}
+
+std::unique_ptr<ISocket> SocketFactory::createClientSocket(
+    int sockFd,
+    const folly::SocketAddress& peerAddr,
+    std::shared_ptr<ctran::utils::Abort> abort) {
+  return std::make_unique<Socket>(sockFd, false, peerAddr);
+}
+
+std::unique_ptr<IServerSocket> SocketFactory::createServerSocket(
+    int acceptRetryCnt,
+    std::shared_ptr<ctran::utils::Abort> abort) {
+  return std::make_unique<ServerSocket>(acceptRetryCnt);
 }
 
 } // namespace ctran::bootstrap
