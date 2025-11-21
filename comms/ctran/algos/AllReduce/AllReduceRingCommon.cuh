@@ -6,6 +6,7 @@
 #include <chrono>
 
 #include "comms/ctran/algos/common/GpeKernelSync.h"
+#include "comms/ctran/utils/DevAttribute.h"
 #include "comms/utils/commSpecs.h"
 
 namespace ctran::allreduce::ring {

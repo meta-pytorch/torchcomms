@@ -3,6 +3,7 @@
 #pragma once
 
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/utils/DevAttribute.h"
 
 /* Define a sync type used to synchronize between multiple producers and single
  * consumer. Each of the producers and consumer is a thread block. The producers

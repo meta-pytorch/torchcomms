@@ -9,6 +9,7 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/algos/common/MPSCTbSync.h"
+#include "comms/ctran/utils/DevAttribute.h"
 #include "comms/utils/commSpecs.h" // need for ncclDataType_t
 
 // Define types shared by both host and device code
