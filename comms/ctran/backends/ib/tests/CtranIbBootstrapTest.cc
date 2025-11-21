@@ -899,3 +899,115 @@ TEST_F(CtranIbBootstrapCommonTest, ListenThreadTerminatesOnShutdown) {
       << "Shutdown should have been called";
   EXPECT_FALSE(preparedMockIServerSocket->abortCtrl->Test());
 }
+
+// Test that abort during bus card exchange fails gracefully
+TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
+  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  folly::Baton<> acceptSocketBaton;
+
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+
+  // Socket connects successfully
+  EXPECT_CALL(*mockSocket, connect(_, _, _, _, _))
+      .WillOnce([](const folly::SocketAddress& addr,
+                   const std::string& ifName,
+                   const std::chrono::milliseconds timeout,
+                   size_t numRetries,
+                   bool async) { return 0; });
+
+  EXPECT_CALL(*mockSocket, send(_, _))
+      .WillOnce([&](const void* buf, const size_t len) { return 0; })
+      .WillOnce([&](const void* buf, const size_t len) { return 0; })
+      .WillOnce([&](const void* buf, const size_t len) {
+        // Third send (bus card) triggers abort and fails.
+        abortCtrl->Set();
+        return ECONNABORTED;
+      })
+      .WillRepeatedly([&](const void* buf, const size_t len) {
+        // Any additional sends should also fail.
+        return ECONNABORTED;
+      });
+
+  EXPECT_CALL(*mockSocket, recv(_, _))
+      .WillRepeatedly(
+          [&](void* buf, const size_t len) { return ECONNABORTED; });
+
+  auto mockServerSocket = std::make_unique<
+      StrictMock<ctran::bootstrap::testing::MockIServerSocket>>();
+
+  EXPECT_CALL(*mockServerSocket, bindAndListen(_, _))
+      .WillOnce([](const folly::SocketAddress& addr,
+                   const std::string& ifName) { return 0; });
+
+  EXPECT_CALL(*mockServerSocket, hasShutDown()).WillOnce([]() {
+    return false;
+  });
+
+  EXPECT_CALL(*mockServerSocket, acceptSocket()).WillOnce([&]() {
+    acceptSocketBaton.wait();
+    return folly::makeUnexpected(ECONNABORTED);
+  });
+
+  EXPECT_CALL(*mockServerSocket, shutdown()).WillOnce([&]() {
+    acceptSocketBaton.post();
+    return 0;
+  });
+
+  std::vector<std::unique_ptr<ctran::bootstrap::testing::MockISocket>>
+      mockSockets;
+  mockSockets.push_back(std::move(mockSocket));
+
+  std::vector<std::unique_ptr<ctran::bootstrap::testing::MockIServerSocket>>
+      mockServerSockets;
+  mockServerSockets.push_back(std::move(mockServerSocket));
+
+  auto socketFactory =
+      std::make_shared<ctran::bootstrap::testing::MockInjectorSocketFactory>(
+          std::move(mockSockets), std::move(mockServerSockets));
+
+  SocketServerAddr serverAddr = getSocketServerAddress();
+  auto ctranIb = createCtranIb(
+      /*rank=*/0,
+      CtranIb::BootstrapMode::kSpecifiedServer,
+      abortCtrl,
+      &serverAddr,
+      socketFactory);
+
+  // Try to connect to peer - should fail during bus card exchange
+  SocketServerAddr peerServerAddr =
+      getSocketServerAddress(12347, "127.0.0.1", "lo");
+
+  ControlMsg msg;
+  CtranIbRequest req;
+  CtranIbEpochRAII epochRAII(ctranIb.get());
+
+  auto start = std::chrono::steady_clock::now();
+  commResult_t result = ctranIb->isendCtrlMsg(
+      msg.type, &msg, sizeof(msg), 1, req, &peerServerAddr);
+
+  while (!req.isComplete()) {
+    auto res = ctranIb->progress();
+    EXPECT_EQ(res, commSuccess);
+
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    // Keep trying to progress request for ~5 seconds before giving up.
+    // Just need to confirm that it doesn't complete.
+    if (elapsed > std::chrono::seconds(1)) {
+      break;
+    }
+  }
+
+  auto elapsed = std::chrono::steady_clock::now() - start;
+
+  // Verify abort happened quickly
+  EXPECT_LT(elapsed, std::chrono::seconds(10));
+  EXPECT_NE(result, commSuccess);
+  EXPECT_TRUE(abortCtrl->Test());
+
+  // Verify VC was not established
+  auto vc = ctranIb->getVc(1);
+  EXPECT_EQ(vc, nullptr) << "VC should not be created after abort during "
+                            "bus card exchange";
+}
