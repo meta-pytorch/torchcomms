@@ -112,6 +112,9 @@ class basetype:
         else:
             self.prefixes = ""
 
+    def __lt__(self, other):
+        return self.name < other.name
+
     @staticmethod
     def utilfns(file):
         pass
@@ -587,8 +590,11 @@ def populateHFile(allcvars, outputFilename):
 
     file.write("#include <cstdint>\n")
     file.write("#include <string>\n")
+    file.write("#include <string_view>\n")
     file.write("#include <vector>\n")
     file.write("#include <unordered_map>\n")
+    file.write("#include <array>\n")
+
     file.write("\n")
 
     # Generate extern declaration
@@ -596,6 +602,24 @@ def populateHFile(allcvars, outputFilename):
         cvar.externDecl(file)
     file.write("\n")
     file.write("namespace ncclx {\n")
+
+    file.write(
+        "constexpr std::array<std::string_view, <@numCvars>> cvarNames = {<@cvarNames>};\n"
+    )
+
+    is_cvar_registered: str = """
+constexpr bool isCvarRegistered(std::string_view name) {
+    for (auto cvarName : cvarNames) {
+        if (cvarName == name) {
+            return true;
+        }
+    }
+
+    return false;
+}
+"""
+
+    file.write(is_cvar_registered + "\n")
 
     cvar_maps_text: str = """
 extern std::unordered_map<std::string, std::string*> env_string_values;
@@ -616,6 +640,27 @@ extern std::unordered_map<std::string, bool*> env_bool_values;
 
     printAutogenFooter(file)
     file.close()
+
+    with open(outputFilename, "r") as f:
+
+        def get_field(cvar) -> str:
+            if cvar.name != cvar.envstr:
+                return cvar.envstr
+
+            return cvar.name
+
+        contents: str = f.read()
+        updatedContents: str = contents.replace("<@numCvars>", str(len(allcvars)))
+        updatedContents: str = updatedContents.replace(
+            "<@cvarNames>",
+            ",".join(
+                '"%s"' % get_field(c)
+                for c in sorted(allcvars, key=lambda cvar: get_field(cvar))
+            ),
+        )
+
+    with open(outputFilename, "w") as f:
+        f.write(updatedContents)
 
 
 def format_file(path):

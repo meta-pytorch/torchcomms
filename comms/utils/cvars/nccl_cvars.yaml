@@ -2607,6 +2607,7 @@ cvars:
      Set comm shrink share resources.
 
  - name        : NCCL_ENV_CTA_POLICY
+   envstr      : NCCL_CTA_POLICY
    type        : int
    default     : MIN
    description : |-
