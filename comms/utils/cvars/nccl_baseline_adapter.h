@@ -23,7 +23,7 @@ void ncclLoadParam(
 /**
  * Load a string-based CVAR.
  */
-const char* ncclGetEnv(const char* name);
+const char* ncclGetEnvImpl(const char* name);
 } // namespace nccl_baseline_adapter
 
 #endif // NCCL_BASELINE_ADAPTER_H_INCLUDED

@@ -24,28 +24,28 @@ class NcclLoadParamTest : public NcclBaselineAdapterTest {};
 
 TEST_F(NcclLoadParamTest, LoadFromInt64Map) {
   int64_t value = 12345;
-  ncclx::env_int64_values["TEST_INT64"] = &value;
+  ncclx::env_int64_values["__NCCL_UNIT_TEST_INT64_T_CVAR__"] = &value;
 
   int64_t cache = 0; // uninitialized value
   int64_t defaultVal = 100;
   int64_t uninitializedVal = 0;
 
   nccl_baseline_adapter::ncclLoadParam(
-      "TEST_INT64", defaultVal, uninitializedVal, &cache);
+      "__NCCL_UNIT_TEST_INT64_T_CVAR__", defaultVal, uninitializedVal, &cache);
 
   EXPECT_EQ(cache, 12345);
 }
 
 TEST_F(NcclLoadParamTest, LoadFromIntMap) {
   int value = 42;
-  ncclx::env_int_values["TEST_INT"] = &value;
+  ncclx::env_int_values["__NCCL_UNIT_TEST_INT_CVAR__"] = &value;
 
   int64_t cache = 0; // uninitialized value
   int64_t defaultVal = 100;
   int64_t uninitializedVal = 0;
 
   nccl_baseline_adapter::ncclLoadParam(
-      "TEST_INT", defaultVal, uninitializedVal, &cache);
+      "__NCCL_UNIT_TEST_INT_CVAR__", defaultVal, uninitializedVal, &cache);
 
   EXPECT_EQ(cache, 42);
 }
@@ -80,84 +80,84 @@ TEST_F(NcclLoadParamTest, LoadFromBoolMapFalse) {
 
 TEST_F(NcclLoadParamTest, LoadFromStringMapValidNumber) {
   std::string value = "789";
-  ncclx::env_string_values["TEST_STRING"] = &value;
+  ncclx::env_string_values["__NCCL_UNIT_TEST_STRING_CVAR__"] = &value;
 
   int64_t cache = 0; // uninitialized value
   int64_t defaultVal = 100;
   int64_t uninitializedVal = 0;
 
   nccl_baseline_adapter::ncclLoadParam(
-      "TEST_STRING", defaultVal, uninitializedVal, &cache);
+      "__NCCL_UNIT_TEST_STRING_CVAR__", defaultVal, uninitializedVal, &cache);
 
   EXPECT_EQ(cache, 789);
 }
 
 TEST_F(NcclLoadParamTest, LoadFromStringMapHexNumber) {
   std::string value = "0x100";
-  ncclx::env_string_values["TEST_STRING"] = &value;
+  ncclx::env_string_values["__NCCL_UNIT_TEST_STRING_CVAR__"] = &value;
 
   int64_t cache = 0; // uninitialized value
   int64_t defaultVal = 100;
   int64_t uninitializedVal = 0;
 
   nccl_baseline_adapter::ncclLoadParam(
-      "TEST_STRING", defaultVal, uninitializedVal, &cache);
+      "__NCCL_UNIT_TEST_STRING_CVAR__", defaultVal, uninitializedVal, &cache);
 
   EXPECT_EQ(cache, 256); // 0x100 = 256
 }
 
 TEST_F(NcclLoadParamTest, LoadFromStringMapOctalNumber) {
   std::string value = "010";
-  ncclx::env_string_values["TEST_STRING"] = &value;
+  ncclx::env_string_values["__NCCL_UNIT_TEST_STRING_CVAR__"] = &value;
 
   int64_t cache = 0; // uninitialized value
   int64_t defaultVal = 100;
   int64_t uninitializedVal = 0;
 
   nccl_baseline_adapter::ncclLoadParam(
-      "TEST_STRING", defaultVal, uninitializedVal, &cache);
+      "__NCCL_UNIT_TEST_STRING_CVAR__", defaultVal, uninitializedVal, &cache);
 
   EXPECT_EQ(cache, 8); // 010 octal = 8
 }
 
 TEST_F(NcclLoadParamTest, LoadFromStringMapInvalidNumber) {
   std::string value = "invalid123";
-  ncclx::env_string_values["TEST_STRING"] = &value;
+  ncclx::env_string_values["__NCCL_UNIT_TEST_STRING_CVAR__"] = &value;
 
   int64_t cache = 0; // uninitialized value
   int64_t defaultVal = 100;
   int64_t uninitializedVal = 0;
 
   nccl_baseline_adapter::ncclLoadParam(
-      "TEST_STRING", defaultVal, uninitializedVal, &cache);
+      "__NCCL_UNIT_TEST_STRING_CVAR__", defaultVal, uninitializedVal, &cache);
 
   EXPECT_EQ(cache, defaultVal); // Should use default value for invalid string
 }
 
 TEST_F(NcclLoadParamTest, LoadFromStringMapEmptyString) {
   std::string value;
-  ncclx::env_string_values["TEST_STRING"] = &value;
+  ncclx::env_string_values["__NCCL_UNIT_TEST_STRING_CVAR__"] = &value;
 
   int64_t cache = 0; // uninitialized value
   int64_t defaultVal = 100;
   int64_t uninitializedVal = 0;
 
   nccl_baseline_adapter::ncclLoadParam(
-      "TEST_STRING", defaultVal, uninitializedVal, &cache);
+      "__NCCL_UNIT_TEST_STRING_CVAR__", defaultVal, uninitializedVal, &cache);
 
   EXPECT_EQ(cache, defaultVal); // Should use default value for empty string
 }
 
 TEST_F(NcclLoadParamTest, LoadFromStringMapNegativeNumber) {
   std::string value = "-456";
-  ncclx::env_string_values["TEST_STRING"] = &value;
+  ncclx::env_string_values["__NCCL_UNIT_TEST_STRING_CVAR__"] = &value;
 
   int64_t cache = 0; // uninitialized value
   int64_t defaultVal = 100;
   int64_t uninitializedVal = 0;
 
   nccl_baseline_adapter::ncclLoadParam(
-      "TEST_STRING", defaultVal, uninitializedVal, &cache);
+      "__NCCL_UNIT_TEST_STRING_CVAR__", defaultVal, uninitializedVal, &cache);
 
   EXPECT_EQ(cache, -456);
 }
@@ -175,14 +175,14 @@ TEST_F(NcclLoadParamTest, LoadNonExistentParam) {
 
 TEST_F(NcclLoadParamTest, AlreadyInitializedParam) {
   int64_t value = 12345;
-  ncclx::env_int64_values["TEST_INT64"] = &value;
+  ncclx::env_int64_values["__NCCL_UNIT_TEST_INT64_T_CVAR__"] = &value;
 
   int64_t cache = 500; // already initialized value
   int64_t defaultVal = 100;
   int64_t uninitializedVal = 0;
 
   nccl_baseline_adapter::ncclLoadParam(
-      "TEST_INT64", defaultVal, uninitializedVal, &cache);
+      "__NCCL_UNIT_TEST_INT64_T_CVAR__", defaultVal, uninitializedVal, &cache);
 
   EXPECT_EQ(cache, 500); // Should not change already initialized value
 }
@@ -496,80 +496,82 @@ TEST_F(NcclLoadParamTest, LoadParamMultipleInitialization) {
   EXPECT_EQ(cache, value); // Should still be original value
 }
 
-// Tests for nccl_baseline_adapter::ncclGetEnv function
+// Tests for nccl_baseline_adapter::ncclGetEnvImpl function
 class NcclGetEnvTest : public NcclBaselineAdapterTest {};
 
 TEST_F(NcclGetEnvTest, GetFromStringMap) {
   std::string value = "test_string_value";
-  ncclx::env_string_values["TEST_STRING"] = &value;
+  ncclx::env_string_values["__NCCL_UNIT_TEST_STRING_CVAR__"] = &value;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_STRING");
+  const char* result =
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
 
   EXPECT_STREQ(result, "test_string_value");
 }
 
 TEST_F(NcclGetEnvTest, GetFromInt64Map) {
   int64_t value = 12345;
-  ncclx::env_int64_values["TEST_INT64"] = &value;
+  ncclx::env_int64_values["__NCCL_UNIT_TEST_INT64_T_CVAR__"] = &value;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_INT64");
+  const char* result =
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_INT64_T_CVAR__");
 
   EXPECT_STREQ(result, "12345");
 }
 
 TEST_F(NcclGetEnvTest, GetFromInt64MapNegative) {
   int64_t value = -9876;
-  ncclx::env_int64_values["TEST_INT64_NEG"] = &value;
+  ncclx::env_int64_values["__NCCL_UNIT_TEST_INT64_T_CVAR__"] = &value;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_INT64_NEG");
+  const char* result =
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_INT64_T_CVAR__");
 
   EXPECT_STREQ(result, "-9876");
 }
 
 TEST_F(NcclGetEnvTest, GetFromBoolMapTrue) {
   bool value = true;
-  ncclx::env_bool_values["TEST_BOOL_TRUE"] = &value;
+  ncclx::env_bool_values["__NCCL_UNIT_TEST_BOOL_CVAR__"] = &value;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_BOOL_TRUE");
+  const char* result =
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_BOOL_CVAR__");
 
   EXPECT_STREQ(result, "1");
 }
 
 TEST_F(NcclGetEnvTest, GetFromBoolMapFalse) {
   bool value = false;
-  ncclx::env_bool_values["TEST_BOOL_FALSE"] = &value;
+  ncclx::env_bool_values["__NCCL_UNIT_TEST_BOOL_CVAR__"] = &value;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_BOOL_FALSE");
+  const char* result =
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_BOOL_CVAR__");
 
   EXPECT_STREQ(result, "0");
 }
 
 TEST_F(NcclGetEnvTest, GetFromIntMap) {
   int value = 42;
-  ncclx::env_int_values["TEST_INT"] = &value;
+  ncclx::env_int_values["__NCCL_UNIT_TEST_INT_CVAR__"] = &value;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_INT");
+  const char* result =
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_INT_CVAR__");
 
   EXPECT_STREQ(result, "42");
 }
 
 TEST_F(NcclGetEnvTest, GetFromIntMapNegative) {
   int value = -789;
-  ncclx::env_int_values["TEST_INT_NEG"] = &value;
+  ncclx::env_int_values["__NCCL_UNIT_TEST_INT_CVAR__"] = &value;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_INT_NEG");
+  const char* result =
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_INT_CVAR__");
 
   EXPECT_STREQ(result, "-789");
 }
 
-TEST_F(NcclGetEnvTest, GetNonExistentEnv) {
-  EXPECT_THROW(
-      nccl_baseline_adapter::ncclGetEnv("NON_EXISTENT"), std::runtime_error);
-}
-
 TEST_F(NcclGetEnvTest, GetNonExistentEnvMessage) {
   try {
-    nccl_baseline_adapter::ncclGetEnv("NON_EXISTENT_VAR");
+    nccl_baseline_adapter::ncclGetEnvImpl("NON_EXISTENT_VAR");
     FAIL() << "Expected std::runtime_error to be thrown";
   } catch (const std::runtime_error& e) {
     EXPECT_THAT(
@@ -591,7 +593,7 @@ TEST_F(NcclGetEnvTest, PriorityOrderStringFirst) {
   ncclx::env_bool_values["TEST_PRIORITY"] = &boolValue;
   ncclx::env_int_values["TEST_PRIORITY"] = &intValue;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_PRIORITY");
+  const char* result = nccl_baseline_adapter::ncclGetEnvImpl("TEST_PRIORITY");
 
   // Assert - Should return string value (highest priority)
   EXPECT_STREQ(result, stringValue.c_str());
@@ -607,7 +609,7 @@ TEST_F(NcclGetEnvTest, PriorityOrderInt64Second) {
   ncclx::env_bool_values["TEST_PRIORITY"] = &boolValue;
   ncclx::env_int_values["TEST_PRIORITY"] = &intValue;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_PRIORITY");
+  const char* result = nccl_baseline_adapter::ncclGetEnvImpl("TEST_PRIORITY");
 
   // Assert - Should return int64 value (second priority)
   EXPECT_STREQ(result, "1000");
@@ -621,7 +623,7 @@ TEST_F(NcclGetEnvTest, PriorityOrderBoolThird) {
   ncclx::env_bool_values["TEST_PRIORITY"] = &boolValue;
   ncclx::env_int_values["TEST_PRIORITY"] = &intValue;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_PRIORITY");
+  const char* result = nccl_baseline_adapter::ncclGetEnvImpl("TEST_PRIORITY");
 
   // Assert - Should return bool value (third priority)
   EXPECT_STREQ(result, "1");
@@ -632,7 +634,7 @@ TEST_F(NcclGetEnvTest, PriorityOrderIntLast) {
   int intValue = 2000;
   ncclx::env_int_values["TEST_PRIORITY"] = &intValue;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_PRIORITY");
+  const char* result = nccl_baseline_adapter::ncclGetEnvImpl("TEST_PRIORITY");
 
   // Assert - Should return int value (last priority)
   EXPECT_STREQ(result, "2000");
@@ -643,8 +645,8 @@ TEST_F(NcclGetEnvTest, CachedConversion) {
   ncclx::env_int64_values["TEST_CACHED"] = &value;
 
   // Call multiple times
-  const char* result1 = nccl_baseline_adapter::ncclGetEnv("TEST_CACHED");
-  const char* result2 = nccl_baseline_adapter::ncclGetEnv("TEST_CACHED");
+  const char* result1 = nccl_baseline_adapter::ncclGetEnvImpl("TEST_CACHED");
+  const char* result2 = nccl_baseline_adapter::ncclGetEnvImpl("TEST_CACHED");
 
   // Assert - Should return same pointer (cached)
   EXPECT_EQ(result1, result2);
@@ -657,11 +659,12 @@ TEST_F(NcclGetEnvTest, ThreadLocalCaching) {
 
   std::string result_from_thread;
   const char* result_from_main =
-      nccl_baseline_adapter::ncclGetEnv("TEST_THREAD_LOCAL");
+      nccl_baseline_adapter::ncclGetEnvImpl("TEST_THREAD_LOCAL");
 
   // Get value from another thread
   std::thread t([&]() {
-    const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_THREAD_LOCAL");
+    const char* result =
+        nccl_baseline_adapter::ncclGetEnvImpl("TEST_THREAD_LOCAL");
     result_from_thread = std::string(result);
   });
   t.join();
@@ -678,8 +681,8 @@ TEST_F(NcclGetEnvTest, LargeNumbers) {
   ncclx::env_int64_values["TEST_MAX"] = &maxValue;
   ncclx::env_int64_values["TEST_MIN"] = &minValue;
 
-  const char* maxResult = nccl_baseline_adapter::ncclGetEnv("TEST_MAX");
-  const char* minResult = nccl_baseline_adapter::ncclGetEnv("TEST_MIN");
+  const char* maxResult = nccl_baseline_adapter::ncclGetEnvImpl("TEST_MAX");
+  const char* minResult = nccl_baseline_adapter::ncclGetEnvImpl("TEST_MIN");
 
   EXPECT_STREQ(maxResult, std::to_string(maxValue).c_str());
   EXPECT_STREQ(minResult, std::to_string(minValue).c_str());
@@ -689,7 +692,7 @@ TEST_F(NcclGetEnvTest, EmptyString) {
   std::string emptyValue;
   ncclx::env_string_values["TEST_EMPTY"] = &emptyValue;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_EMPTY");
+  const char* result = nccl_baseline_adapter::ncclGetEnvImpl("TEST_EMPTY");
 
   EXPECT_STREQ(result, nullptr);
 }
@@ -698,14 +701,14 @@ TEST_F(NcclGetEnvTest, SpecialCharactersInString) {
   std::string specialValue = "test!@#$%^&*()_+-={}[]|\\:;\"'<>?,./ ";
   ncclx::env_string_values["TEST_SPECIAL"] = &specialValue;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_SPECIAL");
+  const char* result = nccl_baseline_adapter::ncclGetEnvImpl("TEST_SPECIAL");
 
   EXPECT_STREQ(result, specialValue.c_str());
 }
 
 TEST_F(NcclGetEnvTest, GetEnvNonExistentVar) {
   EXPECT_THROW(
-      nccl_baseline_adapter::ncclGetEnv("NON_EXISTENT_ENV_VAR_12345"),
+      nccl_baseline_adapter::ncclGetEnvImpl("NON_EXISTENT_ENV_VAR_12345"),
       std::runtime_error);
 }
 
@@ -715,21 +718,21 @@ TEST_F(NcclGetEnvTest, GetEnvNumericEdgeCases) {
   int64_t zeroValue = 0;
   ncclx::env_int64_values["TEST_GET_ZERO"] = &zeroValue;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_GET_ZERO");
+  const char* result = nccl_baseline_adapter::ncclGetEnvImpl("TEST_GET_ZERO");
   EXPECT_STREQ(result, "0");
 
   // Test with negative values
   int64_t negValue = -12345;
   ncclx::env_int64_values["TEST_GET_NEG"] = &negValue;
 
-  result = nccl_baseline_adapter::ncclGetEnv("TEST_GET_NEG");
+  result = nccl_baseline_adapter::ncclGetEnvImpl("TEST_GET_NEG");
   EXPECT_STREQ(result, "-12345");
 
   // Test with max/min values
   int64_t maxValue = std::numeric_limits<int64_t>::max();
   ncclx::env_int64_values["TEST_GET_MAX"] = &maxValue;
 
-  result = nccl_baseline_adapter::ncclGetEnv("TEST_GET_MAX");
+  result = nccl_baseline_adapter::ncclGetEnvImpl("TEST_GET_MAX");
   EXPECT_STREQ(result, std::to_string(maxValue).c_str());
 }
 
@@ -747,7 +750,7 @@ TEST_F(NcclGetEnvTest, GetEnvConcurrentCacheTest) {
   for (int i = 0; i < num_threads; ++i) {
     threads.emplace_back([&]() {
       const char* result =
-          nccl_baseline_adapter::ncclGetEnv("TEST_CACHE_CONCURRENT");
+          nccl_baseline_adapter::ncclGetEnvImpl("TEST_CACHE_CONCURRENT");
       if (std::string(result) == "42") {
         successful_calls++;
       }
@@ -766,7 +769,8 @@ TEST_F(NcclGetEnvTest, GetEnvVeryLongString) {
   std::string longValue(10000, 'x'); // 10k character string
   ncclx::env_string_values["TEST_LONG_STRING"] = &longValue;
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv("TEST_LONG_STRING");
+  const char* result =
+      nccl_baseline_adapter::ncclGetEnvImpl("TEST_LONG_STRING");
   EXPECT_EQ(strlen(result), 10000);
   EXPECT_EQ(result[0], 'x');
   EXPECT_EQ(result[9999], 'x');
@@ -787,7 +791,7 @@ TEST_F(NcclGetEnvTest, MixedTypeCleanupTest) {
   ncclx::env_bool_values["CLEANUP_TEST"] = &boolVal;
 
   // Test both functions work correctly
-  const char* envResult = nccl_baseline_adapter::ncclGetEnv("CLEANUP_TEST");
+  const char* envResult = nccl_baseline_adapter::ncclGetEnvImpl("CLEANUP_TEST");
   EXPECT_STREQ(envResult, "test_cleanup"); // String has highest priority
 
   int64_t cache = 0;
@@ -812,7 +816,8 @@ TEST_F(NcclBaselineAdapterIntegrationTest, LoadParamThenGetEnv) {
 
   nccl_baseline_adapter::ncclLoadParam(
       "TEST_INTEGRATION", defaultVal, uninitializedVal, &cache);
-  const char* envResult = nccl_baseline_adapter::ncclGetEnv("TEST_INTEGRATION");
+  const char* envResult =
+      nccl_baseline_adapter::ncclGetEnvImpl("TEST_INTEGRATION");
 
   EXPECT_EQ(cache, 9999);
   EXPECT_STREQ(envResult, "9999");
@@ -825,7 +830,7 @@ TEST_F(NcclBaselineAdapterIntegrationTest, InitEnvThenLoadStringParam) {
   setenv(cvar, value.c_str(), 1);
   ncclCvarInit();
 
-  const char* result = nccl_baseline_adapter::ncclGetEnv(cvar);
+  const char* result = nccl_baseline_adapter::ncclGetEnvImpl(cvar);
   EXPECT_STREQ(result, value.c_str());
 }
 
@@ -844,7 +849,7 @@ TEST_F(NcclBaselineAdapterIntegrationTest, InitEnvThenLoadInt64Param) {
 
   nccl_baseline_adapter::ncclLoadParam(
       cvar, defaultVal, uninitializedVal, &cache);
-  const char* envResult = nccl_baseline_adapter::ncclGetEnv(cvar);
+  const char* envResult = nccl_baseline_adapter::ncclGetEnvImpl(cvar);
 
   EXPECT_EQ(cache, value);
   EXPECT_STREQ(envResult, stringValue.c_str());
@@ -865,7 +870,7 @@ TEST_F(NcclBaselineAdapterIntegrationTest, InitEnvThenLoadIntParam) {
 
   nccl_baseline_adapter::ncclLoadParam(
       cvar, defaultVal, uninitializedVal, &cache);
-  const char* envResult = nccl_baseline_adapter::ncclGetEnv(cvar);
+  const char* envResult = nccl_baseline_adapter::ncclGetEnvImpl(cvar);
 
   EXPECT_EQ(cache, value);
   EXPECT_STREQ(envResult, stringValue.c_str());
@@ -886,7 +891,7 @@ TEST_F(NcclBaselineAdapterIntegrationTest, InitEnvThenLoadBoolParam) {
 
   nccl_baseline_adapter::ncclLoadParam(
       cvar, defaultVal, uninitializedVal, &cache);
-  const char* envResult = nccl_baseline_adapter::ncclGetEnv(cvar);
+  const char* envResult = nccl_baseline_adapter::ncclGetEnvImpl(cvar);
 
   EXPECT_EQ(cache, value);
   EXPECT_STREQ(envResult, "1"); // bool is converted to int
@@ -902,11 +907,13 @@ TEST_F(NcclBaselineAdapterIntegrationTest, ConsistentBehaviorBetweenFunctions) {
 
   nccl_baseline_adapter::ncclLoadParam(
       "TEST_CONSISTENT", defaultVal, uninitializedVal, &cache);
-  const char* envResult = nccl_baseline_adapter::ncclGetEnv("TEST_CONSISTENT");
+  const char* envResult =
+      nccl_baseline_adapter::ncclGetEnvImpl("TEST_CONSISTENT");
 
   // Assert - Both should parse the string as a number
   EXPECT_EQ(cache, 12345);
   EXPECT_STREQ(
       envResult,
-      "12345"); // nccl_baseline_adapter::ncclGetEnv returns the original string
+      "12345"); // nccl_baseline_adapter::ncclGetEnvImpl returns the original
+                // string
 }

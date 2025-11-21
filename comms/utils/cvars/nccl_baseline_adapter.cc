@@ -27,7 +27,6 @@ void ncclLoadParam(
     int64_t* cache) {
   static std::mutex mutex;
   std::lock_guard<std::mutex> lock(mutex);
-
   if (__atomic_load_n(cache, __ATOMIC_RELAXED) != uninitialized) {
     // If the value is already initialized, return immediately.
     return;
@@ -99,7 +98,7 @@ void ncclLoadParam(
   __atomic_store_n(cache, value, __ATOMIC_RELAXED);
 }
 
-const char* ncclGetEnv(const char* name) {
+const char* ncclGetEnvImpl(const char* name) {
   // Note: we omit the initEnv() call here (which is present in the baseline
   // NCCL implementation) because calling initEnv() breaks a large number of
   // unit tests. This is because the unit tests temporarily set values for
