@@ -14,11 +14,16 @@
 #include "comms/ctran/bootstrap/AbortableSocket.h"
 #include "comms/ctran/bootstrap/ISocketFactory.h"
 #include "comms/ctran/bootstrap/Socket.h"
+#include "comms/ctran/bootstrap/tests/MockIServerSocket.h"
+#include "comms/ctran/bootstrap/tests/MockISocket.h"
+#include "comms/ctran/bootstrap/tests/MockInjectorSocketFactory.h"
 #include "comms/ctran/tests/CtranStandaloneUTUtils.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using AbortPtr = std::shared_ptr<ctran::utils::Abort>;
+using ::testing::_;
+using ::testing::StrictMock;
 
 // Type alias for socket factory creation function
 using SocketFactoryCreator =
@@ -385,6 +390,336 @@ TEST_P(CtranIbBootstrapParameterizedTest, InvalidMagicNumberRejection) {
   clientThread.join();
 }
 
+// Enum to specify which control message operation to test
+enum class CtrlMsgOperation { Send, Recv };
+
+// Parameterized test fixture for control message abort testing
+class CtranIbAbortCtrlMsgTest
+    : public CtranIbBootstrapTestBase,
+      public ::testing::WithParamInterface<CtrlMsgOperation> {
+ protected:
+  static constexpr int kPeerRank = 1;
+  static constexpr int kPeerPort = 12346;
+
+  void SetUp() override {
+    CtranIbBootstrapTestBase::SetUp();
+    EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
+    abortCtrl_ = ctran::utils::createAbort(/*enabled=*/true);
+  }
+
+  void TearDown() override {
+    CtranIbBootstrapTestBase::TearDown();
+
+    acceptSocketBaton_.post();
+    mockServerSockets_.clear();
+    mockSockets_.clear();
+    ctranIb_.reset();
+  }
+
+  std::unique_ptr<StrictMock<ctran::bootstrap::testing::MockIServerSocket>>
+  prepareMockIServerSocket(
+      std::unique_ptr<StrictMock<ctran::bootstrap::testing::MockIServerSocket>>
+          mockServerSocket = nullptr) {
+    if (!mockServerSocket) {
+      mockServerSocket = std::make_unique<
+          StrictMock<ctran::bootstrap::testing::MockIServerSocket>>();
+    }
+
+    EXPECT_CALL(*mockServerSocket, shutdown()).WillOnce([]() { return 0; });
+
+    EXPECT_CALL(*mockServerSocket, hasShutDown()).WillOnce([]() {
+      return false;
+    });
+
+    EXPECT_CALL(*mockServerSocket, acceptSocket()).WillOnce([this]() {
+      acceptSocketBaton_.wait(); // Shouldn't return immediately.
+      // Return some error because this call shouldn't return a valid socket.
+      return folly::makeUnexpected(EAGAIN);
+    });
+
+    EXPECT_CALL(*mockServerSocket, bindAndListen(::testing::_, ::testing::_))
+        .WillOnce([](const folly::SocketAddress& addr,
+                     const std::string& ifName) { return 0; });
+
+    return mockServerSocket;
+  }
+
+  // Helper to create a valid remote bus card for testing
+  std::string createValidRemoteBusCard() {
+    // BusCard structure matches the one in CtranIbVc.cc
+    // CTRAN_HARDCODED_MAX_QPS is defined in CtranIbVc.cc as 128
+    // NOTE: This struct is intentionally duplicated from CtranIbVc.cc
+    // because BusCard is an internal implementation detail not exposed
+    // in any header. This must be kept in sync manually...
+    // See CtranIbVc.cc for the canonical definition.
+    constexpr int kCtranHardcodedMaxQps = 128;
+
+    struct BusCard {
+      enum ibverbx::ibv_mtu mtu;
+      uint32_t controlQpn;
+      uint32_t notifQpn;
+      uint32_t atomicQpn;
+      uint32_t dataQpn[kCtranHardcodedMaxQps];
+      uint8_t ports[CTRAN_MAX_IB_DEVICES_PER_RANK];
+      union {
+        struct {
+          uint64_t spns[CTRAN_MAX_IB_DEVICES_PER_RANK];
+          uint64_t iids[CTRAN_MAX_IB_DEVICES_PER_RANK];
+        } eth;
+        struct {
+          uint16_t lids[CTRAN_MAX_IB_DEVICES_PER_RANK];
+        } ib;
+      } u;
+    };
+
+    BusCard busCard{};
+    busCard.mtu = ibverbx::IBV_MTU_4096;
+    busCard.controlQpn = 100;
+    busCard.notifQpn = 101;
+    busCard.atomicQpn = 102;
+
+    for (int i = 0; i < kCtranHardcodedMaxQps; i++) {
+      busCard.dataQpn[i] = 200 + i;
+    }
+
+    for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
+      busCard.ports[i] = 1; // Port 1 is typical for IB devices
+    }
+
+    for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
+      busCard.u.eth.spns[i] = 0xfe80000000000000ULL; // Link-local subnet prefix
+      busCard.u.eth.iids[i] = 0x0000000000000001ULL + i; // Interface ID
+    }
+
+    return std::string(
+        reinterpret_cast<const char*>(&busCard), sizeof(BusCard));
+  }
+
+  // Execute a test for control message operations (send or recv) with abort
+  //
+  // CtranIb throws an std::runtime_error when a socket operation returns a
+  // non-zero error code and the abortCtrl_ is unset.
+  void testAbortedCtrlMsg(
+      std::unique_ptr<StrictMock<ctran::bootstrap::testing::MockISocket>>
+          mockSocket,
+      bool shouldFail = true) {
+    // Setup
+    SocketServerAddr serverAddr = getSocketServerAddress();
+    mockSockets_.push_back(std::move(mockSocket));
+    auto mockServerSocket = prepareMockIServerSocket();
+    mockServerSockets_.push_back(std::move(mockServerSocket));
+
+    auto socketFactory =
+        std::make_shared<ctran::bootstrap::testing::MockInjectorSocketFactory>(
+            std::move(mockSockets_), std::move(mockServerSockets_));
+
+    ctranIb_ = createCtranIb(
+        0,
+        CtranIb::BootstrapMode::kSpecifiedServer,
+        abortCtrl_,
+        &serverAddr,
+        socketFactory);
+
+    // Execute
+    ControlMsg msg;
+    CtranIbRequest req;
+    CtranIbEpochRAII epochRAII(ctranIb_.get());
+
+    auto start = std::chrono::steady_clock::now();
+
+    SocketServerAddr peerServerAddr =
+        getSocketServerAddress(kPeerPort, "127.0.0.1", "lo");
+
+    commResult_t result;
+    auto operation = GetParam();
+    if (operation == CtrlMsgOperation::Send) {
+      result = ctranIb_->isendCtrlMsg(
+          msg.type, &msg, sizeof(msg), kPeerRank, req, &peerServerAddr);
+    } else {
+      result = ctranIb_->irecvCtrlMsg(
+          &msg, sizeof(msg), kPeerRank, req, &peerServerAddr);
+    }
+
+    XLOGF(INFO, "i(send|recv)CtrlMsg received result={}", result);
+
+    auto elapsed = std::chrono::steady_clock::now() - start;
+
+    // Verify
+    if (shouldFail) {
+      EXPECT_NE(result, commSuccess);
+    } else {
+      EXPECT_EQ(result, commSuccess);
+    }
+
+    EXPECT_LT(elapsed, std::chrono::seconds(5)) << "Abort should fail quickly";
+
+    XLOGF(
+        INFO,
+        "Control message {} {}",
+        operation == CtrlMsgOperation::Send ? "send" : "recv",
+        shouldFail ? "aborted as expected" : "completed successfully");
+  }
+
+  std::unique_ptr<CtranIb> ctranIb_;
+  folly::Baton<> acceptSocketBaton_;
+  std::shared_ptr<ctran::utils::Abort> abortCtrl_;
+  std::vector<std::unique_ptr<ctran::bootstrap::testing::MockISocket>>
+      mockSockets_;
+  std::vector<std::unique_ptr<ctran::bootstrap::testing::MockIServerSocket>>
+      mockServerSockets_;
+};
+
+TEST_P(CtranIbAbortCtrlMsgTest, SocketConnectError) {
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+
+  EXPECT_CALL(*mockSocket, connect(_, _, _, _, _))
+      .WillRepeatedly([](const folly::SocketAddress& addr,
+                         const std::string& ifName,
+                         const std::chrono::milliseconds timeout,
+                         size_t numRetries,
+                         bool async) { return ECONNABORTED; });
+
+  testAbortedCtrlMsg(std::move(mockSocket), true);
+  EXPECT_FALSE(abortCtrl_->Test());
+}
+
+TEST_P(CtranIbAbortCtrlMsgTest, AbortDuringSocketConnect) {
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+
+  EXPECT_CALL(*mockSocket, connect(_, _, _, _, _))
+      .WillOnce([this](
+                    const folly::SocketAddress& addr,
+                    const std::string& ifName,
+                    const std::chrono::milliseconds timeout,
+                    size_t numRetries,
+                    bool async) {
+        abortCtrl_->Set();
+        return 0; // Only trigger abort; don't return error code here...
+      });
+
+  EXPECT_CALL(*mockSocket, send(_, _))
+      .WillRepeatedly(
+          [&](const void* buf, const size_t len) { return ECONNABORTED; });
+
+  EXPECT_CALL(*mockSocket, recv(_, _))
+      .WillRepeatedly(
+          [&](const void* buf, const size_t len) { return ECONNABORTED; });
+
+  testAbortedCtrlMsg(std::move(mockSocket), true);
+  EXPECT_TRUE(abortCtrl_->Test());
+}
+
+TEST_P(CtranIbAbortCtrlMsgTest, AbortOnSocketSend) {
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+
+  EXPECT_CALL(*mockSocket, connect(_, _, _, _, _))
+      .WillRepeatedly([&](const folly::SocketAddress& addr,
+                          const std::string& ifName,
+                          const std::chrono::milliseconds timeout,
+                          size_t numRetries,
+                          bool async) { return 0; });
+
+  EXPECT_CALL(*mockSocket, send(_, _))
+      .WillRepeatedly([&](const void* buf, const size_t len) {
+        if (abortCtrl_->Test()) {
+          // Once abort is triggered, should return errcode.
+          return ECONNABORTED;
+        }
+        abortCtrl_->Set();
+        return 0; // Only trigger abort; don't return error code here...
+      });
+
+  EXPECT_CALL(*mockSocket, recv(_, _))
+      .WillRepeatedly([&](const void* buf, const size_t len) {
+        if (abortCtrl_->Test()) {
+          // Once abort is triggered, should return errcode.
+          return ECONNABORTED;
+        }
+        return 0;
+      });
+
+  testAbortedCtrlMsg(std::move(mockSocket), true);
+  EXPECT_TRUE(abortCtrl_->Test());
+}
+
+TEST_P(CtranIbAbortCtrlMsgTest, SocketSendError) {
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+
+  EXPECT_CALL(*mockSocket, connect(_, _, _, _, _))
+      .WillOnce([&](const folly::SocketAddress& addr,
+                    const std::string& ifName,
+                    const std::chrono::milliseconds timeout,
+                    size_t numRetries,
+                    bool async) { return 0; });
+
+  EXPECT_CALL(*mockSocket, recv(_, _))
+      .WillRepeatedly([&](const void* buf, const size_t len) { return 0; });
+
+  EXPECT_CALL(*mockSocket, send(_, _))
+      .WillRepeatedly(
+          [&](const void* buf, const size_t len) { return ECONNABORTED; });
+
+  testAbortedCtrlMsg(std::move(mockSocket), true);
+  EXPECT_FALSE(abortCtrl_->Test());
+}
+
+TEST_P(CtranIbAbortCtrlMsgTest, SocketRecvError) {
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+
+  EXPECT_CALL(*mockSocket, connect(_, _, _, _, _))
+      .WillRepeatedly([&](const folly::SocketAddress& addr,
+                          const std::string& ifName,
+                          const std::chrono::milliseconds timeout,
+                          size_t numRetries,
+                          bool async) { return 0; });
+
+  EXPECT_CALL(*mockSocket, send(_, _))
+      .WillRepeatedly([&](const void* buf, const size_t len) { return 0; });
+
+  EXPECT_CALL(*mockSocket, recv(_, _))
+      .WillRepeatedly(
+          [&](const void* buf, const size_t len) { return ECONNABORTED; });
+
+  testAbortedCtrlMsg(std::move(mockSocket), true);
+  EXPECT_FALSE(abortCtrl_->Test());
+}
+
+TEST_P(CtranIbAbortCtrlMsgTest, NoAbortNoError) {
+  auto mockSocket =
+      std::make_unique<StrictMock<ctran::bootstrap::testing::MockISocket>>();
+
+  // Create a valid remote bus card
+  std::string remoteBusCard = createValidRemoteBusCard();
+
+  EXPECT_CALL(*mockSocket, connect(_, _, _, _, _))
+      .WillOnce([&](const folly::SocketAddress& addr,
+                    const std::string& ifName,
+                    const std::chrono::milliseconds timeout,
+                    size_t numRetries,
+                    bool async) { return 0; });
+
+  // Send operations: magic number, rank, local bus card, final ack
+  EXPECT_CALL(*mockSocket, send(_, _))
+      .WillRepeatedly([&](const void* buf, const size_t len) { return 0; });
+
+  // Recv operation: populate buffer with valid remote bus card
+  EXPECT_CALL(*mockSocket, recv(_, _))
+      .WillRepeatedly([&](void* buf, const size_t len) {
+        // Copy the remote bus card into the provided buffer
+        std::memcpy(
+            buf, remoteBusCard.data(), std::min(len, remoteBusCard.size()));
+        return 0;
+      });
+
+  testAbortedCtrlMsg(std::move(mockSocket), false);
+  EXPECT_FALSE(abortCtrl_->Test());
+}
+
 // Instantiate parameterized tests with both Socket and AbortableSocket
 // implementations
 INSTANTIATE_TEST_SUITE_P(
@@ -407,4 +742,14 @@ INSTANTIATE_TEST_SUITE_P(
     // Test name generator
     [](const ::testing::TestParamInfo<TestParam>& info) {
       return info.param.name;
+    });
+
+// Instantiate control message abort tests for both Send and Recv operations
+INSTANTIATE_TEST_SUITE_P(
+    CtrlMsgOperations,
+    CtranIbAbortCtrlMsgTest,
+    ::testing::Values(CtrlMsgOperation::Send, CtrlMsgOperation::Recv),
+    // Test name generator
+    [](const ::testing::TestParamInfo<CtrlMsgOperation>& info) {
+      return info.param == CtrlMsgOperation::Send ? "Send" : "Recv";
     });
