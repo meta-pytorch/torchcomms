@@ -6,7 +6,7 @@
 #include <memory>
 #include <string>
 
-#include <cuda_runtime.h>
+#include <cuda_runtime.h> // @manual
 
 #include <gtest/gtest.h>
 
