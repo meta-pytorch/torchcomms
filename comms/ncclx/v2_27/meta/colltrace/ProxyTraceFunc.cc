@@ -39,7 +39,7 @@ ncclResult_t proxyTraceInit(struct ncclProxyState* state, CtranComm* comm) {
     WARN(
         "PROXYTRACE: failed to initialize ProxyTrace, comm %p commDesc %s: %s",
         comm,
-        comm->config_.commDesc,
+        comm->config_.commDesc.c_str(),
         e.what());
     return ncclInternalError;
   }
