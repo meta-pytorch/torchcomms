@@ -2,6 +2,7 @@
 
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
+#include <atomic>
 #include <chrono>
 #include <memory>
 #include <thread>
@@ -753,3 +754,148 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<CtrlMsgOperation>& info) {
       return info.param == CtrlMsgOperation::Send ? "Send" : "Recv";
     });
+
+using StrictMockIServerSocketPtr =
+    std::unique_ptr<ctran::bootstrap::testing::MockIServerSocket>;
+using MockInjectorSocketFactoryPtr =
+    std::shared_ptr<ctran::bootstrap::testing::MockInjectorSocketFactory>;
+
+struct PreparedMockedServerSocket {
+  AbortPtr abortCtrl;
+  std::shared_ptr<folly::Baton<>> acceptCalledBaton;
+  std::shared_ptr<folly::Baton<>> unblockAcceptBaton;
+  std::shared_ptr<std::atomic_flag> hasShutDown;
+  MockInjectorSocketFactoryPtr socketFactory;
+};
+
+// Prepare a MockIServerSocket for use in the AbortDuringListenThreadAccept,
+// RapidShutdownNoConnections, and ListenThreadTerminatesOnShutdown unit tests.
+std::shared_ptr<PreparedMockedServerSocket> prepareMockIServerSocket(
+    bool unblockAcceptInShutdown,
+    bool abortEnabled = false) {
+  auto prepared = std::make_shared<PreparedMockedServerSocket>();
+  prepared->abortCtrl = ctran::utils::createAbort(/*enabled=*/abortEnabled);
+  prepared->acceptCalledBaton = std::make_shared<folly::Baton<>>();
+  prepared->unblockAcceptBaton = std::make_shared<folly::Baton<>>();
+  prepared->hasShutDown = std::make_shared<std::atomic_flag>();
+
+  auto mockedServerSocket = std::make_unique<
+      StrictMock<ctran::bootstrap::testing::MockIServerSocket>>();
+
+  // Capture shared pointers for use in in lambdas
+  auto acceptCalledBaton = prepared->acceptCalledBaton;
+  auto unblockAcceptBaton = prepared->unblockAcceptBaton;
+  auto hasShutDown = prepared->hasShutDown;
+
+  EXPECT_CALL(*mockedServerSocket, bindAndListen(_, _))
+      .WillOnce([](const folly::SocketAddress& addr,
+                   const std::string& ifName) { return 0; });
+
+  EXPECT_CALL(*mockedServerSocket, hasShutDown()).WillOnce([hasShutDown]() {
+    return hasShutDown->test();
+  });
+
+  // Accept should block until shutdown is called
+  EXPECT_CALL(*mockedServerSocket, acceptSocket())
+      .WillOnce([acceptCalledBaton, unblockAcceptBaton]() {
+        acceptCalledBaton->post();
+        unblockAcceptBaton->wait(); // Wait for signal to continue
+        return folly::makeUnexpected(ECONNABORTED);
+      });
+
+  EXPECT_CALL(*mockedServerSocket, shutdown())
+      .WillOnce([hasShutDown, unblockAcceptBaton, unblockAcceptInShutdown]() {
+        hasShutDown->test_and_set();
+        // Note that the internals here are tested by the AbortableSocket UTs.
+        if (unblockAcceptInShutdown) {
+          // Shutdown should unblock accept
+          unblockAcceptBaton->post();
+        }
+        return 0;
+      });
+
+  std::vector<StrictMockIServerSocketPtr> mockServerSockets;
+  mockServerSockets.push_back(std::move(mockedServerSocket));
+
+  prepared->socketFactory =
+      std::make_shared<ctran::bootstrap::testing::MockInjectorSocketFactory>(
+          std::move(mockServerSockets));
+
+  return prepared;
+}
+
+// Test that abort during listen thread's accept loop exits cleanly
+TEST_F(CtranIbBootstrapCommonTest, AbortDuringListenThreadAccept) {
+  auto preparedServerSocket = prepareMockIServerSocket(
+      /*unblockAcceptInShutdown=*/false, /*abortEnabled=*/true);
+
+  SocketServerAddr serverAddr = getSocketServerAddress();
+
+  // Create CtranIb - this starts the listen thread
+  auto ctranIb = createCtranIb(
+      /*rank=*/0,
+      CtranIb::BootstrapMode::kSpecifiedServer,
+      preparedServerSocket->abortCtrl,
+      &serverAddr,
+      preparedServerSocket->socketFactory);
+
+  // Wait for accept to be called
+  preparedServerSocket->acceptCalledBaton->wait();
+  preparedServerSocket->unblockAcceptBaton->post(); // Allow accept to continue
+
+  // The HANDLE_SOCKET_ERROR macro will call abort().
+  // So, wait up to 10sec for this to occur. Should happen quickly.
+  auto start = std::chrono::steady_clock::now();
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start);
+  while (!preparedServerSocket->abortCtrl->Test() && elapsed.count() < 10000) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - start);
+  }
+
+  EXPECT_TRUE(preparedServerSocket->abortCtrl->Test());
+
+  // Destroy CtranIb
+  auto startDestroy = std::chrono::steady_clock::now();
+  ctranIb.reset();
+
+  // Verify thread joined quickly (not hanging)
+  auto destroyTime = std::chrono::steady_clock::now() - startDestroy;
+  EXPECT_LT(destroyTime, std::chrono::seconds(2))
+      << "Listen thread should terminate quickly after abort";
+}
+
+// Test that listen thread terminates cleanly via shutdown
+TEST_F(CtranIbBootstrapCommonTest, ListenThreadTerminatesOnShutdown) {
+  auto preparedMockIServerSocket = prepareMockIServerSocket(
+      /*unblockAcceptInShutdown=*/true, /*abortEnabled=*/true);
+
+  SocketServerAddr serverAddr = getSocketServerAddress();
+
+  {
+    auto ctranIb = createCtranIb(
+        /*rank=*/0,
+        CtranIb::BootstrapMode::kSpecifiedServer,
+        preparedMockIServerSocket->abortCtrl,
+        &serverAddr,
+        preparedMockIServerSocket->socketFactory);
+
+    // Wait for accept to be called
+    preparedMockIServerSocket->acceptCalledBaton->wait();
+
+    // Now destroy CtranIb - this triggers shutdown and should join thread
+    auto startDestroy = std::chrono::steady_clock::now();
+    ctranIb.reset();
+    auto elapsed = std::chrono::steady_clock::now() - startDestroy;
+
+    // Verify destruction completed quickly
+    EXPECT_LT(elapsed, std::chrono::seconds(2))
+        << "Destructor should complete quickly after shutdown";
+  }
+
+  // If we get here without hanging, the test passed
+  EXPECT_TRUE(preparedMockIServerSocket->unblockAcceptBaton->ready())
+      << "Shutdown should have been called";
+  EXPECT_FALSE(preparedMockIServerSocket->abortCtrl->Test());
+}
