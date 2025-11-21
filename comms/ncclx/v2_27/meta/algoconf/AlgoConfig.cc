@@ -129,10 +129,14 @@ class AlgoConfig {
   // allow testOnlyResetAlgoConfig to reset the state for testing
   void reset();
 
-  std::atomic<enum NCCL_SENDRECV_ALGO> sendrecv = NCCL_SENDRECV_ALGO_DEFAULT;
-  std::atomic<enum NCCL_ALLGATHER_ALGO> allgather = NCCL_ALLGATHER_ALGO_DEFAULT;
-  std::atomic<enum NCCL_ALLREDUCE_ALGO> allreduce = NCCL_ALLREDUCE_ALGO_DEFAULT;
-  std::atomic<enum NCCL_ALLTOALLV_ALGO> alltoallv = NCCL_ALLTOALLV_ALGO_DEFAULT;
+  std::atomic<enum NCCL_SENDRECV_ALGO> sendrecv =
+      NCCL_SENDRECV_ALGO_DEFAULTCVARVALUE;
+  std::atomic<enum NCCL_ALLGATHER_ALGO> allgather =
+      NCCL_ALLGATHER_ALGO_DEFAULTCVARVALUE;
+  std::atomic<enum NCCL_ALLREDUCE_ALGO> allreduce =
+      NCCL_ALLREDUCE_ALGO_DEFAULTCVARVALUE;
+  std::atomic<enum NCCL_ALLTOALLV_ALGO> alltoallv =
+      NCCL_ALLTOALLV_ALGO_DEFAULTCVARVALUE;
 };
 
 template <typename T>
