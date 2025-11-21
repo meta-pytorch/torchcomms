@@ -112,3 +112,21 @@ void CtranBaseTest::releaseBuf(
     NCCLCHECK_TEST(ncclMemFreeDisjoint(buf, disjointSegmentSizes));
   }
 }
+
+void CtranBaseTest::allocDevArg(const size_t nbytes, void*& ptr) {
+  CUDACHECK_ASSERT(cudaMalloc(&ptr, nbytes));
+  // store argPtr to release at the end of test
+  devArgs_.insert(ptr);
+}
+
+void CtranBaseTest::releaseDevArgs() {
+  for (auto ptr : devArgs_) {
+    CUDACHECK_TEST(cudaFree(ptr));
+  }
+  devArgs_.clear();
+}
+
+void CtranBaseTest::releaseDevArg(void* ptr) {
+  cudaFree(ptr);
+  devArgs_.erase(ptr);
+}
