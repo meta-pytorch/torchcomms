@@ -2731,3 +2731,53 @@ cvars:
      backends specified by NCCL_CTRAN_BACKENDS.
      Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
      this config will allow MCCL to override backends.
+
+ - name        : NCCL_GIN_GDAKI_NIC_HANDLER
+   type        : int
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gin-gdaki-nic-handler
+
+ - name        : NCCL_GIN_GDAKI_QP_DEPTH
+   type        : int
+   default     : 128
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gin-gdaki-qp-depth
+
+ - name        : NCCL_GIN_ERROR_QUERY_SEC
+   type        : int
+   default     : 10
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gin-error-query-sec
+
+ - name        : NCCL_GIN_ENABLE
+   type        : int
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gin-enable
+
+ - name        : NCCL_GIN_SIGNAL_POOL_SIZE
+   type        : int
+   default     : 65536
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gin-signal-pool-size
+
+ - name        : NCCL_GIN_COUNTER_POOL_SIZE
+   type        : int
+   default     : 65536
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gin-counter-pool-size
+
+ - name        : NCCL_GIN_NCONTEXTS
+   type        : int
+   default     : 4
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gin-ncontexts
+
+ - name        : NCCL_MNNVL_RAIL_PER_HOST
+   type        : int
+   default     : 0
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-mnnvl-rail-per-host
+
+ - name        : NCCL_GIN_PROXY_QUEUE_SIZE
+   type        : int
+   default     : -1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-gin-proxy-queue-size
+
+ - name        : NCCL_P2P_SCHEDULE_GROUP_SIZE
+   type        : int
+   default     : 8
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-schedule-group-size
