@@ -7,7 +7,6 @@
 #include <fmt/core.h>
 #include <folly/ScopeGuard.h>
 #include <folly/Synchronized.h>
-#include <chrono>
 #include <cstdio>
 #include <stdexcept>
 #include <string>
@@ -291,7 +290,8 @@ void CtranIbSingleton::ibAsyncEventHandler(const int cudaDev) {
 CtranIb::CtranIb(
     CtranComm* comm,
     CtranCtrlManager* ctrlMgr,
-    std::optional<bool> enableLocalFlush)
+    std::optional<bool> enableLocalFlush,
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory)
     : comm(comm) {
   // enableLocalFlush: whether to support local flush. If true, CtranIb
   // will enable resource required for local flush.
@@ -316,7 +316,11 @@ CtranIb::CtranIb(
       comm->statex_->commHash(),
       comm->statex_->commDesc(),
       ctrlMgr,
-      enableLocalFlush_);
+      enableLocalFlush_,
+      BootstrapMode::kDefaultServer,
+      std::nullopt,
+      ::ctran::utils::createAbort(/*enabled=*/false),
+      socketFactory);
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -337,7 +341,8 @@ CtranIb::CtranIb(
     bool enableLocalFlush,
     const BootstrapMode bootstrapMode,
     std::optional<const SocketServerAddr*> qpServerAddr,
-    std::shared_ptr<Abort> abortCtrl) {
+    std::shared_ptr<Abort> abortCtrl,
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory) {
   init(
       nullptr,
       rank,
@@ -348,7 +353,8 @@ CtranIb::CtranIb(
       enableLocalFlush,
       bootstrapMode,
       qpServerAddr,
-      abortCtrl);
+      abortCtrl,
+      socketFactory);
 
   CLOGF_SUBSYS(
       INFO,
@@ -371,11 +377,12 @@ void CtranIb::init(
     bool enableLocalFlush,
     const BootstrapMode bootstrapMode,
     std::optional<const SocketServerAddr*> qpServerAddr,
-    std::shared_ptr<Abort> abortCtrl) {
+    std::shared_ptr<Abort> abortCtrl,
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory) {
   bool foundPort = false;
   this->comm = comm;
-  this->abortCtrl_ = comm ? comm->getAbort() : abortCtrl;
   this->rank = rank;
+  this->abortCtrl_ = comm ? comm->getAbort() : abortCtrl;
   this->cudaDev = cudaDev;
   this->commHash = commHash;
   this->commDesc = commDesc;
@@ -395,6 +402,18 @@ void CtranIb::init(
   CtranIbSingleton& s = CtranIbSingleton::getInstance();
 
   const bool dmaBufSupported = s.getDevToDmaBufSupport(cudaDev);
+
+  if (socketFactory != nullptr) {
+    socketFactory_ = socketFactory; // ISocketFactory explicitly specified.
+  } else if (abortCtrl_->Enabled()) {
+    socketFactory_ = // Abort is enabled, so we want AbortableSockets.
+        std::make_shared<ctran::bootstrap::AbortableSocketFactory>();
+  } else { // Fall back to old, non-abortable sockets.
+    socketFactory_ = std::make_shared<ctran::bootstrap::SocketFactory>();
+  }
+
+  listenSocket = socketFactory_->createServerSocket(
+      static_cast<int>(NCCL_SOCKET_RETRY_CNT), abortCtrl_);
 
   const bool commAbortEnabled = comm && comm->abortEnabled();
   if (commAbortEnabled && abortCtrl->Enabled()) {
@@ -595,7 +614,7 @@ void CtranIb::bootstrapStart(
     ifnamePtr = const_cast<std::string*>(&qpServerAddrPtr->ifName);
   }
 
-  FB_SYSCHECKTHROW(this->listenSocket.bindAndListen(addrSockAddr, *ifnamePtr));
+  FB_SYSCHECKTHROW(this->listenSocket->bindAndListen(addrSockAddr, *ifnamePtr));
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -603,13 +622,13 @@ void CtranIb::bootstrapStart(
       rank,
       bootstrapMode == BootstrapMode::kSpecifiedServer ? "specified"
                                                        : "self-finding",
-      this->listenSocket.getListenAddress()->describe().c_str(),
+      this->listenSocket->getListenAddress()->describe().c_str(),
       *ifnamePtr);
 
   // Exchange listen sock address among all ranks
   if (comm) {
     allListenSocketAddrs.resize(comm->statex_->nRanks());
-    auto maybeListenAddr = this->listenSocket.getListenAddress();
+    auto maybeListenAddr = this->listenSocket->getListenAddress();
     if (maybeListenAddr.hasError()) {
       FB_SYSCHECKTHROW(maybeListenAddr.error());
     }
@@ -642,7 +661,7 @@ CtranIb::~CtranIb(void) {
   CtranIbSingleton& s = CtranIbSingleton::getInstance();
 
   if (bootstrapMode != BootstrapMode::kExternal) {
-    listenSocket.shutdown();
+    listenSocket->shutdown();
     listenThread.join();
   }
 
@@ -965,7 +984,7 @@ commResult_t CtranIb::preConnect(const std::unordered_set<int>& peerRanks) {
 }
 
 commResult_t CtranIb::connectVc(
-    ctran::bootstrap::Socket& sock,
+    std::unique_ptr<ctran::bootstrap::ISocket> sock,
     const bool isServer,
     const int peerRank) {
   // Create a new VC for the peer
@@ -984,11 +1003,13 @@ commResult_t CtranIb::connectVc(
     remoteBusCard.resize(size);
     FB_COMMCHECK(vc->getLocalBusCard(localBusCard.data()));
     if (isServer) {
-      FB_SYSCHECKRETURN(sock.recv(remoteBusCard.data(), size), commRemoteError);
-      FB_SYSCHECKRETURN(sock.send(localBusCard.data(), size), commRemoteError);
+      FB_SYSCHECKRETURN(
+          sock->recv(remoteBusCard.data(), size), commRemoteError);
+      FB_SYSCHECKRETURN(sock->send(localBusCard.data(), size), commRemoteError);
     } else {
-      FB_SYSCHECKRETURN(sock.send(localBusCard.data(), size), commRemoteError);
-      FB_SYSCHECKRETURN(sock.recv(remoteBusCard.data(), size), commRemoteError);
+      FB_SYSCHECKRETURN(sock->send(localBusCard.data(), size), commRemoteError);
+      FB_SYSCHECKRETURN(
+          sock->recv(remoteBusCard.data(), size), commRemoteError);
     }
   }
 
@@ -999,11 +1020,11 @@ commResult_t CtranIb::connectVc(
   // vcStateMaps update.
   int ack{0};
   if (isServer) {
-    FB_SYSCHECKRETURN(sock.send(&ack, sizeof(int)), commRemoteError);
-    FB_SYSCHECKRETURN(sock.recv(&ack, sizeof(int)), commRemoteError);
+    FB_SYSCHECKRETURN(sock->send(&ack, sizeof(int)), commRemoteError);
+    FB_SYSCHECKRETURN(sock->recv(&ack, sizeof(int)), commRemoteError);
   } else {
-    FB_SYSCHECKRETURN(sock.recv(&ack, sizeof(int)), commRemoteError);
-    FB_SYSCHECKRETURN(sock.send(&ack, sizeof(int)), commRemoteError);
+    FB_SYSCHECKRETURN(sock->recv(&ack, sizeof(int)), commRemoteError);
+    FB_SYSCHECKRETURN(sock->send(&ack, sizeof(int)), commRemoteError);
   }
   return commSuccess;
 }
@@ -1059,6 +1080,23 @@ commResult_t CtranIb::connectVcDirect(
   return commSuccess;
 }
 
+// TODO: We may want to retry if err is ECONNRESET,
+// ETIMEDOUT, or ECONNRESET. For other errors, we
+// may still want to throw an std::runtime_error,
+// like what would happen if FT is disabled (via
+// the FB_SYSCHECKTHROW macro).
+#define HANDLE_SOCKET_ERROR(cmd, abortCtrl)                           \
+  if (!abortCtrl->Enabled()) {                                        \
+    FB_SYSCHECKTHROW(cmd);                                            \
+  } else {                                                            \
+    int errCode = cmd;                                                \
+    if (errCode || abortCtrl->Test()) {                               \
+      CLOGF(ERR, "Socket error encountered: {}. Aborting.", errCode); \
+      abortCtrl->Set(); /* Ensure remote is notified */               \
+      break;                                                          \
+    }                                                                 \
+  }
+
 void CtranIb::bootstrapAccept(CtranIb* ib) {
   // Set cudaDev for logging
   FB_CUDACHECKTHROW(cudaSetDevice(ib->cudaDev));
@@ -1066,19 +1104,20 @@ void CtranIb::bootstrapAccept(CtranIb* ib) {
       "CTranIbListen", ib->rank, ib->commHash, ib->commDesc.c_str(), __func__);
   while (1) {
     // Accept a connection from a peer. Socket will automatically closed when
-    // it'll go out of scope (part of its destructor)
-    auto maybeSocket = ib->listenSocket.accept();
+    // it'll go out of scope (part of its destructor).
+    auto maybeSocket = ib->listenSocket->acceptSocket();
     if (maybeSocket.hasError()) {
-      if (ib->listenSocket.hasShutDown()) {
-        break; // listen socket is closed
+      if (ib->listenSocket->hasShutDown()) {
+        break; // listen socket is closed or the CtranIb instance was aborted
       }
-      FB_SYSCHECKTHROW(maybeSocket.error());
+      HANDLE_SOCKET_ERROR(maybeSocket.error(), ib->abortCtrl_);
     }
 
-    auto& socket = maybeSocket.value();
+    std::unique_ptr<ctran::bootstrap::ISocket> socket =
+        std::move(maybeSocket.value());
 
     uint64_t magic{0};
-    FB_SYSCHECKTHROW(socket.recv(&magic, sizeof(uint64_t)));
+    HANDLE_SOCKET_ERROR(socket->recv(&magic, sizeof(uint64_t)), ib->abortCtrl_);
     if (magic != kBootstrapMagic) {
       CLOGF(
           WARN,
@@ -1088,14 +1127,24 @@ void CtranIb::bootstrapAccept(CtranIb* ib) {
           kBootstrapMagic,
           ib->commHash,
           ib->commDesc,
-          socket.getLocalAddress().describe(),
-          socket.getPeerAddress().describe());
+          socket->getLocalAddress().describe(),
+          socket->getPeerAddress().describe());
       continue;
     }
 
     int peerRank;
-    FB_SYSCHECKTHROW(socket.recv(&peerRank, sizeof(int)));
-    FB_COMMCHECKTHROW(ib->connectVc(socket, true, peerRank));
+    HANDLE_SOCKET_ERROR(socket->recv(&peerRank, sizeof(int)), ib->abortCtrl_);
+    const auto err = ib->connectVc(std::move(socket), true, peerRank);
+    if (err != 0) { // TODO: We may want to handle certain errors differently?
+      CLOGF(
+          ERR,
+          "CTRAN-IB: Failed to establish connection with peer rank {} for commHash {:x} commDesc {}, err={}",
+          peerRank,
+          ib->commHash,
+          ib->commDesc,
+          err);
+      continue;
+    }
   }
 
   CLOGF(
@@ -1146,18 +1195,19 @@ commResult_t CtranIb::bootstrapConnect(
       *clientIfName);
 
   // Send SETUP command to remote listenThread
-  ctran::bootstrap::Socket sock;
+  std::unique_ptr<ctran::bootstrap::ISocket> sock =
+      socketFactory_->createClientSocket(abortCtrl_);
   FB_SYSCHECKRETURN(
-      sock.connect(
+      sock->connect(
           peerSockAddr,
           *clientIfName,
           std::chrono::milliseconds(NCCL_SOCKET_RETRY_SLEEP_MSEC),
           NCCL_SOCKET_RETRY_CNT),
       commRemoteError);
   FB_SYSCHECKRETURN(
-      sock.send(&kBootstrapMagic, sizeof(uint64_t)), commRemoteError);
-  FB_SYSCHECKRETURN(sock.send(&rank, sizeof(int)), commRemoteError);
-  return connectVc(sock, false, peerRank);
+      sock->send(&kBootstrapMagic, sizeof(uint64_t)), commRemoteError);
+  FB_SYSCHECKRETURN(sock->send(&rank, sizeof(int)), commRemoteError);
+  return connectVc(std::move(sock), false, peerRank);
 }
 
 const char* CtranIb::ibv_wc_status_str(enum ibverbx::ibv_wc_status status) {

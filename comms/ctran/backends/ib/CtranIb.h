@@ -13,7 +13,8 @@
 #include "comms/ctran/backends/ib/CtranIbImpl.h"
 #include "comms/ctran/backends/ib/CtranIbLocalVc.h"
 #include "comms/ctran/backends/ib/CtranIbVc.h"
-#include "comms/ctran/bootstrap/Socket.h"
+#include "comms/ctran/bootstrap/AbortableSocket.h"
+#include "comms/ctran/bootstrap/ISocketFactory.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/CtranPerf.h"
@@ -49,7 +50,9 @@ class CtranIb {
   CtranIb(
       CtranComm* comm,
       CtranCtrlManager* ctrlMgr,
-      std::optional<bool> enableLocalFlush = std::nullopt);
+      std::optional<bool> enableLocalFlush = std::nullopt,
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
+          nullptr);
 
   // Creates local IB resources without pre-existing communicator. It is used
   // for use cases directly control the local transport (see CtranEx). In
@@ -82,7 +85,9 @@ class CtranIb {
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
       std::shared_ptr<Abort> abortCtrl =
-          ::ctran::utils::createAbort(/*enabled=*/false));
+          ::ctran::utils::createAbort(/*enabled=*/false),
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
+          nullptr);
 
   ~CtranIb();
 
@@ -451,7 +456,7 @@ class CtranIb {
   // - isServer: whether the local rank is isServer
   // - peerRank: the peer rank of remote client or server
   commResult_t connectVc(
-      ctran::bootstrap::Socket& sock,
+      std::unique_ptr<ctran::bootstrap::ISocket> sock,
       const bool isServer,
       const int peerRank);
 
@@ -476,6 +481,11 @@ class CtranIb {
     return getVcImpl<PerfConfig>(peerRank);
   }
 
+  // Return the listen address of the listen socket.
+  folly::Expected<folly::SocketAddress, int> getListenSocketListenAddr() {
+    return listenSocket->getListenAddress();
+  }
+
  private:
   friend class CtranIbRequest;
   void init(
@@ -489,7 +499,10 @@ class CtranIb {
       const BootstrapMode bootstrapMode = BootstrapMode::kDefaultServer,
       std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
       std::shared_ptr<Abort> abortCtrl =
-          ::ctran::utils::createAbort(/*enabled=*/false));
+          ::ctran::utils::createAbort(/*enabled=*/false),
+      std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory =
+          nullptr);
+
   void bootstrapStart(std::optional<const SocketServerAddr*> qpServerAddr);
   static void bootstrapAccept(CtranIb* ib);
   commResult_t bootstrapConnect(
@@ -1073,13 +1086,14 @@ class CtranIb {
   bool enableLocalFlush{true};
   BootstrapMode bootstrapMode{BootstrapMode::kDefaultServer};
 
+  std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory_;
+
   // bitmap to indicate whether a peer is connected.
   // note that only one thread access it (e.g., GPE thread) or the epoch lock
   // needs to be acquired.
   std::vector<bool> connectedPeerMap;
 
-  ctran::bootstrap::ServerSocket listenSocket{
-      static_cast<int>(NCCL_SOCKET_RETRY_CNT)};
+  std::unique_ptr<ctran::bootstrap::IServerSocket> listenSocket;
   std::vector<sockaddr_storage> allListenSocketAddrs{};
   std::thread listenThread;
 
