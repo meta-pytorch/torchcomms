@@ -5,8 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "comms/ctran/algos/AllToAllvDedup/Types.h"
-#include "comms/ctran/algos/CtranAlgoDev.h"
-#include "comms/ctran/commstate/CommStateXDev.h"
+#include "comms/ctran/utils/DevAttribute.h"
 
 namespace ctran::alltoallvdedup {
 const int MAX_NUM_RECV_BUCKETS = 16;

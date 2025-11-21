@@ -64,7 +64,7 @@ TEST_F(CvarInitTest, InitWithStringCvar) {
 
   // Verify the string CVAR was set correctly
   const char* result =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(result, "test_value");
 }
 
@@ -219,7 +219,7 @@ TEST_F(CvarInitTest, EmptyStringHandling) {
   EXPECT_NO_THROW(ncclCvarInit());
 
   const char* result =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(
       result, nullptr); // Current impl returns nullptr instead of empty string
 }
@@ -249,7 +249,7 @@ TEST_F(CvarInitTest, WhitespaceTrimming) {
         << "Failed for input: '" << testCase.input << "'";
 
     const char* result =
-        nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+        nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
     EXPECT_STREQ(result, testCase.expected)
         << "Failed for input: '" << testCase.input << "'";
 
@@ -293,19 +293,19 @@ TEST_F(CvarInitTest, MultipleCvarsInitialization) {
 
   // Verify all CVARs were set correctly
   const char* stringResult =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(stringResult, "string_value");
 
   const char* boolResult =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_BOOL_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_BOOL_CVAR__");
   EXPECT_STREQ(boolResult, "1");
 
   const char* intResult =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_INT_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_INT_CVAR__");
   EXPECT_STREQ(intResult, "42");
 
   const char* int64Result =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_INT64_T_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_INT64_T_CVAR__");
   EXPECT_STREQ(int64Result, "9876543210");
 }
 
@@ -320,18 +320,19 @@ TEST_F(CvarInitTest, RealNcclCvarsInitialization) {
 
   // Verify real CVARs were set correctly
   const char* buffsizeResult =
-      nccl_baseline_adapter::ncclGetEnv("NCCL_BUFFSIZE");
+      nccl_baseline_adapter::ncclGetEnvImpl("NCCL_BUFFSIZE");
   EXPECT_STREQ(buffsizeResult, "1048576");
 
   const char* nthreadsResult =
-      nccl_baseline_adapter::ncclGetEnv("NCCL_NTHREADS");
+      nccl_baseline_adapter::ncclGetEnvImpl("NCCL_NTHREADS");
   EXPECT_STREQ(nthreadsResult, "8");
 
-  const char* p2pResult = nccl_baseline_adapter::ncclGetEnv("NCCL_P2P_DISABLE");
+  const char* p2pResult =
+      nccl_baseline_adapter::ncclGetEnvImpl("NCCL_P2P_DISABLE");
   EXPECT_STREQ(p2pResult, "1");
 
   const char* cudaResult =
-      nccl_baseline_adapter::ncclGetEnv("CUDA_LAUNCH_BLOCKING");
+      nccl_baseline_adapter::ncclGetEnvImpl("CUDA_LAUNCH_BLOCKING");
   EXPECT_STREQ(cudaResult, "0");
 
   unsetenv("NCCL_BUFFSIZE");
@@ -347,13 +348,13 @@ TEST_F(CvarInitTest, IdempotencyTest) {
   // First initialization
   EXPECT_NO_THROW(ncclCvarInit());
   const char* result1 =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(result1, "test_value");
 
   // Second initialization - should not change anything
   EXPECT_NO_THROW(ncclCvarInit());
   const char* result2 =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(result2, "test_value");
 
   // Results should be the same
@@ -447,7 +448,7 @@ TEST_F(CvarInitTest, NcclMinCtasUserProvidedValue) {
   EXPECT_EQ(NCCL_MIN_CTAS, 16);
 
   // Also verify via ncclGetEnv
-  const char* result = nccl_baseline_adapter::ncclGetEnv("NCCL_MIN_CTAS");
+  const char* result = nccl_baseline_adapter::ncclGetEnvImpl("NCCL_MIN_CTAS");
   EXPECT_STREQ(result, "16");
 
   unsetenv("NCCL_MIN_CTAS");
@@ -734,7 +735,7 @@ TEST_F(CvarInitEdgeCasesTest, LongStringTesting) {
   EXPECT_NO_THROW(ncclCvarInit());
 
   const char* result =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(result, longString.c_str());
 
   // Test extremely long string (1MB)
@@ -743,7 +744,8 @@ TEST_F(CvarInitEdgeCasesTest, LongStringTesting) {
 
   EXPECT_NO_THROW(ncclCvarInit());
 
-  result = nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+  result =
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(result, veryLongString.c_str());
 }
 
@@ -777,7 +779,7 @@ TEST_F(CvarInitEdgeCasesTest, SpecialCharacterTesting) {
     EXPECT_NO_THROW(ncclCvarInit()) << "Failed for " << testCase.name;
 
     const char* result =
-        nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+        nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
 
     // For most cases, expect exact match (note: trimWhitespace may affect some)
     if (strcmp(testCase.name, "mixed_whitespace") == 0) {
@@ -869,7 +871,7 @@ TEST_F(CvarInitEdgeCasesTest, MemoryStressTest) {
 
   // Verify our CVARs still work
   const char* result =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(result, "stress_test");
 
   // Clean up
@@ -886,7 +888,7 @@ TEST_F(CvarInitEdgeCasesTest, RepeatedInitializationWithChanges) {
   EXPECT_NO_THROW(ncclCvarInit());
 
   const char* result1 =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
   EXPECT_STREQ(result1, "first_value");
 
   // Change environment variable and reinitialize
@@ -895,7 +897,7 @@ TEST_F(CvarInitEdgeCasesTest, RepeatedInitializationWithChanges) {
 
   // After reinitialization, it should pick up the new value.
   const char* result2 =
-      nccl_baseline_adapter::ncclGetEnv("__NCCL_UNIT_TEST_STRING_CVAR__");
+      nccl_baseline_adapter::ncclGetEnvImpl("__NCCL_UNIT_TEST_STRING_CVAR__");
 
   EXPECT_STREQ(result2, "second_value");
 }

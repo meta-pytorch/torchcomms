@@ -4,7 +4,7 @@
 
 #include <functional>
 
-#include <cuda_runtime.h>
+#include <cuda_runtime.h> // @manual
 
 #include <folly/futures/Future.h>
 #include <folly/synchronization/CallOnce.h>
@@ -234,7 +234,7 @@ void workerRoutine(PerRankState& state) {
 } // namespace
 
 void CtranStandaloneMultiRankBaseTest::SetUp() {
-  setenv("NCCL_CTRAN_ENABLE", "INFO", 1);
+  setenv("NCCL_CTRAN_ENABLE", "true", 1);
   setenv("NCCL_DEBUG", "INFO", 1);
   // Ensure logger is initialized
   initOnce();

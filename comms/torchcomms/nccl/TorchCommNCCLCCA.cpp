@@ -35,10 +35,9 @@ DefaultCachingAllocatorHookImpl::DefaultCachingAllocatorHookImpl() {
 }
 
 void CachingAllocatorHookImpl::registerMemPreHook() {
-  int device = c10::cuda::current_device();
   // We assume no mem pool and no comm has been created yet, we just loop up the
-  // snapshot of the default pool for the current device.
-  auto snapshot = c10::cuda::CUDACachingAllocator::snapshot({device, 0});
+  // snapshot of the default pool for all devices.
+  auto snapshot = c10::cuda::CUDACachingAllocator::snapshot();
   for (const auto& segmentInfo : snapshot.segments) {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     void* addr = reinterpret_cast<void*>(segmentInfo.address);

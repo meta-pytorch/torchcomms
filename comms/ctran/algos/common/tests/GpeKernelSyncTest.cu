@@ -5,6 +5,15 @@
 
 using namespace ctran::algos;
 
+__global__ void GpeKernelSyncResetKernel(
+    GpeKernelSync* sync,
+    const int nworkers) {
+  const auto warpId = threadIdx.x / kWarpSize;
+  if (warpId == 0) {
+    GpeKernelSyncDev::resetWarp(sync, nworkers);
+  }
+}
+
 __global__ void
 GpeKernelSyncKernel(GpeKernelSync* sync, int* data, int numElem, int nSteps) {
   const auto workerId = blockIdx.x;

@@ -112,18 +112,21 @@ class basetype:
         else:
             self.prefixes = ""
 
+    def __lt__(self, other):
+        return self.name < other.name
+
     @staticmethod
     def utilfns(file):
         pass
 
     def externDecl(self, file):
         indent(file, "extern %s %s;" % (self.type, self.name))
-        indent(file, "extern %s %s_DEFAULT;" % (self.type, self.name))
+        indent(file, "extern %s %s_DEFAULTCVARVALUE;" % (self.type, self.name))
         file.write("\n")
 
     def storageDecl(self, file):
         indent(file, "%s %s;" % (self.type, self.name))
-        indent(file, "%s %s_DEFAULT;" % (self.type, self.name))
+        indent(file, "%s %s_DEFAULTCVARVALUE;" % (self.type, self.name))
 
     def desc(self, file):
         file.write("\n")
@@ -147,14 +150,12 @@ class bool(basetype):
         pass
 
     def readenv(self, file):
-        global env_bool_kv_pairs
-
         indent(
             file, '%s = env2bool("%s", "%s");' % (self.name, self.envstr, self.default)
         )
         indent(
             file,
-            '%s_DEFAULT = env2bool("NCCL_ENV_DO_NOT_SET", "%s");'
+            '%s_DEFAULTCVARVALUE = env2bool("NCCL_ENV_DO_NOT_SET", "%s");'
             % (self.name, self.default),
         )
 
@@ -179,7 +180,7 @@ class numeric(basetype):
         )
         indent(
             file,
-            '%s_DEFAULT = env2num<%s>("NCCL_ENV_DO_NOT_SET", "%s");'
+            '%s_DEFAULTCVARVALUE = env2num<%s>("NCCL_ENV_DO_NOT_SET", "%s");'
             % (self.name, self.type, self.default),
         )
 
@@ -200,19 +201,20 @@ class string(basetype):
 
     def externDecl(self, file):
         indent(file, "extern std::string %s;" % self.name)
-        indent(file, "extern std::string %s_DEFAULT;" % self.name)
+        indent(file, "extern std::string %s_DEFAULTCVARVALUE;" % self.name)
         file.write("\n")
 
     def storageDecl(self, file):
         indent(file, "std::string %s;" % self.name)
-        indent(file, "std::string %s_DEFAULT;" % self.name)
+        indent(file, "std::string %s_DEFAULTCVARVALUE;" % self.name)
 
     def readenv(self, file):
         default = self.default if self.default else ""
         indent(file, '%s = env2str("%s", "%s");' % (self.name, self.envstr, default))
         indent(
             file,
-            '%s_DEFAULT = env2str("NCCL_ENV_DO_NOT_SET", "%s");' % (self.name, default),
+            '%s_DEFAULTCVARVALUE = env2str("NCCL_ENV_DO_NOT_SET", "%s");'
+            % (self.name, default),
         )
         env_string_kv_pairs[self.envstr] = self.name
         file.write("\n")
@@ -225,12 +227,12 @@ class stringlist(basetype):
 
     def externDecl(self, file):
         indent(file, "extern std::vector<std::string> %s;" % self.name)
-        indent(file, "extern std::vector<std::string> %s_DEFAULT;" % self.name)
+        indent(file, "extern std::vector<std::string> %s_DEFAULTCVARVALUE;" % self.name)
         file.write("\n")
 
     def storageDecl(self, file):
         indent(file, "std::vector<std::string> %s;" % self.name)
-        indent(file, "std::vector<std::string> %s_DEFAULT;" % self.name)
+        indent(file, "std::vector<std::string> %s_DEFAULTCVARVALUE;" % self.name)
 
     def readenv(self, file):
         default = self.default if self.default else ""
@@ -238,10 +240,10 @@ class stringlist(basetype):
         indent(
             file, '%s = env2strlist("%s", "%s");' % (self.name, self.envstr, default)
         )
-        indent(file, "%s_DEFAULT.clear();" % self.name)
+        indent(file, "%s_DEFAULTCVARVALUE.clear();" % self.name)
         indent(
             file,
-            '%s_DEFAULT = env2strlist("NCCL_ENV_DO_NOT_SET", "%s");'
+            '%s_DEFAULTCVARVALUE = env2strlist("NCCL_ENV_DO_NOT_SET", "%s");'
             % (self.name, default),
         )
         file.write("\n")
@@ -260,7 +262,7 @@ class dictlist(basetype):
         )
         indent(
             file,
-            "extern std::unordered_map<std::string,std::vector<std::string>> %s_DEFAULT;"
+            "extern std::unordered_map<std::string,std::vector<std::string>> %s_DEFAULTCVARVALUE;"
             % self.name,
         )
         file.write("\n")
@@ -272,7 +274,7 @@ class dictlist(basetype):
         )
         indent(
             file,
-            "std::unordered_map<std::string,std::vector<std::string>> %s_DEFAULT;"
+            "std::unordered_map<std::string,std::vector<std::string>> %s_DEFAULTCVARVALUE;"
             % self.name,
         )
 
@@ -282,10 +284,10 @@ class dictlist(basetype):
         indent(
             file, '%s = env2dictlist("%s", "%s");' % (self.name, self.envstr, default)
         )
-        indent(file, "%s_DEFAULT.clear();" % self.name)
+        indent(file, "%s_DEFAULTCVARVALUE.clear();" % self.name)
         indent(
             file,
-            '%s_DEFAULT = env2dictlist("NCCL_ENV_DO_NOT_SET", "%s");'
+            '%s_DEFAULTCVARVALUE = env2dictlist("NCCL_ENV_DO_NOT_SET", "%s");'
             % (self.name, default),
         )
         file.write("\n")
@@ -320,10 +322,10 @@ class prefixedStringlist(stringlist):
             'std::tie(%s_PREFIX, %s) = env2prefixedStrlist("%s", "%s", %s_allPrefixes);'
             % (self.name, self.name, self.envstr, default, self.name),
         )
-        indent(file, "%s_DEFAULT.clear();" % self.name)
+        indent(file, "%s_DEFAULTCVARVALUE.clear();" % self.name)
         indent(
             file,
-            "std::tie(%s_PREFIX_DEFAULT, %s_DEFAULT) = "
+            "std::tie(%s_PREFIX_DEFAULT, %s_DEFAULTCVARVALUE) = "
             'env2prefixedStrlist("NCCL_ENV_DO_NOT_SET", "%s", %s_allPrefixes);'
             % (self.name, self.name, default, self.name),
         )
@@ -342,12 +344,12 @@ class enum(basetype):
             indent(file, "%s," % c)
         indent(file, "};")
         indent(file, "extern enum %s %s;" % (self.name, self.name))
-        indent(file, "extern enum %s %s_DEFAULT;" % (self.name, self.name))
+        indent(file, "extern enum %s %s_DEFAULTCVARVALUE;" % (self.name, self.name))
         file.write("\n")
 
     def storageDecl(self, file):
         indent(file, "enum %s %s;" % (self.name, self.name))
-        indent(file, "enum %s %s_DEFAULT;" % (self.name, self.name))
+        indent(file, "enum %s %s_DEFAULTCVARVALUE;" % (self.name, self.name))
 
     def readenv(self, file):
         indent(file, 'if (getenv("%s") == nullptr) {' % self.envstr)
@@ -365,7 +367,9 @@ class enum(basetype):
         indent(file, '  CVAR_WARN_UNKNOWN_VALUE("%s", str.c_str());' % self.name)
         indent(file, "}")
         indent(file, "}")
-        indent(file, "%s_DEFAULT = %s::%s;" % (self.name, self.name, self.default))
+        indent(
+            file, "%s_DEFAULTCVARVALUE = %s::%s;" % (self.name, self.name, self.default)
+        )
         file.write("\n")
 
 
@@ -381,12 +385,17 @@ class enumlist(basetype):
             indent(file, "%s," % c)
         indent(file, "};")
         indent(file, "extern std::vector<enum %s> %s;" % (self.name, self.name))
-        indent(file, "extern std::vector<enum %s> %s_DEFAULT;" % (self.name, self.name))
+        indent(
+            file,
+            "extern std::vector<enum %s> %s_DEFAULTCVARVALUE;" % (self.name, self.name),
+        )
         file.write("\n")
 
     def storageDecl(self, file):
         indent(file, "std::vector<enum %s> %s;" % (self.name, self.name))
-        indent(file, "std::vector<enum %s> %s_DEFAULT;" % (self.name, self.name))
+        indent(
+            file, "std::vector<enum %s> %s_DEFAULTCVARVALUE;" % (self.name, self.name)
+        )
 
     def readenv(self, file):
         indent(file, "{")
@@ -407,10 +416,13 @@ class enumlist(basetype):
         indent(file, "}")
         indent(file, "}")
         indent(file, "}")
-        indent(file, "%s_DEFAULT.clear();" % self.name)
+        indent(file, "%s_DEFAULTCVARVALUE.clear();" % self.name)
         default = self.default.replace(" ", "").split(",")
         for d in default:
-            indent(file, "%s_DEFAULT.emplace_back(%s::%s);" % (self.name, self.name, d))
+            indent(
+                file,
+                "%s_DEFAULTCVARVALUE.emplace_back(%s::%s);" % (self.name, self.name, d),
+            )
         file.write("\n")
 
 
@@ -533,7 +545,7 @@ def populateCCFile(
     indent(file, "static void readCvarEnv() {")
     for cvar in allcvars:
         cvar.readenv(file)
-        indent(file, f'if ({cvar.name}_DEFAULT != {cvar.name}) {"{"}')
+        indent(file, f'if ({cvar.name}_DEFAULTCVARVALUE != {cvar.name}) {"{"}')
         indent(
             file,
             f'  CVAR_INFO("NCCL Config - CVAR {{}} has an override", "{cvar.name}");',
@@ -578,8 +590,15 @@ def populateHFile(allcvars, outputFilename):
 
     file.write("#include <cstdint>\n")
     file.write("#include <string>\n")
+    file.write("#include <string_view>\n")
     file.write("#include <vector>\n")
     file.write("#include <unordered_map>\n")
+    file.write("#include <array>\n")
+
+    file.write("\n")
+
+    file.write("extern bool logNcclBaselineAdapterInfo;")
+
     file.write("\n")
 
     # Generate extern declaration
@@ -587,6 +606,24 @@ def populateHFile(allcvars, outputFilename):
         cvar.externDecl(file)
     file.write("\n")
     file.write("namespace ncclx {\n")
+
+    file.write(
+        "constexpr std::array<std::string_view, <@numCvars>> cvarNames = {<@cvarNames>};\n"
+    )
+
+    is_cvar_registered: str = """
+constexpr bool isCvarRegistered(std::string_view name) {
+    for (auto cvarName : cvarNames) {
+        if (cvarName == name) {
+            return true;
+        }
+    }
+
+    return false;
+}
+"""
+
+    file.write(is_cvar_registered + "\n")
 
     cvar_maps_text: str = """
 extern std::unordered_map<std::string, std::string*> env_string_values;
@@ -607,6 +644,27 @@ extern std::unordered_map<std::string, bool*> env_bool_values;
 
     printAutogenFooter(file)
     file.close()
+
+    with open(outputFilename, "r") as f:
+
+        def get_field(cvar) -> str:
+            if cvar.name != cvar.envstr:
+                return cvar.envstr
+
+            return cvar.name
+
+        contents: str = f.read()
+        updatedContents: str = contents.replace("<@numCvars>", str(len(allcvars)))
+        updatedContents: str = updatedContents.replace(
+            "<@cvarNames>",
+            ",".join(
+                '"%s"' % get_field(c)
+                for c in sorted(allcvars, key=lambda cvar: get_field(cvar))
+            ),
+        )
+
+    with open(outputFilename, "w") as f:
+        f.write(updatedContents)
 
 
 def format_file(path):

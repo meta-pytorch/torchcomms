@@ -344,3 +344,39 @@ TEST(Socket, AcceptErrorOnShutdown) {
   server.shutdown();
   listenThread.join();
 }
+
+// Tests for ISocket interface implementation
+
+TEST(Socket, ISocketInterfaceSendAll) {
+  ctran::bootstrap::ServerSocket server{1};
+  ctran::bootstrap::Socket client;
+
+  // Start server on the loopback interface
+  ASSERT_EQ(0, server.bindAndListen(folly::SocketAddress("::1", 0), "lo"));
+  const auto& maybeServerAddr = server.getListenAddress();
+  ASSERT_FALSE(maybeServerAddr.hasError());
+  auto& serverAddr = maybeServerAddr.value();
+
+  // Connect client to the server
+  ASSERT_EQ(0, client.connect(serverAddr, "lo"));
+
+  // Accept client connection on server
+  auto maybeClient = server.accept();
+  ASSERT_FALSE(maybeClient.hasError());
+  auto& acceptedClient = maybeClient.value();
+
+  // Test sendAll/recvAll via ISocket interface
+  const std::string request = "test message for sendAll";
+  std::unique_ptr<ctran::bootstrap::ISocket> clientSocket =
+      std::make_unique<ctran::bootstrap::Socket>(std::move(client));
+  ASSERT_EQ(0, clientSocket->send(request.data(), request.size()));
+
+  char rcvdRequest[request.size()];
+  ASSERT_EQ(0, acceptedClient.recv(rcvdRequest, request.size()));
+  EXPECT_EQ(0, std::memcmp(request.data(), rcvdRequest, request.size()));
+
+  // Cleanup
+  EXPECT_EQ(0, server.shutdown());
+  EXPECT_EQ(0, clientSocket->close());
+  EXPECT_EQ(0, acceptedClient.close());
+}

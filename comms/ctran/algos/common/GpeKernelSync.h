@@ -37,9 +37,10 @@ struct alignas(16) GpeKernelSync {
   inline bool isComplete(const int step) {
     bool allComplete = true;
     for (unsigned int i = 0; i < nworkers; i++) {
+      volatile int* flag = &completeFlag[i];
       // Kernel handles posted request in sequential, thus >= step indicates
       // completion of the checking step.
-      allComplete &= (completeFlag[i] >= step);
+      allComplete &= (*flag >= step);
       if (!allComplete) {
         break;
       }
@@ -51,8 +52,8 @@ struct alignas(16) GpeKernelSync {
     for (unsigned int i = 0; i < nworkers; i++) {
       // Kernel handles posted request in sequential, thus >= step indicates
       // that the checking step has been posted.
-      volatile int* completeFlag_ = &completeFlag[i];
-      while (*completeFlag_ < step)
+      volatile int* flag = &completeFlag[i];
+      while (*flag < step)
         ;
     }
   }
@@ -64,7 +65,8 @@ struct alignas(16) GpeKernelSync {
     wcStoreFence();
     // Post to all thread blocks (workers) on kernel side
     for (unsigned int i = 0; i < nworkers; i++) {
-      postFlag[i] = step;
+      volatile int* flag = &postFlag[i];
+      *flag = step;
     }
   }
 

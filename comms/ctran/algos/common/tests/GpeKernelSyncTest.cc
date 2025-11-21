@@ -9,6 +9,9 @@ using ctran::algos::GpeKernelSync;
 
 extern __global__ void
 GpeKernelSyncKernel(GpeKernelSync* sync, int* data, int numElem, int nSteps);
+extern __global__ void GpeKernelSyncResetKernel(
+    GpeKernelSync* sync,
+    const int nworkers);
 
 class CtranGpeKernelSyncTest : public ::testing::Test {
  public:
@@ -33,8 +36,19 @@ class CtranGpeKernelSyncTest : public ::testing::Test {
   cudaEvent_t stop_;
 };
 
-TEST_F(CtranGpeKernelSyncTest, kernelSync) {
-  const int nWorkers = 2;
+enum class ResetMode {
+  kFromHost,
+  kFromDevice,
+};
+
+class CtranGpeKernelSyncTestParamFixture
+    : public CtranGpeKernelSyncTest,
+      // number of thread blocks for each sync group
+      public ::testing::WithParamInterface<std::tuple<int, ResetMode>> {};
+
+TEST_P(CtranGpeKernelSyncTestParamFixture, kernelSync) {
+  auto [nWorkers, resetType] = GetParam();
+
   int numElem = 8192;
   int niter = 10;
   void* ptr = nullptr;
@@ -48,12 +62,26 @@ TEST_F(CtranGpeKernelSyncTest, kernelSync) {
   // Assign sync and data pointers from the allocated memory
   GpeKernelSync* sync = reinterpret_cast<GpeKernelSync*>(ptr);
 
-  new (sync) GpeKernelSync(nWorkers);
-
   int* data = reinterpret_cast<int*>(
       reinterpret_cast<char*>(ptr) + sizeof(GpeKernelSync));
   for (int e = 0; e < numElem; ++e) {
     data[e] = e;
+  }
+
+  if (resetType == ResetMode::kFromDevice) {
+    std::array<void*, 2> resetArgs;
+    resetArgs.at(0) = &sync;
+    resetArgs.at(1) = &nWorkers;
+    CUDACHECK_ASSERT(cudaLaunchKernel(
+        (const void*)GpeKernelSyncResetKernel,
+        {1, 1, 1},
+        {32, 1, 1},
+        resetArgs.data(),
+        0,
+        0));
+    CUDACHECK_ASSERT(cudaDeviceSynchronize());
+  } else {
+    new (sync) GpeKernelSync(nWorkers);
   }
 
   std::array<void*, 4> kernArgs;
@@ -61,7 +89,7 @@ TEST_F(CtranGpeKernelSyncTest, kernelSync) {
   kernArgs.at(1) = &data;
   kernArgs.at(2) = &numElem;
   kernArgs.at(3) = &niter;
-  dim3 grid = {nWorkers, 1, 1};
+  dim3 grid = {(unsigned int)nWorkers, 1, 1};
   dim3 blocks = {128, 1, 1};
   ASSERT_EQ(
       cudaFuncSetAttribute(
@@ -97,3 +125,18 @@ TEST_F(CtranGpeKernelSyncTest, kernelSync) {
 
   ASSERT_EQ(cudaFreeHost(ptr), cudaSuccess);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    CtranTest,
+    CtranGpeKernelSyncTestParamFixture,
+    ::testing::Combine(
+        ::testing::Values(1, 2, 4, 8, 16, 32, 64),
+        ::testing::Values(ResetMode::kFromHost, ResetMode::kFromDevice)),
+    [&](const testing::TestParamInfo<
+        CtranGpeKernelSyncTestParamFixture::ParamType>& info) {
+      const auto resetTypeStr = std::get<1>(info.param) == ResetMode::kFromHost
+          ? "ResetFromHost"
+          : "ResetFromDevice";
+      return std::to_string(std::get<0>(info.param)) + "numWorkers_" +
+          resetTypeStr;
+    });

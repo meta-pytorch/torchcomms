@@ -1327,7 +1327,7 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
   int netLockHeld = 0;
   NCCLCHECK(xmlAlloc(&xml, NCCL_TOPO_XML_MAX_NODES));
   if (!NCCL_TOPO_FILE.empty()) {
-    bool customTopoFile = NCCL_TOPO_FILE != NCCL_TOPO_FILE_DEFAULT;
+    bool customTopoFile = NCCL_TOPO_FILE != NCCL_TOPO_FILE_DEFAULTCVARVALUE;
     if (customTopoFile) {
       INFO(
           NCCL_ENV,

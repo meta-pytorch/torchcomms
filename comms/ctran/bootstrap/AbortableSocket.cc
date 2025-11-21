@@ -615,7 +615,7 @@ AbortableServerSocket::acceptAsync() {
       return folly::makeUnexpected(errno);
     } else {
       XLOGF(
-          INFO,
+          DBG,
           "Received error \"{}\" and will perform a free retry",
           strerror(errno));
       return folly::makeUnexpected(EAGAIN); // Treat as EAGAIN to retry

@@ -5,7 +5,7 @@
 #include <fmt/format.h>
 #include <cstddef>
 
-#include "comms/ctran/commstate/CommStateXDev.h"
+#include "comms/ctran/utils/DevAttribute.h"
 
 namespace ctran::allreduce::arg {
 
