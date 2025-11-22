@@ -49,8 +49,9 @@ struct alignas(16) CtranAlgoDeviceSync {
 struct alignas(16) CtranAlgoDeviceState {
   // Shared buffers for intra-node inter-process communication.
   // Both sync and buf are pointers to device memory.
-  // TODO: use two 1D arrays instead of 2D array for allPeerSyncMap
-  CtranAlgoDeviceSync* allPeerSyncMap[CTRAN_MAX_NVL_PEERS][CTRAN_MAX_NVL_PEERS];
+  // indexed by rank ID
+  CtranAlgoDeviceSync* remoteSyncsMap[CTRAN_MAX_NVL_PEERS];
+  CtranAlgoDeviceSync* localSyncsMap[CTRAN_MAX_NVL_PEERS];
 
   // indexed by rank ID
   void* remoteStagingBufsMap[CTRAN_MAX_NVL_PEERS];

@@ -122,6 +122,22 @@ CtranAlgoDeviceState* CtranAlgo::getDevState() {
 static const std::string kCtranAlgoInitResources{
     "CtranAlgoInitResources - lazy connect init"};
 
+namespace {
+// Helper to calculate sync and staging buffer pointers for a given peer
+std::pair<CtranAlgoDeviceSync*, void*> calculatePeerSyncAndStagingBufAddr(
+    void* mappedDevShmPtr,
+    int pos,
+    int nLocalRanks) {
+  char* regionPtr_d = reinterpret_cast<char*>(mappedDevShmPtr);
+  void* bufBase_d =
+      regionPtr_d + (nLocalRanks - 1) * sizeof(CtranAlgoDeviceSync);
+  void* sync = regionPtr_d + pos * sizeof(CtranAlgoDeviceSync);
+  void* buf = reinterpret_cast<char*>(bufBase_d) +
+      pos * NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+  return {reinterpret_cast<CtranAlgoDeviceSync*>(sync), buf};
+}
+} // namespace
+
 commResult_t CtranAlgo::initKernelResources() {
   const auto statex = comm_->statex_.get();
   CtranAlgoDeviceState tmpDevState;
@@ -195,7 +211,8 @@ commResult_t CtranAlgo::initKernelResources() {
   // Setup pointers to bufstates and shared buffer of each peers' shared region
   // See description of bufState and buf memory locations in SharedResource.
   if (this->sharedRes_) {
-    auto& allPeerSyncMap = tmpDevState.allPeerSyncMap;
+    auto& remoteSyncsMap = tmpDevState.remoteSyncsMap;
+    auto& localSyncsMap = tmpDevState.localSyncsMap;
     auto& remoteStagingBufsMap = tmpDevState.remoteStagingBufsMap;
     auto& localStagingBufsMap = tmpDevState.localStagingBufsMap;
     auto& peerBcastBufsMap = tmpDevState.peerBcastBufsMap;
@@ -203,53 +220,43 @@ commResult_t CtranAlgo::initKernelResources() {
     auto& alltoallvDynamicSendbuffsMap =
         tmpDevState.alltoallvDynamicSendbuffsMap;
 
-    for (int owner = 0; owner < nLocalRanks; owner++) {
-      char* regionPtr_d = (char*)this->sharedRes_->mappedDevShmPtrs[owner];
-      void* bufBase_d = (char*)this->sharedRes_->mappedDevShmPtrs[owner] +
-          (nLocalRanks - 1) * sizeof(CtranAlgoDeviceSync);
-      for (int i = 0; i < nLocalRanks; i++) {
-        // Skip owner itself
-        if (i == owner) {
-          allPeerSyncMap[owner][i] = nullptr;
-          if (i == localRank) {
-            localStagingBufsMap[i] = nullptr;
-            remoteStagingBufsMap[i] = nullptr;
-          }
-          continue;
-        }
+    for (int i = 0; i < nLocalRanks; i++) {
+      if (i == localRank) {
+        localSyncsMap[i] = nullptr;
+        remoteSyncsMap[i] = nullptr;
+        localStagingBufsMap[i] = nullptr;
+        remoteStagingBufsMap[i] = nullptr;
+      } else {
+        int localPos = LOCAL_RANK_TO_DEV_REGION_POS(i, localRank);
+        auto [localSync, localBuf] = calculatePeerSyncAndStagingBufAddr(
+            this->sharedRes_->mappedDevShmPtrs[localRank],
+            localPos,
+            nLocalRanks);
+        localSyncsMap[i] = localSync;
+        localStagingBufsMap[i] = localBuf;
 
-        int pos = LOCAL_RANK_TO_DEV_REGION_POS(i, owner);
-        void* statePtr_d =
-            (char*)regionPtr_d + pos * sizeof(CtranAlgoDeviceSync);
-
-        allPeerSyncMap[owner][i] =
-            reinterpret_cast<CtranAlgoDeviceSync*>(statePtr_d);
-        void* buf =
-            (char*)bufBase_d + pos * NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
-        if (owner == localRank) {
-          localStagingBufsMap[i] = buf;
-        }
-        if (i == localRank) {
-          remoteStagingBufsMap[owner] = buf;
-        }
+        int remotePos = LOCAL_RANK_TO_DEV_REGION_POS(localRank, i);
+        auto [remoteSync, remoteBuf] = calculatePeerSyncAndStagingBufAddr(
+            this->sharedRes_->mappedDevShmPtrs[i], remotePos, nLocalRanks);
+        remoteSyncsMap[i] = remoteSync;
+        remoteStagingBufsMap[i] = remoteBuf;
       }
 
       // Next chunk is for bcastBuf
-      peerBcastBufsMap[owner] =
-          (char*)this->sharedRes_->mappedDevShmPtrs[owner] +
+      peerBcastBufsMap[i] = (char*)this->sharedRes_->mappedDevShmPtrs[i] +
           (sizeof(CtranAlgoDeviceSync) +
            NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE) *
               (nLocalRanks - 1);
       CLOGF_TRACE(
           INIT,
           "CTRAN-ALGO: allocated local peerBcastBufsMap[{}] = {}, size {}",
-          owner,
-          (void*)peerBcastBufsMap[owner],
+          i,
+          (void*)peerBcastBufsMap[i],
           tmpDevState.bcastBufSize);
 
       // Next chunk is for alltoallvDynamic
-      peerAllToAllvDynamicBufsMap[owner] = reinterpret_cast<void*>(
-          reinterpret_cast<uintptr_t>(peerBcastBufsMap[owner]) +
+      peerAllToAllvDynamicBufsMap[i] = reinterpret_cast<void*>(
+          reinterpret_cast<uintptr_t>(peerBcastBufsMap[i]) +
           tmpDevState.bcastBufSize);
     }
     // FIXME: need better management on shm resources. Like how we managed the

@@ -275,33 +275,35 @@ TEST_F(CtranTest, AlgoDeviceState) {
   EXPECT_EQ(statexDev.pid(), getpid());
 
   for (int i = 0; i < nLocalRanks; i++) {
-    if (i != localRank) {
-      EXPECT_NE(devState.remoteStagingBufsMap[i], nullptr);
-      EXPECT_NE(devState.localStagingBufsMap[i], nullptr);
-    } else {
+    if (i == localRank) {
+      EXPECT_EQ(devState.remoteSyncsMap[i], nullptr);
+      EXPECT_EQ(devState.localSyncsMap[i], nullptr);
       EXPECT_EQ(devState.remoteStagingBufsMap[i], nullptr);
       EXPECT_EQ(devState.localStagingBufsMap[i], nullptr);
+      continue;
     }
-    for (int j = 0; j < nLocalRanks; j++) {
-      if (i == j) {
-        // Expect null for owner itself
-        EXPECT_EQ(devState.allPeerSyncMap[i][j], nullptr);
-      } else {
-        // Expect IPC buffer is allocated and state is reset for all peers
-        EXPECT_NE(devState.allPeerSyncMap[i][j], nullptr);
+    EXPECT_NE(devState.remoteSyncsMap[i], nullptr);
+    EXPECT_NE(devState.localSyncsMap[i], nullptr);
+    EXPECT_NE(devState.remoteStagingBufsMap[i], nullptr);
+    EXPECT_NE(devState.localStagingBufsMap[i], nullptr);
 
-        // Copy buffer state to host and check values are reset to default
-        struct CtranAlgoDeviceSync stateVal;
-        CUDACHECK_TEST(cudaMemcpy(
-            &stateVal,
-            devState.allPeerSyncMap[i][j],
-            sizeof(stateVal),
-            cudaMemcpyDeviceToHost));
-        for (int k = 0; k < CTRAN_ALGO_MAX_THREAD_BLOCKS; k++) {
-          EXPECT_EQ(
-              stateVal.syncs[k].stepOnSameBlockIdx, CTRAN_ALGO_STEP_RESET);
-        }
-      }
+    // Copy buffer state to host and check values are reset to default
+    struct CtranAlgoDeviceSync localStateVal, remoteStateVal;
+    CUDACHECK_TEST(cudaMemcpy(
+        &localStateVal,
+        devState.localSyncsMap[i],
+        sizeof(localStateVal),
+        cudaMemcpyDeviceToHost));
+    CUDACHECK_TEST(cudaMemcpy(
+        &remoteStateVal,
+        devState.remoteSyncsMap[i],
+        sizeof(remoteStateVal),
+        cudaMemcpyDeviceToHost));
+    for (int k = 0; k < CTRAN_ALGO_MAX_THREAD_BLOCKS; k++) {
+      EXPECT_EQ(
+          localStateVal.syncs[k].stepOnSameBlockIdx, CTRAN_ALGO_STEP_RESET);
+      EXPECT_EQ(
+          remoteStateVal.syncs[k].stepOnSameBlockIdx, CTRAN_ALGO_STEP_RESET);
     }
   }
 }
