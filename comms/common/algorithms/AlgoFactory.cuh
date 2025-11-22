@@ -2,13 +2,11 @@
 
 #pragma once
 
-#include "comms/common/IpcGpuBarrier.cuh"
 #include "comms/common/algorithms/all_gather/AllGatherAlgoManager.h"
 #include "comms/common/algorithms/all_reduce/AllReduceAlgoManager.h"
 #include "comms/common/algorithms/all_to_all/AllToAllAlgoManager.h"
 #include "comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h"
 #include "comms/ctran/interfaces/IBootstrap.h" // @manual
-#include "comms/utils/CudaRAII.h"
 #include "comms/utils/commSpecs.h"
 
 namespace meta::comms {
@@ -28,6 +26,7 @@ class AlgoFactory {
  public:
   struct AllReduceOptions {
     bool enableDda{false};
+    int ddaSendbufSizeBytes{0};
     // If msg size is not larger than the threshold,
     // flat (one-shot) DDA will be used
     int ddaFlatMaxThresholdBytes{0};
@@ -35,34 +34,32 @@ class AlgoFactory {
     // tree (two-shot) DDA will be used
     int ddaTreeMaxThresholdBytes{0};
   };
-
   struct AllGatherOptions {
     bool enableDda{false};
+    int ddaSendbufSizeBytes{0};
     // If msg size is not larger than the threshold,
     // DDA will be used
     int ddaMaxThresholdBytes{0};
   };
-
   struct ReduceScatterOptions {
     bool enableDda{false};
+    int ddaSendbufSizeBytes{0};
     // If msg size is not larger than the threshold,
     // DDA will be used
     int ddaMaxThresholdBytes{0};
   };
-
   struct AllToAllOptions {
     bool enableDda{false};
+    int ddaSendbufSizeBytes{0};
     // If msg size is not larger than the threshold,
     // DDA will be used
     int ddaMaxThresholdBytes{0};
   };
-
   AlgoFactory(
       std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
       int nRanks,
       int selfRank,
       int maxBlocks,
-      int ddaSendbufSizeBytes,
       const AllReduceOptions& allReduceOpts,
       const AllGatherOptions& allGatherOpts,
       const ReduceScatterOptions& reduceScatterOpts,
@@ -87,12 +84,13 @@ class AlgoFactory {
       void* recvbuff,
       size_t count,
       commDataType_t datatype,
-      cudaStream_t stream) {
+      cudaStream_t stream,
+      const void* acc = nullptr) {
     if (allGatherMgr_ == nullptr) {
       return nullptr;
     }
     return allGatherMgr_->getAllGatherAlgo(
-        sendbuff, recvbuff, count, datatype, stream);
+        sendbuff, recvbuff, count, datatype, stream, acc);
   }
 
   std::unique_ptr<AlgoReduceScatter> getReduceScatterAlgo(
@@ -100,12 +98,13 @@ class AlgoFactory {
       void* recvbuff,
       size_t count,
       commDataType_t datatype,
-      cudaStream_t stream) {
+      cudaStream_t stream,
+      const void* acc = nullptr) {
     if (reduceScatterMgr_ == nullptr) {
       return nullptr;
     }
     return reduceScatterMgr_->getReduceScatterAlgo(
-        sendbuff, recvbuff, count, datatype, stream);
+        sendbuff, recvbuff, count, datatype, stream, acc);
   }
 
   std::unique_ptr<AlgoAllToAll> getAllToAllAlgo(
@@ -113,27 +112,16 @@ class AlgoFactory {
       void* recvbuff,
       size_t count,
       commDataType_t datatype,
-      cudaStream_t stream) {
+      cudaStream_t stream,
+      const void* acc = nullptr) {
     if (allToAllMgr_ == nullptr) {
       return nullptr;
     }
     return allToAllMgr_->getAllToAllAlgo(
-        sendbuff, recvbuff, count, datatype, stream);
+        sendbuff, recvbuff, count, datatype, stream, acc);
   }
 
  private:
-  int nRanks_{0};
-  int selfRank_{-1};
-  int maxBlocks_{0};
-  int ddaSendbufSizeBytes_{0};
-
-  std::unique_ptr<IpcGpuBarrierResources> barrierResources_;
-  IpcGpuBarrier barrier_;
-  std::unique_ptr<DeviceBuffer> ddaSendbuf_;
-  std::unique_ptr<IpcMemHandler> memHandler_;
-  // arrary of void* (all ranks' ipc enabled sendbuf) in device memory
-  std::unique_ptr<DeviceBuffer> allRankDdaSendbuffs_;
-
   std::unique_ptr<AllReduceAlgoManager> allReduceMgr_{nullptr};
   std::unique_ptr<AllGatherAlgoManager> allGatherMgr_{nullptr};
   std::unique_ptr<ReduceScatterAlgoManager> reduceScatterMgr_{nullptr};

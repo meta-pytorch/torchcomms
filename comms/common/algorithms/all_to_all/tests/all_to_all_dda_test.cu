@@ -165,7 +165,8 @@ TYPED_TEST_P(AllToAllDdaTest, ddaAllToAllIpcTest) {
           cnt,
           sendbuf_d,
           this->globalRank,
-          this->barrier);
+          this->barrier,
+          accbuf_d);
 
   cudaDeviceSynchronize();
 

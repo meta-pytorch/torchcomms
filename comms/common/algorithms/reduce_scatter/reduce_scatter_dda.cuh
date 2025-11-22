@@ -18,7 +18,8 @@ __launch_bounds__(512)
         size_t count,
         const T* __restrict__ sendbuff,
         int selfRank,
-        IpcGpuBarrier barrier) {
+        IpcGpuBarrier barrier,
+        const T* __restrict__ acc) {
   barrier.syncOnSameBlockIdx<
       false /* hasPreviousMemAccess */,
       true /* hasSubsequentMemAccess */>();

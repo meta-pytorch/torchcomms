@@ -13,13 +13,12 @@ namespace meta::comms {
 class AllGatherAlgoManager {
  public:
   AllGatherAlgoManager(
+      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
       int nRanks,
       int selfRank,
       int maxBlocks,
       int ddaSendbufSizeBytes,
-      int ddaMaxThresholdBytes,
-      void** allRankDdaSendbuffs,
-      IpcGpuBarrier* barrier);
+      int ddaMaxThresholdBytes);
   AllGatherAlgoManager(const AllGatherAlgoManager&) = delete;
   AllGatherAlgoManager(AllGatherAlgoManager&&) = delete;
 
@@ -28,16 +27,21 @@ class AllGatherAlgoManager {
       void* recvbuff,
       size_t count,
       commDataType_t datatype,
-      cudaStream_t stream);
+      cudaStream_t stream,
+      const void* acc);
 
- protected:
+ private:
   int nRanks_{0};
   int selfRank_{-1};
   int maxBlocks_{0};
   int ddaSendbufSizeBytes_{0};
   int ddaMaxThresholdBytes_{0};
-  void** allRankDdaSendbuffs_{nullptr};
-  IpcGpuBarrier* barrier_;
+  std::unique_ptr<IpcGpuBarrierResources> barrierResources_;
+  IpcGpuBarrier barrier_;
+  std::unique_ptr<DeviceBuffer> ddaSendbuf_;
+  std::unique_ptr<IpcMemHandler> memHandler_;
+  // arrary of void* (all ranks' ipc enabled sendbuf) in device memory
+  std::unique_ptr<DeviceBuffer> allRankDdaSendbuffs_;
 };
 
 } // namespace meta::comms

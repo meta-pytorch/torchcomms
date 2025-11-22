@@ -5,20 +5,39 @@
 namespace meta::comms {
 
 AllGatherAlgoManager::AllGatherAlgoManager(
+    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
     int nRanks,
     int selfRank,
     int maxBlocks,
     int ddaSendbufSizeBytes,
-    int ddaMaxThresholdBytes,
-    void** allRankDdaSendbuffs,
-    IpcGpuBarrier* barrier)
+    int ddaMaxThresholdBytes)
     : nRanks_(nRanks),
       selfRank_(selfRank),
       maxBlocks_(maxBlocks),
       ddaSendbufSizeBytes_(ddaSendbufSizeBytes),
-      ddaMaxThresholdBytes_(ddaMaxThresholdBytes),
-      allRankDdaSendbuffs_(allRankDdaSendbuffs),
-      barrier_(barrier) {
+      ddaMaxThresholdBytes_(ddaMaxThresholdBytes) {
+  auto [barrierResources, barrier] =
+      IpcGpuBarrier::mallocAndInit(nRanks_, maxBlocks_, selfRank_, bootstrap);
+  barrierResources_ = std::move(barrierResources);
+  barrier_ = barrier;
+
+  ddaSendbuf_ = std::make_unique<DeviceBuffer>(ddaSendbufSizeBytes_);
+  memHandler_ = std::make_unique<IpcMemHandler>(bootstrap, selfRank_, nRanks_);
+  memHandler_->addSelfDeviceMemPtr(ddaSendbuf_->get());
+  memHandler_->exchangeMemPtrs();
+
+  std::vector<void*> ipcSendbufs(nRanks_);
+  for (int i = 0; i < nRanks_; ++i) {
+    ipcSendbufs[i] = memHandler_->getPeerDeviceMemPtr(i);
+  }
+
+  allRankDdaSendbuffs_ =
+      std::make_unique<DeviceBuffer>(sizeof(void*) * nRanks_);
+  CUDA_CHECK(cudaMemcpy(
+      allRankDdaSendbuffs_->get(),
+      ipcSendbufs.data(),
+      sizeof(void*) * nRanks_,
+      cudaMemcpyDefault));
   XLOG(DBG) << "Successfully initialized AllGatherAlgoManager";
 }
 
@@ -27,15 +46,15 @@ std::unique_ptr<AlgoAllGather> AllGatherAlgoManager::getAllGatherAlgo(
     void* recvbuff,
     size_t count,
     commDataType_t datatype,
-    cudaStream_t stream) {
-  if ((nRanks_ * count * commTypeSize(datatype)) > ddaSendbufSizeBytes_) {
-    // AG: msgSize = (nRanks_ x count x datatype) must fit into the dda sendbuf
+    cudaStream_t stream,
+    const void* acc) {
+  if (count * commTypeSize(datatype) > ddaSendbufSizeBytes_) {
+    // msg size must fit into the dda sendbuf
     XLOG(DBG) << "Not using custom all gather algo because message size "
-              << nRanks_ * count * commTypeSize(datatype)
+              << count * commTypeSize(datatype)
               << " is larger than ddaSendbufSizeBytes " << ddaSendbufSizeBytes_;
     return nullptr;
   }
-
   if (((uintptr_t)sendbuff % 16) || ((uintptr_t)recvbuff % 16) ||
       ((count * commTypeSize(datatype)) % 16)) {
     // 16 byte alignment as we do 16-byte loads in DDA kernel
@@ -53,22 +72,20 @@ std::unique_ptr<AlgoAllGather> AllGatherAlgoManager::getAllGatherAlgo(
   }
 
   std::unique_ptr<AlgoAllGather> algo;
-  if ((nRanks_ * count * commTypeSize(datatype)) > ddaMaxThresholdBytes_) {
-    // AG: msgSize = (nRanks_ x count x datatype) must less than algo threshold
+  if (count * commTypeSize(datatype) > ddaMaxThresholdBytes_) {
     XLOG(DBG) << "Not using custom all gather algo because msg size "
-              << nRanks_ * count * commTypeSize(datatype)
+              << count * commTypeSize(datatype)
               << " is larger than DDA algo threshold " << ddaMaxThresholdBytes_;
     return nullptr;
   } else {
-    if (((count * commTypeSize(datatype)) % 16) ||
-        ((nRanks_ * count * commTypeSize(datatype)) % 16)) {
+    if ((count * commTypeSize(datatype)) % 16) {
       XLOG(DBG) << "Not using DDA all gather algo because send/recv buff "
                    "or msg size is not 16-byte aligned for each rank";
       return nullptr;
     }
     algo = std::make_unique<AlgoAllGatherDdaIpc>(
         sendbuff,
-        allRankDdaSendbuffs_,
+        reinterpret_cast<void**>(allRankDdaSendbuffs_->get()),
         recvbuff,
         count,
         datatype,
@@ -76,7 +93,8 @@ std::unique_ptr<AlgoAllGather> AllGatherAlgoManager::getAllGatherAlgo(
         nRanks_,
         selfRank_,
         maxBlocks_,
-        barrier_);
+        &barrier_,
+        acc);
   }
   return algo;
 }

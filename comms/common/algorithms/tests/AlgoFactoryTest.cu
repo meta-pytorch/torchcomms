@@ -10,13 +10,12 @@ using namespace meta::rcclx;
 using namespace meta::comms;
 
 namespace {
-constexpr int nRanks = 8;
 constexpr int maxBlocks = 128;
-constexpr int ddaSendbufSizeBytes = 16384;
-// always use a threshold smaller than (ddaSendbufSizeBytes / nRanks)
-constexpr int ddaThresholdBytes = ddaSendbufSizeBytes / nRanks;
-constexpr int ddaFlatThresholdBytes = ddaSendbufSizeBytes / (nRanks * 2);
-constexpr int ddaTreeThresholdBytes = ddaSendbufSizeBytes / nRanks;
+constexpr int ddaSendbufSizeBytes = 4096;
+// always use a threshold smaller than the ddaSendbufSizeBytes
+constexpr int ddaThresholdBytes = ddaSendbufSizeBytes / 4;
+constexpr int ddaFlatThresholdBytes = ddaSendbufSizeBytes / 4;
+constexpr int ddaTreeThresholdBytes = ddaSendbufSizeBytes / 2;
 constexpr commDataType_t dataType = commBfloat16;
 constexpr int maxCnt = ddaThresholdBytes / sizeof(__nv_bfloat16);
 constexpr int maxOneshotCnt = ddaFlatThresholdBytes / sizeof(__nv_bfloat16);
@@ -42,17 +41,23 @@ class AlgoFactoryTest : public RcclxBaseTestFixture {
         numRanks,
         localRank,
         maxBlocks,
-        ddaSendbufSizeBytes,
         AlgoFactory::AllReduceOptions{
             .enableDda = true,
+            .ddaSendbufSizeBytes = ddaSendbufSizeBytes,
             .ddaFlatMaxThresholdBytes = ddaFlatThresholdBytes,
             .ddaTreeMaxThresholdBytes = ddaTreeThresholdBytes},
         AlgoFactory::AllGatherOptions{
-            .enableDda = true, .ddaMaxThresholdBytes = ddaThresholdBytes},
+            .enableDda = true,
+            .ddaSendbufSizeBytes = ddaSendbufSizeBytes,
+            .ddaMaxThresholdBytes = ddaThresholdBytes},
         AlgoFactory::ReduceScatterOptions{
-            .enableDda = true, .ddaMaxThresholdBytes = ddaThresholdBytes},
+            .enableDda = true,
+            .ddaSendbufSizeBytes = ddaSendbufSizeBytes,
+            .ddaMaxThresholdBytes = ddaThresholdBytes},
         AlgoFactory::AllToAllOptions{
-            .enableDda = true, .ddaMaxThresholdBytes = ddaThresholdBytes});
+            .enableDda = true,
+            .ddaSendbufSizeBytes = ddaSendbufSizeBytes,
+            .ddaMaxThresholdBytes = ddaThresholdBytes});
   }
 
  protected:

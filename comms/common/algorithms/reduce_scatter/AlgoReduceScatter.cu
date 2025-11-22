@@ -15,7 +15,8 @@ AlgoReduceScatter::AlgoReduceScatter(
     int nRanks,
     int selfRank,
     int maxBlocks,
-    IpcGpuBarrier* barrier)
+    IpcGpuBarrier* barrier,
+    const void* acc)
     : sendbuff_(sendbuff),
       allRankDdaSendbuffs_(allRankDdaSendbuffs),
       recvbuff_(recvbuff),
@@ -25,7 +26,8 @@ AlgoReduceScatter::AlgoReduceScatter(
       nRanks_(nRanks),
       selfRank_(selfRank),
       maxBlocks_(maxBlocks),
-      barrier_(barrier) {}
+      barrier_(barrier),
+      acc_(acc) {}
 
 void AlgoReduceScatterDdaIpc::reduceScatter() {
   TYPED_CALL(datatype_, launchKernel);
