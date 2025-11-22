@@ -250,6 +250,9 @@ ensure_static_symlink ssl
 ensure_static_symlink event
 ensure_static_symlink sodium
 ensure_static_symlink boost_context
+ensure_static_symlink glog
+ensure_static_symlink gflags
+ensure_static_symlink zstd
 
 BUILDDIR=${BUILDDIR:="${PWD}/build"}
 CLEAN_BUILD=${CLEAN_BUILD:=0}
