@@ -23,10 +23,14 @@ if [ -z "$AMDGPU_TARGETS" ]; then
   echo "Using default amdgpu_targets: $AMDGPU_TARGETS"
 fi
 
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+
 function do_cmake_build() {
   local source_dir="$1"
   local extra_flags="$2"
   cmake -G Ninja \
+    -DCMAKE_POLICY_VERSION=3.27 \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
     -DCMAKE_INSTALL_PREFIX="$CMAKE_PREFIX_PATH" \
     -DCMAKE_MODULE_PATH="$CMAKE_PREFIX_PATH" \
@@ -45,6 +49,28 @@ function do_cmake_build() {
   ninja install
 }
 
+THIRD_PARTY_ORIG_LDFLAGS=${LDFLAGS:-}
+
+# Ensure a static archive is available by symlinking the shared object if
+# the .a is missing in the current conda prefix.
+function ensure_static_symlink() {
+  local base="$1"
+  local so="${CONDA_PREFIX}/lib/lib${base}.so"
+  local ar="${CONDA_PREFIX}/lib/lib${base}.a"
+  if [[ ! -f "$ar" && -f "$so" ]]; then
+    ln -sf "lib${base}.so" "$ar"
+  fi
+}
+
+function set_third_party_ldflags() {
+  local base="-L${CONDA_PREFIX}/lib -Wl,--allow-shlib-undefined"
+  if [[ -n "${THIRD_PARTY_ORIG_LDFLAGS:-}" ]]; then
+    export LDFLAGS="${base} ${THIRD_PARTY_ORIG_LDFLAGS}"
+  else
+    export LDFLAGS="${base}"
+  fi
+}
+
 function clean_third_party {
   local library_name="$1"
   if [ "$CLEAN_THIRD_PARTY" == 1 ]; then
@@ -58,6 +84,11 @@ function build_fb_oss_library() {
   local repo_tag="$2"
   local library_name="$3"
   local extra_flags="$4"
+  local stamp_file="${library_name}/.forge_built"
+  if [[ -f "${stamp_file}" && "${FORCE_THIRD_PARTY_REBUILD:-0}" != "1" ]]; then
+    echo "[third-party] ${library_name} already built; skipping"
+    return
+  fi
 
   clean_third_party "$library_name"
 
@@ -76,12 +107,14 @@ function build_fb_oss_library() {
     source_dir="../${library_name}/cmake_unofficial"
   fi
 
-  export LDFLAGS="-Wl,--allow-shlib-undefined"
+  set_third_party_ldflags
+  chmod -R +w build-output 2>/dev/null || true
   rm -rf build-output
   mkdir -p build-output
   pushd build-output
   do_cmake_build "$source_dir" "$extra_flags"
   popd
+  touch "${stamp_file}"
 }
 
 function build_automake_library() {
@@ -89,6 +122,11 @@ function build_automake_library() {
   local repo_tag="$2"
   local library_name="$3"
   local extra_flags="$4"
+  local stamp_file="${library_name}/.forge_built"
+  if [[ -f "${stamp_file}" && "${FORCE_THIRD_PARTY_REBUILD:-0}" != "1" ]]; then
+    echo "[third-party] ${library_name} already built; skipping"
+    return
+  fi
 
   clean_third_party "$library_name"
 
@@ -96,13 +134,14 @@ function build_automake_library() {
     git clone --depth 1 -b "$repo_tag" "$repo_url" "$library_name"
   fi
 
-  export LDFLAGS="-Wl,--allow-shlib-undefined"
+  set_third_party_ldflags
   pushd "$library_name"
   ./configure --prefix="$CMAKE_PREFIX_PATH" --disable-pie
 
   make
   make install
   popd
+  touch "${stamp_file}"
 }
 
 function build_boost() {
@@ -110,6 +149,11 @@ function build_boost() {
   local repo_tag="boost-1.82.0"
   local library_name="boost"
   local extra_flags=""
+  local stamp_file="${library_name}/.forge_built"
+  if [[ -f "${stamp_file}" && "${FORCE_THIRD_PARTY_REBUILD:-0}" != "1" ]]; then
+    echo "[third-party] ${library_name} already built; skipping"
+    return
+  fi
 
   # clean up existing boost
   clean_third_party "$library_name"
@@ -118,11 +162,12 @@ function build_boost() {
     git clone -j 10 --recurse-submodules --depth 1 -b "$repo_tag" "$repo_url" "$library_name"
   fi
 
-  export LDFLAGS="-Wl,--allow-shlib-undefined"
+  set_third_party_ldflags
   pushd "$library_name"
   ./bootstrap.sh --prefix="$CMAKE_PREFIX_PATH" --libdir="$CMAKE_PREFIX_PATH/$LIB_SUFFIX" --without-libraries=python
   ./b2 -q cxxflags=-fPIC cflags=-fPIC install
   popd
+  touch "${stamp_file}"
 }
 
 function build_third_party {
@@ -132,8 +177,9 @@ function build_third_party {
   fi
   local third_party_tag="v2025.09.01.00"
 
-  mkdir -p /tmp/third-party
-  pushd /tmp/third-party
+  local third_party_root="${THIRD_PARTY_ROOT:-${BASE_DIR}/.third-party-cache}"
+  mkdir -p "${third_party_root}"
+  pushd "${third_party_root}"
   # TODO: Move other dependencies into system libs
   build_fb_oss_library "https://github.com/fmtlib/fmt.git" "11.2.0" fmt "-DFMT_INSTALL=ON -DFMT_TEST=OFF -DFMT_DOC=OFF"
   build_fb_oss_library "https://github.com/fmtlib/fmt.git" "11.2.0" fmt "-DFMT_INSTALL=ON -DFMT_TEST=OFF -DFMT_DOC=OFF -DBUILD_SHARED_LIBS=ON"
@@ -172,7 +218,7 @@ function build_third_party {
       fmt
       glog==0.4.0
     )
-    conda install "${DEPS[@]}" --yes
+    conda install "${DEPS[@]}" --yes || true
     build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly
   fi
   build_fb_oss_library "https://github.com/facebookincubator/fizz.git" "$third_party_tag" fizz "-DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF"
@@ -195,6 +241,15 @@ fi
 set -e
 
 export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
+export LIBRARY_PATH="${CONDA_PREFIX}/lib:${LIBRARY_PATH:-}"
+export USE_SYSTEM_LIBS=${USE_SYSTEM_LIBS:-1}
+# Some dependencies are only present as shared libs in the conda env; create
+# static aliases so the linker finds the expected .a names.
+ensure_static_symlink crypto
+ensure_static_symlink ssl
+ensure_static_symlink event
+ensure_static_symlink sodium
+ensure_static_symlink boost_context
 
 BUILDDIR=${BUILDDIR:="${PWD}/build"}
 CLEAN_BUILD=${CLEAN_BUILD:=0}

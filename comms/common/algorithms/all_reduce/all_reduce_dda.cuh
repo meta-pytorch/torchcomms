@@ -1,8 +1,18 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#include <hip/hip_runtime.h>
+#include <hip/hip_bfloat16.h>
+#include <hip/hip_fp16.h>
+#include <hip/amd_detail/amd_hip_bf16.h>
+// Provide CUDA-compatible bfloat16 aliases when building on HIP/ROCm.
+using __nv_bfloat16 = __hip_bfloat16;
+using __nv_bfloat162 = __hip_bfloat162;
+#else
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#endif
 #include "comms/common/IpcGpuBarrier.cuh"
 #include "comms/common/algorithms/CollCommon.cuh"
 
