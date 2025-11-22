@@ -10,18 +10,12 @@ namespace meta::comms {
 
 template <typename T>
 concept SupportedTypes =
-    (std::same_as<T, float> || std::same_as<T, half> ||
-     std::same_as<T, __nv_bfloat16>);
+    (std::same_as<T, half> || std::same_as<T, __nv_bfloat16>);
 
 template <SupportedTypes T>
 static inline __device__ uint32_t
 vecElementAdd(const uint32_t& a, const uint32_t& b) {
-  if constexpr (std::is_same<T, float>::value) {
-    const float* x = reinterpret_cast<const float*>(&a);
-    const float* y = reinterpret_cast<const float*>(&b);
-    float z = x[0] + y[0];
-    return (reinterpret_cast<uint32_t*>(&z))[0];
-  } else if constexpr (std::is_same<T, half>::value) {
+  if constexpr (std::is_same<T, half>::value) {
     const __half* x = reinterpret_cast<const __half*>(&a);
     const __half* y = reinterpret_cast<const __half*>(&b);
     __half2 p = __halves2half2(x[0], x[1]);

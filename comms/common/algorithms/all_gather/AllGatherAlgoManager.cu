@@ -44,9 +44,8 @@ std::unique_ptr<AlgoAllGather> AllGatherAlgoManager::getAllGatherAlgo(
     return nullptr;
   }
 
-  if (datatype != commBfloat16 && datatype != commFloat16 &&
-      datatype != commFloat) {
-    // we currently only support bf16, half, float
+  if (datatype != commBfloat16 && datatype != commFloat16) {
+    // we currently only support bf16 and half
     XLOG(DBG)
         << "Not using custom all gather algo because cudaDataType_t datatype "
         << static_cast<int>(datatype) << " is not supported";

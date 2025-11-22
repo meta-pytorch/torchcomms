@@ -178,7 +178,7 @@ TYPED_TEST_P(AllGatherDdaTest, ddaAllGatherIpcTest) {
 }
 
 REGISTER_TYPED_TEST_SUITE_P(AllGatherDdaTest, ddaAllGatherIpcTest);
-using TypesToTest = ::testing::Types<float, half, __nv_bfloat16>;
+using TypesToTest = ::testing::Types<half, __nv_bfloat16>;
 INSTANTIATE_TYPED_TEST_SUITE_P(
     AllGatherDdaTests,
     AllGatherDdaTest,
