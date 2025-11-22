@@ -107,6 +107,4 @@ AlgoFactory::AlgoFactory(
   }
 }
 
-AlgoFactory::~AlgoFactory() {}
-
 } // namespace meta::comms
