@@ -120,23 +120,6 @@ ncclResult_t ncclAllGather_impl(const void* sendbuff, void* recvbuff, size_t sen
     }
   }
 
-#ifdef BUILD_META_INTERNAL
-  if (comm->algoFactory) {
-    // try to get meta customized algo
-    auto algo = comm->algoFactory->getAllGatherAlgo(
-        sendbuff, recvbuff, sendcount, meta::comms::ncclToMetaComm(datatype), stream);
-    if (algo) {
-      try {
-        algo->allGather();
-      } catch (const std::exception& e) {
-        WARN("failed to launch custom all gather: %s", e.what());
-        return ncclInternalError;
-      }
-      return ncclSuccess;
-    }
-  }
-#endif
-
   NVTX3_FUNC_WITH_PARAMS(AllGather, NcclNvtxParamsAllGather,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, sendcount * ncclTypeSize(datatype), datatype));
 

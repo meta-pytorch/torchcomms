@@ -13,11 +13,9 @@ namespace {
 constexpr int maxBlocks = 128;
 constexpr int ddaSendbufSizeBytes = 4096;
 // always use a threshold smaller than the ddaSendbufSizeBytes
-constexpr int ddaThresholdBytes = ddaSendbufSizeBytes / 4;
 constexpr int ddaFlatThresholdBytes = ddaSendbufSizeBytes / 4;
 constexpr int ddaTreeThresholdBytes = ddaSendbufSizeBytes / 2;
 constexpr commDataType_t dataType = commBfloat16;
-constexpr int maxCnt = ddaThresholdBytes / sizeof(__nv_bfloat16);
 constexpr int maxOneshotCnt = ddaFlatThresholdBytes / sizeof(__nv_bfloat16);
 constexpr int maxTwoshotCnt = ddaTreeThresholdBytes / sizeof(__nv_bfloat16);
 } // namespace
@@ -45,11 +43,7 @@ class AlgoFactoryTest : public RcclxBaseTestFixture {
             .enableDda = true,
             .ddaSendbufSizeBytes = ddaSendbufSizeBytes,
             .ddaFlatMaxThresholdBytes = ddaFlatThresholdBytes,
-            .ddaTreeMaxThresholdBytes = ddaTreeThresholdBytes},
-        AlgoFactory::AllGatherOptions{
-            .enableDda = true,
-            .ddaSendbufSizeBytes = ddaSendbufSizeBytes,
-            .ddaMaxThresholdBytes = ddaThresholdBytes});
+            .ddaTreeMaxThresholdBytes = ddaTreeThresholdBytes});
   }
 
  protected:
@@ -185,40 +179,6 @@ TEST_F(AlgoFactoryTest, allReduceFlatDdaStressTest) {
 TEST_F(AlgoFactoryTest, allReduceTreeDdaStressTest) {
   CudaStream stream;
   stressTest(maxTwoshotCnt, stream.get());
-}
-
-TEST_F(AlgoFactoryTest, allGatherAlgoSelection) {
-  CudaStream stream;
-  // if msg size is within the dda threshold, we will use DDA
-  EXPECT_NE(
-      factory->getAllGatherAlgo(
-          sendbuf.get(), recvbuf.get(), maxOneshotCnt, dataType, stream.get()),
-      nullptr);
-  // if msg size exceeds the dda threshold, we won't use DDA
-  EXPECT_EQ(
-      factory->getAllGatherAlgo(
-          sendbuf.get(), recvbuf.get(), maxCnt + 16, dataType, stream.get()),
-      nullptr);
-  // if sendbuf is not aligned with 16-byte, we won't do DDA
-  EXPECT_EQ(
-      factory->getAllGatherAlgo(
-          sendbuf.get(), recvbuf.get(), maxCnt - 1, dataType, stream.get()),
-      nullptr);
-  EXPECT_EQ(
-      factory->getAllGatherAlgo(
-          sendbuf.get(), recvbuf.get(), maxCnt - 1, dataType, stream.get()),
-      nullptr);
-  // DDA currently doesn't support int type
-  // DDA only supports SUM op
-  EXPECT_EQ(
-      factory->getAllGatherAlgo(
-          sendbuf.get(), recvbuf.get(), maxCnt, commInt8, stream.get()),
-      nullptr);
-
-  // validate dda algo selection
-  auto algo = factory->getAllGatherAlgo(
-      sendbuf.get(), recvbuf.get(), maxCnt, dataType, stream.get());
-  EXPECT_NE(dynamic_cast<AlgoAllGatherDdaIpc*>(algo.get()), nullptr);
 }
 
 int main(int argc, char* argv[]) {
