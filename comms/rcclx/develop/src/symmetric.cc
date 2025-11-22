@@ -1,3 +1,6 @@
+// Modification Copyright (c) Advanced Micro Devices, Inc., or its affiliates.
+// SPDX-License-Identifier: MIT
+
 #include "symmetric.h"
 #include "comm.h"
 #include "device.h"
@@ -294,3 +297,9 @@ const char* ncclSymKernelIdToString(int kernelId) {
   }
   return kernelName[kernelId];
 }
+
+#ifndef GENERATE_SYM_KERNELS
+void* ncclSymGetKernelPtr(ncclSymKernelId kernelId, int/*ncclDevRedOp_t*/ red, ncclDataType_t ty) {
+  return nullptr;
+}
+#endif

@@ -130,7 +130,7 @@ typedef ncclResult_t (*ncclCommDestroy_fn_t)(ncclComm_t comm);
 typedef ncclResult_t (*ncclCommAbort_fn_t)(ncclComm_t comm);
 
 typedef ncclResult_t (*ncclCommShrink_fn_t)(ncclComm_t comm, int* excludeRanksList,
-                                            int excludeRanksCount, ncclComm_t *newcomm,
+                                            int excludeRanksCount, ncclComm_t *newcomm, 
                                             ncclConfig_t* config, int shrinkFlags);
 
 typedef ncclResult_t (*ncclCommSplit_fn_t)(ncclComm_t comm, int color, int key,
