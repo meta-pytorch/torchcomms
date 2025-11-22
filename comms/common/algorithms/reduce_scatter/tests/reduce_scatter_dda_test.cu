@@ -164,14 +164,6 @@ TYPED_TEST_P(ReduceScatterDdaTest, ddaReduceScatterIpcTest) {
 
   DeviceBuffer recvbuff(sizeof(ElementType) * cnt);
   ElementType* recvbuff_d = reinterpret_cast<ElementType*>(recvbuff.get());
-
-  CUDA_CHECK(cudaMemcpy(
-      reinterpret_cast<ElementType**>(
-          this->allRankIpcBufs->get())[this->globalRank],
-      sendbuf_d,
-      sizeof(ElementType) * NUMRANKS * cnt,
-      cudaMemcpyDefault));
-
   ddaReduceScatterIpc<ElementType, NUMRANKS, false /*hasAcc*/>
       <<<nBlocks, nThreads>>>(
           (ElementType**)this->allRankIpcBufs->get(),

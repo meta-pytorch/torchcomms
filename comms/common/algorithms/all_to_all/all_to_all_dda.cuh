@@ -26,22 +26,33 @@ __launch_bounds__(512)
   // We assume that count % countPerThread == 0. This assumption is enforced
   // before kernel launch
   // TODO: we should be able to deal with left over as well
-  const size_t countPerRank = count;
   constexpr auto countPerThread = sizeof(uint4) / sizeof(T);
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-
-  const auto idxStart = gtIdx * countPerThread;
-  const auto idxEnd = countPerRank;
   const auto idxStride = gridDim.x * blockDim.x * countPerThread;
+  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
+  const auto idxStart = gtIdx * countPerThread;
+  const size_t countPerRank = count;
 
-  for (size_t idx = idxStart; idx < idxEnd; idx += idxStride) {
+  for (size_t idx = idxStart; idx < countPerRank; idx += idxStride) {
 #pragma unroll NRANKS
     for (int r = 0; r < NRANKS; ++r) {
-      int srcRank = r;
-      int srcIdx = idx + selfRank * idxEnd;
-      int destIdx = idx + r * idxEnd;
-      *reinterpret_cast<uint4*>(&recvbuff[destIdx]) =
-          reinterpret_cast<const uint4*>(&ipcbuffs[srcRank][srcIdx])[0];
+      int sendIdx = idx + r * countPerRank;
+      int destRank = r;
+      int destIdx = idx + selfRank * countPerRank;
+      *reinterpret_cast<uint4*>(&ipcbuffs[destRank][destIdx]) =
+          reinterpret_cast<const uint4*>(&sendbuff[sendIdx])[0];
+    }
+  }
+
+  barrier.syncOnSameBlockIdx<
+      true /* hasPreviousMemAccess */,
+      true /* hasSubsequentMemAccess */>();
+
+  for (size_t idx = idxStart; idx < countPerRank; idx += idxStride) {
+#pragma unroll NRANKS
+    for (int r = 0; r < NRANKS; ++r) {
+      int recvIdx = idx + r * countPerRank;
+      *reinterpret_cast<uint4*>(&recvbuff[recvIdx]) =
+          reinterpret_cast<const uint4*>(&ipcbuffs[selfRank][recvIdx])[0];
     }
   }
 
