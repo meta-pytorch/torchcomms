@@ -195,13 +195,12 @@ typedef enum { LOCAL, REMOTE } DevSyncLoc;
 template <DevSyncLoc Loc>
 __device__ __forceinline__ CtranAlgoDeviceSync* devSyncGetLoc(
     int peerLocalRank) {
-  int localRank = statex->localRank();
   if (Loc == DevSyncLoc::LOCAL) {
     // get local sync shared with the REMOTE rank
-    return shmDevState.allPeerSyncMap[localRank][peerLocalRank];
+    return shmDevState.localSyncsMap[peerLocalRank];
   } else {
     // get remote sync shared with the local rank
-    return shmDevState.allPeerSyncMap[peerLocalRank][localRank];
+    return shmDevState.remoteSyncsMap[peerLocalRank];
   }
 }
 
@@ -211,14 +210,12 @@ template <DevSyncLoc Loc>
 __device__ __forceinline__ CtranAlgoDeviceSync* devSyncGetLoc(
     int peerLocalRank,
     CtranAlgoDeviceState* devState) {
-  const auto& statex = devState->statex;
-  const auto localRank = statex.localRank();
   if (Loc == DevSyncLoc::LOCAL) {
     // get local sync shared with the REMOTE rank
-    return devState->allPeerSyncMap[localRank][peerLocalRank];
+    return devState->localSyncsMap[peerLocalRank];
   } else {
     // get remote sync shared with the local rank
-    return devState->allPeerSyncMap[peerLocalRank][localRank];
+    return devState->remoteSyncsMap[peerLocalRank];
   }
 }
 

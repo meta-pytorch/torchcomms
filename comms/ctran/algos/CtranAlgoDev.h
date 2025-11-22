@@ -20,7 +20,7 @@
 #define CTRAN_MAX_NVL_PEERS (32)
 #else
 #ifndef CTRAN_MAX_NVL_PEERS
-#define CTRAN_MAX_NVL_PEERS (32)
+#define CTRAN_MAX_NVL_PEERS (72)
 #endif
 #endif
 
@@ -49,8 +49,14 @@ struct alignas(16) CtranAlgoDeviceSync {
 struct alignas(16) CtranAlgoDeviceState {
   // Shared buffers for intra-node inter-process communication.
   // Both sync and buf are pointers to device memory.
-  CtranAlgoDeviceSync* allPeerSyncMap[CTRAN_MAX_NVL_PEERS][CTRAN_MAX_NVL_PEERS];
-  void* allPeerBufsMap[CTRAN_MAX_NVL_PEERS][CTRAN_MAX_NVL_PEERS];
+  // indexed by rank ID
+  CtranAlgoDeviceSync* remoteSyncsMap[CTRAN_MAX_NVL_PEERS];
+  CtranAlgoDeviceSync* localSyncsMap[CTRAN_MAX_NVL_PEERS];
+
+  // indexed by rank ID
+  void* remoteStagingBufsMap[CTRAN_MAX_NVL_PEERS];
+  void* localStagingBufsMap[CTRAN_MAX_NVL_PEERS];
+
   void* peerBcastBufsMap[CTRAN_MAX_NVL_PEERS];
   void* peerAllToAllvDynamicBufsMap[CTRAN_MAX_NVL_PEERS];
   // FIXME: this should become per-block resource.

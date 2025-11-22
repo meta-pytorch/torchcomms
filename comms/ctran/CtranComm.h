@@ -19,7 +19,7 @@
 using meta::comms::CommBackend;
 struct ctranConfig {
   int blocking{-1};
-  const char* commDesc{nullptr};
+  std::string commDesc;
   const char* ncclAllGatherAlgo{nullptr};
   std::vector<enum CommBackend> backends = {};
 

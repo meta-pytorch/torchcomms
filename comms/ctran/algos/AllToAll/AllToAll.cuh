@@ -29,7 +29,7 @@ sendImpl(const T* sendbuff, size_t count, int groupIdx, int ngroups) {
     size_t displ = count * statex->localRankToRank(sendPeer);
 
     // get shared buffer
-    void* buf = shmDevState.allPeerBufsMap[sendPeer][localRank];
+    void* buf = shmDevState.remoteStagingBufsMap[sendPeer];
     const T* sendPtr = sendbuff + displ;
 
     if (canCopy16(sendPtr, count)) {
@@ -76,7 +76,7 @@ recvImpl(T* recvbuff, size_t count, int groupIdx, int ngroups) {
     size_t displ = count * statex->localRankToRank(recvPeer);
 
     // get shared buffer
-    void* buf = shmDevState.allPeerBufsMap[localRank][recvPeer];
+    void* buf = shmDevState.localStagingBufsMap[recvPeer];
     T* recvPtr = recvbuff + displ;
 
     if (canCopy16(recvPtr, count)) {

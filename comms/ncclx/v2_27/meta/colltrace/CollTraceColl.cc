@@ -107,7 +107,7 @@ ScubaEntry CollTraceColl::toScubaEntry() const {
 
 CollSignature CollTraceColl::toCollSignature() const {
   uint64_t pgid = LOGGER_PG_ID_DEFAULT;
-  std::string commDesc(comm->config_.commDesc);
+  const auto& commDesc = comm->config_.commDesc;
   if (commDesc != "undefined") {
     size_t pos = commDesc.find(':');
     if (pos != std::string::npos) {
@@ -117,7 +117,7 @@ CollSignature CollTraceColl::toCollSignature() const {
         WARN_FIRST_N(
             kDebugRepeatLogCount,
             "CollTrace: Invalid commDesc: %s",
-            comm->config_.commDesc);
+            comm->config_.commDesc.c_str());
       }
     }
   }

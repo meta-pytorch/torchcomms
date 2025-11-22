@@ -46,6 +46,76 @@ class CtranBaseTest {
         excludedBackends.end();
   }
   size_t pageSize_{0};
+  std::unordered_set<void*> devArgs_;
+
+ protected:
+  // allocate an argument from device memory without assigning any value
+  void allocDevArg(const size_t nbytes, void*& ptr);
+
+  // allocate an argument from device memory and assign the value specified by
+  // argVec
+  template <typename T>
+  void allocDevArg(const std::vector<T>& argVec, T*& ptr) {
+    void* ptr_ = nullptr;
+    size_t nbytes = sizeof(T) * argVec.size();
+    allocDevArg(nbytes, ptr_);
+    CUDACHECK_ASSERT(cudaMemcpy(
+        ptr_, argVec.data(), argVec.size() * sizeof(T), cudaMemcpyDefault));
+    ptr = reinterpret_cast<T*>(ptr_);
+  }
+
+  // release all device arguments allocated by allocDevArg
+  void releaseDevArgs();
+  // release a single device argument allocated by allocDevArg with the pointer
+  void releaseDevArg(void* ptr);
+
+  // asynchrounously assign value to a device argument specified by argVec
+  template <typename T>
+  void assignDevArg(T* buf, const std::vector<T>& vals, cudaStream_t stream) {
+    CUDACHECK_ASSERT(cudaMemcpyAsync(
+        buf, vals.data(), vals.size() * sizeof(T), cudaMemcpyDefault, stream));
+  }
+
+  // asynchronously assign value to a device argument specified by single value
+  template <typename T>
+  void assignDevArg(T* buf, const int count, const T val, cudaStream_t stream) {
+    std::vector<T> expVals(count, val);
+    return assignDevArg(buf, expVals, stream);
+  }
+
+  // check the value of a device argument specified by argVec; if any error is
+  // detected, returns maxNumErrs errors at most.
+  template <typename T>
+  void checkDevArg(
+      const T* buf,
+      const std::vector<T> expVals,
+      std::vector<std::string>& errs,
+      const int maxNumErrs = 10) {
+    const auto count = expVals.size();
+    std::vector<T> obsVals(count, -1);
+    CUDACHECK_ASSERT(
+        cudaMemcpy(obsVals.data(), buf, count * sizeof(T), cudaMemcpyDefault));
+    errs.reserve(maxNumErrs);
+    for (auto i = 0; i < count; ++i) {
+      if (obsVals[i] != expVals[i] && errs.size() < maxNumErrs) {
+        errs.push_back(
+            fmt::format(
+                "observed[{}] = {}, expected = {}", i, obsVals[i], expVals[i]));
+      }
+    }
+  }
+
+  // wrapper of checkDevArg with single value
+  template <typename T>
+  void checkDevArg(
+      const T* buf,
+      const int count,
+      const T expVal,
+      std::vector<std::string>& errs,
+      const int maxNumErrs = 10) {
+    std::vector<T> obsVals(count, expVal);
+    return checkDevArg(buf, obsVals, errs, maxNumErrs);
+  }
 
  public:
   CtranBaseTest() {

@@ -14,7 +14,6 @@ __device__ __forceinline__ void sendImpl(
     KernelElem* sendElemsList,
     int groupIdx,
     int ngroups) {
-  int localRank = statex->localRank();
   size_t bufSize = shmDevState.bufSize;
 
   // Host algorithm already schedules send and receives with different peer to
@@ -46,7 +45,7 @@ __device__ __forceinline__ void sendImpl(
     }
 
     // get shared buffer
-    void* buf = shmDevState.allPeerBufsMap[sendPeer][localRank];
+    void* buf = shmDevState.remoteStagingBufsMap[sendPeer];
     const T* sendPtr = sendbuff + displ;
 
     bool canCopy16Byte = canCopy16(sendPtr, count);
@@ -76,7 +75,6 @@ __device__ __forceinline__ void sendImpl(
 template <typename T>
 __device__ __forceinline__ void
 recvImpl(T* recvbuff, KernelElem* recvElemsList, int groupIdx, int ngroups) {
-  int localRank = statex->localRank();
   size_t bufSize = shmDevState.bufSize;
 
   // Host algorithm already schedules send and receives with different peer to
@@ -108,7 +106,7 @@ recvImpl(T* recvbuff, KernelElem* recvElemsList, int groupIdx, int ngroups) {
     }
 
     // get shared buffer
-    void* buf = shmDevState.allPeerBufsMap[localRank][recvPeer];
+    void* buf = shmDevState.localStagingBufsMap[recvPeer];
     T* recvPtr = recvbuff + displ;
 
     if (canCopy16(recvPtr, count)) {
