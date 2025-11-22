@@ -41,13 +41,6 @@ RCCL_PARAM(
     "DDA_REDUCE_SCATTER_MAX_BYTES",
     8 * 1024 * 1024);
 
-RCCL_PARAM(EnableDdaAllToAll, "ENABLE_DDA_ALL_TO_ALL", 0);
-RCCL_PARAM(
-    DdaAllToAllSendbufBytes,
-    "DDA_ALL_TO_ALL_SENDBUF_BYTES",
-    8 * 1024 * 1024);
-RCCL_PARAM(DdaAllToAllMaxBytes, "DDA_ALL_TO_ALL_MAX_BYTES", 2 * 1024 * 1024);
-
 std::unique_ptr<meta::comms::AlgoFactory> initAlgoFactory(ncclComm_t comm) {
   return std::make_unique<::meta::comms::AlgoFactory>(
       std::make_shared<::rcclx::BaselineBootstrap>(comm),
@@ -73,11 +66,5 @@ std::unique_ptr<meta::comms::AlgoFactory> initAlgoFactory(ncclComm_t comm) {
           .ddaSendbufSizeBytes =
               static_cast<int>(rcclParamDdaReduceScatterSendbufBytes()),
           .ddaMaxThresholdBytes =
-              static_cast<int>(rcclParamDdaReduceScatterMaxBytes())},
-      ::meta::comms::AlgoFactory::AllToAllOptions{
-          .enableDda = static_cast<bool>(rcclParamEnableDdaAllToAll()),
-          .ddaSendbufSizeBytes =
-              static_cast<int>(rcclParamDdaAllToAllSendbufBytes()),
-          .ddaMaxThresholdBytes =
-              static_cast<int>(rcclParamDdaAllToAllMaxBytes())});
+              static_cast<int>(rcclParamDdaReduceScatterMaxBytes())});
 }

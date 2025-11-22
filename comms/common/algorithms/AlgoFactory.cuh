@@ -4,7 +4,6 @@
 
 #include "comms/common/algorithms/all_gather/AllGatherAlgoManager.h"
 #include "comms/common/algorithms/all_reduce/AllReduceAlgoManager.h"
-#include "comms/common/algorithms/all_to_all/AllToAllAlgoManager.h"
 #include "comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h"
 #include "comms/ctran/interfaces/IBootstrap.h" // @manual
 #include "comms/utils/commSpecs.h"
@@ -15,7 +14,6 @@ namespace meta::comms {
 class AlgoManagerAllReduce;
 class AlgoManagerAllGather;
 class AlgoManagerReduceScatter;
-class AlgoManagerAllToAll;
 
 /**
  * per communicator per rank Algorithm factory that
@@ -48,13 +46,6 @@ class AlgoFactory {
     // DDA will be used
     int ddaMaxThresholdBytes{0};
   };
-  struct AllToAllOptions {
-    bool enableDda{false};
-    int ddaSendbufSizeBytes{0};
-    // If msg size is not larger than the threshold,
-    // DDA will be used
-    int ddaMaxThresholdBytes{0};
-  };
   AlgoFactory(
       std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
       int nRanks,
@@ -62,8 +53,7 @@ class AlgoFactory {
       int maxBlocks,
       const AllReduceOptions& allReduceOpts,
       const AllGatherOptions& allGatherOpts,
-      const ReduceScatterOptions& reduceScatterOpts,
-      const AllToAllOptions& allToAllOpts);
+      const ReduceScatterOptions& reduceScatterOpts);
 
   std::unique_ptr<AlgoAllReduce> getAllReduceAlgo(
       const void* sendbuff,
@@ -107,24 +97,9 @@ class AlgoFactory {
         sendbuff, recvbuff, count, datatype, stream, acc);
   }
 
-  std::unique_ptr<AlgoAllToAll> getAllToAllAlgo(
-      const void* sendbuff,
-      void* recvbuff,
-      size_t count,
-      commDataType_t datatype,
-      cudaStream_t stream,
-      const void* acc = nullptr) {
-    if (allToAllMgr_ == nullptr) {
-      return nullptr;
-    }
-    return allToAllMgr_->getAllToAllAlgo(
-        sendbuff, recvbuff, count, datatype, stream, acc);
-  }
-
  private:
   std::unique_ptr<AllReduceAlgoManager> allReduceMgr_{nullptr};
   std::unique_ptr<AllGatherAlgoManager> allGatherMgr_{nullptr};
   std::unique_ptr<ReduceScatterAlgoManager> reduceScatterMgr_{nullptr};
-  std::unique_ptr<AllToAllAlgoManager> allToAllMgr_{nullptr};
 };
 } // namespace meta::comms

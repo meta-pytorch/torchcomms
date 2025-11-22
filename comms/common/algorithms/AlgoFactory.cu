@@ -14,12 +14,11 @@ AlgoFactory::AlgoFactory(
     int maxBlocks,
     const AllReduceOptions& allReduceOpts,
     const AllGatherOptions& allGatherOpts,
-    const ReduceScatterOptions& reduceScatterOpts,
-    const AllToAllOptions& allToAllOpts) {
+    const ReduceScatterOptions& reduceScatterOpts) {
   if (allReduceOpts.enableDda || allGatherOpts.enableDda ||
-      reduceScatterOpts.enableDda || allToAllOpts.enableDda) {
+      reduceScatterOpts.enableDda) {
     XLOG(DBG)
-        << "Initializing AllReduceAlgoManager / AllGatherAlgoManager / ReduceScatterAlgoManager / AllToAllAlgoManager";
+        << "Initializing AllReduceAlgoManager / AllGatherAlgoManager / ReduceScatterAlgoManager";
 
     for (int i = 0; i < nRanks; ++i) {
       if (i == selfRank) {
@@ -64,17 +63,6 @@ AlgoFactory::AlgoFactory(
         reduceScatterOpts.ddaSendbufSizeBytes,
         reduceScatterOpts.ddaMaxThresholdBytes);
     XLOG(DBG) << "Successfully initialized ReduceScatterAlgoManager";
-  }
-
-  if (allToAllOpts.enableDda) {
-    allToAllMgr_ = std::make_unique<AllToAllAlgoManager>(
-        bootstrap,
-        nRanks,
-        selfRank,
-        maxBlocks,
-        allToAllOpts.ddaSendbufSizeBytes,
-        allToAllOpts.ddaMaxThresholdBytes);
-    XLOG(DBG) << "Successfully initialized AllToAllAlgoManager";
   }
 }
 
