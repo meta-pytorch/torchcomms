@@ -20,7 +20,7 @@
 #define CTRAN_MAX_NVL_PEERS (32)
 #else
 #ifndef CTRAN_MAX_NVL_PEERS
-#define CTRAN_MAX_NVL_PEERS (32)
+#define CTRAN_MAX_NVL_PEERS (72)
 #endif
 #endif
 
