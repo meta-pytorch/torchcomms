@@ -33,7 +33,7 @@ __device__ __forceinline__ void sendData(
     int localRank,
     int groupIdx,
     int ngroups) {
-  void* buf = shmDevState.allPeerBufsMap[sendPeer][localRank];
+  void* buf = shmDevState.remoteStagingBufsMap[sendPeer];
   size_t bufSize = shmDevState.bufSize;
 
   if (canCopy16(sendPtr, count)) {
@@ -66,7 +66,7 @@ __device__ __forceinline__ void recvData(
     int groupIdx,
     int ngroups) {
   size_t bufSize = shmDevState.bufSize;
-  const void* buf = shmDevState.allPeerBufsMap[localRank][recvPeer];
+  const void* buf = shmDevState.localStagingBufsMap[recvPeer];
 
   if (canCopy16(recvPtr, count)) {
     ctranKernMultiStagedRecv<uint4>(

@@ -275,14 +275,19 @@ TEST_F(CtranTest, AlgoDeviceState) {
   EXPECT_EQ(statexDev.pid(), getpid());
 
   for (int i = 0; i < nLocalRanks; i++) {
+    if (i != localRank) {
+      EXPECT_NE(devState.remoteStagingBufsMap[i], nullptr);
+      EXPECT_NE(devState.localStagingBufsMap[i], nullptr);
+    } else {
+      EXPECT_EQ(devState.remoteStagingBufsMap[i], nullptr);
+      EXPECT_EQ(devState.localStagingBufsMap[i], nullptr);
+    }
     for (int j = 0; j < nLocalRanks; j++) {
       if (i == j) {
         // Expect null for owner itself
-        EXPECT_EQ(devState.allPeerBufsMap[i][j], nullptr);
         EXPECT_EQ(devState.allPeerSyncMap[i][j], nullptr);
       } else {
         // Expect IPC buffer is allocated and state is reset for all peers
-        EXPECT_NE(devState.allPeerBufsMap[i][j], nullptr);
         EXPECT_NE(devState.allPeerSyncMap[i][j], nullptr);
 
         // Copy buffer state to host and check values are reset to default

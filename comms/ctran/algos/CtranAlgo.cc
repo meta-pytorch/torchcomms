@@ -196,7 +196,8 @@ commResult_t CtranAlgo::initKernelResources() {
   // See description of bufState and buf memory locations in SharedResource.
   if (this->sharedRes_) {
     auto& allPeerSyncMap = tmpDevState.allPeerSyncMap;
-    auto& allPeerBufsMap = tmpDevState.allPeerBufsMap;
+    auto& remoteStagingBufsMap = tmpDevState.remoteStagingBufsMap;
+    auto& localStagingBufsMap = tmpDevState.localStagingBufsMap;
     auto& peerBcastBufsMap = tmpDevState.peerBcastBufsMap;
     auto& peerAllToAllvDynamicBufsMap = tmpDevState.peerAllToAllvDynamicBufsMap;
     auto& alltoallvDynamicSendbuffsMap =
@@ -210,7 +211,10 @@ commResult_t CtranAlgo::initKernelResources() {
         // Skip owner itself
         if (i == owner) {
           allPeerSyncMap[owner][i] = nullptr;
-          allPeerBufsMap[owner][i] = nullptr;
+          if (i == localRank) {
+            localStagingBufsMap[i] = nullptr;
+            remoteStagingBufsMap[i] = nullptr;
+          }
           continue;
         }
 
@@ -220,8 +224,14 @@ commResult_t CtranAlgo::initKernelResources() {
 
         allPeerSyncMap[owner][i] =
             reinterpret_cast<CtranAlgoDeviceSync*>(statePtr_d);
-        allPeerBufsMap[owner][i] =
+        void* buf =
             (char*)bufBase_d + pos * NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+        if (owner == localRank) {
+          localStagingBufsMap[i] = buf;
+        }
+        if (i == localRank) {
+          remoteStagingBufsMap[owner] = buf;
+        }
       }
 
       // Next chunk is for bcastBuf
