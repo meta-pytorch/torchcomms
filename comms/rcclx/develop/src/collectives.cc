@@ -521,23 +521,6 @@ ncclResult_t ncclReduceScatter_impl(const void* sendbuff, void* recvbuff, size_t
     }
   }
 
-#ifdef BUILD_META_INTERNAL
-  if (comm->algoFactory && op == ncclSum) {
-    // try to get meta customized algo
-    auto algo = comm->algoFactory->getReduceScatterAlgo(
-        sendbuff, recvbuff, recvcount, meta::comms::ncclToMetaComm(datatype), stream);
-    if (algo) {
-      try {
-        algo->reduceScatter();
-      } catch (const std::exception& e) {
-        WARN("failed to launch custom reduce scatter: %s", e.what());
-        return ncclInternalError;
-      }
-      return ncclSuccess;
-    }
-  }
-#endif
-
   NVTX3_FUNC_WITH_PARAMS(ReduceScatter, NcclNvtxParamsReduceScatter,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, recvcount * ncclTypeSize(datatype), op, datatype));
 

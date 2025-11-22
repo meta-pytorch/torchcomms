@@ -4,7 +4,6 @@
 
 #include "comms/common/algorithms/all_gather/AllGatherAlgoManager.h"
 #include "comms/common/algorithms/all_reduce/AllReduceAlgoManager.h"
-#include "comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h"
 #include "comms/ctran/interfaces/IBootstrap.h" // @manual
 #include "comms/utils/commSpecs.h"
 
@@ -13,7 +12,6 @@ namespace meta::comms {
 // Forward declaration
 class AlgoManagerAllReduce;
 class AlgoManagerAllGather;
-class AlgoManagerReduceScatter;
 
 /**
  * per communicator per rank Algorithm factory that
@@ -39,21 +37,13 @@ class AlgoFactory {
     // DDA will be used
     int ddaMaxThresholdBytes{0};
   };
-  struct ReduceScatterOptions {
-    bool enableDda{false};
-    int ddaSendbufSizeBytes{0};
-    // If msg size is not larger than the threshold,
-    // DDA will be used
-    int ddaMaxThresholdBytes{0};
-  };
   AlgoFactory(
       std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
       int nRanks,
       int selfRank,
       int maxBlocks,
       const AllReduceOptions& allReduceOpts,
-      const AllGatherOptions& allGatherOpts,
-      const ReduceScatterOptions& reduceScatterOpts);
+      const AllGatherOptions& allGatherOpts);
 
   std::unique_ptr<AlgoAllReduce> getAllReduceAlgo(
       const void* sendbuff,
@@ -83,23 +73,8 @@ class AlgoFactory {
         sendbuff, recvbuff, count, datatype, stream, acc);
   }
 
-  std::unique_ptr<AlgoReduceScatter> getReduceScatterAlgo(
-      const void* sendbuff,
-      void* recvbuff,
-      size_t count,
-      commDataType_t datatype,
-      cudaStream_t stream,
-      const void* acc = nullptr) {
-    if (reduceScatterMgr_ == nullptr) {
-      return nullptr;
-    }
-    return reduceScatterMgr_->getReduceScatterAlgo(
-        sendbuff, recvbuff, count, datatype, stream, acc);
-  }
-
  private:
   std::unique_ptr<AllReduceAlgoManager> allReduceMgr_{nullptr};
   std::unique_ptr<AllGatherAlgoManager> allGatherMgr_{nullptr};
-  std::unique_ptr<ReduceScatterAlgoManager> reduceScatterMgr_{nullptr};
 };
 } // namespace meta::comms
