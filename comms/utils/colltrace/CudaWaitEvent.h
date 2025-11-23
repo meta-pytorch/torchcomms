@@ -12,6 +12,9 @@
 
 namespace meta::comms::colltrace {
 
+// WARNING: The cudaEvent and cudaStream used by this class is intentionally
+// NOT destroyed, this class is only intended to be used as global static
+// variables. Creating too many of these objects might cause issue with cuda
 class CudaReferencePoint {
   using system_clock_time_point = ICollWaitEvent::system_clock_time_point;
 
@@ -21,8 +24,10 @@ class CudaReferencePoint {
   CommsMaybe<system_clock_time_point> getTimeViaEvent(const CudaEvent& event);
 
  private:
-  CudaStream stream_;
-  CudaEvent event_;
+  // We intentionally NOT using the RAII version to avoid segfault when calling
+  // cudaEventDestory and cudaStreamDestroy during the program exit.
+  cudaStream_t stream_{nullptr};
+  cudaEvent_t event_{nullptr};
   system_clock_time_point time_;
 };
 
