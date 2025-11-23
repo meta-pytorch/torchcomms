@@ -632,7 +632,7 @@ ncclResult_t ncclIbInit(ncclDebugLogger_t logFunction, ncclProfilerCallback_t pr
         WARN("NET/IB : No IP interface found.");
         ret = ncclInternalError;
         goto fail;
-      }   
+      }
 
       // Check if user defined which IB device:port to use
       const char* userIbEnv = ncclGetEnv("NCCL_IB_HCA");
@@ -1008,6 +1008,7 @@ struct ncclIbConnectionMetadata {
   int ndevs;
   int tc;
   int sl;
+  int isP2p;
 };
 
 enum ncclIbCommState {
@@ -1033,6 +1034,7 @@ struct ncclIbCommStage {
 struct ncclIbHandle {
   union ncclSocketAddress connectAddr; // Filled by the target
   uint64_t magic; // random number to help debugging
+  int isP2p; // P2P flag
   struct ncclIbCommStage stage; // Used by the other side when connecting
 };
 
@@ -1208,6 +1210,7 @@ struct ncclIbRecvComm {
 static_assert((offsetof(struct ncclIbRecvComm, remFifo) % 32) == 0, "ncclIbRecvComm fifo must be 32-byte aligned");
 
 NCCL_PARAM(IbQpsPerConn, "IB_QPS_PER_CONNECTION", 1);
+RCCL_PARAM(IbQpsPerP2p, "IB_QPS_PER_P2P", 0);
 
 static void ncclIbAddEvent(struct ncclIbRequest* req, int devIndex, struct ncclIbNetCommDevBase* base) {
   req->events[devIndex]++;
@@ -1230,7 +1233,7 @@ ncclResult_t ncclIbInitCommDevBase(int ibDevN, struct ncclIbNetCommDevBase* base
   pthread_mutex_unlock(&ibDev->lock);
 
   // CQ is sized to accommodate the max SQ + RQ WQE completions. If each SQ WQE could be signaled, then,
-  // for each QP, there can be 2*MAX_REQUESTS completions for SQ and MAX_REQUESTS completions for RQ. 
+  // for each QP, there can be 2*MAX_REQUESTS completions for SQ and MAX_REQUESTS completions for RQ.
   NCCLCHECK(wrap_ibv_create_cq(&base->cq, ibDev->context, 3*MAX_REQUESTS*ncclParamIbQpsPerConn(), cq_context, NULL, 0));
 
   return ncclSuccess;
@@ -1363,6 +1366,7 @@ ncclResult_t ncclIbConnect(int dev, ncclNetCommConfig_t* config, void* opaqueHan
   struct ncclIbSendComm* comm = (struct ncclIbSendComm*)stage->comm;
   int ready;
   uint8_t link_layer = IBV_LINK_LAYER_UNSPECIFIED;
+  int isP2p = 0;
   *sendComm = NULL;
 
   if (stage->state == ncclIbCommStateConnect)      goto ib_connect_check;
@@ -1422,9 +1426,19 @@ ib_recv_dev_list:
   mergedDev = ncclIbMergedDevs + dev;
   comm->base.vProps = mergedDev->vProps;
   int localNqps, remoteNqps;
-  localNqps  = ncclParamIbQpsPerConn() * comm->base.vProps.ndevs; // We must have at least 1 qp per-device
-  remoteNqps = ncclParamIbQpsPerConn() * remoteVProps.ndevs;
+
+  // Read isP2p from handle
+  isP2p = handle->isP2p;
+  INFO(NCCL_NET, "NET/IB: ncclIbConnect isP2p=%d", isP2p);
+  if (rcclParamIbQpsPerP2p() > 0 && isP2p) {
+    localNqps  = rcclParamIbQpsPerP2p() * comm->base.vProps.ndevs; // We must have at least 1 qp per-device
+    remoteNqps = rcclParamIbQpsPerP2p() * remoteVProps.ndevs;
+  } else {
+    localNqps  = ncclParamIbQpsPerConn() * comm->base.vProps.ndevs; // We must have at least 1 qp per-device
+    remoteNqps = ncclParamIbQpsPerConn() * remoteVProps.ndevs;
+  }
   comm->base.nqps = remoteNqps > localNqps ? remoteNqps : localNqps; // Select max nqps (local or remote)
+  INFO(NCCL_NET, "NET/IB: Max Nqps=%d, localNqps=%d, remoteNqps=%d", comm->base.nqps, localNqps, remoteNqps);
 
   // Init PD, Ctx for each IB device
   comm->ar = 1; // Set to 1 for logic
@@ -1436,7 +1450,7 @@ ib_recv_dev_list:
 
   memset(&meta, 0, sizeof(meta));
   meta.ndevs = comm->base.vProps.ndevs;
-
+  meta.isP2p = isP2p;
   // Alternate QPs between devices
   int devIndex;
   devIndex = 0;
@@ -1714,11 +1728,6 @@ ib_recv_dev_list:
   rComm->base.vProps = mergedDev->vProps;
   memcpy(stage->buffer, &rComm->base.vProps, sizeof(ncclNetVDeviceProps_t));
   rComm->base.isSend = false;
-  int localNqps, remoteNqps;
-  localNqps  = ncclParamIbQpsPerConn() * rComm->base.vProps.ndevs; // We must have at least 1 qp per-device
-  remoteNqps = ncclParamIbQpsPerConn() * remoteVProps.ndevs;
-  rComm->base.nqps = remoteNqps > localNqps ? remoteNqps : localNqps; // Select max nqps (local or remote)
-
   stage->offset = 0;
   stage->state = ncclIbCommStateSendDevList;
 
@@ -1743,10 +1752,20 @@ ib_recv:
   struct ncclIbRecvCommDev* rCommDev;
   struct ncclIbDevInfo* remDevInfo;
   struct ncclIbQp* qp;
-  bool useDmaBuf; 
+  bool useDmaBuf;
+  int localNqps, remoteNqps;
 
   mergedDev = ncclIbMergedDevs + lComm->dev;
   rComm->base.nRemDevs = remMeta.ndevs;
+  if (rcclParamIbQpsPerP2p() > 0 && remMeta.isP2p) {
+    localNqps  = rcclParamIbQpsPerP2p() * rComm->base.vProps.ndevs;
+    remoteNqps = rcclParamIbQpsPerP2p() * remMeta.ndevs;
+  } else {
+    localNqps  = ncclParamIbQpsPerConn() * rComm->base.vProps.ndevs;
+    remoteNqps = ncclParamIbQpsPerConn() * remMeta.ndevs;
+  }
+  rComm->base.nqps = remoteNqps > localNqps ? remoteNqps : localNqps;
+  INFO(NCCL_NET, "NET/IB: IbAccept Max Nqps=%d, localNqps=%d, remoteNqps=%d",rComm->base.nqps, localNqps, remoteNqps);
   if (rComm->base.nRemDevs != rComm->base.vProps.ndevs) {
     INFO(NCCL_NET, "NET/IB : Local mergedDev %s has a different number of devices=%d as remote %s %d",
       mergedDev->devName, rComm->base.vProps.ndevs, remMeta.devName, rComm->base.nRemDevs);
@@ -1825,7 +1844,7 @@ ib_recv:
 
   useDmaBuf  = (ncclIbDmaBufSupport(lComm->dev) == ncclSuccess);
   rComm->flushEnabled = ((ncclIbGdrSupport() == ncclSuccess || useDmaBuf)
-                            && (ncclParamIbGdrFlushDisable() == 0)) ? 1 : 0;              
+                            && (ncclParamIbGdrFlushDisable() == 0)) ? 1 : 0;
   for (int i = 0; i < rComm->base.vProps.ndevs; i++) {
     rCommDev = rComm->devs + i;
     ibDev = ncclIbDevs + rCommDev->base.ibDevN;
@@ -1906,6 +1925,7 @@ ib_recv:
     meta.qpInfo[q].devIndex = rComm->base.qps[q].devIndex;
   }
   meta.ndevs = rComm->base.vProps.ndevs;
+  meta.isP2p = remMeta.isP2p;
   strncpy(meta.devName, mergedDev->devName, MAX_MERGED_DEV_NAME);
   rComm->base.nDataQps = std::max(rComm->base.vProps.ndevs, rComm->base.nRemDevs);
 
@@ -2714,6 +2734,14 @@ ncclResult_t ncclIbCloseListen(void* listenComm) {
     NCCLCHECK(ncclSocketClose(&comm->sock));
     free(comm);
   }
+  return ncclSuccess;
+}
+
+ncclResult_t rcclNetP2pPolicy(void* handle, int isP2p) {
+  if (!handle) return ncclInvalidArgument;
+  struct ncclIbHandle* ibHandle = (struct ncclIbHandle*)handle;
+  if (ibHandle->magic != NCCL_SOCKET_MAGIC) return ncclInvalidArgument;
+  ibHandle->isP2p = isP2p;
   return ncclSuccess;
 }
 

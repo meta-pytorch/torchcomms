@@ -428,7 +428,7 @@ NCCL_API(ncclResult_t, ncclCommRegister, const ncclComm_t comm, void* buff, size
 
 NCCL_API(ncclResult_t, ncclCommDeregister, const ncclComm_t comm, void* handle);
 
-NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size,
+NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size, 
          ncclWindow_t* win, int winFlags);
 
 NCCL_API(ncclResult_t, ncclCommWindowDeregister, ncclComm_t comm, ncclWindow_t win);
@@ -613,7 +613,7 @@ ncclResult_t
 ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeRanksCount, ncclComm_t* newcomm,
                ncclConfig_t* config, int shrinkFlags)
 {
-    return ::rccl::RcclGetFunctionTable()->ncclCommShrink_fn(comm, excludeRanksList, excludeRanksCount,
+    return ::rccl::RcclGetFunctionTable()->ncclCommShrink_fn(comm, excludeRanksList, excludeRanksCount, 
                                                              newcomm, config, shrinkFlags);
 }
 
