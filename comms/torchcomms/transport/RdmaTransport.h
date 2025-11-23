@@ -61,10 +61,27 @@ class RdmaMemory : folly::MoveOnly {
       return &parent_;
     }
 
-   private:
+   protected:
     const RdmaMemory& parent_;
     const size_t offset_;
     const size_t length_;
+  };
+
+  class MutableView : public View {
+   public:
+    /*
+     * Create a writable view of a subset of RdmaMemory with bounds checking.
+     * Asserts that the view is within the bounds of the parent memory.
+     */
+    MutableView(const RdmaMemory& parent, size_t offset, size_t length)
+        : View(parent, offset, length) {}
+
+    /*
+     * Get mutable pointer to the start of the view within the parent memory
+     */
+    void* mutable_data() const {
+      return const_cast<void*>(View::data());
+    }
   };
 
   RdmaMemory(const void* buf, size_t len, int cudaDev);
@@ -77,6 +94,15 @@ class RdmaMemory : folly::MoveOnly {
   View createView(const void* buf, size_t length) const {
     const size_t offset = (uintptr_t)buf - (uintptr_t)buf_;
     return View(*this, offset, length);
+  }
+
+  MutableView createMutableView(size_t offset, size_t length) const {
+    return MutableView(*this, offset, length);
+  }
+
+  MutableView createMutableView(const void* buf, size_t length) const {
+    const size_t offset = (uintptr_t)buf - (uintptr_t)buf_;
+    return MutableView(*this, offset, length);
   }
 
   /*
@@ -215,6 +241,14 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * rank.
    */
   folly::SemiFuture<commResult_t> waitForWrite();
+
+  /*
+   * [Remote Op] Transfer data from remote buffer on the peer rank to local
+   * buffer via RDMA.
+   */
+  folly::SemiFuture<commResult_t> read(
+      RdmaMemory::MutableView& localBuffer,
+      const RdmaRemoteBuffer& remoteBuffer);
 
  private:
   /*
