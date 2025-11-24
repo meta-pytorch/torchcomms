@@ -1,4 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+# pyre-strict
+
 import math
 from typing import Any, cast, Optional
 
@@ -179,13 +181,13 @@ def _flatten_with_comm(
     # We need to create a new DeviceMesh with the new API.
     # TODO: Clean up this code once torchcomm releases.
     if hasattr(mesh, "_rank_map"):
-        flattened_device_mesh = dist.DeviceMesh(  # pyre-ignore[28]
+        flattened_device_mesh = dist.DeviceMesh(
             device_type=comm.get_device(),
             mesh_dim_names=(mesh_dim_name,),
             _init_backend=False,
             _rank=comm.get_rank(),
             _layout=layout.coalesce(),
-            _rank_map=mesh._rank_map,  # pyre-ignore[16]
+            _rank_map=mesh._rank_map,
             _root_mesh=mesh,
         )
     else:

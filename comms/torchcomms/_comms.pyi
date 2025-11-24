@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# pyre-unsafe
+# pyre-strict
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 from datetime import timedelta

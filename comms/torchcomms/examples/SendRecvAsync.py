@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# pyre-unsafe
+# pyre-strict
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 """
@@ -14,7 +14,7 @@ import torch
 from torchcomms import new_comm
 
 
-def main():
+def main() -> None:
     # Initialize TorchComm
     device = torch.device("cuda")
     torchcomm = new_comm("ncclx", device, name="main_comm")
