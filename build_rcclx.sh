@@ -62,6 +62,19 @@ function ensure_static_symlink() {
   fi
 }
 
+function ensure_default_static_symlinks() {
+  # Some dependencies are only present as shared libs in the conda env; create
+  # static aliases so the linker finds the expected .a names.
+  ensure_static_symlink crypto
+  ensure_static_symlink ssl
+  ensure_static_symlink event
+  ensure_static_symlink sodium
+  ensure_static_symlink boost_context
+  ensure_static_symlink glog
+  ensure_static_symlink gflags
+  ensure_static_symlink zstd
+}
+
 function set_third_party_ldflags() {
   local base="-L${CONDA_PREFIX}/lib -Wl,--allow-shlib-undefined"
   if [[ -n "${THIRD_PARTY_ORIG_LDFLAGS:-}" ]]; then
@@ -243,16 +256,6 @@ set -e
 export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
 export LIBRARY_PATH="${CONDA_PREFIX}/lib:${LIBRARY_PATH:-}"
 export USE_SYSTEM_LIBS=${USE_SYSTEM_LIBS:-1}
-# Some dependencies are only present as shared libs in the conda env; create
-# static aliases so the linker finds the expected .a names.
-ensure_static_symlink crypto
-ensure_static_symlink ssl
-ensure_static_symlink event
-ensure_static_symlink sodium
-ensure_static_symlink boost_context
-ensure_static_symlink glog
-ensure_static_symlink gflags
-ensure_static_symlink zstd
 
 BUILDDIR=${BUILDDIR:="${PWD}/build"}
 CLEAN_BUILD=${CLEAN_BUILD:=0}
@@ -273,6 +276,9 @@ if [[ -z "${NCCL_BUILD_SKIP_DEPS}" ]]; then
   fi
   build_third_party
 fi
+
+# Run after dependency installation to ensure first-build static aliases exist
+ensure_default_static_symlinks
 
 if [ "$CLEAN_BUILD" == 1 ]; then
     rm -rf "$BUILDDIR"
