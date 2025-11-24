@@ -116,6 +116,10 @@ export RCCLX_LIB=${BUILD_DIR}/lib
 
 ```bash
 ./build_rcclx.sh
+# TIP: Default builds both gfx942 and gfx950 and can take 1hr+. Narrow to your GPU:
+#   MI300X/MI325X (gfx942): ./build_rcclx.sh --amdgpu_targets gfx942
+#   MI355X (gfx950): ./build_rcclx.sh --amdgpu_targets gfx950
+#   Unsure? run: rocminfo | grep -m1 gfx
 ```
 
 
