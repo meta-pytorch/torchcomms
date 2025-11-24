@@ -316,7 +316,7 @@ make -j \
 
 if [ -z "$SKIP_CONDA_INSTALL" ]; then
   conda install -p "$CONDA_DIR" -c conda-forge pybind11==2.13.6 pybind11-global==2.13.6 --yes
-  "$CONDA_BIN_DIR"/pip install .; pip_exit_code=$?
+  "$CONDA_BIN_DIR"/pip install --no-build-isolation .; pip_exit_code=$?
 fi
 
 if [ "$NCCL_PYTHON_PACKAGE_SKIP_SANITY_CHECK" != 1 ]; then
