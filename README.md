@@ -108,6 +108,7 @@ conda install conda-forge::glog=0.4.0 conda-forge::gflags conda-forge::fmt -y
 
 Environment variables to find rocm/rcclx headers
 ```
+cd torchcomms
 export BUILD_DIR=${PWD}/comms/rcclx/develop/build/release/build
 export ROCM_HOME=/opt/rocm
 export RCCLX_INCLUDE=${BUILD_DIR}/include/rccl
@@ -138,6 +139,16 @@ rocminfo | grep -m1 gfx
 
 #### Install torchcomms:
 
+Set backend env vars before installing. For RCCLX-only:
+```bash
+export USE_NCCL=OFF
+export USE_NCCLX=OFF
+export USE_GLOO=OFF
+export USE_RCCL=OFF
+export USE_RCCLX=ON
+```
+(See Build Configuration below for defaults and other mixes.)
+
 ```bash
 # Install PyTorch (if not already installed)
 pip install -r requirements.txt
@@ -157,13 +168,7 @@ export USE_RCCL=OFF   # Default: OFF
 export USE_RCCLX=OFF  # Default: OFF
 ```
 
-Then run:
-
-```bash
-# Install PyTorch (if not already installed)
-pip install -r requirements.txt
-pip install --no-build-isolation -v .
-```
+After setting your desired backends, run the install commands above.
 
 ## Quick Start Example
 
