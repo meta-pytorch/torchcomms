@@ -67,11 +67,7 @@ class TransportTest(unittest.TestCase):
 
         self.bind_and_connect(server_transport, client_transport)
 
-    def run_send_recv(
-        self,
-        device1: str,
-        device2: str,
-    ) -> None:
+    def run_send_recv(self, device1: str, device2: str, mode="WRITE") -> None:
         transport_device_1 = "cuda:0" if device1 == "cpu" else device1
         transport_device_2 = "cuda:0" if device2 == "cpu" else device2
         transport1 = RdmaTransport(torch.device(transport_device_1))
@@ -87,7 +83,16 @@ class TransportTest(unittest.TestCase):
         tensor1_mem = RdmaMemory(tensor1)
         tensor2_mem = RdmaMemory(tensor2)
 
-        res = transport1.write(tensor1_mem.to_view(), tensor2_mem.to_remote_buffer())
+        if mode == "WRITE":
+            res = transport1.write(
+                tensor1_mem.to_view(), tensor2_mem.to_remote_buffer()
+            )
+        elif mode == "READ":
+            res = transport2.read(
+                tensor2_mem.to_mutable_view(), tensor1_mem.to_remote_buffer()
+            )
+        else:
+            raise ValueError(f"Invalid mode: {mode}")
 
         self.assertEqual(res, 0)
         self.assertTrue(torch.allclose(tensor1.cpu(), tensor2.cpu()))
@@ -160,6 +165,22 @@ class TransportTest(unittest.TestCase):
         del transport2
         del tensor1_mem
         del tensor2_mem
+
+    def test_basic_read_gpu_to_gpu(self) -> None:
+        self.check_multi_gpu()
+        self.run_send_recv("cuda:0", "cuda:1", mode="READ")
+
+    def test_basic_read_cpu_to_gpu(self) -> None:
+        self.check_multi_gpu()
+        self.run_send_recv("cpu", "cuda:1", mode="READ")
+
+    def test_basic_read_gpu_to_cpu(self) -> None:
+        self.check_multi_gpu()
+        self.run_send_recv("cuda:1", "cpu", mode="READ")
+
+    def test_basic_read_cpu_to_cpu(self) -> None:
+        self.check_multi_gpu()
+        self.run_send_recv("cpu", "cpu", mode="READ")
 
 
 if __name__ == "__main__" and os.environ["TEST_BACKEND"] == "ncclx":

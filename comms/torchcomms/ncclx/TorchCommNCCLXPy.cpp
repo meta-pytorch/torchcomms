@@ -71,11 +71,21 @@ PYBIND11_MODULE(_comms_ncclx, m) {
              const RdmaRemoteBuffer& remoteBuffer) {
             return static_cast<int>(
                 self.write(localBuffer, remoteBuffer, false).get());
+          })
+      .def(
+          "read",
+          [](RdmaTransport& self,
+             RdmaMemory::MutableView& localBuffer,
+             const RdmaRemoteBuffer& remoteBuffer) {
+            return static_cast<int>(self.read(localBuffer, remoteBuffer).get());
           });
 
   py::class_<RdmaMemory::View, std::shared_ptr<RdmaMemory::View>>(
       m, "RdmaMemoryView")
       .def("size", &RdmaMemory::View::size);
+
+  py::class_<RdmaMemory::MutableView, std::shared_ptr<RdmaMemory::MutableView>>(
+      m, "RdmaMemoryMutableView");
 
   py::class_<RdmaMemory, std::shared_ptr<RdmaMemory>>(m, "RdmaMemory")
       .def(py::init([](const at::Tensor& tensor) {
@@ -91,6 +101,11 @@ PYBIND11_MODULE(_comms_ncclx, m) {
           "to_view",
           [](RdmaMemory& self) {
             return self.createView(size_t(0), self.length());
+          })
+      .def(
+          "to_mutable_view",
+          [](RdmaMemory& self) {
+            return self.createMutableView(size_t(0), self.length());
           })
       .def("to_remote_buffer", [](RdmaMemory& self) {
         return RdmaRemoteBuffer{
