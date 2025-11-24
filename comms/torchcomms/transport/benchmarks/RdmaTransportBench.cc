@@ -19,6 +19,8 @@ using namespace torch::comms;
 // RdmaMemory Benchmarks
 //------------------------------------------------------------------------------
 
+enum class RdmaMemoryOperation { READ, WRITE };
+
 /**
  * Benchmark RdmaMemory creation with different buffer sizes
  */
@@ -44,13 +46,11 @@ static void RdmaMemory_Register_Deregister(uint32_t iters, size_t bufferSize) {
 BENCHMARK_PARAM(RdmaMemory_Register_Deregister, 8192);
 // BENCHMARK_PARAM(RdmaMemory_Register_Deregister, 1024 * 1024);
 
-/**
- * Benchmark RdmaTransport write operation latency
- */
-static void RdmaTransport_Write(
+static void RdmaTransport_run_benchmark(
     uint32_t iters,
     size_t bufferSize,
-    folly::UserCounters& counters) {
+    folly::UserCounters& counters,
+    RdmaMemoryOperation op) {
   const int cudaDev0 = 0;
   const int cudaDev1 = 1;
   std::unique_ptr<RdmaTransport> sender, receiver;
@@ -82,18 +82,29 @@ static void RdmaTransport_Write(
     CHECK_EQ(cudaMalloc(&recvBuffer, bufferSize), cudaSuccess);
     recvMemory = std::make_unique<RdmaMemory>(recvBuffer, bufferSize, cudaDev1);
   }
-  auto remoteBuffer =
-      RdmaRemoteBuffer{.ptr = recvBuffer, .accessKey = recvMemory->remoteKey()};
+
   folly::stop_watch<std::chrono::microseconds> timer;
+  // Create remote buffers
+  auto resvRemoteBuffer =
+      RdmaRemoteBuffer{.ptr = recvBuffer, .accessKey = recvMemory->remoteKey()};
+  auto senderRemoteBuffer =
+      RdmaRemoteBuffer{.ptr = sendBuffer, .accessKey = sendMemory->remoteKey()};
+
+  // Create memory views
+  auto sendMemoryView = sendMemory->createView(sendBuffer, bufferSize);
+  auto recvMemoryView = recvMemory->createMutableView(recvBuffer, bufferSize);
 
   //
-  // Benchmark the write operation
+  // Benchmark the operations
   //
-  for (uint32_t i = 0; i < iters; ++i) {
-    sender
-        ->write(
-            sendMemory->createView(sendBuffer, bufferSize), remoteBuffer, false)
-        .get();
+  if (op == RdmaMemoryOperation::WRITE) {
+    for (uint32_t i = 0; i < iters; ++i) {
+      sender->write(sendMemoryView, resvRemoteBuffer, false).get();
+    }
+  } else if (op == RdmaMemoryOperation::READ) {
+    for (uint32_t i = 0; i < iters; ++i) {
+      receiver->read(recvMemoryView, senderRemoteBuffer).get();
+    }
   }
 
   BENCHMARK_SUSPEND {
@@ -110,6 +121,27 @@ static void RdmaTransport_Write(
     sender.reset();
     receiver.reset();
   }
+}
+/**
+ * Benchmark RdmaTransport write operation latency
+ */
+static void RdmaTransport_Write(
+    uint32_t iters,
+    size_t bufferSize,
+    folly::UserCounters& counters) {
+  RdmaTransport_run_benchmark(
+      iters, bufferSize, counters, RdmaMemoryOperation::WRITE);
+}
+
+/**
+ * Benchmark RdmaTransport read operation latency
+ */
+static void RdmaTransport_Read(
+    uint32_t iters,
+    size_t bufferSize,
+    folly::UserCounters& counters) {
+  RdmaTransport_run_benchmark(
+      iters, bufferSize, counters, RdmaMemoryOperation::WRITE);
 }
 
 #define BENCHMARK_PARAM_COUNTERS(name, param)                     \
@@ -139,6 +171,23 @@ BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 33554432);
 BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 67108864);
 BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 134217728);
 BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 268435456);
+
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 8192);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 16384);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 32768);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 65536);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 131072);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 262144);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 524288);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 1048576);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 2097152);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 4194304);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 8388608);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 16777216);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 33554432);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 67108864);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 134217728);
+BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 268435456);
 
 // Custom main function to handle initialization
 int main(int argc, char** argv) {

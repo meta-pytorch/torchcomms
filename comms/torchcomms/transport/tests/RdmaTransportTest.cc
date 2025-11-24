@@ -52,8 +52,10 @@ class RdmaTransportTest : public ::testing::Test {
     folly::Promise<bool> communicationResult;
   };
 
-  // Common thread function that handles both server and client logic
-  void runRdmaTransportThread(bool isServer, ThreadSyncObjects& syncObjects) {
+  // Common thread function that handles both server and client logic for write
+  void runRdmaTransportThreadWrite(
+      bool isServer,
+      ThreadSyncObjects& syncObjects) {
     const size_t bufferSize = 8192;
     const int cudaDev = isServer ? 0 : 1;
     // Set CUDA device
@@ -143,6 +145,111 @@ class RdmaTransportTest : public ::testing::Test {
     // Cleanup
     EXPECT_EQ(cudaFreeHost(testData), cudaSuccess);
     EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+  }
+
+  // Common thread function that handles both server and client logic for read
+  void runRdmaTransportThreadRead(
+      bool isServer,
+      ThreadSyncObjects& syncObjects,
+      folly::Promise<bool>& readDonePromise,
+      folly::SemiFuture<bool>& readDoneFuture) {
+    const size_t bufferSize = 8192;
+    const int cudaDev = isServer ? 0 : 1;
+    // Set CUDA device
+    EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+    // Create RdmaTransport instance
+    auto transport = std::make_unique<torch::comms::RdmaTransport>(
+        cudaDev, evbThread_->getEventBase());
+
+    // Bind and get URL
+    std::string myUrl = transport->bind();
+    EXPECT_FALSE(myUrl.empty());
+    syncObjects.myUrlPromise.setValue(myUrl);
+
+    // Wait for peer's URL
+    std::string peerUrl = std::move(syncObjects.peerUrlFuture).get();
+    EXPECT_FALSE(peerUrl.empty());
+
+    // Connect to peer
+    commResult_t connectResult = transport->connect(peerUrl);
+    EXPECT_EQ(connectResult, commSuccess);
+    EXPECT_TRUE(transport->connected());
+
+    // Wait for connection to be established
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    if (isServer) {
+      // Server: Allocate and initialize data buffer for client to read
+      void* dataBuffer = nullptr;
+      EXPECT_EQ(cudaMalloc(&dataBuffer, bufferSize), cudaSuccess);
+      torch::comms::RdmaMemory dataMemory(dataBuffer, bufferSize, cudaDev);
+
+      std::vector<uint8_t> testData(bufferSize, 0xAB);
+      EXPECT_EQ(
+          cudaMemcpy(
+              dataBuffer, testData.data(), bufferSize, cudaMemcpyHostToDevice),
+          cudaSuccess);
+
+      // Export buffer for client to read
+      RdmaRemoteBuffer myMemInfo{
+          .ptr = dataBuffer, .accessKey = dataMemory.remoteKey()};
+      syncObjects.memoryInfoPromise.setValue(myMemInfo);
+
+      // Wait for client to complete read before cleaning up
+      std::move(readDoneFuture).get();
+
+      // Cleanup
+      EXPECT_EQ(cudaFree(dataBuffer), cudaSuccess);
+    } else {
+      // Client: Get server's buffer info
+      auto serverMemInfo = std::move(syncObjects.memoryInfoFuture).get();
+
+      // Allocate local buffer to read into
+      void* readBuffer = nullptr;
+      EXPECT_EQ(cudaMalloc(&readBuffer, bufferSize), cudaSuccess);
+      torch::comms::RdmaMemory readMemory(readBuffer, bufferSize, cudaDev);
+
+      // Initialize read buffer with zeros
+      std::vector<uint8_t> zeroData(bufferSize, 0x00);
+      EXPECT_EQ(
+          cudaMemcpy(
+              readBuffer, zeroData.data(), bufferSize, cudaMemcpyHostToDevice),
+          cudaSuccess);
+
+      // Perform RDMA read from server's buffer using WriteableView
+      auto readView = readMemory.createMutableView(readBuffer, bufferSize);
+      auto readFuture = transport->read(readView, serverMemInfo);
+      EXPECT_EQ(commSuccess, std::move(readFuture).get());
+      readDonePromise.setValue(true);
+
+      // Verify read data matches server's data
+      std::vector<uint8_t> receivedData(bufferSize);
+      EXPECT_EQ(
+          cudaMemcpy(
+              receivedData.data(),
+              readBuffer,
+              bufferSize,
+              cudaMemcpyDeviceToHost),
+          cudaSuccess);
+
+      uint8_t expectedValue = 0xAB; // Client reads 0xAB from server
+      bool dataValid = true;
+      for (size_t i = 0; i < bufferSize; ++i) {
+        if (receivedData[i] != expectedValue) {
+          dataValid = false;
+          break;
+        }
+      }
+      EXPECT_TRUE(dataValid)
+          << "Read data verification failed - received data does not match server data";
+
+      // Signal server that read is complete
+      syncObjects.communicationResult.setValue(true);
+
+      // Cleanup
+      EXPECT_EQ(cudaFree(readBuffer), cudaSuccess);
+    }
   }
 
  private:
@@ -320,7 +427,7 @@ TEST_F(RdmaMemoryTest, MoveOnlySemantics) {
   EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
 }
 
-TEST_F(RdmaTransportTest, ServerClientDataTransfer) {
+TEST_F(RdmaTransportTest, ServerClientDataTransferWrite) {
   // Promise/future pairs for exchanging URLs between threads
   auto [urlPromise0, urlFuture0] = folly::makePromiseContract<std::string>();
   auto [urlPromise1, urlFuture1] = folly::makePromiseContract<std::string>();
@@ -348,9 +455,57 @@ TEST_F(RdmaTransportTest, ServerClientDataTransfer) {
 
   // Launch both threads using the common function
   std::thread serverThread(
-      [&]() { runRdmaTransportThread(true, serverSyncObjects); });
+      [&]() { runRdmaTransportThreadWrite(true, serverSyncObjects); });
   std::thread clientThread(
-      [&]() { runRdmaTransportThread(false, clientSyncObjects); });
+      [&]() { runRdmaTransportThreadWrite(false, clientSyncObjects); });
+
+  // Wait for both threads to complete
+  serverThread.join();
+  clientThread.join();
+
+  // Verify the communication was successful
+  bool success = std::move(communicationFuture).get();
+  EXPECT_TRUE(success);
+}
+
+TEST_F(RdmaTransportTest, ServerClientDataTransferRead) {
+  // Promise/future pairs for exchanging URLs between threads
+  auto [urlPromise0, urlFuture0] = folly::makePromiseContract<std::string>();
+  auto [urlPromise1, urlFuture1] = folly::makePromiseContract<std::string>();
+  auto [memoryInfoPromise, memoryInfoFuture] =
+      folly::makePromiseContract<RdmaRemoteBuffer>();
+  auto [communicationResult, communicationFuture] =
+      folly::makePromiseContract<bool>();
+
+  auto [readDonePromise, readDoneFuture] = folly::makePromiseContract<bool>();
+
+  // Setup synchronization objects for server (CUDA device 0)
+  ThreadSyncObjects serverSyncObjects{
+      std::move(urlPromise0),
+      std::move(urlFuture1),
+      std::move(memoryInfoPromise),
+      folly::SemiFuture<RdmaRemoteBuffer>::makeEmpty(), // server doesn't import
+                                                        // memory
+      folly::Promise<bool>(), // server doesn't set comm result
+  };
+
+  // Setup synchronization objects for client (CUDA device 1)
+  ThreadSyncObjects clientSyncObjects{
+      std::move(urlPromise1),
+      std::move(urlFuture0),
+      folly::Promise<RdmaRemoteBuffer>(), // client doesn't export memory
+      std::move(memoryInfoFuture),
+      std::move(communicationResult)};
+
+  // Launch both threads using the common function
+  std::thread serverThread([&]() {
+    runRdmaTransportThreadRead(
+        true, serverSyncObjects, readDonePromise, readDoneFuture);
+  });
+  std::thread clientThread([&]() {
+    runRdmaTransportThreadRead(
+        false, clientSyncObjects, readDonePromise, readDoneFuture);
+  });
 
   // Wait for both threads to complete
   serverThread.join();
