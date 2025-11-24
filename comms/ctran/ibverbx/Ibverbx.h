@@ -103,8 +103,6 @@ struct IbvSymbols {
       struct ibv_context* context) = nullptr;
   int (*ibv_internal_destroy_comp_channel)(struct ibv_comp_channel* channel) =
       nullptr;
-  int (*ibv_internal_req_notify_cq)(struct ibv_cq* cq, int solicited_only) =
-      nullptr;
   int (*ibv_internal_get_cq_event)(
       struct ibv_comp_channel* channel,
       struct ibv_cq** cq,

@@ -376,7 +376,6 @@ int buildIbvSymbols(IbvSymbols& symbols) {
   symbols.ibv_internal_destroy_cq = &linked_destroy_cq;
   symbols.ibv_internal_create_comp_channel = &linked_create_comp_channel;
   symbols.ibv_internal_destroy_comp_channel = &linked_destroy_comp_channel;
-  symbols.ibv_internal_req_notify_cq = &linked_req_notify_cq;
   symbols.ibv_internal_get_cq_event = &linked_get_cq_event;
   symbols.ibv_internal_ack_cq_events = &linked_ack_cq_events;
   symbols.ibv_internal_create_qp = &linked_create_qp;
@@ -521,9 +520,6 @@ int buildIbvSymbols(IbvSymbols& symbols) {
       "ibv_get_cq_event", symbols.ibv_internal_get_cq_event, "IBVERBS_1.0");
   LOAD_IBVERBS_SYM_VERSION(
       "ibv_ack_cq_events", symbols.ibv_internal_ack_cq_events, "IBVERBS_1.0");
-  // TODO: ibv_req_notify_cq is found not in any version of IBVERBS
-  LOAD_IBVERBS_SYM_VERSION(
-      "ibv_req_notify_cq", symbols.ibv_internal_req_notify_cq, "IBVERBS_1.0");
   LOAD_IBVERBS_SYM_VERSION(
       "ibv_query_ece", symbols.ibv_internal_query_ece, "IBVERBS_1.10");
   LOAD_IBVERBS_SYM_VERSION(
@@ -779,7 +775,7 @@ ibv_cq* IbvCq::cq() const {
 
 folly::Expected<folly::Unit, Error> IbvCq::reqNotifyCq(
     int solicited_only) const {
-  int rc = ibvSymbols.ibv_internal_req_notify_cq(cq_, solicited_only);
+  int rc = cq_->context->ops.req_notify_cq(cq_, solicited_only);
   if (rc != 0) {
     return folly::makeUnexpected(Error(rc));
   }
