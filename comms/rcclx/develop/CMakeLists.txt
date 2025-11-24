@@ -770,14 +770,8 @@ set(RCCLX_LIB_FILES
 set(COMMON_FILES
   comms/common/algorithms/AlgoFactory.cu
   comms/common/algorithms/AlgoFactory.cuh
-  comms/common/algorithms/CollCommon.cuh
   comms/common/algorithms/AlgoUtils.cc
   comms/common/algorithms/AlgoUtils.h
-  comms/common/algorithms/all_gather/AlgoAllGather.cu
-  comms/common/algorithms/all_gather/AlgoAllGather.cuh
-  comms/common/algorithms/all_gather/AllGatherAlgoManager.cu
-  comms/common/algorithms/all_gather/AllGatherAlgoManager.h
-  comms/common/algorithms/all_gather/all_gather_dda.cuh
   comms/common/algorithms/all_reduce/AlgoAllReduce.cu
   comms/common/algorithms/all_reduce/AlgoAllReduce.cuh
   comms/common/algorithms/all_reduce/AllReduceAlgoManager.cu
