@@ -234,4 +234,50 @@ TEST_F(CtranSendRecvTest, TwoSendersTimeout) {
   }
 }
 
+class CtranSendRecvIbTest : public CtranSendRecvTest {
+ public:
+  CtranSendRecvIbTest() = default;
+
+  void SetUp() override {
+    setenv(
+        "NCCL_CTRAN_IB_QP_CONFIG_ALGO",
+        "alltoall:1048576,16,dqplb,128,224|sendrecv:1048576,32,dqplb,128,224",
+        1);
+    ncclCvarInit();
+    CtranSendRecvTest::SetUp();
+  }
+};
+
+TEST_F(CtranSendRecvIbTest, SendRecvIbconfig) {
+  startWorkers(/*abortEnabled=*/true);
+
+  // Only rank 0 needs to validate the config since it's a global setting
+  run(/*rank=*/0, [this](PerRankState& state) {
+    auto* ctranComm = state.ctranComm.get();
+    ASSERT_NE(ctranComm, nullptr);
+
+    // Skip test if ctran algo is not available
+    if (ctranComm->ctran_->algo == nullptr) {
+      GTEST_SKIP() << "No ctran algo found, skip test";
+    }
+
+    // Get the IB config for SENDRECV collective
+    CtranIbConfig* ctranIbConfigPtr =
+        ctranComm->ctran_->algo->getCollToVcConfig(CollType::SENDRECV);
+
+    ASSERT_NE(ctranIbConfigPtr, nullptr)
+        << "SendRecv IB config should not be null";
+
+    // Verify the configuration matches the environment variable set in SetUp:
+    EXPECT_EQ(ctranIbConfigPtr->qpScalingTh, 1048576);
+    EXPECT_EQ(ctranIbConfigPtr->numQps, 32);
+    EXPECT_EQ(ctranIbConfigPtr->vcMode, NCCL_CTRAN_IB_VC_MODE::dqplb);
+    EXPECT_EQ(ctranIbConfigPtr->qpMsgs, 128);
+  });
+
+  run(/*rank=*/1, [](PerRankState& state) {
+    // No operation needed, just exit
+  });
+}
+
 } // namespace ctran::testing

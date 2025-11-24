@@ -240,6 +240,10 @@ inline void progressSendPostTrans(
   char* tmpSendBuf = reinterpret_cast<char*>(resource.tmpSendBuf) +
       tmpChunkId * algoCtx.chunkSize;
 
+  // Get allreduce specific IB config
+  static CtranIbConfig* allReduceConfig =
+      resource.comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
+
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW(resource.comm->ctran_->mapper->iput(
       tmpSendBuf,
@@ -250,7 +254,7 @@ inline void progressSendPostTrans(
           .memHdl_ = resource.tmpSendBufHdl,
           .remoteAccessKey_ = args.rightRemKey,
           .notify_ = true,
-      },
+          .ibConfig_ = allReduceConfig},
       &req));
   dataSResps.at(round).reset(req);
 

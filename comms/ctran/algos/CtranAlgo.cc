@@ -841,6 +841,10 @@ commResult_t CtranAlgo::initAllReduceDirectResource(
 CollType CtranAlgo::getCollType(const std::string& algoStr) {
   if (algoStr == "alltoall") {
     return CollType::ALLTOALL;
+  } else if (algoStr == "sendrecv") {
+    return CollType::SENDRECV;
+  } else if (algoStr == "allreduce") {
+    return CollType::ALLREDUCE;
   }
 
   return CollType::UNKNOWN;
