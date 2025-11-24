@@ -44,7 +44,8 @@ bool RdmaMemory::contains(const void* buf, size_t len) const {
 }
 
 struct RdmaTransport::Work {
-  bool isWrite{true};
+  enum class Type { Write, Read, WaitForWrite };
+  Type type{Type::Write};
   CtranIbRequest ibReq;
   folly::Promise<commResult_t> promise;
 };
@@ -130,7 +131,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
 
   auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
   auto work = std::make_unique<Work>();
-  work->isWrite = true;
+  work->type = Work::Type::Write;
   auto sf = work->promise.getSemiFuture();
 
   CtranIbEpochRAII epochRAII(ib_.get());
@@ -159,8 +160,41 @@ folly::SemiFuture<commResult_t> RdmaTransport::waitForWrite() {
   CHECK_THROW(evb_, std::runtime_error);
 
   auto work = std::make_unique<Work>();
-  work->isWrite = false;
+  work->type = Work::Type::WaitForWrite;
   auto sf = work->promise.getSemiFuture();
+
+  // Add work to pending list and schedule progress
+  auto pendingWorks = pendingWorks_.wlock();
+  pendingWorks->emplace_back(std::move(work));
+  evb_->runInEventBaseThread([this]() { progress(); });
+
+  return sf;
+}
+
+folly::SemiFuture<commResult_t> RdmaTransport::read(
+    RdmaMemory::MutableView& localBuffer,
+    const RdmaRemoteBuffer& remoteBuffer) {
+  CHECK_THROW(connected(), std::runtime_error);
+  CHECK_THROW(evb_, std::runtime_error);
+
+  CHECK(cudaDev_ == localBuffer->getDevice());
+
+  auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
+  auto work = std::make_unique<Work>();
+  work->type = Work::Type::Read;
+  auto sf = work->promise.getSemiFuture();
+
+  CtranIbEpochRAII epochRAII(ib_.get());
+  FB_COMMCHECK(ib_->iget(
+      remoteBuffer.ptr,
+      localBuffer.mutable_data(),
+      localBuffer.size(),
+      kDummyRank,
+      localBuffer->localKey(),
+      ibRemoteKey,
+      nullptr,
+      &work->ibReq,
+      false));
 
   // Add work to pending list and schedule progress
   auto pendingWorks = pendingWorks_.wlock();
@@ -187,13 +221,14 @@ void RdmaTransport::progress() {
       continue;
     }
 
-    if ((*it)->isWrite && (*it)->ibReq.isComplete()) {
+    if (((*it)->type == Work::Type::Write || (*it)->type == Work::Type::Read) &&
+        (*it)->ibReq.isComplete()) {
       (*it)->promise.setValue(hasError ? res : commSuccess);
       it = pendingWorks->erase(it);
       continue;
     }
 
-    if (!(*it)->isWrite) {
+    if ((*it)->type == Work::Type::WaitForWrite) {
       bool done = false;
       auto waitRes = ib_->checkNotify(kDummyRank, &done);
       if (waitRes != commSuccess || done) {
