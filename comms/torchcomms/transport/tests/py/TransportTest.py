@@ -7,7 +7,7 @@ import pickle
 import unittest
 
 import torch
-from torchcomms._comms_ncclx import RdmaMemory, RdmaTransport
+from torchcomms._transport import RdmaMemory, RdmaTransport
 
 
 class TransportTest(unittest.TestCase):
