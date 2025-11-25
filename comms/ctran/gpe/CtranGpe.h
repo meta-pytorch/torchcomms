@@ -155,6 +155,7 @@ struct OpElem {
     struct {
       const void* const* sendbuffs;
       void* const* recvbuffs;
+      void* recvbuff;
       commDataType_t datatype;
       size_t sendcountsLength;
       size_t maxSendcount;

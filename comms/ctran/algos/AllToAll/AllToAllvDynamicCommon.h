@@ -17,7 +17,8 @@ commResult_t ctranAllToAllvDynamicIbImpl(
     OpElem::opType algoType,
     CtranComm* comm,
     std::unique_ptr<CtranMapperTimestamp> timestamp,
-    KernelElem* elem);
+    KernelElem* elem,
+    void* recvbuff = nullptr);
 
 commResult_t setupKernelConfig(
     const size_t* sendcounts,
@@ -43,7 +44,8 @@ commResult_t setupGpeOp(
     CtranComm* comm,
     uint64_t opCount,
     std::vector<std::unique_ptr<struct OpElem>>& opGroup,
-    KernelElem* elem);
+    KernelElem* elem,
+    void* recvbuff = nullptr);
 
 template <typename PerfConfig = DefaultPerfCollConfig>
 commResult_t peerPutNonContig(

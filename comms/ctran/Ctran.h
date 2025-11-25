@@ -146,6 +146,13 @@ commResult_t ctranAlltoallvDynamicSplit(
     CtranComm* comm,
     cudaStream_t stream);
 
+// Note: we support the combine and dispatch APIs by keeping both recvbuffs (for
+// dispatch) and recvbuff (for combine), for implementation simplicity, as we
+// now only have two moving variables for the two APIs: recvbuffs and
+// recvAllSplitLengths.
+// In the future, if the moving varibles increase and it requires more
+// extendiblity, we should implement a new class/struct like Hints, to support
+// various metadata type.
 commResult_t ctranAlltoallvDynamicSplitNonContig(
     const void* sendbuff,
     const size_t* sendSplitLengths,
@@ -153,6 +160,7 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
     const size_t* sendIndices,
     const size_t* sendIndicesBlockLengths,
     void* const* recvbuffs,
+    void* recvbuff,
     size_t maxSendcount,
     size_t maxRecvcount,
     const meta::comms::Hints& hints,

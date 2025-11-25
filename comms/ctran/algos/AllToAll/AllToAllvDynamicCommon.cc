@@ -217,7 +217,8 @@ commResult_t ctranAllToAllvDynamicIbImpl(
     OpElem::opType algoType,
     CtranComm* comm,
     std::unique_ptr<CtranMapperTimestamp> timestamp,
-    KernelElem* elem) {
+    KernelElem* elem,
+    void* recvbuff) {
   const auto& statex = comm->statex_;
   const int myRank = statex->rank();
   const int nRanks = statex->nRanks();
@@ -260,10 +261,14 @@ commResult_t ctranAllToAllvDynamicIbImpl(
       continue;
     }
     // schedule IB ctrl messages
+    void* curRecvBuff = recvbuffs[peer];
+    if (recvbuffs == nullptr) {
+      curRecvBuff = recvbuff;
+    }
     FB_COMMCHECK(regIsendCtrl(
         comm,
         peer,
-        recvbuffs[peer],
+        curRecvBuff,
         maxRecvcount * commTypeSize(datatype),
         recvMemHdl,
         tmpRegHdls,
@@ -344,8 +349,11 @@ commResult_t setupKernelConfig(
           CtranAlgo::TmpbufType::SENDCOUNTS_TMPBUF_CPU));
   config.args.collective.alltoallv_dynamic.sendcountsLength = sendcountsLength;
 
-  for (int i = 0; i < comm->statex_->nRanks(); i++) {
-    config.args.collective.alltoallv_dynamic.recvbuffsPtrGPU[i] = recvbuffs[i];
+  if (recvbuffs != nullptr) {
+    for (int i = 0; i < comm->statex_->nRanks(); i++) {
+      config.args.collective.alltoallv_dynamic.recvbuffsPtrGPU[i] =
+          recvbuffs[i];
+    }
   }
 
   config.args.collective.alltoallv_dynamic.actualRecvcounts = actualRecvcounts;
@@ -382,7 +390,8 @@ commResult_t opIbImpl(
       op->type,
       comm,
       std::move(timestamp),
-      op->alltoallv_dynamic.kElem);
+      op->alltoallv_dynamic.kElem,
+      op->alltoallv_dynamic.recvbuff);
 }
 
 commResult_t setupGpeOp(
@@ -396,7 +405,8 @@ commResult_t setupGpeOp(
     CtranComm* comm,
     uint64_t opCount,
     std::vector<std::unique_ptr<struct OpElem>>& opGroup,
-    KernelElem* elem) {
+    KernelElem* elem,
+    void* recvbuff) {
   std::unique_ptr<struct OpElem> op =
       std::unique_ptr<struct OpElem>(new OpElem(opType, comm, opCount));
   op->alltoallv_dynamic.sendbuffs = sendbuffs;
@@ -406,6 +416,7 @@ commResult_t setupGpeOp(
   op->alltoallv_dynamic.maxSendcount = maxSendcount;
   op->alltoallv_dynamic.maxRecvcount = maxRecvcount;
   op->alltoallv_dynamic.kElem = elem;
+  op->alltoallv_dynamic.recvbuff = recvbuff;
 
   opGroup.push_back(std::move(op));
 

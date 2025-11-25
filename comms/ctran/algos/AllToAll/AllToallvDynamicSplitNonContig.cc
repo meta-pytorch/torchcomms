@@ -21,6 +21,7 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
     const size_t* sendIndices,
     const size_t* sendIndicesBlockLengths,
     void* const* recvbuffs,
+    void* recvbuff,
     size_t maxSendcount,
     size_t maxRecvcount,
     const meta::comms::Hints& hints,
@@ -31,6 +32,18 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
     size_t* recvAllSplitLengths) {
   auto opCount = comm->ctran_->getOpCount();
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
+
+  if (combine && recvbuff == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "Invalid AllToAllvDynamic argument: in combine mode, recvbuff cannot be nullptr");
+  }
+
+  if (!combine && recvbuffs == nullptr) {
+    FB_ERRORRETURN(
+        commInvalidArgument,
+        "Invalid AllToAllvDynamic argument: in dispatch mode, recvbuffs cannot be nullptr");
+  }
 
   // prepare kernel config for self and NVL copies
   KernelConfig config = KernelConfig(
@@ -70,6 +83,12 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
   config.args.collective.alltoallv_dynamic.nonContig.maxSendcount =
       maxSendcount;
 
+  if (recvbuff != nullptr) {
+    for (int i = 0; i < comm->statex_->nRanks(); i++) {
+      config.args.collective.alltoallv_dynamic.recvbuffsPtrGPU[i] = recvbuff;
+    }
+  }
+
   // prepare operation for IB path
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   FB_COMMCHECK(setupGpeOp(
@@ -84,7 +103,8 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
       comm,
       opCount,
       opGroup,
-      elem));
+      elem,
+      recvbuff));
 
   XCHECK(alltoallvDynamicSplitNonContigKerns.contains(datatype))
       << "alltoallvDynamicSplitNonContigKerns does not contain datatype "
