@@ -10,7 +10,7 @@
 
 #include "comms/ctran/ibverbx/Coordinator.h"
 #include "comms/ctran/ibverbx/IbvCommon.h"
-#include "comms/ctran/ibverbx/IbvMr.h"
+#include "comms/ctran/ibverbx/IbvPd.h"
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
@@ -30,56 +30,6 @@ ibvGetCqEvent(ibv_comp_channel* channel, ibv_cq** cq, void** cq_context);
 
 // Acknowledge completion events
 void ibvAckCqEvents(ibv_cq* cq, unsigned int nevents);
-
-// IbvPd: Protection Domain
-class IbvPd {
- public:
-  ~IbvPd();
-
-  // disable copy constructor
-  IbvPd(const IbvPd&) = delete;
-  IbvPd& operator=(const IbvPd&) = delete;
-
-  // move constructor
-  IbvPd(IbvPd&& other) noexcept;
-  IbvPd& operator=(IbvPd&& other) noexcept;
-
-  ibv_pd* pd() const;
-  bool useDataDirect() const;
-
-  folly::Expected<IbvMr, Error>
-  regMr(void* addr, size_t length, ibv_access_flags access) const;
-
-  folly::Expected<IbvMr, Error> regDmabufMr(
-      uint64_t offset,
-      size_t length,
-      uint64_t iova,
-      int fd,
-      ibv_access_flags access) const;
-
-  folly::Expected<IbvQp, Error> createQp(ibv_qp_init_attr* initAttr) const;
-
-  // The send_cq and recv_cq fields in initAttr are ignored.
-  // Instead, initAttr.send_cq and initAttr.recv_cq will be set to the physical
-  // CQs contained within sendCq and recvCq, respectively.
-  folly::Expected<IbvVirtualQp, Error> createVirtualQp(
-      int totalQps,
-      ibv_qp_init_attr* initAttr,
-      IbvVirtualCq* sendCq,
-      IbvVirtualCq* recvCq,
-      int maxMsgCntPerQp = kIbMaxMsgCntPerQp,
-      int maxMsgSize = kIbMaxMsgSizeByte,
-      LoadBalancingScheme loadBalancingScheme =
-          LoadBalancingScheme::SPRAY) const;
-
- private:
-  friend class IbvDevice;
-
-  IbvPd(ibv_pd* pd, bool dataDirect = false);
-
-  ibv_pd* pd_{nullptr};
-  bool dataDirect_{false}; // Relevant only to mlx5
-};
 
 // IbvDevice
 class IbvDevice {
