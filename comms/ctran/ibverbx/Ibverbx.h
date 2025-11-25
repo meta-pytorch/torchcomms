@@ -10,6 +10,7 @@
 
 #include "comms/ctran/ibverbx/Coordinator.h"
 #include "comms/ctran/ibverbx/IbvCommon.h"
+#include "comms/ctran/ibverbx/IbvMr.h"
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
@@ -29,29 +30,6 @@ ibvGetCqEvent(ibv_comp_channel* channel, ibv_cq** cq, void** cq_context);
 
 // Acknowledge completion events
 void ibvAckCqEvents(ibv_cq* cq, unsigned int nevents);
-
-// IbvMr: Memory Region
-class IbvMr {
- public:
-  ~IbvMr();
-
-  // disable copy constructor
-  IbvMr(const IbvMr&) = delete;
-  IbvMr& operator=(const IbvMr&) = delete;
-
-  // move constructor
-  IbvMr(IbvMr&& other) noexcept;
-  IbvMr& operator=(IbvMr&& other) noexcept;
-
-  ibv_mr* mr() const;
-
- private:
-  friend class IbvPd;
-
-  explicit IbvMr(ibv_mr* mr);
-
-  ibv_mr* mr_{nullptr};
-};
 
 // IbvPd: Protection Domain
 class IbvPd {
