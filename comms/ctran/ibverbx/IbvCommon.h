@@ -15,6 +15,7 @@ constexpr std::string_view kDefaultHcaPrefix = "";
 const std::vector<std::string> kDefaultHcaList{};
 // Default port
 constexpr int kIbAnyPort = -1;
+constexpr int kDefaultIbDataDirect = 1;
 constexpr int kIbMaxMsgCntPerQp = 100;
 constexpr int kIbMaxMsgSizeByte = 100;
 constexpr int kIbMaxCqe_ = 100;
