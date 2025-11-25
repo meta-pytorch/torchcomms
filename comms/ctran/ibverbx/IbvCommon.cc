@@ -1,3 +1,5 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include <folly/String.h>
 #include <iostream>
