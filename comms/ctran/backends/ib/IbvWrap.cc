@@ -3,7 +3,7 @@
 #include <sys/types.h>
 
 #include "comms/ctran/backends/ib/IbvWrap.h"
-#include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/utils/logger/LogUtils.h"
 
 #include "comms/ctran/utils/Checks.h"
