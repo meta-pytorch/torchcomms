@@ -12,7 +12,6 @@
 #include "comms/utils/logger/LogUtils.h"
 
 CtranNvl::CtranNvl(CtranComm* comm) {
-  commResult_t res = commSuccess;
   const auto statex = comm->statex_.get();
   int myRank = statex->rank();
   int myLocalRank = statex->localRank();
@@ -65,11 +64,8 @@ CtranNvl::CtranNvl(CtranComm* comm) {
         continue;
       }
       int canAccessPeer = 1;
-      FB_CUDACHECKGOTO(
-          cudaDeviceCanAccessPeer(
-              &canAccessPeer, statex->cudaDev(), peerDevs[i]),
-          res,
-          fail);
+      FB_CUDACHECKTHROW(cudaDeviceCanAccessPeer(
+          &canAccessPeer, statex->cudaDev(), peerDevs[i]));
       if (canAccessPeer) {
         this->pimpl_->nvlRankSupportMode[statex->localRankToRank(i)]
             .nvlIntraHost = true;
@@ -101,10 +97,6 @@ CtranNvl::CtranNvl(CtranComm* comm) {
       vecToStr(nvlFabricSupportedRanksStr));
 
   return;
-
-fail:
-  CLOGF(WARN, "CTRAN-NVL : Failed to initialize NVL backend.");
-  throw std::bad_alloc();
 }
 
 CtranNvl::~CtranNvl() {
