@@ -40,6 +40,7 @@ USE_NCCLX = flag_enabled("USE_NCCLX", True)
 USE_GLOO = flag_enabled("USE_GLOO", True)
 USE_RCCL = flag_enabled("USE_RCCL", False)
 USE_RCCLX = flag_enabled("USE_RCCLX", False)
+USE_XCCL = flag_enabled("USE_XCCL", False)
 
 requirement_path = os.path.join(ROOT, "requirements.txt")
 try:
@@ -107,6 +108,7 @@ class build_ext(build_ext_orig):
             f"-DUSE_GLOO={flag_str(USE_GLOO)}",
             f"-DUSE_RCCL={flag_str(USE_RCCL)}",
             f"-DUSE_RCCLX={flag_str(USE_RCCLX)}",
+            f"-DUSE_XCCL={flag_str(USE_XCCL)}",
         ]
         build_args = ["--", "-j"]
 
@@ -150,6 +152,9 @@ if USE_RCCL:
 if USE_RCCLX:
     ext_modules += [
         CMakeExtension("torchcomms._comms_rcclx"),
+if USE_XCCL:
+    ext_modules += [
+        CMakeExtension("torchcomms._comms_xccl"),
     ]
 
 setup(
@@ -164,6 +169,7 @@ setup(
             "gloo = torchcomms._comms_gloo",
             "rccl = torchcomms._comms_rccl",
             "rcclx = torchcomms._comms_rcclx",
+            "xccl = torchcomms._comms_xccl",
         ]
     },
     ext_modules=ext_modules,
