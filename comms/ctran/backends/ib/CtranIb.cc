@@ -67,7 +67,7 @@ CtranIbSingleton::CtranIbSingleton() {
   auto ibvInitResult = ibverbx::ibvInit();
   FOLLY_EXPECTED_CHECKTHROW(ibvInitResult);
   auto maybeDeviceList = ibverbx::IbvDevice::ibvGetDeviceList(
-      NCCL_IB_HCA, NCCL_IB_HCA_PREFIX, CTRAN_IB_ANY_PORT);
+      NCCL_IB_HCA, NCCL_IB_HCA_PREFIX, CTRAN_IB_ANY_PORT, NCCL_IB_DATA_DIRECT);
   FOLLY_EXPECTED_CHECKTHROW(maybeDeviceList);
   ibvDevices = std::move(*maybeDeviceList);
 
