@@ -352,7 +352,6 @@ class CtranDistTest : public ::testing::Test {
     COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
     mccl::McclCommCreateOpts opts{
         .cudaDeviceId = cudaDev,
-        .timeout = std::chrono::seconds(5),
     };
     auto mcclComm = std::make_unique<mccl::McclComm>(opts);
 
