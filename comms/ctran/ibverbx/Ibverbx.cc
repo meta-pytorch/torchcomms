@@ -330,7 +330,10 @@ bool mlx5dvDmaBufDataDirectLinkCapable(
     return false;
   }
   if (dev_fail) {
-    XLOGF(INFO, "Kernel DMA-BUF is not supported on device {}", device->name);
+    XLOGF(
+        INFO,
+        "MLX5DV Kernel DMA-BUF is not supported on device {}",
+        device->name);
     return false;
   }
 
