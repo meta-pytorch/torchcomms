@@ -111,18 +111,6 @@ void ibvAckCqEvents(ibv_cq* cq, unsigned int nevents) {
   ibvSymbols.ibv_internal_ack_cq_events(cq, nevents);
 }
 
-/*** Error ***/
-
-Error::Error() : errNum(errno), errStr(folly::errnoStr(errno)) {}
-Error::Error(int errNum) : errNum(errNum), errStr(folly::errnoStr(errNum)) {}
-Error::Error(int errNum, std::string errStr)
-    : errNum(errNum), errStr(std::move(errStr)) {}
-
-std::ostream& operator<<(std::ostream& out, Error const& err) {
-  out << err.errStr << " (errno=" << err.errNum << ")";
-  return out;
-}
-
 /*** IbvMr ***/
 
 IbvMr::IbvMr(ibv_mr* mr) : mr_(mr) {}
