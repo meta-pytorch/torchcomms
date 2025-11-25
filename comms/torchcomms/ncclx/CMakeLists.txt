@@ -2,7 +2,7 @@
 # Extension: torchcomms._comms_ncclx
 file(GLOB TORCHCOMMS_NCCLX_SOURCES
     "comms/torchcomms/ncclx/*.cpp"
-    "comms/torchcomms/transport/*.cc"
+    "comms/torchcomms/transport/*.cpp"
 )
 file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/CudaApi.cpp")
 
