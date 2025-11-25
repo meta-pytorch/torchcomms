@@ -335,10 +335,10 @@ bool CtranSocket::addToPendingOpsIfRequired(
 
       if (it == locked->end()) {
         // if there's no socket and no pendingops queue, create a queue
-        locked->emplace(peerRank, std::deque<std::unique_ptr<SockPendingOp>>());
-        locked->at(peerRank).push_back(std::move(pendingOp));
+        auto res = locked->emplace(peerRank, PendingOpQueue());
+        res.first->second.q.push_back(std::move(pendingOp));
       } else {
-        it->second.push_back(std::move(pendingOp));
+        it->second.q.push_back(std::move(pendingOp));
       }
       pending = true;
     }
@@ -367,7 +367,7 @@ commResult_t CtranSocket::progressPendingOps(void) {
       // If Socket has established, move the pendingOps list to
       // readyToIssueOps; otherwise, skip and move to next peer.
       if (sock) {
-        for (auto& op : it->second) {
+        for (auto& op : it->second.q) {
           readyToIssueOps[peerRank].push_back(std::move(op));
         }
         // Remove the peer entry once all pending ops are issued.
