@@ -30,17 +30,20 @@ PYBIND11_MODULE(_transport, m) {
           py::pickle(
               [](const RdmaRemoteBuffer& buffer) { // __getstate__
                 return py::make_tuple(
-                    reinterpret_cast<uintptr_t>(buffer.ptr), buffer.accessKey);
+                    reinterpret_cast<uintptr_t>(buffer.ptr),
+                    buffer.len,
+                    buffer.accessKey);
               },
               [](const py::tuple& t) { // __setstate__
-                if (t.size() != 2) {
+                if (t.size() != 3) {
                   throw std::runtime_error(
                       "Invalid state for RdmaRemoteBuffer");
                 }
                 return RdmaRemoteBuffer{
                     // NOLINTNEXTLINE(performance-no-int-to-ptr)
                     reinterpret_cast<void*>(t[0].cast<uintptr_t>()),
-                    t[1].cast<std::string>()};
+                    t[1].cast<size_t>(),
+                    t[2].cast<std::string>()};
               }));
 
   py::class_<RdmaTransport, std::shared_ptr<RdmaTransport>>(m, "RdmaTransport")
@@ -105,6 +108,6 @@ PYBIND11_MODULE(_transport, m) {
           })
       .def("to_remote_buffer", [](RdmaMemory& self) {
         return RdmaRemoteBuffer{
-            const_cast<void*>(self.data()), self.remoteKey()};
+            const_cast<void*>(self.data()), self.length(), self.remoteKey()};
       });
 }

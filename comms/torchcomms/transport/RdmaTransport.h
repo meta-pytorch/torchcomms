@@ -85,7 +85,12 @@ class RdmaMemory : folly::MoveOnly {
   };
 
   RdmaMemory(const void* buf, size_t len, int cudaDev);
+  RdmaMemory(RdmaMemory&& other) noexcept;
   ~RdmaMemory();
+
+  View createView() const {
+    return View(*this, 0, len_);
+  }
 
   View createView(size_t offset, size_t length) const {
     return View(*this, offset, length);
@@ -94,6 +99,10 @@ class RdmaMemory : folly::MoveOnly {
   View createView(const void* buf, size_t length) const {
     const size_t offset = (uintptr_t)buf - (uintptr_t)buf_;
     return View(*this, offset, length);
+  }
+
+  MutableView createMutableView() const {
+    return MutableView(*this, 0, len_);
   }
 
   MutableView createMutableView(size_t offset, size_t length) const {
@@ -153,6 +162,7 @@ class RdmaMemory : folly::MoveOnly {
  */
 struct RdmaRemoteBuffer {
   void* ptr{nullptr};
+  const size_t len{0};
   const std::string accessKey;
 };
 

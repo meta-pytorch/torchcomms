@@ -33,8 +33,18 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev)
   remoteKey_ = CtranIb::getRemoteAccessKey(regHdl_).toString();
 }
 
+RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
+    : buf_(other.buf_),
+      len_(other.len_),
+      cudaDev_(other.cudaDev_),
+      regHdl_(other.regHdl_),
+      remoteKey_(std::move(other.remoteKey_)) {
+  other.regHdl_ = nullptr;
+  other.remoteKey_.clear();
+}
+
 RdmaMemory::~RdmaMemory() {
-  if (remoteKey_.size()) {
+  if (remoteKey_.size() > 0 && regHdl_) {
     FB_COMMCHECKTHROW(CtranIb::deregMem(regHdl_));
   }
 }
@@ -126,6 +136,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
     bool notify) {
   CHECK_THROW(connected(), std::runtime_error);
   CHECK_THROW(evb_, std::runtime_error);
+  CHECK_THROW(localBuffer.size() <= remoteBuffer.len, std::runtime_error);
 
   CHECK(cudaDev_ == localBuffer->getDevice());
 
