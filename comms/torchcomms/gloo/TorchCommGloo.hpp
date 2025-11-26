@@ -153,6 +153,11 @@ class TorchCommGloo : public TorchCommBackend,
       const std::string& name,
       const CommOptions& options = {}) override;
 
+  std::shared_ptr<c10::Allocator> getMemAllocator() override {
+    throw std::runtime_error(
+        "getMemAllocator not implemented for Gloo backend");
+  }
+
   // Friend access for TorchWorkGloo
   friend class TorchWorkGloo;
 

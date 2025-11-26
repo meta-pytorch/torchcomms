@@ -244,6 +244,9 @@ class NcclxMock : public NcclxApi {
        cudaStream_t stream),
       (override));
 
+  MOCK_METHOD(ncclResult_t, memAlloc, (void** buff, size_t size), (override));
+  MOCK_METHOD(ncclResult_t, memFree, (void* buff), (override));
+
   // Group operations
   MOCK_METHOD(ncclResult_t, groupStart, (), (override));
   MOCK_METHOD(ncclResult_t, groupEnd, (), (override));

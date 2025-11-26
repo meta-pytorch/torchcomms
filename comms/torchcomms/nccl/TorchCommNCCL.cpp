@@ -3,6 +3,9 @@
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
 
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
+#include <torch/csrc/distributed/c10d/cuda/utils.hpp> // @manual=//caffe2:torch-cpp-cuda
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -1394,6 +1397,55 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
   new_torchcomm->init(device_, name, options);
 
   return new_torchcomm;
+}
+
+// Allocate function
+static void* _ncclMemAlloc(
+    std::shared_ptr<NcclApi> nccl_api,
+    size_t size,
+    int device,
+    void* stream) {
+  at::cuda::OptionalCUDAGuard gpuGuard(device);
+  void* ptr = nullptr;
+  TORCH_CHECK(
+      nccl_api->memAlloc(&ptr, size) == ncclSuccess, "ncclMemAlloc failed");
+  LOG(INFO) << "NCCL mem allocator: allocated " << ptr << " with " << size
+            << " bytes in stream " << stream;
+  return ptr;
+}
+
+// Free function
+static void _ncclMemFree(
+    std::shared_ptr<NcclApi> nccl_api,
+    void* ptr,
+    size_t size,
+    int device,
+    void* stream) {
+  LOG(INFO) << "NCCL mem allocator: freeing " << ptr << " with " << size
+            << " bytes in stream " << stream;
+  at::cuda::OptionalCUDAGuard gpuGuard(device);
+  TORCH_CHECK(nccl_api->memFree(ptr) == ncclSuccess, "ncclMemFree failed");
+}
+
+// Create a `CUDAPluggableAllocator` that uses the above functions.
+std::shared_ptr<c10::Allocator> TorchCommNCCL::getMemAllocator() {
+  c10::DeviceIndex deviceIdx = device_.index();
+  if (!c10d::cuda::deviceSupportsMulticast(deviceIdx)) {
+    TORCH_CHECK(
+        false, "NCCL mem allocator is not supported in this NCCL version");
+  }
+  static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
+      ncclMemAllocator =
+          torch::cuda::CUDAPluggableAllocator::createCustomAllocator(
+              // alloc_fn
+              [this](size_t size, int device, cudaStream_t stream) {
+                return _ncclMemAlloc(nccl_api_, size, device, stream);
+              },
+              // free_fn
+              [this](void* ptr, size_t size, int device, cudaStream_t stream) {
+                return _ncclMemFree(nccl_api_, ptr, size, device, stream);
+              });
+  return ncclMemAllocator;
 }
 
 void TorchCommNCCL::register_address(

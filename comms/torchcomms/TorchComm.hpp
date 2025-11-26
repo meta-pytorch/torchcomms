@@ -134,6 +134,9 @@ class TorchComm {
       const std::string& name,
       const CommOptions& options = {});
 
+  // Memory Management
+  std::shared_ptr<c10::Allocator> getMemAllocator();
+
   // Batch Operations
   BatchSendRecv batch_op_create();
 

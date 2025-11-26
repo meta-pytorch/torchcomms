@@ -266,6 +266,14 @@ ncclResult_t DefaultNcclxApi::winWaitSignal(
 #endif
 }
 
+ncclResult_t DefaultNcclxApi::memAlloc(void** buff, size_t size) {
+  return ncclMemAlloc(buff, size);
+}
+
+ncclResult_t DefaultNcclxApi::memFree(void* buff) {
+  return ncclMemFree(buff);
+}
+
 ncclResult_t DefaultNcclxApi::groupStart() {
   return ncclGroupStart();
 }

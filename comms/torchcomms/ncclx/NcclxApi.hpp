@@ -180,6 +180,9 @@ class NcclxApi {
       NcclxWindow win,
       cudaStream_t stream) = 0;
 
+  virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
+  virtual ncclResult_t memFree(void* buff) = 0;
+
   // Group operations
   virtual ncclResult_t groupStart() = 0;
   virtual ncclResult_t groupEnd() = 0;
@@ -363,6 +366,9 @@ class DefaultNcclxApi : public NcclxApi {
       NcclxWindowCmpOp cmp_op,
       NcclxWindow win,
       cudaStream_t stream) override;
+
+  ncclResult_t memAlloc(void** buff, size_t size) override;
+  ncclResult_t memFree(void* buff) override;
 
   // Group operations
   ncclResult_t groupStart() override;

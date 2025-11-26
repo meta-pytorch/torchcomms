@@ -184,6 +184,8 @@ class TorchCommNCCLX : public TorchCommBackend,
       const std::string& name,
       const CommOptions& options = {}) override;
 
+  std::shared_ptr<c10::Allocator> getMemAllocator() override;
+
   // Friend access for TorchCommNCCLX
   friend class TorchWorkNCCLX;
   friend class CachingAllocatorHookImpl;

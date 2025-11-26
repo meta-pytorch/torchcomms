@@ -173,7 +173,11 @@ class TorchCommRCCL : public TorchCommBackend,
       const std::string& name,
       const CommOptions& options = {}) override;
 
-  // Friend access for TorchWorkRCCL
+  std::shared_ptr<c10::Allocator> getMemAllocator() override {
+    throw std::runtime_error("getMemAllocator not supported for RCCL backend");
+  }
+
+  // Friend access for TorchCommRCCL
   friend class TorchWorkRCCL;
   friend class CachingAllocatorHookImpl;
 
