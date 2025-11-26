@@ -2,7 +2,6 @@
 # pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-import os
 import pickle
 import unittest
 
@@ -183,5 +182,5 @@ class TransportTest(unittest.TestCase):
         self.run_send_recv("cpu", "cpu", mode="READ")
 
 
-if __name__ == "__main__" and os.environ["TEST_BACKEND"] == "ncclx":
+if __name__ == "__main__":
     unittest.main()
