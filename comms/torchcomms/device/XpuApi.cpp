@@ -30,10 +30,15 @@ xpu_result_t DefaultXpuApi::getDeviceProperties(xpuDeviceProp* prop, int device)
         std::string device_name = sycl_device.get_info<sycl::info::device::name>();
         strncpy(prop->name, device_name.c_str(), 255);
         prop->name[255] = '\0';
-        
+
         // Get memory info
         prop->totalGlobalMem = sycl_device.get_info<sycl::info::device::global_mem_size>();
-        
+
+        if (!sycl_device.has(sycl::aspect::ext_intel_free_memory)) {
+            TC_LOG(WARNING)
+                << "Free memory query not supported on this SYCL device. Returning total memory as free memory.";
+        }
+
         // Get compute capabilities
         auto max_work_group_size = sycl_device.get_info<sycl::info::device::max_work_group_size>();
         auto max_work_item_sizes = sycl_device.get_info<sycl::info::device::max_work_item_sizes<3>>();
@@ -64,7 +69,6 @@ xpu_result_t DefaultXpuApi::memGetInfo(size_t* free, size_t* total) {
         if (sycl_device.has(sycl::aspect::ext_intel_free_memory)) {
             *free = sycl_device.get_info<sycl::ext::intel::info::device::free_memory>();
         } else {
-            TC_LOG(WARNING) << "Free memory query not supported on this SYCL device. Returning total memory as free memory.";
             *free = *total;
         }
 
