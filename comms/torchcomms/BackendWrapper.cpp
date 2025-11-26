@@ -81,6 +81,7 @@ std::vector<at::Tensor> WorkWrapper::result() {
 
 BackendWrapper::BackendWrapper(std::shared_ptr<TorchComm> comm)
     : Backend(comm->getRank(), comm->getSize()),
+      comm_(comm),
       backend_(comm->unsafeGetBackend()) {}
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
@@ -351,6 +352,10 @@ BackendWrapper::recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) {
   TORCH_INTERNAL_ASSERT(tensors.size() == 1, "Only single tensor supported");
   return c10::make_intrusive<WorkWrapper>(
       backend_->recv(tensors.at(0), srcRank, tag));
+}
+
+std::shared_ptr<TorchComm> BackendWrapper::getComm() const {
+  return comm_;
 }
 
 } // namespace comms
