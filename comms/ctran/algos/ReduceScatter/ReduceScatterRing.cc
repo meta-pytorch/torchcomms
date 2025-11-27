@@ -16,6 +16,11 @@ static const auto myAlgo = NCCL_REDUCESCATTER_ALGO::ctring;
 static inline std::tuple<size_t, int, int> getRingConfig(
     CtranComm* comm,
     struct OpElem* op) {
+  // Handle zero-count case
+  if (op->reducescatter.recvcount == 0) {
+    return std::make_tuple(0, 0, 0);
+  }
+
   // Compute stepCount based on tmpBuf size
   // We use half for receive and half for intermediate local reduce result.
   // (We may use recvbuf in out-of-place case, but to keep code simple we skip
@@ -32,6 +37,7 @@ static inline std::tuple<size_t, int, int> getRingConfig(
   if (op->reducescatter.recvcount % stepCount) {
     nRounds++;
   }
+
   // - Each round of the ring has nRanks - 1 steps
   int nSteps = comm->statex_->nRanks() - 1;
   return std::make_tuple(stepCount, nRounds, nSteps);
@@ -326,6 +332,12 @@ commResult_t ctranReduceScatterRing(
       -1,
       comm,
       stream);
+
+  // Handle zero-count case
+  if (recvcount == 0) {
+    return commSuccess;
+  }
+
   // make sure tmpbuf is allocated and registered on main thread
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
 
