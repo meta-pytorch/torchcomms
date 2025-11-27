@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "FuzzerUtil.h"
+#include <folly/system/HardwareConcurrency.h>
 #include "FuzzerIO.h"
 #include "FuzzerInternal.h"
 #include <cassert>
@@ -196,7 +197,7 @@ void PrintPC(const char *SymbolizedFMT, const char *FallbackFMT, uintptr_t PC) {
 }
 
 unsigned NumberOfCpuCores() {
-  unsigned N = std::thread::hardware_concurrency();
+  unsigned N = folly::hardware_concurrency();
   if (!N) {
     Printf("WARNING: std::thread::hardware_concurrency not well defined for "
            "your platform. Assuming CPU count of 1.\n");
