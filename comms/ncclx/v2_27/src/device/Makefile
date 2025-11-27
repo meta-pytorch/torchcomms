@@ -111,7 +111,6 @@ SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/DirectImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/PipelineImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/AllGatherP.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAllvDedup/PrepareImpl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAllvDedup/ExecImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Broadcast/Broadcast.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecv.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Barrier.cu

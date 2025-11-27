@@ -12,6 +12,13 @@
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 
+// Forward declaration of kernel at global scope
+template <typename T>
+extern __global__ void ncclKernelAllToAllvDedup(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::alltoallvdedup::ExecKernArgs args);
+
 namespace ctran::alltoallvdedup {
 // updated when GPE thread starts a new collective, only for logging purpose
 thread_local uint64_t thOpCount = -1;
@@ -22,12 +29,6 @@ using namespace utils;
 #define DEBUG_LOG(fmt, ...) \
   do {                      \
   } while (0);
-
-template <typename T>
-extern __global__ void ncclKernelAllToAllvDedup(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ExecKernArgs args);
 
 namespace {
 void* alltoallv_dedup_dpKerns[commNumTypes] = {
