@@ -17,7 +17,7 @@ from torchcomms.device_mesh import _create_torchcomm_process_group, _get_store_f
 class MemPoolTorchCommTest(unittest.TestCase):
     @property
     def world_size(self) -> int:
-        return torch.cuda.device_count()
+        return dist.get_world_size()
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)

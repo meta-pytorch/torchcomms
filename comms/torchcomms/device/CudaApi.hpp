@@ -177,5 +177,7 @@ class DefaultCudaApi : public CudaApi {
   const char* getErrorString(cudaError_t error) override;
 };
 
+bool deviceSupportsMulticast(int device_idx);
+
 } // namespace comms
 } // namespace torch

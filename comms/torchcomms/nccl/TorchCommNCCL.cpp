@@ -5,7 +5,6 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
-#include <torch/csrc/distributed/c10d/cuda/utils.hpp> // @manual=//caffe2:torch-cpp-cuda
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -1430,7 +1429,7 @@ static void _ncclMemFree(
 // Create a `CUDAPluggableAllocator` that uses the above functions.
 std::shared_ptr<c10::Allocator> TorchCommNCCL::getMemAllocator() {
   c10::DeviceIndex deviceIdx = device_.index();
-  if (!c10d::cuda::deviceSupportsMulticast(deviceIdx)) {
+  if (!deviceSupportsMulticast(deviceIdx)) {
     TORCH_CHECK(
         false, "NCCL mem allocator is not supported in this NCCL version");
   }
