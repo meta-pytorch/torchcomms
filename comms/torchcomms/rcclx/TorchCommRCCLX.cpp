@@ -1006,15 +1006,24 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all_v_single(
   std::vector<size_t> senddispls(comm_size_);
   std::vector<size_t> recvdispls(comm_size_);
 
+  // Calculate the number of elements per slice along the first dimension
+  // For a tensor with shape [N, D1, D2, ..., Dk], each slice of size S along
+  // dim 0 contains S * D1 * D2 * ... * Dk elements
+  // Use input tensor for send counts and output tensor for recv counts
+  size_t send_elements_per_slice =
+      input.numel() ? input.numel() / input.size(0) : 0;
+  size_t recv_elements_per_slice =
+      output.numel() ? output.numel() / output.size(0) : 0;
+
   size_t sendoffset = 0;
   size_t recvoffset = 0;
   for (int i = 0; i < comm_size_; ++i) {
-    sendcounts[i] = input_split_sizes[i];
-    recvcounts[i] = output_split_sizes[i];
+    sendcounts[i] = input_split_sizes[i] * send_elements_per_slice;
+    recvcounts[i] = output_split_sizes[i] * recv_elements_per_slice;
     senddispls[i] = sendoffset;
     recvdispls[i] = recvoffset;
-    sendoffset += input_split_sizes[i];
-    recvoffset += output_split_sizes[i];
+    sendoffset += sendcounts[i];
+    recvoffset += recvcounts[i];
   }
 
   ncclResult_t result = rcclx_api_->allToAllv(
