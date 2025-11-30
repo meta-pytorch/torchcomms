@@ -1152,13 +1152,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
   // Calculate the number of elements per slice along the first dimension
   // For a tensor with shape [N, D1, D2, ..., Dk], each slice of size S along
   // dim 0 contains S * D1 * D2 * ... * Dk elements
-  size_t elements_per_slice = input.numel() ? input.numel() / input.size(0) : 0;
+  // Use input tensor for send counts and output tensor for recv counts
+  size_t send_elements_per_slice =
+      input.numel() ? input.numel() / input.size(0) : 0;
+  size_t recv_elements_per_slice =
+      output.numel() ? output.numel() / output.size(0) : 0;
 
   size_t sendoffset = 0;
   size_t recvoffset = 0;
   for (int i = 0; i < comm_size_; ++i) {
-    sendcounts[i] = input_split_sizes[i] * elements_per_slice;
-    recvcounts[i] = output_split_sizes[i] * elements_per_slice;
+    sendcounts[i] = input_split_sizes[i] * send_elements_per_slice;
+    recvcounts[i] = output_split_sizes[i] * recv_elements_per_slice;
     senddispls[i] = sendoffset;
     recvdispls[i] = recvoffset;
     sendoffset += sendcounts[i];
