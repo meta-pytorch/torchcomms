@@ -13,6 +13,13 @@ if (NOT DEFINED ENABLE_TCPDM)
     list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/ctran/backends/tcpdevmem/.*")
 endif()
 
+list(FILTER CMAKE_CUDA_FLAGS EXCLUDE REGEX ".*arch=compute_50,code=sm_50")
+list(FILTER CMAKE_CUDA_FLAGS EXCLUDE REGEX ".*arch=compute_60,code=sm_60")
+list(FILTER CMAKE_CUDA_FLAGS EXCLUDE REGEX ".*arch=compute_70,code=sm_70")
+list(FILTER CMAKE_CUDA_FLAGS EXCLUDE REGEX ".*arch=compute_75,code=sm_75")
+
+message(status "CMAKE_CUDA_FLAGS: ${CMAKE_CUDA_FLAGS}")
+
 # genctran.py generates source files (*.cu) for template instantiations across
 # different algorithms, data types, and operations.
 execute_process(
