@@ -23,6 +23,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using AbortPtr = std::shared_ptr<ctran::utils::Abort>;
+using namespace std::literals::chrono_literals;
 using ::testing::_;
 using ::testing::StrictMock;
 
@@ -279,7 +280,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
   // Set up a timer to abort after a short delay
   std::thread abortThread([&]() {
     abortThreadStarted.post();
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(100ms);
     abortCtrl->Set();
   });
 
@@ -300,7 +301,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   // Should abort quickly
-  EXPECT_LT(elapsed, std::chrono::seconds(5));
+  EXPECT_LT(elapsed, 5s);
   EXPECT_NE(result, commSuccess);
 
   // Verify abort flag is set
@@ -318,7 +319,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortTimeoutSendCtrlMsg) {
       abortCtrl,
       &serverAddr);
 
-  abortCtrl->SetTimeout(std::chrono::milliseconds(250));
+  abortCtrl->SetTimeout(250ms);
 
   // Try to connect to a non-existent server
   SocketServerAddr invalidServerAddr = getSocketServerAddress(
@@ -336,7 +337,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortTimeoutSendCtrlMsg) {
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   // Should abort quickly
-  EXPECT_LT(elapsed, std::chrono::seconds(5));
+  EXPECT_LT(elapsed, 5s);
   EXPECT_NE(result, commSuccess);
   EXPECT_TRUE(abortCtrl->Test());
 }
@@ -352,7 +353,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, InvalidMagicNumberRejection) {
 
   // Create a client socket that sends invalid magic number
   std::thread clientThread([&]() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(100ms);
 
     auto param = GetParam();
     auto socketFactory = param.socketFactoryCreator();
@@ -363,8 +364,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, InvalidMagicNumberRejection) {
     serverAddrFolly.setFromIpPort(
         listenAddr.getIPAddress().str(), listenAddr.getPort());
 
-    int result = clientSocket->connect(
-        serverAddrFolly, "lo", std::chrono::milliseconds(1000), 5);
+    int result = clientSocket->connect(serverAddrFolly, "lo", 1s, 5);
 
     if (result == 0) {
       // Send invalid magic number
@@ -376,7 +376,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, InvalidMagicNumberRejection) {
       clientSocket->send(&rank, sizeof(int));
 
       // Give server time to process and reject
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      std::this_thread::sleep_for(500ms);
     }
   });
 
@@ -552,7 +552,7 @@ class CtranIbAbortCtrlMsgTest
       EXPECT_EQ(result, commSuccess);
     }
 
-    EXPECT_LT(elapsed, std::chrono::seconds(5)) << "Abort should fail quickly";
+    EXPECT_LT(elapsed, 5s) << "Abort should fail quickly";
 
     XLOGF(
         INFO,
@@ -849,7 +849,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringListenThreadAccept) {
   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - start);
   while (!preparedServerSocket->abortCtrl->Test() && elapsed.count() < 10000) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    std::this_thread::sleep_for(10ms);
     elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - start);
   }
