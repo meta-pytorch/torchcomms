@@ -339,7 +339,7 @@ struct RunWorkColl<ncclFuncAllGather, T, RedOp, NCCL_ALGO_NVLS, NCCL_PROTO_SIMPL
                 /*nSrcs=*/1, [=]__device__(int s/*==0*/) -> void* {
               return (char*)srcPtrs[src] + railAllOffset;
             },
-                /*nDsts=*/outIsDst + nDsts, [=]__device__(int d) -> void* {
+                /*nDsts=*/outIsDst + nDsts, [=, this]__device__(int d) -> void* {
               return d < outIsDst ? outbuf + userOneBeg
                 : work->regUsed ? (char*)dstPtrs[d - outIsDst] + userOneBeg
                 : (char*)dstPtrs[d - outIsDst] + railAllOffset;
@@ -560,10 +560,10 @@ struct RunWorkColl<ncclFuncAllGather, T, RedOp, NCCL_ALGO_COLLNET_DIRECT, NCCL_P
                     /*MultimemDsts=*/0, 0+MinDsts, 1+MaxDsts,
                     /*PreOpSrcs=*/0>
             (tid, tn, 0, nullptr, false,
-             /*nSrcs=*/1, [=]__device__(int s/*==0*/) -> void* {
+             /*nSrcs=*/1, [=, this]__device__(int s/*==0*/) -> void* {
                return work->regUsed && (recvDirectFlag & NCCL_P2P_READ) ? (char*)srcPtrs[src] + userOneBeg : (char*)srcPtrs[src] + railAllOffset;
              },
-             /*nDsts=*/outIsDst+nDsts, [=]__device__(int d) -> void* {
+             /*nDsts=*/outIsDst+nDsts, [=, this]__device__(int d) -> void* {
                return d < outIsDst ? outbuf + userOneBeg
                                    : work->regUsed && (sendDirectFlag & NCCL_P2P_WRITE) ? (char*)dstPtrs[d-outIsDst] + userOneBeg
                                    : (char*)dstPtrs[d-outIsDst] + railAllOffset;
