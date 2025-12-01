@@ -470,6 +470,62 @@ class AllToAllvSingleTest(unittest.TestCase):
                     input_sizes, output_sizes, dtype
                 )
 
+        # Test asymmetric communication: some ranks have all zero inputs but non-zero outputs
+        for count in self.counts:
+            for dtype in self.dtypes:
+                # Create an asymmetric pattern where even ranks send data but odd ranks don't
+                # However, odd ranks receive data from even ranks
+                input_sizes = []
+                output_sizes = []
+
+                for i in range(self.num_ranks):
+                    if self.rank % 2 == 0:
+                        # Even ranks send data to all ranks
+                        input_sizes.append(count)
+                    else:
+                        # Odd ranks don't send any data
+                        input_sizes.append(0)
+
+                    if i % 2 == 0:
+                        # All ranks receive data from even ranks
+                        output_sizes.append(count)
+                    else:
+                        # All ranks don't receive from odd ranks (since they don't send)
+                        output_sizes.append(0)
+
+                # Create a descriptive test name for better test output
+                test_name = f"AsymmetricZeroInput_{count}_{get_dtype_name(dtype)}"
+                print(f"Running tests with parameters: {test_name}")
+
+                # Run all test functions with clear tracing
+                print("Running _sync_all_to_all_v_single")
+                self._sync_all_to_all_v_single(input_sizes, output_sizes, dtype)
+
+                print("Running _sync_all_to_all_v_single_no_work")
+                self._sync_all_to_all_v_single_no_work(input_sizes, output_sizes, dtype)
+
+                print("Running _async_all_to_all_v_single")
+                self._async_all_to_all_v_single(input_sizes, output_sizes, dtype)
+
+                print("Running _async_all_to_all_v_single_early_reset")
+                self._async_all_to_all_v_single_early_reset(
+                    input_sizes, output_sizes, dtype
+                )
+
+                print("Running _all_to_all_v_single_input_deleted")
+                self._all_to_all_v_single_input_deleted(
+                    input_sizes, output_sizes, dtype
+                )
+
+                if runCudaGraphTests:
+                    print("Running _graph_all_to_all_v_single")
+                    self._graph_all_to_all_v_single(input_sizes, output_sizes, dtype)
+
+                    print("Running _graph_all_to_all_v_single_input_deleted")
+                    self._graph_all_to_all_v_single_input_deleted(
+                        input_sizes, output_sizes, dtype
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

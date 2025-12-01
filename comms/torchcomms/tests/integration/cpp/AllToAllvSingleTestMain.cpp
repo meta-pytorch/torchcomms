@@ -147,6 +147,66 @@ TEST_F(AllToAllvSingleTest, AllTests) {
     SCOPED_TRACE("Running testSyncAllToAllvSingleMultiDimTensor");
     testSyncAllToAllvSingleMultiDimTensor(input_sizes, output_sizes, dtype);
   }
+
+  // Test asymmetric communication: some ranks have all zero inputs but non-zero
+  // outputs
+  for (uint64_t count : counts) {
+    for (at::ScalarType dtype : dtypes) {
+      // Create an asymmetric pattern where even ranks send data but odd ranks
+      // don't However, odd ranks receive data from even ranks
+      std::vector<uint64_t> input_sizes, output_sizes;
+
+      for (int i = 0; i < num_ranks_; i++) {
+        if (rank_ % 2 == 0) {
+          // Even ranks send data to all ranks
+          input_sizes.push_back(count);
+        } else {
+          // Odd ranks don't send any data
+          input_sizes.push_back(0);
+        }
+
+        if (i % 2 == 0) {
+          // All ranks receive data from even ranks
+          output_sizes.push_back(count);
+        } else {
+          // All ranks don't receive from odd ranks (since they don't send)
+          output_sizes.push_back(0);
+        }
+      }
+
+      // Create a descriptive test name for better test output
+      std::string testName = "AsymmetricZeroInput_" + std::to_string(count) +
+          "_" + getDtypeName(dtype);
+
+      SCOPED_TRACE("Running tests with parameters: " + testName);
+
+      // Run all test functions with clear tracing, passing parameters directly
+      SCOPED_TRACE("Running testSyncAllToAllvSingle");
+      testSyncAllToAllvSingle(input_sizes, output_sizes, dtype);
+
+      SCOPED_TRACE("Running testSyncAllToAllvSingleNoWork");
+      testSyncAllToAllvSingleNoWork(input_sizes, output_sizes, dtype);
+
+      SCOPED_TRACE("Running testAsyncAllToAllvSingle");
+      testAsyncAllToAllvSingle(input_sizes, output_sizes, dtype);
+
+      SCOPED_TRACE("Running testAsyncAllToAllvSingleEarlyReset");
+      testAsyncAllToAllvSingleEarlyReset(input_sizes, output_sizes, dtype);
+
+      SCOPED_TRACE("Running testAllToAllvSingleInputDeleted");
+      testAllToAllvSingleInputDeleted(input_sizes, output_sizes, dtype);
+
+      // Run CUDA Graph tests
+      SCOPED_TRACE("Running testGraphAllToAllvSingle");
+      testGraphAllToAllvSingle(input_sizes, output_sizes, dtype);
+
+      SCOPED_TRACE("Running testGraphAllToAllvSingleInputDeleted");
+      testGraphAllToAllvSingleInputDeleted(input_sizes, output_sizes, dtype);
+
+      SCOPED_TRACE("Running testSyncAllToAllvSingleMultiDimTensor");
+      testSyncAllToAllvSingleMultiDimTensor(input_sizes, output_sizes, dtype);
+    }
+  }
 }
 
 // This main function is provided by gtest
