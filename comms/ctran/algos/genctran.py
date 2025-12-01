@@ -48,8 +48,7 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
     for base in algo_info["bases"]:
         for variant in variants:
             # Construct the full name with variant (e.g., "AllToAllvDynamic" + "Split")
-            name_prefix = "" if base.startswith(algo_info["dir"]) else algo_info["dir"]
-            full_name = name_prefix + base + variant
+            full_name = base + variant
             variant = f"_{variant}" if variant else variant
 
             for type in types:
@@ -77,11 +76,7 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
 
                         # Construct macro name with variant suffix
                         macro_name = (
-                            "DECL_CTRAN_"
-                            + name_prefix.upper()
-                            + base.upper()
-                            + variant.upper()
-                            + "_KERN"
+                            "DECL_CTRAN_" + base.upper() + variant.upper() + "_KERN"
                         )
                         f.write(
                             macro_name + "(" + type + ", comm" + op.capitalize() + ");"
@@ -121,11 +116,7 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
 
                     # Construct macro name with variant suffix
                     macro_name = (
-                        "DECL_CTRAN_"
-                        + name_prefix.upper()
-                        + base.upper()
-                        + variant.upper()
-                        + "_KERN"
+                        "DECL_CTRAN_" + base.upper() + variant.upper() + "_KERN"
                     )
                     f.write(macro_name + "(" + type + ");")
                     f.write("\n")
@@ -208,19 +199,6 @@ def gen_alltoall_files(gensrc, srcs, rules):
             "dir": "AllToAll",
             "has_ops": False,
             "variants": ["", "Split", "SplitNonContig"],
-        },
-    )
-
-    # Generate for AllToAllvDedup (separate directory)
-    gen_algo_files(
-        gensrc,
-        srcs,
-        rules,
-        {
-            "bases": ["ExecImpl"],
-            "dir": "AllToAllvDedup",
-            "has_ops": False,
-            "variants": [""],  # No variants
         },
     )
 

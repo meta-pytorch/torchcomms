@@ -1,6 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#pragma once
 #include <stdio.h>
 #include <cstddef>
 
@@ -15,10 +14,9 @@
 #include "comms/ctran/commstate/CommStateXDev.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
-namespace ctran::alltoallvdedup {
-
 using namespace ctran::algos;
 
+namespace ctran::alltoallvdedup {
 __device__ inline int
 bucketToLocalBucket(const ExecKernArgs& args, int bucket, int nLocalRanks) {
   return bucket & (args.pArgs.numRecvBuckets * nLocalRanks - 1);
@@ -333,7 +331,7 @@ __device__ inline void progressSendCopy(
 
       const auto step = state.steps[n];
       bool posted = false;
-      posted = GpeKernelSyncDev::checkPost(sync, workerId, step);
+      posted = ctran::algos::GpeKernelSyncDev::checkPost(sync, workerId, step);
       if (!posted) {
         // If no available chunk is posted for this node, move to next
         continue;
@@ -393,7 +391,7 @@ __device__ inline void progressSendCopy(
         hdr->numBlocks = numToCopy;
         hdr->sendRank = rank;
       }
-      GpeKernelSyncDev::complete(sync, workerId, step);
+      ctran::algos::GpeKernelSyncDev::complete(sync, workerId, step);
       state.updateStep(
           n, tmpSendIdx[recvNode * totalNumSendBlocks + endBlock], numToCopy);
     }
@@ -832,7 +830,7 @@ __device__ inline void progressFwd(
       const auto step = state.steps[n];
 
       bool posted = false;
-      posted = GpeKernelSyncDev::checkPost(sync, workerId, step);
+      posted = ctran::algos::GpeKernelSyncDev::checkPost(sync, workerId, step);
       if (!posted) {
         // If no available chunk is posted for this node, move to next
         continue;
@@ -970,7 +968,7 @@ __device__ inline void progressFwd(
       }
 
       // Notify GPE thread that we have finished forwarding of this chunk
-      GpeKernelSyncDev::complete(sync, workerId, step);
+      ctran::algos::GpeKernelSyncDev::complete(sync, workerId, step);
       state.updateStep(n, numBlocks);
     }
   }
@@ -1121,7 +1119,7 @@ __device__ inline void recvCopyBlocks(
   __threadfence();
 
   auto gksync = args.kSync.recvCopyGKSyncs + fwdLocalRank;
-  GpeKernelSyncDev::complete(gksync, workerId, 2 * step);
+  ctran::algos::GpeKernelSyncDev::complete(gksync, workerId, 2 * step);
 
   // Copy from tmpRecvBuff to user recvBuff
   void* tmpRecvBuff = getTmpChunkPtrByIdx(
@@ -1212,7 +1210,7 @@ __device__ inline void recvCopyBlocks(
     __syncthreads();
   }
 
-  GpeKernelSyncDev::complete(gksync, workerId, 2 * step + 1);
+  ctran::algos::GpeKernelSyncDev::complete(gksync, workerId, 2 * step + 1);
 
   // Only worker 0 notifies fwd workers of complete. All workers wait here for
   // everyone to be done before worker 0 notifies. overallStep is the global
@@ -1289,15 +1287,23 @@ __device__ inline void progressRecvCopy(
   } while (0)
 
 template <typename T>
-__device__ inline void
-algoFn(int* flag, CtranAlgoDeviceState* devState, ExecKernArgs args) {
+__global__ void ncclKernelAllToAllvDedup(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ExecKernArgs args) {
+  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
+
+  if (flag && gtIdx == 0) {
+    ctran::device::devLoadAbortFlags(flag, devState);
+    ctran::device::KernelStartGpe(flag);
+  }
+
   if (threadIdx.x == 0) {
     // TODO: move it into a generic routine for all kernels
     devState->opCount = args.opCount;
   }
   devStateLoadToShm(devState);
   auto& config = args.config;
-
   if (threadIdx.x == 0) {
     CTRAN_DEV_TRACE(
         "ncclKernelAllToAllvDedup called, numSendGroups=%d, %d, numFwdGroups=%d, %d, numRecvGroups=%d, %d\n",
@@ -1344,13 +1350,13 @@ algoFn(int* flag, CtranAlgoDeviceState* devState, ExecKernArgs args) {
 
     auto myNode = statex->node();
     auto sync = args.kSync.recvFwdGKSyncs + myNode;
-    GpeKernelSyncDev::waitPost(sync, workerId, 0);
+    ctran::algos::GpeKernelSyncDev::waitPost(sync, workerId, 0);
 
     // Handle intra-node forwarding first, since the recvRanks should still be
     // idle and cross-node forwarding chunks are not yet arrived
     progressIntraFwd<T>(args, groupId, workerId, intraRange);
 
-    GpeKernelSyncDev::complete(sync, workerId, 1);
+    ctran::algos::GpeKernelSyncDev::complete(sync, workerId, 1);
 
     GroupNodes nodeRange = assignGroupNodes(args, groupId, config.numFwdGroups);
     progressFwd<T>(args, groupId, workerId, nodeRange);
@@ -1374,31 +1380,11 @@ algoFn(int* flag, CtranAlgoDeviceState* devState, ExecKernArgs args) {
       GpeKernelSyncDev::reset(sync, workerId);
     }
   }
-
   // FIXME: handle intra-node forward: after exchangeMetadata, each FWD rank
   // knows the recvOffset of blocks from itself, thus can copy to recvBuff.
   if (threadIdx.x == 0) {
     CTRAN_DEV_TRACE("Finished progress loop\n");
   }
-}
-
-} // namespace ctran::alltoallvdedup
-
-// Kernel template definition at global scope (outside namespace)
-template <typename T>
-__global__ void ncclKernelAllToAllvDedup(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::alltoallvdedup::ExecKernArgs args) {
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-
-  if (flag && gtIdx == 0) {
-    ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
-  }
-
-  // Call the algorithm implementation
-  ctran::alltoallvdedup::algoFn<T>(flag, devState, args);
 
   if (flag && gtIdx == 0) {
     ctran::device::KernelWaitGpeTerminate(flag);
@@ -1408,8 +1394,25 @@ __global__ void ncclKernelAllToAllvDedup(
   }
 }
 
-#define DECL_CTRAN_ALLTOALLVDEDUPEXECIMPL_KERN(T)       \
+#define DECL_ALLTOALLVDEDUP_KERN(T)                     \
   template __global__ void ncclKernelAllToAllvDedup<T>( \
-      int* flag,                                        \
-      CtranAlgoDeviceState* devState,                   \
-      ctran::alltoallvdedup::ExecKernArgs args);
+      int* flag, CtranAlgoDeviceState* devState, ExecKernArgs args)
+
+DECL_ALLTOALLVDEDUP_KERN(int8_t);
+DECL_ALLTOALLVDEDUP_KERN(uint8_t);
+DECL_ALLTOALLVDEDUP_KERN(int32_t);
+DECL_ALLTOALLVDEDUP_KERN(uint32_t);
+DECL_ALLTOALLVDEDUP_KERN(int64_t);
+DECL_ALLTOALLVDEDUP_KERN(uint64_t);
+DECL_ALLTOALLVDEDUP_KERN(half);
+DECL_ALLTOALLVDEDUP_KERN(float);
+DECL_ALLTOALLVDEDUP_KERN(double);
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+DECL_ALLTOALLVDEDUP_KERN(__nv_bfloat16);
+#endif
+#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
+DECL_ALLTOALLVDEDUP_KERN(__nv_fp8_e4m3);
+DECL_ALLTOALLVDEDUP_KERN(__nv_fp8_e5m2);
+#endif
+
+} // namespace ctran::alltoallvdedup
