@@ -193,16 +193,6 @@ struct OpElem {
       void* ctran_trace_logger;
     } alltoallv_dedup_prepare;
     struct {
-      // Exec input arguments
-      const void* sendBuff;
-      const int* blockRecvBuckets;
-      const size_t* numSendBlocks;
-      const size_t* numRecvBlocks;
-      const size_t* recvOffsets;
-      const size_t* numForwardBlocks;
-      void* recvBuff;
-      int* blockSendRanks;
-
       // Reference to persistent algo fields
       void* pArgs;
       void* algoResource;

@@ -82,7 +82,6 @@ TEST_F(CtranAllToAllvDedupResourceTest, InitDestroy) {
   };
 
   PersistConfig config = {
-      .numPrepareThreadBlocks = 1,
       .tmpChunkSize = 128,
       .tmpNumChunks = 2,
   };
@@ -116,17 +115,10 @@ TEST_F(CtranAllToAllvDedupResourceTest, InitDestroy) {
 
     // Verify buffer references are all set
     auto& ref = resource->getRef();
-    CHECK_VALID_BUF(ref, kTmpNumRecvBlocksBuff);
-    CHECK_VALID_REMBUF(ref, kTmpNumRecvBlocksBuff, myRank);
 
-    CHECK_VALID_BUF(ref, kTmpNumSendBlocksBuffH);
-    CHECK_VALID_REMBUF(ref, kTmpNumSendBlocksBuffH, myRank);
-
-    CHECK_VALID_BUF(ref, kNumForwardBlocksH);
-    CHECK_VALID_BUF(ref, kBlockRecvBucketsH);
     CHECK_VALID_BUF(ref, kTmpRecvOffsets);
 
-    CHECK_VALID_BUF(ref, kGpeKernelSyncs);
+    CHECK_VALID_BUF(ref, kSendGKSyncs);
 
     CHECK_VALID_BUF(ref, kTmpSendBuff);
 
@@ -135,8 +127,6 @@ TEST_F(CtranAllToAllvDedupResourceTest, InitDestroy) {
 
     CHECK_VALID_BUF(ref, kTmpRecvBuff);
     CHECK_VALID_REMBUF(ref, kTmpRecvBuff, myRank);
-
-    CHECK_VALID_BUF(ref, kFwdGroupSync);
 
     ASSERT_EQ(resource->destroy(), ncclSuccess);
     resource.reset();

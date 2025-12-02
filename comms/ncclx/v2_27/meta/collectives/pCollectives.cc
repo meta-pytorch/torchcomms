@@ -163,7 +163,7 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupExec(
     const int fwdIdx[],
     const int recvIdx[],
     void* recvBuff,
-    int blockSendRanks[],
+    int recvBlockIds[],
     void* request) {
   CtranPersistentRequest* pReq = nullptr;
   GET_VALID_PREQ_OR_ERRRETURN(request, &pReq);
@@ -172,19 +172,7 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupExec(
 
   return metaCommToNccl(
       ::ctran::allToAllvDedupExec(
-          sendBuff,
-          blockRecvBuckets,
-          numSendBlocks,
-          numRecvBlocks,
-          recvOffsets,
-          numForwardBlocks,
-          totalNumRecvBlocks,
-          sendIdx,
-          fwdIdx,
-          recvIdx,
-          recvBuff,
-          blockSendRanks,
-          pReq));
+          sendBuff, sendIdx, fwdIdx, recvIdx, recvBuff, recvBlockIds, pReq));
 }
 
 __attribute__((visibility("default"))) ncclResult_t pExec(void* request) {

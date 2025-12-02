@@ -1209,7 +1209,7 @@ cvars:
    default     : 1
    description : |-
      Number of thread block groups used for copying send data within the
-     AllToAllvDedupDP kernel.
+     AllToAllvDedup kernel.
 
  - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCKS_PER_GROUP
    type        : int
@@ -1218,32 +1218,27 @@ cvars:
      Number of thread blocks in sendCopy group for sending data within the
      AllToAllvDedup kernel.
 
- - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_PREPARE_NUM_THREAD_BLOCK_GROUPS
-   type        : int
-   default     : 1
-   description : |-
-     Number of thread block groups used within the AllToAllvDedupPrepare kernel.
-
- - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCK_GROUPS
-   type        : int
-   default     : 1
-   description : |-
-     Number of thread block groups used for forwarding data within the
-     AllToAllvDedupDP kernel.
-
- - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS_PER_GROUP
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS
    type        : int
    default     : 1
    description : |-
      Number of thread blocks in forward group for forwarding data within the
-     AllToAllvDedupDP kernel.
+     AllToAllvDedup kernel.
+
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_FWD_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 1
+   description : |-
+     Number of thread blocks in intra forward group for forwarding data within the
+     AllToAllvDedup kernel.
 
  - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCK_GROUPS
    type        : int
    default     : 1
    description : |-
      Number of thread block groups used for copying received data within
-     the AllToAllvDedupDP kernel.
+     the AllToAllvDedup kernel.
 
  - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP
    type        : int
@@ -1251,6 +1246,13 @@ cvars:
    description : |-
      Number of thread blocks in recvCopy group for copying data within the
      AllToAllvDedup kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_RECV_NUM_THREAD_BLOCKS
+   type        : int
+   default     : 1
+   description : |-
+     Number of thread blocks in intra recvCopy group for forwarding data within the
+     AllToAllvDedup kernel from the same node.
 
  - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_THREAD_BLOCK_SIZE
    type        : int

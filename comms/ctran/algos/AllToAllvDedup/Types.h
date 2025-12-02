@@ -4,11 +4,10 @@
 
 #include <cstddef>
 #include <sstream>
-#include "comms/ctran/algos/AllToAllvDedup/FwdGroupSync.h"
-#include "comms/ctran/algos/AllToAllvDedup/WorkerSync.h"
+#include "comms/ctran/algos/AllToAllvDedup/WorkerGroup.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
-#include "comms/ctran/algos/common/MPSCTbSync.h"
+#include "comms/ctran/algos/common/SpscP2pSync.h"
 #include "comms/ctran/utils/DevAttribute.h"
 #include "comms/utils/commSpecs.h" // need for ncclDataType_t
 
@@ -16,41 +15,16 @@
 
 namespace ctran::alltoallvdedup {
 
-// Prepare kernel leverages warp for different duty; use them to control
-// required threads
-enum class PrepareKernRole {
-  kCompOffset,
-  kCopyNumRecvBlocks,
-  kCopyNumForwardBlocks,
-  kCopyNumSendBlocks,
-  kResetSync,
-  kNumRoles
-};
-
-enum class PrepareSyncStep {
-  kCopyBlockRecvBuckets,
-  kPostTmpNumSendBlocksBuff,
-  kCopyLocalOutputSplits,
-  kPostNumForwardBlocks,
-  kCopyNumRecvBlocksH,
-  kKernelDone,
-};
-
 struct PersistConfig {
-  int numPrepareThreadBlocks;
-  int numPrepareThreads;
-
-  int numThreadBlocks;
   int numThreads;
 
   int numSendGroups;
   int numSendWorkers;
-
-  int numFwdGroups;
   int numFwdWorkers;
-
   int numRecvGroups;
   int numRecvWorkers;
+  int numIntraFwdWorkers;
+  int numIntraRecvWorkers;
 
   int tmpChunkSize;
   int tmpNumChunks;
@@ -58,67 +32,68 @@ struct PersistConfig {
 
 // Persistent arguments specified at init time
 struct PersistArgs {
-  size_t totalNumSendBlocks;
-  size_t blockCount;
-  size_t blockNumRecvBuckets;
+  int totalNumSendBlocks;
+  int blockCount;
+  int blockNumRecvBuckets;
   int numRecvBuckets;
   commDataType_t datatype;
-};
+  size_t typeSize;
 
-struct PrepareArgs {
-  const int* blockRecvBuckets;
-  size_t* numSendBlocks;
-  size_t* numRecvBlocks;
-  size_t* recvOffsets;
-  size_t* numForwardBlocks;
-  size_t* totalNumRecvBlocks;
-  int* xnodeInputSplits;
-  int* xnodeOutputSplits;
-  int* xnodeGatherIndices;
-  int* localInputSplits;
-  int* localOutputSplits;
-  int* localGatherIndices;
-  int* eGatherIndices;
+  // not passed by user, but pre-calculated at init
+  int maxNumSteps;
+  int maxNumStepBlks;
 };
 
 struct ExecArgs {
   // Dispatch input arguments
   const void* sendBuff;
-  const int* blockRecvBuckets;
-  const size_t* numSendBlocks;
-  const size_t* numRecvBlocks;
-  const size_t* recvOffsets;
-  const size_t* numForwardBlocks;
+
+  // nNodes * totalNumSendBlocks
   const int* sendIdx;
+  // nLocalRanks * nNodes * totalNumSendBlocks
   const int* fwdIdx;
+  // numRecvBuckets * nRanks * totalNumSendBlocks
   const int* recvIdx;
 
   // Dispatch output arguments
   void* recvBuff;
-  int* blockSendRanks;
+  int* recvBlockIds;
+};
+
+struct alignas(16) FwdRecvSync {
+  algos::SpscP2pSync spsc;
+};
+
+struct alignas(16) IntraRedSync {
+  int cnt;
 };
 
 struct KernSync {
-  // used to sync between kernel and GPE on forward rank at prepare phase.
-  algos::GpeKernelSync* prepareGKSync;
-
-  // used to sync between forward groups in the same rank
-  FwdGroupSync* fwdGroupSync;
-
-  // used to sync between workers in the same group
-  WorkerSync* workerSync;
+  // WorkerGroupType::kNumTypes * MAX_NUM_GROUPS_PER_ROLE sync objects. Number
+  // of groups is determined at runtime, and only used groups are reset in
+  // prepare() and used in exec() / combine.
+  WorkerGroupSync* wgSyncs;
 
   // used to sync between forward groups and receive local ranks' recv groups on
-  // the same node
-  algos::MPSCTbSync<>* fwdRecvSyncs;
-  algos::MPSCTbSync<>* remFwdRecvSyncs[CTRAN_MAX_NVL_PEERS];
+  // the same node. Reset once at resource init
+  FwdRecvSync* fwdRecvSyncs;
+  FwdRecvSync* remFwdRecvSyncs[CTRAN_MAX_NVL_PEERS];
+  FwdRecvSync* intraFwdRecvSyncs;
+  FwdRecvSync* remIntraFwdRecvSyncs[CTRAN_MAX_NVL_PEERS];
+
+  // sync between local sendRed and intraRecv workers.
+  // Reset before each exec()/combine()
+  IntraRedSync* intraRedSync;
 
   // used to sync between kernel and GPE on send rank and forward rank,
   // respectively. Do not use arguments in kElem since it is slow host-pinned
   // memory. Each element in the list is for one rail peer.
-  algos::GpeKernelSync* sendCopyGKSyncs;
-  algos::GpeKernelSync* recvFwdGKSyncs;
+  // Reset before each exec()/combine()
+  algos::GpeKernelSync* sendGKSyncs;
+  algos::GpeKernelSync* recvGKSyncs;
+  algos::GpeKernelSync* intraFwdGKSyncs;
   algos::GpeKernelSync* recvCopyGKSyncs;
+  algos::GpeKernelSync* intraRecvCopyGKSyncs;
 };
 
 struct InitKernArgs {
@@ -127,37 +102,9 @@ struct InitKernArgs {
   KernSync kSync;
 };
 
-struct PrepareKernArgs {
-  uint64_t opCount;
-  PersistConfig config;
-
-  PersistArgs pArgs;
-  PrepareArgs prepareArgs;
-
-  int* blockRecvBucketsH;
-  size_t* numForwardBlocksH;
-
-  size_t* tmpNumRecvBlocksBuff;
-  size_t* tmpNumRecvBlocksBuffH;
-
-  // IPC imported ptr to each of the local peers' tmpNumRecvBlocksBuff
-  size_t* tmpRemNumRecvBlocksBuffs[CTRAN_MAX_NVL_PEERS];
-  size_t* tmpNumSendBlocksBuffH;
-
-  int* tmpLocalOutputSplits;
-  // IPC imported ptr to each of the local peers' tmpLocalOutputSplits
-  int* tmpRemLocalOutputSplits[CTRAN_MAX_NVL_PEERS];
-  int* tmpLocalOutputSplitsH;
-  int* tmpRankBitmaps;
-  // IPC imported ptr to each of the local peers' tmpRankBitmaps
-  int* tmpRemRankBitmaps[CTRAN_MAX_NVL_PEERS];
-  int* tmpRankBitmapsH;
-
-  // Copy of recvOffsets used by recv rank to track the offset of
-  // incoming blocks in exec.
-  size_t* tmpRecvOffsets;
-
-  KernSync kSync;
+struct RecvCopyStepInfo {
+  int numBlocks;
+  int sendRank;
 };
 
 struct ExecKernArgs {
@@ -171,16 +118,106 @@ struct ExecKernArgs {
   // used by fwd rank to load incoming fwdArgs + data chunk
   void* tmpFwdBuff;
 
-  void* tmpSendIdx;
-  void* tmpIntraFwdIdx;
+  // nNodes * totalNumSendBlocks
+  // store blockIdx sending to each node
+  int* tmpSendIdx;
+  // nNodes
+  // store number of blocks sending to each node
+  int* tmpNumSendIdx;
 
+  // nNodes * maxNumSteps
+  // track number of pending blocks to be reduced from remote nodes at each step
+  // on send rank. Used in combine
+  int* tmpSendRedStepNumPending;
+  // totalNumSendBlocks
+  // store the number of reduce sources (remote node) for a block.
+  int* tmpSendRedIdxNumSrcs;
+  int* tmpSendRedIdxNumPendingSrcs;
+  // totalNumSendBlocks * nNodes
+  // store the reduce sources (remote node) for a block.
+  int* tmpSendRedIdxSrcIds;
+
+  // nLocalRanks * maxNumSteps
+  // track number of pending blocks to be reduced from local recv ranks at each
+  // step on send rank. Used in combine
+  int* tmpIntraRedStepNumPending;
+  // totalNumSendBlocks
+  // store the number of reduce sources (local recv rank) for a block.
+  int* tmpIntraRedIdxNumSrcs;
+  int* tmpIntraRedIdxNumPendingSrcs;
+  // totalNumSendBlocks * nLocalRanks
+  // store the reduce sources (local recv rank) for a block.
+  int* tmpIntraRedIdxSrcIds;
+
+  // nRanks * totalNumSendBlocks
+  // store the number of reduce buckets for a block.
+  int* tmpRecvRedIdxNumSrcs;
+  // nRanks * totalNumSendBlocks * numRecvBuckets
+  // store the reduce buckets for a block.
+  int* tmpRecvRedIdxSrcIds;
+
+  // nLocalRanks * nNodes * totalNumSendBlocks
+  // store blockIdx forwarding to each local rank from each send node
+  int* tmpFwdIdx;
+  // nNodes
+  int* tmpNumFwdIdx;
+  // nLocalRanks
+  int* tmpNumIntraFwdIdx;
+  // numRecvBuckets * nRanks * totalNumSendBlocks
+  // store blockIdx receiving from each send rank to each local bucket
+  int* tmpRecvIdx;
+  // nLocalRanks, count merged recvIdx from all buckets, as number of blocks to
+  // be received from each forward rank
+  int* tmpNumFwdRecvIdx;
+  // nLocalRanks, count merged recvIdx from all buckets, as number of blocks to
+  // be received from each local send rank
+  int* tmpNumIntraRecvIdx;
+  // numRecvBuckets * nRanks, starting offset in number of blocks of each bucket
+  // and from each send rank in recv buffer
+  int* tmpRecvOffsets;
+
+  // Used by recv rank to receive forwarded chunk from local forward ranks
   void* tmpRecvBuff;
   // IPC imported ptr to each of the local peers' tmpRecvBuff
   void* remTmpRecvBuffs[CTRAN_MAX_NVL_PEERS];
 
-  // Copy of recvOffsets copied in prepare, for recv rank to track the offset of
-  // incoming blocks in exec.
-  size_t* tmpRecvOffsets;
+  // Similar to tmpRecvBuff, but only for intraFwd
+  void* tmpIntraRecvBuff;
+  void* remTmpIntraRecvBuffs[CTRAN_MAX_NVL_PEERS];
+
+  // nNodes
+  // host copy of tmpNumSendIdx, for host side to track send progress.
+  int* tmpNumSendIdxH;
+  // nNodes
+  // host copy of tmpNumFwdIdx, for host side to track send progress.
+  int* tmpNumFwdIdxH;
+  // nLocalRanks
+  // host copy of tmpNumIntraFwdIdx, for host side to track intraFwd profiling.
+  int* tmpNumIntraFwdIdxH;
+  // nLocalRanks
+  // host copy of tmpNumIntraRecvIdx, for host side to track intraRecv
+  // profiling.
+  int* tmpNumIntraRecvIdxH;
+  // nLocalRanks
+  // host copy of tmpNumFwdRecvIdx, for host side to track recv profiling.
+  int* tmpNumFwdRecvIdxH;
+
+  // maxNumSteps * nLocalRanks * sizeof(RecvCopyStepInfo)
+  RecvCopyStepInfo* recvStepInfo;
+  // maxNumSteps * nLocalRanks * kMaxNumBlocksPerChunk
+  int* recvStepFwdBlockIds;
+
+  // maxNumSteps * nLocalRanks * sizeof(RecvCopyStepInfo)
+  RecvCopyStepInfo* intraRecvStepInfo;
+  // maxNumSteps * nLocalRanks * kMaxNumBlocksPerChunk
+  int* intraRecvStepFwdBlockIds;
+
+  // maxNumSteps * nLocalRanks
+  int* fwdStepRecvrNumBlocks;
+  // maxNumSteps * nNodes * kMaxNumBlocksPerChunk
+  int* fwdStepBlockIds;
+  // maxNumSteps * nNodes
+  int* fwdStepNumBlocks;
 
   KernSync kSync;
 };
@@ -188,51 +225,9 @@ struct ExecKernArgs {
 // FWD metadata generated by sender side, and transfer to fwd rank's
 // tmpbuf in GPU mem together with data chunk.
 // Format: fwdHdr + recvLocalRanksBitMap[numBlocks] + blocks[numBlocks]
-struct FwdChkHdr {
+struct alignas(16) FwdChkHdr {
   int numBlocks; // number of actual blocks in the fwd chunk
   int sendRank; // sender rank of all chunks in the fwd chunk
-};
-
-// FIXME: recvRanksBitMap is a 32 bits integer, each bit represents a
-// recvRank, can hold up to 32 localRanks. It is sufficient for H100, but not
-// for GB200!
-struct LocalBucketsBitMap {
-  uint32_t val;
-  DEVICE_ATTRIBUTE void insert(const int i) {
-    val |= 1 << i;
-  }
-
-  DEVICE_ATTRIBUTE bool contains(const int i) {
-    return val & (1 << i);
-  }
-
-  // Check if any of the bits in [min, max] are set
-  DEVICE_ATTRIBUTE bool containsAny(const int min, const int max) {
-    for (int i = min; i <= max; i++) {
-      if (contains(i)) {
-        return true;
-      }
-    }
-    return false;
-  }
-};
-
-// MyRankBucketsBitMap holds the recvBuckets for the localRank
-// It is a subset of the LocalBucketsBitMap containing only information for
-// localRank
-struct MyRankBucketsBitMap {
-  uint32_t val;
-
-  DEVICE_ATTRIBUTE MyRankBucketsBitMap(
-      LocalBucketsBitMap localBitMap,
-      int localRank,
-      int numRecvBuckets) {
-    uint32_t mask = (1 << numRecvBuckets) - 1;
-    val = (localBitMap.val >> (localRank * numRecvBuckets)) & mask;
-  }
-
-  DEVICE_ATTRIBUTE bool contains(const int i) {
-    return val & (1 << i);
-  }
+  int opCount;
 };
 } // namespace ctran::alltoallvdedup
