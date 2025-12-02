@@ -35,6 +35,8 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
     # CTRAN requires minimum 1024 elements per chunk
     chunk_sizes = [1024]
     dtypes = [torch.int]
+    # hidden_dim scales chunk sizes for C++ API (C++ sees chunk_sizes * hidden_dim)
+    hidden_dim = 2
 
     def get_wrapper(self):
         return TorchCommTestWrapper()
@@ -77,6 +79,9 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         # Save original input for later verification
         original_input_tensor = input_tensor.clone()
 
+        # Actual chunk size (accounts for hidden dimension)
+        actual_chunk_size = chunk_size * self.hidden_dim
+
         # Print input information
         print(
             f"[Rank {self.rank}] INPUT: tensor filled with value {self.rank}, shape={input_tensor.shape}"
@@ -103,6 +108,7 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             input_chunk_sizes,
             input_chunk_indices,
             input_chunk_count_per_rank,
+            self.hidden_dim,
             False,
         )
         work.wait()
@@ -113,9 +119,9 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             f"[Rank {self.rank}] OUTPUT: received chunk_sizes_per_rank={output_chunk_sizes_per_rank.cpu().tolist()}"
         )
         for sender_rank in range(self.num_ranks):
-            offset = self.rank * chunk_size
+            offset = self.rank * actual_chunk_size
             section = output_tensor_list[sender_rank][
-                offset : offset + min(10, chunk_size)
+                offset : offset + min(10, actual_chunk_size)
             ]
             print(
                 f"[Rank {self.rank}] OUTPUT: from sender {sender_rank}, first 10 values at offset {offset}={section.cpu().tolist()}"
@@ -134,14 +140,15 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         combine_input_tensor = torch.cat(output_tensor_list, dim=0)
         self.assertEqual(
             combine_input_tensor.size(0),
-            chunk_size * self.num_ranks * self.num_ranks,
-            "Combine input size should be num_ranks * num_ranks * chunk_size",
+            actual_chunk_size * self.num_ranks * self.num_ranks,
+            "Combine input size should be num_ranks * num_ranks * actual_chunk_size",
         )
 
         # Setup combine API parameters
         num_chunks = self.num_ranks * self.num_ranks  # Total chunks in flattened tensor
 
-        # All chunk sizes are chunk_size
+        # All chunk sizes are chunk_size (logical size, not actual)
+        # The Python API will scale this up by hidden_dim before calling C++
         combine_input_chunk_sizes = torch.full(
             (num_chunks,), chunk_size, dtype=torch.long, device=self.device
         )
@@ -159,8 +166,8 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             self.num_ranks, dtype=torch.long, device=self.device
         )
 
-        # Create output tensor: should reconstruct original input (chunk_size * num_ranks)
-        combine_output_size = chunk_size * self.num_ranks
+        # Create output tensor: should reconstruct original input (actual_chunk_size * num_ranks)
+        combine_output_size = actual_chunk_size * self.num_ranks
         options = {"dtype": dtype, "device": self.device}
         combine_output_tensor = torch.zeros(combine_output_size, **options)
 
@@ -174,6 +181,7 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             combine_input_chunk_sizes,
             combine_input_chunk_indices,
             combine_input_chunk_count_per_rank,
+            self.hidden_dim,
             False,
         )
         combine_work.wait()
@@ -202,12 +210,16 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
     def _create_tensors(self, chunk_size, dtype):
         """Create input and output tensors matching SimpleDispatchExample pattern.
 
-        Each rank has num_ranks chunks of chunk_size elements.
+        Each rank has num_ranks chunks of chunk_size*hidden_dim elements.
         All chunks are filled with the rank's value.
         Communication: Each rank sends chunk i to rank i.
+        Note: chunk_size is the logical size; actual size is chunk_size * hidden_dim.
         """
-        # Total input size = chunk_size * num_ranks
-        maxSendcount = chunk_size * self.num_ranks
+        # Actual chunk size in elements (accounts for hidden dimension)
+        actual_chunk_size = chunk_size * self.hidden_dim
+
+        # Total input size = actual_chunk_size * num_ranks
+        maxSendcount = actual_chunk_size * self.num_ranks
         options = {"dtype": dtype, "device": self.device}
 
         # Create input tensor and fill each chunk with rank's value
@@ -215,12 +227,13 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         input_tensor = torch.zeros(maxSendcount, **options)
 
         for chunk_id in range(self.num_ranks):
-            offset = chunk_id * chunk_size
-            section = input_tensor[offset : offset + chunk_size]
+            offset = chunk_id * actual_chunk_size
+            section = input_tensor[offset : offset + actual_chunk_size]
             # Fill with rank's value (all chunks have same value)
             section.fill_(int(self.rank))
 
-        # input_chunk_sizes: all values are chunk_size
+        # input_chunk_sizes: all values are chunk_size (logical size, not actual)
+        # The Python API will scale this up by hidden_dim before calling C++
         input_chunk_sizes = torch.full(
             (self.num_ranks,), chunk_size, dtype=torch.long, device=self.device
         )
@@ -237,9 +250,9 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         )
 
         # Create output tensors (one per source rank)
-        # Each output buffer can receive up to num_ranks chunks
+        # Each output buffer can receive up to num_ranks chunks of actual_chunk_size
         output_tensor_list = [
-            torch.zeros(chunk_size * self.num_ranks, **options)
+            torch.zeros(actual_chunk_size * self.num_ranks, **options)
             for _ in range(self.num_ranks)
         ]
 
@@ -265,8 +278,12 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
 
         For rank i:
         - Should receive chunk i from all ranks
-        - output_tensor_list[sender_j] should contain sender_j's value at offset i*chunk_size
+        - output_tensor_list[sender_j] should contain sender_j's value at offset i*actual_chunk_size
+        Note: chunk_size is the logical size; actual size is chunk_size * hidden_dim.
         """
+        # Actual chunk size in elements (accounts for hidden dimension)
+        actual_chunk_size = chunk_size * self.hidden_dim
+
         print(f"[Rank {self.rank}] VERIFY: Starting dispatch verification")
 
         # Verify output_chunk_sizes_per_rank structure
@@ -278,7 +295,8 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             "output_chunk_sizes_per_rank size mismatch",
         )
 
-        # Verify that each sender sent chunk[rank] to this rank with size chunk_size
+        # Verify that each sender sent chunk[rank] to this rank with size chunk_size (logical)
+        # The Python API scales down the chunk sizes, so we should see chunk_size, not actual_chunk_size
         output_sizes_cpu = output_chunk_sizes_per_rank.cpu().tolist()
         print(f"[Rank {self.rank}] VERIFY: Checking chunk sizes from all senders")
         for sender_rank in range(self.num_ranks):
@@ -297,16 +315,16 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
 
         # Verify output_tensor_list contains correct data
         # For rank i, output_tensor_list[j] should contain data from sender j
-        # at offset i*chunk_size with value j
+        # at offset i*actual_chunk_size with value j
         print(f"[Rank {self.rank}] VERIFY: Checking received data values")
         for sender_rank in range(self.num_ranks):
             recvbuff = output_tensor_list[sender_rank]
 
-            # Calculate offset where data should be placed
-            expected_offset = self.rank * chunk_size
+            # Calculate offset where data should be placed (using actual size)
+            expected_offset = self.rank * actual_chunk_size
 
             # Verify that the chunk at expected_offset contains sender_rank's value
-            section = recvbuff[expected_offset : expected_offset + chunk_size]
+            section = recvbuff[expected_offset : expected_offset + actual_chunk_size]
 
             expected_value = sender_rank
             actual_value = section[0].item()
@@ -314,7 +332,7 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
                 f"[Rank {self.rank}] VERIFY: From sender {sender_rank}, expected value={expected_value}, actual value={actual_value}"
             )
             expected = torch.ones(
-                chunk_size, dtype=section.dtype, device=section.device
+                actual_chunk_size, dtype=section.dtype, device=section.device
             ) * int(expected_value)
             self.assertTrue(
                 torch.equal(section, expected),
