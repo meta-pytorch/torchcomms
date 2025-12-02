@@ -133,22 +133,9 @@ __attribute__((visibility("default"))) ncclResult_t allToAllvDedupPrepare(
   CHECK_PREQ_TYPE(pReq, CtranPersistentRequest::Type::ALLTOALLV_DEDUP);
   CHECK_VALID_CTRAN(pReq->comm_);
 
-  return metaCommToNccl(
-      ::ctran::allToAllvDedupPrepare(
-          blockRecvBuckets,
-          numSendBlocks,
-          numRecvBlocks,
-          recvOffsets,
-          numForwardBlocks,
-          totalNumRecvBlocks,
-          xnodeInputSplits,
-          xnodeOutputSplits,
-          xnodeGatherIndices,
-          localInputSplits,
-          localOutputSplits,
-          localGatherIndices,
-          eGatherIndices,
-          pReq));
+  // TODO: Ctran level prepare has been deprecated; NCCL API will be cleaned up
+  // in next diff
+  return ncclSuccess;
 }
 
 __attribute__((visibility("default"))) ncclResult_t allToAllvDedupExec(

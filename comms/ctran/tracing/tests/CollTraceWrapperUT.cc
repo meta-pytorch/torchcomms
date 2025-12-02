@@ -466,26 +466,6 @@ TEST_F(
 
 TEST_F(
     CollTraceWrapperTest,
-    GetCollectiveMetadata_AllToAllvDedupPrepare_CorrectMetadata) {
-  // Create AllToAllv_Dedup_Prepare kernel config
-  KernelConfig allToAllvDedupPrepareConfig(
-      KernelConfig::KernelType::ALLTOALLV_DEDUP_PREPARE,
-      reinterpret_cast<cudaStream_t>(0x1234),
-      "alltoallv_dedup_prepare_algo",
-      5);
-
-  uint64_t opCount = 888;
-
-  auto metadata =
-      getCollectiveMetadata(opGroup_, allToAllvDedupPrepareConfig, opCount);
-
-  EXPECT_EQ(metadata.opName, "AllToAllv_Dedup_Prepare");
-  EXPECT_EQ(metadata.algoName, "alltoallv_dedup_prepare_algo");
-  EXPECT_EQ(metadata.opCount, opCount);
-}
-
-TEST_F(
-    CollTraceWrapperTest,
     GetCollectiveMetadata_AllToAllvDedup_CorrectMetadata) {
   // Create AllToAllv_Dedup kernel config
   KernelConfig allToAllvDedupConfig(

@@ -243,14 +243,6 @@ CollectiveMetadata getCollectiveMetadata(
           .opCount = opCount,
       };
     }
-    case KernelConfig::KernelType::ALLTOALLV_DEDUP_PREPARE: {
-      // TODO: Add more info for dedup alltoall
-      return CollectiveMetadata{
-          .opName = "AllToAllv_Dedup_Prepare",
-          .algoName = kernelConfig.algoName,
-          .opCount = opCount,
-      };
-    }
     case KernelConfig::KernelType::ALLTOALLV_DEDUP: {
       // TODO: Add more info for dedup alltoall
       return CollectiveMetadata{

@@ -395,54 +395,6 @@ commResult_t allToAllvDedupDestroy(CtranPersistentRequest* request);
 
 bool allToAllvDedupSupport(CtranComm* comm, meta::comms::Hints hints);
 
-commResult_t allToAllvDedupPrepare(
-    // Receiving buckets for each send block (experts for each token).
-    // Total totalNumSendBlocks * blockNumRecvBuckets elements, stored in a 1D
-    // array as:
-    //  [blk0_bucket0, blk0_bucket1, ..., blk0_bucketN-1
-    //  blk1_bucket0, blk1_bucket1, ..., blk1_bucketN-1, ...]
-    const int blockRecvBuckets[],
-
-    // Number of blocks (tokens) sent to each rank.
-    // Total nRanks elements, stored in a 1D array.
-    size_t numSendBlocks[],
-    // TODO: add size_t numSendBlocksToNode[], with nNodes elements
-
-    // Number of blocks (tokens) received from each rank.
-    // Total numRecvBuckets * nRanks elements, stored in a 1D array as:
-    // [bucket0_rank0, bucket0_rank1, ..., bucket0_rankN-1,
-    // bucket1_rank0, bucket1_rank1, ..., bucket1_rankN-1, ...]
-    size_t numRecvBlocks[],
-
-    // Offset in elements of received blocks from each rank in receive buffer.
-    // Same shape as numRecvBlocks.
-    size_t recvOffsets[],
-
-    // Number of blocks (tokens) forwarded through each rank. Total nRanks
-    // elements.
-    // - For cross-node rail rank, it indicates the number of blocks forwarded
-    // from the peer. The values are used to calculate the pipeline steps in the
-    // consequent exec.
-    // - For local rank, it indicates the number of blocks forwarded to the
-    // peer. The values are used to calculate the pipeline steps in later
-    // combine.
-    // - For rest ranks, the value is 0.
-    size_t numForwardBlocks[],
-
-    // Total number of blocks (tokens) received from all ranks.
-    size_t* totalNumRecvBlocks,
-
-    // Pytorch metadata
-    int xnodeInputSplits[],
-    int xnodeOutputSplits[],
-    int xnodeGatherIndices[],
-    int localInputSplits[],
-    int localOutputSplits[],
-    int localGatherIndices[],
-    int eGatherIndices[],
-
-    CtranPersistentRequest* request);
-
 commResult_t allToAllvDedupExec(
     const void* sendBuff,
     const int* sendIdx,
