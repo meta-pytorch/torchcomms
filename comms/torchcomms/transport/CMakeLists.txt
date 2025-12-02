@@ -67,13 +67,13 @@ target_link_libraries(torchcomms_transport PRIVATE
     ${TORCH_PYTHON_LIB}
     ctran
     utils
+    ${FOLLY_LDFLAGS}
 )
 
 if(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms_transport PRIVATE
         "-lfolly"
         "-lgflags"
-        ${FOLLY_LDFLAGS}
         "-lboost_program_options"
         "-lboost_filesystem"
     )
@@ -81,7 +81,6 @@ else()
     target_link_libraries(torchcomms_transport PRIVATE
         "-l:libfolly.a"
         "-l:libgflags.a"
-        ${FOLLY_LDFLAGS}
         "-l:libboost_program_options.a"
         "-l:libboost_filesystem.a"
     )
