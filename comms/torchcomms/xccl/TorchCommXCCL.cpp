@@ -75,7 +75,7 @@ void TorchCommXCCL::init(at::Device device, const std::string &name,
             "Failed to set XPU device to " + std::to_string(device_.index()));
 
   // Verify device properties and memory availability
-  xpuDeviceProp device_prop = {};
+  [[maybe_unused]] xpuDeviceProp device_prop = {};
   XPU_CHECK(
       xpu_api_,
       xpu_api_->getDeviceProperties(&device_prop, device_.index()),
