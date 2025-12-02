@@ -215,6 +215,11 @@ const at::Device& TorchComm::getDevice() const {
   return impl_->getDevice();
 }
 
+// Memory Management
+std::shared_ptr<c10::Allocator> TorchComm::getMemAllocator() {
+  return impl_->getMemAllocator();
+}
+
 // Batch Operations
 
 BatchSendRecv::BatchSendRecv(TorchComm* parent) : parent_(parent) {}

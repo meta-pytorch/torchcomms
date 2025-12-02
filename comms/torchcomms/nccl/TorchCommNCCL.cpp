@@ -3,6 +3,8 @@
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
 
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
@@ -990,15 +992,19 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_v_single(
   // Calculate the number of elements per slice along the first dimension
   // For a tensor with shape [N, D1, D2, ..., Dk], each slice of size S along
   // dim 0 contains S * D1 * D2 * ... * Dk elements
-  size_t elements_per_slice = input.numel() ? input.numel() / input.size(0) : 0;
+  // Use input tensor for send counts and output tensor for recv counts
+  size_t send_elements_per_slice =
+      input.numel() ? input.numel() / input.size(0) : 0;
+  size_t recv_elements_per_slice =
+      output.numel() ? output.numel() / output.size(0) : 0;
   const auto data_type = getNcclDataType(input);
   const size_t type_size = wordSize(data_type);
 
   size_t sendoffset = 0;
   size_t recvoffset = 0;
   for (int i = 0; i < comm_size_; ++i) {
-    sendcounts[i] = input_split_sizes[i] * elements_per_slice;
-    recvcounts[i] = output_split_sizes[i] * elements_per_slice;
+    sendcounts[i] = input_split_sizes[i] * send_elements_per_slice;
+    recvcounts[i] = output_split_sizes[i] * recv_elements_per_slice;
     senddispls[i] = sendoffset;
     recvdispls[i] = recvoffset;
     sendoffset += sendcounts[i];
@@ -1394,6 +1400,55 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
   new_torchcomm->init(device_, name, options);
 
   return new_torchcomm;
+}
+
+// Allocate function
+static void* _ncclMemAlloc(
+    std::shared_ptr<NcclApi> nccl_api,
+    size_t size,
+    int device,
+    void* stream) {
+  at::cuda::OptionalCUDAGuard gpuGuard(device);
+  void* ptr = nullptr;
+  TORCH_CHECK(
+      nccl_api->memAlloc(&ptr, size) == ncclSuccess, "ncclMemAlloc failed");
+  LOG(INFO) << "NCCL mem allocator: allocated " << ptr << " with " << size
+            << " bytes in stream " << stream;
+  return ptr;
+}
+
+// Free function
+static void _ncclMemFree(
+    std::shared_ptr<NcclApi> nccl_api,
+    void* ptr,
+    size_t size,
+    int device,
+    void* stream) {
+  LOG(INFO) << "NCCL mem allocator: freeing " << ptr << " with " << size
+            << " bytes in stream " << stream;
+  at::cuda::OptionalCUDAGuard gpuGuard(device);
+  TORCH_CHECK(nccl_api->memFree(ptr) == ncclSuccess, "ncclMemFree failed");
+}
+
+// Create a `CUDAPluggableAllocator` that uses the above functions.
+std::shared_ptr<c10::Allocator> TorchCommNCCL::getMemAllocator() {
+  c10::DeviceIndex deviceIdx = device_.index();
+  if (!deviceSupportsMulticast(deviceIdx)) {
+    TORCH_CHECK(
+        false, "NCCL mem allocator is not supported in this NCCL version");
+  }
+  static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
+      ncclMemAllocator =
+          torch::cuda::CUDAPluggableAllocator::createCustomAllocator(
+              // alloc_fn
+              [this](size_t size, int device, cudaStream_t stream) {
+                return _ncclMemAlloc(nccl_api_, size, device, stream);
+              },
+              // free_fn
+              [this](void* ptr, size_t size, int device, cudaStream_t stream) {
+                return _ncclMemFree(nccl_api_, ptr, size, device, stream);
+              });
+  return ncclMemAllocator;
 }
 
 void TorchCommNCCL::register_address(

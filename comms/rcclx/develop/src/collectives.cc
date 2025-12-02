@@ -120,6 +120,23 @@ ncclResult_t ncclAllGather_impl(const void* sendbuff, void* recvbuff, size_t sen
     }
   }
 
+#ifdef BUILD_META_INTERNAL
+  if (comm->algoFactory) {
+    // try to get meta customized algo
+    auto algo = comm->algoFactory->getAllGatherAlgo(
+        sendbuff, recvbuff, sendcount, meta::comms::ncclToMetaComm(datatype), stream);
+    if (algo) {
+      try {
+        algo->allGather();
+      } catch (const std::exception& e) {
+        WARN("failed to launch custom all gather: %s", e.what());
+        return ncclInternalError;
+      }
+      return ncclSuccess;
+    }
+  }
+#endif
+
   NVTX3_FUNC_WITH_PARAMS(AllGather, NcclNvtxParamsAllGather,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, sendcount * ncclTypeSize(datatype), datatype));
 
@@ -297,6 +314,23 @@ ncclResult_t ncclAllToAll_impl(const void* sendbuff, void* recvbuff, size_t coun
           sendbuff, recvbuff, count, datatype, comm, stream);
     }
   }
+
+#ifdef BUILD_META_INTERNAL
+  if (comm->algoFactory) {
+    // try to get meta customized algo
+    auto algo = comm->algoFactory->getAllToAllAlgo(
+        sendbuff, recvbuff, count, meta::comms::ncclToMetaComm(datatype), stream);
+    if (algo) {
+      try {
+        algo->allToAll();
+      } catch (const std::exception& e) {
+        WARN("failed to launch custom all-to-all: %s", e.what());
+        return ncclInternalError;
+      }
+      return ncclSuccess;
+    }
+  }
+#endif
 
   NVTX3_FUNC_WITH_PARAMS(AllToAll, NcclNvtxParamsAllToAll,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), datatype));
@@ -503,6 +537,23 @@ ncclResult_t ncclReduceScatter_impl(const void* sendbuff, void* recvbuff, size_t
           sendbuff, recvbuff, totalCount, datatype, op, comm, stream);
     }
   }
+
+#ifdef BUILD_META_INTERNAL
+  if (comm->algoFactory && op == ncclSum) {
+    // try to get meta customized algo
+    auto algo = comm->algoFactory->getReduceScatterAlgo(
+        sendbuff, recvbuff, recvcount, meta::comms::ncclToMetaComm(datatype), stream);
+    if (algo) {
+      try {
+        algo->reduceScatter();
+      } catch (const std::exception& e) {
+        WARN("failed to launch custom reduce scatter: %s", e.what());
+        return ncclInternalError;
+      }
+      return ncclSuccess;
+    }
+  }
+#endif
 
   NVTX3_FUNC_WITH_PARAMS(ReduceScatter, NcclNvtxParamsReduceScatter,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, recvcount * ncclTypeSize(datatype), op, datatype));

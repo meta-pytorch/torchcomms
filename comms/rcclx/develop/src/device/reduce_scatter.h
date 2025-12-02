@@ -285,7 +285,7 @@ struct RunWorkColl<ncclFuncReduceScatter, T, RedOp, NCCL_ALGO_NVLS, NCCL_PROTO_S
               /*MultimemDsts,MinDsts,MaxDsts=*/MultimemDsts, 1, 1,
               /*PreOpSrcs=*/1>
               (tid, tn, work->redOpArg, &work->redOpArg, false,
-                /*nSrcs=*/nSrcs, [=]__device__(int s) {
+                /*nSrcs=*/nSrcs, [=, this]__device__(int s) {
               return work->regUsed ? (T*)srcPtrs[s] + userOneBeg :
                 !ReduceSendNotRecv ? (T*)srcPtrs[s] + railAllOffset:
                 (T*)inbuf + userOneBeg;
@@ -492,7 +492,7 @@ struct RunWorkColl<ncclFuncReduceScatter, T, RedOp, NCCL_ALGO_COLLNET_DIRECT, NC
                      /*MultimemDsts,MinDsts,MaxDsts=*/0,1,1,
                      /*PreOpSrcs=*/1>
             (tid, tn, work->redOpArg, &work->redOpArg, false,
-             /*nSrcs=*/1+nSrcs, [=]__device__(int s) {
+             /*nSrcs=*/1+nSrcs, [=, this]__device__(int s) {
                return s==0 ? (T*)inbuf + userOneBeg
                            : work->regUsed && (recvDirectFlag & NCCL_P2P_READ)
                            ? (T*)srcPtrs[s-1] + userOneBeg

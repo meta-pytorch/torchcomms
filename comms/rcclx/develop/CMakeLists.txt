@@ -521,9 +521,12 @@ set(SRC_FILES
   src/include/msccl/msccl_struct.h
   src/include/mscclpp/mscclpp_nccl.h
   src/include/nccl_common.h
-  src/include/nccl_net.h
-  src/include/nccl_profiler.h
-  src/include/nccl_tuner.h
+  src/include/plugin/nccl_net.h
+  src/include/plugin/nccl_profiler.h
+  src/include/plugin/nccl_tuner.h
+  src/include/mlx5/mlx5dvwrap.h
+  src/include/mlx5/mlx5dvcore.h
+  src/include/mlx5/mlx5dvsymbols.h
   src/include/net_device.h
   src/include/net.h
   src/include/npkit/npkit_event.h
@@ -583,6 +586,7 @@ set(SRC_FILES
   src/include/shm.h
   src/include/shmutils.h
   src/include/signals.h
+  src/include/symmetric.h
   src/include/socket.h
   src/include/strongstream.h
   src/include/timer.h
@@ -611,7 +615,34 @@ set(SRC_FILES
 # src/misc/nvmlwrap.cc
   src/misc/nvmlwrap_stub.cc
   src/misc/param.cc
-  src/misc/profiler.cc
+  src/plugin/profiler.cc
+  src/include/plugin/net/net_v6.h
+  src/include/plugin/net/net_v7.h
+  src/include/plugin/net/net_v8.h
+  src/include/plugin/net/net_v9.h
+  src/include/plugin/net/net_v10.h
+  src/include/plugin/nccl_net.h
+  src/include/plugin/nccl_profiler.h
+  src/include/plugin/nccl_tuner.h
+  src/include/plugin/plugin.h
+  src/include/plugin/net/net_v6.h
+  src/include/plugin/net/net_v7.h
+  src/include/plugin/net/net_v8.h
+  src/include/plugin/net/net_v9.h
+  src/include/plugin/net/net_v10.h
+  src/include/plugin/profiler/net_ib_v1.h
+  src/include/plugin/profiler/net_ib.h
+  src/include/plugin/profiler/net_socket_v1.h
+  src/include/plugin/profiler/net_socket.h
+  src/include/plugin/profiler/profiler_v1.h
+  src/include/plugin/profiler/profiler_v2.h
+  src/include/plugin/profiler/profiler_v3.h
+  src/include/plugin/profiler/profiler_v4.h
+  src/include/plugin/tuner/tuner_v2.h
+  src/include/plugin/tuner/tuner_v3.h
+  src/include/plugin/tuner/tuner_v4.h
+  src/include/proxy_trace/proxy_trace.h
+  src/include/register_inline.h
   src/misc/recorder.cc
   src/misc/rocm_smi_wrap.cc
   src/misc/rocmwrap.cc
@@ -624,9 +655,9 @@ set(SRC_FILES
   src/mnnvl.cc
   src/msccl.cc
   src/nccl.h
-  src/net.cc
+  src/plugin/net.cc
   src/proxy.cc
-# src/ras/client.cc
+  src/ras/client.cc
   src/ras/client_support.cc
   src/ras/collectives.cc
   src/ras/peers.cc
@@ -1139,6 +1170,9 @@ if(ENABLE_NPKIT)
   target_compile_definitions(rccl PRIVATE ENABLE_NPKIT_EVENT_REDUCE_SCATTER_RING_RECV_REDUCE_COPY_EXIT)
   target_compile_definitions(rccl PRIVATE ENABLE_NPKIT_PRIM_COLLECT_DATA_PROCESS_TIME)
 endif()
+
+# Prevent glog macro conflicts with HIP/AMD headers that define ERROR
+target_compile_definitions(rccl PRIVATE GLOG_NO_ABBREVIATED_SEVERITIES)
 
 if(PROFILE)
   target_compile_definitions(rccl PRIVATE ENABLE_PROFILING)

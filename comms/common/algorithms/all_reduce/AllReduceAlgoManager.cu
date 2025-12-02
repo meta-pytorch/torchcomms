@@ -50,13 +50,44 @@ std::unique_ptr<AlgoAllReduce> AllReduceAlgoManager::getAllReduceAlgo(
     commDataType_t datatype,
     cudaStream_t stream,
     const void* acc) {
-  if (count * commTypeSize(datatype) > ddaSendbufSizeBytes_) {
-    // msg size must fit into the dda sendbuf
+  return nullptr;
+}
+
+AllReduceAlgoManagerDev::AllReduceAlgoManagerDev(
+    int nRanks,
+    int selfRank,
+    int maxBlocks,
+    int ddaSendbufSizeBytes,
+    int ddaFlatMaxThresholdBytes,
+    int ddaTreeMaxThresholdBytes,
+    void** allRankDdaSendbuffs,
+    IpcGpuBarrier* barrier)
+    : nRanks_(nRanks),
+      selfRank_(selfRank),
+      maxBlocks_(maxBlocks),
+      ddaSendbufSizeBytes_(ddaSendbufSizeBytes),
+      ddaFlatMaxThresholdBytes_(ddaFlatMaxThresholdBytes),
+      ddaTreeMaxThresholdBytes_(ddaTreeMaxThresholdBytes),
+      allRankDdaSendbuffs_(allRankDdaSendbuffs),
+      barrier_(barrier) {
+  XLOG(DBG) << "Successfully initialized AllReduceAlgoManager";
+}
+
+std::unique_ptr<AlgoAllReduce> AllReduceAlgoManagerDev::getAllReduceAlgo(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    commDataType_t datatype,
+    cudaStream_t stream,
+    const void* acc) {
+  if ((count * commTypeSize(datatype)) > ddaSendbufSizeBytes_) {
+    // AllReduce: (count x datatype) size must fit into the dda sendbuf
     XLOG(DBG) << "Not using custom all reduce algo because message size "
               << count * commTypeSize(datatype)
               << " is larger than ddaSendbufSizeBytes " << ddaSendbufSizeBytes_;
     return nullptr;
   }
+
   if (((uintptr_t)sendbuff % 16) || ((uintptr_t)recvbuff % 16) ||
       ((count * commTypeSize(datatype)) % 16)) {
     // 16 byte alignment as we do 16-byte loads in DDA kernel
@@ -65,8 +96,9 @@ std::unique_ptr<AlgoAllReduce> AllReduceAlgoManager::getAllReduceAlgo(
     return nullptr;
   }
 
-  if (datatype != commBfloat16 && datatype != commFloat16) {
-    // we currently only support bf16 and half
+  if (datatype != commBfloat16 && datatype != commFloat16 &&
+      datatype != commFloat) {
+    // we currently only support bf16, half, float
     XLOG(DBG)
         << "Not using custom all reduce algo because cudaDataType_t datatype "
         << static_cast<int>(datatype) << " is not supported";
@@ -90,7 +122,7 @@ std::unique_ptr<AlgoAllReduce> AllReduceAlgoManager::getAllReduceAlgo(
     }
     algo = std::make_unique<AlgoAllReduceDdaTreeIpc>(
         sendbuff,
-        reinterpret_cast<void**>(allRankDdaSendbuffs_->get()),
+        allRankDdaSendbuffs_,
         recvbuff,
         count,
         datatype,
@@ -98,12 +130,12 @@ std::unique_ptr<AlgoAllReduce> AllReduceAlgoManager::getAllReduceAlgo(
         nRanks_,
         selfRank_,
         maxBlocks_,
-        &barrier_,
+        barrier_,
         acc);
   } else {
     algo = std::make_unique<AlgoAllReduceDdaFlatIpc>(
         sendbuff,
-        reinterpret_cast<void**>(allRankDdaSendbuffs_->get()),
+        allRankDdaSendbuffs_,
         recvbuff,
         count,
         datatype,
@@ -111,7 +143,7 @@ std::unique_ptr<AlgoAllReduce> AllReduceAlgoManager::getAllReduceAlgo(
         nRanks_,
         selfRank_,
         maxBlocks_,
-        &barrier_,
+        barrier_,
         acc);
   }
   return algo;

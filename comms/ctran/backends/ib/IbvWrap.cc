@@ -3,7 +3,7 @@
 #include <sys/types.h>
 
 #include "comms/ctran/backends/ib/IbvWrap.h"
-#include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/utils/logger/LogUtils.h"
 
 #include "comms/ctran/utils/Checks.h"
@@ -128,8 +128,9 @@ commResult_t wrap_ibv_get_device_list(
     struct ibv_device*** ret,
     int* num_devices) {
   *ret = ibvSymbols.ibv_internal_get_device_list(num_devices);
-  if (*ret == nullptr)
+  if (*ret == nullptr) {
     *num_devices = 0;
+  }
   return commSuccess;
 }
 
@@ -480,8 +481,9 @@ static void ibvModifyQpLog(
     remoteGidRes =
         ibvGetGidStr(remoteGid, remoteGidName, sizeof(remoteGidName));
     // we need pd->context to retrieve local GID, skip if not there
-    if (!qp->pd->context)
+    if (!qp->pd->context) {
       goto print;
+    }
     gidIndex = avAttr->ah_attr.grh.sgid_index;
     union ibv_gid localGid;
     FB_COMMCHECKGOTO(

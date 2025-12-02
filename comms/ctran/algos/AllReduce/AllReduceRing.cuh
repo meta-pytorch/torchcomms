@@ -1,21 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <cuda.h>
-#include <cuda_runtime.h>
-#if CUDART_VERSION >= 11000
-#include <cuda_bf16.h>
-#endif
-#if CUDART_VERSION >= 11080
-#include <cuda_fp8.h>
-#endif
-
-#if defined(__HIP_PLATFORM_AMD__)
-#include <cuda_bf16.h>
-
-// TODO: Add this mapping to "cuda_to_hip_mappings.py" (See T233054942).
-#include <hip/hip_fp8.h>
-#endif
-
+#pragma once
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -294,27 +279,3 @@ __global__ void ncclKernelAllReduceCtranRing(
       int* flag,                                                   \
       CtranAlgoDeviceState* devState,                              \
       ctran::allreduce::ring::KernArgs args);
-
-#define DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(T)          \
-  DECL_CTRAN_ALLREDUCERING_KERN(T, commRedOp_t::commSum);  \
-  DECL_CTRAN_ALLREDUCERING_KERN(T, commRedOp_t::commProd); \
-  DECL_CTRAN_ALLREDUCERING_KERN(T, commRedOp_t::commAvg);  \
-  DECL_CTRAN_ALLREDUCERING_KERN(T, commRedOp_t::commMax);  \
-  DECL_CTRAN_ALLREDUCERING_KERN(T, commRedOp_t::commMin);
-
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(int8_t);
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(uint8_t);
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(int32_t);
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(uint32_t);
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(int64_t);
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(uint64_t);
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(half);
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(float);
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(double);
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(__nv_bfloat16);
-#endif
-#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(__nv_fp8_e4m3);
-DECL_CTRAN_ALLREDUCERING_KERN_DATATYPE(__nv_fp8_e5m2);
-#endif

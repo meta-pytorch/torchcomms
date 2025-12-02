@@ -78,82 +78,11 @@ TraceRecord::TraceRecord(const std::string& algo, const int rank)
   }
 }
 
-void TraceRecord::end() {
+void TraceRecord::addMetadata(const std::string& key, const std::string& val) {
   if (enabled) {
-    end_ = std::chrono::system_clock::now();
+    metaDataKeys_.push_back(key);
+    metaDataVals_.push_back(val);
   }
-}
-
-void TraceRecord::addPoint(
-    const std::string& name,
-    const int seqNum,
-    std::optional<const int> peer,
-    std::optional<const std::map<std::string, std::string>> metaData) {
-  if (enabled) {
-    int p = rank_;
-    if (peer.has_value()) {
-      p = peer.value();
-    }
-    auto key = std::make_pair(name, seqNum);
-
-    FB_CHECKABORT(
-        !hasInterval(name, seqNum),
-        fmt::format("Point name {} seqNum {} already exists", name, seqNum));
-
-    TimestampPoint tp = TimestampPoint(p);
-    if (metaData.has_value()) {
-      tp.setMetadata(metaData.value());
-    }
-    mapSeqNumTimePoints[key] = tp;
-  }
-}
-
-void TraceRecord::startInterval(
-    const std::string& name,
-    const int seqNum,
-    std::optional<const int> peer,
-    std::optional<const std::map<std::string, std::string>> metaData) {
-  if (enabled) {
-    int p = -1;
-    if (peer.has_value()) {
-      p = peer.value();
-    }
-    TimeInterval timeInterval = TimeInterval(p);
-    timeInterval.start();
-
-    if (metaData.has_value()) {
-      timeInterval.setMetadata(metaData.value());
-    }
-    auto key = std::make_pair(name, seqNum);
-
-    FB_CHECKABORT(
-        !hasInterval(name, seqNum),
-        fmt::format(
-            "Starting interval name {} seqNum {} already exists",
-            name,
-            seqNum));
-    mapSeqNumTimeIntervals[key] = timeInterval;
-  }
-}
-
-void TraceRecord::endInterval(const std::string& name, const int seqNum) {
-  if (enabled) {
-    FB_CHECKABORT(
-        hasInterval(name, seqNum),
-        fmt::format(
-            "Starting interval name {} seqNum {} not found", name, seqNum));
-    auto key = std::make_pair(name, seqNum);
-    auto& record = mapSeqNumTimeIntervals[key];
-    record.end();
-  }
-}
-
-bool TraceRecord::hasInterval(const std::string& name, const int seqNum) {
-  if (enabled) {
-    auto it = mapSeqNumTimeIntervals.find(std::make_pair(name, seqNum));
-    return it != mapSeqNumTimeIntervals.end();
-  }
-  return false;
 }
 
 std::string TraceRecord::toJsonEntry(int& id, const int pid) const {

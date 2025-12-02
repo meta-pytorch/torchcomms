@@ -184,6 +184,86 @@ ncclResult_t DefaultNcclxApi::allToAllv(
       stream);
 }
 
+ncclResult_t DefaultNcclxApi::alltoallvDynamicDispatch(
+    const void* sendbuff,
+    const size_t* sendSplitLengths,
+    size_t numSendSplitLengths,
+    const size_t* sendIndices,
+    const size_t* sendIndicesBlockLengths,
+    void* const* recvbuffs,
+    size_t* recvAllSplitLengths,
+    size_t maxSendcount,
+    size_t maxRecvcount,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream) {
+#ifdef NCCL_ALLTOALLV_DYNAMIC_SUPPORTED
+  ncclx::Hints hints;
+  hints.set("ncclx_alltoallv_dynamic_sendbuffs_location", "cpu");
+  hints.set("ncclx_alltoallv_dynamic_recvbuffs_location", "cpu");
+  hints.set("ncclx_alltoallv_dynamic_sendcounts_location", "gpu");
+  hints.set("ncclx_alltoallv_dynamic_max_sendcounts_location", "cpu");
+  hints.set("ncclx_alltoallv_dynamic_max_recvcounts_location", "cpu");
+  hints.set("ncclx_alltoallv_dynamic_actual_recvcounts_location", "gpu");
+  return ncclx::alltoallvDynamicDispatch(
+      sendbuff,
+      sendSplitLengths,
+      numSendSplitLengths,
+      sendIndices,
+      sendIndicesBlockLengths,
+      recvbuffs,
+      recvAllSplitLengths,
+      maxSendcount,
+      maxRecvcount,
+      hints,
+      datatype,
+      comm,
+      stream);
+#else
+  throw std::logic_error(
+      "NCCL alltoallvDynamicDispatch is not supported in this build");
+#endif
+}
+
+ncclResult_t DefaultNcclxApi::alltoallvDynamicCombine(
+    const void* sendbuff,
+    const size_t* sendSplitLengths,
+    size_t numSendSplitLengths,
+    const size_t* sendIndices,
+    const size_t* sendIndicesBlockLengths,
+    void* recvbuff,
+    size_t maxSendcount,
+    size_t maxRecvcount,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream) {
+#ifdef NCCL_ALLTOALLV_DYNAMIC_SUPPORTED
+  ncclx::Hints hints;
+  hints.set("ncclx_alltoallv_dynamic_sendbuffs_location", "cpu");
+  hints.set("ncclx_alltoallv_dynamic_recvbuffs_location", "cpu");
+  hints.set("ncclx_alltoallv_dynamic_sendcounts_location", "gpu");
+  hints.set("ncclx_alltoallv_dynamic_max_sendcounts_location", "cpu");
+  hints.set("ncclx_alltoallv_dynamic_max_recvcounts_location", "cpu");
+  hints.set("ncclx_alltoallv_dynamic_actual_recvcounts_location", "gpu");
+  return ncclx::alltoallvDynamicCombine(
+      sendbuff,
+      sendSplitLengths,
+      numSendSplitLengths,
+      sendIndices,
+      sendIndicesBlockLengths,
+      recvbuff,
+      maxSendcount,
+      maxRecvcount,
+      hints,
+      datatype,
+      comm,
+      stream);
+#else
+  throw std::logic_error(
+      "NCCL alltoallvDynamicCombine is not supported in this build");
+#endif
+}
+
 ncclResult_t DefaultNcclxApi::winAllocate(
     size_t size,
     ncclComm_t comm,
@@ -264,6 +344,14 @@ ncclResult_t DefaultNcclxApi::winWaitSignal(
   throw std::logic_error(
       "NCCL does not support window, NCCL_RMA_SUPPORTED is not set");
 #endif
+}
+
+ncclResult_t DefaultNcclxApi::memAlloc(void** buff, size_t size) {
+  return ncclMemAlloc(buff, size);
+}
+
+ncclResult_t DefaultNcclxApi::memFree(void* buff) {
+  return ncclMemFree(buff);
 }
 
 ncclResult_t DefaultNcclxApi::groupStart() {

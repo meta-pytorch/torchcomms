@@ -49,6 +49,7 @@ jobs:
           pip install -r docs/requirements.txt
           export USE_NCCL=0
           export USE_NCCLX=0
+          export USE_TRANSPORT=0
           export USE_SYSTEM_LIBS=1
           pip install --no-build-isolation .[dev] -v
       - name: Build Sphinx Docs

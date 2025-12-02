@@ -24,7 +24,9 @@
 
 enum CollType {
   ALLTOALL = 1,
-  UNKNOWN = 2,
+  SENDRECV = 2,
+  ALLREDUCE = 3,
+  UNKNOWN = 4,
 };
 constexpr int kExpectedCommAttrLength = 5;
 

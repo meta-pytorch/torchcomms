@@ -102,7 +102,11 @@ class BackendWrapper : public c10d::Backend {
   c10::intrusive_ptr<c10d::Work>
   recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) override;
 
+  // Get the underlying backend comm for backend-specific operations
+  std::shared_ptr<TorchComm> getComm() const;
+
  private:
+  std::shared_ptr<TorchComm> comm_;
   std::shared_ptr<TorchCommBackend> backend_;
 };
 

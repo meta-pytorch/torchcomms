@@ -655,9 +655,9 @@ class CtranIb {
         if (it == rankToPendingOpsMap.end()) {
           // create a new entry for the peer if it does not exist and VC is not
           // established
-          rankToPendingOpsMap[peerRank].push_back(std::move(pendingOp));
+          rankToPendingOpsMap[peerRank].q.push_back(std::move(pendingOp));
         } else {
-          it->second.push_back(std::move(pendingOp));
+          it->second.q.push_back(std::move(pendingOp));
         }
         pending = true;
       }
@@ -686,7 +686,7 @@ class CtranIb {
         // If VC has established, move the pendingOps list to readyToIssueOps;
         // otherwise, skip and move to next peer.
         if (vc) {
-          for (auto& op : it->second) {
+          for (auto& op : it->second.q) {
             readyToIssueOps[peerRank].push_back(std::move(op));
           }
           // Remove the peer entry once all pending ops are issued.
@@ -1116,8 +1116,15 @@ class CtranIb {
   std::unique_ptr<::ctran::ib::LocalVirtualConn> localVc;
   std::mutex localVcMutex;
 
-  folly::F14FastMap<int, std::deque<std::unique_ptr<PendingOp>>>
-      rankToPendingOpsMap;
+  struct PendingOpQueue {
+    std::deque<std::unique_ptr<PendingOp>> q;
+    PendingOpQueue() = default;
+    PendingOpQueue(const PendingOpQueue&) noexcept = default;
+    PendingOpQueue(PendingOpQueue&&) noexcept = default;
+    ~PendingOpQueue() noexcept = default;
+  };
+
+  folly::F14FastMap<int, PendingOpQueue> rankToPendingOpsMap;
   std::mutex pendingOpsMutex;
 
   CtranCtrlManager* ctrlMgr{nullptr};

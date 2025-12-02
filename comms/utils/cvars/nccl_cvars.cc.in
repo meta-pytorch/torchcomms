@@ -93,7 +93,7 @@ static std::unordered_map<std::string, std::vector<std::string>> parseConfigToke
   // Split input string by semicolon
   std::unordered_map<std::string, std::vector<std::string>> configMap;
   std::vector<std::string> tokenList;
-  folly::split(';', inputString, tokenList, true /* ignore empty */);
+  folly::split('|', inputString, tokenList, true /* ignore empty */);
 
   // Trim white space & check for duplicates
   std::unordered_set<std::string> uniqueTokens;

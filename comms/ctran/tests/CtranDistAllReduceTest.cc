@@ -440,6 +440,34 @@ INSTANTIATE_TEST_SUITE_P(
 
 #endif
 
+class CtranAllReduceIbTest : public CtranAllReduceTest<uint64_t> {
+ public:
+  CtranAllReduceIbTest() = default;
+
+  void SetUp() override {
+    setenv("NCCL_CTRAN_IB_QP_CONFIG_ALGO", "allreduce:131072,1,dqplb,8,192", 1);
+    ncclCvarInit();
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_F(CtranAllReduceIbTest, AllReduceIbconfig) {
+  if (comm->ctranComm_->ctran_->algo == nullptr) {
+    GTEST_SKIP() << "No ctran algo found, skip test";
+  }
+
+  CtranIbConfig* ctranIbConfigPtr =
+      comm->ctranComm_->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
+
+  ASSERT_NE(ctranIbConfigPtr, nullptr)
+      << "AllReduce IB config should not be null";
+
+  EXPECT_EQ(ctranIbConfigPtr->qpScalingTh, 131072);
+  EXPECT_EQ(ctranIbConfigPtr->numQps, 1);
+  EXPECT_EQ(ctranIbConfigPtr->vcMode, NCCL_CTRAN_IB_VC_MODE::dqplb);
+  EXPECT_EQ(ctranIbConfigPtr->qpMsgs, 8);
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);

@@ -96,6 +96,11 @@ class CtranSocket {
   struct recvCtrlQueue {
     std::deque<std::unique_ptr<SockPendingOp>> postedOps_;
     std::deque<std::unique_ptr<ControlMsg>> unexpMsgs_;
+
+    recvCtrlQueue() = default;
+    recvCtrlQueue(recvCtrlQueue&& other) noexcept = default;
+    recvCtrlQueue(const recvCtrlQueue& other) = default;
+    ~recvCtrlQueue() noexcept = default;
   };
 
   void init(const SocketServerAddr& serverAddr);
@@ -170,12 +175,9 @@ class CtranSocket {
   }
 
   inline recvCtrlQueue& getRecvCtrlQueue(int peerRank) {
-    auto it = rankToRecvCtrlMap_.find(peerRank);
-    if (it == rankToRecvCtrlMap_.end()) {
-      rankToRecvCtrlMap_[peerRank] = recvCtrlQueue();
-    }
-    auto& recvQueue = rankToRecvCtrlMap_[peerRank];
-    return recvQueue;
+    auto [it, inserted] =
+        rankToRecvCtrlMap_.try_emplace(peerRank, recvCtrlQueue());
+    return it->second;
   }
 
   const int rank_;
@@ -198,8 +200,16 @@ class CtranSocket {
   // the rankToSocket is accessed by both the main thread and the listen thread.
   folly::Synchronized<SocketMaps> socketMaps_;
 
-  folly::Synchronized<
-      folly::F14FastMap<int, std::deque<std::unique_ptr<SockPendingOp>>>>
+  struct PendingOpQueue {
+    std::deque<std::unique_ptr<SockPendingOp>> q;
+
+    PendingOpQueue() = default;
+    PendingOpQueue(const PendingOpQueue&) noexcept = default;
+    PendingOpQueue(PendingOpQueue&&) noexcept = default;
+    ~PendingOpQueue() noexcept = default;
+  };
+
+  folly::Synchronized<folly::F14FastMap<int, PendingOpQueue>>
       rankToPendingOpsMap_;
 
   // every rank maintains a postedrecv queue and unexpected msg queue

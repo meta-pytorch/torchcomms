@@ -1117,13 +1117,22 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
           "batch_op_create",
           &TorchComm::batch_op_create,
           "Create a batch operation object for batched P2P operations.",
-          py::call_guard<py::gil_scoped_release>());
+          py::call_guard<py::gil_scoped_release>())
+      .def_property_readonly(
+          "mem_allocator",
+          &TorchComm::getMemAllocator,
+          "Get the communication-specific memory allocator");
 
   intrusive_ptr_class_<BackendWrapper, c10d::Backend>(m, "_BackendWrapper")
       .def(
           py::init<std::shared_ptr<TorchComm>>(),
           "Create BackendWrapper around a TorchCommBackend",
           py::arg("comm"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_comm",
+          &BackendWrapper::getComm,
+          "Get the underlying TorchComm instance",
           py::call_guard<py::gil_scoped_release>());
   intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper");
 

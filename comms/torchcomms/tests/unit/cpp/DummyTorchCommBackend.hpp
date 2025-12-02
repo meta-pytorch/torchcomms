@@ -141,6 +141,11 @@ class DummyTorchCommBackend : public TorchCommBackend {
       const std::string& name,
       const CommOptions& options = {}) override;
 
+  std::shared_ptr<c10::Allocator> getMemAllocator() override {
+    throw std::runtime_error(
+        "getMemAllocator not implemented for Dummy backend");
+  }
+
   const CommOptions& getOptions() const override;
   const at::Device& getDevice() const override;
 

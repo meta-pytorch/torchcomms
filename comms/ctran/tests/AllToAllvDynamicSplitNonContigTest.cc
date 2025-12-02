@@ -313,6 +313,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         sendIndicesDev,
         sendIndicesBlockLengthsDev,
         recvbuffsHost,
+        nullptr,
         maxSendcount,
         maxRecvcount,
         hints,

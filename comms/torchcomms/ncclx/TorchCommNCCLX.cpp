@@ -3,6 +3,8 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 #include <cstdlib>
 #include <set>
 #include <stdexcept>
@@ -1149,13 +1151,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
   // Calculate the number of elements per slice along the first dimension
   // For a tensor with shape [N, D1, D2, ..., Dk], each slice of size S along
   // dim 0 contains S * D1 * D2 * ... * Dk elements
-  size_t elements_per_slice = input.numel() ? input.numel() / input.size(0) : 0;
+  // Use input tensor for send counts and output tensor for recv counts
+  size_t send_elements_per_slice =
+      input.numel() ? input.numel() / input.size(0) : 0;
+  size_t recv_elements_per_slice =
+      output.numel() ? output.numel() / output.size(0) : 0;
 
   size_t sendoffset = 0;
   size_t recvoffset = 0;
   for (int i = 0; i < comm_size_; ++i) {
-    sendcounts[i] = input_split_sizes[i] * elements_per_slice;
-    recvcounts[i] = output_split_sizes[i] * elements_per_slice;
+    sendcounts[i] = input_split_sizes[i] * send_elements_per_slice;
+    recvcounts[i] = output_split_sizes[i] * recv_elements_per_slice;
     senddispls[i] = sendoffset;
     recvdispls[i] = recvoffset;
     sendoffset += sendcounts[i];
@@ -1247,6 +1253,143 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
   nccl_api_->groupEnd();
 
   // Record end event after NCCL operations
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
+    const std::vector<at::Tensor>& output_tensor_list,
+    at::Tensor& output_chunk_sizes_per_rank,
+    const at::Tensor& input_tensor,
+    const at::Tensor& input_chunk_sizes,
+    const at::Tensor& input_chunk_indices,
+    const at::Tensor& input_chunk_count_per_rank,
+    bool async_op) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(input_tensor);
+  ensureTensorContiguous(input_chunk_sizes);
+  ensureTensorContiguous(input_chunk_indices);
+  ensureTensorContiguous(input_chunk_count_per_rank);
+  ensureTensorContiguous(output_chunk_sizes_per_rank);
+
+  for (const auto& t : output_tensor_list) {
+    ensureTensorContiguous(t);
+  }
+
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "alltoallv_dynamic_dispatch",
+      rank_,
+      {input_tensor},
+      output_tensor_list);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream,
+      options_.timeout,
+      {input_tensor,
+       input_chunk_sizes,
+       input_chunk_indices,
+       input_chunk_count_per_rank});
+
+  // Record start event before NCCL operation
+  work->recordStart("alltoallv_dynamic_dispatch");
+
+  // Convert vector of tensors to array of pointers
+  std::vector<void*> output_tensor_ptrs;
+  output_tensor_ptrs.reserve(output_tensor_list.size());
+  for (const auto& t : output_tensor_list) {
+    output_tensor_ptrs.push_back(t.data_ptr());
+  }
+
+  ncclResult_t result = nccl_api_->alltoallvDynamicDispatch(
+      input_tensor.data_ptr(),
+      reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),
+      input_chunk_sizes.numel(),
+      reinterpret_cast<size_t*>(input_chunk_indices.data_ptr()),
+      reinterpret_cast<size_t*>(input_chunk_count_per_rank.data_ptr()),
+      output_tensor_ptrs.data(),
+      reinterpret_cast<size_t*>(output_chunk_sizes_per_rank.data_ptr()),
+      input_tensor.numel(),
+      output_tensor_list[0].numel(),
+      getNcclDataType(input_tensor),
+      nccl_comm_,
+      stream);
+
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL alltoallvDynamicDispatch failed", result);
+  }
+
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
+    at::Tensor& output_tensor,
+    const at::Tensor& input_tensor,
+    const at::Tensor& input_chunk_sizes,
+    const at::Tensor& input_chunk_indices,
+    const at::Tensor& input_chunk_count_per_rank,
+    bool async_op) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(output_tensor);
+  ensureTensorContiguous(input_tensor);
+  ensureTensorContiguous(input_chunk_sizes);
+  ensureTensorContiguous(input_chunk_indices);
+  ensureTensorContiguous(input_chunk_count_per_rank);
+
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "alltoallv_dynamic_combine",
+      rank_,
+      input_tensor,
+      output_tensor);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream,
+      options_.timeout,
+      {input_tensor,
+       input_chunk_sizes,
+       input_chunk_indices,
+       input_chunk_count_per_rank});
+
+  // Record start event before NCCL operation
+  work->recordStart("alltoallv_dynamic_combine");
+
+  ncclResult_t result = nccl_api_->alltoallvDynamicCombine(
+      input_tensor.data_ptr(),
+      reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),
+      input_chunk_sizes.numel(),
+      reinterpret_cast<size_t*>(input_chunk_indices.data_ptr()),
+      reinterpret_cast<size_t*>(input_chunk_count_per_rank.data_ptr()),
+      output_tensor.data_ptr(),
+      input_tensor.numel(),
+      output_tensor.numel(),
+      getNcclDataType(input_tensor),
+      nccl_comm_,
+      stream);
+
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL alltoallvDynamicCombine failed", result);
+  }
+
+  // Record end event after NCCL operation
   work->recordEnd();
 
   // Enqueue the work after events have been recorded
@@ -1562,6 +1705,55 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   new_torchcomm->init(device_, name, options);
 
   return new_torchcomm;
+}
+
+// Allocate function
+static void* _ncclMemAlloc(
+    std::shared_ptr<NcclxApi> nccl_api,
+    size_t size,
+    int device,
+    void* stream) {
+  at::cuda::OptionalCUDAGuard gpuGuard(device);
+  void* ptr = nullptr;
+  TORCH_CHECK(
+      nccl_api->memAlloc(&ptr, size) == ncclSuccess, "ncclMemAlloc failed");
+  LOG(INFO) << "NCCL mem allocator: allocated " << ptr << " with " << size
+            << " bytes in stream " << stream;
+  return ptr;
+}
+
+// Free function
+static void _ncclMemFree(
+    std::shared_ptr<NcclxApi> nccl_api,
+    void* ptr,
+    size_t size,
+    int device,
+    void* stream) {
+  LOG(INFO) << "NCCL mem allocator: freeing " << ptr << " with " << size
+            << " bytes in stream " << stream;
+  at::cuda::OptionalCUDAGuard gpuGuard(device);
+  TORCH_CHECK(nccl_api->memFree(ptr) == ncclSuccess, "ncclMemFree failed");
+}
+
+// Create a `CUDAPluggableAllocator` that uses the above functions.
+std::shared_ptr<c10::Allocator> TorchCommNCCLX::getMemAllocator() {
+  c10::DeviceIndex deviceIdx = device_.index();
+  if (!deviceSupportsMulticast(deviceIdx)) {
+    TORCH_CHECK(
+        false, "NCCL mem allocator is not supported in this NCCL version");
+  }
+  static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
+      ncclMemAllocator =
+          torch::cuda::CUDAPluggableAllocator::createCustomAllocator(
+              // alloc_fn
+              [this](size_t size, int device, cudaStream_t stream) {
+                return _ncclMemAlloc(nccl_api_, size, device, stream);
+              },
+              // free_fn
+              [this](void* ptr, size_t size, int device, cudaStream_t stream) {
+                return _ncclMemFree(nccl_api_, ptr, size, device, stream);
+              });
+  return ncclMemAllocator;
 }
 
 void TorchCommNCCLX::register_address(

@@ -149,6 +149,33 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
+  virtual ncclResult_t alltoallvDynamicDispatch(
+      const void* sendbuff,
+      const size_t* sendSplitLengths,
+      size_t numSendSplitLengths,
+      const size_t* sendIndices,
+      const size_t* sendIndicesBlockLengths,
+      void* const* recvbuffs,
+      size_t* recvAllSplitLengths,
+      size_t maxSendcount,
+      size_t maxRecvcount,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream) = 0;
+
+  virtual ncclResult_t alltoallvDynamicCombine(
+      const void* sendbuff,
+      const size_t* sendSplitLengths,
+      size_t numSendSplitLengths,
+      const size_t* sendIndices,
+      const size_t* sendIndicesBlockLengths,
+      void* recvbuff,
+      size_t maxSendcount,
+      size_t maxRecvcount,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream) = 0;
+
   virtual ncclResult_t winAllocate(
       size_t size,
       ncclComm_t comm,
@@ -179,6 +206,9 @@ class NcclxApi {
       NcclxWindowCmpOp cmp_op,
       NcclxWindow win,
       cudaStream_t stream) = 0;
+
+  virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
+  virtual ncclResult_t memFree(void* buff) = 0;
 
   // Group operations
   virtual ncclResult_t groupStart() = 0;
@@ -329,6 +359,33 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
+  ncclResult_t alltoallvDynamicDispatch(
+      const void* sendbuff,
+      const size_t* sendSplitLengths,
+      size_t numSendSplitLengths,
+      const size_t* sendIndices,
+      const size_t* sendIndicesBlockLengths,
+      void* const* recvbuffs,
+      size_t* recvAllSplitLengths,
+      size_t maxSendcount,
+      size_t maxRecvcount,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream) override;
+
+  ncclResult_t alltoallvDynamicCombine(
+      const void* sendbuff,
+      const size_t* sendSplitLengths,
+      size_t numSendSplitLengths,
+      const size_t* sendIndices,
+      const size_t* sendIndicesBlockLengths,
+      void* recvbuff,
+      size_t maxSendcount,
+      size_t maxRecvcount,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream) override;
+
   // Window RMA operations
   ncclResult_t winAllocate(
       size_t size,
@@ -363,6 +420,9 @@ class DefaultNcclxApi : public NcclxApi {
       NcclxWindowCmpOp cmp_op,
       NcclxWindow win,
       cudaStream_t stream) override;
+
+  ncclResult_t memAlloc(void** buff, size_t size) override;
+  ncclResult_t memFree(void* buff) override;
 
   // Group operations
   ncclResult_t groupStart() override;

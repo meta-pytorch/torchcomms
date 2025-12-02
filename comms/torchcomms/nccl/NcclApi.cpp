@@ -207,5 +207,25 @@ ncclResult_t DefaultNcclApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   return ncclRedOpDestroy(op, comm);
 }
 
+ncclResult_t DefaultNcclApi::memAlloc(void** buff, size_t size) {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 19, 0)
+  return ncclMemAlloc(buff, size);
+#else
+  throw std::runtime_error(
+      "NCCL version " + std::to_string(NCCL_VERSION_CODE) +
+      " does not support ncclMemAlloc API");
+#endif
+}
+
+ncclResult_t DefaultNcclApi::memFree(void* buff) {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 19, 0)
+  return ncclMemFree(buff);
+#else
+  throw std::runtime_error(
+      "NCCL version " + std::to_string(NCCL_VERSION_CODE) +
+      " does not support ncclMemFree API");
+#endif
+}
+
 } // namespace comms
 } // namespace torch

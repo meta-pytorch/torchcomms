@@ -232,38 +232,45 @@ struct CtranKernelAllToAllDedupArgs {
 };
 
 struct CtranKernelAllToAllvDynamicArgs {
-  void** sendbuffsPtrTmpbufCPU;
-  const size_t* sendcounts;
-  size_t* sendCountsTmpbufGPU;
-  size_t* sendCountsTmpbufCPU;
-  size_t sendcountsLength;
-  size_t* recvCountsTmpbufGPU;
-  size_t* actualRecvcounts;
-  void* recvbuffsPtrGPU[CTRAN_MAX_TOTAL_RANK];
-  commDataType_t datatype;
-  KernelElem* kElem;
+  void** sendbuffsPtrTmpbufCPU{nullptr};
+  const size_t* sendcounts{nullptr};
+  size_t* sendCountsTmpbufGPU{nullptr};
+  size_t* sendCountsTmpbufCPU{nullptr};
+  size_t sendcountsLength{0};
+  size_t* recvCountsTmpbufGPU{nullptr};
+  size_t* actualRecvcounts{nullptr};
+  void* recvbuffsPtrGPU[CTRAN_MAX_TOTAL_RANK]{};
+  commDataType_t datatype{};
+  KernelElem* kElem{nullptr};
   union {
     struct {
-      const void* sendbuff;
-      void** sendbuffsPtrShmDev;
+      const void* sendbuff{nullptr};
+      void** sendbuffsPtrShmDev{nullptr};
     } split;
     struct {
-      const void* sendbuffsPtrGPU[CTRAN_MAX_TOTAL_RANK];
+      const void* sendbuffsPtrGPU[CTRAN_MAX_TOTAL_RANK]{};
     } nonSplit;
   };
   union {
     struct {
-      const size_t* sendIndices;
-      size_t* sendIndicesTmpbufCPU;
-      const size_t* sendIndicesBlockLengths;
-      size_t* sendIndicesBlockLengthsTmpbufCPU;
-      size_t maxSendIndicesBlockLength;
-      size_t maxRecvcount;
-      size_t maxSendcount;
+      const size_t* sendIndices{nullptr};
+      size_t* sendIndicesTmpbufCPU{nullptr};
+      const size_t* sendIndicesBlockLengths{nullptr};
+      size_t* sendIndicesBlockLengthsTmpbufCPU{nullptr};
+      size_t maxSendIndicesBlockLength{0};
+      size_t maxRecvcount{0};
+      size_t maxSendcount{0};
     } nonContig;
     struct {
     } contig;
   };
+
+  // Default constructor needed because unions with non-trivial member
+  // initializers have deleted default constructors
+  CtranKernelAllToAllvDynamicArgs() {
+    // Unions are initialized by their first member by default
+    // split and nonContig are already initialized above
+  }
 };
 
 struct CtranKernelBroadcastArgs {
@@ -321,6 +328,10 @@ struct CtranKernelArgs {
     CtranKernelWaitNotifyArgs waitnotify;
     CtranKernelGetArgs get;
   } collective;
+
+  // Default constructor needed because union has a member with non-trivial
+  // default constructor Initialize first member of union
+  CtranKernelArgs() : collective{.allgather = {}} {}
 };
 
 #endif

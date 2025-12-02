@@ -216,6 +216,10 @@ inline commResult_t sendRecvImpl(
         op->recv.peerRank, recvMemHdl[i], op->recv.kElem, notifyVec[i].get()));
   }
 
+  // Get sendrecv specific IB config
+  static CtranIbConfig* sendRecvConfig =
+      comm->ctran_->algo->getCollToVcConfig(CollType::SENDRECV);
+
   // As we recv control msgs, issue PUT operations
   bool isIssuedFirst = false;
   while (putReqs.size() < sendOpGroup.size() && !comm->testAbort()) {
@@ -255,7 +259,8 @@ inline commResult_t sendRecvImpl(
                 .memHdl_ = sendMemHdl[i],
                 .remoteAccessKey_ = remoteAccessKey[i],
                 .notify_ = true,
-                .kernElem_ = op->send.kElem},
+                .kernElem_ = op->send.kElem,
+                .ibConfig_ = sendRecvConfig},
             &req));
         putReqs[i] = std::unique_ptr<CtranMapperRequest>(req);
         timestamp->putIssued.push_back(

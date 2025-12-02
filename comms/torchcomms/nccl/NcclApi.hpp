@@ -143,6 +143,9 @@ class NcclApi {
       ncclScalarResidence_t residence,
       ncclComm_t comm) = 0;
   virtual ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm) = 0;
+
+  virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
+  virtual ncclResult_t memFree(void* buff) = 0;
 };
 
 /**
@@ -281,6 +284,9 @@ class DefaultNcclApi : public NcclApi {
       ncclScalarResidence_t residence,
       ncclComm_t comm) override;
   ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm) override;
+
+  ncclResult_t memAlloc(void** buff, size_t size) override;
+  ncclResult_t memFree(void* buff) override;
 };
 
 } // namespace comms

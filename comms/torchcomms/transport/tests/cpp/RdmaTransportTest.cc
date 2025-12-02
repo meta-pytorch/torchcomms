@@ -116,7 +116,9 @@ class RdmaTransportTest : public ::testing::Test {
 
       // Export client's buffer information to server
       RdmaRemoteBuffer myMemInfo{
-          .ptr = buffer, .accessKey = rdmaMemory.remoteKey()};
+          .ptr = buffer,
+          .len = bufferSize,
+          .accessKey = rdmaMemory.remoteKey()};
       syncObjects.memoryInfoPromise.setValue(myMemInfo);
 
       // Wait for incoming put transfer from server
@@ -296,6 +298,17 @@ TEST_F(RdmaMemoryTest, BasicConstruction) {
   // Test boundary cases
   EXPECT_FALSE(memory.contains(static_cast<uint8_t*>(buffer_) - 1, 1));
   EXPECT_FALSE(memory.contains(buffer_, bufferSize_ + 1));
+}
+
+TEST_F(RdmaMemoryTest, ViewCreation) {
+  RdmaMemory memory(buffer_, bufferSize_, cudaDev_);
+
+  // Test valid view creation
+  auto view = memory.createView();
+  EXPECT_EQ(view.data(), buffer_);
+  EXPECT_EQ(view.size(), bufferSize_);
+  EXPECT_EQ(view->getDevice(), cudaDev_);
+  EXPECT_EQ(view->remoteKey(), memory.remoteKey());
 }
 
 TEST_F(RdmaMemoryTest, ViewCreationWithOffsetLength) {

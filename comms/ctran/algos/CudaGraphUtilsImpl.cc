@@ -48,7 +48,11 @@ commResult_t prepareCudagraphAwareAllToAllvDynamic(
   const int nRanks = op->comm_->statex_->nRanks();
   std::vector<void*> recvbuffs(nRanks);
   for (int i = 0; i < nRanks; i++) {
-    recvbuffs[i] = op->alltoallv_dynamic.recvbuffs[i];
+    if (op->alltoallv_dynamic.recvbuffs != nullptr) {
+      recvbuffs[i] = op->alltoallv_dynamic.recvbuffs[i];
+    } else {
+      recvbuffs[i] = op->alltoallv_dynamic.recvbuff;
+    }
   }
   // FIXME: confirm if sendbuffs are also persistent, so we don't need to
   // search handle for sendbuffs every time

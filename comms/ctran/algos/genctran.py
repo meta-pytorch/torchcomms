@@ -139,7 +139,7 @@ def gen_allreduce_files(gensrc, srcs, rules):
         srcs,
         rules,
         {
-            "bases": ["AllReduceDirect"],
+            "bases": ["AllReduceDirect", "AllReduceRing"],
             "dir": "AllReduce",
             "has_ops": True,
             "variants": [""],  # No variants

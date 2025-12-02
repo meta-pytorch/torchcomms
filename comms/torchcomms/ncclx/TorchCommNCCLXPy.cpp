@@ -1,7 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <folly/io/async/EventBase.h>
-#include <folly/io/async/ScopedEventBaseThread.h>
 #include <pybind11/chrono.h>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -9,106 +7,100 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
-#include "comms/torchcomms/transport/RdmaTransport.h"
 
 namespace py = pybind11;
 using namespace torch::comms;
-
-namespace {
-folly::ScopedEventBaseThread& getScopedEventBaseThread() {
-  // This intentionally creates and leaks a global event base thread to be used
-  // for all Transports on first use.
-  static folly::ScopedEventBaseThread scopedEventBaseThread{"torchcomms_evb"};
-  return scopedEventBaseThread;
-}
-} // namespace
 
 PYBIND11_MODULE(_comms_ncclx, m) {
   m.doc() = "NCCLX specific python bindings for TorchComm";
 
   py::class_<TorchCommNCCLX, std::shared_ptr<TorchCommNCCLX>>(
-      m, "TorchCommNCCLX");
+      m, "TorchCommNCCLX")
+      .def(
+          "alltoallv_dynamic_dispatch",
+          [](TorchCommNCCLX& self,
+             const std::vector<at::Tensor>& output_tensor_list,
+             at::Tensor& output_chunk_sizes_per_rank,
+             const at::Tensor& input_tensor,
+             const at::Tensor& input_chunk_sizes,
+             const at::Tensor& input_chunk_indices,
+             const at::Tensor& input_chunk_count_per_rank,
+             bool async_op) {
+            return self.alltoallv_dynamic_dispatch(
+                output_tensor_list,
+                output_chunk_sizes_per_rank,
+                input_tensor,
+                input_chunk_sizes,
+                input_chunk_indices,
+                input_chunk_count_per_rank,
+                async_op);
+          },
+          R"(
+All-to-all dynamic dispatch operation with variable split sizes and non-contiguous indices.
 
-  py::class_<RdmaRemoteBuffer, std::shared_ptr<RdmaRemoteBuffer>>(
-      m, "RdmaRemoteBuffer")
-      .def(
-          py::pickle(
-              [](const RdmaRemoteBuffer& buffer) { // __getstate__
-                return py::make_tuple(
-                    reinterpret_cast<uintptr_t>(buffer.ptr), buffer.accessKey);
-              },
-              [](const py::tuple& t) { // __setstate__
-                if (t.size() != 2) {
-                  throw std::runtime_error(
-                      "Invalid state for RdmaRemoteBuffer");
-                }
-                return RdmaRemoteBuffer{
-                    reinterpret_cast<void*>(t[0].cast<uintptr_t>()),
-                    t[1].cast<std::string>()};
-              }));
+This API performs an all-to-all communication where each rank can send multiple chunks
+to each destination rank, with chunks potentially non-contiguous in the send buffer.
 
-  py::class_<RdmaTransport, std::shared_ptr<RdmaTransport>>(m, "RdmaTransport")
-      // initialize a new RDMATransport using a custom init fn
-      .def(py::init([](at::Device device) {
-        TORCH_INTERNAL_ASSERT(device.is_cuda());
-        int cuda_device = device.index();
-        return std::make_shared<RdmaTransport>(
-            cuda_device, getScopedEventBaseThread().getEventBase());
-      }))
-      .def_static("supported", &RdmaTransport::supported)
-      .def("bind", [](RdmaTransport& self) { return py::bytes(self.bind()); })
-      .def(
-          "connect",
-          [](RdmaTransport& self, const py::bytes& peerUrl) {
-            std::string peerUrlStr = peerUrl.cast<std::string>();
-            return static_cast<int>(self.connect(peerUrlStr));
-          })
-      .def("connected", &RdmaTransport::connected)
-      .def(
-          "write",
-          [](RdmaTransport& self,
-             const RdmaMemory::View& localBuffer,
-             const RdmaRemoteBuffer& remoteBuffer) {
-            return static_cast<int>(
-                self.write(localBuffer, remoteBuffer, false).get());
-          })
-      .def(
-          "read",
-          [](RdmaTransport& self,
-             RdmaMemory::MutableView& localBuffer,
-             const RdmaRemoteBuffer& remoteBuffer) {
-            return static_cast<int>(self.read(localBuffer, remoteBuffer).get());
-          });
+Args:
+    output_tensor_list: List of output tensors (one per source rank) to receive data.
+    output_chunk_sizes_per_rank: Output tensor to receive chunk size information from all ranks.
+    input_tensor: Input tensor containing all data to be sent.
+    input_chunk_sizes: Tensor of chunk sizes (one per chunk across all destination ranks).
+    input_chunk_indices: Tensor of chunk indices indicating where each chunk is located in input_tensor.
+    input_chunk_count_per_rank: Tensor indicating how many chunks are sent to each rank.
+    async_op: Whether to perform the operation asynchronously.
 
-  py::class_<RdmaMemory::View, std::shared_ptr<RdmaMemory::View>>(
-      m, "RdmaMemoryView")
-      .def("size", &RdmaMemory::View::size);
-
-  py::class_<RdmaMemory::MutableView, std::shared_ptr<RdmaMemory::MutableView>>(
-      m, "RdmaMemoryMutableView");
-
-  py::class_<RdmaMemory, std::shared_ptr<RdmaMemory>>(m, "RdmaMemory")
-      .def(py::init([](const at::Tensor& tensor) {
-        TORCH_CHECK(
-            tensor.is_contiguous(),
-            "RdmaMemory currently requires a contiguous tensor");
-        // If CPU memory is passed, use device 0 for NIC discovery
-        const auto device = tensor.get_device() < 0 ? 0 : tensor.get_device();
-        return std::make_shared<RdmaMemory>(
-            tensor.data_ptr(), tensor.nbytes(), device);
-      }))
+Returns:
+    TorchWork object for tracking operation completion.
+)",
+          py::arg("output_tensor_list"),
+          py::arg("output_chunk_sizes_per_rank"),
+          py::arg("input_tensor"),
+          py::arg("input_chunk_sizes"),
+          py::arg("input_chunk_indices"),
+          py::arg("input_chunk_count_per_rank"),
+          py::arg("async_op"),
+          py::call_guard<py::gil_scoped_release>())
       .def(
-          "to_view",
-          [](RdmaMemory& self) {
-            return self.createView(size_t(0), self.length());
-          })
-      .def(
-          "to_mutable_view",
-          [](RdmaMemory& self) {
-            return self.createMutableView(size_t(0), self.length());
-          })
-      .def("to_remote_buffer", [](RdmaMemory& self) {
-        return RdmaRemoteBuffer{
-            const_cast<void*>(self.data()), self.remoteKey()};
-      });
+          "alltoallv_dynamic_combine",
+          [](TorchCommNCCLX& self,
+             at::Tensor& output_tensor,
+             const at::Tensor& input_tensor,
+             const at::Tensor& input_chunk_sizes,
+             const at::Tensor& input_chunk_indices,
+             const at::Tensor& input_chunk_count_per_rank,
+             bool async_op) {
+            return self.alltoallv_dynamic_combine(
+                output_tensor,
+                input_tensor,
+                input_chunk_sizes,
+                input_chunk_indices,
+                input_chunk_count_per_rank,
+                async_op);
+          },
+          R"(
+All-to-all dynamic combine operation with variable split sizes and non-contiguous indices.
+
+This API performs an all-to-all communication where each rank can send multiple chunks
+to each destination rank, with chunks potentially non-contiguous in the send buffer.
+This is the inverse operation of alltoallv_dynamic_dispatch.
+
+Args:
+    output_tensor: Output tensor to receive combined data.
+    input_tensor: Input tensor containing all data to be sent.
+    input_chunk_sizes: Tensor of chunk sizes (one per chunk across all destination ranks).
+    input_chunk_indices: Tensor of chunk indices indicating where each chunk is located in input_tensor.
+    input_chunk_count_per_rank: Tensor indicating how many chunks are sent to each rank.
+    async_op: Whether to perform the operation asynchronously.
+
+Returns:
+    TorchWork object for tracking operation completion.
+)",
+          py::arg("output_tensor"),
+          py::arg("input_tensor"),
+          py::arg("input_chunk_sizes"),
+          py::arg("input_chunk_indices"),
+          py::arg("input_chunk_count_per_rank"),
+          py::arg("async_op"),
+          py::call_guard<py::gil_scoped_release>());
 }

@@ -207,12 +207,15 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
 
     verifyResult(count, redOp, recvBufComm);
 
-    verifyBackendsUsed(
-        comm->ctranComm_->ctran_.get(),
-        comm->ctranComm_->statex_.get(),
-        memType,
-        // ReduceScatter uses kernel reduce not NVL iput
-        {CtranMapperBackend::NVL});
+    if (count > 0) {
+      verifyBackendsUsed(
+          comm->ctranComm_->ctran_.get(),
+          comm->ctranComm_->statex_.get(),
+          memType,
+          // ReduceScatter uses kernel reduce not NVL iput
+          {CtranMapperBackend::NVL});
+    }
+
     verifyGpeLeak(comm->ctranComm_->ctran_.get());
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -222,18 +225,21 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
     ASSERT_TRUE(comm->newCollTrace != nullptr);
     auto dumpMap = meta::comms::ncclx::dumpNewCollTrace(*comm->newCollTrace);
 
-    EXPECT_NE(dumpMap["CT_pastColls"], "[]");
     EXPECT_EQ(dumpMap["CT_pendingColls"], "[]");
     EXPECT_EQ(dumpMap["CT_currentColl"], "null");
 
-    auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
-    EXPECT_EQ(pastCollsJson.size(), 1);
+    // Only verify CollTrace records if count > 0 (operation was executed)
+    if (count > 0) {
+      EXPECT_NE(dumpMap["CT_pastColls"], "[]");
 
-    const auto& lastColl = pastCollsJson[0];
-    EXPECT_EQ(lastColl["opName"].asString(), "ReduceScatter");
-    EXPECT_EQ(lastColl["count"].asInt(), count);
-    EXPECT_EQ(lastColl["algoName"].asString(), reduceScatterAlgoName(algo));
+      auto pastCollsJson = folly::parseJson(dumpMap["CT_pastColls"]);
+      EXPECT_EQ(pastCollsJson.size(), 1);
 
+      const auto& lastColl = pastCollsJson[0];
+      EXPECT_EQ(lastColl["opName"].asString(), "ReduceScatter");
+      EXPECT_EQ(lastColl["count"].asInt(), count);
+      EXPECT_EQ(lastColl["algoName"].asString(), reduceScatterAlgoName(algo));
+    }
     memoryCleanUp(memType);
   }
 };
@@ -347,7 +353,10 @@ auto specialTestsValue = ::testing::Values(
     // unaligned size
     std::make_tuple(1048567, kTestInPlace, true, kMemNcclMemAlloc),
     // larger than tmpbuf size
-    std::make_tuple(33554176, kTestOutOfPlace, true, kMemNcclMemAlloc)
+    std::make_tuple(33554176, kTestOutOfPlace, true, kMemNcclMemAlloc),
+    // zero count case (test for recvcount=0 bug fix)
+    std::make_tuple(0, kTestInPlace, true, kMemNcclMemAlloc),
+    std::make_tuple(0, kTestOutOfPlace, true, kMemNcclMemAlloc)
     // disjoint test
     // std::make_tuple(
     //     1UL << 22,

@@ -10,6 +10,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include "comms/ctran/utils/Checks.h"
 
 namespace ctran::utils {
 
@@ -72,30 +73,30 @@ class TimeInterval {
       const int pid,
       const int seqNum = -1) const;
 
-  void start() {
+  inline void start() {
     this->start_ = std::chrono::system_clock::now();
   }
 
-  void end() {
+  inline void end() {
     if (!completed_) {
       this->end_ = std::chrono::system_clock::now();
       completed_ = true;
     }
   }
 
-  int64_t durationMs() const {
+  inline int64_t durationMs() const {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                end_ - this->start_)
         .count();
   }
 
-  int64_t durationUs() const {
+  inline int64_t durationUs() const {
     return std::chrono::duration_cast<std::chrono::microseconds>(
                end_ - this->start_)
         .count();
   }
 
-  void setMetadata(const std::map<std::string, std::string>& metaData) {
+  inline void setMetadata(const std::map<std::string, std::string>& metaData) {
     this->metaData_ = metaData;
   }
 
@@ -116,44 +117,99 @@ class TraceRecord {
   // Add a point with sequence number. If the key <name, seqNum> already
   // exists, it will hit an assertion fail. Caller is responsible to ensure
   // the uniqueness.
-  void addPoint(
+  inline void addPoint(
       const std::string& name,
       const int seqNum,
       std::optional<const int> peer = std::nullopt,
       std::optional<const std::map<std::string, std::string>> metaData =
-          std::nullopt);
+          std::nullopt) {
+    if (enabled) {
+      int p = rank_;
+      if (peer.has_value()) {
+        p = peer.value();
+      }
+      auto key = std::make_pair(name, seqNum);
+
+      FB_CHECKABORT(
+          !hasInterval(name, seqNum),
+          fmt::format("Point name {} seqNum {} already exists", name, seqNum));
+
+      TimestampPoint tp = TimestampPoint(p);
+      if (metaData.has_value()) {
+        tp.setMetadata(metaData.value());
+      }
+      mapSeqNumTimePoints[key] = tp;
+    }
+  }
 
   // Add a start interval with sequence number. If the key <name, seqNum>
   // already exists, it will hit an assertion fail. Caller is responsible to
   // ensure the uniqueness.
-  void startInterval(
+  inline void startInterval(
       const std::string& name,
       const int seqNum,
       std::optional<const int> peer = std::nullopt,
       std::optional<const std::map<std::string, std::string>> metaData =
-          std::nullopt);
+          std::nullopt) {
+    if (enabled) {
+      int p = -1;
+      if (peer.has_value()) {
+        p = peer.value();
+      }
+      TimeInterval timeInterval = TimeInterval(p);
+      timeInterval.start();
+
+      if (metaData.has_value()) {
+        timeInterval.setMetadata(metaData.value());
+      }
+      auto key = std::make_pair(name, seqNum);
+
+      FB_CHECKABORT(
+          !hasInterval(name, seqNum),
+          fmt::format(
+              "Starting interval name {} seqNum {} already exists",
+              name,
+              seqNum));
+      mapSeqNumTimeIntervals[key] = timeInterval;
+    }
+  }
 
   // End an existing interval. If the key <name, seqNum> doesn't exist,
   // it will hit an assertion fail. Caller is responsible to ensure the
   // the corresponding starting interval has been recorded.
-  void endInterval(const std::string& name, const int seqNum);
-
-  // Check whether a start interval with <name, seqNum> exists.
-  bool hasInterval(const std::string& name, const int seqNum);
-
-  // Record completion of the entire trace record
-  void end();
-
-  inline void addMetadata(const std::string& key, const std::string& val) {
+  void endInterval(const std::string& name, const int seqNum) {
     if (enabled) {
-      metaDataKeys_.push_back(key);
-      metaDataVals_.push_back(val);
+      FB_CHECKABORT(
+          hasInterval(name, seqNum),
+          fmt::format(
+              "Starting interval name {} seqNum {} not found", name, seqNum));
+      auto key = std::make_pair(name, seqNum);
+      auto& record = mapSeqNumTimeIntervals[key];
+      record.end();
     }
   }
 
+  // Check whether a start interval with <name, seqNum> exists.
+  inline bool hasInterval(const std::string& name, const int seqNum) {
+    if (enabled) {
+      auto it = mapSeqNumTimeIntervals.find(std::make_pair(name, seqNum));
+      return it != mapSeqNumTimeIntervals.end();
+    }
+    return false;
+  }
+
+  // Record completion of the entire trace record
+  inline void end() {
+    if (enabled) {
+      end_ = std::chrono::system_clock::now();
+    }
+  }
+
+  void addMetadata(const std::string& key, const std::string& val);
+
   std::string toJsonEntry(int& id, const int pid) const;
 
-  uint64_t durationUs() const {
+  inline uint64_t durationUs() const {
     return std::chrono::duration_cast<std::chrono::microseconds>(end_ - start_)
         .count();
   }

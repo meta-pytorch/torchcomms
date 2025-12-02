@@ -137,7 +137,7 @@ void IbUtils::linkDownSetTimeout(const std::string& devName, const int port) {
   int device;
   FB_CUDACHECKIGNORE(cudaGetDevice(&device));
   // capture by value rather than reference to handle out-of-scope
-  timeoutThread_ = std::thread{[=]() {
+  timeoutThread_ = std::thread{[=, this]() {
     // Set cuda device for the thread so that logging can correctly
     // identify the local rank of the thread.
     cudaSetDevice(device);

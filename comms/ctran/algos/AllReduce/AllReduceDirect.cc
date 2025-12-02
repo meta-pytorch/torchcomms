@@ -235,6 +235,9 @@ static commResult_t impl(
   if (stepCount > totalStepCount) {
     stepCount = totalStepCount;
   }
+  // Get allreduce specific IB config
+  static CtranIbConfig* allReduceConfig =
+      comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
 
   while (totalStepCount) {
     size_t chunkCount = stepCount / nRanks;
@@ -282,7 +285,8 @@ static commResult_t impl(
               CtranMapperConfig{
                   .memHdl_ = recvHdl,
                   .remoteAccessKey_ = interNodeRemoteTmpAccessKey,
-                  .notify_ = true},
+                  .notify_ = true,
+                  .ibConfig_ = allReduceConfig},
               &req));
           interNodePutReq[n] = std::unique_ptr<CtranMapperRequest>(req);
         }

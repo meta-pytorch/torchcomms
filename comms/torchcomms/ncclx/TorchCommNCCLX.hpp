@@ -154,6 +154,25 @@ class TorchCommNCCLX : public TorchCommBackend,
       const std::vector<at::Tensor>& input_tensor_list,
       bool async_op,
       const AllToAllOptions& options = {}) override;
+
+  // AllToAllv Dynamic Operations
+  c10::intrusive_ptr<TorchWork> alltoallv_dynamic_dispatch(
+      const std::vector<at::Tensor>& output_tensor_list,
+      at::Tensor& output_chunk_sizes_per_rank,
+      const at::Tensor& input_tensor,
+      const at::Tensor& input_chunk_sizes,
+      const at::Tensor& input_chunk_indices,
+      const at::Tensor& input_chunk_count_per_rank,
+      bool async_op);
+
+  c10::intrusive_ptr<TorchWork> alltoallv_dynamic_combine(
+      at::Tensor& output_tensor,
+      const at::Tensor& input_tensor,
+      const at::Tensor& input_chunk_sizes,
+      const at::Tensor& input_chunk_indices,
+      const at::Tensor& input_chunk_count_per_rank,
+      bool async_op);
+
   c10::intrusive_ptr<TorchWork> barrier(
       bool async_op,
       const BarrierOptions& options = {}) override;
@@ -183,6 +202,8 @@ class TorchCommNCCLX : public TorchCommBackend,
       const std::vector<int>& ranks,
       const std::string& name,
       const CommOptions& options = {}) override;
+
+  std::shared_ptr<c10::Allocator> getMemAllocator() override;
 
   // Friend access for TorchCommNCCLX
   friend class TorchWorkNCCLX;
