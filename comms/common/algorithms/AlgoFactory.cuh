@@ -28,6 +28,51 @@ class AlgoFactory {
  public:
   struct AllReduceOptions {
     bool enableDda{false};
+    int ddaSendbufSizeBytes{0};
+    // If msg size is not larger than the threshold,
+    // flat (one-shot) DDA will be used
+    int ddaFlatMaxThresholdBytes{0};
+    // If msg size is not larger than the threshold,
+    // tree (two-shot) DDA will be used
+    int ddaTreeMaxThresholdBytes{0};
+  };
+  AlgoFactory(
+      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      int nRanks,
+      int selfRank,
+      int maxBlocks,
+      const AllReduceOptions& allReduceOpts);
+
+  std::unique_ptr<AlgoAllReduce> getAllReduceAlgo(
+      const void* sendbuff,
+      void* recvbuff,
+      size_t count,
+      commDataType_t datatype,
+      cudaStream_t stream,
+      const void* acc = nullptr) {
+    if (allReduceMgr_ == nullptr) {
+      return nullptr;
+    }
+    return allReduceMgr_->getAllReduceAlgo(
+        sendbuff, recvbuff, count, datatype, stream, acc);
+  }
+
+ private:
+  std::unique_ptr<AllReduceAlgoManager> allReduceMgr_{nullptr};
+};
+
+/**
+ * TBD:
+ * - above AlgoFactory is kept to compatible with rcclx-stable snapshot to
+ * avoid segmentation fault.
+ * - below new AlgoFactoryDev is to support AR + new DDA AG, RS, A2A
+ * - once rcclx-stable is updated, above AlgoFactory will be deprecated and
+ * AlgoFactoryDev will be updated to AlgoFactory for all DDA algorithms
+ */
+class AlgoFactoryDev {
+ public:
+  struct AllReduceOptions {
+    bool enableDda{false};
     // If msg size is not larger than the threshold,
     // flat (one-shot) DDA will be used
     int ddaFlatMaxThresholdBytes{0};
@@ -57,7 +102,7 @@ class AlgoFactory {
     int ddaMaxThresholdBytes{0};
   };
 
-  AlgoFactory(
+  AlgoFactoryDev(
       std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
       int nRanks,
       int selfRank,
@@ -121,6 +166,10 @@ class AlgoFactory {
         sendbuff, recvbuff, count, datatype, stream);
   }
 
+  AlgoFactoryDev(const AlgoFactoryDev&) = delete;
+  AlgoFactoryDev& operator=(const AlgoFactoryDev&) = delete;
+  ~AlgoFactoryDev() = default;
+
  private:
   int nRanks_{0};
   int selfRank_{-1};
@@ -134,7 +183,7 @@ class AlgoFactory {
   // arrary of void* (all ranks' ipc enabled sendbuf) in device memory
   std::unique_ptr<DeviceBuffer> allRankDdaSendbuffs_;
 
-  std::unique_ptr<AllReduceAlgoManager> allReduceMgr_{nullptr};
+  std::unique_ptr<AllReduceAlgoManagerDev> allReduceMgr_{nullptr};
   std::unique_ptr<AllGatherAlgoManager> allGatherMgr_{nullptr};
   std::unique_ptr<ReduceScatterAlgoManager> reduceScatterMgr_{nullptr};
   std::unique_ptr<AllToAllAlgoManager> allToAllMgr_{nullptr};

@@ -5,6 +5,55 @@
 namespace meta::comms {
 
 AllReduceAlgoManager::AllReduceAlgoManager(
+    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    int nRanks,
+    int selfRank,
+    int maxBlocks,
+    int ddaSendbufSizeBytes,
+    int ddaFlatMaxThresholdBytes,
+    int ddaTreeMaxThresholdBytes)
+    : nRanks_(nRanks),
+      selfRank_(selfRank),
+      maxBlocks_(maxBlocks),
+      ddaSendbufSizeBytes_(ddaSendbufSizeBytes),
+      ddaFlatMaxThresholdBytes_(ddaFlatMaxThresholdBytes),
+      ddaTreeMaxThresholdBytes_(ddaTreeMaxThresholdBytes) {
+  auto [barrierResources, barrier] =
+      IpcGpuBarrier::mallocAndInit(nRanks_, maxBlocks_, selfRank_, bootstrap);
+  barrierResources_ = std::move(barrierResources);
+  barrier_ = barrier;
+
+  ddaSendbuf_ = std::make_unique<DeviceBuffer>(ddaSendbufSizeBytes_);
+  memHandler_ = std::make_unique<IpcMemHandler>(bootstrap, selfRank_, nRanks_);
+  memHandler_->addSelfDeviceMemPtr(ddaSendbuf_->get());
+  memHandler_->exchangeMemPtrs();
+
+  std::vector<void*> ipcSendbufs(nRanks_);
+  for (int i = 0; i < nRanks_; ++i) {
+    ipcSendbufs[i] = memHandler_->getPeerDeviceMemPtr(i);
+  }
+
+  allRankDdaSendbuffs_ =
+      std::make_unique<DeviceBuffer>(sizeof(void*) * nRanks_);
+  CUDA_CHECK(cudaMemcpy(
+      allRankDdaSendbuffs_->get(),
+      ipcSendbufs.data(),
+      sizeof(void*) * nRanks_,
+      cudaMemcpyDefault));
+  XLOG(DBG) << "Successfully initialized AllReduceAlgoManager";
+}
+
+std::unique_ptr<AlgoAllReduce> AllReduceAlgoManager::getAllReduceAlgo(
+    const void* sendbuff,
+    void* recvbuff,
+    size_t count,
+    commDataType_t datatype,
+    cudaStream_t stream,
+    const void* acc) {
+  return nullptr;
+}
+
+AllReduceAlgoManagerDev::AllReduceAlgoManagerDev(
     int nRanks,
     int selfRank,
     int maxBlocks,
@@ -24,7 +73,7 @@ AllReduceAlgoManager::AllReduceAlgoManager(
   XLOG(DBG) << "Successfully initialized AllReduceAlgoManager";
 }
 
-std::unique_ptr<AlgoAllReduce> AllReduceAlgoManager::getAllReduceAlgo(
+std::unique_ptr<AlgoAllReduce> AllReduceAlgoManagerDev::getAllReduceAlgo(
     const void* sendbuff,
     void* recvbuff,
     size_t count,

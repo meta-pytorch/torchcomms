@@ -34,7 +34,7 @@ RCCL_PARAM(
 RCCL_PARAM(EnableDdaAllToAll, "ENABLE_DDA_ALL_TO_ALL", 0);
 RCCL_PARAM(DdaAllToAllMaxBytes, "DDA_ALL_TO_ALL_MAX_BYTES", 2 * 1024 * 1024);
 
-std::unique_ptr<meta::comms::AlgoFactory> initAlgoFactory(ncclComm_t comm) {
+std::unique_ptr<meta::comms::AlgoFactoryDev> initAlgoFactory(ncclComm_t comm) {
   // DDA (Direct Device Access) only works for single-node setups where all
   // ranks share the same physical GPUs. Disable it for multi-node
   // configurations.
@@ -46,27 +46,27 @@ std::unique_ptr<meta::comms::AlgoFactory> initAlgoFactory(ncclComm_t comm) {
     return nullptr;
   }
 
-  return std::make_unique<::meta::comms::AlgoFactory>(
+  return std::make_unique<::meta::comms::AlgoFactoryDev>(
       std::make_shared<::rcclx::BaselineBootstrap>(comm),
       comm->nRanks,
       comm->rank,
       rcclParamDdaMaxBlocks(),
       rcclParamDdaSendbufBytes(),
-      ::meta::comms::AlgoFactory::AllReduceOptions{
+      ::meta::comms::AlgoFactoryDev::AllReduceOptions{
           .enableDda = static_cast<bool>(rcclParamEnableDdaAllReduce()),
           .ddaFlatMaxThresholdBytes =
               static_cast<int>(rcclParamDdaAllReduceFlatMaxBytes()),
           .ddaTreeMaxThresholdBytes =
               static_cast<int>(rcclParamDdaAllReduceTreeMaxBytes())},
-      ::meta::comms::AlgoFactory::AllGatherOptions{
+      ::meta::comms::AlgoFactoryDev::AllGatherOptions{
           .enableDda = static_cast<bool>(rcclParamEnableDdaAllGather()),
           .ddaMaxThresholdBytes =
               static_cast<int>(rcclParamDdaAllGatherMaxBytes())},
-      ::meta::comms::AlgoFactory::ReduceScatterOptions{
+      ::meta::comms::AlgoFactoryDev::ReduceScatterOptions{
           .enableDda = static_cast<bool>(rcclParamEnableDdaReduceScatter()),
           .ddaMaxThresholdBytes =
               static_cast<int>(rcclParamDdaReduceScatterMaxBytes())},
-      ::meta::comms::AlgoFactory::AllToAllOptions{
+      ::meta::comms::AlgoFactoryDev::AllToAllOptions{
           .enableDda = static_cast<bool>(rcclParamEnableDdaAllToAll()),
           .ddaMaxThresholdBytes =
               static_cast<int>(rcclParamDdaAllToAllMaxBytes())});

@@ -37,26 +37,26 @@ class AlgoFactoryTest : public RcclxBaseTestFixture {
     CUDA_CHECK(cudaSetDevice(localRank));
 
     auto bootstrap = std::make_shared<TestBaselineBootstrap>(comm);
-    factory = std::make_unique<AlgoFactory>(
+    factory = std::make_unique<AlgoFactoryDev>(
         bootstrap,
         numRanks,
         localRank,
         maxBlocks,
         ddaSendbufSizeBytes,
-        AlgoFactory::AllReduceOptions{
+        AlgoFactoryDev::AllReduceOptions{
             .enableDda = true,
             .ddaFlatMaxThresholdBytes = ddaFlatThresholdBytes,
             .ddaTreeMaxThresholdBytes = ddaTreeThresholdBytes},
-        AlgoFactory::AllGatherOptions{
+        AlgoFactoryDev::AllGatherOptions{
             .enableDda = true, .ddaMaxThresholdBytes = ddaThresholdBytes},
-        AlgoFactory::ReduceScatterOptions{
+        AlgoFactoryDev::ReduceScatterOptions{
             .enableDda = true, .ddaMaxThresholdBytes = ddaThresholdBytes},
-        AlgoFactory::AllToAllOptions{
+        AlgoFactoryDev::AllToAllOptions{
             .enableDda = true, .ddaMaxThresholdBytes = ddaThresholdBytes});
   }
 
  protected:
-  std::unique_ptr<AlgoFactory> factory;
+  std::unique_ptr<AlgoFactoryDev> factory;
   DeviceBuffer sendbuf{ddaSendbufSizeBytes};
   DeviceBuffer recvbuf{ddaSendbufSizeBytes};
 
