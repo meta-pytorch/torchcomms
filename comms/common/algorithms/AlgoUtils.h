@@ -37,6 +37,10 @@ namespace comms {
   ({                                                              \
     do {                                                          \
       switch (commDataType) {                                     \
+        case commFloat: {                                         \
+          func<float>(__VA_ARGS__);                               \
+          break;                                                  \
+        }                                                         \
         case commFloat16: {                                       \
           func<half>(__VA_ARGS__);                                \
           break;                                                  \

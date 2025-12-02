@@ -1,4 +1,3 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
@@ -7,7 +6,7 @@
 #include <folly/logging/xlog.h>
 #include <gtest/gtest.h>
 #include "comms/common/IpcGpuBarrier.cuh"
-#include "comms/common/algorithms/all_reduce/all_reduce_dda.cuh"
+#include "comms/common/algorithms/all_gather/all_gather_dda.cuh"
 #include "comms/common/tests/TestBaselineBootstrap.h"
 #include "comms/rcclx/develop/meta/lib/tests/RcclxTestUtils.h"
 #include "comms/utils/CudaRAII.h"
@@ -23,7 +22,7 @@ const int nThreads = 128;
 } // namespace
 
 template <typename ElementType>
-class AllReduceDdaTest : public RcclxBaseTestFixture {
+class AllGatherDdaTest : public RcclxBaseTestFixture {
  public:
   void SetUp() override {
     RcclxBaseTestFixture::SetUp();
@@ -76,7 +75,7 @@ class AllReduceDdaTest : public RcclxBaseTestFixture {
   IpcGpuBarrier barrier;
 };
 
-TYPED_TEST_SUITE_P(AllReduceDdaTest);
+TYPED_TEST_SUITE_P(AllGatherDdaTest);
 
 // The range of the elements in the data arrary
 const int RAND_RANGE = 100;
@@ -109,27 +108,21 @@ __global__ void genData(
     int size) {
   for (auto idx = blockIdx.x * blockDim.x + threadIdx.x; idx < size;
        idx += gridDim.x * blockDim.x) {
-    // NOTE: the current DDA two-shot implementation assumes the bias vector is
-    // same across all ranks.
-    T bias = nRanks;
-    acc[idx] = bias;
-    T sum = bias;
     for (int i = 0; i < nRanks; ++i) {
       // populate data and then compute ground truth of the all reduce
       double val =
           curand_uniform_double(&randStates[idx * nRanks + i]) * RAND_RANGE;
       // downcast to T
-      T hval = val;
-      sum += hval;
+      T hval = val + i;
       if (i == selfRank) {
         data[idx] = hval;
       }
+      groundTruth[idx + i * size] = hval;
     }
-    groundTruth[idx] = sum;
   }
 }
 
-TYPED_TEST_P(AllReduceDdaTest, ddaAllReduceFlatIpcTest) {
+TYPED_TEST_P(AllGatherDdaTest, ddaAllGatherIpcTest) {
   using ElementType = TypeParam;
 
   // The IpcGpuBarrier requires numThreads >= numRanks
@@ -151,7 +144,7 @@ TYPED_TEST_P(AllReduceDdaTest, ddaAllReduceFlatIpcTest) {
   DeviceBuffer accbuf(sizeof(ElementType) * cnt);
   ElementType* accbuf_d = reinterpret_cast<ElementType*>(accbuf.get());
 
-  DeviceBuffer groundTruth(sizeof(ElementType) * cnt);
+  DeviceBuffer groundTruth(sizeof(ElementType) * NUMRANKS * cnt);
   ElementType* groundTruth_d =
       reinterpret_cast<ElementType*>(groundTruth.get());
 
@@ -164,100 +157,31 @@ TYPED_TEST_P(AllReduceDdaTest, ddaAllReduceFlatIpcTest) {
       NUMRANKS,
       cnt);
 
-  DeviceBuffer recvbuff(sizeof(ElementType) * cnt);
+  DeviceBuffer recvbuff(sizeof(ElementType) * NUMRANKS * cnt);
   ElementType* recvbuff_d = reinterpret_cast<ElementType*>(recvbuff.get());
-  ddaAllReduceFlatIpc<ElementType, NUMRANKS, true /*hasAcc*/>
+  ddaAllGatherIpc<ElementType, NUMRANKS, false /*hasAcc*/>
       <<<nBlocks, nThreads>>>(
           (ElementType**)this->allRankIpcBufs->get(),
           recvbuff_d,
           cnt,
           sendbuf_d,
           this->globalRank,
-          this->barrier,
-          accbuf_d);
+          this->barrier);
 
   cudaDeviceSynchronize();
 
-  // compare with ground truth
-  for (int i = 0; i < cnt; ++i) {
+  for (int i = 0; i < NUMRANKS * cnt; ++i) {
     EXPECT_EQ(
         static_cast<double>(recvbuff_d[i]),
         static_cast<double>(groundTruth_d[i]));
   }
 }
 
-TYPED_TEST_P(AllReduceDdaTest, ddaAllReduceTreeIpcTest) {
-  using ElementType = TypeParam;
-
-  // The IpcGpuBarrier requires numThreads >= numRanks
-  ASSERT_GE(nThreads, NUMRANKS);
-  // we do 128 bit load in the dda kernel and in two-shot algo each rank is
-  // responsible for count/nRanks elements, so the data memory must align with
-  // 128 bits
-  ASSERT_EQ(cnt % NUMRANKS, 0);
-  ASSERT_EQ(cnt / NUMRANKS * sizeof(ElementType) % sizeof(uint4), 0);
-
-  // prepare the sendbuff on each rank
-  DeviceBuffer randStateBuf(sizeof(curandState_t) * NUMRANKS * cnt);
-  curandState_t* randStates_d =
-      reinterpret_cast<curandState_t*>(randStateBuf.get());
-  initRand<<<nBlocks, nThreads>>>(randStates_d, cnt, NUMRANKS);
-
-  DeviceBuffer sendbuf(sizeof(ElementType) * cnt);
-  ElementType* sendbuf_d = reinterpret_cast<ElementType*>(sendbuf.get());
-
-  DeviceBuffer accbuf(sizeof(ElementType) * cnt);
-  ElementType* accbuf_d = reinterpret_cast<ElementType*>(accbuf.get());
-
-  DeviceBuffer groundTruth(sizeof(ElementType) * cnt);
-  ElementType* groundTruth_d =
-      reinterpret_cast<ElementType*>(groundTruth.get());
-
-  genData<<<nBlocks, nThreads>>>(
-      randStates_d,
-      sendbuf_d,
-      accbuf_d,
-      groundTruth_d,
-      this->globalRank,
-      NUMRANKS,
-      cnt);
-
-  DeviceBuffer recvbuff(sizeof(ElementType) * cnt);
-  ElementType* recvbuff_d = reinterpret_cast<ElementType*>(recvbuff.get());
-
-  CUDA_CHECK(cudaMemcpy(
-      reinterpret_cast<ElementType**>(
-          this->allRankIpcBufs->get())[this->globalRank],
-      sendbuf_d,
-      sizeof(ElementType) * cnt,
-      cudaMemcpyDefault));
-  ddaAllReduceTreeIpc<ElementType, NUMRANKS, true /*hasAcc*/>
-      <<<nBlocks, nThreads>>>(
-          (ElementType**)this->allRankIpcBufs->get(),
-          recvbuff_d,
-          cnt,
-          sendbuf_d,
-          this->globalRank,
-          this->barrier,
-          accbuf_d);
-  cudaDeviceSynchronize();
-
-  // compare with ground truth
-  for (int i = 0; i < cnt; ++i) {
-    EXPECT_EQ(
-        static_cast<double>(recvbuff_d[i]),
-        static_cast<double>(groundTruth_d[i]));
-  }
-}
-
-REGISTER_TYPED_TEST_SUITE_P(
-    AllReduceDdaTest,
-    ddaAllReduceFlatIpcTest,
-    ddaAllReduceTreeIpcTest);
+REGISTER_TYPED_TEST_SUITE_P(AllGatherDdaTest, ddaAllGatherIpcTest);
 using TypesToTest = ::testing::Types<float, half, __nv_bfloat16>;
 INSTANTIATE_TYPED_TEST_SUITE_P(
-    AllReduceDdaTests,
-    AllReduceDdaTest,
+    AllGatherDdaTests,
+    AllGatherDdaTest,
     TypesToTest);
 
 int main(int argc, char* argv[]) {
