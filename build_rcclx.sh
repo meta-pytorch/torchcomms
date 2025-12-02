@@ -228,7 +228,6 @@ pushd "${NCCL_HOME}"
     --amdgpu_targets "$AMDGPU_TARGETS" \
     --disable-colltrace \
     --disable-msccl-kernel \
-    --disable-mscclpp \
     -j 16
 
 popd

@@ -703,11 +703,6 @@ set(RCCLX_FILES
   meta/colltrace/CollTrace.h
   meta/ctran/BaselineBootstrap.cc
   meta/ctran/BaselineBootstrap.h
-# meta/scuba/RcclxScubaLogger.cc
-# meta/scuba/RcclxScubaLogger.h
-  meta/testinfra/TestsDistUtils.h
-  meta/testinfra/TestUtils.h
-  meta/testinfra/TestXPlatUtils.h
 )
 
 # Run this command to get RCCLX_LIB_FILES:
@@ -752,6 +747,25 @@ set(COMMON_FILES
   comms/common/algorithms/all_reduce/AllReduceAlgoManager.cu
   comms/common/algorithms/all_reduce/AllReduceAlgoManager.h
   comms/common/algorithms/all_reduce/all_reduce_dda.cuh
+
+  comms/common/algorithms/all_gather/AlgoAllGather.cu
+  comms/common/algorithms/all_gather/AlgoAllGather.cuh
+  comms/common/algorithms/all_gather/AllGatherAlgoManager.cu
+  comms/common/algorithms/all_gather/AllGatherAlgoManager.h
+  comms/common/algorithms/all_gather/all_gather_dda.cuh
+  comms/common/algorithms/all_to_all/AlgoAllToAll.cu
+  comms/common/algorithms/all_to_all/AlgoAllToAll.cuh
+  comms/common/algorithms/all_to_all/AllToAllAlgoManager.cu
+  comms/common/algorithms/all_to_all/AllToAllAlgoManager.h
+  comms/common/algorithms/all_to_all/all_to_all_dda.cuh
+
+  comms/common/algorithms/CollCommon.cuh
+  comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cu
+  comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cuh
+  comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.cu
+  comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h
+  comms/common/algorithms/reduce_scatter/reduce_scatter_dda.cuh
+
   comms/common/IpcGpuBarrier.cu
   comms/common/IpcGpuBarrier.cuh
   comms/common/IpcMemHandler.cc
