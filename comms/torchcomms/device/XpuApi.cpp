@@ -36,7 +36,7 @@ xpu_result_t DefaultXpuApi::getDeviceProperties(xpuDeviceProp* prop, int device)
 
         if (!sycl_device.has(sycl::aspect::ext_intel_free_memory)) {
             TC_LOG(WARNING)
-                << "Free memory query not supported on this SYCL device. Returning total memory as free memory.";
+                << "Free memory queries are unsupported on this SYCL device; using total global memory as the free-memory estimate.";
         }
 
         // Get compute capabilities
