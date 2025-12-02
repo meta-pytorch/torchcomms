@@ -126,6 +126,7 @@ extras_require = {
         "pytest",
         "numpy",
         "psutil",
+        "lintrunner",
     ],
 }
 

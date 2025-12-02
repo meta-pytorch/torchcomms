@@ -10,7 +10,7 @@ jobs:
   build-docs:
     if: github.repository_owner == 'meta-pytorch'
     name: Build Documentation
-    runs-on: linux.g5.12xlarge.nvidia.gpu
+    runs-on: linux.12xlarge
     container:
       image: nvidia/cuda:12.8.1-devel-ubuntu24.04
     timeout-minutes: 30
@@ -73,7 +73,7 @@ jobs:
           path: docs/build/html/
 
   upload:
-    runs-on: linux.g5.4xlarge.nvidia.gpu
+    runs-on: linux.12xlarge
     permissions:
       # Grant write permission here so that the doc can be pushed to gh-pages branch
       contents: write

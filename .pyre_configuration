@@ -1,0 +1,20 @@
+{
+  "exclude": [
+    ".*/build/.*",
+    ".*/docs/.*",
+    ".*/setup.py",
+    ".*/third-party/.*",
+    ".*/comms/rcclx/.*",
+    ".*/comms/ncclx/.*",
+    ".*/comms/utils/.*"
+  ],
+  "ignore_all_errors": [
+  ],
+  "site_package_search_strategy": "all",
+  "source_directories": [
+    "scripts",
+    "comms"
+  ],
+  "strict": false,
+  "version": "0.0.101749035478"
+}

@@ -1,0 +1,39 @@
+[[linter]]
+code = "CLANGFORMAT"
+include_patterns = [
+    "comms/torchcomms/**/*.hpp",
+    "comms/torchcomms/**/*.cpp",
+]
+exclude_patterns = []
+init_command = [
+    "python3",
+    "tools/linter/adapters/pip_init.py",
+    "--dry-run={{DRYRUN}}",
+    "clang-format==21.1.2",
+]
+command = [
+    "python3",
+    "tools/linter/adapters/clangformat_linter.py",
+    "--",
+    "@{{PATHSFILE}}",
+]
+is_formatter = true
+
+[[linter]]
+code = 'PYRE'
+include_patterns = [
+    "comms/torchcomms/**/*.py",
+    "comms/torchcomms/**/*.pyi",
+]
+command = [
+    'python3',
+    'tools/linter/adapters/pyre_linter.py',
+    '--',
+    '@{{PATHSFILE}}'
+]
+init_command = [
+    'bash',
+    'scripts/setup_pyre.sh',
+    '--dry-run={{DRYRUN}}',
+]
+is_formatter = false
