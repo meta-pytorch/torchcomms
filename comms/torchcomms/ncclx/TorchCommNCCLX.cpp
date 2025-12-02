@@ -1261,6 +1261,143 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
   return work;
 }
 
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
+    const std::vector<at::Tensor>& output_tensor_list,
+    at::Tensor& output_chunk_sizes_per_rank,
+    const at::Tensor& input_tensor,
+    const at::Tensor& input_chunk_sizes,
+    const at::Tensor& input_chunk_indices,
+    const at::Tensor& input_chunk_count_per_rank,
+    bool async_op) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(input_tensor);
+  ensureTensorContiguous(input_chunk_sizes);
+  ensureTensorContiguous(input_chunk_indices);
+  ensureTensorContiguous(input_chunk_count_per_rank);
+  ensureTensorContiguous(output_chunk_sizes_per_rank);
+
+  for (const auto& t : output_tensor_list) {
+    ensureTensorContiguous(t);
+  }
+
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "alltoallv_dynamic_dispatch",
+      rank_,
+      {input_tensor},
+      output_tensor_list);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream,
+      options_.timeout,
+      {input_tensor,
+       input_chunk_sizes,
+       input_chunk_indices,
+       input_chunk_count_per_rank});
+
+  // Record start event before NCCL operation
+  work->recordStart("alltoallv_dynamic_dispatch");
+
+  // Convert vector of tensors to array of pointers
+  std::vector<void*> output_tensor_ptrs;
+  output_tensor_ptrs.reserve(output_tensor_list.size());
+  for (const auto& t : output_tensor_list) {
+    output_tensor_ptrs.push_back(t.data_ptr());
+  }
+
+  ncclResult_t result = nccl_api_->alltoallvDynamicDispatch(
+      input_tensor.data_ptr(),
+      reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),
+      input_chunk_sizes.numel(),
+      reinterpret_cast<size_t*>(input_chunk_indices.data_ptr()),
+      reinterpret_cast<size_t*>(input_chunk_count_per_rank.data_ptr()),
+      output_tensor_ptrs.data(),
+      reinterpret_cast<size_t*>(output_chunk_sizes_per_rank.data_ptr()),
+      input_tensor.numel(),
+      output_tensor_list[0].numel(),
+      getNcclDataType(input_tensor),
+      nccl_comm_,
+      stream);
+
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL alltoallvDynamicDispatch failed", result);
+  }
+
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
+    at::Tensor& output_tensor,
+    const at::Tensor& input_tensor,
+    const at::Tensor& input_chunk_sizes,
+    const at::Tensor& input_chunk_indices,
+    const at::Tensor& input_chunk_count_per_rank,
+    bool async_op) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(output_tensor);
+  ensureTensorContiguous(input_tensor);
+  ensureTensorContiguous(input_chunk_sizes);
+  ensureTensorContiguous(input_chunk_indices);
+  ensureTensorContiguous(input_chunk_count_per_rank);
+
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "alltoallv_dynamic_combine",
+      rank_,
+      input_tensor,
+      output_tensor);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream,
+      options_.timeout,
+      {input_tensor,
+       input_chunk_sizes,
+       input_chunk_indices,
+       input_chunk_count_per_rank});
+
+  // Record start event before NCCL operation
+  work->recordStart("alltoallv_dynamic_combine");
+
+  ncclResult_t result = nccl_api_->alltoallvDynamicCombine(
+      input_tensor.data_ptr(),
+      reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),
+      input_chunk_sizes.numel(),
+      reinterpret_cast<size_t*>(input_chunk_indices.data_ptr()),
+      reinterpret_cast<size_t*>(input_chunk_count_per_rank.data_ptr()),
+      output_tensor.data_ptr(),
+      input_tensor.numel(),
+      output_tensor.numel(),
+      getNcclDataType(input_tensor),
+      nccl_comm_,
+      stream);
+
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL alltoallvDynamicCombine failed", result);
+  }
+
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::barrier(
     bool async_op,
     const BarrierOptions& options) {

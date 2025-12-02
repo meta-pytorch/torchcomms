@@ -1243,6 +1243,62 @@ TEST_F(TorchCommNCCLXPreHookTest, MemAllocatedBeforeCommRegistered) {
   EXPECT_TRUE(mock_hook_->isMemRegisteredCalled());
   comm->finalize();
 }
+
+TEST_F(TorchCommNCCLXTest, AlltoallvDynamicDispatchCombine) {
+  setupRankAndSize(0, 2);
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  comm->init(*device_, "test_name", default_options_);
+
+  // Create test data
+  auto input_tensor = createTestTensor({100});
+  std::vector<at::Tensor> output_tensor_list = {
+      createTestTensor({50}), createTestTensor({50})};
+  auto input_chunk_sizes = createTestTensor({2});
+  auto input_chunk_indices = createTestTensor({2});
+  auto input_chunk_count_per_rank = createTestTensor({2});
+  auto output_chunk_sizes_per_rank = createTestTensor({4});
+  auto output_tensor = createTestTensor({100});
+
+  // Test alltoallv_dynamic_dispatch
+  EXPECT_CALL(
+      *nccl_mock_, alltoallvDynamicDispatch(_, _, _, _, _, _, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSuccess));
+
+  auto work1 = comm->alltoallv_dynamic_dispatch(
+      output_tensor_list,
+      output_chunk_sizes_per_rank,
+      input_tensor,
+      input_chunk_sizes,
+      input_chunk_indices,
+      input_chunk_count_per_rank,
+      false);
+
+  EXPECT_NE(work1, nullptr);
+
+  // Test alltoallv_dynamic_combine
+  EXPECT_CALL(
+      *nccl_mock_, alltoallvDynamicCombine(_, _, _, _, _, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSuccess));
+
+  auto work2 = comm->alltoallv_dynamic_combine(
+      output_tensor,
+      input_tensor,
+      input_chunk_sizes,
+      input_chunk_indices,
+      input_chunk_count_per_rank,
+      false);
+
+  EXPECT_NE(work2, nullptr);
+
+  setupNormalDestruction(*comm);
+  comm->finalize();
+}
 } // namespace test
 } // namespace comms
 } // namespace torch
