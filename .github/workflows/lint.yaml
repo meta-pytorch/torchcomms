@@ -1,0 +1,78 @@
+name: Lint
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  lint:
+    if: github.repository_owner == 'meta-pytorch'
+    name: lintrunner
+    runs-on: linux.4xlarge
+    container:
+      image: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    timeout-minutes: 30
+    steps:
+      - name: Setup git
+        shell: bash -l {0}
+        run: |
+          set -eux
+
+          apt-get update
+          apt-get install -y git
+
+          # git doesn't like mixed ownership, override it
+          chown -R root:root .
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup conda env
+        uses: conda-incubator/setup-miniconda@v2
+        with:
+          auto-update-conda: true
+          miniconda-version: "latest"
+          activate-environment: test
+          python-version: '3.14'
+          auto-activate: false
+      - name: Verify conda environment
+        shell: bash -l {0}
+        run: |
+          conda info
+          which python
+          which conda
+      - name: Update pip
+        shell: bash -l {0}
+        run: python -m pip install --upgrade pip
+      - name: Install pytorch
+        shell: bash -l {0}
+        run: pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
+      - name: Install Dependencies
+        shell: bash -l {0}
+        run: |
+          set -eux
+
+          conda install -y git
+          conda install -y -c conda-forge glog==0.4.0 gflags fmt
+          pip install cmake
+          export USE_NCCL=0
+          export USE_NCCLX=0
+          export USE_GLOO=0
+          export USE_TRANSPORT=0
+          export USE_SYSTEM_LIBS=1
+          pip install --no-build-isolation .[dev] -v
+      - name: Install Lint Dependencies
+        shell: bash -l {0}
+        run: |
+          set -eux
+
+          lintrunner init
+      - name: Lint
+        shell: bash -l {0}
+        run: |
+          set -eux
+
+          # for lintrunner debugging
+          export RUST_BACKTRACE=1
+
+          lintrunner --force-color --all-files -v

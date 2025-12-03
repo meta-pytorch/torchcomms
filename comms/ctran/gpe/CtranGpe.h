@@ -46,7 +46,6 @@ struct OpElem {
     ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
     ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P,
     ALLTOALL_DEDUP,
-    ALLTOALLV_DEDUP_PREPARE,
     ALLTOALLV_DEDUP,
     BROADCAST,
     REDUCESCATTER,
@@ -179,30 +178,6 @@ struct OpElem {
       std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys;
     } alltoall_dedup;
     struct {
-      // reference to pre-initialized algo resource
-      void* pArgs;
-      void* algoResource;
-      void* algoConfig;
-      void* xnodeInputSplits;
-      void* xnodeOutputSplits;
-      void* xnodeGatherIndices;
-      void* localInputSplits;
-      void* localOutputSplits;
-      void* localGatherIndices;
-      void* eGatherIndices;
-      void* ctran_trace_logger;
-    } alltoallv_dedup_prepare;
-    struct {
-      // Exec input arguments
-      const void* sendBuff;
-      const int* blockRecvBuckets;
-      const size_t* numSendBlocks;
-      const size_t* numRecvBlocks;
-      const size_t* recvOffsets;
-      const size_t* numForwardBlocks;
-      void* recvBuff;
-      int* blockSendRanks;
-
       // Reference to persistent algo fields
       void* pArgs;
       void* algoResource;
@@ -316,7 +291,6 @@ struct KernelConfig {
     ALLTOALLV_DYNAMIC_SPLIT,
     ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,
     ALLTOALL_DEDUP,
-    ALLTOALLV_DEDUP_PREPARE,
     ALLTOALLV_DEDUP,
     BROADCAST,
     BROADCAST_UNPACK,

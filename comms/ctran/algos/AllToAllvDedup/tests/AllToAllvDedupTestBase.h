@@ -6,6 +6,85 @@
 
 using ncclx::CommStateX;
 
+struct TestPArgsParam {
+  int totalNumSendBlocks;
+  int blockCount;
+  int blockNumRecvBuckets;
+  int numRecvBuckets;
+  inline std::string toString() const {
+    return fmt::format(
+        "totalNumSendBlocks {} blockCount {} blockNumRecvBuckets {} numRecvBuckets{}",
+        totalNumSendBlocks,
+        blockCount,
+        blockNumRecvBuckets,
+        numRecvBuckets);
+  }
+
+  inline std::string toTestName() const {
+    return fmt::format(
+        "{}nBlocks_{}count_{}blockNumBkts_{}nBkts",
+        totalNumSendBlocks,
+        blockCount,
+        blockNumRecvBuckets,
+        numRecvBuckets);
+  }
+};
+
+struct TestTmpChunkParam {
+  int numChunks;
+  int chunkSizeMb;
+  inline std::string toTestName() const {
+    return fmt::format("{}nChks_{}chkSzMb", numChunks, chunkSizeMb);
+  }
+};
+
+struct TestExecWgParam {
+  int sendG;
+  int sendW;
+  int fwdW;
+  int recvG;
+  int recvW;
+  int intraFwdW;
+  int intraRecvW;
+  inline std::string toTestName() const {
+    return fmt::format(
+        "send{}g{}w_fwd{}w_recv{}g{}w_intraFwd{}w_intraRecv{}w",
+        sendG,
+        sendW,
+        fwdW,
+        recvG,
+        recvW,
+        intraFwdW,
+        intraRecvW);
+  }
+};
+
+#define SET_TMPCHK_ENVRAII(param)                                          \
+  EnvRAII<int> envChkSz(                                                   \
+      NCCL_CTRAN_ALLTOALLV_DEDUP_CHUNK_SIZE, param.chunkSizeMb * 1 << 20); \
+  EnvRAII<int> envNumChks(                                                 \
+      NCCL_CTRAN_ALLTOALLV_DEDUP_NUM_CHUNKS, param.numChunks);
+
+#define SET_EXEC_WG_ENVRAII(param)                                           \
+  EnvRAII<int> envSendG(                                                     \
+      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCK_GROUPS, param.sendG); \
+  EnvRAII<int> envSendW(                                                     \
+      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCKS_PER_GROUP,           \
+      param.sendW);                                                          \
+  EnvRAII<int> envFwdW(                                                      \
+      NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS, param.fwdW);         \
+  EnvRAII<int> envRecvG(                                                     \
+      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCK_GROUPS, param.recvG); \
+  EnvRAII<int> envRecvW(                                                     \
+      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP,           \
+      param.recvW);                                                          \
+  EnvRAII<int> envIntraFwdW(                                                 \
+      NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_FWD_NUM_THREAD_BLOCKS,                \
+      param.intraFwdW);                                                      \
+  EnvRAII<int> envIntraRecvW(                                                \
+      NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_RECV_NUM_THREAD_BLOCKS,               \
+      param.intraRecvW);
+
 class AllToAllvDedupTestBase {
  public:
   AllToAllvDedupTestBase() = default;
@@ -13,14 +92,14 @@ class AllToAllvDedupTestBase {
 
  protected:
   void setPersistArgs(
-      const int totalNumSendBlocks,
-      const int blockCount,
-      const int blockNumRecvBuckets,
-      const int numRecvBuckets) {
-    pArgs_.totalNumSendBlocks = totalNumSendBlocks;
-    pArgs_.blockCount = blockCount;
-    pArgs_.blockNumRecvBuckets = blockNumRecvBuckets;
-    pArgs_.numRecvBuckets = numRecvBuckets;
+      const TestPArgsParam& pArgs,
+      const int numSkippedBuckets = 0) {
+    const auto nRanks = statex_->nRanks();
+    pArgs_ = pArgs;
+    // update blockNumRecvBuckets to reflect skipped buckets
+    pArgs_.blockNumRecvBuckets = std::min(
+        nRanks * pArgs.numRecvBuckets - numSkippedBuckets,
+        pArgs.blockNumRecvBuckets);
   }
 
   std::vector<size_t> getRecvBlockIds(const int* recvIdx, const int count)
@@ -69,20 +148,7 @@ class AllToAllvDedupTestBase {
     statex_ = statex;
   }
 
-  struct {
-    int totalNumSendBlocks{0}; // number of tokens
-    int blockCount{0}; // elements per token
-    int blockNumRecvBuckets{0}; // topK
-    int numRecvBuckets{0}; // number of experts per rank
-    inline std::string toString() const {
-      return fmt::format(
-          "totalNumSendBlocks {} blockCount {} blockNumRecvBuckets {} numRecvBuckets{}",
-          totalNumSendBlocks,
-          blockCount,
-          blockNumRecvBuckets,
-          numRecvBuckets);
-    }
-  } pArgs_;
+  TestPArgsParam pArgs_;
 
   std::vector<std::vector<int>> allRankBlkBkts_;
 };

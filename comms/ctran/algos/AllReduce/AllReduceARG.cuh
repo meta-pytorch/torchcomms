@@ -1,8 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #if !defined(USE_ROCM)
 
-#include <stdio.h>
-#include <cstddef>
+#pragma once
 #include "comms/ctran/algos/AllReduce/AllReduceARGCommonDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
@@ -11,12 +10,10 @@
 #include "comms/ctran/algos/localReduce.cuh"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
-using namespace ctran::allreduce::arg;
-
 template <typename T>
 __device__ void prepareBcastArg(
     CtranKernelAllReduceArgs& args,
-    AllReduceARGContext& context,
+    ctran::allreduce::arg::AllReduceARGContext& context,
     CtranAlgoDevBcastArg& bcastArg) {
   const auto localRank = statex->localRank();
   const auto nLocalRanks = statex->nLocalRanks();
@@ -47,14 +44,14 @@ template <typename T, typename RedT, commRedOp_t RedOp>
 __device__ __forceinline__ void reduceInLocal(
     CtranAlgoDeviceState* devState,
     CtranKernelAllReduceArgs& args,
-    AllReduceARGContext& context) {
+    ctran::allreduce::arg::AllReduceARGContext& context) {
   bool revoked = false;
   const auto nRanks = statex->nRanks();
   const auto myRank = statex->rank();
   const auto localRank = statex->localRank();
   const auto nLocalRanks = statex->nLocalRanks();
 
-  KernelElem* elem = args.kernelElems[kLocalReduce];
+  KernelElem* elem = args.kernelElems[ctran::allreduce::arg::kLocalReduce];
   elemWaitPostOrRevokeByGroup(elem, blockIdx.x, &revoked);
   const auto count = context.stepCount;
   const T* localSendbuff = reinterpret_cast<const T*>(args.tmpbuff);
@@ -75,9 +72,9 @@ template <typename T>
 __device__ __forceinline__ void intraNodeAllGather(
     CtranAlgoDeviceState* devState,
     CtranKernelAllReduceArgs& args,
-    AllReduceARGContext& context) {
+    ctran::allreduce::arg::AllReduceARGContext& context) {
   bool allGatherRevoke;
-  KernelElem* elem = args.kernelElems[kIntraAllGather];
+  KernelElem* elem = args.kernelElems[ctran::allreduce::arg::kIntraAllGather];
   elemWaitPostOrRevokeByGroup(elem, blockIdx.x, &allGatherRevoke);
 
   // prepare bcast arg
@@ -95,8 +92,9 @@ template <typename T>
 __device__ __forceinline__ void alltoall(
     CtranAlgoDeviceState* devState,
     CtranKernelAllReduceArgs& args,
-    AllReduceARGContext& context) {
-  KernelElem* alltoall = args.kernelElems[kIntraAllToAll];
+    ctran::allreduce::arg::AllReduceARGContext& context) {
+  KernelElem* alltoall =
+      args.kernelElems[ctran::allreduce::arg::kIntraAllToAll];
   const auto localRank = statex->localRank();
   const auto nLocalRanks = statex->nLocalRanks();
   const auto myRank = statex->rank();
@@ -153,7 +151,7 @@ __global__ void ncclKernelAllReduceARG(
   }
   devStateLoadToShm(devState);
 
-  AllReduceARGContext context = {
+  ctran::allreduce::arg::AllReduceARGContext context = {
       .localRank = statex->localRank(),
       .nLocalRanks = statex->nLocalRanks(),
       .rank = statex->rank(),
@@ -219,44 +217,16 @@ __global__ void ncclKernelAllReduceARG(
   }
 }
 
-#define DECL_ALL_REDUCE_ARG(T, RedT, RedOp)                        \
+#define DECL_CTRAN_ALLREDUCEARG_KERN(T, RedOp)                  \
+  template __global__ void ncclKernelAllReduceARG<T, T, RedOp>( \
+      int* flag,                                                \
+      CtranAlgoDeviceState* devState,                           \
+      CtranKernelAllReduceArgs args);
+
+#define DECL_CTRAN_ALLREDUCEARG_KERN_REDT(T, RedT, RedOp)          \
   template __global__ void ncclKernelAllReduceARG<T, RedT, RedOp>( \
       int* flag,                                                   \
       CtranAlgoDeviceState* devState,                              \
       CtranKernelAllReduceArgs args);
-
-#define DECL_ALL_REDUCE_ARG_ALL(T, RedT)               \
-  DECL_ALL_REDUCE_ARG(T, RedT, commRedOp_t::commSum);  \
-  DECL_ALL_REDUCE_ARG(T, RedT, commRedOp_t::commProd); \
-  DECL_ALL_REDUCE_ARG(T, RedT, commRedOp_t::commAvg);  \
-  DECL_ALL_REDUCE_ARG(T, RedT, commRedOp_t::commMax);  \
-  DECL_ALL_REDUCE_ARG(T, RedT, commRedOp_t::commMin);
-
-#define DECL_ALL_REDUCE_ARG_SELF(T) DECL_ALL_REDUCE_ARG_ALL(T, T)
-
-DECL_ALL_REDUCE_ARG_SELF(int8_t);
-DECL_ALL_REDUCE_ARG_SELF(uint8_t);
-DECL_ALL_REDUCE_ARG_SELF(int32_t);
-DECL_ALL_REDUCE_ARG_SELF(uint32_t);
-DECL_ALL_REDUCE_ARG_SELF(int64_t);
-DECL_ALL_REDUCE_ARG_SELF(uint64_t);
-DECL_ALL_REDUCE_ARG_SELF(half);
-DECL_ALL_REDUCE_ARG_SELF(float);
-DECL_ALL_REDUCE_ARG_SELF(double);
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-DECL_ALL_REDUCE_ARG_SELF(__nv_bfloat16);
-#endif
-#if defined(__CUDA_FP8_TYPES_EXIST__) && defined(NCCL_ENABLE_FP8)
-DECL_ALL_REDUCE_ARG_SELF(__nv_fp8_e4m3);
-DECL_ALL_REDUCE_ARG_SELF(__nv_fp8_e5m2);
-#endif
-
-#if defined(__CUDA_BF16_TYPES_EXIST__)
-#define DECL_ALL_REDUCE_ARG_KERN_ALL_TYPES(RedT) \
-  DECL_ALL_REDUCE_ARG_ALL(__nv_bfloat16, RedT);
-
-// kernel where dequantization type is FP32
-DECL_ALL_REDUCE_ARG_KERN_ALL_TYPES(float);
-#endif
 
 #endif // !defined(USE_ROCM)

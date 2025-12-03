@@ -104,7 +104,6 @@ SRCS = common.cu onerank.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllPImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRing.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRecDbl.cu
-SRCS += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceARG.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceShm.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/DirectImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/PipelineImpl.cu

@@ -22,17 +22,16 @@ class AlgoImpl {
   ~AlgoImpl() {};
 
   enum Phase {
-    kPrepare,
     kExec,
   };
 
   commResult_t initialize();
 
   static inline const std::string algoName(Phase phase) {
-    if (phase == kPrepare) {
-      return "ctranAllToAllvDedupPrepare";
-    } else {
+    if (phase == kExec) {
       return "ctranAllToAllvDedupExec";
+    } else {
+      return "unknown";
     }
   }
 
@@ -40,8 +39,6 @@ class AlgoImpl {
   ResourceImpl* getResource() const {
     return resource_.get();
   }
-
-  commResult_t prepare(const PrepareArgs& args, const uint64_t opCount);
 
   commResult_t exec(const ExecArgs& args, const uint64_t opCount);
 

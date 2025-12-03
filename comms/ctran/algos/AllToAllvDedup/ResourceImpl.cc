@@ -2,15 +2,15 @@
 
 #include <cstddef>
 
+#include "comms/ctran/algos/AllToAllvDedup/CommonDev.h"
 #include "comms/ctran/algos/AllToAllvDedup/ResourceImpl.h"
+#include "comms/ctran/algos/AllToAllvDedup/Types.h"
 #include "comms/ctran/algos/common/BufManager.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
-#include "comms/ctran/algos/common/MPSCTbSync.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/utils/logger/LogUtils.h"
 
 namespace ctran::alltoallvdedup {
-using ::ctran::algos::MPSCTbSync;
 using ::ctran::algos::bufmanager::MemType;
 
 using algos::GpeKernelSync;
@@ -18,300 +18,175 @@ using algos::bufmanager::BasicBuf;
 using algos::bufmanager::MemType;
 using algos::bufmanager::RegBuf;
 using algos::bufmanager::RemRegBuf;
+using BufName = ResourceBufName;
 
 namespace {
-#define CHECK_BUF(bufMngr_, memType, bufName)                      \
+#define CHECK_BUF(bufMngr_, md, bufName)                           \
   FB_CHECKABORT(                                                   \
-      bufMngr_->contains(memType, ResourceBufName::bufName),       \
+      bufMngr_->contains(md.memType, bufName),                     \
       "Invalid assignement! Memtype {} buf {} is not initialized", \
-      algos::bufmanager::memTypeToStr(memType).c_str(),            \
-      ARGTOSTR(bufName));
+      algos::bufmanager::memTypeToStr(md.memType).c_str(),         \
+      md.str);
 
-#define SET_REGBUF(bufMngr_, memType, bufName)                             \
-  {                                                                        \
-    CHECK_BUF(bufMngr_, memType, bufName);                                 \
-    auto& regBuf = ref_.bufs.regBufs[(size_t)ResourceBufName::bufName];    \
-    auto ret =                                                             \
-        bufMngr_->assignRegBuf(memType, ResourceBufName::bufName, regBuf); \
-    FB_CHECKABORT(ret, "Failed to assign regbuf {}", ARGTOSTR(bufName));   \
-    CLOGF_TRACE(                                                           \
-        INIT,                                                              \
-        "Rank {} assigned {} = {}",                                        \
-        statex_->rank(),                                                   \
-        ARGTOSTR(bufName),                                                 \
-        regBuf.toString());                                                \
+#define SET_REM_REGBUF(bufMngr_, bufMdMap_, bufName, peerRanks)             \
+  {                                                                         \
+    const auto& md = bufMdMap_.at(bufName);                                 \
+    /* Omit check since already checked in SET_REGBUF*/                     \
+    auto& remRegBufVec = ref_.bufs.remRegBufs[(size_t)bufName];             \
+    auto ret = bufMngr_->assignRemRegBuf(                                   \
+        md.memType, bufName, peerRanks, remRegBufVec);                      \
+    FB_CHECKABORT(                                                          \
+        ret, "Failed to assign remote regbuf {} {}", md.str, (int)bufName); \
+    for (int i = 0; i < peerRanks.size(); i++) {                            \
+      CLOGF_TRACE(                                                          \
+          INIT,                                                             \
+          "Rank {} assigned {} remRegBufVec[{}] = {}",                      \
+          statex_->rank(),                                                  \
+          md.str,                                                           \
+          i,                                                                \
+          remRegBufVec[i].toString());                                      \
+    }                                                                       \
   }
 
-#define SET_REM_REGBUF(bufMngr_, memType, bufName, peerRanks)         \
-  {                                                                   \
-    /* Omit check since already checked in SET_REGBUF*/               \
-    auto& remRegBufVec =                                              \
-        ref_.bufs.remRegBufs[(size_t)ResourceBufName::bufName];       \
-    auto ret = bufMngr_->assignRemRegBuf(                             \
-        memType, ResourceBufName::bufName, peerRanks, remRegBufVec);  \
-    FB_CHECKABORT(                                                    \
-        ret, "Failed to assign remote regbuf {}", ARGTOSTR(bufName)); \
-    for (int i = 0; i < peerRanks.size(); i++) {                      \
-      CLOGF_TRACE(                                                    \
-          INIT,                                                       \
-          "Rank {} assigned {} remRegBufVec[{}] = {}",                \
-          statex_->rank(),                                            \
-          ARGTOSTR(bufName),                                          \
-          i,                                                          \
-          remRegBufVec[i].toString());                                \
-    }                                                                 \
-  }
-
-std::vector<int> prepareExchange(ncclx::CommStateX* statex) {
+void prepareExchange(
+    ncclx::CommStateX* statex,
+    std::vector<int>& localPeers,
+    std::vector<int>& railPeers,
+    std::vector<int>& allPeers) {
   const auto nLocalRanks = statex->nLocalRanks();
   const auto nNodes = statex->nNodes();
   const auto myNode = statex->node();
   const auto myLocalRank = statex->localRank();
 
   // Include intra-node peers and rail peers
-  std::vector<int> peers;
-  peers.reserve(nLocalRanks + nNodes - 1);
+  localPeers.reserve(nLocalRanks);
+  railPeers.reserve(nNodes);
+  allPeers.reserve(nLocalRanks + nNodes - 1);
   for (int i = 0; i < nLocalRanks; i++) {
-    peers.push_back(statex->localRankToRank(i, myNode));
+    const auto rank = statex->localRankToRank(i, myNode);
+    localPeers.push_back(rank);
+    allPeers.push_back(rank);
   }
   for (int n = 0; n < nNodes; n++) {
-    // Skip myself since already included in above localRanks
-    if (n == myNode) {
-      continue;
+    const auto rank = statex->localRankToRank(myLocalRank, n);
+    railPeers.push_back(rank);
+    if (n != myNode) {
+      allPeers.push_back(rank);
     }
-    peers.push_back(statex->localRankToRank(myLocalRank, n));
   }
-  return peers;
 }
 } // namespace
 
-commResult_t ResourceImpl::setRef(
-    const PersistConfig& config,
-    cudaStream_t stream) {
-  const auto nLocalRanks = statex_->nLocalRanks();
-  const auto nNodes = statex_->nNodes();
-  const auto myNode = statex_->node();
-  const auto myLocalRank = statex_->localRank();
+commResult_t ResourceImpl::setKSync(cudaStream_t stream, const bool skipRem) {
+  auto& kSync = ref_.kSync;
+  const auto useReg = skipRem ? false : true;
+  GET_RESOURCE_BUFPTR(&ref_, kWorkerGroupSync, useReg, kSync.wgSyncs);
+  GET_RESOURCE_BUFPTR(&ref_, kIntraRedSync, useReg, kSync.intraRedSync);
+  GET_RESOURCE_BUFPTR(&ref_, kFwdRecvSync, useReg, kSync.fwdRecvSyncs);
+  GET_RESOURCE_BUFPTR(
+      &ref_, kIntraFwdRecvSync, useReg, kSync.intraFwdRecvSyncs);
+  GET_RESOURCE_BUFPTR(&ref_, kSendGKSyncs, useReg, kSync.sendGKSyncs);
+  GET_RESOURCE_BUFPTR(&ref_, kRecvGKSyncs, useReg, kSync.recvGKSyncs);
+  GET_RESOURCE_BUFPTR(&ref_, kIntraFwdGKSyncs, useReg, kSync.intraFwdGKSyncs);
+  GET_RESOURCE_BUFPTR(&ref_, kRecvCopyGKSyncs, useReg, kSync.recvCopyGKSyncs);
+  GET_RESOURCE_BUFPTR(
+      &ref_, kIntraRecvCopyGKSyncs, useReg, kSync.intraRecvCopyGKSyncs);
 
-  std::vector<int> localPeers(nLocalRanks);
-  std::vector<int> railPeers(nNodes);
-  for (int i = 0; i < nLocalRanks; i++) {
-    localPeers[i] = statex_->localRankToRank(i, myNode);
-  }
-  for (int n = 0; n < nNodes; n++) {
-    railPeers[n] = statex_->localRankToRank(myLocalRank, n);
-  }
-
-  // Assign all local buffers as regBuf to simplify ptr query in algorithm
-  SET_REGBUF(bufMngr_, MemType::kDevice, kTmpSendBuff);
-
-  SET_REGBUF(bufMngr_, MemType::kDevice, kTmpSendIdx);
-  SET_REGBUF(bufMngr_, MemType::kDevice, kTmpIntraFwdIdx);
-
-  SET_REGBUF(bufMngr_, MemType::kDevice, kTmpFwdBuff);
-  SET_REM_REGBUF(bufMngr_, MemType::kDevice, kTmpFwdBuff, railPeers);
-
-  SET_REGBUF(bufMngr_, MemType::kDevice, kTmpRecvBuff);
-  SET_REM_REGBUF(bufMngr_, MemType::kDevice, kTmpRecvBuff, localPeers);
-
-  SET_REGBUF(bufMngr_, MemType::kDevice, kLocalOutputSplits);
-  SET_REM_REGBUF(bufMngr_, MemType::kDevice, kLocalOutputSplits, localPeers);
-  SET_REGBUF(bufMngr_, MemType::kHostPinned, kLocalOutputSplitsH);
-
-  SET_REGBUF(bufMngr_, MemType::kDevice, kRankBitmaps);
-  SET_REM_REGBUF(bufMngr_, MemType::kDevice, kRankBitmaps, localPeers);
-  SET_REGBUF(bufMngr_, MemType::kHostPinned, kRankBitmapsH);
-
-  SET_REGBUF(bufMngr_, MemType::kHostPinned, kTmpNumSendBlocksBuffH);
-  SET_REM_REGBUF(
-      bufMngr_, MemType::kHostPinned, kTmpNumSendBlocksBuffH, railPeers);
-
-  SET_REGBUF(bufMngr_, MemType::kDevice, kTmpNumRecvBlocksBuff);
-  SET_REM_REGBUF(bufMngr_, MemType::kDevice, kTmpNumRecvBlocksBuff, localPeers);
-  SET_REGBUF(bufMngr_, MemType::kHostPinned, kTmpNumRecvBlocksBuffH);
-
-  SET_REGBUF(bufMngr_, MemType::kHostPinned, kBlockRecvBucketsH);
-  SET_REM_REGBUF(bufMngr_, MemType::kHostPinned, kBlockRecvBucketsH, railPeers);
-  SET_REGBUF(bufMngr_, MemType::kHostPinned, kNumForwardBlocksH);
-  SET_REGBUF(bufMngr_, MemType::kDevice, kTmpRecvOffsets);
-
-  SET_REGBUF(bufMngr_, MemType::kHostPinned, kGpeKernelSyncs);
-
-  ResourceBufs& bufs = ref_.bufs;
-
-  // Initialize sync objects used by host
-  auto& gkSyncBuff = bufs.getRegBuf(ResourceBufName::kGpeKernelSyncs);
-
-  ref_.sendCopyGKSyncs.resize(nNodes);
-  ref_.recvFwdGKSyncs.resize(nNodes);
-  ref_.recvCopyGKSyncs.resize(nLocalRanks);
-
-  // - Initialize syncs for sendCopy and recvFwd which needs to be per node, and
-  // each sync is watched by numWorkers thread blocks
-  for (int n = 0; n < nNodes; n++) {
-    ref_.sendCopyGKSyncs[n] =
-        reinterpret_cast<GpeKernelSync*>(gkSyncBuff.ptr) + n;
-    new (ref_.sendCopyGKSyncs[n]) GpeKernelSync(config.numSendWorkers);
-  }
-  for (int n = 0; n < nNodes; n++) {
-    ref_.recvFwdGKSyncs[n] =
-        reinterpret_cast<GpeKernelSync*>(gkSyncBuff.ptr) + nNodes + n;
-    new (ref_.recvFwdGKSyncs[n]) GpeKernelSync(config.numFwdWorkers);
-  }
-  for (int n = 0; n < nLocalRanks; n++) {
-    ref_.recvCopyGKSyncs[n] =
-        reinterpret_cast<GpeKernelSync*>(gkSyncBuff.ptr) + 2 * nNodes + n;
-    new (ref_.recvCopyGKSyncs[n]) GpeKernelSync(config.numRecvWorkers);
+  if (!skipRem) {
+    GET_RESOURCE_REM_BUFPTRS(&ref_, kFwdRecvSync, kSync.remFwdRecvSyncs);
+    GET_RESOURCE_REM_BUFPTRS(
+        &ref_, kIntraFwdRecvSync, kSync.remIntraFwdRecvSyncs);
   }
 
-  // - Single sync for prepare phase which is watched by all thread blocks
-  ref_.prepareGKSync = reinterpret_cast<GpeKernelSync*>(gkSyncBuff.ptr) +
-      nNodes * 2 + nLocalRanks;
-  new (ref_.prepareGKSync) GpeKernelSync(config.numPrepareThreadBlocks);
+  // Initialize fwdRecvSync only once at init; other kSync objects are reset
+  // before exec()/combine().
+  auto numSyncs =
+      bufMdMap_.at(BufName::kFwdRecvSync).buflen / sizeof(FwdRecvSync);
+  std::vector<FwdRecvSync> fwdRecvSyncH(numSyncs, FwdRecvSync());
 
-  // Initialize sync objects used by device
-
-  // - Copy GK sync objects that are already initialized for host
-  ref_.kSync.prepareGKSync = ref_.prepareGKSync;
-  ref_.kSync.sendCopyGKSyncs = ref_.sendCopyGKSyncs[0];
-  ref_.kSync.recvFwdGKSyncs = ref_.recvFwdGKSyncs[0];
-  ref_.kSync.recvCopyGKSyncs = ref_.recvCopyGKSyncs[0];
-
-  // - Initialize sync objects used only by device
-  SET_REGBUF(bufMngr_, MemType::kDevice, kFwdGroupSync);
-  auto& fwdGroupSyncBuff = bufs.getRegBuf(ResourceBufName::kFwdGroupSync);
-  ref_.kSync.fwdGroupSync =
-      reinterpret_cast<FwdGroupSync*>(fwdGroupSyncBuff.ptr);
-
-  SET_REGBUF(bufMngr_, MemType::kDevice, kWorkerSync);
-  auto& workerSyncBuff = bufs.getRegBuf(ResourceBufName::kWorkerSync);
-  ref_.kSync.workerSync = reinterpret_cast<WorkerSync*>(workerSyncBuff.ptr);
-
-  SET_REGBUF(bufMngr_, MemType::kDevice, kFwdRecvSync);
-  SET_REM_REGBUF(bufMngr_, MemType::kDevice, kFwdRecvSync, localPeers);
-  auto& fwdRecvSyncBuff = bufs.getRegBuf(ResourceBufName::kFwdRecvSync);
-  ref_.kSync.fwdRecvSyncs =
-      reinterpret_cast<algos::MPSCTbSync<>*>(fwdRecvSyncBuff.ptr);
-
-  // - Initialize fwdRecvSync only once at init
-  // - fwdGroupSync will be initialized at each prepare
-  std::vector<MPSCTbSync<>> fwdRecvSyncH(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_NUM_CHUNKS * nLocalRanks,
-      MPSCTbSync(config.numFwdWorkers));
   FB_CUDACHECK(cudaMemcpyAsync(
-      fwdRecvSyncBuff.ptr,
+      kSync.fwdRecvSyncs,
       fwdRecvSyncH.data(),
-      sizeof(MPSCTbSync<>) * fwdRecvSyncH.size(),
+      sizeof(FwdRecvSync) * numSyncs,
       cudaMemcpyHostToDevice,
       stream));
-
-  auto& remFwdRecvSyncBuffs = bufs.getRemRegBufs(ResourceBufName::kFwdRecvSync);
-  FB_CHECKABORT(
-      remFwdRecvSyncBuffs.size() <= (size_t)CTRAN_MAX_NVL_PEERS,
-      "Unexpected remFwdRecvSyncBuffs.size() {} > CTRAN_MAX_NVL_PEERS {}",
-      nLocalRanks,
-      CTRAN_MAX_NVL_PEERS);
-  for (auto i = 0; i < remFwdRecvSyncBuffs.size(); i++) {
-    ref_.kSync.remFwdRecvSyncs[i] =
-        reinterpret_cast<algos::MPSCTbSync<>*>(remFwdRecvSyncBuffs[i].ptr);
-  }
-
+  numSyncs =
+      bufMdMap_.at(BufName::kIntraFwdRecvSync).buflen / sizeof(FwdRecvSync);
+  fwdRecvSyncH.clear();
+  fwdRecvSyncH.resize(numSyncs, FwdRecvSync());
+  FB_CUDACHECK(cudaMemcpyAsync(
+      kSync.intraFwdRecvSyncs,
+      fwdRecvSyncH.data(),
+      sizeof(FwdRecvSync) * numSyncs,
+      cudaMemcpyHostToDevice,
+      stream));
   return commSuccess;
+}
+
+void ResourceImpl::setRef() {
+  for (int i = 0; i < static_cast<int>(BufName::kNumBufsNames); i++) {
+    const auto bname = static_cast<BufName>(i);
+    const auto& md = bufMdMap_.at(bname);
+    CHECK_BUF(bufMngr_, md, bname);
+    auto& buf = ref_.bufs.bufs[(size_t)bname];
+    auto ret = bufMngr_->assignBuf(md.memType, bname, buf);
+    FB_CHECKABORT(ret, "Failed to assign buf {} {}", md.str, i);
+    CLOGF_TRACE(
+        INIT,
+        "Rank {} assigned {} = {}",
+        statex_->rank(),
+        md.str,
+        buf.toString());
+  }
+}
+
+void ResourceImpl::setRegRef() {
+  // Assign all local buffers as regBuf to simplify ptr query in algorithm
+  for (int i = 0; i < static_cast<int>(BufName::kNumBufsNames); i++) {
+    const auto bname = static_cast<BufName>(i);
+    const auto& md = bufMdMap_.at(bname);
+    CHECK_BUF(bufMngr_, md, bname);
+    auto& regBuf = ref_.bufs.regBufs[(size_t)bname];
+    auto ret = bufMngr_->assignRegBuf(md.memType, bname, regBuf);
+    FB_CHECKABORT(ret, "Failed to assign regbuf {} {}", md.str, i);
+    CLOGF_TRACE(
+        INIT,
+        "Rank {} assigned {} = {}",
+        statex_->rank(),
+        md.str,
+        regBuf.toString());
+  }
+}
+
+void ResourceImpl::setRemRef(
+    std::vector<int>& localPeers,
+    std::vector<int>& railPeers) {
+  SET_REM_REGBUF(bufMngr_, bufMdMap_, BufName::kTmpFwdBuff, railPeers);
+  SET_REM_REGBUF(bufMngr_, bufMdMap_, BufName::kTmpRecvBuff, localPeers);
+  SET_REM_REGBUF(bufMngr_, bufMdMap_, BufName::kTmpIntraRecvBuff, localPeers);
+  SET_REM_REGBUF(bufMngr_, bufMdMap_, BufName::kFwdRecvSync, localPeers);
+  SET_REM_REGBUF(bufMngr_, bufMdMap_, BufName::kIntraFwdRecvSync, localPeers);
 }
 
 commResult_t ResourceImpl::initialize(
     const PersistArgs& args,
     const PersistConfig& config,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    const bool skipRem) {
   const auto nNodes = statex_->nNodes();
   const auto nLocalRanks = statex_->nLocalRanks();
   const auto nRanks = statex_->nRanks();
 
   SetCudaDevRAII setCudaDev(statex_->cudaDev());
 
-  // Cache all required tmp buffers for allocation preparation
+  // initialize buffer metadata
+  initBufMd(args, config, nNodes, nLocalRanks);
 
-  size_t perRankBufLen = config.tmpChunkSize * config.tmpNumChunks;
-  size_t buflen = perRankBufLen * nNodes;
-
-  FB_COMMCHECK(
-      bufMngr_->insert(MemType::kDevice, ResourceBufName::kTmpFwdBuff, buflen));
-  // same size as tmpFwdBuff
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kDevice, ResourceBufName::kTmpSendBuff, buflen));
-
-  buflen = nNodes * args.totalNumSendBlocks * sizeof(int);
-  FB_COMMCHECK(
-      bufMngr_->insert(MemType::kDevice, ResourceBufName::kTmpSendIdx, buflen));
-
-  buflen = nNodes * nLocalRanks * args.totalNumSendBlocks * sizeof(int);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kDevice, ResourceBufName::kTmpIntraFwdIdx, buflen));
-
-  // separate buffer for each local FWD ranks
-  buflen = perRankBufLen * nLocalRanks;
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kDevice, ResourceBufName::kTmpRecvBuff, buflen));
-
-  // used for pt metadata
-  buflen = nLocalRanks * nLocalRanks * sizeof(int);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kDevice, ResourceBufName::kLocalOutputSplits, buflen));
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kHostPinned, ResourceBufName::kLocalOutputSplitsH, buflen));
-  buflen = nLocalRanks * nLocalRanks * nNodes * args.totalNumSendBlocks *
-      sizeof(int);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kDevice, ResourceBufName::kRankBitmaps, buflen));
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kHostPinned, ResourceBufName::kRankBitmapsH, buflen));
-
-  buflen = nNodes * nNodes *
-      (args.numRecvBuckets * nLocalRanks + nLocalRanks + 1) * sizeof(size_t);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kHostPinned, ResourceBufName::kTmpNumSendBlocksBuffH, buflen));
-
-  buflen = (args.numRecvBuckets * nRanks + nRanks) * sizeof(size_t);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kDevice, ResourceBufName::kTmpNumRecvBlocksBuff, buflen));
-
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kHostPinned, ResourceBufName::kTmpNumRecvBlocksBuffH, buflen));
-
-  buflen = sizeof(algos::MPSCTbSync<>) * NCCL_CTRAN_ALLTOALLV_DEDUP_NUM_CHUNKS *
-      nLocalRanks;
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kDevice, ResourceBufName::kFwdRecvSync, buflen));
-
-  // Max space needed to host dynamic arguments: blockRecvRanks
-  // we do an allgather across nNodes rail peers to compute metadata for
-  // external combine
-  buflen =
-      nNodes * args.totalNumSendBlocks * args.blockNumRecvBuckets * sizeof(int);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kHostPinned, ResourceBufName::kBlockRecvBucketsH, buflen));
-
-  buflen = nRanks * sizeof(size_t);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kHostPinned, ResourceBufName::kNumForwardBlocksH, buflen));
-
-  buflen = args.numRecvBuckets * nRanks * sizeof(size_t);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kDevice, ResourceBufName::kTmpRecvOffsets, buflen));
-
-  // nNodes number of syncs for each of sendCopy and recvFwd, single sync for
-  // each of sendMetadata and recvMetadata
-  buflen = (nNodes * 2 + nLocalRanks + 2) * sizeof(GpeKernelSync);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kHostPinned, ResourceBufName::kGpeKernelSyncs, buflen));
-
-  buflen = sizeof(FwdGroupSync);
-  FB_COMMCHECK(bufMngr_->insert(
-      MemType::kDevice, ResourceBufName::kFwdGroupSync, buflen));
-
-  buflen = sizeof(WorkerSync);
-  FB_COMMCHECK(
-      bufMngr_->insert(MemType::kDevice, ResourceBufName::kWorkerSync, buflen));
+  for (int i = 0; i < static_cast<int>(BufName::kNumBufsNames); i++) {
+    const auto bname = static_cast<BufName>(i);
+    const auto md = bufMdMap_.at(bname);
+    FB_COMMCHECK(bufMngr_->insert(md.memType, bname, md.buflen));
+  }
 
   // allocate memory
   FB_COMMCHECK(bufMngr_->commit());
@@ -321,19 +196,28 @@ commResult_t ResourceImpl::initialize(
       "AllToAllvDedup::ResourceImpl: Rank {} commited buffer allocation",
       statex_->rank());
 
-  // register and exchange memory handles
-  auto peers = prepareExchange(statex_);
-  CLOGF_TRACE(
-      INIT,
-      "AllToAllvDedup::ResourceImpl: Rank {} exchanged with peers [{}]",
-      statex_->rank(),
-      folly::join(",", peers));
-  FB_COMMCHECK(bufMngr_->exchange(peers, nRanks));
+  if (!skipRem) {
+    std::vector<int> localPeers, railPeers, allPeers;
+    // register and exchange memory handles
+    prepareExchange(statex_, localPeers, railPeers, allPeers);
+    CLOGF_TRACE(
+        INIT,
+        "AllToAllvDedup::ResourceImpl: Rank {} exchanged with allPeers [{}]",
+        statex_->rank(),
+        folly::join(",", allPeers));
+    FB_COMMCHECK(bufMngr_->exchange(allPeers, nRanks));
 
-  // assign buffers from allocated memory and keep a const copy of it for later
-  // algorithm to use
-  FB_COMMCHECK(setRef(config, stream));
+    // assign buffers from allocated memory and keep a const copy of it for
+    // later algorithm to use; if not skip remote exchange, all buffers are
+    // registered and remote exchanged
+    setRegRef();
+    setRemRef(localPeers, railPeers);
+  } else {
+    // if skip remote, set as basic buffer
+    setRef();
+  }
 
+  FB_COMMCHECK(setKSync(stream, skipRem));
   return commSuccess;
 }
 
@@ -356,8 +240,9 @@ ResourceImpl::ResourceImpl(
   auto memKey = folly::sformat(
       "Ctran::AllToAllvDedup::ResourceImpl-{:#x}", statex->commHash());
 
-  bufMngr_ = std::make_unique<::ctran::algos::BufManager<
-      ResourceBufName,
-      ResourceBufName::kNumBufsNames>>(statex, mapper, logMetadata, memKey);
+  bufMngr_ = std::make_unique<
+      ::ctran::algos::BufManager<BufName, BufName::kNumBufsNames>>(
+      statex, mapper, logMetadata, memKey);
 }
+
 } // namespace ctran::alltoallvdedup

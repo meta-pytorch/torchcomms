@@ -415,10 +415,6 @@ bool collTraceRecordCtranKernelInfo(
       coll.opName = "AllToAllvDynamicSplitNonContig";
       break;
     }
-    case KernelConfig::KernelType::ALLTOALLV_DEDUP_PREPARE: {
-      coll.opName = "AllToAllvDedupPrepare";
-      break;
-    }
     case KernelConfig::KernelType::ALLTOALLV_DEDUP: {
       coll.opName = "AllToAllvDedup";
       // FIXME: need pass in arguments; a placeholder to pass build for now
@@ -538,9 +534,6 @@ bool collTraceRecordCtranCollective(
       break;
     case OpElem::ALLTOALLV_DYNAMIC:
       coll.opName = "AllToAllvDynamic";
-      break;
-    case OpElem::ALLTOALLV_DEDUP_PREPARE:
-      coll.opName = "AllToAllvDedupPrepare";
       break;
     case OpElem::ALLTOALLV_DEDUP: {
       coll.opName = "AllToAllvDedup";

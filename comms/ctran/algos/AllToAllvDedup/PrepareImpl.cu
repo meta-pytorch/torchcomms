@@ -4,545 +4,546 @@
 #include <cstddef>
 
 #include "comms/ctran/algos/AllToAllvDedup/CommonDev.h"
-#include "comms/ctran/algos/AllToAllvDedup/FwdGroupSyncDev.cuh"
+#include "comms/ctran/algos/AllToAllvDedup/ExecCommon.cuh"
+#include "comms/ctran/algos/AllToAllvDedup/IndexMapDev.cuh"
 #include "comms/ctran/algos/AllToAllvDedup/Types.h"
-#include "comms/ctran/algos/AllToAllvDedup/WorkerSyncDev.cuh"
+#include "comms/ctran/algos/AllToAllvDedup/WorkerGroupDev.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
+#include "comms/ctran/algos/common/MultiTbSyncDev.cuh"
 #include "comms/ctran/commstate/CommStateXDev.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 namespace ctran::alltoallvdedup {
 using namespace ctran::algos;
 
-__device__ __forceinline__ bool checkWarpRole(
-    unsigned int warpId,
-    const PrepareKernRole role) {
-  return warpId == (unsigned int)role;
+__device__ inline int countMaps(
+    const int* inMaps,
+    const int numMaps,
+    const int b,
+    const int stride,
+    int* mapIds) {
+  // TODO: how to parallelize while maintain the order of mapId
+  int count = 0;
+  for (auto i = 0; i < numMaps; i++) {
+    const auto rIdx = inMaps[i * stride + b];
+    if (rIdx != -1) {
+      mapIds[count++] = i;
+    }
+  }
+  // DEBUG only; can be deleted later
+  for (auto i = count; i < numMaps; i++) {
+    mapIds[i] = -1;
+  }
+  return count;
 }
 
-__device__ __forceinline__ void computeOffsetsFromCounts(
-    const size_t nLocalRanks,
-    const size_t nNodes,
-    const size_t* numBlocks,
-    size_t* offsets,
-    size_t* totalNumBlocks,
-    size_t numRecvBuckets,
-    size_t nElemPerBlock = 1) {
-  // traverse numRecvBuckets array so that the buckets on each rank are
-  // contiguous in memory
-  size_t sum = 0;
-  for (auto bucket = 0; bucket < numRecvBuckets; bucket++) {
-    for (auto localRank = 0; localRank < nLocalRanks; localRank++) {
-      for (auto node = 0; node < nNodes; node++) {
-        auto rank = node * nLocalRanks + localRank;
-        offsets[rank * numRecvBuckets + bucket] = sum * nElemPerBlock;
-        sum += numBlocks[rank * numRecvBuckets + bucket];
+__device__ inline void prepareTmpSendIdx(
+    ExecKernArgs& args,
+    const WorkerGroup& sendG) {
+  const auto workerId = sendG.workerId();
+  const auto numWorkers = sendG.numWorkers;
+
+  if (threadIdx.x == 0) {
+    CTRAN_DEV_TRACE("workerId %d/%d starts \n", workerId, numWorkers);
+  }
+
+  const auto nNodes = statex->nNodes();
+  const auto totalNumSendBlocks = args.pArgs.totalNumSendBlocks;
+  const auto maxNumSteps = args.pArgs.maxNumSteps;
+  const auto maxNumStepBlks = args.pArgs.maxNumStepBlks;
+
+  const auto* sendIdx = args.execArgs.sendIdx;
+  // nNodes; used to trackblocks to be forwarded to remote node in exec()
+  auto* tmpNumSendIdx = args.tmpNumSendIdx;
+  auto* tmpNumSendIdxH = args.tmpNumSendIdxH;
+  // nNodes * maxNumSteps
+  auto* tmpSendIdx = args.tmpSendIdx;
+  // nNodes * maxNumSteps
+  auto* tmpSendRedStepNumPending = args.tmpSendRedStepNumPending;
+
+  // convert tmpIdx for each recv node
+  for (auto recvNode = workerId; recvNode < nNodes; recvNode += numWorkers) {
+    const auto nodeOffset = recvNode * totalNumSendBlocks;
+    const auto count = IndexMapDev::transpose(
+        &sendIdx[nodeOffset], totalNumSendBlocks, &tmpSendIdx[nodeOffset]);
+    if (threadIdx.x == 0) {
+      tmpNumSendIdx[recvNode] = count;
+      tmpNumSendIdxH[recvNode] = count;
+      CTRAN_DEV_TRACE("tmpNumSendIdx[%d] %d\n", recvNode, count);
+    }
+
+    // update per step count
+    const auto remain = count % maxNumStepBlks;
+    const auto numSteps = (count + maxNumStepBlks - 1) / maxNumStepBlks;
+    for (auto s = threadIdx.x; s < maxNumSteps; s += blockDim.x) {
+      const auto idx = recvNode * maxNumSteps + s;
+      if (s < numSteps - 1) {
+        tmpSendRedStepNumPending[idx] = maxNumStepBlks;
+      } else if (s == numSteps - 1) {
+        tmpSendRedStepNumPending[idx] = remain;
+      } else {
+        tmpSendRedStepNumPending[idx] = 0;
+      }
+    }
+    CTRAN_DEV_TRACE_IF(
+        threadIdx.x == 0,
+        "updated tmpSendRedStepNumPending: node %d numSteps %d countPerStep %d, last %d\n",
+        recvNode,
+        numSteps,
+        maxNumStepBlks,
+        remain);
+  }
+
+  // prepare reduce vector for each block
+  const auto tid = threadIdx.x + workerId * blockDim.x;
+  const auto numThreads = blockDim.x * numWorkers;
+  for (auto b = tid; b < totalNumSendBlocks; b += numThreads) {
+    // totalNumSendBlocks * nNodes
+    auto* mapIds = args.tmpSendRedIdxSrcIds + b * nNodes;
+    const auto count =
+        countMaps(sendIdx, nNodes, b, totalNumSendBlocks, mapIds);
+
+    args.tmpSendRedIdxNumSrcs[b] = count;
+    args.tmpSendRedIdxNumPendingSrcs[b] = count;
+    CTRAN_DEV_TRACE_IF(
+        b < 20 && count > 0,
+        "tmpSendRedIdxNumSrcs[%d] %d/%d, srcIds %d %d...\n",
+        b,
+        count,
+        nNodes,
+        mapIds[0],
+        mapIds[1]);
+  }
+}
+
+__device__ inline void prepareTmpIntraFwdIdx(
+    ExecKernArgs& args,
+    const WorkerGroup& intraFwdG) {
+  const auto workerId = intraFwdG.workerId();
+  const auto numWorkers = intraFwdG.numWorkers;
+
+  if (threadIdx.x == 0) {
+    CTRAN_DEV_TRACE("workerId %d/%d starts \n", workerId, numWorkers);
+  }
+
+  // Prepare tmpFwdIdx[][myNodes], indicating number of blocks to be forwarded
+  // to each local rank from my node (i.e., sendRank itself)
+  const auto myNode = statex->node();
+  const auto nNodes = statex->nNodes();
+  const auto nLocalRanks = statex->nLocalRanks();
+  const auto totalNumSendBlocks = args.pArgs.totalNumSendBlocks;
+  const auto maxNumStepBlks = args.pArgs.maxNumStepBlks;
+  const auto maxNumSteps = args.pArgs.maxNumSteps;
+
+  const int* fwdIdx = args.execArgs.fwdIdx;
+  const auto* intraFwdIdx = fwdIdx + myNode * totalNumSendBlocks;
+
+  // nLocalRanks; used to track number of blocks to be forwarded to each local
+  // rank in exec()
+  int* tmpNumIntraFwdIdx = args.tmpNumIntraFwdIdx;
+  int* tmpNumIntraFwdIdxH = args.tmpNumIntraFwdIdxH;
+  int* tmpFwdIdx = args.tmpFwdIdx;
+
+  // nLocalRanks * maxNumSteps; used to track whether a remote chunk can be
+  // freed after local reduction in combine intraFwdRed
+  int* tmpIntraRedStepNumPending = args.tmpIntraRedStepNumPending;
+
+  for (auto localRank = workerId; localRank < nLocalRanks;
+       localRank += numWorkers) {
+    const auto slotId = localRank * nNodes + myNode;
+    const auto offset = slotId * totalNumSendBlocks;
+
+    const auto count = IndexMapDev::transpose(
+        &fwdIdx[offset], totalNumSendBlocks, &tmpFwdIdx[offset]);
+    if (threadIdx.x == 0) {
+      tmpNumIntraFwdIdx[localRank] = count;
+      tmpNumIntraFwdIdxH[localRank] = count;
+      CTRAN_DEV_TRACE("tmpNumIntraFwdIdx[%d] %d\n", localRank, count);
+    }
+
+    // update per step count
+    const auto remain = count % maxNumStepBlks;
+    const auto numSteps = (count + maxNumStepBlks - 1) / maxNumStepBlks;
+    for (auto s = threadIdx.x; s < maxNumSteps; s += blockDim.x) {
+      const auto idx = localRank * maxNumSteps + s;
+      if (s < numSteps - 1) {
+        tmpIntraRedStepNumPending[idx] = maxNumStepBlks;
+      } else if (s == numSteps - 1) {
+        tmpIntraRedStepNumPending[idx] = remain;
+      } else {
+        tmpIntraRedStepNumPending[idx] = 0;
+      }
+    }
+    CTRAN_DEV_TRACE_IF(
+        threadIdx.x == 0,
+        "updated tmpIntraRedStepNumPending: localRank %d numSteps %d count %d, last %d\n",
+        localRank,
+        numSteps,
+        maxNumStepBlks,
+        remain);
+  }
+
+  // prepare reduce vector for each block
+  const auto tid = threadIdx.x + workerId * blockDim.x;
+  const auto numThreads = blockDim.x * numWorkers;
+
+  for (auto b = tid; b < totalNumSendBlocks; b += numThreads) {
+    // totalNumSendBlocks * nLocalRanks
+    auto* mapIds = args.tmpIntraRedIdxSrcIds + b * nLocalRanks;
+    // tmpFwdIdx format: nLocalRanks * nNodes * totalNumSendBlocks
+    const auto count = countMaps(
+        intraFwdIdx, nLocalRanks, b, nNodes * totalNumSendBlocks, mapIds);
+    // totalNumSendBlocks
+    args.tmpIntraRedIdxNumSrcs[b] = count;
+    args.tmpIntraRedIdxNumPendingSrcs[b] = count;
+    CTRAN_DEV_TRACE_IF(
+        b < 20 && count > 0,
+        "tmpIntraRedIdxNumSrcs[%d] %d/%d, srcIds %d %d...\n",
+        b,
+        count,
+        nLocalRanks,
+        mapIds[0],
+        mapIds[1]);
+  }
+}
+
+__device__ inline void prepareTmpFwdIdx(
+    ExecKernArgs& args,
+    const WorkerGroup& fwdG) {
+  const auto workerId = fwdG.workerId();
+  const auto numWorkers = fwdG.numWorkers;
+
+  if (threadIdx.x == 0) {
+    CTRAN_DEV_TRACE("workerId %d/%d starts \n", workerId, numWorkers);
+  }
+
+  // Prepare tmpNumFwdIdx[node] for each localRank and node, indicating
+  // number of blocks to be forwarded to each local rank from the node.
+  const auto myNode = statex->node();
+  const auto nNodes = statex->nNodes();
+  const auto nLocalRanks = statex->nLocalRanks();
+  const auto totalNumSendBlocks = args.pArgs.totalNumSendBlocks;
+
+  const int* fwdIdx = args.execArgs.fwdIdx;
+  auto* tmpNumFwdIdx = args.tmpNumFwdIdx;
+  auto* tmpNumFwdIdxH = args.tmpNumFwdIdxH;
+
+  for (auto node = workerId; node < nNodes; node += numWorkers) {
+    // intraFwd is handled separately
+    if (node == myNode) {
+      continue;
+    }
+
+    // compute count of merged indices, as number of blocks from each send node
+    // to all local ranks. used for progress tracking. IndexMapDev::countMerge()
+    // counds a block only once if it exists in multiple merged lookupMaps.
+    //
+    // fwdIdx format:
+    //              sendnode0    sendnode1
+    // localrank0 | lookupMap  | lookupMap |...
+    // localrank1 | lookupMap  | lookupMap |...
+    const int* maps[CTRAN_MAX_NVL_PEERS];
+    for (auto r = 0; r < nLocalRanks; r++) {
+      const auto slotId = r * nNodes + node;
+      maps[r] = &fwdIdx[slotId * totalNumSendBlocks];
+    }
+    const auto count =
+        IndexMapDev::countMerge(maps, totalNumSendBlocks, nLocalRanks);
+    if (threadIdx.x == 0) {
+      tmpNumFwdIdx[node] = count;
+      tmpNumFwdIdxH[node] = count;
+      CTRAN_DEV_TRACE("tmpNumFwdIdx[%d] %d\n", node, count);
+    }
+  }
+}
+__device__ inline void prepareTmpRecvOffsets(
+    ExecKernArgs& args,
+    const WorkerGroup& recvG) {
+  const auto workerId = recvG.workerId();
+  const auto numWorkers = recvG.numWorkers;
+  const auto nRanks = statex->nRanks();
+
+  const auto numRecvBuckets = args.pArgs.numRecvBuckets;
+  const auto totalNumSendBlocks = args.pArgs.totalNumSendBlocks;
+  const auto numOffsets = numRecvBuckets * nRanks;
+
+  // numRecvBuckets * nRanks, already reset in prepare
+  int* tmpRecvOffsets = args.tmpRecvOffsets;
+  // nBuckets * nRanks * totalNumSendBlocks
+  const auto recvIdx = args.execArgs.recvIdx;
+
+  // compute count of indices received by each bucket from each sendRank, used
+  // as offset for recv worker to copy block into corresponding locaiton in
+  // recvBuff.
+  for (auto i = workerId; i < numOffsets; i += numWorkers) {
+    if (i == numOffsets - 1) {
+      break; // skip last slotId since no more slot after it
+    }
+
+    // each worker counts number of blocks received per bucket per sendRank
+    const auto count = IndexMapDev::count(
+        &recvIdx[i * totalNumSendBlocks], totalNumSendBlocks);
+    // threads increases later slots' offest in parallel
+    for (auto nxt = i + 1 + threadIdx.x; nxt < numOffsets; nxt += blockDim.x) {
+      atomicAdd(&tmpRecvOffsets[nxt], count);
+    }
+  }
+}
+
+__device__ inline void prepareTmpRecvRedIdx(
+    ExecKernArgs& args,
+    const WorkerGroup& recvG) {
+  const auto workerId = recvG.workerId();
+  const auto numWorkers = recvG.numWorkers;
+  const auto nRanks = statex->nRanks();
+
+  const auto numRecvBuckets = args.pArgs.numRecvBuckets;
+  const auto totalNumSendBlocks = args.pArgs.totalNumSendBlocks;
+  // nBuckets * nRanks * totalNumSendBlocks
+  const auto recvIdx = args.execArgs.recvIdx;
+
+  // prepare reduce vector for each block
+  for (auto sendRank = workerId; sendRank < nRanks; sendRank += numWorkers) {
+    // nBuckets * nRanks * totalNumSendBlocks
+    const auto* rankIdxMap = recvIdx + sendRank * totalNumSendBlocks;
+    const auto mapStride = nRanks * totalNumSendBlocks;
+    const auto rankOffset = sendRank * totalNumSendBlocks;
+    for (auto b = threadIdx.x; b < totalNumSendBlocks; b += blockDim.x) {
+      // nRanks * totalNumSendBlocks * numRecvBuckets
+      auto* mapIds = args.tmpRecvRedIdxSrcIds + rankOffset * numRecvBuckets +
+          b * numRecvBuckets;
+      const auto count =
+          countMaps(rankIdxMap, numRecvBuckets, b, mapStride, mapIds);
+      // nRanks * totalNumSendBlocks
+      args.tmpRecvRedIdxNumSrcs[rankOffset + b] = count;
+      CTRAN_DEV_TRACE_IF(
+          b < 20 && count > 0,
+          "tmpRecvRedIdxNumSrcs[rank %d][%d/%d] %d/%d, srcIds: %d %d...\n",
+          sendRank,
+          b,
+          totalNumSendBlocks,
+          count,
+          numRecvBuckets,
+          mapIds[0],
+          mapIds[1]);
+    }
+  }
+}
+
+__device__ inline void prepareTmpRecvIdx(
+    ExecKernArgs& args,
+    const WorkerGroup& recvG) {
+  const auto workerId = recvG.workerId();
+  const auto numWorkers = recvG.numWorkers;
+
+  if (threadIdx.x == 0) {
+    CTRAN_DEV_TRACE("workerId %d/%d starts \n", workerId, numWorkers);
+  }
+
+  const auto numRecvBuckets = args.pArgs.numRecvBuckets;
+  const auto totalNumSendBlocks = args.pArgs.totalNumSendBlocks;
+  const auto nRanks = statex->nRanks();
+  const auto myNode = statex->node();
+
+  // nBuckets * nRanks * totalNumSendBlocks
+  const auto recvIdx = args.execArgs.recvIdx;
+  // nLocalRanks
+  int* tmpNumFwdRecvIdx = args.tmpNumFwdRecvIdx;
+  int* tmpNumIntraRecvIdx = args.tmpNumIntraRecvIdx;
+  int* tmpNumFwdRecvIdxH = args.tmpNumFwdRecvIdxH;
+  int* tmpNumIntraRecvIdxH = args.tmpNumIntraRecvIdxH;
+
+  // Count the number of received blocks from each forward local rank for
+  // progress tracking. Each worker counts for different sendRank
+  for (auto sendRank = workerId; sendRank < nRanks; sendRank += numWorkers) {
+    const auto lr = statex->localRank(sendRank);
+    const auto node = statex->node(sendRank);
+
+    // compute count of merged indices, as number of unique blocks from each
+    // send rank to all local buckets
+    const int* maps[MAX_NUM_RECV_BUCKETS];
+    for (auto bkt = 0; bkt < numRecvBuckets; bkt++) {
+      const auto slotId = bkt * nRanks + sendRank;
+      maps[bkt] = &recvIdx[slotId * totalNumSendBlocks];
+    }
+
+    // there is no duplicate blocks beween different sendRanks, thus sum up as
+    // number of blocks forwarded from each local rank
+    const auto count =
+        IndexMapDev::countMerge(maps, totalNumSendBlocks, numRecvBuckets);
+    if (threadIdx.x == 0) {
+      // track intraFwd and fwd separately
+      if (node == myNode) {
+        tmpNumIntraRecvIdx[lr] = count;
+        tmpNumIntraRecvIdxH[lr] = count;
+      } else {
+        atomicAdd(&tmpNumFwdRecvIdx[lr], count);
+        atomicAdd(&tmpNumFwdRecvIdxH[lr], count);
       }
     }
   }
-  *totalNumBlocks = sum;
 }
 
-__device__ __forceinline__ void gatherNumRecvCounts(PrepareKernArgs& args) {
-  const auto nLocalRanks = statex->nLocalRanks();
-  const auto nNodes = statex->nNodes();
-  const auto myLocalRank = statex->localRank();
-  const auto myNode = statex->node();
-  const auto nRanks = statex->nRanks();
+__device__ inline void
+resetTmpRecvIdx(ExecKernArgs& args, const int nRanks, const int nLocalRanks) {
+  const auto numRecvBuckets = args.pArgs.numRecvBuckets;
 
-  // nNodes * nNodes * (args.pArgs.numRecvBuckets * nLocalRanks + nLocalRanks +
-  // 1)
-  auto tmpNumSendBlocks = args.tmpNumSendBlocksBuffH;
+  // nLocalRanks
+  int* tmpNumFwdRecvIdx = args.tmpNumFwdRecvIdx;
+  int* tmpRecvOffsets = args.tmpRecvOffsets;
+  const auto numOffsets = numRecvBuckets * nRanks;
 
-  // Each thread updates the numRecvBlocks from a sendRank to each localRank
-  // E.g., assuming nLocalRanks = 4, nNodes = 2, numRecvBuckets = 2 every rank
-  // hosts numRecvBlocks[2][4][2];
-  // - Each local forwarding rank i updates numRecvBlocks[][i][] for all local
-  //   ranks, in total nLocalRanks * nNodes * numRecvBuckets = nRanks *
-  //   numRecvBuckets = 16 P2P updates
-  // - The total number of buckets = 16 P2P updates is executed by different
-  //   thread on rank i
-  const auto nLocalBuckets = args.pArgs.numRecvBuckets * nLocalRanks;
-  const auto nUpdates = nNodes * nLocalBuckets;
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-  for (int i = gtIdx; i < nUpdates; i += blockDim.x * gridDim.x) {
-    const auto sendNode = i / nLocalBuckets;
-    const auto sendRank = statex->localRankToRank(myLocalRank, sendNode);
-    const auto sendBucket = sendRank * args.pArgs.numRecvBuckets +
-        (i & (args.pArgs.numRecvBuckets - 1));
-    const auto recvLocalBucket = i & (nLocalBuckets - 1);
-    const auto recvLocalRank = bucketToRank(args.pArgs, recvLocalBucket);
-
-    const auto sendNodeOffset =
-        sendNode * nNodes * (nLocalBuckets + nLocalRanks + 1);
-    const auto rankOffsetInSendNode =
-        myNode * (nLocalBuckets + nLocalRanks + 1) + recvLocalBucket;
-
-    // H2D load
-    const auto numSendBlocks =
-        tmpNumSendBlocks[sendNodeOffset + rankOffsetInSendNode];
-    // P2P store
-    auto remNumRecvBlocks = args.tmpRemNumRecvBlocksBuffs[recvLocalRank];
-    remNumRecvBlocks[sendBucket] = numSendBlocks;
+  for (auto i = threadIdx.x; i < numOffsets; i += blockDim.x) {
+    tmpRecvOffsets[i] = 0;
   }
-
-  for (int i = gtIdx; i < nRanks; i += blockDim.x * gridDim.x) {
-    const auto sendNode = i / nLocalRanks;
-    const auto sendNodeOffset =
-        sendNode * nNodes * (nLocalBuckets + nLocalRanks + 1);
-    const auto recvLocalRank = i & (nLocalRanks - 1);
-    const auto rankOffsetInSendNode =
-        myNode * (nLocalBuckets + nLocalRanks + 1) + nLocalBuckets +
-        recvLocalRank;
-
-    // H2D load
-    const auto numSendBlocks =
-        tmpNumSendBlocks[sendNodeOffset + rankOffsetInSendNode];
-    // P2P store
-    const auto sendRank = statex->localRankToRank(myLocalRank, sendNode);
-    auto remNumRecvBlocks = args.tmpRemNumRecvBlocksBuffs[recvLocalRank];
-    remNumRecvBlocks[nUpdates + sendRank] = numSendBlocks;
-  }
-
-  // Wait for all P2P remNumRecvBlocks updates from intra-node ranks
-  barrier(myLocalRank, nLocalRanks);
-
-  if (threadIdx.x == 0) {
-    CTRAN_DEV_TRACE(
-        "gathered numRecvBlocks %p: %ld %ld %ld %ld\n",
-        args.tmpNumRecvBlocksBuff,
-        args.tmpNumRecvBlocksBuff[0],
-        args.tmpNumRecvBlocksBuff[1],
-        args.tmpNumRecvBlocksBuff[2],
-        args.tmpNumRecvBlocksBuff[3]);
+  for (auto i = threadIdx.x; i < nLocalRanks; i += blockDim.x) {
+    tmpNumFwdRecvIdx[i] = 0;
   }
 }
 
-__device__ void __inline__ copyBlockRecvBuckets(PrepareKernArgs& args) {
-  PersistArgs& pArgs = args.pArgs;
-  const auto count = pArgs.totalNumSendBlocks * pArgs.blockNumRecvBuckets;
-  const auto myNode = statex->node();
-  auto dData = args.blockRecvBucketsH + myNode * count;
-  auto sData = args.prepareArgs.blockRecvBuckets;
-
-  copy<int>(dData, sData, count, blockIdx.x, gridDim.x);
-
-  __syncthreads();
-  if (threadIdx.x == 0) {
-    CTRAN_DEV_TRACE(
-        "copied blockRecvBuckets %p: %d %d %d %d -> blockRecvBucketsH %p: %d %d ... %d %d, count %ld (%ld * %ld)\n",
-        sData,
-        sData[0],
-        sData[1],
-        sData[count - 2],
-        sData[count - 1],
-        dData,
-        dData[0],
-        dData[1],
-        dData[count - 2],
-        dData[count - 1],
-        count,
-        pArgs.totalNumSendBlocks,
-        pArgs.blockNumRecvBuckets);
-  }
-}
-
-__device__ void __inline__ copyNumSendBlocks(PrepareKernArgs& args) {
-  auto& prepareArgs = args.prepareArgs;
-  const auto nLocalRanks = statex->nLocalRanks();
-  const auto nRanks = statex->nRanks();
-  const auto nNodes = statex->nNodes();
-  const auto myNode = statex->node();
-
-  auto dPtr = prepareArgs.numSendBlocks;
-  const auto nLocalBuckets = args.pArgs.numRecvBuckets * nLocalRanks;
-  auto sPtr = args.tmpNumSendBlocksBuffH +
-      myNode * nNodes * (nLocalBuckets + nLocalRanks + 1);
-
-  const auto laneId = threadIdx.x & (kWarpSize - 1);
-
-  for (int i = laneId; i < nRanks; i += kWarpSize) {
-    const auto node = i / nLocalRanks;
-    const auto localRank = i & (nLocalRanks - 1);
-    dPtr[i] = 0;
-    for (int j = 0; j < args.pArgs.numRecvBuckets; j++) {
-      const auto localBucket = localRank * args.pArgs.numRecvBuckets + j;
-      const auto sIdx = node * (nLocalBuckets + nLocalRanks + 1) + localBucket;
-      dPtr[i] += sPtr[sIdx];
-    }
-  }
-
-  syncwarp();
-  if (laneId == 0) {
-    const auto warpId = threadIdx.x / kWarpSize;
-    CTRAN_DEV_TRACE(
-        "warpId %d copied tmpNumSendBlocksBuffH %p -> numSendBlocks %p: %ld %ld\n",
-        warpId,
-        sPtr,
-        dPtr,
-        dPtr[0],
-        dPtr[1]);
-  }
-}
-
-__device__ void __inline__ copyNumForwardBlocks(PrepareKernArgs& args) {
-  auto& prepareArgs = args.prepareArgs;
-  auto dPtr = prepareArgs.numForwardBlocks;
-  const auto sPtr = args.numForwardBlocksH;
-
-  const auto count = statex->nRanks();
-  const auto laneId = threadIdx.x & (kWarpSize - 1);
-
-  copyWarp<size_t>(dPtr, sPtr, count);
-
-  syncwarp();
-  if (laneId == 0) {
-    const auto warpId = threadIdx.x / kWarpSize;
-    CTRAN_DEV_TRACE(
-        "warpId %d copied numForwardBlocksH %p -> numForwardBlocks %p: %ld %ld\n",
-        warpId,
-        sPtr,
-        dPtr,
-        dPtr[0],
-        dPtr[1]);
-  }
-}
-
-__device__ void __inline__ copyNumRecvBlocks(PrepareKernArgs& args) {
-  const auto myLocalRank = statex->localRank();
-  const auto nRanks = statex->nRanks();
-  auto dPtr = args.prepareArgs.numRecvBlocks;
-  const auto sPtr = args.tmpNumRecvBlocksBuff;
-
-  const auto count = nRanks * args.pArgs.numRecvBuckets;
-  const auto laneId = threadIdx.x & (kWarpSize - 1);
-
-  copyWarp<size_t>(dPtr, sPtr, count);
-
-  syncwarp();
-  if (laneId == 0) {
-    const auto warpId = threadIdx.x / kWarpSize;
-    CTRAN_DEV_TRACE(
-        "copied warpId %d tmpNumRecvBlocksBuff %p (%p + %d) -> numRecvBlocks %p: %ld %ld\n",
-        warpId,
-        sPtr,
-        args.tmpNumRecvBlocksBuff,
-        myLocalRank * nRanks,
-        dPtr,
-        dPtr[0],
-        dPtr[1]);
-  }
-}
-
-__device__ void __inline__ copyNumRecvBlocksH(PrepareKernArgs& args) {
-  const auto nRanks = statex->nRanks();
-  auto dPtr = args.tmpNumRecvBlocksBuffH;
-  const auto sPtr = args.tmpNumRecvBlocksBuff;
-
-  const auto count = nRanks * args.pArgs.numRecvBuckets + nRanks;
-  const auto laneId = threadIdx.x & (kWarpSize - 1);
-
-  copyWarp<size_t>(dPtr, sPtr, count);
-  syncwarp();
-  if (laneId == 0) {
-    const auto warpId = threadIdx.x / kWarpSize;
-    CTRAN_DEV_TRACE(
-        "copied warpId %d tmpNumRecvBlocksBuff %p (%p + %d) -> tmpNumRecvBlocksBuffH %p: %ld %ld %ld %ld\n",
-        warpId,
-        sPtr,
-        args.tmpNumRecvBlocksBuff,
-        count,
-        dPtr,
-        dPtr[0],
-        dPtr[1],
-        dPtr[2],
-        dPtr[3]);
-  }
-}
-
-__device__ __forceinline__ void gatherLocalOutputSplits(PrepareKernArgs& args) {
-  const auto nLocalRanks = statex->nLocalRanks();
-  const auto myLocalRank = statex->localRank();
-
-  // need volatile since accessing with different threads?
-  volatile auto tmpLocalOutputSplits = args.tmpLocalOutputSplits;
-  auto tmpLocalOutputSplitsH = args.tmpLocalOutputSplitsH;
-
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-  const auto nUpdates = nLocalRanks * nLocalRanks;
-  for (int i = gtIdx; i < nUpdates; i += blockDim.x * gridDim.x) {
-    const auto peerRank = i / nLocalRanks;
-    const auto offset = myLocalRank * nLocalRanks;
-    const auto localOffset = i & (nLocalRanks - 1);
-
-    // H2D load
-    const auto sendCount = tmpLocalOutputSplitsH[offset + localOffset];
-    CTRAN_DEV_TRACE("sendCount: %d\n", sendCount);
-
-    // P2P store
-    auto tmpRemLocalOutputSplits = args.tmpRemLocalOutputSplits[peerRank];
-    // fixme branching
-    if (peerRank == myLocalRank) {
-      tmpRemLocalOutputSplits = tmpLocalOutputSplits;
-    }
-    tmpRemLocalOutputSplits[offset + localOffset] = sendCount;
-  }
-}
-
-__device__ __forceinline__ void copyLocalOutputSplits(PrepareKernArgs& args) {
-  const auto nLocalRanks = statex->nLocalRanks();
-
-  // need volatile since accessing with different threads?
-  volatile auto tmpLocalOutputSplits = args.tmpLocalOutputSplits;
-  auto tmpLocalOutputSplitsH = args.tmpLocalOutputSplitsH;
-
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-
-  // copy to host pinned
-  for (int i = gtIdx; i < nLocalRanks * nLocalRanks;
-       i += blockDim.x * gridDim.x) {
-    tmpLocalOutputSplitsH[i] = tmpLocalOutputSplits[i];
-  }
-
-  if (threadIdx.x == 0) {
-    CTRAN_DEV_TRACE(
-        "gathered tmpLocalOutputSplits %p: %d %d %d %d\n",
-        args.tmpLocalOutputSplits,
-        args.tmpLocalOutputSplits[0],
-        args.tmpLocalOutputSplits[1],
-        args.tmpLocalOutputSplits[2],
-        args.tmpLocalOutputSplits[3]);
-  }
-}
-
-__device__ __forceinline__ void gatherRankBitmaps(PrepareKernArgs& args) {
-  const auto nLocalRanks = statex->nLocalRanks();
-  const auto nNodes = statex->nNodes();
-  const auto myLocalRank = statex->localRank();
-
-  // need volatile since accessing with different threads?
-  volatile auto tmpRankBitmaps = args.tmpRankBitmaps;
-  auto tmpRankBitmapsH = args.tmpRankBitmapsH;
-
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-  const auto countPerRank =
-      nLocalRanks * nNodes * args.pArgs.totalNumSendBlocks;
-  const auto nUpdates = nLocalRanks * countPerRank;
-  for (int i = gtIdx; i < nUpdates; i += blockDim.x * gridDim.x) {
-    const auto peerRank = i / countPerRank;
-    const auto offset = myLocalRank * countPerRank;
-    const auto localOffset = i & (countPerRank - 1);
-
-    // H2D load
-    const auto bitmap = tmpRankBitmapsH[offset + localOffset];
-
-    // P2P store
-    auto tmpRemRankBitmaps = args.tmpRemRankBitmaps[peerRank];
-    // fixme branching
-    if (peerRank == myLocalRank) {
-      tmpRemRankBitmaps = tmpRankBitmaps;
-    }
-    tmpRemRankBitmaps[offset + localOffset] = bitmap;
-  }
-}
-
-__device__ __forceinline__ void copyRankBitmaps(PrepareKernArgs& args) {
-  const auto nLocalRanks = statex->nLocalRanks();
-  const auto nNodes = statex->nNodes();
-
-  // need volatile since accessing with different threads?
-  volatile auto tmpRankBitmaps = args.tmpRankBitmaps;
-  auto tmpRankBitmapsH = args.tmpRankBitmapsH;
-
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-  const auto countPerRank =
-      nLocalRanks * nNodes * args.pArgs.totalNumSendBlocks;
-  const auto nUpdates = nLocalRanks * countPerRank;
-
-  // copy to host pinned
-  for (int i = gtIdx; i < nUpdates; i += blockDim.x * gridDim.x) {
-    tmpRankBitmapsH[i] = tmpRankBitmaps[i];
-  }
-
-  if (threadIdx.x == 0) {
-    CTRAN_DEV_TRACE(
-        "gathered tmpRankBitmaps %p: %d %d %d %d\n",
-        args.tmpRankBitmaps,
-        args.tmpRankBitmaps[0],
-        args.tmpRankBitmaps[1],
-        args.tmpRankBitmaps[2],
-        args.tmpRankBitmaps[3]);
-  }
-}
-
-__global__ void ncclKernelAllToAllvDedupPrepare(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    PrepareKernArgs args) {
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-
-  if (flag && gtIdx == 0) {
-    ctran::device::devLoadAbortFlags(flag, devState);
-    ctran::device::KernelStartGpe(flag);
-  }
-
-  // TODO: move it into a generic routine for all kernels
-  devState->opCount = args.opCount;
-  devStateLoadToShm(devState);
-
-  auto prepareGKSync = args.kSync.prepareGKSync;
-  auto workerId = blockIdx.x;
-
-  // Skip waitPost for step 0;
-
-  // Barrier among all local ranks to ensure any previous call to prepare &
-  // exec has finished, so P2P updating to other local ranks doesn't overwrite
-  // previous call. Barrier among rail peers will be handled by GPE thread.
-  const auto nLocalRanks = statex->nLocalRanks();
-  const auto nNodes = statex->nNodes();
-  const auto myLocalRank = statex->localRank();
-  barrier(myLocalRank, nLocalRanks);
-
-  // Copies blockRecvBuckets -> blockRecvBucketsH (D2H) by all threads
-  copyBlockRecvBuckets(args);
-
-  // Notify GPE thread to compute tmpNumSendBlocks based on blockRecvBucketsH
-  // and exchange
-  GpeKernelSyncDev::complete(
-      prepareGKSync, workerId, (int)PrepareSyncStep::kCopyBlockRecvBuckets);
-
-  if (threadIdx.x == 0) {
-    CTRAN_DEV_TRACE(
-        "completed prepareGKSync %p postFlag[%d] %d\n",
-        prepareGKSync,
-        workerId,
-        prepareGKSync->postFlag[workerId]);
-  }
-
-  // Wait for GPE thread to receive remote tmpNumSendBlocks
-  GpeKernelSyncDev::waitPost(
-      prepareGKSync, workerId, (int)PrepareSyncStep::kPostTmpNumSendBlocksBuff);
-
+// single thread block to reset all sync objects
+__device__ inline void resetSync(ExecKernArgs& args, const bool kIsExec) {
   const auto warpId = threadIdx.x / kWarpSize;
-  const auto laneId = threadIdx.x & (kWarpSize - 1);
+  const auto numWraps = blockDim.x / kWarpSize;
+  const auto& config = args.config;
 
-  // Intranode gather numRecvCounts from all ranks based on
-  // tmpNumSendBlocksBuffH (H2D, P2P) in each forwarding rank.
-  // Handled by all threads
-  gatherNumRecvCounts(args);
-
-  // Each of rest tasks are lightweight, assign to different warps
-  if (checkWarpRole(warpId, PrepareKernRole::kCompOffset)) {
-    const auto nRanks = statex->nRanks();
-    const auto count = nRanks * args.pArgs.numRecvBuckets;
-
-    // laneId 0 compute offsets based on myTmpNumRecvBlocks (D2D)
-    // FIXME: how to use full warp?
-    if (laneId == 0) {
-      computeOffsetsFromCounts(
-          nLocalRanks,
-          nNodes,
-          args.tmpNumRecvBlocksBuff,
-          args.prepareArgs.recvOffsets,
-          args.prepareArgs.totalNumRecvBlocks,
-          args.pArgs.numRecvBuckets,
-          args.pArgs.blockCount);
-    }
-    syncwarp();
-
-    // Full warp copies to tmpRecvOffsets for exec to track receive progress
-    // (i.e., value will be updated, thus need separate from recvOffsets
-    // returned to user)
-    copyWarp<size_t>(args.tmpRecvOffsets, args.prepareArgs.recvOffsets, count);
-    syncwarp();
-
-    if (laneId == 0) {
-      CTRAN_DEV_TRACE(
-          "computed recvOffsets %p: %ld %ld, tmpRecvOffsets %p: %ld %ld, totalNumRecvBlocks %ld\n",
-          args.prepareArgs.recvOffsets,
-          args.prepareArgs.recvOffsets[0],
-          args.prepareArgs.recvOffsets[1],
-          args.tmpRecvOffsets,
-          args.tmpRecvOffsets[0],
-          args.tmpRecvOffsets[1],
-          *args.prepareArgs.totalNumRecvBlocks);
-    }
-  } else if (checkWarpRole(warpId, PrepareKernRole::kCopyNumRecvBlocks)) {
-    // myTmpNumRecvBlocks -> numRecvBlocks (D2D)
-    copyNumRecvBlocks(args);
-  } else if (checkWarpRole(warpId, PrepareKernRole::kCopyNumForwardBlocks)) {
-    // numForwardBlocksH -> numForwardBlocks (H2D)
-
-    // Wait for GPE thread to finish compute of numForwardBlocks
-    GpeKernelSyncDev::waitPostWarp(
-        prepareGKSync, workerId, (int)PrepareSyncStep::kPostNumForwardBlocks);
-    copyNumForwardBlocks(args);
-  } else if (checkWarpRole(warpId, PrepareKernRole::kCopyNumSendBlocks)) {
-    // tmpNumSendBlocksBuffH -> numSendBlocks (H2D)
-    copyNumSendBlocks(args);
-  } else if (checkWarpRole(warpId, PrepareKernRole::kResetSync)) {
-    FwdGroupSyncDev::resetWarp(
-        args.config.numFwdGroups,
-        args.config.numFwdWorkers,
-        args.kSync.fwdGroupSync);
-    WorkerSyncDev::resetWarp(args.kSync.workerSync);
+  if (threadIdx.x == 0) {
+    CTRAN_DEV_TRACE(
+        "workerId %d/%d starts numSendWorkers %d,%d numFwdWorkers %d numRecvWorkers %d,%d\n",
+        0,
+        1,
+        config.numSendGroups,
+        config.numSendWorkers,
+        config.numFwdWorkers,
+        config.numRecvGroups,
+        config.numRecvWorkers);
   }
 
-  // myTmpNumRecvBlocks -> numRecvBlocksH (D2H)
-  copyNumRecvBlocksH(args);
+  const int numTypes = 5;
+  int numGroups[numTypes];
+  numGroups[(int)WorkerGroupType::kSend] = config.numSendGroups;
+  numGroups[(int)WorkerGroupType::kFwd] = 1;
+  numGroups[(int)WorkerGroupType::kRecv] = config.numRecvGroups;
+  numGroups[(int)WorkerGroupType::kIntraFwd] = 1;
+  numGroups[(int)WorkerGroupType::kIntraRecv] = 1;
 
-  GpeKernelSyncDev::complete(
-      prepareGKSync, workerId, (int)PrepareSyncStep::kCopyNumRecvBlocksH);
-
-  GpeKernelSyncDev::complete(
-      prepareGKSync, workerId, (int)PrepareSyncStep::kKernelDone);
-
-  if (flag && gtIdx == 0) {
-    ctran::device::KernelWaitGpeTerminate(flag);
+  // Now all threads reset the barrier objects in parallel
+  const auto numSyncs = numTypes * MAX_NUM_GROUPS_PER_ROLE;
+  for (int i = (int)threadIdx.x; i < numSyncs; i += blockDim.x) {
+    const int t = i % numTypes;
+    const int g = i / numTypes;
+    if (g < numGroups[t]) {
+      // reset only used counters
+      auto* sync = getWgSync(args, static_cast<WorkerGroupType>(t), g);
+      for (int c = 0; c < WorkerGroupSync::kNumCnts; c++) {
+        MultiTbSyncDev::reset(&sync->cnts[c]);
+      }
+    }
   }
 
-  // reset for next prepare to use.
-  // syncthreads so we don't reset while other threads are still using it,
-  // otherwise warp 0 may hit reset while warp kCopyNumForwardBlocks
-  // is still waiting on the sync
-  __syncthreads();
-  GpeKernelSyncDev::reset(prepareGKSync, blockIdx.x);
+  const auto nNodes = statex->nNodes();
+  const auto nLocalRanks = statex->nLocalRanks();
+
+  // Reset GPE sync; always before both next kernel and GPE exec.
+  GpeKernelSync* nNodeSyncs[2];
+  nNodeSyncs[0] = args.kSync.sendGKSyncs;
+  nNodeSyncs[1] = args.kSync.recvGKSyncs;
+  for (auto i = warpId; i < nNodes * 2; i += numWraps) {
+    const auto syncId = i / nNodes;
+    const auto n = i % nNodes;
+    auto sync = nNodeSyncs[syncId] + n;
+    // always worker 0 to sync with GPE
+    GpeKernelSyncDev::resetWarp(sync, 1);
+  }
+
+  GpeKernelSync* nLocalRankSyncs[3];
+  nLocalRankSyncs[0] = args.kSync.intraFwdGKSyncs;
+  nLocalRankSyncs[1] = args.kSync.recvCopyGKSyncs;
+  nLocalRankSyncs[2] = args.kSync.intraRecvCopyGKSyncs;
+  for (auto i = warpId; i < nLocalRanks * 3; i += numWraps) {
+    const auto syncId = i / nLocalRanks;
+    const auto r = i % nLocalRanks;
+    auto sync = nLocalRankSyncs[syncId] + r;
+    // always worker 0 to sync with GPE
+    GpeKernelSyncDev::resetWarp(sync, 1);
+  }
+
+  // Unlike other SpscP2pSync objects, consumer of intraRedSync (sendRed worker)
+  // doesn't reset after waited post because the data buffer (recvBuff) doesn't
+  // need to be reused by producer. Thus, this is a producer-one-way-post sync
+  // at combine(), and we need reset before the next combine().
+  if (threadIdx.x == 0) {
+    args.kSync.intraRedSync->cnt = -1;
+  }
 }
 
-__global__ void ncclKernelAllToAllvDedupNvlGatherMetadata(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    PrepareKernArgs args) {
-  // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
-  // channels.
-  shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
-  const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
-  if (flag && gtIdx == 0) {
-    ctran::device::KernelStartGpe(flag);
-  }
+// Reset any tmpIdx before prepare; expect 1 thread block
+__global__ void ncclKernelAllToAllvDedupPrepareReset(
+    ExecKernArgs args,
+    int nRanks,
+    int nLocalRanks) {
+  resetTmpRecvIdx(args, nRanks, nLocalRanks);
+}
 
+// Prepare metadata and reset sync objects; used before exec
+__global__ void ncclKernelAllToAllvDedupPrepare(
+    CtranAlgoDeviceState* devState,
+    ExecKernArgs args,
+    PrepareConfig config,
+    const int roles) {
   // TODO: move it into a generic routine for all kernels
   devState->opCount = args.opCount;
   devStateLoadToShm(devState);
 
-  // Barrier among all local ranks to ensure any previous call to prepare &
-  // exec has finished, so P2P updating to other local ranks doesn't overwrite
-  // previous call. Barrier among rail peers will be handled by GPE thread.
-  const auto nLocalRanks = statex->nLocalRanks();
-  const auto myLocalRank = statex->localRank();
-  barrier(myLocalRank, nLocalRanks);
+  if (threadIdx.x == 0) {
+    CTRAN_DEV_TRACE("start kernel\n");
+  }
 
-  gatherRankBitmaps(args);
+  constexpr bool kIsExec = true;
 
-  // Wait for all P2P updates from intra-node ranks
-  barrier(myLocalRank, nLocalRanks);
+  WorkerGroup sendG, intraFwdG, fwdG, recvG, recvOffG, recvRedG, resetG;
+  assignWorkerGroup(0, 1, config.numSendIdxWorkers, sendG);
+  assignWorkerGroup(sendG.end + 1, 1, config.numIntraFwdIdxWorkers, intraFwdG);
+  assignWorkerGroup(intraFwdG.end + 1, 1, config.numFwdIxWorkers, fwdG);
+  assignWorkerGroup(fwdG.end + 1, 1, config.numRecvIdxWorkers, recvG);
+  assignWorkerGroup(recvG.end + 1, 1, config.numRecvOffsetWorkers, recvOffG);
+  assignWorkerGroup(recvOffG.end + 1, 1, config.numRecvRedIdxWorkers, recvRedG);
+  assignWorkerGroup(recvRedG.end + 1, 1, config.numResetSyncWorkers, resetG);
 
-  if (flag && gtIdx == 0) {
-    ctran::device::KernelWaitGpeTerminate(flag);
+  if (sendG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpSendIdx)) {
+    prepareTmpSendIdx(args, sendG);
+  } else if (
+      intraFwdG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpIntraFwdIdx)) {
+    prepareTmpIntraFwdIdx(args, intraFwdG);
+  } else if (
+      fwdG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpFwdIdx)) {
+    prepareTmpFwdIdx(args, fwdG);
+  } else if (
+      recvG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpRecvIdx)) {
+    prepareTmpRecvIdx(args, recvG);
+  } else if (
+      recvOffG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpRecvOffsets)) {
+    prepareTmpRecvOffsets(args, recvOffG);
+  } else if (
+      recvRedG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpRecvRedIdx)) {
+    prepareTmpRecvRedIdx(args, recvRedG);
+  } else if (
+      resetG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kResetSync)) {
+    resetSync(args, kIsExec);
+  }
+
+  if (threadIdx.x == 0) {
+    CTRAN_DEV_TRACE("exit kernel\n");
   }
 }
-
 } // namespace ctran::alltoallvdedup

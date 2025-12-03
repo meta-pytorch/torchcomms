@@ -18,6 +18,7 @@ class TorchCommNCCLX:
         input_chunk_sizes: torch.Tensor,
         input_chunk_indices: torch.Tensor,
         input_chunk_count_per_rank: torch.Tensor,
+        hidden_dim: int,
         async_op: bool,
     ) -> TorchWork: ...
     def alltoallv_dynamic_combine(
@@ -27,5 +28,6 @@ class TorchCommNCCLX:
         input_chunk_sizes: torch.Tensor,
         input_chunk_indices: torch.Tensor,
         input_chunk_count_per_rank: torch.Tensor,
+        hidden_dim: int,
         async_op: bool,
     ) -> TorchWork: ...
