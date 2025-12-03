@@ -1059,9 +1059,6 @@ commResult_t CtranIb::connectVcDirect(
   // once updated the vcStateMaps.
   FB_COMMCHECKTHROW(updateVcState(vc, peerRank));
 
-  // Remove from pendingVcs_ since the VC is now established
-  pendingVcs_.erase(peerRank);
-
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -1300,6 +1297,16 @@ commResult_t CtranIb::updateVcState(
     if (checkAndInsertQpToVcMap(locked->qpToVcMap, qpId, vc) != commSuccess) {
       return commInternalError;
     }
+  }
+
+  {
+    // Remove from pendingVcs_ since the VC is now established and ownership
+    // transferred to vcStateMaps
+    // TODO: for now we apply a hot fix to address segfault caused by race from
+    // concurrent threads updating pendingVcs_. We need to revisit why we
+    // need pendingVcs_? To add explaination to it or remove
+    std::lock_guard<std::mutex> lock(cqMutex);
+    pendingVcs_.erase(peerRank);
   }
 
   return commSuccess;
