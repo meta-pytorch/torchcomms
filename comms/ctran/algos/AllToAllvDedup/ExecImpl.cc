@@ -16,7 +16,9 @@ extern __global__ void ncclKernelAllToAllvDedupPrepareReset(
     int nLocalRanks);
 extern __global__ void ncclKernelAllToAllvDedupPrepare(
     CtranAlgoDeviceState* devState,
-    ExecKernArgs args);
+    ExecKernArgs args,
+    PrepareConfig config,
+    const int roles);
 
 namespace {
 void* alltoallv_dedup_dpKerns[commNumTypes] = {
@@ -106,30 +108,24 @@ commResult_t execGpeFn(
   return commSuccess;
 }
 
-commResult_t launchExecReset(
-    CtranComm* comm,
+commResult_t launchPrepareKernel(
     const ExecKernArgs& args,
-    cudaStream_t stream) {
-  const auto nNodes = comm->statex_->nNodes();
-  const auto nLocalRanks = comm->statex_->nLocalRanks();
-  const auto nRanks = comm->statex_->nRanks();
+    const PrepareConfig& config,
+    const ncclx::CommStateX* statex,
+    const CtranAlgoDeviceState* devState_d,
+    cudaStream_t stream,
+    const int roles = static_cast<int>(PrepareRole::kPrepareAll)) {
+  const auto nLocalRanks = statex->nLocalRanks();
+  const auto nRanks = statex->nRanks();
 
-  // Use 2 * nNodes + nLocalRanks + nRanks + 1 thread block:
-  // - nNodes blocks for prepareTmpSendIdx
-  // - nLocalRanks blocks for prepareTmpIntraFwdIdx
-  // - nNodes blocks for prepareTmpFwdIdx
-  // - nRanks blocks for prepareTmpRecvIdx
-  // - nRanks * numRecvBuckets blocks for prepareTmpRecvOffsets
-  // - nRanks blocks for prepareTmpRecvRedIdx
-  // - 1 block for resetSync
-
-  unsigned int numThreads = args.config.numThreads;
-  unsigned int numBlocks = 2 * nNodes + nLocalRanks + nRanks +
-      nRanks * args.pArgs.numRecvBuckets + nRanks + 1;
+  unsigned int numThreads = config.numThreads;
+  unsigned int numBlocks = config.numSendIdxWorkers +
+      config.numIntraFwdIdxWorkers + config.numFwdIxWorkers +
+      config.numRecvIdxWorkers + config.numRecvOffsetWorkers +
+      config.numRecvRedIdxWorkers + config.numResetSyncWorkers;
 
   // first reset all tmp indices
   {
-    const int nRanks = comm->statex_->nRanks();
     std::array<void*, 3> kernelArgs;
     kernelArgs.at(0) = (void*)&args;
     kernelArgs.at(1) = (void*)&nRanks;
@@ -147,13 +143,14 @@ commResult_t launchExecReset(
 
   // prepare tmp indices
   {
-    std::array<void*, 2> kernelArgs;
-    auto devState_d = comm->ctran_->algo->getDevState();
+    std::array<void*, 4> kernelArgs;
     kernelArgs.at(0) = (void*)&devState_d;
     kernelArgs.at(1) = (void*)&args;
+    kernelArgs.at(2) = (void*)&config;
+    kernelArgs.at(3) = (void*)&roles;
 
     dim3 grid = {numBlocks, 1, 1};
-    dim3 blocks = {256, 1, 1};
+    dim3 blocks = {numThreads, 1, 1};
     FB_CUDACHECK(cudaFuncSetAttribute(
         reinterpret_cast<void*>(ncclKernelAllToAllvDedupPrepare),
         cudaFuncAttributeMaxDynamicSharedMemorySize,
@@ -188,6 +185,34 @@ void setupWorkerGroups(PersistConfig& config) {
 }
 } // namespace
 
+void setupPrepareKernelConfig(
+    const ExecKernArgs& args,
+    const ncclx::CommStateX* statex,
+    PrepareConfig& config) {
+  const auto nNodes = statex->nNodes();
+  const auto nLocalRanks = statex->nLocalRanks();
+  const auto nRanks = statex->nRanks();
+
+  config.numSendIdxWorkers = nNodes;
+  config.numIntraFwdIdxWorkers = nLocalRanks;
+  config.numFwdIxWorkers = nNodes;
+  config.numRecvIdxWorkers = nRanks;
+  config.numRecvOffsetWorkers = nRanks * args.pArgs.numRecvBuckets;
+  config.numRecvRedIdxWorkers = nRanks;
+  config.numResetSyncWorkers = 1;
+  config.numThreads = NCCL_CTRAN_ALLTOALLV_DEDUP_RESET_THREAD_BLOCK_SIZE;
+}
+
+commResult_t launchPrepareForTest(
+    const ExecKernArgs& args,
+    const PrepareConfig& config,
+    const ncclx::CommStateX* statex,
+    const CtranAlgoDeviceState* dState,
+    cudaStream_t stream,
+    const int role) {
+  return launchPrepareKernel(args, config, statex, dState, stream, role);
+}
+
 commResult_t AlgoImpl::exec(const ExecArgs& execArgs, const uint64_t opCount) {
   // prepare kernel config for self and NVL copies
   KernelConfig kernelConfig = KernelConfig(
@@ -206,8 +231,12 @@ commResult_t AlgoImpl::exec(const ExecArgs& execArgs, const uint64_t opCount) {
       pArgs, execConfig, execArgs, resource_.get(), opCount, kernArgs);
   kernelConfig.algoArgs = &kernArgs; // copied to kernel within submit()
 
-  // Launch reset kernel
-  launchExecReset(comm_, kernArgs, stream_);
+  const auto statex = comm_->statex_.get();
+  // Launch prepare kernel
+  PrepareConfig config;
+  setupPrepareKernelConfig(kernArgs, statex, config);
+  FB_COMMCHECK(launchPrepareKernel(
+      kernArgs, config, statex, ctran_->algo->getDevState(), stream_));
 
   // Launch combine kernel with GPE
   std::vector<std::unique_ptr<struct OpElem>> opGroup;

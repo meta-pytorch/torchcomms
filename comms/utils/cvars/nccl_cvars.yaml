@@ -1258,8 +1258,14 @@ cvars:
    type        : int
    default     : 256
    description : |-
-     Number of threads in each thread block used for intra-node
-     AllToAllvDedupDP kernel.
+     Number of threads in each thread block used for AllToAllvDedup kernel.
+
+ - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_RESET_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 256
+   description : |-
+     Number of threads in each thread block used for the reset kernel
+     in AllToAllvDedup.
 
  - name        : NCCL_CTRAN_ALLTOALLV_DEDUP_NUM_CHUNKS
    type        : int

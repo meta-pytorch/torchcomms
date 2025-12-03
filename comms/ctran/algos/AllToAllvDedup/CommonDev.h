@@ -85,4 +85,9 @@ DEVICE_ATTRIBUTE size_t getChunkHeaderLen(const size_t numBlocks) {
   return ALIGN(sizeof(FwdChkHdr) + numBlocks * sizeof(int), 16);
 }
 
+DEVICE_ATTRIBUTE bool prepareRoleContains(
+    const int roles,
+    const PrepareRole role) {
+  return (roles & static_cast<int>(role)) != 0;
+}
 } // namespace ctran::alltoallvdedup

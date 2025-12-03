@@ -491,7 +491,9 @@ __global__ void ncclKernelAllToAllvDedupPrepareReset(
 // Prepare metadata and reset sync objects; used before exec
 __global__ void ncclKernelAllToAllvDedupPrepare(
     CtranAlgoDeviceState* devState,
-    ExecKernArgs args) {
+    ExecKernArgs args,
+    PrepareConfig config,
+    const int roles) {
   // TODO: move it into a generic routine for all kernels
   devState->opCount = args.opCount;
   devStateLoadToShm(devState);
@@ -500,42 +502,43 @@ __global__ void ncclKernelAllToAllvDedupPrepare(
     CTRAN_DEV_TRACE("start kernel\n");
   }
 
-  const auto nNodes = statex->nNodes();
-  const auto nLocalRanks = statex->nLocalRanks();
-  const auto nRanks = statex->nRanks();
-  const auto numRecvBuckets = args.pArgs.numRecvBuckets;
   constexpr bool kIsExec = true;
 
-  // Thread block usage:
-  // - nNodes blocks for prepareTmpSendIdx
-  // - nLocalRanks blocks for prepareTmpIntraFwdIdx
-  // - nNodes blocks for prepareTmpFwdIdx
-  // - nRanks blocks for prepareTmpRecvIdx
-  // - nRanks * numRecvBuckets blocks for prepareTmpRecvOffsets
-  // - nRanks blocks for prepareTmpRecvRedIdx
-  // - 1 block for resetSync
   WorkerGroup sendG, intraFwdG, fwdG, recvG, recvOffG, recvRedG, resetG;
-  assignWorkerGroup(0, 1, nNodes, sendG);
-  assignWorkerGroup(sendG.end + 1, 1, nLocalRanks, intraFwdG);
-  assignWorkerGroup(intraFwdG.end + 1, 1, nNodes, fwdG);
-  assignWorkerGroup(fwdG.end + 1, 1, nRanks, recvG);
-  assignWorkerGroup(recvG.end + 1, 1, nRanks * numRecvBuckets, recvOffG);
-  assignWorkerGroup(recvOffG.end + 1, 1, nRanks, recvRedG);
-  assignWorkerGroup(recvRedG.end + 1, 1, 1, resetG);
+  assignWorkerGroup(0, 1, config.numSendIdxWorkers, sendG);
+  assignWorkerGroup(sendG.end + 1, 1, config.numIntraFwdIdxWorkers, intraFwdG);
+  assignWorkerGroup(intraFwdG.end + 1, 1, config.numFwdIxWorkers, fwdG);
+  assignWorkerGroup(fwdG.end + 1, 1, config.numRecvIdxWorkers, recvG);
+  assignWorkerGroup(recvG.end + 1, 1, config.numRecvOffsetWorkers, recvOffG);
+  assignWorkerGroup(recvOffG.end + 1, 1, config.numRecvRedIdxWorkers, recvRedG);
+  assignWorkerGroup(recvRedG.end + 1, 1, config.numResetSyncWorkers, resetG);
 
-  if (sendG.contains(blockIdx.x)) {
+  if (sendG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpSendIdx)) {
     prepareTmpSendIdx(args, sendG);
-  } else if (intraFwdG.contains(blockIdx.x)) {
+  } else if (
+      intraFwdG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpIntraFwdIdx)) {
     prepareTmpIntraFwdIdx(args, intraFwdG);
-  } else if (fwdG.contains(blockIdx.x)) {
+  } else if (
+      fwdG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpFwdIdx)) {
     prepareTmpFwdIdx(args, fwdG);
-  } else if (recvG.contains(blockIdx.x)) {
+  } else if (
+      recvG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpRecvIdx)) {
     prepareTmpRecvIdx(args, recvG);
-  } else if (recvOffG.contains(blockIdx.x)) {
+  } else if (
+      recvOffG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpRecvOffsets)) {
     prepareTmpRecvOffsets(args, recvOffG);
-  } else if (recvRedG.contains(blockIdx.x)) {
+  } else if (
+      recvRedG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kPrepTmpRecvRedIdx)) {
     prepareTmpRecvRedIdx(args, recvRedG);
-  } else if (resetG.contains(blockIdx.x)) {
+  } else if (
+      resetG.contains(blockIdx.x) &&
+      prepareRoleContains(roles, PrepareRole::kResetSync)) {
     resetSync(args, kIsExec);
   }
 
