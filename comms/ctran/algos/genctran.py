@@ -42,10 +42,19 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
             - 'has_ops': whether algorithm needs reduction operations
             - 'variants': list of variant suffixes (e.g., ["", "Split", "NonContig"])
                          defaults to [""] for algorithms without variants
+            - 'special_types': optional dict mapping base names to list of (T, RedT, op) tuples
+                              for special type combinations (e.g., __nv_bfloat16 with float reduction)
+            - 'ifdef': optional dict mapping base names to conditional compilation directive
+                       (e.g., {"AllReduceARG": "#if !defined(USE_ROCM)"})
     """
     variants = algo_info.get("variants", [""])
+    special_types = algo_info.get("special_types", {})
+    ifdef_directives = algo_info.get("ifdef", {})
 
     for base in algo_info["bases"]:
+        # Check if this base has a special ifdef directive
+        ifdef_directive = ifdef_directives.get(base, None)
+
         for variant in variants:
             # Construct the full name with variant (e.g., "AllToAllvDynamic" + "Split")
             full_name = base + variant
@@ -59,7 +68,14 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
                         f = open(os.path.join(gensrc, file + ".cu"), "w")
 
                         f.write(header)
-                        f.write("\n\n")
+                        f.write("\n")
+
+                        # Add algorithm-specific ifdef directive if it exists
+                        if ifdef_directive:
+                            f.write(ifdef_directive)
+                            f.write("\n")
+
+                        f.write("\n")
                         f.write(
                             f'#include "comms/ctran/algos/{algo_info["dir"]}/{base}.cuh"'
                         )
@@ -91,6 +107,12 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
                             f.write("#endif")
                             f.write("\n")
 
+                        # Add closing endif for algorithm-specific ifdef directive
+                        if ifdef_directive:
+                            f.write("\n")
+                            f.write("#endif // !defined(USE_ROCM)")
+                            f.write("\n")
+
                         f.close()
                         srcs += [file + ".cu"]
                 else:
@@ -99,7 +121,14 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
                     f = open(os.path.join(gensrc, file + ".cu"), "w")
 
                     f.write(header)
-                    f.write("\n\n")
+                    f.write("\n")
+
+                    # Add algorithm-specific ifdef directive if it exists
+                    if ifdef_directive:
+                        f.write(ifdef_directive)
+                        f.write("\n")
+
+                    f.write("\n")
                     f.write(
                         f'#include "comms/ctran/algos/{algo_info["dir"]}/{base}.cuh"'
                     )
@@ -129,8 +158,55 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
                         f.write("#endif")
                         f.write("\n")
 
+                    # Add closing endif for algorithm-specific ifdef directive
+                    if ifdef_directive:
+                        f.write("\n")
+                        f.write("#endif // !defined(USE_ROCM)")
+                        f.write("\n")
+
                     f.close()
                     srcs += [file + ".cu"]
+
+        # Generate special type combination files for this base (e.g., __nv_bfloat16 with float reduction)
+        if base in special_types:
+            for special_type, red_type, op in special_types[base]:
+                file = f"{base}_{special_type}_{red_type}_{op}"
+                f = open(os.path.join(gensrc, file + ".cu"), "w")
+
+                f.write(header)
+                f.write("\n")
+
+                # Add algorithm-specific ifdef directive if it exists
+                if ifdef_directive:
+                    f.write(ifdef_directive)
+                    f.write("\n")
+
+                f.write("\n")
+                f.write(f'#include "comms/ctran/algos/{algo_info["dir"]}/{base}.cuh"')
+                f.write("\n\n")
+
+                if special_type == "__nv_bfloat16":
+                    f.write("#if defined(__CUDA_BF16_TYPES_EXIST__)")
+                    f.write("\n")
+
+                macro_name = "DECL_CTRAN_" + base.upper() + "_KERN_REDT"
+                f.write(
+                    f"{macro_name}({special_type}, {red_type}, comm{op.capitalize()});"
+                )
+                f.write("\n")
+
+                if special_type == "__nv_bfloat16":
+                    f.write("#endif")
+                    f.write("\n")
+
+                # Add closing endif for algorithm-specific ifdef directive
+                if ifdef_directive:
+                    f.write("\n")
+                    f.write("#endif // !defined(USE_ROCM)")
+                    f.write("\n")
+
+                f.close()
+                srcs += [file + ".cu"]
 
 
 def gen_allreduce_files(gensrc, srcs, rules):
@@ -139,10 +215,20 @@ def gen_allreduce_files(gensrc, srcs, rules):
         srcs,
         rules,
         {
-            "bases": ["AllReduceDirect", "AllReduceRing"],
+            "bases": ["AllReduceDirect", "AllReduceRing", "AllReduceARG"],
             "dir": "AllReduce",
             "has_ops": True,
             "variants": [""],  # No variants
+            "special_types": {
+                # AllReduceARG supports __nv_bfloat16 with float reduction type
+                # This matches the original AllReduceARG.cu which had:
+                # DECL_ALL_REDUCE_ARG_KERN_ALL_TYPES(float) for __nv_bfloat16
+                "AllReduceARG": [("__nv_bfloat16", "float", op) for op in ops],
+            },
+            "ifdef": {
+                # AllReduceARG is not supported on ROCm
+                "AllReduceARG": "#if !defined(USE_ROCM)",
+            },
         },
     )
 
