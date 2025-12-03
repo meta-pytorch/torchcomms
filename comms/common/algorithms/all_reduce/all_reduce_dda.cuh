@@ -5,8 +5,6 @@
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
 #include <hip/amd_detail/amd_hip_bf16.h>
-// Use a backend-agnostic BF16 alias so hipify does not rewrite it into the
-// host-side hip_bfloat16 struct on ROCm.
 using bf16 = __hip_bfloat16;
 using bf162 = __hip_bfloat162;
 #else
@@ -20,41 +18,6 @@ using bf162 = __nv_bfloat162;
 #include "comms/common/algorithms/CollCommon.cuh"
 
 namespace meta::comms {
-
-template <typename T>
-concept SupportedTypes =
-    (std::same_as<T, half> || std::same_as<T, bf16>);
-
-template <SupportedTypes T>
-static inline __device__ uint32_t
-vecElementAdd(const uint32_t& a, const uint32_t& b) {
-  if constexpr (std::is_same<T, half>::value) {
-    const __half* x = reinterpret_cast<const __half*>(&a);
-    const __half* y = reinterpret_cast<const __half*>(&b);
-    __half2 p = __halves2half2(x[0], x[1]);
-    __half2 q = __halves2half2(y[0], y[1]);
-    __half2 z = __hadd2(p, q);
-    return (reinterpret_cast<uint32_t*>(&z))[0];
-  } else if constexpr (std::is_same<T, bf16>::value) {
-    const bf16* x = reinterpret_cast<const bf16*>(&a);
-    const bf16* y = reinterpret_cast<const bf16*>(&b);
-    bf162 p = {x[0], x[1]};
-    bf162 q = {y[0], y[1]};
-    bf162 z = __hadd2(p, q);
-    return (reinterpret_cast<uint32_t*>(&z))[0];
-  }
-  return 0;
-}
-
-template <SupportedTypes T>
-static inline __device__ uint4 vecElementAdd(const uint4& a, const uint4& b) {
-  uint4 res{0, 0, 0, 0};
-  res.x = vecElementAdd<T>(a.x, b.x);
-  res.y = vecElementAdd<T>(a.y, b.y);
-  res.z = vecElementAdd<T>(a.z, b.z);
-  res.w = vecElementAdd<T>(a.w, b.w);
-  return res;
-}
 
 template <typename T, int NRANKS, bool hasAcc>
 #if defined(USE_ROCM)
