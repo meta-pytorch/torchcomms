@@ -34,7 +34,7 @@ xpu_result_t DefaultXpuApi::getDeviceProperties(xpuDeviceProp* prop, int device)
         // Get memory info
         prop->totalGlobalMem = sycl_device.get_info<sycl::info::device::global_mem_size>();
 
-        if (!sycl_device.has(sycl::aspect::ext_intel_free_memory)) {
+        if (!sycl_device.has(sycl::aspect::ext_intel_free_memory)) [[unlikely]] {
             TC_LOG(WARNING)
                 << "Free memory queries are unsupported on this SYCL device; using total global memory as the free-memory estimate.";
         }
@@ -66,9 +66,9 @@ xpu_result_t DefaultXpuApi::memGetInfo(size_t* free, size_t* total) {
         sycl::device& sycl_device = ::c10::xpu::get_raw_device(device);
         
         *total = sycl_device.get_info<sycl::info::device::global_mem_size>();
-        if (sycl_device.has(sycl::aspect::ext_intel_free_memory)) {
+        if (sycl_device.has(sycl::aspect::ext_intel_free_memory)) [[likely]] {
             *free = sycl_device.get_info<sycl::ext::intel::info::device::free_memory>();
-        } else {
+        } else [[unlikely]] {
             *free = *total;
         }
 
