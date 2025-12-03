@@ -167,7 +167,13 @@ export USE_RCCL=OFF   # Default: OFF
 export USE_RCCLX=OFF  # Default: OFF
 ```
 
-After setting your desired backends, run the install commands above.
+Then run:
+
+```bash
+# Install PyTorch (if not already installed)
+pip install -r requirements.txt
+pip install --no-build-isolation -v .
+```
 
 ## Quick Start Example
 
