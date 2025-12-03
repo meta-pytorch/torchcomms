@@ -57,7 +57,8 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
 
         for variant in variants:
             # Construct the full name with variant (e.g., "AllToAllvDynamic" + "Split")
-            full_name = base + variant
+            name_prefix = "" if base.startswith(algo_info["dir"]) else algo_info["dir"]
+            full_name = name_prefix + base + variant
             variant = f"_{variant}" if variant else variant
 
             for type in types:
@@ -92,7 +93,11 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
 
                         # Construct macro name with variant suffix
                         macro_name = (
-                            "DECL_CTRAN_" + base.upper() + variant.upper() + "_KERN"
+                            "DECL_CTRAN_"
+                            + name_prefix.upper()
+                            + base.upper()
+                            + variant.upper()
+                            + "_KERN"
                         )
                         f.write(
                             macro_name + "(" + type + ", comm" + op.capitalize() + ");"
@@ -145,7 +150,11 @@ def gen_algo_files(gensrc, srcs, rules, algo_info):
 
                     # Construct macro name with variant suffix
                     macro_name = (
-                        "DECL_CTRAN_" + base.upper() + variant.upper() + "_KERN"
+                        "DECL_CTRAN_"
+                        + name_prefix.upper()
+                        + base.upper()
+                        + variant.upper()
+                        + "_KERN"
                     )
                     f.write(macro_name + "(" + type + ");")
                     f.write("\n")
