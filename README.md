@@ -108,7 +108,6 @@ conda install conda-forge::glog=0.4.0 conda-forge::gflags conda-forge::fmt -y
 
 Environment variables to find rocm/rcclx headers
 ```
-cd torchcomms
 export BUILD_DIR=${PWD}/comms/rcclx/develop/build/release/build
 export ROCM_HOME=/opt/rocm
 export RCCLX_INCLUDE=${BUILD_DIR}/include/rccl
@@ -126,7 +125,7 @@ MI300X/MI325X (gfx942):
 ./build_rcclx.sh --amdgpu_targets gfx942
 ```
 
-MI355X (gfx950):
+MI350X/MI355X (gfx950):
 ```bash
 ./build_rcclx.sh --amdgpu_targets gfx950
 ```
