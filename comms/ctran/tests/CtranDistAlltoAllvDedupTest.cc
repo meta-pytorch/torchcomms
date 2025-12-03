@@ -302,7 +302,8 @@ void CtranAllToAllvDedupTest::run(
 TEST_F(CtranAllToAllvDedupTest, InitDestroy) {
   meta::comms::Hints hints; // unused
 
-  setPersistArgs(16, 8192, 4, 2);
+  const TestPArgsParam pArgs = {16, 8192, 4, 2};
+  setPersistArgs(pArgs);
 
   std::cout << "calling support check with comm_ " << comm_ << std::endl;
   if (!::ctran::allToAllvDedupSupport(comm_, hints)) {
@@ -367,44 +368,24 @@ TEST_F(CtranAllToAllvDedupTest, InitDestroy) {
 class CtranTestAllToAllvDedupParamFixture
     : public CtranAllToAllvDedupTest,
       public ::testing::WithParamInterface<
-          std::tuple<int, int, int, int, int, int, int, int, int, int, bool>> {
+          std::
+              tuple<TestPArgsParam, TestTmpChunkParam, TestExecWgParam, bool>> {
 };
 
 TEST_P(CtranTestAllToAllvDedupParamFixture, Basic) {
-  const auto& [totalNumSendBlocks, blockCount, blockNumRecvBuckets, numRecvBuckets, chunkSizeMb, sendG, sendW, fwdW, recvG, recvW, skipBucket] =
-      GetParam();
-  EnvRAII<int> env1(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_CHUNK_SIZE, chunkSizeMb * 1 << 20);
-  EnvRAII<int> envSendG(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCK_GROUPS, sendG);
-  EnvRAII<int> envSendW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCKS_PER_GROUP, sendW);
-  EnvRAII<int> envFwdW(NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS, fwdW);
-  EnvRAII<int> envRecvG(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCK_GROUPS, recvG);
-  EnvRAII<int> envRecvW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP, recvW);
-  EnvRAII<int> envIntraFwdW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_FWD_NUM_THREAD_BLOCKS, fwdW);
-  EnvRAII<int> envIntraRecvW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_RECV_NUM_THREAD_BLOCKS, recvW);
+  auto& [pArgsParam, tmpChkParam, execWgParam, skipBucket] = GetParam();
+
+  SET_TMPCHK_ENVRAII(tmpChkParam);
+  SET_EXEC_WG_ENVRAII(execWgParam);
 
   const auto nRanks = comm_->statex_->nRanks();
-
   bool overrideBuckets = false;
   std::unordered_set<int> skippedBuckets;
   if (skipBucket) {
     skippedBuckets.insert(nRanks - 1);
   }
 
-  const int actualBlockNumRecvBuckets =
-      std::min(nRanks - (int)skippedBuckets.size(), blockNumRecvBuckets);
-
-  setPersistArgs(
-      totalNumSendBlocks,
-      blockCount,
-      actualBlockNumRecvBuckets,
-      numRecvBuckets);
+  setPersistArgs(pArgsParam, skippedBuckets.size());
 
   // optionally override bucket assignement to skip one bucket; generate indices
   // after setPersistArgs
@@ -417,49 +398,27 @@ TEST_P(CtranTestAllToAllvDedupParamFixture, Basic) {
 }
 
 TEST_F(CtranAllToAllvDedupTest, TracingExec) {
-  const auto& [totalNumSendBlocks, blockCount, blockNumRecvBuckets, numRecvBuckets, chunkSizeMb, sendG, sendW, fwdW, recvG, recvW] =
-      std::make_tuple(8192, 8192, 2, 2, 8 /* MB */, 1, 4, 16, 1, 8);
+  const TestPArgsParam pArgsParam{8192, 8192, 2, 2};
+  const TestTmpChunkParam tmpChkParam{4, 8};
+  const TestExecWgParam execWgParam{1, 4, 16, 1, 8, 8, 8};
+
   EnvRAII<bool> envTraceLogger(NCCL_CTRAN_ENABLE_TRACE_LOGGER, true);
-  EnvRAII<int> env1(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_CHUNK_SIZE, chunkSizeMb * 1 << 20);
-  EnvRAII<int> envSendG(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCK_GROUPS, sendG);
-  EnvRAII<int> envSendW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCKS_PER_GROUP, sendW);
-  EnvRAII<int> envFwdW(NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS, fwdW);
-  EnvRAII<int> envRecvG(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCK_GROUPS, recvG);
-  EnvRAII<int> envRecvW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP, recvW);
-  // EnvRAII<int> envNumChunks(NCCL_CTRAN_ALLTOALLV_DEDUP_NUM_CHUNKS, 4);
+  SET_TMPCHK_ENVRAII(tmpChkParam);
+  SET_EXEC_WG_ENVRAII(execWgParam);
 
-  const auto nRanks = comm_->statex_->nRanks();
-
-  int actualBlockNumRecvBuckets = std::min(nRanks, blockNumRecvBuckets);
-  setPersistArgs(
-      totalNumSendBlocks,
-      blockCount,
-      actualBlockNumRecvBuckets,
-      numRecvBuckets);
+  setPersistArgs(pArgsParam);
 
   run<commInt32>(defaultNumIters_);
 }
 
 TEST_F(CtranAllToAllvDedupTest, TracingExecSmall) {
-  const auto& [totalNumSendBlocks, blockCount, blockNumRecvBuckets, numRecvBuckets, chunkSizeMb, sendG, sendW, fwdW, recvG, recvW, skipBucket] =
-      std::make_tuple(2, 8192, 2, 2, 4 /* MB */, 1, 4, 4, 1, 4, false);
+  const TestPArgsParam pArgsParam{2, 8192, 2, 2};
+  const TestTmpChunkParam tmpChkParam{4, 8};
+  const TestExecWgParam execWgParam{1, 4, 4, 1, 4, 1, 1};
+
   EnvRAII<bool> envTraceLogger(NCCL_CTRAN_ENABLE_TRACE_LOGGER, true);
-  EnvRAII<int> env1(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_CHUNK_SIZE, chunkSizeMb * 1 << 20);
-  EnvRAII<int> envSendG(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCK_GROUPS, sendG);
-  EnvRAII<int> envSendW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCKS_PER_GROUP, sendW);
-  EnvRAII<int> envFwdW(NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS, fwdW);
-  EnvRAII<int> envRecvG(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCK_GROUPS, recvG);
-  EnvRAII<int> envRecvW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP, recvW);
+  SET_TMPCHK_ENVRAII(tmpChkParam);
+  SET_EXEC_WG_ENVRAII(execWgParam);
 
   const auto nRanks = comm_->statex_->nRanks();
 
@@ -467,7 +426,6 @@ TEST_F(CtranAllToAllvDedupTest, TracingExecSmall) {
     GTEST_SKIP() << "Skip test because special 4 rank test";
   }
 
-  int actualBlockNumRecvBuckets = std::min(nRanks, blockNumRecvBuckets);
   const bool kOverrideBuckets = true;
   allRankBlkBkts_.resize(nRanks);
   allRankBlkBkts_[0] = {1, 5, 5, 6};
@@ -475,39 +433,27 @@ TEST_F(CtranAllToAllvDedupTest, TracingExecSmall) {
   allRankBlkBkts_[2] = {3, 5, 0, 7};
   allRankBlkBkts_[3] = {5, 6, 5, 6};
 
-  setPersistArgs(
-      totalNumSendBlocks,
-      blockCount,
-      actualBlockNumRecvBuckets,
-      numRecvBuckets);
+  setPersistArgs(pArgsParam);
   run<commInt32>(defaultNumIters_, kOverrideBuckets);
 }
 
 TEST_F(CtranAllToAllvDedupTest, SmallChunkSize) {
-  const auto& [totalNumSendBlocks, blockCount, blockNumRecvBuckets, numRecvBuckets, chunkSizeKb, sendG, sendW, fwdW, recvG, recvW, numChunks] =
-      std::make_tuple(32, 8192, 2, 1, 64 /* KB */, 1, 1, 8, 1, 8, 1);
-  EnvRAII<int> env1(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_CHUNK_SIZE, chunkSizeKb * 1 << 10);
-  EnvRAII<int> envSendG(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCK_GROUPS, sendG);
-  EnvRAII<int> envSendW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCKS_PER_GROUP, sendW);
-  EnvRAII<int> envFwdW(NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS, fwdW);
-  EnvRAII<int> envRecvG(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCK_GROUPS, recvG);
-  EnvRAII<int> envRecvW(
-      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP, recvW);
-  EnvRAII<int> envNumChunks(NCCL_CTRAN_ALLTOALLV_DEDUP_NUM_CHUNKS, numChunks);
+  const TestPArgsParam pArgsParam{32, 8192, 2, 1};
+  const TestTmpChunkParam tmpChkParam{1, 64 /* KB */};
+  const TestExecWgParam execWgParam{1, 8, 1, 8, 1, 8, 8};
+
+  SET_TMPCHK_ENVRAII(tmpChkParam);
+  SET_EXEC_WG_ENVRAII(execWgParam);
 
   const auto nRanks = comm_->statex_->nRanks();
   const auto nLocalRanks = comm_->statex_->nLocalRanks();
   const auto nNodes = comm_->statex_->nNodes();
 
-  int actualBlockNumRecvBuckets = std::min(nRanks, blockNumRecvBuckets);
   const bool kOverrideBuckets = true;
   allRankBlkBkts_.resize(nRanks);
-  const auto numBucketsPerNode = nLocalRanks * numRecvBuckets;
+  const auto numBucketsPerNode = nLocalRanks * pArgsParam.numRecvBuckets;
 
+  // Generate inter-node only bucket assignment
   for (int i = 0; i < nRanks; i++) {
     const auto node = comm_->statex_->node(i);
     std::vector<int> candidates;
@@ -519,19 +465,14 @@ TEST_F(CtranAllToAllvDedupTest, SmallChunkSize) {
         candidates.push_back(j + numBucketsPerNode * n);
       }
     }
-
-    for (int j = 0; j < totalNumSendBlocks; j++) {
-      for (int k = 0; k < blockNumRecvBuckets; k++) {
+    for (int j = 0; j < pArgsParam.totalNumSendBlocks; j++) {
+      for (int k = 0; k < pArgsParam.blockNumRecvBuckets; k++) {
         allRankBlkBkts_[i].push_back(candidates[(j + k) % candidates.size()]);
       }
     }
   }
 
-  setPersistArgs(
-      totalNumSendBlocks,
-      blockCount,
-      actualBlockNumRecvBuckets,
-      numRecvBuckets);
+  setPersistArgs(pArgsParam);
   run<commInt32>(1, kOverrideBuckets);
 }
 
@@ -649,38 +590,73 @@ INSTANTIATE_TEST_SUITE_P(
     CtranTest,
     CtranTestAllToAllvDedupParamFixture,
     ::testing::Values(
-        std::make_tuple(8192, 8192, 4, 1, 4 /* MB */, 1, 1, 1, 1, 1, false),
-#if 1
-        std::make_tuple(8, 2048, 2, 1, 4 /* MB */, 1, 1, 1, 1, 1, false),
-        std::make_tuple(8192, 8192, 4, 1, 4 /* MB */, 2, 1, 4, 2, 1, false),
-        std::make_tuple(8192, 8192, 4, 1, 4 /* MB */, 2, 2, 4, 2, 1, false),
-        std::make_tuple(8192, 8192, 4, 1, 4 /* MB */, 2, 2, 4, 2, 2, false),
-        std::make_tuple(8, 2048, 2, 2, 4 /* MB */, 1, 1, 1, 1, 1, false),
-        std::make_tuple(8192, 8192, 2, 2, 4 /* MB */, 1, 1, 1, 1, 1, false),
-        std::make_tuple(8192, 8192, 4, 2, 4 /* MB */, 2, 1, 4, 2, 1, false),
-        std::make_tuple(8, 2048, 2, 4, 4 /* MB */, 1, 1, 1, 1, 1, false),
+        std::make_tuple(
+            TestPArgsParam{4000, 8192, 4, 1},
+            TestTmpChunkParam{4, 4},
+            TestExecWgParam{1, 1, 1, 1, 1, 1, 1},
+            false),
+        std::make_tuple(
+            TestPArgsParam{8, 2048, 2, 1},
+            TestTmpChunkParam{4, 4},
+            TestExecWgParam{1, 1, 1, 1, 1, 1, 1},
+            false),
+        std::make_tuple(
+            TestPArgsParam{4000, 8192, 4, 1},
+            TestTmpChunkParam{1, 8},
+            TestExecWgParam{2, 1, 4, 2, 1, 4, 4},
+            false),
+        std::make_tuple(
+            TestPArgsParam{4000, 8192, 4, 1},
+            TestTmpChunkParam{2, 8},
+            TestExecWgParam{2, 2, 4, 2, 1, 4, 4},
+            false),
+        std::make_tuple(
+            TestPArgsParam{8192, 8192, 4, 1},
+            TestTmpChunkParam{4, 4},
+            TestExecWgParam{2, 2, 4, 2, 2, 4, 8},
+            false),
+        std::make_tuple(
+            TestPArgsParam{8, 2048, 2, 2},
+            TestTmpChunkParam{4, 4},
+            TestExecWgParam{1, 1, 1, 1, 1, 1, 1},
+            false),
+        std::make_tuple(
+            TestPArgsParam{4000, 8192, 4, 2},
+            TestTmpChunkParam{4, 4},
+            TestExecWgParam{2, 1, 4, 2, 1, 4, 4},
+            false),
+        std::make_tuple(
+            TestPArgsParam{8, 2048, 2, 4},
+            TestTmpChunkParam{4, 4},
+            TestExecWgParam{1, 1, 1, 1, 1, 1, 1},
+            false),
         // skip last bucket
-        std::make_tuple(8192, 8192, 4, 1, 4 /* MB */, 1, 8, 8, 1, 8, true),
-        std::make_tuple(8192, 8192, 4, 1, 4 /* MB */, 2, 2, 8, 1, 8, true),
+        std::make_tuple(
+            TestPArgsParam{8192, 8192, 4, 1},
+            TestTmpChunkParam{4, 4},
+            TestExecWgParam{1, 8, 8, 1, 8, 8, 8},
+            true),
+        std::make_tuple(
+            TestPArgsParam{8192, 8192, 4, 1},
+            TestTmpChunkParam{4, 4},
+            TestExecWgParam{2, 8, 8, 1, 8, 8, 8},
+            true),
 
         // ModelComparisonTracingExec
-        std::make_tuple(4096, 2048, 8, 16, 4 /* MB */, 1, 4, 8, 4, 8, false)
-#endif
-            ),
+        std::make_tuple(
+            TestPArgsParam{4096, 2048, 8, 16},
+            TestTmpChunkParam{4, 4},
+            TestExecWgParam{1, 4, 8, 4, 8, 8, 16},
+            false)),
     [&](const testing::TestParamInfo<
         CtranTestAllToAllvDedupParamFixture::ParamType>& info) {
-      const bool skipBucket = std::get<10>(info.param);
-      return std::to_string(std::get<0>(info.param)) + "numblocks_" +
-          std::to_string(std::get<1>(info.param)) + "count_" +
-          std::to_string(std::get<2>(info.param)) + "bBuckets_" +
-          std::to_string(std::get<3>(info.param)) + "buckets_" +
-          std::to_string(std::get<4>(info.param)) + "MBchunkSz_" +
-          std::to_string(std::get<5>(info.param)) + "sendG_" +
-          std::to_string(std::get<6>(info.param)) + "sendW_" +
-          std::to_string(std::get<7>(info.param)) + "fwdW_" +
-          std::to_string(std::get<8>(info.param)) + "recvG" +
-          std::to_string(std::get<9>(info.param)) + "recvW" +
-          (skipBucket ? "_skipBucket" : "");
+      const auto& pArgsParam = std::get<0>(info.param);
+      const auto& tmpChkParam = std::get<1>(info.param);
+      const auto& execWgParam = std::get<2>(info.param);
+      const auto skipBucket = std::get<3>(info.param);
+
+      return pArgsParam.toTestName() + "_" + tmpChkParam.toTestName() + "_" +
+          execWgParam.toTestName() + (skipBucket ? "_skipBucket" : "");
     });
 
 int main(int argc, char* argv[]) {
