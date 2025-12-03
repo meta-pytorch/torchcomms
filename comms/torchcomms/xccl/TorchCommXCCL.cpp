@@ -82,6 +82,14 @@ void TorchCommXCCL::init(at::Device device, const std::string &name,
       "Failed to get device properties for device " +
           std::to_string(device_.index()));
 
+  // Check available memory
+  [[maybe_unused]] size_t free_memory, total_memory;
+  XPU_CHECK(
+      xpu_api_,
+      xpu_api_->memGetInfo(&free_memory, &total_memory),
+      "Failed to get memory info for device " +
+          std::to_string(device_.index()));
+
   // Read hints and store them
   for (auto const &[key, val] : options_.hints) {
     if (key.starts_with("torchcomm::xccl::")) {
