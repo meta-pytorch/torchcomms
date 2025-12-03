@@ -55,19 +55,19 @@ void CachingAllocatorHookImpl::registerMemPreHook() {
 void CachingAllocatorHookImpl::regDeregMem(
     const c10::cuda::CUDACachingAllocator::TraceEntry& te) {
   std::lock_guard<std::mutex> lock(mutex_);
-  bool register_mem = te.action_ ==
-      c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_ALLOC;
-  bool unregister_mem = te.action_ ==
-      c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_FREE;
 
-  if (register_mem) {
+  if (te.action_ ==
+      c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_ALLOC) {
     // Memory got allocated, register it with NCCL
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     void* addr = reinterpret_cast<void*>(static_cast<uintptr_t>(te.addr_));
     size_t len = te.size_;
 
     if (registeredMemMap_.contains(addr)) {
-      throw std::runtime_error("Memory already registered with NCCL");
+      LOG(ERROR) << "[CCA] SEGMENT_ALLOC: Memory already registered at 0x"
+                 << std::hex << addr << std::dec << " size=" << len
+                 << " existing_size=" << registeredMemMap_.at(addr).len;
+      throw std::runtime_error("Memory already registered with NCCLX");
     } else {
       registeredMemMap_.emplace(addr, MemInfo{len, te.device_});
     }
@@ -78,13 +78,17 @@ void CachingAllocatorHookImpl::regDeregMem(
         comm->register_address(TorchCommNCCLX::AddressWithLen(addr, len));
       }
     }
-  } else if (unregister_mem) {
+  } else if (
+      te.action_ ==
+      c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_FREE) {
     // Memory got freed, deregister it with NCCL
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     void* addr = reinterpret_cast<void*>(static_cast<uintptr_t>(te.addr_));
 
     if (!registeredMemMap_.contains(addr)) {
-      throw std::runtime_error("Memory not registered with NCCL");
+      LOG(ERROR) << "[CCA] SEGMENT_FREE: Memory not registered at 0x"
+                 << std::hex << addr << std::dec << " size=" << te.size_;
+      throw std::runtime_error("Memory not registered with NCCLX");
     } else {
       registeredMemMap_.erase(addr);
     }
