@@ -21,38 +21,13 @@ commResult_t AlgoImpl::initConfig() {
 
   // Check specified number of thread blocks not exceed the maximum
   auto numSendGroups = NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCK_GROUPS;
-  auto numSendWorkers =
-      NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCKS_PER_GROUP;
-
-  auto numFwdWorkers = NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS;
   auto numRecvGroups = NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCK_GROUPS;
-  auto numRecvWorkers =
-      NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP;
-  auto numIntraFwdWorkers =
-      NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_FWD_NUM_THREAD_BLOCKS;
-  auto numIntraRecvWorkers =
-      NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_RECV_NUM_THREAD_BLOCKS;
 
-  auto numThreadBlocks = numSendGroups * numSendWorkers + numFwdWorkers +
-      numRecvGroups * numRecvWorkers + numIntraFwdWorkers + numIntraRecvWorkers;
-  if (numThreadBlocks > CTRAN_ALGO_MAX_THREAD_BLOCKS) {
-    FB_ERRORRETURN(
-        commInvalidArgument,
-        "Total number of thread blocks {} ("
-        "(NCCL_CTRAN_ALLTOALLV_DEDUP_SEND_NUM_THREAD_BLOCK_GROUPS {} * NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP {} + "
-        "NCCL_CTRAN_ALLTOALLV_DEDUP_FWD_NUM_THREAD_BLOCKS {} + "
-        "NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCK_GROUPS {} * NCCL_CTRAN_ALLTOALLV_DEDUP_RECV_NUM_THREAD_BLOCKS_PER_GROUP {} + "
-        "NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_FWD_NUM_THREAD_BLOCKS {} + NCCL_CTRAN_ALLTOALLV_DEDUP_INTRA_RECV_NUM_THREAD_BLOCKS {}) must be <= {}",
-        numThreadBlocks,
-        numSendGroups,
-        numSendWorkers,
-        numFwdWorkers,
-        numRecvGroups,
-        numRecvWorkers,
-        numIntraFwdWorkers,
-        numIntraRecvWorkers,
-        CTRAN_ALGO_MAX_THREAD_BLOCKS);
-  }
+  // dedup doesn't use relevant structures that are statically initialized with
+  // CTRAN_ALGO_MAX_THREAD_BLOCKS; thus the sum of thread blocks can go beyond.
+  // FIXME: However, would algorithm hang if one thread block is spin-waiting a
+  // signal from the other thread block from a different role?
+
   if (numSendGroups > MAX_NUM_GROUPS_PER_ROLE) {
     FB_ERRORRETURN(
         commInvalidArgument,
