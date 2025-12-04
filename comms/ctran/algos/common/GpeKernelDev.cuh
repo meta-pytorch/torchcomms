@@ -45,7 +45,8 @@ static inline __device__ bool KernelTestHostAbort(volatile int* flag) {
   // local), or user active aborts/timeouts will put CtranComm in such state, if
   // abort is enabled for CtranComm.
   return shmDevState.enableCancellableWaits &&
-      (kernelDoAbort || ctran::utils::loadInt(flag) == KERNEL_HOST_ABORT);
+      (kernelDoAbort ||
+       (flag && ctran::utils::loadInt(flag) == KERNEL_HOST_ABORT));
 }
 
 static inline __device__ bool KernelTestHostAbortBlock(volatile int* flag) {
