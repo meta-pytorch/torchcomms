@@ -147,6 +147,16 @@ const char* ncclGetEnvImpl(const char* name) {
     return converted_values[name].c_str();
   }
 
+  std::string name_string_value(name);
+  name_string_value.append("_STRINGVALUE");
+  auto it_str_val = ncclx::env_string_values.find(name_string_value.c_str());
+  if (it_str_val != ncclx::env_string_values.end()) {
+    if (it_str_val->second->empty()) {
+      return nullptr;
+    }
+    return it_str_val->second->c_str();
+  }
+
   throw std::runtime_error(
       "Undefined NCCL environment variable: \"" + std::string(name) + "\"");
 }
