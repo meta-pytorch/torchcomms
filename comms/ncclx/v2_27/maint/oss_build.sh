@@ -156,9 +156,12 @@ function build_comms_tracing_service {
   popd
 }
 
-conda_env="${1:-${CONDA_PREFIX:-}}"
-if [[ -z "$conda_env" || ! -d "$conda_env" || ! -d "$conda_env/conda-meta" ]]; then
-  usage
+# Allow bypassing conda environment check for Docker builds
+if [[ -z "${SKIP_CONDA_ENV_CHECK}" ]]; then
+  conda_env="${1:-${CONDA_PREFIX:-}}"
+  if [[ -z "$conda_env" || ! -d "$conda_env" || ! -d "$conda_env/conda-meta" ]]; then
+    usage
+  fi
 fi
 
 if [ -z "$DEV_SIGNATURE" ]; then
@@ -285,8 +288,8 @@ fi
 
 mkdir -p $BUILDDIR
 
-# Use nccl relative to fbcode dir
-export NCCL_HOME=$FBCODE_DIR/comms/ncclx/v2_27
+# Use nccl relative to fbcode dir (configurable for Docker builds)
+export NCCL_HOME=${NCCL_HOME:-$FBCODE_DIR/comms/ncclx/v2_27}
 pushd "${NCCL_HOME}"
 
 # Build hook libraries. Used for fault injection.
