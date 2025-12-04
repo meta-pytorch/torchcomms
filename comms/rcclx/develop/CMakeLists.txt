@@ -524,11 +524,6 @@ set(SRC_FILES
   src/include/mlx5/mlx5dvwrap.h
   src/include/mlx5/mlx5dvcore.h
   src/include/mlx5/mlx5dvsymbols.h
-  src/include/plugin/net/net_v6.h
-  src/include/plugin/net/net_v7.h
-  src/include/plugin/net/net_v8.h
-  src/include/plugin/net/net_v9.h
-  src/include/plugin/net/net_v10.h
   src/include/net_device.h
   src/include/net.h
   src/include/npkit/npkit_event.h
@@ -618,6 +613,11 @@ set(SRC_FILES
   src/misc/nvmlwrap_stub.cc
   src/misc/param.cc
   src/plugin/profiler.cc
+  src/include/plugin/net/net_v6.h
+  src/include/plugin/net/net_v7.h
+  src/include/plugin/net/net_v8.h
+  src/include/plugin/net/net_v9.h
+  src/include/plugin/net/net_v10.h
   src/include/plugin/nccl_net.h
   src/include/plugin/nccl_profiler.h
   src/include/plugin/nccl_tuner.h
