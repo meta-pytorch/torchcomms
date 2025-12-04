@@ -23,20 +23,6 @@ namespace ctran {
     }                                                                 \
   } while (0)
 
-static folly::once_flag enabledFlag;
-static bool enabled;
-
-bool CtranTcpDm::isEnabled() {
-  folly::call_once(enabledFlag, [&]() {
-    auto it = std::find(
-        NCCL_CTRAN_BACKENDS.begin(),
-        NCCL_CTRAN_BACKENDS.end(),
-        NCCL_CTRAN_BACKENDS::tcpdm);
-    enabled = it != NCCL_CTRAN_BACKENDS.end();
-  });
-  return enabled;
-}
-
 void CtranTcpDm::bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap) {
   folly::SocketAddress ifAddrSockAddr;
   sockaddr_in6 sin6{};

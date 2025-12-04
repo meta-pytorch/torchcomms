@@ -14,6 +14,8 @@
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
 
+using meta::comms::CommBackend;
+
 struct CtranMapperSegmentRange {
   const void* buf{nullptr};
   const std::size_t len{0};
@@ -173,7 +175,7 @@ struct CtranMapperRegElem {
   // It internally locks the stateMnger to ensure thread-safe access.
   // The segment should be registered only once by the first thread and reused
   // by all later calls before deregistration.
-  commResult_t doRegister();
+  commResult_t doRegister(const std::vector<bool>& backends);
 
   // Thread-safe function to deregister the segment.
   // It internally locks the stateMnger to ensure thread-safe access.
@@ -311,6 +313,7 @@ class CtranMapperRegCache {
       const int cudaDev,
       const std::string& useDesc,
       const struct CommLogData& logMetaData,
+      const std::vector<bool>& backends,
       bool& didRegister,
       CtranMapperRegElem** regHdl);
 
@@ -327,6 +330,7 @@ class CtranMapperRegCache {
       const void* ptr,
       const size_t len,
       int cudaDev,
+      const std::vector<bool>& backends,
       CtranMapperRegElem** regHdl);
 
   // Thread-safe functions to deregister a dynamic registration.
@@ -369,7 +373,8 @@ class CtranMapperRegCache {
       const void* buf,
       const size_t len,
       const int cudaDev,
-      const struct CommLogData& logMetaData);
+      const struct CommLogData& logMetaData,
+      const std::vector<bool>& backends);
 
   // Thread-safe function to check if a given <ptr, len> range is registered.
   bool isRegistered(const void* ptr, const size_t len);
@@ -405,6 +410,7 @@ class CtranMapperRegCache {
     int cudaDev{-1};
     bool stopFlag{false};
     struct CommLogData logMetaData;
+    std::vector<bool> backends;
   };
   std::thread asyncRegThread_;
   folly::Synchronized<std::queue<AsyncRegCmd>, std::mutex> asyncRegQueue_;

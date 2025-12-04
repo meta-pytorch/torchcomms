@@ -297,6 +297,7 @@ void CtranMapperRegCache::asyncRegThreadFn(int cudaDev) {
         cmd.cudaDev,
         "asyncRegMem",
         cmd.logMetaData,
+        cmd.backends,
         didRegister,
         &regHdl));
 
@@ -327,7 +328,8 @@ commResult_t CtranMapperRegCache::asyncRegRange(
     const void* buf,
     const size_t len,
     const int cudaDev,
-    const struct CommLogData& logMetaData) {
+    const struct CommLogData& logMetaData,
+    const std::vector<bool>& backend) {
   if (!asyncRegThread_.joinable()) {
     CLOGF(
         ERR,
@@ -340,7 +342,8 @@ commResult_t CtranMapperRegCache::asyncRegRange(
       .len = len,
       .cudaDev = cudaDev,
       .stopFlag = false,
-      .logMetaData = logMetaData};
+      .logMetaData = logMetaData,
+      .backends = backend};
 
   {
     auto locked = asyncRegQueue_.lock();
@@ -514,6 +517,7 @@ commResult_t CtranMapperRegCache::regRange(
     const int cudaDev,
     const std::string& useDesc,
     const struct CommLogData& logMetaData,
+    const std::vector<bool>& backends,
     bool& didRegister,
     CtranMapperRegElem** regHdl) {
   auto dur = CtranMapperTimer();
@@ -586,7 +590,7 @@ commResult_t CtranMapperRegCache::regRange(
           ptrToReg, lenToReg, cudaDev, segments);
 
       // Backend registration
-      FB_COMMCHECK(newRegElem->doRegister());
+      FB_COMMCHECK(newRegElem->doRegister(backends));
       auto regHdl_ = newRegElem.get();
 
       // Global lock to update regElemsMaps.
@@ -774,6 +778,7 @@ commResult_t CtranMapperRegCache::regDynamic(
     const void* ptr,
     const size_t len,
     int cudaDev,
+    const std::vector<bool>& backends,
     CtranMapperRegElem** regElem) {
   auto dur = CtranMapperTimer();
   SetCudaDevRAII setCudaDev(cudaDev);
@@ -797,7 +802,7 @@ commResult_t CtranMapperRegCache::regDynamic(
       ranges.at(0).type);
 
   // Registration (expensive)
-  FB_COMMCHECK(newRegElem_->doRegister());
+  FB_COMMCHECK(newRegElem_->doRegister(backends));
 
   *regElem = newRegElem_.get();
 
@@ -840,13 +845,13 @@ commResult_t CtranMapperRegCache::deregDynamic(CtranMapperRegElem* regHdl) {
   return commSuccess;
 }
 
-commResult_t CtranMapperRegElem::doRegister() {
+commResult_t CtranMapperRegElem::doRegister(const std::vector<bool>& backends) {
   auto stat = stateMnger.wlock();
 
   // Register to backends
   if (type_ != DevMemType::kHostUnregistered &&
       // TODO: TCPDM does not support NVL yet.
-      !ctran::CtranTcpDm::isEnabled()) {
+      backends[CommBackend::TCPDM] == false) {
     // Register to NVL backend if it is device accessible memory
     // TODO: add support for managed and host pinned memory
     FB_CHECKABORT(nvlRegElem == nullptr, "nvlRegElem is already registered");
@@ -862,7 +867,7 @@ commResult_t CtranMapperRegElem::doRegister() {
   }
 
   FB_CHECKABORT(ibRegElem == nullptr, "ibRegElem is already registered");
-  if (CtranIb::isEnabled()) {
+  if (backends[CommBackend::IB]) {
     try {
       FB_COMMCHECK(CtranIb::regMem(buf, len, cudaDev_, &ibRegElem));
     } catch (const std::bad_alloc& e) {
@@ -875,7 +880,7 @@ commResult_t CtranMapperRegElem::doRegister() {
   }
 
   // Register with TCPDM backend unless already registered with IB.
-  if (ctran::CtranTcpDm::isEnabled()) {
+  if (backends[CommBackend::TCPDM]) {
     FB_COMMCHECK(
         ctran::CtranTcpDm::regMem((void*)buf, len, cudaDev_, &tcpRegElem));
   }

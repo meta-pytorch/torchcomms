@@ -914,22 +914,6 @@ class CtranIbTest : public CtranDistTest {
   const int sendRank{0}, recvRank{1};
 };
 
-TEST_F(CtranIbTest, IsCtranIbEnabled) {
-  this->printTestDesc(
-      "IsEnabled",
-      "Test CtranIb::isEnabled() static method returns correct boolean value.");
-
-  EnvRAII env1(
-      NCCL_CTRAN_BACKENDS,
-      std::vector<enum NCCL_CTRAN_BACKENDS>{NCCL_CTRAN_BACKENDS::ib});
-
-  // Test that isEnabled returns a boolean value
-  bool isEnabled = CtranIb::isEnabled();
-
-  // The return value should be either true or false
-  EXPECT_TRUE(isEnabled);
-}
-
 TEST_F(CtranIbTest, NormalInitialize) {
   this->printTestDesc(
       "NormalInitialize",

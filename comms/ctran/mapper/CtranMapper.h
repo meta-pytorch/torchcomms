@@ -1918,8 +1918,11 @@ class CtranMapper {
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
   std::unique_ptr<class CtranCtrlManager> ctrlMgr{nullptr};
-  std::vector<CtranMapperBackend> rankBackendMap;
-  std::vector<CtranMapperBackend> backends;
+
+  // holds enabled backends when the mapper is created.
+  // A unified struct for holding all available backends.
+  std::vector<bool> enableBackends_{
+      std::vector<bool>(CtranMapperBackend::NUM_BACKENDS, false)};
 
   // Lightweight request object to track mapper internal callback ctrl msgs
   class CbCtrlRequest {

@@ -13,10 +13,6 @@ class CtranTcpDm {
   CtranTcpDm(CtranComm* comm, CtranCtrlManager* ctrlMgr) {}
   ~CtranTcpDm() {}
 
-  static bool isEnabled() {
-    return false;
-  }
-
   commResult_t preConnect(const std::unordered_set<int>& peerRanks) {
     return commInvalidUsage;
   }
