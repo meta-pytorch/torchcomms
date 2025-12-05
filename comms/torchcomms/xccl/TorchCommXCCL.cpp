@@ -343,7 +343,7 @@ TorchCommXCCL::all_reduce(at::Tensor &tensor, const ReduceOp &op, bool async_op,
   // No-op for empty input tensor
   // TODO: Consider removing this check once oneCCL supports zero-sized tensors
   // for reduce operation.
-  if (input_tensor.numel() == 0) [[unlikely]] {
+  if (tensor.numel() == 0) [[unlikely]] {
     TC_LOG(WARNING) << "all_reduce called with empty input tensor";
     work->recordEnd();
     enqueueWork(work, stream);
