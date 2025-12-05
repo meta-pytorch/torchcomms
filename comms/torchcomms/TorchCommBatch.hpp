@@ -5,8 +5,6 @@
 #include <ATen/ATen.h>
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
-#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
-#include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include "comms/torchcomms/TorchCommOptions.hpp"
 
 namespace torch {
