@@ -673,6 +673,18 @@ class Hints {
 ncclResult_t  ncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWin_t* win, const ncclx::Hints& hints = ncclx::Hints());
 ncclResult_t pncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWin_t* win, const ncclx::Hints& hints = ncclx::Hints());
 
+
+/*
+ * Window Register
+ *
+ * Create a window object and register user provided shared memory for one-siede communication,
+ * also allocates memory at each rank on the same deivce for signaling.
+ * Accepted hints:
+ *   window_buffer_location: {cpu, gpu} (default: gpu)
+ *   --- indicating the location of the allocated window buffers.
+ */
+ ncclResult_t  ncclWinRegister(const void *baseptr, const size_t size, ncclComm_t comm, ncclWin_t* win, const ncclx::Hints& hints = ncclx::Hints());
+
 /*
  * Query the address of the shared memory on remote peer
  */
@@ -680,7 +692,7 @@ ncclResult_t  ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWin_t win, void 
 ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWin_t win, void **addr);
 
 /*
- * Free the window object and free the allocated memory
+ * Free the window object and free the allocated memory allocated within the communicator.
  */
 ncclResult_t  ncclWinFree(ncclComm_t comm, ncclWin_t win);
 ncclResult_t pncclWinFree(ncclComm_t comm, ncclWin_t win);
