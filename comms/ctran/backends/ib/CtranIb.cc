@@ -1371,17 +1371,3 @@ uint32_t CtranIb::getPgToTrafficClassValue() const {
   }
   return NCCL_IB_TC;
 }
-
-static folly::once_flag enabledFlag;
-static bool enabled;
-
-bool CtranIb::isEnabled() {
-  folly::call_once(enabledFlag, [&]() {
-    auto it = std::find(
-        NCCL_CTRAN_BACKENDS.begin(),
-        NCCL_CTRAN_BACKENDS.end(),
-        NCCL_CTRAN_BACKENDS::ib);
-    enabled = it != NCCL_CTRAN_BACKENDS.end();
-  });
-  return enabled;
-}

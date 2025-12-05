@@ -19,8 +19,6 @@ class CtranTcpDm {
   CtranTcpDm(CtranComm* comm, CtranCtrlManager* ctrlMgr);
   ~CtranTcpDm();
 
-  static bool isEnabled();
-
   commResult_t preConnect(const std::unordered_set<int>& peerRanks);
 
   static commResult_t

@@ -87,6 +87,42 @@ class CtranRMATest : public CtranDistBaseTest {
     }
     return errs;
   }
+
+  void createWin(
+      bool isUserBuf,
+      bool isCpuWin,
+      void** winBasePtr,
+      CtranWin** winPtr,
+      size_t sizeBytes,
+      meta::comms::Hints hints) {
+    auto res = commSuccess;
+    // If userBuf is true, allocate buffer and use ctranWinRegister API
+    if (isUserBuf) {
+      if (isCpuWin) {
+        ASSERT_EQ(cudaMallocHost((void**)winBasePtr, sizeBytes), cudaSuccess);
+      } else {
+        ASSERT_EQ(ncclMemAlloc((void**)winBasePtr, sizeBytes), ncclSuccess);
+      }
+      res = ctranWinRegister(
+          (void*)*winBasePtr, sizeBytes, comm->ctranComm_.get(), winPtr, hints);
+
+    } else {
+      res = ctranWinAllocate(
+          sizeBytes, comm->ctranComm_.get(), (void**)winBasePtr, winPtr, hints);
+    }
+    ASSERT_EQ(res, commSuccess);
+    ASSERT_NE(*winBasePtr, nullptr);
+  }
+
+  void freeWinBuf(bool isUserBuf, bool isCpuWin, void* winBase) {
+    if (isUserBuf) {
+      if (isCpuWin) {
+        ASSERT_EQ(cudaFreeHost(winBase), cudaSuccess);
+      } else {
+        ASSERT_EQ(ncclMemFree(winBase), ncclSuccess);
+      }
+    }
+  }
 };
 
 class MultiWindowTestParam
@@ -166,10 +202,11 @@ TEST_P(MultiWindowTestParam, multiWindow) {
 
 class CtranRMATestParam : public CtranRMATest,
                           public ::testing::WithParamInterface<
-                              std::tuple<size_t, size_t, bool, bool>> {};
+                              std::tuple<size_t, size_t, bool, bool, bool>> {};
 
 TEST_P(CtranRMATestParam, winPutWait) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin] = GetParam();
+  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf] =
+      GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
   if (!comm->ctranComm_->ctran_->mapper->hasBackend(
@@ -201,15 +238,10 @@ TEST_P(CtranRMATestParam, winPutWait) {
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
   meta::comms::Hints hints;
-  if (cpuWin) {
-    hints.set("window_buffer_location", "cpu");
-  }
+  hints.set("window_buffer_location", cpuWin ? "cpu" : "gpu");
   CtranWin* win = nullptr;
   void* winBase = nullptr;
-  auto res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), &winBase, &win, hints);
-  ASSERT_EQ(res, ncclSuccess);
-  ASSERT_NE(winBase, nullptr);
+  createWin(userBuf, cpuWin, &winBase, &win, sizeBytes, hints);
 
   // Always allocate localBuf from GPU mem so it can be used in ctranAllReduce
   int* localBuf = nullptr;
@@ -224,7 +256,7 @@ TEST_P(CtranRMATestParam, winPutWait) {
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
-    res = ctranWinSharedQuery(peer, win, &remoteAddr);
+    auto res = ctranWinSharedQuery(peer, win, &remoteAddr);
     EXPECT_EQ(res, ncclSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
@@ -302,11 +334,12 @@ TEST_P(CtranRMATestParam, winPutWait) {
         cpuWin ? "cpuWin" : "gpuWin");
   }
 
-  res = ctranWinFree(win);
+  auto res = ctranWinFree(win);
   EXPECT_EQ(res, ncclSuccess);
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  freeWinBuf(userBuf, cpuWin, winBase);
 
   CUDACHECK_TEST(cudaEventDestroy(start_event));
   CUDACHECK_TEST(cudaEventDestroy(end_event));
@@ -317,7 +350,8 @@ TEST_P(CtranRMATestParam, winPutWait) {
 }
 
 TEST_P(CtranRMATestParam, winPutOnly) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin] = GetParam();
+  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf] =
+      GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
   if (!comm->ctranComm_->ctran_->mapper->hasBackend(
@@ -343,15 +377,10 @@ TEST_P(CtranRMATestParam, winPutOnly) {
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
   meta::comms::Hints hints;
-  if (cpuWin) {
-    hints.set("window_buffer_location", "cpu");
-  }
+  hints.set("window_buffer_location", cpuWin ? "cpu" : "gpu");
   CtranWin* win = nullptr;
   void* winBase = nullptr;
-  auto res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), &winBase, &win, hints);
-  ASSERT_EQ(res, ncclSuccess);
-  ASSERT_NE(winBase, nullptr);
+  createWin(userBuf, cpuWin, &winBase, &win, sizeBytes, hints);
 
   // Always allocate localBuf from GPU mem
   int* localBuf = nullptr;
@@ -396,18 +425,20 @@ TEST_P(CtranRMATestParam, winPutOnly) {
       1,
       main_stream);
 
-  res = ctranWinFree(win);
+  auto res = ctranWinFree(win);
   EXPECT_EQ(res, ncclSuccess);
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  freeWinBuf(userBuf, cpuWin, winBase);
 
   CUDACHECK_TEST(cudaStreamDestroy(put_stream));
   EXPECT_EQ(errs, 0);
 }
 
 TEST_P(CtranRMATestParam, winGet) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin] = GetParam();
+  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf] =
+      GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
   if (!comm->ctranComm_->ctran_->mapper->hasBackend(
@@ -433,15 +464,11 @@ TEST_P(CtranRMATestParam, winGet) {
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
   meta::comms::Hints hints;
-  if (cpuWin) {
-    hints.set("window_buffer_location", "cpu");
-  }
+  hints.set("window_buffer_location", cpuWin ? "cpu" : "gpu");
+
   CtranWin* win = nullptr;
   void* winBase = nullptr;
-  auto res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), &winBase, &win, hints);
-  ASSERT_EQ(res, ncclSuccess);
-  ASSERT_NE(winBase, nullptr);
+  createWin(userBuf, cpuWin, &winBase, &win, sizeBytes, hints);
 
   // Always allocate localBuf from GPU mem
   int* localBuf = nullptr;
@@ -481,18 +508,20 @@ TEST_P(CtranRMATestParam, winGet) {
   int errs =
       checkChunkValue((int*)localBuf, kNumElements, nextPeer, 0, main_stream);
 
-  res = ctranWinFree(win);
+  auto res = ctranWinFree(win);
   EXPECT_EQ(res, ncclSuccess);
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  freeWinBuf(userBuf, cpuWin, winBase);
 
   CUDACHECK_TEST(cudaStreamDestroy(get_stream));
   EXPECT_EQ(errs, 0);
 }
 
 TEST_P(CtranRMATestParam, winPutWait_v2) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin] = GetParam();
+  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf] =
+      GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
   if (!comm->ctranComm_->ctran_->mapper->hasBackend(
@@ -524,17 +553,13 @@ TEST_P(CtranRMATestParam, winPutWait_v2) {
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
   meta::comms::Hints hints;
-  if (cpuWin) {
-    hints.set("window_buffer_location", "cpu");
-  }
+  hints.set("window_buffer_location", cpuWin ? "cpu" : "gpu");
   hints.set("window_signal_bufsize", std::to_string(statex->nRanks()));
   CtranWin* win = nullptr;
   int* winBase = nullptr;
-  auto res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), (void**)&winBase, &win, hints);
-  ASSERT_EQ(res, ncclSuccess);
-  ASSERT_NE(winBase, nullptr);
-  uint64_t* signalBase = win->winBaseSignalPtr;
+  createWin(userBuf, cpuWin, (void**)&winBase, &win, sizeBytes, hints);
+
+  uint64_t* signalBase = win->winSignalPtr;
   ASSERT_NE(signalBase, nullptr);
 
   // Always allocate localBuf from GPU mem so it can be used in ctranAllReduce
@@ -550,7 +575,7 @@ TEST_P(CtranRMATestParam, winPutWait_v2) {
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
-    res = ctranWinSharedQuery(peer, win, &remoteAddr);
+    auto res = ctranWinSharedQuery(peer, win, &remoteAddr);
     EXPECT_EQ(res, ncclSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, (void*)winBase);
@@ -620,11 +645,12 @@ TEST_P(CtranRMATestParam, winPutWait_v2) {
         cpuWin ? "cpuWin" : "gpuWin");
   }
 
-  res = ctranWinFree(win);
+  auto res = ctranWinFree(win);
   EXPECT_EQ(res, ncclSuccess);
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  freeWinBuf(userBuf, cpuWin, winBase);
 
   CUDACHECK_TEST(cudaEventDestroy(start_event));
   CUDACHECK_TEST(cudaEventDestroy(end_event));
@@ -651,9 +677,7 @@ TEST_P(RMATestSignalParam, winSignalAllToAll) {
       cudaStreamCreateWithFlags(&wait_stream, cudaStreamNonBlocking));
 
   meta::comms::Hints hints;
-  if (cpuWin) {
-    hints.set("window_buffer_location", "cpu");
-  }
+  hints.set("window_buffer_location", cpuWin ? "cpu" : "gpu");
   hints.set(
       "window_signal_bufsize", std::to_string(kNumElements * statex->nRanks()));
   CtranWin* win = nullptr;
@@ -664,7 +688,7 @@ TEST_P(RMATestSignalParam, winSignalAllToAll) {
       0, comm->ctranComm_.get(), (void**)&winBase, &win, hints);
   ASSERT_EQ(res, commSuccess);
   ASSERT_NE(winBase, nullptr);
-  uint64_t* signalBase = win->winBaseSignalPtr;
+  uint64_t* signalBase = win->winSignalPtr;
   ASSERT_NE(signalBase, nullptr);
 
   // initialize with 1000UL, a random number
@@ -734,24 +758,26 @@ TEST_P(RMATestSignalParam, winSignalAllToAll) {
 INSTANTIATE_TEST_SUITE_P(
     RMATestInstance,
     CtranRMATestParam,
-    ::testing::Values(
-        // kNumElements, kNumIters, ctranAllReduce, cpuWin
-        std::make_tuple(8192, 500, false, false),
-        std::make_tuple(8 * 1024 * 1024, 500, false, false),
-        std::make_tuple(8 * 1024 * 1024, 500, true, false),
-        std::make_tuple(8 * 1024 * 1024, 500, true, true),
-        std::make_tuple(8 * 1024 * 1024, 500, false, true)),
+    ::testing::Combine(
+        // kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf
+        ::testing::Values(8192, 8 * 1024 * 1024),
+        ::testing::Values(500),
+        ::testing::Values(true, false),
+        ::testing::Values(true, false),
+        ::testing::Values(true, false)),
     [](const testing::TestParamInfo<CtranRMATestParam::ParamType>& info) {
       const auto kNumElements = std::get<0>(info.param);
       const auto kNumIters = std::get<1>(info.param);
       const auto ctranAllReduce = std::get<2>(info.param);
       const auto cpuWin = std::get<3>(info.param);
+      const auto userBuf = std::get<4>(info.param);
       std::string name = fmt::format(
-          "numElem{}_numIters{}_{}_{}",
+          "numElem{}_numIters{}_{}_{}_{}",
           kNumElements,
           kNumIters,
           ctranAllReduce ? "ctranAR" : "ncclAR",
-          cpuWin ? "cpuWin" : "gpuWin");
+          cpuWin ? "cpuWin" : "gpuWin",
+          userBuf ? "userBuf" : "allocBuf");
       return name;
     });
 

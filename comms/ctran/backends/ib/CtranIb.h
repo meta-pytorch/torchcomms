@@ -114,8 +114,6 @@ class CtranIb {
   // Unlock the entire CtranIb instance.
   commResult_t epochUnlock();
 
-  static bool isEnabled();
-
   // Register control message callback function if have any.
   // Input arguments:
   //   - ctrlMgr: the ctranCtrlManager to manage the control message

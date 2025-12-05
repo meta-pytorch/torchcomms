@@ -18,6 +18,18 @@
 namespace torch {
 namespace comms {
 
+namespace {
+// Helper function to validate that metadata tensors are int64_t (torch.int64)
+void validateInt64Dtype(const at::Tensor& tensor, const std::string& name) {
+  if (tensor.scalar_type() != at::kLong) {
+    throw std::runtime_error(
+        "Tensor '" + name +
+        "' must be of type int64 (torch.int64), but has type " +
+        c10::toString(tensor.scalar_type()));
+  }
+}
+} // namespace
+
 ncclResult_t NCCLException::getResult() const {
   return result_;
 }
@@ -1281,6 +1293,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
     ensureTensorContiguous(t);
   }
 
+  // Validate metadata tensor types - all must be int64_t (torch.int64)
+  validateInt64Dtype(input_chunk_sizes, "input_chunk_sizes");
+  validateInt64Dtype(input_chunk_indices, "input_chunk_indices");
+  validateInt64Dtype(input_chunk_count_per_rank, "input_chunk_count_per_rank");
+  validateInt64Dtype(
+      output_chunk_sizes_per_rank, "output_chunk_sizes_per_rank");
+
   TorchCommTracingGuard tracingGuard(
       name_,
       comm_size_,
@@ -1301,6 +1320,11 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_dispatch");
 
+  // Ensure int64_t and size_t are compatible for safe casting
+  static_assert(
+      sizeof(int64_t) == sizeof(size_t),
+      "int64_t and size_t must have the same size for metadata tensors");
+
   // Convert vector of tensors to array of pointers
   std::vector<void*> output_tensor_ptrs;
   output_tensor_ptrs.reserve(output_tensor_list.size());
@@ -1308,6 +1332,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
     output_tensor_ptrs.push_back(t.data_ptr());
   }
 
+  // Cast int64_t* to size_t* for NCCL API (safe on 64-bit systems)
   ncclResult_t result = nccl_api_->alltoallvDynamicDispatch(
       input_tensor.data_ptr(),
       reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),
@@ -1351,6 +1376,11 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   ensureTensorContiguous(input_chunk_indices);
   ensureTensorContiguous(input_chunk_count_per_rank);
 
+  // Validate metadata tensor types - all must be int64_t (torch.int64)
+  validateInt64Dtype(input_chunk_sizes, "input_chunk_sizes");
+  validateInt64Dtype(input_chunk_indices, "input_chunk_indices");
+  validateInt64Dtype(input_chunk_count_per_rank, "input_chunk_count_per_rank");
+
   TorchCommTracingGuard tracingGuard(
       name_,
       comm_size_,
@@ -1371,6 +1401,12 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_combine");
 
+  // Ensure int64_t and size_t are compatible for safe casting
+  static_assert(
+      sizeof(int64_t) == sizeof(size_t),
+      "int64_t and size_t must have the same size for metadata tensors");
+
+  // Cast int64_t* to size_t* for NCCL API (safe on 64-bit systems)
   ncclResult_t result = nccl_api_->alltoallvDynamicCombine(
       input_tensor.data_ptr(),
       reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),

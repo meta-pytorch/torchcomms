@@ -45,7 +45,7 @@ __global__ void initializeBufferPtrKernel(
     size_t maxCount,
     int* sendbuff,
     int** sendbuffs,
-    size_t* sendSplitLengthsDev);
+    size_t* inputChunkSizesDev);
 __global__ void checkDataBuffersKernel(
     size_t maxCount,
     size_t* counts,
@@ -57,7 +57,7 @@ __global__ void checkDataBuffersNonContigKernel(
     size_t* recvSplits,
     size_t* recvIndices,
     size_t* recvIndicesBlockLengths,
-    size_t numSendSplitLengths,
+    size_t inputChunkSizesCount,
     int** recvbuffs,
     int globalRank);
 __global__ void equalCountsKernel(size_t* sendCounts, size_t count);
@@ -75,7 +75,7 @@ __global__ void checkRandomCountsKernel(
 __global__ void checkRandomCountsNonContigKernel(
     size_t* recvSplits,
     size_t* randomCountsMatrix,
-    size_t numSendSplitLengths,
+    size_t inputChunkSizesCount,
     int numRanks,
     int maxNumExperts);
 __global__ void initRecvIndicesKernel(
@@ -131,13 +131,13 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   void AllocateBuffers(MemAllocType memType, bool registFlag) {
     // Create metadata buffers
     CUDACHECK_TEST(cudaMalloc(
-        &sendSplitLengthsDev, numRanks * maxNumExperts * sizeof(size_t)));
-    CUDACHECK_TEST(
-        cudaMalloc(&sendIndicesDev, numRanks * maxNumExperts * sizeof(size_t)));
+        &inputChunkSizesDev, numRanks * maxNumExperts * sizeof(size_t)));
+    CUDACHECK_TEST(cudaMalloc(
+        &inputChunkIndicesDev, numRanks * maxNumExperts * sizeof(size_t)));
     CUDACHECK_TEST(
         cudaMalloc(&recvIndicesDev, numRanks * maxNumExperts * sizeof(size_t)));
     CUDACHECK_TEST(cudaHostAlloc(
-        &sendIndicesHost,
+        &inputChunkIndicesHost,
         numRanks * maxNumExperts * sizeof(size_t),
         cudaHostAllocDefault));
     CUDACHECK_TEST(cudaHostAlloc(
@@ -145,11 +145,11 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         numRanks * maxNumExperts * sizeof(size_t),
         cudaHostAllocDefault));
     CUDACHECK_TEST(
-        cudaMalloc(&sendIndicesBlockLengthsDev, numRanks * sizeof(size_t)));
+        cudaMalloc(&inputChunkCountPerRankDev, numRanks * sizeof(size_t)));
     CUDACHECK_TEST(
         cudaMalloc(&recvIndicesBlockLengthsDev, numRanks * sizeof(size_t)));
     CUDACHECK_TEST(cudaHostAlloc(
-        &sendIndicesBlockLengthsHost,
+        &inputChunkCountPerRankHost,
         numRanks * sizeof(size_t),
         cudaHostAllocDefault));
     CUDACHECK_TEST(cudaHostAlloc(
@@ -241,14 +241,14 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     CUDACHECK_TEST(cudaFree(recvbuffsDev));
 
     // Free metadata buffers
-    CUDACHECK_TEST(cudaFree(sendSplitLengthsDev));
-    CUDACHECK_TEST(cudaFree(sendIndicesDev));
+    CUDACHECK_TEST(cudaFree(inputChunkSizesDev));
+    CUDACHECK_TEST(cudaFree(inputChunkIndicesDev));
     CUDACHECK_TEST(cudaFree(recvIndicesDev));
-    CUDACHECK_TEST(cudaFreeHost(sendIndicesHost));
+    CUDACHECK_TEST(cudaFreeHost(inputChunkIndicesHost));
     CUDACHECK_TEST(cudaFreeHost(recvIndicesHost));
-    CUDACHECK_TEST(cudaFree(sendIndicesBlockLengthsDev));
+    CUDACHECK_TEST(cudaFree(inputChunkCountPerRankDev));
     CUDACHECK_TEST(cudaFree(recvIndicesBlockLengthsDev));
-    CUDACHECK_TEST(cudaFreeHost(sendIndicesBlockLengthsHost));
+    CUDACHECK_TEST(cudaFreeHost(inputChunkCountPerRankHost));
     CUDACHECK_TEST(cudaFreeHost(recvIndicesBlockLengthsHost));
     CUDACHECK_TEST(cudaFree(recvSplitsDev));
   }
@@ -258,12 +258,12 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     kernelArgs.push_back((void*)&maxCount);
     kernelArgs.push_back((void*)&sendbuffsDev);
     kernelArgs.push_back((void*)&recvbuffsDev);
-    kernelArgs.push_back((void*)&sendSplitLengthsDev);
+    kernelArgs.push_back((void*)&inputChunkSizesDev);
     kernelArgs.push_back((void*)&maxTotalExperts);
     kernelArgs.push_back((void*)&numRanks);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)initializeDataBuffersKernel,
-        numSendSplitLengths,
+        inputChunkSizesCount,
         1024,
         kernelArgs.data(),
         0,
@@ -275,10 +275,10 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     kernelArgs.push_back((void*)&maxCount);
     kernelArgs.push_back((void*)&sendbuffDev);
     kernelArgs.push_back((void*)&sendbuffsDev);
-    kernelArgs.push_back((void*)&sendSplitLengthsDev);
+    kernelArgs.push_back((void*)&inputChunkSizesDev);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)initializeBufferPtrKernel,
-        numSendSplitLengths,
+        inputChunkSizesCount,
         1,
         kernelArgs.data(),
         0,
@@ -292,7 +292,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     kernelArgs.push_back((void*)&recvSplitsDev);
     kernelArgs.push_back((void*)&recvIndicesDev);
     kernelArgs.push_back((void*)&recvIndicesBlockLengthsDev);
-    kernelArgs.push_back((void*)&numSendSplitLengths);
+    kernelArgs.push_back((void*)&inputChunkSizesCount);
     kernelArgs.push_back((void*)&recvbuffsDev);
     kernelArgs.push_back((void*)&globalRank);
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -308,10 +308,10 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   void EnqueueAllToAllvDynamicSplitNonContig() {
     auto res = ctranAlltoallvDynamicSplitNonContig(
         sendbuffDev,
-        sendSplitLengthsDev,
-        numSendSplitLengths,
-        sendIndicesDev,
-        sendIndicesBlockLengthsDev,
+        inputChunkSizesDev,
+        inputChunkSizesCount,
+        inputChunkIndicesDev,
+        inputChunkCountPerRankDev,
         recvbuffsHost,
         nullptr,
         maxSendcount,
@@ -331,52 +331,52 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   };
 
   void InitSendIndices(bool expertType) {
-    // Initilze sendIndicesBlockLengthsDev
-    numSendSplitLengths = 0;
+    // Initilze inputChunkCountPerRankDev
+    inputChunkSizesCount = 0;
     for (int r = 0; r < numRanks; r++) {
-      sendIndicesBlockLengthsHost[r] = numExperts;
+      inputChunkCountPerRankHost[r] = numExperts;
       if (expertType) {
-        sendIndicesBlockLengthsHost[r] += r % (maxNumExperts - numExperts + 1);
+        inputChunkCountPerRankHost[r] += r % (maxNumExperts - numExperts + 1);
       }
-      numSendSplitLengths += sendIndicesBlockLengthsHost[r];
+      inputChunkSizesCount += inputChunkCountPerRankHost[r];
     }
     CUDACHECK_TEST(cudaMemcpy(
-        sendIndicesBlockLengthsDev,
-        sendIndicesBlockLengthsHost,
+        inputChunkCountPerRankDev,
+        inputChunkCountPerRankHost,
         numRanks * sizeof(size_t),
         cudaMemcpyDefault));
 
-    // Initialize sendIndicesDev
+    // Initialize inputChunkIndicesDev
     auto sendIndicesPos = 0;
     if (contigSendIndices) {
       auto lastIndices = 0;
       for (int r = 0; r < numRanks; r++) {
-        for (int i = 0; i < sendIndicesBlockLengthsHost[r]; i++) {
-          sendIndicesHost[sendIndicesPos + i] = lastIndices;
+        for (int i = 0; i < inputChunkCountPerRankHost[r]; i++) {
+          inputChunkIndicesHost[sendIndicesPos + i] = lastIndices;
           lastIndices++;
         }
-        sendIndicesPos += sendIndicesBlockLengthsHost[r];
+        sendIndicesPos += inputChunkCountPerRankHost[r];
       }
     } else {
       auto lastIndices = numRanks * numExperts;
       for (int r = 0; r < numRanks; r++) {
         // the extra indices will start from lastIndices, and will be coninuous
         // for each rank
-        for (int i = 0; i < sendIndicesBlockLengthsHost[r]; i++) {
+        for (int i = 0; i < inputChunkCountPerRankHost[r]; i++) {
           if (i < numExperts) {
-            sendIndicesHost[sendIndicesPos + i] = r + numRanks * i;
+            inputChunkIndicesHost[sendIndicesPos + i] = r + numRanks * i;
           } else {
-            sendIndicesHost[sendIndicesPos + i] = lastIndices;
+            inputChunkIndicesHost[sendIndicesPos + i] = lastIndices;
             lastIndices++;
           }
         }
-        sendIndicesPos += sendIndicesBlockLengthsHost[r];
+        sendIndicesPos += inputChunkCountPerRankHost[r];
       }
     }
     CUDACHECK_TEST(cudaMemcpy(
-        sendIndicesDev,
-        sendIndicesHost,
-        numSendSplitLengths * sizeof(size_t),
+        inputChunkIndicesDev,
+        inputChunkIndicesHost,
+        inputChunkSizesCount * sizeof(size_t),
         cudaMemcpyDefault));
   }
 
@@ -387,7 +387,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     std::vector<void*> kernelArgs;
     // Initialize sendSplitLengthsDev
     if (type == CountType::EQUAL) {
-      kernelArgs.push_back((void*)&sendSplitLengthsDev);
+      kernelArgs.push_back((void*)&inputChunkSizesDev);
       kernelArgs.push_back((void*)&count);
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)equalCountsKernel,
@@ -397,7 +397,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
           0,
           stream));
     } else {
-      kernelArgs.push_back((void*)&sendSplitLengthsDev);
+      kernelArgs.push_back((void*)&inputChunkSizesDev);
       kernelArgs.push_back((void*)&randomCountsMatricesDev[matrixId]);
       kernelArgs.push_back((void*)&globalRank);
       kernelArgs.push_back((void*)&numRanks);
@@ -423,20 +423,20 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)checkEqualCountsKernel,
           1,
-          numSendSplitLengths * numRanks,
+          inputChunkSizesCount * numRanks,
           kernelArgs.data(),
           0,
           stream));
     } else {
       kernelArgs.push_back((void*)&recvSplitsDev);
       kernelArgs.push_back((void*)&randomCountsMatricesDev[matrixId]);
-      kernelArgs.push_back((void*)&numSendSplitLengths);
+      kernelArgs.push_back((void*)&inputChunkSizesCount);
       kernelArgs.push_back((void*)&numRanks);
       kernelArgs.push_back((void*)&maxNumExperts);
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)checkRandomCountsNonContigKernel,
           numRanks,
-          numSendSplitLengths,
+          inputChunkSizesCount,
           kernelArgs.data(),
           0,
           stream));
@@ -447,12 +447,12 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     // Initialize recvIndicesDev
     curSendIndicesPos = 0;
     for (int r = 0; r < globalRank; r++) {
-      curSendIndicesPos += sendIndicesBlockLengthsHost[r];
+      curSendIndicesPos += inputChunkCountPerRankHost[r];
     }
 
     std::vector<void*> kernelArgs;
     kernelArgs.push_back((void*)&recvIndicesBlockLengthsDev);
-    kernelArgs.push_back((void*)&sendIndicesBlockLengthsHost[globalRank]);
+    kernelArgs.push_back((void*)&inputChunkCountPerRankHost[globalRank]);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)initRecvIndicesBlockLengthKernel,
         numRanks,
@@ -464,12 +464,12 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     kernelArgs.clear();
     kernelArgs.push_back((void*)&recvIndicesDev);
     kernelArgs.push_back((void*)&recvIndicesBlockLengthsDev);
-    kernelArgs.push_back((void*)&sendIndicesDev);
+    kernelArgs.push_back((void*)&inputChunkIndicesDev);
     kernelArgs.push_back((void*)&curSendIndicesPos);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)initRecvIndicesKernel,
         numRanks,
-        sendIndicesBlockLengthsHost[globalRank],
+        inputChunkCountPerRankHost[globalRank],
         kernelArgs.data(),
         0,
         stream));
@@ -544,13 +544,13 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   std::vector<void*> sendhdls;
   std::vector<void*> recvhdls;
 
-  size_t* sendSplitLengthsDev{nullptr};
-  size_t numSendSplitLengths{0};
+  size_t* inputChunkSizesDev{nullptr};
+  size_t inputChunkSizesCount{0};
 
-  size_t* sendIndicesDev{nullptr};
-  size_t* sendIndicesHost{nullptr};
-  size_t* sendIndicesBlockLengthsDev{nullptr};
-  size_t* sendIndicesBlockLengthsHost{nullptr};
+  size_t* inputChunkIndicesDev{nullptr};
+  size_t* inputChunkIndicesHost{nullptr};
+  size_t* inputChunkCountPerRankDev{nullptr};
+  size_t* inputChunkCountPerRankHost{nullptr};
   size_t curSendIndicesPos{0};
 
   size_t* recvIndicesDev{nullptr};

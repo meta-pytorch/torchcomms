@@ -94,9 +94,9 @@ __device__ __forceinline__ void sendImplNonContig(
     const T* const* sendbuffs,
     const size_t* sendcounts,
     size_t sendcountsLength,
-    const size_t* sendIndices,
-    const size_t* sendIndicesBlockLengths,
-    size_t maxSendIndicesBlockLength,
+    const size_t* inputChunkIndices,
+    const size_t* inputChunkCountPerRank,
+    size_t maxInputChunkCountPerRank,
     int groupIdx,
     int ngroups) {
   const auto localRank = statex->localRank();
@@ -113,15 +113,15 @@ __device__ __forceinline__ void sendImplNonContig(
         reinterpret_cast<size_t*>(
             shmDevState.peerAllToAllvDynamicBufsMap[sendPeer]) +
         (localRank * ngroups + groupIdx) *
-            (sendcountsLength + 1 + maxSendIndicesBlockLength);
+            (sendcountsLength + 1 + maxInputChunkCountPerRank);
     size_t* sendIndicesPeerAllToAllvDynamicBufsMap =
         sendcountsPeerAllToAllvDynamicBufsMap + sendcountsLength;
 
     auto curSendIndicesLength = 1;
     auto startSendIndex = 0;
-    curSendIndicesLength = sendIndicesBlockLengths[sendPeerGlobal];
+    curSendIndicesLength = inputChunkCountPerRank[sendPeerGlobal];
     for (int i = 0; i < sendPeerGlobal; i++) {
-      startSendIndex += sendIndicesBlockLengths[i];
+      startSendIndex += inputChunkCountPerRank[i];
     }
 
     // send the count to the remote process.  Each thread block sends
@@ -135,13 +135,13 @@ __device__ __forceinline__ void sendImplNonContig(
       sendIndicesPeerAllToAllvDynamicBufsMap[0] = curSendIndicesLength;
       for (int i = 0; i < curSendIndicesLength; i++) {
         sendIndicesPeerAllToAllvDynamicBufsMap[i + 1] =
-            sendIndices[startSendIndex + i];
+            inputChunkIndices[startSendIndex + i];
       }
     }
     devSyncSetStep(sync, groupIdx, 0);
 
     for (int i = 0; i < curSendIndicesLength; i++) {
-      size_t curIndex = sendIndices[startSendIndex + i];
+      size_t curIndex = inputChunkIndices[startSendIndex + i];
       if (sendcounts[curIndex] > 0) {
         sendData(
             sendbuffs[curIndex],
@@ -159,7 +159,7 @@ template <typename T>
 __device__ __forceinline__ void recvImplNonContig(
     T* const* recvbuffs,
     size_t* recvCountsTmpbufGPU,
-    size_t maxSendIndicesBlockLength,
+    size_t maxInputChunkCountPerRank,
     size_t sendcountsLength,
     int groupIdx,
     int ngroups,
@@ -179,7 +179,7 @@ __device__ __forceinline__ void recvImplNonContig(
         reinterpret_cast<size_t*>(
             shmDevState.peerAllToAllvDynamicBufsMap[localRank]) +
         (recvPeer * ngroups + groupIdx) *
-            (sendcountsLength + 1 + maxSendIndicesBlockLength);
+            (sendcountsLength + 1 + maxInputChunkCountPerRank);
     size_t* recvIndicesPeerAllToAllvDynamicBufsMap =
         recvcountsPeerAllToAllvDynamicBufsMap + sendcountsLength;
     auto mySendIndicesBlockLength = 0;
@@ -294,10 +294,10 @@ __device__ __forceinline__ void selfCopyNonContig(
     const T* const* sendbuffs,
     T* const* recvbuffs,
     const size_t* sendcounts,
-    const size_t* sendIndices,
-    const size_t* sendIndicesBlockLengths,
+    const size_t* inputChunkIndices,
+    const size_t* inputChunkCountPerRank,
     size_t sendcountsLength,
-    size_t maxSendIndicesBlockLength,
+    size_t maxInputChunkCountPerRank,
     size_t* recvCountsTmpbufGPU,
     int rank,
     int nRanks,
@@ -306,7 +306,7 @@ __device__ __forceinline__ void selfCopyNonContig(
     size_t maxRecvcount,
     bool nonContigIndices) {
   // Now we calculate the startSendIndex on-the-fly,
-  // which may not be efficient. If the sendIndicesBlockLengths can be
+  // which may not be efficient. If the inputChunkCountPerRank can be
   // on CPU, we can calculate it on CPU and pass it to GPU.
   // Or we could create a shared buffer (but will have to be per-block)
   // to store the pre-calculated startSendIndex.
@@ -314,7 +314,7 @@ __device__ __forceinline__ void selfCopyNonContig(
   auto startSendIndex = 0, recvOffsets = 0, curOffsetIndex = 0;
 
   for (int i = 0; i < rank; i++) {
-    startSendIndex += sendIndicesBlockLengths[i];
+    startSendIndex += inputChunkCountPerRank[i];
   }
 
   if (!nonContigIndices && groupIdx == 0 && groupType == GROUP_RECV) {
@@ -330,8 +330,8 @@ __device__ __forceinline__ void selfCopyNonContig(
     curOffsetIndex = sendcountsLength * rank / nRanks;
   }
 
-  for (int i = 0; i < sendIndicesBlockLengths[rank]; i++) {
-    auto curSendIndex = sendIndices[startSendIndex + i];
+  for (int i = 0; i < inputChunkCountPerRank[rank]; i++) {
+    auto curSendIndex = inputChunkIndices[startSendIndex + i];
 
     for (int j = curOffsetIndex; j < curSendIndex; j++) {
       recvOffsets += sendcounts[j];
@@ -442,19 +442,19 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
   // All blocks first involved in self D2D copy, then use NVL to exchange
   // counts/data with peers
   if (algoType == DYNAMIC_SPLIT_NON_CONTIG) {
-    const size_t* sendIndices = args.nonContig.sendIndices;
-    const size_t* sendIndicesBlockLengths =
-        args.nonContig.sendIndicesBlockLengths;
-    size_t maxSendIndicesBlockLength = args.nonContig.maxSendIndicesBlockLength;
+    const size_t* inputChunkIndices = args.nonContig.inputChunkIndices;
+    const size_t* inputChunkCountPerRank =
+        args.nonContig.inputChunkCountPerRank;
+    size_t maxInputChunkCountPerRank = args.nonContig.maxInputChunkCountPerRank;
 
     selfCopyNonContig(
         sendbuffs,
         recvbuffs,
         sendcounts,
-        sendIndices,
-        sendIndicesBlockLengths,
+        inputChunkIndices,
+        inputChunkCountPerRank,
         sendcountsLength,
-        maxSendIndicesBlockLength,
+        maxInputChunkCountPerRank,
         recvCountsTmpbufGPU,
         rank,
         nRanks,
@@ -466,7 +466,7 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
       recvImplNonContig(
           recvbuffs,
           recvCountsTmpbufGPU,
-          maxSendIndicesBlockLength,
+          maxInputChunkCountPerRank,
           sendcountsLength,
           groupIdx,
           ngroups,
@@ -477,9 +477,9 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
           sendbuffs,
           sendcounts,
           sendcountsLength,
-          sendIndices,
-          sendIndicesBlockLengths,
-          maxSendIndicesBlockLength,
+          inputChunkIndices,
+          inputChunkCountPerRank,
+          maxInputChunkCountPerRank,
           groupIdx,
           ngroups);
     }
@@ -595,36 +595,35 @@ __global__ void ncclKernelAllToAllvDynamicSplitNonContig(
   bool nonContigIndices = false;
   int totalSendIndicesLength = 0;
   for (int i = 0; i < statex->nRanks(); i++) {
-    totalSendIndicesLength += args.nonContig.sendIndicesBlockLengths[i];
+    totalSendIndicesLength += args.nonContig.inputChunkCountPerRank[i];
   }
   nonContigIndices = (totalSendIndicesLength < args.sendcountsLength);
 
   generateSendbuffs<T>(args, nonContigIndices);
 
   ctranKernCopy<size_t>(
-      args.nonContig.sendIndices,
-      reinterpret_cast<size_t*>(args.nonContig.sendIndicesTmpbufCPU),
+      args.nonContig.inputChunkIndices,
+      reinterpret_cast<size_t*>(args.nonContig.inputChunkIndicesTmpbufCPU),
       totalSendIndicesLength,
       blockIdx.x,
       gridDim.x);
   ctranKernCopy<size_t>(
-      args.nonContig.sendIndicesBlockLengths,
-      reinterpret_cast<size_t*>(
-          args.nonContig.sendIndicesBlockLengthsTmpbufCPU),
+      args.nonContig.inputChunkCountPerRank,
+      reinterpret_cast<size_t*>(args.nonContig.inputChunkCountPerRankTmpbufCPU),
       statex->nRanks(),
       blockIdx.x,
       gridDim.x);
 
   if (blockDim.x * blockIdx.x + threadIdx.x == 0) {
     for (int i = 0; i < statex->nRanks(); i++) {
-      if (args.nonContig.sendIndicesBlockLengths[i] >
-          args.nonContig.maxSendIndicesBlockLength) {
+      if (args.nonContig.inputChunkCountPerRank[i] >
+          args.nonContig.maxInputChunkCountPerRank) {
         printf(
-            "[AllToAllvDynamic Contig Kernel] The sendIndicesBlockLengths %lu on rank %d to peer %d is larger than allowed (%lu)\n",
-            args.nonContig.sendIndicesBlockLengths,
+            "[AllToAllvDynamic Contig Kernel] The inputChunkCountPerRank %lu on rank %d to peer %d is larger than allowed (%lu)\n",
+            args.nonContig.inputChunkCountPerRank,
             statex->rank(),
             i,
-            args.nonContig.maxSendIndicesBlockLength);
+            args.nonContig.maxInputChunkCountPerRank);
         trap();
       }
     }

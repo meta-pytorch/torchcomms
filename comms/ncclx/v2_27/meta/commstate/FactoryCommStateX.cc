@@ -53,15 +53,12 @@ std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm) {
       std::vector<int>(), /* commRanksToWorldRanks */
       comm->config.commDesc);
 
-  // Fake topology with nLocalRanks=1
   if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
+    // Fake topology with nLocalRanks=1
     _CommStateX->initRankTopologyNolocal();
   } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
-    CHECKABORT(
-        comm->nRanks >= NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS,
-        "CommStateX: NCCL_COMM_STATE_DEBUG_TOPO::vnode initialize failed because number of available ranks (%d) is less than nLocalRanks per vnode (NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS=%d).",
-        comm->nRanks,
-        NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
+    // Fake topology with
+    // nLocalRanks=NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS
     _CommStateX->initRankTopologyVnode(
         NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
   } else {
