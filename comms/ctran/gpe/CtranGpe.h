@@ -14,6 +14,7 @@
 #include "comms/ctran/CtranExImpl.h"
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/window/CtranWin.h"
@@ -285,6 +286,7 @@ struct KernelConfig {
     SENDRECV_NOTIFY,
     RECV_UNPACK,
     SENDRECV_UNPACK,
+    SENDRECV_STAGED,
     ALLTOALL,
     ALLTOALLV,
     ALLTOALLV_DYNAMIC,
@@ -483,6 +485,11 @@ extern __global__ void ncclKernelSendRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelSendRecvArgs args);
+
+extern __global__ void ncclKernelSendRecvStaged(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::sendrecv::KernArgs args);
 
 template <bool UNPACK>
 __global__ void ncclKernelBroadcast(

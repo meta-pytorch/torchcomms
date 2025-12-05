@@ -225,7 +225,7 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  if ((ncclx::algoconf::getSendRecvAlgo() == NCCL_SENDRECV_ALGO::ctran) &&
+  if ((ncclx::algoconf::getSendRecvAlgo() != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get())) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two
@@ -267,7 +267,7 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  if ((ncclx::algoconf::getSendRecvAlgo() == NCCL_SENDRECV_ALGO::ctran) &&
+  if ((ncclx::algoconf::getSendRecvAlgo() != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get())) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two

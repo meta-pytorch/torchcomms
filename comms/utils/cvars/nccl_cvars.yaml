@@ -1366,13 +1366,22 @@ cvars:
      number of thread blocks calculated by NCCL_CTRAN_NVL_SENDRECV_CHUNK_SIZE
      cannot exceed this number.
 
- - name        : NCCL_CTRAN_NVL_SENDRECV_THREAD_BLOCK_SIZE
+ - name        : NCCL_CTRAN_NVL_SENDRECV_ZCOPY_THREAD_BLOCK_SIZE
    type        : int
    default     : -1
    description : |-
-     Number of threads in each thread block used for intra-node
-     sendrecv kernel. Default -1 to use the recommended size by CUDA runtime.
+     Number of threads in each thread block used for intra-node zero-copy
+     sendrecv kernel. Default -1 to use the recommended size by CUDA runtime
 
+ - name        : NCCL_CTRAN_NVL_SENDRECV_STAGED_COPY_THREAD_BLOCK_SIZE
+   type        : int
+   default     : 512
+   description : |-
+     Number of threads in each thread block used for intra-node staged-copy
+     sendrecv kernel.
+
+ # TODO: after refactoring of copy-engine, remove this and use NCCL_SENDRECV_ALGO
+ # to select sendrecv copy engine
  - name        : NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE
    type        : bool
    default     : false
@@ -1871,11 +1880,13 @@ cvars:
  - name        : NCCL_SENDRECV_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran
+   choices     : orig, ctran, ctzcopy, ctstaged
    description : |-
      The algorithm to use for sendrecv communication
      orig - Copy-based communication
-     ctran - Ctran-based communication
+     ctran - Ctran-based communication auto-select
+     ctzcopy - Ctran-based zero-copy kernel for NVL
+     ctstaged - Ctran-based staged-copy kernel for NVL
 
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
