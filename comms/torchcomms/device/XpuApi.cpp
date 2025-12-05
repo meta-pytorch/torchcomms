@@ -1,4 +1,5 @@
 #include "comms/torchcomms/device/XpuApi.hpp"
+#include "comms/torchcomms/TorchCommLogging.hpp"
 #include <ATen/xpu/XPUContext.h>
 #include <c10/xpu/XPUFunctions.h>
 #include <c10/xpu/XPUStream.h>
@@ -60,8 +61,13 @@ xpu_result_t DefaultXpuApi::memGetInfo(size_t* free, size_t* total) {
         sycl::device& sycl_device = ::c10::xpu::get_raw_device(device);
         
         *total = sycl_device.get_info<sycl::info::device::global_mem_size>();
-        *free = *total; // SYCL doesn't provide free memory query
-        
+        if (sycl_device.has(sycl::aspect::ext_intel_free_memory)) {
+            *free = sycl_device.get_info<sycl::ext::intel::info::device::free_memory>();
+        } else {
+            TC_LOG(WARNING) << "Free memory query not supported on this SYCL device. Returning total memory as free memory.";
+            *free = *total;
+        }
+
         return XPU_SUCCESS;
     } catch (const std::exception& e) {
         return XPU_ERROR_INVALID_VALUE;
