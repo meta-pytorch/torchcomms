@@ -104,13 +104,13 @@ commResult_t ctranGet(
   // Check if the target displacement exceeds the window size
   size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
   size_t countNbytes = count * commTypeSize(datatype);
-  if ((targetDispNbytes + countNbytes) > win->dataSize) {
+  if ((targetDispNbytes + countNbytes) > win->dataBytes) {
     CLOGF(
         ERR,
         "Invalid target displacement from {} bytes to {} bytes exceeding the window size {}",
         targetDispNbytes,
         targetDispNbytes + countNbytes,
-        win->dataSize);
+        win->dataBytes);
     return commInvalidArgument;
   }
 

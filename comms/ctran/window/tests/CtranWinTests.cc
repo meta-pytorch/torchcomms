@@ -47,14 +47,52 @@ class CtranWinTest : public NcclxBaseTest {
     CUDACHECK_TEST(cudaMemcpy(
         buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
   }
+
+  void createWin(
+      ncclComm_t comm,
+      bool isUserBuf,
+      bool isCpuWin,
+      void** winBasePtr,
+      CtranWin** winPtr,
+      size_t sizeBytes) {
+    meta::comms::Hints hints;
+    hints.set("window_buffer_location", isCpuWin ? "cpu" : "gpu");
+    auto res = commSuccess;
+    // If userBuf is true, allocate buffer and use ctranWinRegister API
+    if (isUserBuf) {
+      if (isCpuWin) {
+        ASSERT_EQ(cudaMallocHost((void**)winBasePtr, sizeBytes), cudaSuccess);
+      } else {
+        ASSERT_EQ(ncclMemAlloc((void**)winBasePtr, sizeBytes), ncclSuccess);
+      }
+      res = ctranWinRegister(
+          (void*)*winBasePtr, sizeBytes, comm->ctranComm_.get(), winPtr, hints);
+
+    } else {
+      res = ctranWinAllocate(
+          sizeBytes, comm->ctranComm_.get(), (void**)winBasePtr, winPtr, hints);
+    }
+    ASSERT_EQ(res, commSuccess);
+    ASSERT_NE(*winBasePtr, nullptr);
+  }
+
+  void freeWinBuf(bool isUserBuf, bool isCpuWin, void* winBase) {
+    if (isUserBuf) {
+      if (isCpuWin) {
+        ASSERT_EQ(cudaFreeHost(winBase), cudaSuccess);
+      } else {
+        ASSERT_EQ(ncclMemFree(winBase), ncclSuccess);
+      }
+    }
+  }
 };
 
 class CtranWinTestParam
     : public CtranWinTest,
-      public ::testing::WithParamInterface<std::tuple<bool>> {};
+      public ::testing::WithParamInterface<std::tuple<bool, bool>> {};
 
-TEST_P(CtranWinTestParam, winCreation) {
-  auto [cpuWin] = GetParam();
+TEST_P(CtranWinTestParam, winAllocCreate) {
+  auto [cpuWin, userBuf] = GetParam();
 
   ncclComm_t comm = createNcclComm(
       this->globalRank,
@@ -73,15 +111,8 @@ TEST_P(CtranWinTestParam, winCreation) {
   CtranWin* win = nullptr;
   size_t sizeBytes = 8192 * sizeof(int);
   void* winBase = nullptr;
+  createWin(comm, userBuf, cpuWin, &winBase, &win, sizeBytes);
 
-  meta::comms::Hints hints;
-  if (cpuWin) {
-    hints.set("window_buffer_location", "cpu");
-  }
-  auto res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), &winBase, &win, hints);
-  ASSERT_EQ(res, commSuccess);
-  ASSERT_NE(winBase, nullptr);
   EXPECT_THAT(win, testing::NotNull());
 
   // Expect window allocation would trigger internal buffer registration export
@@ -90,7 +121,7 @@ TEST_P(CtranWinTestParam, winCreation) {
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
-    res = ctranWinSharedQuery(peer, win, &remoteAddr);
+    auto res = ctranWinSharedQuery(peer, win, &remoteAddr);
     EXPECT_EQ(res, commSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
@@ -113,13 +144,15 @@ TEST_P(CtranWinTestParam, winCreation) {
   // Barrier to ensure all peers have finished creation and query
   this->barrier(comm, stream);
 
-  res = ctranWinFree(win);
+  auto res = ctranWinFree(win);
   EXPECT_EQ(res, commSuccess);
 
   // This test only exported buffers in window, thus expect all exported cache
   // is freed upon window free
   const auto dump1 = comm->ctranComm_->ctran_->mapper->dumpExportRegCache();
   EXPECT_EQ(dump1.size(), 0);
+
+  freeWinBuf(userBuf, cpuWin, winBase);
 
   finalizeNcclComm(globalRank, server.get());
   NCCLCHECK_TEST(ncclCommDestroy(comm));
@@ -241,9 +274,9 @@ INSTANTIATE_TEST_SUITE_P(
     CtranWinInstance,
     CtranWinTestParam,
     ::testing::Values(
-        // cpuWin
-        std::make_tuple(true),
-        std::make_tuple(true)));
+        // cpuWin, userBuf
+        std::make_tuple(true, false),
+        std::make_tuple(true, false)));
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

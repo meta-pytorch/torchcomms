@@ -347,13 +347,13 @@ commResult_t ctranPutSignal(
   // Check if the target displacement exceeds the window size
   size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
   size_t countNbytes = count * commTypeSize(datatype);
-  if ((targetDispNbytes + countNbytes) > win->dataSize) {
+  if ((targetDispNbytes + countNbytes) > win->dataBytes) {
     CLOGF(
         ERR,
         "Invalid target displacement from {} bytes to {} bytes exceeding the window size {}",
         targetDispNbytes,
         targetDispNbytes + countNbytes,
-        win->dataSize);
+        win->dataBytes);
     return commInvalidArgument;
   }
 
@@ -503,7 +503,7 @@ commResult_t ctranPutSignal_v2(
 
   // Check if the target displacement exceeds the window size
   FB_COMMCHECK(checkDisplacementBounds(
-      targetDisp, commTypeSize(datatype), count, win->dataSize));
+      targetDisp, commTypeSize(datatype), count, win->dataBytes));
   size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
   size_t countNbytes = count * commTypeSize(datatype);
   uint64_t* signalAddr = nullptr;
@@ -598,7 +598,7 @@ commResult_t ctranWaitSignal_v2(
       signalDisp,
       statex->rank(),
       (void*)win,
-      (void*)win->winBaseSignalPtr,
+      (void*)win->winSignalPtr,
       (void*)win->comm,
       statex->commHash(),
       statex->nRanks(),
@@ -607,7 +607,7 @@ commResult_t ctranWaitSignal_v2(
 
   // Check if the signal displacement exceeds the window size
   FB_COMMCHECK(checkSignalDisplacement(signalDisp, win->signalSize));
-  const uint64_t* signalAddr = win->winBaseSignalPtr + signalDisp;
+  const uint64_t* signalAddr = win->winSignalPtr + signalDisp;
 
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::WAITSIGNAL, stream, "WaitSignal", 0);
