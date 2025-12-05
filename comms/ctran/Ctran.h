@@ -202,20 +202,21 @@ commResult_t ctranAlltoallvDynamicSplit(
  * -----------
  * @param sendbuff               GPU buffer containing all data to send
  *                               Layout: concatenated chunks in order of
- *                               sendSplitLengths
+ *                               inputChunkSizes
  *
- * @param sendSplitLengths       GPU array of size numSendSplitLengths
+ * @param inputChunkSizes        GPU array of size inputChunkSizesCount
  *                               Specifies number of elements in each chunk
  *
- * @param numSendSplitLengths    Total number of chunks
+ * @param inputChunkSizesCount   Total number of chunks
  *
  *
- * @param sendIndices            GPU array of chunk ids to send
+ * @param inputChunkIndices      GPU array of chunk ids to send
  *
  *
- * @param sendIndicesBlockLengths GPU array of size numRanks
+ * @param inputChunkCountPerRank GPU array of size numRanks
  *                               Number of chunks sent to each rank
- *                               Partitions sendIndices array by destination
+ *                               Partitions inputChunkIndices array by
+ * destination
  *
  * @param recvbuffs              Array of numRanks GPU buffer pointers
  *                               recvbuffs[i] receives all data from rank i
@@ -238,17 +239,17 @@ commResult_t ctranAlltoallvDynamicSplit(
  * @param combine                false = dispatch mode (scatter TO experts)
  *                               true = combine mode (gather FROM experts)
  *
- * @param recvAllSplitLengths    Optional GPU output buffer of size
- *                               (numRanks * numSendSplitLengths)
+ * @param outputChunkSizesPerRank Optional GPU output buffer of size
+ *                               (numRanks * inputChunkSizesCount)
  *                               Stores actual received sizes for each chunk
  *                               from each sender
  */
 commResult_t ctranAlltoallvDynamicSplitNonContig(
     const void* sendbuff,
-    const size_t* sendSplitLengths,
-    size_t numSendSplitLengths,
-    const size_t* sendIndices,
-    const size_t* sendIndicesBlockLengths,
+    const size_t* inputChunkSizes,
+    size_t inputChunkSizesCount,
+    const size_t* inputChunkIndices,
+    const size_t* inputChunkCountPerRank,
     void* const* recvbuffs,
     void* recvbuff,
     size_t maxSendcount,
@@ -258,7 +259,7 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
     CtranComm* comm,
     cudaStream_t stream,
     bool combine,
-    size_t* recvAllSplitLengths = nullptr);
+    size_t* outputChunkSizesPerRank = nullptr);
 
 commResult_t ctranAllToAllvDynamicSupport(
     CtranComm* comm,

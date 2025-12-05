@@ -16,10 +16,10 @@ CTRAN_DATATYPE_TO_FUNC_MAPPER(
 
 commResult_t ctranAlltoallvDynamicSplitNonContig(
     const void* sendbuff,
-    const size_t* sendSplitLengths,
-    size_t numSendSplitLengths,
-    const size_t* sendIndices,
-    const size_t* sendIndicesBlockLengths,
+    const size_t* inputChunkSizes,
+    size_t inputChunkSizesCount,
+    const size_t* inputChunkIndices,
+    const size_t* inputChunkCountPerRank,
     void* const* recvbuffs,
     void* recvbuff,
     size_t maxSendcount,
@@ -29,7 +29,7 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
     CtranComm* comm,
     cudaStream_t stream,
     bool combine,
-    size_t* recvAllSplitLengths) {
+    size_t* outputChunkSizesPerRank) {
   auto opCount = comm->ctran_->getOpCount();
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
 
@@ -54,10 +54,10 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
   KernelElem* elem = nullptr;
 
   FB_COMMCHECK(setupKernelConfig(
-      sendSplitLengths,
-      numSendSplitLengths,
+      inputChunkSizes,
+      inputChunkSizesCount,
       recvbuffs,
-      recvAllSplitLengths,
+      outputChunkSizesPerRank,
       datatype,
       comm,
       config,
@@ -66,17 +66,19 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
   // Special parameter handling for ctranAllToAllvDynamicSplitNonContig
   config.args.collective.alltoallv_dynamic.split.sendbuff = sendbuff;
 
-  config.args.collective.alltoallv_dynamic.nonContig.sendIndices = sendIndices;
-  config.args.collective.alltoallv_dynamic.nonContig.sendIndicesTmpbufCPU =
+  config.args.collective.alltoallv_dynamic.nonContig.inputChunkIndices =
+      inputChunkIndices;
+  config.args.collective.alltoallv_dynamic.nonContig
+      .inputChunkIndicesTmpbufCPU =
       reinterpret_cast<size_t*>(comm->ctran_->algo->getTmpBuf(
           CtranAlgo::TmpbufType::SENDINDICES_TMPBUF_CPU));
-  config.args.collective.alltoallv_dynamic.nonContig.sendIndicesBlockLengths =
-      sendIndicesBlockLengths;
+  config.args.collective.alltoallv_dynamic.nonContig.inputChunkCountPerRank =
+      inputChunkCountPerRank;
   config.args.collective.alltoallv_dynamic.nonContig
-      .sendIndicesBlockLengthsTmpbufCPU =
+      .inputChunkCountPerRankTmpbufCPU =
       reinterpret_cast<size_t*>(comm->ctran_->algo->getTmpBuf(
           CtranAlgo::TmpbufType::SENDINDICES_BLOCKLEN_TMPBUF_CPU));
-  config.args.collective.alltoallv_dynamic.nonContig.maxSendIndicesBlockLength =
+  config.args.collective.alltoallv_dynamic.nonContig.maxInputChunkCountPerRank =
       CTRAN_MAX_NUM_SPLITS_PER_RANK;
   config.args.collective.alltoallv_dynamic.nonContig.maxRecvcount =
       maxRecvcount;
@@ -95,7 +97,7 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
       reinterpret_cast<void**>(comm->ctran_->algo->getTmpBuf(
           CtranAlgo::TmpbufType::SENDBUFFS_PTR_TMPBUF_CPU)),
       recvbuffs,
-      numSendSplitLengths,
+      inputChunkSizesCount,
       maxSendcount,
       maxRecvcount,
       datatype,
