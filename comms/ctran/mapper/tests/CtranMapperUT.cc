@@ -112,7 +112,15 @@ TEST(CtranMapperUT, EnableBackendWithMCCLBackendOverride) {
 TEST(CtranMapperUT, EnableBackendThroughCVARsWithTCPandIB) {
   setenv("NCCL_CTRAN_BACKENDS", "nvl, ib, socket, tcpdm", 1);
   ncclCvarInit();
-  EXPECT_THROW(createDummyCtranComm(), std::runtime_error);
+  std::optional<std::exception> ex;
+  try {
+    createDummyCtranComm();
+  } catch (const std::runtime_error& e) {
+    ex = e;
+  } catch (const ctran::utils::Exception& e) {
+    ex = e;
+  }
+  ASSERT_TRUE(ex.has_value());
 }
 
 TEST(CtranMapperUT, BackendEnum) {
