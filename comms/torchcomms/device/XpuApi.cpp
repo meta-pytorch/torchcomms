@@ -1,10 +1,10 @@
 #include "comms/torchcomms/device/XpuApi.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include <ATen/xpu/XPUContext.h>
 #include <c10/xpu/XPUFunctions.h>
 #include <c10/xpu/XPUStream.h>
 #include <sstream>
 #include <stdexcept>
+#include "comms/torchcomms/TorchCommLogging.hpp"
 
 namespace torch {
 namespace comms {
@@ -18,64 +18,71 @@ xpu_result_t DefaultXpuApi::setDevice(int device) {
     }
 }
 
-xpu_result_t DefaultXpuApi::getDeviceProperties(xpuDeviceProp* prop, int device) {
-    if (!prop) {
-        return XPU_ERROR_INVALID_VALUE;
+xpu_result_t DefaultXpuApi::getDeviceProperties(
+    xpuDeviceProp* prop,
+    int device) {
+  if (!prop) {
+    return XPU_ERROR_INVALID_VALUE;
+  }
+
+  try {
+    sycl::device sycl_device = ::c10::xpu::get_raw_device(device);
+
+    // Get device name
+    std::string device_name = sycl_device.get_info<sycl::info::device::name>();
+    strncpy(prop->name, device_name.c_str(), 255);
+    prop->name[255] = '\0';
+
+    // Get memory info
+    prop->totalGlobalMem =
+        sycl_device.get_info<sycl::info::device::global_mem_size>();
+
+    if (!sycl_device.has(sycl::aspect::ext_intel_free_memory)) [[unlikely]] {
+      TC_LOG(WARNING)
+          << "Free memory queries are unsupported on this SYCL device; using total global memory as the free-memory estimate.";
     }
-    
-    try {
-        sycl::device sycl_device = ::c10::xpu::get_raw_device(device);
-        
-        // Get device name
-        std::string device_name = sycl_device.get_info<sycl::info::device::name>();
-        strncpy(prop->name, device_name.c_str(), 255);
-        prop->name[255] = '\0';
 
-        // Get memory info
-        prop->totalGlobalMem = sycl_device.get_info<sycl::info::device::global_mem_size>();
+    // Get compute capabilities
+    auto max_work_group_size =
+        sycl_device.get_info<sycl::info::device::max_work_group_size>();
+    auto max_work_item_sizes =
+        sycl_device.get_info<sycl::info::device::max_work_item_sizes<3>>();
+    auto max_compute_units =
+        sycl_device.get_info<sycl::info::device::max_compute_units>();
 
-        if (!sycl_device.has(sycl::aspect::ext_intel_free_memory)) [[unlikely]] {
-            TC_LOG(WARNING)
-                << "Free memory queries are unsupported on this SYCL device; using total global memory as the free-memory estimate.";
-        }
+    prop->multiProcessorCount = max_compute_units;
+    prop->maxThreadsPerBlock = max_work_group_size;
+    prop->maxThreadsDim[0] = max_work_item_sizes[0];
+    prop->maxThreadsDim[1] = max_work_item_sizes[1];
+    prop->maxThreadsDim[2] = max_work_item_sizes[2];
 
-        // Get compute capabilities
-        auto max_work_group_size = sycl_device.get_info<sycl::info::device::max_work_group_size>();
-        auto max_work_item_sizes = sycl_device.get_info<sycl::info::device::max_work_item_sizes<3>>();
-        auto max_compute_units = sycl_device.get_info<sycl::info::device::max_compute_units>();
-        
-        prop->multiProcessorCount = max_compute_units;
-        prop->maxThreadsPerBlock = max_work_group_size;
-        prop->maxThreadsDim[0] = max_work_item_sizes[0];
-        prop->maxThreadsDim[1] = max_work_item_sizes[1];
-        prop->maxThreadsDim[2] = max_work_item_sizes[2];
-        
-        return XPU_SUCCESS;
-    } catch (const std::exception& e) {
-        return XPU_ERROR_INVALID_VALUE;
-    }
+    return XPU_SUCCESS;
+  } catch (const std::exception& e) {
+    return XPU_ERROR_INVALID_VALUE;
+  }
 }
 
 xpu_result_t DefaultXpuApi::memGetInfo(size_t* free, size_t* total) {
-    if (!free || !total) {
-        return XPU_ERROR_INVALID_VALUE;
-    }
-    
-    try {
-        int device = ::c10::xpu::current_device();
-        sycl::device& sycl_device = ::c10::xpu::get_raw_device(device);
-        
-        *total = sycl_device.get_info<sycl::info::device::global_mem_size>();
-        if (sycl_device.has(sycl::aspect::ext_intel_free_memory)) [[likely]] {
-            *free = sycl_device.get_info<sycl::ext::intel::info::device::free_memory>();
-        } else [[unlikely]] {
-            *free = *total;
-        }
+  if (!free || !total) {
+    return XPU_ERROR_INVALID_VALUE;
+  }
 
-        return XPU_SUCCESS;
-    } catch (const std::exception& e) {
-        return XPU_ERROR_INVALID_VALUE;
+  try {
+    int device = ::c10::xpu::current_device();
+    sycl::device& sycl_device = ::c10::xpu::get_raw_device(device);
+
+    *total = sycl_device.get_info<sycl::info::device::global_mem_size>();
+    if (sycl_device.has(sycl::aspect::ext_intel_free_memory)) [[likely]] {
+      *free =
+          sycl_device.get_info<sycl::ext::intel::info::device::free_memory>();
+    } else [[unlikely]] {
+      *free = *total;
     }
+
+    return XPU_SUCCESS;
+  } catch (const std::exception& e) {
+    return XPU_ERROR_INVALID_VALUE;
+  }
 }
 
 xpu_result_t DefaultXpuApi::getDeviceCount(int* count) {
