@@ -293,6 +293,7 @@ commResult_t ctranAllToAllDedupDestroy(CtranPersistentRequest* request);
 
 bool ctranBroadcastSupport(
     CtranComm* comm,
+    enum NCCL_BROADCAST_ALGO algo,
     std::optional<CtranMapperBackend> specifiedBackend = std::nullopt);
 commResult_t ctranBroadcast(
     const void* sendbuff,
@@ -301,7 +302,8 @@ commResult_t ctranBroadcast(
     commDataType_t datatype,
     int root,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_BROADCAST_ALGO algo);
 
 commResult_t ctranPutSignal(
     const void* origin_buff,

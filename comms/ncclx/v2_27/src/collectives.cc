@@ -144,9 +144,9 @@ ncclResult_t ncclBroadcast(const void* sendbuff, void* recvbuff, size_t count, n
 
   SetCudaDevRAII setCudaDev(comm->cudaDev);
   if ((NCCL_BROADCAST_ALGO != NCCL_BROADCAST_ALGO::orig) &&
-      ctranBroadcastSupport(comm->ctranComm_.get())) {
+      ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO)) {
     return metaCommToNccl(ctranBroadcast(
-        sendbuff, recvbuff, count, ncclToMetaComm(datatype), root, comm->ctranComm_.get(), stream));
+        sendbuff, recvbuff, count, ncclToMetaComm(datatype), root, comm->ctranComm_.get(), stream, NCCL_BROADCAST_ALGO));
   }
   NVTX3_FUNC_WITH_PARAMS(Broadcast, NcclNvtxParamsBroadcast,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), root));

@@ -108,7 +108,8 @@ class CtranBroadcastTest : public CtranStandaloneMultiRankBaseTest,
         kDataType,
         root,
         state.ctranComm.get(),
-        state.stream);
+        state.stream,
+        NCCL_BROADCAST_ALGO);
     EXPECT_EQ(commSuccess, result);
 
     CLOGF(INFO, "rank {} broadcast scheduled", state.rank);

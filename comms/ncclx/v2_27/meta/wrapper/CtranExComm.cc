@@ -112,7 +112,8 @@ ncclResult_t CtranExComm::deregMem(void* segHdl) {
 
 bool CtranExComm::supportBroadcast() const {
   CHECK_VALID_COMM();
-  return ctranBroadcastSupport(comm_->ctranComm_.get(), CtranMapperBackend::IB);
+  return ctranBroadcastSupport(
+      comm_->ctranComm_.get(), NCCL_BROADCAST_ALGO, CtranMapperBackend::IB);
 }
 
 ncclResult_t CtranExComm::broadcast(
@@ -126,7 +127,8 @@ ncclResult_t CtranExComm::broadcast(
   auto ctranComm = comm_->ctranComm_.get();
 
   // Restrict to use only IB backend
-  if (!ctranBroadcastSupport(ctranComm, CtranMapperBackend::IB)) {
+  if (!ctranBroadcastSupport(
+          ctranComm, NCCL_BROADCAST_ALGO, CtranMapperBackend::IB)) {
     CLOGF(
         ERR,
         "CTRAN-EX: the specified communicator does not support broadcast with only IB backend.");
