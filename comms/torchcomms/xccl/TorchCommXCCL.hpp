@@ -139,6 +139,8 @@ public:
   split(const std::vector<int> &ranks, const std::string &name,
         const CommOptions &options = {}) override;
 
+  std::shared_ptr<c10::Allocator> getMemAllocator() override;
+
   // Friend access for TorchCommXCCL
   friend class TorchWorkXCCL;
 

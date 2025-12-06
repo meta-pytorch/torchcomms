@@ -473,12 +473,21 @@ TorchCommXCCL::split(const std::vector<int> &ranks, const std::string &name,
   throw std::runtime_error("XCCL split is not supported now and will be added later");
 }
 
-XCCLException::XCCLException(XcclApi &xccl_api, const std::string &message,
-                             onecclResult_t result)
+std::shared_ptr<c10::Allocator> TorchCommXCCL::getMemAllocator() {
+  throw std::runtime_error(
+      "XCCL getMemAllocator is not supported now and will be added later");
+}
+
+XCCLException::XCCLException(
+    XcclApi& xccl_api,
+    const std::string& message,
+    onecclResult_t result)
     : message_(message + ": " + xccl_api.getErrorString(result)),
       result_(result) {}
 
-const char *XCCLException::what() const noexcept { return message_.c_str(); }
+const char* XCCLException::what() const noexcept {
+  return message_.c_str();
+}
 
 } // namespace comms
 } // namespace torch
