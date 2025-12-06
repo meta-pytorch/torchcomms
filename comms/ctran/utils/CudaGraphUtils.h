@@ -22,8 +22,12 @@ inline cudaError_t getStreamCaptureInfo(
 #elif CUDART_VERSION >= 12030
   return cudaStreamGetCaptureInfo_v3(stream, &info.status, &info.id, &info.g);
 #else
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  return hipStreamGetCaptureInfo_v2(stream, &info.status, &info.id, &info.g);
+#else
   return cudaStreamGetCaptureInfo_v2(stream, &info.status, &info.id, &info.g);
-#endif
+#endif // defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#endif // CUDART_VERSION >= 13000
 }
 
 inline commResult_t addHostNode(
