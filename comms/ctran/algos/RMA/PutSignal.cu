@@ -126,19 +126,7 @@ __global__ void ncclKernelWaitSignal(
 #else
     ::cuda::atomic_ref<uint64_t, cuda::thread_scope_system> ref{
         *args.signalAddr};
-    if (args.cmpOp == commCmpEQ) {
-      while (ref.load(cuda::std::memory_order_acquire) != args.cmpVal) {
-      }
-    } else if (args.cmpOp == commCmpGE) {
-      while (ref.load(cuda::std::memory_order_acquire) < args.cmpVal) {
-      }
-    } else if (args.cmpOp == commCmpLE) {
-      while (ref.load(cuda::std::memory_order_acquire) > args.cmpVal) {
-      }
-    } else {
-      // Invalid comparison operation
-      printf("ncclKernelWaitSignal: invalid cmpOp %d\n", args.cmpOp);
-      trap();
+    while (ref.load(cuda::std::memory_order_acquire) < args.cmpVal) {
     }
 #endif
   }

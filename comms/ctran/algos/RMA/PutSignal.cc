@@ -297,22 +297,13 @@ static commResult_t waitSignalImpl(
       "waitSignalImpl: signalAddr {}, cmpVal={}",
       (void*)const_cast<uint64_t*>(op->waitsignal.signalAddr),
       op->waitsignal.cmpVal);
-  if (op->waitsignal.cmpOp == commCmpEQ) {
-    while (std::atomic_load(addr) != op->waitsignal.cmpVal) {
-      std::this_thread::yield();
-    };
-  } else if (op->waitsignal.cmpOp == commCmpGE) {
-    while (std::atomic_load(addr) < op->waitsignal.cmpVal) {
-      std::this_thread::yield();
-    };
-  } else if (op->waitsignal.cmpOp == commCmpLE) {
-    while (std::atomic_load(addr) > op->waitsignal.cmpVal) {
-      std::this_thread::yield();
-    };
-  } else {
-    CLOGF(ERR, "waitSignalImpl: invalid cmpOp {}", op->waitsignal.cmpOp);
-    return commInvalidArgument;
-  }
+  // Spin-wait until the signal is received.
+  // Only a 'greater or equal (GE)' (>=) comparison is required in this design,
+  // because signals are monotonically increasing and we only care about
+  // reaching or passing the target value.
+  while (std::atomic_load(addr) < op->waitsignal.cmpVal) {
+    std::this_thread::yield();
+  };
 
   return commSuccess;
 }
@@ -455,7 +446,9 @@ commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
   opGroup.clear();
 
   CtranKernelWaitSignalArgs kernArgs = {
-      .signalAddr = nullptr, .cmpVal = 0, .cmpOp = commCmpOp_t::commCmpGE};
+      .signalAddr = nullptr,
+      .cmpVal = waitSignalVal,
+  };
   config.algoArgs = reinterpret_cast<void*>(&kernArgs);
   if (win->isGpuMem()) {
     // if GPU memory, use kernel to atomic wait on the local signal value update
@@ -470,178 +463,6 @@ commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
     op->waitsignal.win = win;
     op->waitsignal.signalAddr = signalAddr;
     op->waitsignal.cmpVal = waitSignalVal;
-    op->waitsignal.cmpOp = commCmpOp_t::commCmpGE;
-    opGroup.push_back(std::unique_ptr<struct OpElem>(op));
-  }
-
-  FB_COMMCHECK(comm->ctran_->gpe->submit(
-      std::move(opGroup),
-      waitSignalImpl,
-      config,
-      reinterpret_cast<void*>(ncclKernelWaitSignal)));
-  return commSuccess;
-}
-
-commResult_t ctranPutSignal_v2(
-    const void* originBuff,
-    size_t targetDisp,
-    size_t count,
-    commDataType_t datatype,
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    CtranWin* win,
-    cudaStream_t stream,
-    bool signal) {
-  CtranComm* comm = win->comm;
-  const auto winOpCount = win->updateOpCount(peer);
-  const auto putOpCount = win->updateOpCount(peer, window::OpCountType::kPut);
-  auto statex = comm->statex_.get();
-  CTRAN_RMA_INFO(
-      signal ? "ctranPutSignal_v2" : "ctranPut_v2",
-      putOpCount,
-      winOpCount,
-      originBuff,
-      targetDisp,
-      count,
-      datatype,
-      statex->rank(),
-      peer,
-      win,
-      comm,
-      stream);
-
-  // Check if the target displacement exceeds the window size
-  FB_COMMCHECK(checkDisplacementBounds(
-      targetDisp, commTypeSize(datatype), count, win->dataBytes));
-  size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
-  size_t countNbytes = count * commTypeSize(datatype);
-  uint64_t* signalAddr = nullptr;
-  if (signal) {
-    FB_COMMCHECK(checkSignalDisplacement(signalDisp, win->signalSize));
-    signalAddr = win->remWinInfo[peer].signalAddr + signalDisp;
-  }
-
-  KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::PUTSIGNAL, stream, "PutSignal", putOpCount);
-  config.args.devState_d = comm->ctran_->algo->getDevState();
-
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-  opGroup.clear();
-
-  // Use direct copy if peer is on the same host and has NVL enabled.
-  // Otherwise, do put & signal via IB
-  CtranKernelPutSignalArgs kernArgs = {.signalAddr = nullptr, .signalVal = 0};
-  if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
-    // Single-node direct cudaMemcpy
-    if (count > 0) {
-      void* dstPtr = reinterpret_cast<void*>(
-          reinterpret_cast<size_t>(win->remWinInfo[peer].dataAddr) +
-          targetDispNbytes);
-      // CollTrace tracing logic for local + no signal case. In this case the
-      // put will not trigger gpe->submit, so we need to record manually in the
-      // algo. In other cases, this handle would be a no-op and the tracing
-      // will take place in the gpe function.
-      auto colltraceHandle = meta::comms::colltrace::getCollTraceHandleRMA(
-          comm, opGroup, config, !signal);
-      colltraceHandle->trigger(
-          CollTraceHandleTriggerState::BeforeEnqueueKernel);
-
-      FB_CUDACHECK(cudaMemcpyAsync(
-          dstPtr, originBuff, countNbytes, cudaMemcpyDefault, stream));
-
-      colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
-    }
-    if (signal) {
-      // Use atomic_store to signal the remote peer
-      kernArgs.signalAddr = signalAddr;
-      kernArgs.signalVal = signalVal;
-    } else {
-      // No signal, just return
-      return commSuccess;
-    }
-  } else {
-    // X-node put & signal via network
-    // Create an op for GPE thread to complete put and signal
-    struct OpElem* op =
-        new struct OpElem(OpElem::opType::PUTSIGNAL, comm, putOpCount);
-    op->putsignal.sendbuff = originBuff;
-    op->putsignal.targetDisp = targetDisp;
-    op->putsignal.count = count;
-    op->putsignal.datatype = datatype;
-    op->putsignal.signalAddr = signalAddr;
-    op->putsignal.signalVal = signalVal;
-    op->putsignal.peerRank = peer;
-    op->putsignal.win = win;
-    opGroup.push_back(std::unique_ptr<struct OpElem>(op));
-  }
-
-  void* func = nullptr;
-  if (signal) {
-    func = reinterpret_cast<void*>(ncclKernelPutSignal);
-    config.algoArgs = reinterpret_cast<void*>(&kernArgs);
-  } else {
-    func = reinterpret_cast<void*>(ncclKernelPut);
-    config.algoArgs = nullptr;
-  }
-  FB_COMMCHECK(comm->ctran_->gpe->submit(
-      std::move(opGroup), putSignalImpl, config, func));
-
-  return commSuccess;
-}
-
-commResult_t ctranWaitSignal_v2(
-    size_t signalDisp,
-    uint64_t cmpVal,
-    commCmpOp_t cmpOp,
-    CtranWin* win,
-    cudaStream_t stream) {
-  CtranComm* comm = win->comm;
-  auto statex = comm->statex_.get();
-  // FIXME: log ctranWaitSignal with CTRAN_RMA_INFO(add signalDisp and cmpVal)
-  CLOGF_SUBSYS(
-      INFO,
-      COLL,
-      "CTRAN-RMA WaitSignal_v2: cmpValue {} signalDisp {} rank {} "
-      "win {} winSigBase {} comm {} commHash {:x} [nranks={} localRanks={}] stream={}",
-      cmpVal,
-      signalDisp,
-      statex->rank(),
-      (void*)win,
-      (void*)win->winSignalPtr,
-      (void*)win->comm,
-      statex->commHash(),
-      statex->nRanks(),
-      statex->nLocalRanks(),
-      (void*)stream);
-
-  // Check if the signal displacement exceeds the window size
-  FB_COMMCHECK(checkSignalDisplacement(signalDisp, win->signalSize));
-  const uint64_t* signalAddr = win->winSignalPtr + signalDisp;
-
-  KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::WAITSIGNAL, stream, "WaitSignal", 0);
-  config.args.devState_d = comm->ctran_->algo->getDevState();
-
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-  opGroup.clear();
-
-  CtranKernelWaitSignalArgs kernArgs = {
-      .signalAddr = nullptr, .cmpVal = 0, .cmpOp = cmpOp};
-  config.algoArgs = reinterpret_cast<void*>(&kernArgs);
-  if (win->isGpuMem()) {
-    // if GPU memory, use kernel to atomic wait on the local signal value update
-    // from remote rank, either from NVL or IB
-    kernArgs.signalAddr = const_cast<uint64_t*>(signalAddr);
-    kernArgs.cmpVal = cmpVal;
-  } else {
-    // if CPU memory, GPE thread to atomic wait for update from remote rank via
-    // IB.
-    struct OpElem* op = new struct OpElem(OpElem::opType::WAITSIGNAL, comm, 0);
-    op->waitsignal.win = win;
-    op->waitsignal.signalAddr = signalAddr;
-    op->waitsignal.cmpVal = cmpVal;
-    op->waitsignal.cmpOp = cmpOp;
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
   }
 

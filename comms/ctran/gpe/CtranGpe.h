@@ -229,7 +229,6 @@ struct OpElem {
     struct {
       const uint64_t* signalAddr;
       uint64_t cmpVal;
-      commCmpOp_t cmpOp;
       ctran::CtranWin* win;
     } waitsignal;
     struct {
