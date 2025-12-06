@@ -74,7 +74,9 @@ commResult_t ctranAllGather(
     cudaStream_t stream,
     enum NCCL_ALLGATHER_ALGO algo);
 
-bool ctranReduceScatterSupport(CtranComm* comm);
+bool ctranReduceScatterSupport(
+    CtranComm* comm,
+    enum NCCL_REDUCESCATTER_ALGO algo);
 commResult_t ctranReduceScatter(
     const void* sendbuff,
     void* recvbuff,
@@ -82,7 +84,8 @@ commResult_t ctranReduceScatter(
     commDataType_t datatype,
     commRedOp_t redOp,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_REDUCESCATTER_ALGO algo);
 
 bool ctranAllReduceSupport(CtranComm* comm);
 commResult_t ctranAllReduce(

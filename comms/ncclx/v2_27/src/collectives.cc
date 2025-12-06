@@ -187,9 +187,9 @@ ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recv
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, recvcount * ncclTypeSize(datatype), op));
 
   if (NCCL_REDUCESCATTER_ALGO != NCCL_REDUCESCATTER_ALGO::orig &&
-      ctranReduceScatterSupport(comm->ctranComm_.get())) {
+      ctranReduceScatterSupport(comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO)) {
     return metaCommToNccl(ctranReduceScatter(
-        sendbuff, recvbuff, recvcount, ncclToMetaComm(datatype), ncclToMetaComm(op), comm->ctranComm_.get(), stream));
+        sendbuff, recvbuff, recvcount, ncclToMetaComm(datatype), ncclToMetaComm(op), comm->ctranComm_.get(), stream, NCCL_REDUCESCATTER_ALGO));
   }
 
   struct ncclInfo info = { ncclFuncReduceScatter, "ReduceScatter",

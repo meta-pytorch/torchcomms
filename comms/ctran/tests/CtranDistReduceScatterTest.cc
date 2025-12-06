@@ -44,7 +44,8 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
     setenv("NCCL_COLLTRACE_RECORD_MAX", "-1", 0);
     CtranDistBaseTest::SetUp();
     comm = commWorld;
-    if (!ctranReduceScatterSupport(comm->ctranComm_.get())) {
+    if (!ctranReduceScatterSupport(
+            comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO)) {
       GTEST_SKIP() << "ctranReduceScatterSupport returns fails, skip test";
     }
   }
@@ -153,19 +154,10 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
       enum NCCL_REDUCESCATTER_ALGO algo) {
     EnvRAII env(NCCL_REDUCESCATTER_ALGO, algo);
 
-    if (algo == NCCL_REDUCESCATTER_ALGO::ctdirect) {
-      const int nNodes = comm->ctranComm_->statex_->nNodes();
-      if (nNodes != 1) {
-        GTEST_SKIP() << "ctdirect only supports nNodes=1, but got " << nNodes
-                     << ", skip test";
-      }
-    } else if (algo == NCCL_REDUCESCATTER_ALGO::ctring) {
-      const int nLocalRanks = comm->ctranComm_->statex_->nLocalRanks();
-      if (nLocalRanks != 1) {
-        GTEST_SKIP() << "ctring only supports nLocalRanks=1, but got "
-                     << nLocalRanks << ", skip test";
-      }
-    } else if (algo == NCCL_REDUCESCATTER_ALGO::ctrhd) {
+    if (algo == NCCL_REDUCESCATTER_ALGO::ctrhd) {
+      // ctranReduceScatterSupport always returns false for ctrhd algo, but we
+      // still want to test it here. We only test ctrhd when the conditions are
+      // met (nLocalRanks=1, nNodes is power of 2, and tmpBuf is small enough)
       const int nNodes = comm->ctranComm_->statex_->nNodes();
       const int nLocalRanks = comm->ctranComm_->statex_->nLocalRanks();
       if (nLocalRanks != 1) {
@@ -183,6 +175,8 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
                      << " bytes is too large to fit in tmpBuf for "
                      << "ctrhd, skip test";
       }
+    } else if (!ctranReduceScatterSupport(comm->ctranComm_.get(), algo)) {
+      GTEST_SKIP() << "ctranReduceScatterSupport returns fails, skip test";
     }
 
     if (memType == kCuMemAllocDisjoint &&
@@ -200,7 +194,14 @@ class CtranReduceScatterTest : public CtranDistBaseTest {
       recvBufComm = reinterpret_cast<T*>(sendBuf) + globalRank * count;
     }
     auto res = ctranReduceScatter(
-        sendBuf, recvBufComm, count, dt, redOp, comm->ctranComm_.get(), stream);
+        sendBuf,
+        recvBufComm,
+        count,
+        dt,
+        redOp,
+        comm->ctranComm_.get(),
+        stream,
+        algo);
     EXPECT_EQ(res, commSuccess);
 
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
