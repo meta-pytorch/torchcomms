@@ -521,9 +521,6 @@ set(SRC_FILES
   src/include/msccl/msccl_struct.h
   src/include/mscclpp/mscclpp_nccl.h
   src/include/nccl_common.h
-  src/include/plugin/nccl_net.h
-  src/include/plugin/nccl_profiler.h
-  src/include/plugin/nccl_tuner.h
   src/include/mlx5/mlx5dvwrap.h
   src/include/mlx5/mlx5dvcore.h
   src/include/mlx5/mlx5dvsymbols.h
@@ -625,11 +622,6 @@ set(SRC_FILES
   src/include/plugin/nccl_profiler.h
   src/include/plugin/nccl_tuner.h
   src/include/plugin/plugin.h
-  src/include/plugin/net/net_v6.h
-  src/include/plugin/net/net_v7.h
-  src/include/plugin/net/net_v8.h
-  src/include/plugin/net/net_v9.h
-  src/include/plugin/net/net_v10.h
   src/include/plugin/profiler/net_ib_v1.h
   src/include/plugin/profiler/net_ib.h
   src/include/plugin/profiler/net_socket_v1.h

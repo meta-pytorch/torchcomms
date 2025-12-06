@@ -118,8 +118,35 @@ export RCCLX_LIB=${BUILD_DIR}/lib
 ./build_rcclx.sh
 ```
 
+TIP: Default builds both gfx942 and gfx950 and can take 1hr+. Narrow to your GPU:
+
+MI300X/MI325X (gfx942):
+```bash
+./build_rcclx.sh --amdgpu_targets gfx942
+```
+
+MI350X/MI355X (gfx950):
+```bash
+./build_rcclx.sh --amdgpu_targets gfx950
+```
+
+Detect your arch if unsure:
+```bash
+rocminfo | grep -m1 gfx
+```
+
 
 #### Install torchcomms:
+
+Set backend env vars before installing. For RCCLX-only:
+```bash
+export USE_NCCL=OFF
+export USE_NCCLX=OFF
+export USE_GLOO=OFF
+export USE_RCCL=OFF
+export USE_RCCLX=ON
+```
+(See Build Configuration below for defaults and other mixes.)
 
 ```bash
 # Install PyTorch (if not already installed)
