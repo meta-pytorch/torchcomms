@@ -1308,16 +1308,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       {input_tensor},
       output_tensor_list);
 
-  // Convert vector of tensors to a CPU tensor holding pointers, which will be
-  // hold by torchComm.
-  at::Tensor output_tensor_ptrs = at::zeros(
-      {static_cast<int64_t>(output_tensor_list.size())},
-      at::TensorOptions().dtype(at::kLong).device(at::kCPU));
-  for (size_t i = 0; i < output_tensor_list.size(); ++i) {
-    reinterpret_cast<void**>(output_tensor_ptrs.data_ptr<int64_t>())[i] =
-        output_tensor_list[i].data_ptr();
-  }
-
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
       stream,
@@ -1325,8 +1315,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       {input_tensor,
        input_chunk_sizes,
        input_chunk_indices,
-       input_chunk_count_per_rank,
-       output_tensor_ptrs});
+       input_chunk_count_per_rank});
 
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_dispatch");
@@ -1336,13 +1325,21 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       sizeof(int64_t) == sizeof(size_t),
       "int64_t and size_t must have the same size for metadata tensors");
 
+  // Convert vector of tensors to array of pointers
+  std::vector<void*> output_tensor_ptrs;
+  output_tensor_ptrs.reserve(output_tensor_list.size());
+  for (const auto& t : output_tensor_list) {
+    output_tensor_ptrs.push_back(t.data_ptr());
+  }
+
+  // Cast int64_t* to size_t* for NCCL API (safe on 64-bit systems)
   ncclResult_t result = nccl_api_->alltoallvDynamicDispatch(
       input_tensor.data_ptr(),
       reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),
       input_chunk_sizes.numel(),
       reinterpret_cast<size_t*>(input_chunk_indices.data_ptr()),
       reinterpret_cast<size_t*>(input_chunk_count_per_rank.data_ptr()),
-      reinterpret_cast<void* const*>(output_tensor_ptrs.data_ptr()),
+      output_tensor_ptrs.data(),
       reinterpret_cast<size_t*>(output_chunk_sizes_per_rank.data_ptr()),
       input_tensor.numel(),
       output_tensor_list[0].numel(),
