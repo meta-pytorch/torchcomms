@@ -1,10 +1,11 @@
 #include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
+#include <ATen/xpu/XPUContext.h>
+#include <exception>
+#include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
-#include <ATen/xpu/XPUContext.h>
-#include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 
 namespace torch {
 namespace comms {
@@ -61,8 +62,14 @@ TorchCommXCCLBootstrap::TorchCommXCCLBootstrap(
 
 TorchCommXCCLBootstrap::~TorchCommXCCLBootstrap() {
   if (barrier_buffer_ != nullptr) {
-    XPU_CHECK(xpu_api_, xpu_api_->free(barrier_buffer_),
-              "Failed to free barrier buffer");
+    try {
+      XPU_CHECK(
+          xpu_api_,
+          xpu_api_->free(barrier_buffer_),
+          "Failed to free barrier buffer");
+    } catch (const std::exception& e) {
+      TC_LOG(ERROR) << e.what();
+    }
     barrier_buffer_ = nullptr;
   }
 }
