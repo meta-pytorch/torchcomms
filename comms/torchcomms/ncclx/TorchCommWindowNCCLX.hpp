@@ -43,11 +43,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
       uint64_t signalVal,
       int dstRank,
       bool asyncOp) override;
-  c10::intrusive_ptr<TorchWork> waitSignal(
-      size_t signalDisp,
-      uint64_t cmpVal,
-      SignalCmpOp cmpOp,
-      bool asyncOp) override;
+  c10::intrusive_ptr<TorchWork> waitSignal(int peerRank, bool asyncOp) override;
   at::Tensor getTensor(
       int rank,
       at::IntArrayRef sizes,

@@ -9,10 +9,8 @@ namespace comms {
 
 #ifdef NCCL_RMA_SUPPORTED
 using NcclxWindow = ncclWin_t;
-using NcclxWindowCmpOp = ncclCmpOp_t;
 #else
 using NcclxWindow = void*;
-using NcclxWindowCmpOp = int;
 #endif
 
 /**
@@ -200,12 +198,8 @@ class NcclxApi {
       int peer,
       NcclxWindow win,
       cudaStream_t stream) = 0;
-  virtual ncclResult_t winWaitSignal(
-      size_t signal_disp,
-      uint64_t cmp_val,
-      NcclxWindowCmpOp cmp_op,
-      NcclxWindow win,
-      cudaStream_t stream) = 0;
+  virtual ncclResult_t
+  winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
 
   virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
   virtual ncclResult_t memFree(void* buff) = 0;
@@ -414,12 +408,8 @@ class DefaultNcclxApi : public NcclxApi {
       int peer,
       NcclxWindow win,
       cudaStream_t stream) override;
-  ncclResult_t winWaitSignal(
-      size_t signal_disp,
-      uint64_t cmp_val,
-      NcclxWindowCmpOp cmp_op,
-      NcclxWindow win,
-      cudaStream_t stream) override;
+  ncclResult_t winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream)
+      override;
 
   ncclResult_t memAlloc(void** buff, size_t size) override;
   ncclResult_t memFree(void* buff) override;

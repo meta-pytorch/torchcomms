@@ -149,24 +149,6 @@ TorchCommNCCLX::RedOpRAII TorchCommNCCLX::getNcclReduceOp(
   }
 }
 
-NcclxWindowCmpOp TorchCommNCCLX::getNcclSignalCmpOp(SignalCmpOp op) {
-#ifdef NCCL_RMA_SUPPORTED
-  switch (op) {
-    case SignalCmpOp::EQ:
-      return ncclCmpEQ;
-    case SignalCmpOp::GE:
-      return ncclCmpGE;
-    case SignalCmpOp::LE:
-      return ncclCmpLE;
-    default:
-      throw std::runtime_error("Unsupported signal compare operation");
-  }
-#else
-  (void)op;
-  throw std::logic_error("NCCL RMA is not supported");
-#endif
-}
-
 void TorchCommNCCLX::checkWorkQueue() {
   TorchWorkNCCLX::WorkStatus status = workq_.garbageCollect();
 

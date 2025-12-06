@@ -78,8 +78,7 @@ void WindowRmaTest::testWindowPutBasic(
     // call signal on current stream to notify remote rank that the put is
     // complete
     auto signal_work = win->signal(rank_, signal_val, dst_rank, async_signal);
-    auto wait_signal_work = win->waitSignal(
-        src_rank, signal_val, torch::comms::SignalCmpOp::EQ, async_signal);
+    auto wait_signal_work = win->waitSignal(src_rank, async_signal);
     if (async_signal) {
       // register async Signal op to current stream since it is launched on
       // the internal op_stream
@@ -149,8 +148,7 @@ void WindowRmaTest::testWindowCpuPut(
     // call signal on current stream to notify remote rank that the put is
     // complete
     auto signal_work = win->signal(rank_, signal_val, dst_rank, async_signal);
-    auto wait_signal_work = win->waitSignal(
-        src_rank, signal_val, torch::comms::SignalCmpOp::EQ, async_signal);
+    auto wait_signal_work = win->waitSignal(src_rank, async_signal);
     if (async_signal) {
       // register async Signal op to current stream since it is launched on
       // the internal op_stream

@@ -177,12 +177,9 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::signal(
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::waitSignal(
-    size_t signalDisp,
-    uint64_t cmpVal,
-    SignalCmpOp cmpOp,
+    int peerRank,
     bool asyncOp) {
   checkWindowAndThrow();
-  auto nccl_cmp_op = torch_comm_->getNcclSignalCmpOp(cmpOp);
   auto stream =
       asyncOp ? wait_stream_ : cuda_api_->getCurrentCUDAStream(device_.index());
   if (asyncOp) {
@@ -193,9 +190,7 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::waitSignal(
   }
   auto work = torch_comm_->createWork(stream, kDefaultTimeout);
   work->recordStart("waitSignal");
-  CHECK_EQ(
-      nccl_api_->winWaitSignal(signalDisp, cmpVal, nccl_cmp_op, win_, stream),
-      ncclSuccess);
+  CHECK_EQ(nccl_api_->winWaitSignal(peerRank, win_, stream), ncclSuccess);
   work->recordEnd();
   torch_comm_->enqueueWork(work, stream);
   return work;

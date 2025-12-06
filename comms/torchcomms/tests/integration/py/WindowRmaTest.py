@@ -11,7 +11,6 @@ import psutil
 import torch
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
-    SignalCmpOp,
     TorchCommTestWrapper,
 )
 
@@ -68,9 +67,7 @@ class WindowRmaTest(unittest.TestCase):
             signal_val = 1
             # call signal on current stream to notify remote rank that the put is complete
             signal_work = win.signal(self.rank, signal_val, dst_rank, async_signal)
-            wait_signal_work = win.wait_signal(
-                src_rank, signal_val, SignalCmpOp.EQ, async_signal
-            )
+            wait_signal_work = win.wait_signal(src_rank, async_signal)
             if async_signal:
                 # register async signal/waitSignal op to current stream if async_op is True since they are launched on internal op_stream/wait_stream
                 signal_work.wait()
@@ -133,9 +130,7 @@ class WindowRmaTest(unittest.TestCase):
         if signal:
             signal_val = 1
             signal_work = win.signal(self.rank, signal_val, dst_rank, async_signal)
-            wait_signal_work = win.wait_signal(
-                src_rank, signal_val, SignalCmpOp.EQ, async_signal
-            )
+            wait_signal_work = win.wait_signal(src_rank, async_signal)
             if async_signal:
                 # register async signal/waitSignal op to current stream if async_op is True since they are launched on internal op_stream/wait_stream
                 signal_work.wait()

@@ -36,9 +36,7 @@ class TorchCommWindow {
   virtual c10::intrusive_ptr<TorchWork>
   signal(size_t signalDisp, uint64_t signalVal, int dstRank, bool asyncOp) = 0;
   virtual c10::intrusive_ptr<TorchWork> waitSignal(
-      size_t signalDisp,
-      uint64_t cmpVal,
-      SignalCmpOp cmpOp,
+      int peerRank,
       bool asyncOp) = 0;
 
   size_t get_size() const {
