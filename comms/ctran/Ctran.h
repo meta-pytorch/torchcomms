@@ -310,17 +310,9 @@ commResult_t ctranPutSignal(
     CtranComm* comm,
     cudaStream_t stream,
     bool signal = true);
-commResult_t ctranSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    ctran::CtranWin* win,
-    cudaStream_t stream);
-commResult_t ctranWaitSignal(
-    int peer,
-    ctran::CtranWin* win,
-    CtranComm* comm,
-    cudaStream_t stream);
+commResult_t ctranSignal(int peer, ctran::CtranWin* win, cudaStream_t stream);
+commResult_t
+ctranWaitSignal(int peer, ctran::CtranWin* win, cudaStream_t stream);
 commResult_t ctranPutSignal_v2(
     const void* origin_buff,
     size_t target_disp,

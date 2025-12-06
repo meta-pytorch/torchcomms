@@ -10,6 +10,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/hints/Hints.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
@@ -45,11 +46,15 @@ struct CtranWin {
   void* winDataPtr{nullptr};
   // The pointer of the signal buffer of this window
   uint64_t* winSignalPtr{nullptr};
+  // Stores signal values for waiting, used to track progress
+  std::deque<std::atomic<uint64_t>> waitSignalVal{};
+
+  // Stores signal values for sent signals, used to track progress
+  std::deque<std::atomic<uint64_t>> signalVal{};
 
   CtranWin(
       CtranComm* comm,
       size_t dataSize,
-      size_t signalSize,
       DevMemType bufType = DevMemType::kCumem);
 
   inline uint64_t updateOpCount(
@@ -68,6 +73,24 @@ struct CtranWin {
       it->second++;
     }
     return opCount;
+  }
+
+  inline uint64_t ctranNextWaitSignalVal(int peer) {
+    FB_CHECKTHROW(
+        peer < signalSize,
+        "peer rank {} exceed window signal buffer size {}",
+        peer,
+        signalSize);
+    return waitSignalVal[peer].fetch_add(1, std::memory_order_relaxed);
+  }
+
+  inline uint64_t ctranNextSignalVal(int peer) {
+    FB_CHECKTHROW(
+        peer < signalSize,
+        "peer rank {} exceed window signal buffer size {}",
+        peer,
+        signalSize);
+    return signalVal[peer].fetch_add(1, std::memory_order_relaxed);
   }
 
   commResult_t allocate(void* userBufPtr = nullptr);

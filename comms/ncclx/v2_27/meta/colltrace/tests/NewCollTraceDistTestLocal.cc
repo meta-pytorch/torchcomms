@@ -161,18 +161,8 @@ TEST_F(CollTraceTestLocal, winSignalAllToAll) {
       if (peerRank == myrank) {
         continue;
       }
-      COMMCHECK_TEST(ctranSignal(
-          kNumElements * myrank + iter,
-          (uint64_t)myrank,
-          peerRank,
-          win,
-          sig_stream));
-      COMMCHECK_TEST(ctranWaitSignal_v2(
-          kNumElements * peerRank + iter,
-          (uint64_t)peerRank,
-          commCmpEQ,
-          win,
-          wait_stream));
+      COMMCHECK_TEST(ctranSignal(peerRank, win, sig_stream));
+      COMMCHECK_TEST(ctranWaitSignal((uint64_t)peerRank, win, wait_stream));
     }
   }
 

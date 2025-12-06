@@ -420,9 +420,10 @@ commResult_t ctranPutSignal(
   return commSuccess;
 }
 
-commResult_t
-ctranWaitSignal(int peer, CtranWin* win, CtranComm* comm, cudaStream_t stream) {
+commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
+  CtranComm* comm = win->comm;
   auto statex = comm->statex_.get();
+  auto waitSignalVal = win->ctranNextWaitSignalVal(peer);
   const auto winOpCount = win->updateOpCount(peer);
   const auto waitOpCount =
       win->updateOpCount(peer, window::OpCountType::kWaitSignal);
@@ -431,44 +432,49 @@ ctranWaitSignal(int peer, CtranWin* win, CtranComm* comm, cudaStream_t stream) {
       waitOpCount,
       winOpCount,
       nullptr,
-      size_t(0),
-      size_t(0),
-      0,
+      peer, // signal disp
+      size_t(1), // signal count
+      commDataType_t::commUint64, // signal datatype
       statex->rank(),
       peer,
       win,
       comm,
       stream);
 
+  const uint64_t* signalAddr = win->winSignalPtr + peer;
+
   KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::WAITNOTIFY, stream, "WaitNotify", waitOpCount);
+      KernelConfig::KernelType::WAITSIGNAL, stream, "WaitSignal", waitOpCount);
   config.args.devState_d = comm->ctran_->algo->getDevState();
 
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   opGroup.clear();
-  config.args.collective.waitnotify.peerLocalRank = statex->localRank(peer);
 
-  // Use direct copy if peer is on the same host and has been IPC mapped.
-  // Otherwise, do put & notify via network
-  if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
-    config.args.collective.waitnotify.isDirect = false;
+  CtranKernelWaitSignalArgs kernArgs = {
+      .signalAddr = nullptr, .cmpVal = 0, .cmpOp = commCmpOp_t::commCmpGE};
+  config.algoArgs = reinterpret_cast<void*>(&kernArgs);
+  if (win->isGpuMem()) {
+    // if GPU memory, use kernel to atomic wait on the local signal value update
+    // from remote rank, either from NVL or IB
+    kernArgs.signalAddr = const_cast<uint64_t*>(signalAddr);
+    kernArgs.cmpVal = waitSignalVal;
   } else {
-    // X-node wait notify via network
-    config.args.collective.waitnotify.isDirect = true;
-
-    // Create an op for GPE thread to complete wait notify
+    // if CPU memory, GPE thread to atomic wait for update from remote rank via
+    // IB.
     struct OpElem* op =
-        new struct OpElem(OpElem::opType::WAITNOTIFY, comm, waitOpCount);
-    op->waitnotify.peerRank = peer;
-    op->waitnotify.win = win;
+        new struct OpElem(OpElem::opType::WAITSIGNAL, comm, waitOpCount);
+    op->waitsignal.win = win;
+    op->waitsignal.signalAddr = signalAddr;
+    op->waitsignal.cmpVal = waitSignalVal;
+    op->waitsignal.cmpOp = commCmpOp_t::commCmpGE;
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
   }
 
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
-      waitNotifyImpl,
+      waitSignalImpl,
       config,
-      reinterpret_cast<void*>(ncclKernelWaitNotify)));
+      reinterpret_cast<void*>(ncclKernelWaitSignal)));
   return commSuccess;
 }
 
@@ -643,23 +649,20 @@ commResult_t ctranWaitSignal_v2(
   return commSuccess;
 }
 
-commResult_t ctranSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    CtranWin* win,
-    cudaStream_t stream) {
+commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
   CtranComm* comm = win->comm;
   const auto winOpCount = win->updateOpCount(peer);
   const auto sigOpCount =
       win->updateOpCount(peer, window::OpCountType::kSignal);
   auto statex = comm->statex_.get();
+
+  auto signalVal = win->ctranNextSignalVal(peer);
   CTRAN_RMA_INFO(
       "ctranSignal",
       sigOpCount,
       winOpCount,
       nullptr,
-      signalDisp,
+      statex->rank(),
       1,
       commUint64,
       statex->rank(),
@@ -668,8 +671,7 @@ commResult_t ctranSignal(
       comm,
       stream);
 
-  FB_COMMCHECK(checkSignalDisplacement(signalDisp, win->signalSize));
-  uint64_t* signalAddr = win->remWinInfo[peer].signalAddr + signalDisp;
+  uint64_t* signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
 
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::SIGNAL, stream, "Signal", sigOpCount);

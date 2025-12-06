@@ -177,8 +177,13 @@ TEST_P(MultiWindowTestParam, multiWindow) {
           win,
           win->comm,
           put_stream,
-          true));
-      COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, win->comm, wait_stream));
+          false));
+      // TODO: since ctranPutSignal refactoring is WIP and only signaling based
+      // notification is used, we are using put+signal to correctly matching the
+      // ctranWaitSignal. Once ctranPutSignal is fully refactored, we can use
+      // ctranPutSignal directly.
+      COMMCHECK_TEST(ctranSignal(nextPeer, win, put_stream));
+      COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, wait_stream));
     }
     // Barrier to ensure all peers have finished put
     this->barrier(comm, main_stream);
@@ -285,8 +290,13 @@ TEST_P(CtranRMATestParam, winPutWait) {
         win,
         win->comm,
         put_stream,
-        true));
-    COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, win->comm, wait_stream));
+        false));
+    // TODO: since ctranPutSignal refactoring is WIP and only signaling based
+    // notification is used, we are using put+signal to correctly matching the
+    // ctranWaitSignal. Once ctranPutSignal is fully refactored, we can use
+    // ctranPutSignal directly.
+    COMMCHECK_TEST(ctranSignal(nextPeer, win, put_stream));
+    COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, wait_stream));
     if (iter == 0) {
       // Skip first iteration to avoid any warmup overhead
       CUDACHECK_TEST(cudaEventRecord(start_event, put_stream));
@@ -657,12 +667,12 @@ TEST_P(CtranRMATestParam, winPutWait_v2) {
   CUDACHECK_TEST(cudaStreamDestroy(put_stream));
 }
 
-class RMATestSignalParam
-    : public CtranRMATest,
-      public ::testing::WithParamInterface<std::tuple<size_t, bool, bool>> {};
+class RMATestSignalParam : public CtranRMATest,
+                           public ::testing::WithParamInterface<
+                               std::tuple<size_t, bool, bool, bool>> {};
 
-TEST_P(RMATestSignalParam, winSignalAllToAll) {
-  const auto& [kNumElements, cpuWin, signalOnly] = GetParam();
+TEST_P(RMATestSignalParam, winSignalWait) {
+  const auto& [kNumIters, cpuWin, signalOnly, userBuf] = GetParam();
   auto envGuard = EnvRAII(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::orig);
 
   auto comm = this->comm;
@@ -677,48 +687,36 @@ TEST_P(RMATestSignalParam, winSignalAllToAll) {
       cudaStreamCreateWithFlags(&wait_stream, cudaStreamNonBlocking));
 
   meta::comms::Hints hints;
-  hints.set("window_buffer_location", cpuWin ? "cpu" : "gpu");
-  hints.set(
-      "window_signal_bufsize", std::to_string(kNumElements * statex->nRanks()));
   CtranWin* win = nullptr;
   int* winBase = nullptr;
-  // Allocate the window with data buffer size of 0 since this test only uses
-  // the signal buffer for inter-rank signaling
-  auto res = ctranWinAllocate(
-      0, comm->ctranComm_.get(), (void**)&winBase, &win, hints);
-  ASSERT_EQ(res, commSuccess);
-  ASSERT_NE(winBase, nullptr);
+
+  // allocte sizeof(int) * statex->nRanks() Bytes buffer size
+  size_t sizeBytes = sizeof(int) * statex->nRanks();
+  createWin(userBuf, cpuWin, (void**)&winBase, &win, sizeBytes, hints);
   uint64_t* signalBase = win->winSignalPtr;
   ASSERT_NE(signalBase, nullptr);
 
-  // initialize with 1000UL, a random number
-  assignChunkValue(signalBase, kNumElements * statex->nRanks(), 1000UL, 0UL);
   // barrier to ensure all peers have finished value assignment
   this->barrier(comm, main_stream);
 
   const auto myrank = statex->rank();
   const auto numRanks = statex->nRanks();
 
-  for (auto iter = 0; iter < kNumElements; iter++) {
+  for (auto iter = 0; iter < kNumIters; iter++) {
     // In iterations, each rank signals the continuous memory region of other
     // ranks, with its rank id as the signal value
     for (auto peerRank = 0; peerRank < numRanks; peerRank++) {
       if (peerRank == myrank) {
         continue;
       }
-      COMMCHECK_TEST(ctranSignal(
-          kNumElements * myrank + iter,
-          (uint64_t)myrank,
-          peerRank,
-          win,
-          sig_stream));
-      if (!signalOnly) {
-        COMMCHECK_TEST(ctranWaitSignal_v2(
-            kNumElements * peerRank + iter,
-            (uint64_t)peerRank,
-            commCmpEQ,
-            win,
-            wait_stream));
+      COMMCHECK_TEST(ctranSignal(peerRank, win, sig_stream));
+    }
+    if (!signalOnly) {
+      for (auto peerRank = 0; peerRank < numRanks; peerRank++) {
+        if (peerRank == myrank) {
+          continue;
+        }
+        COMMCHECK_TEST(ctranWaitSignal(peerRank, win, wait_stream));
       }
     }
   }
@@ -737,19 +735,16 @@ TEST_P(RMATestSignalParam, winSignalAllToAll) {
       continue;
     }
     errs += checkChunkValue(
-        signalBase + kNumElements * peerRank,
-        kNumElements,
-        (uint64_t)peerRank,
-        0UL,
-        wait_stream);
+        signalBase + peerRank, 1, (uint64_t)kNumIters, 0UL, wait_stream);
   }
   EXPECT_EQ(errs, 0);
   // For signalWait, this is necessary since we must ensure all ctranSignal
   // ops finish for other peers
   CUDACHECK_TEST(cudaStreamSynchronize(sig_stream));
 
-  res = ctranWinFree(win);
+  auto res = ctranWinFree(win);
   EXPECT_EQ(res, ncclSuccess);
+  freeWinBuf(userBuf, cpuWin, winBase);
 
   CUDACHECK_TEST(cudaStreamDestroy(sig_stream));
   CUDACHECK_TEST(cudaStreamDestroy(wait_stream));
@@ -789,20 +784,23 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     RMATestSignalInstance,
     RMATestSignalParam,
-    ::testing::Values(
-        std::make_tuple(100, true, true),
-        std::make_tuple(100, false, true),
-        std::make_tuple(100, true, false),
-        std::make_tuple(100, false, false)),
+    ::testing::Combine(
+        // kNumElements, cpuWin, signalOnly, userBuf
+        ::testing::Values(100),
+        ::testing::Values(true, false),
+        ::testing::Values(true, false),
+        ::testing::Values(true, false)),
     [](const testing::TestParamInfo<RMATestSignalParam::ParamType>& info) {
       const auto kNumIters = std::get<0>(info.param);
       const auto cpuWin = std::get<1>(info.param);
       const auto signalOnly = std::get<2>(info.param);
+      const auto userBuf = std::get<3>(info.param);
       std::string name = fmt::format(
-          "numIters{}_{}_{}",
+          "numIters{}_{}_{}_{}",
           kNumIters,
           cpuWin ? "cpuWin" : "gpuWin",
-          signalOnly ? "signalOnly" : "signalWait");
+          signalOnly ? "signalOnly" : "signalWait",
+          userBuf ? "userBuf" : "allocBuf");
       return name;
     });
 
