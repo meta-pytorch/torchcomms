@@ -31,17 +31,12 @@ ncclResult_t ncclPutSignal(
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclPutSignal requires Ctran support");
   }
-  // TODO: use ctranPutSignal_v2 for correct signaling, will be deprecated by
-  // using refactored ctranPutSignal later
-  return metaCommToNccl(ctranPutSignal_v2(
+  return metaCommToNccl(ctranPutSignal(
       origin_buff,
-      target_disp,
       count,
       ncclToMetaComm(datatype),
-      comm->statex_.get()->rank(), // use rank as signalDisp
-      win->ctranWindow->ctranNextSignalVal(
-          peer), // get next signalVal from internal counter
       peer,
+      target_disp,
       win->ctranWindow,
       stream,
       true));
@@ -76,7 +71,6 @@ ncclResult_t ncclPut(
       peer,
       target_disp,
       win->ctranWindow,
-      comm,
       stream,
       false));
 }
@@ -154,14 +148,17 @@ ncclResult_t ncclPutSignal_v2(
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclPutSignal requires Ctran support");
   }
-  return metaCommToNccl(ctranPutSignal_v2(
-      origin_buff,
-      target_disp,
-      count,
-      ncclToMetaComm(datatype),
+  WARN(
+      "ncclPutSignal_v2 is deprecated; please use ncclPutSignal instead. The arguments signal_disp={%ld} and signal_val={%ld} are ignored. The peer argument ({%d}) is now used as disp.",
       signal_disp,
       signal_val,
+      peer);
+  return metaCommToNccl(ctranPutSignal(
+      origin_buff,
+      count,
+      ncclToMetaComm(datatype),
       peer,
+      target_disp,
       win->ctranWindow,
       stream,
       true));

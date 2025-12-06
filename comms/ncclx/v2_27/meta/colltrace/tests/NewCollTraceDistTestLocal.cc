@@ -258,7 +258,6 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
         nextPeer,
         kNumElements * statex->rank(),
         win,
-        win->comm,
         put_stream,
         false));
   }

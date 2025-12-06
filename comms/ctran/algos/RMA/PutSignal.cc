@@ -324,9 +324,9 @@ commResult_t ctranPutSignal(
     int peer,
     size_t targetDisp,
     CtranWin* win,
-    CtranComm* comm,
     cudaStream_t stream,
     bool signal) {
+  CtranComm* comm = win->comm;
   const auto winOpCount = win->updateOpCount(peer);
   const auto putOpCount = win->updateOpCount(peer, window::OpCountType::kPut);
   auto statex = comm->statex_.get();
@@ -345,29 +345,27 @@ commResult_t ctranPutSignal(
       stream);
 
   // Check if the target displacement exceeds the window size
+  FB_COMMCHECK(checkDisplacementBounds(
+      targetDisp, commTypeSize(datatype), count, win->dataBytes));
   size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
   size_t countNbytes = count * commTypeSize(datatype);
-  if ((targetDispNbytes + countNbytes) > win->dataBytes) {
-    CLOGF(
-        ERR,
-        "Invalid target displacement from {} bytes to {} bytes exceeding the window size {}",
-        targetDispNbytes,
-        targetDispNbytes + countNbytes,
-        win->dataBytes);
-    return commInvalidArgument;
+  uint64_t* signalAddr = nullptr;
+  uint64_t signalVal = 0;
+  if (signal) {
+    signalVal = win->ctranNextSignalVal(peer);
+    signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
   }
 
-  // FIXME: passing also winOpCount to colltrace
   KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::PUTNOTIFY, stream, "PutNotify", putOpCount);
+      KernelConfig::KernelType::PUTSIGNAL, stream, "PutSignal", putOpCount);
   config.args.devState_d = comm->ctran_->algo->getDevState();
 
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   opGroup.clear();
-  config.args.collective.putnotify.peerLocalRank = statex->localRank(peer);
 
-  // Use direct copy if peer is on the same host and has been IPC mapped.
-  // Otherwise, do put & notify via network
+  // Use direct copy if peer is on the same host and has NVL enabled.
+  // Otherwise, do put & signal via network
+  CtranKernelPutSignalArgs kernArgs = {.signalAddr = nullptr, .signalVal = 0};
   if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
     // Single-node direct cudaMemcpy
     if (count > 0) {
@@ -389,34 +387,40 @@ commResult_t ctranPutSignal(
       colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
     }
     if (signal) {
-      config.args.collective.putnotify.isDirect = false;
-
+      // Use atomic_store to signal the remote peer
+      kernArgs.signalAddr = signalAddr;
+      kernArgs.signalVal = signalVal;
     } else {
-      // for intra-node put, we don't need to launch a kernel
+      // No signal, just return
       return commSuccess;
     }
   } else {
-    // X-node put & notify via network
-    config.args.collective.putnotify.isDirect = true;
-
-    // Create an op for GPE thread to complete put and notify
+    // X-node put & signal via network
+    // Create an op for GPE thread to complete put and signal
     struct OpElem* op =
-        new struct OpElem(OpElem::opType::PUTNOTIFY, comm, putOpCount);
-    op->putnotify.sendbuff = originBuff;
-    op->putnotify.count = count;
-    op->putnotify.datatype = datatype;
-    op->putnotify.targetDisp = targetDisp;
-    op->putnotify.peerRank = peer;
-    op->putnotify.win = win;
-    op->putnotify.notify = signal;
+        new struct OpElem(OpElem::opType::PUTSIGNAL, comm, putOpCount);
+    op->putsignal.sendbuff = originBuff;
+    op->putsignal.targetDisp = targetDisp;
+    op->putsignal.count = count;
+    op->putsignal.datatype = datatype;
+    op->putsignal.signalAddr = signalAddr;
+    op->putsignal.signalVal = signalVal;
+    op->putsignal.peerRank = peer;
+    op->putsignal.win = win;
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
   }
 
+  void* func = nullptr;
+  if (signal) {
+    func = reinterpret_cast<void*>(ncclKernelPutSignal);
+    config.algoArgs = reinterpret_cast<void*>(&kernArgs);
+  } else {
+    func = reinterpret_cast<void*>(ncclKernelPut);
+    config.algoArgs = nullptr;
+  }
   FB_COMMCHECK(comm->ctran_->gpe->submit(
-      std::move(opGroup),
-      putNotifyImpl,
-      config,
-      reinterpret_cast<void*>(ncclKernelPutNotify)));
+      std::move(opGroup), putSignalImpl, config, func));
+
   return commSuccess;
 }
 

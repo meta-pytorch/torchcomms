@@ -175,14 +175,8 @@ TEST_P(MultiWindowTestParam, multiWindow) {
           nextPeer,
           numElements * statex->rank(),
           win,
-          win->comm,
           put_stream,
-          false));
-      // TODO: since ctranPutSignal refactoring is WIP and only signaling based
-      // notification is used, we are using put+signal to correctly matching the
-      // ctranWaitSignal. Once ctranPutSignal is fully refactored, we can use
-      // ctranPutSignal directly.
-      COMMCHECK_TEST(ctranSignal(nextPeer, win, put_stream));
+          true));
       COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, wait_stream));
     }
     // Barrier to ensure all peers have finished put
@@ -288,14 +282,8 @@ TEST_P(CtranRMATestParam, winPutWait) {
         nextPeer,
         kNumElements * statex->rank(),
         win,
-        win->comm,
         put_stream,
-        false));
-    // TODO: since ctranPutSignal refactoring is WIP and only signaling based
-    // notification is used, we are using put+signal to correctly matching the
-    // ctranWaitSignal. Once ctranPutSignal is fully refactored, we can use
-    // ctranPutSignal directly.
-    COMMCHECK_TEST(ctranSignal(nextPeer, win, put_stream));
+        true));
     COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, wait_stream));
     if (iter == 0) {
       // Skip first iteration to avoid any warmup overhead
@@ -420,7 +408,6 @@ TEST_P(CtranRMATestParam, winPutOnly) {
         nextPeer,
         kNumElements * statex->rank(),
         win,
-        win->comm,
         put_stream,
         false));
   }

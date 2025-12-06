@@ -307,7 +307,6 @@ commResult_t ctranPutSignal(
     int peer,
     size_t target_disp,
     ctran::CtranWin* win,
-    CtranComm* comm,
     cudaStream_t stream,
     bool signal = true);
 commResult_t ctranSignal(int peer, ctran::CtranWin* win, cudaStream_t stream);
