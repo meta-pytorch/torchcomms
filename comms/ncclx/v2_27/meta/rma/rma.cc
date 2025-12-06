@@ -38,8 +38,8 @@ ncclResult_t ncclPutSignal(
       peer,
       target_disp,
       win->ctranWindow,
-      comm,
-      stream));
+      stream,
+      true));
 }
 
 NCCL_API(
@@ -71,7 +71,6 @@ ncclResult_t ncclPut(
       peer,
       target_disp,
       win->ctranWindow,
-      comm,
       stream,
       false));
 }
@@ -120,7 +119,7 @@ ncclResult_t ncclWaitSignal(int peer, ncclWin_t win, cudaStream_t stream) {
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclWaitSignal requires Ctran support");
   }
-  return metaCommToNccl(ctranWaitSignal(peer, win->ctranWindow, comm, stream));
+  return metaCommToNccl(ctranWaitSignal(peer, win->ctranWindow, stream));
 }
 
 NCCL_API(
@@ -149,14 +148,17 @@ ncclResult_t ncclPutSignal_v2(
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclPutSignal requires Ctran support");
   }
-  return metaCommToNccl(ctranPutSignal_v2(
-      origin_buff,
-      target_disp,
-      count,
-      ncclToMetaComm(datatype),
+  WARN(
+      "ncclPutSignal_v2 is deprecated; please use ncclPutSignal instead. The arguments signal_disp={%ld} and signal_val={%ld} are ignored. The peer argument ({%d}) is now used as disp.",
       signal_disp,
       signal_val,
+      peer);
+  return metaCommToNccl(ctranPutSignal(
+      origin_buff,
+      count,
+      ncclToMetaComm(datatype),
       peer,
+      target_disp,
       win->ctranWindow,
       stream,
       true));
@@ -180,15 +182,20 @@ ncclResult_t ncclWaitSignal_v2(
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclWaitSignal requires Ctran support");
   }
-  return metaCommToNccl(ctranWaitSignal_v2(
-      signal_disp, cmp_val, ncclToMetaComm(cmp_op), win->ctranWindow, stream));
+  WARN(
+      "ncclWaitSignal_v2 is deprecated; please use ncclWaitSignal instead. The arguments cmp_val={%ld}, cmp_op={%d} are ignored. signal_disp ={%ld} must equals to peer rank",
+      cmp_val,
+      cmp_op,
+      signal_disp);
+  assert(signal_disp < comm->statex_.get()->nRanks());
+  return metaCommToNccl(ctranWaitSignal(signal_disp, win->ctranWindow, stream));
 }
 
 NCCL_API(
     ncclResult_t,
     ncclSignal,
-    size_t signalDisp,
-    uint64_t signalVal,
+    size_t signalDisp, // TODO: to be deprecated
+    uint64_t signalVal, // TODO: to be deprecated
     int peer,
     ncclWin_t win,
     cudaStream_t stream);
@@ -202,6 +209,5 @@ ncclResult_t ncclSignal(
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclSignal requires Ctran support");
   }
-  return metaCommToNccl(
-      ctranSignal(signalDisp, signalVal, peer, win->ctranWindow, stream));
+  return metaCommToNccl(ctranSignal(peer, win->ctranWindow, stream));
 }

@@ -120,6 +120,14 @@ commResult_t ResourceImpl::setKSync(cudaStream_t stream, const bool skipRem) {
       sizeof(FwdRecvSync) * numSyncs,
       cudaMemcpyHostToDevice,
       stream));
+  // Ensure fwdRecvSyncs has locally reset and no local rank would start before
+  // all local ranks finished setKSync. Otherwise, the initialization on rank i
+  // may incorrectly reset the SPSC flag after rank j has posted to rank i
+  FB_CUDACHECK(cudaStreamSynchronize(stream));
+  if (!skipRem) {
+    CtranMapperEpochRAII epochRAII(mapper_);
+    FB_COMMCHECK(mapper_->intraBarrier());
+  }
   return commSuccess;
 }
 

@@ -35,6 +35,8 @@ class CtranMapperTcpdmTest : public ::testing::Test {
       commRAII.reset();
     } catch (const std::runtime_error& e) {
       GTEST_SKIP() << "TCPDM backend not enabled. Skip test";
+    } catch (const ctran::utils::Exception& e) {
+      GTEST_SKIP() << "TCPDM backend not enabled. Skip test";
     }
   }
   void TearDown() override {

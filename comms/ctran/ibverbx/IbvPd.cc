@@ -109,8 +109,8 @@ folly::Expected<IbvVirtualQp, Error> IbvPd::createVirtualQp(
   }
 
   // Overwrite the CQs in the initAttr to point to the virtual CQ
-  initAttr->send_cq = sendCq->getPhysicalCqRef().cq();
-  initAttr->recv_cq = recvCq->getPhysicalCqRef().cq();
+  initAttr->send_cq = sendCq->getPhysicalCqsRef().at(0).cq();
+  initAttr->recv_cq = recvCq->getPhysicalCqsRef().at(0).cq();
 
   // First create all the data QPs
   for (int i = 0; i < totalQps; i++) {

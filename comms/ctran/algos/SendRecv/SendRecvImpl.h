@@ -12,8 +12,11 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ctran::sendrecv {
-KernelConfig::KernelType
-getKernelType(bool hasSend, bool hasRecv, bool hasTcpDmRecv);
+KernelConfig::KernelType getKernelType(
+    bool hasSend,
+    bool hasRecv,
+    bool hasTcpDmRecv,
+    enum NCCL_SENDRECV_ALGO algo);
 
 commResult_t setupGpeOp(
     CtranComm* comm,
@@ -21,12 +24,15 @@ commResult_t setupGpeOp(
     std::vector<OpElem*>& nvlOps,
     std::vector<OpElem*>& sendNvlOps,
     std::vector<OpElem*>& ibOps,
-    std::vector<std::unique_ptr<OpElem>>& gpeOpGroup);
+    std::vector<std::unique_ptr<OpElem>>& gpeOpGroup,
+    enum NCCL_SENDRECV_ALGO algo);
 
 commResult_t setupKernelConfig(
     CtranComm* comm,
     const std::vector<OpElem*>& opGroup,
-    KernelConfig& config);
+    const std::vector<OpElem*>& nvlOps,
+    KernelConfig& config,
+    ctran::sendrecv::KernArgs& kernArgs);
 } // namespace ctran::sendrecv
 
 inline const std::string sendRecvAlgoName(

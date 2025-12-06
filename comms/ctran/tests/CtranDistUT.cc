@@ -98,8 +98,10 @@ TEST_F(CtranTest, CTranDisabled) {
   EXPECT_FALSE(
       ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO));
   EXPECT_FALSE(ctranAllReduceSupport(comm->ctranComm_.get()));
-  EXPECT_FALSE(ctranBroadcastSupport(comm->ctranComm_.get()));
-  EXPECT_FALSE(ctranReduceScatterSupport(comm->ctranComm_.get()));
+  EXPECT_FALSE(
+      ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO));
+  EXPECT_FALSE(ctranReduceScatterSupport(
+      comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO));
   EXPECT_FALSE(ctranSendRecvSupport(0, comm->ctranComm_.get()));
   EXPECT_FALSE(ctranAllToAllSupport(1048576, commInt, comm->ctranComm_.get()));
   EXPECT_FALSE(ctranAllToAllvSupport(comm->ctranComm_.get()));

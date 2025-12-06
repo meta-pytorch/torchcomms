@@ -221,6 +221,7 @@ class DeviceMeshTest(unittest.TestCase):
                 layout = device_mesh_3d[dim_name]._layout
                 sizes.append(layout.sizes)
                 strides.append(layout.strides)
+            # pyre-fixme[19]: _MeshLayout dataclass accepts positional args
             flatten_layout = _MeshLayout(tuple(sizes), tuple(strides))
             _flatten_with_comm(
                 device_mesh_3d,

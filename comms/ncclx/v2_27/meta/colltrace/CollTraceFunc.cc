@@ -309,6 +309,9 @@ bool collTraceRecordCtranKernelInfo(
     case KernelConfig::KernelType::SENDRECV:
       coll.opName = "SendRecv";
       break;
+    case KernelConfig::KernelType::SENDRECV_STAGED:
+      coll.opName = "SendRecvStaged";
+      break;
     case KernelConfig::KernelType::SEND_NOTIFY:
       coll.opName = "SendNotify";
       break;

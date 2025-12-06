@@ -7,7 +7,6 @@
 #include <c10/util/intrusive_ptr.h>
 #include <comms/torchcomms/TorchCommTypes.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
-#include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <chrono>
 #include <string>
 #include <unordered_map>

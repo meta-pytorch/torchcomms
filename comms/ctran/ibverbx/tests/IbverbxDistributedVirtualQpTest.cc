@@ -217,12 +217,12 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
     int cqe = 2 * numQp * maxMsgPerQp;
     auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
     EXPECT_TRUE(maybeVirtualCq);
-    EXPECT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+    EXPECT_NE(maybeVirtualCq->getPhysicalCqsRef().at(0).cq(), nullptr);
     auto virtualCq = std::move(*maybeVirtualCq);
 
     // make qp group
     uint32_t totalQps = numQp;
-    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
     auto maybeVirtualQp = pd.createVirtualQp(
         totalQps,
         &initAttr,
@@ -356,11 +356,11 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpModifyVirtualQp) {
   int cqe = 100;
   auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
   ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+  ASSERT_NE(maybeVirtualCq->getPhysicalCqsRef().at(0).cq(), nullptr);
   auto virtualCq = std::move(*maybeVirtualCq);
 
   // make qp group
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
   auto pd = device.allocPd();
   ASSERT_TRUE(pd);
 
@@ -450,12 +450,12 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
   int cqe = 1600;
   auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
   ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+  ASSERT_NE(maybeVirtualCq->getPhysicalCqsRef().at(0).cq(), nullptr);
   auto virtualCq = std::move(*maybeVirtualCq);
 
   // make qp group
   int totalQps = 16;
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
   auto virtualQp = pd->createVirtualQp(
       totalQps, &initAttr, &virtualCq, &virtualCq, 128, 1024);
   ASSERT_TRUE(virtualQp);

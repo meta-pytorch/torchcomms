@@ -15,12 +15,20 @@
 using ctran::window::RemWinInfo;
 
 namespace ctran {
-CtranWin::CtranWin(
-    CtranComm* comm,
-    size_t size,
-    size_t signalSize,
-    DevMemType bufType)
-    : comm(comm), dataBytes(size), signalSize(signalSize), bufType_(bufType) {}
+CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
+    : comm(comm), dataBytes(size), bufType_(bufType) {
+  if (comm == nullptr) {
+    FB_CHECKABORT(
+        commInternalError, "CtranWin: comm is nullptr when creating window.");
+  }
+  signalSize = comm->statex_.get()->nRanks();
+  signalVal.resize(signalSize);
+  waitSignalVal.resize(signalSize);
+  for (auto& val : signalVal)
+    val.store(1);
+  for (auto& val : waitSignalVal)
+    val.store(1);
+}
 
 commResult_t CtranWin::exchange() {
   auto statex = comm->statex_.get();
@@ -274,12 +282,10 @@ commResult_t ctranWinAllocate(
   std::string sigBufSize;
 
   hints.get("window_buffer_location", locationRes);
-  hints.get("window_signal_bufsize", sigBufSize);
 
   CtranWin* newWin = new CtranWin(
       comm,
       size,
-      sigBufSize.empty() ? NCCL_CTRAN_WIN_SIGNAL_SIZE : std::stoi(sigBufSize),
       locationRes == "cpu" ? DevMemType::kHostPinned : DevMemType::kCumem);
   FB_COMMCHECK(newWin->allocate(nullptr));
   FB_COMMCHECK(newWin->exchange());
@@ -302,7 +308,6 @@ commResult_t ctranWinRegister(
         "CtranWin: Valid data buffer must be provided while the ctranWinRegister is used.");
   }
   std::string locationRes;
-  auto statex = comm->statex_.get();
 
   hints.get("window_buffer_location", locationRes);
 
@@ -310,9 +315,6 @@ commResult_t ctranWinRegister(
       comm,
       // byte size of user provided data buffer
       size,
-      // for signal size, we use the number of ranks as the signal size and will
-      // allocate signal buffer with size = nRanks * sizeof(uint64_t)
-      statex->nRanks(),
       // if user buffer is on host CPU, allocate kHostPinned buffer for signal
       // otherwise is on GPU device, allocate kCumem buffer for signal
       locationRes == "cpu" ? DevMemType::kHostPinned : DevMemType::kCumem);

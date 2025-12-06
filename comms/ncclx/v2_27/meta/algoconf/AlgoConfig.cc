@@ -15,6 +15,10 @@ inline const std::string algoValToStr(enum NCCL_SENDRECV_ALGO val) {
       return "ctran";
     case NCCL_SENDRECV_ALGO::orig:
       return "orig";
+    case NCCL_SENDRECV_ALGO::ctzcopy:
+      return "ctzcopy";
+    case NCCL_SENDRECV_ALGO::ctstaged:
+      return "ctstaged";
   }
 }
 

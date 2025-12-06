@@ -11,8 +11,6 @@
 #include <comms/torchcomms/TorchCommUtils.hpp>
 #include <comms/torchcomms/TorchCommWindow.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
-#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
-#include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <memory>
 #include <vector>
 

@@ -11,9 +11,9 @@ namespace comms {
 class TorchCommBackendFactoryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    backend_name_ = "dummy";
+    backend_name_ = "dummy_test";
     std::cout << "setting backend name to " << backend_name_ << std::endl;
-    dummy_backend_lib_path_ = std::getenv("DUMMY_BACKEND_LIB_PATH");
+    dummy_backend_lib_path_ = std::getenv("DUMMY_TEST_BACKEND_LIB_PATH");
     dummy_backend_env_key_ = "TORCHCOMMS_BACKEND_LIB_PATH_" + backend_name_;
     std::transform(
         dummy_backend_env_key_.begin(),
@@ -49,7 +49,7 @@ TEST_F(TorchCommBackendFactoryTest, CreateGenericBackend) {
   EXPECT_EQ(backend->getRank(), 0);
   EXPECT_EQ(backend->getSize(), 1);
   EXPECT_EQ(backend->getDevice().type(), at::kCPU);
-  EXPECT_EQ(backend->getBackendName(), backend_name_);
+  EXPECT_EQ(backend->getBackendName(), "dummy");
 }
 
 TEST_F(TorchCommBackendFactoryTest, GenericBackendFunctionality) {
@@ -94,7 +94,7 @@ TEST_F(TorchCommBackendFactoryTest, GenericBackendSplit) {
       backend_name_, device, "my_comm", options);
   ASSERT_NE(backend, nullptr);
 
-  ASSERT_EQ(backend->getBackendName(), backend_name_);
+  ASSERT_EQ(backend->getBackendName(), "dummy");
 
   // Test split functionality
   std::vector<int> ranks = {0};
@@ -103,7 +103,7 @@ TEST_F(TorchCommBackendFactoryTest, GenericBackendSplit) {
 
   EXPECT_EQ(split_backend->getRank(), 0);
   EXPECT_EQ(split_backend->getSize(), 1);
-  ASSERT_EQ(split_backend->getBackendName(), backend_name_);
+  ASSERT_EQ(split_backend->getBackendName(), "dummy");
 }
 
 TEST_F(TorchCommBackendFactoryTest, UnsupportedBackend) {

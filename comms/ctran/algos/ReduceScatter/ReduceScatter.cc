@@ -6,18 +6,21 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
-bool ctranReduceScatterSupport(CtranComm* comm) {
+bool ctranReduceScatterSupport(
+    CtranComm* comm,
+    enum NCCL_REDUCESCATTER_ALGO algo) {
   // CTran supports either single node case or nLocalRanks == 1 multi-node case
   // for now.
-  bool topoSupport =
-      comm->statex_->nNodes() == 1 || comm->statex_->nLocalRanks() == 1;
+  const int nRanks = comm->statex_->nRanks();
+  const int rank = comm->statex_->rank();
+  const int nNodes = comm->statex_->nNodes();
+  const int nLocalRanks = comm->statex_->nLocalRanks();
+
+  bool topoSupport = nNodes == 1 || nLocalRanks == 1;
   bool ctranInited = ctranInitialized(comm);
-  bool supported = false;
-  if (ctranInited) {
-    supported =
-        (comm->statex_->nRanks() == 1 || comm->ctran_->mapper->hasBackend()) &&
-        topoSupport;
-  }
+
+  bool supported = ctranInited &&
+      (nRanks == 1 || comm->ctran_->mapper->hasBackend()) && topoSupport;
 
   // Print details of unsupport reason
   if (!supported) {
@@ -26,15 +29,13 @@ bool ctranReduceScatterSupport(CtranComm* comm) {
         "ctranReduceScatterSupport: not supported. Likely because "
         "unsupported topology ({}): nNodes {} nLocalRanks {}, ctranInitialized ({}), or hasBackend ({})",
         topoSupport ? "supported" : "unsupported",
-        comm->statex_->nNodes(),
-        comm->statex_->nLocalRanks(),
+        nNodes,
+        nLocalRanks,
         ctranInited ? "true" : "false",
         ctranInited && comm->ctran_->mapper->hasBackend() ? "true" : "false");
 
     // Print details of unsupported peers
     if (ctranInited && !comm->ctran_->mapper->hasBackend()) {
-      const auto nRanks = comm->statex_->nRanks();
-      const auto rank = comm->statex_->rank();
       for (int peer = 0; peer < nRanks; peer++) {
         if (peer != rank &&
             comm->ctran_->mapper->getBackend(peer) ==
@@ -47,7 +48,44 @@ bool ctranReduceScatterSupport(CtranComm* comm) {
         }
       }
     }
+    CLOGF(
+        WARN,
+        "ctranReduceScatterSupport: CTRAN not supported, falling back to baseline");
+
+  } else {
+    switch (algo) {
+      case NCCL_REDUCESCATTER_ALGO::ctdirect:
+        if (nNodes > 1) {
+          supported = false;
+          CLOGF(
+              WARN,
+              "ctranReduceScatterSupport: ctdirect only supports nNodes=1. Falling back to baseline.");
+        }
+        break;
+      case NCCL_REDUCESCATTER_ALGO::ctring:
+        if (nLocalRanks > 1) {
+          supported = false;
+          CLOGF(
+              WARN,
+              "ctranReduceScatterSupport: ctring only supports nLocalRanks=1. Falling back to baseline.");
+        }
+        break;
+      case NCCL_REDUCESCATTER_ALGO::ctrhd: {
+        // ctrhd can run when nLocalRanks=1, nNodes is a power of 2, and data
+        // buffer size is smaller than NCCL_CTRAN_INTERNODE_TMPBUF_SIZE.
+        // Currently, we return false here since we can't check the data buffer
+        // size.
+        supported = false;
+        CLOGF(
+            WARN,
+            "ctranReduceScatterSupport returns false for all cases of algo=ctrhd. Falling back to baseline.");
+        break;
+      }
+      default:
+        break;
+    }
   }
+
   return supported;
 }
 
@@ -58,12 +96,12 @@ commResult_t ctranReduceScatter(
     commDataType_t datatype,
     commRedOp_t redOp,
     CtranComm* comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    enum NCCL_REDUCESCATTER_ALGO algo) {
   if (comm->statex_->nRanks() == 1) {
     return reduceScatterSingleRankImpl(
         sendbuff, recvbuff, recvcount, datatype, redOp, comm, stream);
   }
-  auto algo = NCCL_REDUCESCATTER_ALGO;
 
   const int nNodes = comm->statex_->nNodes();
   const int nLocalRanks = comm->statex_->nLocalRanks();
@@ -71,9 +109,15 @@ commResult_t ctranReduceScatter(
   // nLocalRanks>1 case is currently unsupported.
   if (algo == NCCL_REDUCESCATTER_ALGO::ctran) {
     if (nNodes == 1) {
+      CLOGF_SUBSYS(
+          INFO, COLL, "Running ReduceScatter ctdirect algorithm for nNodes=1");
       algo = NCCL_REDUCESCATTER_ALGO::ctdirect;
     } else if (nLocalRanks == 1) {
       // Only ctring for nLocalRanks=1 && nNodes >1 case
+      CLOGF_SUBSYS(
+          INFO,
+          COLL,
+          "Running ReduceScatter ctring algorithm for nLocalRanks=1 and nNodes>1");
       algo = NCCL_REDUCESCATTER_ALGO::ctring;
     }
   }

@@ -74,7 +74,9 @@ commResult_t ctranAllGather(
     cudaStream_t stream,
     enum NCCL_ALLGATHER_ALGO algo);
 
-bool ctranReduceScatterSupport(CtranComm* comm);
+bool ctranReduceScatterSupport(
+    CtranComm* comm,
+    enum NCCL_REDUCESCATTER_ALGO algo);
 commResult_t ctranReduceScatter(
     const void* sendbuff,
     void* recvbuff,
@@ -82,7 +84,8 @@ commResult_t ctranReduceScatter(
     commDataType_t datatype,
     commRedOp_t redOp,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_REDUCESCATTER_ALGO algo);
 
 bool ctranAllReduceSupport(CtranComm* comm);
 commResult_t ctranAllReduce(
@@ -290,6 +293,7 @@ commResult_t ctranAllToAllDedupDestroy(CtranPersistentRequest* request);
 
 bool ctranBroadcastSupport(
     CtranComm* comm,
+    enum NCCL_BROADCAST_ALGO algo,
     std::optional<CtranMapperBackend> specifiedBackend = std::nullopt);
 commResult_t ctranBroadcast(
     const void* sendbuff,
@@ -298,7 +302,8 @@ commResult_t ctranBroadcast(
     commDataType_t datatype,
     int root,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_BROADCAST_ALGO algo);
 
 commResult_t ctranPutSignal(
     const void* origin_buff,
@@ -307,37 +312,11 @@ commResult_t ctranPutSignal(
     int peer,
     size_t target_disp,
     ctran::CtranWin* win,
-    CtranComm* comm,
     cudaStream_t stream,
     bool signal = true);
-commResult_t ctranSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    ctran::CtranWin* win,
-    cudaStream_t stream);
-commResult_t ctranWaitSignal(
-    int peer,
-    ctran::CtranWin* win,
-    CtranComm* comm,
-    cudaStream_t stream);
-commResult_t ctranPutSignal_v2(
-    const void* origin_buff,
-    size_t target_disp,
-    size_t count,
-    commDataType_t datatype,
-    size_t signal_disp,
-    uint64_t signal_val,
-    int peer,
-    ctran::CtranWin* win,
-    cudaStream_t stream,
-    bool signal);
-commResult_t ctranWaitSignal_v2(
-    size_t signal_disp,
-    uint64_t cmp_val,
-    commCmpOp_t cmp_type,
-    ctran::CtranWin* win,
-    cudaStream_t stream);
+commResult_t ctranSignal(int peer, ctran::CtranWin* win, cudaStream_t stream);
+commResult_t
+ctranWaitSignal(int peer, ctran::CtranWin* win, cudaStream_t stream);
 commResult_t ctranGet(
     void* recvBuff,
     size_t targetDisp,

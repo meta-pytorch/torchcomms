@@ -59,7 +59,7 @@ jobs:
 
         # Build pybindings
         pip install --no-build-isolation -v '.[dev]'
-        python -c "import torchcomms"
+        python -c "import torchcomms; import torchcomms._transport"
 
         # Run tests
         comms/torchcomms/scripts/run_tests_integration_py.sh

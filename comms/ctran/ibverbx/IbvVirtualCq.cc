@@ -6,8 +6,20 @@ namespace ibverbx {
 
 /*** IbvVirtualCq ***/
 
-IbvVirtualCq::IbvVirtualCq(IbvCq&& physicalCq, int maxCqe)
-    : physicalCq_(std::move(physicalCq)), maxCqe_(maxCqe) {
+IbvVirtualCq::IbvVirtualCq(IbvCq&& physicalCq, int maxCqe) : maxCqe_(maxCqe) {
+  physicalCqs_.push_back(std::move(physicalCq));
+  virtualCqNum_ =
+      nextVirtualCqNum_.fetch_add(1); // Assign unique virtual CQ number
+
+  // Register the virtual CQ with Coordinator
+  auto coordinator = Coordinator::getCoordinator();
+  CHECK(coordinator)
+      << "Coordinator should not be nullptr during IbvVirtualCq construction!";
+  coordinator->registerVirtualCq(virtualCqNum_, this);
+}
+
+IbvVirtualCq::IbvVirtualCq(std::vector<IbvCq>&& cqs, int maxCqe)
+    : physicalCqs_(std::move(cqs)), maxCqe_(maxCqe) {
   virtualCqNum_ =
       nextVirtualCqNum_.fetch_add(1); // Assign unique virtual CQ number
 
@@ -19,7 +31,7 @@ IbvVirtualCq::IbvVirtualCq(IbvCq&& physicalCq, int maxCqe)
 }
 
 IbvVirtualCq::IbvVirtualCq(IbvVirtualCq&& other) noexcept {
-  physicalCq_ = std::move(other.physicalCq_);
+  physicalCqs_ = std::move(other.physicalCqs_);
   pendingSendVirtualWcQue_ = std::move(other.pendingSendVirtualWcQue_);
   pendingRecvVirtualWcQue_ = std::move(other.pendingRecvVirtualWcQue_);
   maxCqe_ = other.maxCqe_;
@@ -35,7 +47,7 @@ IbvVirtualCq::IbvVirtualCq(IbvVirtualCq&& other) noexcept {
 
 IbvVirtualCq& IbvVirtualCq::operator=(IbvVirtualCq&& other) noexcept {
   if (this != &other) {
-    physicalCq_ = std::move(other.physicalCq_);
+    physicalCqs_ = std::move(other.physicalCqs_);
     pendingSendVirtualWcQue_ = std::move(other.pendingSendVirtualWcQue_);
     pendingRecvVirtualWcQue_ = std::move(other.pendingRecvVirtualWcQue_);
     maxCqe_ = other.maxCqe_;
@@ -51,8 +63,8 @@ IbvVirtualCq& IbvVirtualCq::operator=(IbvVirtualCq&& other) noexcept {
   return *this;
 }
 
-IbvCq& IbvVirtualCq::getPhysicalCqRef() {
-  return physicalCq_;
+std::vector<IbvCq>& IbvVirtualCq::getPhysicalCqsRef() {
+  return physicalCqs_;
 }
 
 uint32_t IbvVirtualCq::getVirtualCqNum() const {

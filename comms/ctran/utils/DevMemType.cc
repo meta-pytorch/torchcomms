@@ -18,7 +18,11 @@ getDevMemType(const void* addr, const int cudaDev, DevMemType& memType) {
 
   cudaPointerAttributes attr;
   FB_CUDACHECK(cudaPointerGetAttributes(&attr, addr));
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+  if (attr.type == hipMemoryTypeUnregistered) {
+#else
   if (attr.type == cudaMemoryTypeUnregistered) {
+#endif
     memType = DevMemType::kHostUnregistered;
     return commSuccess;
   } else if (attr.type == cudaMemoryTypeHost) {

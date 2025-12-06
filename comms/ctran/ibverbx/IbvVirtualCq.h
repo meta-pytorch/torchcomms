@@ -35,6 +35,7 @@ struct VirtualWc {
 class IbvVirtualCq {
  public:
   IbvVirtualCq(IbvCq&& cq, int maxCqe);
+  IbvVirtualCq(std::vector<IbvCq>&& cqs, int maxCqe);
   ~IbvVirtualCq();
 
   // disable copy constructor
@@ -47,7 +48,7 @@ class IbvVirtualCq {
 
   inline folly::Expected<std::vector<ibv_wc>, Error> pollCq(int numEntries);
 
-  IbvCq& getPhysicalCqRef();
+  std::vector<IbvCq>& getPhysicalCqsRef();
   uint32_t getVirtualCqNum() const;
 
   void enqueSendCq(VirtualWc virtualWc);
@@ -64,7 +65,7 @@ class IbvVirtualCq {
   uint32_t virtualCqNum_{
       0}; // The unique virtual CQ number assigned to instance of IbvVirtualCq
 
-  IbvCq physicalCq_;
+  std::vector<IbvCq> physicalCqs_;
   int maxCqe_{0};
   std::deque<VirtualWc> pendingSendVirtualWcQue_;
   std::deque<VirtualWc> pendingRecvVirtualWcQue_;
@@ -113,16 +114,25 @@ inline folly::Expected<std::vector<ibv_wc>, Error> IbvVirtualCq::pollCq(
 inline folly::Expected<folly::Unit, Error>
 IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
   // Poll from physical CQ one by one and process immediately
+  int cqIdx = 0;
   while (true) {
     // Poll one completion at a time
-    auto maybePhysicalWcsVector = physicalCq_.pollCq(1);
+    auto maybePhysicalWcsVector = physicalCqs_.at(cqIdx).pollCq(1);
     if (maybePhysicalWcsVector.hasError()) {
       return folly::makeUnexpected(maybePhysicalWcsVector.error());
     }
 
-    // If no completions available, break the loop
+    // If there are no available completions, increment cqIdx and continue
+    // looping. Repeat this process until cqIdx reaches physicalCqs_.size().
     if (maybePhysicalWcsVector->empty()) {
-      break;
+      cqIdx += 1;
+      // If cqIdx equals physicalCqs_size, we have already polled CQEs from all
+      // physical CQs. No more CQEs are available to poll at this time, so break
+      // the loop.
+      if (cqIdx == physicalCqs_.size()) {
+        break;
+      }
+      continue;
     }
 
     // Process the single completion immediately

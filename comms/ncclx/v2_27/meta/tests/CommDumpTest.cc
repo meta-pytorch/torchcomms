@@ -112,22 +112,22 @@ class CommDumpTest : public ::testing::TestWithParam<enum sourceToDump> {
         ncclCommRegister(comm, recvBuf, count * sizeof(int), &recvHandle));
   }
 
-  void prepareCtranAllGather(ncclComm* comm, const int count) {
+  void prepareCtranAllGather(ncclComm* commPtr, const int count) {
     CUDACHECK_TEST(cudaMalloc(&sendBuf, count * sizeof(int)));
     CUDACHECK_TEST(cudaMalloc(&recvBuf, count * this->numRanks * sizeof(int)));
     NCCLCHECK_TEST(
-        ncclCommRegister(comm, sendBuf, count * sizeof(int), &sendHandle));
+        ncclCommRegister(commPtr, sendBuf, count * sizeof(int), &sendHandle));
     NCCLCHECK_TEST(ncclCommRegister(
-        comm, recvBuf, count * this->numRanks * sizeof(int), &recvHandle));
+        commPtr, recvBuf, count * this->numRanks * sizeof(int), &recvHandle));
   }
 
-  void prepareCtranAllToAll(ncclComm* comm, const int count) {
+  void prepareCtranAllToAll(ncclComm* commPtr, const int count) {
     CUDACHECK_TEST(cudaMalloc(&sendBuf, count * this->numRanks * sizeof(int)));
     CUDACHECK_TEST(cudaMalloc(&recvBuf, count * this->numRanks * sizeof(int)));
     NCCLCHECK_TEST(ncclCommRegister(
-        comm, sendBuf, count * this->numRanks * sizeof(int), &sendHandle));
+        commPtr, sendBuf, count * this->numRanks * sizeof(int), &sendHandle));
     NCCLCHECK_TEST(ncclCommRegister(
-        comm, recvBuf, count * this->numRanks * sizeof(int), &recvHandle));
+        commPtr, recvBuf, count * this->numRanks * sizeof(int), &recvHandle));
   }
 
   int localRank{0};

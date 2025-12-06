@@ -74,15 +74,21 @@ if(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms_transport PRIVATE
         "-lfolly"
         "-lgflags"
+        "-lglog"
         "-lboost_program_options"
         "-lboost_filesystem"
+        "-lboost_context"
+        "-lfmt"
     )
 else()
     target_link_libraries(torchcomms_transport PRIVATE
         "-l:libfolly.a"
         "-l:libgflags.a"
+        "-l:libglog.a"
         "-l:libboost_program_options.a"
         "-l:libboost_filesystem.a"
+        "-l:libboost_context.a"
+        "-l:libfmt.a"
     )
 endif()
 

@@ -120,8 +120,8 @@ IbvEndPoint::~IbvEndPoint() = default;
 ibv_qp_init_attr IbvEndPoint::makeIbvQpInitAttr() {
   ibv_qp_init_attr initAttr{};
   memset(&initAttr, 0, sizeof(ibv_qp_init_attr));
-  initAttr.send_cq = cq.getPhysicalCqRef().cq();
-  initAttr.recv_cq = cq.getPhysicalCqRef().cq();
+  initAttr.send_cq = cq.getPhysicalCqsRef().at(0).cq();
+  initAttr.recv_cq = cq.getPhysicalCqsRef().at(0).cq();
   initAttr.qp_type = IBV_QPT_RC; // Reliable Connection
   initAttr.sq_sig_all = 0;
   initAttr.cap.max_send_wr = kMaxOutstandingWrs; // maximum outstanding send WRs
