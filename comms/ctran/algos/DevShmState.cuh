@@ -6,13 +6,27 @@
 #include "comms/ctran/commstate/CommStateXDev.h"
 
 #if defined(__HIP_PLATFORM_AMD__)
-__shared__ CtranAlgoDeviceState shmDevState;
-// Points to shmDevState.statex
-__shared__ ctran::CommStateXDev* statex;
-__shared__ int* kernelFlag;
-__shared__ bool kernelDoAbort;
+/* For AMD/HIP:
+ - Buck's HIP compiler treats "extern __shared__" for pointer types as host
+ variables
+ - CMake's linker fails with duplicate symbols if we use __shared__ without
+ extern
+ - Hencing using static for the variables.
+   (this is fine since __shared__ variables are per-kernel-block anyway)
+*/
+extern __shared__ char dynamicSharedMem[];
+static __shared__ ctran::CommStateXDev* statex;
+static __shared__ int* kernelFlag;
+static __shared__ bool kernelDoAbort;
 // TODO: remove once all kernels migrated to populate kernelFlag
-__constant__ int placeHolderKernelFlag = KERNEL_STARTED;
+static __constant__ int placeHolderKernelFlag;
+
+// Accessor function to get the device state from dynamic shared memory
+__device__ __forceinline__ CtranAlgoDeviceState& getShmDevState() {
+  return *reinterpret_cast<CtranAlgoDeviceState*>(dynamicSharedMem);
+}
+#define shmDevState getShmDevState()
+
 #else
 // Use dynamic shared memory because on GB200 shemDevState may exceeed the
 // static shared memory limit 48KB - declare as char array and cast to struct
