@@ -603,33 +603,35 @@ __device__ inline void updateProgressRecvState(
         range.numRanks);                                                            \
   }
 
-#define FWDHDR_TRACE_CHECK(                                                             \
-    VERBOSE, args, hdr, fwdSrcName, fwdSrcRank, step, fwdBlockIds)                      \
-  if (threadIdx.x == 0 && workerId == 0) {                                              \
-    if (hdr->numBlocks == 0 || hdr->numBlocks > args.pArgs.maxNumStepBlks) {            \
-      CTRAN_DEV_FATAL(                                                                  \
-          "Wrong chunk header received from %s %d step %d: sendRank %d numBlocks %d\n", \
-          fwdSrcName,                                                                   \
-          fwdSrcRank,                                                                   \
-          step,                                                                         \
-          hdr->sendRank,                                                                \
-          hdr->numBlocks);                                                              \
-    } else {                                                                            \
-      CTRAN_DEV_TRACE(                                                                  \
-          "Received hdr %p numBlocks %d sendRank %d from %s %d step %d\n",              \
-          hdr,                                                                          \
-          hdr->numBlocks,                                                               \
-          hdr->sendRank,                                                                \
-          fwdSrcName,                                                                   \
-          fwdSrcRank,                                                                   \
-          step);                                                                        \
-    }                                                                                   \
-    if (VERBOSE) {                                                                      \
-      for (auto b = 0; b < hdr->numBlocks; b++) {                                       \
-        CTRAN_DEV_TRACE_IF(                                                             \
-            b < 5, " Received remBlockIds[%d] %d\n", b, fwdBlockIds[b]);                \
-      }                                                                                 \
-    }                                                                                   \
+#define FWDHDR_TRACE_CHECK(                                                                        \
+    VERBOSE, args, hdr, fwdSrcName, fwdSrcRank, step, fwdBlockIds)                                 \
+  if (threadIdx.x == 0 && workerId == 0) {                                                         \
+    if (hdr->numBlocks == 0 || hdr->numBlocks > args.pArgs.maxNumStepBlks ||                       \
+        hdr->opCount != args.opCount) {                                                            \
+      CTRAN_DEV_FATAL(                                                                             \
+          "Wrong chunk header received from %s %d step %d: sendRank %d numBlocks %d opCount %d\n", \
+          fwdSrcName,                                                                              \
+          fwdSrcRank,                                                                              \
+          step,                                                                                    \
+          hdr->sendRank,                                                                           \
+          hdr->numBlocks,                                                                          \
+          hdr->opCount);                                                                           \
+    } else {                                                                                       \
+      CTRAN_DEV_TRACE(                                                                             \
+          "Received hdr %p numBlocks %d sendRank %d from %s %d step %d\n",                         \
+          hdr,                                                                                     \
+          hdr->numBlocks,                                                                          \
+          hdr->sendRank,                                                                           \
+          fwdSrcName,                                                                              \
+          fwdSrcRank,                                                                              \
+          step);                                                                                   \
+    }                                                                                              \
+    if (VERBOSE) {                                                                                 \
+      for (auto b = 0; b < hdr->numBlocks; b++) {                                                  \
+        CTRAN_DEV_TRACE_IF(                                                                        \
+            b < 5, " Received remBlockIds[%d] %d\n", b, fwdBlockIds[b]);                           \
+      }                                                                                            \
+    }                                                                                              \
   }
 
 #define SEND_DATACOPY_TRACE(numToCopy, node, myRank, step)          \
