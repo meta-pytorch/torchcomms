@@ -2,6 +2,34 @@
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 #include <mutex>
+#include <type_traits>
+
+// Helper to detect if c10::CachingAllocator constants exist
+namespace {
+// SFINAE helper to check if kLargeBuffer exists
+template <typename T = void>
+constexpr auto getLargeBufferSize(int)
+    -> decltype(c10::CachingAllocator::kLargeBuffer, size_t()) {
+  return c10::CachingAllocator::kLargeBuffer;
+}
+
+template <typename T = void>
+constexpr size_t getLargeBufferSize(...) {
+  return 20971520; // 20MB (20 * 1024 * 1024)
+}
+
+// SFINAE helper to check if kSmallBuffer exists
+template <typename T = void>
+constexpr auto getSmallBufferSize(int)
+    -> decltype(c10::CachingAllocator::kSmallBuffer, size_t()) {
+  return c10::CachingAllocator::kSmallBuffer;
+}
+
+template <typename T = void>
+constexpr size_t getSmallBufferSize(...) {
+  return 2097152; // 2MB (2 * 1024 * 1024)
+}
+} // namespace
 
 namespace torch {
 namespace comms {
@@ -90,15 +118,12 @@ void CachingAllocatorHookImpl::regDeregMem(
     // below to make sure this assumption is valid.
     size_t total_size = te.size_;
 
-    // Use preprocessor to detect which namespace has the constants available
-#if __has_include(<c10/core/AllocatorConfig.h>)
-    constexpr size_t kLargeBuffer = c10::CachingAllocator::kLargeBuffer; // 20MB
-    constexpr size_t kSmallBuffer = c10::CachingAllocator::kSmallBuffer; // 2MB
-#else
-    constexpr size_t kLargeBuffer =
-        20971520; // 20MB (hardcoded for conda, symbol not exported)
-    constexpr size_t kSmallBuffer = 2097152; // 2MB (not available in conda)
-#endif
+    // Define chunk sizes for expandable segments
+    // In older PyTorch versions, c10::CachingAllocator::kLargeBuffer and
+    // kSmallBuffer symbols may not exist. We detect their availability at
+    // compile time using SFINAE and fall back to hardcoded values if needed.
+    constexpr size_t kLargeBuffer = getLargeBufferSize<>(0);
+    constexpr size_t kSmallBuffer = getSmallBufferSize<>(0);
 
     for (size_t offset = 0; offset < total_size;) {
       // Determine the chunk size at this offset
