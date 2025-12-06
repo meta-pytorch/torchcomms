@@ -135,8 +135,6 @@ class TorchCommWindow:
     ) -> TorchWork: ...
     def signal(
         self,
-        signal_disp: int,
-        signal_val: int,
         dst_rank: int,
         async_op: bool,
     ) -> None: ...

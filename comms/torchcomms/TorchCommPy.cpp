@@ -196,9 +196,7 @@ Args:
     async_op: if this is true, the operation is asynced.
 
       )",
-          py::arg("signal_disp"),
-          py::arg("signal_val"),
-          py::arg("dst_rank"),
+          py::arg("peer_rank"),
           py::arg("async_op"),
           py::call_guard<py::gil_scoped_release>())
       .def(

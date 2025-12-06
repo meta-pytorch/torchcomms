@@ -50,14 +50,8 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)storageOffset;
     return at::Tensor();
   }
-  c10::intrusive_ptr<TorchWork> signal(
-      size_t signalDisp,
-      uint64_t signalVal,
-      int dstRank,
-      bool asyncOp) override {
-    (void)signalDisp;
-    (void)signalVal;
-    (void)dstRank;
+  c10::intrusive_ptr<TorchWork> signal(int peerRank, bool asyncOp) override {
+    (void)peerRank;
     (void)asyncOp;
     return c10::make_intrusive<DummyTorchWork>();
   }

@@ -192,12 +192,8 @@ class NcclxApi {
       cudaStream_t stream) = 0;
   virtual ncclResult_t
   winSharedQuery(int rank, ncclComm_t comm, NcclxWindow win, void** addr) = 0;
-  virtual ncclResult_t winSignal(
-      size_t signalDisp,
-      uint64_t signalVal,
-      int peer,
-      NcclxWindow win,
-      cudaStream_t stream) = 0;
+  virtual ncclResult_t
+  winSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
   virtual ncclResult_t
   winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
 
@@ -402,12 +398,8 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       NcclxWindow win,
       void** addr) override;
-  ncclResult_t winSignal(
-      size_t signalDisp,
-      uint64_t signalVal,
-      int peer,
-      NcclxWindow win,
-      cudaStream_t stream) override;
+  ncclResult_t winSignal(int peer, NcclxWindow win, cudaStream_t stream)
+      override;
   ncclResult_t winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream)
       override;
 

@@ -74,10 +74,9 @@ void WindowRmaTest::testWindowPutBasic(
   }
 
   if (signal) {
-    auto signal_val = 1;
     // call signal on current stream to notify remote rank that the put is
     // complete
-    auto signal_work = win->signal(rank_, signal_val, dst_rank, async_signal);
+    auto signal_work = win->signal(dst_rank, async_signal);
     auto wait_signal_work = win->waitSignal(src_rank, async_signal);
     if (async_signal) {
       // register async Signal op to current stream since it is launched on
@@ -144,10 +143,9 @@ void WindowRmaTest::testWindowCpuPut(
   }
 
   if (signal) {
-    auto signal_val = 1;
     // call signal on current stream to notify remote rank that the put is
     // complete
-    auto signal_work = win->signal(rank_, signal_val, dst_rank, async_signal);
+    auto signal_work = win->signal(dst_rank, async_signal);
     auto wait_signal_work = win->waitSignal(src_rank, async_signal);
     if (async_signal) {
       // register async Signal op to current stream since it is launched on

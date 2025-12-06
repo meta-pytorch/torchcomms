@@ -81,7 +81,7 @@ void NcclxMock::setupDefaultBehaviors() {
       .WillByDefault(DoAll(
           SetArgPointee<3>(reinterpret_cast<void*>(0x5000)),
           Return(ncclSuccess)));
-  ON_CALL(*this, winSignal(_, _, _, _, _)).WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, winSignal(_, _, _)).WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, winWaitSignal(_, _, _)).WillByDefault(Return(ncclSuccess));
 
   // Group operations - return success by default

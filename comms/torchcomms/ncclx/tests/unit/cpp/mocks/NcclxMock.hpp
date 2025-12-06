@@ -260,11 +260,7 @@ class NcclxMock : public NcclxApi {
   MOCK_METHOD(
       ncclResult_t,
       winSignal,
-      (size_t signalDisp,
-       uint64_t signalVal,
-       int peer,
-       NcclxWindow win,
-       cudaStream_t stream),
+      (int peer, NcclxWindow win, cudaStream_t stream),
       (override));
 
   MOCK_METHOD(

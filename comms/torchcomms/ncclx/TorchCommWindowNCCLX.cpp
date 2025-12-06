@@ -151,13 +151,9 @@ at::Tensor TorchCommWindowNCCLX::getTensor(
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::signal(
-    size_t signalDisp,
-    uint64_t signalVal,
-    int dstRank,
+    int peerRank,
     bool asyncOp) {
   checkWindowAndThrow();
-  // make sure the signalDisp is within the signal_size_
-  CHECK_LT(signalDisp, signal_size_) << "signalDisp is out of range";
   auto stream =
       asyncOp ? op_stream_ : cuda_api_->getCurrentCUDAStream(device_.index());
   if (asyncOp) {
@@ -168,9 +164,7 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::signal(
   }
   auto work = torch_comm_->createWork(stream, kDefaultTimeout);
   work->recordStart("signal");
-  CHECK_EQ(
-      nccl_api_->winSignal(signalDisp, signalVal, dstRank, win_, stream),
-      ncclSuccess);
+  CHECK_EQ(nccl_api_->winSignal(peerRank, win_, stream), ncclSuccess);
   work->recordEnd();
   torch_comm_->enqueueWork(work, stream);
   return work;
