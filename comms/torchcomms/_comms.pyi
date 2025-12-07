@@ -31,11 +31,6 @@ class ReduceOp:
     @property
     def type(self) -> RedOpType: ...
 
-class SignalCmpOp(Enum):
-    EQ = auto()
-    GE = auto()
-    LE = auto()
-
 class CommOptions:
     abort_process_on_timeout_or_error: bool
     timeout: timedelta
@@ -140,16 +135,12 @@ class TorchCommWindow:
     ) -> TorchWork: ...
     def signal(
         self,
-        signal_disp: int,
-        signal_val: int,
         dst_rank: int,
         async_op: bool,
     ) -> None: ...
     def wait_signal(
         self,
-        signal_disp: int,
-        signal_val: int,
-        cmp_op: SignalCmpOp,
+        peer_rank: int,
         async_op: bool,
     ) -> None: ...
     def get_tensor(

@@ -9,10 +9,8 @@ namespace comms {
 
 #ifdef NCCL_RMA_SUPPORTED
 using NcclxWindow = ncclWin_t;
-using NcclxWindowCmpOp = ncclCmpOp_t;
 #else
 using NcclxWindow = void*;
-using NcclxWindowCmpOp = int;
 #endif
 
 /**
@@ -194,18 +192,10 @@ class NcclxApi {
       cudaStream_t stream) = 0;
   virtual ncclResult_t
   winSharedQuery(int rank, ncclComm_t comm, NcclxWindow win, void** addr) = 0;
-  virtual ncclResult_t winSignal(
-      size_t signalDisp,
-      uint64_t signalVal,
-      int peer,
-      NcclxWindow win,
-      cudaStream_t stream) = 0;
-  virtual ncclResult_t winWaitSignal(
-      size_t signal_disp,
-      uint64_t cmp_val,
-      NcclxWindowCmpOp cmp_op,
-      NcclxWindow win,
-      cudaStream_t stream) = 0;
+  virtual ncclResult_t
+  winSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
+  virtual ncclResult_t
+  winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
 
   virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
   virtual ncclResult_t memFree(void* buff) = 0;
@@ -408,18 +398,10 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       NcclxWindow win,
       void** addr) override;
-  ncclResult_t winSignal(
-      size_t signalDisp,
-      uint64_t signalVal,
-      int peer,
-      NcclxWindow win,
-      cudaStream_t stream) override;
-  ncclResult_t winWaitSignal(
-      size_t signal_disp,
-      uint64_t cmp_val,
-      NcclxWindowCmpOp cmp_op,
-      NcclxWindow win,
-      cudaStream_t stream) override;
+  ncclResult_t winSignal(int peer, NcclxWindow win, cudaStream_t stream)
+      override;
+  ncclResult_t winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream)
+      override;
 
   ncclResult_t memAlloc(void** buff, size_t size) override;
   ncclResult_t memFree(void* buff) override;

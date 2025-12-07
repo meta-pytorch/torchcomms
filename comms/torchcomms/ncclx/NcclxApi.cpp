@@ -318,28 +318,20 @@ ncclResult_t DefaultNcclxApi::winSharedQuery(
 #endif
 }
 
-ncclResult_t DefaultNcclxApi::winSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    NcclxWindow win,
-    cudaStream_t stream) {
+ncclResult_t
+DefaultNcclxApi::winSignal(int peer, NcclxWindow win, cudaStream_t stream) {
 #ifdef NCCL_RMA_SUPPORTED
-  return ncclSignal(signalDisp, signalVal, peer, win, stream);
+  return ncclSignal(peer, 0, peer, win, stream);
 #else
   throw std::logic_error(
       "NCCL does not support window, NCCL_RMA_SUPPORTED is not set");
 #endif
 }
 
-ncclResult_t DefaultNcclxApi::winWaitSignal(
-    size_t signal_disp,
-    uint64_t cmp_val,
-    NcclxWindowCmpOp cmp_op,
-    NcclxWindow win,
-    cudaStream_t stream) {
+ncclResult_t
+DefaultNcclxApi::winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) {
 #ifdef NCCL_RMA_SUPPORTED
-  return ncclWaitSignal_v2(signal_disp, cmp_val, cmp_op, win, stream);
+  return ncclWaitSignal(peer, win, stream);
 #else
   throw std::logic_error(
       "NCCL does not support window, NCCL_RMA_SUPPORTED is not set");

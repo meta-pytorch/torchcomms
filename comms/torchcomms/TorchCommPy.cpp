@@ -63,12 +63,6 @@ PYBIND11_MODULE(_comms, m) {
       .def_readonly_static(
           "AVG", &ReduceOp::AVG, "Average reduction operation");
 
-  // Enum NcclxCmpOp
-  py::enum_<SignalCmpOp>(m, "SignalCmpOp", "Signal comparison operation.")
-      .value("EQ", SignalCmpOp::EQ)
-      .value("GE", SignalCmpOp::GE)
-      .value("LE", SignalCmpOp::LE);
-
   // Bind CommOptions structure
   py::class_<CommOptions>(
       m, "CommOptions", "Options for communicator creation.")
@@ -202,18 +196,14 @@ Args:
     async_op: if this is true, the operation is asynced.
 
       )",
-          py::arg("signal_disp"),
-          py::arg("signal_val"),
-          py::arg("dst_rank"),
+          py::arg("peer_rank"),
           py::arg("async_op"),
           py::call_guard<py::gil_scoped_release>())
       .def(
           "wait_signal",
           &TorchCommWindow::waitSignal,
           "wait for a signal from remote peer",
-          py::arg("signal_disp"),
-          py::arg("signal_val"),
-          py::arg("cmp_op"),
+          py::arg("peer_rank"),
           py::arg("async_op"),
           py::call_guard<py::gil_scoped_release>())
       .def(

@@ -279,8 +279,6 @@ class TorchCommNCCLX : public TorchCommBackend,
       std::chrono::milliseconds timeout,
       const at::Tensor& inputTensor);
 
-  NcclxWindowCmpOp getNcclSignalCmpOp(SignalCmpOp op);
-
  private:
   // Helper that automatically cleans up premul sums.
   struct RedOpRAII {

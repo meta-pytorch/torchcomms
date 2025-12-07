@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <cstddef>
+#include <sstream>
 
 #include "comms/ctran/algos/AllToAllvDedup/CommonDev.h"
 #include "comms/ctran/algos/AllToAllvDedup/ResourceImpl.h"
@@ -245,8 +246,10 @@ ResourceImpl::ResourceImpl(
     CommLogData* logMetadata)
     : statex_(statex), mapper_(mapper), logMetaData_(logMetadata) {
   // memory pool requires unique key for each memory region allocation
-  auto memKey = folly::sformat(
-      "Ctran::AllToAllvDedup::ResourceImpl-{:#x}", statex->commHash());
+  std::stringstream ss;
+  ss << "Ctran::AllToAllvDedup::ResourceImpl-0x" << std::hex
+     << statex->commHash();
+  auto memKey = ss.str();
 
   bufMngr_ = std::make_unique<
       ::ctran::algos::BufManager<BufName, BufName::kNumBufsNames>>(

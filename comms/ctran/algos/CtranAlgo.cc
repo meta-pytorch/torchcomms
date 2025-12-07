@@ -704,8 +704,10 @@ commResult_t CtranAlgo::initTmpBufs() {
 
   // request slab buffer from memory pool
   if (comm_->memCache_) {
-    this->tmpBufKey = folly::sformat(
-        "Ctran::InitTmpBuf {}", this->comm_->statex_->commHash());
+    std::stringstream ss;
+    ss << "Ctran::InitTmpBuf " << this->comm_->statex_->commHash();
+    this->tmpBufKey = ss.str();
+
     FB_COMMCHECKTHROW(comm_->memCache_->getCachedCuMemById(
         this->tmpBufKey,
         &this->tmpbuf,

@@ -6,7 +6,7 @@ import os
 from typing import Tuple, Union
 
 import torch
-from torchcomms import new_comm, RedOpType, SignalCmpOp
+from torchcomms import new_comm, RedOpType
 from torchcomms._comms import _get_store
 
 
@@ -48,17 +48,6 @@ def get_op_name(op):
         return "PremulSum"
     else:
         return "Unknown: " + str(op.type)
-
-
-def get_signal_cmp_op_name(op):
-    """Helper function to get a string representation of the reduction operation."""
-    if op == SignalCmpOp.EQ:
-        return "EQ"
-    elif op == SignalCmpOp.GE:
-        return "GE"
-    elif op == SignalCmpOp.LE:
-        return "LE"
-        return "Unknown"
 
 
 def get_rank_and_size() -> Tuple[int, int]:

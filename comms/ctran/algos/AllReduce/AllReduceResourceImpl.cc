@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/algos/AllReduce/AllReduceResourceImpl.h"
+#include <sstream>
 #include "comms/ctran/algos/AllReduce/AllReduceDevTypes.h"
 #include "comms/ctran/algos/AllReduce/AllReduceNetTypes.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -66,8 +67,9 @@ AllReduceResourceImpl::AllReduceResourceImpl(
     CommLogData* logMetadata)
     : statex_(statex), mapper_(mapper), logMetaData_(logMetadata) {
   // memory pool requires unique key for each memory region allocation
-  auto memKey =
-      folly::sformat("Ctran::AllReduceResource-{:#x}", statex->commHash());
+  std::stringstream ss;
+  ss << "Ctran::AllReduceResource-0x" << std::hex << statex->commHash();
+  auto memKey = ss.str();
 
   bufMngr_ = std::make_unique<::ctran::algos::BufManager<
       AllReduceResourceBufName,

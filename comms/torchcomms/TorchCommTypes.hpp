@@ -82,13 +82,6 @@ class ReduceOp {
   std::optional<const PreMulSumFactorT> factor_{std::nullopt};
 };
 
-// CmpOp enum for comparison operations in Signal
-enum class SignalCmpOp {
-  EQ = 0,
-  GE,
-  LE,
-};
-
 // Default timeout for collective operations.  It can be overridden during
 // TorchComm creation or during each collective operation.
 constexpr std::chrono::milliseconds kDefaultTimeout = std::chrono::seconds(600);

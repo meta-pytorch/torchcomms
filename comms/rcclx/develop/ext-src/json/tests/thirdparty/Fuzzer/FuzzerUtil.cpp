@@ -197,7 +197,7 @@ void PrintPC(const char *SymbolizedFMT, const char *FallbackFMT, uintptr_t PC) {
 }
 
 unsigned NumberOfCpuCores() {
-  unsigned N = folly::hardware_concurrency();
+  unsigned N = folly::available_concurrency();
   if (!N) {
     Printf("WARNING: std::thread::hardware_concurrency not well defined for "
            "your platform. Assuming CPU count of 1.\n");
