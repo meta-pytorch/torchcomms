@@ -101,7 +101,7 @@ TEST_F(CtranMapperProfilerTest, MapperFlushTimerStdout) {
   dummyCommRAII = createDummyCtranComm();
 
   auto dummyAlgo = "Ring";
-  auto mapper = std::make_unique<CtranMapper>(dummyCommRAII->ctranComm);
+  auto mapper = std::make_unique<CtranMapper>(dummyCommRAII->ctranComm.get());
   EXPECT_THAT(mapper, testing::NotNull());
 
   auto ts = std::unique_ptr<CtranMapperTimestamp>(
@@ -139,7 +139,7 @@ TEST_F(CtranMapperProfilerTest, DISABLED_MapperFlushTimerInfo) {
   dummyCommRAII = createDummyCtranComm();
 
   auto dummyAlgo = "Ring";
-  auto mapper = std::make_unique<CtranMapper>(dummyCommRAII->ctranComm);
+  auto mapper = std::make_unique<CtranMapper>(dummyCommRAII->ctranComm.get());
   EXPECT_THAT(mapper, testing::NotNull());
 
   auto ts = std::unique_ptr<CtranMapperTimestamp>(
@@ -185,7 +185,7 @@ TEST_F(CtranMapperProfilerTest, MapperFlushTimerKineto) {
   dummyCommRAII = createDummyCtranComm();
 
   auto dummyAlgo = "Ring";
-  auto mapper = std::make_unique<CtranMapper>(dummyCommRAII->ctranComm);
+  auto mapper = std::make_unique<CtranMapper>(dummyCommRAII->ctranComm.get());
   EXPECT_THAT(mapper, testing::NotNull());
 
   auto ts = std::unique_ptr<CtranMapperTimestamp>(
@@ -236,7 +236,7 @@ TEST_F(CtranMapperProfilerTest, regSnapshot) {
 
   for (int i = 0; i < numComms; ++i) {
     comms[i] = createDummyCtranComm();
-    mappers[i] = std::make_unique<CtranMapper>(comms[i]->ctranComm);
+    mappers[i] = std::make_unique<CtranMapper>(comms[i]->ctranComm.get());
     EXPECT_THAT(mappers[i], testing::NotNull());
   }
 

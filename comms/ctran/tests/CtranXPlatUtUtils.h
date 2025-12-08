@@ -9,11 +9,14 @@
 #include <optional>
 #include "caffe2/torch/csrc/distributed/c10d/TCPStore.hpp"
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/interfaces/ICtran.h"
+#include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CudaUtils.h"
+#include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
-#include "comms/mccl/McclComm.h"
-#include "comms/mccl/mccl.h"
+#include "comms/mccl/bootstrap/CtranAdapter.h"
+#include "comms/mccl/utils/Utils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/testinfra/tests_common.cuh"
 #include "comms/utils/commSpecs.h"
 
 void logGpuMemoryStats(int gpu);
@@ -40,21 +43,16 @@ void commMemFree(void* buf, size_t bufSize, MemAllocType memType);
 
 class TestCtranCommRAII {
  public:
-  // TODO: construct without mcclComm
-  TestCtranCommRAII(std::unique_ptr<mccl::McclComm> mcclComm);
-  CtranComm* ctranComm{nullptr};
+  TestCtranCommRAII(std::unique_ptr<CtranComm> ctranComm)
+      : ctranComm(std::move(ctranComm)) {}
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
+  std::shared_ptr<mccl::bootstrap::Bootstrap> bootstrap_{nullptr};
 
   ~TestCtranCommRAII() {
-    if (mcclComm_) {
-      mcclComm_.reset();
-    }
     if (ctranComm) {
-      ctranComm->destroy();
+      ctranComm.reset();
     }
   }
-
- private:
-  std::unique_ptr<mccl::McclComm> mcclComm_;
 };
 
 std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId = 0);
@@ -237,6 +235,81 @@ inline std::unique_ptr<c10d::TCPStore> createTcpStore(bool isServer) {
   }
 }
 
+// Helper struct to hold bootstrap that needs to stay alive with the CtranComm
+struct CtranCommWithBootstrap {
+  std::shared_ptr<mccl::bootstrap::Bootstrap> bootstrap;
+  std::unique_ptr<CtranComm> ctranComm;
+};
+
+inline CtranCommWithBootstrap createCtranCommWithBootstrap(
+    int rank,
+    int nRanks,
+    uint64_t commId = 22,
+    int commHash = -1,
+    std::string_view commDesc = "ctran_comm_raii_comm_desc") {
+  int cudaDev;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+
+  COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
+
+  std::unique_ptr<CtranComm> ctranComm = std::make_unique<CtranComm>(
+      ::ctran::utils::createAbort(/*enabled=*/false));
+
+  // Create and initialize bootstrap; needed for CTRAN backend initialization
+  auto bootstrap = std::make_shared<mccl::bootstrap::Bootstrap>(
+      NCCL_SOCKET_IFNAME,
+      mccl::bootstrap::Options{
+          .port = 0, .ifAddrPrefix = NCCL_SOCKET_IPADDR_PREFIX});
+
+  const std::string selfUrl = bootstrap->semi_getInitUrl().get();
+  std::vector<std::string> urls(nRanks);
+  urls[rank] = selfUrl;
+
+  // For single-rank case, just use our own URL
+  // For multi-rank case, caller should use exchangeInitUrls to get all URLs
+  if (nRanks == 1) {
+    bootstrap->init(urls, rank, /*uuid=*/0);
+  }
+
+  ctranComm->bootstrap_ =
+      std::make_unique<mccl::bootstrap::CtranAdapter>(bootstrap);
+
+  ctranComm->logMetaData_.commId = commId;
+  ctranComm->logMetaData_.commHash = commHash;
+  ctranComm->logMetaData_.commDesc = std::string(commDesc);
+  ctranComm->logMetaData_.rank = rank;
+  ctranComm->logMetaData_.nRanks = nRanks;
+
+  const int cudaArch = ctran::utils::getCudaArch(cudaDev).value_or(-1);
+  const int64_t busId = ctran::utils::BusId::makeFrom(cudaDev).toInt64();
+
+  std::vector<ncclx::RankTopology> rankTopologies{};
+  std::vector<int> commRanksToWorldRanks{};
+  ctranComm->statex_ = std::make_unique<ncclx::CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      std::move(rankTopologies),
+      std::move(commRanksToWorldRanks),
+      std::string{commDesc});
+
+  // For single-rank communicators (nRanks=1), use nolocal topology mode
+  // which doesn't require bootstrap communication.
+  if (nRanks == 1) {
+    ctranComm->statex_->initRankTopologyNolocal();
+  }
+
+  FB_COMMCHECKTHROW(ctranInit(ctranComm.get()));
+
+  return CtranCommWithBootstrap{
+      .bootstrap = std::move(bootstrap),
+      .ctranComm = std::move(ctranComm),
+  };
+}
+
 class CtranDistTest : public ::testing::Test {
  public:
   std::unique_ptr<TestCtranCommRAII> commRAII;
@@ -344,30 +417,79 @@ class CtranDistTest : public ::testing::Test {
     return res;
   }
 
+  static constexpr uint64_t kCommId{22};
+  static constexpr int kCommHash{-1};
+  static constexpr std::string_view kCommDesc{"ctran_comm_raii_comm_desc"};
+  std::shared_ptr<mccl::bootstrap::Bootstrap> bootstrap_{nullptr};
+
   std::unique_ptr<TestCtranCommRAII> createCtranCommRAII() {
     int cudaDev;
     CUDACHECK_TEST(cudaGetDevice(&cudaDev));
 
-    // TODO: refactor mccl comm creation to generic ctran comm creation
     COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
-    mccl::McclCommCreateOpts opts{
-        .cudaDeviceId = cudaDev,
-    };
-    auto mcclComm = std::make_unique<mccl::McclComm>(opts);
 
-    const std::string selfUrl = mcclComm->getInitURL();
-    LOG(INFO) << "Rank " << globalRank << " initURL: " << selfUrl;
-    const std::string uuid{"0"};
-    auto initWorkHandle = mcclComm->init(
-        mccl::InitOpts{
-            .uuid = uuid,
-            .urls = exchangeInitUrls(selfUrl, numRanks, globalRank),
-            .timeout = std::chrono::milliseconds(120000),
-        });
-    initWorkHandle->waitCpu();
-    auto res = initWorkHandle->getResult();
-    COMMCHECK_TEST(res.value().code);
-    return std::make_unique<TestCtranCommRAII>(std::move(mcclComm));
+    // For multi-rank cases, we need to set up bootstrap before creating the
+    // CtranComm This is different from single-rank case where bootstrap can be
+    // self-initialized
+    if (numRanks > 1) {
+      // Create bootstrap first
+      bootstrap_ = std::make_shared<mccl::bootstrap::Bootstrap>(
+          NCCL_SOCKET_IFNAME,
+          mccl::bootstrap::Options{
+              .port = 0, .ifAddrPrefix = NCCL_SOCKET_IPADDR_PREFIX});
+
+      const std::string selfUrl = bootstrap_->semi_getInitUrl().get();
+      LOG(INFO) << "Rank " << globalRank << " initURL: " << selfUrl;
+
+      auto urls = exchangeInitUrls(selfUrl, numRanks, globalRank);
+      bootstrap_->init(urls, globalRank, /*uuid=*/0);
+
+      // Now create CtranComm with the initialized bootstrap
+      std::unique_ptr<CtranComm> ctranComm = std::make_unique<CtranComm>(
+          ::ctran::utils::createAbort(/*enabled=*/false));
+
+      ctranComm->bootstrap_ =
+          std::make_unique<mccl::bootstrap::CtranAdapter>(bootstrap_);
+
+      ctranComm->logMetaData_.commId = kCommId;
+      ctranComm->logMetaData_.commHash = kCommHash;
+      ctranComm->logMetaData_.commDesc = std::string(kCommDesc);
+      ctranComm->logMetaData_.rank = globalRank;
+      ctranComm->logMetaData_.nRanks = numRanks;
+
+      const int cudaArch = ctran::utils::getCudaArch(cudaDev).value_or(-1);
+      const int64_t busId = ctran::utils::BusId::makeFrom(cudaDev).toInt64();
+
+      std::vector<ncclx::RankTopology> rankTopologies{};
+      std::vector<int> commRanksToWorldRanks{};
+      ctranComm->statex_ = std::make_unique<ncclx::CommStateX>(
+          globalRank,
+          numRanks,
+          cudaDev,
+          cudaArch,
+          busId,
+          kCommHash,
+          std::move(rankTopologies),
+          std::move(commRanksToWorldRanks),
+          std::string{kCommDesc});
+
+      mccl::utils::initRankTopology(
+          ctranComm->statex_.get(), ctranComm->bootstrap_.get());
+
+      FB_COMMCHECKTHROW(ctranInit(ctranComm.get()));
+
+      auto raii = std::make_unique<TestCtranCommRAII>(std::move(ctranComm));
+      raii->bootstrap_ = bootstrap_;
+      return raii;
+    } else {
+      // Single-rank case - use the helper function
+      auto result = createCtranCommWithBootstrap(
+          globalRank, numRanks, kCommId, kCommHash, kCommDesc);
+      auto raii =
+          std::make_unique<TestCtranCommRAII>(std::move(result.ctranComm));
+      raii->bootstrap_ = std::move(result.bootstrap);
+      return raii;
+    }
   }
 
   std::unique_ptr<c10d::TCPStore> tcpStore_{nullptr};

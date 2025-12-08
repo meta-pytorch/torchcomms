@@ -74,7 +74,7 @@ TEST_F(CtranIbHcaTest, IbHcaExactMatchDev) {
     // CtranComm* comm = this->commRAII->ctranComm;
 
     std::unique_ptr<TestCtranCommRAII> commRAII_ = createDummyCtranComm(devId);
-    CtranComm* comm = commRAII_->ctranComm;
+    CtranComm* comm = commRAII_->ctranComm.get();
 
     EXPECT_EQ(NCCL_IB_HCA_PREFIX, "=");
 

@@ -33,7 +33,7 @@ class CtranGpeTest : public ::testing::Test {
 
     CUDACHECK_TEST(cudaMalloc(&dummyDevState_d, sizeof(CtranAlgoDeviceState)));
     dummyCommRAII = createDummyCtranComm();
-    dummyComm = dummyCommRAII->ctranComm;
+    dummyComm = dummyCommRAII->ctranComm.get();
   }
   void TearDown() override {
     if (gpe != nullptr) {
@@ -61,7 +61,7 @@ class CtranGpeKernelTest : public ::testing::Test {
     ncclCvarInit();
 
     dummyCommRAII = createDummyCtranComm();
-    dummyComm = dummyCommRAII->ctranComm;
+    dummyComm = dummyCommRAII->ctranComm.get();
 
     FB_CUDACHECKIGNORE(
         cudaHostAlloc((void**)&testFlag, sizeof(int), cudaHostAllocDefault));

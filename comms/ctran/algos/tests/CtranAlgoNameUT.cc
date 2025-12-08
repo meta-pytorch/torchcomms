@@ -13,7 +13,7 @@ class CtranAlgoNameTest : public ::testing::Test {
 
     ncclCvarInit();
     dummyCommRAII = createDummyCtranComm();
-    dummyComm_ = dummyCommRAII->ctranComm;
+    dummyComm_ = dummyCommRAII->ctranComm.get();
   }
 
  protected:

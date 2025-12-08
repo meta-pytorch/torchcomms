@@ -33,7 +33,7 @@ class CtranMapperTest : public ::testing::Test {
     logGpuMemoryStats(cudaDev);
 
     commRAII_ = createDummyCtranComm();
-    dummyComm_ = commRAII_->ctranComm;
+    dummyComm_ = commRAII_->ctranComm.get();
     CUDACHECK_TEST(cudaSetDevice(cudaDev));
     CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
     CUDACHECK_TEST(cudaMalloc(&buf2, bufSize));
@@ -61,7 +61,7 @@ TEST(CtranMapperUT, EnableBackendThroughCVARs) {
   setenv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket", 1);
   ncclCvarInit();
   auto commRAII = createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm;
+  auto dummyComm = commRAII->ctranComm.get();
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::IB));
@@ -74,39 +74,43 @@ TEST(CtranMapperUT, EnableBackendThroughCVARsWithoutIB) {
   setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
   ncclCvarInit();
   auto commRAII = createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm;
+  auto dummyComm = commRAII->ctranComm.get();
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
   EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
 }
-TEST(CtranMapperUT, EnableBackendWithMCCLBackendUNSET) {
+TEST(CtranMapperUT, EnableBackendWithConfigUnset) {
+  // Test that when config_.backends contains only UNSET, mapper falls back
+  // to using NCCL_CTRAN_BACKENDS CVAR.
   setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
-  setenv("MCCL_CTRAN_BACKENDS", "not_set", 1);
   ncclCvarInit();
   auto commRAII = createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm;
+  auto dummyComm = commRAII->ctranComm.get();
+  dummyComm->config_.backends = {CommBackend::UNSET}; // Test fallback behavior
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
   EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
-  unsetenv("MCCL_CTRAN_BACKENDS");
 }
 
-TEST(CtranMapperUT, EnableBackendWithMCCLBackendOverride) {
+TEST(CtranMapperUT, EnableBackendWithExplicitConfigOverride) {
+  // Test that when config_.backends is explicitly set,
+  // it overrides the NCCL_CTRAN_BACKENDS CVAR.
   setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
-  setenv("MCCL_CTRAN_BACKENDS", "ib", 1);
   ncclCvarInit();
   auto commRAII = createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm;
+  auto dummyComm = commRAII->ctranComm.get();
+  // Explicitly set config_.backends to IB only.
+  dummyComm->config_.backends = {CommBackend::IB};
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
+  // Verify config_.backends={IB} overrides NCCL_CTRAN_BACKENDS={nvl, socket}
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::IB));
   EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
   EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
-  unsetenv("MCCL_CTRAN_BACKENDS");
 }
 
 TEST(CtranMapperUT, EnableBackendThroughCVARsWithTCPandIB) {
@@ -1252,7 +1256,7 @@ class CtranMapperTestDisjoint : public ::testing::Test {
     logGpuMemoryStats(cudaDev);
 
     commRAII_ = createDummyCtranComm();
-    dummyComm_ = commRAII_->ctranComm;
+    dummyComm_ = commRAII_->ctranComm.get();
     CUDACHECK_TEST(cudaSetDevice(cudaDev));
 
     // Skip test if cuMem is not supported since we need disjoint allocations

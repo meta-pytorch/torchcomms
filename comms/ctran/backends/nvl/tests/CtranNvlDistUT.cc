@@ -36,7 +36,7 @@ class CtranNvlTest : public CtranDistTest {
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
 
-    comm = commRAII->ctranComm;
+    comm = commRAII->ctranComm.get();
   }
 
   void TearDown() override {
