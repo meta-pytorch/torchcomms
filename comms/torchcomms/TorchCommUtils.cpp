@@ -149,7 +149,7 @@ std::pair<int, int> query_pals_ranksize() {
     TC_LOG(WARNING)
         << "Found size from PALS/PBS environment but unable to determine rank. "
         << "Please set PALS_RANKID.";
-  } else {
+  } else if (rank > -1 && comm_size > 0) {
     TC_LOG(INFO) << "Found rank and size from PALS/PBS environment (rank="
                  << rank << ", size=" << comm_size << ").";
   }
