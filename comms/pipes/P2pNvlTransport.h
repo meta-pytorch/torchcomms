@@ -13,6 +13,7 @@ namespace comms::pipes {
 struct P2pNvlTransportConfig {
   std::size_t dataBufferSize{0};
   std::size_t chunkSize{0};
+  std::size_t pipelineDepth{0};
 };
 
 // Host-side P2P NVL transport that exchanges IPC buffer handles between ranks
