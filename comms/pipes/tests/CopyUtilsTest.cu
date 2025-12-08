@@ -6,6 +6,7 @@
 
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/tests/Utils.h"
 
 namespace comms::pipes::test {
 
@@ -40,6 +41,7 @@ void testCopyChunkVectorized(
     int blockSize) {
   testCopyChunkVectorizedKernel<<<numBlocks, blockSize>>>(
       dst_d, src_d, chunk_bytes, errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 } // namespace comms::pipes::test

@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/pipes/tests/P2pNvlTransportTest.cuh"
+#include "comms/pipes/tests/Utils.h"
 
 namespace comms::pipes::test {
 
@@ -28,6 +29,7 @@ void fillBuffer(int* deviceBuffer, int value, size_t numElements) {
   const int blockSize = 256;
   const int numBlocks = (numElements + blockSize - 1) / blockSize;
   fillBufferKernel<<<numBlocks, blockSize>>>(deviceBuffer, value, numElements);
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 void verifyBuffer(
@@ -39,6 +41,7 @@ void verifyBuffer(
   const int numBlocks = (numElements + blockSize - 1) / blockSize;
   verifyBufferKernel<<<numBlocks, blockSize>>>(
       deviceBuffer, expectedValue, numElements, deviceErrorCount);
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 } // namespace comms::pipes::test

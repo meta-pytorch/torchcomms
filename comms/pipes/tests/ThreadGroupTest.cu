@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/tests/Utils.h"
 
 namespace comms::pipes::test {
 
@@ -58,6 +59,7 @@ void testContiguousLocality(
     int blockSize) {
   testContiguousLocalityKernel<<<numBlocks, blockSize>>>(
       groupIds_d, numItems, errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 } // namespace comms::pipes::test
