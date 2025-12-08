@@ -1259,10 +1259,14 @@ TEST_F(TorchCommNCCLXTest, AlltoallvDynamicDispatchCombine) {
   auto input_tensor = createTestTensor({100});
   std::vector<at::Tensor> output_tensor_list = {
       createTestTensor({50}), createTestTensor({50})};
-  auto input_chunk_sizes = createTestTensor({2});
-  auto input_chunk_indices = createTestTensor({2});
-  auto input_chunk_count_per_rank = createTestTensor({2});
-  auto output_chunk_sizes_per_rank = createTestTensor({4});
+  auto input_chunk_sizes =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_indices =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_count_per_rank =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto output_chunk_sizes_per_rank =
+      at::ones({4}, at::TensorOptions().device(*device_).dtype(at::kLong));
   auto output_tensor = createTestTensor({100});
 
   // Test alltoallv_dynamic_dispatch
