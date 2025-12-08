@@ -197,4 +197,34 @@ __device__ inline ThreadGroup make_warp_group() {
 #endif
 }
 
+/**
+ * make_block_group - Create a ThreadGroup where all threads in a block
+ *                    work together as a single group
+ *
+ * Use case: When work items need more parallelism than a warp provides,
+ * or when __syncthreads() synchronization is acceptable.
+ *
+ * Example with 4 blocks × 256 threads:
+ *   - total_groups = 4 (one per block)
+ *   - group_size = 256
+ *   - Each block processes work items cooperatively
+ */
+__device__ inline ThreadGroup make_block_group() {
+#ifdef __CUDA_ARCH__
+  uint32_t global_tid = blockIdx.x * blockDim.x + threadIdx.x;
+  uint32_t total_threads = blockDim.x * gridDim.x;
+
+  return ThreadGroup{
+      .thread_id_in_group = threadIdx.x,
+      .group_size = blockDim.x,
+      .group_id = blockIdx.x,
+      .total_groups = gridDim.x,
+      .scope = SyncScope::TILE,
+      .global_thread_id = global_tid,
+      .total_threads = total_threads};
+#else
+  return ThreadGroup{};
+#endif
+}
+
 } // namespace comms::pipes

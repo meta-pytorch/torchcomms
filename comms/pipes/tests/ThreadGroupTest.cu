@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/tests/Utils.h"
 
 namespace comms::pipes::test {
 
@@ -58,6 +59,49 @@ void testContiguousLocality(
     int blockSize) {
   testContiguousLocalityKernel<<<numBlocks, blockSize>>>(
       groupIds_d, numItems, errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// Block Group Tests
+// =============================================================================
+
+__global__ void testBlockGroupKernel(
+    uint32_t* groupIds,
+    uint32_t* threadIdsInGroup,
+    uint32_t* groupSizes,
+    uint32_t numItems,
+    uint32_t* errorCount) {
+  auto block = make_block_group();
+
+  // Record group properties for verification
+  if (threadIdx.x == 0) {
+    groupSizes[blockIdx.x] = block.group_size;
+  }
+
+  // Each block writes its group_id to its assigned work items
+  block.for_each_item_contiguous(numItems, [&](uint32_t item_id) {
+    if (item_id >= numItems) {
+      atomicAdd(errorCount, 1);
+      return;
+    }
+
+    groupIds[item_id] = block.group_id;
+    threadIdsInGroup[item_id] = block.thread_id_in_group;
+  });
+}
+
+void testBlockGroup(
+    uint32_t* groupIds_d,
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t numItems,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testBlockGroupKernel<<<numBlocks, blockSize>>>(
+      groupIds_d, threadIdsInGroup_d, groupSizes_d, numItems, errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 } // namespace comms::pipes::test

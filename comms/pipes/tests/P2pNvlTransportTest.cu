@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/tests/P2pNvlTransportTest.cuh"
+#include "comms/pipes/tests/Utils.h"
 
 namespace comms::pipes::test {
 
@@ -24,10 +26,95 @@ __global__ void verifyBufferKernel(
   }
 }
 
+// Helper to create the appropriate thread group based on type
+__device__ inline ThreadGroup make_group(GroupType groupType) {
+  switch (groupType) {
+    case GroupType::WARP:
+      return make_warp_group();
+    case GroupType::BLOCK:
+      return make_block_group();
+    default:
+      return make_warp_group();
+  }
+}
+
+__global__ void testSendKernel(
+    P2pNvlTransportDevice p2p,
+    void* src_d,
+    size_t nbytes,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  p2p.send(group, src_d, nbytes);
+}
+
+__global__ void testRecvKernel(
+    P2pNvlTransportDevice p2p,
+    void* dst_d,
+    size_t nbytes,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  p2p.recv(group, dst_d, nbytes);
+}
+
+// Kernel that performs multiple sequential sends within a single kernel launch
+__global__ void testMultiSendKernel(
+    P2pNvlTransportDevice p2p,
+    void* src_d,
+    size_t nbytes,
+    int numSends,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  char* src = reinterpret_cast<char*>(src_d);
+  for (int i = 0; i < numSends; i++) {
+    p2p.send(group, src + i * nbytes, nbytes);
+  }
+}
+
+// Kernel that performs multiple sequential recvs within a single kernel launch
+__global__ void testMultiRecvKernel(
+    P2pNvlTransportDevice p2p,
+    void* dst_d,
+    size_t nbytes,
+    int numRecvs,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  char* dst = reinterpret_cast<char*>(dst_d);
+  for (int i = 0; i < numRecvs; i++) {
+    p2p.recv(group, dst + i * nbytes, nbytes);
+  }
+}
+
+// Kernel that performs both send and recv within a single kernel launch
+// Used for pipelined bidirectional communication
+__global__ void testSendRecvKernel(
+    P2pNvlTransportDevice p2p,
+    void* send_d,
+    void* recv_d,
+    size_t nbytes,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  p2p.send(group, send_d, nbytes);
+  p2p.recv(group, recv_d, nbytes);
+}
+
+// Kernel that performs recv then send within a single kernel launch
+// Paired with testSendRecvKernel for bidirectional tests
+__global__ void testRecvSendKernel(
+    P2pNvlTransportDevice p2p,
+    void* recv_d,
+    void* send_d,
+    size_t nbytes,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  p2p.recv(group, recv_d, nbytes);
+  p2p.send(group, send_d, nbytes);
+}
+
 void fillBuffer(int* deviceBuffer, int value, size_t numElements) {
   const int blockSize = 256;
   const int numBlocks = (numElements + blockSize - 1) / blockSize;
   fillBufferKernel<<<numBlocks, blockSize>>>(deviceBuffer, value, numElements);
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 void verifyBuffer(
@@ -39,6 +126,87 @@ void verifyBuffer(
   const int numBlocks = (numElements + blockSize - 1) / blockSize;
   verifyBufferKernel<<<numBlocks, blockSize>>>(
       deviceBuffer, expectedValue, numElements, deviceErrorCount);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testSend(
+    P2pNvlTransportDevice p2p,
+    void* src_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType,
+    int /*blocksPerGroup*/) {
+  testSendKernel<<<numBlocks, blockSize>>>(p2p, src_d, nbytes, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testRecv(
+    P2pNvlTransportDevice p2p,
+    void* dst_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType,
+    int /*blocksPerGroup*/) {
+  testRecvKernel<<<numBlocks, blockSize>>>(p2p, dst_d, nbytes, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testMultiSend(
+    P2pNvlTransportDevice p2p,
+    void* src_d,
+    size_t nbytes,
+    int numSends,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType,
+    int /*blocksPerGroup*/) {
+  testMultiSendKernel<<<numBlocks, blockSize>>>(
+      p2p, src_d, nbytes, numSends, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testMultiRecv(
+    P2pNvlTransportDevice p2p,
+    void* dst_d,
+    size_t nbytes,
+    int numRecvs,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType,
+    int /*blocksPerGroup*/) {
+  testMultiRecvKernel<<<numBlocks, blockSize>>>(
+      p2p, dst_d, nbytes, numRecvs, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testSendRecv(
+    P2pNvlTransportDevice p2p,
+    void* send_d,
+    void* recv_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType,
+    int /*blocksPerGroup*/) {
+  testSendRecvKernel<<<numBlocks, blockSize>>>(
+      p2p, send_d, recv_d, nbytes, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testRecvSend(
+    P2pNvlTransportDevice p2p,
+    void* recv_d,
+    void* send_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType,
+    int /*blocksPerGroup*/) {
+  testRecvSendKernel<<<numBlocks, blockSize>>>(
+      p2p, recv_d, send_d, nbytes, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
 }
 
 } // namespace comms::pipes::test
