@@ -1,52 +1,29 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
-#include <mutex>
-#include <type_traits>
+#include <cuda.h>
 
-// Helper to detect if c10::CachingAllocator constants exist
+// Helper function to get allocation granularity for a device
 namespace {
+size_t getAllocationGranularity(int device) {
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  prop.location.id = device;
 
-// Helper to get kLargeBuffer from c10::CachingAllocator if it exists
-template <typename = void>
-struct LargeBufferGetter {
-  static constexpr size_t get() {
-    return 20971520; // 20MB (20 * 1024 * 1024) - fallback
+  size_t granularity;
+  CUresult result = cuMemGetAllocationGranularity(
+      &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM);
+
+  if (result != CUDA_SUCCESS) {
+    const char* error_string;
+    cuGetErrorString(result, &error_string);
+    throw std::runtime_error(
+        std::string("Failed to get allocation granularity for device ") +
+        std::to_string(device) + ": " + error_string);
   }
-};
 
-// Specialization when c10::CachingAllocator::kLargeBuffer exists
-template <>
-struct LargeBufferGetter<
-    std::void_t<decltype(c10::CachingAllocator::kLargeBuffer)>> {
-  static constexpr size_t get() {
-    return c10::CachingAllocator::kLargeBuffer;
-  }
-};
-
-// Helper to get kSmallBuffer from c10::CachingAllocator if it exists
-template <typename = void>
-struct SmallBufferGetter {
-  static constexpr size_t get() {
-    return 2097152; // 2MB (2 * 1024 * 1024) - fallback
-  }
-};
-
-// Specialization when c10::CachingAllocator::kSmallBuffer exists
-template <>
-struct SmallBufferGetter<
-    std::void_t<decltype(c10::CachingAllocator::kSmallBuffer)>> {
-  static constexpr size_t get() {
-    return c10::CachingAllocator::kSmallBuffer;
-  }
-};
-
-inline size_t getLargeBufferSize() {
-  return LargeBufferGetter<>::get();
-}
-
-inline size_t getSmallBufferSize() {
-  return SmallBufferGetter<>::get();
+  return granularity;
 }
 } // namespace
 
@@ -132,32 +109,20 @@ void CachingAllocatorHookImpl::regDeregMem(
 
     // PyTorch expandable segments can send MAP events covering one or more
     // chunks. We need to register each chunk separately.
-    // The assumption here is that chunks are either kLargeBuffer or
-    // kSmallBuffer sized, no other sizes are allowed.  We assert on this check
-    // below to make sure this assumption is valid.
+    // Chunk size is determined by the allocation granularity for the device.
     size_t total_size = te.size_;
-
-    // Define chunk sizes for expandable segments
-    // In older PyTorch versions, c10::CachingAllocator::kLargeBuffer and
-    // kSmallBuffer symbols may not exist. We detect their availability at
-    // compile time using SFINAE and fall back to hardcoded values if needed.
-    const size_t kLargeBuffer = getLargeBufferSize();
-    const size_t kSmallBuffer = getSmallBufferSize();
+    size_t chunk_size = getAllocationGranularity(te.device_);
 
     for (size_t offset = 0; offset < total_size;) {
       // Determine the chunk size at this offset
       size_t remaining = total_size - offset;
-      size_t chunk_size;
 
-      if (remaining >= kLargeBuffer) {
-        chunk_size = kLargeBuffer;
-      } else if (remaining == kSmallBuffer) {
-        chunk_size = kSmallBuffer;
-      } else {
+      if (remaining < chunk_size) {
         LOG(ERROR) << "[CCA] SEGMENT_MAP: Invalid remaining size=" << remaining
-                   << " at offset=" << offset << " total_size=" << total_size;
+                   << " at offset=" << offset << " total_size=" << total_size
+                   << " chunk_size=" << chunk_size;
         throw std::runtime_error(
-            "SEGMENT_MAP: Remaining size must be kLargeBuffer or kSmallBuffer");
+            "SEGMENT_MAP: Remaining size must be a multiple of allocation granularity");
       }
 
       void* chunk_addr =
@@ -210,8 +175,8 @@ void CachingAllocatorHookImpl::regDeregMem(
       c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_UNMAP) {
     // Memory got unmapped, deregister it with NCCL
 
-    // PyTorch expandable segments can have chunks of different sizes (e.g.,
-    // kLargeBuffer or kSmallBuffer). UNMAP events can cover multiple chunks.
+    // PyTorch expandable segments have chunks sized according to the
+    // allocation granularity. UNMAP events can cover multiple chunks.
     // We iterate through registered chunks within the unmapped range and
     // deregister each one.
     size_t total_size = te.size_;
