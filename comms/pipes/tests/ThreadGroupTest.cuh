@@ -20,4 +20,19 @@ void testContiguousLocality(
     int numBlocks,
     int blockSize);
 
+// Tests make_block_group() - where all threads in a block form one group
+// Verifies:
+// - group_id == blockIdx.x
+// - group_size == blockDim.x
+// - thread_id_in_group == threadIdx.x
+// - total_groups == gridDim.x
+void testBlockGroup(
+    uint32_t* groupIds_d,
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t numItems,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
 } // namespace comms::pipes::test

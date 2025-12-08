@@ -157,6 +157,89 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.testName;
     });
 
+// =============================================================================
+// Block Group Tests
+// =============================================================================
+
+// Test: make_block_group creates correct ThreadGroup
+// Verifies:
+// - group_id == blockIdx.x (each block is its own group)
+// - group_size == blockDim.x (all threads in block form the group)
+// - thread_id_in_group == threadIdx.x
+// - total_groups == gridDim.x
+// - Work items are distributed contiguously across block groups
+TEST_F(ThreadGroupTestFixture, BlockGroupContiguousLocality) {
+  const uint32_t numItems = 1024;
+  const int numBlocks = 4;
+  const int blockSize = 256;
+
+  DeviceBuffer groupIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer threadIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer groupSizesBuffer(numBlocks * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto groupIds_d = static_cast<uint32_t*>(groupIdsBuffer.get());
+  auto threadIds_d = static_cast<uint32_t*>(threadIdsBuffer.get());
+  auto groupSizes_d = static_cast<uint32_t*>(groupSizesBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(cudaMemset(groupIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(threadIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(groupSizes_d, 0, numBlocks * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  test::testBlockGroup(
+      groupIds_d,
+      threadIds_d,
+      groupSizes_d,
+      numItems,
+      errorCount_d,
+      numBlocks,
+      blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify no kernel errors
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0) << "Block group should not have any errors";
+
+  // Verify group sizes
+  std::vector<uint32_t> groupSizes_h(numBlocks);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupSizes_h.data(),
+      groupSizes_d,
+      numBlocks * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  for (int i = 0; i < numBlocks; i++) {
+    EXPECT_EQ(groupSizes_h[i], static_cast<uint32_t>(blockSize))
+        << "Block " << i << " should have group_size == blockSize";
+  }
+
+  // Verify contiguous distribution of work items
+  std::vector<uint32_t> groupIds_h(numItems);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupIds_h.data(),
+      groupIds_d,
+      numItems * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  const uint32_t itemsPerGroup = (numItems + numBlocks - 1) / numBlocks;
+
+  for (uint32_t group_id = 0; group_id < static_cast<uint32_t>(numBlocks);
+       group_id++) {
+    uint32_t start_item = group_id * itemsPerGroup;
+    uint32_t end_item = std::min(start_item + itemsPerGroup, numItems);
+
+    for (uint32_t item_id = start_item; item_id < end_item; item_id++) {
+      EXPECT_EQ(groupIds_h[item_id], group_id)
+          << "Work item " << item_id << " should be assigned to block group "
+          << group_id;
+    }
+  }
+}
+
 } // namespace comms::pipes
 
 int main(int argc, char* argv[]) {
