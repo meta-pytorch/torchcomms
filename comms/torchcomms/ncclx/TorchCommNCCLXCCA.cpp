@@ -2,6 +2,53 @@
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 #include <mutex>
+#include <type_traits>
+
+// Helper to detect if c10::CachingAllocator constants exist
+namespace {
+
+// Helper to get kLargeBuffer from c10::CachingAllocator if it exists
+template <typename = void>
+struct LargeBufferGetter {
+  static constexpr size_t get() {
+    return 20971520; // 20MB (20 * 1024 * 1024) - fallback
+  }
+};
+
+// Specialization when c10::CachingAllocator::kLargeBuffer exists
+template <>
+struct LargeBufferGetter<
+    std::void_t<decltype(c10::CachingAllocator::kLargeBuffer)>> {
+  static constexpr size_t get() {
+    return c10::CachingAllocator::kLargeBuffer;
+  }
+};
+
+// Helper to get kSmallBuffer from c10::CachingAllocator if it exists
+template <typename = void>
+struct SmallBufferGetter {
+  static constexpr size_t get() {
+    return 2097152; // 2MB (2 * 1024 * 1024) - fallback
+  }
+};
+
+// Specialization when c10::CachingAllocator::kSmallBuffer exists
+template <>
+struct SmallBufferGetter<
+    std::void_t<decltype(c10::CachingAllocator::kSmallBuffer)>> {
+  static constexpr size_t get() {
+    return c10::CachingAllocator::kSmallBuffer;
+  }
+};
+
+inline size_t getLargeBufferSize() {
+  return LargeBufferGetter<>::get();
+}
+
+inline size_t getSmallBufferSize() {
+  return SmallBufferGetter<>::get();
+}
+} // namespace
 
 namespace torch {
 namespace comms {
@@ -90,15 +137,12 @@ void CachingAllocatorHookImpl::regDeregMem(
     // below to make sure this assumption is valid.
     size_t total_size = te.size_;
 
-    // Use preprocessor to detect which namespace has the constants available
-#if __has_include(<c10/core/AllocatorConfig.h>)
-    constexpr size_t kLargeBuffer = c10::CachingAllocator::kLargeBuffer; // 20MB
-    constexpr size_t kSmallBuffer = c10::CachingAllocator::kSmallBuffer; // 2MB
-#else
-    constexpr size_t kLargeBuffer =
-        20971520; // 20MB (hardcoded for conda, symbol not exported)
-    constexpr size_t kSmallBuffer = 2097152; // 2MB (not available in conda)
-#endif
+    // Define chunk sizes for expandable segments
+    // In older PyTorch versions, c10::CachingAllocator::kLargeBuffer and
+    // kSmallBuffer symbols may not exist. We detect their availability at
+    // compile time using SFINAE and fall back to hardcoded values if needed.
+    const size_t kLargeBuffer = getLargeBufferSize();
+    const size_t kSmallBuffer = getSmallBufferSize();
 
     for (size_t offset = 0; offset < total_size;) {
       // Determine the chunk size at this offset
