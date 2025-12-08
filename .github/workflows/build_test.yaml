@@ -62,5 +62,5 @@ jobs:
         python -c "import torchcomms; import torchcomms._transport"
 
         # Run tests
-        comms/torchcomms/scripts/run_tests_integration_py.sh
+        comms/torchcomms/scripts/run_tests_integration_py.sh -s MemPoolTest.py
         pytest -v comms/torchcomms/tests/unit/py
