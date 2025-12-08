@@ -12,7 +12,7 @@ namespace comms::pipes {
 // Configuration for P2P NVL transport buffer sizes
 struct P2pNvlTransportConfig {
   std::size_t dataBufferSize{0};
-  std::size_t stateBufferSize{0};
+  std::size_t chunkSize{0};
 };
 
 // Host-side P2P NVL transport that exchanges IPC buffer handles between ranks
