@@ -2,9 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#define P2pNvlTransport_TEST_FRIENDS \
-  FRIEND_TEST(P2pNvlTransportTestFixture, IpcMemAccess);
-
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
@@ -75,9 +72,9 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   auto p2p = transport.getTransportDevice(peerRank);
 
   auto localAddr =
-      static_cast<int*>(static_cast<void*>(p2p.localState_.dataBuffer));
+      static_cast<int*>(static_cast<void*>(p2p.getLocalState().dataBuffer));
   auto remoteAddr =
-      static_cast<int*>(static_cast<void*>(p2p.remoteState_.dataBuffer));
+      static_cast<int*>(static_cast<void*>(p2p.getRemoteState().dataBuffer));
   XLOGF(
       INFO,
       "Rank {}: localAddr: {}, remoteAddr: {}",

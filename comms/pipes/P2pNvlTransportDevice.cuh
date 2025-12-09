@@ -570,16 +570,21 @@ class P2pNvlTransportDevice {
 #endif
   }
 
+  // Getters for testing
+  __host__ const LocalState& getLocalState() const {
+    return localState_;
+  }
+
+  __host__ const RemoteState& getRemoteState() const {
+    return remoteState_;
+  }
+
  private:
   const int myRank_{-1};
   const int peerRank_{-1};
   const P2pNvlTransportOptions options_;
   LocalState localState_;
   RemoteState remoteState_;
-
-#ifdef P2pNvlTransport_TEST_FRIENDS
-  P2pNvlTransport_TEST_FRIENDS
-#endif
 };
 
 } // namespace comms::pipes
