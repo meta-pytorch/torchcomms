@@ -450,6 +450,44 @@ TEST_F(IbverbxTestFixture, IbvDeviceQueries) {
   EXPECT_GT(activePort.value(), 0);
 }
 
+TEST_F(IbverbxTestFixture, IbvDeviceMultiThreadUniqueDeviceId) {
+  constexpr int kNumThreads = 4;
+  constexpr int kDevicesPerThread = 10;
+  constexpr int kTotalDevices = kNumThreads * kDevicesPerThread;
+
+  std::set<int32_t> deviceIds;
+  std::mutex numsMutex;
+
+  auto createDevices = [&]() {
+    std::vector<int32_t> localDeviceIds;
+    localDeviceIds.reserve(kDevicesPerThread);
+
+    for (int i = 0; i < kDevicesPerThread; i++) {
+      auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+      ASSERT_TRUE(devices);
+      for (auto& device : *devices) {
+        localDeviceIds.push_back(device.getDeviceId());
+      }
+    }
+
+    std::lock_guard<std::mutex> lock(numsMutex);
+    deviceIds.insert(localDeviceIds.begin(), localDeviceIds.end());
+  };
+
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (int i = 0; i < kNumThreads; i++) {
+    threads.emplace_back(createDevices);
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  ASSERT_EQ(deviceIds.size(), kTotalDevices)
+      << "All device IDs should be distinct";
+}
+
 TEST_F(IbverbxTestFixture, IbvCq) {
   auto devices = IbvDevice::ibvGetDeviceList();
   ASSERT_TRUE(devices);

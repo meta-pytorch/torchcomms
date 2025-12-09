@@ -181,7 +181,7 @@ std::vector<IbvDevice> IbvDevice::ibvFilterDeviceList(
 }
 
 IbvDevice::IbvDevice(ibv_device* ibvDevice, int port, bool dataDirect)
-    : device_(ibvDevice) {
+    : device_(ibvDevice), deviceId_(nextDeviceId_.fetch_add(1)) {
   port_ = port;
   context_ = ibvSymbols.ibv_internal_open_device(device_);
   if (!context_) {
@@ -213,9 +213,11 @@ IbvDevice::IbvDevice(IbvDevice&& other) noexcept {
   context_ = other.context_;
   port_ = other.port_;
   dataDirect_ = other.dataDirect_;
+  deviceId_ = other.deviceId_;
 
   other.device_ = nullptr;
   other.context_ = nullptr;
+  other.deviceId_ = -1;
 }
 
 IbvDevice& IbvDevice::operator=(IbvDevice&& other) noexcept {
@@ -223,9 +225,11 @@ IbvDevice& IbvDevice::operator=(IbvDevice&& other) noexcept {
   context_ = other.context_;
   port_ = other.port_;
   dataDirect_ = other.dataDirect_;
+  deviceId_ = other.deviceId_;
 
   other.device_ = nullptr;
   other.context_ = nullptr;
+  other.deviceId_ = -1;
   return *this;
 }
 
@@ -239,6 +243,10 @@ ibv_context* IbvDevice::context() const {
 
 int IbvDevice::port() const {
   return port_;
+}
+
+int32_t IbvDevice::getDeviceId() const {
+  return deviceId_;
 }
 
 folly::Expected<IbvPd, Error> IbvDevice::allocPd() {

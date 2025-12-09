@@ -33,6 +33,7 @@ class IbvDevice {
   ibv_device* device() const;
   ibv_context* context() const;
   int port() const;
+  int32_t getDeviceId() const;
 
   folly::Expected<IbvPd, Error> allocPd();
   folly::Expected<IbvPd, Error> allocParentDomain(
@@ -81,6 +82,11 @@ class IbvDevice {
   ibv_context* context_{nullptr};
   int port_{-1};
   bool dataDirect_{false}; // Relevant only to mlx5
+
+  inline static std::atomic<int32_t> nextDeviceId_{
+      0}; // Static counter for assigning unique virtual Device IDs
+  int32_t deviceId_{-1}; // The unique device ID assigned to
+                         // instance of IbvDevice
 
   static std::vector<IbvDevice> ibvFilterDeviceList(
       int numDevs,
