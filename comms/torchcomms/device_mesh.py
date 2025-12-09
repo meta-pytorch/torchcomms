@@ -9,6 +9,8 @@ import torch.distributed as dist
 
 from torch.distributed.device_mesh import _mesh_resources
 
+from torch.distributed.distributed_c10d import GroupName
+
 from torchcomms._comms import _BackendWrapper, _get_store, new_comm, TorchComm
 
 
@@ -33,6 +35,10 @@ def _create_torchcomm_process_group(
     Returns:
         The created and registered ProcessGroup instance
     """
+    # Make the linter happy. GroupName is just an alias for str. The cost of
+    # this conversion is negligible.
+    group_name = GroupName(group_name)
+
     wrapper = _BackendWrapper(comm)  # noqa: F405
     backend_type = dist.ProcessGroup.BackendType.CUSTOM  # noqa: F841
     backend_config = dist.BackendConfig(dist.Backend(backend_str))
