@@ -247,6 +247,8 @@ void ReduceScatterTest::testGraphReduceScatter(
     // Verify the results after each replay
     verifyResults(output, op);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for reduce_scatter with input deleted after graph
@@ -300,4 +302,6 @@ void ReduceScatterTest::testGraphReduceScatterInputDeleted(
     // Verify the results after each replay
     verifyResults(output, op);
   }
+
+  graph.reset();
 }

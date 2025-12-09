@@ -216,6 +216,8 @@ void ScatterTest::testGraphScatter(int count, at::ScalarType dtype) {
     // Verify the results after each replay
     verifyResults(output);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for scatter with input deleted after graph creation
@@ -272,6 +274,8 @@ void ScatterTest::testGraphScatterInputDeleted(
     // Verify the results after each replay
     verifyResults(output);
   }
+
+  graph.reset();
 }
 
 // Helper function to create input tensors

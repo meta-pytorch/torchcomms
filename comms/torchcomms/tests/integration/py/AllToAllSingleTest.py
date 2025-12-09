@@ -167,6 +167,8 @@ class AllToAllSingleTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_results(output_tensor)
 
+            graph.reset()
+
     def _graph_all_to_all_single_input_deleted(self, count, dtype):
         """Test CUDA Graph all_to_all_single with input deleted after graph creation."""
         print(
@@ -205,6 +207,8 @@ class AllToAllSingleTest(unittest.TestCase):
 
                 # Verify the results after each replay
                 self._verify_results(output_tensor)
+
+            graph.reset()
 
     def _create_input_tensor(self, count, dtype):
         """Create input tensor with rank-specific values."""

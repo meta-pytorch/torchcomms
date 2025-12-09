@@ -170,6 +170,8 @@ class ReduceScatterTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_results(output_tensor, op)
 
+            graph.reset()
+
     def _graph_reduce_scatter_input_deleted(self, count, dtype, op):
         """Test CUDA Graph reduce_scatter with input deleted after graph creation."""
         print(
@@ -208,6 +210,8 @@ class ReduceScatterTest(unittest.TestCase):
 
             # Verify the results after each replay
             self._verify_results(output_tensor, op)
+
+        graph.reset()
 
     def _create_input_tensors(self, count, dtype):
         """Create input tensors with rank-specific values."""
