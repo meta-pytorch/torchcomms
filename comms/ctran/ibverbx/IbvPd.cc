@@ -9,18 +9,23 @@ extern IbvSymbols ibvSymbols;
 
 /*** IbvPd ***/
 
-IbvPd::IbvPd(ibv_pd* pd, bool dataDirect) : pd_(pd), dataDirect_(dataDirect) {}
+IbvPd::IbvPd(ibv_pd* pd, int32_t deviceId, bool dataDirect)
+    : pd_(pd), deviceId_(deviceId), dataDirect_(dataDirect) {}
 
 IbvPd::IbvPd(IbvPd&& other) noexcept {
   pd_ = other.pd_;
   dataDirect_ = other.dataDirect_;
+  deviceId_ = other.deviceId_;
   other.pd_ = nullptr;
+  other.deviceId_ = -1;
 }
 
 IbvPd& IbvPd::operator=(IbvPd&& other) noexcept {
   pd_ = other.pd_;
   dataDirect_ = other.dataDirect_;
+  deviceId_ = other.deviceId_;
   other.pd_ = nullptr;
+  other.deviceId_ = -1;
   return *this;
 }
 
@@ -39,6 +44,10 @@ ibv_pd* IbvPd::pd() const {
 
 bool IbvPd::useDataDirect() const {
   return dataDirect_;
+}
+
+int32_t IbvPd::getDeviceId() const {
+  return deviceId_;
 }
 
 folly::Expected<IbvMr, Error>
@@ -84,7 +93,7 @@ folly::Expected<IbvQp, Error> IbvPd::createQp(
   if (!qp) {
     return folly::makeUnexpected(Error(errno));
   }
-  return IbvQp(qp);
+  return IbvQp(qp, deviceId_);
 }
 
 folly::Expected<IbvVirtualQp, Error> IbvPd::createVirtualQp(

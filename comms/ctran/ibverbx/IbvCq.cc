@@ -10,7 +10,7 @@ extern IbvSymbols ibvSymbols;
 
 /*** IbvCq ***/
 
-IbvCq::IbvCq(ibv_cq* cq) : cq_(cq) {}
+IbvCq::IbvCq(ibv_cq* cq, int32_t deviceId) : cq_(cq), deviceId_(deviceId) {}
 
 IbvCq::~IbvCq() {
   if (cq_) {
@@ -23,17 +23,25 @@ IbvCq::~IbvCq() {
 
 IbvCq::IbvCq(IbvCq&& other) noexcept {
   cq_ = other.cq_;
+  deviceId_ = other.deviceId_;
   other.cq_ = nullptr;
+  other.deviceId_ = -1;
 }
 
 IbvCq& IbvCq::operator=(IbvCq&& other) noexcept {
   cq_ = other.cq_;
+  deviceId_ = other.deviceId_;
   other.cq_ = nullptr;
+  other.deviceId_ = -1;
   return *this;
 }
 
 ibv_cq* IbvCq::cq() const {
   return cq_;
+}
+
+int32_t IbvCq::getDeviceId() const {
+  return deviceId_;
 }
 
 folly::Expected<folly::Unit, Error> IbvCq::reqNotifyCq(

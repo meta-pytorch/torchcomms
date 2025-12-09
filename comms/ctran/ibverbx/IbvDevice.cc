@@ -255,7 +255,7 @@ folly::Expected<IbvPd, Error> IbvDevice::allocPd() {
   if (!pd) {
     return folly::makeUnexpected(Error(errno));
   }
-  return IbvPd(pd, dataDirect_);
+  return IbvPd(pd, deviceId_, dataDirect_);
 }
 
 folly::Expected<IbvPd, Error> IbvDevice::allocParentDomain(
@@ -271,7 +271,7 @@ folly::Expected<IbvPd, Error> IbvDevice::allocParentDomain(
   if (!pd) {
     return folly::makeUnexpected(Error(errno));
   }
-  return IbvPd(pd, dataDirect_);
+  return IbvPd(pd, deviceId_, dataDirect_);
 }
 
 folly::Expected<ibv_device_attr, Error> IbvDevice::queryDevice() const {
@@ -315,7 +315,7 @@ folly::Expected<IbvCq, Error> IbvDevice::createCq(
   if (!cq) {
     return folly::makeUnexpected(Error(errno));
   }
-  return IbvCq(cq);
+  return IbvCq(cq, deviceId_);
 }
 
 folly::Expected<IbvVirtualCq, Error> IbvDevice::createVirtualCq(
@@ -338,7 +338,7 @@ folly::Expected<IbvCq, Error> IbvDevice::createCq(
     return folly::makeUnexpected(Error(errno));
   }
   ibv_cq* cq = ibv_cq_ex_to_cq(cqEx);
-  return IbvCq(cq);
+  return IbvCq(cq, deviceId_);
 }
 
 folly::Expected<ibv_comp_channel*, Error> IbvDevice::createCompChannel() const {
