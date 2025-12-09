@@ -144,6 +144,8 @@ class IbvVirtualQp {
   uint64_t nextPhysicalWrId_{0}; // ID of the next physical work request to
                                  // be posted on the physical QP
 
+  int deviceCnt_{0}; // Number of unique devices that the physical QPs span
+
   LoadBalancingScheme loadBalancingScheme_{
       LoadBalancingScheme::SPRAY}; // Load balancing scheme for this virtual QP
 
