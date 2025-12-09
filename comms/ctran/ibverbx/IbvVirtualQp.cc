@@ -56,6 +56,10 @@ const IbvQp& IbvVirtualQp::getNotifyQpRef() const {
   return notifyQp_;
 }
 
+IbvQp& IbvVirtualQp::getNotifyQpRef() {
+  return notifyQp_;
+}
+
 uint32_t IbvVirtualQp::getVirtualQpNum() const {
   return virtualQpNum_;
 }

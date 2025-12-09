@@ -55,6 +55,14 @@ struct IbvVirtualQpBusinessCard {
 // Ibv Virtual Queue Pair
 class IbvVirtualQp {
  public:
+  IbvVirtualQp(
+      std::vector<IbvQp>&& qps,
+      IbvQp&& notifyQp,
+      IbvVirtualCq* sendCq,
+      IbvVirtualCq* recvCq,
+      int maxMsgCntPerQp = kIbMaxMsgCntPerQp,
+      int maxMsgSize = kIbMaxMsgSizeByte,
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
   ~IbvVirtualQp();
 
   // disable copy constructor
@@ -69,6 +77,7 @@ class IbvVirtualQp {
   const std::vector<IbvQp>& getQpsRef() const;
   std::vector<IbvQp>& getQpsRef();
   const IbvQp& getNotifyQpRef() const;
+  IbvQp& getNotifyQpRef();
   uint32_t getVirtualQpNum() const;
   // If businessCard is not provided, all physical QPs will be updated with the
   // universal attributes specified in attr. This is typically used for changing
@@ -148,15 +157,6 @@ class IbvVirtualQp {
       false}; // flag to indicate if dqplb receiver is initialized
   inline folly::Expected<folly::Unit, Error> initializeDqplbReceiver();
 
-  IbvVirtualQp(
-      std::vector<IbvQp>&& qps,
-      IbvQp&& notifyQp,
-      IbvVirtualCq* sendCq,
-      IbvVirtualCq* recvCq,
-      int maxMsgCntPerQp = kIbMaxMsgCntPerQp,
-      int maxMsgSize = kIbMaxMsgSizeByte,
-      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
-
   // mapPendingSendQueToPhysicalQp is a helper function to iterate through
   // virtualSendWr in the pendingSendVirtualWrQue_, construct physical wrs and
   // call postSend on physical QP. If qpIdx is provided, this function will
@@ -175,7 +175,8 @@ class IbvVirtualQp {
 
 inline folly::Expected<VirtualQpResponse, Error>
 Coordinator::submitRequestToVirtualQp(VirtualQpRequest&& request) {
-  auto virtualQp = getVirtualQpByPhysicalQpNum(request.physicalQpNum);
+  auto virtualQp = getVirtualQpByPhysicalQpNumAndDeviceId(
+      request.physicalQpNum, request.deviceId);
   return virtualQp->processRequest(std::move(request));
 }
 

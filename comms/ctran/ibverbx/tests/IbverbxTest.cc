@@ -1219,34 +1219,43 @@ TEST_F(IbverbxTestFixture, Coordinator) {
   ASSERT_NE(recvCqIt, virtualQpToRecvCqMap.end());
   ASSERT_EQ(recvCqIt->second, virtualCqNum);
 
-  // 3. Test physicalQpNumToVirtualQpNum_ mapping
-  const auto& physicalQpToVirtualQpMap =
-      coordinator->getPhysicalQpToVirtualQpMap();
+  // 3. Test qpIdToVirtualQpNum_ mapping
+  const auto& qpIdToVirtualQpMap = coordinator->getQpIdToVirtualQpMap();
   ASSERT_EQ(
-      physicalQpToVirtualQpMap.size(),
+      qpIdToVirtualQpMap.size(),
       totalQps + 1); // totalQps + 1 to consider notifyQp
   for (const auto& physicalQp : virtualQp.getQpsRef()) {
     uint32_t physicalQpNum = physicalQp.qp()->qp_num;
-    auto virtualQpNumIt = physicalQpToVirtualQpMap.find(physicalQpNum);
-    ASSERT_NE(virtualQpNumIt, physicalQpToVirtualQpMap.end());
+    int32_t deviceId = physicalQp.getDeviceId();
+    QpId key{.deviceId = deviceId, .qpNum = physicalQpNum};
+    auto virtualQpNumIt = qpIdToVirtualQpMap.find(key);
+    ASSERT_NE(virtualQpNumIt, qpIdToVirtualQpMap.end());
     ASSERT_EQ(virtualQpNumIt->second, virtualQpNum);
   }
   uint32_t notifyQpNum = virtualQp.getNotifyQpRef().qp()->qp_num;
-  auto notifyQpIt = physicalQpToVirtualQpMap.find(notifyQpNum);
-  ASSERT_NE(notifyQpIt, physicalQpToVirtualQpMap.end());
+  int32_t notifyDeviceId = virtualQp.getNotifyQpRef().getDeviceId();
+  QpId notifyKey{.deviceId = notifyDeviceId, .qpNum = notifyQpNum};
+  auto notifyQpIt = qpIdToVirtualQpMap.find(notifyKey);
+  ASSERT_NE(notifyQpIt, qpIdToVirtualQpMap.end());
   ASSERT_EQ(notifyQpIt->second, virtualQpNum);
 
   // 4. Test that all physical QP numbers are unique and properly mapped
   std::set<uint32_t> physicalQpNums;
   for (const auto& physicalQp : virtualQp.getQpsRef()) {
     uint32_t physicalQpNum = physicalQp.qp()->qp_num;
+    uint32_t deviceId = physicalQp.getDeviceId();
     ASSERT_TRUE(
         physicalQpNums.insert(physicalQpNum).second); // Should be unique
     ASSERT_EQ(
-        coordinator->getVirtualQpByPhysicalQpNum(physicalQpNum), &virtualQp);
+        coordinator->getVirtualQpByPhysicalQpNumAndDeviceId(
+            physicalQpNum, deviceId),
+        &virtualQp);
   }
   ASSERT_TRUE(physicalQpNums.insert(notifyQpNum).second); // Should be unique
-  ASSERT_EQ(coordinator->getVirtualQpByPhysicalQpNum(notifyQpNum), &virtualQp);
+  ASSERT_EQ(
+      coordinator->getVirtualQpByPhysicalQpNumAndDeviceId(
+          notifyQpNum, notifyDeviceId),
+      &virtualQp);
 }
 
 TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {

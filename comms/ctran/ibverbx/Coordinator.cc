@@ -30,10 +30,12 @@ void Coordinator::registerVirtualCq(
   virtualCqNumToVirtualCq_[virtualCqNum] = virtualCq;
 }
 
-void Coordinator::registerPhysicalQpToVirtualQp(
-    int physicalQpNum,
+void Coordinator::registerPhysicalQpAndDeviceIdToVirtualQp(
+    uint32_t physicalQpNum,
+    int32_t deviceId,
     uint32_t virtualQpNum) {
-  physicalQpNumToVirtualQpNum_[physicalQpNum] = virtualQpNum;
+  QpId key{.deviceId = deviceId, .qpNum = physicalQpNum};
+  qpIdToVirtualQpNum_[key] = virtualQpNum;
 }
 
 void Coordinator::registerVirtualQpToVirtualSendCq(
@@ -58,17 +60,23 @@ void Coordinator::registerVirtualQpWithVirtualCqMappings(
   // Register the virtual QP
   registerVirtualQp(virtualQpNum, virtualQp);
 
-  // Register all physical QP to virtual QP mappings
-  for (const auto& qp : virtualQp->getQpsRef()) {
-    registerPhysicalQpToVirtualQp(qp.qp()->qp_num, virtualQpNum);
-  }
-  // Register notify QP
-  registerPhysicalQpToVirtualQp(
-      virtualQp->getNotifyQpRef().qp()->qp_num, virtualQpNum);
-
   // Register virtual QP to virtual CQ relationships
   registerVirtualQpToVirtualSendCq(virtualQpNum, virtualSendCqNum);
   registerVirtualQpToVirtualRecvCq(virtualQpNum, virtualRecvCqNum);
+
+  // Register all physical QPs to virtual QP mappings
+  for (size_t i = 0; i < virtualQp->getQpsRef().size(); i++) {
+    int physicalQpNum = virtualQp->getQpsRef().at(i).qp()->qp_num;
+    int deviceId = virtualQp->getQpsRef().at(i).getDeviceId();
+    registerPhysicalQpAndDeviceIdToVirtualQp(
+        physicalQpNum, deviceId, virtualQpNum);
+  }
+
+  // Register the notify QP to virtual QP mapping
+  int notifyPhysicalQpNum = virtualQp->getNotifyQpRef().qp()->qp_num;
+  int notifyDeviceId = virtualQp->getNotifyQpRef().getDeviceId();
+  registerPhysicalQpAndDeviceIdToVirtualQp(
+      notifyPhysicalQpNum, notifyDeviceId, virtualQpNum);
 }
 
 // Access APIs for testing and internal use
@@ -82,9 +90,9 @@ Coordinator::getVirtualCqMap() const {
   return virtualCqNumToVirtualCq_;
 }
 
-const std::unordered_map<int, uint32_t>&
-Coordinator::getPhysicalQpToVirtualQpMap() const {
-  return physicalQpNumToVirtualQpNum_;
+const std::unordered_map<QpId, uint32_t, QpIdHash>&
+Coordinator::getQpIdToVirtualQpMap() const {
+  return qpIdToVirtualQpNum_;
 }
 
 const std::unordered_map<uint32_t, uint32_t>&
@@ -128,10 +136,10 @@ void Coordinator::unregisterVirtualQp(
   virtualQpNumToVirtualRecvCqNum_.erase(virtualQpNum);
 
   // Remove all physical QP to virtual QP mappings that point to this virtual QP
-  for (auto it = physicalQpNumToVirtualQpNum_.begin();
-       it != physicalQpNumToVirtualQpNum_.end();) {
+  for (auto it = qpIdToVirtualQpNum_.begin();
+       it != qpIdToVirtualQpNum_.end();) {
     if (it->second == virtualQpNum) {
-      it = physicalQpNumToVirtualQpNum_.erase(it);
+      it = qpIdToVirtualQpNum_.erase(it);
     } else {
       ++it;
     }
