@@ -5,7 +5,7 @@
 #include <cstdint>
 
 #include "comms/pipes/ThreadGroup.cuh"
-#include "comms/pipes/tests/Utils.h"
+#include "comms/pipes/tests/Checks.h"
 
 namespace comms::pipes::test {
 
