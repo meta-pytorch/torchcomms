@@ -147,9 +147,9 @@ void TorchCommNCCLXTest::setupNormalDestruction(
 
 // Helper method to create a tensor for testing
 at::Tensor TorchCommNCCLXTest::createTestTensor(
-    const std::vector<int64_t>& sizes) {
-  return at::ones(
-      sizes, at::TensorOptions().device(*device_).dtype(at::kFloat));
+    const std::vector<int64_t>& sizes,
+    const at::ScalarType type) {
+  return at::ones(sizes, at::TensorOptions().device(*device_).dtype(type));
 }
 
 void TorchCommNCCLXTest::setupWorkToTimeout(WorkEvent& work_event) {
