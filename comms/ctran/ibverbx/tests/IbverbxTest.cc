@@ -450,6 +450,44 @@ TEST_F(IbverbxTestFixture, IbvDeviceQueries) {
   EXPECT_GT(activePort.value(), 0);
 }
 
+TEST_F(IbverbxTestFixture, IbvDeviceMultiThreadUniqueDeviceId) {
+  constexpr int kNumThreads = 4;
+  constexpr int kDevicesPerThread = 10;
+  constexpr int kTotalDevices = kNumThreads * kDevicesPerThread;
+
+  std::set<int32_t> deviceIds;
+  std::mutex numsMutex;
+
+  auto createDevices = [&]() {
+    std::vector<int32_t> localDeviceIds;
+    localDeviceIds.reserve(kDevicesPerThread);
+
+    for (int i = 0; i < kDevicesPerThread; i++) {
+      auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+      ASSERT_TRUE(devices);
+      for (auto& device : *devices) {
+        localDeviceIds.push_back(device.getDeviceId());
+      }
+    }
+
+    std::lock_guard<std::mutex> lock(numsMutex);
+    deviceIds.insert(localDeviceIds.begin(), localDeviceIds.end());
+  };
+
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (int i = 0; i < kNumThreads; i++) {
+    threads.emplace_back(createDevices);
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  ASSERT_EQ(deviceIds.size(), kTotalDevices)
+      << "All device IDs should be distinct";
+}
+
 TEST_F(IbverbxTestFixture, IbvCq) {
   auto devices = IbvDevice::ibvGetDeviceList();
   ASSERT_TRUE(devices);
@@ -1181,34 +1219,43 @@ TEST_F(IbverbxTestFixture, Coordinator) {
   ASSERT_NE(recvCqIt, virtualQpToRecvCqMap.end());
   ASSERT_EQ(recvCqIt->second, virtualCqNum);
 
-  // 3. Test physicalQpNumToVirtualQpNum_ mapping
-  const auto& physicalQpToVirtualQpMap =
-      coordinator->getPhysicalQpToVirtualQpMap();
+  // 3. Test qpIdToVirtualQpNum_ mapping
+  const auto& qpIdToVirtualQpMap = coordinator->getQpIdToVirtualQpMap();
   ASSERT_EQ(
-      physicalQpToVirtualQpMap.size(),
+      qpIdToVirtualQpMap.size(),
       totalQps + 1); // totalQps + 1 to consider notifyQp
   for (const auto& physicalQp : virtualQp.getQpsRef()) {
     uint32_t physicalQpNum = physicalQp.qp()->qp_num;
-    auto virtualQpNumIt = physicalQpToVirtualQpMap.find(physicalQpNum);
-    ASSERT_NE(virtualQpNumIt, physicalQpToVirtualQpMap.end());
+    int32_t deviceId = physicalQp.getDeviceId();
+    QpId key{.deviceId = deviceId, .qpNum = physicalQpNum};
+    auto virtualQpNumIt = qpIdToVirtualQpMap.find(key);
+    ASSERT_NE(virtualQpNumIt, qpIdToVirtualQpMap.end());
     ASSERT_EQ(virtualQpNumIt->second, virtualQpNum);
   }
   uint32_t notifyQpNum = virtualQp.getNotifyQpRef().qp()->qp_num;
-  auto notifyQpIt = physicalQpToVirtualQpMap.find(notifyQpNum);
-  ASSERT_NE(notifyQpIt, physicalQpToVirtualQpMap.end());
+  int32_t notifyDeviceId = virtualQp.getNotifyQpRef().getDeviceId();
+  QpId notifyKey{.deviceId = notifyDeviceId, .qpNum = notifyQpNum};
+  auto notifyQpIt = qpIdToVirtualQpMap.find(notifyKey);
+  ASSERT_NE(notifyQpIt, qpIdToVirtualQpMap.end());
   ASSERT_EQ(notifyQpIt->second, virtualQpNum);
 
   // 4. Test that all physical QP numbers are unique and properly mapped
   std::set<uint32_t> physicalQpNums;
   for (const auto& physicalQp : virtualQp.getQpsRef()) {
     uint32_t physicalQpNum = physicalQp.qp()->qp_num;
+    uint32_t deviceId = physicalQp.getDeviceId();
     ASSERT_TRUE(
         physicalQpNums.insert(physicalQpNum).second); // Should be unique
     ASSERT_EQ(
-        coordinator->getVirtualQpByPhysicalQpNum(physicalQpNum), &virtualQp);
+        coordinator->getVirtualQpByPhysicalQpNumAndDeviceId(
+            physicalQpNum, deviceId),
+        &virtualQp);
   }
   ASSERT_TRUE(physicalQpNums.insert(notifyQpNum).second); // Should be unique
-  ASSERT_EQ(coordinator->getVirtualQpByPhysicalQpNum(notifyQpNum), &virtualQp);
+  ASSERT_EQ(
+      coordinator->getVirtualQpByPhysicalQpNumAndDeviceId(
+          notifyQpNum, notifyDeviceId),
+      &virtualQp);
 }
 
 TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {

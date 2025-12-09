@@ -240,33 +240,20 @@ void commMemFree(void* buf, size_t bufSize, MemAllocType memType) {
   }
 }
 
-TestCtranCommRAII::TestCtranCommRAII(std::unique_ptr<mccl::McclComm> mcclComm)
-    : mcclComm_(std::move(mcclComm)) {
-  ctranComm = mcclComm_->comm_.get();
-}
-
 std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId) {
   CUDACHECK_TEST(cudaSetDevice(devId));
 
   CHECK_EQ(ctran::utils::commCudaLibraryInit(), commSuccess);
 
-  mccl::McclCommCreateOpts mcclCreateOpts{
-      .cudaDeviceId = devId,
-      .enableFaultTolerance = false,
-  };
+  const std::string uuid{"0"};
+  uint64_t commHash =
+      ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
+  std::string commDesc = fmt::format("DummyCtranTestComm-{}", 0);
 
-  auto mcclComm = std::make_unique<mccl::McclComm>(mcclCreateOpts);
-  auto initURL = mcclComm->getInitURL();
-  std::string uuid{"0"};
-  auto initWorkHandle = mcclComm->init(
-      mccl::InitOpts{
-          .uuid = uuid,
-          .urls = std::unordered_set<mccl::InitURL>{initURL},
-      });
-  initWorkHandle->waitCpu();
-  auto initResult = initWorkHandle->getResult();
-  CHECK_EQ(initResult->code, commSuccess)
-      << "init failed with error: " << initResult->message;
+  auto result = createCtranCommWithBootstrap(0, 1, 0, commHash, commDesc);
 
-  return std::make_unique<TestCtranCommRAII>(std::move(mcclComm));
+  // Create a TestCtranCommRAII that also holds the bootstrap
+  auto raii = std::make_unique<TestCtranCommRAII>(std::move(result.ctranComm));
+  raii->bootstrap_ = std::move(result.bootstrap);
+  return raii;
 }

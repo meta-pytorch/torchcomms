@@ -13,6 +13,27 @@ namespace ibverbx {
 class IbvVirtualQp;
 class IbvVirtualCq;
 
+// QpId uniquely identifies a physical QP using both the device ID and QP
+// number. This is necessary because different NIC devices can have QPs with the
+// same QP number, so we need both fields to uniquely identify a physical QP.
+struct QpId {
+  int32_t deviceId{-1};
+  uint32_t qpNum{0};
+
+  bool operator==(const QpId& other) const {
+    return deviceId == other.deviceId && qpNum == other.qpNum;
+  }
+};
+
+// Hash function for QpId to enable use in unordered_map
+struct QpIdHash {
+  std::size_t operator()(const QpId& id) const {
+    auto h1 = std::hash<int32_t>{}(id.deviceId);
+    auto h2 = std::hash<uint32_t>{}(id.qpNum);
+    return h1 ^ (h2 << 1);
+  }
+};
+
 // Coordinator class responsible for routing commands and responses between
 // IbvVirtualQp and IbvVirtualCq. Maintains mappings from physical QP numbers to
 // IbvVirtualQp pointers, and from virtual CQ numbers to IbvVirtualCq pointers.
@@ -41,7 +62,10 @@ class Coordinator {
   // Register APIs for mapping management
   void registerVirtualQp(uint32_t virtualQpNum, IbvVirtualQp* virtualQp);
   void registerVirtualCq(uint32_t virtualCqNum, IbvVirtualCq* virtualCq);
-  void registerPhysicalQpToVirtualQp(int physicalQpNum, uint32_t virtualQpNum);
+  void registerPhysicalQpAndDeviceIdToVirtualQp(
+      uint32_t physicalQpNum,
+      int32_t deviceId,
+      uint32_t virtualQpNum);
   void registerVirtualQpToVirtualSendCq(
       uint32_t virtualQpNum,
       uint32_t virtualSendCqNum);
@@ -59,14 +83,17 @@ class Coordinator {
   // Getter APIs for accessing mappings
   inline IbvVirtualCq* getVirtualSendCq(uint32_t virtualQpNum) const;
   inline IbvVirtualCq* getVirtualRecvCq(uint32_t virtualQpNum) const;
-  inline IbvVirtualQp* getVirtualQpByPhysicalQpNum(int physicalQpNum) const;
+  inline IbvVirtualQp* getVirtualQpByPhysicalQpNumAndDeviceId(
+      uint32_t physicalQpNum,
+      int32_t deviceId) const;
   inline IbvVirtualQp* getVirtualQpById(uint32_t virtualQpNum) const;
   inline IbvVirtualCq* getVirtualCqById(uint32_t virtualCqNum) const;
 
   // Access APIs for testing and internal use
   const std::unordered_map<uint32_t, IbvVirtualQp*>& getVirtualQpMap() const;
   const std::unordered_map<uint32_t, IbvVirtualCq*>& getVirtualCqMap() const;
-  const std::unordered_map<int, uint32_t>& getPhysicalQpToVirtualQpMap() const;
+  const std::unordered_map<QpId, uint32_t, QpIdHash>& getQpIdToVirtualQpMap()
+      const;
   const std::unordered_map<uint32_t, uint32_t>& getVirtualQpToVirtualSendCqMap()
       const;
   const std::unordered_map<uint32_t, uint32_t>& getVirtualQpToVirtualRecvCqMap()
@@ -95,8 +122,10 @@ class Coordinator {
   // Map 4: Virtual QP Num -> Virtual Recv CQ Num (relationship)
   std::unordered_map<uint32_t, uint32_t> virtualQpNumToVirtualRecvCqNum_;
 
-  // Map 5: Physical QP number -> Virtual QP Num (for routing)
-  std::unordered_map<int, uint32_t> physicalQpNumToVirtualQpNum_;
+  // Map 5: QpId (deviceId, qpNum) -> Virtual QP Num (for routing)
+  // The Device ID is used to differentiate QPs with the same QP number but
+  // associated with different NIC devices
+  std::unordered_map<QpId, uint32_t, QpIdHash> qpIdToVirtualQpNum_;
 };
 
 // Coordinator inline functions
@@ -118,10 +147,12 @@ inline IbvVirtualCq* Coordinator::getVirtualRecvCq(
   return getVirtualCqById(it->second);
 }
 
-inline IbvVirtualQp* Coordinator::getVirtualQpByPhysicalQpNum(
-    int physicalQpNum) const {
-  auto it = physicalQpNumToVirtualQpNum_.find(physicalQpNum);
-  if (it == physicalQpNumToVirtualQpNum_.end()) {
+inline IbvVirtualQp* Coordinator::getVirtualQpByPhysicalQpNumAndDeviceId(
+    uint32_t physicalQpNum,
+    int32_t deviceId) const {
+  QpId key{.deviceId = deviceId, .qpNum = physicalQpNum};
+  auto it = qpIdToVirtualQpNum_.find(key);
+  if (it == qpIdToVirtualQpNum_.end()) {
     return nullptr;
   }
   return getVirtualQpById(it->second);

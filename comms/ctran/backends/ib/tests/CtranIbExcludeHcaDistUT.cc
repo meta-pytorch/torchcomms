@@ -52,7 +52,7 @@ TEST_F(CtranIbHcaTest, IbHcaExcludeDev) {
   // devices match the condition
   for (int devId = 0; devId < nDevices; devId++) {
     auto ctrlMgr = std::make_unique<CtranCtrlManager>();
-    CtranComm* comm = this->commRAII->ctranComm;
+    CtranComm* comm = this->commRAII->ctranComm.get();
 
     EXPECT_EQ(NCCL_IB_HCA_PREFIX, "^");
 

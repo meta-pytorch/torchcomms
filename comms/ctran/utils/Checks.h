@@ -167,6 +167,20 @@
       throw std::runtime_error(std::string("System error: ") + errstr);        \
     }                                                                          \
   } while (0)
+#define FB_SYSCHECKTHROW_EX(cmd, rank, commHash, desc)                         \
+  do {                                                                         \
+    int err = cmd;                                                             \
+    if (err != 0) {                                                            \
+      auto errstr = folly::errnoStr(err);                                      \
+      CLOGF(ERR, "{}:{} -> {} ({})", __FILE__, __LINE__, err, errstr.c_str()); \
+      throw ctran::utils::Exception(                                           \
+          std::string("System error: ") + errstr,                              \
+          commSystemError,                                                     \
+          rank,                                                                \
+          commHash,                                                            \
+          desc);                                                               \
+    }                                                                          \
+  } while (0)
 
 #define FB_SYSCHECKRETURN(cmd, retval)                                         \
   do {                                                                         \

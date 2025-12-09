@@ -268,6 +268,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   void register_address(const AddressWithLen& addr);
   void deregister_address(const Address& addr);
   ncclDataType_t getNcclDataType(const at::Tensor& tensor);
+  ncclDataType_t getNcclDataType(const at::ScalarType scalar_type);
 
   c10::intrusive_ptr<TorchWorkNCCLX> createWork(
       cudaStream_t stream,

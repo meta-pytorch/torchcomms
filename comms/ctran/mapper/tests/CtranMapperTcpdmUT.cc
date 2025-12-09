@@ -41,13 +41,12 @@ class CtranMapperTcpdmTest : public ::testing::Test {
   }
   void TearDown() override {
     unsetenv("NCCL_CTRAN_BACKENDS");
-    unsetenv("MCCL_CTRAN_BACKENDS");
     commRAII_.reset();
   }
   void createComm() {
     ncclCvarInit();
     commRAII_ = createDummyCtranComm();
-    dummyComm_ = commRAII_->ctranComm;
+    dummyComm_ = commRAII_->ctranComm.get();
   }
 };
 
@@ -63,11 +62,12 @@ TEST_F(CtranMapperTcpdmTest, EnableTCPDMBackendThroughCVARs) {
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::TCPDM));
 }
 TEST_F(CtranMapperTcpdmTest, OverrideBackendThroughHints) {
+  // Test that config_.backends overrides NCCL_CTRAN_BACKENDS CVAR.
   setenv("NCCL_CTRAN_BACKENDS", "nvl,ib,socket", 1);
   ASSERT_STREQ(getenv("NCCL_CTRAN_BACKENDS"), "nvl,ib,socket");
-  setenv("MCCL_CTRAN_BACKENDS", "tcpdm", 1);
-  ASSERT_STREQ(getenv("MCCL_CTRAN_BACKENDS"), "tcpdm");
   this->createComm();
+  // Directly set config_.backends to override CVAR-based backend selection
+  this->dummyComm_->config_.backends = {CommBackend::TCPDM};
   auto mapper = std::make_unique<CtranMapper>(this->dummyComm_);
   auto rank = this->dummyComm_->statex_->rank();
   EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));

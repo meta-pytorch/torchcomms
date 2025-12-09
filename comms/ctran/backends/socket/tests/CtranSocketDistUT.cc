@@ -24,7 +24,7 @@ class CtranSocketTest : public CtranDistTest {
   CtranSocketTest() = default;
   void SetUp() override {
     CtranDistTest::SetUp();
-    comm = commRAII->ctranComm;
+    comm = commRAII->ctranComm.get();
     ctrlMgr = std::make_unique<CtranCtrlManager>();
   }
 

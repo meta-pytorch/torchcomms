@@ -41,7 +41,7 @@ class CtranIbTest : public CtranDistTest {
   CtranIbTest() = default;
   void SetUp() override {
     CtranDistTest::SetUp();
-    this->comm = this->commRAII->ctranComm;
+    this->comm = this->commRAII->ctranComm.get();
     this->ctrlMgr = std::make_unique<CtranCtrlManager>();
     this->commIbRegCount = getIbRegCount();
   }

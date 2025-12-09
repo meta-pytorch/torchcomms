@@ -104,4 +104,201 @@ void testBlockGroup(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+// =============================================================================
+// Partition Tests
+// =============================================================================
+
+__global__ void testPartitionKernel(
+    uint32_t* partitionIds,
+    uint32_t* subgroupIds,
+    uint32_t* subgroupTotalGroups,
+    uint32_t numPartitions,
+    uint32_t* errorCount) {
+  auto warp = make_warp_group();
+
+  auto [partition_id, subgroup] = warp.partition(numPartitions);
+
+  // Bounds check
+  if (partition_id >= numPartitions) {
+    atomicAdd(errorCount, 1);
+    return;
+  }
+
+  // Record results for CPU verification (one write per warp)
+  if (warp.is_leader()) {
+    partitionIds[warp.group_id] = partition_id;
+    subgroupIds[warp.group_id] = subgroup.group_id;
+    subgroupTotalGroups[warp.group_id] = subgroup.total_groups;
+  }
+}
+
+void testPartition(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testPartitionKernel<<<numBlocks, blockSize>>>(
+      partitionIds_d,
+      subgroupIds_d,
+      subgroupTotalGroups_d,
+      numPartitions,
+      errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// Subgroup Properties Verification Tests
+// =============================================================================
+
+__global__ void testPartitionSubgroupPropertiesKernel(
+    uint32_t* threadIdsInGroup,
+    uint32_t* groupSizes,
+    uint32_t* scopes,
+    uint32_t numPartitions,
+    uint32_t* errorCount) {
+  auto warp = make_warp_group();
+
+  auto [partition_id, subgroup] = warp.partition(numPartitions);
+
+  // Verify preserved properties match original warp
+  if (subgroup.thread_id_in_group != warp.thread_id_in_group) {
+    atomicAdd(errorCount, 1);
+  }
+  if (subgroup.group_size != warp.group_size) {
+    atomicAdd(errorCount, 1);
+  }
+  if (subgroup.scope != warp.scope) {
+    atomicAdd(errorCount, 1);
+  }
+
+  // Record for CPU verification (one write per warp)
+  if (warp.is_leader()) {
+    threadIdsInGroup[warp.group_id] = subgroup.thread_id_in_group;
+    groupSizes[warp.group_id] = subgroup.group_size;
+    scopes[warp.group_id] = static_cast<uint32_t>(subgroup.scope);
+  }
+}
+
+void testPartitionSubgroupProperties(
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t* scopes_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testPartitionSubgroupPropertiesKernel<<<numBlocks, blockSize>>>(
+      threadIdsInGroup_d, groupSizes_d, scopes_d, numPartitions, errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// Weighted Partition Tests
+// =============================================================================
+
+__global__ void testWeightedPartitionKernel(
+    uint32_t* partitionIds,
+    uint32_t* subgroupIds,
+    uint32_t* subgroupTotalGroups,
+    const uint32_t* weights,
+    uint32_t numPartitions,
+    uint32_t* errorCount) {
+  auto warp = make_warp_group();
+
+  auto [partition_id, subgroup] =
+      warp.partition(make_device_span(weights, numPartitions));
+
+  // Bounds check
+  if (partition_id >= numPartitions) {
+    atomicAdd(errorCount, 1);
+    return;
+  }
+
+  // Record results for CPU verification (one write per warp)
+  if (warp.is_leader()) {
+    partitionIds[warp.group_id] = partition_id;
+    subgroupIds[warp.group_id] = subgroup.group_id;
+    subgroupTotalGroups[warp.group_id] = subgroup.total_groups;
+  }
+}
+
+void testWeightedPartition(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    const uint32_t* weights_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testWeightedPartitionKernel<<<numBlocks, blockSize>>>(
+      partitionIds_d,
+      subgroupIds_d,
+      subgroupTotalGroups_d,
+      weights_d,
+      numPartitions,
+      errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// Invalid Partition Test (more partitions than groups)
+// =============================================================================
+
+__global__ void testWeightedPartitionMorePartitionsThanGroupsKernel(
+    const uint32_t* weights,
+    uint32_t numPartitions) {
+  auto warp = make_warp_group();
+
+  // This should trigger an assertion failure because numPartitions >
+  // total_groups The assertion in partition(weights) checks: num_partitions <=
+  // total_groups
+  auto [partition_id, subgroup] =
+      warp.partition(make_device_span(weights, numPartitions));
+
+  // Suppress unused variable warnings (we won't reach here due to assertion)
+  (void)partition_id;
+  (void)subgroup;
+}
+
+void testWeightedPartitionMorePartitionsThanGroups(
+    const uint32_t* weights_d,
+    uint32_t numPartitions,
+    int numBlocks,
+    int blockSize) {
+  testWeightedPartitionMorePartitionsThanGroupsKernel<<<numBlocks, blockSize>>>(
+      weights_d, numPartitions);
+  // No PIPES_KERNEL_LAUNCH_CHECK() here - this test expects the kernel to trap
+}
+
+// =============================================================================
+// Invalid Partition Test (more partitions than groups) - Non-weighted version
+// =============================================================================
+
+__global__ void testPartitionMorePartitionsThanGroupsKernel(
+    uint32_t numPartitions) {
+  auto warp = make_warp_group();
+
+  // This should trigger a trap because numPartitions > total_groups
+  // The check in partition(num_partitions) validates: num_partitions <=
+  // total_groups
+  auto [partition_id, subgroup] = warp.partition(numPartitions);
+
+  // Suppress unused variable warnings (we won't reach here due to trap)
+  (void)partition_id;
+  (void)subgroup;
+}
+
+void testPartitionMorePartitionsThanGroups(
+    uint32_t numPartitions,
+    int numBlocks,
+    int blockSize) {
+  testPartitionMorePartitionsThanGroupsKernel<<<numBlocks, blockSize>>>(
+      numPartitions);
+  // No PIPES_KERNEL_LAUNCH_CHECK() here - this test expects the kernel to trap
+}
+
 } // namespace comms::pipes::test

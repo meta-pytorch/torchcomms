@@ -92,7 +92,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   AllToAllvDynamicSplitNonContigTestCommon() = default;
   void SetUp() override {
     CtranDistTest::SetUp();
-    comm = commRAII->ctranComm;
+    comm = commRAII->ctranComm.get();
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
     CUDACHECK_TEST(cudaStreamCreate(&stream));

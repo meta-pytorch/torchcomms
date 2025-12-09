@@ -2,9 +2,6 @@
 
 #include <gtest/gtest.h>
 
-#define P2pNvlTransport_TEST_FRIENDS \
-  FRIEND_TEST(P2pNvlTransportTestFixture, IpcMemAccess);
-
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
@@ -19,7 +16,7 @@
 
 using namespace meta::comms;
 
-namespace comms::pipes {
+namespace comms::pipes::tests {
 
 // Parameters for transfer size tests: (nbytes, dataBufferSize, chunkSize, name)
 struct TransferSizeParams {
@@ -43,7 +40,7 @@ class P2pNvlTransportTestFixture : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
-    cudaSetDevice(localRank);
+    CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 
   void TearDown() override {
@@ -75,9 +72,9 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   auto p2p = transport.getTransportDevice(peerRank);
 
   auto localAddr =
-      static_cast<int*>(static_cast<void*>(p2p.localState_.dataBuffer));
+      static_cast<int*>(static_cast<void*>(p2p.getLocalState().dataBuffer));
   auto remoteAddr =
-      static_cast<int*>(static_cast<void*>(p2p.remoteState_.dataBuffer));
+      static_cast<int*>(static_cast<void*>(p2p.getRemoteState().dataBuffer));
   XLOGF(
       INFO,
       "Rank {}: localAddr: {}, remoteAddr: {}",
@@ -214,7 +211,7 @@ class TransportTestHelper {
                 numRanks,
                 bootstrap_,
                 config)) {
-    cudaSetDevice(localRank);
+    CUDACHECK_TEST(cudaSetDevice(localRank));
     transport_->exchange();
   }
 
@@ -281,7 +278,7 @@ class TransferSizeTestFixture
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
-    cudaSetDevice(localRank);
+    CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 };
 
@@ -391,7 +388,7 @@ class GroupTypeTestFixture
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
-    cudaSetDevice(localRank);
+    CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 };
 
@@ -904,6 +901,137 @@ TEST_F(P2pNvlTransportTestFixture, SimultaneousSendRecvInKernel) {
 }
 
 // =============================================================================
+// Parameterized Test Fixture for Weighted Partition Send/Recv
+// =============================================================================
+// Tests unequal send/recv partitioning with weighted splits
+
+struct WeightedPartitionParams {
+  uint32_t sendWeight;
+  uint32_t recvWeight;
+  std::string name;
+};
+
+class WeightedPartitionTestFixture
+    : public MpiBaseTestFixture,
+      public ::testing::WithParamInterface<WeightedPartitionParams> {
+ protected:
+  void SetUp() override {
+    MpiBaseTestFixture::SetUp();
+    CUDACHECK_TEST(cudaSetDevice(localRank));
+  }
+};
+
+TEST_P(WeightedPartitionTestFixture, SendRecv) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const auto& params = GetParam();
+  const size_t nbytes = 2 * 1024 * 1024; // 2MB
+  const int numBlocks = 4;
+  const int blockSize = 128;
+
+  const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
+  P2pNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+  };
+
+  TransportTestHelper helper(globalRank, numRanks, localRank, config);
+  auto p2p = helper.getDevice();
+
+  const size_t numInts = nbytes / sizeof(int);
+
+  DeviceBuffer sendBuffer(nbytes);
+  DeviceBuffer recvBuffer(nbytes);
+
+  auto send_d = static_cast<int*>(sendBuffer.get());
+  auto recv_d = static_cast<int*>(recvBuffer.get());
+
+  const int sendValue = 400 + globalRank;
+  const int expectedRecvValue = 400 + helper.peerRank();
+
+  test::fillBuffer(send_d, sendValue, numInts);
+  CUDACHECK_TEST(cudaMemset(recv_d, 0, nbytes));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Rank 0 sends then recvs, rank 1 recvs then sends
+  if (helper.globalRank() == 0) {
+    test::testWeightedSendRecv(
+        p2p,
+        send_d,
+        recv_d,
+        nbytes,
+        numBlocks,
+        blockSize,
+        params.sendWeight,
+        params.recvWeight);
+  } else {
+    test::testWeightedRecvSend(
+        p2p,
+        recv_d,
+        send_d,
+        nbytes,
+        numBlocks,
+        blockSize,
+        params.sendWeight,
+        params.recvWeight);
+  }
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Verify received data
+  std::vector<int> hostBuffer(numInts);
+  CUDACHECK_TEST(
+      cudaMemcpy(hostBuffer.data(), recv_d, nbytes, cudaMemcpyDeviceToHost));
+
+  for (size_t i = 0; i < numInts; i++) {
+    EXPECT_EQ(hostBuffer[i], expectedRecvValue)
+        << "Rank " << globalRank << ": Mismatch at index " << i << ": expected "
+        << expectedRecvValue << ", got " << hostBuffer[i];
+    if (hostBuffer[i] != expectedRecvValue) {
+      break;
+    }
+  }
+
+  XLOGF(
+      INFO,
+      "Rank {}: Weighted partition test '{}' completed",
+      globalRank,
+      params.name);
+}
+
+std::string weightedPartitionParamName(
+    const ::testing::TestParamInfo<WeightedPartitionParams>& info) {
+  return info.param.name;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    WeightedPartitionVariations,
+    WeightedPartitionTestFixture,
+    ::testing::Values(
+        WeightedPartitionParams{
+            .sendWeight = 3,
+            .recvWeight = 1,
+            .name = "Send3_Recv1"},
+        WeightedPartitionParams{
+            .sendWeight = 1,
+            .recvWeight = 3,
+            .name = "Send1_Recv3"},
+        // Extreme case: 1:99 split - tests that at least 1 warp is assigned to
+        // send
+        WeightedPartitionParams{
+            .sendWeight = 1,
+            .recvWeight = 99,
+            .name = "Send1_Recv99"}),
+    weightedPartitionParamName);
+
+// =============================================================================
 // Parameterized Test Fixture for Pipeline Depth Variation
 // =============================================================================
 // Test different pipelineDepth values to verify pipelining works correctly:
@@ -926,7 +1054,7 @@ class PipelineDepthTestFixture
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
-    cudaSetDevice(localRank);
+    CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 };
 
@@ -1045,7 +1173,7 @@ class PipelineSaturationTestFixture
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
-    cudaSetDevice(localRank);
+    CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 };
 
@@ -1144,7 +1272,7 @@ class ChunkCountEdgeCaseTestFixture
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
-    cudaSetDevice(localRank);
+    CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 };
 
@@ -1278,7 +1406,7 @@ class LargeTransferTestFixture
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
-    cudaSetDevice(localRank);
+    CUDACHECK_TEST(cudaSetDevice(localRank));
   }
 };
 
@@ -1366,7 +1494,7 @@ INSTANTIATE_TEST_SUITE_P(
             .name = "Large_128MB_4MBBuffer_DeepPipeline"}),
     largeTransferParamName);
 
-} // namespace comms::pipes
+} // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

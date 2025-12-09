@@ -11,7 +11,7 @@ namespace ibverbx {
 extern IbvSymbols ibvSymbols;
 
 /*** IbvQp ***/
-IbvQp::IbvQp(ibv_qp* qp) : qp_(qp) {}
+IbvQp::IbvQp(ibv_qp* qp, int32_t deviceId) : qp_(qp), deviceId_(deviceId) {}
 
 IbvQp::~IbvQp() {
   if (qp_) {
@@ -26,19 +26,27 @@ IbvQp::IbvQp(IbvQp&& other) noexcept {
   qp_ = other.qp_;
   physicalSendWrStatus_ = std::move(other.physicalSendWrStatus_);
   physicalRecvWrStatus_ = std::move(other.physicalRecvWrStatus_);
+  deviceId_ = other.deviceId_;
   other.qp_ = nullptr;
+  other.deviceId_ = -1;
 }
 
 IbvQp& IbvQp::operator=(IbvQp&& other) noexcept {
   qp_ = other.qp_;
   physicalSendWrStatus_ = std::move(other.physicalSendWrStatus_);
   physicalRecvWrStatus_ = std::move(other.physicalRecvWrStatus_);
+  deviceId_ = other.deviceId_;
   other.qp_ = nullptr;
+  other.deviceId_ = -1;
   return *this;
 }
 
 ibv_qp* IbvQp::qp() const {
   return qp_;
+}
+
+int32_t IbvQp::getDeviceId() const {
+  return deviceId_;
 }
 
 folly::Expected<folly::Unit, Error> IbvQp::modifyQp(

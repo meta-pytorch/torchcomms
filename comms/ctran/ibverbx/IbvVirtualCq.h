@@ -143,7 +143,8 @@ IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
       VirtualQpRequest request = {
           .type = RequestType::RECV,
           .wrId = physicalWc.wr_id,
-          .physicalQpNum = physicalWc.qp_num};
+          .physicalQpNum = physicalWc.qp_num,
+          .deviceId = physicalCqs_.at(cqIdx).getDeviceId()};
       if (physicalWc.opcode == IBV_WC_RECV_RDMA_WITH_IMM) {
         request.immData = physicalWc.imm_data;
       }
@@ -175,7 +176,8 @@ IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
       VirtualQpRequest request = {
           .type = RequestType::SEND,
           .wrId = physicalWc.wr_id,
-          .physicalQpNum = physicalWc.qp_num};
+          .physicalQpNum = physicalWc.qp_num,
+          .deviceId = physicalCqs_.at(cqIdx).getDeviceId()};
       auto coordinator = Coordinator::getCoordinator();
       CHECK(coordinator) << "Coordinator should not be nullptr during pollCq!";
       auto response = coordinator->submitRequestToVirtualQp(std::move(request));
@@ -190,7 +192,8 @@ IbvVirtualCq::loopPollPhysicalCqUntilEmpty() {
         VirtualQpRequest request = {
             .type = RequestType::SEND_NOTIFY,
             .wrId = response->virtualWrId,
-            .physicalQpNum = physicalWc.qp_num};
+            .physicalQpNum = physicalWc.qp_num,
+            .deviceId = physicalCqs_.at(cqIdx).getDeviceId()};
 
         auto coordinator = Coordinator::getCoordinator();
         CHECK(coordinator)

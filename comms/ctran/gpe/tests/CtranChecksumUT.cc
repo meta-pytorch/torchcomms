@@ -23,7 +23,7 @@ class CtranChecksumTest : public ::testing::Test {
 
     ncclCvarInit();
     dummyCommRAII = createDummyCtranComm();
-    dummyComm = dummyCommRAII->ctranComm;
+    dummyComm = dummyCommRAII->ctranComm.get();
   }
 
   void TearDown() override {}
