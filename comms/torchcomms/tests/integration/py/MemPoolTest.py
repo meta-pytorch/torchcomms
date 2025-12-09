@@ -43,7 +43,8 @@ class MemPoolTorchCommTest(unittest.TestCase):
         torch.testing.assert_close(tensor.cpu(), expected_tensor)
 
     @unittest.skipIf(
-        os.getenv("TEST_BACKEND") not in ["ncclx", "nccl"],
+        os.getenv("TEST_BACKEND") not in ["ncclx", "nccl"]
+        or torch.cuda.get_device_capability() < (9, 0),
         "Skipping NCCLX/NCCL-only mem pool tests",
     )
     def test_mem_pool(self) -> None:
