@@ -19,7 +19,7 @@
 
 using namespace meta::comms;
 
-namespace comms::pipes {
+namespace comms::pipes::tests {
 
 // Parameters for transfer size tests: (nbytes, dataBufferSize, chunkSize, name)
 struct TransferSizeParams {
@@ -1497,7 +1497,7 @@ INSTANTIATE_TEST_SUITE_P(
             .name = "Large_128MB_4MBBuffer_DeepPipeline"}),
     largeTransferParamName);
 
-} // namespace comms::pipes
+} // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

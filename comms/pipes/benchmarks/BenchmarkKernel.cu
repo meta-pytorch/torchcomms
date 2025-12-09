@@ -1,0 +1,100 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#include "comms/pipes/benchmarks/BenchmarkKernel.cuh"
+
+namespace comms::pipes::benchmark {
+
+// Helper to compute global thread ID across all blocks
+__device__ inline unsigned int getGlobalThreadId() {
+  return blockIdx.x * blockDim.x + threadIdx.x;
+}
+
+// Helper to get the appropriate thread group
+__device__ inline ThreadGroup getThreadGroup(bool useBlockGroups) {
+  return useBlockGroups ? make_block_group() : make_warp_group();
+}
+
+__global__ void p2pSend(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    bool useBlockGroups) {
+  auto group = getThreadGroup(useBlockGroups);
+  p2p.send(group, srcBuff, nBytes);
+}
+
+__global__ void p2pRecv(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    bool useBlockGroups) {
+  auto group = getThreadGroup(useBlockGroups);
+  p2p.recv(group, dstBuff, nBytes);
+}
+
+__global__ void p2pSendTimed(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    TimingStats* stats,
+    bool useBlockGroups) {
+  auto group = getThreadGroup(useBlockGroups);
+  unsigned int globalThreadId = getGlobalThreadId();
+
+  // Only first thread globally records start time
+  if (globalThreadId == 0) {
+    stats->startCycle = clock64();
+  }
+
+  p2p.send(group, srcBuff, nBytes);
+
+  // Only first thread globally records end time
+  if (globalThreadId == 0) {
+    unsigned long long end = clock64();
+    stats->endCycle = end;
+    stats->totalCycles = end - stats->startCycle;
+  }
+}
+
+__global__ void p2pRecvTimed(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    TimingStats* stats,
+    bool useBlockGroups) {
+  auto group = getThreadGroup(useBlockGroups);
+  unsigned int globalThreadId = getGlobalThreadId();
+
+  // Only first thread globally records start time
+  if (globalThreadId == 0) {
+    stats->startCycle = clock64();
+  }
+
+  p2p.recv(group, dstBuff, nBytes);
+
+  // Only first thread globally records end time
+  if (globalThreadId == 0) {
+    unsigned long long end = clock64();
+    stats->endCycle = end;
+    stats->totalCycles = end - stats->startCycle;
+  }
+}
+
+__global__ void p2pBidirectional(
+    P2pNvlTransportDevice p2p,
+    void* sendBuff,
+    void* recvBuff,
+    std::size_t nBytes,
+    bool useBlockGroups) {
+  auto group = getThreadGroup(useBlockGroups);
+
+  // Partition groups into 2: half for send, half for recv
+  auto [partition_id, subgroup] = group.partition(2);
+  if (partition_id == 0) {
+    p2p.send(subgroup, sendBuff, nBytes);
+  } else {
+    p2p.recv(subgroup, recvBuff, nBytes);
+  }
+}
+
+} // namespace comms::pipes::benchmark
