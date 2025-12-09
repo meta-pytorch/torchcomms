@@ -431,7 +431,12 @@ void CtranIb::init(
         ") exceeds CTRAN_MAX_IB_DEVICES_PER_RANK (" +
         std::to_string(CTRAN_MAX_IB_DEVICES_PER_RANK) + ")";
     CLOGF(ERR, "CTRAN-IB: {}", msg);
-    throw std::runtime_error(msg.c_str());
+    throw ::ctran::utils::Exception(
+        msg.c_str(),
+        commInvalidArgument,
+        this->rank,
+        this->commHash,
+        this->commDesc);
   }
 
   // assume NCCL_CTRAN_IB_DEVICES_PER_RANK contexts per cuda device
@@ -441,7 +446,12 @@ void CtranIb::init(
         ") * NCCL_CTRAN_IB_DEVICES_PER_RANK * NCCL_CTRAN_IB_DEVICE_STRIDE exceeds the number of contexts (" +
         std::to_string(s.ibvDevices.size()) + ")";
     CLOGF(ERR, "CTRAN-IB: {}", msg);
-    throw std::runtime_error(msg.c_str());
+    throw ::ctran::utils::Exception(
+        msg.c_str(),
+        commSystemError,
+        this->rank,
+        this->commHash,
+        this->commDesc);
   }
 
   for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; ++device) {
@@ -499,9 +509,13 @@ void CtranIb::init(
           WARN,
           "CTRAN-IB : No active port found on device {}. Disable IB backend.",
           s.ibvDevices[singletonDevIdx].device()->name);
-      throw std::runtime_error(
+      throw ::ctran::utils::Exception(
           std::string("CTRAN-IB : No active port found on device ") +
-          s.ibvDevices[singletonDevIdx].device()->name);
+              s.ibvDevices[singletonDevIdx].device()->name,
+          commSystemError,
+          this->rank,
+          this->commHash,
+          this->commDesc);
     }
 
     /* The max CQEs would not be enough for us in the worst case, where
@@ -599,7 +613,12 @@ void CtranIb::bootstrapStart(
         NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
     if (maybeAddr.hasError()) {
       CLOGF(WARN, "CTRAN-IB: No socket interfaces found");
-      throw std::runtime_error("CTRAN-IB : No socket interfaces found");
+      throw ::ctran::utils::Exception(
+          "CTRAN-IB : No socket interfaces found",
+          commSystemError,
+          this->rank,
+          this->commHash,
+          this->commDesc);
     }
 
     addrSockAddr = folly::SocketAddress(maybeAddr.value(), 0 /* port */);
