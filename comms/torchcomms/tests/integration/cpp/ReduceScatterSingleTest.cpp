@@ -192,6 +192,8 @@ void ReduceScatterSingleTest::testGraphReduceScatterSingle(
     // Verify the results after each replay
     verifyResults(output, op);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for reduce_scatter_single with input deleted after
@@ -244,6 +246,8 @@ void ReduceScatterSingleTest::testGraphReduceScatterSingleInputDeleted(
     // Verify the results after each replay
     verifyResults(output, op);
   }
+
+  graph.reset();
 }
 
 // Helper function to create input tensor

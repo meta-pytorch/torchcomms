@@ -191,6 +191,8 @@ class AllToAllvSingleTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_results(output_tensor, output_split_sizes)
 
+            graph.reset()
+
     def _graph_all_to_all_v_single_input_deleted(
         self, input_split_sizes, output_split_sizes, dtype
     ):
@@ -242,6 +244,8 @@ class AllToAllvSingleTest(unittest.TestCase):
 
                 # Verify the results after each replay
                 self._verify_results(output_tensor, output_split_sizes)
+
+            graph.reset()
 
     def _sync_all_to_all_v_single_multi_dim_tensor(
         self, input_split_sizes_, output_split_sizes_, dtype
