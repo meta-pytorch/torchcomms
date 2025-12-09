@@ -337,8 +337,8 @@ struct BenchmarkSetup {
   void* recvBuffer{};
   std::vector<std::optional<IbvMr>> sendMrs; // One MR per PD
   std::vector<std::optional<IbvMr>> recvMrs; // One MR per PD
-  std::unordered_map<int32_t, MemoryRegionKeys> senderDeviceNumToKeys;
-  std::unordered_map<int32_t, MemoryRegionKeys> receiverDeviceNumToKeys;
+  std::unordered_map<int32_t, MemoryRegionKeys> senderDeviceIdToKeys;
+  std::unordered_map<int32_t, MemoryRegionKeys> receiverDeviceIdToKeys;
 
   // Disable copy and move operations for RAII resource management
   BenchmarkSetup(const BenchmarkSetup&) = delete;
@@ -439,16 +439,16 @@ struct BenchmarkSetup {
       recvMrs.push_back(std::move(*recvMrExpected));
     }
 
-    // Construct deviceNumToKeys maps for sender and receiver
+    // Construct deviceIdToKeys maps for sender and receiver
     for (size_t i = 0; i < sender->devices.size(); i++) {
       int32_t deviceId = sender->devices.at(i).getDeviceId();
-      senderDeviceNumToKeys[deviceId] = MemoryRegionKeys{
+      senderDeviceIdToKeys[deviceId] = MemoryRegionKeys{
           .lkey = sendMrs.at(i)->mr()->lkey, .rkey = recvMrs.at(i)->mr()->rkey};
     }
 
     for (size_t i = 0; i < receiver->devices.size(); i++) {
       int32_t deviceId = receiver->devices.at(i).getDeviceId();
-      receiverDeviceNumToKeys[deviceId] = MemoryRegionKeys{
+      receiverDeviceIdToKeys[deviceId] = MemoryRegionKeys{
           .lkey = recvMrs.at(i)->mr()->lkey, .rkey = sendMrs.at(i)->mr()->rkey};
     }
   }
@@ -528,7 +528,7 @@ static void BM_Ibverbx_VirtualQp_RdmaRead(benchmark::State& state) {
     // Benchmark the postSend operation
     for (auto _ : state) {
       setup.receiver->qp.postSend(
-          &sendWr, &sendWrBad, setup.receiverDeviceNumToKeys);
+          &sendWr, &sendWrBad, setup.receiverDeviceIdToKeys);
 
       // Poll receiver cq until completion
       BenchmarkSetup::pollCqUntilCompletion(setup.receiver->cq, "Receiver");
@@ -573,7 +573,7 @@ static void BM_Ibverbx_VirtualQp_RdmaWrite(benchmark::State& state) {
     // Benchmark the postSend operation
     for (auto _ : state) {
       auto postSendResult = setup.sender->qp.postSend(
-          &sendWr, &sendWrBad, setup.senderDeviceNumToKeys);
+          &sendWr, &sendWrBad, setup.senderDeviceIdToKeys);
       BenchmarkSetup::pollCqUntilCompletion(setup.sender->cq, "Sender");
     }
 
@@ -628,7 +628,7 @@ static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm(
     for (auto _ : state) {
       setup.receiver->qp.postRecv(&recvWr, &recvWrBad);
       setup.sender->qp.postSend(
-          &sendWr, &sendWrBad, setup.senderDeviceNumToKeys);
+          &sendWr, &sendWrBad, setup.senderDeviceIdToKeys);
 
       // Poll sender and receiver cq until completion
       BenchmarkSetup::pollCqUntilCompletion(setup.sender->cq, "Sender");
