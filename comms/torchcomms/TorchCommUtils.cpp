@@ -95,8 +95,6 @@ int count_file_lines(const std::string& filepath, bool ignore_empty_lines) {
 
   if (filestream.bad()) {
     throw std::runtime_error("Error while reading file: " + filepath);
-  } else if (!filestream.eof()) {
-    throw std::runtime_error("File read did not reach EOF: " + filepath);
   }
 
   return line_count;
