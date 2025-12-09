@@ -225,21 +225,21 @@ static void MultiBlockDevSyncOnSteps(
 //------------------------------------------------------------------------------
 
 // Test with different numbers of thread block groups
-BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 1);
-BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 2);
-BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 4);
-BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 8);
-BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 16);
-BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 32);
-BENCHMARK_PARAM_COUNTERS(DevSyncWaitNotify, 64);
+BENCHMARK_SINGLE_PARAM_COUNTERS(DevSyncWaitNotify, 1);
+BENCHMARK_SINGLE_PARAM_COUNTERS(DevSyncWaitNotify, 2);
+BENCHMARK_SINGLE_PARAM_COUNTERS(DevSyncWaitNotify, 4);
+BENCHMARK_SINGLE_PARAM_COUNTERS(DevSyncWaitNotify, 8);
+BENCHMARK_SINGLE_PARAM_COUNTERS(DevSyncWaitNotify, 16);
+BENCHMARK_SINGLE_PARAM_COUNTERS(DevSyncWaitNotify, 32);
+BENCHMARK_SINGLE_PARAM_COUNTERS(DevSyncWaitNotify, 64);
 
-BENCHMARK_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 1);
-BENCHMARK_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 2);
-BENCHMARK_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 4);
-BENCHMARK_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 8);
-BENCHMARK_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 16);
-BENCHMARK_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 32);
-BENCHMARK_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 64);
+BENCHMARK_SINGLE_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 1);
+BENCHMARK_SINGLE_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 2);
+BENCHMARK_SINGLE_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 4);
+BENCHMARK_SINGLE_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 8);
+BENCHMARK_SINGLE_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 16);
+BENCHMARK_SINGLE_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 32);
+BENCHMARK_SINGLE_PARAM_COUNTERS(MultiBlockDevSyncOnSteps, 64);
 
 int main(int argc, char** argv) {
   CHECK_GE(bench_utils::getNumCudaDevices(), 2);
