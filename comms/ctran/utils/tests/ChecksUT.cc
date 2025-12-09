@@ -222,6 +222,27 @@ TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW) {
   EXPECT_THROW(FB_SYSCHECKTHROW(1), std::runtime_error);
 }
 
+TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX) {
+  const int rank = 7;
+  const uint64_t commHash = 0xDEADBEEF;
+  const std::string desc = "testDesc";
+
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_SYSCHECKTHROW_EX(0, rank, commHash, desc));
+
+  // Failure case: ctran::utils::Exception thrown with correct properties
+  bool caughtException = false;
+  try {
+    FB_SYSCHECKTHROW_EX(EINVAL, rank, commHash, desc);
+  } catch (const ctran::utils::Exception& e) {
+    EXPECT_EQ(e.rank(), rank);
+    EXPECT_EQ(e.commHash(), commHash);
+    EXPECT_THAT(std::string(e.what()), ::testing::HasSubstr("System error:"));
+    caughtException = true;
+  }
+  ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+}
+
 TEST_F(CtranUtilsCheckTest, FB_CHECKTHROW) {
   EXPECT_NO_THROW(FB_CHECKTHROW(true, "test FB_CHECKTHROW -> NO throw"));
   EXPECT_THROW(

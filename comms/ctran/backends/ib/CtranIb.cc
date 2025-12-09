@@ -633,7 +633,11 @@ void CtranIb::bootstrapStart(
     ifnamePtr = const_cast<std::string*>(&qpServerAddrPtr->ifName);
   }
 
-  FB_SYSCHECKTHROW(this->listenSocket->bindAndListen(addrSockAddr, *ifnamePtr));
+  FB_SYSCHECKTHROW_EX(
+      this->listenSocket->bindAndListen(addrSockAddr, *ifnamePtr),
+      this->rank,
+      this->commHash,
+      this->commDesc);
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -649,7 +653,8 @@ void CtranIb::bootstrapStart(
     allListenSocketAddrs.resize(comm->statex_->nRanks());
     auto maybeListenAddr = this->listenSocket->getListenAddress();
     if (maybeListenAddr.hasError()) {
-      FB_SYSCHECKTHROW(maybeListenAddr.error());
+      FB_SYSCHECKTHROW_EX(
+          maybeListenAddr.error(), this->rank, this->commHash, this->commDesc);
     }
     maybeListenAddr->getAddress(&allListenSocketAddrs[rank]);
 
@@ -1098,17 +1103,17 @@ commResult_t CtranIb::connectVcDirect(
 
 // TODO: We may want to retry if err is ECONNRESET,
 // ETIMEDOUT, or ECONNRESET. For other errors, we
-// may still want to throw an std::runtime_error,
+// may still want to throw an ctran::utils::Exception,
 // like what would happen if FT is disabled (via
-// the FB_SYSCHECKTHROW macro).
-#define HANDLE_SOCKET_ERROR(cmd, abortCtrl)                           \
-  if (!abortCtrl->Enabled()) {                                        \
-    FB_SYSCHECKTHROW(cmd);                                            \
+// the FB_SYSCHECKTHROW_EX macro).
+#define HANDLE_SOCKET_ERROR(cmd, ib)                                  \
+  if (!ib->abortCtrl_->Enabled()) {                                   \
+    FB_SYSCHECKTHROW_EX(cmd, ib->rank, ib->commHash, ib->commDesc);   \
   } else {                                                            \
     int errCode = cmd;                                                \
-    if (errCode || abortCtrl->Test()) {                               \
+    if (errCode || ib->abortCtrl_->Test()) {                          \
       CLOGF(ERR, "Socket error encountered: {}. Aborting.", errCode); \
-      abortCtrl->Set(); /* Ensure remote is notified */               \
+      ib->abortCtrl_->Set(); /* Ensure remote is notified */          \
       break;                                                          \
     }                                                                 \
   }
@@ -1126,14 +1131,14 @@ void CtranIb::bootstrapAccept(CtranIb* ib) {
       if (ib->listenSocket->hasShutDown()) {
         break; // listen socket is closed or the CtranIb instance was aborted
       }
-      HANDLE_SOCKET_ERROR(maybeSocket.error(), ib->abortCtrl_);
+      HANDLE_SOCKET_ERROR(maybeSocket.error(), ib);
     }
 
     std::unique_ptr<ctran::bootstrap::ISocket> socket =
         std::move(maybeSocket.value());
 
     uint64_t magic{0};
-    HANDLE_SOCKET_ERROR(socket->recv(&magic, sizeof(uint64_t)), ib->abortCtrl_);
+    HANDLE_SOCKET_ERROR(socket->recv(&magic, sizeof(uint64_t)), ib);
     if (magic != kBootstrapMagic) {
       CLOGF(
           WARN,
@@ -1149,7 +1154,7 @@ void CtranIb::bootstrapAccept(CtranIb* ib) {
     }
 
     int peerRank;
-    HANDLE_SOCKET_ERROR(socket->recv(&peerRank, sizeof(int)), ib->abortCtrl_);
+    HANDLE_SOCKET_ERROR(socket->recv(&peerRank, sizeof(int)), ib);
     const auto err = ib->connectVc(std::move(socket), true, peerRank);
     if (err != 0) { // TODO: We may want to handle certain errors differently?
       CLOGF(
