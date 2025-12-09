@@ -95,7 +95,8 @@ class IbvVirtualQp {
 
   inline folly::Expected<folly::Unit, Error> postSend(
       ibv_send_wr* sendWr,
-      ibv_send_wr* sendWrBad);
+      ibv_send_wr* sendWrBad,
+      const std::unordered_map<int32_t, MemoryRegionKeys>& deviceIdToKeys = {});
 
   inline folly::Expected<folly::Unit, Error> postRecv(
       ibv_recv_wr* ibvRecvWr,
@@ -117,7 +118,8 @@ class IbvVirtualQp {
   inline void updatePhysicalSendWrFromVirtualSendWr(
       VirtualSendWr& virtualSendWr,
       ibv_send_wr* sendWr,
-      ibv_sge* sendSg);
+      ibv_sge* sendSg,
+      int32_t deviceId = 0);
 
   friend class IbvPd;
   friend class IbvVirtualCq;
@@ -212,7 +214,11 @@ IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
     // Update the physical send work request with virtual one
     ibv_send_wr sendWr_{};
     ibv_sge sendSg_{};
-    updatePhysicalSendWrFromVirtualSendWr(virtualSendWr, &sendWr_, &sendSg_);
+    updatePhysicalSendWrFromVirtualSendWr(
+        virtualSendWr,
+        &sendWr_,
+        &sendSg_,
+        physicalQps_.at(availableQpIdx).getDeviceId());
 
     // Call ibv_post_send to send the message
     ibv_send_wr badSendWr_{};
@@ -294,7 +300,8 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendNotifyImm() {
 inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
     VirtualSendWr& virtualSendWr,
     ibv_send_wr* sendWr,
-    ibv_sge* sendSg) {
+    ibv_sge* sendSg,
+    int32_t deviceId) {
   sendWr->wr_id = nextPhysicalWrId_++;
 
   auto lenToSend = std::min(
@@ -302,7 +309,11 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
       maxMsgSize_);
   sendSg->addr = virtualSendWr.wr.sg_list->addr + virtualSendWr.offset;
   sendSg->length = lenToSend;
-  sendSg->lkey = virtualSendWr.wr.sg_list->lkey;
+  sendSg->lkey = virtualSendWr.deviceIdToKeys.empty()
+      ? virtualSendWr.wr.sg_list->lkey
+      : virtualSendWr.deviceIdToKeys.at(deviceId)
+            .lkey; // Use lkey from deviceIdToKeys if not empty, otherwise from
+                   // virtualSendWr.wr
   sendWr->next = nullptr;
   sendWr->sg_list = sendSg;
   sendWr->num_sge = 1;
@@ -316,7 +327,12 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
       sendWr->send_flags = virtualSendWr.wr.send_flags;
       sendWr->wr.rdma.remote_addr =
           virtualSendWr.wr.wr.rdma.remote_addr + virtualSendWr.offset;
-      sendWr->wr.rdma.rkey = virtualSendWr.wr.wr.rdma.rkey;
+
+      sendWr->wr.rdma.rkey = virtualSendWr.deviceIdToKeys.empty()
+          ? virtualSendWr.wr.wr.rdma.rkey
+          : virtualSendWr.deviceIdToKeys.at(deviceId)
+                .rkey; // Use rkey from deviceIdToKeys if not empty, otherwise
+                       // from virtualSendWr.wr
       break;
     case IBV_WR_RDMA_WRITE_WITH_IMM:
       sendWr->opcode = (loadBalancingScheme_ == LoadBalancingScheme::SPRAY)
@@ -325,7 +341,11 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
       sendWr->send_flags = IBV_SEND_SIGNALED;
       sendWr->wr.rdma.remote_addr =
           virtualSendWr.wr.wr.rdma.remote_addr + virtualSendWr.offset;
-      sendWr->wr.rdma.rkey = virtualSendWr.wr.wr.rdma.rkey;
+      sendWr->wr.rdma.rkey = virtualSendWr.deviceIdToKeys.empty()
+          ? virtualSendWr.wr.wr.rdma.rkey
+          : virtualSendWr.deviceIdToKeys.at(deviceId)
+                .rkey; // Use rkey from deviceIdToKeys if not empty, otherwise
+                       // from virtualSendWr.wr
       break;
     case IBV_WR_SEND:
       sendWr->opcode = virtualSendWr.wr.opcode;
@@ -345,7 +365,15 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
 
 inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
     ibv_send_wr* sendWr,
-    ibv_send_wr* sendWrBad) {
+    ibv_send_wr* sendWrBad,
+    const std::unordered_map<int32_t, MemoryRegionKeys>& deviceIdToKeys) {
+  // Report error if deviceCnt_ > 1 and deviceIdToKeys is not provided
+  if (deviceCnt_ > 1 && deviceIdToKeys.empty()) {
+    return folly::makeUnexpected(Error(
+        EINVAL,
+        "In IbvVirtualQp::postSend, deviceIdToKeys must be provided when using multiple NICs"));
+  }
+
   // Report error if num_sge is more than 1
   if (sendWr->num_sge > 1) {
     return folly::makeUnexpected(Error(
@@ -388,11 +416,15 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
   coordinator->submitRequestToVirtualCq(std::move(request));
 
   // Set up the send work request with the completion queue entry and enqueue
-  // Note: virtualWcPtr can be nullptr - this is intentional and supported
-  // The VirtualSendWr constructor will handle deep copying of sendWr and
-  // sg_list
+  // Note: The VirtualSendWr constructor will handle deep copying of sendWr,
+  // sg_list, and deviceIdToKeys (if provided; otherwise deviceIdToKeys will
+  // be empty)
   pendingSendVirtualWrQue_.emplace_back(
-      *sendWr, expectedMsgCnt, expectedMsgCnt, sendExtraNotifyImm);
+      *sendWr,
+      expectedMsgCnt,
+      expectedMsgCnt,
+      sendExtraNotifyImm,
+      deviceIdToKeys);
 
   // Map large messages from vSendQ_ to pQps_
   if (mapPendingSendQueToPhysicalQp().hasError()) {
