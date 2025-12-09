@@ -2,51 +2,24 @@
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 #include <mutex>
-#include <type_traits>
 
 // Helper to detect if c10::CachingAllocator constants exist
 namespace {
 
-// Helper to get kLargeBuffer from c10::CachingAllocator if it exists
-template <typename = void>
-struct LargeBufferGetter {
-  static constexpr size_t get() {
-    return 20971520; // 20MB (20 * 1024 * 1024) - fallback
-  }
-};
-
-// Specialization when c10::CachingAllocator::kLargeBuffer exists
-template <>
-struct LargeBufferGetter<
-    std::void_t<decltype(c10::CachingAllocator::kLargeBuffer)>> {
-  static constexpr size_t get() {
-    return c10::CachingAllocator::kLargeBuffer;
-  }
-};
-
-// Helper to get kSmallBuffer from c10::CachingAllocator if it exists
-template <typename = void>
-struct SmallBufferGetter {
-  static constexpr size_t get() {
-    return 2097152; // 2MB (2 * 1024 * 1024) - fallback
-  }
-};
-
-// Specialization when c10::CachingAllocator::kSmallBuffer exists
-template <>
-struct SmallBufferGetter<
-    std::void_t<decltype(c10::CachingAllocator::kSmallBuffer)>> {
-  static constexpr size_t get() {
-    return c10::CachingAllocator::kSmallBuffer;
-  }
-};
-
-inline size_t getLargeBufferSize() {
-  return LargeBufferGetter<>::get();
+size_t getLargeBufferSize() {
+#if __has_include(<c10/core/AllocatorConfig.h>)
+  return c10::CachingAllocator::kLargeBuffer;
+#else
+  return 20971520; // 20MB (20 * 1024 * 1024) - fallback
+#endif
 }
 
-inline size_t getSmallBufferSize() {
-  return SmallBufferGetter<>::get();
+size_t getSmallBufferSize() {
+#if __has_include(<c10/core/AllocatorConfig.h>)
+  return c10::CachingAllocator::kSmallBuffer;
+#else
+  return 2097152; // 2MB (2 * 1024 * 1024) - fallback
+#endif
 }
 } // namespace
 
@@ -139,8 +112,8 @@ void CachingAllocatorHookImpl::regDeregMem(
 
     // Define chunk sizes for expandable segments
     // In older PyTorch versions, c10::CachingAllocator::kLargeBuffer and
-    // kSmallBuffer symbols may not exist. We detect their availability at
-    // compile time using SFINAE and fall back to hardcoded values if needed.
+    // kSmallBuffer symbols may not exist. We detect their availability
+    // according to the existence of AllocatorConfig.h
     const size_t kLargeBuffer = getLargeBufferSize();
     const size_t kSmallBuffer = getSmallBufferSize();
 
