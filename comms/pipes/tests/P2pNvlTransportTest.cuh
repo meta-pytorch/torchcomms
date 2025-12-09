@@ -97,4 +97,30 @@ void testRecvSend(
     GroupType groupType = GroupType::WARP,
     int blocksPerGroup = 1);
 
+// Weighted partition send/recv - partitions groups according to weights
+// sendWeight:recvWeight controls the ratio of groups assigned to send vs recv
+void testWeightedSendRecv(
+    P2pNvlTransportDevice p2p,
+    void* send_d,
+    void* recv_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    uint32_t sendWeight,
+    uint32_t recvWeight,
+    GroupType groupType = GroupType::WARP);
+
+// Weighted partition recv/send - partitions groups according to weights
+// recvWeight:sendWeight controls the ratio of groups assigned to recv vs send
+void testWeightedRecvSend(
+    P2pNvlTransportDevice p2p,
+    void* recv_d,
+    void* send_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    uint32_t recvWeight,
+    uint32_t sendWeight,
+    GroupType groupType = GroupType::WARP);
+
 } // namespace comms::pipes::test

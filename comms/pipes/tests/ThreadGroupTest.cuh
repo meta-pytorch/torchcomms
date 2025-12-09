@@ -35,4 +35,56 @@ void testBlockGroup(
     int numBlocks,
     int blockSize);
 
+// Tests partition(num_partitions) - even partition of groups
+// Verifies:
+// - Each group gets a valid partition_id in [0, num_partitions)
+// - subgroup.group_id is renumbered within partition
+// - subgroup.total_groups is correct for each partition
+void testPartition(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+// Tests that subgroup preserves thread_id_in_group, group_size, and scope
+// from the original group
+void testPartitionSubgroupProperties(
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t* scopes_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+// Tests partition(cuda::std::span<const uint32_t>) - weighted partition
+// Verifies proportional assignment based on weights
+void testWeightedPartition(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    const uint32_t* weights_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+// Tests that partition(weights) asserts when num_partitions > total_groups
+// This is invalid usage since some partitions would be empty
+void testWeightedPartitionMorePartitionsThanGroups(
+    const uint32_t* weights_d,
+    uint32_t numPartitions,
+    int numBlocks,
+    int blockSize);
+
+// Tests that partition(num_partitions) traps when num_partitions > total_groups
+// This is invalid usage since some partitions would be empty
+void testPartitionMorePartitionsThanGroups(
+    uint32_t numPartitions,
+    int numBlocks,
+    int blockSize);
+
 } // namespace comms::pipes::test

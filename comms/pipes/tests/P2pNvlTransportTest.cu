@@ -110,6 +110,48 @@ __global__ void testRecvSendKernel(
   p2p.send(group, send_d, nbytes);
 }
 
+// Kernel that performs weighted partition send/recv
+// Groups are partitioned according to weights, partition 0 sends, partition 1
+// recvs
+__global__ void testWeightedSendRecvKernel(
+    P2pNvlTransportDevice p2p,
+    void* send_d,
+    void* recv_d,
+    size_t nbytes,
+    uint32_t sendWeight,
+    uint32_t recvWeight,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  uint32_t weights[] = {sendWeight, recvWeight};
+  auto [partition_id, subgroup] = group.partition(make_device_span(weights, 2));
+  if (partition_id == 0) {
+    p2p.send(subgroup, send_d, nbytes);
+  } else {
+    p2p.recv(subgroup, recv_d, nbytes);
+  }
+}
+
+// Kernel that performs weighted partition recv/send
+// Groups are partitioned according to weights, partition 0 recvs, partition 1
+// sends
+__global__ void testWeightedRecvSendKernel(
+    P2pNvlTransportDevice p2p,
+    void* recv_d,
+    void* send_d,
+    size_t nbytes,
+    uint32_t recvWeight,
+    uint32_t sendWeight,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  uint32_t weights[] = {recvWeight, sendWeight};
+  auto [partition_id, subgroup] = group.partition(make_device_span(weights, 2));
+  if (partition_id == 0) {
+    p2p.recv(subgroup, recv_d, nbytes);
+  } else {
+    p2p.send(subgroup, send_d, nbytes);
+  }
+}
+
 void fillBuffer(int* deviceBuffer, int value, size_t numElements) {
   const int blockSize = 256;
   const int numBlocks = (numElements + blockSize - 1) / blockSize;
@@ -206,6 +248,36 @@ void testRecvSend(
     int /*blocksPerGroup*/) {
   testRecvSendKernel<<<numBlocks, blockSize>>>(
       p2p, recv_d, send_d, nbytes, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testWeightedSendRecv(
+    P2pNvlTransportDevice p2p,
+    void* send_d,
+    void* recv_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    uint32_t sendWeight,
+    uint32_t recvWeight,
+    GroupType groupType) {
+  testWeightedSendRecvKernel<<<numBlocks, blockSize>>>(
+      p2p, send_d, recv_d, nbytes, sendWeight, recvWeight, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void testWeightedRecvSend(
+    P2pNvlTransportDevice p2p,
+    void* recv_d,
+    void* send_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    uint32_t recvWeight,
+    uint32_t sendWeight,
+    GroupType groupType) {
+  testWeightedRecvSendKernel<<<numBlocks, blockSize>>>(
+      p2p, recv_d, send_d, nbytes, recvWeight, sendWeight, groupType);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
