@@ -1515,6 +1515,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_exec(
       "cuda stream is not recorded at alltoallv_dedup_init before calling alltoallv_dedup_exec");
   auto stream = pReq->getStream().value();
   auto work = createWork(stream, options_.timeout, input_tensor);
+  // Keep the persistent request alive until last dedup work has completed and
+  // cleaned up by CPU, because work->wait() doesn't let CPU wait for kernel
+  // to complete.
+  work->setPersistentRequest(pReq);
 
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dedup_exec");
