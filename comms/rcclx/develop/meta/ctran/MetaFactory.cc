@@ -5,8 +5,11 @@
 #include "BaselineBootstrap.h"
 #include "MetaFactory.h"
 #include "comm.h"
+#include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
+#include "comms/ctran/algos/AllToAll/AllToAllvDynamicHintUtils.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/window/WinHintUtils.h"
 #include "comms/utils/commSpecs.h"
 
 using namespace ctran;
@@ -63,6 +66,26 @@ commResult_t ncclToMetaComm(ncclResult_t result) {
           std::string("ncclToComm: unimplemented nccl Result ") +
           std::to_string(result));
   }
+}
+
+meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
+  // TODO: consolidate ncclx::Hints and meta::comms::Hints. This would require
+  // changing the existing NCCLX APIs that use ncclx::Hints.
+  meta::comms::Hints ret;
+  std::string v;
+  for (const auto& k : meta::comms::hints::AllToAllvDynamicHintUtils::keys()) {
+    FB_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
+    FB_COMMCHECKTHROW(ret.set(k, v));
+  }
+  for (const auto& k : meta::comms::hints::AllToAllPHintUtils::keys()) {
+    FB_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
+    FB_COMMCHECKTHROW(ret.set(k, v));
+  }
+  for (const auto& k : meta::comms::hints::WinHintUtils::keys()) {
+    FB_COMMCHECKTHROW(ncclToMetaComm(hints.get(k, v)));
+    FB_COMMCHECKTHROW(ret.set(k, v));
+  }
+  return ret;
 }
 
 commDataType_t ncclToMetaComm(ncclDataType_t dataType) {

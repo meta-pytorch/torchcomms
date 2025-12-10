@@ -4,6 +4,7 @@
 
 #include <memory>
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/hints/Hints.h"
 #include "comms/utils/commSpecs.h"
 #include "nccl.h"
 
@@ -12,6 +13,9 @@ ncclResult_t metaCommToNccl(commResult_t result);
 
 // Convert ncclResult_t to commResult_t
 commResult_t ncclToMetaComm(ncclResult_t result);
+
+// Convert ncclx::Hints to meta::comms::Hints
+meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints);
 
 // Convert ncclDataType_t to commDataType_t
 commDataType_t ncclToMetaComm(ncclDataType_t dataType);
