@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "comms/pipes/CopyUtils.cuh"
+#include "comms/pipes/P2pTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -344,7 +345,7 @@ struct P2pNvlTransportOptions {
  * local buffers
  *   }
  */
-class P2pNvlTransportDevice {
+class P2pNvlTransportDevice : public P2pTransportDevice {
  public:
   __host__ __device__ P2pNvlTransportDevice(
       int myRank,
@@ -357,6 +358,8 @@ class P2pNvlTransportDevice {
         options_(options),
         localState_(localState),
         remoteState_(remoteState) {}
+
+  __host__ __device__ ~P2pNvlTransportDevice() override = default;
 
   /**
    * send - Transfer data to peer GPU over NVLink
@@ -409,7 +412,7 @@ class P2pNvlTransportDevice {
    *   stepOffset = stepId × dataBufferSize               (into source data)
    **/
   __device__ __forceinline__ void
-  send(ThreadGroup& group, void* srcbuff, std::size_t nbytes) {
+  send(ThreadGroup& group, void* srcbuff, std::size_t nbytes) override {
 #ifdef __CUDA_ARCH__
     char* src = reinterpret_cast<char*>(srcbuff);
 
@@ -510,7 +513,7 @@ class P2pNvlTransportDevice {
    *                                   state = -1 ────────▶ [sender unblocks]
    */
   __device__ __forceinline__ void
-  recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes) {
+  recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes) override {
 #ifdef __CUDA_ARCH__
     char* dst = reinterpret_cast<char*>(dstbuff);
 
@@ -577,6 +580,23 @@ class P2pNvlTransportDevice {
 
   __host__ const RemoteState& getRemoteState() const {
     return remoteState_;
+  }
+
+  /**
+   * write - Not implemented for P2pNvlTransportDevice
+   *
+   * P2pNvlTransportDevice is designed for remote P2P transfers over NVLink.
+   * For local memory copies, use P2pSelfTransportDevice instead.
+   * Calling this method will trap and abort the kernel.
+   */
+  __device__ __forceinline__ void write(
+      ThreadGroup& group,
+      char* dst_d,
+      const char* src_d,
+      std::size_t nbytes) override {
+#ifdef __CUDA_ARCH__
+    __trap(); // Abort kernel if write is called on P2pNvlTransportDevice
+#endif
   }
 
  private:
