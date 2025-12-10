@@ -84,6 +84,7 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
       maxRecvcount;
   config.args.collective.alltoallv_dynamic.nonContig.maxSendcount =
       maxSendcount;
+  config.args.collective.alltoallv_dynamic.nonContig.combine = combine;
 
   if (recvbuff != nullptr) {
     for (int i = 0; i < comm->statex_->nRanks(); i++) {
@@ -106,7 +107,8 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
       opCount,
       opGroup,
       elem,
-      recvbuff));
+      recvbuff,
+      combine));
 
   XCHECK(alltoallvDynamicSplitNonContigKerns.contains(datatype))
       << "alltoallvDynamicSplitNonContigKerns does not contain datatype "

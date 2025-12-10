@@ -45,7 +45,8 @@ commResult_t setupGpeOp(
     uint64_t opCount,
     std::vector<std::unique_ptr<struct OpElem>>& opGroup,
     KernelElem* elem,
-    void* recvbuff = nullptr);
+    void* recvbuff = nullptr,
+    bool combine = false);
 
 template <typename PerfConfig = DefaultPerfCollConfig>
 commResult_t peerPutNonContig(
@@ -64,6 +65,7 @@ commResult_t peerPutNonContig(
     std::vector<std::unique_ptr<CtranMapperRequest>>& ibRecvCtrlReqs,
     size_t maxRecvcount,
     size_t maxSendcount,
+    bool combine,
     bool skipWaitRecvCtrl = false) {
   // Prepare basic info for nonContig send
   size_t* sendIndices = reinterpret_cast<size_t*>(comm->ctran_->algo->getTmpBuf(
@@ -97,7 +99,6 @@ commResult_t peerPutNonContig(
   for (int r = 0; r < comm->statex_->nRanks(); r++) {
     totalBlock += sendIndicesBlockLengthsTmpbufCPU[r];
   }
-  bool nonContigIndices = (totalBlock < sendcountsLength);
 
   // Calculate the offset of each recvbuff, considering if it is 1st or 2nd
   // all2allv.
@@ -105,7 +106,7 @@ commResult_t peerPutNonContig(
   remoteRecvBuffsBytesOffset[0] = 0;
   int numCountsPerRank = sendcountsLength / nRanks;
   for (int i = 1; i < sendcountsLength; i++) {
-    if (nonContigIndices && (i % numCountsPerRank == 0)) {
+    if (combine && (i % numCountsPerRank == 0)) {
       remoteRecvBuffsBytesOffset[i] = 0;
     } else {
       remoteRecvBuffsBytesOffset[i] += remoteRecvBuffsBytesOffset[i - 1] +
@@ -153,7 +154,7 @@ commResult_t peerPutNonContig(
       // Allgather sendcounts
       // Skip sending sendcounts if it is second all2allv.
       // TODO: using hints instead of nonContigIndices to determine this.
-      if (!nonContigIndices) {
+      if (!combine) {
         puts.emplace_back(
             CtranMapperPutMsg{
                 .sbuf = reinterpret_cast<size_t*>(sendCountsTmpbufGPU),

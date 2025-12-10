@@ -31,7 +31,8 @@
               ibPutReqs,                                                      \
               ibRecvCtrlReqs,                                                 \
               maxRecvcount,                                                   \
-              maxSendcount));                                                 \
+              maxSendcount,                                                   \
+              combine));                                                      \
     } else {                                                                  \
       FB_COMMCHECK(peerPutContig(                                             \
           comm,                                                               \
@@ -218,7 +219,8 @@ commResult_t ctranAllToAllvDynamicIbImpl(
     CtranComm* comm,
     std::unique_ptr<CtranMapperTimestamp> timestamp,
     KernelElem* elem,
-    void* recvbuff) {
+    void* recvbuff,
+    bool combine) {
   const auto& statex = comm->statex_;
   const int myRank = statex->rank();
   const int nRanks = statex->nRanks();
@@ -391,7 +393,8 @@ commResult_t opIbImpl(
       comm,
       std::move(timestamp),
       op->alltoallv_dynamic.kElem,
-      op->alltoallv_dynamic.recvbuff);
+      op->alltoallv_dynamic.recvbuff,
+      op->alltoallv_dynamic.combine);
 }
 
 commResult_t setupGpeOp(
@@ -406,7 +409,8 @@ commResult_t setupGpeOp(
     uint64_t opCount,
     std::vector<std::unique_ptr<struct OpElem>>& opGroup,
     KernelElem* elem,
-    void* recvbuff) {
+    void* recvbuff,
+    bool combine) {
   std::unique_ptr<struct OpElem> op =
       std::unique_ptr<struct OpElem>(new OpElem(opType, comm, opCount));
   op->alltoallv_dynamic.sendbuffs = sendbuffs;
@@ -417,6 +421,7 @@ commResult_t setupGpeOp(
   op->alltoallv_dynamic.maxRecvcount = maxRecvcount;
   op->alltoallv_dynamic.kElem = elem;
   op->alltoallv_dynamic.recvbuff = recvbuff;
+  op->alltoallv_dynamic.combine = combine;
 
   opGroup.push_back(std::move(op));
 

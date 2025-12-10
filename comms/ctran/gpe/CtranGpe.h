@@ -163,6 +163,7 @@ struct OpElem {
       KernelElem* kElem;
       // Persistent args for persistent alltoallv_dynamic.
       void* pArgs;
+      bool combine;
     } alltoallv_dynamic;
     struct {
       const void* sendbuff;
