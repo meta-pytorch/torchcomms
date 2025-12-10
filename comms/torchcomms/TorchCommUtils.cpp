@@ -91,6 +91,24 @@ int count_file_lines(const std::string& filepath, bool ignore_empty_lines) {
         std::istreambuf_iterator<char>(filestream),
         std::istreambuf_iterator<char>(),
         '\n');
+
+    // Clear the stream state so we can use tellg/seekg
+    filestream.clear();
+
+    // Check if the file is empty
+    const bool is_empty_file =
+        filestream.tellg() == std::ifstream::pos_type(0) &&
+        filestream.peek() == std::ifstream::traits_type::eof();
+
+    // If the file does not end with a newline, we need to add one to the count
+    if (!is_empty_file) {
+      filestream.seekg(-1, std::ios::end);
+      char last_char;
+      filestream.get(last_char);
+      if (last_char != '\n') {
+        ++line_count;
+      }
+    }
   }
 
   if (filestream.bad()) {
