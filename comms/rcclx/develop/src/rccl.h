@@ -1014,6 +1014,15 @@ ncclResult_t alltoallvDynamic(const void * const* sendbuffs, const size_t* sendc
     size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts,
     const Hints& hints, ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
 
+ncclResult_t alltoallvDynamicSplit(const void* sendbuff, const size_t* sendSplitLengths, void* const* recvbuffs,
+    size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts, const Hints& hints,
+    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
+
+ncclResult_t alltoallvDynamicSplitNonContig( const void* sendbuff, const size_t* sendSplitLengths,
+    size_t numSendSplitLengths, const size_t* sendIndices, const size_t* sendIndicesBlockLengths, void* const* recvbuffs,
+    size_t* recvAllSplitLengths, size_t* recvIndices, size_t* recvIndicesBlockLengths, size_t maxSendcount,
+    size_t maxRecvcount, const Hints& hints, ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
+
 } // namespace ncclx
 #endif // __cplusplus
 
