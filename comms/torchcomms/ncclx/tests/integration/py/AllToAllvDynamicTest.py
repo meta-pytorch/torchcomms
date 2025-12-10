@@ -17,6 +17,9 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import (
 
 
 def generate_random_split(n: int, total_sum: int) -> List[int]:
+    """
+    Give an input total_sum and n. Generate a random list of length n that sums to total_sum.
+    """
     num_cuts = min(total_sum, n - 1)
     cuts = sorted(random.sample(range(0, total_sum), num_cuts))
     split = [a - b for a, b in zip(cuts + [total_sum], [0] + cuts)]
@@ -375,17 +378,17 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         assert ETP == 1 or TP == ETP, "Test cases only support ETP=1 or ETP==TP for now"
         TP2EP = TP // ETP
         NUM_LOCAL_EXPERTS = E // comm_size // TP2EP
-        # Setup input split indices and combine indices
+        # Setup input dispatch indices and combine indices
         stride = E // comm_size
         start = self.rank % TP2EP * NUM_LOCAL_EXPERTS
-        split_indices_list = []
+        dispatch_indices_list = []
         for _ in range(comm_size):
-            split_indices_list.extend(list(range(start, start + NUM_LOCAL_EXPERTS)))
+            dispatch_indices_list.extend(list(range(start, start + NUM_LOCAL_EXPERTS)))
             start += stride
-        split_indices = torch.tensor(
-            split_indices_list, dtype=torch.long, device=self.device
+        dispatch_indices = torch.tensor(
+            dispatch_indices_list, dtype=torch.long, device=self.device
         )
-        start = split_indices_list[NUM_LOCAL_EXPERTS * rank]
+        start = dispatch_indices_list[NUM_LOCAL_EXPERTS * rank]
         combine_indices_list = []
         for _ in range(comm_size):
             combine_indices_list.extend(list(range(start, start + NUM_LOCAL_EXPERTS)))
@@ -413,13 +416,13 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         output_split_sizes = torch.empty(
             (comm_size, E), dtype=torch.long, device=self.device
         )
-
+        # Actual runs.
         backend.alltoallv_dynamic_dispatch(
             list(output_tensor.chunk(comm_size)),
             output_split_sizes,
             input_tensor,
             input_split_sizes,
-            split_indices,
+            dispatch_indices,
             indices_per_rank,
             D,
             False,
@@ -445,7 +448,7 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             input_split_sizes_list = input_split_sizes.tolist()
             split_vals = original_input_tensor.split(input_split_sizes_list)
             split_output_vals = combine_output_tensor.split(input_split_sizes_list)
-            for i in split_indices_list:
+            for i in dispatch_indices_list:
                 expected_vals.append(split_vals[i])
                 output_vals.append(split_output_vals[i])
             expected_vals = torch.cat(expected_vals)
@@ -476,6 +479,67 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         for E, T, ETP_SIZE in itertools.product([16, 128], [32, 1024], [1, TP_SIZE]):
             self._run_rail_base_e2e(ep_modulo_tp_comm, E, T, ETP_SIZE, TP_SIZE)
         ep_modulo_tp_comm.finalize()
+
+    def _run_full_e2e(self, E: int, T: int):
+        D = 1024
+        torch.manual_seed(42)
+        NUM_LOCAL_EXPERTS = E // self.num_ranks
+        # Setup input dispatch indices and combine indices
+        dispatch_indices = torch.arange(0, E, dtype=torch.long, device=self.device)
+        start = NUM_LOCAL_EXPERTS * self.rank
+        combine_indices_list = []
+        for _ in range(self.num_ranks):
+            combine_indices_list.extend(list(range(start, start + NUM_LOCAL_EXPERTS)))
+            start += E
+        combine_indices = torch.tensor(
+            combine_indices_list, dtype=torch.long, device=self.device
+        )
+
+        # Setup indices per rank.
+        indices_per_rank = torch.full(
+            (self.num_ranks,), NUM_LOCAL_EXPERTS, dtype=torch.long, device=self.device
+        )
+        # Setup input and output tensors
+        input_tensor = torch.randn((T, D), dtype=torch.bfloat16, device=self.device)
+        output_tensor = torch.empty(
+            (self.num_ranks, T, D), dtype=torch.bfloat16, device=self.device
+        )
+        original_input_tensor = input_tensor.clone()
+        input_split_sizes = torch.tensor(
+            generate_random_split(E, T), dtype=torch.long, device=self.device
+        )
+        output_split_sizes = torch.empty(
+            (self.num_ranks, E), dtype=torch.long, device=self.device
+        )
+        self.ncclx_backend.alltoallv_dynamic_dispatch(
+            list(output_tensor.chunk(self.num_ranks)),
+            output_split_sizes,
+            input_tensor,
+            input_split_sizes,
+            dispatch_indices,
+            indices_per_rank,
+            D,
+            False,
+        )
+
+        combine_output_tensor = torch.empty_like(original_input_tensor)
+        self.ncclx_backend.alltoallv_dynamic_combine(
+            combine_output_tensor,
+            output_tensor.view(-1, D),
+            output_split_sizes.flatten(),
+            combine_indices,
+            indices_per_rank,
+            D,
+            False,
+        )
+        torch.testing.assert_close(
+            combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
+        )
+
+    def test_full_e2e(self):
+        """Run full all2all based e2e tests. This corresponds to prod use cases when SP is used and each rank has different data."""
+        for E, T in itertools.product([16, 128], [32, 1024]):
+            self._run_full_e2e(E, T)
 
 
 if __name__ == "__main__":
