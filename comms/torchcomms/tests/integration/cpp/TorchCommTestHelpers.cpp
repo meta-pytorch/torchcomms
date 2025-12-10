@@ -247,6 +247,83 @@ void verifyTensorEquality(
   verifyTensorEquality(output, expected, description);
 }
 
+std::string tensorToString(const at::Tensor& tensor) {
+  std::ostringstream oss;
+  if (tensor.numel() == 0) {
+    oss << "[]";
+    return oss.str();
+  }
+
+  // Check if tensor is complex type
+  const auto isComplex = tensor.is_complex();
+  // Convert tensor to appropriate type for item() extraction
+  // Types that don't support direct item<double>() need conversion
+  at::Tensor cpu_tensor = tensor.cpu();
+  at::Tensor flat;
+
+  if (isComplex) {
+    // For complex types, convert to ComplexDouble for consistent access
+    flat = cpu_tensor.to(at::kComplexDouble).flatten();
+  } else {
+    const auto unsafeToDouble = cpu_tensor.scalar_type() == at::kHalf ||
+        cpu_tensor.scalar_type() == at::kBFloat16 ||
+        cpu_tensor.scalar_type() == at::kBool;
+    flat = unsafeToDouble ? cpu_tensor.to(at::kDouble).flatten()
+                          : cpu_tensor.flatten();
+  }
+
+  // Helper lambda to format a single element
+  auto formatElement = [&oss, &flat, isComplex](int64_t i) {
+    if (isComplex) {
+      auto val = flat[i].item<c10::complex<double>>();
+      oss << "(" << val.real() << (val.imag() >= 0 ? "+" : "") << val.imag()
+          << "j)";
+    } else {
+      oss << flat[i].item<double>();
+    }
+  };
+
+  if (tensor.dim() == 0) {
+    // Scalar tensor - print its value
+    formatElement(0);
+    return oss.str();
+  }
+
+  int64_t numel = flat.numel();
+  int64_t ndim = tensor.dim();
+
+  // Calculate stride for each dimension (product of sizes from dim d to end)
+  std::vector<int64_t> strides(ndim);
+  strides[ndim - 1] = tensor.size(ndim - 1);
+  for (int64_t d = ndim - 2; d >= 0; --d) {
+    strides[d] = strides[d + 1] * tensor.size(d);
+  }
+
+  for (int64_t i = 0; i < numel; ++i) {
+    // Opening brackets (from outermost to innermost)
+    for (int64_t d = 0; d < ndim; ++d) {
+      if (i % strides[d] == 0) {
+        oss << "[";
+      }
+    }
+
+    formatElement(i);
+
+    // Closing brackets (from innermost to outermost)
+    for (int64_t d = ndim - 1; d >= 0; --d) {
+      if ((i + 1) % strides[d] == 0) {
+        oss << "]";
+      }
+    }
+
+    if (i < numel - 1) {
+      oss << ", ";
+    }
+  }
+
+  return oss.str();
+}
+
 TorchCommTestWrapper::TorchCommTestWrapper(
     c10::intrusive_ptr<c10d::Store> store) {
   configureManualRankSize();
