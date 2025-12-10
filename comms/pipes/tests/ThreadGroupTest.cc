@@ -321,16 +321,32 @@ TEST_P(ThreadGroupPartitionTest, PartitionEven) {
       totalWarps * sizeof(uint32_t),
       cudaMemcpyDeviceToHost));
 
-  const uint32_t groupsPerPartition =
-      (totalWarps + numPartitions - 1) / numPartitions;
+  // Verify partition assignments using floor division + remainder distribution
+  const uint32_t groupsPerPartition = totalWarps / numPartitions;
+  const uint32_t remainder = totalWarps % numPartitions;
+  const uint32_t boundary = remainder * (groupsPerPartition + 1);
 
   for (uint32_t warpId = 0; warpId < totalWarps; warpId++) {
-    uint32_t expectedPartition = warpId / groupsPerPartition;
-    // Clamp to valid partition range (handles more partitions than groups)
-    if (expectedPartition >= numPartitions) {
-      expectedPartition = numPartitions - 1;
+    // Use direct calculation (same as partition() function)
+    uint32_t expectedPartition;
+    uint32_t partitionStart;
+    uint32_t partitionSize;
+
+    if (warpId < boundary) {
+      // First 'remainder' partitions (larger size)
+      expectedPartition = warpId / (groupsPerPartition + 1);
+      partitionStart = expectedPartition * (groupsPerPartition + 1);
+      partitionSize = groupsPerPartition + 1;
+    } else {
+      // Remaining partitions (normal size)
+      uint32_t offset = warpId - boundary;
+      uint32_t partitionOffset = offset / groupsPerPartition;
+      expectedPartition = remainder + partitionOffset;
+      partitionStart = boundary + partitionOffset * groupsPerPartition;
+      partitionSize = groupsPerPartition;
     }
-    uint32_t expectedSubgroupId = warpId % groupsPerPartition;
+
+    uint32_t expectedSubgroupId = warpId - partitionStart;
 
     EXPECT_EQ(partitionIds_h[warpId], expectedPartition)
         << "Warp " << warpId << " should be in partition " << expectedPartition;
@@ -339,16 +355,9 @@ TEST_P(ThreadGroupPartitionTest, PartitionEven) {
         << "Warp " << warpId << " should have subgroup.group_id "
         << expectedSubgroupId;
 
-    // Each partition has groupsPerPartition groups (may be less for last
-    // partition)
-    uint32_t partitionStart = expectedPartition * groupsPerPartition;
-    uint32_t partitionEnd =
-        std::min(partitionStart + groupsPerPartition, totalWarps);
-    uint32_t expectedTotalGroups = partitionEnd - partitionStart;
-
-    EXPECT_EQ(subgroupTotalGroups_h[warpId], expectedTotalGroups)
+    EXPECT_EQ(subgroupTotalGroups_h[warpId], partitionSize)
         << "Warp " << warpId << " should have subgroup.total_groups "
-        << expectedTotalGroups;
+        << partitionSize;
   }
 
   // Verify all partitions that should have warps actually do
@@ -358,6 +367,20 @@ TEST_P(ThreadGroupPartitionTest, PartitionEven) {
       partitionCounts[partitionIds_h[warpId]]++;
     }
   }
+
+  // Count distinct partitions actually used
+  uint32_t distinctPartitions = 0;
+  for (uint32_t i = 0; i < numPartitions; i++) {
+    if (partitionCounts[i] > 0) {
+      distinctPartitions++;
+    }
+  }
+
+  // we should get exactly numPartitions
+  EXPECT_EQ(distinctPartitions, numPartitions)
+      << "Should have " << numPartitions << " distinct partition_ids "
+      << "(totalWarps=" << totalWarps << ", numPartitions=" << numPartitions
+      << ")";
 
   // Check partition sizes
   uint32_t totalAssigned = 0;
@@ -400,7 +423,20 @@ INSTANTIATE_TEST_SUITE_P(
             .numPartitions = 4,
             .numBlocks = 8,
             .blockSize = 256,
-            .testName = "FourPartitions_Even"}),
+            .testName = "FourPartitions_Even"},
+        // 15-way split: 32 warps / 15 partitions (uneven distribution)
+        // 4 blocks × 256 threads = 32 warps total
+        // Floor division: groups_per_partition = 32 / 15 = 2, remainder = 2
+        // First 2 partitions get 3 warps each, remaining 13 get 2 warps each
+        // Partition boundaries: [0,3), [3,6), [6,8), [8,10), [10,12), [12,14),
+        //                       [14,16), [16,18), [18,20), [20,22), [22,24),
+        //                       [24,26), [26,28), [28,30), [30,32)
+        // This verifies exactly 15 distinct partition_ids (0-14) are generated
+        PartitionTestParams{
+            .numPartitions = 15,
+            .numBlocks = 4,
+            .blockSize = 256,
+            .testName = "FifteenPartitions_FourBlocks"}),
     [](const ::testing::TestParamInfo<PartitionTestParams>& info) {
       return info.param.testName;
     });
@@ -614,6 +650,20 @@ TEST_P(ThreadGroupWeightedPartitionTest, WeightedPartition) {
         << "Partition ID should be < " << numPartitions;
     partitionCounts[partitionIds_h[warpId]]++;
   }
+
+  // Count distinct partitions actually used
+  uint32_t distinctPartitions = 0;
+  for (uint32_t i = 0; i < numPartitions; i++) {
+    if (partitionCounts[i] > 0) {
+      distinctPartitions++;
+    }
+  }
+
+  // We should get exactly numPartitions
+  EXPECT_EQ(distinctPartitions, numPartitions)
+      << "Should have " << numPartitions << " distinct partition_ids "
+      << "(totalWarps=" << totalWarps << ", numPartitions=" << numPartitions
+      << "). Even extreme weight ratios should produce all requested partitions.";
 
   uint32_t prevBoundary = 0;
   for (uint32_t i = 0; i < numPartitions; i++) {
