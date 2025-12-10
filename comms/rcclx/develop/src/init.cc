@@ -68,6 +68,9 @@
 #include "latency_profiler/CollTrace.h"
 #include "latency_profiler/CollTraceFunc.h"
 
+#include "comms/ctran/utils/SkipDestroyUtil.h"
+#include "MetaFactory.h"
+
 #ifndef STR2
   #define STR2(v) #v
 #endif
@@ -2147,6 +2150,13 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   comm->initState = ncclSuccess;
   timers[TIMER_INIT_TOTAL] = clockNano() - timers[TIMER_INIT_TOTAL];
 
+
+  // Ctran Specific Initialization 
+  if(NCCL_CTRAN_ENABLE) {
+      NCCLCHECKGOTO(metaCommToNccl(initNcclCommCtran(comm)), res, fail);
+  }
+  
+
   // Trace this call for replay tool
   if (job->parent) {
     /* unlink child abort flag. */
@@ -2734,8 +2744,18 @@ static ncclResult_t commDestroySync(struct ncclAsyncJob* job_) {
   ncclResult_t ret = ncclSuccess;
 
   CUDACHECKGOTO(cudaSetDevice(comm->cudaDev), ret, fail);
-
+  
   NCCLCHECKGOTO(meta::colltrace::collTraceDestroy(comm), ret, fail);
+  if(comm->ctranComm_) {
+    NCCLCHECKGOTO(metaCommToNccl(ctranFinalize(comm->ctranComm_.get())), ret, fail);
+    try {
+      comm->ctranComm_->destroy();
+      comm->ctranComm_.reset();
+    } catch (std::exception& e) {
+      WARN("CtranComm destruction failed: %s", e.what());
+      goto fail;
+    }
+  }
 
   NCCLCHECKGOTO(latency_profiler::collTraceDestroy(comm), ret, fail);
   TRACE(NCCL_INIT, "Destroying comm %p rank %d abortFlag %d asyncResult %d", comm, comm->rank, *comm->abortFlag, comm->asyncResult);
@@ -3006,10 +3026,49 @@ static ncclResult_t setCommAbortFlags(ncclComm_t comm, int value) {
   return ncclSuccess;
 }
 
+
+static bool skipDestroyFlag = false;
+
+bool skipDestroy() {
+  return skipDestroyFlag;
+}
+
+static void commAbortLog(ncclComm_t comm, const std::string& abortScope) {
+  if (comm == nullptr) {
+    INFO(NCCL_INIT, "comm %p - Abort %s", comm, abortScope.c_str());
+  } else {
+    INFO(
+        NCCL_INIT,
+        "comm %p commHash %lx rank %d nRanks %d cudaDev %d busId %lx - Abort %s",
+        comm,
+        comm->commHash,
+        comm->rank,
+        comm->nRanks,
+        comm->cudaDev,
+        comm->busId,
+        abortScope.c_str());
+  }
+}
+
+
 NCCL_API(ncclResult_t, ncclCommAbort, ncclComm_t comm);
 ncclResult_t ncclCommAbort_impl(ncclComm_t comm) {
   NCCLCHECK(Recorder::instance().record(rrCommAbort, comm));
   NVTX3_RANGE(NcclNvtxParamsCommAbort);
+
+  // Ctran - Force abort logic.
+  if (NCCL_COMM_ABORT_SCOPE != NCCL_COMM_ABORT_SCOPE::comm) {
+    skipDestroyFlag = true;
+    ctran::utils::setSkipDestroyCtran(skipDestroyFlag);
+  }
+  if (NCCL_COMM_ABORT_SCOPE == NCCL_COMM_ABORT_SCOPE::none) {
+    commAbortLog(comm, "SKIP");
+    return ncclSuccess;
+  } else if (NCCL_COMM_ABORT_SCOPE == NCCL_COMM_ABORT_SCOPE::job) {
+    commAbortLog(comm, "EXIT");
+    exit(1);
+  }
+
 
   if (comm == NULL) {
     return ncclSuccess;
@@ -3247,6 +3306,17 @@ ncclResult_t ncclCommGetAsyncError_impl(ncclComm_t comm, ncclResult_t *asyncErro
     NCCLCHECK(ncclGroupJobComplete(comm->groupJob));
     comm->groupJob = NULL;
   }
+
+  // Check Ctran asyncError if no error happens in the baseline path
+  if (NCCL_CTRAN_ENABLE && ctranInitialized(comm->ctranComm_.get()) &&
+      (*asyncError == ncclSuccess || *asyncError == ncclInProgress)) {
+    auto ctranAsyncError = metaCommToNccl(comm->ctranComm_->getAsyncResult());
+    // Overwrite if ctranAsyncError is inProgress or error
+    if (ctranAsyncError != ncclSuccess) {
+      *asyncError = ctranAsyncError;
+    }
+  }
+  
   return ncclSuccess;
 }
 

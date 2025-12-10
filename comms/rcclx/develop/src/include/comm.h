@@ -28,6 +28,9 @@
 #include "recorder.h"
 #include "meta/lpcoll/low_precision_common.h"
 
+// Meta Ctran lib
+#include "comms/ctran/CtranComm.h"
+
 #if defined(__HIP_PLATFORM_AMD__) || defined(__HIPCC__)
 #define HIPRT_CB
 #else
@@ -748,6 +751,9 @@ struct ncclComm {
 
   // custom collective [RCCL]
   bool enableCustColl;
+
+  // This is the only bridge between ctran and baseline code
+  std::unique_ptr<CtranComm> ctranComm_;
 
   uint64_t endMagic;
 };
