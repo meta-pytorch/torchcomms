@@ -6,6 +6,7 @@ import itertools
 import os
 import random
 import unittest
+from contextlib import nullcontext
 
 from typing import List
 
@@ -368,7 +369,9 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             # Run sync alltoallv_dynamic_dispatch with combine
             self._sync_alltoallv_dynamic(chunk_size, dtype)
 
-    def _run_rail_base_e2e(self, sub_torchcomm, E: int, T: int, ETP: int, TP: int):
+    def _run_rail_base_e2e(
+        self, sub_torchcomm, E: int, T: int, ETP: int, TP: int, use_cudagraph: bool
+    ):
         """Run DP2EP end-to-end test with specified torch comm sub-group."""
         D = 1024
         torch.manual_seed(42)
@@ -417,27 +420,34 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             (comm_size, E), dtype=torch.long, device=self.device
         )
         # Actual runs.
-        backend.alltoallv_dynamic_dispatch(
-            list(output_tensor.chunk(comm_size)),
-            output_split_sizes,
-            input_tensor,
-            input_split_sizes,
-            dispatch_indices,
-            indices_per_rank,
-            D,
-            False,
-        )
+        g = torch.cuda.CUDAGraph()
+        ctx = nullcontext()
+        if use_cudagraph:
+            ctx = torch.cuda.graph(g)
+        with ctx:
+            backend.alltoallv_dynamic_dispatch(
+                list(output_tensor.chunk(comm_size)),
+                output_split_sizes,
+                input_tensor,
+                input_split_sizes,
+                dispatch_indices,
+                indices_per_rank,
+                D,
+                False,
+            )
 
-        combine_output_tensor = torch.empty_like(original_input_tensor)
-        backend.alltoallv_dynamic_combine(
-            combine_output_tensor,
-            output_tensor.view(-1, D),
-            output_split_sizes.flatten(),
-            combine_indices,
-            indices_per_rank,
-            D,
-            False,
-        )
+            combine_output_tensor = torch.empty_like(original_input_tensor)
+            backend.alltoallv_dynamic_combine(
+                combine_output_tensor,
+                output_tensor.view(-1, D),
+                output_split_sizes.flatten(),
+                combine_indices,
+                indices_per_rank,
+                D,
+                False,
+            )
+        if use_cudagraph:
+            g.replay()
         if ETP == TP:
             torch.testing.assert_close(
                 combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
@@ -454,6 +464,8 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             expected_vals = torch.cat(expected_vals)
             output_vals = torch.cat(output_vals)
             torch.testing.assert_close(output_vals, expected_vals, rtol=0.0, atol=0.0)
+        g.reset()
+        del g
 
     def test_rail_base_e2e(self):
         """Run DP2EP>1 end-to-end test with rail-based all2all.
@@ -476,11 +488,15 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
                 my_group_rank = rank_list
                 break
         ep_modulo_tp_comm = self.torchcomm.split(my_group_rank, name="ep_modulo_tp")
-        for E, T, ETP_SIZE in itertools.product([16, 128], [32, 1024], [1, TP_SIZE]):
-            self._run_rail_base_e2e(ep_modulo_tp_comm, E, T, ETP_SIZE, TP_SIZE)
+        for E, T, ETP_SIZE, use_cudagraph in itertools.product(
+            [16, 128], [32, 1024], [1, TP_SIZE], [False, True]
+        ):
+            self._run_rail_base_e2e(
+                ep_modulo_tp_comm, E, T, ETP_SIZE, TP_SIZE, use_cudagraph
+            )
         ep_modulo_tp_comm.finalize()
 
-    def _run_full_e2e(self, E: int, T: int):
+    def _run_full_e2e(self, E: int, T: int, use_cudagraph: bool):
         D = 1024
         torch.manual_seed(42)
         NUM_LOCAL_EXPERTS = E // self.num_ranks
@@ -511,35 +527,47 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         output_split_sizes = torch.empty(
             (self.num_ranks, E), dtype=torch.long, device=self.device
         )
-        self.ncclx_backend.alltoallv_dynamic_dispatch(
-            list(output_tensor.chunk(self.num_ranks)),
-            output_split_sizes,
-            input_tensor,
-            input_split_sizes,
-            dispatch_indices,
-            indices_per_rank,
-            D,
-            False,
-        )
+        # Actual runs.
+        g = torch.cuda.CUDAGraph()
+        ctx = nullcontext()
+        if use_cudagraph:
+            ctx = torch.cuda.graph(g)
+        with ctx:
+            self.ncclx_backend.alltoallv_dynamic_dispatch(
+                list(output_tensor.chunk(self.num_ranks)),
+                output_split_sizes,
+                input_tensor,
+                input_split_sizes,
+                dispatch_indices,
+                indices_per_rank,
+                D,
+                False,
+            )
 
-        combine_output_tensor = torch.empty_like(original_input_tensor)
-        self.ncclx_backend.alltoallv_dynamic_combine(
-            combine_output_tensor,
-            output_tensor.view(-1, D),
-            output_split_sizes.flatten(),
-            combine_indices,
-            indices_per_rank,
-            D,
-            False,
-        )
+            combine_output_tensor = torch.empty_like(original_input_tensor)
+            self.ncclx_backend.alltoallv_dynamic_combine(
+                combine_output_tensor,
+                output_tensor.view(-1, D),
+                output_split_sizes.flatten(),
+                combine_indices,
+                indices_per_rank,
+                D,
+                False,
+            )
+        if use_cudagraph:
+            g.replay()
         torch.testing.assert_close(
             combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
         )
+        g.reset()
+        del g
 
     def test_full_e2e(self):
         """Run full all2all based e2e tests. This corresponds to prod use cases when SP is used and each rank has different data."""
-        for E, T in itertools.product([16, 128], [32, 1024]):
-            self._run_full_e2e(E, T)
+        for E, T, use_cudagraph in itertools.product(
+            [16, 128], [32, 1024], [False, True]
+        ):
+            self._run_full_e2e(E, T, use_cudagraph)
 
 
 if __name__ == "__main__":
