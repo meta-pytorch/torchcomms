@@ -7,6 +7,7 @@
 #include <deque>
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/ctran/ibverbx/device/structs.h"
 
 namespace ibverbx {
 
@@ -25,6 +26,10 @@ class IbvQp {
 
   ibv_qp* qp() const;
   int32_t getDeviceId() const;
+
+  // create device qp, map qp buffer to GPU
+  folly::Expected<struct device_qp, Error> getDeviceQp(
+      device_cq* cq) const noexcept;
 
   folly::Expected<folly::Unit, Error> modifyQp(ibv_qp_attr* attr, int attrMask);
   folly::Expected<std::pair<ibv_qp_attr, ibv_qp_init_attr>, Error> queryQp(

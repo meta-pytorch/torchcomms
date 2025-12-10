@@ -164,7 +164,7 @@ __device__ __forceinline__ void recvImplNonContig(
     int groupIdx,
     int ngroups,
     size_t maxRecvcount,
-    bool nonContigIndices) {
+    bool combine) {
   const auto localRank = statex->localRank();
   const auto nLocalRanks = statex->nLocalRanks();
 
@@ -189,7 +189,7 @@ __device__ __forceinline__ void recvImplNonContig(
     // writes it to the recvCountsTmpbufGPU buffer.
     devSyncWaitStep(sync, groupIdx, 0);
     mySendIndicesBlockLength = recvIndicesPeerAllToAllvDynamicBufsMap[0];
-    if (threadIdx.x == 0 && groupIdx == 0 && !nonContigIndices) {
+    if (threadIdx.x == 0 && groupIdx == 0 && !combine) {
       for (int i = 0; i < sendcountsLength; i++) {
         recvCountsTmpbufGPU[recvPeerGlobal * sendcountsLength + i] =
             recvcountsPeerAllToAllvDynamicBufsMap[i];
@@ -198,7 +198,7 @@ __device__ __forceinline__ void recvImplNonContig(
     devSyncSetStep(sync, groupIdx, CTRAN_ALGO_STEP_RESET);
 
     size_t recvOffsets = 0, lastRecvIndex = 0;
-    if (nonContigIndices) {
+    if (combine) {
       lastRecvIndex = sendcountsLength * statex->rank() / statex->nRanks();
     }
     for (int i = 0; i < mySendIndicesBlockLength; i++) {
@@ -304,7 +304,7 @@ __device__ __forceinline__ void selfCopyNonContig(
     int groupIdx,
     bool groupType,
     size_t maxRecvcount,
-    bool nonContigIndices) {
+    bool combine) {
   // Now we calculate the startSendIndex on-the-fly,
   // which may not be efficient. If the inputChunkCountPerRank can be
   // on CPU, we can calculate it on CPU and pass it to GPU.
@@ -317,7 +317,7 @@ __device__ __forceinline__ void selfCopyNonContig(
     startSendIndex += inputChunkCountPerRank[i];
   }
 
-  if (!nonContigIndices && groupIdx == 0 && groupType == GROUP_RECV) {
+  if (!combine && groupIdx == 0 && groupType == GROUP_RECV) {
     ctranKernCopy<size_t>(
         sendcounts,
         recvCountsTmpbufGPU + rank * sendcountsLength,
@@ -326,7 +326,7 @@ __device__ __forceinline__ void selfCopyNonContig(
         1);
   }
 
-  if (nonContigIndices) {
+  if (combine) {
     curOffsetIndex = sendcountsLength * rank / nRanks;
   }
 
@@ -383,7 +383,7 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
     int* flag,
     CtranKernelAllToAllvDynamicArgs args,
     ALGOTYPE algoType,
-    bool nonContigIndices = false) {
+    bool combine = false) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   const auto rank = statex->rank();
@@ -461,7 +461,7 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
         groupIdx,
         groupType,
         args.nonContig.maxRecvcount,
-        nonContigIndices);
+        combine);
     if (groupType == GROUP_RECV) {
       recvImplNonContig(
           recvbuffs,
@@ -471,7 +471,7 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
           groupIdx,
           ngroups,
           args.nonContig.maxRecvcount,
-          nonContigIndices);
+          combine);
     } else {
       sendImplNonContig(
           sendbuffs,
@@ -510,7 +510,7 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
   // Copy back to recvcounts for DYNAMIC and DYNAMIC_SPLIT
   // or if it is first a2a for DYNAMIC_SPLIT_NON_CONTIG
   if (groupIdx == 0 && groupType == GROUP_RECV &&
-      (algoType != DYNAMIC_SPLIT_NON_CONTIG || !nonContigIndices)) {
+      (algoType != DYNAMIC_SPLIT_NON_CONTIG || !combine)) {
     ctranKernCopy<size_t>(
         recvCountsTmpbufGPU,
         reinterpret_cast<size_t*>(args.actualRecvcounts),
@@ -528,7 +528,7 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
 template <typename T>
 __device__ __forceinline__ void generateSendbuffs(
     CtranKernelAllToAllvDynamicArgs& args,
-    bool nonContigIndices = false) {
+    bool combine = false) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   const size_t* sendSplitLengths = (size_t*)args.sendcounts;
   args.split.sendbuffsPtrShmDev =
@@ -548,7 +548,7 @@ __device__ __forceinline__ void generateSendbuffs(
       // and hence need to reset the sendbuff offset.
       // The length of each rank is equal to maxsendcounts/ranks.
       // i / numCountsPerRank is the rank number.
-      if (nonContigIndices && (i % numCountsPerRank == 0)) {
+      if (combine && (i % numCountsPerRank == 0)) {
         sendbuffsGPU[i] = sendbuffsGPU[0] +
             (args.nonContig.maxSendcount / statex->nRanks()) *
                 (i / numCountsPerRank);
@@ -592,14 +592,14 @@ __global__ void ncclKernelAllToAllvDynamicSplitNonContig(
     CtranKernelAllToAllvDynamicArgs args) {
   devStateLoadToShm(devState);
 
-  bool nonContigIndices = false;
   int totalSendIndicesLength = 0;
   for (int i = 0; i < statex->nRanks(); i++) {
     totalSendIndicesLength += args.nonContig.inputChunkCountPerRank[i];
   }
-  nonContigIndices = (totalSendIndicesLength < args.sendcountsLength);
 
-  generateSendbuffs<T>(args, nonContigIndices);
+  bool combine = args.nonContig.combine;
+
+  generateSendbuffs<T>(args, combine);
 
   ctranKernCopy<size_t>(
       args.nonContig.inputChunkIndices,
@@ -630,7 +630,7 @@ __global__ void ncclKernelAllToAllvDynamicSplitNonContig(
   }
 
   ncclKernelAllToAllvDynamicCommon<T>(
-      flag, args, DYNAMIC_SPLIT_NON_CONTIG, nonContigIndices);
+      flag, args, DYNAMIC_SPLIT_NON_CONTIG, combine);
 }
 
 #define DECL_CTRAN_ALLTOALLVDYNAMIC_KERN(T)               \

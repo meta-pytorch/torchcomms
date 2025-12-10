@@ -30,6 +30,14 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
     cudaStream_t stream,
     bool combine,
     size_t* outputChunkSizesPerRank) {
+  CLOGF_SUBSYS(
+      INFO,
+      COLL,
+      "Entered ctranAlltoallvDynamicSplitNonContig {}: myRank {} nRanks {}",
+      combine ? "[combine]" : "[dispatch]",
+      comm->statex_->rank(),
+      comm->statex_->nRanks());
+
   auto opCount = comm->ctran_->getOpCount();
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
 
@@ -84,6 +92,7 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
       maxRecvcount;
   config.args.collective.alltoallv_dynamic.nonContig.maxSendcount =
       maxSendcount;
+  config.args.collective.alltoallv_dynamic.nonContig.combine = combine;
 
   if (recvbuff != nullptr) {
     for (int i = 0; i < comm->statex_->nRanks(); i++) {
@@ -106,7 +115,8 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
       opCount,
       opGroup,
       elem,
-      recvbuff));
+      recvbuff,
+      combine));
 
   XCHECK(alltoallvDynamicSplitNonContigKerns.contains(datatype))
       << "alltoallvDynamicSplitNonContigKerns does not contain datatype "
@@ -124,6 +134,14 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
       alltoallvDynamicSplitNonContigKerns.at(datatype),
       std::nullopt, /* timeout */
       graphPrepareFn));
+
+  CLOGF_SUBSYS(
+      INFO,
+      COLL,
+      "Enqueued AlltoallvDynamicSplitNonContig {}: myRank {} nRanks {}",
+      combine ? "[combine]" : "[dispatch]",
+      comm->statex_->rank(),
+      comm->statex_->nRanks());
 
   return commSuccess;
 }

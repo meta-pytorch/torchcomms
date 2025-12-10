@@ -31,6 +31,7 @@ using ctran::alltoallvdynamicp::PersistArgs;
             completedIbRecvCtrlReqs,                                          \
             pArgs->maxRecvCount,                                              \
             pArgs->maxSendCount,                                              \
+            op->alltoallv_dynamic.combine,                                    \
             /* skipWaitRecvCtrl */ true));                                    \
     /* Wait for all puts to complete */                                       \
     for (auto& req : ibPutReqs) {                                             \

@@ -10,6 +10,7 @@
 #include "comms/pipes/P2pNvlTransport.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/tests/P2pNvlTransportTest.cuh"
+#include "comms/pipes/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"

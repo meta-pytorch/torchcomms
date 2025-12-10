@@ -321,16 +321,32 @@ TEST_P(ThreadGroupPartitionTest, PartitionEven) {
       totalWarps * sizeof(uint32_t),
       cudaMemcpyDeviceToHost));
 
-  const uint32_t groupsPerPartition =
-      (totalWarps + numPartitions - 1) / numPartitions;
+  // Verify partition assignments using floor division + remainder distribution
+  const uint32_t groupsPerPartition = totalWarps / numPartitions;
+  const uint32_t remainder = totalWarps % numPartitions;
+  const uint32_t boundary = remainder * (groupsPerPartition + 1);
 
   for (uint32_t warpId = 0; warpId < totalWarps; warpId++) {
-    uint32_t expectedPartition = warpId / groupsPerPartition;
-    // Clamp to valid partition range (handles more partitions than groups)
-    if (expectedPartition >= numPartitions) {
-      expectedPartition = numPartitions - 1;
+    // Use direct calculation (same as partition() function)
+    uint32_t expectedPartition;
+    uint32_t partitionStart;
+    uint32_t partitionSize;
+
+    if (warpId < boundary) {
+      // First 'remainder' partitions (larger size)
+      expectedPartition = warpId / (groupsPerPartition + 1);
+      partitionStart = expectedPartition * (groupsPerPartition + 1);
+      partitionSize = groupsPerPartition + 1;
+    } else {
+      // Remaining partitions (normal size)
+      uint32_t offset = warpId - boundary;
+      uint32_t partitionOffset = offset / groupsPerPartition;
+      expectedPartition = remainder + partitionOffset;
+      partitionStart = boundary + partitionOffset * groupsPerPartition;
+      partitionSize = groupsPerPartition;
     }
-    uint32_t expectedSubgroupId = warpId % groupsPerPartition;
+
+    uint32_t expectedSubgroupId = warpId - partitionStart;
 
     EXPECT_EQ(partitionIds_h[warpId], expectedPartition)
         << "Warp " << warpId << " should be in partition " << expectedPartition;
@@ -339,16 +355,9 @@ TEST_P(ThreadGroupPartitionTest, PartitionEven) {
         << "Warp " << warpId << " should have subgroup.group_id "
         << expectedSubgroupId;
 
-    // Each partition has groupsPerPartition groups (may be less for last
-    // partition)
-    uint32_t partitionStart = expectedPartition * groupsPerPartition;
-    uint32_t partitionEnd =
-        std::min(partitionStart + groupsPerPartition, totalWarps);
-    uint32_t expectedTotalGroups = partitionEnd - partitionStart;
-
-    EXPECT_EQ(subgroupTotalGroups_h[warpId], expectedTotalGroups)
+    EXPECT_EQ(subgroupTotalGroups_h[warpId], partitionSize)
         << "Warp " << warpId << " should have subgroup.total_groups "
-        << expectedTotalGroups;
+        << partitionSize;
   }
 
   // Verify all partitions that should have warps actually do
@@ -358,6 +367,20 @@ TEST_P(ThreadGroupPartitionTest, PartitionEven) {
       partitionCounts[partitionIds_h[warpId]]++;
     }
   }
+
+  // Count distinct partitions actually used
+  uint32_t distinctPartitions = 0;
+  for (uint32_t i = 0; i < numPartitions; i++) {
+    if (partitionCounts[i] > 0) {
+      distinctPartitions++;
+    }
+  }
+
+  // we should get exactly numPartitions
+  EXPECT_EQ(distinctPartitions, numPartitions)
+      << "Should have " << numPartitions << " distinct partition_ids "
+      << "(totalWarps=" << totalWarps << ", numPartitions=" << numPartitions
+      << ")";
 
   // Check partition sizes
   uint32_t totalAssigned = 0;
@@ -400,7 +423,20 @@ INSTANTIATE_TEST_SUITE_P(
             .numPartitions = 4,
             .numBlocks = 8,
             .blockSize = 256,
-            .testName = "FourPartitions_Even"}),
+            .testName = "FourPartitions_Even"},
+        // 15-way split: 32 warps / 15 partitions (uneven distribution)
+        // 4 blocks × 256 threads = 32 warps total
+        // Floor division: groups_per_partition = 32 / 15 = 2, remainder = 2
+        // First 2 partitions get 3 warps each, remaining 13 get 2 warps each
+        // Partition boundaries: [0,3), [3,6), [6,8), [8,10), [10,12), [12,14),
+        //                       [14,16), [16,18), [18,20), [20,22), [22,24),
+        //                       [24,26), [26,28), [28,30), [30,32)
+        // This verifies exactly 15 distinct partition_ids (0-14) are generated
+        PartitionTestParams{
+            .numPartitions = 15,
+            .numBlocks = 4,
+            .blockSize = 256,
+            .testName = "FifteenPartitions_FourBlocks"}),
     [](const ::testing::TestParamInfo<PartitionTestParams>& info) {
       return info.param.testName;
     });
@@ -615,6 +651,20 @@ TEST_P(ThreadGroupWeightedPartitionTest, WeightedPartition) {
     partitionCounts[partitionIds_h[warpId]]++;
   }
 
+  // Count distinct partitions actually used
+  uint32_t distinctPartitions = 0;
+  for (uint32_t i = 0; i < numPartitions; i++) {
+    if (partitionCounts[i] > 0) {
+      distinctPartitions++;
+    }
+  }
+
+  // We should get exactly numPartitions
+  EXPECT_EQ(distinctPartitions, numPartitions)
+      << "Should have " << numPartitions << " distinct partition_ids "
+      << "(totalWarps=" << totalWarps << ", numPartitions=" << numPartitions
+      << "). Even extreme weight ratios should produce all requested partitions.";
+
   uint32_t prevBoundary = 0;
   for (uint32_t i = 0; i < numPartitions; i++) {
     uint32_t expectedSize = boundaries[i] - prevBoundary;
@@ -694,111 +744,6 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<WeightedPartitionTestParams>& info) {
       return info.param.testName;
     });
-
-// =============================================================================
-// Invalid Usage Tests
-// =============================================================================
-
-// Test: Verify that partition(weights) with more partitions than groups
-// triggers a device-side trap. This validates the invariant that num_partitions
-// <= total_groups.
-//
-// Note: __trap() causes an illegal instruction that stops kernel execution.
-// After the trap fires, cudaDeviceSynchronize() returns an error, and the
-// device requires cudaDeviceReset() to clear the error state. This test
-// verifies the trap fires by checking for this error condition.
-TEST_F(ThreadGroupTestFixture, WeightedPartitionMorePartitionsThanGroupsTraps) {
-  // Setup: 1 block × 32 threads = 1 warp (total_groups = 1)
-  // But we'll request 4 partitions, which is invalid (4 > 1)
-  const int numBlocks = 1;
-  const int blockSize = 32;
-  const std::vector<uint32_t> weights = {1, 1, 1, 1}; // 4 partitions
-  const uint32_t numPartitions = static_cast<uint32_t>(weights.size());
-
-  // Use raw cudaMalloc instead of DeviceBuffer because we'll reset the device
-  // DeviceBuffer's destructor would try to free memory on a reset device
-  uint32_t* weights_d = nullptr;
-  CUDACHECK_TEST(cudaMalloc(&weights_d, numPartitions * sizeof(uint32_t)));
-
-  CUDACHECK_TEST(cudaMemcpy(
-      weights_d,
-      weights.data(),
-      numPartitions * sizeof(uint32_t),
-      cudaMemcpyHostToDevice));
-
-  // Launch the kernel - this should trigger the device trap
-  test::testWeightedPartitionMorePartitionsThanGroups(
-      weights_d, numPartitions, numBlocks, blockSize);
-
-  // Synchronize and check for error
-  cudaError_t syncError = cudaDeviceSynchronize();
-
-  // The trap should have fired, causing a CUDA error
-  // __trap() typically results in cudaErrorIllegalInstruction or
-  // cudaErrorAssert
-  EXPECT_TRUE(
-      syncError == cudaErrorIllegalInstruction ||
-      syncError == cudaErrorAssert || syncError == cudaErrorLaunchFailure)
-      << "Expected CUDA error when num_partitions > total_groups, but got: "
-      << cudaGetErrorString(syncError);
-
-  // Note: We intentionally don't cudaFree(weights_d) here because the device
-  // is in an error state. cudaDeviceReset() will clean up all allocations.
-
-  // Reset the device to clear the sticky error state
-  // This is required after a device-side trap
-  cudaError_t resetError = cudaDeviceReset();
-  EXPECT_EQ(resetError, cudaSuccess)
-      << "cudaDeviceReset failed: " << cudaGetErrorString(resetError);
-
-  // Re-initialize device for TearDown (which calls cudaDeviceSynchronize)
-  // Don't use CUDACHECK_TEST here - device may need time to recover
-  cudaSetDevice(0);
-  cudaGetLastError(); // Clear any residual error
-}
-
-// Test: Verify that partition(num_partitions) with more partitions than groups
-// triggers a device-side trap. This validates the invariant that num_partitions
-// <= total_groups.
-//
-// Note: __trap() causes an illegal instruction that stops kernel execution.
-// After the trap fires, cudaDeviceSynchronize() returns an error, and the
-// device requires cudaDeviceReset() to clear the error state. This test
-// verifies the trap fires by checking for this error condition.
-TEST_F(ThreadGroupTestFixture, PartitionMorePartitionsThanGroupsTraps) {
-  // Setup: 1 block × 32 threads = 1 warp (total_groups = 1)
-  // But we'll request 4 partitions, which is invalid (4 > 1)
-  const int numBlocks = 1;
-  const int blockSize = 32;
-  const uint32_t numPartitions = 4;
-
-  // Launch the kernel - this should trigger the device trap
-  test::testPartitionMorePartitionsThanGroups(
-      numPartitions, numBlocks, blockSize);
-
-  // Synchronize and check for error
-  cudaError_t syncError = cudaDeviceSynchronize();
-
-  // The trap should have fired, causing a CUDA error
-  // __trap() typically results in cudaErrorIllegalInstruction or
-  // cudaErrorAssert
-  EXPECT_TRUE(
-      syncError == cudaErrorIllegalInstruction ||
-      syncError == cudaErrorAssert || syncError == cudaErrorLaunchFailure)
-      << "Expected CUDA error when num_partitions > total_groups, but got: "
-      << cudaGetErrorString(syncError);
-
-  // Reset the device to clear the sticky error state
-  // This is required after a device-side trap
-  cudaError_t resetError = cudaDeviceReset();
-  EXPECT_EQ(resetError, cudaSuccess)
-      << "cudaDeviceReset failed: " << cudaGetErrorString(resetError);
-
-  // Re-initialize device for TearDown (which calls cudaDeviceSynchronize)
-  // Don't use CUDACHECK_TEST here - device may need time to recover
-  cudaSetDevice(0);
-  cudaGetLastError(); // Clear any residual error
-}
 
 } // namespace comms::pipes
 

@@ -225,14 +225,41 @@ __device__ inline PartitionResult ThreadGroup::partition(
     __trap();
   }
 
-  const uint32_t groups_per_partition =
-      (total_groups + num_partitions - 1) / num_partitions;
-  const uint32_t pid = group_id / groups_per_partition;
-  const uint32_t partition_start = pid * groups_per_partition;
-  const uint32_t partition_end =
-      (partition_start + groups_per_partition < total_groups)
-      ? partition_start + groups_per_partition
-      : total_groups;
+  // Use floor division and distribute remainder to first partitions
+  // groups_per_partition = total_groups / num_partitions (floor)
+  // remainder = total_groups % num_partitions
+  // First 'remainder' partitions get (groups_per_partition + 1) groups
+  // Remaining partitions get groups_per_partition groups
+  //
+  // Example: 32 warps / 15 partitions
+  //   groups_per_partition = 32 / 15 = 2
+  //   remainder = 32 % 15 = 2
+  //   Partition 0: [0,3) - 3 groups
+  //   Partition 1: [3,6) - 3 groups
+  //   Partition 2-14: 2 groups each
+  const uint32_t groups_per_partition = total_groups / num_partitions;
+  const uint32_t remainder = total_groups % num_partitions;
+
+  // Boundary between larger and smaller partitions
+  const uint32_t boundary = remainder * (groups_per_partition + 1);
+
+  uint32_t pid;
+  uint32_t partition_start;
+  uint32_t partition_size;
+
+  if (group_id < boundary) {
+    // This group is in one of the first 'remainder' partitions (larger size)
+    pid = group_id / (groups_per_partition + 1);
+    partition_start = pid * (groups_per_partition + 1);
+    partition_size = groups_per_partition + 1;
+  } else {
+    // This group is in one of the remaining partitions (normal size)
+    uint32_t offset = group_id - boundary;
+    uint32_t partition_offset = offset / groups_per_partition;
+    pid = remainder + partition_offset;
+    partition_start = boundary + partition_offset * groups_per_partition;
+    partition_size = groups_per_partition;
+  }
 
   return PartitionResult{
       .partition_id = pid,
@@ -240,11 +267,10 @@ __device__ inline PartitionResult ThreadGroup::partition(
           .thread_id_in_group = thread_id_in_group,
           .group_size = group_size,
           .group_id = group_id - partition_start,
-          .total_groups = partition_end - partition_start,
+          .total_groups = partition_size,
           .scope = scope}};
-#else
-  return PartitionResult{};
 #endif
+  return PartitionResult{};
 }
 
 /**

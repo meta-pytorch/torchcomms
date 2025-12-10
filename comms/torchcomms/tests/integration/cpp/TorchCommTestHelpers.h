@@ -21,6 +21,14 @@ void destroyStore(
     c10::intrusive_ptr<c10d::Store>&& store,
     std::shared_ptr<torch::comms::TorchComm> torchcomm);
 
+// Convert a tensor to a string representation with nested brackets for each
+// dimension. Supports any N-dimensional tensor.
+// All aten datatypes are supported.
+// Example output:
+//   Tensor([[1, 2, 3], [4, 5, 6]]) -> [[1, 2, 3], [4, 5, 6]]
+// See more examples in TensorToStringTest.cpp
+std::string tensorToString(const at::Tensor& tensor);
+
 void verifyTensorEquality(
     const at::Tensor& output,
     const at::Tensor& expected,

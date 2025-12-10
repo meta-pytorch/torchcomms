@@ -28,6 +28,16 @@ void validateInt64Dtype(const at::Tensor& tensor, const std::string& name) {
         c10::toString(tensor.scalar_type()));
   }
 }
+
+// Helper function to validate that metadata tensors are int (torch.int)
+void validateIntDtype(const at::Tensor& tensor, const std::string& name) {
+  if (tensor.scalar_type() != at::kInt) {
+    throw std::runtime_error(
+        "Tensor '" + name +
+        "' must be of type int (torch.int32 or torch.int), but has type " +
+        c10::toString(tensor.scalar_type()));
+  }
+}
 } // namespace
 
 ncclResult_t NCCLException::getResult() const {
@@ -1426,6 +1436,163 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   if (result != ncclSuccess) {
     throw NCCLException(
         *nccl_api_, "NCCL alltoallvDynamicCombine failed", result);
+  }
+
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+c10::intrusive_ptr<TorchCommNCCLXPersistentRequest>
+TorchCommNCCLX::alltoallv_dedup_init(
+    const int num_send_blocks,
+    const int block_count,
+    const int block_num_recv_buckets,
+    const int num_recv_buckets,
+    at::ScalarType dtype,
+    // async_op decides the stream, thus we need to specify at init time as
+    // required by NCCLX API
+    bool async_op) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  cudaStream_t stream = getOperationStream(async_op);
+
+  void* pReq = nullptr;
+  ncclResult_t result = nccl_api_->alltoallvDedupInit(
+      num_send_blocks,
+      block_count,
+      block_num_recv_buckets,
+      num_recv_buckets,
+      getNcclDataType(dtype),
+      nccl_comm_,
+      stream,
+      &pReq);
+
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL alltoallvDedupInit failed", result);
+  }
+  return at::make_intrusive<TorchCommNCCLXPersistentRequest>(
+      shared_from_this(), pReq, stream);
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_exec(
+    at::Tensor& output_tensor,
+    at::Tensor& recv_block_ids,
+    const at::Tensor& input_tensor,
+    const at::Tensor& send_indices,
+    const at::Tensor& forward_indices,
+    const at::Tensor& recv_indices,
+    at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  ensureTensorContiguous(output_tensor);
+  ensureTensorContiguous(recv_block_ids);
+  ensureTensorContiguous(input_tensor);
+  ensureTensorContiguous(send_indices);
+  ensureTensorContiguous(forward_indices);
+  ensureTensorContiguous(recv_indices);
+
+  validateIntDtype(send_indices, "send_indices");
+  validateIntDtype(forward_indices, "forward_indices");
+  validateIntDtype(recv_indices, "recv_indices");
+
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "alltoallv_dedup_exec",
+      rank_,
+      input_tensor,
+      output_tensor);
+
+  TORCH_CHECK(
+      pReq->getStream() != std::nullopt,
+      "cuda stream is not recorded at alltoallv_dedup_init before calling alltoallv_dedup_exec");
+  auto stream = pReq->getStream().value();
+  auto work = createWork(stream, options_.timeout, input_tensor);
+  // Keep the persistent request alive until last dedup work has completed and
+  // cleaned up by CPU, because work->wait() doesn't let CPU wait for kernel
+  // to complete.
+  work->setPersistentRequest(pReq);
+
+  // Record start event before NCCL operation
+  work->recordStart("alltoallv_dedup_exec");
+
+  ncclResult_t result = nccl_api_->alltoallvDedupExec(
+      input_tensor.data_ptr(),
+      send_indices.data_ptr<int>(),
+      forward_indices.data_ptr<int>(),
+      recv_indices.data_ptr<int>(),
+      output_tensor.data_ptr(),
+      recv_block_ids.data_ptr<int>(),
+      pReq->getRequestPtr());
+
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL alltoallvDedupExec failed", result);
+  }
+
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_combine(
+    at::Tensor& output_tensor,
+    const at::Tensor& input_tensor,
+    const at::Tensor& send_indices,
+    const at::Tensor& forward_indices,
+    const at::Tensor& recv_indices,
+    at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  ensureTensorContiguous(output_tensor);
+  ensureTensorContiguous(input_tensor);
+  ensureTensorContiguous(send_indices);
+  ensureTensorContiguous(forward_indices);
+  ensureTensorContiguous(recv_indices);
+
+  validateIntDtype(send_indices, "send_indices");
+  validateIntDtype(forward_indices, "forward_indices");
+  validateIntDtype(recv_indices, "recv_indices");
+
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "alltoallv_dedup_combine",
+      rank_,
+      input_tensor,
+      output_tensor);
+
+  TORCH_CHECK(
+      pReq->getStream() != std::nullopt,
+      "cuda stream is not recorded at alltoallv_dedup_init before calling alltoallv_dedup_combine");
+  auto stream = pReq->getStream().value();
+  auto work = createWork(stream, options_.timeout, input_tensor);
+
+  // Record start event before NCCL operation
+  work->recordStart("alltoallv_dedup_combine");
+
+  ncclResult_t result = nccl_api_->alltoallvDedupCombine(
+      input_tensor.data_ptr(),
+      send_indices.data_ptr<int>(),
+      forward_indices.data_ptr<int>(),
+      recv_indices.data_ptr<int>(),
+      output_tensor.data_ptr(),
+      pReq->getRequestPtr());
+
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL alltoallvDedupCombine failed", result);
   }
 
   // Record end event after NCCL operation

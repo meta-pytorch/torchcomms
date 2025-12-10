@@ -260,6 +260,7 @@ struct CtranKernelAllToAllvDynamicArgs {
       size_t maxInputChunkCountPerRank{0};
       size_t maxRecvcount{0};
       size_t maxSendcount{0};
+      bool combine;
     } nonContig;
     struct {
     } contig;

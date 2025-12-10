@@ -15,6 +15,7 @@
 #include <vector>
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+#include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 
 namespace torch {
 namespace comms {
@@ -63,6 +64,12 @@ class TorchWorkNCCLX : public TorchWork {
   bool isCompleted() override;
   void wait() override;
 
+  // Set persistent request reference to keep it alive until work is freed
+  void setPersistentRequest(
+      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> request) {
+    persistent_request_ = std::move(request);
+  }
+
  protected:
   void recordStart(const std::string& coll_name);
   void recordEnd();
@@ -101,6 +108,9 @@ class TorchWorkNCCLX : public TorchWork {
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
 
   std::optional<at::RecordFunction> recordFunction_;
+
+  // Reference to persistent request to keep it alive until work is freed
+  at::intrusive_ptr<TorchCommNCCLXPersistentRequest> persistent_request_;
 };
 
 class TorchWorkNCCLXQueue {
