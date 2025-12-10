@@ -103,7 +103,8 @@ TEST_F(CtranTest, CTranDisabled) {
   EXPECT_FALSE(ctranReduceScatterSupport(
       comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO));
   EXPECT_FALSE(ctranSendRecvSupport(0, comm->ctranComm_.get()));
-  EXPECT_FALSE(ctranAllToAllSupport(1048576, commInt, comm->ctranComm_.get()));
+  EXPECT_FALSE(ctranAllToAllSupport(
+      1048576, commInt, comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO::ctran));
   EXPECT_FALSE(ctranAllToAllvSupport(comm->ctranComm_.get()));
   meta::comms::Hints hints;
 

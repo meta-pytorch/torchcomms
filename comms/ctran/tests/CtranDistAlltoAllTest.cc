@@ -88,7 +88,11 @@ class CtranAllToAllTest : public CtranDistBaseTest {
   bool checkTestPrerequisite(size_t count, commDataType_t dataType) {
     EXPECT_NE(nullptr, comm);
     EXPECT_NE(nullptr, comm->ctranComm_->ctran_);
-    if (!ctranAllToAllSupport(count, dataType, comm->ctranComm_.get())) {
+    if (!ctranAllToAllSupport(
+            count,
+            dataType,
+            comm->ctranComm_.get(),
+            NCCL_ALLTOALL_ALGO::ctran)) {
       if (globalRank == 0) {
         printf("Skip test because ctranAllToAllSupport returns false\n");
       }
@@ -157,7 +161,13 @@ class CtranAllToAllTest : public CtranDistBaseTest {
 
     // Run communication
     auto res = ctranAllToAll(
-        sendBuf, recvBuf, count, DataType, comm->ctranComm_.get(), stream);
+        sendBuf,
+        recvBuf,
+        count,
+        DataType,
+        comm->ctranComm_.get(),
+        stream,
+        NCCL_ALLTOALL_ALGO::ctran);
     ASSERT_EQ(res, commSuccess);
     CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
@@ -205,13 +215,25 @@ class CtranAllToAllTest : public CtranDistBaseTest {
       totalColls += iter + warm;
       for (int x = 0; x < warm; x++) {
         COMMCHECK_TEST(ctranAllToAll(
-            sendBuf, recvBuf, count, DataType, comm->ctranComm_.get(), stream));
+            sendBuf,
+            recvBuf,
+            count,
+            DataType,
+            comm->ctranComm_.get(),
+            stream,
+            NCCL_ALLTOALL_ALGO::ctran));
       }
 
       CUDACHECK_TEST(cudaEventRecord(start, stream));
       for (int x = 0; x < iter; x++) {
         COMMCHECK_TEST(ctranAllToAll(
-            sendBuf, recvBuf, count, DataType, comm->ctranComm_.get(), stream));
+            sendBuf,
+            recvBuf,
+            count,
+            DataType,
+            comm->ctranComm_.get(),
+            stream,
+            NCCL_ALLTOALL_ALGO::ctran));
       }
       CUDACHECK_TEST(cudaEventRecord(stop, stream));
       CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -414,7 +436,8 @@ TEST_P(CtranAllToAllTestParam, CudaGraphAwareAllToAll) {
       count,
       DataType,
       comm->ctranComm_.get(),
-      cudagraph_stream);
+      cudagraph_stream,
+      NCCL_ALLTOALL_ALGO::ctran);
   ASSERT_EQ(res, commSuccess);
   CUDACHECK_TEST(cudaStreamEndCapture(cudagraph_stream, &graph));
   CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));

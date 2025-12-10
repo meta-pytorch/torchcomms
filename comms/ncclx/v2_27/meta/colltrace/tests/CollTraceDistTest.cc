@@ -561,15 +561,15 @@ TEST_F(CollTraceTest, TestScubaEntry) {
 
 TEST_F(CollTraceTest, TestRecordNoDropBelowLimit) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
-  auto recordGuard =
-      EnvRAII(NCCL_COLLTRACE_RECORD_MAX, NCCL_COLLTRACE_RECORD_MAX_DEFAULT);
+  auto recordGuard = EnvRAII(
+      NCCL_COLLTRACE_RECORD_MAX, NCCL_COLLTRACE_RECORD_MAX_DEFAULTCVARVALUE);
 
   NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
-  if (NCCL_COLLTRACE_RECORD_MAX_DEFAULT <= 1) {
+  if (NCCL_COLLTRACE_RECORD_MAX_DEFAULTCVARVALUE <= 1) {
     GTEST_SKIP()
-        << "NCCL_COLLTRACE_RECORD_MAX_DEFAULT is too small. Skipping test.";
+        << "NCCL_COLLTRACE_RECORD_MAX_DEFAULTCVARVALUE is too small. Skipping test.";
   }
   const int nColl = std::max(NCCL_COLLTRACE_RECORD_MAX - 5, 1);
 
@@ -593,7 +593,8 @@ TEST_F(CollTraceTest, TestRecordNoDropByEnv) {
   NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
   ASSERT_EQ(comm->newCollTrace, nullptr);
   const int count = 1048576;
-  const int nColl = std::min(NCCL_COLLTRACE_RECORD_MAX_DEFAULT, 100) * 5;
+  const int nColl =
+      std::min(NCCL_COLLTRACE_RECORD_MAX_DEFAULTCVARVALUE, 100) * 5;
 
   prepareAllreduce(count);
   for (int i = 0; i < nColl; i++) {
@@ -644,7 +645,8 @@ TEST_F(CollTraceTest, TestCtranScubaEntry) {
   constexpr int count = 1048576;
   constexpr int nColl = 10;
 
-  if (!ctranAllToAllSupport(count, commInt, comm->ctranComm_.get())) {
+  if (!ctranAllToAllSupport(
+          count, commInt, comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO)) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran All to All support.";
   }
@@ -717,7 +719,8 @@ TEST_F(CollTraceTest, VerboseAllToAllCtran) {
   constexpr int count = 1048576;
   constexpr int nColl = 10;
 
-  if (!ctranAllToAllSupport(count, commInt, comm->ctranComm_.get())) {
+  if (!ctranAllToAllSupport(
+          count, commInt, comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO)) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran All to All support.";
   }

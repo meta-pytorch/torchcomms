@@ -102,7 +102,8 @@ TEST_F(MapperTraceTest, CtranAllToAll) {
       comm->nNodes,
       backendStr.c_str());
 
-  if (!ctranAllToAllSupport(count, commInt8, comm->ctranComm_.get()) ||
+  if (!ctranAllToAllSupport(
+          count, commInt8, comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO) ||
       comm->ctranComm_->statex_->nNodes() < 2) {
     GTEST_SKIP()
         << "Skip test because this comm does not have Ctran All to All support or it is not a multi-node comm";
