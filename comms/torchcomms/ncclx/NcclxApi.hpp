@@ -174,6 +174,37 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
+  virtual ncclResult_t alltoallvDedupInit(
+      const size_t totalNumSendBlocks, // number of blocks (tokens) per batch
+      const size_t blockCount, // number of elements per block (token)
+      const size_t blockNumRecvBuckets, // number of receiving buckets for each
+                                        // block (experts per token, topK)
+      const int numRecvBuckets, // number of receiving buckets per rank (expert
+                                // per rank)
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream,
+      void** request) = 0;
+
+  virtual ncclResult_t alltoallvDedupExec(
+      const void* sendBuff,
+      const int* sendIdx,
+      const int* fwdIdx,
+      const int* recvIdx,
+      void* recvBuff,
+      int recvBlockIds[],
+      void* request) = 0;
+
+  virtual ncclResult_t alltoallvDedupCombine(
+      const void* sendBuff,
+      const int* sendIdx,
+      const int* fwdIdx,
+      const int* recvIdx,
+      void* recvBuff,
+      void* request) = 0;
+
+  virtual ncclResult_t pFree(void* request) = 0;
+
   virtual ncclResult_t winAllocate(
       size_t size,
       ncclComm_t comm,
@@ -375,6 +406,35 @@ class DefaultNcclxApi : public NcclxApi {
       ncclDataType_t datatype,
       ncclComm_t comm,
       cudaStream_t stream) override;
+
+  ncclResult_t alltoallvDedupInit(
+      const size_t totalNumSendBlocks,
+      const size_t blockCount,
+      const size_t blockNumRecvBuckets,
+      const int numRecvBuckets,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      cudaStream_t stream,
+      void** request) override;
+
+  ncclResult_t alltoallvDedupExec(
+      const void* sendBuff,
+      const int* sendIdx,
+      const int* fwdIdx,
+      const int* recvIdx,
+      void* recvBuff,
+      int recvBlockIds[],
+      void* request) override;
+
+  ncclResult_t alltoallvDedupCombine(
+      const void* sendBuff,
+      const int* sendIdx,
+      const int* fwdIdx,
+      const int* recvIdx,
+      void* recvBuff,
+      void* request) override;
+
+  ncclResult_t pFree(void* request) override;
 
   // Window RMA operations
   ncclResult_t winAllocate(

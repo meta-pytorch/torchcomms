@@ -70,6 +70,14 @@ void NcclxMock::setupDefaultBehaviors() {
   ON_CALL(*this, reduceScatter(_, _, _, _, _, _, _))
       .WillByDefault(Return(ncclSuccess));
 
+  ON_CALL(*this, alltoallvDedupInit(_, _, _, _, _, _, _, _))
+      .WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, alltoallvDedupExec(_, _, _, _, _, _, _))
+      .WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, alltoallvDedupCombine(_, _, _, _, _, _))
+      .WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, pFree(_)).WillByDefault(Return(ncclSuccess));
+
   ON_CALL(*this, winAllocate(_, _, _, _, _, _))
       .WillByDefault(DoAll(
           SetArgPointee<3>(reinterpret_cast<NcclxWindow>(0x5000)),

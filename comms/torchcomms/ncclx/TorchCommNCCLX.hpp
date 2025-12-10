@@ -22,6 +22,7 @@
 #include "comms/torchcomms/TorchCommBatch.hpp"
 #include "comms/torchcomms/device/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
+#include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 
@@ -172,6 +173,31 @@ class TorchCommNCCLX : public TorchCommBackend,
       const at::Tensor& input_chunk_indices,
       const at::Tensor& input_chunk_count_per_rank,
       bool async_op);
+
+  c10::intrusive_ptr<TorchCommNCCLXPersistentRequest> alltoallv_dedup_init(
+      const int num_send_blocks,
+      const int block_count,
+      const int block_num_recv_buckets,
+      const int num_recv_buckets,
+      at::ScalarType dtype,
+      bool async_op);
+
+  c10::intrusive_ptr<TorchWork> alltoallv_dedup_exec(
+      at::Tensor& output_tensor,
+      at::Tensor& recv_block_ids,
+      const at::Tensor& input_tensor,
+      const at::Tensor& send_indices,
+      const at::Tensor& forward_indices,
+      const at::Tensor& recv_indices,
+      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
+
+  c10::intrusive_ptr<TorchWork> alltoallv_dedup_combine(
+      at::Tensor& output_tensor,
+      const at::Tensor& input_tensor,
+      const at::Tensor& send_indices,
+      const at::Tensor& forward_indices,
+      const at::Tensor& recv_indices,
+      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
 
   c10::intrusive_ptr<TorchWork> barrier(
       bool async_op,
