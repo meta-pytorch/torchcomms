@@ -3,8 +3,10 @@
 #pragma once
 
 #include <folly/Expected.h>
+
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/ctran/ibverbx/device/structs.h"
 
 namespace ibverbx {
 
@@ -24,6 +26,10 @@ class IbvCq {
 
   ibv_cq* cq() const;
   int32_t getDeviceId() const;
+
+  // create device cq, map cq buffer to GPU
+  folly::Expected<struct device_cq, Error> getDeviceCq() const noexcept;
+
   inline folly::Expected<std::vector<ibv_wc>, Error> pollCq(int numEntries);
 
   // Request notification when the next completion is added to this CQ

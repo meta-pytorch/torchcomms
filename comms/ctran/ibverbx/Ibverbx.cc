@@ -50,14 +50,4 @@ void ibvAckCqEvents(ibv_cq* cq, unsigned int nevents) {
   ibvSymbols.ibv_internal_ack_cq_events(cq, nevents);
 }
 
-folly::Expected<folly::Unit, Error> Mlx5dv::initObj(
-    mlx5dv_obj* obj,
-    uint64_t obj_type) {
-  int rc = ibvSymbols.mlx5dv_internal_init_obj(obj, obj_type);
-  if (rc != 0) {
-    return folly::makeUnexpected(Error(rc));
-  }
-  return folly::unit;
-}
-
 } // namespace ibverbx
