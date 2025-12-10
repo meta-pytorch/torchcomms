@@ -90,7 +90,7 @@ class CtranTcpDm {
   commResult_t teardownUnpackConsumer(int poolIndex);
 
  private:
-  std::shared_ptr<::comms::tcp_devmem::Transport> transport_{nullptr};
+  std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport_{nullptr};
   ctran::bootstrap::ServerSocket listenSocket_{
       static_cast<int>(NCCL_SOCKET_RETRY_CNT)};
   std::vector<sockaddr_storage> allListenSocketAddrs_{};
@@ -101,11 +101,13 @@ class CtranTcpDm {
   int nRanks_{-1};
   uint64_t commHash_{0};
   std::string commDesc_;
-  ::comms::tcp_devmem::NetDev* netdev_{nullptr};
+  ::comms::tcp_devmem::NetDevInterface* netdev_{nullptr};
 
   std::mutex mutex_;
-  std::unordered_map<int, ::comms::tcp_devmem::Communicator*> recvComms_;
-  std::unordered_map<int, ::comms::tcp_devmem::Communicator*> sendComms_;
+  std::unordered_map<int, ::comms::tcp_devmem::CommunicatorInterface*>
+      recvComms_;
+  std::unordered_map<int, ::comms::tcp_devmem::CommunicatorInterface*>
+      sendComms_;
 
   struct RecvRequest {
     int peerRank{-1};
@@ -122,11 +124,11 @@ class CtranTcpDm {
   void bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap);
   void bootstrapAddRecvPeer(
       int peerRank,
-      ::comms::tcp_devmem::Communicator* comm);
+      ::comms::tcp_devmem::CommunicatorInterface* comm);
   void bootstrapAccept();
   void bootstrapAddSendPeer(
       int peerRank,
-      ::comms::tcp_devmem::Communicator* comm);
+      ::comms::tcp_devmem::CommunicatorInterface* comm);
   commResult_t bootstrapConnect(
       int peerRank,
       const folly::SocketAddress& peerSockAddr);

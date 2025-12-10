@@ -11,7 +11,8 @@ namespace ctran {
 
 class CtranTcpDmSingleton {
  public:
-  static std::shared_ptr<::comms::tcp_devmem::Transport> getTransport();
+  static std::shared_ptr<::comms::tcp_devmem::TransportInterface>
+  getTransport();
 };
 
 } // namespace ctran

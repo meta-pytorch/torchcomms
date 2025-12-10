@@ -12,7 +12,7 @@ folly::LeakySingleton<std::shared_ptr<::comms::tcp_devmem::Transport>>
           std::make_shared<::comms::tcp_devmem::Transport>());
     });
 
-std::shared_ptr<::comms::tcp_devmem::Transport>
+std::shared_ptr<::comms::tcp_devmem::TransportInterface>
 CtranTcpDmSingleton::getTransport() {
   return folly::LeakySingleton<
       std::shared_ptr<::comms::tcp_devmem::Transport>>::get();
