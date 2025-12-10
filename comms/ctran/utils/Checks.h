@@ -304,6 +304,29 @@
     }                                                                   \
   } while (0)
 
+#define FOLLY_EXPECTED_CHECKTHROW_EX(RES, rank, commHash, desc)        \
+  do {                                                                 \
+    if (RES.hasError()) {                                              \
+      CLOGF(                                                           \
+          ERR,                                                         \
+          "{}:{} -> {} ({})",                                          \
+          __FILE__,                                                    \
+          __LINE__,                                                    \
+          RES.error().errNum,                                          \
+          RES.error().errStr);                                         \
+      throw ctran::utils::Exception(                                   \
+          std::string("COMM internal failure: ") + RES.error().errStr, \
+          commInternalError,                                           \
+          rank,                                                        \
+          commHash,                                                    \
+          desc);                                                       \
+    }                                                                  \
+  } while (0)
+
+// For singleton/global contexts where rank/commHash/commDesc are not available
+#define FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(RES) \
+  FOLLY_EXPECTED_CHECKTHROW_EX(RES, std::nullopt, std::nullopt, std::nullopt)
+
 #define FOLLY_EXPECTED_CHECKGOTO(RES, label) \
   do {                                       \
     if (RES.hasError()) {                    \

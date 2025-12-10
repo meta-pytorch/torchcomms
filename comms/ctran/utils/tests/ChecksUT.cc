@@ -243,6 +243,71 @@ TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX) {
   ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
 }
 
+namespace {
+struct MockError {
+  int errNum;
+  std::string errStr;
+};
+} // namespace
+
+TEST_F(CtranUtilsCheckTest, FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM) {
+  // Success case: no exception thrown
+  auto successResult = folly::Expected<int, MockError>(42);
+  EXPECT_NO_THROW(FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(successResult));
+
+  // Failure case: ctran::utils::Exception thrown with correct properties
+  // Failure case: ctran::utils::Exception thrown with correct properties
+  auto errorResult = folly::Expected<int, MockError>(folly::makeUnexpected(
+      MockError{
+          .errNum = EINVAL,
+          .errStr = "mock error message",
+      }));
+
+  bool caughtException = false;
+  try {
+    FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(errorResult);
+  } catch (const ctran::utils::Exception& e) {
+    EXPECT_THAT(
+        std::string(e.what()), ::testing::HasSubstr("COMM internal failure:"));
+    EXPECT_THAT(
+        std::string(e.what()), ::testing::HasSubstr("mock error message"));
+    caughtException = true;
+  }
+  ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+}
+
+TEST_F(CtranUtilsCheckTest, FOLLY_EXPECTED_CHECKTHROW_EX) {
+  const int rank = 3;
+  const uint64_t commHash = 0xCAFEBABE;
+  const std::string desc = "testDesc";
+
+  // Success case: no exception thrown
+  auto successResult = folly::Expected<int, MockError>(42);
+  EXPECT_NO_THROW(
+      FOLLY_EXPECTED_CHECKTHROW_EX(successResult, rank, commHash, desc));
+
+  // Failure case: ctran::utils::Exception thrown with correct properties
+  auto errorResult = folly::Expected<int, MockError>(folly::makeUnexpected(
+      MockError{
+          .errNum = EINVAL,
+          .errStr = "mock error message",
+      }));
+
+  bool caughtException = false;
+  try {
+    FOLLY_EXPECTED_CHECKTHROW_EX(errorResult, rank, commHash, desc);
+  } catch (const ctran::utils::Exception& e) {
+    EXPECT_EQ(e.rank(), rank);
+    EXPECT_EQ(e.commHash(), commHash);
+    EXPECT_THAT(
+        std::string(e.what()), ::testing::HasSubstr("COMM internal failure:"));
+    EXPECT_THAT(
+        std::string(e.what()), ::testing::HasSubstr("mock error message"));
+    caughtException = true;
+  }
+  ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+}
+
 TEST_F(CtranUtilsCheckTest, FB_CHECKTHROW) {
   EXPECT_NO_THROW(FB_CHECKTHROW(true, "test FB_CHECKTHROW -> NO throw"));
   EXPECT_THROW(

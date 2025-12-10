@@ -65,10 +65,10 @@ CtranIbSingleton& CtranIbSingleton::getInstance() {
 
 CtranIbSingleton::CtranIbSingleton() {
   auto ibvInitResult = ibverbx::ibvInit();
-  FOLLY_EXPECTED_CHECKTHROW(ibvInitResult);
+  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
   auto maybeDeviceList = ibverbx::IbvDevice::ibvGetDeviceList(
       NCCL_IB_HCA, NCCL_IB_HCA_PREFIX, CTRAN_IB_ANY_PORT, NCCL_IB_DATA_DIRECT);
-  FOLLY_EXPECTED_CHECKTHROW(maybeDeviceList);
+  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybeDeviceList);
   ibvDevices = std::move(*maybeDeviceList);
 
   if (ibvDevices.size() < NCCL_CTRAN_IB_DEVICES_PER_RANK) {
@@ -82,7 +82,7 @@ CtranIbSingleton::CtranIbSingleton() {
 
   for (auto i = 0; i < this->ibvDevices.size(); i++) {
     auto maybePd = this->ibvDevices[i].allocPd();
-    FOLLY_EXPECTED_CHECKTHROW(maybePd);
+    FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybePd);
     this->ibvPds_.push_back(std::move(*maybePd));
   }
 
@@ -463,7 +463,8 @@ void CtranIb::init(
 
     ibverbx::ibv_device_attr devAttr;
     auto maybeDeviceAttr = devices[device].ibvDevice->queryDevice();
-    FOLLY_EXPECTED_CHECKTHROW(maybeDeviceAttr);
+    FOLLY_EXPECTED_CHECKTHROW_EX(
+        maybeDeviceAttr, this->rank, this->commHash, this->commDesc);
     devAttr = std::move(*maybeDeviceAttr);
 
     // Found available port for the given device
@@ -538,7 +539,8 @@ void CtranIb::init(
     // access it yet.
     auto maybeCq =
         devices[device].ibvDevice->createCq(maxCqe, nullptr, nullptr, 0);
-    FOLLY_EXPECTED_CHECKTHROW(maybeCq);
+    FOLLY_EXPECTED_CHECKTHROW_EX(
+        maybeCq, this->rank, this->commHash, this->commDesc);
     cqs.emplace_back(std::move(*maybeCq));
     devices[device].ibvCq = &cqs[device];
     // FIXME: use initRemoteTransStates() to create cq
