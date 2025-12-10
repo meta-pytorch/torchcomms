@@ -365,30 +365,38 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             # Run sync alltoallv_dynamic_dispatch with combine
             self._sync_alltoallv_dynamic(chunk_size, dtype)
 
-    def _run_dp2ep_e2e(self, sub_torchcomm, E: int, T: int):
+    def _run_rail_base_e2e(self, sub_torchcomm, E: int, T: int, ETP: int, TP: int):
         """Run DP2EP end-to-end test with specified torch comm sub-group."""
         D = 1024
         torch.manual_seed(42)
         rank = sub_torchcomm.get_rank()
-        world_size = sub_torchcomm.get_size()
+        comm_size = sub_torchcomm.get_size()
         backend = sub_torchcomm.unsafe_get_backend()
-
-        NUM_LOCAL_EXPERTS = E // sub_torchcomm.get_size()
+        assert ETP == 1 or TP == ETP, "Test cases only support ETP=1 or ETP==TP for now"
+        TP2EP = TP // ETP
+        NUM_LOCAL_EXPERTS = E // comm_size // TP2EP
         # Setup input split indices and combine indices
-        split_indices = torch.arange(0, E, dtype=torch.long, device=self.device)
-        combine_indices_list = [
-            torch.arange(
-                rank * NUM_LOCAL_EXPERTS,
-                (rank + 1) * NUM_LOCAL_EXPERTS,
-                dtype=torch.long,
-            )
-            + i * E
-            for i in range(world_size)
-        ]
-        combine_indices = torch.cat(combine_indices_list)
+        stride = E // comm_size
+        start = self.rank % TP2EP * NUM_LOCAL_EXPERTS
+        split_indices_list = []
+        for _ in range(comm_size):
+            split_indices_list.extend(list(range(start, start + NUM_LOCAL_EXPERTS)))
+            start += stride
+        split_indices = torch.tensor(
+            split_indices_list, dtype=torch.long, device=self.device
+        )
+        start = split_indices_list[NUM_LOCAL_EXPERTS * rank]
+        combine_indices_list = []
+        for _ in range(comm_size):
+            combine_indices_list.extend(list(range(start, start + NUM_LOCAL_EXPERTS)))
+            start += E
+        combine_indices = torch.tensor(
+            combine_indices_list, dtype=torch.long, device=self.device
+        )
+
         # Setup indices per rank
         indices_per_rank = torch.full(
-            (world_size,),
+            (comm_size,),
             NUM_LOCAL_EXPERTS,
             dtype=torch.long,
             device=self.device,
@@ -396,18 +404,18 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         # Setup input and output tensors
         input_tensor = torch.randn((T, D), dtype=torch.bfloat16, device=self.device)
         output_tensor = torch.empty(
-            (world_size, T, D), dtype=torch.bfloat16, device=self.device
+            (comm_size, T, D), dtype=torch.bfloat16, device=self.device
         )
         original_input_tensor = input_tensor.clone()
         input_split_sizes = torch.tensor(
             generate_random_split(E, T), dtype=torch.long, device=self.device
         )
         output_split_sizes = torch.empty(
-            (world_size, E), dtype=torch.long, device=self.device
+            (comm_size, E), dtype=torch.long, device=self.device
         )
 
         backend.alltoallv_dynamic_dispatch(
-            list(output_tensor.chunk(world_size)),
+            list(output_tensor.chunk(comm_size)),
             output_split_sizes,
             input_tensor,
             input_split_sizes,
@@ -427,12 +435,34 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
             D,
             False,
         )
-        torch.testing.assert_close(
-            combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
-        )
+        if ETP == TP:
+            torch.testing.assert_close(
+                combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
+            )
+        else:
+            expected_vals = []
+            output_vals = []
+            input_split_sizes_list = input_split_sizes.tolist()
+            split_vals = original_input_tensor.split(input_split_sizes_list)
+            split_output_vals = combine_output_tensor.split(input_split_sizes_list)
+            for i in split_indices_list:
+                expected_vals.append(split_vals[i])
+                output_vals.append(split_output_vals[i])
+            expected_vals = torch.cat(expected_vals)
+            output_vals = torch.cat(output_vals)
+            torch.testing.assert_close(output_vals, expected_vals, rtol=0.0, atol=0.0)
 
-    def test_dp2ep_e2e(self):
-        """Run DP2EP end-to-end test."""
+    def test_rail_base_e2e(self):
+        """Run DP2EP>1 end-to-end test with rail-based all2all.
+        For example, when we have 4 processes with world rank [0, 1, 2, 3]. Comms group are set up as [[0, 2], [1, 3]].
+        Two common use cases in prod are
+        1) ETP==TP
+        Experts weight sharding are [[W00, W10], [W01, W11], [W20, W30], [W21, W31]] asumming TP=ETP=2, EP=2, DP=2.
+        For a sample visualization of how inputs are setup for this case. Visit https://fburl.com/3j8akuwm with tab DP2EP in RL.
+        2) ETP=1
+        Experts weight sharding are [[W0], [W1], [W2], [W3]] assuming TP=2, ETP=1, EP=4, DP=2.
+        For a sample visualization of how inputs are setup for this case. Visit https://fburl.com/3j8akuwm with tab DP2EP + TP2EP in RL.
+        """
         DP2EP_SIZE = 2
         TP_SIZE = self.num_ranks // DP2EP_SIZE
         ranks = list(range(self.num_ranks))
@@ -443,8 +473,8 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
                 my_group_rank = rank_list
                 break
         ep_modulo_tp_comm = self.torchcomm.split(my_group_rank, name="ep_modulo_tp")
-        for E, T in itertools.product([128, 256], [32, 1024]):
-            self._run_dp2ep_e2e(ep_modulo_tp_comm, E, T)
+        for E, T, ETP_SIZE in itertools.product([16, 128], [32, 1024], [1, TP_SIZE]):
+            self._run_rail_base_e2e(ep_modulo_tp_comm, E, T, ETP_SIZE, TP_SIZE)
         ep_modulo_tp_comm.finalize()
 
 
