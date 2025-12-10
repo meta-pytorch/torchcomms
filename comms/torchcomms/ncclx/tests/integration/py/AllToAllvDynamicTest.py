@@ -4,13 +4,26 @@
 
 import itertools
 import os
+import random
 import unittest
+
+from typing import List
 
 import torch
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
     TorchCommTestWrapper,
 )
+
+
+def generate_random_split(n: int, total_sum: int) -> List[int]:
+    num_cuts = min(total_sum, n - 1)
+    cuts = sorted(random.sample(range(0, total_sum), num_cuts))
+    split = [a - b for a, b in zip(cuts + [total_sum], [0] + cuts)]
+    # Pad with zeros if we have fewer cuts than needed
+    while len(split) < n:
+        split.append(0)
+    return split
 
 
 class AllToAllvDynamicDispatchTest(unittest.TestCase):
@@ -351,6 +364,88 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
 
             # Run sync alltoallv_dynamic_dispatch with combine
             self._sync_alltoallv_dynamic(chunk_size, dtype)
+
+    def _run_dp2ep_e2e(self, sub_torchcomm, E: int, T: int):
+        """Run DP2EP end-to-end test with specified torch comm sub-group."""
+        D = 1024
+        torch.manual_seed(42)
+        rank = sub_torchcomm.get_rank()
+        world_size = sub_torchcomm.get_size()
+        backend = sub_torchcomm.unsafe_get_backend()
+
+        NUM_LOCAL_EXPERTS = E // sub_torchcomm.get_size()
+        # Setup input split indices and combine indices
+        split_indices = torch.arange(0, E, dtype=torch.long, device=self.device)
+        combine_indices_list = [
+            torch.arange(
+                rank * NUM_LOCAL_EXPERTS,
+                (rank + 1) * NUM_LOCAL_EXPERTS,
+                dtype=torch.long,
+            )
+            + i * E
+            for i in range(world_size)
+        ]
+        combine_indices = torch.cat(combine_indices_list)
+        # Setup indices per rank
+        indices_per_rank = torch.full(
+            (world_size,),
+            NUM_LOCAL_EXPERTS,
+            dtype=torch.long,
+            device=self.device,
+        )
+        # Setup input and output tensors
+        input_tensor = torch.randn((T, D), dtype=torch.bfloat16, device=self.device)
+        output_tensor = torch.empty(
+            (world_size, T, D), dtype=torch.bfloat16, device=self.device
+        )
+        original_input_tensor = input_tensor.clone()
+        input_split_sizes = torch.tensor(
+            generate_random_split(E, T), dtype=torch.long, device=self.device
+        )
+        output_split_sizes = torch.empty(
+            (world_size, E), dtype=torch.long, device=self.device
+        )
+
+        backend.alltoallv_dynamic_dispatch(
+            list(output_tensor.chunk(world_size)),
+            output_split_sizes,
+            input_tensor,
+            input_split_sizes,
+            split_indices,
+            indices_per_rank,
+            D,
+            False,
+        )
+
+        combine_output_tensor = torch.empty_like(original_input_tensor)
+        backend.alltoallv_dynamic_combine(
+            combine_output_tensor,
+            output_tensor.view(-1, D),
+            output_split_sizes.flatten(),
+            combine_indices,
+            indices_per_rank,
+            D,
+            False,
+        )
+        torch.testing.assert_close(
+            combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
+        )
+
+    def test_dp2ep_e2e(self):
+        """Run DP2EP end-to-end test."""
+        DP2EP_SIZE = 2
+        TP_SIZE = self.num_ranks // DP2EP_SIZE
+        ranks = list(range(self.num_ranks))
+        ep_modulo_tp_ranks = [ranks[i::TP_SIZE] for i in range(TP_SIZE)]
+        my_group_rank = None
+        for rank_list in ep_modulo_tp_ranks:
+            if self.rank in rank_list:
+                my_group_rank = rank_list
+                break
+        ep_modulo_tp_comm = self.torchcomm.split(my_group_rank, name="ep_modulo_tp")
+        for E, T in itertools.product([128, 256], [32, 1024]):
+            self._run_dp2ep_e2e(ep_modulo_tp_comm, E, T)
+        ep_modulo_tp_comm.finalize()
 
 
 if __name__ == "__main__":
