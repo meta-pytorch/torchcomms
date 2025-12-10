@@ -208,6 +208,98 @@ static inline commResult_t peerPutContig(
   return commSuccess;
 }
 
+static inline void printDynamicLog(
+    const void* const* sendbuffs,
+    void* const* recvbuffs,
+    void* recvbuff,
+    size_t sendcountsLength,
+    bool combine,
+    OpElem::opType algoType,
+    CtranComm* comm,
+    uint64_t opCount,
+    int myRank,
+    int nRanks) {
+  std::string sendbuffsStr = "", recvbuffsStr = "";
+  for (int i = 0; i < nRanks; i++) {
+    sendbuffsStr += fmt::format("sendbuffs[{}] = {}", i, sendbuffs[i]);
+    if (i < nRanks - 1) {
+      sendbuffsStr += ", ";
+    }
+    if (recvbuffs != nullptr) {
+      recvbuffsStr += fmt::format("recvbuffs[{}] = {}", i, recvbuffs[i]);
+      if (i < nRanks - 1) {
+        recvbuffsStr += ", ";
+      }
+    }
+  }
+  if (recvbuffs == nullptr) {
+    recvbuffsStr = "recvbuffs = nullptr";
+  }
+
+  size_t* sendCountsTmpbufCPU =
+      reinterpret_cast<size_t*>(comm->ctran_->algo->getTmpBuf(
+          CtranAlgo::TmpbufType::SENDCOUNTS_TMPBUF_CPU));
+  std::string sendCountsTmpbufCPUStr = "";
+  for (int i = 0; i < sendcountsLength; i++) {
+    sendCountsTmpbufCPUStr += std::to_string(sendCountsTmpbufCPU[i]);
+    if (i < sendcountsLength - 1) {
+      sendCountsTmpbufCPUStr += ", ";
+    }
+  }
+
+  CLOGF_TRACE(
+      COLL,
+      "ctranAllToAllvDynamicIbImpl {}: opCount {} myRank {} - \n"
+      "{}\n"
+      "recvbuff = {}, {}\n"
+      "sendcounts = [{}]",
+      combine ? "[combine]" : "[dispatch]",
+      opCount,
+      myRank,
+      sendbuffsStr,
+      recvbuff,
+      recvbuffsStr,
+      sendCountsTmpbufCPUStr);
+
+  if (algoType == OpElem::opType::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG) {
+    size_t* sendIndices =
+        reinterpret_cast<size_t*>(comm->ctran_->algo->getTmpBuf(
+            CtranAlgo::TmpbufType::SENDINDICES_TMPBUF_CPU));
+
+    size_t* sendIndicesBlockLengthsTmpbufCPU =
+        reinterpret_cast<size_t*>(comm->ctran_->algo->getTmpBuf(
+            CtranAlgo::TmpbufType::SENDINDICES_BLOCKLEN_TMPBUF_CPU));
+
+    std::string sendIndicesStr = "", sendIndicesBlockLengthsStr = "";
+    int j = 0;
+    for (int i = 0; i < nRanks; i++) {
+      sendIndicesBlockLengthsStr +=
+          std::to_string(sendIndicesBlockLengthsTmpbufCPU[i]);
+      if (i < nRanks - 1) {
+        sendIndicesBlockLengthsStr += ", ";
+      }
+      for (int k = 0; k < sendIndicesBlockLengthsTmpbufCPU[i]; k++) {
+        sendIndicesStr += std::to_string(sendIndices[j]);
+        if ((k < sendIndicesBlockLengthsTmpbufCPU[i] - 1) || (i < nRanks - 1)) {
+          sendIndicesStr += ", ";
+        }
+        j++;
+      }
+    }
+
+    CLOGF_TRACE(
+        COLL,
+        "ctranAllToAllvDynamicIbImpl {}: opCount {} myRank {} - "
+        "sendIndices = [{}], "
+        "sendIndicesBlockLengths = [{}]",
+        combine ? "[combine]" : "[dispatch]",
+        opCount,
+        myRank,
+        sendIndicesStr,
+        sendIndicesBlockLengthsStr);
+  }
+}
+
 commResult_t ctranAllToAllvDynamicIbImpl(
     const void* const* sendbuffs,
     void* const* recvbuffs,
@@ -224,6 +316,29 @@ commResult_t ctranAllToAllvDynamicIbImpl(
   const auto& statex = comm->statex_;
   const int myRank = statex->rank();
   const int nRanks = statex->nRanks();
+
+  CLOGF_SUBSYS(
+      INFO,
+      COLL,
+      "Entered ctranAllToAllvDynamicIbImpl {}: myRank {} nRanks {}",
+      combine ? "[combine]" : "[dispatch]",
+      myRank,
+      nRanks);
+
+  // Debug logging: print parameter values when debug mode is enabled
+  if (NCCL_CTRAN_ENABLE_TRACE_LOG) {
+    printDynamicLog(
+        sendbuffs,
+        recvbuffs,
+        recvbuff,
+        sendcountsLength,
+        combine,
+        algoType,
+        comm,
+        comm->ctran_->getOpCount(),
+        myRank,
+        nRanks);
+  }
 
   std::vector<void*> remoteRecvBuffs(nRanks);
   std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys(nRanks);
@@ -301,6 +416,14 @@ commResult_t ctranAllToAllvDynamicIbImpl(
   for (auto& hdl : tmpRegHdls) {
     FB_COMMCHECK(comm->ctran_->mapper->deregDynamic(hdl));
   }
+
+  CLOGF_SUBSYS(
+      INFO,
+      COLL,
+      "Finished ctranAllToAllvDynamicIbImpl {}: myRank {} nRanks {}",
+      combine ? "[combine]" : "[dispatch]",
+      myRank,
+      nRanks);
 
   return commSuccess;
 }
