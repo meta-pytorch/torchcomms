@@ -378,10 +378,8 @@ commResult_t ctranAllToAllvDynamicIbImpl(
       continue;
     }
     // schedule IB ctrl messages
-    void* curRecvBuff = recvbuffs[peer];
-    if (recvbuffs == nullptr) {
-      curRecvBuff = recvbuff;
-    }
+    void* curRecvBuff = (recvbuffs == nullptr) ? recvbuff : recvbuffs[peer];
+
     FB_COMMCHECK(regIsendCtrl(
         comm,
         peer,
