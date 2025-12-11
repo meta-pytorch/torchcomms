@@ -46,6 +46,32 @@ void CtranEnvironmentBase::SetUp() {
   setenv("NCCL_CTRAN_PROFILING", "none", 1);
   setenv("NCCL_CTRAN_ENABLE", "1", 0);
   setenv("NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1", 0);
+
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  setenv("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal", 1);
+#endif
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_VNODE
+  setenv("NCCL_COMM_STATE_DEBUG_TOPO", "vnode", 1);
+#endif
+
+// Allow each test to choose different fast init mode
+#if defined(TEST_ENABLE_FASTINIT)
+  setenv("NCCL_FASTINIT_MODE", "ring_hybrid", 1);
+#else
+  setenv("NCCL_FASTINIT_MODE", "none", 1);
+#endif
+
+#if defined(TEST_ENABLE_CTRAN)
+  setenv("NCCL_CTRAN_ENABLE", "1", 1);
+#endif
+
+#if defined(TEST_ENABLE_LOCAL_REGISTER)
+  setenv("NCCL_LOCAL_REGISTER", "1", 1);
+#endif
+
+#if defined(TEST_CUDA_GRAPH_MODE)
+  setenv("NCCL_CTRAN_ALLOW_CUDA_GRAPH", "1", 1);
+#endif
 }
 
 void CtranEnvironmentBase::TearDown() {
