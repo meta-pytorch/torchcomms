@@ -484,6 +484,14 @@ class CtranIb {
     return listenSocket->getListenAddress();
   }
 
+  int getRank() const {
+    return rank;
+  }
+
+  uint64_t getCommHash() const {
+    return commHash;
+  }
+
  private:
   friend class CtranIbRequest;
   void init(
@@ -1139,7 +1147,8 @@ class CtranIbEpochRAII {
   // needed only for selected cases.
   explicit CtranIbEpochRAII(CtranIb* ctranIb) : ctranIb_(ctranIb) {
     if (ctranIb_ != nullptr) {
-      FB_COMMCHECKTHROW(ctranIb_->epochLock());
+      FB_COMMCHECKTHROW_EX(
+          ctranIb_->epochLock(), ctranIb_->getRank(), ctranIb_->getCommHash());
     }
   }
 

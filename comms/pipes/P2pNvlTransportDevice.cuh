@@ -8,122 +8,13 @@
 #include <cstdint>
 #include <vector>
 
+#include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/CopyUtils.cuh"
+#include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/P2pTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
-
-// =============================================================================
-// Atomic operations with system-wide visibility for NVLink cross-GPU signaling
-// =============================================================================
-//
-// WHY .global QUALIFIER?
-// ======================
-// Without explicit .global, the compiler uses generic addressing which adds:
-//   1. Runtime address space detection (global vs shared vs local)
-//   2. Extra instructions for address translation
-//   3. Potential predicated branches in generated SASS
-//
-// With explicit .global:
-//   1. Compiler knows memory space at compile time
-//   2. Direct addressing with no runtime checks
-//   3. Simpler, faster instruction encoding (~2% throughput improvement)
-//
-// WHY .sys SCOPE?
-// ===============
-// The .sys (system) scope is required for cross-GPU NVLink communication:
-//   - .cta  = visible only within thread block
-//   - .gpu  = visible only within same GPU
-//   - .sys  = visible across all GPUs + CPU
-//
-// For P2P NVLink, sender writes to memory that receiver reads via NVLink peer
-// mapping. The .sys scope ensures the NVLink coherence protocol propagates
-// writes across GPU boundaries.
-
-__device__ __forceinline__ void store_int_release(int* addr, int value) {
-  asm volatile("st.release.sys.global.s32 [%0], %1;"
-               :
-               : "l"(addr), "r"(value)
-               : "memory");
-}
-
-__device__ __forceinline__ int load_int_acquire(int* addr) {
-  int value;
-  asm volatile("ld.acquire.sys.global.s32 %0, [%1];"
-               : "=r"(value)
-               : "l"(addr)
-               : "memory");
-  return value;
-}
-
-/**
- * ChunkState - 128-byte aligned synchronization primitive for P2P transfers
- *
- * Provides thread-safe state signaling between GPUs using acquire-release
- * semantics. Each ChunkState represents the synchronization state for one
- * chunk of data in the staging buffer.
- *
- * MEMORY LAYOUT:
- * - First 4 bytes: actual state value (int)
- * - Remaining 124 bytes: padding to prevent false sharing
- * - Total size: 128 bytes (cache line aligned)
- *
- * STATE VALUES:
- * - -1: Chunk is free/ready for sender to write
- * - stepId (0, 1, 2, ...): Chunk contains data from step stepId, ready for
- * receiver
- *
- * THREAD SAFETY:
- * All operations use acquire-release memory ordering to ensure:
- * - Sender's data writes are visible to receiver before state update
- * - Receiver's data reads complete before state reset
- */
-template <typename T>
-struct alignas(128) ChunkState {
-  T value_;
-  char padding_[128 - sizeof(T)]{};
-
-  __host__ __device__ ChunkState(T v = static_cast<T>(-1)) : value_(v) {}
-
-  /**
-   * load - Read chunk state with acquire semantics
-   *
-   * Atomically loads the state value with acquire memory ordering.
-   * Ensures all memory writes by the peer that happened before their
-   * store() are visible to this GPU after load() returns.
-   *
-   * @return Current state value
-   */
-  __device__ __forceinline__ T load() const {
-    static_assert(
-        sizeof(T) == sizeof(int), "Only 32-bit types supported for atomics");
-    return static_cast<T>(
-        load_int_acquire(reinterpret_cast<int*>(const_cast<T*>(&value_))));
-  }
-
-  /**
-   * store - Write chunk state with release semantics
-   *
-   * Atomically stores the state value with release memory ordering.
-   * Ensures all memory writes by this GPU before store() are visible
-   * to the peer after they read the new state with load().
-   *
-   * @param v New state value to write
-   */
-  __device__ __forceinline__ void store(T v) {
-    static_assert(
-        sizeof(T) == sizeof(int), "Only 32-bit types supported for atomics");
-    store_int_release(reinterpret_cast<int*>(&value_), static_cast<int>(v));
-  }
-};
-
-static_assert(
-    sizeof(ChunkState<int>) == 128,
-    "ChunkState<int> must be exactly 128 bytes");
-static_assert(
-    alignof(ChunkState<int>) == 128,
-    "ChunkState<int> must be 128-byte aligned");
 
 /**
  * LocalState - Pointers to local GPU's buffers
@@ -133,10 +24,11 @@ static_assert(
  * - Receiver reads from LocalState (own local buffers)
  *
  * This means LocalState buffers are the DESTINATION for incoming data.
+ * Uses DeviceSpan for safe, bounds-checked access to chunk states.
  */
 struct LocalState {
   char* dataBuffer;
-  ChunkState<int>* stateBuffer;
+  DeviceSpan<ChunkState> stateBuffer;
 };
 
 /**
@@ -147,10 +39,11 @@ struct LocalState {
  * - This allows receiver to read from local memory (faster)
  *
  * These pointers are obtained via IPC and point to peer's LocalState buffers.
+ * Uses DeviceSpan for safe, bounds-checked access to chunk states.
  */
 struct RemoteState {
   char* dataBuffer;
-  ChunkState<int>* stateBuffer;
+  DeviceSpan<ChunkState> stateBuffer;
 };
 
 /**
@@ -288,29 +181,31 @@ struct P2pNvlTransportOptions {
  * - Sender accesses via NVLink (remote)
  * - Receiver accesses locally (fast)
  *
- *              ┌─────────────────────────────────────┐
- *              │                                     │
- *              ▼                                     │
- *        ┌───────────┐                               │
- * init → │ state=-1  │ ◀─── recv() writes -1 ───────┘
- *        │  (FREE)   │      (local write)
- *        └─────┬─────┘
- *              │
- *              │ send() polls for -1, copies data, writes stepId
- *              │ (all via NVLink)
- *              ▼
- *        ┌───────────┐
- *        │state=stepId│
- *        │  (READY)  │
- *        └─────┬─────┘
- *              │
- *              │ recv() polls for stepId, copies data, writes -1
- *              │ (all local)
- *              ▼
- *        ┌───────────┐
- *        │ state=-1  │ ───▶ Ready for next step
- *        │  (FREE)   │
- *        └───────────┘
+ *        ┌───────────────┐
+ * init → │ READY_TO_SEND │
+ *        │     (-1)      │
+ *        └───────┬───────┘
+ *                │
+ *                │ send() waits for READY_TO_SEND, copies data,
+ *                │ signals readyToRecv(stepId)
+ *                ▼
+ *        ┌───────────────┐
+ *    ┌─▶ │ READY_TO_RECV │
+ *    │   │   (stepId)    │
+ *    │   └───────┬───────┘
+ *    │           │
+ *    │           │ recv() waits for READY_TO_RECV, copies data,
+ *    │           │ signals readyToSend()
+ *    │           ▼
+ *    │   ┌───────────────┐
+ *    │   │ READY_TO_SEND │
+ *    │   │     (-1)      │
+ *    │   └───────┬───────┘
+ *    │           │
+ *    │           │ send() waits for READY_TO_SEND, copies data,
+ *    │           │ signals readyToRecv(stepId)
+ *    │           │
+ *    └───────────┘
  *
  * CHUNK DISTRIBUTION
  * ==================
@@ -421,7 +316,8 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
     // Benefits: Receiver reads from local memory (faster read, no NVLink hop)
     // Trade-off: Sender's copy goes over NVLink
     char* sendBuffer = remoteState_.dataBuffer;
-    ChunkState<int>* sendStates = remoteState_.stateBuffer;
+    // Extract raw pointer to avoid aliasing issues (see DeviceSpan.cuh).
+    ChunkState* const sendStates = remoteState_.stateBuffer.data();
 
     const std::size_t totalSteps =
         (nbytes + options_.dataBufferSize - 1) / options_.dataBufferSize;
@@ -450,10 +346,9 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
             ? kChunkSize
             : stepBytes - chunkOffset;
 
-        ChunkState<int>& chunkState = sendStates[stateOffset + chunkIdx];
+        ChunkState& chunkState = sendStates[stateOffset + chunkIdx];
 
-        while (chunkState.load() != -1) {
-        }
+        chunkState.waitReadyToSend(group);
 
         copy_chunk_vectorized<uint4>(
             sendBuffer,
@@ -463,11 +358,7 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
             stepOffset + chunkOffset,
             group);
 
-        group.sync();
-
-        if (group.is_leader()) {
-          chunkState.store(static_cast<int>(stepId));
-        }
+        chunkState.readyToRecv(group, stepId);
       });
     }
 #endif
@@ -521,7 +412,8 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
     // Receiver reads from LOCAL buffer (sender wrote here via NVLink).
     // Benefits: Local memory read is faster than reading over NVLink
     char* recvBuffer = localState_.dataBuffer;
-    ChunkState<int>* recvStates = localState_.stateBuffer;
+    // Extract raw pointer to avoid aliasing issues (see DeviceSpan.cuh).
+    ChunkState* const recvStates = localState_.stateBuffer.data();
 
     const std::size_t totalSteps =
         (nbytes + options_.dataBufferSize - 1) / options_.dataBufferSize;
@@ -550,10 +442,9 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
             ? kChunkSize
             : stepBytes - chunkOffset;
 
-        ChunkState<int>& chunkState = recvStates[stateOffset + chunkIdx];
+        ChunkState& chunkState = recvStates[stateOffset + chunkIdx];
 
-        while (chunkState.load() != static_cast<int>(stepId)) {
-        }
+        chunkState.waitReadyToRecv(group, stepId);
 
         copy_chunk_vectorized<uint4>(
             dst,
@@ -563,11 +454,7 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
             dataBufferOffset + chunkOffset,
             group);
 
-        group.sync();
-
-        if (group.is_leader()) {
-          chunkState.store(-1);
-        }
+        chunkState.readyToSend(group);
       });
     }
 #endif

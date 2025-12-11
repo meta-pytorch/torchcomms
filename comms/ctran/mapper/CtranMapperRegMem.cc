@@ -519,7 +519,8 @@ commResult_t CtranMapperRegCache::regRange(
     const struct CommLogData& logMetaData,
     const std::vector<bool>& backends,
     bool& didRegister,
-    CtranMapperRegElem** regHdl) {
+    CtranMapperRegElem** regHdl,
+    bool ncclManaged) {
   auto dur = CtranMapperTimer();
   SetCudaDevRAII setCudaDev(cudaDev);
   auto timerBegin = std::chrono::steady_clock::now();
@@ -587,7 +588,7 @@ commResult_t CtranMapperRegCache::regRange(
       ptrToReg = const_cast<void*>(segments.at(0)->range.buf);
       numSegmentsToReg = segments.size();
       auto newRegElem = std::make_unique<CtranMapperRegElem>(
-          ptrToReg, lenToReg, cudaDev, segments);
+          ptrToReg, lenToReg, cudaDev, segments, ncclManaged);
 
       // Backend registration
       FB_COMMCHECK(newRegElem->doRegister(backends));
@@ -856,7 +857,11 @@ commResult_t CtranMapperRegElem::doRegister(const std::vector<bool>& backends) {
     // TODO: add support for managed and host pinned memory
     FB_CHECKABORT(nvlRegElem == nullptr, "nvlRegElem is already registered");
     try {
-      FB_COMMCHECK(CtranNvl::regMem(buf, len, cudaDev_, &nvlRegElem));
+      // Note: shouldSupportCudaMalloc is safely enabled by ncclManaged.
+      // The callsite will guarantee that all ranks will perform safe-release of
+      // the buffer, avoiding any premature deallocation issues.
+      FB_COMMCHECK(
+          CtranNvl::regMem(buf, len, cudaDev_, &nvlRegElem, ncclManaged_));
     } catch (const std::bad_alloc& e) {
       CLOGF(
           WARN,

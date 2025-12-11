@@ -6,7 +6,11 @@
 #include <cuda_runtime.h>
 #include <cstddef>
 
+#include "comms/pipes/P2pNvlTransportDevice.cuh"
+
 namespace comms::pipes::test {
+
+using comms::pipes::P2pNvlTransportDevice;
 
 // Enum for specifying the thread group type
 enum class GroupType {

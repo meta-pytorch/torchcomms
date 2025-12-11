@@ -65,10 +65,10 @@ CtranIbSingleton& CtranIbSingleton::getInstance() {
 
 CtranIbSingleton::CtranIbSingleton() {
   auto ibvInitResult = ibverbx::ibvInit();
-  FOLLY_EXPECTED_CHECKTHROW(ibvInitResult);
+  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(ibvInitResult);
   auto maybeDeviceList = ibverbx::IbvDevice::ibvGetDeviceList(
       NCCL_IB_HCA, NCCL_IB_HCA_PREFIX, CTRAN_IB_ANY_PORT, NCCL_IB_DATA_DIRECT);
-  FOLLY_EXPECTED_CHECKTHROW(maybeDeviceList);
+  FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybeDeviceList);
   ibvDevices = std::move(*maybeDeviceList);
 
   if (ibvDevices.size() < NCCL_CTRAN_IB_DEVICES_PER_RANK) {
@@ -82,7 +82,7 @@ CtranIbSingleton::CtranIbSingleton() {
 
   for (auto i = 0; i < this->ibvDevices.size(); i++) {
     auto maybePd = this->ibvDevices[i].allocPd();
-    FOLLY_EXPECTED_CHECKTHROW(maybePd);
+    FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(maybePd);
     this->ibvPds_.push_back(std::move(*maybePd));
   }
 
@@ -397,7 +397,8 @@ void CtranIb::init(
   this->bootstrapMode = bootstrapMode;
   this->devices.resize(NCCL_CTRAN_IB_DEVICES_PER_RANK);
   this->cqs.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
-  FB_COMMCHECKTHROW(this->setPgToTrafficClassMap());
+  FB_COMMCHECKTHROW_EX(
+      this->setPgToTrafficClassMap(), this->rank, this->commHash);
 
   CtranIbSingleton& s = CtranIbSingleton::getInstance();
 
@@ -463,7 +464,8 @@ void CtranIb::init(
 
     ibverbx::ibv_device_attr devAttr;
     auto maybeDeviceAttr = devices[device].ibvDevice->queryDevice();
-    FOLLY_EXPECTED_CHECKTHROW(maybeDeviceAttr);
+    FOLLY_EXPECTED_CHECKTHROW_EX(
+        maybeDeviceAttr, this->rank, this->commHash, this->commDesc);
     devAttr = std::move(*maybeDeviceAttr);
 
     // Found available port for the given device
@@ -538,7 +540,8 @@ void CtranIb::init(
     // access it yet.
     auto maybeCq =
         devices[device].ibvDevice->createCq(maxCqe, nullptr, nullptr, 0);
-    FOLLY_EXPECTED_CHECKTHROW(maybeCq);
+    FOLLY_EXPECTED_CHECKTHROW_EX(
+        maybeCq, this->rank, this->commHash, this->commDesc);
     cqs.emplace_back(std::move(*maybeCq));
     devices[device].ibvCq = &cqs[device];
     // FIXME: use initRemoteTransStates() to create cq
@@ -663,7 +666,10 @@ void CtranIb::bootstrapStart(
         sizeof(allListenSocketAddrs.at(0)),
         comm->statex_->rank(),
         comm->statex_->nRanks());
-    FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+    FB_COMMCHECKTHROW_EX(
+        static_cast<commResult_t>(std::move(resFuture).get()),
+        this->rank,
+        this->commHash);
   }
 
   this->listenThread = std::thread{bootstrapAccept, this};
@@ -1059,7 +1065,8 @@ std::string CtranIb::getLocalVcIdentifier(const int peerRank) {
   {
     const std::lock_guard<std::mutex> lock(vc->mutex);
     localBusCard.resize(vc->getBusCardSize());
-    FB_COMMCHECKTHROW(vc->getLocalBusCard(localBusCard.data()));
+    FB_COMMCHECKTHROW_EX(
+        vc->getLocalBusCard(localBusCard.data()), this->rank, this->commHash);
   }
   return localBusCard;
 }
@@ -1071,7 +1078,10 @@ commResult_t CtranIb::connectVcDirect(
   auto vc = createVc(peerRank);
   {
     const std::lock_guard<std::mutex> lock(vc->mutex);
-    FB_COMMCHECKTHROW(vc->setupVc((void*)remoteVcIdentifier.data()));
+    FB_COMMCHECKTHROW_EX(
+        vc->setupVc((void*)remoteVcIdentifier.data()),
+        this->rank,
+        this->commHash);
   }
 
   uint32_t controlQp = vc->getControlQpNum();
@@ -1081,7 +1091,7 @@ commResult_t CtranIb::connectVcDirect(
 
   // Till now VC is not yet exposed to local rank. Local rank can use the VC
   // once updated the vcStateMaps.
-  FB_COMMCHECKTHROW(updateVcState(vc, peerRank));
+  FB_COMMCHECKTHROW_EX(updateVcState(vc, peerRank), this->rank, this->commHash);
 
   CLOGF_SUBSYS(
       INFO,

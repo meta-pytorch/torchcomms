@@ -26,6 +26,9 @@
       comm,                                  \
       std::move(timestamp));
 
+// This variable defaults to NCCL_ALLTOALL_ALGO::ctran, but if more algos are
+// added, this implementation should be updated to support them instead of
+// defaulting to ctran
 static const auto myAlgo = NCCL_ALLTOALL_ALGO::ctran;
 
 static commResult_t opIbImpl(
@@ -94,10 +97,11 @@ commResult_t ctranAllToAll(
     const size_t count,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream) {
+    cudaStream_t stream,
+    enum NCCL_ALLTOALL_ALGO algo) {
   auto opCount = comm->ctran_->getOpCount();
   CTRAN_COLL_INFO(
-      allToAllAlgoName(myAlgo).c_str(),
+      allToAllAlgoName(algo).c_str(),
       sendbuff,
       recvbuff,
       count,
@@ -118,7 +122,7 @@ commResult_t ctranAllToAll(
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::ALLTOALL,
       stream,
-      allToAllAlgoName(myAlgo),
+      allToAllAlgoName(algo),
       opCount);
   FB_COMMCHECK(
       ctran::alltoall::setupKernelConfig(
@@ -146,7 +150,14 @@ commResult_t ctranAllToAll(
 bool ctranAllToAllSupport(
     const size_t count,
     commDataType_t datatype,
-    CtranComm* comm) {
+    CtranComm* comm,
+    enum NCCL_ALLTOALL_ALGO algo) {
+  // Currently there is only one ctran algo for alltoall, but we pass algo as a
+  // parameter for future extension and consistency across collectives.
+  // Currently just return false if algo is set to orig
+  if (algo == NCCL_ALLTOALL_ALGO::orig) {
+    return false;
+  }
   bool ctranSupport = false;
   const auto statex = comm->statex_.get();
   if (ctranInitialized(comm)) {

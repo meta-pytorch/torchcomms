@@ -130,8 +130,13 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
     auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
         NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
     if (maybeAddr.hasError()) {
-      CLOGF(WARN, "CTRAN-SOCKET: No socket interfaces found");
-      throw std::runtime_error("CTRAN-SOCKET : No socket interfaces found");
+      std::string msg = fmt::format(
+          "CTRAN-SOCKET: No socket interfaces found (NCCL_SOCKET_IFNAME={}, NCCL_SOCKET_IPADDR_PREFIX={})",
+          NCCL_SOCKET_IFNAME,
+          NCCL_SOCKET_IPADDR_PREFIX);
+      CLOGF(ERR, msg);
+      throw ctran::utils::Exception(
+          msg, commSystemError, rank_, commHash_, commDesc_);
     } else {
       CLOGF_SUBSYS(
           INFO,

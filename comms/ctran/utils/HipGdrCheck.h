@@ -8,7 +8,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace {
-constexpr int MAX_STR_LEN = 255;
+constexpr int MAX_FILE_LEN = 255;
 
 // TODO: We follow the instructions from AMD
 // (https://ontrack.amd.com/browse/FBA-621). Revisit this function and file
@@ -16,7 +16,7 @@ constexpr int MAX_STR_LEN = 255;
 //
 // Adopted from
 // https://github.com/ROCm/rccl/blob/275fdd43c104de684b2db5c0147e560bbde0a2e1/src/graph/xml.cc#L446
-void ncclTopoGetStrFromSys(
+void ncclTopoGetStrFromSysHelper(
     const char* path,
     const char* fileName,
     char* strValue) {
@@ -25,8 +25,8 @@ void ncclTopoGetStrFromSys(
   int offset = 0;
   FILE* file;
   if ((file = fopen(filePath, "r")) != NULL) {
-    while (feof(file) == 0 && ferror(file) == 0 && offset < MAX_STR_LEN) {
-      int len = fread(strValue + offset, 1, MAX_STR_LEN - offset, file);
+    while (feof(file) == 0 && ferror(file) == 0 && offset < MAX_FILE_LEN) {
+      int len = fread(strValue + offset, 1, MAX_FILE_LEN - offset, file);
       offset += len;
     }
     fclose(file);
@@ -73,12 +73,12 @@ inline bool getGpuDirectRDMASupported() {
     ++i;
   }
 
-  char strValue[MAX_STR_LEN];
-  ncclTopoGetStrFromSys(
+  char strValue[MAX_FILE_LEN];
+  ncclTopoGetStrFromSysHelper(
       "/sys/devices/virtual/dmi/id", "bios_version", strValue);
   if (strncmp("Hyper-V UEFI Release", strValue, 20) == 0) {
     int roMode = NCCL_IB_PCI_RELAXED_ORDERING;
-    ncclTopoGetStrFromSys("/proc/sys/kernel", "numa_balancing", strValue);
+    ncclTopoGetStrFromSysHelper("/proc/sys/kernel", "numa_balancing", strValue);
     if (strcmp(strValue, "1") == 0 && roMode == 0)
       ncclIbGdrModuleLoaded = 0;
   }

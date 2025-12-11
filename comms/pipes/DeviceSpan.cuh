@@ -1,7 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+// @lint-ignore-every CLANGTIDY facebook-modularize-issue-check
+
 #pragma once
 
+#include <cassert>
 #include <cstdint>
 
 namespace comms::pipes {
@@ -129,8 +132,8 @@ class DeviceSpan {
   using element_type = T;
   using value_type = typename std::remove_cv<T>::type;
   using size_type = uint32_t;
-  using pointer = T*;
-  using const_pointer = const T*;
+  using pointer = T* const;
+  using const_pointer = T const* const;
   using reference = T&;
   using const_reference = const T&;
 
@@ -218,8 +221,28 @@ class DeviceSpan {
 
  private:
   pointer data_;
-  size_type size_;
+  size_type const size_;
 };
+
+/**
+ * PERFORMANCE NOTE: Lambda Capture and Aliasing
+ * =============================================
+ *
+ * When using DeviceSpan inside a lambda that writes to its elements, extract
+ * the raw pointer BEFORE the lambda to avoid aliasing issues:
+ *
+ *   // SLOW - compiler reloads data_ on each access:
+ *   DeviceSpan<T> span = ...;
+ *   lambda([&] { span[i].modify(); });
+ *
+ *   // FAST - pointer is a local variable, no aliasing concerns:
+ *   T* ptr = span.data();
+ *   lambda([&] { ptr[i].modify(); });
+ *
+ * The compiler cannot prove that writes to elements don't affect the span's
+ * data_ member, causing repeated loads. Extracting to a local pointer variable
+ * solves this because local variables are provably not aliased.
+ */
 
 // Convenience factory function
 template <typename T>

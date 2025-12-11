@@ -9,9 +9,15 @@ import torch.distributed as dist
 
 from torch.distributed.device_mesh import _mesh_resources
 
-from torch.distributed.distributed_c10d import GroupName
-
 from torchcomms._comms import _BackendWrapper, _get_store, new_comm, TorchComm
+
+try:
+    from torch.distributed.distributed_c10d import GroupName
+except ImportError:
+    print("GroupName is not available.")
+    # Fallback: GroupName is effectively just str when not available from torch
+    # We use cast to satisfy type checkers while keeping runtime behavior simple
+    GroupName = str  # type: ignore[misc]
 
 
 def _create_torchcomm_process_group(

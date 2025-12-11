@@ -4,7 +4,10 @@
 #include <cuda_runtime.h>
 #include <memory>
 
+#include <folly/init/Init.h>
+
 #include "comms/ctran/backends/ib/CtranIb.h"
+#include "comms/ctran/utils/Exception.h"
 
 using namespace ctran;
 
@@ -101,7 +104,8 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
   void* senderRegHdl = nullptr;
   if (CtranIb::regMem(sendBuffer, bufferSize, cudaDev0, &senderRegHdl) !=
       commSuccess) {
-    throw std::runtime_error("regMem failed for sendBuffer");
+    throw ctran::utils::Exception(
+        "regMem failed for sendBuffer", commSystemError);
   }
 
   // Allocate memory on the receiver side
@@ -111,15 +115,17 @@ static BenchmarkContext setupBenchmarkContext(size_t bufferSize) {
   void* receiverRegHdl = nullptr;
   if (CtranIb::regMem(recvBuffer, bufferSize, cudaDev1, &receiverRegHdl) !=
       commSuccess) {
-    throw std::runtime_error("regMem failed for recvBuffer");
+    throw ctran::utils::Exception(
+        "regMem failed for recvBuffer", commSystemError);
   }
 
   // Check connection
   if (senderIb->getVc(kDummyRank) == nullptr) {
-    throw std::runtime_error("senderIb not connected");
+    throw ctran::utils::Exception("senderIb not connected", commInternalError);
   }
   if (receiverIb->getVc(kDummyRank) == nullptr) {
-    throw std::runtime_error("receiverIb not connected");
+    throw ctran::utils::Exception(
+        "receiverIb not connected", commInternalError);
   }
 
   auto ibSendKey = CtranIb::getRemoteAccessKey(senderRegHdl);
@@ -170,18 +176,18 @@ benchmarkIput(benchmark::State& state, CtranIbConfig config, bool withNotify) {
             &ibReq, /* req */
             false /* fast */
             ) != commSuccess) {
-      throw std::runtime_error("iput failed");
+      throw ctran::utils::Exception("iput failed", commSystemError);
     }
 
     do {
       if (ctx.senderIb->progress() != commSuccess) {
-        throw std::runtime_error("progress failed");
+        throw ctran::utils::Exception("progress failed", commSystemError);
       }
     } while (!ibReq.isComplete());
 
     if (withNotify) {
       if (ctx.receiverIb->waitNotify(kDummyRank, 1) != commSuccess) {
-        throw std::runtime_error("waitNotify failed");
+        throw ctran::utils::Exception("waitNotify failed", commSystemError);
       }
     }
   }
@@ -209,12 +215,12 @@ benchmarkIget(benchmark::State& state, CtranIbConfig config, bool withNotify) {
             &ibReq, /* req */
             false /* fast */
             ) != commSuccess) {
-      throw std::runtime_error("iget failed");
+      throw ctran::utils::Exception("iget failed", commSystemError);
     }
 
     do {
       if (ctx.receiverIb->progress() != commSuccess) {
-        throw std::runtime_error("progress failed");
+        throw ctran::utils::Exception("progress failed", commSystemError);
       }
     } while (!ibReq.isComplete());
   }
@@ -296,6 +302,8 @@ static auto* registered_benchmark_iget =
 
 // Custom main function to handle initialization
 int main(int argc, char** argv) {
+  folly::Init init(&argc, &argv);
+
   ncclCvarInit();
   ctran::utils::commCudaLibraryInit();
 

@@ -732,6 +732,10 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta//lpcoll/low_precision_utility.h
   comms/rcclx/develop/meta//lpcoll/p2p_allgather.cc
   comms/rcclx/develop/meta//lpcoll/p2p_allgather.h
+  comms/rcclx/develop/meta/ctran/MetaFactory.cc
+  comms/rcclx/develop/meta/ctran/MetaFactory.h
+  comms/rcclx/develop/meta/ctran/AllToAllvDynamic.cc
+  comms/rcclx/develop/meta/ctran/Hints.cc
 )
 
 set(CTRAN_FILES

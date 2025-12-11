@@ -102,7 +102,8 @@ commResult_t ctranAllReduce(
 bool ctranAllToAllSupport(
     const size_t count,
     commDataType_t datatype,
-    CtranComm* comm);
+    CtranComm* comm,
+    enum NCCL_ALLTOALL_ALGO algo);
 
 commResult_t ctranAllToAll(
     const void* sendbuff,
@@ -110,7 +111,8 @@ commResult_t ctranAllToAll(
     const size_t count,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_ALLTOALL_ALGO algo);
 
 bool ctranAllToAllvSupport(CtranComm* comm);
 
