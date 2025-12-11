@@ -7,6 +7,7 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/tests/CtranUtUtils.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/CudaBenchBase.h"
 #include "comms/testinfra/TestUtils.h"
 

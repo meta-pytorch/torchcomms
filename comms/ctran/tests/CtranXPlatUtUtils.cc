@@ -1,8 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include <folly/logging/xlog.h>
-#include "common/fbwhoami/FbWhoAmI.h"
-#include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/ctran/utils/Utils.h"
