@@ -4,7 +4,7 @@
 #include <folly/logging/xlog.h>
 #include <nccl.h>
 
-#include "comms/pipes/P2pNvlTransport.h"
+#include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/benchmarks/BenchmarkKernel.cuh"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
@@ -688,18 +688,18 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
 
   for (const auto& config : configs) {
     // Create P2P transport for this configuration
-    comms::pipes::P2pNvlTransportConfig p2pConfig{
+    comms::pipes::MultiPeerNvlTransportConfig p2pConfig{
         .dataBufferSize = config.stagedBufferSize,
         .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    comms::pipes::P2pNvlTransport transport(
+    comms::pipes::MultiPeerNvlTransport transport(
         globalRank, numRanks, bootstrap, p2pConfig);
     transport.exchange();
 
-    auto p2p = transport.getTransportDevice(peerRank);
+    auto p2p = transport.getP2pTransportDevice(peerRank);
 
     BenchmarkResult result;
     result.testName = config.name;
@@ -799,18 +799,18 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
 
   for (const auto& config : configs) {
     // Create P2P transport for this configuration
-    comms::pipes::P2pNvlTransportConfig p2pConfig{
+    comms::pipes::MultiPeerNvlTransportConfig p2pConfig{
         .dataBufferSize = config.stagedBufferSize,
         .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    comms::pipes::P2pNvlTransport transport(
+    comms::pipes::MultiPeerNvlTransport transport(
         globalRank, numRanks, bootstrap, p2pConfig);
     transport.exchange();
 
-    auto p2p = transport.getTransportDevice(peerRank);
+    auto p2p = transport.getP2pTransportDevice(peerRank);
 
     BenchmarkResult result;
     result.testName = config.name;

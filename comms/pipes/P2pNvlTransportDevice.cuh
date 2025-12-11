@@ -226,7 +226,7 @@ struct P2pNvlTransportOptions {
  *   // Host setup (once)
  *   P2pNvlTransport transport(myRank, nRanks, mpiBootstrap, config);
  *   transport.exchange();  // Exchange IPC handles
- *   auto device = transport.getTransportDevice(peerRank);
+ *   auto device = transport.getP2pTransportDevice(peerRank);
  *
  *   // Kernel (sender on GPU A)
  *   __global__ void sendKernel(P2pNvlTransportDevice p2p, void* src, size_t n)

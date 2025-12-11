@@ -7,7 +7,7 @@
 
 #include <string>
 
-#include "comms/pipes/P2pNvlTransport.h"
+#include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/tests/P2pNvlTransportTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
@@ -59,18 +59,18 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   int peerRank = (globalRank == 0) ? 1 : 0;
 
   const size_t numElements = 256;
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = sizeof(int) * numElements,
       .chunkSize = 256, // 256 bytes
       .pipelineDepth = 4,
   };
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-  P2pNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
   XLOGF(INFO, "Rank {} created transport and exchanged IPC", globalRank);
 
-  auto p2p = transport.getTransportDevice(peerRank);
+  auto p2p = transport.getP2pTransportDevice(peerRank);
 
   auto localAddr =
       static_cast<int*>(static_cast<void*>(p2p.getLocalState().dataBuffer));
@@ -201,13 +201,13 @@ class TransportTestHelper {
       int globalRank,
       int numRanks,
       int localRank,
-      const P2pNvlTransportConfig& config)
+      const MultiPeerNvlTransportConfig& config)
       : globalRank_(globalRank),
         numRanks_(numRanks),
         peerRank_((globalRank == 0) ? 1 : 0),
         bootstrap_(std::make_shared<meta::comms::MpiBootstrap>()),
         transport_(
-            std::make_unique<P2pNvlTransport>(
+            std::make_unique<MultiPeerNvlTransport>(
                 globalRank,
                 numRanks,
                 bootstrap_,
@@ -217,7 +217,7 @@ class TransportTestHelper {
   }
 
   P2pNvlTransportDevice getDevice() {
-    return transport_->getTransportDevice(peerRank_);
+    return transport_->getP2pTransportDevice(peerRank_);
   }
 
   int peerRank() const {
@@ -233,7 +233,7 @@ class TransportTestHelper {
   int numRanks_;
   int peerRank_;
   std::shared_ptr<meta::comms::MpiBootstrap> bootstrap_;
-  std::unique_ptr<P2pNvlTransport> transport_;
+  std::unique_ptr<MultiPeerNvlTransport> transport_;
 };
 
 // =============================================================================
@@ -298,7 +298,7 @@ TEST_P(TransferSizeTestFixture, SendRecv) {
       params.dataBufferSize,
       params.chunkSize);
 
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = params.dataBufferSize,
       .chunkSize = params.chunkSize,
       .pipelineDepth = 4,
@@ -409,7 +409,7 @@ TEST_P(GroupTypeTestFixture, SendRecv) {
 
   const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
   const size_t nbytes = 4 * 1024 * 1024; // 4MB total transfer
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = 1024,
       .pipelineDepth = 4,
@@ -478,7 +478,7 @@ TEST_F(P2pNvlTransportTestFixture, BidirectionalSendRecv) {
 
   const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
   const size_t nbytes = 4 * 1024 * 1024; // 4MB total transfer
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = 1024,
       .pipelineDepth = 4,
@@ -568,7 +568,7 @@ TEST_F(P2pNvlTransportTestFixture, SendRecvStress) {
 
   const size_t dataBufferSize = 512 * 1024; // 512KB staging buffer
   const size_t nbytes = 2 * 1024 * 1024; // 2MB total transfer
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = 512,
       .pipelineDepth = 4,
@@ -603,7 +603,7 @@ TEST_F(P2pNvlTransportTestFixture, SendRecvZeroBytes) {
   }
 
   const size_t dataBufferSize = 4096;
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = 256,
       .pipelineDepth = 4,
@@ -676,7 +676,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiSendInKernel) {
   const int numSends = 4;
   const size_t totalBytes = nbytesPerSend * numSends;
 
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = 1024,
       .pipelineDepth = 4,
@@ -756,7 +756,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiRecvInKernel) {
   const int numRecvs = 8;
   const size_t totalBytes = nbytesPerRecv * numRecvs;
 
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = 512,
       .pipelineDepth = 4,
@@ -832,7 +832,7 @@ TEST_F(P2pNvlTransportTestFixture, SimultaneousSendRecvInKernel) {
   const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
   const size_t nbytes = 2 * 1024 * 1024; // 2MB transfer each direction
 
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = 1024,
       .pipelineDepth = 4,
@@ -934,7 +934,7 @@ TEST_P(WeightedPartitionTestFixture, SendRecv) {
   const int blockSize = 128;
 
   const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = 1024,
       .pipelineDepth = 4,
@@ -1075,7 +1075,7 @@ TEST_P(PipelineDepthTestFixture, SendRecv) {
       params.dataBufferSize,
       params.chunkSize);
 
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = params.dataBufferSize,
       .chunkSize = params.chunkSize,
       .pipelineDepth = params.pipelineDepth,
@@ -1197,7 +1197,7 @@ TEST_P(PipelineSaturationTestFixture, SendRecv) {
       params.totalSteps,
       nbytes);
 
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = params.chunkSize,
       .pipelineDepth = params.pipelineDepth,
@@ -1300,7 +1300,7 @@ TEST_P(ChunkCountEdgeCaseTestFixture, SendRecv) {
       chunksPerStep,
       numWarps);
 
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = params.dataBufferSize,
       .chunkSize = params.chunkSize,
       .pipelineDepth = 4,
@@ -1433,7 +1433,7 @@ TEST_P(LargeTransferTestFixture, SendRecv) {
       totalSteps,
       chunksPerStep);
 
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = params.dataBufferSize,
       .chunkSize = params.chunkSize,
       .pipelineDepth = params.pipelineDepth,
@@ -1541,7 +1541,7 @@ TEST_P(AsymmetricGroupTestFixture, SendRecv) {
 
   const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
   const size_t nbytes = 4 * 1024 * 1024; // 4MB total transfer
-  P2pNvlTransportConfig config{
+  MultiPeerNvlTransportConfig config{
       .dataBufferSize = dataBufferSize,
       .chunkSize = 1024,
       .pipelineDepth = 4,
