@@ -6,7 +6,6 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 #include <mpi.h>
-#include "caffe2/torch/csrc/distributed/c10d/TCPStore.hpp"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/utils/Checks.h"
@@ -32,74 +31,6 @@ class TestCtranCommRAII {
 };
 
 std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId = 0);
-
-static std::atomic<int> testCount = 0;
-inline void incrTestCount() {
-  testCount.fetch_add(1);
-}
-
-enum class TcpStorePhase { INIT, START, END };
-
-inline std::string getTcpStoreKey(enum TcpStorePhase phase) {
-  auto keyPrefix = std::string("commid_") + std::to_string(testCount);
-  switch (phase) {
-    case TcpStorePhase::INIT:
-      return keyPrefix;
-    case TcpStorePhase::START:
-      return keyPrefix + "_start";
-    case TcpStorePhase::END:
-      return keyPrefix + "_end";
-  }
-}
-
-inline std::unique_ptr<c10d::TCPStore> createTcpStore(bool isServer) {
-  const char* masterAddrStr = getenv("MASTER_ADDR");
-  const char* masterPortStr = getenv("MASTER_PORT");
-  if (!masterAddrStr) {
-    LOG(FATAL) << "MASTER_ADDR env variable is not set";
-  }
-  if (!masterPortStr) {
-    LOG(FATAL) << "MASTER_PORT env variable is not set";
-  }
-
-  incrTestCount();
-  auto key = fmt::format("test_tcpstore_init_{}", testCount);
-
-  const std::string masterAddr(masterAddrStr);
-  c10d::TCPStoreOptions opts;
-  opts.port = std::stoi(masterPortStr);
-  opts.waitWorkers = false;
-  opts.useLibUV = true;
-  opts.isServer = isServer;
-
-  LOG(INFO) << "TCPStore "
-            << (isServer ? "server starting on " : "client connecting to ")
-            << masterAddr << ":" << opts.port << " ..." << " using key " << key;
-
-  if (isServer) {
-    auto server = std::make_unique<c10d::TCPStore>(masterAddr, opts);
-    server->set(key, {1});
-    LOG(INFO) << "TCPStore server started.";
-    return server;
-  }
-
-  // TCPStore Client may start before fresh TCPStore Server has started
-  // We need to retry until we connect to a fresh TCPStore Server
-  while (true) {
-    try {
-      auto server = std::make_unique<c10d::TCPStore>(masterAddr, opts);
-      if (server->check({key})) {
-        LOG(INFO) << "TCPStore client started.";
-        return server;
-      }
-    } catch (...) {
-      LOG(INFO) << "Connected to stale TCPStore Server. "
-                << "Waiting for fresh TCPStore Server to start.";
-      std::this_thread::sleep_for(
-          std::chrono::milliseconds{100}); // Sleep for 100ms
-    }
-  }
-}
 
 // Helper struct to hold bootstrap that needs to stay alive with the CtranComm
 struct CtranCommWithBootstrap {

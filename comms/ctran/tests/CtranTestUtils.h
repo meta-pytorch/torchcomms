@@ -52,6 +52,8 @@ inline bool checkTcpStoreEnv() {
       masterAddrEnv && masterPortEnv);
 }
 
+std::unique_ptr<c10d::TCPStore> createTcpStore(bool isServer);
+
 // Detect which initialization environment to use
 InitEnvType getInitEnvType();
 
@@ -88,7 +90,6 @@ class CtranDistTestFixture : public ::testing::Test {
   // TCP Store support
   std::unique_ptr<c10d::TCPStore> tcpStore_{nullptr};
   bool isTcpStoreServer() const;
-  std::unique_ptr<c10d::TCPStore> createTcpStore(bool isServer);
   std::vector<std::string>
   exchangeInitUrls(const std::string& selfUrl, int numRanks, int selfRank);
 
