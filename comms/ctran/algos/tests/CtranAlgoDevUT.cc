@@ -12,7 +12,8 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/tests/CtranAlgoDevTestUtils.h"
 #include "comms/ctran/algos/tests/CtranAlgoDevUTKernels.cuh"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/testinfra/tests_common.cuh"
 
 class CtranAlgoDevTest : public ::testing::Test {
  public:

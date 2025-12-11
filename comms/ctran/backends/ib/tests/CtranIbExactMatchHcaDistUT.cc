@@ -7,17 +7,18 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran::ibvwrap;
 
-class CtranIbHcaTest : public CtranDistTest {
+class CtranIbHcaTest : public ctran::CtranDistTestFixture {
  public:
   CtranIbHcaTest() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    CtranDistTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
@@ -91,14 +92,13 @@ TEST_F(CtranIbHcaTest, IbHcaExactMatchDev) {
       printf("CtranIbTest: IB backend not enabled. Skip test\n");
     }
 
-    commRAII.reset();
-    comm->destroy();
+    commRAII_->ctranComm->destroy();
   }
 }
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

@@ -7,17 +7,24 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran::ibvwrap;
 
-class CtranIbHcaTest : public CtranDistTest {
+class CtranIbHcaTest : public ctran::CtranDistTestFixture {
  public:
   CtranIbHcaTest() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    CtranDistTest::SetUp();
+    ctran::CtranDistTestFixture::SetUp();
+    this->comm_ = makeCtranComm();
+  }
+
+  void TearDown() override {
+    this->comm_.reset();
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void printTestDesc(const std::string& testName, const std::string& testDesc) {
@@ -27,6 +34,9 @@ class CtranIbHcaTest : public CtranDistTest {
                 << testDesc << std::endl;
     }
   }
+
+ protected:
+  std::unique_ptr<CtranComm> comm_{nullptr};
 };
 
 TEST_F(CtranIbHcaTest, IbHcaExcludeDev) {
@@ -52,7 +62,7 @@ TEST_F(CtranIbHcaTest, IbHcaExcludeDev) {
   // devices match the condition
   for (int devId = 0; devId < nDevices; devId++) {
     auto ctrlMgr = std::make_unique<CtranCtrlManager>();
-    CtranComm* comm = this->commRAII->ctranComm.get();
+    CtranComm* comm = this->comm_.get();
 
     EXPECT_EQ(NCCL_IB_HCA_PREFIX, "^");
 
@@ -75,7 +85,7 @@ TEST_F(CtranIbHcaTest, IbHcaExcludeDev) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

@@ -14,13 +14,14 @@
 #include <folly/logging/xlog.h>
 
 #include <gmock/gmock.h>
-#include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
-#include "comms/ctran/ibverbx/Ibverbx.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/bootstrap/Socket.h"
+#include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 using namespace ctran::ibvwrap;
@@ -36,19 +37,21 @@ commResult_t waitIbReq(CtranIbRequest& req, std::unique_ptr<CtranIb>& ctranIb) {
   return commSuccess;
 }
 
-class CtranIbTest : public CtranDistTest {
+class CtranIbTest : public ctran::CtranDistTestFixture {
  public:
   CtranIbTest() = default;
   void SetUp() override {
-    CtranDistTest::SetUp();
-    this->comm = this->commRAII->ctranComm.get();
+    ctran::CtranDistTestFixture::SetUp();
+    this->comm_ = makeCtranComm();
+    this->comm = this->comm_.get();
     this->ctrlMgr = std::make_unique<CtranCtrlManager>();
     this->commIbRegCount = getIbRegCount();
   }
 
   void TearDown() override {
     this->ctrlMgr.reset();
-    CtranDistTest::TearDown();
+    this->comm_.reset();
+    ctran::CtranDistTestFixture::TearDown();
     ASSERT_EQ(getIbRegCount(), 0);
   }
 
@@ -907,6 +910,7 @@ class CtranIbTest : public CtranDistTest {
   }
 
  protected:
+  std::unique_ptr<CtranComm> comm_{nullptr};
   CtranComm* comm{nullptr};
   std::unique_ptr<CtranIb> ctranIb{nullptr};
   std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
@@ -2981,7 +2985,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
