@@ -7,13 +7,12 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 class CtranMapperProfilerTest : public ::testing::Test {
  public:
-  std::unique_ptr<TestCtranCommRAII> dummyCommRAII;
+  std::unique_ptr<ctran::TestCtranCommRAII> dummyCommRAII;
   double expectedDurMS;
   CtranMapperProfilerTest() = default;
 
@@ -100,7 +99,7 @@ TEST_F(CtranMapperProfilerTest, TimestampInsert) {
 TEST_F(CtranMapperProfilerTest, MapperFlushTimerStdout) {
   setenv("NCCL_CTRAN_PROFILING", "stdout", 1);
   ncclCvarInit();
-  dummyCommRAII = createDummyCtranComm();
+  dummyCommRAII = ctran::createDummyCtranComm();
 
   auto dummyAlgo = "Ring";
   auto mapper = std::make_unique<CtranMapper>(dummyCommRAII->ctranComm.get());
@@ -138,7 +137,7 @@ TEST_F(CtranMapperProfilerTest, MapperFlushTimerStdout) {
 TEST_F(CtranMapperProfilerTest, DISABLED_MapperFlushTimerInfo) {
   setenv("NCCL_CTRAN_PROFILING", "info", 1);
   ncclCvarInit();
-  dummyCommRAII = createDummyCtranComm();
+  dummyCommRAII = ctran::createDummyCtranComm();
 
   auto dummyAlgo = "Ring";
   auto mapper = std::make_unique<CtranMapper>(dummyCommRAII->ctranComm.get());
@@ -184,7 +183,7 @@ TEST_F(CtranMapperProfilerTest, MapperFlushTimerKineto) {
   setenv("NCCL_CTRAN_PROFILING", "kineto", 1);
   setenv("NCCL_CTRAN_KINETO_PROFILE_DIR", outputDir, 1);
   ncclCvarInit();
-  dummyCommRAII = createDummyCtranComm();
+  dummyCommRAII = ctran::createDummyCtranComm();
 
   auto dummyAlgo = "Ring";
   auto mapper = std::make_unique<CtranMapper>(dummyCommRAII->ctranComm.get());
@@ -233,11 +232,11 @@ TEST_F(CtranMapperProfilerTest, MapperFlushTimerKineto) {
 
 TEST_F(CtranMapperProfilerTest, regSnapshot) {
   constexpr int numComms = 10;
-  std::vector<std::unique_ptr<TestCtranCommRAII>> comms(numComms);
+  std::vector<std::unique_ptr<ctran::TestCtranCommRAII>> comms(numComms);
   std::vector<std::unique_ptr<CtranMapper>> mappers(numComms);
 
   for (int i = 0; i < numComms; ++i) {
-    comms[i] = createDummyCtranComm();
+    comms[i] = ctran::createDummyCtranComm();
     mappers[i] = std::make_unique<CtranMapper>(comms[i]->ctranComm.get());
     EXPECT_THAT(mappers[i], testing::NotNull());
   }

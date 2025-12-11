@@ -6,19 +6,34 @@
 #include <chrono>
 #include <thread>
 
-#include "comms/ctran/utils/CudaUtils.h"
-#include "comms/ctran/utils/CudaWrap.h"
+#include <folly/logging/xlog.h>
+
 #include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/utils/Utils.h"
-#include "comms/mccl/bootstrap/Bootstrap.h"
-#include "comms/mccl/bootstrap/CtranAdapter.h"
 #include "comms/mccl/utils/Utils.h"
-#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 
 namespace ctran {
+
+std::unique_ptr<TestCtranCommRAII> createDummyCtranComm(int devId) {
+  CUDACHECK_TEST(cudaSetDevice(devId));
+
+  CHECK_EQ(ctran::utils::commCudaLibraryInit(), commSuccess);
+
+  const std::string uuid{"0"};
+  uint64_t commHash =
+      ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
+  std::string commDesc = fmt::format("DummyCtranTestComm-{}", 0);
+
+  auto result = createCtranCommWithBootstrap(0, 1, 0, commHash, commDesc);
+
+  // Create a TestCtranCommRAII that also holds the bootstrap
+  auto raii = std::make_unique<TestCtranCommRAII>(std::move(result.ctranComm));
+  raii->bootstrap_ = std::move(result.bootstrap);
+  return raii;
+}
 
 static std::atomic<int> testCount = 0;
 inline void incrTestCount() {

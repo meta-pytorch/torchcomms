@@ -6,7 +6,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/CtranTraceLogger.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/TestXPlatUtils.h"

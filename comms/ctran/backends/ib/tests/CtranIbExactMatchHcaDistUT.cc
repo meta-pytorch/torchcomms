@@ -8,7 +8,6 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
@@ -75,7 +74,8 @@ TEST_F(CtranIbHcaTest, IbHcaExactMatchDev) {
     auto ctrlMgr = std::make_unique<CtranCtrlManager>();
     // CtranComm* comm = this->commRAII->ctranComm;
 
-    std::unique_ptr<TestCtranCommRAII> commRAII_ = createDummyCtranComm(devId);
+    std::unique_ptr<ctran::TestCtranCommRAII> commRAII_ =
+        ctran::createDummyCtranComm(devId);
     CtranComm* comm = commRAII_->ctranComm.get();
 
     EXPECT_EQ(NCCL_IB_HCA_PREFIX, "=");

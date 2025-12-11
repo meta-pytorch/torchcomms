@@ -12,7 +12,7 @@
 #include "comms/ctran/utils/CudaWrap.h"
 // FIXME [REBASE]: update the path once moved to fbcode/comms
 #include "comms/ctran/gpe/tests/KernelElemPoolUTKernels.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 

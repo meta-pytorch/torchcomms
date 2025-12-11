@@ -10,13 +10,12 @@
 #include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/logger/LogUtils.h"
 
 class CtranMapperTest : public ::testing::Test {
  public:
-  std::unique_ptr<TestCtranCommRAII> commRAII_;
+  std::unique_ptr<ctran::TestCtranCommRAII> commRAII_;
   CtranComm* dummyComm_{nullptr};
 
   std::unique_ptr<CtranMapper> mapper;
@@ -34,7 +33,7 @@ class CtranMapperTest : public ::testing::Test {
 
     ctran::logGpuMemoryStats(cudaDev);
 
-    commRAII_ = createDummyCtranComm();
+    commRAII_ = ctran::createDummyCtranComm();
     dummyComm_ = commRAII_->ctranComm.get();
     CUDACHECK_TEST(cudaSetDevice(cudaDev));
     CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
@@ -62,7 +61,7 @@ class CtranMapperTest : public ::testing::Test {
 TEST(CtranMapperUT, EnableBackendThroughCVARs) {
   setenv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket", 1);
   ncclCvarInit();
-  auto commRAII = createDummyCtranComm();
+  auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
@@ -75,7 +74,7 @@ TEST(CtranMapperUT, EnableBackendThroughCVARs) {
 TEST(CtranMapperUT, EnableBackendThroughCVARsWithoutIB) {
   setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
   ncclCvarInit();
-  auto commRAII = createDummyCtranComm();
+  auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
@@ -88,7 +87,7 @@ TEST(CtranMapperUT, EnableBackendWithConfigUnset) {
   // to using NCCL_CTRAN_BACKENDS CVAR.
   setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
   ncclCvarInit();
-  auto commRAII = createDummyCtranComm();
+  auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
   dummyComm->config_.backends = {CommBackend::UNSET}; // Test fallback behavior
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
@@ -103,7 +102,7 @@ TEST(CtranMapperUT, EnableBackendWithExplicitConfigOverride) {
   // it overrides the NCCL_CTRAN_BACKENDS CVAR.
   setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
   ncclCvarInit();
-  auto commRAII = createDummyCtranComm();
+  auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
   // Explicitly set config_.backends to IB only.
   dummyComm->config_.backends = {CommBackend::IB};
@@ -120,7 +119,7 @@ TEST(CtranMapperUT, EnableBackendThroughCVARsWithTCPandIB) {
   ncclCvarInit();
   std::optional<std::exception> ex;
   try {
-    createDummyCtranComm();
+    ctran::createDummyCtranComm();
   } catch (const std::runtime_error& e) {
     ex = e;
   } catch (const ctran::utils::Exception& e) {
@@ -1230,7 +1229,7 @@ TEST_F(CtranMapperTest, ExportRegCache) {
 
 class CtranMapperTestDisjoint : public ::testing::Test {
  public:
-  std::unique_ptr<TestCtranCommRAII> commRAII_;
+  std::unique_ptr<ctran::TestCtranCommRAII> commRAII_;
   CtranComm* dummyComm_{nullptr};
 
   std::unique_ptr<CtranMapper> mapper;
@@ -1258,7 +1257,7 @@ class CtranMapperTestDisjoint : public ::testing::Test {
 
     ctran::logGpuMemoryStats(cudaDev);
 
-    commRAII_ = createDummyCtranComm();
+    commRAII_ = ctran::createDummyCtranComm();
     dummyComm_ = commRAII_->ctranComm.get();
     CUDACHECK_TEST(cudaSetDevice(cudaDev));
 

@@ -11,7 +11,7 @@
 
 #include <gmock/gmock.h>
 #include "TestLogCategory.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
