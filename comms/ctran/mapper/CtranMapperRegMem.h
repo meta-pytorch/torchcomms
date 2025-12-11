@@ -131,20 +131,27 @@ struct CtranMapperRegElem {
       std::size_t len,
       const int cudaDev,
       bool isDynamic,
-      DevMemType type)
+      DevMemType type,
+      bool ncclManaged = false)
       : buf(buf),
         len(len),
         cudaDev_(cudaDev),
         isDynamic_(isDynamic),
-        type_(type) {};
+        type_(type),
+        ncclManaged_(ncclManaged) {}
   CtranMapperRegElem(
       const void* buf,
       std::size_t len,
       const int cudaDev,
-      std::vector<CtranMapperSegment*>& segments)
+      std::vector<CtranMapperSegment*>& segments,
+      bool ncclManaged = false)
       // Explicitly copy segments to avoid changing passed-in vector which
       // may be used after the call
-      : buf(buf), len(len), cudaDev_(cudaDev), segments_(segments) {
+      : buf(buf),
+        len(len),
+        cudaDev_(cudaDev),
+        segments_(segments),
+        ncclManaged_(ncclManaged) {
     type_ = segments.at(0)->getType();
   };
 
@@ -170,6 +177,7 @@ struct CtranMapperRegElem {
   size_t lookupHit_{0};
   std::vector<CtranMapperSegment*> segments_;
   DevMemType type_{DevMemType::kCudaMalloc};
+  bool ncclManaged_{false};
 
   // Thread-safe function to register the segment.
   // It internally locks the stateMnger to ensure thread-safe access.
@@ -315,7 +323,8 @@ class CtranMapperRegCache {
       const struct CommLogData& logMetaData,
       const std::vector<bool>& backends,
       bool& didRegister,
-      CtranMapperRegElem** regHdl);
+      CtranMapperRegElem** regHdl,
+      bool ncclManaged = false);
 
   // Thread-safe functions to dynamically register a segment.
   // It is similar to regRange() but is not associated with a cached segment nor
