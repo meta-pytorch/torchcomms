@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cuda_fp16.h>
 #include <cuda_runtime.h> // @manual
 #include <gtest/gtest.h>
 #include <memory>
@@ -17,6 +18,42 @@ namespace ctran {
 void logGpuMemoryStats(int gpu);
 
 void commSetMyThreadLoggingName(std::string_view name);
+
+// Template function to get commDataType_t from C++ type.
+template <typename T>
+inline consteval commDataType_t getCommDataType() {
+  if constexpr (std::is_same_v<T, int8_t>) {
+    return commInt8;
+  } else if constexpr (std::is_same_v<T, int32_t>) {
+    return commInt32;
+  } else if constexpr (std::is_same_v<T, int64_t>) {
+    return commInt64;
+  } else if constexpr (std::is_same_v<T, uint8_t>) {
+    return commUint8;
+  } else if constexpr (std::is_same_v<T, uint32_t>) {
+    return commUint32;
+  } else if constexpr (std::is_same_v<T, uint64_t>) {
+    return commUint64;
+  } else if constexpr (std::is_same_v<T, float>) {
+    return commFloat32;
+  } else if constexpr (std::is_same_v<T, double>) {
+    return commFloat64;
+  } else if constexpr (std::is_same_v<T, __half>) {
+    return commFloat16;
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+  } else if constexpr (std::is_same_v<T, __nv_bfloat16>) {
+    return commBfloat16;
+#endif
+#if defined(__CUDA_FP8_TYPES_EXIST__)
+  } else if constexpr (std::is_same_v<T, __nv_fp8_e4m3>) {
+    return commFloat8e4m3;
+  } else if constexpr (std::is_same_v<T, __nv_fp8_e5m2>) {
+    return commFloat8e5m2;
+#endif
+  } else {
+    return commFloat32;
+  }
+}
 
 commResult_t commMemAllocDisjoint(
     void** ptr,
