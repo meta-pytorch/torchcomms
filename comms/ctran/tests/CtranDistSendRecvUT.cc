@@ -36,7 +36,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
     NcclxBaseTest::SetUp();
     srand(time(NULL));
-    logGpuMemoryStats(globalRank);
+    ctran::logGpuMemoryStats(globalRank);
 
     regCache = CtranMapperRegCache::getInstance();
     CHECK_VALID_REGCACHE(regCache);
@@ -69,7 +69,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
   }
 
   void TearDown() override {
-    logGpuMemoryStats(globalRank);
+    ctran::logGpuMemoryStats(globalRank);
     NcclxBaseTest::TearDown();
   }
 

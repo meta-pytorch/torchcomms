@@ -87,8 +87,11 @@ size_t getSegmentSize(const size_t bufSize, const size_t numSegments) {
 void logGpuMemoryStats(int gpu) {
   size_t free, total;
   CUDACHECK_TEST(cudaMemGetInfo(&free, &total));
-  LOG(INFO) << "GPU " << gpu << " memory: free=" << free << ", total=" << total
-            << std::endl;
+  auto mbFree = static_cast<double>(free) / (1024 * 1024);
+  auto mbTotal = static_cast<double>(total) / (1024 * 1024);
+  LOG(INFO) << "GPU " << gpu << " memory: " << "freeBytes=" << free << " ("
+            << mbFree << "MB), " << "totalBytes=" << total << "(" << mbTotal
+            << "MB)";
 }
 
 void commSetMyThreadLoggingName(std::string_view name) {

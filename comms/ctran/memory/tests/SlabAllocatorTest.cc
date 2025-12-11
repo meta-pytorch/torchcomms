@@ -21,12 +21,12 @@ class SlabAllocatorTest : public ::testing::Test {
     ncclCvarInit();
     ncclCudaLibraryInit();
     initEnv();
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
     CUDACHECK_TEST(cudaSetDevice(cudaDev));
   }
 
   void TearDown() override {
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
   }
 
   // helper method to return ground truth allocated bytes

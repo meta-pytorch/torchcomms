@@ -15,7 +15,7 @@ void CtranDistBaseTest::TearDownTestSuite() {
     NCCLCHECK_TEST(ncclCommDestroy(commWorld));
     commWorld = NCCL_COMM_NULL;
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
   }
 
   // Reset tcpStore server
