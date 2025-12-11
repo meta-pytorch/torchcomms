@@ -129,7 +129,7 @@ TEST_P(CtranNvlTestSuite, RegMem) {
 
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           if (memType == kMemCudaMalloc) {
             COMMCHECK_TEST(

@@ -15,6 +15,8 @@ namespace ctran {
 
 void logGpuMemoryStats(int gpu);
 
+void commSetMyThreadLoggingName(std::string_view name);
+
 // Bootstrap initialization type
 enum class InitEnvType { MPI, TCP_STORE };
 

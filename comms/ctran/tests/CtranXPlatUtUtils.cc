@@ -9,10 +9,6 @@
 #define ALIGN_SIZE(size, align) \
   size = ((size + (align) - 1) / (align)) * (align);
 
-void commSetMyThreadLoggingName(std::string_view name) {
-  meta::comms::logger::initThreadMetaData(name);
-}
-
 commResult_t commMemAllocDisjoint(
     void** ptr,
     std::vector<size_t>& disjointSegmentSizes,

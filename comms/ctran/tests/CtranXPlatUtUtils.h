@@ -18,8 +18,6 @@
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/commSpecs.h"
 
-void commSetMyThreadLoggingName(std::string_view name);
-
 commResult_t commMemAllocDisjoint(
     void** ptr,
     std::vector<size_t>& disjointSegmentSizes,

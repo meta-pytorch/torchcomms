@@ -6,6 +6,7 @@
 
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/ctran/utils/Utils.h"
 
@@ -265,7 +266,7 @@ TEST_F(CtranMapperProfilerTest, regSnapshot) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           auto& mapper = mappers[tid];
           void *hdl1 = nullptr, *hdl2 = nullptr;

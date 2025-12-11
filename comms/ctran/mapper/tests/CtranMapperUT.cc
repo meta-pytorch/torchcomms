@@ -361,7 +361,7 @@ TEST_F(CtranMapperTest, regMemEager) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void *segHdl = nullptr, *regHdl = nullptr;
           auto res =
@@ -409,7 +409,7 @@ TEST_F(CtranMapperTest, regMemForce) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void *segHdl = nullptr, *regHdl = nullptr;
           auto res =
@@ -456,7 +456,7 @@ TEST_F(CtranMapperTest, regMemNMissingDereg) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void* hdl = nullptr;
           EXPECT_EQ(mapper->regMem(buf, bufSize, &hdl, false), commSuccess);
@@ -494,7 +494,7 @@ TEST_F(CtranMapperTest, searchRegHandleMiss) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void* regHdl = nullptr;
           bool dynamicRegist = false;
@@ -547,7 +547,7 @@ TEST_F(CtranMapperTest, searchRegHandleHit) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void* regHdl = nullptr;
           bool dynamicRegist = false;
@@ -605,7 +605,7 @@ TEST_F(CtranMapperTest, RegMemAndsearchRegHandleHit) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           // Some threads will register buf2 while the other threads are
           // searching
@@ -658,7 +658,7 @@ TEST_F(CtranMapperTest, RegMemAndsearchRegHandleMiss) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           // Some threads will register buf2 while the other threads are
           // searching
@@ -833,7 +833,7 @@ TEST_F(CtranMapperTest, AsyncRegMemAndSearchRegHandleHit) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void* regHdl = nullptr;
           bool dynamicRegist = false;

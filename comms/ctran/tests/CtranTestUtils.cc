@@ -26,6 +26,10 @@ void logGpuMemoryStats(int gpu) {
             << std::endl;
 }
 
+void commSetMyThreadLoggingName(std::string_view name) {
+  meta::comms::logger::initThreadMetaData(name);
+}
+
 // Static member initialization
 std::atomic<int> CtranDistTestFixture::testCount_{0};
 
