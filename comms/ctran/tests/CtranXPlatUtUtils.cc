@@ -9,13 +9,6 @@
 #define ALIGN_SIZE(size, align) \
   size = ((size + (align) - 1) / (align)) * (align);
 
-void logGpuMemoryStats(int gpu) {
-  size_t free, total;
-  CUDACHECK_TEST(cudaMemGetInfo(&free, &total));
-  LOG(INFO) << "GPU " << gpu << " memory: free=" << free << ", total=" << total
-            << std::endl;
-}
-
 void commSetMyThreadLoggingName(std::string_view name) {
   meta::comms::logger::initThreadMetaData(name);
 }

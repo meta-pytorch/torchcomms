@@ -13,6 +13,8 @@
 
 namespace ctran {
 
+void logGpuMemoryStats(int gpu);
+
 // Bootstrap initialization type
 enum class InitEnvType { MPI, TCP_STORE };
 

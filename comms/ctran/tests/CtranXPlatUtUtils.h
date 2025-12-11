@@ -18,8 +18,6 @@
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/commSpecs.h"
 
-void logGpuMemoryStats(int gpu);
-
 void commSetMyThreadLoggingName(std::string_view name);
 
 commResult_t commMemAllocDisjoint(

@@ -19,6 +19,13 @@
 
 namespace ctran {
 
+void logGpuMemoryStats(int gpu) {
+  size_t free, total;
+  CUDACHECK_TEST(cudaMemGetInfo(&free, &total));
+  LOG(INFO) << "GPU " << gpu << " memory: free=" << free << ", total=" << total
+            << std::endl;
+}
+
 // Static member initialization
 std::atomic<int> CtranDistTestFixture::testCount_{0};
 

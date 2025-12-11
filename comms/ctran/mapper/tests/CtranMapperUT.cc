@@ -9,6 +9,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -30,7 +31,7 @@ class CtranMapperTest : public ::testing::Test {
     ncclCvarInit();
     setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "true", 1);
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
 
     commRAII_ = createDummyCtranComm();
     dummyComm_ = commRAII_->ctranComm.get();
@@ -54,7 +55,7 @@ class CtranMapperTest : public ::testing::Test {
     // Cleanup cached segments in global cache for each test
     EXPECT_EQ(regCache->destroy(), commSuccess);
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
   }
 };
 TEST(CtranMapperUT, EnableBackendThroughCVARs) {
@@ -1253,7 +1254,7 @@ class CtranMapperTestDisjoint : public ::testing::Test {
     ncclCvarInit();
     setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "true", 1);
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
 
     commRAII_ = createDummyCtranComm();
     dummyComm_ = commRAII_->ctranComm.get();
@@ -1305,7 +1306,7 @@ class CtranMapperTestDisjoint : public ::testing::Test {
     // Cleanup cached segments in global cache for each test
     EXPECT_EQ(regCache->destroy(), commSuccess);
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
   }
 };
 
