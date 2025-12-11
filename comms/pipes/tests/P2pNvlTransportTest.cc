@@ -1495,6 +1495,166 @@ INSTANTIATE_TEST_SUITE_P(
             .name = "Large_128MB_4MBBuffer_DeepPipeline"}),
     largeTransferParamName);
 
+// =============================================================================
+// Parameterized Test Fixture for Asymmetric Group Configurations
+// =============================================================================
+// Tests that sender and receiver can use different thread group configurations
+// This validates that the protocol works across asymmetric kernel launches.
+
+struct AsymmetricGroupParams {
+  test::GroupType senderGroupType;
+  int senderNumBlocks;
+  int senderBlockSize;
+  test::GroupType receiverGroupType;
+  int receiverNumBlocks;
+  int receiverBlockSize;
+  std::string name;
+};
+
+class AsymmetricGroupTestFixture
+    : public MpiBaseTestFixture,
+      public ::testing::WithParamInterface<AsymmetricGroupParams> {
+ protected:
+  void SetUp() override {
+    MpiBaseTestFixture::SetUp();
+    CUDACHECK_TEST(cudaSetDevice(localRank));
+  }
+};
+
+TEST_P(AsymmetricGroupTestFixture, SendRecv) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const auto& params = GetParam();
+  XLOGF(
+      INFO,
+      "Running asymmetric group test: {} (sender: {} {}x{}, receiver: {} {}x{})",
+      params.name,
+      params.senderGroupType == test::GroupType::WARP ? "WARP" : "BLOCK",
+      params.senderNumBlocks,
+      params.senderBlockSize,
+      params.receiverGroupType == test::GroupType::WARP ? "WARP" : "BLOCK",
+      params.receiverNumBlocks,
+      params.receiverBlockSize);
+
+  const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
+  const size_t nbytes = 4 * 1024 * 1024; // 4MB total transfer
+  P2pNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+  };
+
+  TransportTestHelper helper(globalRank, numRanks, localRank, config);
+  auto p2p = helper.getDevice();
+
+  const size_t numInts = nbytes / sizeof(int);
+
+  DeviceBuffer srcBuffer(nbytes);
+  DeviceBuffer dstBuffer(nbytes);
+
+  auto src_d = static_cast<int*>(srcBuffer.get());
+  auto dst_d = static_cast<int*>(dstBuffer.get());
+
+  if (globalRank == 0) {
+    // Sender
+    test::fillBuffer(src_d, 42, numInts);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    test::testSend(
+        p2p,
+        src_d,
+        nbytes,
+        params.senderNumBlocks,
+        params.senderBlockSize,
+        params.senderGroupType);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  } else {
+    // Receiver
+    CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    test::testRecv(
+        p2p,
+        dst_d,
+        nbytes,
+        params.receiverNumBlocks,
+        params.receiverBlockSize,
+        params.receiverGroupType);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Verify received data
+    std::vector<int> hostBuffer(numInts);
+    CUDACHECK_TEST(
+        cudaMemcpy(hostBuffer.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
+
+    for (size_t i = 0; i < numInts; i++) {
+      EXPECT_EQ(hostBuffer[i], 42)
+          << "Rank " << globalRank << ": Mismatch at index " << i
+          << ": expected 42, got " << hostBuffer[i];
+      if (hostBuffer[i] != 42) {
+        break;
+      }
+    }
+  }
+
+  XLOGF(
+      INFO,
+      "Rank {}: Asymmetric group test '{}' completed",
+      globalRank,
+      params.name);
+}
+
+std::string asymmetricGroupParamName(
+    const ::testing::TestParamInfo<AsymmetricGroupParams>& info) {
+  return info.param.name;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AsymmetricGroupVariations,
+    AsymmetricGroupTestFixture,
+    ::testing::Values(
+        // Sender uses WARP groups, receiver uses BLOCK groups
+        AsymmetricGroupParams{
+            .senderGroupType = test::GroupType::WARP,
+            .senderNumBlocks = 4,
+            .senderBlockSize = 128,
+            .receiverGroupType = test::GroupType::BLOCK,
+            .receiverNumBlocks = 4,
+            .receiverBlockSize = 128,
+            .name = "SenderWarp_ReceiverBlock"},
+        // Sender uses BLOCK groups, receiver uses WARP groups
+        AsymmetricGroupParams{
+            .senderGroupType = test::GroupType::BLOCK,
+            .senderNumBlocks = 4,
+            .senderBlockSize = 128,
+            .receiverGroupType = test::GroupType::WARP,
+            .receiverNumBlocks = 4,
+            .receiverBlockSize = 128,
+            .name = "SenderBlock_ReceiverWarp"},
+        // Different block configurations
+        AsymmetricGroupParams{
+            .senderGroupType = test::GroupType::WARP,
+            .senderNumBlocks = 8,
+            .senderBlockSize = 256,
+            .receiverGroupType = test::GroupType::BLOCK,
+            .receiverNumBlocks = 2,
+            .receiverBlockSize = 512,
+            .name = "SenderWarp8x256_ReceiverBlock2x512"},
+        // Same group type but different configurations
+        AsymmetricGroupParams{
+            .senderGroupType = test::GroupType::WARP,
+            .senderNumBlocks = 2,
+            .senderBlockSize = 64,
+            .receiverGroupType = test::GroupType::WARP,
+            .receiverNumBlocks = 8,
+            .receiverBlockSize = 256,
+            .name = "SenderWarp2x64_ReceiverWarp8x256"}),
+    asymmetricGroupParamName);
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {
