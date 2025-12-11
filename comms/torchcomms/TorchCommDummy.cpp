@@ -55,7 +55,7 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)asyncOp;
     return c10::make_intrusive<DummyTorchWork>();
   }
-  virtual c10::intrusive_ptr<TorchWork> waitSignal(int peerRank, bool asyncOp)
+  c10::intrusive_ptr<TorchWork> waitSignal(int peerRank, bool asyncOp)
       override {
     (void)peerRank;
     return c10::make_intrusive<DummyTorchWork>();
