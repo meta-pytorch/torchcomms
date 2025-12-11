@@ -10,6 +10,7 @@
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/CudaBenchBase.h"
 #include "comms/testinfra/TestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 using ctran::alltoallvdedup::ExecArgs;
 using ctran::alltoallvdedup::ExecKernArgs;

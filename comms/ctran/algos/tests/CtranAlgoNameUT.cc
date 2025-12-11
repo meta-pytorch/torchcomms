@@ -2,6 +2,7 @@
 #include <gtest/gtest.h>
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 class CtranAlgoNameTest : public ::testing::Test {
  public:

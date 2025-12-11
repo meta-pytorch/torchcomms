@@ -3,7 +3,7 @@
 #include <gtest/gtest.h>
 
 #include "comms/ctran/backends/ib/CtranIb.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/utils/cvars/nccl_cvars.h" // @manual
 
@@ -46,14 +46,14 @@ TEST_P(CtranIbGpuRegMemTestParam, GpuTest) {
 
   ASSERT_EQ(cudaSetDevice(0), cudaSuccess);
 
-  auto buf = commMemAlloc(bufSize, memType, segments);
+  auto buf = ctran::commMemAlloc(bufSize, memType, segments);
   ASSERT_NE(buf, nullptr);
 
   ASSERT_EQ(CtranIb::regMem(buf, bufSize, 0, &ibRegElem), commSuccess);
   ASSERT_NE(ibRegElem, nullptr);
 
   ASSERT_EQ(CtranIb::deregMem(ibRegElem), commSuccess);
-  commMemFree(buf, bufSize, memType);
+  ctran::commMemFree(buf, bufSize, memType);
 }
 
 class CtranIbCumemDistjointRegMemTestParam
@@ -66,13 +66,13 @@ TEST_P(CtranIbCumemDistjointRegMemTestParam, InvalidCumemDistjointTest) {
 
   ASSERT_EQ(cudaSetDevice(0), cudaSuccess);
 
-  auto buf = commMemAlloc(bufSize, kCuMemAllocDisjoint, segments);
+  auto buf = ctran::commMemAlloc(bufSize, kCuMemAllocDisjoint, segments);
   ASSERT_NE(buf, nullptr);
 
   ASSERT_EQ(CtranIb::regMem(buf, bufSize, 0, &ibRegElem), commInvalidUsage);
   ASSERT_EQ(ibRegElem, nullptr);
 
-  commMemFree(buf, bufSize, kCuMemAllocDisjoint);
+  ctran::commMemFree(buf, bufSize, kCuMemAllocDisjoint);
 }
 
 namespace {

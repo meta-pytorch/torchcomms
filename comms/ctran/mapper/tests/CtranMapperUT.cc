@@ -11,6 +11,7 @@
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/logger/LogUtils.h"
 
 class CtranMapperTest : public ::testing::Test {
@@ -1113,7 +1114,8 @@ TEST_F(CtranMapperTest, getMultiSegRegElems) {
   void* buf_ = nullptr;
   std::vector<TestMemSegment> segments;
   std::vector<size_t> segSizes(3, 1048576);
-  EXPECT_EQ(commMemAllocDisjoint(&buf_, segSizes, segments), commSuccess);
+  EXPECT_EQ(
+      ctran::commMemAllocDisjoint(&buf_, segSizes, segments), commSuccess);
 
   std::vector<void*> segHdls;
   for (auto& seg : segments) {
@@ -1165,7 +1167,7 @@ TEST_F(CtranMapperTest, getMultiSegRegElems) {
   for (auto& hdl : segHdls) {
     EXPECT_EQ(mapper->deregMem(hdl), commSuccess);
   }
-  EXPECT_EQ(commMemFreeDisjoint(buf_, segSizes), commSuccess);
+  EXPECT_EQ(ctran::commMemFreeDisjoint(buf_, segSizes), commSuccess);
 }
 
 TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
@@ -1269,7 +1271,8 @@ class CtranMapperTestDisjoint : public ::testing::Test {
     // registration
     std::vector<TestMemSegment> segments;
     disjointSegSizes = {bufBaseSize / 2, bufBaseSize / 2};
-    auto result = commMemAllocDisjoint(&bufBase, disjointSegSizes, segments);
+    auto result =
+        ctran::commMemAllocDisjoint(&bufBase, disjointSegSizes, segments);
     if (result != commSuccess) {
       GTEST_SKIP()
           << "Disjoint allocation failed, cannot test multiple allocation scenario";
@@ -1300,7 +1303,8 @@ class CtranMapperTestDisjoint : public ::testing::Test {
   void TearDown() override {
     // Free disjoint allocation properly if it was used
     if (usedDisjointAllocation) {
-      EXPECT_EQ(commMemFreeDisjoint(bufBase, disjointSegSizes), commSuccess);
+      EXPECT_EQ(
+          ctran::commMemFreeDisjoint(bufBase, disjointSegSizes), commSuccess);
     }
 
     // Cleanup cached segments in global cache for each test

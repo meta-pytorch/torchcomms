@@ -9,6 +9,7 @@
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/ctran/utils/CtranTraceLogger.h"
 #include "comms/ctran/utils/LogInit.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 class CtranTraceLoggerTest : public ::testing::Test {
  public:

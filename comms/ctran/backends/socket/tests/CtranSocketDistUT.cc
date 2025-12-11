@@ -9,7 +9,7 @@
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/socket/CtranSocket.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 commResult_t waitSocketReq(
     CtranSocketRequest& req,

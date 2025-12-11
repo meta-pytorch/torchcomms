@@ -12,6 +12,7 @@
 // FIXME [REBASE]: update the path once moved to fbcode/comms
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 class CtranGpeTest : public ::testing::Test {
  public:

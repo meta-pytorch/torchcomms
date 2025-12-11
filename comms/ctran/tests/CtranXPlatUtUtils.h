@@ -6,7 +6,6 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 #include <mpi.h>
-#include <optional>
 #include "caffe2/torch/csrc/distributed/c10d/TCPStore.hpp"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/interfaces/ICtran.h"
@@ -17,24 +16,6 @@
 #include "comms/mccl/bootstrap/CtranAdapter.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/commSpecs.h"
-
-commResult_t commMemAllocDisjoint(
-    void** ptr,
-    std::vector<size_t>& disjointSegmentSizes,
-    std::vector<TestMemSegment>& segments,
-    bool setRdmaSupport = true,
-    std::optional<CUmemAllocationHandleType> handleType =
-        CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
-
-commResult_t commMemFreeDisjoint(
-    void* ptr,
-    std::vector<size_t>& disjointSegmentSizes);
-
-void* commMemAlloc(
-    size_t bufSize,
-    MemAllocType memType,
-    std::vector<TestMemSegment>& segments);
-void commMemFree(void* buf, size_t bufSize, MemAllocType memType);
 
 class TestCtranCommRAII {
  public:

@@ -9,6 +9,7 @@
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/ctran/utils/Utils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 class CtranMapperProfilerTest : public ::testing::Test {
  public:

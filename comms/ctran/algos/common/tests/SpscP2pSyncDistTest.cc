@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 #include "comms/ctran/algos/common/SpscP2pSync.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
 using ctran::algos::SpscP2pSync;

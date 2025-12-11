@@ -11,6 +11,7 @@
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
 #include "comms/testinfra/TestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/logger/LogUtils.h"
 

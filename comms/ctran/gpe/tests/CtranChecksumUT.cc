@@ -8,6 +8,7 @@
 // FIXME [REBASE]: update the path once moved to fbcode/comms
 #include "comms/ctran/gpe/tests/CtranChecksumUTKernels.h"
 #include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 class CtranChecksumTest : public ::testing::Test {
  public:
