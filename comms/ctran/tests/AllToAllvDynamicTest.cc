@@ -14,7 +14,7 @@
 #endif
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 
 #define dceil(x, y) ((x / y) + !!(x % y))
@@ -58,21 +58,27 @@ __global__ void checkRandomCountsKernel(
     int globalRank,
     int numRanks);
 
-class AllToAllvDynamicTestCommon : public CtranDistTest {
+class AllToAllvDynamicTestCommon : public ctran::CtranDistTestFixture {
  public:
   AllToAllvDynamicTestCommon() = default;
   void SetUp() override {
-    CtranDistTest::SetUp();
-    comm = commRAII->ctranComm.get();
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-    CUDACHECK_TEST(cudaStreamCreate(&stream));
+    ctran::CtranDistTestFixture::SetUp();
+    // Create CtranComm using the fixture's helper
+    ctranComm = makeCtranComm();
+    comm = ctranComm.get();
+    // stream and device already set by fixture
 
     maxAllowedCount = MAX_MEM_USAGE / (2 * numRanks * sizeof(int));
   }
 
   void TearDown() override {
-    CUDACHECK_TEST(cudaStreamDestroy(stream));
-    CtranDistTest::TearDown();
+    // Destroy comm before fixture teardown
+    if (ctranComm) {
+      ctranComm->destroy();
+      ctranComm.reset();
+    }
+    // stream destroyed by fixture
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void AllocateBuffers(MemAllocType memType, size_t maxCount, bool registFlag) {
@@ -180,7 +186,7 @@ class AllToAllvDynamicTestCommon : public CtranDistTest {
         1024,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   void EnqueueDataBuffersCheck(size_t maxCount) {
@@ -195,7 +201,7 @@ class AllToAllvDynamicTestCommon : public CtranDistTest {
         1024,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   void EnqueueAllToAllvDynamic() {
@@ -209,7 +215,7 @@ class AllToAllvDynamicTestCommon : public CtranDistTest {
         hints,
         commInt32,
         comm,
-        stream);
+        stream->get());
     ASSERT_EQ(res, commSuccess);
   }
 
@@ -227,7 +233,12 @@ class AllToAllvDynamicTestCommon : public CtranDistTest {
       kernelArgs.push_back((void*)&scountsDev);
       kernelArgs.push_back((void*)&count);
       CUDACHECK_TEST(cudaLaunchKernel(
-          (void*)equalCountsKernel, 1, numRanks, kernelArgs.data(), 0, stream));
+          (void*)equalCountsKernel,
+          1,
+          numRanks,
+          kernelArgs.data(),
+          0,
+          stream->get()));
     } else {
       kernelArgs.push_back((void*)&scountsDev);
       kernelArgs.push_back((void*)&randomCountsMatricesDev[matrixId]);
@@ -239,7 +250,7 @@ class AllToAllvDynamicTestCommon : public CtranDistTest {
           numRanks,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     }
   }
 
@@ -257,7 +268,7 @@ class AllToAllvDynamicTestCommon : public CtranDistTest {
           numRanks,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     } else {
       kernelArgs.push_back((void*)&actualRcountsDev);
       kernelArgs.push_back((void*)&randomCountsMatricesDev[matrixId]);
@@ -269,7 +280,7 @@ class AllToAllvDynamicTestCommon : public CtranDistTest {
           numRanks,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     }
   }
 
@@ -325,8 +336,9 @@ class AllToAllvDynamicTestCommon : public CtranDistTest {
   }
 
  protected:
+  std::unique_ptr<CtranComm> ctranComm; // Own the CtranComm instance
   CtranComm* comm{nullptr};
-  cudaStream_t stream;
+  // Note: stream is inherited from CtranDistTestFixture
   int numExperts{1};
 
   void** sendbuffsHost{nullptr};
@@ -381,7 +393,7 @@ TEST_P(AllToAllvDynamicTestSuite, UnchangedEqualCounts) {
   EnqueueCountsInitialization(maxCount, CountType::EQUAL, -1);
 
   // Wait for count update to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Enqueue buffer initialization
   EnqueueDataBuffersInitialization(maxCount);
@@ -396,7 +408,7 @@ TEST_P(AllToAllvDynamicTestSuite, UnchangedEqualCounts) {
   EnqueueDataBuffersCheck(maxCount);
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   DeallocateBuffers(memType, registFlag);
 }
@@ -439,7 +451,7 @@ TEST_P(AllToAllvDynamicTestSuite, ChangedEqualCounts) {
   EnqueueDataBuffersCheck(maxCount);
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   DeallocateBuffers(memType, registFlag);
 }
@@ -470,7 +482,7 @@ TEST_P(AllToAllvDynamicTestSuite, UnchangedRandomCounts) {
   EnqueueCountsInitialization(maxCount, CountType::RANDOM, 0);
 
   // Wait for count update to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Enqueue buffer initialization
   EnqueueDataBuffersInitialization(maxCount);
@@ -485,7 +497,7 @@ TEST_P(AllToAllvDynamicTestSuite, UnchangedRandomCounts) {
   EnqueueDataBuffersCheck(maxCount);
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   DeallocateBuffers(memType, registFlag);
 }
@@ -529,7 +541,7 @@ TEST_P(AllToAllvDynamicTestSuite, ChangedRandomCounts) {
   EnqueueDataBuffersCheck(maxCount);
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   DeallocateBuffers(memType, registFlag);
 }
@@ -577,7 +589,7 @@ TEST_P(AllToAllvDynamicTestSuite, MultipleRandomCounts) {
   }
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   DeallocateBuffers(memType, registFlag);
 }
@@ -604,7 +616,8 @@ TEST_P(AllToAllvDynamicTestSuite, UnchangedEqualCountsGraph) {
   cudaGraph_t graph;
   cudaGraphExec_t instance;
 
-  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(stream->get(), cudaStreamCaptureModeGlobal));
 
   // Enqueue count initialization
   EnqueueCountsInitialization(maxCount, CountType::EQUAL, -1);
@@ -621,17 +634,17 @@ TEST_P(AllToAllvDynamicTestSuite, UnchangedEqualCountsGraph) {
   // Enqueue data check
   EnqueueDataBuffersCheck(maxCount);
 
-  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  CUDACHECK_TEST(cudaStreamEndCapture(stream->get(), &graph));
   CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
 
   constexpr int numIters = 10;
   for (int i = 0; i < numIters; i++) {
-    CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
+    CUDACHECK_TEST(cudaGraphLaunch(instance, stream->get()));
     auto nelems = comm->ctran_->gpe->numInUseKernelElems();
     EXPECT_NE(nelems, 0);
   }
 
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   CUDACHECK_TEST(cudaGraphExecDestroy(instance));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
@@ -664,7 +677,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

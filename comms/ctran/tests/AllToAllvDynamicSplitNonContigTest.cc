@@ -14,7 +14,7 @@
 #endif
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/tests_common.cuh"
 
@@ -87,22 +87,28 @@ __global__ void initRecvIndicesBlockLengthKernel(
     size_t* recvIndicesBlockLengths,
     size_t myIndicesBlockLengths);
 
-class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
+class AllToAllvDynamicSplitNonContigTestCommon
+    : public ctran::CtranDistTestFixture {
  public:
   AllToAllvDynamicSplitNonContigTestCommon() = default;
   void SetUp() override {
-    CtranDistTest::SetUp();
-    comm = commRAII->ctranComm.get();
-
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-    CUDACHECK_TEST(cudaStreamCreate(&stream));
+    ctran::CtranDistTestFixture::SetUp();
+    // Create CtranComm using the fixture's helper
+    ctranComm = makeCtranComm();
+    comm = ctranComm.get();
+    // stream and device already set by fixture
 
     maxAllowedCount = MAX_MEM_USAGE / (2 * numRanks * sizeof(int));
   }
 
   void TearDown() override {
-    CUDACHECK_TEST(cudaStreamDestroy(stream));
-    CtranDistTest::TearDown();
+    // Destroy comm before fixture teardown
+    if (ctranComm) {
+      ctranComm->destroy();
+      ctranComm.reset();
+    }
+    // stream destroyed by fixture
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void InitTestSetup(size_t maxCount_, int numExperts_, bool dupExpertFlag) {
@@ -267,7 +273,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         1024,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   void EnqueueInitializeBufferPtrKernel() {
@@ -282,7 +288,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         1,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   void EnqueueDataBuffersCheck() {
@@ -301,7 +307,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         1,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   // TODO: will need to add unit test for combine. Now only have dispatch.
@@ -319,7 +325,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         hints,
         commInt32,
         comm,
-        stream,
+        stream->get(),
         false,
         recvSplitsDev);
     ASSERT_EQ(res, commSuccess);
@@ -395,7 +401,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
           numRanks * maxNumExperts,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     } else {
       kernelArgs.push_back((void*)&inputChunkSizesDev);
       kernelArgs.push_back((void*)&randomCountsMatricesDev[matrixId]);
@@ -407,7 +413,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
           numRanks * maxNumExperts,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     }
   }
 
@@ -426,7 +432,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
           inputChunkSizesCount * numRanks,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     } else {
       kernelArgs.push_back((void*)&recvSplitsDev);
       kernelArgs.push_back((void*)&randomCountsMatricesDev[matrixId]);
@@ -439,7 +445,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
           inputChunkSizesCount,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     }
   }
 
@@ -459,7 +465,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         1,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
 
     kernelArgs.clear();
     kernelArgs.push_back((void*)&recvIndicesDev);
@@ -472,7 +478,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         inputChunkCountPerRankHost[globalRank],
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   void InitializeRandomMatrices(int numMatrices) {
@@ -527,8 +533,9 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   }
 
  protected:
+  std::unique_ptr<CtranComm> ctranComm; // Own the CtranComm instance
   CtranComm* comm{nullptr};
-  cudaStream_t stream{};
+  // Note: stream is inherited from CtranDistTestFixture
   int numExperts{0};
   int maxNumExperts{0};
   int maxTotalExperts{0};
@@ -607,7 +614,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedEqualCounts) {
   EnqueueRecvIndicesInitialization();
 
   // Wait for count update to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   EnqueueInitializeBufferPtrKernel();
 
@@ -624,7 +631,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedEqualCounts) {
   EnqueueDataBuffersCheck();
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   DeallocateBuffers(memType, registFlag);
 }
@@ -673,7 +680,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, ChangedEqualCounts) {
   EnqueueDataBuffersCheck();
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   DeallocateBuffers(memType, registFlag);
 }
@@ -710,7 +717,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedRandomCounts) {
   EnqueueRecvIndicesInitialization();
 
   // Wait for count update to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Enqueue buffer ptr initialization
   EnqueueInitializeBufferPtrKernel();
@@ -728,7 +735,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedRandomCounts) {
   EnqueueDataBuffersCheck();
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Overwrite the registFlag to true. Change it back after fix the small buffer
   // reigstration issue.
@@ -783,7 +790,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, ChangedRandomCounts) {
   EnqueueDataBuffersCheck();
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Overwrite the registFlag to true. Change it back after fix the small buffer
   // reigstration issue.
@@ -842,7 +849,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, MultipleRandomCounts) {
   }
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Overwrite the registFlag to true. Change it back after fix the small buffer
   // reigstration issue.
@@ -870,7 +877,8 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedEqualCountsGraph) {
 
   cudaGraph_t graph;
   cudaGraphExec_t instance;
-  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(stream->get(), cudaStreamCaptureModeGlobal));
 
   // Enqueue count initialization
   EnqueueSplitsInitialization(maxCount, CountType::EQUAL, -1);
@@ -893,17 +901,17 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedEqualCountsGraph) {
   // Enqueue data check
   EnqueueDataBuffersCheck();
 
-  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  CUDACHECK_TEST(cudaStreamEndCapture(stream->get(), &graph));
   CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
 
   constexpr int numIters = 10;
   for (int i = 0; i < numIters; i++) {
-    CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
+    CUDACHECK_TEST(cudaGraphLaunch(instance, stream->get()));
     auto nelems = comm->ctran_->gpe->numInUseKernelElems();
     EXPECT_NE(nelems, 0);
   }
 
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   CUDACHECK_TEST(cudaGraphExecDestroy(instance));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
@@ -935,7 +943,8 @@ TEST_P(
 
   cudaGraph_t graph;
   cudaGraphExec_t instance;
-  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(stream->get(), cudaStreamCaptureModeGlobal));
 
   // Enqueue count initialization
   EnqueueSplitsInitialization(maxCount, CountType::EQUAL, -1);
@@ -958,19 +967,19 @@ TEST_P(
   // Enqueue data check
   EnqueueDataBuffersCheck();
 
-  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  CUDACHECK_TEST(cudaStreamEndCapture(stream->get(), &graph));
   CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
 
   // When using cudagraph aware, need double-buffer to avoid data race on one
   // buffer because of skipping sync. For simplicity, we use 1 iteration here.
   constexpr int numIters = 1;
   for (int i = 0; i < numIters; i++) {
-    CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
+    CUDACHECK_TEST(cudaGraphLaunch(instance, stream->get()));
     auto nelems = comm->ctran_->gpe->numInUseKernelElems();
     EXPECT_NE(nelems, 0);
   }
 
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   CUDACHECK_TEST(cudaGraphExecDestroy(instance));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
@@ -1025,7 +1034,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
