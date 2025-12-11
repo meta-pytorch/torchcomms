@@ -2,10 +2,16 @@
 
 #include "CtranTestUtils.h"
 
+#include <atomic>
+#include <chrono>
+#include <thread>
+
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/utils/Utils.h"
+#include "comms/mccl/bootstrap/Bootstrap.h"
+#include "comms/mccl/bootstrap/CtranAdapter.h"
 #include "comms/mccl/utils/Utils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
@@ -13,15 +19,26 @@
 
 namespace ctran {
 
+// Static member initialization
+std::atomic<int> CtranDistTestFixture::testCount_{0};
+
+InitEnvType getInitEnvType() {
+  if (checkTcpStoreEnv()) {
+    return InitEnvType::TCP_STORE;
+  }
+  return InitEnvType::MPI;
+}
+
 void CtranEnvironmentBase::SetUp() {
-  // support MPI for now
-  // TODO can also support TCPStore
-  MPI_CHECK(MPI_Init(nullptr, nullptr));
+  const auto initType = getInitEnvType();
+  if (initType == InitEnvType::MPI) {
+    MPI_CHECK(MPI_Init(nullptr, nullptr));
+  }
+  // TCPStore doesn't need global initialization
 
-  // set up default envs for CTRAN tests
-
-  // default logging level = INFO
-  // indiviudal test can override the logging level
+  // Set up default envs for CTRAN tests
+  // Default logging level = INFO
+  // Individual test can override the logging level
   setenv("NCCL_DEBUG", "INFO", 0);
 
   // Disable FBWHOAMI Topology failure for tests
@@ -32,11 +49,49 @@ void CtranEnvironmentBase::SetUp() {
 }
 
 void CtranEnvironmentBase::TearDown() {
-  MPI_CHECK(MPI_Finalize());
+  const auto initType = getInitEnvType();
+  if (initType == InitEnvType::MPI) {
+    MPI_CHECK(MPI_Finalize());
+  }
+  // TCPStore doesn't need global cleanup
 }
 
 void CtranDistTestFixture::SetUp() {
-  // get my rank info via MPI
+  const auto initType = getInitEnvType();
+
+  // Get rank info based on initialization type
+  if (initType == InitEnvType::MPI) {
+    setUpMpi();
+  } else if (initType == InitEnvType::TCP_STORE) {
+    setUpTcpStore();
+  }
+
+  // Initialize ctran settings
+  setenv("RANK", std::to_string(globalRank).c_str(), 1);
+  CUDACHECK_TEST(cudaSetDevice(localRank));
+  ncclCvarInit();
+  ctran::logging::initCtranLogging(true /*alwaysInit*/);
+  COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
+
+#ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
+  enableNolocal = true;
+#endif
+
+  if (globalRank == 0) {
+    XLOG(INFO) << "Testing with NCCL_COMM_STATE_DEBUG_TOPO="
+               << (enableNolocal ? "nolocal" : "default");
+  }
+
+  stream.emplace(cudaStreamNonBlocking); // Create RAII non-blocking CUDA stream
+}
+
+void CtranDistTestFixture::TearDown() {
+  stream.reset(); // Reset the CUDA stream (RAII handles destruction)
+  tcpStore_.reset();
+}
+
+void CtranDistTestFixture::setUpMpi() {
+  // Get rank info via MPI
   MPI_CHECK(MPI_Comm_rank(MPI_COMM_WORLD, &globalRank));
   MPI_CHECK(MPI_Comm_size(MPI_COMM_WORLD, &numRanks));
 
@@ -50,17 +105,111 @@ void CtranDistTestFixture::SetUp() {
   MPI_CHECK(MPI_Comm_rank(localComm, &localRank));
   MPI_CHECK(MPI_Comm_size(localComm, &numLocalRanks_));
   MPI_CHECK(MPI_Comm_free(&localComm));
-
-  // initialize ctran settings
-  CUDACHECK_TEST(cudaSetDevice(localRank));
-  ncclCvarInit();
-  ctran::logging::initCtranLogging(true /*alwaysInit*/);
-  COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
 }
 
-void CtranDistTestFixture::TearDown() {}
+void CtranDistTestFixture::setUpTcpStore() {
+  // Get rank info from environment variables
+  localRank = std::stoi(getenv("LOCAL_RANK"));
+  globalRank = std::stoi(getenv("GLOBAL_RANK"));
+  numRanks = std::stoi(getenv("WORLD_SIZE"));
+  numLocalRanks_ = std::stoi(getenv("LOCAL_SIZE"));
+
+  tcpStore_ = createTcpStore(isTcpStoreServer()); // Initialize TCP Store
+}
+
+bool CtranDistTestFixture::isTcpStoreServer() const {
+  return globalRank == 0;
+}
+
+std::unique_ptr<c10d::TCPStore> CtranDistTestFixture::createTcpStore(
+    bool isServer) {
+  const char* masterAddrStr = getenv("MASTER_ADDR");
+  const char* masterPortStr = getenv("MASTER_PORT");
+  if (!masterAddrStr) {
+    XLOG(FATAL) << "MASTER_ADDR env variable is not set";
+  }
+  if (!masterPortStr) {
+    XLOG(FATAL) << "MASTER_PORT env variable is not set";
+  }
+
+  testCount_.fetch_add(1);
+  auto key = fmt::format("test_tcpstore_init_{}", testCount_.load());
+
+  const std::string masterAddr(masterAddrStr);
+  c10d::TCPStoreOptions opts{
+      .port = static_cast<uint16_t>(std::stoi(masterPortStr)),
+      .waitWorkers = false,
+      .useLibUV = true,
+      .isServer = isServer,
+  };
+
+  XLOG(INFO) << "TCPStore "
+             << (isServer ? "server starting on " : "client connecting to ")
+             << masterAddr << ":" << opts.port << " ..." << " using key "
+             << key;
+
+  if (isServer) {
+    auto server = std::make_unique<c10d::TCPStore>(masterAddr, opts);
+    server->set(key, {1});
+    XLOG(INFO) << "TCPStore server started.";
+    return server;
+  }
+
+  // TCPStore Client may start before fresh TCPStore Server has started
+  // We need to retry until we connect to a fresh TCPStore Server
+  while (true) {
+    try {
+      auto server = std::make_unique<c10d::TCPStore>(masterAddr, opts);
+      if (server->check({key})) {
+        XLOG(INFO) << "TCPStore client started.";
+        return server;
+      }
+    } catch (...) {
+      XLOG(INFO) << "Connected to stale TCPStore Server. "
+                 << "Waiting for fresh TCPStore Server to start.";
+      std::this_thread::sleep_for(
+          std::chrono::milliseconds{100}); // Sleep for 100ms
+    }
+  }
+}
+
+std::vector<std::string> CtranDistTestFixture::exchangeInitUrls(
+    const std::string& selfUrl,
+    int numRanks,
+    int selfRank) {
+  const auto initType = getInitEnvType();
+  CHECK(initType == InitEnvType::TCP_STORE);
+
+  std::vector<std::string> res(numRanks);
+  std::vector<std::string> rankKeys(numRanks);
+
+  const auto testNum = testCount_.load();
+  const auto keyUid = fmt::format("commid_{}", testNum);
+
+  for (int i = 0; i < numRanks; ++i) {
+    rankKeys.at(i) = fmt::format("rank_{}_{}", i, keyUid);
+  }
+  const auto selfRankKey = fmt::format("rank_{}_{}", selfRank, keyUid);
+  std::vector<uint8_t> urlBuf(selfUrl.begin(), selfUrl.end());
+  tcpStore_->set(selfRankKey, urlBuf);
+
+  // Wait for urls set by peer ranks
+  tcpStore_->wait(rankKeys);
+  if (tcpStore_->check(rankKeys)) {
+    auto rankUrls = tcpStore_->multiGet(rankKeys);
+    for (int i = 0; i < numRanks; ++i) {
+      const auto& url = rankUrls.at(i);
+      res[i] = std::string(url.begin(), url.end());
+    }
+  } else {
+    XLOG(FATAL) << "TCPStore key check returned false";
+  }
+
+  return res;
+}
 
 std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
+  const auto initType = getInitEnvType();
   const std::string uuid{"0"};
   uint64_t commHash =
       ctran::utils::getHash(uuid.data(), static_cast<int>(uuid.size()));
@@ -74,7 +223,33 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
   comm->logMetaData_.rank = globalRank;
   comm->logMetaData_.nRanks = numRanks;
 
-  comm->bootstrap_ = std::make_unique<meta::comms::MpiBootstrap>();
+  // Use appropriate bootstrap based on init type
+  if (initType == InitEnvType::MPI) {
+    comm->bootstrap_ = std::make_unique<meta::comms::MpiBootstrap>();
+  } else {
+    // For TCP Store, create and initialize mccl::bootstrap::Bootstrap
+    // then wrap with CtranAdapter
+    auto bootstrap = std::make_shared<mccl::bootstrap::Bootstrap>(
+        NCCL_SOCKET_IFNAME,
+        mccl::bootstrap::Options{
+            .port = 0, .ifAddrPrefix = NCCL_SOCKET_IPADDR_PREFIX});
+
+    // Get our own URL and exchange with all ranks
+    std::string selfUrl = bootstrap->semi_getInitUrl().get();
+    XLOG(INFO) << "Rank " << globalRank << " initURL: " << selfUrl;
+
+    auto allUrls = exchangeInitUrls(selfUrl, numRanks, globalRank);
+
+    // Convert to vector of InitURL for init() call
+    std::vector<mccl::InitURL> urlVec(allUrls.begin(), allUrls.end());
+
+    // Initialize the bootstrap with all URLs
+    // void init(urls, myRank, uuid, abort, timeout)
+    bootstrap->init(urlVec, static_cast<size_t>(globalRank), 0 /* uuid */);
+
+    comm->bootstrap_ =
+        std::make_unique<mccl::bootstrap::CtranAdapter>(bootstrap);
+  }
 
   // Initialize StateX
   int cudaDev;
