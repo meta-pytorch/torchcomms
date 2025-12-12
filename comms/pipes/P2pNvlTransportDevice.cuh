@@ -346,6 +346,10 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
             ? kChunkSize
             : stepBytes - chunkOffset;
 
+        if (chunkBytes == 0) {
+          return;
+        }
+
         ChunkState& chunkState = sendStates[stateOffset + chunkIdx];
 
         chunkState.waitReadyToSend(group);
@@ -441,6 +445,10 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
         const std::size_t chunkBytes = (chunkOffset + kChunkSize <= stepBytes)
             ? kChunkSize
             : stepBytes - chunkOffset;
+
+        if (chunkBytes == 0) {
+          return;
+        }
 
         ChunkState& chunkState = recvStates[stateOffset + chunkIdx];
 

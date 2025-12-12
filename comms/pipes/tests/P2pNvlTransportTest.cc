@@ -376,7 +376,36 @@ INSTANTIATE_TEST_SUITE_P(
             .nbytes = 64 * 1024 * 1024,
             .dataBufferSize = 8 * 1024 * 1024,
             .chunkSize = 1024,
-            .name = "VeryLargeMultiStep_64MB"}),
+            .name = "VeryLargeMultiStep_64MB"},
+        // Edge case: stepBytes exactly divisible by chunkSize (no partial
+        // chunk) Tests that we don't process any 0-byte chunks
+        TransferSizeParams{
+            .nbytes = 4096,
+            .dataBufferSize = 4096,
+            .chunkSize = 1024,
+            .name = "ExactChunkBoundary_4Chunks"},
+        // Edge case: last chunk has minimal bytes (1 byte remainder)
+        // stepBytes=4097, chunkSize=1024 → 5 chunks, last chunk = 1 byte
+        TransferSizeParams{
+            .nbytes = 4097,
+            .dataBufferSize = 8192,
+            .chunkSize = 1024,
+            .name = "MinimalLastChunk_1Byte"},
+        // Edge case: multiple steps where each step ends exactly on chunk
+        // boundary 8KB transfer, 4KB buffer, 1KB chunks → 2 steps × 4 chunks
+        // each
+        TransferSizeParams{
+            .nbytes = 8 * 1024,
+            .dataBufferSize = 4 * 1024,
+            .chunkSize = 1024,
+            .name = "MultiStep_ExactChunkBoundaries"},
+        // Edge case: chunkSize larger than stepBytes
+        // Forces single chunk per step with partial fill
+        TransferSizeParams{
+            .nbytes = 2048,
+            .dataBufferSize = 1024,
+            .chunkSize = 2048,
+            .name = "ChunkLargerThanStep"}),
     transferSizeParamName);
 
 // =============================================================================
