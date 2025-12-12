@@ -82,14 +82,14 @@ class CtranIbBootstrapTestBase : public ::testing::Test {
   bool waitForVcEstablished(
       CtranIb* ctranIb,
       int peerRank,
-      std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+      std::chrono::milliseconds timeout = 5000ms) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout) {
       auto vc = ctranIb->getVc(peerRank);
       if (vc != nullptr) {
         return true;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(10ms);
     }
     return false;
   }
@@ -213,8 +213,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapSendRecvCtrlMsg) {
 
     EXPECT_EQ(result, commSuccess);
 
-    bool established =
-        waitForVcEstablished(ctranIb0.get(), 1, std::chrono::seconds(5));
+    bool established = waitForVcEstablished(ctranIb0.get(), 1, 5s);
     EXPECT_TRUE(established);
 
     do {
@@ -252,8 +251,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapSendRecvCtrlMsg) {
 
     // Rank 1 waits for rank 0 to connect (handled by bootstrapAccept
     // thread) Wait for connection to be established
-    bool established =
-        waitForVcEstablished(ctranIb1.get(), 0, std::chrono::seconds(5));
+    bool established = waitForVcEstablished(ctranIb1.get(), 0, 5s);
     EXPECT_TRUE(established);
 
     do {
@@ -382,7 +380,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, InvalidMagicNumberRejection) {
 
   // Listen thread should receive connection but reject it due to invalid magic
   // The VC should not be established
-  std::this_thread::sleep_for(std::chrono::seconds(1));
+  std::this_thread::sleep_for(1s);
 
   // Verify VC was not established
   auto vc = ctranIb->getVc(1);
@@ -394,6 +392,55 @@ TEST_P(CtranIbBootstrapParameterizedTest, InvalidMagicNumberRejection) {
 // Enum to specify which control message operation to test
 enum class CtrlMsgOperation { Send, Recv };
 
+// Helper to create a valid remote bus card for testing
+std::string createValidRemoteBusCard() {
+  // BusCard structure matches the one in CtranIbVc.cc
+  // CTRAN_HARDCODED_MAX_QPS is defined in CtranIbVc.cc as 128
+  // NOTE: This struct is intentionally duplicated from CtranIbVc.cc
+  // because BusCard is an internal implementation detail not exposed
+  // in any header. This must be kept in sync manually...
+  // See CtranIbVc.cc for the canonical definition.
+  constexpr int kCtranHardcodedMaxQps = 128;
+
+  struct BusCard {
+    enum ibverbx::ibv_mtu mtu;
+    uint32_t controlQpn;
+    uint32_t notifQpn;
+    uint32_t atomicQpn;
+    uint32_t dataQpn[kCtranHardcodedMaxQps];
+    uint8_t ports[CTRAN_MAX_IB_DEVICES_PER_RANK];
+    union {
+      struct {
+        uint64_t spns[CTRAN_MAX_IB_DEVICES_PER_RANK];
+        uint64_t iids[CTRAN_MAX_IB_DEVICES_PER_RANK];
+      } eth;
+      struct {
+        uint16_t lids[CTRAN_MAX_IB_DEVICES_PER_RANK];
+      } ib;
+    } u;
+  };
+
+  BusCard busCard{};
+  busCard.mtu = ibverbx::IBV_MTU_4096;
+  busCard.controlQpn = 100;
+  busCard.notifQpn = 101;
+  busCard.atomicQpn = 102;
+
+  for (int i = 0; i < kCtranHardcodedMaxQps; i++) {
+    busCard.dataQpn[i] = 200 + i;
+  }
+
+  for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
+    busCard.ports[i] = 1; // Port 1 is typical for IB devices
+  }
+
+  for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
+    busCard.u.eth.spns[i] = 0xfe80000000000000ULL; // Link-local subnet prefix
+    busCard.u.eth.iids[i] = 0x0000000000000001ULL + i; // Interface ID
+  }
+
+  return std::string(reinterpret_cast<const char*>(&busCard), sizeof(BusCard));
+}
 // Parameterized test fixture for control message abort testing
 class CtranIbAbortCtrlMsgTest
     : public CtranIbBootstrapTestBase,
@@ -443,57 +490,6 @@ class CtranIbAbortCtrlMsgTest
                      const std::string& ifName) { return 0; });
 
     return mockServerSocket;
-  }
-
-  // Helper to create a valid remote bus card for testing
-  std::string createValidRemoteBusCard() {
-    // BusCard structure matches the one in CtranIbVc.cc
-    // CTRAN_HARDCODED_MAX_QPS is defined in CtranIbVc.cc as 128
-    // NOTE: This struct is intentionally duplicated from CtranIbVc.cc
-    // because BusCard is an internal implementation detail not exposed
-    // in any header. This must be kept in sync manually...
-    // See CtranIbVc.cc for the canonical definition.
-    constexpr int kCtranHardcodedMaxQps = 128;
-
-    struct BusCard {
-      enum ibverbx::ibv_mtu mtu;
-      uint32_t controlQpn;
-      uint32_t notifQpn;
-      uint32_t atomicQpn;
-      uint32_t dataQpn[kCtranHardcodedMaxQps];
-      uint8_t ports[CTRAN_MAX_IB_DEVICES_PER_RANK];
-      union {
-        struct {
-          uint64_t spns[CTRAN_MAX_IB_DEVICES_PER_RANK];
-          uint64_t iids[CTRAN_MAX_IB_DEVICES_PER_RANK];
-        } eth;
-        struct {
-          uint16_t lids[CTRAN_MAX_IB_DEVICES_PER_RANK];
-        } ib;
-      } u;
-    };
-
-    BusCard busCard{};
-    busCard.mtu = ibverbx::IBV_MTU_4096;
-    busCard.controlQpn = 100;
-    busCard.notifQpn = 101;
-    busCard.atomicQpn = 102;
-
-    for (int i = 0; i < kCtranHardcodedMaxQps; i++) {
-      busCard.dataQpn[i] = 200 + i;
-    }
-
-    for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
-      busCard.ports[i] = 1; // Port 1 is typical for IB devices
-    }
-
-    for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
-      busCard.u.eth.spns[i] = 0xfe80000000000000ULL; // Link-local subnet prefix
-      busCard.u.eth.iids[i] = 0x0000000000000001ULL + i; // Interface ID
-    }
-
-    return std::string(
-        reinterpret_cast<const char*>(&busCard), sizeof(BusCard));
   }
 
   // Execute a test for control message operations (send or recv) with abort
@@ -862,7 +858,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringListenThreadAccept) {
 
   // Verify thread joined quickly (not hanging)
   auto destroyTime = std::chrono::steady_clock::now() - startDestroy;
-  EXPECT_LT(destroyTime, std::chrono::seconds(2))
+  EXPECT_LT(destroyTime, 2s)
       << "Listen thread should terminate quickly after abort";
 }
 
@@ -890,7 +886,7 @@ TEST_F(CtranIbBootstrapCommonTest, ListenThreadTerminatesOnShutdown) {
     auto elapsed = std::chrono::steady_clock::now() - startDestroy;
 
     // Verify destruction completed quickly
-    EXPECT_LT(elapsed, std::chrono::seconds(2))
+    EXPECT_LT(elapsed, 2s)
         << "Destructor should complete quickly after shutdown";
   }
 
@@ -994,7 +990,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
 
     // Keep trying to progress request for ~5 seconds before giving up.
     // Just need to confirm that it doesn't complete.
-    if (elapsed > std::chrono::seconds(1)) {
+    if (elapsed > 1s) {
       break;
     }
   }
@@ -1002,7 +998,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   // Verify abort happened quickly
-  EXPECT_LT(elapsed, std::chrono::seconds(10));
+  EXPECT_LT(elapsed, 10s);
   EXPECT_NE(result, commSuccess);
   EXPECT_TRUE(abortCtrl->Test());
 
