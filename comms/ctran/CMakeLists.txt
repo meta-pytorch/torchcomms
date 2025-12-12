@@ -8,7 +8,7 @@ file(GLOB_RECURSE CTRAN_SOURCES
 )
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/tests/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/benchmarks/.*")
-if (NOT DEFINED ENABLE_TCPDM)
+if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
     add_compile_definitions(CTRAN_DISABLE_TCPDM)
     list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/ctran/backends/tcpdevmem/.*")
 endif()
@@ -42,7 +42,7 @@ target_compile_options(ctran PRIVATE
     # copied from nccl
     $<$<COMPILE_LANGUAGE:CUDA>:--expt-extended-lambda -Xptxas -maxrregcount=96 -Xfatbin -compress-all>
 )
-if (NOT DEFINED ENABLE_TCPDM)
+if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
     target_compile_options(ctran PRIVATE
         # copied from nccl
         $<$<COMPILE_LANGUAGE:CUDA>:--compiler-options "-DCTRAN_DISABLE_TCPDM">

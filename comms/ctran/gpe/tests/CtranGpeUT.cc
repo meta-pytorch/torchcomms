@@ -11,13 +11,14 @@
 #include "comms/ctran/utils/Checks.h"
 // FIXME [REBASE]: update the path once moved to fbcode/comms
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 class CtranGpeTest : public ::testing::Test {
  public:
   CtranGpe* gpe;
   int cudaDev;
-  std::unique_ptr<TestCtranCommRAII> dummyCommRAII;
+  std::unique_ptr<ctran::TestCtranCommRAII> dummyCommRAII;
   CtranComm* dummyComm{nullptr};
   CtranAlgoDeviceState* dummyDevState_d{nullptr};
 
@@ -32,7 +33,7 @@ class CtranGpeTest : public ::testing::Test {
     ncclCvarInit();
 
     CUDACHECK_TEST(cudaMalloc(&dummyDevState_d, sizeof(CtranAlgoDeviceState)));
-    dummyCommRAII = createDummyCtranComm();
+    dummyCommRAII = ctran::createDummyCtranComm();
     dummyComm = dummyCommRAII->ctranComm.get();
   }
   void TearDown() override {
@@ -47,7 +48,7 @@ class CtranGpeKernelTest : public ::testing::Test {
  public:
   volatile int* testFlag;
   CtranAlgoDeviceState* dummyDevState_d{nullptr};
-  std::unique_ptr<TestCtranCommRAII> dummyCommRAII;
+  std::unique_ptr<ctran::TestCtranCommRAII> dummyCommRAII;
   CtranComm* dummyComm{nullptr};
   int cudaDev;
   CtranGpeKernelTest() = default;
@@ -60,7 +61,7 @@ class CtranGpeKernelTest : public ::testing::Test {
     // Ensure logger is initialized
     ncclCvarInit();
 
-    dummyCommRAII = createDummyCtranComm();
+    dummyCommRAII = ctran::createDummyCtranComm();
     dummyComm = dummyCommRAII->ctranComm.get();
 
     FB_CUDACHECKIGNORE(

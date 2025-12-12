@@ -8,7 +8,8 @@
 
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/socket/CtranSocket.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 commResult_t waitSocketReq(
     CtranSocketRequest& req,
@@ -19,12 +20,13 @@ commResult_t waitSocketReq(
   return commSuccess;
 }
 
-class CtranSocketTest : public CtranDistTest {
+class CtranSocketTest : public ctran::CtranDistTestFixture {
  public:
   CtranSocketTest() = default;
   void SetUp() override {
-    CtranDistTest::SetUp();
-    comm = commRAII->ctranComm.get();
+    ctran::CtranDistTestFixture::SetUp();
+    comm_ = makeCtranComm();
+    comm = comm_.get();
     ctrlMgr = std::make_unique<CtranCtrlManager>();
   }
 
@@ -36,6 +38,7 @@ class CtranSocketTest : public CtranDistTest {
   }
 
  protected:
+  std::unique_ptr<CtranComm> comm_{nullptr};
   CtranComm* comm{nullptr};
   std::unique_ptr<CtranCtrlManager> ctrlMgr{nullptr};
 };
@@ -380,7 +383,7 @@ TEST_F(CtranSocketTest, CtrlMsgAndPreConnect) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

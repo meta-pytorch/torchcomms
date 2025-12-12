@@ -14,21 +14,21 @@
 #endif
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/tests_common.cuh"
 
 __global__ void halfCountKernel(size_t* sendCounts, int numRanks);
 
-class AllToAllvDynamicPerfTestCommon : public CtranDistTest {
+class AllToAllvDynamicPerfTestCommon : public ctran::CtranDistTestFixture {
  public:
   AllToAllvDynamicPerfTestCommon() = default;
   void SetUp() override {
-    CtranDistTest::SetUp();
-    comm = commRAII->ctranComm.get();
-
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-    CUDACHECK_TEST(cudaStreamCreate(&stream));
+    ctran::CtranDistTestFixture::SetUp();
+    // Create CtranComm using the fixture's helper
+    ctranComm = makeCtranComm();
+    comm = ctranComm.get();
+    // stream and device already set by fixture
 
     CUDACHECK_TEST(cudaMalloc(&scounts, numRanks * sizeof(size_t)));
     CUDACHECK_TEST(cudaMalloc(&actualRcounts, numRanks * sizeof(size_t)));
@@ -40,9 +40,13 @@ class AllToAllvDynamicPerfTestCommon : public CtranDistTest {
     CUDACHECK_TEST(cudaFree(scounts));
     CUDACHECK_TEST(cudaFree(actualRcounts));
     CUDACHECK_TEST(cudaFreeHost(scountsHost));
-
-    CUDACHECK_TEST(cudaStreamDestroy(stream));
-    CtranDistTest::TearDown();
+    // Destroy comm before fixture teardown
+    if (ctranComm) {
+      ctranComm->destroy();
+      ctranComm.reset();
+    }
+    // stream destroyed by fixture
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void AllocateBuffers(MemAllocType memType, size_t maxCount, bool registFlag) {
@@ -191,8 +195,9 @@ class AllToAllvDynamicPerfTestCommon : public CtranDistTest {
   }
 
  protected:
+  std::unique_ptr<CtranComm> ctranComm; // Own the CtranComm instance
   CtranComm* comm{nullptr};
-  cudaStream_t stream;
+  // Note: stream is inherited from CtranDistTestFixture
   std::vector<void*> sendbuffs;
   std::vector<void*> recvbuffs;
   int* sendBufContig{nullptr};
@@ -256,7 +261,7 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvBaseline) {
     }
     for (int i = 0; i < totalTimes_ + warmupTime; i++) {
       if (i == warmupTime) {
-        CUDACHECK_TEST(cudaEventRecord(eventStart, stream));
+        CUDACHECK_TEST(cudaEventRecord(eventStart, stream->get()));
       }
       COMMCHECK_TEST(ctranAllToAllv(
           sendBufContig,
@@ -267,10 +272,10 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvBaseline) {
           recvDispls.data(),
           commInt,
           comm,
-          stream));
+          stream->get()));
     }
-    CUDACHECK_TEST(cudaEventRecord(eventEnd, stream));
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaEventRecord(eventEnd, stream->get()));
+    CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
     CUDACHECK_TEST(cudaEventElapsedTime(&elapsedTime, eventStart, eventEnd));
 
@@ -315,7 +320,7 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicUnchangedEqualCounts) {
         scountsHost,
         numRanks * sizeof(size_t),
         cudaMemcpyDefault,
-        stream));
+        stream->get()));
 
     maxSendcount = maxCountBuff;
     maxRecvcount = maxCountBuff;
@@ -326,7 +331,7 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicUnchangedEqualCounts) {
     }
     for (int i = 0; i < totalTimes_ + warmupTime; i++) {
       if (i == warmupTime) {
-        CUDACHECK_TEST(cudaEventRecord(eventStart, stream));
+        CUDACHECK_TEST(cudaEventRecord(eventStart, stream->get()));
       }
       COMMCHECK_TEST(ctranAllToAllvDynamic(
           sendbuffs.data(),
@@ -338,10 +343,10 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicUnchangedEqualCounts) {
           hints,
           commInt,
           comm,
-          stream));
+          stream->get()));
     }
-    CUDACHECK_TEST(cudaEventRecord(eventEnd, stream));
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
+    CUDACHECK_TEST(cudaEventRecord(eventEnd, stream->get()));
+    CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
     CUDACHECK_TEST(cudaEventElapsedTime(&elapsedTime, eventStart, eventEnd));
 
@@ -395,7 +400,7 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicEqualChangedCounts) {
           scountsHost,
           numRanks * sizeof(size_t),
           cudaMemcpyDefault,
-          stream));
+          stream->get()));
 
       maxSendcount = maxCountBuff;
       maxRecvcount = maxCountBuff;
@@ -407,7 +412,7 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicEqualChangedCounts) {
 
       for (int i = 0; i < totalTimes_ + warmupTime; i++) {
         if (i == warmupTime) {
-          CUDACHECK_TEST(cudaEventRecord(eventStart, stream));
+          CUDACHECK_TEST(cudaEventRecord(eventStart, stream->get()));
         }
         COMMCHECK_TEST(ctranAllToAllvDynamic(
             sendbuffs.data(),
@@ -419,10 +424,10 @@ TEST_P(AllToAllvDynamicPerfTestSuite, AllToAllvDynamicEqualChangedCounts) {
             hints,
             commInt,
             comm,
-            stream));
+            stream->get()));
       }
-      CUDACHECK_TEST(cudaEventRecord(eventEnd, stream));
-      CUDACHECK_TEST(cudaStreamSynchronize(stream));
+      CUDACHECK_TEST(cudaEventRecord(eventEnd, stream->get()));
+      CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
       CUDACHECK_TEST(cudaEventElapsedTime(&elapsedTime, eventStart, eventEnd));
 
@@ -446,7 +451,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

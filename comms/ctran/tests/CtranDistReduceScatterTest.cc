@@ -29,7 +29,7 @@ template <typename T>
 class CtranReduceScatterTest : public CtranDistBaseTest {
  public:
   CtranReduceScatterTest() = default;
-  commDataType_t dt = getCommDataType<T>();
+  commDataType_t dt = ctran::getCommDataType<T>();
   size_t sendBytes, recvBytes;
   T *sendBuf, *recvBuf;
   std::vector<TestMemSegment> segments;

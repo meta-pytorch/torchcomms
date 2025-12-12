@@ -18,7 +18,7 @@ class memoryUtilsTest : public ::testing::Test {
 
  protected:
   void SetUp() override {
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
     CUDACHECK_TEST(cudaSetDevice(cudaDev));
     setenv("NCCL_DEBUG", "INFO", 0);
     setenv("NCCL_DEBUG_SUBSYS", "ALLOC", 0);
@@ -35,7 +35,7 @@ class memoryUtilsTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
     NcclLogger::close();
   }
 };

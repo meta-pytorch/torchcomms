@@ -2,7 +2,7 @@
 
 #include <gtest/gtest.h>
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 template <int Threads>
 __global__ void checksumKernel(

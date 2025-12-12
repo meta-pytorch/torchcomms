@@ -31,7 +31,7 @@ class DeviceBuffer {
 // RAII helper for cuda stream
 class CudaStream {
  public:
-  CudaStream();
+  CudaStream(unsigned int flags = cudaStreamDefault);
   ~CudaStream();
 
   // delete copy constructor

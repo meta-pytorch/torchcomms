@@ -469,11 +469,10 @@ inline void issuePostRecvTrans(
   gkSync->post(step);
   postState.posted++;
   DEBUG_LOG(
-      "Rank {} PostRTrans posted for node {} step {}; update posted={}/{}",
-      ctx.commStatex->rank(),
+      "PostRTrans posted for node {} step {}; update posted={}/{}",
       node,
       step,
-      postState.done,
+      postState.posted,
       state.numRecvSteps[node]);
 }
 

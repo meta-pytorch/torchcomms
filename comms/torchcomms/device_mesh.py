@@ -51,7 +51,7 @@ def _create_torchcomm_process_group(
 
     # Create process group
     # pyre-fixme[6]: support store=None
-    pg = dist.ProcessGroup(None, comm.get_rank(), comm.get_size())
+    pg = dist.ProcessGroup(prefix_store, comm.get_rank(), comm.get_size())
 
     # Register backend
     # pyre-fixme[6]: BackendWrapper implements dist.Backend but types isn't aware

@@ -226,7 +226,7 @@ struct P2pNvlTransportOptions {
  *   // Host setup (once)
  *   P2pNvlTransport transport(myRank, nRanks, mpiBootstrap, config);
  *   transport.exchange();  // Exchange IPC handles
- *   auto device = transport.getTransportDevice(peerRank);
+ *   auto device = transport.getP2pTransportDevice(peerRank);
  *
  *   // Kernel (sender on GPU A)
  *   __global__ void sendKernel(P2pNvlTransportDevice p2p, void* src, size_t n)
@@ -346,6 +346,10 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
             ? kChunkSize
             : stepBytes - chunkOffset;
 
+        if (chunkBytes == 0) {
+          return;
+        }
+
         ChunkState& chunkState = sendStates[stateOffset + chunkIdx];
 
         chunkState.waitReadyToSend(group);
@@ -441,6 +445,10 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
         const std::size_t chunkBytes = (chunkOffset + kChunkSize <= stepBytes)
             ? kChunkSize
             : stepBytes - chunkOffset;
+
+        if (chunkBytes == 0) {
+          return;
+        }
 
         ChunkState& chunkState = recvStates[stateOffset + chunkIdx];
 

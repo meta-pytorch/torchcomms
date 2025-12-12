@@ -29,7 +29,7 @@ template <typename TYPE>
 class CtranAllReduceTest : public CtranDistBaseTest {
  public:
   CtranAllReduceTest() = default;
-  commDataType_t dt = getCommDataType<TYPE>();
+  commDataType_t dt = ctran::getCommDataType<TYPE>();
   size_t bytes;
   size_t bufSize;
   void *sendbuf, *recvbuf;

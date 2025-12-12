@@ -9,7 +9,7 @@
 #include <gtest/gtest.h>
 
 #include "comms/ctran/commstate/CommStateX.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 namespace ncclx {
 
