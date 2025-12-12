@@ -57,6 +57,25 @@ SocketServerAddr getSocketServerAddress(
   return serverAddr;
 }
 
+commResult_t sendCtrlMsg(
+    CtranIb* ctranIb,
+    int peerRank = 1,
+    std::optional<const SocketServerAddr*> peerServerAddr = std::nullopt) {
+  ControlMsg msg;
+  CtranIbRequest ctrlReq;
+  CtranIbEpochRAII epochRAII(ctranIb);
+  commResult_t result = ctranIb->isendCtrlMsg(
+      msg.type, &msg, sizeof(msg), peerRank, ctrlReq, peerServerAddr);
+
+  EXPECT_EQ(result, commSuccess);
+  do {
+    auto res = ctranIb->progress();
+    EXPECT_EQ(res, commSuccess);
+  } while (!ctrlReq.isComplete());
+
+  return result;
+}
+
 // Base test class without parameterization for non-parameterized tests
 class CtranIbBootstrapTestBase : public ::testing::Test {
  public:
@@ -185,7 +204,6 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapSendRecvCtrlMsg) {
 
   std::thread rank0Thread([&]() {
     EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
-
     SocketServerAddr serverAddr0 = getSocketServerAddress(0, "127.0.0.1", "lo");
 
     auto [ctranIb0, abortCtrl] = createCtranIbAndAbort(
@@ -197,36 +215,18 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapSendRecvCtrlMsg) {
     auto listenAddr = getAndValidateListenAddr(ctranIb0.get());
     listenAddrPromise0.setValue(listenAddr);
 
-    // Wait for peer's listen address
     auto peerAddr = std::move(listenAddrFuture1).get();
-
-    // Since rank 0 < rank 1, rank 0 should initiate the connection
     SocketServerAddr peerServerAddr = getSocketServerAddress(
         peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
 
-    ControlMsg msg;
-    CtranIbRequest ctrlReq;
-    CtranIbEpochRAII epochRAII(ctranIb0.get());
-
-    commResult_t result = ctranIb0->isendCtrlMsg(
-        msg.type, &msg, sizeof(msg), 1, ctrlReq, &peerServerAddr);
-
-    EXPECT_EQ(result, commSuccess);
+    sendCtrlMsg(ctranIb0.get(), /*peerRank=*/1, &peerServerAddr);
 
     bool established = waitForVcEstablished(ctranIb0.get(), 1, 5s);
     EXPECT_TRUE(established);
-
-    do {
-      auto res = ctranIb0->progress();
-      EXPECT_EQ(res, commSuccess);
-    } while (!ctrlReq.isComplete());
-    EXPECT_TRUE(ctrlReq.isComplete());
   });
 
   std::thread rank1Thread([&]() {
     EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
-
-    // Create CtranIb for rank 1 with specified server
     SocketServerAddr serverAddr1 = getSocketServerAddress(0, "127.0.0.1", "lo");
 
     auto [ctranIb1, abortCtrl] = createCtranIbAndAbort(
@@ -247,17 +247,16 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapSendRecvCtrlMsg) {
 
     ControlMsg msg;
     CtranIbRequest ctrlReq;
+    CtranIbEpochRAII epochRAII(ctranIb1.get());
     ctranIb1->irecvCtrlMsg(&msg, sizeof(msg), 0, ctrlReq, &peerServerAddr);
-
-    // Rank 1 waits for rank 0 to connect (handled by bootstrapAccept
-    // thread) Wait for connection to be established
-    bool established = waitForVcEstablished(ctranIb1.get(), 0, 5s);
-    EXPECT_TRUE(established);
 
     do {
       auto res = ctranIb1->progress();
       EXPECT_EQ(res, commSuccess);
     } while (!ctrlReq.isComplete());
+
+    bool established = waitForVcEstablished(ctranIb1.get(), 0, 5s);
+    EXPECT_TRUE(established);
   });
 
   rank0Thread.join();
@@ -292,9 +291,8 @@ TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
   ControlMsg msg;
   CtranIbRequest ctrlReq;
   CtranIbEpochRAII epochRAII(ctranIb.get());
-
   commResult_t result = ctranIb->isendCtrlMsg(
-      msg.type, &msg, sizeof(msg), 1, ctrlReq, &invalidServerAddr);
+      msg.type, &msg, sizeof(msg), /*peerRank=*/1, ctrlReq, &invalidServerAddr);
 
   auto elapsed = std::chrono::steady_clock::now() - start;
 
@@ -328,10 +326,8 @@ TEST_F(CtranIbBootstrapCommonTest, AbortTimeoutSendCtrlMsg) {
   ControlMsg msg;
   CtranIbRequest ctrlReq;
   CtranIbEpochRAII epochRAII(ctranIb.get());
-
   commResult_t result = ctranIb->isendCtrlMsg(
-      msg.type, &msg, sizeof(msg), 1, ctrlReq, &invalidServerAddr);
-
+      msg.type, &msg, sizeof(msg), /*peerRank=*/1, ctrlReq, &invalidServerAddr);
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   // Should abort quickly
