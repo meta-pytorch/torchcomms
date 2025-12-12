@@ -296,70 +296,41 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapStartSpecifiedServer) {
 }
 
 TEST_P(CtranIbBootstrapParameterizedTest, BootstrapSendRecvCtrlMsg) {
-  auto [listenAddrPromise0, listenAddrFuture0] =
-      folly::makePromiseContract<folly::SocketAddress>();
-  auto [listenAddrPromise1, listenAddrFuture1] =
-      folly::makePromiseContract<folly::SocketAddress>();
-
-  std::thread rank0Thread([&]() {
-    EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
-    SocketServerAddr serverAddr0 = getSocketServerAddress(0, "127.0.0.1", "lo");
-
-    auto [ctranIb0, abortCtrl] = createCtranIbAndAbort(
-        /*rank=*/0,
-        CtranIb::BootstrapMode::kSpecifiedServer,
-        false,
-        &serverAddr0);
-
-    auto listenAddr = getAndValidateListenAddr(ctranIb0.get());
-    listenAddrPromise0.setValue(listenAddr);
-
-    auto peerAddr = std::move(listenAddrFuture1).get();
+  auto rank0Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
     SocketServerAddr peerServerAddr = getSocketServerAddress(
         peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
 
-    sendCtrlMsg(ctranIb0.get(), /*peerRank=*/1, &peerServerAddr);
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
 
-    bool established = waitForVcEstablished(ctranIb0.get(), 1, 5s);
+    bool established = waitForVcEstablished(ctranIb, 1, 5s);
     EXPECT_TRUE(established);
-  });
+  };
 
-  std::thread rank1Thread([&]() {
-    EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
-    SocketServerAddr serverAddr1 = getSocketServerAddress(0, "127.0.0.1", "lo");
-
-    auto [ctranIb1, abortCtrl] = createCtranIbAndAbort(
-        /*rank=*/1,
-        CtranIb::BootstrapMode::kSpecifiedServer,
-        false,
-        &serverAddr1);
-
-    auto listenAddr = getAndValidateListenAddr(ctranIb1.get());
-    listenAddrPromise1.setValue(listenAddr);
-
-    // Wait for peer's listen address (needed for synchronization)
-    auto peerListenAddr = std::move(listenAddrFuture0).get();
+  auto rank1Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
     SocketServerAddr peerServerAddr = getSocketServerAddress(
-        peerListenAddr.getPort(),
-        peerListenAddr.getIPAddress().str().c_str(),
-        "lo");
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
 
     ControlMsg msg;
     CtranIbRequest ctrlReq;
-    CtranIbEpochRAII epochRAII(ctranIb1.get());
-    ctranIb1->irecvCtrlMsg(&msg, sizeof(msg), 0, ctrlReq, &peerServerAddr);
+    CtranIbEpochRAII epochRAII(ctranIb);
+    ctranIb->irecvCtrlMsg(&msg, sizeof(msg), 0, ctrlReq, &peerServerAddr);
 
     do {
-      auto res = ctranIb1->progress();
+      auto res = ctranIb->progress();
       EXPECT_EQ(res, commSuccess);
     } while (!ctrlReq.isComplete());
 
-    bool established = waitForVcEstablished(ctranIb1.get(), 0, 5s);
+    bool established = waitForVcEstablished(ctranIb, 0, 5s);
     EXPECT_TRUE(established);
-  });
+  };
 
-  rank0Thread.join();
-  rank1Thread.join();
+  TwoRankTestHelper(rank0Action, rank1Action).run();
 }
 
 TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
