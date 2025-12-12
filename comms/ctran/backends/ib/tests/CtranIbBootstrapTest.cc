@@ -1074,3 +1074,64 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
   EXPECT_EQ(vc, nullptr) << "VC should not be created after abort during "
                             "bus card exchange";
 }
+
+// Test aborting waitNotify operation
+TEST_F(CtranIbBootstrapCommonTest, AbortWaitNotify) {
+  auto rank0Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+
+    bool established =
+        waitForVcEstablished(ctranIb, 1, std::chrono::seconds(5));
+    EXPECT_TRUE(established);
+
+    // Set timeout to abort waitNotify
+    abortCtrl->SetTimeout(std::chrono::milliseconds(500));
+
+    XLOG(INFO) << "Rank 0 calling ctranIb->waitNotify(1, 1)";
+
+    // Try to wait for a notify that will never come
+    auto startWaitNotify = std::chrono::steady_clock::now();
+    EXPECT_THROW(ctranIb->waitNotify(1, 1), ::ctran::utils::Exception);
+    auto elapsed = std::chrono::steady_clock::now() - startWaitNotify;
+
+    // Should abort after timeout
+    EXPECT_LT(elapsed, std::chrono::seconds(5));
+    EXPECT_TRUE(abortCtrl->Test());
+    XLOGF(INFO, "Rank 0 waitNotify aborted by timeout as expected");
+  };
+
+  auto rank1Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    ControlMsg msg;
+    CtranIbRequest ctrlReq;
+    CtranIbEpochRAII epochRAII(ctranIb);
+    ctranIb->irecvCtrlMsg(&msg, sizeof(msg), 0, ctrlReq, &peerServerAddr);
+
+    do {
+      auto res = ctranIb->progress();
+      EXPECT_EQ(res, commSuccess);
+    } while (!ctrlReq.isComplete());
+
+    bool established =
+        waitForVcEstablished(ctranIb, 0, std::chrono::seconds(5));
+    EXPECT_TRUE(established);
+
+    // Don't send notifications - let rank 0 timeout
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    XLOGF(INFO, "Rank 1 completed without sending notify");
+  };
+
+  TwoRankTestHelper(rank0Action, rank1Action).run();
+}
