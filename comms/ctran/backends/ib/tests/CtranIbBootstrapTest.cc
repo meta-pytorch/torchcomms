@@ -76,6 +76,105 @@ commResult_t sendCtrlMsg(
   return result;
 }
 
+// Helper to create CtranIb for all tests
+std::unique_ptr<CtranIb> createCtranIb(
+    int rank,
+    CtranIb::BootstrapMode mode,
+    AbortPtr abortCtrl,
+    std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr) {
+  const uint64_t commHash = 0x12345678;
+  const std::string commDesc = "test";
+
+  if (socketFactory == nullptr) {
+    socketFactory =
+        std::make_shared<ctran::bootstrap::AbortableSocketFactory>();
+  }
+
+  return std::make_unique<CtranIb>(
+      rank,
+      rank, // Use rank as CUDA device identifier
+      commHash,
+      commDesc,
+      nullptr, // ctrlMgr
+      false, // enableLocalFlush
+      mode,
+      qpServerAddr,
+      abortCtrl,
+      socketFactory);
+}
+
+// Helper to wait for VC to be established
+bool waitForVcEstablished(
+    CtranIb* ctranIb,
+    int peerRank,
+    std::chrono::milliseconds timeout = 5s) {
+  auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < timeout) {
+    auto vc = ctranIb->getVc(peerRank);
+    if (vc != nullptr) {
+      return true;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  return false;
+}
+
+// Helper class to run two-rank tests with address exchange
+class TwoRankTestHelper {
+ public:
+  using RankAction = std::function<void(
+      CtranIb* ctranIb,
+      const folly::SocketAddress& peerAddr,
+      AbortPtr abortCtrl)>;
+
+  TwoRankTestHelper(RankAction rank0Action, RankAction rank1Action)
+      : rank0Action_(std::move(rank0Action)),
+        rank1Action_(std::move(rank1Action)) {}
+
+  void run() {
+    auto [listenAddrPromise0, listenAddrFuture0] =
+        folly::makePromiseContract<folly::SocketAddress>();
+    auto [listenAddrPromise1, listenAddrFuture1] =
+        folly::makePromiseContract<folly::SocketAddress>();
+
+    std::thread rank0Thread([&]() {
+      EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
+      SocketServerAddr serverAddr = getSocketServerAddress();
+      auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+      auto ctranIb = createCtranIb(
+          0, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
+
+      auto listenAddr = getAndValidateListenAddr(ctranIb.get());
+      listenAddrPromise0.setValue(listenAddr);
+
+      auto peerAddr = std::move(listenAddrFuture1).get();
+      rank0Action_(ctranIb.get(), peerAddr, abortCtrl);
+    });
+
+    std::thread rank1Thread([&]() {
+      EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
+      SocketServerAddr serverAddr = getSocketServerAddress();
+      auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+      auto ctranIb = createCtranIb(
+          1, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
+
+      auto listenAddr = getAndValidateListenAddr(ctranIb.get());
+      listenAddrPromise1.setValue(listenAddr);
+
+      auto peerAddr = std::move(listenAddrFuture0).get();
+      rank1Action_(ctranIb.get(), peerAddr, abortCtrl);
+    });
+
+    rank0Thread.join();
+    rank1Thread.join();
+  }
+
+ private:
+  RankAction rank0Action_;
+  RankAction rank1Action_;
+};
+
 // Base test class without parameterization for non-parameterized tests
 class CtranIbBootstrapTestBase : public ::testing::Test {
  public:
@@ -437,6 +536,7 @@ std::string createValidRemoteBusCard() {
 
   return std::string(reinterpret_cast<const char*>(&busCard), sizeof(BusCard));
 }
+
 // Parameterized test fixture for control message abort testing
 class CtranIbAbortCtrlMsgTest
     : public CtranIbBootstrapTestBase,
