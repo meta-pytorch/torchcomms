@@ -350,6 +350,17 @@ TorchCommXCCL::all_reduce(at::Tensor &tensor, const ReduceOp &op, bool async_op,
     return work;
   }
 
+  // oneCCL bug skips premul sum if comm_size is 1, so handle it here
+  // TODO: remove this workaround when oneCCL bug is fixed
+  if (comm_size_ == 1 && op.type() == ReduceOp::RedOpType::PREMUL_SUM) {
+    auto factor = *op.factor();
+    try {
+      tensor *= std::get<double>(factor);
+    } catch (const std::bad_variant_access&) {
+      tensor *= std::get<at::Tensor>(factor);
+    }
+  }
+
   const auto dataType = getXcclDataType(tensor);
   onecclResult_t result = xccl_api_->allReduce(
       tensor.data_ptr(),
