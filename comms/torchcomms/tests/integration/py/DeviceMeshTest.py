@@ -10,7 +10,13 @@ import torch
 import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 import torchcomms
-from torchcomms.device_mesh import _flatten_with_comm, init_device_mesh
+from torchcomms import ReduceOp
+from torchcomms._comms import _get_store
+from torchcomms.device_mesh import (
+    _create_torchcomm_process_group,
+    _flatten_with_comm,
+    init_device_mesh,
+)
 
 try:
     from torch.distributed._mesh_layout import _MeshLayout
@@ -257,6 +263,79 @@ class DeviceMeshTest(unittest.TestCase):
 
         for sub_comm in comm_per_dim.values():
             sub_comm.finalize()
+        comm.finalize()
+
+    @unittest.skipIf(
+        torch.cuda.device_count() < 4,
+        "Skipping not enough GPUs situations for now",
+    )
+    def test_backend_wrapper_split_group(self) -> None:
+        """Test splitting a BackendWrapper process group and validating the result."""
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+
+        # Create a TorchComm communicator
+        comm = torchcomms.new_comm(backend, device, name="comms_test_split_group")
+        store = _get_store("torchcomm", "store_dist_test")
+        pg = _create_torchcomm_process_group(
+            comm, "comms_test_split_group", prefix_store=store
+        )
+
+        # Get current rank and world size
+        cur_rank = comm.get_rank()
+        world_size = comm.get_size()
+
+        split_size = world_size // 2
+        pg_ranks_by_dim = torch.arange(world_size).view(2, split_size)[
+            cur_rank // split_size
+        ]
+        # Split using the BackendWrapper's split_group method
+        split_pg = pg.split_group(
+            pg_ranks_by_dim.tolist(),
+            # pyre-ignore Incompatible parameter type [6]
+            group_name="split_test_group",
+        )
+        # Validate the split process group
+        self.assertIsNotNone(split_pg, "Split process group should not be None")
+
+        # Verify split comm properties
+        self.assertEqual(
+            split_pg.size(),
+            split_size,
+            f"Split comm size should be {split_size}",
+        )
+
+        # Verify the rank within the split group is correct
+        expected_comm_rank = pg_ranks_by_dim.tolist().index(cur_rank)
+        self.assertEqual(
+            split_pg.rank(),
+            expected_comm_rank,
+            f"Rank in split group should be {expected_comm_rank}",
+        )
+
+        # Compare with direct TorchComm split to ensure consistency
+        direct_split_comm = comm.split(
+            pg_ranks_by_dim.tolist(), name="direct_split_test"
+        )
+
+        # Test collective operation on the split process group
+        t = torch.ones(10, device=device, dtype=torch.int32)
+        duplicate_t = t.clone()
+        dist.all_reduce(t, group=split_pg)
+        direct_split_comm.all_reduce(duplicate_t, ReduceOp.SUM, False)
+
+        # Device-aware synchronization
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+
+        # Verify the all_reduce result
+        torch.testing.assert_close(t, duplicate_t)
+
+        # Clean up
+        # pyre-ignore Undefined attribute [16]
+        split_pg._get_backend(device).get_comm().finalize()
+        direct_split_comm.finalize()
+
         comm.finalize()
 
 
