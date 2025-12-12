@@ -23,7 +23,6 @@ class WindowRmaTest(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment before each test."""
-        os.environ["NCCL_CTRAN_ENABLE"] = "1"
         self.wrapper = self.get_wrapper()
         self.torchcomm = self.wrapper.get_torchcomm()
         self.rank = self.torchcomm.get_rank()
@@ -167,6 +166,10 @@ class WindowRmaTest(unittest.TestCase):
         # Free the window
         del win
 
+    @unittest.skipIf(
+        os.getenv("NCCL_CTRAN_ENABLE", "").lower() not in ("1", "true"),
+        "Skipping NCCLX Ctran Window tests",
+    )
     @unittest.skipIf(
         os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only window tests"
     )
