@@ -11,7 +11,7 @@ ProgressState::ProgressState(int nNodes, int nLocalRanks) {
   preSendTrans.resize(nNodes, StepState());
   sendTrans.resize(nNodes, StepState());
   recvTrans.resize(nNodes, StepState());
-  postRecvTrans.resize(nLocalRanks, StepState());
+  postRecvTrans.resize(nNodes, StepState());
   intraFwd.resize(nLocalRanks, StepState());
   recvCopy.resize(nLocalRanks, StepState());
 
