@@ -9,6 +9,10 @@
 #ifndef NCCL_PARAM_H_
 #define NCCL_PARAM_H_
 
+#ifndef GLOG_NO_ABBREVIATED_SEVERITIES
+#define GLOG_NO_ABBREVIATED_SEVERITIES
+#endif
+
 #include <stdint.h>
 #include "comms/utils/logger/Logger.h"
 #include "comms/utils/logger/LoggingFormat.h"
