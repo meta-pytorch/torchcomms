@@ -360,9 +360,9 @@ void CtranEnvironmentBase::SetUp() {
   // TCPStore doesn't need global initialization
 
   // Set up default envs for CTRAN tests
-  // Default logging level = INFO
+  // Default logging level = WARN
   // Individual test can override the logging level
-  setenv("NCCL_DEBUG", "INFO", 0);
+  setenv("NCCL_DEBUG", "WARN", 0);
 
   // Disable FBWHOAMI Topology failure for tests
   setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "0", 1);
