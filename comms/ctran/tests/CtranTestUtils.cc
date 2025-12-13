@@ -520,9 +520,46 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
   comm->logMetaData_.rank = globalRank;
   comm->logMetaData_.nRanks = numRanks;
 
+  const auto useVirtualTopo =
+      (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal ||
+       NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode);
+
+  // Initialize StateX before bootstrap, so bootstran can honor DEBUG_TOPO set
+  // by StateX
+  int cudaDev;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+  const int cudaArch = ctran::utils::getCudaArch(cudaDev).value_or(-1);
+  const int64_t busId = ctran::utils::BusId::makeFrom(cudaDev).toInt64();
+
+  std::vector<ncclx::RankTopology> rankTopologies{};
+  std::vector<int> commRanksToWorldRanks{};
+  comm->statex_ = std::make_unique<ncclx::CommStateX>(
+      globalRank,
+      numRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      commHash,
+      rankTopologies,
+      commRanksToWorldRanks,
+      commDesc);
+
   // Use appropriate bootstrap based on init type
-  if (initType == InitEnvType::MPI) {
+  if (initType == InitEnvType::MPI && useVirtualTopo) {
+    // Explicitly initialize virtual topology which doesn't need bootstrap
+    mccl::utils::initRankTopologyNoSystem(comm->statex_.get());
+
+    // statex can be queried after topo initialization
+    const auto localRank = comm->statex_->localRank();
+    const auto node = comm->statex_->node();
+
+    // Create bootstrap with virtual localRank and node for internal localComm
+    comm->bootstrap_ =
+        std::make_unique<meta::comms::MpiBootstrap>(localRank, node);
+  } else if (initType == InitEnvType::MPI) {
     comm->bootstrap_ = std::make_unique<meta::comms::MpiBootstrap>();
+    // Initialize StateX with topology using helper function
+    mccl::utils::initRankTopology(comm->statex_.get(), comm->bootstrap_.get());
   } else {
     // For TCP Store, create and initialize mccl::bootstrap::Bootstrap
     // then wrap with CtranAdapter
@@ -546,29 +583,9 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
 
     comm->bootstrap_ =
         std::make_unique<mccl::bootstrap::CtranAdapter>(bootstrap);
+    // Initialize StateX with topology using helper function
+    mccl::utils::initRankTopology(comm->statex_.get(), comm->bootstrap_.get());
   }
-
-  // Initialize StateX
-  int cudaDev;
-  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
-  const int cudaArch = ctran::utils::getCudaArch(cudaDev).value_or(-1);
-  const int64_t busId = ctran::utils::BusId::makeFrom(cudaDev).toInt64();
-
-  std::vector<ncclx::RankTopology> rankTopologies{};
-  std::vector<int> commRanksToWorldRanks{};
-  comm->statex_ = std::make_unique<ncclx::CommStateX>(
-      globalRank,
-      numRanks,
-      cudaDev,
-      cudaArch,
-      busId,
-      commHash,
-      rankTopologies,
-      commRanksToWorldRanks,
-      commDesc);
-
-  // Initialize StateX with topology using helper function
-  mccl::utils::initRankTopology(comm->statex_.get(), comm->bootstrap_.get());
 
   // TODO: add memCache if enabled
 
