@@ -1215,3 +1215,151 @@ TEST_P(CtranIbBootstrapParameterizedTest, BidirectionalCtrlMsg) {
 
   TwoRankTestHelper(rank0Action, rank1Action).run();
 }
+
+// Test that getVc() returns valid VC after connection establishment
+TEST_P(CtranIbBootstrapParameterizedTest, GetVcAfterConnection) {
+  auto rank0Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    // Before connection, getVc should return nullptr
+    auto vcBeforeConnection = ctranIb->getVc(1);
+    EXPECT_EQ(vcBeforeConnection, nullptr);
+
+    // Send control message to establish connection
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+
+    // Wait for VC to be established
+    bool established = waitForVcEstablished(ctranIb, 1, 5s);
+    EXPECT_TRUE(established);
+
+    // After connection, getVc should return valid VC
+    auto vcAfterConnection = ctranIb->getVc(1);
+    EXPECT_NE(vcAfterConnection, nullptr);
+
+    // Multiple calls should return the same VC
+    auto vcSecondCall = ctranIb->getVc(1);
+    EXPECT_EQ(vcAfterConnection, vcSecondCall);
+
+    // Verify VC is functional by calling getter methods
+    EXPECT_GT(vcAfterConnection->getControlQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getNotifyQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getAtomicQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getMaxNumQp(), 0);
+
+    // Send notifications over the established connection to verify it works
+    constexpr int kNumNotifications = 3;
+    {
+      std::lock_guard<std::mutex> lock(vcAfterConnection->mutex);
+      for (int i = 0; i < kNumNotifications; ++i) {
+        auto result = vcAfterConnection->notify(nullptr);
+        EXPECT_EQ(result, commSuccess);
+      }
+    }
+
+    // Progress to send all notifications
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < 5s) {
+      auto res = ctranIb->progress();
+      EXPECT_EQ(res, commSuccess);
+      std::this_thread::sleep_for(10ms);
+    }
+
+    XLOG(INFO) << "Rank 0 verified VC state and sent " << kNumNotifications
+               << " notifications";
+  };
+
+  auto rank1Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    // Before connection, getVc should return nullptr
+    auto vcBeforeConnection = ctranIb->getVc(0);
+    EXPECT_EQ(vcBeforeConnection, nullptr);
+
+    // Receive control message
+    ControlMsg msg;
+    CtranIbRequest ctrlReq;
+    CtranIbEpochRAII epochRAII(ctranIb);
+    ctranIb->irecvCtrlMsg(&msg, sizeof(msg), 0, ctrlReq, &peerServerAddr);
+
+    do {
+      auto res = ctranIb->progress();
+      EXPECT_EQ(res, commSuccess);
+    } while (!ctrlReq.isComplete());
+
+    // Wait for VC to be established
+    bool established = waitForVcEstablished(ctranIb, 0, 5s);
+    EXPECT_TRUE(established);
+
+    // After connection, getVc should return valid VC
+    auto vcAfterConnection = ctranIb->getVc(0);
+    EXPECT_NE(vcAfterConnection, nullptr);
+
+    // Verify VC is functional by calling getter methods
+    EXPECT_GT(vcAfterConnection->getControlQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getNotifyQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getAtomicQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getMaxNumQp(), 0);
+
+    // Wait to receive notifications from rank 0
+    constexpr int kNumNotifications = 3;
+    int notificationsReceived = 0;
+    auto start = std::chrono::steady_clock::now();
+    while (notificationsReceived < kNumNotifications &&
+           std::chrono::steady_clock::now() - start < 5s) {
+      auto res = ctranIb->progress();
+      EXPECT_EQ(res, commSuccess);
+
+      {
+        std::lock_guard<std::mutex> lock(vcAfterConnection->mutex);
+        bool hasNotify = false;
+        vcAfterConnection->checkNotify(&hasNotify);
+        if (hasNotify) {
+          ++notificationsReceived;
+        }
+      }
+
+      std::this_thread::sleep_for(10ms);
+    }
+
+    EXPECT_EQ(notificationsReceived, kNumNotifications)
+        << "Should have received all notifications from rank 0";
+
+    XLOG(INFO) << "Rank 1 verified VC state and received "
+               << notificationsReceived << " notifications";
+  };
+
+  TwoRankTestHelper(rank0Action, rank1Action).run();
+}
+
+// Test that getListenSocketListenAddr() returns consistent address
+TEST_P(CtranIbBootstrapParameterizedTest, ListenAddrConsistency) {
+  SocketServerAddr serverAddr = getSocketServerAddress();
+  auto [ctranIb, abortCtrl] = createCtranIbAndAbort(
+      /*rank=*/0, CtranIb::BootstrapMode::kSpecifiedServer, true, &serverAddr);
+
+  // Get listen address multiple times
+  auto addr1 = ctranIb->getListenSocketListenAddr();
+  auto addr2 = ctranIb->getListenSocketListenAddr();
+  auto addr3 = ctranIb->getListenSocketListenAddr();
+
+  // All calls should succeed
+  EXPECT_FALSE(addr1.hasError());
+  EXPECT_FALSE(addr2.hasError());
+  EXPECT_FALSE(addr3.hasError());
+
+  // All addresses should be identical
+  EXPECT_EQ(addr1.value().getPort(), addr2.value().getPort());
+  EXPECT_EQ(addr1.value().getPort(), addr3.value().getPort());
+  EXPECT_EQ(
+      addr1.value().getIPAddress().str(), addr2.value().getIPAddress().str());
+  EXPECT_EQ(
+      addr1.value().getIPAddress().str(), addr3.value().getIPAddress().str());
+}
