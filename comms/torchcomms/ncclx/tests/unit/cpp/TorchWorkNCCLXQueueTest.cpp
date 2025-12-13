@@ -324,52 +324,5 @@ TEST_F(TorchWorkNCCLXQueueCommTest, NoLeakedObjectsAfterFinalize) {
   EXPECT_EQ(getStreamWorkQueues().size(), 0);
 }
 
-TEST_F(TorchWorkNCCLXQueueCommTest, NoFailureUnderCudaGraphMode) {
-  setupRankAndSize(0, 2); // rank 0, size 2
-  setupCCAExpectations(1, 2, 1);
-  cuda_mock_->setupDefaultBehaviors();
-  nccl_mock_->setupDefaultBehaviors();
-
-  comm_->init(*device_, "test_name", default_options_);
-
-  setupEventsForWork(1);
-
-  std::mt19937 gen;
-  std::uniform_int_distribution<int> dist(0, 10);
-  const int rand1 = dist(gen);
-  const int rand2 = dist(gen);
-
-  testing::Sequence s;
-
-  for (int i = 0; i < rand1; i++) {
-    EXPECT_CALL(*cuda_mock_, eventQuery(work_events_[0].start_event))
-        .InSequence(s)
-        .WillOnce(Return(cudaErrorStreamCaptureUnsupported));
-  }
-  EXPECT_CALL(*cuda_mock_, eventQuery(work_events_[0].start_event))
-      .InSequence(s)
-      .WillOnce(Return(cudaSuccess)); // start event succeeds
-
-  for (int i = 0; i < rand2; i++) {
-    EXPECT_CALL(*cuda_mock_, eventQuery(work_events_[0].end_event))
-        .InSequence(s)
-        .WillOnce(Return(cudaErrorStreamCaptureUnsupported));
-  }
-  EXPECT_CALL(*cuda_mock_, eventQuery(work_events_[0].end_event))
-      .InSequence(s)
-      .WillRepeatedly(Return(cudaSuccess)); // end event succeeds
-
-  auto tensor = at::ones(
-      {10, 10}, at::TensorOptions().device(*device_).dtype(at::kFloat));
-  auto work = comm_->send(tensor, 1, true); // async send
-
-  // Simulate the timeout thread calling checkWorkQueue
-  checkWorkQueue();
-  // Comm finalize will call the work queue finalize().
-  comm_->finalize();
-
-  EXPECT_EQ(getStreamWorkQueues().size(), 0);
-}
-
 } // namespace comms
 } // namespace torch
