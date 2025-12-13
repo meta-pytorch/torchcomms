@@ -28,7 +28,7 @@ class WindowRmaTest : public ::testing::TestWithParam<
       bool signal,
       bool async_signal);
 
-  bool checkIfBackendNicExists();
+  bool checkIfSkip();
 
  protected:
   std::unique_ptr<TorchCommTestWrapper> createWrapper();

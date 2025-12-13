@@ -498,7 +498,8 @@ commResult_t CtranMapper::regMem(
         logMetaData_,
         enableBackends_,
         didRegister,
-        &regHdl_));
+        &regHdl_,
+        ncclManaged));
   }
 
   *segHdl = segHdl_;

@@ -136,10 +136,7 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
   CUmemGenericAllocationHandle allocHandle;
   auto signalBytes = signalSize * sizeof(uint64_t);
   size_t allocSize = allocDataBuf_ ? dataBytes + signalBytes : signalBytes;
-  if (bufType_ == DevMemType::kHostPinned) {
-    FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
-    range_ = allocSize;
-  } else {
+  if (isGpuMem()) {
     FB_COMMCHECK(
         utils::commCuMemAlloc(
             &addr,
@@ -152,6 +149,9 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
     // query the actually allocated range of the memory
     CUdeviceptr pbase = 0;
     FB_CUCHECK(cuMemGetAddressRange(&pbase, &range_, (CUdeviceptr)addr));
+  } else {
+    FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
+    range_ = allocSize;
   }
 
   winBasePtr = addr;
@@ -220,10 +220,10 @@ commResult_t CtranWin::free() {
 
   // utils func to free memory
   auto freeMem = [&](void* addr) {
-    if (bufType_ == DevMemType::kHostPinned) {
-      FB_CUDACHECK(cudaFreeHost(addr));
-    } else {
+    if (isGpuMem()) {
       FB_COMMCHECK(utils::commCuMemFree(addr));
+    } else {
+      FB_CUDACHECK(cudaFreeHost(addr));
     }
     return commSuccess;
   };
@@ -254,7 +254,7 @@ commResult_t CtranWin::free() {
 }
 
 bool CtranWin::nvlEnabled(int rank) const {
-  return bufType_ != DevMemType::kHostPinned &&
+  return isGpuMem() &&
       comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
 }
 
@@ -296,6 +296,25 @@ commResult_t ctranWinAllocate(
   return commSuccess;
 }
 
+commResult_t checkUserBufType(const DevMemType bufType) {
+  if (bufType == DevMemType::kCumem || bufType == DevMemType::kHostPinned ||
+      bufType == DevMemType::kHostUnregistered ||
+      bufType == DevMemType::kCudaMalloc) {
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-WINDOW: Buffer Type {} is provided by user while registering window",
+        devMemTypeStr(bufType));
+    return commSuccess;
+  }
+  CLOGF(
+      ERR,
+      "CTRAN-WINDOW: Unsupported buffer type {} provided when registering window. Supported buffer types are kCumem, kHostPinned, kHostUnregistered, kCudaMalloc",
+      devMemTypeStr(bufType));
+
+  return commInvalidUsage;
+}
+
 commResult_t ctranWinRegister(
     const void* databuf,
     size_t size,
@@ -307,17 +326,19 @@ commResult_t ctranWinRegister(
         commInternalError,
         "CtranWin: Valid data buffer must be provided while the ctranWinRegister is used.");
   }
-  std::string locationRes;
 
-  hints.get("window_buffer_location", locationRes);
+  DevMemType userBufType =
+      DevMemType::kCumem; // will be overwritten by getDevMemType
+  FB_COMMCHECK(getDevMemType(databuf, comm->statex_->cudaDev(), userBufType));
+  FB_COMMCHECK(checkUserBufType(userBufType));
 
   CtranWin* newWin = new struct CtranWin(
       comm,
       // byte size of user provided data buffer
       size,
-      // if user buffer is on host CPU, allocate kHostPinned buffer for signal
-      // otherwise is on GPU device, allocate kCumem buffer for signal
-      locationRes == "cpu" ? DevMemType::kHostPinned : DevMemType::kCumem);
+      // if user buffer is on host CPU, allocate kHostPinned buffer for
+      // signal otherwise is on GPU device, allocate kCumem buffer for signal
+      userBufType);
 
   FB_COMMCHECK(newWin->allocate((void*)databuf));
 

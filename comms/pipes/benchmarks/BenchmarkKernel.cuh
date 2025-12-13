@@ -4,6 +4,7 @@
 
 #include <cuda_runtime.h>
 
+#include "comms/pipes/AllToAllv.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 
 namespace comms::pipes::benchmark {
@@ -60,5 +61,17 @@ __global__ void p2pBidirectional(
     void* recvBuff,
     std::size_t nBytes,
     bool useBlockGroups = false);
+
+/**
+ * AllToAllv benchmark kernel.
+ * All ranks participate in all-to-all communication with variable chunk sizes.
+ */
+__global__ void allToAllvKernel(
+    void* recvbuff_d,
+    const void* sendbuff_d,
+    int my_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    DeviceSpan<ChunkInfo> send_chunk_infos,
+    DeviceSpan<ChunkInfo> recv_chunk_infos);
 
 } // namespace comms::pipes::benchmark

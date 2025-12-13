@@ -513,31 +513,59 @@ class ThreadGroupWeightedPartitionTest
       public ::testing::WithParamInterface<WeightedPartitionTestParams> {};
 
 // Helper to compute expected partition boundaries from weights
+// With zero-weight handling: zero-weight partitions get 0 groups,
+// non-zero-weight partitions get at least 1 group each.
 std::vector<uint32_t> computePartitionBoundaries(
     const std::vector<uint32_t>& weights,
     uint32_t totalGroups) {
   std::vector<uint32_t> boundaries;
   uint32_t totalWeight = 0;
+  uint32_t nonZeroCount = 0;
   for (auto w : weights) {
     totalWeight += w;
+    if (w > 0) {
+      nonZeroCount++;
+    }
   }
 
-  uint32_t numPartitions = static_cast<uint32_t>(weights.size());
-  uint32_t distributableGroups = totalGroups - numPartitions;
+  // Handle edge case: all weights are zero
+  if (totalWeight == 0) {
+    // All groups go to partition 0
+    boundaries.push_back(totalGroups);
+    for (size_t i = 1; i < weights.size(); i++) {
+      boundaries.push_back(totalGroups);
+    }
+    return boundaries;
+  }
+
+  uint32_t distributableGroups = totalGroups - nonZeroCount;
 
   uint32_t accumulatedWeight = 0;
+  uint32_t nonZeroSeen = 0;
+  uint32_t partitionStart = 0;
+
   for (size_t i = 0; i < weights.size(); i++) {
     accumulatedWeight += weights[i];
-    // Each partition gets: 1 (guaranteed) + proportional share of remaining
-    uint32_t proportionalGroups =
-        (accumulatedWeight * distributableGroups + totalWeight - 1) /
-        totalWeight;
-    uint32_t boundary = static_cast<uint32_t>(i + 1) + proportionalGroups;
-    // Clamp to totalGroups
-    if (boundary > totalGroups) {
-      boundary = totalGroups;
+
+    uint32_t boundary;
+    if (weights[i] == 0) {
+      // Zero-weight partitions get no groups
+      boundary = partitionStart;
+    } else {
+      nonZeroSeen++;
+      // Each non-zero partition gets: 1 (guaranteed) + proportional share
+      uint32_t proportionalGroups =
+          (accumulatedWeight * distributableGroups + totalWeight - 1) /
+          totalWeight;
+      boundary = nonZeroSeen + proportionalGroups;
+
+      // Clamp to totalGroups
+      if (boundary > totalGroups) {
+        boundary = totalGroups;
+      }
     }
     boundaries.push_back(boundary);
+    partitionStart = boundary;
   }
   return boundaries;
 }
@@ -659,11 +687,21 @@ TEST_P(ThreadGroupWeightedPartitionTest, WeightedPartition) {
     }
   }
 
-  // We should get exactly numPartitions
-  EXPECT_EQ(distinctPartitions, numPartitions)
-      << "Should have " << numPartitions << " distinct partition_ids "
+  // Count expected non-zero weight partitions
+  uint32_t expectedNonZeroPartitions = 0;
+  for (auto w : params.weights) {
+    if (w > 0) {
+      expectedNonZeroPartitions++;
+    }
+  }
+
+  // We should get exactly the number of non-zero weight partitions
+  // (zero-weight partitions don't receive any groups)
+  EXPECT_EQ(distinctPartitions, expectedNonZeroPartitions)
+      << "Should have " << expectedNonZeroPartitions
+      << " distinct partition_ids "
       << "(totalWarps=" << totalWarps << ", numPartitions=" << numPartitions
-      << "). Even extreme weight ratios should produce all requested partitions.";
+      << ", nonZeroPartitions=" << expectedNonZeroPartitions << ").";
 
   uint32_t prevBoundary = 0;
   for (uint32_t i = 0; i < numPartitions; i++) {
@@ -740,7 +778,40 @@ INSTANTIATE_TEST_SUITE_P(
             .weights = {1, 1, 1, 1},
             .numBlocks = 8,
             .blockSize = 256,
-            .testName = "FourWaySplit"}),
+            .testName = "FourWaySplit"},
+        // Zero weight tests: zero-weight partitions get 0 groups
+        WeightedPartitionTestParams{
+            .weights = {3, 0, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .testName = "ZeroWeight_Middle"},
+        WeightedPartitionTestParams{
+            .weights = {0, 1, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .testName = "ZeroWeight_First"},
+        WeightedPartitionTestParams{
+            .weights = {1, 1, 0},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .testName = "ZeroWeight_Last"},
+        WeightedPartitionTestParams{
+            .weights = {1, 0, 0, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .testName = "ZeroWeight_MultipleMiddle"},
+        WeightedPartitionTestParams{
+            .weights = {0, 0, 1},
+            .numBlocks = 4,
+            .blockSize = 256,
+            .testName = "ZeroWeight_MultipleFirst"},
+        // More partitions than groups is OK when zero-weights reduce non-zero
+        // count
+        WeightedPartitionTestParams{
+            .weights = {1, 0, 0, 0},
+            .numBlocks = 1,
+            .blockSize = 64,
+            .testName = "ZeroWeight_MorePartitionsThanGroupsOK"}),
     [](const ::testing::TestParamInfo<WeightedPartitionTestParams>& info) {
       return info.param.testName;
     });

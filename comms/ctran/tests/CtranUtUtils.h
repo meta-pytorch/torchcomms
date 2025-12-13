@@ -217,9 +217,31 @@ class CtranDistBaseTest : public NcclxBaseTest, public CtranBaseTest {
   static std::unique_ptr<c10d::TCPStore> tcpStoreServer;
   static void TearDownTestSuite();
 
+  // Below provide convenient functions to communicate among testing ranks; use
+  // bootstrap to avoid interference with GPU communication. Not for
+  // communication with performance.
+
+  // - AllGather data from all ranks. buf is a pointer to continuous memory with
+  // nRanks * len bytes, and each rank sets its own data in the buffer at
+  // postion len * rank.
+  inline void allGather(void* buf, const size_t len) {
+    auto resFuture = ctranComm_->bootstrap_->allGather(
+        buf, len, ctranComm_->statex_->rank(), ctranComm_->statex_->nRanks());
+    ASSERT_EQ(
+        static_cast<commResult_t>(std::move(resFuture).get()), commSuccess);
+  }
+
+  // - Barrier to ensure all ranks have arrived
+  inline void barrier() {
+    auto resFuture = ctranComm_->bootstrap_->barrier(
+        ctranComm_->statex_->rank(), ctranComm_->statex_->nRanks());
+    ASSERT_EQ(
+        static_cast<commResult_t>(std::move(resFuture).get()), commSuccess);
+  }
+
  protected:
   cudaStream_t stream = 0;
-
+  CtranComm* ctranComm_{nullptr};
   void SetUp() override;
   void TearDown() override;
 };

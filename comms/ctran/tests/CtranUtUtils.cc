@@ -41,6 +41,7 @@ void CtranDistBaseTest::SetUp() {
       tcpStoreServer = std::move(server);
     }
 
+    // FIXME: this should be replaced with standalone ctranComm
     commWorld = createNcclComm(
         globalRank, numRanks, localRank, false, nullptr, tcpStoreServer.get());
     LOG(INFO) << "CtranBaseTest::SetUp: New commWorld " << commWorld
@@ -49,30 +50,32 @@ void CtranDistBaseTest::SetUp() {
   }
 
   // Reinitialize rank info since each test will reset the value
-  numRanks = commWorld->ctranComm_->statex_->nRanks();
-  localRank = commWorld->ctranComm_->statex_->localRank();
-  globalRank = commWorld->ctranComm_->statex_->rank();
-  localSize = commWorld->ctranComm_->statex_->nLocalRanks();
+  ctranComm_ = commWorld->ctranComm_.get();
+  numRanks = ctranComm_->statex_->nRanks();
+  localRank = ctranComm_->statex_->localRank();
+  globalRank = ctranComm_->statex_->rank();
+  localSize = ctranComm_->statex_->nLocalRanks();
 
   // Reset the value of enableNolocal since each test will reset
   // the value and we set them only in NcclxBaseTest::SetUp()
   enableNolocal =
       NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal;
 
-  ASSERT_TRUE(ctranInitialized(commWorld->ctranComm_.get()));
+  ASSERT_TRUE(ctranInitialized(ctranComm_));
 
-  if (commWorld->ctranComm_->ctran_->mapper->ctranIbPtr() == nullptr &&
-      commWorld->ctranComm_->ctran_->mapper->ctranSockPtr() == nullptr) {
+  if (ctranComm_->ctran_->mapper->ctranIbPtr() == nullptr &&
+      ctranComm_->ctran_->mapper->ctranSockPtr() == nullptr) {
     GTEST_SKIP() << "No IB or Socket Backend found, skip test";
   }
 
   CUDACHECK_TEST(cudaStreamCreate(&stream));
 
   // Reset backends used counter
-  resetBackendsUsed(commWorld->ctranComm_->ctran_.get());
+  resetBackendsUsed(ctranComm_->ctran_.get());
 }
 
 void CtranDistBaseTest::TearDown() {
+  ctranComm_ = nullptr;
   finalizeNcclComm(globalRank, tcpStoreServer.get());
   CUDACHECK_TEST(cudaStreamDestroy(stream));
 }

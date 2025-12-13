@@ -299,6 +299,17 @@ void* commMemAlloc(
       CUDACHECK_TEST(cudaMallocHost(&buf, bufSize));
       segments.emplace_back(buf, bufSize);
       break;
+    case kMemCuMemAlloc: {
+      std::vector<size_t> segSize(1, bufSize);
+      COMMCHECK_TEST(commMemAllocDisjoint(&buf, segSize, segments));
+      break;
+    }
+    case kMemHostUnregistered:
+      // Allocate a host buffer using malloc (not CUDA-registered)
+      buf = malloc(bufSize);
+      CHECK(buf != nullptr);
+      segments.emplace_back(buf, bufSize);
+      break;
     default:
       XLOG(FATAL) << "Unsupported memType: " << memType;
       break;
@@ -319,6 +330,14 @@ void commMemFree(void* buf, size_t bufSize, MemAllocType memType) {
     }
     case kMemHostManaged:
       cudaFreeHost(buf);
+      break;
+    case kMemCuMemAlloc: {
+      std::vector<size_t> segSize(1, bufSize);
+      commMemFreeDisjoint(buf, segSize);
+      break;
+    }
+    case kMemHostUnregistered:
+      free(buf);
       break;
     default:
       XLOG(FATAL) << "Unsupported memType: " << memType;

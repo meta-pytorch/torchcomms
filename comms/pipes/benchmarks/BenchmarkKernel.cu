@@ -97,4 +97,20 @@ __global__ void p2pBidirectional(
   }
 }
 
+__global__ void allToAllvKernel(
+    void* recvbuff_d,
+    const void* sendbuff_d,
+    int my_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    DeviceSpan<ChunkInfo> send_chunk_infos,
+    DeviceSpan<ChunkInfo> recv_chunk_infos) {
+  allToAllv(
+      recvbuff_d,
+      sendbuff_d,
+      my_rank_id,
+      transports_per_rank,
+      send_chunk_infos,
+      recv_chunk_infos);
+}
+
 } // namespace comms::pipes::benchmark

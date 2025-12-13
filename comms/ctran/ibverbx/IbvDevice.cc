@@ -203,7 +203,12 @@ IbvDevice::~IbvDevice() {
   if (context_) {
     int rc = ibvSymbols.ibv_internal_close_device(context_);
     if (rc != 0) {
-      XLOGF(ERR, "Failed to close device rc: {}, {}", rc, strerror(errno));
+      XLOGF(
+          WARN,
+          "Failed to close device rc: {}, {}. "
+          "This is a post-failure warning likely due to an uncleaned RDMA resource on the failure path.",
+          rc,
+          strerror(errno));
     }
   }
 }

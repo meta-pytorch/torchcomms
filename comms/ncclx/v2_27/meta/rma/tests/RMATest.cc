@@ -31,6 +31,8 @@ class RMATest : public ::testing::Test {
   void TearDown() override {
     // Destroy the communicator at the end
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
+    // Check that all allocated memory segments have been freed
+    EXPECT_TRUE(segments.empty()) << "Not all memory segments were freed";
   }
 
   void barrier(ncclComm_t ncclComm, cudaStream_t stream) {
@@ -89,39 +91,50 @@ class RMATest : public ::testing::Test {
 
   void createWin(
       bool isUserBuf,
-      bool isCpuWin,
+      MemAllocType bufType,
       void** winBasePtr,
       ncclWin_t* winPtr,
       size_t sizeBytes,
       std::vector<int>& buf) {
     auto res = ncclSuccess;
     ncclx::Hints hints;
-    hints.set("window_buffer_location", isCpuWin ? "cpu" : "gpu");
+
     // If userBuf is true, allocate buffer and use ctranWinRegister API
     if (isUserBuf) {
-      if (isCpuWin) {
-        *winBasePtr = reinterpret_cast<void*>(buf.data());
-      } else {
-        ASSERT_EQ(ncclMemAlloc(winBasePtr, sizeBytes), ncclSuccess);
-      }
+      *winBasePtr = testAllocBuf(sizeBytes, bufType, segments);
       res = ncclWinRegister(*winBasePtr, sizeBytes, comm, winPtr, hints);
 
     } else {
+      hints.set(
+          "window_buffer_location",
+          bufType == MemAllocType::kMemHostManaged ||
+                  bufType == MemAllocType::kMemHostUnregistered
+              ? "cpu"
+              : "gpu");
       res = ncclWinAllocate(sizeBytes, comm, winBasePtr, winPtr, hints);
     }
     ASSERT_EQ(res, ncclSuccess);
     ASSERT_NE(*winBasePtr, nullptr);
   }
 
-  void freeWinBuf(bool isUserBuf, bool isCpuWin, void* winBase) {
-    if (isUserBuf && !isCpuWin) {
-      ASSERT_EQ(ncclMemFree(winBase), ncclSuccess);
+  void
+  freeWinBuf(bool isUserBuf, void* ptr, size_t size, MemAllocType bufType) {
+    if (isUserBuf) {
+      testFreeBuf(ptr, size, bufType);
+      // Remove the segment from the tracking vector
+      segments.erase(
+          std::remove_if(
+              segments.begin(),
+              segments.end(),
+              [ptr](const TestMemSegment& seg) { return seg.ptr == ptr; }),
+          segments.end());
     }
   }
 
   int localRank{0};
   int globalRank{0};
   int numRanks{0};
+  std::vector<TestMemSegment> segments;
 };
 
 class MultiWindowTestParam
@@ -197,10 +210,11 @@ TEST_P(MultiWindowTestParam, multiWindow) {
 
 class RMATestParam : public RMATest,
                      public ::testing::WithParamInterface<
-                         std::tuple<size_t, size_t, bool, bool, bool>> {};
+                         std::tuple<size_t, size_t, bool, MemAllocType, bool>> {
+};
 
 TEST_P(RMATestParam, winPutWait) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf] =
+  const auto& [kNumElements, kNumIters, ctranAllReduce, bufType, userBuf] =
       GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
@@ -231,7 +245,7 @@ TEST_P(RMATestParam, winPutWait) {
   void* winBase = nullptr;
   std::vector<int> buf(kNumElements * statex->nRanks(), 0);
 
-  createWin(userBuf, cpuWin, &winBase, &win, sizeBytes, buf);
+  createWin(userBuf, bufType, &winBase, &win, sizeBytes, buf);
 
   // Always allocate localBuf from GPU mem so it can be used in ctranAllReduce
   int* localBuf = nullptr;
@@ -250,7 +264,10 @@ TEST_P(RMATestParam, winPutWait) {
     EXPECT_EQ(res, ncclSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
-    } else if (cpuWin || statex->node() != statex->node(peer)) {
+    } else if (
+        bufType == MemAllocType::kMemHostManaged ||
+        bufType == MemAllocType::kMemHostUnregistered ||
+        statex->node() != statex->node(peer)) {
       EXPECT_THAT(remoteAddr, testing::IsNull());
     } else {
       EXPECT_THAT(remoteAddr, testing::NotNull());
@@ -312,14 +329,15 @@ TEST_P(RMATestParam, winPutWait) {
         cudaEventElapsedTime(&elapsed_time_ms, start_event, end_event));
     // time captured with kNumIters - 1 iterations
     float achieved_bw = chunkBytes / elapsed_time_ms / 1e6 * (kNumIters - 1);
-    printf(
+    XLOGF(
+        INFO,
         "[%d] elapsed time %.2f ms for %zu bytes * %ld iterations (%.2f GB/s), on %s\n",
         statex->rank(),
         elapsed_time_ms,
         chunkBytes,
         kNumIters,
         achieved_bw,
-        cpuWin ? "cpuWin" : "gpuWin");
+        testMemAllocTypeToStr(bufType));
   }
 
   auto res = ncclWinFree(comm, win);
@@ -327,7 +345,7 @@ TEST_P(RMATestParam, winPutWait) {
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
-  freeWinBuf(userBuf, cpuWin, winBase);
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaEventDestroy(start_event));
   CUDACHECK_TEST(cudaEventDestroy(end_event));
@@ -338,7 +356,7 @@ TEST_P(RMATestParam, winPutWait) {
 }
 
 TEST_P(RMATestParam, winPutOnly) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf] =
+  const auto& [kNumElements, kNumIters, ctranAllReduce, bufType, userBuf] =
       GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
@@ -364,7 +382,7 @@ TEST_P(RMATestParam, winPutOnly) {
 
   std::vector<int> buf(kNumElements * statex->nRanks(), 0);
 
-  createWin(userBuf, cpuWin, &winBase, &win, sizeBytes, buf);
+  createWin(userBuf, bufType, &winBase, &win, sizeBytes, buf);
 
   // Always allocate localBuf from GPU mem
   int* localBuf = nullptr;
@@ -423,14 +441,14 @@ TEST_P(RMATestParam, winPutOnly) {
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
-  freeWinBuf(userBuf, cpuWin, winBase);
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaStreamDestroy(put_stream));
   EXPECT_EQ(errs, 0);
 }
 
 TEST_P(RMATestParam, winGet) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf] =
+  const auto& [kNumElements, kNumIters, ctranAllReduce, bufType, userBuf] =
       GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
@@ -455,7 +473,7 @@ TEST_P(RMATestParam, winGet) {
   void* winBase = nullptr;
   std::vector<int> buf(kNumElements * statex->nRanks(), 0);
 
-  createWin(userBuf, cpuWin, &winBase, &win, sizeBytes, buf);
+  createWin(userBuf, bufType, &winBase, &win, sizeBytes, buf);
 
   // Always allocate localBuf from GPU mem
   int* localBuf = nullptr;
@@ -512,7 +530,7 @@ TEST_P(RMATestParam, winGet) {
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
-  freeWinBuf(userBuf, cpuWin, winBase);
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaStreamDestroy(get_stream));
   EXPECT_EQ(errs, 0);
@@ -522,24 +540,28 @@ INSTANTIATE_TEST_SUITE_P(
     RMATestInstance,
     RMATestParam,
     ::testing::Combine(
-        // kNumElements, kNumIters, ctranAllReduce, cpuWin, userBuf
+        // kNumElements, kNumIters, ctranAllReduce, bufType, userBuf
         ::testing::Values(8192, 8 * 1024 * 1024),
         ::testing::Values(500),
         ::testing::Values(true, false),
-        ::testing::Values(true, false),
+        ::testing::Values(
+            MemAllocType::kMemNcclMemAlloc,
+            MemAllocType::kMemCudaMalloc,
+            MemAllocType::kMemHostManaged,
+            MemAllocType::kMemHostUnregistered),
         ::testing::Values(true, false)),
     [](const testing::TestParamInfo<RMATestParam::ParamType>& info) {
       const auto kNumElements = std::get<0>(info.param);
       const auto kNumIters = std::get<1>(info.param);
       const auto ctranAllReduce = std::get<2>(info.param);
-      const auto cpuWin = std::get<3>(info.param);
+      const auto bufType = std::get<3>(info.param);
       const auto userBuf = std::get<4>(info.param);
       std::string name = fmt::format(
           "numElem{}_numIters{}_{}_{}_{}",
           kNumElements,
           kNumIters,
           ctranAllReduce ? "ctranAR" : "ncclAR",
-          cpuWin ? "cpuWin" : "gpuWin",
+          testMemAllocTypeToStr(bufType),
           userBuf ? "userBuf" : "allocBuf");
       return name;
     });

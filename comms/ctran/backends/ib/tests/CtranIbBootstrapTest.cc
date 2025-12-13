@@ -36,6 +36,22 @@ struct TestParam {
   SocketFactoryCreator socketFactoryCreator;
 };
 
+// Helper to wait for VC to be established
+bool waitForVcEstablished(
+    CtranIb* ctranIb,
+    int peerRank,
+    std::chrono::milliseconds timeout = 5s) {
+  auto start = std::chrono::steady_clock::now();
+  while (std::chrono::steady_clock::now() - start < timeout) {
+    auto vc = ctranIb->getVc(peerRank);
+    if (vc != nullptr) {
+      return true;
+    }
+    std::this_thread::sleep_for(10ms);
+  }
+  return false;
+}
+
 // Helper to validate and return listen address
 folly::SocketAddress getAndValidateListenAddr(CtranIb* ctranIb) {
   auto maybeListenAddr = ctranIb->getListenSocketListenAddr();
@@ -56,6 +72,134 @@ SocketServerAddr getSocketServerAddress(
   serverAddr.ifName = ifName;
   return serverAddr;
 }
+
+commResult_t sendCtrlMsg(
+    CtranIb* ctranIb,
+    int peerRank = 1,
+    std::optional<const SocketServerAddr*> peerServerAddr = std::nullopt) {
+  ControlMsg msg;
+  CtranIbRequest ctrlReq;
+  CtranIbEpochRAII epochRAII(ctranIb);
+  commResult_t result = ctranIb->isendCtrlMsg(
+      msg.type, &msg, sizeof(msg), peerRank, ctrlReq, peerServerAddr);
+
+  EXPECT_EQ(result, commSuccess);
+
+  do {
+    auto res = ctranIb->progress();
+    EXPECT_EQ(res, commSuccess);
+  } while (!ctrlReq.isComplete());
+
+  bool established = waitForVcEstablished(ctranIb, peerRank, 5s);
+  EXPECT_TRUE(established);
+
+  return result;
+}
+
+commResult_t recvCtrlMsg(
+    CtranIb* ctranIb,
+    int peerRank = 1,
+    std::optional<const SocketServerAddr*> peerServerAddr = std::nullopt) {
+  ControlMsg msg;
+  CtranIbRequest ctrlReq;
+  CtranIbEpochRAII epochRAII(ctranIb);
+  commResult_t result = ctranIb->irecvCtrlMsg(
+      &msg, sizeof(msg), peerRank, ctrlReq, peerServerAddr);
+
+  EXPECT_EQ(result, commSuccess);
+
+  do {
+    auto res = ctranIb->progress();
+    EXPECT_EQ(res, commSuccess);
+  } while (!ctrlReq.isComplete());
+
+  bool established = waitForVcEstablished(ctranIb, peerRank, 5s);
+  EXPECT_TRUE(established);
+
+  return result;
+}
+
+// Helper to create CtranIb for all tests
+std::unique_ptr<CtranIb> createCtranIb(
+    int rank,
+    CtranIb::BootstrapMode mode,
+    AbortPtr abortCtrl,
+    std::optional<const SocketServerAddr*> qpServerAddr = std::nullopt,
+    std::shared_ptr<ctran::bootstrap::ISocketFactory> socketFactory = nullptr) {
+  const uint64_t commHash = 0x12345678;
+  const std::string commDesc = "test";
+
+  if (socketFactory == nullptr) {
+    socketFactory =
+        std::make_shared<ctran::bootstrap::AbortableSocketFactory>();
+  }
+
+  return std::make_unique<CtranIb>(
+      rank,
+      rank, // Use rank as CUDA device identifier
+      commHash,
+      commDesc,
+      nullptr, // ctrlMgr
+      false, // enableLocalFlush
+      mode,
+      qpServerAddr,
+      abortCtrl,
+      socketFactory);
+}
+// Helper class to run two-rank tests with address exchange
+class TwoRankTestHelper {
+ public:
+  using RankAction = std::function<void(
+      CtranIb* ctranIb,
+      const folly::SocketAddress& peerAddr,
+      AbortPtr abortCtrl)>;
+
+  TwoRankTestHelper(RankAction rank0Action, RankAction rank1Action)
+      : rank0Action_(std::move(rank0Action)),
+        rank1Action_(std::move(rank1Action)) {}
+
+  void run() {
+    auto [listenAddrPromise0, listenAddrFuture0] =
+        folly::makePromiseContract<folly::SocketAddress>();
+    auto [listenAddrPromise1, listenAddrFuture1] =
+        folly::makePromiseContract<folly::SocketAddress>();
+
+    std::thread rank0Thread([&]() {
+      EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
+      SocketServerAddr serverAddr = getSocketServerAddress();
+      auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+      auto ctranIb = createCtranIb(
+          0, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
+
+      auto listenAddr = getAndValidateListenAddr(ctranIb.get());
+      listenAddrPromise0.setValue(listenAddr);
+
+      auto peerAddr = std::move(listenAddrFuture1).get();
+      rank0Action_(ctranIb.get(), peerAddr, abortCtrl);
+    });
+
+    std::thread rank1Thread([&]() {
+      EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
+      SocketServerAddr serverAddr = getSocketServerAddress();
+      auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+      auto ctranIb = createCtranIb(
+          1, CtranIb::BootstrapMode::kSpecifiedServer, abortCtrl, &serverAddr);
+
+      auto listenAddr = getAndValidateListenAddr(ctranIb.get());
+      listenAddrPromise1.setValue(listenAddr);
+
+      auto peerAddr = std::move(listenAddrFuture0).get();
+      rank1Action_(ctranIb.get(), peerAddr, abortCtrl);
+    });
+
+    rank0Thread.join();
+    rank1Thread.join();
+  }
+
+ private:
+  RankAction rank0Action_;
+  RankAction rank1Action_;
+};
 
 // Base test class without parameterization for non-parameterized tests
 class CtranIbBootstrapTestBase : public ::testing::Test {
@@ -82,14 +226,14 @@ class CtranIbBootstrapTestBase : public ::testing::Test {
   bool waitForVcEstablished(
       CtranIb* ctranIb,
       int peerRank,
-      std::chrono::milliseconds timeout = std::chrono::seconds(5)) {
+      std::chrono::milliseconds timeout = 5000ms) {
     auto start = std::chrono::steady_clock::now();
     while (std::chrono::steady_clock::now() - start < timeout) {
       auto vc = ctranIb->getVc(peerRank);
       if (vc != nullptr) {
         return true;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      std::this_thread::sleep_for(10ms);
     }
     return false;
   }
@@ -178,92 +322,27 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapStartSpecifiedServer) {
 }
 
 TEST_P(CtranIbBootstrapParameterizedTest, BootstrapSendRecvCtrlMsg) {
-  auto [listenAddrPromise0, listenAddrFuture0] =
-      folly::makePromiseContract<folly::SocketAddress>();
-  auto [listenAddrPromise1, listenAddrFuture1] =
-      folly::makePromiseContract<folly::SocketAddress>();
-
-  std::thread rank0Thread([&]() {
-    EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
-
-    SocketServerAddr serverAddr0 = getSocketServerAddress(0, "127.0.0.1", "lo");
-
-    auto [ctranIb0, abortCtrl] = createCtranIbAndAbort(
-        /*rank=*/0,
-        CtranIb::BootstrapMode::kSpecifiedServer,
-        false,
-        &serverAddr0);
-
-    auto listenAddr = getAndValidateListenAddr(ctranIb0.get());
-    listenAddrPromise0.setValue(listenAddr);
-
-    // Wait for peer's listen address
-    auto peerAddr = std::move(listenAddrFuture1).get();
-
-    // Since rank 0 < rank 1, rank 0 should initiate the connection
+  auto rank0Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
     SocketServerAddr peerServerAddr = getSocketServerAddress(
         peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
 
-    ControlMsg msg;
-    CtranIbRequest ctrlReq;
-    CtranIbEpochRAII epochRAII(ctranIb0.get());
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+  };
 
-    commResult_t result = ctranIb0->isendCtrlMsg(
-        msg.type, &msg, sizeof(msg), 1, ctrlReq, &peerServerAddr);
-
-    EXPECT_EQ(result, commSuccess);
-
-    bool established =
-        waitForVcEstablished(ctranIb0.get(), 1, std::chrono::seconds(5));
-    EXPECT_TRUE(established);
-
-    do {
-      auto res = ctranIb0->progress();
-      EXPECT_EQ(res, commSuccess);
-    } while (!ctrlReq.isComplete());
-    EXPECT_TRUE(ctrlReq.isComplete());
-  });
-
-  std::thread rank1Thread([&]() {
-    EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
-
-    // Create CtranIb for rank 1 with specified server
-    SocketServerAddr serverAddr1 = getSocketServerAddress(0, "127.0.0.1", "lo");
-
-    auto [ctranIb1, abortCtrl] = createCtranIbAndAbort(
-        /*rank=*/1,
-        CtranIb::BootstrapMode::kSpecifiedServer,
-        false,
-        &serverAddr1);
-
-    auto listenAddr = getAndValidateListenAddr(ctranIb1.get());
-    listenAddrPromise1.setValue(listenAddr);
-
-    // Wait for peer's listen address (needed for synchronization)
-    auto peerListenAddr = std::move(listenAddrFuture0).get();
+  auto rank1Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
     SocketServerAddr peerServerAddr = getSocketServerAddress(
-        peerListenAddr.getPort(),
-        peerListenAddr.getIPAddress().str().c_str(),
-        "lo");
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
 
-    ControlMsg msg;
-    CtranIbRequest ctrlReq;
-    ctranIb1->irecvCtrlMsg(&msg, sizeof(msg), 0, ctrlReq, &peerServerAddr);
+    recvCtrlMsg(ctranIb, 0, &peerServerAddr);
+  };
 
-    // Rank 1 waits for rank 0 to connect (handled by bootstrapAccept
-    // thread) Wait for connection to be established
-    bool established =
-        waitForVcEstablished(ctranIb1.get(), 0, std::chrono::seconds(5));
-    EXPECT_TRUE(established);
-
-    do {
-      auto res = ctranIb1->progress();
-      EXPECT_EQ(res, commSuccess);
-    } while (!ctrlReq.isComplete());
-  });
-
-  rank0Thread.join();
-  rank1Thread.join();
+  TwoRankTestHelper(rank0Action, rank1Action).run();
 }
 
 TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
@@ -294,9 +373,8 @@ TEST_F(CtranIbBootstrapCommonTest, AbortExplicitSendCtrlMsg) {
   ControlMsg msg;
   CtranIbRequest ctrlReq;
   CtranIbEpochRAII epochRAII(ctranIb.get());
-
   commResult_t result = ctranIb->isendCtrlMsg(
-      msg.type, &msg, sizeof(msg), 1, ctrlReq, &invalidServerAddr);
+      msg.type, &msg, sizeof(msg), /*peerRank=*/1, ctrlReq, &invalidServerAddr);
 
   auto elapsed = std::chrono::steady_clock::now() - start;
 
@@ -330,10 +408,8 @@ TEST_F(CtranIbBootstrapCommonTest, AbortTimeoutSendCtrlMsg) {
   ControlMsg msg;
   CtranIbRequest ctrlReq;
   CtranIbEpochRAII epochRAII(ctranIb.get());
-
   commResult_t result = ctranIb->isendCtrlMsg(
-      msg.type, &msg, sizeof(msg), 1, ctrlReq, &invalidServerAddr);
-
+      msg.type, &msg, sizeof(msg), /*peerRank=*/1, ctrlReq, &invalidServerAddr);
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   // Should abort quickly
@@ -382,7 +458,7 @@ TEST_P(CtranIbBootstrapParameterizedTest, InvalidMagicNumberRejection) {
 
   // Listen thread should receive connection but reject it due to invalid magic
   // The VC should not be established
-  std::this_thread::sleep_for(std::chrono::seconds(1));
+  std::this_thread::sleep_for(1s);
 
   // Verify VC was not established
   auto vc = ctranIb->getVc(1);
@@ -393,6 +469,56 @@ TEST_P(CtranIbBootstrapParameterizedTest, InvalidMagicNumberRejection) {
 
 // Enum to specify which control message operation to test
 enum class CtrlMsgOperation { Send, Recv };
+
+// Helper to create a valid remote bus card for testing
+std::string createValidRemoteBusCard() {
+  // BusCard structure matches the one in CtranIbVc.cc
+  // CTRAN_HARDCODED_MAX_QPS is defined in CtranIbVc.cc as 128
+  // NOTE: This struct is intentionally duplicated from CtranIbVc.cc
+  // because BusCard is an internal implementation detail not exposed
+  // in any header. This must be kept in sync manually...
+  // See CtranIbVc.cc for the canonical definition.
+  constexpr int kCtranHardcodedMaxQps = 128;
+
+  struct BusCard {
+    enum ibverbx::ibv_mtu mtu;
+    uint32_t controlQpn;
+    uint32_t notifQpn;
+    uint32_t atomicQpn;
+    uint32_t dataQpn[kCtranHardcodedMaxQps];
+    uint8_t ports[CTRAN_MAX_IB_DEVICES_PER_RANK];
+    union {
+      struct {
+        uint64_t spns[CTRAN_MAX_IB_DEVICES_PER_RANK];
+        uint64_t iids[CTRAN_MAX_IB_DEVICES_PER_RANK];
+      } eth;
+      struct {
+        uint16_t lids[CTRAN_MAX_IB_DEVICES_PER_RANK];
+      } ib;
+    } u;
+  };
+
+  BusCard busCard{};
+  busCard.mtu = ibverbx::IBV_MTU_4096;
+  busCard.controlQpn = 100;
+  busCard.notifQpn = 101;
+  busCard.atomicQpn = 102;
+
+  for (int i = 0; i < kCtranHardcodedMaxQps; i++) {
+    busCard.dataQpn[i] = 200 + i;
+  }
+
+  for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
+    busCard.ports[i] = 1; // Port 1 is typical for IB devices
+  }
+
+  for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
+    busCard.u.eth.spns[i] = 0xfe80000000000000ULL; // Link-local subnet prefix
+    busCard.u.eth.iids[i] = 0x0000000000000001ULL + i; // Interface ID
+  }
+
+  return std::string(reinterpret_cast<const char*>(&busCard), sizeof(BusCard));
+}
 
 // Parameterized test fixture for control message abort testing
 class CtranIbAbortCtrlMsgTest
@@ -443,57 +569,6 @@ class CtranIbAbortCtrlMsgTest
                      const std::string& ifName) { return 0; });
 
     return mockServerSocket;
-  }
-
-  // Helper to create a valid remote bus card for testing
-  std::string createValidRemoteBusCard() {
-    // BusCard structure matches the one in CtranIbVc.cc
-    // CTRAN_HARDCODED_MAX_QPS is defined in CtranIbVc.cc as 128
-    // NOTE: This struct is intentionally duplicated from CtranIbVc.cc
-    // because BusCard is an internal implementation detail not exposed
-    // in any header. This must be kept in sync manually...
-    // See CtranIbVc.cc for the canonical definition.
-    constexpr int kCtranHardcodedMaxQps = 128;
-
-    struct BusCard {
-      enum ibverbx::ibv_mtu mtu;
-      uint32_t controlQpn;
-      uint32_t notifQpn;
-      uint32_t atomicQpn;
-      uint32_t dataQpn[kCtranHardcodedMaxQps];
-      uint8_t ports[CTRAN_MAX_IB_DEVICES_PER_RANK];
-      union {
-        struct {
-          uint64_t spns[CTRAN_MAX_IB_DEVICES_PER_RANK];
-          uint64_t iids[CTRAN_MAX_IB_DEVICES_PER_RANK];
-        } eth;
-        struct {
-          uint16_t lids[CTRAN_MAX_IB_DEVICES_PER_RANK];
-        } ib;
-      } u;
-    };
-
-    BusCard busCard{};
-    busCard.mtu = ibverbx::IBV_MTU_4096;
-    busCard.controlQpn = 100;
-    busCard.notifQpn = 101;
-    busCard.atomicQpn = 102;
-
-    for (int i = 0; i < kCtranHardcodedMaxQps; i++) {
-      busCard.dataQpn[i] = 200 + i;
-    }
-
-    for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
-      busCard.ports[i] = 1; // Port 1 is typical for IB devices
-    }
-
-    for (int i = 0; i < NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
-      busCard.u.eth.spns[i] = 0xfe80000000000000ULL; // Link-local subnet prefix
-      busCard.u.eth.iids[i] = 0x0000000000000001ULL + i; // Interface ID
-    }
-
-    return std::string(
-        reinterpret_cast<const char*>(&busCard), sizeof(BusCard));
   }
 
   // Execute a test for control message operations (send or recv) with abort
@@ -862,7 +937,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringListenThreadAccept) {
 
   // Verify thread joined quickly (not hanging)
   auto destroyTime = std::chrono::steady_clock::now() - startDestroy;
-  EXPECT_LT(destroyTime, std::chrono::seconds(2))
+  EXPECT_LT(destroyTime, 2s)
       << "Listen thread should terminate quickly after abort";
 }
 
@@ -890,7 +965,7 @@ TEST_F(CtranIbBootstrapCommonTest, ListenThreadTerminatesOnShutdown) {
     auto elapsed = std::chrono::steady_clock::now() - startDestroy;
 
     // Verify destruction completed quickly
-    EXPECT_LT(elapsed, std::chrono::seconds(2))
+    EXPECT_LT(elapsed, 2s)
         << "Destructor should complete quickly after shutdown";
   }
 
@@ -994,7 +1069,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
 
     // Keep trying to progress request for ~5 seconds before giving up.
     // Just need to confirm that it doesn't complete.
-    if (elapsed > std::chrono::seconds(1)) {
+    if (elapsed > 1s) {
       break;
     }
   }
@@ -1002,7 +1077,7 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
   auto elapsed = std::chrono::steady_clock::now() - start;
 
   // Verify abort happened quickly
-  EXPECT_LT(elapsed, std::chrono::seconds(10));
+  EXPECT_LT(elapsed, 10s);
   EXPECT_NE(result, commSuccess);
   EXPECT_TRUE(abortCtrl->Test());
 
@@ -1010,4 +1085,281 @@ TEST_F(CtranIbBootstrapCommonTest, AbortDuringBusCardExchange) {
   auto vc = ctranIb->getVc(1);
   EXPECT_EQ(vc, nullptr) << "VC should not be created after abort during "
                             "bus card exchange";
+}
+
+// Test aborting waitNotify operation
+TEST_F(CtranIbBootstrapCommonTest, AbortWaitNotify) {
+  auto rank0Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+
+    // Set timeout to abort waitNotify
+    abortCtrl->SetTimeout(std::chrono::milliseconds(500));
+
+    XLOG(INFO) << "Rank 0 calling ctranIb->waitNotify(1, 1)";
+
+    // Try to wait for a notify that will never come
+    auto startWaitNotify = std::chrono::steady_clock::now();
+    EXPECT_THROW(ctranIb->waitNotify(1, 1), ::ctran::utils::Exception);
+    auto elapsed = std::chrono::steady_clock::now() - startWaitNotify;
+
+    // Should abort after timeout
+    EXPECT_LT(elapsed, std::chrono::seconds(5));
+    EXPECT_TRUE(abortCtrl->Test());
+    XLOGF(INFO, "Rank 0 waitNotify aborted by timeout as expected");
+  };
+
+  auto rank1Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    recvCtrlMsg(ctranIb, 0, &peerServerAddr);
+
+    // Don't send notifications - let rank 0 timeout
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    XLOGF(INFO, "Rank 1 completed without sending notify");
+  };
+
+  TwoRankTestHelper(rank0Action, rank1Action).run();
+}
+
+// Test multiple sequential control messages over the same connection
+TEST_P(CtranIbBootstrapParameterizedTest, MultipleSequentialCtrlMsg) {
+  auto rank0Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    // Send first control message
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+
+    // Send second control message over the same established connection
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+
+    // Send third control message
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+
+    XLOG(INFO) << "Rank 0 successfully sent 3 sequential control messages";
+  };
+
+  auto rank1Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    // Receive three control messages
+    for (int i = 0; i < 3; ++i) {
+      recvCtrlMsg(ctranIb, 0, &peerServerAddr);
+
+      XLOGF(INFO, "Rank 1 received control message {}", i + 1);
+    }
+  };
+
+  TwoRankTestHelper(rank0Action, rank1Action).run();
+}
+
+// Test bidirectional communication (both ranks send and receive)
+TEST_P(CtranIbBootstrapParameterizedTest, BidirectionalCtrlMsg) {
+  folly::Baton rank0Complete, rank1Complete;
+
+  auto rank0Action = [this, &rank0Complete, &rank1Complete](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    // Send control message to rank 1
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+
+    // Receive control message from rank 1
+    recvCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+
+    XLOG(INFO) << "Rank 0 completed bidirectional communication";
+
+    rank0Complete.post();
+    rank1Complete.wait();
+  };
+
+  auto rank1Action = [this, &rank1Complete, &rank0Complete](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    // Receive control message from rank 0
+    recvCtrlMsg(ctranIb, /*peerRank=*/0, &peerServerAddr);
+
+    // Send control message to rank 0
+    sendCtrlMsg(ctranIb, /*peerRank=*/0, &peerServerAddr);
+
+    XLOG(INFO) << "Rank 1 completed bidirectional communication";
+
+    rank1Complete.post();
+    rank0Complete.wait();
+  };
+
+  TwoRankTestHelper(rank0Action, rank1Action).run();
+}
+
+// Test that getVc() returns valid VC after connection establishment
+TEST_P(CtranIbBootstrapParameterizedTest, GetVcAfterConnection) {
+  auto rank0Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    // Before connection, getVc should return nullptr
+    auto vcBeforeConnection = ctranIb->getVc(1);
+    EXPECT_EQ(vcBeforeConnection, nullptr);
+
+    // Send control message to establish connection
+    sendCtrlMsg(ctranIb, /*peerRank=*/1, &peerServerAddr);
+
+    // Wait for VC to be established
+    bool established = waitForVcEstablished(ctranIb, 1, 5s);
+    EXPECT_TRUE(established);
+
+    // After connection, getVc should return valid VC
+    auto vcAfterConnection = ctranIb->getVc(1);
+    EXPECT_NE(vcAfterConnection, nullptr);
+
+    // Multiple calls should return the same VC
+    auto vcSecondCall = ctranIb->getVc(1);
+    EXPECT_EQ(vcAfterConnection, vcSecondCall);
+
+    // Verify VC is functional by calling getter methods
+    EXPECT_GT(vcAfterConnection->getControlQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getNotifyQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getAtomicQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getMaxNumQp(), 0);
+
+    // Send notifications over the established connection to verify it works
+    constexpr int kNumNotifications = 3;
+    {
+      std::lock_guard<std::mutex> lock(vcAfterConnection->mutex);
+      for (int i = 0; i < kNumNotifications; ++i) {
+        auto result = vcAfterConnection->notify(nullptr);
+        EXPECT_EQ(result, commSuccess);
+      }
+    }
+
+    // Progress to send all notifications
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < 5s) {
+      auto res = ctranIb->progress();
+      EXPECT_EQ(res, commSuccess);
+      std::this_thread::sleep_for(10ms);
+    }
+
+    XLOG(INFO) << "Rank 0 verified VC state and sent " << kNumNotifications
+               << " notifications";
+  };
+
+  auto rank1Action = [this](
+                         CtranIb* ctranIb,
+                         const folly::SocketAddress& peerAddr,
+                         AbortPtr abortCtrl) {
+    SocketServerAddr peerServerAddr = getSocketServerAddress(
+        peerAddr.getPort(), peerAddr.getIPAddress().str().c_str(), "lo");
+
+    // Before connection, getVc should return nullptr
+    auto vcBeforeConnection = ctranIb->getVc(0);
+    EXPECT_EQ(vcBeforeConnection, nullptr);
+
+    // Receive control message
+    ControlMsg msg;
+    CtranIbRequest ctrlReq;
+    CtranIbEpochRAII epochRAII(ctranIb);
+    ctranIb->irecvCtrlMsg(&msg, sizeof(msg), 0, ctrlReq, &peerServerAddr);
+
+    do {
+      auto res = ctranIb->progress();
+      EXPECT_EQ(res, commSuccess);
+    } while (!ctrlReq.isComplete());
+
+    // Wait for VC to be established
+    bool established = waitForVcEstablished(ctranIb, 0, 5s);
+    EXPECT_TRUE(established);
+
+    // After connection, getVc should return valid VC
+    auto vcAfterConnection = ctranIb->getVc(0);
+    EXPECT_NE(vcAfterConnection, nullptr);
+
+    // Verify VC is functional by calling getter methods
+    EXPECT_GT(vcAfterConnection->getControlQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getNotifyQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getAtomicQpNum(), 0u);
+    EXPECT_GT(vcAfterConnection->getMaxNumQp(), 0);
+
+    // Wait to receive notifications from rank 0
+    constexpr int kNumNotifications = 3;
+    int notificationsReceived = 0;
+    auto start = std::chrono::steady_clock::now();
+    while (notificationsReceived < kNumNotifications &&
+           std::chrono::steady_clock::now() - start < 5s) {
+      auto res = ctranIb->progress();
+      EXPECT_EQ(res, commSuccess);
+
+      {
+        std::lock_guard<std::mutex> lock(vcAfterConnection->mutex);
+        bool hasNotify = false;
+        vcAfterConnection->checkNotify(&hasNotify);
+        if (hasNotify) {
+          ++notificationsReceived;
+        }
+      }
+
+      std::this_thread::sleep_for(10ms);
+    }
+
+    EXPECT_EQ(notificationsReceived, kNumNotifications)
+        << "Should have received all notifications from rank 0";
+
+    XLOG(INFO) << "Rank 1 verified VC state and received "
+               << notificationsReceived << " notifications";
+  };
+
+  TwoRankTestHelper(rank0Action, rank1Action).run();
+}
+
+// Test that getListenSocketListenAddr() returns consistent address
+TEST_P(CtranIbBootstrapParameterizedTest, ListenAddrConsistency) {
+  SocketServerAddr serverAddr = getSocketServerAddress();
+  auto [ctranIb, abortCtrl] = createCtranIbAndAbort(
+      /*rank=*/0, CtranIb::BootstrapMode::kSpecifiedServer, true, &serverAddr);
+
+  // Get listen address multiple times
+  auto addr1 = ctranIb->getListenSocketListenAddr();
+  auto addr2 = ctranIb->getListenSocketListenAddr();
+  auto addr3 = ctranIb->getListenSocketListenAddr();
+
+  // All calls should succeed
+  EXPECT_FALSE(addr1.hasError());
+  EXPECT_FALSE(addr2.hasError());
+  EXPECT_FALSE(addr3.hasError());
+
+  // All addresses should be identical
+  EXPECT_EQ(addr1.value().getPort(), addr2.value().getPort());
+  EXPECT_EQ(addr1.value().getPort(), addr3.value().getPort());
+  EXPECT_EQ(
+      addr1.value().getIPAddress().str(), addr2.value().getIPAddress().str());
+  EXPECT_EQ(
+      addr1.value().getIPAddress().str(), addr3.value().getIPAddress().str());
 }

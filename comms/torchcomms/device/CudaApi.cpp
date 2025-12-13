@@ -117,6 +117,11 @@ cudaError_t DefaultCudaApi::streamGetCaptureInfo_v2(
 #endif
 }
 
+cudaError_t DefaultCudaApi::threadExchangeStreamCaptureMode(
+    enum cudaStreamCaptureMode* mode) {
+  return cudaThreadExchangeStreamCaptureMode(mode);
+}
+
 cudaError_t DefaultCudaApi::malloc(void** devPtr, size_t size) {
   return cudaMalloc(devPtr, size);
 }
