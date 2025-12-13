@@ -33,7 +33,12 @@ IbvPd::~IbvPd() {
   if (pd_) {
     int rc = ibvSymbols.ibv_internal_dealloc_pd(pd_);
     if (rc != 0) {
-      XLOGF(ERR, "Failed to deallocate pd rc: {}, {}", rc, strerror(errno));
+      XLOGF(
+          WARN,
+          "Failed to deallocate pd rc: {}, {}. "
+          "This is a post-failure warning likely due to an uncleaned RDMA resource on the failure path.",
+          rc,
+          strerror(errno));
     }
   }
 }
