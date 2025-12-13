@@ -34,12 +34,9 @@ class CtranAllToAllvDedupTest : public CtranDistBaseTest,
     myRank_ = comm_->statex_->rank();
     nRanks_ = comm_->statex_->nRanks();
     setStatex(comm_->statex_.get());
-
-    CUDACHECK_ASSERT(cudaMalloc(&barrierFlag_, sizeof(int)));
   }
 
   void TearDown() override {
-    CUDACHECK_ASSERT(cudaFree(barrierFlag_));
     CUDACHECK_ASSERT(cudaEventDestroy(execStart_));
     CUDACHECK_ASSERT(cudaEventDestroy(execStop_));
 
@@ -69,12 +66,6 @@ class CtranAllToAllvDedupTest : public CtranDistBaseTest,
   template <commDataType_t DataType = commInt>
   void run(int numIter, std::vector<int>& allowBuckets, bool skipCheck = false);
 
-  void barrier(cudaStream_t stream) {
-    // simple Allreduce as barrier before get data from other ranks
-    COMMCHECK_ASSERT(ctranAllReduce(
-        barrierFlag_, barrierFlag_, 1, commInt, commSum, comm_, stream));
-  }
-
   std::vector<std::vector<int>> genAllRankIndices(
       const std::vector<int>& allowBuckets,
       int iter = 0);
@@ -85,7 +76,6 @@ class CtranAllToAllvDedupTest : public CtranDistBaseTest,
   int expectedVal_{0};
   int myRank_;
   int nRanks_;
-  int* barrierFlag_ = nullptr;
 
   cudaEvent_t execStart_, execStop_;
   const int defaultNumIters_ = 20;
