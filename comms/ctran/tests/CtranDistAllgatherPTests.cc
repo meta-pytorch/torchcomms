@@ -346,6 +346,95 @@ TEST_F(CtranAllgatherPTest, InvalidCount) {
   }
 }
 
+TEST_F(CtranAllgatherPTest, InternalRegisteredMemory) {
+  // Test using CTRAN's internal registered temporary buffers
+  // This validates that buffers allocated by CTRAN internally
+  // (e.g., in CtranAlgo.cc) work correctly with AllGatherP operations
+
+  EnvRAII algoEnv(NCCL_ALLGATHER_P_ALGO, NCCL_ALLGATHER_P_ALGO::ctdirect);
+
+  // Access CTRAN's internal temporary buffers
+  auto* ctranAlgo = ctranComm->ctran_->algo.get();
+
+  // Use MIN_REG_SRC_TMPBUF and MIN_REG_DST_TMPBUF which are sized
+  // CTRAN_MIN_REGISTRATION_SIZE (typically sufficient for small tests)
+  auto [srcBuf, srcBufHdl] =
+      ctranAlgo->getTmpBufInfo(CtranAlgo::TmpbufType::MIN_REG_SRC_TMPBUF);
+  auto [dstBuf, dstBufHdl] =
+      ctranAlgo->getTmpBufInfo(CtranAlgo::TmpbufType::MIN_REG_DST_TMPBUF);
+
+  ASSERT_NE(srcBuf, nullptr) << "Internal src tmpbuf should be allocated";
+  ASSERT_NE(dstBuf, nullptr) << "Internal dst tmpbuf should be allocated";
+  ASSERT_NE(srcBufHdl, nullptr) << "Internal src tmpbuf should be registered";
+  ASSERT_NE(dstBufHdl, nullptr) << "Internal dst tmpbuf should be registered";
+
+  // Use a small count that fits within CTRAN_MIN_REGISTRATION_SIZE
+  const size_t count = 64;
+  const commDataType_t testDt = commInt8;
+  const size_t sendBytes = count * commTypeSize(testDt);
+  const size_t recvBytes = sendBytes * numRanks;
+
+  // Initialize source buffer with rank-specific pattern
+  const char expectedVal = static_cast<char>(globalRank);
+  CUDACHECK_TEST(cudaMemset(srcBuf, expectedVal, sendBytes));
+  CUDACHECK_TEST(cudaMemset(dstBuf, 0xAB, recvBytes));
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Initialize AllGatherP with internal recvbuf
+  // Note: We don't need to call commRegister - buffers are already registered
+  meta::comms::Hints hints;
+  CtranPersistentRequest* request;
+
+  COMMCHECK_TEST(
+      ctran::allGatherPInit(
+          dstBuf,
+          count * numRanks,
+          hints,
+          testDt,
+          ctranComm.get(),
+          stream,
+          request));
+
+  // Execute AllGatherP using internal buffers
+  constexpr int nIter = 3;
+  for (int j = 0; j < nIter; j++) {
+    // Update source buffer for each iteration
+    const char sendVal = static_cast<char>(j * 10 + globalRank);
+    std::vector<char> sendVals(sendBytes, sendVal);
+    ASSERT_EQ(
+        cudaMemcpyAsync(
+            srcBuf, sendVals.data(), sendBytes, cudaMemcpyDefault, stream),
+        cudaSuccess);
+
+    ASSERT_EQ(
+        ctran::allGatherPExec(srcBuf, count, testDt, request), commSuccess);
+    ASSERT_EQ(cudaStreamSynchronize(stream), cudaSuccess);
+
+    // Verify results: each rank's data should be present in recvbuf
+    for (int i = 0; i < numRanks; ++i) {
+      std::vector<char> observedVals(sendBytes, 0xFF);
+      ASSERT_EQ(
+          cudaMemcpy(
+              observedVals.data(),
+              static_cast<char*>(dstBuf) + sendBytes * i,
+              sendBytes,
+              cudaMemcpyDefault),
+          cudaSuccess);
+
+      const char expectedRankVal = static_cast<char>(i + j * 10);
+      EXPECT_THAT(observedVals, testing::Each(expectedRankVal))
+          << "at rank " << globalRank << " in iteration " << j
+          << " at chunk received from peer " << i;
+    }
+  }
+
+  verifyGpeLeak(ctranComm->ctran_.get());
+
+  ASSERT_EQ(ctran::allGatherPDestroy(request), commSuccess);
+  delete request;
+}
+
 inline std::string getTestName(
     const testing::TestParamInfo<CtranAllgatherPTestParam::ParamType>& info) {
   return std::to_string(std::get<0>(info.param)) + "maxSendCount_" +
