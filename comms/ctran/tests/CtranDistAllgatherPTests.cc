@@ -39,8 +39,8 @@ class CtranAllgatherPTestEnv : public ctran::CtranEnvironmentBase {
   void SetUp() override {
     CtranEnvironmentBase::SetUp();
 
-    // set logging level to WARN
-    setenv("NCCL_DEBUG", "WARN", 1);
+    // set logging level to WARN but allow override by manual run
+    setenv("NCCL_DEBUG", "WARN", 0);
   }
 };
 
@@ -136,18 +136,19 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
       size_t count,
       TestInPlaceType inplace,
       MemAllocType memType,
+      CtranComm* testComm,
       bool sendbufReg = true) {
     const auto maxRecvCount = maxSendCount * numRanks;
     memorySetUp(memType, count, maxRecvCount);
 
     void* usedSendBuf = sendbuf;
     COMMCHECK_TEST(
-        ctranComm->ctran_->commRegister(recvbuf, recvBytes, &recvHdl));
+        testComm->ctran_->commRegister(recvbuf, recvBytes, &recvHdl));
     if (inplace == kTestInPlace) {
       usedSendBuf = (char*)recvbuf + globalRank * sendBytes;
     } else if (sendbufReg) {
       COMMCHECK_TEST(
-          ctranComm->ctran_->commRegister(sendbuf, sendBytes, &sendHdl));
+          testComm->ctran_->commRegister(sendbuf, sendBytes, &sendHdl));
     }
     meta::comms::Hints hints;
     CtranPersistentRequest* request;
@@ -161,7 +162,7 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
             initMaxRecvCount,
             hints,
             initDt,
-            ctranComm.get(),
+            testComm,
             stream,
             request));
 
@@ -199,15 +200,15 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
       }
     }
 
-    verifyGpeLeak(ctranComm->ctran_.get());
+    verifyGpeLeak(testComm->ctran_.get());
 
     ASSERT_EQ(ctran::allGatherPDestroy(request), commSuccess);
     delete request;
 
     if (inplace == kTestOutOfPlace && sendbufReg) {
-      COMMCHECK_TEST(ctranComm->ctran_->commDeregister(sendHdl));
+      COMMCHECK_TEST(testComm->ctran_->commDeregister(sendHdl));
     }
-    COMMCHECK_TEST(ctranComm->ctran_->commDeregister(recvHdl));
+    COMMCHECK_TEST(testComm->ctran_->commDeregister(recvHdl));
 
     memoryCleanUp(memType);
   }
@@ -233,7 +234,33 @@ TEST_P(CtranAllgatherPTestParam, Basic) {
   } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   } else {
-    run(maxSendCount, count, inplace, memType);
+    run(maxSendCount, count, inplace, memType, ctranComm.get());
+  }
+}
+
+TEST_P(CtranAllgatherPTestParam, VnodeBasic) {
+  const auto& [maxSendCount, count, inplace, memType, algo] = GetParam();
+  const std::string algoStr =
+      (algo == NCCL_ALLGATHER_P_ALGO::ctdirect) ? "ctdirect" : "ctpipeline";
+  SysEnvRAII algoEnv("NCCL_ALLGATHER_P_ALGO", algoStr);
+  EnvRAII vnodeEnv(
+      NCCL_COMM_STATE_DEBUG_TOPO, NCCL_COMM_STATE_DEBUG_TOPO::vnode);
+  EnvRAII ppnEnv(NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS, 4);
+  if (ctranComm->statex_->nLocalRanks() % 4 != 0) {
+    GTEST_SKIP()
+        << "Vnode test requires number of local ranks to be multiple of 4, skip test";
+  }
+
+  if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skipping this test";
+  } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
+    GTEST_SKIP() << "No IB Backend found, skip test";
+  } else {
+    // Create a new communicator with virtual node + 4 local ranks setup
+    auto testComm = makeCtranComm();
+    ASSERT_EQ(testComm->statex_->nLocalRanks(), 4);
+    ASSERT_EQ(testComm->statex_->nNodes(), numRanks / 4);
+    run(maxSendCount, count, inplace, memType, testComm.get());
   }
 }
 
@@ -254,7 +281,12 @@ TEST_F(CtranAllgatherPTestParam, DynamicSendRegDirect) {
   } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   } else {
-    run(maxSendCount, count, inplace, memType, false /* sendbufReg */);
+    run(maxSendCount,
+        count,
+        inplace,
+        memType,
+        ctranComm.get(),
+        false /* sendbufReg */);
   }
 }
 
@@ -270,7 +302,12 @@ TEST_F(CtranAllgatherPTestParam, DynamicSendRegPipeline) {
   } else if (ctranComm->ctran_->mapper->ctranIbPtr() == nullptr) {
     GTEST_SKIP() << "No IB Backend found, skip test";
   } else {
-    run(maxSendCount, count, inplace, memType, false /* sendbufReg */);
+    run(maxSendCount,
+        count,
+        inplace,
+        memType,
+        ctranComm.get(),
+        false /* sendbufReg */);
   }
 }
 
