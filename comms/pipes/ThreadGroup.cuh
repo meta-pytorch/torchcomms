@@ -281,54 +281,44 @@ __device__ inline PartitionResult ThreadGroup::partition(
  *
  * REQUIREMENTS:
  * =============
- * - num_partitions (weights.size()) must be <= total_groups
- * - If num_partitions > total_groups, the kernel will trap with an error
+ * - The number of partitions with non-zero weight must be <= total_groups
+ * - If non_zero_weight_count > total_groups, the kernel will trap with an error
  *   message showing both values
  *
  * GUARANTEES:
  * ===========
- * - Each partition receives at least 1 group (regardless of weight skew)
+ * - Each partition with non-zero weight receives at least 1 group
+ * - Partitions with zero weight receive 0 groups
  * - Groups are distributed proportionally to weights (after minimum guarantee)
  * - All groups are assigned to exactly one partition
  *
- * ALGORITHM: Reserve-Then-Distribute
- * ===================================
- * Each partition gets: 1 (guaranteed) + proportional share of remaining groups
+ * ALGORITHM: Reserve-Then-Distribute (with zero-weight handling)
+ * ===============================================================
+ * For partitions with non-zero weight:
+ *   Each gets: 1 (guaranteed) + proportional share of remaining groups
  *
- *   partition_end[i] = (i + 1) + ceil(accumulated_weight[i] * distributable /
- * total_weight)
+ *   partition_end[i] = non_zero_count_so_far + ceil(accumulated_weight *
+ *                      distributable / total_weight)
  *
- * where distributable = total_groups - num_partitions
+ * where distributable = total_groups - non_zero_weight_count
  *
- * MATHEMATICAL PROOF OF MINIMUM GUARANTEE:
- * ========================================
- * For partition i, the size is:
- *   size[i] = partition_end[i] - partition_end[i-1]
- *           = [(i + 1) + proportional[i]] - [i + proportional[i-1]]
- *           = 1 + (proportional[i] - proportional[i-1])
- *           >= 1  (because proportional is monotonically non-decreasing)
+ * For partitions with zero weight:
+ *   partition_end[i] = partition_start[i] (i.e., 0 groups)
  *
- * Since accumulated_weight always increases, proportional[i] >=
- * proportional[i-1], so the difference is always >= 0. Therefore, size[i] >= 1
- * for all partitions.
- *
- * WHY THIS CONSTRAINT:
- * ====================
- * When num_partitions > total_groups, some partitions would receive zero
- * groups, and group assignment would skip partitions non-deterministically
- * based on rounding. This is almost always a bug in the caller's logic.
- *
- * EXAMPLE (32 warps, weights {3, 1} -> 24 + 8 split):
- * ====================================================
- *   uint32_t weights[] = {3, 1};
+ * EXAMPLE (32 warps, weights {3, 0, 1} -> 24 + 0 + 8 split):
+ * ===========================================================
+ *   uint32_t weights[] = {3, 0, 1};
  *   auto [partition_id, subgroup] = warp.partition(weights);
  *   if (partition_id == 0) {
  *     p2p.send(subgroup, sendBuff, nBytes);  // 24 warps
+ *   } else if (partition_id == 1) {
+ *     // No warps assigned (zero weight)
  *   } else {
  *     p2p.recv(subgroup, recvBuff, nBytes);  // 8 warps
  *   }
  *
- * @param weights Span of relative weights (size must be <= total_groups)
+ * @param weights Span of relative weights (non-zero count must be <=
+ * total_groups)
  * @return {partition_id, subgroup} for this group
  */
 __device__ inline PartitionResult ThreadGroup::partition(
@@ -336,42 +326,68 @@ __device__ inline PartitionResult ThreadGroup::partition(
 #ifdef __CUDA_ARCH__
   const uint32_t num_partitions = static_cast<uint32_t>(weights.size());
 
-  // More partitions than groups is invalid - some partitions would be empty
-  // and group assignment would skip partitions non-deterministically.
+  // Count non-zero weights and calculate total weight
+  uint32_t total_weight = 0;
+  uint32_t non_zero_count = 0;
+  for (uint32_t i = 0; i < num_partitions; i++) {
+    total_weight += weights[i];
+    if (weights[i] > 0) {
+      non_zero_count++;
+    }
+  }
+
+  // Only partitions with non-zero weight need groups.
   // Use __trap() instead of assert() to ensure this check is active in both
   // debug and release builds.
-  if (num_partitions > total_groups) {
+  if (non_zero_count > total_groups) {
     printf(
-        "partition(weights): num_partitions (%u) must be <= total_groups (%u)\n",
-        num_partitions,
+        "partition(weights): non_zero_weight_count (%u) must be <= total_groups (%u)\n",
+        non_zero_count,
         total_groups);
     __trap();
   }
 
-  uint32_t total_weight = 0;
-  for (uint32_t i = 0; i < num_partitions; i++) {
-    total_weight += weights[i];
+  // Handle edge case: all weights are zero
+  if (total_weight == 0) {
+    // Assign all groups to partition 0 (arbitrary but deterministic)
+    return PartitionResult{
+        .partition_id = 0,
+        .subgroup = ThreadGroup{
+            .thread_id_in_group = thread_id_in_group,
+            .group_size = group_size,
+            .group_id = group_id,
+            .total_groups = total_groups,
+            .scope = scope}};
   }
 
-  // Calculate distributable groups (after guaranteeing 1 per partition)
-  const uint32_t distributable_groups = total_groups - num_partitions;
+  // Calculate distributable groups (after guaranteeing 1 per non-zero
+  // partition)
+  const uint32_t distributable_groups = total_groups - non_zero_count;
 
   uint32_t partition_start = 0;
   uint32_t accumulated_weight = 0;
+  uint32_t non_zero_seen = 0;
 
   for (uint32_t i = 0; i < num_partitions; i++) {
     accumulated_weight += weights[i];
 
-    // Each partition gets: 1 (guaranteed) + proportional share of remaining
-    // Use ceiling division for the proportional part to avoid rounding down
-    uint32_t proportional_groups =
-        (accumulated_weight * distributable_groups + total_weight - 1) /
-        total_weight;
-    uint32_t partition_end = (i + 1) + proportional_groups;
+    uint32_t partition_end;
+    if (weights[i] == 0) {
+      // Zero-weight partitions get no groups
+      partition_end = partition_start;
+    } else {
+      non_zero_seen++;
+      // Each non-zero partition gets: 1 (guaranteed) + proportional share
+      // Use ceiling division for the proportional part
+      uint32_t proportional_groups =
+          (accumulated_weight * distributable_groups + total_weight - 1) /
+          total_weight;
+      partition_end = non_zero_seen + proportional_groups;
 
-    // Clamp to total_groups (last partition gets remainder)
-    if (partition_end > total_groups) {
-      partition_end = total_groups;
+      // Clamp to total_groups (last partition gets remainder)
+      if (partition_end > total_groups) {
+        partition_end = total_groups;
+      }
     }
 
     if (group_id < partition_end) {
