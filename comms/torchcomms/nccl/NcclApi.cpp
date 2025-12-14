@@ -6,10 +6,6 @@
 namespace torch {
 namespace comms {
 
-#if defined(IS_NCCLX)
-#error "NCCLX should not be used"
-#endif
-
 // DefaultNcclApi implementation
 const char* DefaultNcclApi::getErrorString(ncclResult_t result) {
   return ncclGetErrorString(result);
