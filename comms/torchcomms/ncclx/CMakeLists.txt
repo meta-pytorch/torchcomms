@@ -69,6 +69,8 @@ set_target_properties(torchcomms_comms_ncclx PROPERTIES
     OUTPUT_NAME "_comms_ncclx"
     SUFFIX ".${Python3_SOABI}.so"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms"
+    BUILD_RPATH "${NCCLX_BUILD_DIR}/lib"
+    INSTALL_RPATH "${NCCLX_BUILD_DIR}/lib"
 )
 target_include_directories(torchcomms_comms_ncclx PRIVATE
     ${ROOT}
