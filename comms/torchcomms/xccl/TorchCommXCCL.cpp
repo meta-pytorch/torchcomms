@@ -15,12 +15,7 @@ onecclResult_t XCCLException::getResult() const { return result_; }
 
 void preReduce(at::Tensor& tensor, const ReduceOp& r) {
   if (r.type() == ReduceOp::RedOpType::PREMUL_SUM) {
-    auto factor = *r.factor();
-    try {
-      tensor *= std::get<double>(factor);
-    } catch (const std::bad_variant_access&) {
-      tensor *= std::get<at::Tensor>(factor);
-    }
+    std::visit([&tensor](auto&& arg) { tensor.mul_(arg); }, *r.factor());
   }
 }
 
