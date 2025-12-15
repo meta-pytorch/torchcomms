@@ -87,7 +87,7 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
       reinterpret_cast<size_t*>(comm->ctran_->algo->getTmpBuf(
           CtranAlgo::TmpbufType::SENDINDICES_BLOCKLEN_TMPBUF_CPU));
   config.args.collective.alltoallv_dynamic.nonContig.maxInputChunkCountPerRank =
-      CTRAN_MAX_NUM_SPLITS_PER_RANK;
+      all2allvDynamicMaxNumSplitsPerRank;
   config.args.collective.alltoallv_dynamic.nonContig.maxRecvcount =
       maxRecvcount;
   config.args.collective.alltoallv_dynamic.nonContig.maxSendcount =

@@ -16,9 +16,6 @@
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/utils/logger/Logger.h"
 
-#define CTRAN_MAX_TOTAL_SENDBUFFS 2048
-#define CTRAN_MAX_NUM_SPLITS_PER_RANK 1024
-
 #define LOCAL_RANK_TO_DEV_REGION_POS(localRank, ownerLocalRank) \
   (localRank < ownerLocalRank ? localRank : localRank - 1)
 
@@ -29,6 +26,15 @@ enum CollType {
   UNKNOWN = 4,
 };
 constexpr int kExpectedCommAttrLength = 5;
+
+// The following two values are used to allocate tmpbuf for
+// AllToAllvDynamic.
+// TODO: if model scale become larger, need to figure out ways to reduce
+// these value to avoid allocate a large staing buffer.
+// TODO: move the following and the tmpbuff allocation logic out of CtranAlgo,
+// and create new funcs in A2AvDynamic's own logic.
+inline size_t all2allvDynamicMaxSendcounts = 0;
+inline size_t all2allvDynamicMaxNumSplitsPerRank = 0;
 
 commResult_t ctranConfigCommAlgoOverride(CtranComm* comm);
 
