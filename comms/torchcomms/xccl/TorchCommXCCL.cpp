@@ -13,6 +13,17 @@ namespace comms {
 
 onecclResult_t XCCLException::getResult() const { return result_; }
 
+void preReduce(at::Tensor& tensor, const ReduceOp& r) {
+  if (r.type() == ReduceOp::RedOpType::PREMUL_SUM) {
+    auto factor = *r.factor();
+    try {
+      tensor *= std::get<double>(factor);
+    } catch (const std::bad_variant_access&) {
+      tensor *= std::get<at::Tensor>(factor);
+    }
+  }
+}
+
 TorchCommXCCL::TorchCommXCCL()
     : xccl_comm_{nullptr}, device_(at::kXPU),
       init_state_(InitializationState::UNINITIALIZED), shutdown_(false) {}
@@ -352,13 +363,8 @@ TorchCommXCCL::all_reduce(at::Tensor &tensor, const ReduceOp &op, bool async_op,
 
   // oneCCL bug skips premul sum if comm_size is 1, so handle it here
   // TODO: remove this workaround when oneCCL bug is fixed
-  if (comm_size_ == 1 && op.type() == ReduceOp::RedOpType::PREMUL_SUM) {
-    auto factor = *op.factor();
-    try {
-      tensor *= std::get<double>(factor);
-    } catch (const std::bad_variant_access&) {
-      tensor *= std::get<at::Tensor>(factor);
-    }
+  if (comm_size_ == 1) {
+    preReduce(tensor, op);
   }
 
   const auto dataType = getXcclDataType(tensor);
