@@ -82,8 +82,7 @@ std::vector<at::Tensor> WorkWrapper::result() {
 BackendWrapper::BackendWrapper(std::shared_ptr<TorchComm> comm)
     : Backend(comm->getRank(), comm->getSize()),
       comm_(comm),
-      backend_(comm->unsafeGetBackend()),
-      options_(c10::make_intrusive<Options>()) {}
+      backend_(comm->unsafeGetBackend()) {}
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
     std::vector<at::Tensor>& tensors,
@@ -357,32 +356,6 @@ BackendWrapper::recv(std::vector<at::Tensor>& tensors, int srcRank, int tag) {
 
 std::shared_ptr<TorchComm> BackendWrapper::getComm() const {
   return comm_;
-}
-
-c10::intrusive_ptr<c10d::Backend::Options> BackendWrapper::getBackendOptions() {
-  return c10::static_intrusive_pointer_cast<c10d::Backend::Options>(options_);
-}
-
-c10::intrusive_ptr<c10d::Backend> BackendWrapper::split(
-    const c10::intrusive_ptr<c10d::Store>& store,
-    const std::vector<int>& ranks,
-    const c10::intrusive_ptr<c10d::Backend::Options>& opts) {
-  auto comm = getComm();
-  CommOptions commOpts;
-  auto backendOpts = c10::dynamic_intrusive_pointer_cast<Options>(opts);
-  if (backendOpts) {
-    commOpts.abort_process_on_timeout_or_error =
-        backendOpts->abort_process_on_timeout_or_error;
-    commOpts.timeout = backendOpts->timeout;
-    commOpts.high_priority_stream = backendOpts->high_priority_stream;
-    commOpts.store = backendOpts->store;
-    commOpts.hints = backendOpts->hints;
-  }
-  auto new_comm = comm->split(ranks, opts->group_name, commOpts);
-  if (new_comm == nullptr) {
-    return nullptr;
-  }
-  return c10::make_intrusive<BackendWrapper>(new_comm);
 }
 
 } // namespace comms
