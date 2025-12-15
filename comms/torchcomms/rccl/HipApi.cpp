@@ -59,6 +59,11 @@ hipError_t DefaultHipApi::streamSynchronize(hipStream_t stream) {
   return hipStreamSynchronize(stream);
 }
 
+hipError_t DefaultHipApi::threadExchangeStreamCaptureMode(
+    enum hipStreamCaptureMode* mode) {
+  return hipThreadExchangeStreamCaptureMode(mode);
+}
+
 hipError_t DefaultHipApi::malloc(void** devPtr, size_t size) {
   return hipMalloc(devPtr, size);
 }

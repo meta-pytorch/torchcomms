@@ -44,6 +44,11 @@ class HipMock : public HipApi {
   MOCK_METHOD(hipError_t, streamSynchronize, (hipStream_t stream), (override));
   MOCK_METHOD(
       hipError_t,
+      threadExchangeStreamCaptureMode,
+      (enum hipStreamCaptureMode * mode),
+      (override));
+  MOCK_METHOD(
+      hipError_t,
       getStreamPriorityRange,
       (int* leastPriority, int* greatestPriority),
       (override));
