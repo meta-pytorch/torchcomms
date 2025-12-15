@@ -91,9 +91,7 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCL::checkStatus() {
       // Start event has completed, store the current time
       start_completed_time_ = std::chrono::steady_clock::now();
       state_ = WorkStatus::INPROGRESS;
-    } else if (
-        start_status != cudaErrorNotReady &&
-        start_status != cudaErrorStreamCaptureUnsupported) {
+    } else if (start_status != cudaErrorNotReady) {
       // Some other error occurred with the start event
       TC_LOG(ERROR) << "CUDA error during start event query: "
                     << comm_->getCudaApi()->getErrorString(start_status) << " ("
@@ -126,7 +124,7 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCL::checkStatus() {
       // Operation has timed out
       state_ = WorkStatus::TIMEDOUT;
     }
-  } else if (end_status != cudaErrorStreamCaptureUnsupported) {
+  } else {
     // Some other error occurred with the end event
     TC_LOG(ERROR) << "CUDA error during end event query: "
                   << comm_->getCudaApi()->getErrorString(end_status) << " ("
