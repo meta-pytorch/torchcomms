@@ -13,7 +13,7 @@ namespace comms {
 
 onecclResult_t XCCLException::getResult() const { return result_; }
 
-void preReduce(at::Tensor& tensor, const ReduceOp& r) {
+static void preReduce(at::Tensor& tensor, const ReduceOp& r) {
   if (r.type() == ReduceOp::RedOpType::PREMUL_SUM) {
     std::visit([&tensor](auto&& arg) { tensor.mul_(arg); }, *r.factor());
   }
