@@ -11,6 +11,7 @@ from contextlib import nullcontext
 from typing import List
 
 import torch
+from parameterized import parameterized_class
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
     TorchCommTestWrapper,
@@ -30,6 +31,14 @@ def generate_random_split(n: int, total_sum: int) -> List[int]:
     return split
 
 
+@parameterized_class(
+    ("name", "use_ib"),
+    [
+        ("ib", True),
+        ("nvlink", False),
+    ],
+    class_name_func=lambda cls, _, params: f"{cls.__name__}_{params['name']}",
+)
 class AllToAllvDynamicDispatchTest(unittest.TestCase):
     """Test class for alltoallv_dynamic_dispatch and alltoallv_dynamic_combine operations.
 
@@ -62,6 +71,8 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         """Set up test environment before each test."""
         # NCCLX alltoallvDynamic requires NCCL_CTRAN_ENABLE=1
         os.environ["NCCL_CTRAN_ENABLE"] = "1"
+        if self.use_ib:
+            os.environ["NCCL_COMM_STATE_DEBUG_TOPO"] = "nolocal"
         self.wrapper = self.get_wrapper()
         self.torchcomm = self.wrapper.get_torchcomm()
         self.rank = self.torchcomm.get_rank()
