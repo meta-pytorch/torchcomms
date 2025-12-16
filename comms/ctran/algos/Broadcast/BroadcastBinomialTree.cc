@@ -122,7 +122,7 @@ static inline commResult_t setupPlan(
     }
 
     // Recv config
-    if (comm->ctran_->mapper->requiresRecvNotify(op->recv.peerRank)) {
+    if (comm->ctran_->mapper->requiresRecvNotify(recvFrom)) {
       // only 1 group handles waitNotify elem
       FB_COMMCHECK(comm->ctran_->gpe->allocKernelElems(1, 1, &elem));
       elem->waitNotify.peerLocalRank = statex->localRank(recvFrom);
@@ -131,7 +131,7 @@ static inline commResult_t setupPlan(
       // pass the ngroups used by remote put
       elem->waitNotify.ngroups = getNumGroups(sendSize);
 
-      if (comm->ctran_->mapper->requiresPostRecvNotify(op->recv.peerRank)) {
+      if (comm->ctran_->mapper->requiresPostRecvNotify(recvFrom)) {
         waitNotifyList.enqueue(elem);
       }
       op->broadcast.waitNotifyMap.insert({recvFrom, elem});

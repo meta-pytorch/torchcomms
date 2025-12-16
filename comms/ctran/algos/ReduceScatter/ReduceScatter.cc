@@ -81,6 +81,9 @@ bool ctranReduceScatterSupport(
             "ctranReduceScatterSupport returns false for all cases of algo=ctrhd. Falling back to baseline.");
         break;
       }
+      case NCCL_REDUCESCATTER_ALGO::orig: // invalid query
+        supported = false;
+        break;
       default:
         break;
     }
