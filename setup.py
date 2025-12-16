@@ -127,6 +127,7 @@ extras_require = {
         "numpy",
         "psutil",
         "lintrunner",
+        "parameterized",
     ],
 }
 
