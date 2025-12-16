@@ -247,7 +247,7 @@ inline void progressSendPostTrans(
       tmpChunkId * algoCtx.chunkSize;
 
   // Get allreduce specific IB config
-  static CtranIbConfig* allReduceConfig =
+  static thread_local auto allReduceConfig =
       resource.comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
 
   CtranMapperRequest* req;

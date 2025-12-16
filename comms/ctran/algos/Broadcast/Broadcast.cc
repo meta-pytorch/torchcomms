@@ -65,6 +65,9 @@ bool ctranBroadcastSupport(
     CtranComm* comm,
     enum NCCL_BROADCAST_ALGO algo,
     std::optional<CtranMapperBackend> specifiedBackend) {
+  if (algo == NCCL_BROADCAST_ALGO::orig) {
+    return false;
+  }
   return ctranInitialized(comm) &&
       comm->ctran_->algo->supportBroadcast(specifiedBackend);
 }

@@ -143,8 +143,7 @@ ncclResult_t ncclBroadcast(const void* sendbuff, void* recvbuff, size_t count, n
   }
 
   SetCudaDevRAII setCudaDev(comm->cudaDev);
-  if ((NCCL_BROADCAST_ALGO != NCCL_BROADCAST_ALGO::orig) &&
-      ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO)) {
+  if (ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO)) {
     return metaCommToNccl(ctranBroadcast(
         sendbuff, recvbuff, count, ncclToMetaComm(datatype), root, comm->ctranComm_.get(), stream, NCCL_BROADCAST_ALGO));
   }
@@ -186,8 +185,7 @@ ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recv
   NVTX3_FUNC_WITH_PARAMS(ReduceScatter, NcclNvtxParamsReduceScatter,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, recvcount * ncclTypeSize(datatype), op));
 
-  if (NCCL_REDUCESCATTER_ALGO != NCCL_REDUCESCATTER_ALGO::orig &&
-      ctranReduceScatterSupport(comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO)) {
+  if (ctranReduceScatterSupport(comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO)) {
     return metaCommToNccl(ctranReduceScatter(
         sendbuff, recvbuff, recvcount, ncclToMetaComm(datatype), ncclToMetaComm(op), comm->ctranComm_.get(), stream, NCCL_REDUCESCATTER_ALGO));
   }

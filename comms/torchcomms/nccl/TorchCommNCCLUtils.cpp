@@ -195,6 +195,13 @@ void TorchCommNCCL::checkWorkQueue() {
 // it cudaEventQuery.
 void TorchCommNCCL::timeoutWatchdog() noexcept {
   TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
+
+  cudaStreamCaptureMode mode = cudaStreamCaptureModeThreadLocal;
+  CUDA_CHECK(
+      cuda_api_,
+      cuda_api_->threadExchangeStreamCaptureMode(&mode),
+      "Failed to swap capture mode for timeout thread");
+
   while (!shutdown_) {
     {
       std::unique_lock<std::mutex> lock(timeout_mutex_);

@@ -137,12 +137,12 @@ class TorchCommWindow:
         self,
         dst_rank: int,
         async_op: bool,
-    ) -> None: ...
+    ) -> TorchWork: ...
     def wait_signal(
         self,
         peer_rank: int,
         async_op: bool,
-    ) -> None: ...
+    ) -> TorchWork: ...
     def get_tensor(
         self,
         rank: int,
