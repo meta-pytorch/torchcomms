@@ -449,9 +449,17 @@ class CtranAllReduceIbTest : public CtranAllReduceTest<uint64_t> {
     ncclCvarInit();
     CtranAllReduceTest::SetUp();
   }
+
+  void TearDown() override {
+    CtranAllReduceTest::TearDown();
+  }
 };
 
-TEST_F(CtranAllReduceIbTest, AllReduceIbconfig) {
+TEST_F(CtranAllReduceIbTest, AllReduceIbConfig) {
+  ASSERT_NE(comm, nullptr) << "comm should not be null";
+  ASSERT_NE(comm->ctranComm_, nullptr) << "ctranComm should not be null";
+  ASSERT_NE(comm->ctranComm_->ctran_, nullptr) << "ctran should not be null";
+
   if (comm->ctranComm_->ctran_->algo == nullptr) {
     GTEST_SKIP() << "No ctran algo found, skip test";
   }
@@ -462,6 +470,8 @@ TEST_F(CtranAllReduceIbTest, AllReduceIbconfig) {
   ASSERT_NE(ctranIbConfigPtr, nullptr)
       << "AllReduce IB config should not be null";
 
+  // Verify the config values match the env var:
+  // "allreduce:131072,1,dqplb,8,192"
   EXPECT_EQ(ctranIbConfigPtr->qpScalingTh, 131072);
   EXPECT_EQ(ctranIbConfigPtr->numQps, 1);
   EXPECT_EQ(ctranIbConfigPtr->vcMode, NCCL_CTRAN_IB_VC_MODE::dqplb);

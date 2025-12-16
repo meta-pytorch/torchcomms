@@ -223,7 +223,7 @@ inline commResult_t sendRecvImpl(
   }
 
   // Get sendrecv specific IB config
-  static CtranIbConfig* sendRecvConfig =
+  static thread_local auto sendRecvConfig =
       comm->ctran_->algo->getCollToVcConfig(CollType::SENDRECV);
 
   // As we recv control msgs, issue PUT operations
