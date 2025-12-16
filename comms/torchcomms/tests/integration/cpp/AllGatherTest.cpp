@@ -175,6 +175,8 @@ void AllGatherTest::testGraphAllGather(int count, at::ScalarType dtype) {
     // Verify the results after each replay
     verifyResults(outputs);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for all_gather with input deleted after graph
@@ -230,6 +232,8 @@ void AllGatherTest::testGraphAllGatherInputDeleted(
     // Verify the results after each replay
     verifyResults(outputs);
   }
+
+  graph.reset();
 }
 
 // Helper function to create input tensor

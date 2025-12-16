@@ -194,6 +194,8 @@ void AllToAllvSingleTest::testGraphAllToAllvSingle(
     // Verify the results after each replay
     verifyResults(output, output_split_sizes);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for all_to_all_v_single with input deleted after
@@ -246,6 +248,8 @@ void AllToAllvSingleTest::testGraphAllToAllvSingleInputDeleted(
     // Verify the results after each replay
     verifyResults(output, output_split_sizes);
   }
+
+  graph.reset();
 }
 
 // Test function for synchronous all_to_all_v_single with work object

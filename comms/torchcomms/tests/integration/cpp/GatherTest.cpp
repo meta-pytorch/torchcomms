@@ -200,6 +200,8 @@ void GatherTest::testGraphGather(int count, at::ScalarType dtype) {
     // Verify the results after each replay
     verifyGatherResults(outputs, root_rank);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for gather with input deleted after graph creation
@@ -255,6 +257,8 @@ void GatherTest::testGraphGatherInputDeleted(int count, at::ScalarType dtype) {
     // Verify the results after each replay
     verifyGatherResults(outputs, root_rank);
   }
+
+  graph.reset();
 }
 
 // Helper function to create input tensor

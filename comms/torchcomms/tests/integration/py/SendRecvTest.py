@@ -264,6 +264,8 @@ class SendRecvTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_results(recv_tensor, recv_rank)
 
+            graph.reset()
+
     def _graph_send_recv_input_deleted(self, count, dtype):
         """Test CUDA Graph send/recv with input deleted after graph creation."""
         print(
@@ -314,6 +316,8 @@ class SendRecvTest(unittest.TestCase):
 
                 # Verify the results after each replay
                 self._verify_results(recv_tensor, recv_rank)
+
+            graph.reset()
 
     def _create_send_tensor(self, count, dtype):
         """Create send tensor with rank-specific values."""
