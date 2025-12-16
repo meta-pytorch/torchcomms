@@ -17,7 +17,7 @@ NCCL_API(
     ncclDataType_t datatype,
     int peer,
     size_t target_disp,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 ncclResult_t ncclPutSignal(
     const void* origin_buff,
@@ -25,9 +25,14 @@ ncclResult_t ncclPutSignal(
     ncclDataType_t datatype,
     int peer,
     size_t target_disp,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream) {
-  auto comm = win->comm->ctranComm_.get();
+  auto it = windowMap().find(win);
+  ncclWin* ncclwinPtr = (it != windowMap().end()) ? it->second : nullptr;
+  if (!ncclwinPtr) {
+    FB_ERRORRETURN(ncclInvalidUsage, "Invalid window handle");
+  }
+  auto comm = ncclwinPtr->comm->ctranComm_.get();
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclPutSignal requires Ctran support");
   }
@@ -37,7 +42,7 @@ ncclResult_t ncclPutSignal(
       ncclToMetaComm(datatype),
       peer,
       target_disp,
-      win->ctranWindow,
+      ncclwinPtr->ctranWindow,
       stream,
       true));
 }
@@ -50,7 +55,7 @@ NCCL_API(
     ncclDataType_t datatype,
     int peer,
     size_t target_disp,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 ncclResult_t ncclPut(
     const void* origin_buff,
@@ -58,9 +63,14 @@ ncclResult_t ncclPut(
     ncclDataType_t datatype,
     int peer,
     size_t target_disp,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream) {
-  auto comm = win->comm->ctranComm_.get();
+  auto it = windowMap().find(win);
+  ncclWin* ncclwinPtr = (it != windowMap().end()) ? it->second : nullptr;
+  if (!ncclwinPtr) {
+    FB_ERRORRETURN(ncclInvalidUsage, "Invalid window handle");
+  }
+  auto comm = ncclwinPtr->comm->ctranComm_.get();
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclPut requires Ctran support");
   }
@@ -70,7 +80,7 @@ ncclResult_t ncclPut(
       ncclToMetaComm(datatype),
       peer,
       target_disp,
-      win->ctranWindow,
+      ncclwinPtr->ctranWindow,
       stream,
       false));
 }
@@ -83,7 +93,7 @@ NCCL_API(
     size_t count,
     ncclDataType_t datatype,
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 ncclResult_t ncclGet(
     void* target_buff,
@@ -91,9 +101,14 @@ ncclResult_t ncclGet(
     size_t count,
     ncclDataType_t datatype,
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream) {
-  auto comm = win->comm->ctranComm_.get();
+  auto it = windowMap().find(win);
+  ncclWin* ncclwinPtr = (it != windowMap().end()) ? it->second : nullptr;
+  if (!ncclwinPtr) {
+    FB_ERRORRETURN(ncclInvalidUsage, "Invalid window handle");
+  }
+  auto comm = ncclwinPtr->comm->ctranComm_.get();
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclGet requires Ctran support");
   }
@@ -103,7 +118,7 @@ ncclResult_t ncclGet(
       count,
       ncclToMetaComm(datatype),
       peer,
-      win->ctranWindow,
+      ncclwinPtr->ctranWindow,
       comm,
       stream));
 }
@@ -112,14 +127,19 @@ NCCL_API(
     ncclResult_t,
     ncclWaitSignal,
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
-ncclResult_t ncclWaitSignal(int peer, ncclWin_t win, cudaStream_t stream) {
-  auto comm = win->comm->ctranComm_.get();
+ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
+  auto it = windowMap().find(win);
+  ncclWin* ncclwinPtr = (it != windowMap().end()) ? it->second : nullptr;
+  if (!ncclwinPtr) {
+    FB_ERRORRETURN(ncclInvalidUsage, "Invalid window handle");
+  }
+  auto comm = ncclwinPtr->comm->ctranComm_.get();
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclWaitSignal requires Ctran support");
   }
-  return metaCommToNccl(ctranWaitSignal(peer, win->ctranWindow, stream));
+  return metaCommToNccl(ctranWaitSignal(peer, ncclwinPtr->ctranWindow, stream));
 }
 
 NCCL_API(
@@ -132,7 +152,7 @@ NCCL_API(
     size_t signal_disp,
     uint64_t signal_val,
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 ncclResult_t ncclPutSignal_v2(
     const void* origin_buff,
@@ -142,9 +162,14 @@ ncclResult_t ncclPutSignal_v2(
     size_t signal_disp,
     uint64_t signal_val,
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream) {
-  auto comm = win->ctranWindow->comm;
+  auto it = windowMap().find(win);
+  ncclWin* ncclwinPtr = (it != windowMap().end()) ? it->second : nullptr;
+  if (!ncclwinPtr) {
+    FB_ERRORRETURN(ncclInvalidUsage, "Invalid window handle");
+  }
+  auto comm = ncclwinPtr->ctranWindow->comm;
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclPutSignal requires Ctran support");
   }
@@ -159,7 +184,7 @@ ncclResult_t ncclPutSignal_v2(
       ncclToMetaComm(datatype),
       peer,
       target_disp,
-      win->ctranWindow,
+      ncclwinPtr->ctranWindow,
       stream,
       true));
 }
@@ -170,15 +195,20 @@ NCCL_API(
     size_t signal_disp,
     uint64_t cmp_val,
     ncclCmpOp_t cmp_op,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 ncclResult_t ncclWaitSignal_v2(
     size_t signal_disp,
     uint64_t cmp_val,
     ncclCmpOp_t cmp_op,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream) {
-  auto comm = win->ctranWindow->comm;
+  auto it = windowMap().find(win);
+  ncclWin* ncclwinPtr = (it != windowMap().end()) ? it->second : nullptr;
+  if (!ncclwinPtr) {
+    FB_ERRORRETURN(ncclInvalidUsage, "Invalid window handle");
+  }
+  auto comm = ncclwinPtr->ctranWindow->comm;
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclWaitSignal requires Ctran support");
   }
@@ -188,7 +218,8 @@ ncclResult_t ncclWaitSignal_v2(
       cmp_op,
       signal_disp);
   assert(signal_disp < comm->statex_.get()->nRanks());
-  return metaCommToNccl(ctranWaitSignal(signal_disp, win->ctranWindow, stream));
+  return metaCommToNccl(
+      ctranWaitSignal(signal_disp, ncclwinPtr->ctranWindow, stream));
 }
 
 NCCL_API(
@@ -197,17 +228,22 @@ NCCL_API(
     size_t signalDisp, // TODO: to be deprecated
     uint64_t signalVal, // TODO: to be deprecated
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 ncclResult_t ncclSignal(
     size_t signalDisp,
     uint64_t signalVal,
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream) {
-  auto comm = win->ctranWindow->comm;
+  auto it = windowMap().find(win);
+  ncclWin* ncclwinPtr = (it != windowMap().end()) ? it->second : nullptr;
+  if (!ncclwinPtr) {
+    FB_ERRORRETURN(ncclInvalidUsage, "Invalid window handle");
+  }
+  auto comm = ncclwinPtr->ctranWindow->comm;
   if (!ctranInitialized(comm)) {
     FB_ERRORRETURN(ncclInternalError, "ncclSignal requires Ctran support");
   }
-  return metaCommToNccl(ctranSignal(peer, win->ctranWindow, stream));
+  return metaCommToNccl(ctranSignal(peer, ncclwinPtr->ctranWindow, stream));
 }
