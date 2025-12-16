@@ -1650,7 +1650,7 @@ cvars:
 
  - name        : NCCL_CTRAN_REGISTER
    type        : enum
-   default     : lazy
+   default     : async
    choices     : none, lazy, eager, async
    description : |-
      Kind of registration to use for ctran user buffers
