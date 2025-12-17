@@ -60,6 +60,15 @@ extern ncclComm_t ncclCommWorld;
 typedef struct ncclUniqueId { char internal[NCCL_UNIQUE_ID_BYTES] = {0};} ncclUniqueId;
 
 #define NCCL_RMA_SUPPORTED
+typedef enum {
+  ncclWinAccessUnified = 0,
+  ncclWinAccessSeparate = 1,
+} ncclWinAccessType;
+typedef struct {
+  // attributes of the window
+  ncclWinAccessType accessType;
+} ncclWinAttr;
+typedef ncclWinAttr* ncclWinAttr_t;
 
 /* Error type */
 typedef enum { ncclSuccess                 =  0,
@@ -690,6 +699,11 @@ ncclResult_t pncclWinEpochStart(int rank, ncclComm_t comm, ncclWindow_t win, voi
 // TODO: ncclWinSharedQuery is needed only before the NCCLX PG is deprecated
 #define ncclWinSharedQuery ncclWinEpochStart
 #define pncclWinSharedQuery pncclWinEpochStart
+
+/*
+ * Query the window attributes
+ */
+ncclResult_t ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr);
 
 /*
  * Free the window object and free the allocated memory allocated within the communicator.

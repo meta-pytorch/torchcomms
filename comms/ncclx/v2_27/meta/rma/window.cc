@@ -163,3 +163,46 @@ ncclResult_t ncclWinFree(ncclComm_t comm, ncclWindow_t win) {
   NCCLCHECK(metaCommToNccl(ctran::ctranWinFree(ncclWinPtr->ctranWindow)));
   return ncclSuccess;
 }
+
+NCCL_API(
+    ncclResult_t,
+    ncclWinGetAttributes,
+    int rank,
+    ncclWindow_t win,
+    ncclWinAttr_t* attr);
+ncclResult_t
+ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr) {
+  ncclWin* ncclWinPtr = ncclWinMap().find(win);
+  if (!win || !ncclWinPtr || !attr) {
+    FB_ERRORRETURN(
+        ncclInvalidUsage,
+        "Invalid parameter(s) in ncclWinGetAttributes: win {}, attr {}",
+        (void*)win,
+        (void*)attr);
+  }
+
+  auto statex = ncclWinPtr->comm->ctranComm_->statex_.get();
+  if (statex == nullptr) {
+    FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
+  }
+
+  if (rank < 0 || rank >= statex->nRanks()) {
+    FB_ERRORRETURN(
+        ncclInvalidUsage,
+        "Invalid rank {} in ncclWinGetAttributes: must be in range [0, {})",
+        rank,
+        statex->nRanks());
+  }
+
+  auto newAttr = new ncclWinAttr();
+  auto guard = folly::makeGuard([newAttr] { delete newAttr; });
+  auto nvlEnabled = ncclWinPtr->ctranWindow->nvlEnabled(rank);
+  if (nvlEnabled) {
+    newAttr->accessType = ncclWinAccessType::ncclWinAccessUnified;
+  } else {
+    newAttr->accessType = ncclWinAccessType::ncclWinAccessSeparate;
+  }
+  *attr = newAttr;
+  guard.dismiss();
+  return ncclSuccess;
+}

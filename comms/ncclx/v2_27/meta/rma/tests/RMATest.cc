@@ -572,6 +572,66 @@ INSTANTIATE_TEST_SUITE_P(
     MultiWindowTestParam,
     ::testing::Values(std::make_tuple(8, 10)));
 
+class NvlEnabledTestParam
+    : public RMATest,
+      public ::testing::WithParamInterface<
+          std::tuple<std::vector<enum NCCL_CTRAN_BACKENDS>, bool>> {};
+
+TEST_P(NvlEnabledTestParam, ncclWinGetAttributes) {
+  const auto& [backends, expectNvlEnabled] = GetParam();
+  EnvRAII envBackend(NCCL_CTRAN_BACKENDS, backends);
+
+  // create a test comm using the provided backends
+  ncclComm_t comm = createNcclComm(
+      this->globalRank, this->numRanks, this->localRank, false, nullptr);
+  ASSERT_NE(comm, nullptr);
+
+  auto statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
+  EXPECT_EQ(statex->nRanks(), this->numRanks);
+
+  size_t sizeBytes = 8192 * sizeof(int);
+  ncclWindow_t win = nullptr;
+  void* winBase = nullptr;
+  ASSERT_EQ(ncclWinAllocate(sizeBytes, comm, &winBase, &win), ncclSuccess);
+  ASSERT_NE(winBase, nullptr);
+
+  EXPECT_THAT(win, testing::NotNull());
+
+  for (int peer = 0; peer < this->numRanks; peer++) {
+    ncclWinAttr_t winAttr;
+    EXPECT_EQ(ncclWinGetAttributes(peer, win, &winAttr), ncclSuccess);
+
+    // NVL is only expected to be enabled for local peers when NVL backend is
+    // configured
+    bool expectedEnabled =
+        expectNvlEnabled && (statex->node() == statex->node(peer));
+    auto expectedType = expectedEnabled
+        ? ncclWinAccessType::ncclWinAccessUnified
+        : ncclWinAccessType::ncclWinAccessSeparate;
+    EXPECT_EQ(winAttr->accessType, expectedType)
+        << "Peer " << peer << ": expected accessType=" << expectedType
+        << ", got " << winAttr->accessType;
+    delete winAttr;
+  }
+
+  EXPECT_EQ(ncclWinFree(comm, win), ncclSuccess);
+
+  NCCLCHECK_TEST(ncclCommDestroy(comm));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    NvlEnabledTestInstance,
+    NvlEnabledTestParam,
+    ::testing::Values(
+        std::make_tuple(
+            std::vector<enum NCCL_CTRAN_BACKENDS>(
+                {NCCL_CTRAN_BACKENDS::nvl, NCCL_CTRAN_BACKENDS::ib}),
+            true),
+        std::make_tuple(
+            std::vector<enum NCCL_CTRAN_BACKENDS>({NCCL_CTRAN_BACKENDS::ib}),
+            false)));
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   ::testing::AddGlobalTestEnvironment(new DistEnvironmentBase);
