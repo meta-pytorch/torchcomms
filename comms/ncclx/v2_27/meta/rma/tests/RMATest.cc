@@ -93,7 +93,7 @@ class RMATest : public ::testing::Test {
       bool isUserBuf,
       MemAllocType bufType,
       void** winBasePtr,
-      ncclWin_t* winPtr,
+      ncclWindow_t* winPtr,
       size_t sizeBytes,
       std::vector<int>& buf) {
     auto res = ncclSuccess;
@@ -102,7 +102,8 @@ class RMATest : public ::testing::Test {
     // If userBuf is true, allocate buffer and use ctranWinRegister API
     if (isUserBuf) {
       *winBasePtr = testAllocBuf(sizeBytes, bufType, segments);
-      res = ncclWinRegister(*winBasePtr, sizeBytes, comm, winPtr, hints);
+      res = ncclCommWindowRegister(
+          comm, *winBasePtr, sizeBytes, winPtr, NCCL_WIN_DEFAULT);
 
     } else {
       hints.set(
@@ -161,7 +162,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
         cudaStreamCreateWithFlags(&wait_stream, cudaStreamNonBlocking));
 
     size_t sizeBytes = numElements * sizeof(int) * statex->nRanks();
-    ncclWin_t win = nullptr;
+    ncclWindow_t win = nullptr;
     void* winBase = nullptr;
     auto res = ncclWinAllocate(sizeBytes, comm, &winBase, &win);
     ASSERT_EQ(res, ncclSuccess);
@@ -241,7 +242,7 @@ TEST_P(RMATestParam, winPutWait) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
   std::vector<int> buf(kNumElements * statex->nRanks(), 0);
 
@@ -260,7 +261,7 @@ TEST_P(RMATestParam, winPutWait) {
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
-    auto res = ncclWinSharedQuery(peer, comm, win, &remoteAddr);
+    auto res = ncclWinEpochStart(peer, comm, win, &remoteAddr);
     EXPECT_EQ(res, ncclSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
@@ -377,7 +378,7 @@ TEST_P(RMATestParam, winPutOnly) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
 
   std::vector<int> buf(kNumElements * statex->nRanks(), 0);
@@ -469,7 +470,7 @@ TEST_P(RMATestParam, winGet) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
   std::vector<int> buf(kNumElements * statex->nRanks(), 0);
 
@@ -570,6 +571,66 @@ INSTANTIATE_TEST_SUITE_P(
     MultiWindowTestInstance,
     MultiWindowTestParam,
     ::testing::Values(std::make_tuple(8, 10)));
+
+class NvlEnabledTestParam
+    : public RMATest,
+      public ::testing::WithParamInterface<
+          std::tuple<std::vector<enum NCCL_CTRAN_BACKENDS>, bool>> {};
+
+TEST_P(NvlEnabledTestParam, ncclWinGetAttributes) {
+  const auto& [backends, expectNvlEnabled] = GetParam();
+  EnvRAII envBackend(NCCL_CTRAN_BACKENDS, backends);
+
+  // create a test comm using the provided backends
+  ncclComm_t comm = createNcclComm(
+      this->globalRank, this->numRanks, this->localRank, false, nullptr);
+  ASSERT_NE(comm, nullptr);
+
+  auto statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
+  EXPECT_EQ(statex->nRanks(), this->numRanks);
+
+  size_t sizeBytes = 8192 * sizeof(int);
+  ncclWindow_t win = nullptr;
+  void* winBase = nullptr;
+  ASSERT_EQ(ncclWinAllocate(sizeBytes, comm, &winBase, &win), ncclSuccess);
+  ASSERT_NE(winBase, nullptr);
+
+  EXPECT_THAT(win, testing::NotNull());
+
+  for (int peer = 0; peer < this->numRanks; peer++) {
+    ncclWinAttr_t winAttr;
+    EXPECT_EQ(ncclWinGetAttributes(peer, win, &winAttr), ncclSuccess);
+
+    // NVL is only expected to be enabled for local peers when NVL backend is
+    // configured
+    bool expectedEnabled =
+        expectNvlEnabled && (statex->node() == statex->node(peer));
+    auto expectedType = expectedEnabled
+        ? ncclWinAccessType::ncclWinAccessUnified
+        : ncclWinAccessType::ncclWinAccessSeparate;
+    EXPECT_EQ(winAttr->accessType, expectedType)
+        << "Peer " << peer << ": expected accessType=" << expectedType
+        << ", got " << winAttr->accessType;
+    delete winAttr;
+  }
+
+  EXPECT_EQ(ncclWinFree(comm, win), ncclSuccess);
+
+  NCCLCHECK_TEST(ncclCommDestroy(comm));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    NvlEnabledTestInstance,
+    NvlEnabledTestParam,
+    ::testing::Values(
+        std::make_tuple(
+            std::vector<enum NCCL_CTRAN_BACKENDS>(
+                {NCCL_CTRAN_BACKENDS::nvl, NCCL_CTRAN_BACKENDS::ib}),
+            true),
+        std::make_tuple(
+            std::vector<enum NCCL_CTRAN_BACKENDS>({NCCL_CTRAN_BACKENDS::ib}),
+            false)));
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

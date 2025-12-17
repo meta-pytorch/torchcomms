@@ -5,10 +5,8 @@
 namespace torch {
 namespace comms {
 
-TorchWorkCompleted::TorchWorkCompleted() {}
-
-bool TorchWorkCompleted::isCompleted() {
-  return true;
+TorchWorkCompleted::TorchWorkCompleted() {
+  setStatus(WorkStatus::COMPLETED);
 }
 
 void TorchWorkCompleted::wait() {
@@ -16,12 +14,15 @@ void TorchWorkCompleted::wait() {
 }
 
 TorchWorkThread::TorchWorkThread(std::function<void()> fn)
-    : future_(std::async(std::launch::async, std::move(fn))) {}
-
-bool TorchWorkThread::isCompleted() {
-  return !future_.valid() ||
-      future_.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
-}
+    : future_(std::async(std::launch::async, [this, fn = std::move(fn)]() {
+        try {
+          fn();
+          setStatus(WorkStatus::COMPLETED);
+        } catch (...) {
+          setStatus(WorkStatus::ERROR);
+          throw;
+        }
+      })) {}
 
 void TorchWorkThread::wait() {
   if (!future_.valid()) {

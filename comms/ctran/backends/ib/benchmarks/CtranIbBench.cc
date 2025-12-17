@@ -2,6 +2,8 @@
 
 #include <benchmark/benchmark.h>
 #include <cuda_runtime.h>
+#include <folly/init/Init.h>
+#include <folly/logging/Init.h>
 #include <memory>
 
 #include <folly/init/Init.h>
@@ -10,6 +12,10 @@
 #include "comms/ctran/utils/Exception.h"
 
 using namespace ctran;
+
+FOLLY_INIT_LOGGING_CONFIG(
+    ".=WARNING"
+    ";default:async=true,sync_level=WARNING");
 
 constexpr int kDummyRank = 0;
 
@@ -232,7 +238,9 @@ benchmarkIget(benchmark::State& state, CtranIbConfig config, bool withNotify) {
 /**
  * Benchmark CtranIb Iput operation latency with configurable CtranIbConfig
  */
-static void BM_CtranIb_Iput(benchmark::State& state, CtranIbConfig config) {
+static void BM_CtranIb_IputWithoutNotify(
+    benchmark::State& state,
+    CtranIbConfig config) {
   benchmarkIput(state, config, false);
 }
 
@@ -262,12 +270,14 @@ const size_t kMinBufferSize = 8 * 1024; // 8 KB
 const size_t kMaxBufferSize = 256 * 1024 * 1024; // 256 MB
 
 // Register the benchmark with the config as a parameter
-static auto* registered_benchmark =
-    benchmark::RegisterBenchmark("BM_CtranIb_Iput", BM_CtranIb_Iput, config)
-        ->RangeMultiplier(2)
-        ->Range(kMinBufferSize, kMaxBufferSize)
-        ->UseRealTime()
-        ->Unit(benchmark::kMicrosecond);
+static auto* registered_benchmark = benchmark::RegisterBenchmark(
+                                        "BM_CtranIb_IputWithoutNotify",
+                                        BM_CtranIb_IputWithoutNotify,
+                                        config)
+                                        ->RangeMultiplier(2)
+                                        ->Range(kMinBufferSize, kMaxBufferSize)
+                                        ->UseRealTime()
+                                        ->Unit(benchmark::kMicrosecond);
 
 static auto* registered_benchmark_with_notify_spray =
     benchmark::RegisterBenchmark(
@@ -320,6 +330,7 @@ int main(int argc, char** argv) {
 
   // Initialize and run benchmark
   ::benchmark::Initialize(&argc, argv);
+  folly::init(&argc, &argv);
   ::benchmark::RunSpecifiedBenchmarks();
 
   // Cleanup

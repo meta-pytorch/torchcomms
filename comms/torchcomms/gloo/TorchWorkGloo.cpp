@@ -10,14 +10,12 @@
 namespace torch {
 namespace comms {
 
-TorchWorkGloo::TorchWorkGloo() {}
+TorchWorkGloo::TorchWorkGloo() {
+  setStatus(WorkStatus::COMPLETED);
+}
 
 TorchWorkGloo::~TorchWorkGloo() {
   TC_LOG(INFO) << "TorchWorkGloo destroyed";
-}
-
-bool TorchWorkGloo::isCompleted() {
-  return true;
 }
 
 void TorchWorkGloo::wait() {

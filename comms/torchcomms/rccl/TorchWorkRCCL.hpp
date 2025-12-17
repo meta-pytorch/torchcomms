@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <atomic>
 #include <chrono>
 #include <memory>
 #include <optional>
@@ -21,15 +20,6 @@ class TorchCommRCCL;
 
 class TorchWorkRCCL : public TorchWork {
  public:
-  // Status of a work object
-  enum class WorkStatus {
-    NOT_STARTED, // Work has not started yet
-    INPROGRESS, // Work is still in progress,
-    COMPLETED, // Work has completed successfully
-    TIMEDOUT, // Work has timed out
-    ERROR // Work has encountered an error
-  };
-
   TorchWorkRCCL(
       std::shared_ptr<TorchCommRCCL> comm,
       hipStream_t stream,
@@ -56,7 +46,6 @@ class TorchWorkRCCL : public TorchWork {
   TorchWorkRCCL(TorchWorkRCCL&& other) noexcept;
 
   // Override virtual functions from TorchWork
-  bool isCompleted() override;
   void wait() override;
 
   // Check the status of the work object
@@ -82,9 +71,6 @@ class TorchWorkRCCL : public TorchWork {
   hipStream_t stream_; // stream is not owned by this class
 
   std::chrono::milliseconds timeout_ms_;
-
-  // state machine variables. TODO: convert to state machine later
-  std::atomic<WorkStatus> state_;
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
   std::shared_ptr<TorchCommTracing> tracing_;
