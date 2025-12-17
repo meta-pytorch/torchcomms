@@ -124,6 +124,23 @@ inline void algoStrToVal(
   }
 }
 
+inline const std::string algoValToStr(enum NCCL_RMA_ALGO val) {
+  switch (val) {
+    case NCCL_RMA_ALGO::orig:
+      return "orig";
+    case NCCL_RMA_ALGO::ctran:
+      return "ctran";
+  }
+}
+
+inline void algoStrToVal(const std::string& str, enum NCCL_RMA_ALGO& val) {
+  if (str == "ctran") {
+    val = NCCL_RMA_ALGO::ctran;
+  } else {
+    val = NCCL_RMA_ALGO::orig;
+  }
+}
+
 class AlgoConfig {
  public:
   AlgoConfig();
@@ -141,6 +158,7 @@ class AlgoConfig {
       NCCL_ALLREDUCE_ALGO_DEFAULTCVARVALUE;
   std::atomic<enum NCCL_ALLTOALLV_ALGO> alltoallv =
       NCCL_ALLTOALLV_ALGO_DEFAULTCVARVALUE;
+  std::atomic<enum NCCL_RMA_ALGO> rma = NCCL_RMA_ALGO_DEFAULTCVARVALUE;
 };
 
 template <typename T>
@@ -182,6 +200,12 @@ void AlgoConfig::reset() {
       .setHook = setAlgo<enum NCCL_ALLTOALLV_ALGO>,
       .resetHook = resetAlgo<enum NCCL_ALLTOALLV_ALGO>};
   hintsMngr->regHintEntry("algo_alltoallv", alltoallvEntry);
+
+  rma.store(NCCL_RMA_ALGO);
+  ncclx::GlobalHintEntry rmaEntry = {
+      .setHook = setAlgo<enum NCCL_RMA_ALGO>,
+      .resetHook = resetAlgo<enum NCCL_RMA_ALGO>};
+  hintsMngr->regHintEntry("algo_rma", rmaEntry);
 }
 
 folly::Singleton<AlgoConfig> algoConfigSingleton;
@@ -215,6 +239,10 @@ void setAlgo(
     enum NCCL_ALLTOALLV_ALGO val;
     algoStrToVal(valStr, val);
     algoConfig->alltoallv.store(val);
+  } else if (std::is_same<T, enum NCCL_RMA_ALGO>::value) {
+    enum NCCL_RMA_ALGO val;
+    algoStrToVal(valStr, val);
+    algoConfig->rma.store(val);
   }
 }
 
@@ -229,6 +257,8 @@ void resetAlgo(const std::string& key __attribute__((unused))) {
     algoConfig->allreduce.store(NCCL_ALLREDUCE_ALGO);
   } else if (std::is_same<T, enum NCCL_ALLTOALLV_ALGO>::value) {
     algoConfig->alltoallv.store(NCCL_ALLTOALLV_ALGO);
+  } else if (std::is_same<T, enum NCCL_RMA_ALGO>::value) {
+    algoConfig->rma.store(NCCL_RMA_ALGO);
   }
 }
 } // namespace
@@ -254,6 +284,11 @@ enum NCCL_ALLTOALLV_ALGO getAllToAllVAlgo() {
   return algoConfig->alltoallv.load();
 }
 
+enum NCCL_RMA_ALGO getRmaAlgo() {
+  auto algoConfig = AlgoConfig::getInstance();
+  return algoConfig->rma.load();
+}
+
 std::string getAlgoHintValue(enum NCCL_SENDRECV_ALGO algo) {
   return algoValToStr(algo);
 }
@@ -264,6 +299,9 @@ std::string getAlgoHintValue(enum NCCL_ALLREDUCE_ALGO algo) {
   return algoValToStr(algo);
 }
 std::string getAlgoHintValue(enum NCCL_ALLTOALLV_ALGO algo) {
+  return algoValToStr(algo);
+}
+std::string getAlgoHintValue(enum NCCL_RMA_ALGO algo) {
   return algoValToStr(algo);
 }
 
@@ -294,6 +332,11 @@ void testOnlySetAlgo(enum NCCL_ALLREDUCE_ALGO algo) {
 void testOnlySetAlgo(enum NCCL_ALLTOALLV_ALGO algo) {
   auto algoConfig = AlgoConfig::getInstance();
   algoConfig->alltoallv.store(algo);
+}
+
+void testOnlySetAlgo(enum NCCL_RMA_ALGO algo) {
+  auto algoConfig = AlgoConfig::getInstance();
+  algoConfig->rma.store(algo);
 }
 
 void setupGlobalHints() {

@@ -11,6 +11,7 @@
 using ncclx::algoconf::getAllGatherAlgo;
 using ncclx::algoconf::getAllReduceAlgo;
 using ncclx::algoconf::getAllToAllVAlgo;
+using ncclx::algoconf::getRmaAlgo;
 using ncclx::algoconf::getSendRecvAlgo;
 using ncclx::algoconf::testOnlyResetAlgoConfig;
 
@@ -197,4 +198,37 @@ TEST_F(AlgoConfigUT, InvalidAlgoHint) {
   auto getHintVal = ncclx::getGlobalHint("algo_sendrecv");
   ASSERT_TRUE(getHintVal.has_value());
   ASSERT_EQ(getHintVal.value(), "dummy_val");
+}
+
+TEST_F(AlgoConfigUT, RmaAlgoHintOverride) {
+  setenv("NCCL_RMA_ALGO", "ctran", 1);
+  ncclx::testOnlyResetGlobalHints();
+  testOnlyResetAlgoConfig();
+
+  const char* hintName = "algo_rma";
+  ASSERT_EQ(getRmaAlgo(), NCCL_RMA_ALGO::ctran);
+
+  // set/reset multiple times
+  std::unordered_map<enum NCCL_RMA_ALGO, const char*> overrideAlgos = {
+      {NCCL_RMA_ALGO::orig, "orig"},
+  };
+
+  const int iter = 10;
+  for (int i = 0; i < iter; i++) {
+    for (auto& [algo, hintVal] : overrideAlgos) {
+      ASSERT_TRUE(ncclx::setGlobalHint(hintName, hintVal));
+
+      auto getHintVal = ncclx::getGlobalHint(hintName);
+      ASSERT_TRUE(getHintVal.has_value());
+      ASSERT_EQ(getHintVal.value(), hintVal);
+
+      ASSERT_EQ(getRmaAlgo(), algo);
+
+      ASSERT_TRUE(ncclx::resetGlobalHint(hintName));
+      getHintVal = ncclx::getGlobalHint(hintName);
+      ASSERT_FALSE(getHintVal.has_value());
+
+      ASSERT_EQ(getRmaAlgo(), NCCL_RMA_ALGO::ctran);
+    }
+  }
 }

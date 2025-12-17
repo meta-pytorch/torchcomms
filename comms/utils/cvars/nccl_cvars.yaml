@@ -1949,6 +1949,15 @@ cvars:
      compCtran - Compression-based communication using IB Control message exchange
      bsCompCtran - Compression-based communication with NCCL socket bootstrapping
 
+ - name        : NCCL_RMA_ALGO
+   type        : enum
+   default     : ctran
+   choices     : orig, ctran
+   description : |-
+     The algorithm to use for NCCL RMA communication
+     orig - nccl rma communication
+     ctran - Ctran-based rma communication
+
  - name        : NCCL_CTRAN_ALLTOALL_CUDAGRAPH_AWARE_ENABLE
    type        : bool
    default     : false
