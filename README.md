@@ -125,6 +125,7 @@ export RCCLX_LIB=${BUILD_DIR}/lib
 Source Intel oneAPI environment (update path to your oneAPI installation)
 ```bash
 export INTEL_ONEAPI=/path/to/intel/oneapi  # e.g., /opt/intel/oneapi or ~/intel/oneapi
+source $INTEL_ONEAPI/compiler/latest/env/vars.sh
 source $INTEL_ONEAPI/ccl/latest/env/vars.sh
 ```
 
