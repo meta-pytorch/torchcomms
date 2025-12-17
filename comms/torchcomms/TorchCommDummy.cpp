@@ -8,16 +8,6 @@
 namespace torch {
 namespace comms {
 
-// Dummy TorchWork implementation for testing
-class DummyTorchWork : public TorchWork {
- public:
-  bool isCompleted() override {
-    return true;
-  }
-
-  void wait() override {}
-};
-
 class DummyTorchCommWindow : public TorchCommWindow {
  public:
   void allocate(
@@ -37,7 +27,7 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)dstRank;
     (void)targetDisp;
     (void)asyncOp;
-    return c10::make_intrusive<DummyTorchWork>();
+    return c10::make_intrusive<TorchWorkCompleted>();
   }
   at::Tensor getTensor(
       int rank,
@@ -53,13 +43,13 @@ class DummyTorchCommWindow : public TorchCommWindow {
   c10::intrusive_ptr<TorchWork> signal(int peerRank, bool asyncOp) override {
     (void)peerRank;
     (void)asyncOp;
-    return c10::make_intrusive<DummyTorchWork>();
+    return c10::make_intrusive<TorchWorkCompleted>();
   }
   c10::intrusive_ptr<TorchWork> waitSignal(int peerRank, bool asyncOp)
       override {
     (void)peerRank;
     (void)asyncOp;
-    return c10::make_intrusive<DummyTorchWork>();
+    return c10::make_intrusive<TorchWorkCompleted>();
   }
 };
 
@@ -101,7 +91,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::send(
     int dst,
     bool async_op,
     const SendOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::recv(
@@ -109,14 +99,14 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::recv(
     int src,
     bool async_op,
     const RecvOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::batch_op_issue(
     const std::vector<BatchSendRecv::P2POp>& ops,
     bool async_op,
     const BatchP2POptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::broadcast(
@@ -124,7 +114,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::broadcast(
     int root,
     bool async_op,
     const BroadcastOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::all_reduce(
@@ -132,7 +122,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_reduce(
     const ReduceOp& op,
     bool async_op,
     const AllReduceOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce(
@@ -141,7 +131,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce(
     const ReduceOp& op,
     bool async_op,
     const ReduceOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather(
@@ -149,7 +139,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather(
     const at::Tensor& tensor,
     bool async_op,
     const AllGatherOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather_v(
@@ -157,7 +147,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather_v(
     const at::Tensor& tensor,
     bool async_op,
     const AllGatherOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather_single(
@@ -165,7 +155,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_gather_single(
     const at::Tensor& input,
     bool async_op,
     const AllGatherSingleOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter(
@@ -174,7 +164,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter(
     const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter_v(
@@ -183,7 +173,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter_v(
     const ReduceOp& op,
     bool async_op,
     const ReduceScatterOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter_single(
@@ -192,7 +182,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::reduce_scatter_single(
     const ReduceOp& op,
     bool async_op,
     const ReduceScatterSingleOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all_single(
@@ -200,7 +190,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all_single(
     const at::Tensor& input,
     bool async_op,
     const AllToAllSingleOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all_v_single(
@@ -210,7 +200,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all_v_single(
     const std::vector<uint64_t>& input_split_sizes,
     bool async_op,
     const AllToAllvSingleOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all(
@@ -218,13 +208,13 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::all_to_all(
     const std::vector<at::Tensor>& input_tensor_list,
     bool async_op,
     const AllToAllOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::barrier(
     bool async_op,
     const BarrierOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::scatter(
@@ -233,7 +223,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::scatter(
     int root,
     bool async_op,
     const ScatterOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommDummy::gather(
@@ -242,7 +232,7 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::gather(
     int root,
     bool async_op,
     const GatherOptions& options) {
-  return c10::make_intrusive<DummyTorchWork>();
+  return c10::make_intrusive<TorchWorkCompleted>();
 }
 
 std::shared_ptr<TorchCommWindow> TorchCommDummy::window_allocate(

@@ -14,15 +14,6 @@ class TorchCommGloo;
 
 class TorchWorkGloo : public TorchWork {
  public:
-  // Status of a work object
-  enum class WorkStatus {
-    NOT_STARTED, // Work has not started yet
-    INPROGRESS, // Work is still in progress,
-    COMPLETED, // Work has completed successfully
-    TIMEDOUT, // Work has timed out
-    ERROR // Work has encountered an error
-  };
-
   TorchWorkGloo();
   ~TorchWorkGloo() override;
 
@@ -33,7 +24,6 @@ class TorchWorkGloo : public TorchWork {
   TorchWorkGloo& operator=(TorchWorkGloo&&) = delete;
 
   // Override virtual functions from TorchWork
-  bool isCompleted() override;
   void wait() override;
 
  protected:
