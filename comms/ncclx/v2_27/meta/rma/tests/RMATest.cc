@@ -93,7 +93,7 @@ class RMATest : public ::testing::Test {
       bool isUserBuf,
       MemAllocType bufType,
       void** winBasePtr,
-      ncclWin_t* winPtr,
+      ncclWindow_t* winPtr,
       size_t sizeBytes,
       std::vector<int>& buf) {
     auto res = ncclSuccess;
@@ -102,7 +102,8 @@ class RMATest : public ::testing::Test {
     // If userBuf is true, allocate buffer and use ctranWinRegister API
     if (isUserBuf) {
       *winBasePtr = testAllocBuf(sizeBytes, bufType, segments);
-      res = ncclWinRegister(*winBasePtr, sizeBytes, comm, winPtr, hints);
+      res = ncclCommWindowRegister(
+          comm, *winBasePtr, sizeBytes, winPtr, NCCL_WIN_DEFAULT);
 
     } else {
       hints.set(
@@ -161,7 +162,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
         cudaStreamCreateWithFlags(&wait_stream, cudaStreamNonBlocking));
 
     size_t sizeBytes = numElements * sizeof(int) * statex->nRanks();
-    ncclWin_t win = nullptr;
+    ncclWindow_t win = nullptr;
     void* winBase = nullptr;
     auto res = ncclWinAllocate(sizeBytes, comm, &winBase, &win);
     ASSERT_EQ(res, ncclSuccess);
@@ -241,7 +242,7 @@ TEST_P(RMATestParam, winPutWait) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
   std::vector<int> buf(kNumElements * statex->nRanks(), 0);
 
@@ -260,7 +261,7 @@ TEST_P(RMATestParam, winPutWait) {
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
-    auto res = ncclWinSharedQuery(peer, comm, win, &remoteAddr);
+    auto res = ncclWinEpochStart(peer, comm, win, &remoteAddr);
     EXPECT_EQ(res, ncclSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
@@ -377,7 +378,7 @@ TEST_P(RMATestParam, winPutOnly) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
 
   std::vector<int> buf(kNumElements * statex->nRanks(), 0);
@@ -469,7 +470,7 @@ TEST_P(RMATestParam, winGet) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
   std::vector<int> buf(kNumElements * statex->nRanks(), 0);
 

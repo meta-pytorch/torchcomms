@@ -37,13 +37,13 @@ NCCL_API(
     size_t size,
     ncclComm_t comm,
     void** baseptr,
-    ncclWin_t* win,
+    ncclWindow_t* win,
     const ncclx::Hints& hints);
 ncclResult_t ncclWinAllocate(
     size_t size,
     ncclComm_t comm,
     void** baseptr,
-    ncclWin_t* win,
+    ncclWindow_t* win,
     const ncclx::Hints& hints) {
   NCCLCHECK(CheckCommAndReturn(comm));
   ncclWin* win_ = new ncclWin();
@@ -57,7 +57,11 @@ ncclResult_t ncclWinAllocate(
           baseptr,
           &win_->ctranWindow,
           ncclToMetaComm(hints))));
-  *win = win_;
+
+  // Create empty ncclWindow as handle and register mapping
+  ncclWindow_t handle = new ncclWindow();
+  ncclWinMap().insert(handle, win_);
+  *win = handle;
   guard.dismiss();
   return ncclSuccess;
 }
@@ -68,13 +72,13 @@ NCCL_API(
     const void* baseptr,
     const size_t size,
     ncclComm_t comm,
-    ncclWin_t* win,
+    ncclWindow_t* win,
     const ncclx::Hints& hints);
 ncclResult_t ncclWinRegister(
     const void* baseptr,
     const size_t size,
     ncclComm_t comm,
-    ncclWin_t* win,
+    ncclWindow_t* win,
     const ncclx::Hints& hints) {
   NCCLCHECK(CheckCommAndReturn(comm));
   if (baseptr == nullptr) {
@@ -94,24 +98,29 @@ ncclResult_t ncclWinRegister(
           comm->ctranComm_.get(),
           &win_->ctranWindow,
           ncclToMetaComm(hints))));
-  *win = win_;
+
+  // Create empty ncclWindow as handle and register mapping
+  ncclWindow_t handle = new ncclWindow();
+  ncclWinMap().insert(handle, win_);
+  *win = handle;
   guard.dismiss();
   return ncclSuccess;
 }
 
 NCCL_API(
     ncclResult_t,
-    ncclWinSharedQuery,
+    ncclWinEpochStart,
     int rank,
     ncclComm_t comm,
-    ncclWin_t win,
+    ncclWindow_t win,
     void** addr);
 ncclResult_t
-ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWin_t win, void** addr) {
-  if (!comm || !win || comm != win->comm) {
+ncclWinEpochStart(int rank, ncclComm_t comm, ncclWindow_t win, void** addr) {
+  ncclWin* w = ncclWinMap().find(win);
+  if (!comm || !win || !w || comm != w->comm) {
     FB_ERRORRETURN(
         ncclInvalidUsage,
-        "Invalid parameter(s) to query shared buffere in ncclWinSharedQuery: comm {}, win {}",
+        "Invalid parameter(s) to query shared buffer in ncclWinEpochStart: comm {}, win {}",
         (void*)comm,
         (void*)win);
   }
@@ -122,16 +131,17 @@ ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWin_t win, void** addr) {
   }
 
   NCCLCHECK(
-      metaCommToNccl(ctran::ctranWinSharedQuery(rank, win->ctranWindow, addr)));
+      metaCommToNccl(ctran::ctranWinSharedQuery(rank, w->ctranWindow, addr)));
   return ncclSuccess;
 }
 
-NCCL_API(ncclResult_t, ncclWinFree, ncclComm_t comm, ncclWin_t win);
-ncclResult_t ncclWinFree(ncclComm_t comm, ncclWin_t win) {
-  if (!comm || !win || comm != win->comm) {
+NCCL_API(ncclResult_t, ncclWinFree, ncclComm_t comm, ncclWindow_t win);
+ncclResult_t ncclWinFree(ncclComm_t comm, ncclWindow_t win) {
+  ncclWin* ncclWinPtr = ncclWinMap().find(win);
+  if (!comm || !win || !ncclWinPtr || comm != ncclWinPtr->comm) {
     FB_ERRORRETURN(
         ncclInvalidUsage,
-        "Invalid parameter(s) to query shared buffere in ncclWinSharedQuery: comm {}, win {}",
+        "Invalid parameter(s) to free window: comm {}, win {}",
         (void*)comm,
         (void*)win);
   }
@@ -141,8 +151,15 @@ ncclResult_t ncclWinFree(ncclComm_t comm, ncclWin_t win) {
     FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
   }
 
-  NCCLCHECK(metaCommToNccl(ctran::ctranWinFree(win->ctranWindow)));
-  ncclWin* win_ = static_cast<ncclWin*>(win);
-  delete win_;
+  // Remove from map first, then cleanup resources
+  ncclWinMap().erase(win);
+
+  // Guard ensures cleanup happens on both success and failure paths
+  auto guard = folly::makeGuard([win, ncclWinPtr] {
+    delete ncclWinPtr;
+    delete win;
+  });
+
+  NCCLCHECK(metaCommToNccl(ctran::ctranWinFree(ncclWinPtr->ctranWindow)));
   return ncclSuccess;
 }
