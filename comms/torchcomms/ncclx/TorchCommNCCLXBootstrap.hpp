@@ -22,7 +22,6 @@ constexpr uint16_t kTCPStorePort = 29500;
 class TorchCommNCCLXBootstrap {
  public:
   TorchCommNCCLXBootstrap(
-      c10::intrusive_ptr<c10d::Store> store,
       c10::Device device,
       std::shared_ptr<NcclxApi> nccl_api,
       std::shared_ptr<CudaApi> cuda_api,
@@ -38,9 +37,6 @@ class TorchCommNCCLXBootstrap {
   ncclComm_t createNcclComm(
       const std::string& name,
       const CommOptions& options = {});
-  static std::string getNCCLXStoreKey();
-  static std::string getNCCLXStoreKeyPrefix();
-  static int getNCCLXStoreKeyCounter();
 
   int getRank() {
     return rank_;
@@ -53,26 +49,19 @@ class TorchCommNCCLXBootstrap {
   }
 
  private:
-  ncclUniqueId exchangeUniqueId(std::string_view name);
-  ncclUniqueId exchangeUniqueIdStore();
-  ncclUniqueId exchangeUniqueIdTCPStore(std::string_view name);
-  bool isTCPStoreEnabled();
+  ncclUniqueId exchangeUniqueId(const std::string& name);
   void cleanupTCPStore(ncclComm_t nccl_comm);
 
  private:
   const std::chrono::milliseconds timeout_;
-  static int counter_;
 
   c10::intrusive_ptr<c10d::Store> store_;
-  bool created_internal_store_;
   c10::Device device_;
   std::shared_ptr<NcclxApi> nccl_api_;
   std::shared_ptr<CudaApi> cuda_api_;
   void* barrier_buffer_{nullptr};
   int rank_;
   int comm_size_;
-
-  std::string uniqueid_xchg_method_;
 };
 
 // Helper function to populate NCCL config from hints

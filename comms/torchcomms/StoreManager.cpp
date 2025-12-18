@@ -45,24 +45,28 @@ StoreManager& StoreManager::get() {
   return storeManager;
 }
 
+std::string StoreManager::getPrefix(
+    std::string_view backendName,
+    std::string_view commName) {
+  return fmt::format("torchcomm(backend={},name={})", backendName, commName);
+}
+
 c10::intrusive_ptr<c10d::Store> StoreManager::getStore(
     std::string_view backendName,
     std::string_view commName,
     std::chrono::milliseconds timeout) {
   std::lock_guard<std::mutex> lock(mutex_);
-  std::string prefix =
-      fmt::format("torchcomm(backend={},name={})", backendName, commName);
-
-  if (storeNames_.contains(prefix)) {
-    throw std::runtime_error("Store prefix has been reused for: " + prefix);
-  }
-  storeNames_.insert(prefix);
+  std::string prefix = getPrefix(backendName, commName);
 
   if (!root_) {
     root_ = createRoot(timeout);
   }
 
   return c10::make_intrusive<c10d::PrefixStore>(prefix, root_->clone());
+}
+
+void StoreManager::injectMockStore(c10::intrusive_ptr<c10d::Store> store) {
+  root_ = store;
 }
 
 } // namespace torch::comms

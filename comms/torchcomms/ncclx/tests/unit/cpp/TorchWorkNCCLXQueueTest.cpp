@@ -8,6 +8,7 @@
 
 #include <torch/csrc/distributed/c10d/HashStore.hpp> // @manual=//caffe2:torch-cpp
 
+#include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
@@ -65,6 +66,7 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
 
     // Create hash store for communication
     auto store_ = c10::make_intrusive<c10d::HashStore>();
+    StoreManager::get().injectMockStore(store_);
 
     // Set up device. make it the cpu device because we're mocking cuda.
     device_ = at::Device(at::DeviceType::CPU, 0);

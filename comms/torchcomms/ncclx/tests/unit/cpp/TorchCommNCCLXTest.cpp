@@ -12,6 +12,7 @@
 #include <c10/core/Device.h>
 #include <torch/csrc/distributed/c10d/HashStore.hpp> // @manual=//caffe2:torch-cpp
 
+#include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
@@ -134,14 +135,13 @@ TEST_F(TorchCommNCCLXTest, InitializationRank0GetUniqueId) {
 
   EXPECT_NO_THROW(comm->init(*device_, "test_name", default_options_));
 
-  auto bootstrap = new TorchCommNCCLXBootstrap(
-      store_, *device_, nccl_mock_, cuda_mock_, std::chrono::seconds(60));
-  auto store_key = bootstrap->getNCCLXStoreKeyPrefix() +
-      std::to_string(bootstrap->getNCCLXStoreKeyCounter() - 1);
-  delete bootstrap;
-
   // Verify the unique ID was stored in the store
-  auto stored_vec = store_->get(store_key);
+  auto stored_vec = StoreManager::get()
+                        .getStore(
+                            TorchCommNCCLX::kBackendName,
+                            comm->getCommName(),
+                            default_options_.timeout)
+                        ->get(std::string(comm->getCommName()));
   ncclUniqueId stored_id;
   memcpy(&stored_id, stored_vec.data(), sizeof(stored_id));
 
@@ -160,18 +160,15 @@ TEST_F(TorchCommNCCLXTest, InitializationNonRank0ReadUniqueId) {
   // Clear - 1 (destructor)
   setupCCAExpectations(1, 2, 1);
 
-  auto bootstrap = new TorchCommNCCLXBootstrap(
-      store_, *device_, nccl_mock_, cuda_mock_, std::chrono::seconds(60));
-  auto store_key = bootstrap->getNCCLXStoreKeyPrefix() +
-      std::to_string(bootstrap->getNCCLXStoreKeyCounter());
-  delete bootstrap;
-
   // Pre-populate store with unique ID (as if rank 0 already stored it)
   ncclUniqueId expected_id{};
   memset(&expected_id, 0x42, sizeof(expected_id)); // Fill with test pattern
   std::vector<uint8_t> id_vec(sizeof(ncclUniqueId));
   memcpy(id_vec.data(), &expected_id, sizeof(expected_id));
-  store_->set(store_key, id_vec);
+  StoreManager::get()
+      .getStore(
+          TorchCommNCCLX::kBackendName, "test_name", default_options_.timeout)
+      ->set("test_name", id_vec);
 
   auto comm = createMockedTorchComm();
 
@@ -186,9 +183,7 @@ TEST_F(TorchCommNCCLXTest, InitializationNonRank0ReadUniqueId) {
           SetArgPointee<0>(reinterpret_cast<ncclComm_t>(0x3000)),
           Return(ncclSuccess)));
 
-  auto options = default_options_;
-  options.store = store_;
-  EXPECT_NO_THROW(comm->init(*device_, "test_name", options));
+  EXPECT_NO_THROW(comm->init(*device_, "test_name", default_options_));
   comm->finalize();
 }
 
