@@ -294,9 +294,12 @@ class DeviceMeshTest(unittest.TestCase):
             pg_ranks_by_dim.tolist(),
             # pyre-ignore Incompatible parameter type [6]
             group_name="split_test_group",
+            opts=pg._get_backend(device).options,
         )
+
         # Validate the split process group
         self.assertIsNotNone(split_pg, "Split process group should not be None")
+        self.assertEqual(split_pg._get_backend(device).name(), backend)
 
         # Verify split comm properties
         self.assertEqual(

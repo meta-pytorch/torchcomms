@@ -1220,6 +1220,12 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
           "get_comm",
           &BackendWrapper::getComm,
           "Get the underlying TorchComm instance",
+          py::call_guard<py::gil_scoped_release>())
+      .def("name", &BackendWrapper::getBackendName)
+      .def_property_readonly(
+          "options",
+          &BackendWrapper::getOptions,
+          R"(Return the options used to create the torchComm under the hood.)",
           py::call_guard<py::gil_scoped_release>());
   intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper");
 
