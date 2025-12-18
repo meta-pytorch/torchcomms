@@ -171,7 +171,8 @@ CtranMapperRegCacheSnapshot CtranMapperRegCacheProfiler::getSnapshot() const {
 }
 
 void CtranMapperRegCache::init() {
-  if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async) {
+  if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
+      !asyncRegThread_.joinable()) {
     int cudaDev;
     FB_CUDACHECKTHROW(cudaGetDevice(&cudaDev));
     asyncRegThread_ =
