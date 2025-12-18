@@ -38,6 +38,7 @@ void validateIntDtype(const at::Tensor& tensor, const std::string& name) {
         c10::toString(tensor.scalar_type()));
   }
 }
+
 } // namespace
 
 ncclResult_t NCCLException::getResult() const {
@@ -45,14 +46,16 @@ ncclResult_t NCCLException::getResult() const {
 }
 
 TorchCommNCCLX::TorchCommNCCLX()
-    : nccl_comm_{nullptr},
+    : nccl_comm_(nullptr),
       device_(at::kCUDA),
+      split_counter_(0),
       init_state_(InitializationState::UNINITIALIZED),
       shutdown_(false) {}
 
 TorchCommNCCLX::TorchCommNCCLX(const ncclComm_t nccl_comm)
     : nccl_comm_(nccl_comm),
       device_(at::kCUDA),
+      split_counter_(0),
       init_state_(InitializationState::UNINITIALIZED),
       shutdown_(false) {}
 
@@ -100,7 +103,7 @@ void TorchCommNCCLX::init(
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
-      nccl_comm_ = bootstrap->createNcclComm(name, options);
+      nccl_comm_ = bootstrap->createNcclComm(name_, options);
     }
 
     delete bootstrap;
@@ -1833,7 +1836,7 @@ std::shared_ptr<TorchCommWindow> TorchCommNCCLX::window_allocate(
 
 std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
     const std::vector<int>& ranks,
-    const std::string& name,
+    const std::string& split_name,
     const CommOptions& options) {
   checkAndAbortIfTimedOutOrError();
 
@@ -1877,7 +1880,9 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   // Create a new NCCL communicator
   ncclComm_t new_comm;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.commDesc = strdup(name.c_str());
+  std::string commDesc = name_ + "::split::" + std::to_string(color) + "_" +
+      split_name + "_" + std::to_string(split_counter_++);
+  config.commDesc = strdup(commDesc.c_str());
 
   // Set splitGroupRanks and splitGroupSize hints automatically based on ranks
   // parameter
@@ -1887,7 +1892,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   }
 
   // Populate NCCL config from user-provided hints
-  populateNcclConfigFromHints(config, options, name);
+  populateNcclConfigFromHints(config, options, commDesc);
 
   // TODO: nccl says that this is not supposed to be called if any operation
   // is outstanding on the comm. We should check for that.
@@ -1908,7 +1913,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
       std::shared_ptr<TorchCommNCCLX>(new TorchCommNCCLX(new_comm));
   new_torchcomm->nccl_api_ = nccl_api_;
   new_torchcomm->cuda_api_ = cuda_api_;
-  new_torchcomm->init(device_, name, options);
+  new_torchcomm->init(device_, commDesc, options);
 
   return new_torchcomm;
 }

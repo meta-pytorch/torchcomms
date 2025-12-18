@@ -681,6 +681,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
   state->abortFlag = comm->abortFlag;
   state->net = comm->ncclNet;
   state->logMetaDataPtr = &comm->logMetaData;
+  state->fastInitMode = comm->config.fastInitMode;
   comm->bootstrap = state;
   comm->magic = state->magic = BOOTSTRAP_HANDLE(handles, 0)->magic; // state and comm magic set to the first magic ID
 
@@ -688,7 +689,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
 
   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_TOTAL]);
   bool skipFormRingViaTcpStore = (nHandles != 1) && NCCL_SKIP_TCPFORM_RING;
-  if (NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid && !skipFormRingViaTcpStore) {
+  if (isFastInitRingMode(state->fastInitMode) && !skipFormRingViaTcpStore) {
     INFO(NCCL_INIT, "rank %d nHandles %d, fast-init mode: ring-hybrid, use formRingViaTcpStore to form boostrap ring", rank, nHandles);
     // (meta) fast path to form ring via tcpstore
     NCCLCHECK(formRingViaTcpStore(state, comm));
@@ -845,6 +846,7 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
   state->cudaDev = comm->cudaDev;
   state->abortFlag = comm->abortFlag;
   state->net = comm->ncclNet;
+  state->fastInitMode = comm->config.fastInitMode;
   comm->bootstrap = state;
   comm->magic = state->magic = magic;
 
@@ -852,7 +854,7 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
   next = parentRanks[(rank + 1) % nranks];
 
   // create a handle for the others to reach out to me
-  if (NCCL_FASTINIT_MODE != NCCL_FASTINIT_MODE::ring_hybrid && NCCL_OOB_NET_ENABLE) {
+  if (!isFastInitRingMode(state->fastInitMode) && NCCL_OOB_NET_ENABLE) {
     NCCLCHECKGOTO(netGetDevice(rank, comm, &STATE_LISTEN(state, net.dev)), ret, fail);
     NCCLCHECKGOTO(state->net->listen(STATE_LISTEN(state, net.dev), STATE_LISTEN(state, net.handle), &STATE_LISTEN(state, net.comm)), ret, fail);
     memcpy(info.handle, STATE_LISTEN(state, net.handle), NCCL_NET_HANDLE_MAXSIZE);
@@ -872,7 +874,7 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
   // Get addr from next rank using the parent's connections
   NCCLCHECKGOTO(bootstrapSend(parent->bootstrap, prev, BOOTSTRAP_TAG_COMMSPLIT, &info, sizeof(union ringConnectInfo)), ret, fail);
   NCCLCHECKGOTO(bootstrapRecv(parent->bootstrap, next, BOOTSTRAP_TAG_COMMSPLIT, &nextPeer, sizeof(union ringConnectInfo)), ret, fail);
-  if (NCCL_FASTINIT_MODE != NCCL_FASTINIT_MODE::ring_hybrid && NCCL_OOB_NET_ENABLE) {
+  if (!isFastInitRingMode(state->fastInitMode) && NCCL_OOB_NET_ENABLE) {
     NCCLCHECKGOTO(netRingConnect(state->net, &state->listen, nextPeer.handle,
                                  &STATE_RING(state, net.sendComm), &STATE_RING(state, net.sendDevHandle),
                                  &STATE_RING(state, net.recvComm), &STATE_RING(state, net.recvDevHandle), state->abortFlag),
@@ -1144,7 +1146,7 @@ ncclResult_t bootstrapAllGather(void* commState, void* allData, int size) {
 
   uint64_t time = 0;
   BOOTSTRAP_PROF_OPEN(time);
-  if (NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid) {
+  if (isFastInitRingMode(state->fastInitMode)) {
     NCCLCHECKGOTO(ncclxBidirRingAllGather(&STATE_RING(state, socket.recv), &STATE_RING(state, socket.send), rank, nranks, (char*)allData, size), res, exit);
   } else if (NCCL_OOB_NET_ENABLE) {
     NCCLCHECKGOTO(netRingAllGather(state->net, STATE_RING(state, net.sendComm), STATE_RING(state, net.recvComm), rank, nranks, (char*)allData, size, state->abortFlag), res, exit);
@@ -1259,7 +1261,7 @@ ncclResult_t bootstrapClose(void* commState) {
       return ncclInternalError;
     }
   }
-  if (NCCL_FASTINIT_MODE != NCCL_FASTINIT_MODE::ring_hybrid && NCCL_OOB_NET_ENABLE) {
+  if (!isFastInitRingMode(state->fastInitMode) && NCCL_OOB_NET_ENABLE) {
     NCCLCHECK(state->net->closeSend(STATE_RING(state, net.sendComm)));
     NCCLCHECK(state->net->closeRecv(STATE_RING(state, net.recvComm)));
     NCCLCHECK(state->net->closeListen(STATE_LISTEN(state, net.comm)));

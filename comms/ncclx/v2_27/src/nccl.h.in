@@ -98,6 +98,10 @@ typedef enum { ncclSuccess                 =  0,
 #define NCCL_SHRINK_DEFAULT 0x00 /* shrink the parent communicator */
 #define NCCL_SHRINK_ABORT 0x01   /* First, terminate ongoing parent operations, and then shrink the parent communicator */
 
+/* ncclConfig initMode */
+#define NCCL_FAST_INIT_MODE_DEFAULT 0x00
+#define NCCL_FAST_INIT_MODE_RING 0x01
+
 /* Communicator configuration. Users can assign value to attributes to specify the
  * behavior of a communicator. */
 typedef struct ncclConfig_v22700 {
@@ -124,7 +128,7 @@ typedef struct ncclConfig_v22700 {
    */
 
   // communicator process group information.
-  const char* commDesc;
+  const char* commDesc{nullptr};
 
   // commSplit group ranks information
   int* splitGroupRanks;
@@ -136,6 +140,9 @@ typedef struct ncclConfig_v22700 {
   // control the lazy connect features
   int lazyConnect{NCCL_CONFIG_UNDEF_INT};
   int lazySetupChannels{NCCL_CONFIG_UNDEF_INT};
+
+  // control the fast init features
+  int fastInitMode{NCCL_CONFIG_UNDEF_INT};
 } ncclConfig_t;
 
 /* Config initializer must be assigned to initialize config structure when it is created.
@@ -162,6 +169,7 @@ typedef struct ncclConfig_v22700 {
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclAllGatherAlgo */     \
   NCCL_CONFIG_UNDEF_INT,                    /* lazyConnect */           \
   NCCL_CONFIG_UNDEF_INT,                    /* lazySetupChannels */     \
+  NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
 }
 
 /* This struct will be used by ncclGroupSimulateEnd() API to query information about simulation. */
