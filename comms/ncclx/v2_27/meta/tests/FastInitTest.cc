@@ -141,6 +141,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
   EXPECT_EQ(statex1->nLocalRanks(), localSize / 2);
 
   ncclComm expectedComm;
+  expectedComm.config.commDesc = childCommConfig.commDesc;
   setCtranCommBase(&expectedComm);
 
   expectedComm.ctranComm_->statex_ = std::make_unique<ncclx::CommStateX>(

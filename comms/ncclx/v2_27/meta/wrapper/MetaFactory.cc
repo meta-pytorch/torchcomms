@@ -215,7 +215,7 @@ meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
 ctranConfig makeCtranConfigFrom(ncclComm* comm) {
   struct ctranConfig tconfig = {
       .blocking = comm->config.blocking,
-      .commDesc = comm->config.commDesc,
+      .commDesc = comm->config.commDesc ? comm->config.commDesc : "undefined",
       .ncclAllGatherAlgo = comm->config.ncclAllGatherAlgo,
   };
   return tconfig;

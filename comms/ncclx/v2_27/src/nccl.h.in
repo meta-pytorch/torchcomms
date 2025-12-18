@@ -124,7 +124,7 @@ typedef struct ncclConfig_v22700 {
    */
 
   // communicator process group information.
-  const char* commDesc;
+  const char* commDesc{nullptr};
 
   // commSplit group ranks information
   int* splitGroupRanks;
