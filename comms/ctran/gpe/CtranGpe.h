@@ -69,11 +69,11 @@ struct OpElem {
   // If true, stream must be a valid cuda stream; otherwise, it is unused.
   bool isDevice{true};
 
-  // TCP Device Memory unpack pool index for this operation.
+  // TCP Device Memory unpack pool for this operation.
   // Allocated by prepareUnpackConsumer() and freed during GPE kernel teardown.
   // Used by algorithm implementations to populate CtranMapperContext and
   // pass it down to CtranTcpDm::irecvConnected().
-  int unpackPoolId{-1};
+  void* unpackPool{nullptr};
 
   union {
     struct {
@@ -311,7 +311,7 @@ struct KernelConfig {
   CtranKernelArgs args;
   // Pointer to argument struct specific to each algorithm
   void* algoArgs{nullptr};
-  int unpackPoolId{-1};
+  void* unpackPool{nullptr};
 
   const std::string algoName;
   // Copied after collective called ctran->updateOpCount()

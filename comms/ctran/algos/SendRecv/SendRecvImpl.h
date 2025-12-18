@@ -149,7 +149,7 @@ inline commResult_t sendRecvImpl(
       peerRank = op->recv.peerRank;
     }
     CtranMapperContext context(algoName, sendSizes, recvSizes);
-    context.unpackPoolId = opGroup.front()->unpackPoolId;
+    context.unpackPool = opGroup.front()->unpackPool;
     comm->ctran_->mapper->setContext(std::move(context));
 
     CTRAN_PROFILER_IF(profiler, {

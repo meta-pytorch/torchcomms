@@ -218,7 +218,7 @@ static commResult_t impl(
   auto& waitNotifyMap = op->broadcast.waitNotifyMap;
 
   CtranMapperContext context("CtranBroadcastBinomialTree", sendSize, sendSize);
-  context.unpackPoolId = op->unpackPoolId;
+  context.unpackPool = op->unpackPool;
   mapper->setContext(std::move(context));
   for (int p = 0; p < nRanks; ++p) {
     remoteAccessKeys.emplace_back();
