@@ -40,7 +40,7 @@ __device__ void progressSendCopy(ExecKernArgs& args, WorkerGroup& sendG) {
   const auto totalNumSendBlocks = args.pArgs.totalNumSendBlocks;
 
   ProgressSendState state;
-  updateProgressSendState(args, range, state);
+  state.setupState(args, range);
 
   // Each group iterates on different node range;
   while (state.numTotalPending > 0) {
@@ -149,7 +149,7 @@ __device__ void progressIntraFwd(ExecKernArgs& args, WorkerGroup& intraFwdG) {
   constexpr bool kIsExec = true;
 
   ProgressIntraFwdState state;
-  updateProgressIntraFwdState(args, range, state);
+  state.setupState(args, range);
 
   const auto& config = args.config;
   const auto blockCount = args.pArgs.blockCount;
@@ -334,7 +334,7 @@ __device__ void progressFwd(ExecKernArgs& args, WorkerGroup& fwdG) {
   NODE_RANGE_TRACE(fwdG, range);
 
   ProgressFwdState state;
-  updateProgressFwdState(args, range, state);
+  state.setupState(args, range);
 
   int* tmpFwdIdx = args.tmpFwdIdx;
   const int* fwdIdx = args.execArgs.fwdIdx;
@@ -688,7 +688,7 @@ __device__ void progressIntraRecvCopy(
   LOCAL_RANK_RANGE_TRACE(intraRecvG, range);
 
   ProgressRecvState state;
-  updateProgressIntraRecvState(args, state);
+  state.setupIntraRecvState(args);
   constexpr bool kIsIntra = true;
 
   while (state.numTotalPending > 0) {
@@ -718,7 +718,7 @@ __device__ void progressRecvCopy(ExecKernArgs& args, WorkerGroup& recvG) {
   const bool kIsIntra = false;
 
   ProgressRecvState state;
-  updateProgressRecvState(args, range, state);
+  state.setupState(args, range);
 
   while (state.numTotalPending > 0) {
     for (auto r = range.start; r <= range.end; r++) {

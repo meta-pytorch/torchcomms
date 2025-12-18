@@ -191,6 +191,21 @@ getStepNumPosted(const ExecKernArgs& args, const int total, const int step) {
         numTotalPending);                                                                                   \
   } while (0)
 
+struct GroupLocalRanks {
+  int start;
+  int end;
+  int numRanks;
+  __device__ __forceinline__ bool contains(const int r) const {
+    return r >= start && r <= end;
+  }
+};
+
+struct GroupNodes {
+  int start;
+  int end;
+  int numNodes;
+};
+
 struct ProgressSendState {
   int numPendingBlocks[MAX_NUM_NODES];
   int steps[MAX_NUM_NODES];
@@ -213,6 +228,41 @@ struct ProgressSendState {
 
   __device__ __forceinline__ bool hasPending(const int idx) {
     return numPendingBlocks[idx] > 0;
+  }
+
+  __device__ __forceinline__ void setupState(
+      ExecKernArgs& args,
+      const GroupNodes& range,
+      const bool kIsExec = true) {
+    const auto myNode = statex->node();
+
+    numTotalPending = 0;
+    for (auto n = 0; n < range.numNodes; n++) {
+      numPendingBlocks[n] = 0; // numSendBlocks for each node
+      steps[n] = 0;
+
+      auto recvNode = n + range.start;
+      // local node send is handled by intraFwd in exec()
+      if (kIsExec && recvNode == myNode) {
+        continue;
+      }
+
+      // tmpNumSendIdx populated at start of exec
+      const auto numSendIdx = args.tmpNumSendIdx[recvNode];
+      numPendingBlocks[n] = numSendIdx;
+
+      if (numSendIdx > 0) {
+        numTotalPending++;
+        if (threadIdx.x == 0) {
+          int recvNode = n + range.start;
+          CTRAN_DEV_TRACE(
+              "loaded numPendingBlocks %d to recvNode %d, numTotalPending %d\n",
+              numPendingBlocks[n],
+              recvNode,
+              numTotalPending);
+        }
+      }
+    }
   }
 };
 
@@ -256,6 +306,46 @@ struct ProgressFwdState {
       CHECK_VALID_STATE(idx, numTotalPending, numPendingBlocks);
     }
   }
+
+  __device__ __forceinline__ void setupState(
+      ExecKernArgs& args,
+      const GroupNodes& range) {
+    const auto nLocalRanks = statex->nLocalRanks();
+    const auto myNode = statex->node();
+    const auto* tmpNumFwdIdx = args.tmpNumFwdIdx;
+
+    for (auto r = 0; r < nLocalRanks; r++) {
+      numFwdBlocksToRank[r] = 0;
+      fwdReady[r] = 0;
+      fwdDone[r] = 0;
+      frCheckSteps[r] = -1;
+    }
+
+    numTotalPending = 0;
+    for (auto n = 0; n < range.numNodes; n++) {
+      numPendingBlocks[n] = 0;
+      steps[n] = 0;
+      const auto sendNode = n + range.start;
+      // Intra-node forwarding is handled separately
+      if (sendNode == myNode) {
+        continue;
+      }
+
+      const auto count = tmpNumFwdIdx[sendNode];
+      numPendingBlocks[n] = count;
+      if (count > 0) {
+        numTotalPending++;
+      }
+      if (threadIdx.x == 0) {
+        CTRAN_DEV_TRACE(
+            "loaded tmpNumFwdIdx[node %d] %d -> numPendingBlocks %d, numTotalPending %d\n",
+            sendNode,
+            tmpNumFwdIdx[sendNode],
+            numPendingBlocks[n],
+            numTotalPending);
+      }
+    }
+  }
 };
 
 struct ProgressRecvState {
@@ -282,6 +372,60 @@ struct ProgressRecvState {
 
       // TODO: add control to skip out-of-range check
       CHECK_VALID_STATE(idx, numTotalPending, numPendingBlocks);
+    }
+  }
+
+  __device__ __forceinline__ void setupIntraRecvState(ExecKernArgs& args) {
+    // nLocalRanks
+    int* tmpNumIntraRecvIdx = args.tmpNumIntraRecvIdx;
+    const auto nLocalRanks = statex->nLocalRanks();
+
+    // Popolate local state
+    numTotalPending = 0;
+
+    // Count number of received blocks from all sendRanks on the same node
+    for (auto r = 0; r < nLocalRanks; r++) {
+      const int count = tmpNumIntraRecvIdx[r];
+      numPendingBlocks[r] = count;
+      frCheckSteps[r] = -1;
+      steps[r] = 0;
+      if (count > 0) {
+        numTotalPending++;
+      }
+      if (threadIdx.x == 0) {
+        CTRAN_DEV_TRACE(
+            "loaded numPendingBlocks %d from sendRank %d, numTotalPending %d\n",
+            numPendingBlocks[r],
+            r,
+            numTotalPending);
+      }
+    }
+  }
+
+  __device__ __forceinline__ void setupState(
+      ExecKernArgs& args,
+      const GroupLocalRanks& range) {
+    // nLocalRanks
+    int* tmpNumFwdRecvIdx = args.tmpNumFwdRecvIdx;
+
+    // Popolate local state
+    numTotalPending = 0;
+
+    // Count number of received blocks from all sendRanks in the range
+    for (auto r = range.start; r <= range.end; r++) {
+      const int count = tmpNumFwdRecvIdx[r];
+      numPendingBlocks[r] = count;
+      steps[r] = 0;
+      frCheckSteps[r] = -1;
+      if (count > 0) {
+        numTotalPending++;
+      }
+      CTRAN_DEV_TRACE_IF(
+          threadIdx.x == 0,
+          "loaded numPendingBlocks %d from peerLocalRank %d, numTotalPending %d\n",
+          numPendingBlocks[r],
+          r,
+          numTotalPending);
     }
   }
 };
@@ -311,6 +455,31 @@ struct ProgressIntraFwdState {
 
   __device__ __forceinline__ bool hasPending(const int idx) {
     return numPendingBlocks[idx] > 0;
+  }
+
+  __device__ __forceinline__ void setupState(
+      ExecKernArgs& args,
+      const GroupLocalRanks& range) {
+    const auto* tmpNumIntraFwdIdx = args.tmpNumIntraFwdIdx;
+
+    numTotalPending = 0;
+    for (auto r = range.start; r <= range.end; r++) {
+      const auto localRank = r + range.start;
+      const auto count = tmpNumIntraFwdIdx[localRank];
+      steps[r] = 0;
+      numPendingBlocks[r] = count;
+
+      if (count > 0) {
+        numTotalPending++;
+      }
+      if (threadIdx.x == 0) {
+        CTRAN_DEV_TRACE(
+            "loaded tmpNumIntraFwdIdx[localRank %d] -> numPendingBlocks %d, numTotalPending %d\n",
+            localRank,
+            numPendingBlocks[r],
+            numTotalPending);
+      }
+    }
   }
 };
 
@@ -365,21 +534,6 @@ __device__ inline void assignWorkerGroups(
       getWgSync(args, WorkerGroupType::kIntraRecv, intraRecvG.groupId()));
 }
 
-struct GroupLocalRanks {
-  int start;
-  int end;
-  int numRanks;
-  __device__ __forceinline__ bool contains(const int r) const {
-    return r >= start && r <= end;
-  }
-};
-
-struct GroupNodes {
-  int start;
-  int end;
-  int numNodes;
-};
-
 __device__ inline void getGroupRange(
     const int totalNum,
     const int numGroups,
@@ -415,166 +569,6 @@ __device__ inline GroupNodes assignGroupNodes(
   getGroupRange(
       nNodes, numGroups, groupId, range.start, range.end, range.numNodes);
   return range;
-}
-
-__device__ inline void updateProgressSendState(
-    ExecKernArgs& args,
-    const GroupNodes& range,
-    ProgressSendState& state,
-    const bool kIsExec = true) {
-  const auto myNode = statex->node();
-
-  state.numTotalPending = 0;
-  for (auto n = 0; n < range.numNodes; n++) {
-    state.numPendingBlocks[n] = 0; // numSendBlocks for each node
-    state.steps[n] = 0;
-
-    auto recvNode = n + range.start;
-    // local node send is handled by intraFwd in exec()
-    if (kIsExec && recvNode == myNode) {
-      continue;
-    }
-
-    // tmpNumSendIdx populated at start of exec
-    const auto numSendIdx = args.tmpNumSendIdx[recvNode];
-    state.numPendingBlocks[n] = numSendIdx;
-
-    if (numSendIdx > 0) {
-      state.numTotalPending++;
-      if (threadIdx.x == 0) {
-        int recvNode = n + range.start;
-        CTRAN_DEV_TRACE(
-            "loaded numPendingBlocks %d to recvNode %d, numTotalPending %d\n",
-            state.numPendingBlocks[n],
-            recvNode,
-            state.numTotalPending);
-      }
-    }
-  }
-}
-
-__device__ inline void updateProgressIntraFwdState(
-    ExecKernArgs& args,
-    const GroupLocalRanks& range,
-    ProgressIntraFwdState& state) {
-  const auto* tmpNumIntraFwdIdx = args.tmpNumIntraFwdIdx;
-
-  state.numTotalPending = 0;
-  for (auto r = range.start; r <= range.end; r++) {
-    const auto localRank = r + range.start;
-    const auto count = tmpNumIntraFwdIdx[localRank];
-    state.steps[r] = 0;
-    state.numPendingBlocks[r] = count;
-
-    if (count > 0) {
-      state.numTotalPending++;
-    }
-    if (threadIdx.x == 0) {
-      CTRAN_DEV_TRACE(
-          "loaded tmpNumIntraFwdIdx[localRank %d] -> numPendingBlocks %d, numTotalPending %d\n",
-          localRank,
-          state.numPendingBlocks[r],
-          state.numTotalPending);
-    }
-  }
-}
-
-__device__ inline void updateProgressFwdState(
-    ExecKernArgs& args,
-    const GroupNodes& range,
-    ProgressFwdState& state) {
-  const auto nLocalRanks = statex->nLocalRanks();
-  const auto myNode = statex->node();
-  const auto* tmpNumFwdIdx = args.tmpNumFwdIdx;
-
-  for (auto r = 0; r < nLocalRanks; r++) {
-    state.numFwdBlocksToRank[r] = 0;
-    state.fwdReady[r] = 0;
-    state.fwdDone[r] = 0;
-    state.frCheckSteps[r] = -1;
-  }
-
-  state.numTotalPending = 0;
-  for (auto n = 0; n < range.numNodes; n++) {
-    state.numPendingBlocks[n] = 0;
-    state.steps[n] = 0;
-    const auto sendNode = n + range.start;
-    // Intra-node forwarding is handled separately
-    if (sendNode == myNode) {
-      continue;
-    }
-
-    const auto count = tmpNumFwdIdx[sendNode];
-    state.numPendingBlocks[n] = count;
-    if (count > 0) {
-      state.numTotalPending++;
-    }
-    if (threadIdx.x == 0) {
-      CTRAN_DEV_TRACE(
-          "loaded tmpNumFwdIdx[node %d] %d -> numPendingBlocks %d, numTotalPending %d\n",
-          sendNode,
-          tmpNumFwdIdx[sendNode],
-          state.numPendingBlocks[n],
-          state.numTotalPending);
-    }
-  }
-}
-
-__device__ inline void updateProgressIntraRecvState(
-    ExecKernArgs& args,
-    ProgressRecvState& state) {
-  // nLocalRanks
-  int* tmpNumIntraRecvIdx = args.tmpNumIntraRecvIdx;
-  const auto nLocalRanks = statex->nLocalRanks();
-
-  // Popolate local state
-  state.numTotalPending = 0;
-
-  // Count number of received blocks from all sendRanks on the same node
-  for (auto r = 0; r < nLocalRanks; r++) {
-    const int count = tmpNumIntraRecvIdx[r];
-    state.numPendingBlocks[r] = count;
-    state.frCheckSteps[r] = -1;
-    state.steps[r] = 0;
-    if (count > 0) {
-      state.numTotalPending++;
-    }
-    if (threadIdx.x == 0) {
-      CTRAN_DEV_TRACE(
-          "loaded numPendingBlocks %d from sendRank %d, numTotalPending %d\n",
-          state.numPendingBlocks[r],
-          r,
-          state.numTotalPending);
-    }
-  }
-}
-
-__device__ inline void updateProgressRecvState(
-    ExecKernArgs& args,
-    const GroupLocalRanks& range,
-    ProgressRecvState& state) {
-  // nLocalRanks
-  int* tmpNumFwdRecvIdx = args.tmpNumFwdRecvIdx;
-
-  // Popolate local state
-  state.numTotalPending = 0;
-
-  // Count number of received blocks from all sendRanks in the range
-  for (auto r = range.start; r <= range.end; r++) {
-    const int count = tmpNumFwdRecvIdx[r];
-    state.numPendingBlocks[r] = count;
-    state.steps[r] = 0;
-    state.frCheckSteps[r] = -1;
-    if (count > 0) {
-      state.numTotalPending++;
-    }
-    CTRAN_DEV_TRACE_IF(
-        threadIdx.x == 0,
-        "loaded numPendingBlocks %d from peerLocalRank %d, numTotalPending %d\n",
-        state.numPendingBlocks[r],
-        r,
-        state.numTotalPending);
-  }
 }
 
 #define NODE_RANGE_TRACE(group, range)                                    \
