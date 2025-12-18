@@ -700,13 +700,8 @@ ncclResult_t pncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, nccl
 /*
  * Query the address of the shared memory on remote peer
  */
-ncclResult_t  ncclWinEpochStart(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
-ncclResult_t pncclWinEpochStart(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
-
-/* Alias for backward compatibility */
-// TODO: ncclWinSharedQuery is needed only before the NCCLX PG is deprecated
-#define ncclWinSharedQuery ncclWinEpochStart
-#define pncclWinSharedQuery pncclWinEpochStart
+ncclResult_t  ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
+ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
 
 /*
  * Query the window attributes
