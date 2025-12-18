@@ -379,6 +379,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   at::Device device_;
   int comm_size_{};
   int rank_{};
+  size_t split_counter_{};
   CommOptions options_;
 
   struct Configs {

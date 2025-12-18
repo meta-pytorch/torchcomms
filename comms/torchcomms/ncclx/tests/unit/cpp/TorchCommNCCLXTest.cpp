@@ -40,6 +40,71 @@ TEST_F(TorchCommNCCLXTest, TestOptionsEnvironmentVariables) {
   EXPECT_EQ(options2.timeout, std::chrono::milliseconds(1500));
 }
 
+TEST_F(TorchCommNCCLXTest, UniqueCommDesc) {
+  setupRankAndSize(0, 4); // rank 0, size 4
+  cuda_mock_->setupDefaultBehaviors();
+  mock_hook_->setupDefaultBehaviors();
+
+  ON_CALL(*nccl_mock_, getUniqueId(_))
+      .WillByDefault(
+          DoAll(SetArgPointee<0>(ncclUniqueId{}), Return(ncclSuccess)));
+
+  ON_CALL(*nccl_mock_, commInitRankConfig(_, _, _, 0, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<0>(reinterpret_cast<ncclComm_t>(0x3000)),
+          Return(ncclSuccess)));
+
+  ON_CALL(*nccl_mock_, commSplit(_, _, _, _, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<3>(reinterpret_cast<ncclComm_t>(0x4000)),
+          Return(ncclSuccess)));
+
+  auto validateCommNameUnique =
+      [](std::vector<std::shared_ptr<TorchCommBackend>> comms) {
+        for (size_t i = 0; i < comms.size(); i++) {
+          for (size_t j = i + 1; j < comms.size(); j++) {
+            EXPECT_NE(comms[i]->getCommName(), comms[j]->getCommName());
+          }
+        }
+      };
+
+  auto comm1 = createMockedTorchComm();
+  auto comm2 = createMockedTorchComm();
+
+  EXPECT_NO_THROW(comm1->init(at::kCUDA, "test_name1", default_options_));
+  EXPECT_NO_THROW(comm2->init(at::kCUDA, "test_name2", default_options_));
+
+  auto split_comm1 = comm1->split({0, 1, 2, 3}, "split_comm");
+  EXPECT_TRUE(split_comm1 != nullptr);
+  auto split_comm2 = comm2->split({0, 1, 2, 3}, "split_comm");
+  EXPECT_TRUE(split_comm2 != nullptr);
+
+  auto split_comm1_2 = split_comm1->split({0, 1}, "split_comm");
+  EXPECT_TRUE(split_comm1_2 != nullptr);
+  auto split_comm1_3 = split_comm1->split({0, 1, 2}, "split_comm");
+  EXPECT_TRUE(split_comm1_3 != nullptr);
+
+  auto split_comm2_2 = split_comm2->split({0, 1}, "split_comm");
+  EXPECT_TRUE(split_comm2_2 != nullptr);
+  auto split_comm2_3 = split_comm2->split({0, 1, 2}, "split_comm");
+  EXPECT_TRUE(split_comm2_3 != nullptr);
+
+  std::vector<std::shared_ptr<TorchCommBackend>> comms = {
+      comm1,
+      comm2,
+      split_comm1,
+      split_comm2,
+      split_comm1_2,
+      split_comm1_3,
+      split_comm2_2,
+      split_comm2_3};
+
+  validateCommNameUnique(comms);
+  for (auto& comm : comms) {
+    comm->finalize();
+  }
+}
+
 TEST_F(TorchCommNCCLXTest, InitializationRank0GetUniqueId) {
   // Test: if node is rank 0, it will try to get a unique id and store it in the
   // store
