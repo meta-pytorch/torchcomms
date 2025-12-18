@@ -143,13 +143,51 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
   py::class_<TorchCommWindow, std::shared_ptr<TorchCommWindow>>(
       m, "TorchCommWindow")
       .def(
+          "tensor_register",
+          [](TorchCommWindow& self, const at::Tensor& tensor) {
+            self.tensor_register(tensor);
+          },
+          R"(
+Register a tensor buffer to a window for RMA operations.
+
+Args:
+    tensor: the contiguous tensor buffer to register as a window
+
+      )",
+          py::arg("tensor"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "tensor_deregister",
+          &TorchCommWindow::tensor_deregister,
+          R"(
+Deregister the window and free all associated resources.
+
+      )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "get_size",
           &TorchCommWindow::get_size,
           R"(Get the size of the window)",
           py::call_guard<py::gil_scoped_release>())
       .def(
           "put",
-          &TorchCommWindow::put,
+          [](TorchCommWindow& self,
+             const at::Tensor& tensor,
+             int dst_rank,
+             size_t target_disp,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            PutOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.put(tensor, dst_rank, target_disp, async_op, opts);
+          },
+
           R"(
 Put allows you to put a tensor into the previously allocated remote window.
 
@@ -182,29 +220,59 @@ Example usage:
           py::arg("dst_rank"),
           py::arg("target_disp"),
           py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "signal",
-          &TorchCommWindow::signal,
+          [](TorchCommWindow& self,
+             int peer_rank,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            SignalOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.signal(peer_rank, async_op, opts);
+          },
           R"(
 Atomic signal to notify remote peer of a change in state.
 
 Args:
-    signal_disp: the displacement in signal bugger.
-    signal_val: the signal value to set for signalling.
-    dst_rank: the destination rank.
+    peer_rank: the rank of the remote peer to signal.
     async_op: if this is true, the operation is asynced.
 
       )",
           py::arg("peer_rank"),
           py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "wait_signal",
-          &TorchCommWindow::waitSignal,
+          [](TorchCommWindow& self,
+             int peer_rank,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            WaitSignalOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.wait_signal(peer_rank, async_op, opts);
+          },
           "wait for a signal from remote peer",
           py::arg("peer_rank"),
           py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
       .def(
           "get_tensor",
@@ -1043,25 +1111,15 @@ Args:
 
       // window operations
       .def(
-          "window_allocate",
-          [](TorchComm& self,
-             const size_t window_size,
-             bool cpu_buf = false,
-             const size_t signal_size = 256) {
-            return self.window_allocate(window_size, cpu_buf, signal_size);
-          },
+          "new_window",
+          [](TorchComm& self) { return self.new_window(); },
           R"(
-Allocate a shared Window with current TorchComm Communicator.
+Create a new window object for RMA operations.
 
-Args:
-    window_size: The byte size of the window to be created.
-    cpu_buf: buffer is allocated on the CPU, or on the same device as the assigned communicator.
+Returns:
+    TorchCommWindow: An unregistered window object. Call window.tensor_register(tensor) to register a tensor buffer.
 
-Returns: The window object.
-          )",
-          py::arg("window_size"),
-          py::arg("cpu_buf") = false,
-          py::arg("signal_size") = 256,
+      )",
           py::call_guard<py::gil_scoped_release>())
 
       // Communicator Management

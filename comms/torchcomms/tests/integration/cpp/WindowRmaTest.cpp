@@ -79,9 +79,13 @@ void WindowRmaTest::testWindowPutBasic(
   at::Tensor input_tensor = createWindowRmaTensor(rank_, count, dtype);
   auto current_stream = at::cuda::getCurrentCUDAStream(device_index_);
 
-  // Call window_allocate
-  auto win = torchcomm_->window_allocate(
-      input_tensor.numel() * input_tensor.element_size() * num_ranks_);
+  // use mem_pool to allocate the window buffer
+  setupMemPool();
+  at::Tensor tensor =
+      createWindowRmaTensor(rank_, count * num_ranks_, dtype, true);
+  auto win = torchcomm_->new_window();
+  win->tensor_register(tensor);
+
   // call barrier to ensure all ranks have allocated the window
   torchcomm_->barrier(false);
 
@@ -100,7 +104,7 @@ void WindowRmaTest::testWindowPutBasic(
     // call signal on current stream to notify remote rank that the put is
     // complete
     auto signal_work = win->signal(dst_rank, async_signal);
-    auto wait_signal_work = win->waitSignal(src_rank, async_signal);
+    auto wait_signal_work = win->wait_signal(src_rank, async_signal);
     if (async_signal) {
       // register async Signal op to current stream since it is launched on
       // the internal op_stream
@@ -122,93 +126,26 @@ void WindowRmaTest::testWindowPutBasic(
   // Verify results
   verifyWindowRmaResults(result_tensor.cpu(), src_rank);
 
+  win->tensor_deregister();
+  // Explicitly destroy the window object to mimic user behavior
   win.reset();
-}
-
-void WindowRmaTest::testWindowCpuPut(
-    int count,
-    at::ScalarType dtype,
-    bool async_op,
-    bool signal,
-    bool async_signal) {
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing Window Put with count=" << count
-                           << " and dtype=" << getDtypeName(dtype));
-
-  // Create tensor with different values based on rank
-  std::vector<int64_t> tensor_size = {count};
-  auto current_stream = at::cuda::getCurrentCUDAStream(device_index_);
-
-  auto dst_rank = (rank_ + 1) % num_ranks_;
-  auto src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
-  auto input_tensor = at::full(
-      tensor_size,
-      rank_ + 100,
-      at::TensorOptions().dtype(dtype).device(at::kCUDA));
-
-  auto target_tensor = at::full(
-      tensor_size,
-      src_rank + 100,
-      at::TensorOptions().dtype(dtype).device(at::kCPU));
-
-  torchcomm_->barrier(false);
-
-  // Call window_allocate
-  auto win = torchcomm_->window_allocate(
-      input_tensor.numel() * input_tensor.element_size() * num_ranks_, true);
-  // call barrier to ensure all ranks have allocated the window
-  torchcomm_->barrier(false);
-
-  auto work = win->put(input_tensor, dst_rank, dst_rank * count, async_op);
-  if (async_op) {
-    // register async op to current stream if async_op is True
-    work->wait();
-  }
-
-  if (signal) {
-    // call signal on current stream to notify remote rank that the put is
-    // complete
-    auto signal_work = win->signal(dst_rank, async_signal);
-    auto wait_signal_work = win->waitSignal(src_rank, async_signal);
-    if (async_signal) {
-      // register async Signal op to current stream since it is launched on
-      // the internal op_stream
-      signal_work->wait();
-      // register async WaitSignal op to current stream since it is launched on
-      // the internal wait_stream
-      wait_signal_work->wait();
-    }
-    // synchronize current stream to ensure signal is complete
-    current_stream.synchronize();
-  } else {
-    // call barrier on current stream to ensure put is complete
-    torchcomm_->barrier(false);
-    // [TODO]: wait for barrier to accomplish since we are checking on CPU
-    // buffer,
-    // we should add some feature in TorchCommWindow to help aovid this if CPU
-    // buffer is used.
-    current_stream.synchronize();
-  }
-
-  auto output_tensor = win->getTensor(
-      rank_, {tensor_size}, input_tensor.scalar_type(), rank_ * count);
-
-  CHECK(output_tensor.device().type() == at::kCPU);
-
-  torchcomm_->barrier(false);
-
-  // Verify results
-  verifyTensorEquality(output_tensor, target_tensor, "WindowRmaTest");
-  win.reset();
+  cleanupMemPool();
 }
 
 // Helper function to create tensor for broadcast
 at::Tensor WindowRmaTest::createWindowRmaTensor(
     int value,
     int count,
-    at::ScalarType dtype) {
+    at::ScalarType dtype,
+    bool use_mem_pool) {
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
   at::Tensor tensor;
+
+  if (use_mem_pool) {
+    TORCH_CHECK(
+        memPool_ != nullptr,
+        "MemPool not initialized. Call setupMemPool() before creating tensors with use_mem_pool=true");
+  }
 
   // Initialize tensor based on dtype
   if (dtype == at::kFloat) {
@@ -220,6 +157,32 @@ at::Tensor WindowRmaTest::createWindowRmaTensor(
   }
 
   return tensor;
+}
+
+void WindowRmaTest::setupMemPool() {
+  if (memPool_) {
+    return; // Already set up
+  }
+
+  auto allocator = torchcomm_->getMemAllocator();
+  auto cudaAllocator =
+      std::dynamic_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator);
+  memPool_ = std::make_unique<at::cuda::MemPool>(cudaAllocator.get());
+
+  auto tid = std::this_thread::get_id();
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      memPool_->device(), memPool_->id(), [=](cudaStream_t) {
+        return std::this_thread::get_id() == tid;
+      });
+}
+
+void WindowRmaTest::cleanupMemPool() {
+  if (memPool_) {
+    c10::cuda::CUDACachingAllocator::endAllocateToPool(
+        memPool_->device(), memPool_->id());
+    memPool_.reset();
+  }
 }
 
 // Helper function to verify results
@@ -243,22 +206,11 @@ TEST_P(WindowRmaTest, WindowPutBasic) {
   testWindowPutBasic(count, dtype, async_op, signal, async_signal);
 }
 
-TEST_P(WindowRmaTest, WindowCpuBuf) {
-  if (checkIfSkip()) {
-    GTEST_SKIP() << "Skipping NCCLX-CTRAN-only window tests";
-  }
-  int count = std::get<0>(GetParam());
-  at::ScalarType dtype = std::get<1>(GetParam());
-  bool async_op = std::get<2>(GetParam());
-  bool signal = std::get<3>(GetParam());
-  bool async_signal = std::get<4>(GetParam());
-  testWindowCpuPut(count, dtype, async_op, signal, async_signal);
-}
-
 INSTANTIATE_TEST_SUITE_P(
     WindowRmaTestParams,
     WindowRmaTest,
     ::testing::Combine(
+        // count, dtype, async_op, signal, async_signal
         ::testing::Values(4, 1024, 1024 * 1024),
         ::testing::Values(at::kFloat, at::kInt, at::kChar),
         ::testing::Values(true, false),

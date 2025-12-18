@@ -10,23 +10,21 @@ namespace comms {
 
 class DummyTorchCommWindow : public TorchCommWindow {
  public:
-  void allocate(
-      const size_t window_size,
-      bool cpu_buf,
-      const size_t signal_size = 256) override {
-    (void)cpu_buf;
-    (void)signal_size;
-    win_size_ = window_size;
+  void tensor_register(const at::Tensor& tensor) override {
+    (void)tensor;
   }
+  void tensor_deregister() override {}
   c10::intrusive_ptr<TorchWork> put(
       const at::Tensor& data,
       int dstRank,
       size_t targetDisp,
-      bool asyncOp) override {
+      bool asyncOp,
+      const PutOptions& options) override {
     (void)data;
     (void)dstRank;
     (void)targetDisp;
     (void)asyncOp;
+    (void)options;
     return c10::make_intrusive<TorchWorkCompleted>();
   }
   at::Tensor getTensor(
@@ -40,15 +38,20 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)storageOffset;
     return at::Tensor();
   }
-  c10::intrusive_ptr<TorchWork> signal(int peerRank, bool asyncOp) override {
+  c10::intrusive_ptr<TorchWork>
+  signal(int peerRank, bool asyncOp, const SignalOptions& options) override {
     (void)peerRank;
     (void)asyncOp;
+    (void)options;
     return c10::make_intrusive<TorchWorkCompleted>();
   }
-  c10::intrusive_ptr<TorchWork> waitSignal(int peerRank, bool asyncOp)
-      override {
+  c10::intrusive_ptr<TorchWork> wait_signal(
+      int peerRank,
+      bool asyncOp,
+      const WaitSignalOptions& options) override {
     (void)peerRank;
     (void)asyncOp;
+    (void)options;
     return c10::make_intrusive<TorchWorkCompleted>();
   }
 };
@@ -235,12 +238,8 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::gather(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-std::shared_ptr<TorchCommWindow> TorchCommDummy::window_allocate(
-    const size_t window_size,
-    bool cpu_buf,
-    const size_t signal_size) {
+std::shared_ptr<TorchCommWindow> TorchCommDummy::new_window() {
   auto win = std::make_shared<DummyTorchCommWindow>();
-  win->allocate(window_size, cpu_buf, signal_size);
   return win;
 }
 

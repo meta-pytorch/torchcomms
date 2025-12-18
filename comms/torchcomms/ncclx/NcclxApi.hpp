@@ -8,7 +8,7 @@ namespace torch {
 namespace comms {
 
 #ifdef NCCL_RMA_SUPPORTED
-using NcclxWindow = ncclWin_t;
+using NcclxWindow = ncclWindow_t;
 #else
 using NcclxWindow = void*;
 #endif
@@ -205,14 +205,14 @@ class NcclxApi {
 
   virtual ncclResult_t pFree(void* request) = 0;
 
-  virtual ncclResult_t winAllocate(
-      size_t size,
+  virtual ncclResult_t commWindowRegister(
+      void* baseptr,
+      const size_t size,
       ncclComm_t comm,
-      void** baseptr,
-      NcclxWindow* winPtr,
-      bool cpuBuf,
-      const size_t signal_size = 256) = 0;
-  virtual ncclResult_t winFree(ncclComm_t comm, NcclxWindow win) = 0;
+      NcclxWindow* winPtr) = 0;
+  virtual ncclResult_t commWindowDeregister(
+      ncclComm_t comm,
+      NcclxWindow win) = 0;
   virtual ncclResult_t winPut(
       const void* originBuff,
       size_t count,
@@ -437,14 +437,12 @@ class DefaultNcclxApi : public NcclxApi {
   ncclResult_t pFree(void* request) override;
 
   // Window RMA operations
-  ncclResult_t winAllocate(
-      size_t size,
+  ncclResult_t commWindowRegister(
+      void* baseptr,
+      const size_t size,
       ncclComm_t comm,
-      void** baseptr,
-      NcclxWindow* winPtr,
-      bool cpuBuf,
-      const size_t signal_size = 256) override;
-  ncclResult_t winFree(ncclComm_t comm, NcclxWindow win) override;
+      NcclxWindow* winPtr) override;
+  ncclResult_t commWindowDeregister(ncclComm_t comm, NcclxWindow win) override;
   ncclResult_t winPut(
       const void* originBuff,
       size_t count,

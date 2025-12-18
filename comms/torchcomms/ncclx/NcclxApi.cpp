@@ -324,26 +324,23 @@ ncclResult_t DefaultNcclxApi::pFree(void* request) {
   return ncclx::pFree(request);
 }
 
-ncclResult_t DefaultNcclxApi::winAllocate(
-    size_t size,
+ncclResult_t DefaultNcclxApi::commWindowRegister(
+    void* baseptr,
+    const size_t size,
     ncclComm_t comm,
-    void** baseptr,
-    NcclxWindow* winPtr,
-    bool cpuBuf,
-    const size_t signal_size) {
+    NcclxWindow* winPtr) {
 #ifdef NCCL_RMA_SUPPORTED
-  ncclx::Hints hints;
-  hints.set("window_buffer_location", cpuBuf ? "cpu" : "gpu");
-  hints.set("window_signal_size", std::to_string(signal_size));
-  return ncclWinAllocate(size, comm, baseptr, winPtr, hints);
+  return ncclCommWindowRegister(comm, baseptr, size, winPtr, NCCL_WIN_DEFAULT);
 #else
   throw std::logic_error("NCCL RMA is not supported in this build");
 #endif
 }
 
-ncclResult_t DefaultNcclxApi::winFree(ncclComm_t comm, NcclxWindow win) {
+ncclResult_t DefaultNcclxApi::commWindowDeregister(
+    ncclComm_t comm,
+    NcclxWindow win) {
 #ifdef NCCL_RMA_SUPPORTED
-  return ncclWinFree(comm, win);
+  return ncclCommWindowDeregister(comm, win);
 #else
   throw std::logic_error("NCCL RMA is not supported in this build");
 #endif

@@ -1824,13 +1824,9 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 }
 
 // Window & One-sidede Operations
-std::shared_ptr<TorchCommWindow> TorchCommNCCLX::window_allocate(
-    const size_t window_size,
-    bool cpu_buf,
-    const size_t signal_size) {
-  auto win = std::make_shared<TorchCommWindowNCCLX>(
-      nccl_comm_, shared_from_this(), device_);
-  win->allocate(window_size, cpu_buf, signal_size);
+std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window() {
+  auto win =
+      std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, shared_from_this());
   return win;
 }
 

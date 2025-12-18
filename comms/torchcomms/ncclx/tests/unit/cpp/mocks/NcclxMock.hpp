@@ -262,18 +262,13 @@ class NcclxMock : public NcclxApi {
 
   MOCK_METHOD(
       ncclResult_t,
-      winAllocate,
-      (size_t size,
-       ncclComm_t comm,
-       void** baseptr,
-       NcclxWindow* win,
-       bool cpuBuf,
-       const size_t signal_size),
+      commWindowRegister,
+      (void* baseptr, size_t size, ncclComm_t comm, NcclxWindow* win),
       (override));
 
   MOCK_METHOD(
       ncclResult_t,
-      winFree,
+      commWindowDeregister,
       (ncclComm_t comm, NcclxWindow win),
       (override));
 

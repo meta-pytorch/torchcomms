@@ -41,8 +41,8 @@ TEST_F(TorchCommWindowNCCLXTest, windowPutExceedWindowSize) {
   };
 
   // CPU window operations after finalize
-  auto win =
-      comm->window_allocate(tensor.numel() * tensor.element_size(), false);
+  auto win = comm->new_window();
+  win->tensor_register(tensor);
 
   testOperation([&]() { win->put(large_input_tensor, 0, 0, false); });
 
@@ -55,7 +55,7 @@ TEST_F(TorchCommWindowNCCLXTest, windowPutExceedWindowSize) {
   EXPECT_NO_THROW(comm->finalize());
 }
 
-TEST_F(TorchCommWindowNCCLXTest, windowDoubleAllocate) {
+TEST_F(TorchCommWindowNCCLXTest, windowRegisterWithInvalidTensor) {
   setupRankAndSize(0, 2);
   setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
@@ -68,7 +68,6 @@ TEST_F(TorchCommWindowNCCLXTest, windowDoubleAllocate) {
   // Create test tensors for various operations
   auto tensor = createTestTensor({10, 10});
 
-  // Helper lambda to test that operations throw "double allocation" exception
   auto testOperation = [](const std::function<void()>& operation) {
     EXPECT_THROW(
         {
@@ -77,18 +76,20 @@ TEST_F(TorchCommWindowNCCLXTest, windowDoubleAllocate) {
           } catch (const std::runtime_error& e) {
             std::string error_msg = e.what();
             EXPECT_TRUE(
-                error_msg.find("Double allocation error") != std::string::npos);
+                error_msg.find("valid tensor is required") !=
+                std::string::npos);
             throw;
           }
         },
         std::runtime_error);
   };
 
-  auto win =
-      comm->window_allocate(tensor.numel() * tensor.element_size(), false);
+  at::Tensor win_buf;
 
-  testOperation(
-      [&]() { win->allocate(tensor.numel() * tensor.element_size(), false); });
+  testOperation([&]() {
+    auto win = comm->new_window();
+    win->tensor_register(win_buf);
+  });
 
   // Finalize should wait for work to complete
   EXPECT_NO_THROW(comm->finalize());
@@ -125,9 +126,7 @@ TEST_F(
   };
 
   // test window operations without initialization
-  testOperation([&]() {
-    comm->window_allocate(tensor.numel() * tensor.element_size(), true);
-  });
+  testOperation([&]() { comm->new_window(); });
 }
 
 TEST_F(TorchCommWindowNCCLXTest, WindowOperationsAfterFinalizeThrowException) {
@@ -163,9 +162,7 @@ TEST_F(TorchCommWindowNCCLXTest, WindowOperationsAfterFinalizeThrowException) {
   };
 
   // Test window operations after finalize
-  testOperation([&]() {
-    comm->window_allocate(tensor.numel() * tensor.element_size(), true);
-  });
+  testOperation([&]() { comm->new_window(); });
 }
 
 } // namespace test

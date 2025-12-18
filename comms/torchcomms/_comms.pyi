@@ -126,22 +126,35 @@ class TorchWork:
 class TorchCommWindow:
     def get_size(self) -> int: ...
     def get_device(self) -> Any: ...
+    def tensor_register(
+        self,
+        tensor: Any,
+    ) -> None: ...
+    def tensor_deregister(
+        self,
+    ) -> None: ...
     def put(
         self,
         tensor: Any,
         dst_rank: int,
         target_disp: int,
         async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
     ) -> TorchWork: ...
     def signal(
         self,
         dst_rank: int,
         async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
     ) -> TorchWork: ...
     def wait_signal(
         self,
         peer_rank: int,
         async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
     ) -> TorchWork: ...
     def get_tensor(
         self,
@@ -328,12 +341,7 @@ class TorchComm:
         timeout: timedelta | None = None,
     ) -> TorchComm: ...
     def batch_op_create(self) -> BatchSendRecv: ...
-    def window_allocate(
-        self,
-        window_size: int,
-        cpu_buf: bool | None = False,
-        signal_size: int | None = None,
-    ) -> TorchCommWindow: ...
+    def new_window(self) -> TorchCommWindow: ...
     def mem_allocator(self) -> Any: ...
 
 def new_comm(

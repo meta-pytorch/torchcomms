@@ -8,7 +8,7 @@ namespace torch {
 namespace comms {
 
 #ifdef NCCL_RMA_SUPPORTED
-using RcclxWindow = ncclWin_t;
+using RcclxWindow = ncclWindow_t;
 using RcclxWindowCmpOp = ncclCmpOp_t;
 #else
 using RcclxWindow = void*;

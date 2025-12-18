@@ -218,10 +218,7 @@ class TorchCommNCCLX : public TorchCommBackend,
       const GatherOptions& options = {}) override;
 
   // Window & One-sidede Operations
-  std::shared_ptr<TorchCommWindow> window_allocate(
-      const size_t window_size,
-      bool cpu_buf = false,
-      const size_t signal_size = 256) override;
+  std::shared_ptr<TorchCommWindow> new_window() override;
 
   // Communicator Management
   std::shared_ptr<TorchCommBackend> split(
@@ -306,6 +303,15 @@ class TorchCommNCCLX : public TorchCommBackend,
       std::chrono::milliseconds timeout,
       const at::Tensor& inputTensor);
 
+  // Stream and work management for Window operations
+  cudaStream_t getOperationStream(bool async_op);
+  void enqueueWork(
+      c10::intrusive_ptr<TorchWorkNCCLX> work,
+      cudaStream_t stream);
+  cudaStream_t getInternalStream() const {
+    return internal_stream_;
+  }
+
  private:
   // Helper that automatically cleans up premul sums.
   struct RedOpRAII {
@@ -364,11 +370,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
   void checkWorkQueue();
-  void enqueueWork(
-      c10::intrusive_ptr<TorchWorkNCCLX> work,
-      cudaStream_t stream);
   bool getGraphCaptureMode();
-  cudaStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
 
   void attachMemoryHook();

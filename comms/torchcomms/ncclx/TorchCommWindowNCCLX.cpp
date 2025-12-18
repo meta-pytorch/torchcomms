@@ -9,81 +9,88 @@ namespace comms {
 
 TorchCommWindowNCCLX::TorchCommWindowNCCLX(
     ncclComm_t ncclComm,
-    std::shared_ptr<TorchCommNCCLX> torchComm,
-    at::Device device)
+    std::shared_ptr<TorchCommNCCLX> torchComm)
     : nccl_comm_(ncclComm), torch_comm_(torchComm) {
   // make sure the torchComm & ncclComm are not null
   checkCommAndThrow();
 
-  // TorchCommWindowNCCLX would ncclApi/CudaApi from TorchCommNCCLX
+  // TorchCommWindowNCCLX reuse ncclApi/cudaApi/device from TorchCommNCCLX
   nccl_api_ = torch_comm_->getNcclApi();
   cuda_api_ = torch_comm_->getCudaApi();
-
-  // Retrieve the torchComm device, which may differ from the window device.
-  // For example, a rank may allocate a window on the CPU even if its primary
-  // device is GPU. When allocating a GPU window, ensure that the device matches
-  // comm_device_ to maintain consistency during window_allocate()
-  device_ = torch_comm_->getDevice();
-
-  // Set CUDA device and verify it's accessible
-  CUDA_CHECK(
-      cuda_api_,
-      cuda_api_->setDevice(device_.index()),
-      "Failed to set CUDA device to " + std::to_string(device_.index()));
-
-  // Initialize default CUDA API implementation
-  cuda_api_->eventCreate(&rma_event_);
-  const char* uniqueid_force_high_env = std::getenv("TORCH_NCCL_HIGH_PRIORITY");
-  bool force_high = uniqueid_force_high_env != nullptr &&
-      std::string(uniqueid_force_high_env) == "1";
-  cuda_api_->streamCreateWithPriority(&op_stream_, 0, force_high);
-  cuda_api_->streamCreateWithPriority(&wait_stream_, 0, force_high);
-  CHECK_NOTNULL(op_stream_);
-  CHECK_NOTNULL(wait_stream_);
+  comm_device_ = torch_comm_->getDevice();
 }
 
 TorchCommWindowNCCLX::~TorchCommWindowNCCLX() noexcept {
-  // free the window if it is not freed
-  // Ensure all pending RMA operations have finished
-  cuda_api_->streamSynchronize(op_stream_);
-  cuda_api_->streamSynchronize(wait_stream_);
-  win_size_ = 0;
-  CHECK_EQ(nccl_api_->winFree(nccl_comm_, win_), ncclSuccess)
-      << "NCCLX window free failed";
-  win_ = nullptr;
+  // User is responsible for waiting on work objects returned by
+  // put/signal/wait_signal before destroying the window. This matches PyTorch's
+  // async collective design. No synchronization needed here - proper work
+  // management ensures safety.
 
-  // Destroy cuda_api resources
-  cuda_api_->eventDestroy(rma_event_);
-  cuda_api_->streamDestroy(op_stream_);
-  cuda_api_->streamDestroy(wait_stream_);
+  // check the window is deregistered
+  if (win_ != nullptr) {
+    auto result = nccl_api_->commWindowDeregister(nccl_comm_, win_);
+    if (result != ncclSuccess) {
+      TC_LOG(ERROR) << "NCCLX window deregister failed";
+    }
+    win_ = nullptr;
+    win_size_ = 0;
+    buf_tensor_.reset(); // Release the tensor reference
+  }
 }
 
-void TorchCommWindowNCCLX::allocate(
-    const size_t window_size,
-    bool cpu_buf,
-    const size_t signal_size) {
+void TorchCommWindowNCCLX::tensor_register(const at::Tensor& tensor) {
   checkCommAndThrow();
-  void* base_ptr;
-  cpuBuf_ = cpu_buf;
-  signal_size_ = signal_size;
-  // TODO: add optimization to allocate window with size 0
-  win_size_ = window_size;
+  checkDeviceAndThrow(tensor);
+
+  if (!tensor.defined()) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX][register]: a valid tensor is required for window register.");
+  }
+
   if (win_ != nullptr) {
     throw std::runtime_error(
-        "[TorchCommWindowNCCLX][Allocate]: Double allocation error: win_ != nullptr");
+        "[TorchCommWindowNCCLX][register]: Double registration error: win_ != nullptr");
   }
+  if (!tensor.is_contiguous()) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX][register]: contiguous tensor is required for window register.");
+  }
+
+  // Set member variables before calling winRegisterBuf
+  buf_dtype_ = tensor.scalar_type();
+  win_size_ = tensor.numel() * tensor.element_size();
+
   CHECK_EQ(
-      nccl_api_->winAllocate(
-          win_size_, nccl_comm_, &base_ptr, &win_, cpuBuf_, signal_size),
+      nccl_api_->commWindowRegister(
+          tensor.data_ptr(), win_size_, nccl_comm_, &win_),
       ncclSuccess)
-      << "[TorchCommWindowNCCLX]: NCCLX window allocation failed.";
+      << "[TorchCommWindowNCCLX]: NCCLX window registration failed.";
+
+  // Store a copy of the tensor to ensure its storage remains valid
+  // for the lifetime of this window (via reference counting)
+  buf_tensor_ = tensor;
+  buf_device_ = tensor.device();
+}
+
+void TorchCommWindowNCCLX::tensor_deregister() {
+  checkCommAndThrow();
+  if (win_ == nullptr) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX]: Double deregistration error: win_ == nullptr");
+  }
+  CHECK_EQ(nccl_api_->commWindowDeregister(nccl_comm_, win_), ncclSuccess)
+      << "NCCLX window deregister failed";
+  win_ = nullptr;
+  win_size_ = 0;
+  buf_tensor_.reset(); // Release the tensor reference
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
     const at::Tensor& data,
     int dstRank,
     size_t targetDisp,
-    bool asyncOp) {
+    bool asyncOp,
+    const PutOptions& options) {
   checkCommAndThrow();
   const auto req_size = (data.numel() + targetDisp) * data.element_size();
 
@@ -91,19 +98,12 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
   CHECK_NOTNULL(win_);
 
   checkDeviceAndThrow(data);
-  auto stream =
-      asyncOp ? op_stream_ : cuda_api_->getCurrentCUDAStream(device_.index());
-  if (asyncOp) {
-    checkOpStreamAndThrow();
-    cuda_api_->eventRecord(
-        rma_event_, cuda_api_->getCurrentCUDAStream(device_.index()));
-    cuda_api_->streamWaitEvent(stream, rma_event_, 0);
-  }
-  auto work = torch_comm_->createWork(stream, kDefaultTimeout, {data});
+  auto stream = torch_comm_->getOperationStream(asyncOp);
+  auto work = torch_comm_->createWork(stream, options.timeout, {data});
   work->recordStart("put");
   CHECK_EQ(
       nccl_api_->winPut(
-          reinterpret_cast<void*>(data.data_ptr()),
+          data.data_ptr(),
           data.numel(),
           torch_comm_->getNcclDataType(data),
           dstRank,
@@ -141,28 +141,21 @@ at::Tensor TorchCommWindowNCCLX::getTensor(
   checkRequestSizeAndThrow(req_size);
   auto data_ptr =
       reinterpret_cast<uint8_t*>(base_ptr) + storageOffset * element_size;
-  auto options = cpuBuf_ ? at::TensorOptions().dtype(dtype).device(at::kCPU)
-                         : at::TensorOptions().dtype(dtype).device(device_);
+  auto options = at::TensorOptions().dtype(dtype).device(buf_device_);
   auto t = at::for_blob(data_ptr, sizes)
                .options(options)
-               .target_device(cpuBuf_ ? at::kCPU : device_)
+               .target_device(buf_device_)
                .make_tensor();
   return t;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::signal(
     int peerRank,
-    bool asyncOp) {
+    bool asyncOp,
+    const SignalOptions& options) {
   checkWindowAndThrow();
-  auto stream =
-      asyncOp ? op_stream_ : cuda_api_->getCurrentCUDAStream(device_.index());
-  if (asyncOp) {
-    checkOpStreamAndThrow();
-    cuda_api_->eventRecord(
-        rma_event_, cuda_api_->getCurrentCUDAStream(device_.index()));
-    cuda_api_->streamWaitEvent(stream, rma_event_, 0);
-  }
-  auto work = torch_comm_->createWork(stream, kDefaultTimeout);
+  auto stream = torch_comm_->getOperationStream(asyncOp);
+  auto work = torch_comm_->createWork(stream, options.timeout);
   work->recordStart("signal");
   CHECK_EQ(nccl_api_->winSignal(peerRank, win_, stream), ncclSuccess);
   work->recordEnd();
@@ -170,73 +163,47 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::signal(
   return work;
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::waitSignal(
+c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::wait_signal(
     int peerRank,
-    bool asyncOp) {
+    bool asyncOp,
+    const WaitSignalOptions& options) {
   checkWindowAndThrow();
-  auto stream =
-      asyncOp ? wait_stream_ : cuda_api_->getCurrentCUDAStream(device_.index());
-  if (asyncOp) {
-    checkWaitStreamAndThrow();
-    cuda_api_->eventRecord(
-        rma_event_, cuda_api_->getCurrentCUDAStream(device_.index()));
-    cuda_api_->streamWaitEvent(stream, rma_event_, 0);
-  }
-  auto work = torch_comm_->createWork(stream, kDefaultTimeout);
-  work->recordStart("waitSignal");
+  auto stream = torch_comm_->getOperationStream(asyncOp);
+
+  auto work = torch_comm_->createWork(stream, options.timeout);
+  work->recordStart("wait_signal");
   CHECK_EQ(nccl_api_->winWaitSignal(peerRank, win_, stream), ncclSuccess);
   work->recordEnd();
   torch_comm_->enqueueWork(work, stream);
   return work;
 }
 
-void TorchCommWindowNCCLX::checkEventAndThrow() {
-  if (rma_event_ == nullptr) {
-    throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: RMA event is not initialized, rma_event_ == nullptr");
-  }
-}
-void TorchCommWindowNCCLX::checkOpStreamAndThrow() {
-  if (op_stream_ == nullptr) {
-    throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: RMA op stream is not initialized, op_stream_ == nullptr");
-  }
-}
-
-void TorchCommWindowNCCLX::checkWaitStreamAndThrow() {
-  if (wait_stream_ == nullptr) {
-    throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: RMA wait stream is not initialized, wait_stream_ == nullptr");
-  }
-}
-
-void TorchCommWindowNCCLX::checkRequestSizeAndThrow(size_t input_size) {
+void TorchCommWindowNCCLX::checkRequestSizeAndThrow(size_t input_size) const {
   if (input_size > win_size_) {
     throw std::runtime_error(
         "[TorchCommWindowNCCLX]: Requested size (" +
         std::to_string(input_size) + " bytes) exceeds the window size (" +
         std::to_string(win_size_) + " bytes)");
   }
-  return;
 }
 
-void TorchCommWindowNCCLX::checkDeviceAndThrow(const at::Tensor& tensor) {
+void TorchCommWindowNCCLX::checkDeviceAndThrow(const at::Tensor& tensor) const {
   auto data_device_type = tensor.device().type();
-  // if tenosr and window buffer are both on GPU, we need to check whether they
-  // are on the same device, otherwise throw error
-  if (!cpuBuf_ && data_device_type == at::kCUDA) {
+  // if the torchComm device is on GPU, we need to make sure the tensor is on
+  // the same device as the window
+  if (comm_device_.type() == at::kCUDA && data_device_type == at::kCUDA) {
     auto data_device_idx = tensor.device().index();
-    if (device_.index() != tensor.device().index()) {
+    if (comm_device_.index() != data_device_idx) {
       throw std::runtime_error(
-          "[TorchCommWindowNCCLX]: Device mismatch: window on device idx: " +
-          std::to_string(device_.index()) +
+          "[TorchCommWindowNCCLX]: Device mismatch: torchcomm is on device idx: " +
+          std::to_string(comm_device_.index()) +
           ", operated tensor on device idx: " +
           std::to_string(data_device_idx));
     }
   }
 }
 
-void TorchCommWindowNCCLX::checkCommAndThrow() {
+void TorchCommWindowNCCLX::checkCommAndThrow() const {
   if (nccl_comm_ == nullptr) {
     throw std::runtime_error(
         "[TorchCommWindowNCCLX]: NCCL communicator is not initialized, nccl_comm_ == nullptr");
@@ -247,7 +214,7 @@ void TorchCommWindowNCCLX::checkCommAndThrow() {
   }
 }
 
-void TorchCommWindowNCCLX::checkWindowAndThrow() {
+void TorchCommWindowNCCLX::checkWindowAndThrow() const {
   if (win_ == nullptr) {
     throw std::runtime_error("[TorchCommWindowNCCLX]: NCCLX window is null");
   }
