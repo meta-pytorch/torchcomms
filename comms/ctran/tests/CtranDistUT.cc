@@ -278,7 +278,7 @@ TEST_F(CtranTest, AlgoDeviceState) {
   EXPECT_EQ(statexDev.pid(), getpid());
 
   for (int i = 0; i < nLocalRanks; i++) {
-    if (i == localRank) {
+    if (i == comm->ctranComm_->statex_->localRank()) {
       EXPECT_EQ(devState.remoteSyncsMap[i], nullptr);
       EXPECT_EQ(devState.localSyncsMap[i], nullptr);
       EXPECT_EQ(devState.remoteStagingBufsMap[i], nullptr);
