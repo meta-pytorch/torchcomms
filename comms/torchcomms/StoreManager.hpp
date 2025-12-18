@@ -16,16 +16,20 @@ class StoreManager {
 
  public:
   static StoreManager& get();
+  static std::string getPrefix(
+      std::string_view backendName,
+      std::string_view commName);
 
   c10::intrusive_ptr<c10d::Store> getStore(
       std::string_view backendName,
       std::string_view commName,
       std::chrono::milliseconds timeout);
 
+  void injectMockStore(c10::intrusive_ptr<c10d::Store> store);
+
  private:
   std::mutex mutex_{};
   c10::intrusive_ptr<c10d::Store> root_{};
-  std::unordered_set<std::string> storeNames_{};
 };
 
 } // namespace torch::comms

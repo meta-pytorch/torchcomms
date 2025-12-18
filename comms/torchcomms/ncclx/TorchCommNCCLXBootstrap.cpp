@@ -15,22 +15,13 @@
 namespace torch {
 namespace comms {
 
-// Initialize the static counter
-int TorchCommNCCLXBootstrap::counter_ = 0;
-
-const std::string kUniqueidXchgMethodAuto = "auto";
-const std::string kUniqueidXchgMethodTCPStore = "tcpstore";
-const std::string kUniqueidXchgMethodDefault = kUniqueidXchgMethodAuto;
-
 TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
-    c10::intrusive_ptr<c10d::Store> store,
     c10::Device device,
     std::shared_ptr<NcclxApi> nccl_api,
     std::shared_ptr<CudaApi> cuda_api,
     std::chrono::milliseconds timeout)
     : timeout_(timeout),
-      store_(store),
-      created_internal_store_(false),
+      store_(nullptr),
       device_(device),
       nccl_api_(nccl_api),
       cuda_api_(cuda_api) {
@@ -38,22 +29,6 @@ TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
   auto ranksize = query_ranksize();
   rank_ = ranksize.first;
   comm_size_ = ranksize.second;
-
-  const char* uniqueid_xchg_env =
-      std::getenv("TORCHCOMM_NCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD");
-  if (uniqueid_xchg_env == nullptr) {
-    TC_LOG(INFO, nullptr)
-        << "TORCHCOMM_NCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD not set, "
-        << "defaulting to " << kUniqueidXchgMethodDefault;
-    uniqueid_xchg_method_ = kUniqueidXchgMethodDefault;
-  } else {
-    uniqueid_xchg_method_ = uniqueid_xchg_env;
-  }
-  std::transform(
-      uniqueid_xchg_method_.begin(),
-      uniqueid_xchg_method_.end(),
-      uniqueid_xchg_method_.begin(),
-      [](unsigned char c) { return std::tolower(c); });
 
   if (device_.index() == -1) {
     int device_count{0};
@@ -95,24 +70,10 @@ TorchCommNCCLXBootstrap::~TorchCommNCCLXBootstrap() {
   }
 }
 
-std::string TorchCommNCCLXBootstrap::getNCCLXStoreKey() {
-  std::string key = getNCCLXStoreKeyPrefix() + std::to_string(counter_);
-  counter_++;
-  return key;
-}
-
-std::string TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() {
-  return "ncclx_storekey_";
-};
-
-int TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter() {
-  return counter_;
-}
-
-ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueIdStore() {
+ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueId(
+    const std::string& name) {
   ncclUniqueId uniqueId;
 
-  auto key = getNCCLXStoreKey();
   if (rank_ == 0) {
     // Generate unique ID on rank 0
     ncclResult_t ncclErr = nccl_api_->getUniqueId(&uniqueId);
@@ -126,10 +87,10 @@ ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueIdStore() {
     std::vector<uint8_t> vec(
         reinterpret_cast<uint8_t*>(&uniqueId),
         reinterpret_cast<uint8_t*>(&uniqueId) + sizeof(uniqueId));
-    store_->set(key, vec);
+    store_->set(name, vec);
   } else {
     // Other ranks read the broadcast ID
-    auto vec = store_->get(key);
+    auto vec = store_->get(name);
     if (vec.size() != sizeof(ncclUniqueId)) {
       throw std::runtime_error("Invalid NCCL unique ID size");
     }
@@ -139,63 +100,31 @@ ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueIdStore() {
   return uniqueId;
 }
 
-ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueIdTCPStore(
-    std::string_view name) {
-  store_ = StoreManager::get().getStore(
-      TorchCommNCCLX::kBackendName, name, timeout_);
-  created_internal_store_ = true;
-
-  return exchangeUniqueIdStore();
-}
-
-bool TorchCommNCCLXBootstrap::isTCPStoreEnabled() {
-  return std::getenv("MASTER_ADDR") && std::getenv("MASTER_PORT");
-}
-
-ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueId(std::string_view name) {
-  if (store_ != nullptr) {
-    return exchangeUniqueIdStore();
-  }
-
-  bool is_tcp_store_enabled = isTCPStoreEnabled();
-  if (uniqueid_xchg_method_ != kUniqueidXchgMethodAuto &&
-      uniqueid_xchg_method_ != kUniqueidXchgMethodTCPStore) {
-    throw std::runtime_error(
-        "Invalid unique ID exchange method " + uniqueid_xchg_method_);
-  }
-  if (!is_tcp_store_enabled) {
-    throw std::runtime_error("No way to exchange unique ID");
-  }
-  return exchangeUniqueIdTCPStore(name);
-}
-
 void TorchCommNCCLXBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
-  if (created_internal_store_) {
-    // Delete the internal store object and do a barrier to ensure that all
-    // processes have deleted their store object too.  This way, when we
-    // create the next torchcomm, we can use the same port to create a new store
-    // object.
-    store_.reset();
+  // Delete the internal store object and do a barrier to ensure that all
+  // processes have deleted their store object too.  This way, when we
+  // create the next torchcomm, we can use the same port to create a new store
+  // object.
+  store_.reset();
 
-    auto stream = cuda_api_->getCurrentCUDAStream(device_.index());
-    ncclResult_t result = nccl_api_->allReduce(
-        barrier_buffer_,
-        barrier_buffer_,
-        1,
-        ncclFloat32,
-        ncclSum,
-        nccl_comm,
-        stream);
-    if (result != ncclSuccess) {
-      TC_LOG(ERROR) << "NCCL AllReduce failed: "
-                    << nccl_api_->getErrorString(result);
-    }
-
-    CUDA_CHECK(
-        cuda_api_,
-        cuda_api_->streamSynchronize(stream),
-        "Stream synchronization failed");
+  auto stream = cuda_api_->getCurrentCUDAStream(device_.index());
+  ncclResult_t result = nccl_api_->allReduce(
+      barrier_buffer_,
+      barrier_buffer_,
+      1,
+      ncclFloat32,
+      ncclSum,
+      nccl_comm,
+      stream);
+  if (result != ncclSuccess) {
+    TC_LOG(ERROR) << "NCCL AllReduce failed: "
+                  << nccl_api_->getErrorString(result);
   }
+
+  CUDA_CHECK(
+      cuda_api_,
+      cuda_api_->streamSynchronize(stream),
+      "Stream synchronization failed");
 }
 
 // Helper function to populate NCCL config from hints
@@ -283,6 +212,11 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
     const CommOptions& options) {
   ncclUniqueId uniqueId;
   ncclComm_t nccl_comm = nullptr;
+
+  if (!store_) {
+    store_ = StoreManager::get().getStore(
+        TorchCommNCCLX::kBackendName, name, timeout_);
+  }
 
   uniqueId = exchangeUniqueId(name);
 

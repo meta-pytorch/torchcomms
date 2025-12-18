@@ -9,6 +9,8 @@
 #include <c10/core/Device.h>
 #include <torch/csrc/distributed/c10d/HashStore.hpp> // @manual=//caffe2:torch-cpp
 
+#include "comms/torchcomms/StoreManager.hpp"
+#include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CudaMock.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/NcclxMock.hpp"
@@ -30,6 +32,7 @@ class TorchCommNCCLXBootstrapTest : public ::testing::Test {
   void SetUp() override {
     // Create hash store for communication
     store_ = c10::make_intrusive<c10d::HashStore>();
+    StoreManager::get().injectMockStore(store_);
 
     // Set up device - use CPU device because we're mocking cuda
     device_ = at::Device(at::DeviceType::CPU, 0);
@@ -37,11 +40,6 @@ class TorchCommNCCLXBootstrapTest : public ::testing::Test {
     // Create fresh mocks for each test
     nccl_mock_ = std::make_shared<NiceMock<NcclxMock>>();
     cuda_mock_ = std::make_shared<NiceMock<CudaMock>>();
-
-    // Reset the static counter to a known state
-    // We'll access it through the public interface
-    TorchCommNCCLXBootstrap::getNCCLXStoreKey(); // This increments counter
-    initial_counter_ = TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter();
   }
 
   void TearDown() override {
@@ -59,42 +57,21 @@ class TorchCommNCCLXBootstrapTest : public ::testing::Test {
 
   std::unique_ptr<TorchCommNCCLXBootstrap> createBootstrap(
       c10::intrusive_ptr<c10d::Store> store = nullptr) {
-    if (!store) {
-      store = store_;
+    if (store) {
+      StoreManager::get().injectMockStore(store);
     }
     return std::make_unique<TorchCommNCCLXBootstrap>(
-        store, device_, nccl_mock_, cuda_mock_, kTimeout);
+        device_, nccl_mock_, cuda_mock_, kTimeout);
   }
 
   c10::intrusive_ptr<c10d::Store> store_;
   at::Device device_{at::DeviceType::CPU, 0};
   std::shared_ptr<NiceMock<NcclxMock>> nccl_mock_;
   std::shared_ptr<NiceMock<CudaMock>> cuda_mock_;
-  int initial_counter_{-1};
 };
 
-TEST_F(TorchCommNCCLXBootstrapTest, StaticMethodsStoreKeyGeneration) {
-  // Test that store key generation works correctly with counter
-  std::string prefix = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix();
-  EXPECT_EQ(prefix, "ncclx_storekey_");
-
-  int counter_before = TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter();
-  std::string key1 = TorchCommNCCLXBootstrap::getNCCLXStoreKey();
-  int counter_after = TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter();
-
-  EXPECT_EQ(counter_after, counter_before + 1);
-  EXPECT_EQ(key1, prefix + std::to_string(counter_before));
-
-  // Test that subsequent calls increment the counter
-  std::string key2 = TorchCommNCCLXBootstrap::getNCCLXStoreKey();
-  int final_counter = TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter();
-
-  EXPECT_EQ(final_counter, counter_after + 1);
-  EXPECT_EQ(key2, prefix + std::to_string(counter_after));
-  EXPECT_NE(key1, key2);
-}
-
 TEST_F(TorchCommNCCLXBootstrapTest, GetRankAndSizeFromEnvironment) {
+  const std::string name = "test_comm";
   setupRankAndSize(1, 4);
 
   auto bootstrap = createBootstrap();
@@ -105,9 +82,9 @@ TEST_F(TorchCommNCCLXBootstrapTest, GetRankAndSizeFromEnvironment) {
   std::vector<uint8_t> id_vec(sizeof(ncclUniqueId));
   memcpy(id_vec.data(), &expected_id, sizeof(expected_id));
 
-  std::string store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() +
-      std::to_string(TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter());
-  store_->set(store_key, id_vec);
+  StoreManager::get()
+      .getStore(TorchCommNCCLX::kBackendName, name, kTimeout)
+      ->set(name, id_vec);
 
   // Set up mock expectations
   EXPECT_CALL(*nccl_mock_, commInitRankConfig(_, 4, _, 1, _))
@@ -115,7 +92,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, GetRankAndSizeFromEnvironment) {
           SetArgPointee<0>(reinterpret_cast<ncclComm_t>(0x3000)),
           Return(ncclSuccess)));
 
-  EXPECT_NO_THROW(bootstrap->createNcclComm("test_comm"));
+  EXPECT_NO_THROW(bootstrap->createNcclComm(name));
 }
 
 TEST_F(TorchCommNCCLXBootstrapTest, GetRankAndSizeEnvironmentVariablesMissing) {
@@ -124,6 +101,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, GetRankAndSizeEnvironmentVariablesMissing) {
 }
 
 TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdRank0) {
+  const std::string name = "test_comm";
   setupRankAndSize(0, 2);
 
   auto bootstrap = createBootstrap();
@@ -140,13 +118,13 @@ TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdRank0) {
           SetArgPointee<0>(reinterpret_cast<ncclComm_t>(0x3000)),
           Return(ncclSuccess)));
 
-  ncclComm_t comm = bootstrap->createNcclComm("test_comm");
+  ncclComm_t comm = bootstrap->createNcclComm(name);
   EXPECT_NE(comm, nullptr);
 
   // Verify the unique ID was stored
-  std::string store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() +
-      std::to_string(initial_counter_);
-  auto stored_vec = store_->get(store_key);
+  auto stored_vec = StoreManager::get()
+                        .getStore(TorchCommNCCLX::kBackendName, name, kTimeout)
+                        ->get(name);
   ncclUniqueId stored_id;
   memcpy(&stored_id, stored_vec.data(), sizeof(stored_id));
 
@@ -154,6 +132,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdRank0) {
 }
 
 TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdNonRank0) {
+  const std::string name = "test_comm";
   setupRankAndSize(1, 2);
 
   // Pre-populate store with unique ID (as if rank 0 already stored it)
@@ -162,9 +141,9 @@ TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdNonRank0) {
   std::vector<uint8_t> id_vec(sizeof(ncclUniqueId));
   memcpy(id_vec.data(), &expected_id, sizeof(expected_id));
 
-  std::string store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() +
-      std::to_string(TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter());
-  store_->set(store_key, id_vec);
+  StoreManager::get()
+      .getStore(TorchCommNCCLX::kBackendName, name, kTimeout)
+      ->set(name, id_vec);
 
   auto bootstrap = createBootstrap();
 
@@ -173,7 +152,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdNonRank0) {
           SetArgPointee<0>(reinterpret_cast<ncclComm_t>(0x3000)),
           Return(ncclSuccess)));
 
-  ncclComm_t comm = bootstrap->createNcclComm("test_comm");
+  ncclComm_t comm = bootstrap->createNcclComm(name);
   EXPECT_NE(comm, nullptr);
 }
 
@@ -238,21 +217,22 @@ TEST_F(TorchCommNCCLXBootstrapTest, CreateNcclCommInitRankConfigFailure) {
 }
 
 TEST_F(TorchCommNCCLXBootstrapTest, ExchangeUniqueIdInvalidStoreData) {
+  const std::string name = "test_comm";
   setupRankAndSize(1, 2);
 
   // Store invalid data (wrong size)
   std::vector<uint8_t> invalid_vec(
       10); // Wrong size, should be sizeof(ncclUniqueId)
-  std::string store_key = TorchCommNCCLXBootstrap::getNCCLXStoreKeyPrefix() +
-      std::to_string(TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter());
-  store_->set(store_key, invalid_vec);
+  StoreManager::get()
+      .getStore(TorchCommNCCLX::kBackendName, name, kTimeout)
+      ->set(name, invalid_vec);
 
   auto bootstrap = createBootstrap();
 
   EXPECT_THROW(
       {
         try {
-          bootstrap->createNcclComm("test_comm");
+          bootstrap->createNcclComm(name);
         } catch (const std::runtime_error& e) {
           std::string error_msg = e.what();
           EXPECT_TRUE(
@@ -270,8 +250,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, CreateNcclCommWithNullStore) {
   setenv("MASTER_PORT", "0", 1);
 
   // Create bootstrap with null store to test TCPStore creation
-  auto bootstrap = std::make_unique<TorchCommNCCLXBootstrap>(
-      nullptr, device_, nccl_mock_, cuda_mock_, kTimeout);
+  auto bootstrap = createBootstrap();
 
   ncclUniqueId expected_id{};
   memset(&expected_id, 0x42, sizeof(expected_id));
@@ -297,8 +276,7 @@ TEST_F(TorchCommNCCLXBootstrapTest, CleanupTCPStoreBarrierFailure) {
   setenv("MASTER_PORT", "0", 1);
 
   // Create bootstrap with null store to trigger internal store creation
-  auto bootstrap = std::make_unique<TorchCommNCCLXBootstrap>(
-      nullptr, device_, nccl_mock_, cuda_mock_, kTimeout);
+  auto bootstrap = createBootstrap();
 
   ncclUniqueId expected_id{};
   memset(&expected_id, 0x42, sizeof(expected_id));

@@ -99,7 +99,7 @@ void TorchCommNCCLX::init(
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
     auto bootstrap = new TorchCommNCCLXBootstrap(
-        options_.store, device_, nccl_api_, cuda_api_, options_.timeout);
+        device_, nccl_api_, cuda_api_, options_.timeout);
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
