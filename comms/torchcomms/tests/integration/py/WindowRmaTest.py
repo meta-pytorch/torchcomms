@@ -9,6 +9,7 @@ import unittest
 import psutil
 
 import torch
+from torchcomms import TorchCommlWinAccessType
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
     TorchCommTestWrapper,
@@ -134,6 +135,38 @@ class WindowRmaTest(unittest.TestCase):
             print(f"Running tests with parameters: {test_name}")
 
             self._window_put_test(count, dtype, async_op, signal, async_signal)
+
+    @unittest.skipIf(
+        os.getenv("NCCL_CTRAN_ENABLE", "").lower() not in ("1", "true"),
+        "Skipping NCCLX Ctran Window tests",
+    )
+    @unittest.skipIf(
+        os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only window tests"
+    )
+    @unittest.skipIf("beth0" not in psutil.net_if_addrs(), "RDMA nic required")
+    def test_window_attributes(self):
+        """Test window attributes."""
+        print("Testing window attributes")
+        win_buf = torch.ones(
+            [1024 * 1024 * self.num_ranks], dtype=torch.bfloat16, device=self.device
+        )
+        win = self.torchcomm.new_window()
+        win.tensor_register(win_buf)
+        if self.num_ranks <= 8:
+            next_rank = (self.rank + 1) % self.num_ranks
+            win_attr = win.get_attr(next_rank)
+            assert (
+                win_attr.access_type == TorchCommlWinAccessType.WIN_ACCESS_TYPE_UNIFIED
+            )
+        else:
+            next_rank = (self.rank + 8) % self.num_ranks
+            win_attr = win.get_attr(next_rank)
+            assert (
+                win_attr.access_type == TorchCommlWinAccessType.WIN_ACCESS_TYPE_SEPARATE
+            )
+        # clean up
+        win.tensor_deregister()
+        del win
 
 
 if __name__ == "__main__":

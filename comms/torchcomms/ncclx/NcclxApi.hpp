@@ -7,11 +7,9 @@
 namespace torch {
 namespace comms {
 
-#ifdef NCCL_RMA_SUPPORTED
 using NcclxWindow = ncclWindow_t;
-#else
-using NcclxWindow = void*;
-#endif
+using NcclxWindowAccessType = ncclWinAccessType;
+using NcclxWindowAttr = ncclWinAttr_t;
 
 /**
  * Abstract interface for NCCL API operations.
@@ -227,6 +225,8 @@ class NcclxApi {
   winSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
   virtual ncclResult_t
   winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
+  virtual ncclResult_t
+  winGetAttributes(int peer, NcclxWindow win, NcclxWindowAttr* attrPtr) = 0;
 
   virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
   virtual ncclResult_t memFree(void* buff) = 0;
@@ -460,6 +460,10 @@ class DefaultNcclxApi : public NcclxApi {
       override;
   ncclResult_t winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream)
       override;
+  ncclResult_t winGetAttributes(
+      int peer,
+      NcclxWindow win,
+      NcclxWindowAttr* attrPtr) override;
 
   ncclResult_t memAlloc(void** buff, size_t size) override;
   ncclResult_t memFree(void* buff) override;

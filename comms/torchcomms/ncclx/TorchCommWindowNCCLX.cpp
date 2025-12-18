@@ -214,5 +214,34 @@ void TorchCommWindowNCCLX::checkWindowAndThrow() const {
   }
 }
 
+std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX::get_attr(
+    int peerRank) {
+  checkWindowAndThrow();
+  NcclxWindowAttr nccl_attr_raw = nullptr;
+  CHECK_EQ(
+      nccl_api_->winGetAttributes(peerRank, win_, &nccl_attr_raw), ncclSuccess)
+      << "NCCLX window get_attr failed";
+
+  CHECK_NOTNULL(nccl_attr_raw);
+
+  // Use unique_ptr for RAII - automatic cleanup on exception or return
+  std::unique_ptr<std::remove_pointer<NcclxWindowAttr>::type> nccl_attr(
+      nccl_attr_raw);
+
+  // Convert from NCCL type to TorchComm type
+  auto attr = std::make_shared<TorchCommWindowAttr>();
+  switch (nccl_attr->accessType) {
+    case ncclWinAccessUnified:
+      attr->accessType = TorchCommlWinAccessType::WIN_ACCESS_TYPE_UNIFIED;
+      break;
+    case ncclWinAccessSeparate:
+      attr->accessType = TorchCommlWinAccessType::WIN_ACCESS_TYPE_SEPARATE;
+      break;
+    default:
+      throw std::runtime_error("Unsupported NCCL window access type");
+  }
+  return attr;
+}
+
 } // namespace comms
 } // namespace torch

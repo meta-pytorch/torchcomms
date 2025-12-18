@@ -302,6 +302,12 @@ class NcclxMock : public NcclxApi {
       (int peer, NcclxWindow win, cudaStream_t stream),
       (override));
 
+  MOCK_METHOD(
+      ncclResult_t,
+      winGetAttributes,
+      (int peer, NcclxWindow win, NcclxWindowAttr* attrPtr),
+      (override));
+
   MOCK_METHOD(ncclResult_t, memAlloc, (void** buff, size_t size), (override));
   MOCK_METHOD(ncclResult_t, memFree, (void* buff), (override));
 

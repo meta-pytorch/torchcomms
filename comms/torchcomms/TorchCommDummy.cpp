@@ -47,6 +47,11 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)options;
     return c10::make_intrusive<TorchWorkCompleted>();
   }
+
+  std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) override {
+    (void)peerRank;
+    return nullptr;
+  }
 };
 
 TorchCommDummy::TorchCommDummy()

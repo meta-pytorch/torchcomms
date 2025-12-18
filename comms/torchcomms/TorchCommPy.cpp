@@ -139,6 +139,23 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
           )",
           py::call_guard<py::gil_scoped_release>());
 
+  py::enum_<TorchCommlWinAccessType>(
+      m, "TorchCommlWinAccessType", "Window attribute.")
+      .value(
+          "WIN_ACCESS_TYPE_UNIFIED",
+          TorchCommlWinAccessType::WIN_ACCESS_TYPE_UNIFIED)
+      .value(
+          "WIN_ACCESS_TYPE_SEPARATE",
+          TorchCommlWinAccessType::WIN_ACCESS_TYPE_SEPARATE);
+
+  py::class_<TorchCommWindowAttr, std::shared_ptr<TorchCommWindowAttr>>(
+      m, "TorchCommWindowAttr", "Window attributes.")
+      .def(py::init<>(), "Create default TorchCommWindowAttr")
+      .def_readwrite(
+          "access_type",
+          &TorchCommWindowAttr::accessType,
+          "Window access type");
+
   // Bind TorchCommWindow class
   py::class_<TorchCommWindow, std::shared_ptr<TorchCommWindow>>(
       m, "TorchCommWindow")
@@ -274,6 +291,12 @@ Args:
           py::arg("async_op"),
           py::arg("hints") = std::nullopt,
           py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_attr",
+          &TorchCommWindow::get_attr,
+          "get the attribute of the window",
+          py::arg("peer_rank"),
           py::call_guard<py::gil_scoped_release>())
       .def(
           "get_tensor",

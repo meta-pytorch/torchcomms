@@ -11,6 +11,16 @@ namespace comms {
 // Forward declaration
 class TorchWork;
 
+typedef enum {
+  WIN_ACCESS_TYPE_UNIFIED = 0,
+  WIN_ACCESS_TYPE_SEPARATE = 1,
+} TorchCommlWinAccessType;
+
+class TorchCommWindowAttr {
+ public:
+  TorchCommlWinAccessType accessType;
+};
+
 class TorchCommWindow {
  public:
   TorchCommWindow() = default;
@@ -39,6 +49,8 @@ class TorchCommWindow {
       int peerRank,
       bool asyncOp,
       const WaitSignalOptions& options = {}) = 0;
+
+  virtual std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) = 0;
 
   size_t get_size() const {
     return win_size_;

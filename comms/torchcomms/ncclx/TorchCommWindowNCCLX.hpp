@@ -51,6 +51,8 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
       const WaitSignalOptions& options = {}) override;
   at::Tensor get_tensor(int rank) override;
 
+  std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) override;
+
  protected:
   friend class TorchCommNCCLX;
 
