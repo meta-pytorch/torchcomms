@@ -67,6 +67,10 @@ ncclResult_t getHostName(char* hostname, int maxlen, const char delim) {
   return ncclSuccess;
 }
 
+bool isFastInitRingMode(int fastInitMode) {
+  return fastInitMode == NCCL_FAST_INIT_MODE_RING || NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid;
+}
+
 static uint64_t hostHashValue = 0;
 /* Generate a hash of the unique identifying string for this host
  * that will be unique for both bare-metal and container instances

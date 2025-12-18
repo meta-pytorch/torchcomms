@@ -40,11 +40,34 @@ void validateCtranInitialization(
   EXPECT_EQ(comm->commHash, comm->ctranComm_->statex_->commHash());
 }
 
+ncclConfig_t ncclConfigInitHelper(bool enableFastInitConfig) {
+  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
+  if (enableFastInitConfig) {
+    config.fastInitMode = NCCL_FAST_INIT_MODE_RING;
+  }
+  return config;
+}
+
+ncclResult_t ncclCommInitRankConfigHelper(
+    ncclComm_t* comm,
+    int nRanks,
+    ncclUniqueId commId,
+    int myRank,
+    bool enableFastInitConfig) {
+  if (!enableFastInitConfig) {
+    return ncclCommInitRankConfig(comm, nRanks, commId, myRank, nullptr);
+  } else {
+    ncclConfig_t config = ncclConfigInitHelper(enableFastInitConfig);
+    return ncclCommInitRankConfig(comm, nRanks, commId, myRank, &config);
+  }
+}
+
 TEST_P(NcclxBaseTestFixture, NcclCommInitWorldAndDestroy) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
+  NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
+      &rootComm, numRanks, commId, globalRank, enableFastInitConfig));
+
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
@@ -66,8 +89,8 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWorldAndDestroy) {
 TEST_P(NcclxBaseTestFixture, NcclCommInitWorldAndAbort) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
+  NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
+      &rootComm, numRanks, commId, globalRank, enableFastInitConfig));
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
@@ -109,13 +132,13 @@ void compareComm(const ncclComm& comm1, const ncclComm& comm2) {
 TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
+  NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
+      &rootComm, numRanks, commId, globalRank, enableFastInitConfig));
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
   ncclComm_t childComm = nullptr;
-  ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t childCommConfig = ncclConfigInitHelper(enableFastInitConfig);
   childCommConfig.commDesc = "child_communicator";
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
@@ -167,8 +190,8 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
 TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
+  NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
+      &rootComm, numRanks, commId, globalRank, enableFastInitConfig));
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
   const auto statex = rootComm->ctranComm_->statex_.get();
@@ -179,7 +202,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
   }
 
   // child comm config
-  ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t childCommConfig = ncclConfigInitHelper(enableFastInitConfig);
   childCommConfig.commDesc = "child_communicator";
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
@@ -214,8 +237,8 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
 TEST_P(NcclxBaseTestFixture, WorldCommAllGather) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
+  NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
+      &rootComm, numRanks, commId, globalRank, enableFastInitConfig));
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
   const auto statex = rootComm->ctranComm_->statex_.get();
@@ -264,8 +287,8 @@ TEST_P(NcclxBaseTestFixture, WorldCommAllGather) {
 TEST_P(NcclxBaseTestFixture, ChildCommAllGather) {
   ncclComm_t rootComm = nullptr;
   ncclUniqueId commId;
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&rootComm, numRanks, commId, globalRank, nullptr));
+  NCCLCHECK_TEST(ncclCommInitRankConfigHelper(
+      &rootComm, numRanks, commId, globalRank, enableFastInitConfig));
   ASSERT_NE(nullptr, rootComm);
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
   const auto statex = rootComm->ctranComm_->statex_.get();
@@ -275,7 +298,7 @@ TEST_P(NcclxBaseTestFixture, ChildCommAllGather) {
   }
 
   ncclComm_t childComm = nullptr;
-  ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t childCommConfig = ncclConfigInitHelper(enableFastInitConfig);
   childCommConfig.commDesc = "child_communicator";
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
@@ -331,9 +354,9 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitNoColor) {
   ncclComm_t rootComm = nullptr;
   ncclComm_t childComm = NCCL_COMM_NULL;
   ncclUniqueId commId;
-  ncclConfig_t rootConfig = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t rootConfig = ncclConfigInitHelper(enableFastInitConfig);
   rootConfig.commDesc = "root_communicator";
-  ncclConfig_t childConfig = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t childConfig = ncclConfigInitHelper(enableFastInitConfig);
   childConfig.commDesc = "child_communicator";
 
   NCCLCHECK_TEST(ncclCommInitRankConfig(
@@ -390,7 +413,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
   ncclUniqueId commId1, commId2;
 
   // Create first comm with commDesc "comm_desc_1"
-  ncclConfig_t config1 = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t config1 = ncclConfigInitHelper(enableFastInitConfig);
   config1.commDesc = "comm_desc_1";
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&comm1, numRanks, commId1, globalRank, &config1));
@@ -398,7 +421,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
   validateCtranInitialization(comm1, globalRank, numRanks, localRank);
 
   // Create second comm with commDesc "comm_desc_2"
-  ncclConfig_t config2 = NCCL_CONFIG_INITIALIZER;
+  ncclConfig_t config2 = ncclConfigInitHelper(enableFastInitConfig);
   config2.commDesc = "comm_desc_2";
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&comm2, numRanks, commId2, globalRank, &config2));
@@ -427,17 +450,35 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
 INSTANTIATE_TEST_SUITE_P(
     MyTestSuite,
     NcclxBaseTestFixture,
-    testing::Values(NcclxEnvs({
-        {"NCCL_FASTINIT_MODE", "ring_hybrid"},
-        {"NCCL_CTRAN_ENABLE", "1"},
-        {"NCCL_COLLTRACE", "trace"},
-        {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
-    })),
+    testing::ValuesIn(
+        {NcclxEnvs({
+             {"NCCL_FASTINIT_MODE", "ring_hybrid"},
+             {"NCCL_CTRAN_ENABLE", "1"},
+             {"NCCL_COLLTRACE", "trace"},
+             {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
+         }),
+         NcclxEnvs({
+             {"TEST_ENABLE_FASTINIT_CONFIG", "1"},
+             {"NCCL_FASTINIT_MODE", "ring_hybrid"},
+             {"NCCL_CTRAN_ENABLE", "1"},
+             {"NCCL_COLLTRACE", "trace"},
+             {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
+         }),
+         NcclxEnvs({
+             {"TEST_ENABLE_FASTINIT_CONFIG", "1"},
+             {"NCCL_FASTINIT_MODE", "none"},
+             {"NCCL_CTRAN_ENABLE", "1"},
+             {"NCCL_COLLTRACE", "trace"},
+             {"NCCL_COLLTRACE_USE_NEW_COLLTRACE", "1"},
+         })}),
     [](const testing::TestParamInfo<NcclxBaseTestFixture::ParamType>& info) {
       // generate test-name for a given NcclxEnvs
       std::string name = "";
       for (const auto& [key, val] : info.param) {
-        if (key == "NCCL_FASTINIT_MODE") {
+        if (key == "NCCL_FASTINIT_MODE" ||
+            key == "TEST_ENABLE_FASTINIT_CONFIG") {
+          name += key;
+          name += "_";
           name += val;
         }
       }
