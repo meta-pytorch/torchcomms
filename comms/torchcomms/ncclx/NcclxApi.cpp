@@ -351,15 +351,11 @@ ncclResult_t DefaultNcclxApi::winPut(
     size_t count,
     ncclDataType_t datatype,
     int peer,
-    size_t targetDisp,
+    size_t targetOffsetNelems,
     NcclxWindow win,
     cudaStream_t stream) {
-#ifdef NCCL_RMA_SUPPORTED
-  return ncclPut(originBuff, count, datatype, peer, targetDisp, win, stream);
-#else
-  throw std::logic_error(
-      "NCCL does not support window, NCCL_RMA_SUPPORTED is not set");
-#endif
+  return ncclPut(
+      originBuff, count, datatype, peer, targetOffsetNelems, win, stream);
 };
 
 ncclResult_t DefaultNcclxApi::winSharedQuery(

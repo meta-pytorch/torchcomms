@@ -120,8 +120,10 @@ void WindowRmaTest::testWindowPutBasic(
     torchcomm_->barrier(false);
   }
 
-  auto result_tensor = win->getTensor(
-      rank_, {input_tensor.sizes()}, input_tensor.scalar_type(), rank_ * count);
+  // Get count slices starting from rank_ * count offset
+  auto remote_tensor = win->get_tensor(rank_);
+  auto result_tensor = remote_tensor.index(
+      {at::indexing::Slice(rank_ * count, (rank_ + 1) * count)});
 
   // Verify results
   verifyWindowRmaResults(result_tensor.cpu(), src_rank);

@@ -36,9 +36,9 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   void tensor_deregister() override;
 
   c10::intrusive_ptr<TorchWork> put(
-      const at::Tensor& data,
+      const at::Tensor& tensor,
       int dstRank,
-      size_t targetDisp,
+      size_t targetOffsetNelems,
       bool asyncOp,
       const PutOptions& options = {}) override;
   c10::intrusive_ptr<TorchWork> signal(
@@ -49,11 +49,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
       int peerRank,
       bool asyncOp,
       const WaitSignalOptions& options = {}) override;
-  at::Tensor getTensor(
-      int rank,
-      at::IntArrayRef sizes,
-      at::ScalarType dtype,
-      int64_t storageOffset) override;
+  at::Tensor get_tensor(int rank) override;
 
  protected:
   friend class TorchCommNCCLX;

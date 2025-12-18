@@ -15,27 +15,20 @@ class DummyTorchCommWindow : public TorchCommWindow {
   }
   void tensor_deregister() override {}
   c10::intrusive_ptr<TorchWork> put(
-      const at::Tensor& data,
+      const at::Tensor& tensor,
       int dstRank,
-      size_t targetDisp,
+      size_t targetOffsetNelems,
       bool asyncOp,
       const PutOptions& options) override {
-    (void)data;
+    (void)tensor;
     (void)dstRank;
-    (void)targetDisp;
+    (void)targetOffsetNelems;
     (void)asyncOp;
     (void)options;
     return c10::make_intrusive<TorchWorkCompleted>();
   }
-  at::Tensor getTensor(
-      int rank,
-      at::IntArrayRef sizes,
-      at::ScalarType dtype,
-      int64_t storageOffset) override {
+  at::Tensor get_tensor(int rank) override {
     (void)rank;
-    (void)sizes;
-    (void)dtype;
-    (void)storageOffset;
     return at::Tensor();
   }
   c10::intrusive_ptr<TorchWork>

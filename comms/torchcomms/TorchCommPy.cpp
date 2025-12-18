@@ -174,7 +174,7 @@ Deregister the window and free all associated resources.
           [](TorchCommWindow& self,
              const at::Tensor& tensor,
              int dst_rank,
-             size_t target_disp,
+             size_t target_offset_nelems,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -185,7 +185,8 @@ Deregister the window and free all associated resources.
             if (timeout) {
               opts.timeout = *timeout;
             }
-            return self.put(tensor, dst_rank, target_disp, async_op, opts);
+            return self.put(
+                tensor, dst_rank, target_offset_nelems, async_op, opts);
           },
 
           R"(
@@ -194,7 +195,7 @@ Put allows you to put a tensor into the previously allocated remote window.
 Args:
     tensor: the tensor to put
     dst_rank: the destination rank
-    target_disp: the target displacement
+    target_offset_nelems: the target offset in number of elements
     async_op: if this is true, the operation is asynced and will be enqueued on a background stream and a TorchWork object is returned.
 
 
@@ -206,11 +207,11 @@ Example usage:
   # create a window
   window = torchcomms.create_window(window_size, cpu_buf)
   # put a tensor into the window
-  work = window.put(tensor, dst_rank, target_disp, async_op=True)
+  work = window.put(tensor, dst_rank, target_offset_nelems, async_op=True)
   work.wait()
 
   # on the remote side, get the tensor from the window after waiting on the remote signal
-  tensor = window.get_tensor(rank, tensor_sizes, tensor_dtype, offset)
+  tensor = window.get_tensor(rank)
 
   # safely use the tensor after the collective completes
   tensor.sum()
@@ -218,7 +219,7 @@ Example usage:
       )",
           py::arg("tensor"),
           py::arg("dst_rank"),
-          py::arg("target_disp"),
+          py::arg("target_offset_nelems"),
           py::arg("async_op"),
           py::arg("hints") = std::nullopt,
           py::arg("timeout") = std::nullopt,
@@ -276,12 +277,27 @@ Args:
           py::call_guard<py::gil_scoped_release>())
       .def(
           "get_tensor",
-          &TorchCommWindow::getTensor,
-          "get a tensor from remote window",
+          &TorchCommWindow::get_tensor,
+          R"(
+Get the entire tensor view from the remote rank's window buffer.
+
+This method returns a tensor view of the complete registered buffer from
+the specified rank's window. Users can slice the returned tensor as needed.
+
+Args:
+    rank: The rank whose window to access.
+
+Returns:
+    A tensor view with the same shape as the registered buffer.
+
+Example:
+    If the registered buffer has shape [100, 512, 128]:
+    - full_tensor = get_tensor(rank=0)
+      returns a tensor with shape [100, 512, 128]
+    - You can then slice it: sliced = full_tensor[20:65]
+
+      )",
           py::arg("rank"),
-          py::arg("sizes"),
-          py::arg("dtype"),
-          py::arg("offset"),
           py::call_guard<py::gil_scoped_release>());
 
   // Bind BatchSendRecv::P2POp class

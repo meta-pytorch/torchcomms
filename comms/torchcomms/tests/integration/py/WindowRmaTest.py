@@ -72,9 +72,8 @@ class WindowRmaTest(unittest.TestCase):
             self.torchcomm.barrier(False)
             torch.cuda.current_stream().synchronize()
 
-        output_tensor = win.get_tensor(
-            self.rank, list(input_tensor.shape), input_tensor.dtype, self.rank * count
-        )
+        remote_tensor = win.get_tensor(self.rank)
+        output_tensor = remote_tensor[self.rank * count : (self.rank + 1) * count]
 
         target_tensor = (
             torch.ones(

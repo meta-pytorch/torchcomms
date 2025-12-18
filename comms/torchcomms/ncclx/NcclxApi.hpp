@@ -218,7 +218,7 @@ class NcclxApi {
       size_t count,
       ncclDataType_t datatype,
       int peer,
-      size_t targetDisp,
+      size_t targetOffsetNelems,
       NcclxWindow win,
       cudaStream_t stream) = 0;
   virtual ncclResult_t
@@ -448,7 +448,7 @@ class DefaultNcclxApi : public NcclxApi {
       size_t count,
       ncclDataType_t datatype,
       int peer,
-      size_t targetDisp,
+      size_t targetOffsetNelems,
       NcclxWindow win,
       cudaStream_t stream) override;
   ncclResult_t winSharedQuery(

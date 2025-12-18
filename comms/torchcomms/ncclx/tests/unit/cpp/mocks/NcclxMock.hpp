@@ -279,7 +279,7 @@ class NcclxMock : public NcclxApi {
        size_t count,
        ncclDataType_t datatype,
        int peer,
-       size_t targetDisp,
+       size_t targetOffsetNelems,
        NcclxWindow win,
        cudaStream_t stream),
       (override));

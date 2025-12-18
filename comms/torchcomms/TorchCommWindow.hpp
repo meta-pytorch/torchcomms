@@ -24,17 +24,15 @@ class TorchCommWindow {
 
   virtual void tensor_register(const at::Tensor& tensor) = 0;
   virtual void tensor_deregister() = 0;
+
+  // APIs exposed to users
   virtual c10::intrusive_ptr<TorchWork> put(
-      const at::Tensor& data,
+      const at::Tensor& tensor,
       int dstRank,
-      size_t targetDisp,
+      size_t targetOffsetNelems,
       bool asyncOp,
       const PutOptions& options = {}) = 0;
-  virtual at::Tensor getTensor(
-      int rank,
-      at::IntArrayRef sizes,
-      at::ScalarType dtype,
-      int64_t storageOffset) = 0;
+  virtual at::Tensor get_tensor(int rank) = 0;
   virtual c10::intrusive_ptr<TorchWork>
   signal(int peerRank, bool asyncOp, const SignalOptions& options = {}) = 0;
   virtual c10::intrusive_ptr<TorchWork> wait_signal(
@@ -60,6 +58,8 @@ class TorchCommWindow {
   std::optional<at::Tensor> buf_tensor_;
   at::ScalarType buf_dtype_{at::kFloat};
   c10::Device buf_device_{c10::kCUDA};
+  // Cached buffer shape to avoid repeated calls to tensor.sizes()
+  std::vector<int64_t> buf_shape_;
 };
 
 } // namespace comms

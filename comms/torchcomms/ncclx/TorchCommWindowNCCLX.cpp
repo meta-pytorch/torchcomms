@@ -60,6 +60,14 @@ void TorchCommWindowNCCLX::tensor_register(const at::Tensor& tensor) {
   buf_dtype_ = tensor.scalar_type();
   win_size_ = tensor.numel() * tensor.element_size();
 
+  // Cache the buffer shape to avoid repeated calls to tensor.sizes()
+  auto buf_shape = tensor.sizes();
+  buf_shape_.clear();
+  buf_shape_.reserve(buf_shape.size());
+  for (size_t i = 0; i < buf_shape.size(); ++i) {
+    buf_shape_.push_back(buf_shape[i]);
+  }
+
   CHECK_EQ(
       nccl_api_->commWindowRegister(
           tensor.data_ptr(), win_size_, nccl_comm_, &win_),
@@ -86,28 +94,29 @@ void TorchCommWindowNCCLX::tensor_deregister() {
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
-    const at::Tensor& data,
+    const at::Tensor& tensor,
     int dstRank,
-    size_t targetDisp,
+    size_t targetOffsetNelems,
     bool asyncOp,
     const PutOptions& options) {
   checkCommAndThrow();
-  const auto req_size = (data.numel() + targetDisp) * data.element_size();
+  const auto req_size =
+      (tensor.numel() + targetOffsetNelems) * tensor.element_size();
 
   checkRequestSizeAndThrow(req_size);
   CHECK_NOTNULL(win_);
 
-  checkDeviceAndThrow(data);
+  checkDeviceAndThrow(tensor);
   auto stream = torch_comm_->getOperationStream(asyncOp);
-  auto work = torch_comm_->createWork(stream, options.timeout, {data});
+  auto work = torch_comm_->createWork(stream, options.timeout, {tensor});
   work->recordStart("put");
   CHECK_EQ(
       nccl_api_->winPut(
-          data.data_ptr(),
-          data.numel(),
-          torch_comm_->getNcclDataType(data),
+          tensor.data_ptr(),
+          tensor.numel(),
+          torch_comm_->getNcclDataType(tensor),
           dstRank,
-          targetDisp,
+          targetOffsetNelems,
           win_,
           stream),
       ncclSuccess);
@@ -117,11 +126,7 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
   return work;
 }
 
-at::Tensor TorchCommWindowNCCLX::getTensor(
-    int rank,
-    at::IntArrayRef sizes,
-    at::ScalarType dtype,
-    int64_t storageOffset) {
+at::Tensor TorchCommWindowNCCLX::get_tensor(int rank) {
   checkCommAndThrow();
   checkWindowAndThrow();
   void* base_ptr = nullptr;
@@ -131,21 +136,10 @@ at::Tensor TorchCommWindowNCCLX::getTensor(
 
   CHECK_NOTNULL(base_ptr);
 
-  const size_t numel = std::accumulate(
-      sizes.begin(),
-      sizes.end(),
-      static_cast<size_t>(1),
-      std::multiplies<size_t>());
-  const auto element_size = c10::elementSize(dtype);
-  const auto req_size = (numel + storageOffset) * element_size;
-  checkRequestSizeAndThrow(req_size);
-  auto data_ptr =
-      reinterpret_cast<uint8_t*>(base_ptr) + storageOffset * element_size;
-  auto options = at::TensorOptions().dtype(dtype).device(buf_device_);
-  auto t = at::for_blob(data_ptr, sizes)
-               .options(options)
-               .target_device(buf_device_)
-               .make_tensor();
+  // Create tensor view of the entire registered buffer
+  auto options = at::TensorOptions().dtype(buf_dtype_).device(buf_device_);
+  auto t = at::from_blob(base_ptr, buf_shape_, options);
+
   return t;
 }
 

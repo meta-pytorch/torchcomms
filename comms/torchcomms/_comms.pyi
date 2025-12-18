@@ -137,7 +137,7 @@ class TorchCommWindow:
         self,
         tensor: Any,
         dst_rank: int,
-        target_disp: int,
+        target_offset_nelems: int,
         async_op: bool,
         hints: Dict[str, str] | None = None,
         timeout: timedelta | None = None,
@@ -159,9 +159,6 @@ class TorchCommWindow:
     def get_tensor(
         self,
         rank: int,
-        sizes: List[int],
-        dtype: Any,
-        offset: int,
     ) -> Any: ...
 
 class P2POpType(Enum):
