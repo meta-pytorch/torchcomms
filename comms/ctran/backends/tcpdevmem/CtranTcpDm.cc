@@ -207,8 +207,6 @@ CtranTcpDm::~CtranTcpDm() {
   for (auto comm : recvComms_) {
     transport_->closeRecv(comm.second);
   }
-
-  transport_.reset();
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {

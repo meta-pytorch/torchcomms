@@ -15,6 +15,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
+#include "comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
@@ -23,6 +24,7 @@
 
 using ctran::CtranTcpDm;
 using ctran::CtranTcpDmRequest;
+using ctran::CtranTcpDmSingleton;
 
 commResult_t waitTcpReq(
     CtranTcpDmRequest& req,
@@ -164,6 +166,58 @@ TEST_F(CtranTcpTest, SendRecv) {
     COMMCHECK_TEST(waitTcpReq(req, ctranTcpDm));
   }
   COMMCHECK_TEST(CtranTcpDm::deregMem(memHandle));
+}
+
+TEST_F(CtranTcpTest, getIfNames) {
+  if (!CtranTcpDmSingleton::supportBondTransport()) {
+    GTEST_SKIP() << "Skip test specific for BondTransport";
+  }
+
+  this->printTestDesc(
+      "getIfNames", "Expect CtranTcpDm to be able to get interface names.");
+  std::vector<std::string> ilist = {};
+  int n = 1;
+  std::vector<std::vector<std::string>> expected = {};
+  auto res = CtranTcpDmSingleton::getIfNames(ilist, n);
+  EXPECT_EQ(res == expected, 1);
+
+  ilist = {"mlx5_0:1", "mlx5_1:1", "mlx5_3:1", "mlx5_4:1"};
+  n = 2;
+  expected = {{"beth0", "beth1"}, {"beth2", "beth3"}};
+  res = CtranTcpDmSingleton::getIfNames(ilist, n);
+  EXPECT_EQ(res == expected, 1);
+
+  n = 1;
+  expected = {{"beth0"}, {"beth1"}, {"beth2"}, {"beth3"}};
+  res = CtranTcpDmSingleton::getIfNames(ilist, n);
+  EXPECT_EQ(res == expected, 1);
+
+  n = 0;
+  expected = {};
+  res = CtranTcpDmSingleton::getIfNames(ilist, n);
+  EXPECT_EQ(res == expected, 1);
+
+  n = 10;
+  res = CtranTcpDmSingleton::getIfNames(ilist, n);
+  EXPECT_EQ(res == expected, 1);
+
+  ilist = {"mlx5_0:1", "mlx5_1:1", "mlx5_3:1"};
+  n = 2;
+  expected = {{"beth0", "beth1"}};
+  res = CtranTcpDmSingleton::getIfNames(ilist, n);
+  EXPECT_EQ(res == expected, 1);
+
+  ilist = {
+      "mlx5_2:1",
+      "mlx5_0",
+      "xyz:",
+      "mlx5_1:",
+      "mlx5_6:1",
+      "mlx5_3:1",
+      "mlx5_4:1"};
+  expected = {{"beth0", "beth1"}, {"beth2", "beth3"}};
+  res = CtranTcpDmSingleton::getIfNames(ilist, n);
+  EXPECT_EQ(res == expected, 1);
 }
 
 int main(int argc, char* argv[]) {
