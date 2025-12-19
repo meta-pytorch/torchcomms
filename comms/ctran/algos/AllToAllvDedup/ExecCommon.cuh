@@ -1,17 +1,16 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 #pragma once
-#include <stdio.h>
-#include <cstddef>
 
 #include "comms/ctran/algos/AllToAllvDedup/CommonDev.h"
 #include "comms/ctran/algos/AllToAllvDedup/FwdRecvSync.cuh"
 #include "comms/ctran/algos/AllToAllvDedup/WorkerGroupDev.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
-#include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
-#include "comms/ctran/algos/localReduce.cuh"
-#include "comms/ctran/commstate/CommStateXDev.h"
-#include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
+
+#define VERBOSE 0
+constexpr int kNumBlocksToTrace = 5;
+#define DATATRACE_COND(b) (b < kNumBlocksToTrace && VERBOSE)
 
 namespace ctran::alltoallvdedup {
 using namespace ctran::algos;
