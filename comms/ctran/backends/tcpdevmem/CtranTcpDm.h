@@ -39,7 +39,7 @@ class CtranTcpDm {
       void* data,
       size_t size,
       CtranTcpDmRequest& req,
-      int unpackPoolId);
+      void* unpackPool);
 
   commResult_t iput(
       const void* sbuf,
@@ -81,16 +81,16 @@ class CtranTcpDm {
   commResult_t progress();
 
   // Export the location of GPU kernel consumer queues.
-  // Returns the allocated pool index via the out parameter poolIndex.
+  // Returns the allocated pool via the out parameter pool.
   commResult_t
-  prepareUnpackConsumer(SQueues* sqs, size_t blocks, int* poolIndex = nullptr);
+  prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool = nullptr);
 
   // Return GPU kernel consumer queues to the pool.
-  // poolIndex: the pool index returned by prepareUnpackConsumer.
-  commResult_t teardownUnpackConsumer(int poolIndex);
+  // pool: the pool returned by prepareUnpackConsumer.
+  commResult_t teardownUnpackConsumer(void* pool);
 
  private:
-  std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport_{nullptr};
+  ::comms::tcp_devmem::TransportInterface* transport_{nullptr};
   ctran::bootstrap::ServerSocket listenSocket_{
       static_cast<int>(NCCL_SOCKET_RETRY_CNT)};
   std::vector<sockaddr_storage> allListenSocketAddrs_{};
@@ -115,7 +115,7 @@ class CtranTcpDm {
     void* data{nullptr};
     size_t size{0};
     CtranTcpDmRequest* req{nullptr};
-    int unpackPoolId{-1};
+    void* unpackPool{nullptr};
   };
   std::list<std::unique_ptr<RecvRequest>> queuedRecv_;
 
@@ -139,7 +139,7 @@ class CtranTcpDm {
       void* data,
       size_t size,
       CtranTcpDmRequest& req,
-      int unpackPoolId);
+      void* unpackPool);
 };
 
 } // namespace ctran

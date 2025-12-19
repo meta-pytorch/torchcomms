@@ -324,29 +324,18 @@ ncclResult_t DefaultNcclxApi::pFree(void* request) {
   return ncclx::pFree(request);
 }
 
-ncclResult_t DefaultNcclxApi::winAllocate(
-    size_t size,
+ncclResult_t DefaultNcclxApi::commWindowRegister(
+    void* baseptr,
+    const size_t size,
     ncclComm_t comm,
-    void** baseptr,
-    NcclxWindow* winPtr,
-    bool cpuBuf,
-    const size_t signal_size) {
-#ifdef NCCL_RMA_SUPPORTED
-  ncclx::Hints hints;
-  hints.set("window_buffer_location", cpuBuf ? "cpu" : "gpu");
-  hints.set("window_signal_size", std::to_string(signal_size));
-  return ncclWinAllocate(size, comm, baseptr, winPtr, hints);
-#else
-  throw std::logic_error("NCCL RMA is not supported in this build");
-#endif
+    NcclxWindow* winPtr) {
+  return ncclCommWindowRegister(comm, baseptr, size, winPtr, NCCL_WIN_DEFAULT);
 }
 
-ncclResult_t DefaultNcclxApi::winFree(ncclComm_t comm, NcclxWindow win) {
-#ifdef NCCL_RMA_SUPPORTED
-  return ncclWinFree(comm, win);
-#else
-  throw std::logic_error("NCCL RMA is not supported in this build");
-#endif
+ncclResult_t DefaultNcclxApi::commWindowDeregister(
+    ncclComm_t comm,
+    NcclxWindow win) {
+  return ncclCommWindowDeregister(comm, win);
 }
 
 ncclResult_t DefaultNcclxApi::winPut(
@@ -354,15 +343,11 @@ ncclResult_t DefaultNcclxApi::winPut(
     size_t count,
     ncclDataType_t datatype,
     int peer,
-    size_t targetDisp,
+    size_t targetOffsetNelems,
     NcclxWindow win,
     cudaStream_t stream) {
-#ifdef NCCL_RMA_SUPPORTED
-  return ncclPut(originBuff, count, datatype, peer, targetDisp, win, stream);
-#else
-  throw std::logic_error(
-      "NCCL does not support window, NCCL_RMA_SUPPORTED is not set");
-#endif
+  return ncclPut(
+      originBuff, count, datatype, peer, targetOffsetNelems, win, stream);
 };
 
 ncclResult_t DefaultNcclxApi::winSharedQuery(
@@ -370,32 +355,24 @@ ncclResult_t DefaultNcclxApi::winSharedQuery(
     ncclComm_t comm,
     NcclxWindow win,
     void** addr) {
-#ifdef NCCL_RMA_SUPPORTED
   return ncclWinSharedQuery(rank, comm, win, addr);
-#else
-  throw std::logic_error(
-      "NCCL does not support window, NCCL_RMA_SUPPORTED is not set");
-#endif
 }
 
 ncclResult_t
 DefaultNcclxApi::winSignal(int peer, NcclxWindow win, cudaStream_t stream) {
-#ifdef NCCL_RMA_SUPPORTED
   return ncclSignal(peer, 0, peer, win, stream);
-#else
-  throw std::logic_error(
-      "NCCL does not support window, NCCL_RMA_SUPPORTED is not set");
-#endif
 }
 
 ncclResult_t
 DefaultNcclxApi::winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) {
-#ifdef NCCL_RMA_SUPPORTED
   return ncclWaitSignal(peer, win, stream);
-#else
-  throw std::logic_error(
-      "NCCL does not support window, NCCL_RMA_SUPPORTED is not set");
-#endif
+}
+
+ncclResult_t DefaultNcclxApi::winGetAttributes(
+    int peer,
+    NcclxWindow win,
+    NcclxWindowAttr* attrPtr) {
+  return ncclWinGetAttributes(peer, win, attrPtr);
 }
 
 ncclResult_t DefaultNcclxApi::memAlloc(void** buff, size_t size) {

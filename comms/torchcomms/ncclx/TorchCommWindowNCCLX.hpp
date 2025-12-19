@@ -20,61 +20,59 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   TorchCommWindowNCCLX() = delete;
   explicit TorchCommWindowNCCLX(
       ncclComm_t ncclComm,
-      std::shared_ptr<TorchCommNCCLX> torchComm,
-      at::Device device);
+      std::shared_ptr<TorchCommNCCLX> torchComm);
   ~TorchCommWindowNCCLX() noexcept override;
 
   // We delete the copy constructor and assignment operator to prevent 2 work
   // objects sharing the underlying collective work events.
   TorchCommWindowNCCLX(const TorchCommWindowNCCLX& other) = delete;
   TorchCommWindowNCCLX& operator=(const TorchCommWindowNCCLX& other) = delete;
-  // Delete the move assignment operdator to prevent accidentally stomping over
+  // Delete the move assignment operator to prevent accidentally stomping over
   // events if the work is in progress.
   TorchCommWindowNCCLX& operator=(TorchCommWindowNCCLX&& other) noexcept =
       delete;
 
+  void tensor_register(const at::Tensor& tensor) override;
+  void tensor_deregister() override;
+
   c10::intrusive_ptr<TorchWork> put(
-      const at::Tensor& data,
+      const at::Tensor& tensor,
       int dstRank,
-      size_t targetDisp,
-      bool asyncOp) override;
-  c10::intrusive_ptr<TorchWork> signal(int peerRank, bool asyncOp) override;
-  c10::intrusive_ptr<TorchWork> waitSignal(int peerRank, bool asyncOp) override;
-  at::Tensor getTensor(
-      int rank,
-      at::IntArrayRef sizes,
-      at::ScalarType dtype,
-      int64_t storageOffset) override;
+      size_t targetOffsetNelems,
+      bool asyncOp,
+      const PutOptions& options = {}) override;
+  c10::intrusive_ptr<TorchWork> signal(
+      int peerRank,
+      bool asyncOp,
+      const SignalOptions& options = {}) override;
+  c10::intrusive_ptr<TorchWork> wait_signal(
+      int peerRank,
+      bool asyncOp,
+      const WaitSignalOptions& options = {}) override;
+  at::Tensor get_tensor(int rank) override;
+
+  std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) override;
 
  protected:
-  void allocate(
-      const size_t window_size,
-      bool cpu_buf = false,
-      const size_t signal_size = 256) override;
   friend class TorchCommNCCLX;
 
  private:
   // internal util functions
-  void checkRequestSizeAndThrow(size_t input_size);
-  void checkDeviceAndThrow(const at::Tensor& tensor);
-  void checkCommAndThrow();
-  void checkWindowAndThrow();
-  void checkEventAndThrow();
-  void checkOpStreamAndThrow();
-  void checkWaitStreamAndThrow();
+  void checkRequestSizeAndThrow(size_t input_size) const;
+  void checkDeviceAndThrow(const at::Tensor& tensor) const;
+  void checkCommAndThrow() const;
+  void checkWindowAndThrow() const;
 
   ncclComm_t nccl_comm_{};
   std::shared_ptr<TorchCommNCCLX> torch_comm_;
   NcclxWindow win_{nullptr};
-  at::Device device_{at::kCUDA};
-  cudaStream_t op_stream_{nullptr}, wait_stream_{nullptr};
-  cudaEvent_t rma_event_{nullptr};
 
   // NCCL API abstraction
   NcclxApi* nccl_api_;
   // CUDA API abstraction
   CudaApi* cuda_api_;
-  size_t signal_size_{256};
+  // Torchcomm device
+  at::Device comm_device_{at::kCUDA};
 };
 
 } // namespace comms

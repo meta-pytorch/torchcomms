@@ -7,11 +7,9 @@
 namespace torch {
 namespace comms {
 
-#ifdef NCCL_RMA_SUPPORTED
-using NcclxWindow = ncclWin_t;
-#else
-using NcclxWindow = void*;
-#endif
+using NcclxWindow = ncclWindow_t;
+using NcclxWindowAccessType = ncclWinAccessType;
+using NcclxWindowAttr = ncclWinAttr_t;
 
 /**
  * Abstract interface for NCCL API operations.
@@ -205,20 +203,20 @@ class NcclxApi {
 
   virtual ncclResult_t pFree(void* request) = 0;
 
-  virtual ncclResult_t winAllocate(
-      size_t size,
+  virtual ncclResult_t commWindowRegister(
+      void* baseptr,
+      const size_t size,
       ncclComm_t comm,
-      void** baseptr,
-      NcclxWindow* winPtr,
-      bool cpuBuf,
-      const size_t signal_size = 256) = 0;
-  virtual ncclResult_t winFree(ncclComm_t comm, NcclxWindow win) = 0;
+      NcclxWindow* winPtr) = 0;
+  virtual ncclResult_t commWindowDeregister(
+      ncclComm_t comm,
+      NcclxWindow win) = 0;
   virtual ncclResult_t winPut(
       const void* originBuff,
       size_t count,
       ncclDataType_t datatype,
       int peer,
-      size_t targetDisp,
+      size_t targetOffsetNelems,
       NcclxWindow win,
       cudaStream_t stream) = 0;
   virtual ncclResult_t
@@ -227,6 +225,8 @@ class NcclxApi {
   winSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
   virtual ncclResult_t
   winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
+  virtual ncclResult_t
+  winGetAttributes(int peer, NcclxWindow win, NcclxWindowAttr* attrPtr) = 0;
 
   virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
   virtual ncclResult_t memFree(void* buff) = 0;
@@ -437,20 +437,18 @@ class DefaultNcclxApi : public NcclxApi {
   ncclResult_t pFree(void* request) override;
 
   // Window RMA operations
-  ncclResult_t winAllocate(
-      size_t size,
+  ncclResult_t commWindowRegister(
+      void* baseptr,
+      const size_t size,
       ncclComm_t comm,
-      void** baseptr,
-      NcclxWindow* winPtr,
-      bool cpuBuf,
-      const size_t signal_size = 256) override;
-  ncclResult_t winFree(ncclComm_t comm, NcclxWindow win) override;
+      NcclxWindow* winPtr) override;
+  ncclResult_t commWindowDeregister(ncclComm_t comm, NcclxWindow win) override;
   ncclResult_t winPut(
       const void* originBuff,
       size_t count,
       ncclDataType_t datatype,
       int peer,
-      size_t targetDisp,
+      size_t targetOffsetNelems,
       NcclxWindow win,
       cudaStream_t stream) override;
   ncclResult_t winSharedQuery(
@@ -462,6 +460,10 @@ class DefaultNcclxApi : public NcclxApi {
       override;
   ncclResult_t winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream)
       override;
+  ncclResult_t winGetAttributes(
+      int peer,
+      NcclxWindow win,
+      NcclxWindowAttr* attrPtr) override;
 
   ncclResult_t memAlloc(void** buff, size_t size) override;
   ncclResult_t memFree(void* buff) override;

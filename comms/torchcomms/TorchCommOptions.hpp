@@ -157,5 +157,29 @@ class CommOptions {
   bool operator==(const CommOptions& other) const;
 };
 
+class PutOptions {
+ public:
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout;
+
+  PutOptions() : timeout(kNoTimeout) {}
+};
+
+class SignalOptions {
+ public:
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout;
+
+  SignalOptions() : timeout(kNoTimeout) {}
+};
+
+class WaitSignalOptions {
+ public:
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout;
+
+  WaitSignalOptions() : timeout(kNoTimeout) {}
+};
+
 } // namespace comms
 } // namespace torch

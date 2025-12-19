@@ -49,7 +49,7 @@ class CtranTcpDmRequest {
   }
 
   void track(
-      std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport,
+      ::comms::tcp_devmem::TransportInterface* transport,
       ::comms::tcp_devmem::RequestInterface* request) {
     done_ = false;
     transport_ = transport;
@@ -58,7 +58,7 @@ class CtranTcpDmRequest {
 
  private:
   ::comms::tcp_devmem::RequestInterface* request_{nullptr};
-  std::shared_ptr<::comms::tcp_devmem::TransportInterface> transport_{nullptr};
+  ::comms::tcp_devmem::TransportInterface* transport_{nullptr};
   bool done_{false};
 };
 

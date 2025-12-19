@@ -187,11 +187,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather(
       output_tensor_list, input_tensor, root, async_op, options);
 }
 
-std::shared_ptr<TorchCommWindow> TorchComm::window_allocate(
-    const size_t window_size,
-    bool cpu_buf,
-    const size_t signal_size) {
-  return impl_->window_allocate(window_size, cpu_buf, signal_size);
+std::shared_ptr<TorchCommWindow> TorchComm::new_window() {
+  return impl_->new_window();
 }
 
 // Communicator Management

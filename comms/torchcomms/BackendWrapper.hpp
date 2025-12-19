@@ -32,7 +32,7 @@ using c10d::kUnsetTimeout;
 
 class BackendWrapper : public c10d::Backend {
  public:
-  struct Options : c10d::Backend::Options {
+  struct TORCH_API Options : c10d::Backend::Options {
     bool abort_process_on_timeout_or_error{true};
     std::chrono::milliseconds timeout{kDefaultTimeout};
     bool high_priority_stream{false};
@@ -116,6 +116,12 @@ class BackendWrapper : public c10d::Backend {
 
   // Get the underlying backend comm for backend-specific operations
   std::shared_ptr<TorchComm> getComm() const;
+
+  c10::intrusive_ptr<Options> getOptions() {
+    return options_;
+  }
+
+  const std::string getBackendName() const override;
 
   c10::intrusive_ptr<c10d::Backend::Options> getBackendOptions() override;
 

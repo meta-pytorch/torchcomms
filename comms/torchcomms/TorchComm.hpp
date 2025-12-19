@@ -152,11 +152,7 @@ class TorchComm {
     return impl_;
   }
 
-  // Window & One-sidede Operations
-  std::shared_ptr<TorchCommWindow> window_allocate(
-      const size_t window_size,
-      bool cpu_buf = false,
-      const size_t signal_size = 256);
+  std::shared_ptr<TorchCommWindow> new_window();
 
   // Disable copy and move semantics
   TorchComm(const TorchComm&) = delete;

@@ -109,18 +109,18 @@ ncclResult_t ncclWinRegister(
 
 NCCL_API(
     ncclResult_t,
-    ncclWinEpochStart,
+    ncclWinSharedQuery,
     int rank,
     ncclComm_t comm,
     ncclWindow_t win,
     void** addr);
 ncclResult_t
-ncclWinEpochStart(int rank, ncclComm_t comm, ncclWindow_t win, void** addr) {
+ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void** addr) {
   ncclWin* w = ncclWinMap().find(win);
   if (!comm || !win || !w || comm != w->comm) {
     FB_ERRORRETURN(
         ncclInvalidUsage,
-        "Invalid parameter(s) to query shared buffer in ncclWinEpochStart: comm {}, win {}",
+        "Invalid parameter(s) to query shared buffer in ncclWinSharedQuery: comm {}, win {}",
         (void*)comm,
         (void*)win);
   }

@@ -207,8 +207,6 @@ CtranTcpDm::~CtranTcpDm() {
   for (auto comm : recvComms_) {
     transport_->closeRecv(comm.second);
   }
-
-  transport_.reset();
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {
@@ -302,7 +300,7 @@ commResult_t CtranTcpDm::progress() {
         recvReq->data,
         recvReq->size,
         *recvReq->req,
-        recvReq->unpackPoolId));
+        recvReq->unpackPool));
 
     it = queuedRecv_.erase(it);
   }
@@ -316,7 +314,7 @@ commResult_t CtranTcpDm::irecv(
     void* data,
     size_t size,
     CtranTcpDmRequest& req,
-    int unpackPoolId) {
+    void* unpackPool) {
   {
     std::unique_lock lock(mutex_);
 
@@ -330,13 +328,13 @@ commResult_t CtranTcpDm::irecv(
       recvReq->data = data;
       recvReq->size = size;
       recvReq->req = &req;
-      recvReq->unpackPoolId = unpackPoolId;
+      recvReq->unpackPool = unpackPool;
       queuedRecv_.push_back(std::move(recvReq));
       return commSuccess;
     }
   }
 
-  return irecvConnected(peerRank, handle, data, size, req, unpackPoolId);
+  return irecvConnected(peerRank, handle, data, size, req, unpackPool);
 }
 
 commResult_t CtranTcpDm::irecvConnected(
@@ -345,7 +343,7 @@ commResult_t CtranTcpDm::irecvConnected(
     void* data,
     size_t size,
     CtranTcpDmRequest& req,
-    int unpackPoolId) {
+    void* unpackPool) {
   ::comms::tcp_devmem::CommunicatorInterface* comm = recvComms_.at(peerRank);
   if (!comm) {
     return commInternalError;
@@ -359,7 +357,7 @@ commResult_t CtranTcpDm::irecvConnected(
       size,
       handle,
       &request,
-      unpackPoolId));
+      unpackPool));
 
   req.track(transport_, request);
 
@@ -367,14 +365,13 @@ commResult_t CtranTcpDm::irecvConnected(
 }
 
 commResult_t
-CtranTcpDm::prepareUnpackConsumer(SQueues* sqs, size_t blocks, int* poolIndex) {
-  COMMCHECK_TCP(
-      transport_->prepareUnpackConsumer(netdev_, sqs, blocks, poolIndex));
+CtranTcpDm::prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool) {
+  COMMCHECK_TCP(transport_->prepareUnpackConsumer(netdev_, sqs, blocks, pool));
   return commSuccess;
 }
 
-commResult_t CtranTcpDm::teardownUnpackConsumer(int poolIndex) {
-  COMMCHECK_TCP(transport_->teardownUnpackConsumer(netdev_, poolIndex));
+commResult_t CtranTcpDm::teardownUnpackConsumer(void* pool) {
+  COMMCHECK_TCP(transport_->teardownUnpackConsumer(netdev_, pool));
   return commSuccess;
 }
 

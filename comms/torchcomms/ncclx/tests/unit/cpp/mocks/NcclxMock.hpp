@@ -262,18 +262,13 @@ class NcclxMock : public NcclxApi {
 
   MOCK_METHOD(
       ncclResult_t,
-      winAllocate,
-      (size_t size,
-       ncclComm_t comm,
-       void** baseptr,
-       NcclxWindow* win,
-       bool cpuBuf,
-       const size_t signal_size),
+      commWindowRegister,
+      (void* baseptr, size_t size, ncclComm_t comm, NcclxWindow* win),
       (override));
 
   MOCK_METHOD(
       ncclResult_t,
-      winFree,
+      commWindowDeregister,
       (ncclComm_t comm, NcclxWindow win),
       (override));
 
@@ -284,7 +279,7 @@ class NcclxMock : public NcclxApi {
        size_t count,
        ncclDataType_t datatype,
        int peer,
-       size_t targetDisp,
+       size_t targetOffsetNelems,
        NcclxWindow win,
        cudaStream_t stream),
       (override));
@@ -305,6 +300,12 @@ class NcclxMock : public NcclxApi {
       ncclResult_t,
       winWaitSignal,
       (int peer, NcclxWindow win, cudaStream_t stream),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      winGetAttributes,
+      (int peer, NcclxWindow win, NcclxWindowAttr* attrPtr),
       (override));
 
   MOCK_METHOD(ncclResult_t, memAlloc, (void** buff, size_t size), (override));

@@ -359,6 +359,10 @@ std::shared_ptr<TorchComm> BackendWrapper::getComm() const {
   return comm_;
 }
 
+const std::string BackendWrapper::getBackendName() const {
+  return comm_->getBackend();
+}
+
 c10::intrusive_ptr<c10d::Backend::Options> BackendWrapper::getBackendOptions() {
   return c10::static_intrusive_pointer_cast<c10d::Backend::Options>(options_);
 }

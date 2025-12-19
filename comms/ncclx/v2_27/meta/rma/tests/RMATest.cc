@@ -261,7 +261,7 @@ TEST_P(RMATestParam, winPutWait) {
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
-    auto res = ncclWinEpochStart(peer, comm, win, &remoteAddr);
+    auto res = ncclWinSharedQuery(peer, comm, win, &remoteAddr);
     EXPECT_EQ(res, ncclSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);

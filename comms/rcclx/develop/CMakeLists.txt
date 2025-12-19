@@ -914,6 +914,9 @@ set(CTRAN_FILES
   comms/ctran/algos/AllToAll/AllToAllv.cuh
   comms/ctran/algos/AllToAll/AllToAllvDynamic.cuh
   comms/ctran/algos/AllToAllvDedup/ExecCommon.cuh
+  comms/ctran/algos/AllToAllvDedup/ExecFwd.cuh
+  comms/ctran/algos/AllToAllvDedup/ExecRecvCopy.cuh
+  comms/ctran/algos/AllToAllvDedup/ExecSendCopy.cuh
   comms/ctran/algos/AllToAllvDedup/ExecImpl.cu
   comms/ctran/algos/AllToAllvDedup/FwdRecvSync.cuh
   comms/ctran/algos/AllToAllvDedup/IndexMapDev.cuh

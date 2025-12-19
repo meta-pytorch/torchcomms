@@ -779,18 +779,18 @@ class CtranMapper {
       KernelConfig& config) {
     if (this->ctranTcpDm != nullptr) {
       auto ret = this->ctranTcpDm->prepareUnpackConsumer(
-          sqs, blocks, &config.unpackPoolId);
+          sqs, blocks, &config.unpackPool);
       for (auto& op : opGroup) {
-        op->unpackPoolId = config.unpackPoolId;
+        op->unpackPool = config.unpackPool;
       }
       return ret;
     }
     return commSuccess;
   }
 
-  commResult_t teardownUnpackConsumer(int poolIndex) {
+  commResult_t teardownUnpackConsumer(void* pool) {
     if (this->ctranTcpDm != nullptr) {
-      return this->ctranTcpDm->teardownUnpackConsumer(poolIndex);
+      return this->ctranTcpDm->teardownUnpackConsumer(pool);
     }
     return commSuccess;
   }
@@ -1784,7 +1784,7 @@ class CtranMapper {
           (void*)rbuff,
           len,
           notify->tcpDmReq,
-          this->context.unpackPoolId));
+          this->context.unpackPool));
     }
 
     notify->update(peerRank, kernElem, backend, notifyCnt);

@@ -3,6 +3,7 @@
 
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/CUDAGraph.h>
+#include <ATen/cuda/MemPool.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <gtest/gtest.h>
 #include "comms/torchcomms/tests/integration/cpp/TorchCommTestHelpers.h"
@@ -36,6 +37,11 @@ class WindowRmaTest : public ::testing::TestWithParam<
 
   void TearDown() override;
 
+  // Setup memory pool for allocations - call this before allocating tensors
+  void setupMemPool();
+  // Cleanup memory pool - call after done with tensor allocations
+  void cleanupMemPool();
+
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;
   int rank_;
@@ -43,9 +49,16 @@ class WindowRmaTest : public ::testing::TestWithParam<
   int device_index_;
   c10::DeviceType device_type_;
 
+  // Memory pool for NCCL allocations
+  std::unique_ptr<at::cuda::MemPool> memPool_;
+
   static constexpr int num_replays = 4;
 
   // Helper function declarations with parameters
-  at::Tensor createWindowRmaTensor(int value, int count, at::ScalarType dtype);
+  at::Tensor createWindowRmaTensor(
+      int value,
+      int count,
+      at::ScalarType dtype,
+      bool use_mem_pool = false);
   void verifyWindowRmaResults(const at::Tensor& tensor, int value);
 };
