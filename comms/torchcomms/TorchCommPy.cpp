@@ -1228,6 +1228,9 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
           R"(Return the options used to create the torchComm under the hood.)",
           py::call_guard<py::gil_scoped_release>());
   intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper");
+  // Register the backend Options
+  intrusive_ptr_class_<BackendWrapper::Options, c10d::Backend::Options>(
+      m, "_BackendWrapperOptions");
 
   m.def(
       "_get_store",
