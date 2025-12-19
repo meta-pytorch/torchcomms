@@ -26,6 +26,15 @@ void configureManualRankSize() {
   }
 }
 
+std::unordered_map<std::string, std::string> getHintsFromEnv() {
+  std::unordered_map<std::string, std::string> hints;
+  auto fast_init_mode_env = std::getenv("TEST_FAST_INIT_MODE");
+  if (fast_init_mode_env) {
+    hints["fastInitMode"] = std::string(fast_init_mode_env);
+  }
+  return hints;
+}
+
 std::string getDtypeName(at::ScalarType dtype) {
   switch (dtype) {
     case at::kFloat:
@@ -342,6 +351,7 @@ TorchCommTestWrapper::TorchCommTestWrapper(
 
   torch::comms::CommOptions options;
   options.store = store;
+  options.hints = getHintsFromEnv();
   torchcomm_ = torch::comms::new_comm(
       backend, device, fmt::format("comms_test_{}", next_comm_id), options);
 
