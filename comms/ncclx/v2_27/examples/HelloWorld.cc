@@ -31,12 +31,6 @@ int main(int argc, char* argv[]) {
   printf("ncclCommHash %lx\n", ncclCommHash);
 #endif
 
-#ifdef NCCL_COMM_DESCRIPTION
-  char commDesc[10];
-  NCCLCHECK(ncclCommGetDesc(comm, commDesc));
-  printf("nccl commDesc %s\n", commDesc);
-#endif
-
 #ifdef NCCL_COMM_DUMP
   std::unordered_map<std::string, std::string> dump;
   NCCLCHECK(ncclCommDump(comm, dump));
