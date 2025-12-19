@@ -777,9 +777,6 @@ set(CTRAN_FILES
   comms/ctran/algos/AllToAll/AllToAllvDynamicSplit.cc
   comms/ctran/algos/AllToAll/AllToallvDynamicSplitNonContig.cc
   comms/ctran/algos/AllToAll/AllToAllvImpl.h
-  comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.cc
-  comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.h
-  comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllvImpl.h
   comms/ctran/algos/AllToAll/Types.h
 
   comms/ctran/algos/AllToAllvDedup/AlgoImpl.cc
@@ -879,9 +876,6 @@ set(CTRAN_FILES
   comms/ctran/hints/HintUtils.h
   #comms/ctran/ibverbx/benchmarks/IbverbxIbEventBench.cc
   #comms/ctran/ibverbx/benchmarks/IbverbxVirtualQpBench.cc
-  comms/ctran/ibverbx/fb/ibgda/DeviceQueuePair.h
-  comms/ctran/ibverbx/fb/ibgda/SegmentBuilder.h
-  comms/ctran/ibverbx/fb/ibgda/Utils.h
   comms/ctran/ibverbx/Ibvcore.h
   comms/ctran/ibverbx/Ibverbx.cc
   comms/ctran/ibverbx/Ibverbx.h
@@ -941,13 +935,12 @@ set(CTRAN_FILES
   comms/ctran/utils/DevUtils.cuh
 
   comms/ctran/ibverbx/DqplbSeqTracker.h
-  comms/ctran/ibverbx/fb/ibgda/DeviceQueuePair.h
-  comms/ctran/ibverbx/fb/ibgda/SegmentBuilder.h
-  comms/ctran/ibverbx/fb/ibgda/Utils.h
+  comms/ctran/ibverbx/device/structs.h
   comms/ctran/ibverbx/IbvCommon.h
   comms/ctran/ibverbx/Ibvcore.h
   comms/ctran/ibverbx/IbvCq.h
   comms/ctran/ibverbx/IbvDevice.h
+  comms/ctran/ibverbx/Mlx5dv.h
   comms/ctran/ibverbx/Ibverbx.h
   comms/ctran/ibverbx/IbverbxSymbols.h
   comms/ctran/ibverbx/IbvMr.h
@@ -973,14 +966,12 @@ set(CTRAN_FILES
   comms/ctran/mapper/CtranMapperRegMem.h
   comms/ctran/mapper/CtranMapperRequest.cc
   comms/ctran/mapper/CtranMapperTypes.h
-  comms/ctran/mapper/fb/IcompressionManager.h
   comms/ctran/memory/memCacheAllocator.cc
   comms/ctran/memory/memCacheAllocator.h
   comms/ctran/memory/SlabAllocator.cc
   comms/ctran/memory/SlabAllocator.h
   comms/ctran/memory/Utils.cc
   comms/ctran/memory/Utils.h
-  comms/tcp_devmem/transport.h
   comms/ctran/profiler/AlgoProfilerModule.cc
   comms/ctran/profiler/AlgoProfilerModule.h
   comms/ctran/profiler/CtranProfiler.cc

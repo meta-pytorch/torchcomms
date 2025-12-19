@@ -3,19 +3,21 @@
 #pragma once
 
 #include <assert.h>
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#include <hip/hip_runtime.h>
+#include <hip/hip_bfloat16.h>
+#include <hip/hip_fp16.h>
+#include <hip/hip_fp8.h>
+#include <hip/amd_detail/amd_hip_bf16.h>
+#else
 #include <cuda.h>
+#include <cuda_fp16.h>
 #if CUDART_VERSION >= 11000
 #include <cuda_bf16.h>
 #endif
 #if CUDART_VERSION >= 11080
 #include <cuda_fp8.h>
 #endif
-
-#if defined(__HIP_PLATFORM_AMD__)
-#include <cuda_bf16.h>
-
-// TODO: Add this mapping to "cuda_to_hip_mappings.py" (See T233054942).
-#include <hip/hip_fp8.h>
 #endif
 
 #include "comms/ctran/utils/DevUtils.cuh"
