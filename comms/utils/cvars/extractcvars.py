@@ -299,11 +299,13 @@ class prefixedStringlist(stringlist):
         pass
 
     def externDecl(self, file):
+        indent(file, "extern std::string %s_STRINGVALUE;" % self.name)
         indent(file, "extern std::string %s_PREFIX;" % self.name)
         indent(file, "extern std::string %s_PREFIX_DEFAULT;" % self.name)
         super().externDecl(file)
 
     def storageDecl(self, file):
+        indent(file, "std::string %s_STRINGVALUE;" % self.name)
         indent(file, "std::string %s_PREFIX;" % self.name)
         indent(file, "std::string %s_PREFIX_DEFAULT;" % self.name)
         super().storageDecl(file)
@@ -319,6 +321,11 @@ class prefixedStringlist(stringlist):
         indent(file, "%s.clear();" % self.name)
         indent(
             file,
+            'std::string %s_STRINGVALUE = env2str("%s", "%s");'
+            % (self.name, self.envstr, default),
+        )
+        indent(
+            file,
             'std::tie(%s_PREFIX, %s) = env2prefixedStrlist("%s", "%s", %s_allPrefixes);'
             % (self.name, self.name, self.envstr, default, self.name),
         )
@@ -329,6 +336,7 @@ class prefixedStringlist(stringlist):
             'env2prefixedStrlist("NCCL_ENV_DO_NOT_SET", "%s", %s_allPrefixes);'
             % (self.name, self.name, default, self.name),
         )
+        env_string_kv_pairs[f"{self.envstr}_STRINGVALUE"] = f"{self.name}_STRINGVALUE"
         file.write("\n")
 
 

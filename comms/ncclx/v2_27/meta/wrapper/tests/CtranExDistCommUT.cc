@@ -259,7 +259,8 @@ TEST_P(CtranExCommBroadcastFixture, BcastWithReq) {
     // Expect both threads to finish without error.
     EnvRAII defaultCommBcast =
         EnvRAII(NCCL_BROADCAST_ALGO, NCCL_BROADCAST_ALGO::ctran);
-    EXPECT_TRUE(ctranBroadcastSupport(ncclComm_->ctranComm_.get()));
+    EXPECT_TRUE(ctranBroadcastSupport(
+        ncclComm_->ctranComm_.get(), NCCL_BROADCAST_ALGO));
     for (int x = 0; x < nIter; x++) {
       const int root = 0;
       if (ncclComm_->rank == root) {

@@ -18,8 +18,7 @@ TorchWorkNCCLX::TorchWorkNCCLX(
     : inputTensors_(inputTensors),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      state_(WorkStatus::NOT_STARTED) {
+      timeout_ms_(timeout_ms) {
   // If not in graph capture mode, create the events for start and end
   // recording
   start_event_ = comm_->getEvent();
@@ -36,8 +35,7 @@ TorchWorkNCCLX::TorchWorkNCCLX(
     : inputTensor_(inputTensor),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      state_(WorkStatus::NOT_STARTED) {
+      timeout_ms_(timeout_ms) {
   // If not in graph capture mode, create the events for start and end
   // recording
   start_event_ = comm_->getEvent();
@@ -100,15 +98,11 @@ void TorchWorkNCCLX::recordEnd() {
   }
 }
 
-bool TorchWorkNCCLX::isCompleted() {
-  return state_ == WorkStatus::COMPLETED;
-}
-
 TorchWorkNCCLX::WorkStatus TorchWorkNCCLX::checkStatus() {
   // If already marked as completed, return COMPLETED
-  if (state_ == WorkStatus::COMPLETED || state_ == WorkStatus::ERROR ||
-      state_ == WorkStatus::TIMEDOUT) {
-    return state_;
+  if (status() == WorkStatus::COMPLETED || status() == WorkStatus::ERROR ||
+      status() == WorkStatus::TIMEDOUT) {
+    return status();
   }
 
   // Step 1: If start_completed_time_ doesn't have a value yet, query the start
@@ -119,20 +113,18 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLX::checkStatus() {
     if (start_status == cudaSuccess) {
       // Start event has completed, store the current time
       start_completed_time_ = std::chrono::steady_clock::now();
-      state_ = WorkStatus::INPROGRESS;
-    } else if (
-        start_status != cudaErrorNotReady &&
-        start_status != cudaErrorStreamCaptureUnsupported) {
+      setStatus(WorkStatus::INPROGRESS);
+    } else if (start_status != cudaErrorNotReady) {
       // Some other error occurred with the start event
       TC_LOG(ERROR, comm_.get())
           << "CUDA error during start event query: "
           << comm_->getCudaApi()->getErrorString(start_status) << " ("
           << start_status << ")";
-      state_ = WorkStatus::ERROR;
+      setStatus(WorkStatus::ERROR);
     }
   }
-  if (state_ == WorkStatus::NOT_STARTED || state_ == WorkStatus::ERROR) {
-    return state_;
+  if (status() == WorkStatus::NOT_STARTED || status() == WorkStatus::ERROR) {
+    return status();
   }
 
   // Step 2: If we get here, start event has completed, so query the end event
@@ -140,7 +132,7 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLX::checkStatus() {
 
   if (end_status == cudaSuccess) {
     // End event has completed, mark the work as completed
-    state_ = WorkStatus::COMPLETED;
+    setStatus(WorkStatus::COMPLETED);
   } else if (end_status == cudaErrorNotReady) {
     // End event has not completed yet, check for timeout
     auto current_time = std::chrono::steady_clock::now();
@@ -151,22 +143,22 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLX::checkStatus() {
     // Check if the operation has timed out
     if (elapsed_milliseconds > timeout_ms_) {
       // Operation has timed out
-      state_ = WorkStatus::TIMEDOUT;
+      setStatus(WorkStatus::TIMEDOUT);
     }
-  } else if (end_status != cudaErrorStreamCaptureUnsupported) {
+  } else {
     // Some other error occurred with the end event
     TC_LOG(ERROR, comm_.get())
         << "CUDA error during end event query: "
         << comm_->getCudaApi()->getErrorString(end_status) << " (" << end_status
         << ")";
-    state_ = WorkStatus::ERROR;
+    setStatus(WorkStatus::ERROR);
   }
-  return state_;
+  return status();
 }
 
 void TorchWorkNCCLX::wait() {
   // If already completed, return immediately
-  WorkStatus local_state = state_;
+  WorkStatus local_state = status();
   if (local_state == WorkStatus::COMPLETED ||
       local_state == WorkStatus::ERROR || local_state == WorkStatus::TIMEDOUT) {
     return;

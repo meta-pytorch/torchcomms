@@ -41,7 +41,9 @@ struct VirtualQpRequest {
   RequestType type{RequestType::SEND};
   uint64_t wrId{0};
   uint32_t physicalQpNum{0};
+  int32_t deviceId{0};
   uint32_t immData{0};
+  int cqIdx{0}; // CQ index from which this request originated
 };
 
 struct VirtualQpResponse {

@@ -16,6 +16,10 @@
 
 // #define VERBOSE 0
 
+// Global flag to enable deterministic bucket selection using iteration as seed;
+// use it for debugging only
+constexpr bool kUseDeterministicBucketSeed = false;
+
 class CtranAllToAllvDedupTest : public CtranDistBaseTest,
                                 public AllToAllvDedupTestBase {
  public:
@@ -30,12 +34,9 @@ class CtranAllToAllvDedupTest : public CtranDistBaseTest,
     myRank_ = comm_->statex_->rank();
     nRanks_ = comm_->statex_->nRanks();
     setStatex(comm_->statex_.get());
-
-    CUDACHECK_ASSERT(cudaMalloc(&barrierFlag_, sizeof(int)));
   }
 
   void TearDown() override {
-    CUDACHECK_ASSERT(cudaFree(barrierFlag_));
     CUDACHECK_ASSERT(cudaEventDestroy(execStart_));
     CUDACHECK_ASSERT(cudaEventDestroy(execStop_));
 
@@ -63,13 +64,11 @@ class CtranAllToAllvDedupTest : public CtranDistBaseTest,
       const int iter);
 
   template <commDataType_t DataType = commInt>
-  void run(int numIter, bool overrideBuckets = false, bool skipCheck = false);
+  void run(int numIter, std::vector<int>& allowBuckets, bool skipCheck = false);
 
-  void barrier(cudaStream_t stream) {
-    // simple Allreduce as barrier before get data from other ranks
-    COMMCHECK_ASSERT(ctranAllReduce(
-        barrierFlag_, barrierFlag_, 1, commInt, commSum, comm_, stream));
-  }
+  std::vector<std::vector<int>> genAllRankIndices(
+      const std::vector<int>& allowBuckets,
+      int iter = 0);
 
  protected:
   cudaStream_t stream_{0};
@@ -77,7 +76,6 @@ class CtranAllToAllvDedupTest : public CtranDistBaseTest,
   int expectedVal_{0};
   int myRank_;
   int nRanks_;
-  int* barrierFlag_ = nullptr;
 
   cudaEvent_t execStart_, execStop_;
   const int defaultNumIters_ = 20;
@@ -166,10 +164,43 @@ void CtranAllToAllvDedupTest::checkExecResult(
   }
 }
 
+std::vector<std::vector<int>> CtranAllToAllvDedupTest::genAllRankIndices(
+    const std::vector<int>& allowBuckets,
+    int iter) {
+  const auto numBlocksPerRank =
+      pArgs_.totalNumSendBlocks * pArgs_.blockNumRecvBuckets;
+  const int myRank = statex_->rank();
+
+  std::vector<int> allRankTmpContig(nRanks_ * numBlocksPerRank);
+
+  // Optionally use iteration as seed for deterministic bucket selection
+  std::optional<unsigned int> seed = kUseDeterministicBucketSeed
+      ? std::make_optional(static_cast<unsigned int>(iter + myRank))
+      : std::nullopt;
+
+  // generate block buckets for my rank
+  genRankBlockRecvBuckets(
+      allowBuckets, allRankTmpContig.data() + myRank * numBlocksPerRank, seed);
+
+  // allgather block buckets from all ranks
+  allGather(allRankTmpContig.data(), numBlocksPerRank * sizeof(int));
+
+  // copy to 2D allRankBlkBkts_ for easier access
+  std::vector<std::vector<int>> allRankBlkBkts;
+  allRankBlkBkts.resize(nRanks_);
+  for (int sendRank = 0; sendRank < nRanks_; sendRank++) {
+    auto sendRankTmpContig =
+        allRankTmpContig.data() + sendRank * numBlocksPerRank;
+    allRankBlkBkts[sendRank] = std::vector<int>(
+        sendRankTmpContig, sendRankTmpContig + numBlocksPerRank);
+  }
+  return allRankBlkBkts;
+}
+
 template <commDataType_t DataType>
 void CtranAllToAllvDedupTest::run(
     int numIter,
-    bool overrideBuckets,
+    std::vector<int>& allowBuckets,
     bool skipCheck) {
   using DT = typename CommTypeTraits<DataType>::T;
   size_t dataTypeSize = sizeof(DT);
@@ -198,10 +229,9 @@ void CtranAllToAllvDedupTest::run(
   ASSERT_NE(request, nullptr);
 
   for (int x = 0; x < numIter; x++) {
-    // generate global index distribution
-    if (!overrideBuckets) {
-      genAllRankIndices(x, {});
-    }
+    // generate index distribution and allgather from all ranks
+    auto allRankBlkBkts = genAllRankIndices(allowBuckets, x);
+    setAllRankBlkBkts(allRankBlkBkts);
 
     // generate index maps and totalNumRecvBlocks_ based on
     // allRankBlkBkts_
@@ -379,22 +409,18 @@ TEST_P(CtranTestAllToAllvDedupParamFixture, Basic) {
   SET_EXEC_WG_ENVRAII(execWgParam);
 
   const auto nRanks = comm_->statex_->nRanks();
-  bool overrideBuckets = false;
-  std::unordered_set<int> skippedBuckets;
+  std::vector<int> allowBuckets =
+      genAllowBuckets(nRanks * pArgsParam.numRecvBuckets, {});
+
+  // Exclude the last one if skipBucket is true
   if (skipBucket) {
-    skippedBuckets.insert(nRanks - 1);
+    allowBuckets.pop_back();
   }
 
-  setPersistArgs(pArgsParam, skippedBuckets.size());
+  const int numAllowedBuckets = static_cast<int>(allowBuckets.size());
+  setPersistArgs(pArgsParam, numAllowedBuckets);
 
-  // optionally override bucket assignement to skip one bucket; generate indices
-  // after setPersistArgs
-  if (skipBucket) {
-    genAllRankIndices(0, skippedBuckets);
-    overrideBuckets = true;
-  }
-
-  run<commInt32>(defaultNumIters_, overrideBuckets);
+  run<commInt32>(defaultNumIters_, allowBuckets);
 }
 
 TEST_F(CtranAllToAllvDedupTest, TracingExec) {
@@ -406,9 +432,13 @@ TEST_F(CtranAllToAllvDedupTest, TracingExec) {
   SET_TMPCHK_ENVRAII(tmpChkParam);
   SET_EXEC_WG_ENVRAII(execWgParam);
 
+  const auto nRanks = comm_->statex_->nRanks();
+  std::vector<int> allowBuckets =
+      genAllowBuckets(nRanks * pArgsParam.numRecvBuckets, {});
+
   setPersistArgs(pArgsParam);
 
-  run<commInt32>(defaultNumIters_);
+  run<commInt32>(defaultNumIters_, allowBuckets);
 }
 
 TEST_F(CtranAllToAllvDedupTest, TracingExecSmall) {
@@ -421,20 +451,17 @@ TEST_F(CtranAllToAllvDedupTest, TracingExecSmall) {
   SET_EXEC_WG_ENVRAII(execWgParam);
 
   const auto nRanks = comm_->statex_->nRanks();
-
   if (nRanks != 4) {
     GTEST_SKIP() << "Skip test because special 4 rank test";
   }
 
-  const bool kOverrideBuckets = true;
-  allRankBlkBkts_.resize(nRanks);
-  allRankBlkBkts_[0] = {1, 5, 5, 6};
-  allRankBlkBkts_[1] = {0, 1, 3, 5};
-  allRankBlkBkts_[2] = {3, 5, 0, 7};
-  allRankBlkBkts_[3] = {5, 6, 5, 6};
+  // exclude buckets 2 and 4
+  std::vector<int> allowBuckets =
+      genAllowBuckets(nRanks * pArgsParam.numRecvBuckets, {2, 4});
 
   setPersistArgs(pArgsParam);
-  run<commInt32>(defaultNumIters_, kOverrideBuckets);
+
+  run<commInt32>(defaultNumIters_, allowBuckets);
 }
 
 TEST_F(CtranAllToAllvDedupTest, SmallChunkSize) {
@@ -445,35 +472,24 @@ TEST_F(CtranAllToAllvDedupTest, SmallChunkSize) {
   SET_TMPCHK_ENVRAII(tmpChkParam);
   SET_EXEC_WG_ENVRAII(execWgParam);
 
-  const auto nRanks = comm_->statex_->nRanks();
   const auto nLocalRanks = comm_->statex_->nLocalRanks();
-  const auto nNodes = comm_->statex_->nNodes();
+  const auto myNode = comm_->statex_->node();
+  const auto nRanks = comm_->statex_->nRanks();
 
-  const bool kOverrideBuckets = true;
-  allRankBlkBkts_.resize(nRanks);
   const auto numBucketsPerNode = nLocalRanks * pArgsParam.numRecvBuckets;
 
-  // Generate inter-node only bucket assignment
-  for (int i = 0; i < nRanks; i++) {
-    const auto node = comm_->statex_->node(i);
-    std::vector<int> candidates;
-    for (int n = 0; n < nNodes; n++) {
-      if (n == node) {
-        continue;
-      }
-      for (int j = 0; j < numBucketsPerNode; j++) {
-        candidates.push_back(j + numBucketsPerNode * n);
-      }
-    }
-    for (int j = 0; j < pArgsParam.totalNumSendBlocks; j++) {
-      for (int k = 0; k < pArgsParam.blockNumRecvBuckets; k++) {
-        allRankBlkBkts_[i].push_back(candidates[(j + k) % candidates.size()]);
-      }
-    }
+  // Build allowBuckets to include only inter-node buckets (exclude local node
+  // buckets)
+  std::unordered_set<int> intraNodeBuckets;
+  for (int b = 0; b < numBucketsPerNode; b++) {
+    intraNodeBuckets.insert(numBucketsPerNode * myNode + b);
   }
 
+  std::vector<int> allowBuckets =
+      genAllowBuckets(nRanks * pArgsParam.numRecvBuckets, intraNodeBuckets);
+
   setPersistArgs(pArgsParam);
-  run<commInt32>(1, kOverrideBuckets);
+  run<commInt32>(1, allowBuckets);
 }
 
 TEST_F(CtranAllToAllvDedupTest, InvalidExecBuffs) {
@@ -504,7 +520,10 @@ TEST_F(CtranAllToAllvDedupTest, InvalidExecBuffs) {
   ASSERT_NE(request, nullptr);
 
   // generate global index distribution
-  genAllRankIndices(0, {});
+  const auto nRanks = comm_->statex_->nRanks();
+  std::vector<int> allowBuckets =
+      genAllowBuckets(nRanks * pArgs_.numRecvBuckets, {});
+  setAllRankBlkBkts(genAllRankIndices(allowBuckets));
 
   // generate index maps and totalNumRecvBlocks_ based on
   // allRankBlkBkts_

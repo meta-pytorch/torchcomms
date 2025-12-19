@@ -74,7 +74,9 @@ commResult_t ctranAllGather(
     cudaStream_t stream,
     enum NCCL_ALLGATHER_ALGO algo);
 
-bool ctranReduceScatterSupport(CtranComm* comm);
+bool ctranReduceScatterSupport(
+    CtranComm* comm,
+    enum NCCL_REDUCESCATTER_ALGO algo);
 commResult_t ctranReduceScatter(
     const void* sendbuff,
     void* recvbuff,
@@ -82,7 +84,8 @@ commResult_t ctranReduceScatter(
     commDataType_t datatype,
     commRedOp_t redOp,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_REDUCESCATTER_ALGO algo);
 
 bool ctranAllReduceSupport(CtranComm* comm);
 commResult_t ctranAllReduce(
@@ -99,7 +102,8 @@ commResult_t ctranAllReduce(
 bool ctranAllToAllSupport(
     const size_t count,
     commDataType_t datatype,
-    CtranComm* comm);
+    CtranComm* comm,
+    enum NCCL_ALLTOALL_ALGO algo);
 
 commResult_t ctranAllToAll(
     const void* sendbuff,
@@ -107,7 +111,8 @@ commResult_t ctranAllToAll(
     const size_t count,
     commDataType_t datatype,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_ALLTOALL_ALGO algo);
 
 bool ctranAllToAllvSupport(CtranComm* comm);
 
@@ -202,20 +207,21 @@ commResult_t ctranAlltoallvDynamicSplit(
  * -----------
  * @param sendbuff               GPU buffer containing all data to send
  *                               Layout: concatenated chunks in order of
- *                               sendSplitLengths
+ *                               inputChunkSizes
  *
- * @param sendSplitLengths       GPU array of size numSendSplitLengths
+ * @param inputChunkSizes        GPU array of size inputChunkSizesCount
  *                               Specifies number of elements in each chunk
  *
- * @param numSendSplitLengths    Total number of chunks
+ * @param inputChunkSizesCount   Total number of chunks
  *
  *
- * @param sendIndices            GPU array of chunk ids to send
+ * @param inputChunkIndices      GPU array of chunk ids to send
  *
  *
- * @param sendIndicesBlockLengths GPU array of size numRanks
+ * @param inputChunkCountPerRank GPU array of size numRanks
  *                               Number of chunks sent to each rank
- *                               Partitions sendIndices array by destination
+ *                               Partitions inputChunkIndices array by
+ * destination
  *
  * @param recvbuffs              Array of numRanks GPU buffer pointers
  *                               recvbuffs[i] receives all data from rank i
@@ -238,17 +244,17 @@ commResult_t ctranAlltoallvDynamicSplit(
  * @param combine                false = dispatch mode (scatter TO experts)
  *                               true = combine mode (gather FROM experts)
  *
- * @param recvAllSplitLengths    Optional GPU output buffer of size
- *                               (numRanks * numSendSplitLengths)
+ * @param outputChunkSizesPerRank Optional GPU output buffer of size
+ *                               (numRanks * inputChunkSizesCount)
  *                               Stores actual received sizes for each chunk
  *                               from each sender
  */
 commResult_t ctranAlltoallvDynamicSplitNonContig(
     const void* sendbuff,
-    const size_t* sendSplitLengths,
-    size_t numSendSplitLengths,
-    const size_t* sendIndices,
-    const size_t* sendIndicesBlockLengths,
+    const size_t* inputChunkSizes,
+    size_t inputChunkSizesCount,
+    const size_t* inputChunkIndices,
+    const size_t* inputChunkCountPerRank,
     void* const* recvbuffs,
     void* recvbuff,
     size_t maxSendcount,
@@ -258,7 +264,7 @@ commResult_t ctranAlltoallvDynamicSplitNonContig(
     CtranComm* comm,
     cudaStream_t stream,
     bool combine,
-    size_t* recvAllSplitLengths = nullptr);
+    size_t* outputChunkSizesPerRank = nullptr);
 
 commResult_t ctranAllToAllvDynamicSupport(
     CtranComm* comm,
@@ -289,6 +295,7 @@ commResult_t ctranAllToAllDedupDestroy(CtranPersistentRequest* request);
 
 bool ctranBroadcastSupport(
     CtranComm* comm,
+    enum NCCL_BROADCAST_ALGO algo,
     std::optional<CtranMapperBackend> specifiedBackend = std::nullopt);
 commResult_t ctranBroadcast(
     const void* sendbuff,
@@ -297,7 +304,8 @@ commResult_t ctranBroadcast(
     commDataType_t datatype,
     int root,
     CtranComm* comm,
-    cudaStream_t stream);
+    cudaStream_t stream,
+    enum NCCL_BROADCAST_ALGO algo);
 
 commResult_t ctranPutSignal(
     const void* origin_buff,
@@ -306,37 +314,11 @@ commResult_t ctranPutSignal(
     int peer,
     size_t target_disp,
     ctran::CtranWin* win,
-    CtranComm* comm,
     cudaStream_t stream,
     bool signal = true);
-commResult_t ctranSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    ctran::CtranWin* win,
-    cudaStream_t stream);
-commResult_t ctranWaitSignal(
-    int peer,
-    ctran::CtranWin* win,
-    CtranComm* comm,
-    cudaStream_t stream);
-commResult_t ctranPutSignal_v2(
-    const void* origin_buff,
-    size_t target_disp,
-    size_t count,
-    commDataType_t datatype,
-    size_t signal_disp,
-    uint64_t signal_val,
-    int peer,
-    ctran::CtranWin* win,
-    cudaStream_t stream,
-    bool signal);
-commResult_t ctranWaitSignal_v2(
-    size_t signal_disp,
-    uint64_t cmp_val,
-    commCmpOp_t cmp_type,
-    ctran::CtranWin* win,
-    cudaStream_t stream);
+commResult_t ctranSignal(int peer, ctran::CtranWin* win, cudaStream_t stream);
+commResult_t
+ctranWaitSignal(int peer, ctran::CtranWin* win, cudaStream_t stream);
 commResult_t ctranGet(
     void* recvBuff,
     size_t targetDisp,

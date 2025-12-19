@@ -152,6 +152,9 @@ export USE_RCCLX=ON
 # Install PyTorch (if not already installed)
 pip install -r requirements.txt
 pip install --no-build-isolation -v .
+
+# Note: For installing torchcomms with RCCL or RCCLX backend, make sure to turn off the other backends:
+USE_NCCL=OFF USE_NCCLX=OFF USE_GLOO=OFF USE_RCCL=OFF USE_RCCLX=ON USE_TRANSPORT=OFF pip install --no-build-isolation -v .
 ```
 
 ### Build Configuration

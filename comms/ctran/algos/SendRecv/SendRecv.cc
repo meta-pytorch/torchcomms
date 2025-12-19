@@ -27,6 +27,8 @@ std::unordered_map<KernelConfig::KernelType, void*> kernelFns = {
      reinterpret_cast<void*>(ncclKernelRecv</*UNPACK=*/true>)},
     {KernelConfig::KernelType::SENDRECV_UNPACK,
      reinterpret_cast<void*>(ncclKernelSendRecv</*UNPACK=*/true>)},
+    {KernelConfig::KernelType::SENDRECV_STAGED,
+     reinterpret_cast<void*>(ncclKernelSendRecvStaged)},
 };
 
 static const auto myAlgo = NCCL_SENDRECV_ALGO::ctran;
@@ -98,6 +100,11 @@ commResult_t ctranRecv(
 
 commResult_t ctranGroupEndHook(
     std::optional<std::chrono::milliseconds> timeout) {
+  auto algo = NCCL_SENDRECV_ALGO;
+  // By default, use zero-copy kernel for sendrecv.
+  if (algo == NCCL_SENDRECV_ALGO::ctran) {
+    algo = NCCL_SENDRECV_ALGO::ctzcopy;
+  }
   while (!CtranOpGroup.empty()) {
     // TODO: clean up duplicate info in allops, nvlOps and ibOps
     std::vector<OpElem*> allOps;
@@ -191,17 +198,22 @@ commResult_t ctranGroupEndHook(
       std::vector<std::unique_ptr<struct OpElem>> gpeOpGroup;
       FB_COMMCHECK(
           ctran::sendrecv::setupGpeOp(
-              comm, allOps, nvlOps, sendNvlOps, ibOps, gpeOpGroup));
+              comm, allOps, nvlOps, sendNvlOps, ibOps, gpeOpGroup, algo));
 
       // device side
       KernelConfig::KernelType kernelType =
-          ctran::sendrecv::getKernelType(hasSend, hasRecv, hasTcpDmRecv);
+          ctran::sendrecv::getKernelType(hasSend, hasRecv, hasTcpDmRecv, algo);
       auto config = KernelConfig(
           kernelType,
           stream,
           sendRecvAlgoName(myAlgo, allOps),
           allOps.front()->opCount);
-      FB_COMMCHECK(ctran::sendrecv::setupKernelConfig(comm, allOps, config));
+
+      // Create kernArgs on stack for SENDRECV_STAGED
+      ctran::sendrecv::KernArgs kernArgs;
+      FB_COMMCHECK(
+          ctran::sendrecv::setupKernelConfig(
+              comm, allOps, nvlOps, config, kernArgs));
 
       FB_COMMCHECK(comm->ctran_->gpe->submit(
           std::move(gpeOpGroup),

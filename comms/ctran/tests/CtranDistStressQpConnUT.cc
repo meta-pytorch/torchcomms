@@ -120,7 +120,8 @@ TEST_F(CtranStressQpConnTest, AllToAll) {
           count,
           commInt,
           comms[i]->ctranComm_.get(),
-          streams[i]);
+          streams[i],
+          NCCL_ALLTOALL_ALGO::ctran);
       ASSERT_EQ(res, commSuccess);
     }
 

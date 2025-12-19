@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <cstddef>
+#include <sstream>
 
 #include "comms/ctran/algos/AllToAllvDedup/CommonDev.h"
 #include "comms/ctran/algos/AllToAllvDedup/ResourceImpl.h"
@@ -120,6 +121,14 @@ commResult_t ResourceImpl::setKSync(cudaStream_t stream, const bool skipRem) {
       sizeof(FwdRecvSync) * numSyncs,
       cudaMemcpyHostToDevice,
       stream));
+  // Ensure fwdRecvSyncs has locally reset and no local rank would start before
+  // all local ranks finished setKSync. Otherwise, the initialization on rank i
+  // may incorrectly reset the SPSC flag after rank j has posted to rank i
+  FB_CUDACHECK(cudaStreamSynchronize(stream));
+  if (!skipRem) {
+    CtranMapperEpochRAII epochRAII(mapper_);
+    FB_COMMCHECK(mapper_->intraBarrier());
+  }
   return commSuccess;
 }
 
@@ -237,8 +246,10 @@ ResourceImpl::ResourceImpl(
     CommLogData* logMetadata)
     : statex_(statex), mapper_(mapper), logMetaData_(logMetadata) {
   // memory pool requires unique key for each memory region allocation
-  auto memKey = folly::sformat(
-      "Ctran::AllToAllvDedup::ResourceImpl-{:#x}", statex->commHash());
+  std::stringstream ss;
+  ss << "Ctran::AllToAllvDedup::ResourceImpl-0x" << std::hex
+     << statex->commHash();
+  auto memKey = ss.str();
 
   bufMngr_ = std::make_unique<
       ::ctran::algos::BufManager<BufName, BufName::kNumBufsNames>>(

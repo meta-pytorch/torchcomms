@@ -1,0 +1,293 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
+#pragma once
+
+#include <cuda_runtime.h>
+#include <cstdint>
+#include <cstdio>
+
+#include "comms/pipes/DeviceSpan.cuh"
+#include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/P2pSelfTransportDevice.cuh"
+
+namespace comms::pipes {
+
+namespace {
+/**
+ * Debug helper to print allToAllv communication information.
+ * Automatically detects self-copy vs peer communication based on my_rank ==
+ * peer_rank.
+ */
+__device__ __forceinline__ void printPerPeerOperation(
+    int my_rank_id,
+    int peer_rank_id,
+    int partition_id,
+    uint32_t total_groups,
+    size_t send_offset,
+    size_t recv_offset,
+    size_t send_nbytes,
+    size_t recv_nbytes) {
+  if (my_rank_id == peer_rank_id) {
+    // Self-copy
+    printf(
+        "Rank=%d pid=%d total-groups=%d: self-copy send-offset=%lu, recv-offset=%lu nbytes=%lu\n",
+        my_rank_id,
+        partition_id,
+        total_groups,
+        send_offset,
+        recv_offset,
+        send_nbytes);
+  } else {
+    // Peer communication
+    bool is_send = (partition_id == 0);
+    size_t offset = is_send ? send_offset : recv_offset;
+    size_t nbytes = is_send ? send_nbytes : recv_nbytes;
+    printf(
+        "Rank=%d pid=%d total-groups=%d: %s rank=%d offset=%lu nbytes=%lu\n",
+        my_rank_id,
+        partition_id,
+        total_groups,
+        is_send ? "send to" : "recv from",
+        peer_rank_id,
+        offset,
+        nbytes);
+  }
+}
+} // namespace
+
+/**
+ * Chunk metadata for allToAllv operation.
+ * Describes a contiguous chunk of data to send or receive for a specific peer.
+ */
+struct ChunkInfo {
+  std::size_t offset; // offset in bytes from buffer base address
+  std::size_t nbytes; // number of bytes to send or recv
+
+  __host__ __device__ __forceinline__
+  ChunkInfo(std::size_t offset, std::size_t nbytes)
+      : offset(offset), nbytes(nbytes) {}
+};
+
+/**
+ * Transport type tag for discriminated union.
+ * Used to identify which transport type is active in the Transport union.
+ */
+enum class TransportType : uint8_t { SELF, P2P_NVL };
+
+/**
+ * Polymorphic transport wrapper using tagged union.
+ * Allows storing either self-transport (intra-GPU) or P2P NVL transport
+ * (inter-GPU) in a single type for heterogeneous communication patterns.
+ *
+ * Memory layout: [type tag (1 byte)] + [union of transport objects]
+ *
+ * Usage:
+ *   Transport t1(selfTransport);      // Create self-transport
+ *   Transport t2(p2pNvlTransport);    // Create P2P transport
+ *   Transport t3 = std::move(t1);     // Move is supported
+ *   // Copy is deleted - transports contain device pointers/IPC handles
+ */
+struct Transport {
+  TransportType type;
+  union {
+    P2pSelfTransportDevice self;
+    P2pNvlTransportDevice p2p_nvl;
+  };
+
+  /** Constructor for SelfTransportDevice */
+  __host__ __device__ Transport(const P2pSelfTransportDevice& s)
+      : type(TransportType::SELF), self(s) {}
+
+  /** Constructor for P2pNvlTransportDevice */
+  __host__ __device__ Transport(const P2pNvlTransportDevice& p)
+      : type(TransportType::P2P_NVL), p2p_nvl(p) {}
+
+  /**
+   * Delete copy constructor and copy assignment.
+   * Transport objects contain device pointers and IPC handles that should not
+   * be shallow-copied.
+   */
+  Transport(const Transport&) = delete;
+  Transport& operator=(const Transport&) = delete;
+
+  /**
+   * Move constructor.
+   * Uses placement new to move-construct the active union member.
+   */
+  __host__ __device__ Transport(Transport&& other) : type(other.type) {
+    if (type == TransportType::SELF) {
+      new (&self) P2pSelfTransportDevice(std::move(other.self));
+    } else {
+      new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
+    }
+  }
+
+  /**
+   * Move assignment operator.
+   * Destroys current union member, then move-constructs from other.
+   */
+  __host__ __device__ Transport& operator=(Transport&& other) {
+    if (this != &other) {
+      // Destroy current union member
+      if (type == TransportType::SELF) {
+        self.~P2pSelfTransportDevice();
+      } else if (type == TransportType::P2P_NVL) {
+        p2p_nvl.~P2pNvlTransportDevice();
+      }
+
+      // Move from other
+      type = other.type;
+      if (type == TransportType::SELF) {
+        new (&self) P2pSelfTransportDevice(std::move(other.self));
+      } else {
+        new (&p2p_nvl) P2pNvlTransportDevice(std::move(other.p2p_nvl));
+      }
+    }
+    return *this;
+  }
+
+  /**
+   * Destructor.
+   * Explicitly destroys the active union member.
+   */
+  __host__ __device__ ~Transport() {
+    // Union members with non-trivial destructors need explicit cleanup
+    if (type == TransportType::SELF) {
+      self.~P2pSelfTransportDevice();
+    } else if (type == TransportType::P2P_NVL) {
+      p2p_nvl.~P2pNvlTransportDevice();
+    }
+  }
+};
+
+/**
+ * AllToAllv collective communication primitive.
+ *
+ * Performs variable-sized all-to-all data exchange among multiple ranks.
+ * Each rank sends a potentially different amount of data to every other rank,
+ * and receives a potentially different amount of data from every other rank.
+ *
+ * Algorithm:
+ * 1. First weighted partition: Distribute warps across ranks based on total
+ *    communication workload (send+recv bytes for peers, send only for self)
+ * 2. For self-rank: Perform local memory copy within the same GPU
+ * 3. For peer ranks: Second weighted partition to split warps between send
+ *    and recv operations based on their respective data sizes
+ * 4. Execute send or recv using P2P NVL transport
+ *
+ * Parameters:
+ *   @param recvbuff_d: Device pointer to receive buffer
+ *   @param sendbuff_d: Device pointer to send buffer
+ *   @param my_rank_id: Current rank ID
+ *   @param transports_per_rank: Array of transport objects, one per rank
+ *                        (self-transport for my_rank, P2P for others)
+ *   @param send_chunk_infos: Array of send chunk metadata, one per destination
+ * rank
+ *   @param recv_chunk_infos: Array of recv chunk metadata, one per source rank
+ *
+ * Requirements:
+ * - Must be called from device code with sufficient threads
+ * - transports_per_rank.size() == send_chunk_infos.size() ==
+ *   recv_chunk_infos.size()
+ * - send_chunk_infos[i].nbytes == recv_chunk_infos[i].nbytes for i ==
+ *   my_rank_id
+ * - Max 8 ranks supported (stack-allocated weights)
+ */
+__device__ __forceinline__ void allToAllv(
+    void* recvbuff_d,
+    const void* sendbuff_d,
+    int my_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    DeviceSpan<ChunkInfo> send_chunk_infos,
+    DeviceSpan<ChunkInfo> recv_chunk_infos
+    // all arguments below will eventually come from communicator
+) {
+#ifdef __CUDA_ARCH__
+  auto group = make_warp_group();
+  const auto nranks = transports_per_rank.size();
+  assert(nranks == send_chunk_infos.size());
+  assert(nranks == recv_chunk_infos.size());
+
+  // 1. partition into per rank groups using partition
+  auto [peer_rank_id, group_per_rank] = group.partition(nranks);
+
+  if (peer_rank_id == my_rank_id) {
+    // Self partition
+    auto& transport = transports_per_rank[my_rank_id];
+    assert(transport.type == TransportType::SELF);
+
+    const auto& send_info = send_chunk_infos[my_rank_id];
+    const auto& recv_info = recv_chunk_infos[my_rank_id];
+    assert(send_info.nbytes == recv_info.nbytes);
+
+#ifdef DEBUG_ALLTOALLV
+    if (group_per_rank.is_global_leader()) {
+      printPerPeerOperation(
+          my_rank_id,
+          peer_rank_id,
+          peer_rank_id, // partition_id same as peer_rank_id for self
+          group_per_rank.total_groups,
+          send_info.offset,
+          recv_info.offset,
+          send_info.nbytes,
+          recv_info.nbytes);
+    }
+#endif
+
+    // Perform self-copy if there's data
+    if (send_info.nbytes > 0) {
+      transport.self.write(
+          group_per_rank,
+          static_cast<char*>(recvbuff_d) + recv_info.offset,
+          static_cast<const char*>(sendbuff_d) + send_info.offset,
+          send_info.nbytes);
+    }
+    return;
+  }
+
+  // Peer communication
+  // Partition into send/recv groups based on send/recv workload
+  const auto& send_info = send_chunk_infos[peer_rank_id];
+  const auto& recv_info = recv_chunk_infos[peer_rank_id];
+
+  auto [partition_id, send_recv_group] = group_per_rank.partition(2);
+
+  // Extract to local pointer to avoid aliasing: compiler can't prove that
+  // operations on transport won't modify transports_per_rank.data_, forcing
+  // reloads. Local variable is provably independent. See DeviceSpan.cuh:228.
+  auto transports = transports_per_rank.data();
+  auto& transport = transports[peer_rank_id];
+  assert(transport.type == TransportType::P2P_NVL);
+
+#ifdef DEBUG_ALLTOALLV
+  if (send_recv_group.is_global_leader()) {
+    printPerPeerOperation(
+        my_rank_id,
+        peer_rank_id,
+        partition_id,
+        send_recv_group.total_groups,
+        send_info.offset,
+        recv_info.offset,
+        send_info.nbytes,
+        recv_info.nbytes);
+  }
+#endif
+
+  // Perform peer send/recv
+  bool is_send = (partition_id == 0);
+  if (is_send) {
+    transport.p2p_nvl.send(
+        send_recv_group,
+        static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
+        send_info.nbytes);
+  } else {
+    transport.p2p_nvl.recv(
+        send_recv_group,
+        static_cast<char*>(recvbuff_d) + recv_info.offset,
+        recv_info.nbytes);
+  }
+
+#endif
+}
+
+} // namespace comms::pipes

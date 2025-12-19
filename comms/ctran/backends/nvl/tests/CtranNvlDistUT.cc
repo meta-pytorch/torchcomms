@@ -15,7 +15,8 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/backends/nvl/CtranNvlImpl.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 #include "comms/testinfra/TestsCuUtils.h"
 #if !defined(USE_ROCM)
@@ -24,23 +25,23 @@
 #include "comms/testinfra/TestUtils.h"
 #endif
 
-class CtranNvlTest : public CtranDistTest {
+class CtranNvlTest : public ctran::CtranDistTestFixture {
  public:
   CtranNvlTest() = default;
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
-    CtranDistTest::SetUp();
+    CtranDistTestFixture::SetUp();
+    comm_ = makeCtranComm();
+    comm = comm_.get();
 
     // Check epoch lock for the entire test
     NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK = true;
 
     CUDACHECK_TEST(cudaSetDevice(localRank));
-
-    comm = commRAII->ctranComm;
   }
 
   void TearDown() override {
-    CtranDistTest::TearDown();
+    CtranDistTestFixture::TearDown();
   }
 
   commResult_t
@@ -74,6 +75,7 @@ class CtranNvlTest : public CtranDistTest {
   }
 
  protected:
+  std::unique_ptr<CtranComm> comm_{nullptr};
   CtranComm* comm{nullptr};
 };
 
@@ -127,7 +129,7 @@ TEST_P(CtranNvlTestSuite, RegMem) {
 
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           if (memType == kMemCudaMalloc) {
             COMMCHECK_TEST(
@@ -368,7 +370,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

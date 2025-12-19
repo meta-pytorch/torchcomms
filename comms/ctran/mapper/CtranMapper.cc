@@ -74,13 +74,13 @@ CtranMapper::CtranMapper(CtranComm* comm) {
 
   this->comm = comm;
   auto backendsToEnable = getToEnableBackends(comm->config_.backends);
-  /* check user preference for backends */
-  std::vector<bool> enableBackends(CtranMapperBackend::NUM_BACKENDS, false);
+
   iPutCount = std::vector<int>(CtranMapperBackend::NUM_BACKENDS, 0);
   iGetCount = std::vector<int>(CtranMapperBackend::NUM_BACKENDS, 0);
+
   std::vector<std::string> enableBackendsStrs;
   for (auto b : backendsToEnable) {
-    enableBackends.at(b) = true;
+    enableBackends_.at(b) = true;
     enableBackendsStrs.push_back(backendToStr(b));
   }
 
@@ -90,10 +90,10 @@ CtranMapper::CtranMapper(CtranComm* comm) {
       "CTRAN-MAPPER: configure NCCL_CTRAN_BACKENDS [{}]",
       vecToStr(enableBackendsStrs));
 
-  if ((enableBackends[CtranMapperBackend::IB] ||
-       enableBackends[CtranMapperBackend::NVL] ||
-       enableBackends[CtranMapperBackend::SOCKET]) &&
-      enableBackends[CtranMapperBackend::TCPDM]) {
+  if ((enableBackends_[CtranMapperBackend::IB] ||
+       enableBackends_[CtranMapperBackend::NVL] ||
+       enableBackends_[CtranMapperBackend::SOCKET]) &&
+      enableBackends_[CtranMapperBackend::TCPDM]) {
     FB_ERRORTHROW(
         commInvalidArgument,
         "CTRAN-MAPPER: TCPDM can not be enabled with IB, NVL or Socket backends");
@@ -102,40 +102,43 @@ CtranMapper::CtranMapper(CtranComm* comm) {
   this->ctrlMgr = std::make_unique<CtranCtrlManager>();
 
   /* enable available backends */
-  if (enableBackends[CtranMapperBackend::IB]) {
+  if (enableBackends_[CtranMapperBackend::IB]) {
     try {
       this->ctranIb =
           std::make_unique<class CtranIb>(comm, this->ctrlMgr.get());
       this->ctranIb->regCtrlCb(this->ctrlMgr);
     } catch (const std::bad_alloc& e) {
       ctranIb = nullptr;
+      enableBackends_[CtranMapperBackend::IB] = false;
       CLOGF(WARN, "CTRAN-MAPPER: IB backend not enabled");
     }
   }
-  if (enableBackends[CtranMapperBackend::SOCKET]) {
+  if (enableBackends_[CtranMapperBackend::SOCKET]) {
     if (!this->ctranIb) {
       this->ctranSock =
           std::make_unique<class CtranSocket>(comm, this->ctrlMgr.get());
     } else {
+      enableBackends_[CtranMapperBackend::SOCKET] = false;
       CLOGF_SUBSYS(
           INFO,
           INIT,
           "CTRAN-MAPPER: SOCKET backend not enabled, since IB backend is enabled");
     }
   }
-  if (enableBackends[CtranMapperBackend::TCPDM]) {
+  if (enableBackends_[CtranMapperBackend::TCPDM]) {
     this->ctranTcpDm =
         std::make_unique<class ctran::CtranTcpDm>(comm, this->ctrlMgr.get());
     CLOGF(WARN, "CTRAN-MAPPER: TCPDM backend is enabled");
   }
 
-  if (enableBackends[CtranMapperBackend::NVL]) {
+  if (enableBackends_[CtranMapperBackend::NVL]) {
     // NVL backend depends on IB backend for control msg exchange
     if (this->ctranIb || this->ctranSock || this->ctranTcpDm) {
       try {
         this->ctranNvl = std::make_unique<class CtranNvl>(comm);
         this->ctranNvl->regCtrlCb(this->ctrlMgr);
       } catch (const std::bad_alloc& e) {
+        enableBackends_[CtranMapperBackend::NVL] = false;
         // FIXME: give more specific exception + error message
         CLOGF(
             WARN, "CTRAN-MAPPER: NVL backend not enabled. Error {}", e.what());
@@ -493,8 +496,10 @@ commResult_t CtranMapper::regMem(
         cudaDev,
         "eagerRegMem",
         logMetaData_,
+        enableBackends_,
         didRegister,
-        &regHdl_));
+        &regHdl_,
+        ncclManaged));
   }
 
   *segHdl = segHdl_;
@@ -641,7 +646,8 @@ commResult_t CtranMapper::regAsync(const void* buf, const size_t len) {
     CLOGF_TRACE(COLL, "regAsync registered buf {} len {}", buf, len);
     return commSuccess;
   } else {
-    FB_COMMCHECK(regCache->asyncRegRange(buf, len, cudaDev, logMetaData_));
+    FB_COMMCHECK(regCache->asyncRegRange(
+        buf, len, cudaDev, logMetaData_, enableBackends_));
     CLOGF_TRACE(COLL, "regAsync submitted buf {} len {}", buf, len);
     return commInProgress;
   }
@@ -668,7 +674,14 @@ commResult_t CtranMapper::searchRegHandle(
   CtranMapperRegElem* regHdl_ = nullptr;
   bool didRegister = false;
   FB_COMMCHECK(regCache->regRange(
-      buf, len, cudaDev, "regMem", logMetaData_, didRegister, &regHdl_));
+      buf,
+      len,
+      cudaDev,
+      "regMem",
+      logMetaData_,
+      enableBackends_,
+      didRegister,
+      &regHdl_));
 
   if (!regHdl_) {
     if (!allowDynamic) {
@@ -683,8 +696,8 @@ commResult_t CtranMapper::searchRegHandle(
     // Oops, this is not a known cached segment, we have to do dynamic
     // registration with the given buf, len range. Caller is responsible for
     // immediate deregisgration after current use.
-    FB_COMMCHECK(
-        regCache->regDynamic(buf, len, comm->statex_->cudaDev(), &regHdl_));
+    FB_COMMCHECK(regCache->regDynamic(
+        buf, len, comm->statex_->cudaDev(), enableBackends_, &regHdl_));
     *dynamicRegist = true;
     CLOGF(
         WARN,

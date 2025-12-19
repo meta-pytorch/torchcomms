@@ -15,6 +15,8 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/ctran/Ctran.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "meta/rma/ncclWin.h"
+#include "meta/algoconf/AlgoConfig.h"
 
 static ncclResult_t regFindHandleFromSymAddr(struct ncclComm* comm, void* baseSymPtr, struct ncclReg** handle) {
   struct ncclRegCache* cache = &comm->regCache;
@@ -275,6 +277,34 @@ fail:
 
 NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
 ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags) {
+  if(ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
+    if (!ncclGetCuMemSysSupported()) {
+      FB_ERRORRETURN(ncclInternalError, "ncclCommWindowRegister requires CUMEM support.");
+    }
+    if (buff == nullptr) {
+      FB_ERRORRETURN(
+          ncclInvalidUsage,
+          "Invalid baseptr to create shared buffer in ncclCommWindowRegister.");
+    }
+
+    ncclWin* win_ = new ncclWin();
+    win_->comm = comm;
+
+    auto guard = folly::makeGuard([win_] { delete win_; });
+    NCCLCHECK(metaCommToNccl(
+        ctran::ctranWinRegister(
+            buff,
+            size,
+            comm->ctranComm_.get(),
+            &win_->ctranWindow)));
+
+    // Create empty ncclWindow as handle and register mapping
+    ncclWindow_t handle = new ncclWindow();
+    ncclWinMap().insert(handle, win_);
+    *win = handle;
+    guard.dismiss();
+    return ncclSuccess;
+  }
   ncclResult_t ret = ncclSuccess;
   CUmemGenericAllocationHandle memHandle;
   size_t baseSize;
@@ -334,6 +364,31 @@ fail:
 
 NCCL_API(ncclResult_t, ncclCommWindowDeregister, ncclComm_t comm, ncclWindow_t win);
 ncclResult_t ncclCommWindowDeregister(ncclComm_t comm, ncclWindow_t win) {
+  if(ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
+    ncclWin* ncclWinPtr = ncclWinMap().find(win);
+    if (!comm || !win || !ncclWinPtr || comm != ncclWinPtr->comm) {
+      FB_ERRORRETURN(
+          ncclInvalidUsage,
+          "Invalid parameter(s) to free window: comm {}, win {}",
+          (void*)comm,
+          (void*)win);
+    }
+
+    auto statex = comm->ctranComm_->statex_.get();
+    if (statex == nullptr) {
+      FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
+    }
+
+    // Remove from map first, then cleanup resources
+    ncclWinMap().erase(win);
+    auto guard = folly::makeGuard([win, ncclWinPtr] {
+      delete ncclWinPtr;
+      delete win;
+    });
+
+    NCCLCHECK(metaCommToNccl(ctran::ctranWinFree(ncclWinPtr->ctranWindow)));
+    return ncclSuccess;
+  }
   ncclResult_t ret = ncclSuccess;
   int saveDev;
   struct ncclReg* regHandle;

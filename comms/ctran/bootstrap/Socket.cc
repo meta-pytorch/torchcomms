@@ -9,11 +9,11 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <stdexcept>
 #include <vector>
 
 #include <folly/ScopeGuard.h>
 #include <folly/logging/xlog.h>
+#include "comms/ctran/utils/Exception.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ctran::bootstrap {
@@ -109,7 +109,8 @@ folly::Expected<folly::IPAddress, int> getInterfaceAddress(
 Socket::Socket(int sockFd, bool async, folly::SocketAddress peerAddr)
     : fd_(sockFd), peerAddr_(std::move(peerAddr)) {
   if (fd_ < 0) {
-    throw std::runtime_error("Invalid socket file descriptor");
+    throw ctran::utils::Exception(
+        "Invalid socket file descriptor", commInvalidArgument);
   }
   prepareSocket(async);
   localAddr_ = getSocketAdddress(fd_);
@@ -143,7 +144,7 @@ int Socket::connect(
   // Create socket
   fd_ = ::socket(addr.getFamily(), SOCK_STREAM, 0);
   if (fd_ < 0) {
-    throw std::runtime_error("Failed to create socket");
+    throw ctran::utils::Exception("Failed to create socket", commSystemError);
   }
   prepareSocket(async);
 
@@ -152,7 +153,8 @@ int Socket::connect(
     if (setsockopt(
             fd_, SOL_SOCKET, SO_BINDTODEVICE, ifName.c_str(), ifName.size()) <
         0) {
-      throw std::runtime_error("Failed to bind socket to interface " + ifName);
+      throw ctran::utils::Exception(
+          "Failed to bind socket to interface " + ifName, commSystemError);
     }
   }
 
@@ -205,15 +207,18 @@ void Socket::prepareSocket(bool async) {
   // Set the default socket buffer size to 1MB
   const int bufSize = 1 << 20;
   if (::setsockopt(fd_, SOL_SOCKET, SO_SNDBUF, &bufSize, sizeof(int)) < 0) {
-    throw std::runtime_error("Failed to set socket send buffer size");
+    throw ctran::utils::Exception(
+        "Failed to set socket send buffer size", commSystemError);
   }
   if (::setsockopt(fd_, SOL_SOCKET, SO_RCVBUF, &bufSize, sizeof(int)) < 0) {
-    throw std::runtime_error("Failed to set socket receive buffer size");
+    throw ctran::utils::Exception(
+        "Failed to set socket receive buffer size", commSystemError);
   }
   // Set the socket to blocking mode
   int flags = ::fcntl(fd_, F_GETFL, 0);
   if (flags < 0) {
-    throw std::runtime_error("Failed to get socket flags");
+    throw ctran::utils::Exception(
+        "Failed to get socket flags", commSystemError);
   }
   if (async) {
     flags = flags | O_NONBLOCK;
@@ -221,14 +226,15 @@ void Socket::prepareSocket(bool async) {
     flags = flags & ~O_NONBLOCK;
   }
   if (::fcntl(fd_, F_SETFL, flags) < 0) {
-    throw std::runtime_error("Failed to set socket to non-blocking mode");
+    throw ctran::utils::Exception(
+        "Failed to set socket flags", commSystemError);
   }
 
   // Set TCP_NODELAY to disable Nagle's algorithm, to improve latency
   const int noDelay = 1;
   if (::setsockopt(
           fd_, IPPROTO_TCP, TCP_NODELAY, (char*)&noDelay, sizeof(int)) < 0) {
-    throw std::runtime_error("Failed to set TCP_NODELAY");
+    throw ctran::utils::Exception("Failed to set TCP_NODELAY", commSystemError);
   }
 }
 

@@ -297,22 +297,13 @@ static commResult_t waitSignalImpl(
       "waitSignalImpl: signalAddr {}, cmpVal={}",
       (void*)const_cast<uint64_t*>(op->waitsignal.signalAddr),
       op->waitsignal.cmpVal);
-  if (op->waitsignal.cmpOp == commCmpEQ) {
-    while (std::atomic_load(addr) != op->waitsignal.cmpVal) {
-      std::this_thread::yield();
-    };
-  } else if (op->waitsignal.cmpOp == commCmpGE) {
-    while (std::atomic_load(addr) < op->waitsignal.cmpVal) {
-      std::this_thread::yield();
-    };
-  } else if (op->waitsignal.cmpOp == commCmpLE) {
-    while (std::atomic_load(addr) > op->waitsignal.cmpVal) {
-      std::this_thread::yield();
-    };
-  } else {
-    CLOGF(ERR, "waitSignalImpl: invalid cmpOp {}", op->waitsignal.cmpOp);
-    return commInvalidArgument;
-  }
+  // Spin-wait until the signal is received.
+  // Only a 'greater or equal (GE)' (>=) comparison is required in this design,
+  // because signals are monotonically increasing and we only care about
+  // reaching or passing the target value.
+  while (std::atomic_load(addr) < op->waitsignal.cmpVal) {
+    std::this_thread::yield();
+  };
 
   return commSuccess;
 }
@@ -324,9 +315,9 @@ commResult_t ctranPutSignal(
     int peer,
     size_t targetDisp,
     CtranWin* win,
-    CtranComm* comm,
     cudaStream_t stream,
     bool signal) {
+  CtranComm* comm = win->comm;
   const auto winOpCount = win->updateOpCount(peer);
   const auto putOpCount = win->updateOpCount(peer, window::OpCountType::kPut);
   auto statex = comm->statex_.get();
@@ -345,171 +336,15 @@ commResult_t ctranPutSignal(
       stream);
 
   // Check if the target displacement exceeds the window size
-  size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
-  size_t countNbytes = count * commTypeSize(datatype);
-  if ((targetDispNbytes + countNbytes) > win->dataSize) {
-    CLOGF(
-        ERR,
-        "Invalid target displacement from {} bytes to {} bytes exceeding the window size {}",
-        targetDispNbytes,
-        targetDispNbytes + countNbytes,
-        win->dataSize);
-    return commInvalidArgument;
-  }
-
-  // FIXME: passing also winOpCount to colltrace
-  KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::PUTNOTIFY, stream, "PutNotify", putOpCount);
-  config.args.devState_d = comm->ctran_->algo->getDevState();
-
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-  opGroup.clear();
-  config.args.collective.putnotify.peerLocalRank = statex->localRank(peer);
-
-  // Use direct copy if peer is on the same host and has been IPC mapped.
-  // Otherwise, do put & notify via network
-  if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
-    // Single-node direct cudaMemcpy
-    if (count > 0) {
-      void* dstPtr = reinterpret_cast<void*>(
-          reinterpret_cast<size_t>(win->remWinInfo[peer].dataAddr) +
-          targetDispNbytes);
-      // CollTrace tracing logic for local + no signal case. In this case the
-      // put will not trigger gpe->submit, so we need to record manually in the
-      // algo. In other cases, this handle would be a no-op and the tracing
-      // will take place in the gpe function.
-      auto colltraceHandle = meta::comms::colltrace::getCollTraceHandleRMA(
-          comm, opGroup, config, !signal);
-      colltraceHandle->trigger(
-          CollTraceHandleTriggerState::BeforeEnqueueKernel);
-
-      FB_CUDACHECK(cudaMemcpyAsync(
-          dstPtr, originBuff, countNbytes, cudaMemcpyDefault, stream));
-
-      colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
-    }
-    if (signal) {
-      config.args.collective.putnotify.isDirect = false;
-
-    } else {
-      // for intra-node put, we don't need to launch a kernel
-      return commSuccess;
-    }
-  } else {
-    // X-node put & notify via network
-    config.args.collective.putnotify.isDirect = true;
-
-    // Create an op for GPE thread to complete put and notify
-    struct OpElem* op =
-        new struct OpElem(OpElem::opType::PUTNOTIFY, comm, putOpCount);
-    op->putnotify.sendbuff = originBuff;
-    op->putnotify.count = count;
-    op->putnotify.datatype = datatype;
-    op->putnotify.targetDisp = targetDisp;
-    op->putnotify.peerRank = peer;
-    op->putnotify.win = win;
-    op->putnotify.notify = signal;
-    opGroup.push_back(std::unique_ptr<struct OpElem>(op));
-  }
-
-  FB_COMMCHECK(comm->ctran_->gpe->submit(
-      std::move(opGroup),
-      putNotifyImpl,
-      config,
-      reinterpret_cast<void*>(ncclKernelPutNotify)));
-  return commSuccess;
-}
-
-commResult_t
-ctranWaitSignal(int peer, CtranWin* win, CtranComm* comm, cudaStream_t stream) {
-  auto statex = comm->statex_.get();
-  const auto winOpCount = win->updateOpCount(peer);
-  const auto waitOpCount =
-      win->updateOpCount(peer, window::OpCountType::kWaitSignal);
-  CTRAN_RMA_INFO(
-      "ctranWaitSignal",
-      waitOpCount,
-      winOpCount,
-      nullptr,
-      size_t(0),
-      size_t(0),
-      0,
-      statex->rank(),
-      peer,
-      win,
-      comm,
-      stream);
-
-  KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::WAITNOTIFY, stream, "WaitNotify", waitOpCount);
-  config.args.devState_d = comm->ctran_->algo->getDevState();
-
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-  opGroup.clear();
-  config.args.collective.waitnotify.peerLocalRank = statex->localRank(peer);
-
-  // Use direct copy if peer is on the same host and has been IPC mapped.
-  // Otherwise, do put & notify via network
-  if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
-    config.args.collective.waitnotify.isDirect = false;
-  } else {
-    // X-node wait notify via network
-    config.args.collective.waitnotify.isDirect = true;
-
-    // Create an op for GPE thread to complete wait notify
-    struct OpElem* op =
-        new struct OpElem(OpElem::opType::WAITNOTIFY, comm, waitOpCount);
-    op->waitnotify.peerRank = peer;
-    op->waitnotify.win = win;
-    opGroup.push_back(std::unique_ptr<struct OpElem>(op));
-  }
-
-  FB_COMMCHECK(comm->ctran_->gpe->submit(
-      std::move(opGroup),
-      waitNotifyImpl,
-      config,
-      reinterpret_cast<void*>(ncclKernelWaitNotify)));
-  return commSuccess;
-}
-
-commResult_t ctranPutSignal_v2(
-    const void* originBuff,
-    size_t targetDisp,
-    size_t count,
-    commDataType_t datatype,
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    CtranWin* win,
-    cudaStream_t stream,
-    bool signal) {
-  CtranComm* comm = win->comm;
-  const auto winOpCount = win->updateOpCount(peer);
-  const auto putOpCount = win->updateOpCount(peer, window::OpCountType::kPut);
-  auto statex = comm->statex_.get();
-  CTRAN_RMA_INFO(
-      signal ? "ctranPutSignal_v2" : "ctranPut_v2",
-      putOpCount,
-      winOpCount,
-      originBuff,
-      targetDisp,
-      count,
-      datatype,
-      statex->rank(),
-      peer,
-      win,
-      comm,
-      stream);
-
-  // Check if the target displacement exceeds the window size
   FB_COMMCHECK(checkDisplacementBounds(
-      targetDisp, commTypeSize(datatype), count, win->dataSize));
+      targetDisp, commTypeSize(datatype), count, win->dataBytes));
   size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
   size_t countNbytes = count * commTypeSize(datatype);
   uint64_t* signalAddr = nullptr;
+  uint64_t signalVal = 0;
   if (signal) {
-    FB_COMMCHECK(checkSignalDisplacement(signalDisp, win->signalSize));
-    signalAddr = win->remWinInfo[peer].signalAddr + signalDisp;
+    signalVal = win->ctranNextSignalVal(peer);
+    signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
   }
 
   KernelConfig config = KernelConfig(
@@ -520,7 +355,7 @@ commResult_t ctranPutSignal_v2(
   opGroup.clear();
 
   // Use direct copy if peer is on the same host and has NVL enabled.
-  // Otherwise, do put & signal via IB
+  // Otherwise, do put & signal via network
   CtranKernelPutSignalArgs kernArgs = {.signalAddr = nullptr, .signalVal = 0};
   if (statex->node(peer) == statex->node() && win->nvlEnabled(peer)) {
     // Single-node direct cudaMemcpy
@@ -580,58 +415,54 @@ commResult_t ctranPutSignal_v2(
   return commSuccess;
 }
 
-commResult_t ctranWaitSignal_v2(
-    size_t signalDisp,
-    uint64_t cmpVal,
-    commCmpOp_t cmpOp,
-    CtranWin* win,
-    cudaStream_t stream) {
+commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
   CtranComm* comm = win->comm;
   auto statex = comm->statex_.get();
-  // FIXME: log ctranWaitSignal with CTRAN_RMA_INFO(add signalDisp and cmpVal)
-  CLOGF_SUBSYS(
-      INFO,
-      COLL,
-      "CTRAN-RMA WaitSignal_v2: cmpValue {} signalDisp {} rank {} "
-      "win {} winSigBase {} comm {} commHash {:x} [nranks={} localRanks={}] stream={}",
-      cmpVal,
-      signalDisp,
+  auto waitSignalVal = win->ctranNextWaitSignalVal(peer);
+  const auto winOpCount = win->updateOpCount(peer);
+  const auto waitOpCount =
+      win->updateOpCount(peer, window::OpCountType::kWaitSignal);
+  CTRAN_RMA_INFO(
+      "ctranWaitSignal",
+      waitOpCount,
+      winOpCount,
+      nullptr,
+      peer, // signal disp
+      size_t(1), // signal count
+      commDataType_t::commUint64, // signal datatype
       statex->rank(),
-      (void*)win,
-      (void*)win->winBaseSignalPtr,
-      (void*)win->comm,
-      statex->commHash(),
-      statex->nRanks(),
-      statex->nLocalRanks(),
-      (void*)stream);
+      peer,
+      win,
+      comm,
+      stream);
 
-  // Check if the signal displacement exceeds the window size
-  FB_COMMCHECK(checkSignalDisplacement(signalDisp, win->signalSize));
-  const uint64_t* signalAddr = win->winBaseSignalPtr + signalDisp;
+  const uint64_t* signalAddr = win->winSignalPtr + peer;
 
   KernelConfig config = KernelConfig(
-      KernelConfig::KernelType::WAITSIGNAL, stream, "WaitSignal", 0);
+      KernelConfig::KernelType::WAITSIGNAL, stream, "WaitSignal", waitOpCount);
   config.args.devState_d = comm->ctran_->algo->getDevState();
 
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   opGroup.clear();
 
   CtranKernelWaitSignalArgs kernArgs = {
-      .signalAddr = nullptr, .cmpVal = 0, .cmpOp = cmpOp};
+      .signalAddr = nullptr,
+      .cmpVal = waitSignalVal,
+  };
   config.algoArgs = reinterpret_cast<void*>(&kernArgs);
   if (win->isGpuMem()) {
     // if GPU memory, use kernel to atomic wait on the local signal value update
     // from remote rank, either from NVL or IB
     kernArgs.signalAddr = const_cast<uint64_t*>(signalAddr);
-    kernArgs.cmpVal = cmpVal;
+    kernArgs.cmpVal = waitSignalVal;
   } else {
     // if CPU memory, GPE thread to atomic wait for update from remote rank via
     // IB.
-    struct OpElem* op = new struct OpElem(OpElem::opType::WAITSIGNAL, comm, 0);
+    struct OpElem* op =
+        new struct OpElem(OpElem::opType::WAITSIGNAL, comm, waitOpCount);
     op->waitsignal.win = win;
     op->waitsignal.signalAddr = signalAddr;
-    op->waitsignal.cmpVal = cmpVal;
-    op->waitsignal.cmpOp = cmpOp;
+    op->waitsignal.cmpVal = waitSignalVal;
     opGroup.push_back(std::unique_ptr<struct OpElem>(op));
   }
 
@@ -643,23 +474,20 @@ commResult_t ctranWaitSignal_v2(
   return commSuccess;
 }
 
-commResult_t ctranSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    CtranWin* win,
-    cudaStream_t stream) {
+commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
   CtranComm* comm = win->comm;
   const auto winOpCount = win->updateOpCount(peer);
   const auto sigOpCount =
       win->updateOpCount(peer, window::OpCountType::kSignal);
   auto statex = comm->statex_.get();
+
+  auto signalVal = win->ctranNextSignalVal(peer);
   CTRAN_RMA_INFO(
       "ctranSignal",
       sigOpCount,
       winOpCount,
       nullptr,
-      signalDisp,
+      statex->rank(),
       1,
       commUint64,
       statex->rank(),
@@ -668,8 +496,7 @@ commResult_t ctranSignal(
       comm,
       stream);
 
-  FB_COMMCHECK(checkSignalDisplacement(signalDisp, win->signalSize));
-  uint64_t* signalAddr = win->remWinInfo[peer].signalAddr + signalDisp;
+  uint64_t* signalAddr = win->remWinInfo[peer].signalAddr + statex->rank();
 
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::SIGNAL, stream, "Signal", sigOpCount);

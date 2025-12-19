@@ -3,7 +3,7 @@
 #pragma once
 
 #include <gmock/gmock.h>
-#include <rccl.h> // @manual="//comms/rcclx:rcclx-dev",
+#include <rccl.h> // @manual=//comms/rcclx:rcclx-dev
 
 #include "comms/torchcomms/rcclx/RcclxApi.hpp"
 

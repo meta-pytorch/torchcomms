@@ -18,19 +18,44 @@
 namespace torch {
 namespace comms {
 
+namespace {
+// Helper function to validate that metadata tensors are int64_t (torch.int64)
+void validateInt64Dtype(const at::Tensor& tensor, const std::string& name) {
+  if (tensor.scalar_type() != at::kLong) {
+    throw std::runtime_error(
+        "Tensor '" + name +
+        "' must be of type int64 (torch.int64), but has type " +
+        c10::toString(tensor.scalar_type()));
+  }
+}
+
+// Helper function to validate that metadata tensors are int (torch.int)
+void validateIntDtype(const at::Tensor& tensor, const std::string& name) {
+  if (tensor.scalar_type() != at::kInt) {
+    throw std::runtime_error(
+        "Tensor '" + name +
+        "' must be of type int (torch.int32 or torch.int), but has type " +
+        c10::toString(tensor.scalar_type()));
+  }
+}
+
+} // namespace
+
 ncclResult_t NCCLException::getResult() const {
   return result_;
 }
 
 TorchCommNCCLX::TorchCommNCCLX()
-    : nccl_comm_{nullptr},
+    : nccl_comm_(nullptr),
       device_(at::kCUDA),
+      split_counter_(0),
       init_state_(InitializationState::UNINITIALIZED),
       shutdown_(false) {}
 
 TorchCommNCCLX::TorchCommNCCLX(const ncclComm_t nccl_comm)
     : nccl_comm_(nccl_comm),
       device_(at::kCUDA),
+      split_counter_(0),
       init_state_(InitializationState::UNINITIALIZED),
       shutdown_(false) {}
 
@@ -78,7 +103,7 @@ void TorchCommNCCLX::init(
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
-      nccl_comm_ = bootstrap->createNcclComm(name, options);
+      nccl_comm_ = bootstrap->createNcclComm(name_, options);
     }
 
     delete bootstrap;
@@ -1281,6 +1306,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
     ensureTensorContiguous(t);
   }
 
+  // Validate metadata tensor types - all must be int64_t (torch.int64)
+  validateInt64Dtype(input_chunk_sizes, "input_chunk_sizes");
+  validateInt64Dtype(input_chunk_indices, "input_chunk_indices");
+  validateInt64Dtype(input_chunk_count_per_rank, "input_chunk_count_per_rank");
+  validateInt64Dtype(
+      output_chunk_sizes_per_rank, "output_chunk_sizes_per_rank");
+
   TorchCommTracingGuard tracingGuard(
       name_,
       comm_size_,
@@ -1289,6 +1321,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       {input_tensor},
       output_tensor_list);
 
+  // Convert vector of tensors to a CPU tensor holding pointers, which will be
+  // hold by torchComm.
+  at::Tensor output_tensor_ptrs = at::zeros(
+      {static_cast<int64_t>(output_tensor_list.size())},
+      at::TensorOptions().dtype(at::kLong).device(at::kCPU));
+  for (size_t i = 0; i < output_tensor_list.size(); ++i) {
+    reinterpret_cast<void**>(output_tensor_ptrs.data_ptr<int64_t>())[i] =
+        output_tensor_list[i].data_ptr();
+  }
+
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
       stream,
@@ -1296,17 +1338,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       {input_tensor,
        input_chunk_sizes,
        input_chunk_indices,
-       input_chunk_count_per_rank});
+       input_chunk_count_per_rank,
+       output_tensor_ptrs});
 
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_dispatch");
 
-  // Convert vector of tensors to array of pointers
-  std::vector<void*> output_tensor_ptrs;
-  output_tensor_ptrs.reserve(output_tensor_list.size());
-  for (const auto& t : output_tensor_list) {
-    output_tensor_ptrs.push_back(t.data_ptr());
-  }
+  // Ensure int64_t and size_t are compatible for safe casting
+  static_assert(
+      sizeof(int64_t) == sizeof(size_t),
+      "int64_t and size_t must have the same size for metadata tensors");
 
   ncclResult_t result = nccl_api_->alltoallvDynamicDispatch(
       input_tensor.data_ptr(),
@@ -1314,7 +1355,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       input_chunk_sizes.numel(),
       reinterpret_cast<size_t*>(input_chunk_indices.data_ptr()),
       reinterpret_cast<size_t*>(input_chunk_count_per_rank.data_ptr()),
-      output_tensor_ptrs.data(),
+      reinterpret_cast<void* const*>(output_tensor_ptrs.data_ptr()),
       reinterpret_cast<size_t*>(output_chunk_sizes_per_rank.data_ptr()),
       input_tensor.numel(),
       output_tensor_list[0].numel(),
@@ -1351,6 +1392,11 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   ensureTensorContiguous(input_chunk_indices);
   ensureTensorContiguous(input_chunk_count_per_rank);
 
+  // Validate metadata tensor types - all must be int64_t (torch.int64)
+  validateInt64Dtype(input_chunk_sizes, "input_chunk_sizes");
+  validateInt64Dtype(input_chunk_indices, "input_chunk_indices");
+  validateInt64Dtype(input_chunk_count_per_rank, "input_chunk_count_per_rank");
+
   TorchCommTracingGuard tracingGuard(
       name_,
       comm_size_,
@@ -1371,6 +1417,12 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_combine");
 
+  // Ensure int64_t and size_t are compatible for safe casting
+  static_assert(
+      sizeof(int64_t) == sizeof(size_t),
+      "int64_t and size_t must have the same size for metadata tensors");
+
+  // Cast int64_t* to size_t* for NCCL API (safe on 64-bit systems)
   ncclResult_t result = nccl_api_->alltoallvDynamicCombine(
       input_tensor.data_ptr(),
       reinterpret_cast<size_t*>(input_chunk_sizes.data_ptr()),
@@ -1387,6 +1439,163 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   if (result != ncclSuccess) {
     throw NCCLException(
         *nccl_api_, "NCCL alltoallvDynamicCombine failed", result);
+  }
+
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+c10::intrusive_ptr<TorchCommNCCLXPersistentRequest>
+TorchCommNCCLX::alltoallv_dedup_init(
+    const int num_send_blocks,
+    const int block_count,
+    const int block_num_recv_buckets,
+    const int num_recv_buckets,
+    at::ScalarType dtype,
+    // async_op decides the stream, thus we need to specify at init time as
+    // required by NCCLX API
+    bool async_op) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  cudaStream_t stream = getOperationStream(async_op);
+
+  void* pReq = nullptr;
+  ncclResult_t result = nccl_api_->alltoallvDedupInit(
+      num_send_blocks,
+      block_count,
+      block_num_recv_buckets,
+      num_recv_buckets,
+      getNcclDataType(dtype),
+      nccl_comm_,
+      stream,
+      &pReq);
+
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL alltoallvDedupInit failed", result);
+  }
+  return at::make_intrusive<TorchCommNCCLXPersistentRequest>(
+      shared_from_this(), pReq, stream);
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_exec(
+    at::Tensor& output_tensor,
+    at::Tensor& recv_block_ids,
+    const at::Tensor& input_tensor,
+    const at::Tensor& send_indices,
+    const at::Tensor& forward_indices,
+    const at::Tensor& recv_indices,
+    at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  ensureTensorContiguous(output_tensor);
+  ensureTensorContiguous(recv_block_ids);
+  ensureTensorContiguous(input_tensor);
+  ensureTensorContiguous(send_indices);
+  ensureTensorContiguous(forward_indices);
+  ensureTensorContiguous(recv_indices);
+
+  validateIntDtype(send_indices, "send_indices");
+  validateIntDtype(forward_indices, "forward_indices");
+  validateIntDtype(recv_indices, "recv_indices");
+
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "alltoallv_dedup_exec",
+      rank_,
+      input_tensor,
+      output_tensor);
+
+  TORCH_CHECK(
+      pReq->getStream() != std::nullopt,
+      "cuda stream is not recorded at alltoallv_dedup_init before calling alltoallv_dedup_exec");
+  auto stream = pReq->getStream().value();
+  auto work = createWork(stream, options_.timeout, input_tensor);
+  // Keep the persistent request alive until last dedup work has completed and
+  // cleaned up by CPU, because work->wait() doesn't let CPU wait for kernel
+  // to complete.
+  work->setPersistentRequest(pReq);
+
+  // Record start event before NCCL operation
+  work->recordStart("alltoallv_dedup_exec");
+
+  ncclResult_t result = nccl_api_->alltoallvDedupExec(
+      input_tensor.data_ptr(),
+      send_indices.data_ptr<int>(),
+      forward_indices.data_ptr<int>(),
+      recv_indices.data_ptr<int>(),
+      output_tensor.data_ptr(),
+      recv_block_ids.data_ptr<int>(),
+      pReq->getRequestPtr());
+
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL alltoallvDedupExec failed", result);
+  }
+
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_combine(
+    at::Tensor& output_tensor,
+    const at::Tensor& input_tensor,
+    const at::Tensor& send_indices,
+    const at::Tensor& forward_indices,
+    const at::Tensor& recv_indices,
+    at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+
+  ensureTensorContiguous(output_tensor);
+  ensureTensorContiguous(input_tensor);
+  ensureTensorContiguous(send_indices);
+  ensureTensorContiguous(forward_indices);
+  ensureTensorContiguous(recv_indices);
+
+  validateIntDtype(send_indices, "send_indices");
+  validateIntDtype(forward_indices, "forward_indices");
+  validateIntDtype(recv_indices, "recv_indices");
+
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "alltoallv_dedup_combine",
+      rank_,
+      input_tensor,
+      output_tensor);
+
+  TORCH_CHECK(
+      pReq->getStream() != std::nullopt,
+      "cuda stream is not recorded at alltoallv_dedup_init before calling alltoallv_dedup_combine");
+  auto stream = pReq->getStream().value();
+  auto work = createWork(stream, options_.timeout, input_tensor);
+
+  // Record start event before NCCL operation
+  work->recordStart("alltoallv_dedup_combine");
+
+  ncclResult_t result = nccl_api_->alltoallvDedupCombine(
+      input_tensor.data_ptr(),
+      send_indices.data_ptr<int>(),
+      forward_indices.data_ptr<int>(),
+      recv_indices.data_ptr<int>(),
+      output_tensor.data_ptr(),
+      pReq->getRequestPtr());
+
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL alltoallvDedupCombine failed", result);
   }
 
   // Record end event after NCCL operation
@@ -1615,19 +1824,15 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 }
 
 // Window & One-sidede Operations
-std::shared_ptr<TorchCommWindow> TorchCommNCCLX::window_allocate(
-    const size_t window_size,
-    bool cpu_buf,
-    const size_t signal_size) {
-  auto win = std::make_shared<TorchCommWindowNCCLX>(
-      nccl_comm_, shared_from_this(), device_);
-  win->allocate(window_size, cpu_buf, signal_size);
+std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window() {
+  auto win =
+      std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, shared_from_this());
   return win;
 }
 
 std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
     const std::vector<int>& ranks,
-    const std::string& name,
+    const std::string& split_name,
     const CommOptions& options) {
   checkAndAbortIfTimedOutOrError();
 
@@ -1671,7 +1876,9 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   // Create a new NCCL communicator
   ncclComm_t new_comm;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.commDesc = strdup(name.c_str());
+  std::string commDesc = name_ + "::split::" + std::to_string(color) + "_" +
+      split_name + "_" + std::to_string(split_counter_++);
+  config.commDesc = strdup(commDesc.c_str());
 
   // Set splitGroupRanks and splitGroupSize hints automatically based on ranks
   // parameter
@@ -1681,7 +1888,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   }
 
   // Populate NCCL config from user-provided hints
-  populateNcclConfigFromHints(config, options, name);
+  populateNcclConfigFromHints(config, options, commDesc);
 
   // TODO: nccl says that this is not supposed to be called if any operation
   // is outstanding on the comm. We should check for that.
@@ -1702,7 +1909,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
       std::shared_ptr<TorchCommNCCLX>(new TorchCommNCCLX(new_comm));
   new_torchcomm->nccl_api_ = nccl_api_;
   new_torchcomm->cuda_api_ = cuda_api_;
-  new_torchcomm->init(device_, name, options);
+  new_torchcomm->init(device_, commDesc, options);
 
   return new_torchcomm;
 }
@@ -1740,7 +1947,9 @@ std::shared_ptr<c10::Allocator> TorchCommNCCLX::getMemAllocator() {
   c10::DeviceIndex deviceIdx = device_.index();
   if (!deviceSupportsMulticast(deviceIdx)) {
     TORCH_CHECK(
-        false, "NCCL mem allocator is not supported in this NCCL version");
+        false,
+        "NCCLX mem allocator is not supported in CUDART version %d",
+        CUDART_VERSION);
   }
   static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
       ncclMemAllocator =

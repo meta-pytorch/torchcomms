@@ -222,7 +222,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   ncclx::Hints hints;
   hints.set("window_buffer_location", "cpu");
   void* basePtr;
-  ncclWin_t win;
+  ncclWindow_t win;
   NCCLCHECK_FATAL(ncclWinAllocate(
       size * sizeof(float) * worldSize, comm.raw(), &basePtr, &win, hints));
 

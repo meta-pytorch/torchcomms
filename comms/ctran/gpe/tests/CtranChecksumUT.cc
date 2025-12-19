@@ -7,12 +7,13 @@
 #include "comms/ctran/gpe/CtranChecksum.h"
 // FIXME [REBASE]: update the path once moved to fbcode/comms
 #include "comms/ctran/gpe/tests/CtranChecksumUTKernels.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 class CtranChecksumTest : public ::testing::Test {
  public:
   int cudaDev{0};
-  std::unique_ptr<TestCtranCommRAII> dummyCommRAII;
+  std::unique_ptr<ctran::TestCtranCommRAII> dummyCommRAII;
   CtranComm* dummyComm{nullptr};
   cudaStream_t stream_{0};
   CtranChecksumTest() = default;
@@ -22,8 +23,8 @@ class CtranChecksumTest : public ::testing::Test {
     CUDACHECK_TEST(cudaSetDevice(cudaDev));
 
     ncclCvarInit();
-    dummyCommRAII = createDummyCtranComm();
-    dummyComm = dummyCommRAII->ctranComm;
+    dummyCommRAII = ctran::createDummyCtranComm();
+    dummyComm = dummyCommRAII->ctranComm.get();
   }
 
   void TearDown() override {}

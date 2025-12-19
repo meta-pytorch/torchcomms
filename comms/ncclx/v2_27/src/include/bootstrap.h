@@ -65,6 +65,7 @@ struct bootstrapState {
 
   // Reference to CommLogData to object to facilicate logging
   struct CommLogData *logMetaDataPtr{nullptr};
+  int fastInitMode{NCCL_FAST_INIT_MODE_DEFAULT};
 };
 
 ncclResult_t bootstrapNetInit();

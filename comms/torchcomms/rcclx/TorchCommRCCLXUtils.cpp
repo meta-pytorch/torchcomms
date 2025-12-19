@@ -196,6 +196,13 @@ void TorchCommRCCLX::garbageCollectWorkQueues() {
 // it hipEventQuery (done inside checkStatus).
 void TorchCommRCCLX::timeoutWatchdog() noexcept {
   TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
+
+  hipStreamCaptureMode mode = hipStreamCaptureModeThreadLocal;
+  HIP_CHECK(
+      hip_api_,
+      hip_api_->threadExchangeStreamCaptureMode(&mode),
+      "Failed to swap capture mode for timeout thread");
+
   while (!shutdown_) {
     {
       std::unique_lock<std::mutex> lock(timeout_mutex_);

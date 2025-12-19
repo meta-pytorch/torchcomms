@@ -47,6 +47,8 @@ class HipApi {
   virtual hipStream_t getCurrentHIPStreamMasqueradingAsCUDA(
       int device_index) = 0;
   virtual hipError_t streamSynchronize(hipStream_t stream) = 0;
+  virtual hipError_t threadExchangeStreamCaptureMode(
+      enum hipStreamCaptureMode* mode) = 0;
 
   // Memory management
   virtual hipError_t malloc(void** devPtr, size_t size) = 0;
@@ -96,6 +98,8 @@ class DefaultHipApi : public HipApi {
       unsigned int flags) override;
   hipStream_t getCurrentHIPStreamMasqueradingAsCUDA(int device_index) override;
   hipError_t streamSynchronize(hipStream_t stream) override;
+  hipError_t threadExchangeStreamCaptureMode(
+      enum hipStreamCaptureMode* mode) override;
 
   // Memory management
   hipError_t malloc(void** devPtr, size_t size) override;

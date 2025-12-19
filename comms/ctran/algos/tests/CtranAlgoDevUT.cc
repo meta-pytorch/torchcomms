@@ -1,11 +1,19 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+#include <cuda_fp16.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#if CUDART_VERSION >= 11000
+#include <cuda_bf16.h>
+#endif
+#if CUDART_VERSION >= 11080
+#include <cuda_fp8.h>
+#endif
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/tests/CtranAlgoDevTestUtils.h"
 #include "comms/ctran/algos/tests/CtranAlgoDevUTKernels.cuh"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/testinfra/tests_common.cuh"
 
 class CtranAlgoDevTest : public ::testing::Test {
  public:

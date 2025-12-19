@@ -41,7 +41,7 @@ class CtranBroadcastTest : public CtranDistBaseTest {
     comm = commWorld;
     segments.clear();
     segHandles.clear();
-    if (!ctranBroadcastSupport(comm->ctranComm_.get())) {
+    if (!ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO)) {
       GTEST_SKIP() << "ctranBroadcastSupport returns false, skip test";
     }
   }

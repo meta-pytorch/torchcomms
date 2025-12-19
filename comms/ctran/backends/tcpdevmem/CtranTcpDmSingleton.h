@@ -11,7 +11,14 @@ namespace ctran {
 
 class CtranTcpDmSingleton {
  public:
-  static std::shared_ptr<::comms::tcp_devmem::Transport> getTransport();
+  // utility function to get the interface name from hacList
+  static std::vector<std::vector<std::string>> getIfNames(
+      const std::vector<std::string>& hcaList,
+      int ifPerRank);
+
+  static bool supportBondTransport();
+
+  static ::comms::tcp_devmem::TransportInterface* getTransport();
 };
 
 } // namespace ctran

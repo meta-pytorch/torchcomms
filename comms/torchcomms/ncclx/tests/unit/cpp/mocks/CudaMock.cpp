@@ -75,6 +75,9 @@ void CudaMock::setupDefaultBehaviors() {
           SetArgPointee<3>(reinterpret_cast<cudaGraph_t>(0x4000)),
           Return(cudaSuccess)));
 
+  ON_CALL(*this, threadExchangeStreamCaptureMode(_))
+      .WillByDefault(Return(cudaSuccess));
+
   // Memory management - return success by default
   ON_CALL(*this, malloc(_, _))
       .WillByDefault(DoAll(

@@ -1,0 +1,75 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
+#pragma once
+
+#include <cuda.h>
+#include <cuda_runtime.h>
+#include <cstdint>
+
+namespace comms::pipes::test {
+
+// Kernel: testContiguousLocalityKernel
+// Tests that for_each_item_contiguous assigns CONTIGUOUS blocks of work items
+// to each warp. Each warp writes its group_id to all work items it processes.
+// The CPU then verifies that work items [start, end) all have the same
+// group_id, confirming contiguous-based assignment.
+void testContiguousLocality(
+    uint32_t* groupIds_d,
+    uint32_t numItems,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+// Tests make_block_group() - where all threads in a block form one group
+// Verifies:
+// - group_id == blockIdx.x
+// - group_size == blockDim.x
+// - thread_id_in_group == threadIdx.x
+// - total_groups == gridDim.x
+void testBlockGroup(
+    uint32_t* groupIds_d,
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t numItems,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+// Tests partition(num_partitions) - even partition of groups
+// Verifies:
+// - Each group gets a valid partition_id in [0, num_partitions)
+// - subgroup.group_id is renumbered within partition
+// - subgroup.total_groups is correct for each partition
+void testPartition(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+// Tests that subgroup preserves thread_id_in_group, group_size, and scope
+// from the original group
+void testPartitionSubgroupProperties(
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t* scopes_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+// Tests partition(cuda::std::span<const uint32_t>) - weighted partition
+// Verifies proportional assignment based on weights
+void testWeightedPartition(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    const uint32_t* weights_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+} // namespace comms::pipes::test

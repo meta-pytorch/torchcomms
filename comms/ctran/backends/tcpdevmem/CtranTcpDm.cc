@@ -23,30 +23,17 @@ namespace ctran {
     }                                                                 \
   } while (0)
 
-static folly::once_flag enabledFlag;
-static bool enabled;
-
-bool CtranTcpDm::isEnabled() {
-  folly::call_once(enabledFlag, [&]() {
-    auto it = std::find(
-        NCCL_CTRAN_BACKENDS.begin(),
-        NCCL_CTRAN_BACKENDS.end(),
-        NCCL_CTRAN_BACKENDS::tcpdm);
-    enabled = it != NCCL_CTRAN_BACKENDS.end();
-  });
-  return enabled;
-}
-
 void CtranTcpDm::bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap) {
   folly::SocketAddress ifAddrSockAddr;
   sockaddr_in6 sin6{};
+  auto dev = netdev_->bootstrapIface();
   sin6.sin6_family = AF_INET6;
-  sin6.sin6_addr = netdev_->addr;
+  sin6.sin6_addr = dev->addr;
   ifAddrSockAddr.setFromSockaddr(&sin6);
-  FB_SYSCHECKTHROW(listenSocket_.bindAndListen(ifAddrSockAddr, *netdev_->name));
+  FB_SYSCHECKTHROW(listenSocket_.bindAndListen(ifAddrSockAddr, *dev->name));
 
   std::string line =
-      ::comms::tcp_devmem::addrToString(&netdev_->addr, 0, *netdev_->name);
+      ::comms::tcp_devmem::addrToString(&dev->addr, 0, *dev->name);
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -84,7 +71,7 @@ void CtranTcpDm::bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap) {
 
 void CtranTcpDm::bootstrapAddRecvPeer(
     int peerRank,
-    ::comms::tcp_devmem::Communicator* comm) {
+    ::comms::tcp_devmem::CommunicatorInterface* comm) {
   std::lock_guard lock(mutex_);
   recvComms_[peerRank] = comm;
 }
@@ -111,12 +98,12 @@ void CtranTcpDm::bootstrapAccept() {
     FB_SYSCHECKTHROW(socket.recv(&peerRank, sizeof(int)));
 
     ::comms::tcp_devmem::Handle handle{};
-    ::comms::tcp_devmem::CommunicatorListener* listenComm{};
+    ::comms::tcp_devmem::ListenerInterface* listenComm{};
     COMMCHECKTHROW(transport_->listen(netdev_, &handle, &listenComm));
 
     FB_SYSCHECKTHROW(socket.send(&handle, sizeof(handle)));
 
-    ::comms::tcp_devmem::Communicator* recvComm;
+    ::comms::tcp_devmem::CommunicatorInterface* recvComm;
     COMMCHECKTHROW(transport_->accept(listenComm, &recvComm));
     COMMCHECKTHROW(transport_->closeListen(listenComm));
 
@@ -144,7 +131,7 @@ void CtranTcpDm::bootstrapAccept() {
 
 void CtranTcpDm::bootstrapAddSendPeer(
     int peerRank,
-    ::comms::tcp_devmem::Communicator* comm) {
+    ::comms::tcp_devmem::CommunicatorInterface* comm) {
   sendComms_[peerRank] = comm;
 }
 
@@ -166,7 +153,7 @@ commResult_t CtranTcpDm::bootstrapConnect(
   ::comms::tcp_devmem::Handle handle{};
   FB_SYSCHECKRETURN(sock.recv(&handle, sizeof(handle)), commInternalError);
 
-  ::comms::tcp_devmem::Communicator* sendComm{};
+  ::comms::tcp_devmem::CommunicatorInterface* sendComm{};
   COMMCHECKTHROW(transport_->connect(netdev_, &handle, &sendComm));
 
   bootstrapAddSendPeer(peerRank, sendComm);
@@ -220,8 +207,6 @@ CtranTcpDm::~CtranTcpDm() {
   for (auto comm : recvComms_) {
     transport_->closeRecv(comm.second);
   }
-
-  transport_.reset();
 }
 
 commResult_t CtranTcpDm::preConnect(const std::unordered_set<int>& peerRanks) {
@@ -239,10 +224,10 @@ commResult_t CtranTcpDm::regMem(
     void** handle) {
   auto transport = CtranTcpDmSingleton::getTransport();
 
-  ::comms::tcp_devmem::NetDev* dev = transport->getDeviceFor(cudaDev);
+  auto dev = transport->getDeviceFor(cudaDev);
 
   int dmabufFd = ctran::utils::getCuMemDmaBufFd(buf, len);
-  ::comms::tcp_devmem::MemHandle* mhandle = nullptr;
+  ::comms::tcp_devmem::MemHandleInterface* mhandle = nullptr;
   if (dmabufFd < 0) {
     COMMCHECK_TCP(transport->regMr(dev, (void*)buf, len, &mhandle));
   } else {
@@ -256,7 +241,8 @@ commResult_t CtranTcpDm::regMem(
 
 commResult_t CtranTcpDm::deregMem(void* handle) {
   auto transport = CtranTcpDmSingleton::getTransport();
-  auto* mhandle = reinterpret_cast<::comms::tcp_devmem::MemHandle*>(handle);
+  auto* mhandle =
+      reinterpret_cast<::comms::tcp_devmem::MemHandleInterface*>(handle);
 
   COMMCHECK_TCP(transport->deregMr(mhandle));
 
@@ -271,9 +257,9 @@ commResult_t CtranTcpDm::isend(
     CtranTcpDmRequest& req) {
   FB_COMMCHECK(connectPeer(peerRank));
 
-  ::comms::tcp_devmem::Communicator* comm = sendComms_.at(peerRank);
+  ::comms::tcp_devmem::CommunicatorInterface* comm = sendComms_.at(peerRank);
 
-  ::comms::tcp_devmem::Request* request{nullptr};
+  ::comms::tcp_devmem::RequestInterface* request{nullptr};
   COMMCHECK_TCP(transport_->queueRequest(
       comm,
       ::comms::tcp_devmem::Transport::Op::Send,
@@ -314,7 +300,7 @@ commResult_t CtranTcpDm::progress() {
         recvReq->data,
         recvReq->size,
         *recvReq->req,
-        recvReq->unpackPoolId));
+        recvReq->unpackPool));
 
     it = queuedRecv_.erase(it);
   }
@@ -328,7 +314,7 @@ commResult_t CtranTcpDm::irecv(
     void* data,
     size_t size,
     CtranTcpDmRequest& req,
-    int unpackPoolId) {
+    void* unpackPool) {
   {
     std::unique_lock lock(mutex_);
 
@@ -342,13 +328,13 @@ commResult_t CtranTcpDm::irecv(
       recvReq->data = data;
       recvReq->size = size;
       recvReq->req = &req;
-      recvReq->unpackPoolId = unpackPoolId;
+      recvReq->unpackPool = unpackPool;
       queuedRecv_.push_back(std::move(recvReq));
       return commSuccess;
     }
   }
 
-  return irecvConnected(peerRank, handle, data, size, req, unpackPoolId);
+  return irecvConnected(peerRank, handle, data, size, req, unpackPool);
 }
 
 commResult_t CtranTcpDm::irecvConnected(
@@ -357,13 +343,13 @@ commResult_t CtranTcpDm::irecvConnected(
     void* data,
     size_t size,
     CtranTcpDmRequest& req,
-    int unpackPoolId) {
-  ::comms::tcp_devmem::Communicator* comm = recvComms_.at(peerRank);
+    void* unpackPool) {
+  ::comms::tcp_devmem::CommunicatorInterface* comm = recvComms_.at(peerRank);
   if (!comm) {
     return commInternalError;
   }
 
-  ::comms::tcp_devmem::Request* request{nullptr};
+  ::comms::tcp_devmem::RequestInterface* request{nullptr};
   COMMCHECK_TCP(transport_->queueRequest(
       comm,
       ::comms::tcp_devmem::Transport::Op::Recv,
@@ -371,7 +357,7 @@ commResult_t CtranTcpDm::irecvConnected(
       size,
       handle,
       &request,
-      unpackPoolId));
+      unpackPool));
 
   req.track(transport_, request);
 
@@ -379,14 +365,13 @@ commResult_t CtranTcpDm::irecvConnected(
 }
 
 commResult_t
-CtranTcpDm::prepareUnpackConsumer(SQueues* sqs, size_t blocks, int* poolIndex) {
-  COMMCHECK_TCP(
-      transport_->prepareUnpackConsumer(netdev_, sqs, blocks, poolIndex));
+CtranTcpDm::prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool) {
+  COMMCHECK_TCP(transport_->prepareUnpackConsumer(netdev_, sqs, blocks, pool));
   return commSuccess;
 }
 
-commResult_t CtranTcpDm::teardownUnpackConsumer(int poolIndex) {
-  COMMCHECK_TCP(transport_->teardownUnpackConsumer(netdev_, poolIndex));
+commResult_t CtranTcpDm::teardownUnpackConsumer(void* pool) {
+  COMMCHECK_TCP(transport_->teardownUnpackConsumer(netdev_, pool));
   return commSuccess;
 }
 

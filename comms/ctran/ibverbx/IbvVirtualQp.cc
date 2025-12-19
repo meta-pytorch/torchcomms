@@ -3,6 +3,7 @@
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 
 #include <folly/json.h>
+#include <unordered_set>
 #include "comms/ctran/ibverbx/IbvVirtualCq.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
@@ -30,6 +31,14 @@ IbvVirtualQp::IbvVirtualQp(
     qpNumToIdx_[physicalQps_.at(i).qp()->qp_num] = i;
   }
 
+  // Calculate the number of unique devices that the physical QPs span
+  std::unordered_set<uint32_t> uniqueDevices;
+  for (const auto& qp : physicalQps_) {
+    uniqueDevices.insert(qp.getDeviceId());
+  }
+  uniqueDevices.insert(notifyQp_.getDeviceId());
+  deviceCnt_ = uniqueDevices.size();
+
   // Register the virtual QP and all its mappings with the coordinator
   auto coordinator = Coordinator::getCoordinator();
   CHECK(coordinator)
@@ -56,6 +65,10 @@ const IbvQp& IbvVirtualQp::getNotifyQpRef() const {
   return notifyQp_;
 }
 
+IbvQp& IbvVirtualQp::getNotifyQpRef() {
+  return notifyQp_;
+}
+
 uint32_t IbvVirtualQp::getVirtualQpNum() const {
   return virtualQpNum_;
 }
@@ -71,6 +84,7 @@ IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
       maxMsgCntPerQp_(std::move(other.maxMsgCntPerQp_)),
       maxMsgSize_(std::move(other.maxMsgSize_)),
       nextPhysicalWrId_(std::move(other.nextPhysicalWrId_)),
+      deviceCnt_(std::move(other.deviceCnt_)),
       loadBalancingScheme_(std::move(other.loadBalancingScheme_)),
       pendingSendNotifyVirtualWrQue_(
           std::move(other.pendingSendNotifyVirtualWrQue_)),
@@ -93,6 +107,7 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
     qpNumToIdx_ = std::move(other.qpNumToIdx_);
     maxMsgCntPerQp_ = std::move(other.maxMsgCntPerQp_);
     maxMsgSize_ = std::move(other.maxMsgSize_);
+    deviceCnt_ = std::move(other.deviceCnt_);
     loadBalancingScheme_ = std::move(other.loadBalancingScheme_);
     pendingSendVirtualWrQue_ = std::move(other.pendingSendVirtualWrQue_);
     pendingRecvVirtualWrQue_ = std::move(other.pendingRecvVirtualWrQue_);

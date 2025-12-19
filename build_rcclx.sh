@@ -188,7 +188,7 @@ function build_third_party {
   if [ "$CLEAN_THIRD_PARTY" == 1 ]; then
     rm -f "${CONDA_PREFIX}"/*.cmake 2>/dev/null || true
   fi
-  local third_party_tag="v2025.09.01.00"
+  local third_party_tag="v2025.12.15.00"
 
   local third_party_root="${THIRD_PARTY_ROOT:-${BASE_DIR}/.third-party-cache}"
   mkdir -p "${third_party_root}"

@@ -590,7 +590,7 @@ TEST_F(CollTraceTest, winPutWait) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
   auto res = ncclWinAllocate(sizeBytes, comm, &winBase, &win);
   ASSERT_EQ(res, ncclSuccess);

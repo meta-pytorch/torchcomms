@@ -16,6 +16,9 @@
 #include "mscclpp/mscclpp_nccl.h"
 #endif
 
+#include "MetaFactory.h"
+#include "comms/ctran/utils/ErrorStackTraceUtil.h"
+
 using namespace rccl;
 
 NCCL_PARAM(LocalRegister, "LOCAL_REGISTER", 0); // LWPCOMMLIBS-632: off by default for RCCL as unsupported feature.
@@ -133,6 +136,16 @@ ncclResult_t ncclRegCleanup(struct ncclComm* comm) {
 
 NCCL_API(ncclResult_t, ncclCommRegister, const ncclComm_t comm, void* buff, size_t size, void** handle);
 ncclResult_t ncclCommRegister_impl(const ncclComm_t comm, void* buff, size_t size, void** handle) {
+  if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && NCCL_LOCAL_REGISTER) {
+    WARN("Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
+    return metaCommToNccl(ErrorStackTraceUtil::log(commInvalidUsage));
+  }
+  if (ctranInitialized(comm->ctranComm_.get()) &&
+      NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
+    NCCLCHECK(metaCommToNccl(comm->ctranComm_->ctran_->commRegister(buff, size, handle)));
+    return ncclSuccess;
+  } 
+
   ncclResult_t ret = ncclSuccess;
 
   if (!ncclParamLocalRegister())
@@ -194,6 +207,16 @@ exit:
 
 NCCL_API(ncclResult_t, ncclCommDeregister, const ncclComm_t comm, void* handle);
 ncclResult_t ncclCommDeregister_impl(const ncclComm_t comm, void *handle) {
+  if (NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none && NCCL_LOCAL_REGISTER) {
+    WARN("Invalid usage to turn on NCCL_CTRAN_REGISTER and NCCL_LOCAL_REGISTER at the same time.");
+    return metaCommToNccl(ErrorStackTraceUtil::log(commInvalidUsage));
+  }
+  if (ctranInitialized(comm->ctranComm_.get()) &&
+      NCCL_CTRAN_REGISTER != NCCL_CTRAN_REGISTER::none) {
+    NCCLCHECK(metaCommToNccl(comm->ctranComm_->ctran_->commDeregister(handle)));
+    return ncclSuccess;
+  } 
+
   NCCLCHECK(Recorder::instance().record(rrCommDeregister, comm, handle));
 
   #ifdef ENABLE_MSCCLPP

@@ -4,8 +4,6 @@
 
 #include <string>
 
-#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
-
 namespace torch {
 namespace comms {
 

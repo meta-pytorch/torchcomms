@@ -143,10 +143,10 @@ ncclResult_t ncclBroadcast(const void* sendbuff, void* recvbuff, size_t count, n
   }
 
   SetCudaDevRAII setCudaDev(comm->cudaDev);
-  if ((NCCL_BROADCAST_ALGO != NCCL_BROADCAST_ALGO::orig) &&
-      ctranBroadcastSupport(comm->ctranComm_.get())) {
+  if (NCCL_BROADCAST_ALGO != NCCL_BROADCAST_ALGO::orig &&
+      ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO)) {
     return metaCommToNccl(ctranBroadcast(
-        sendbuff, recvbuff, count, ncclToMetaComm(datatype), root, comm->ctranComm_.get(), stream));
+        sendbuff, recvbuff, count, ncclToMetaComm(datatype), root, comm->ctranComm_.get(), stream, NCCL_BROADCAST_ALGO));
   }
   NVTX3_FUNC_WITH_PARAMS(Broadcast, NcclNvtxParamsBroadcast,
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, count * ncclTypeSize(datatype), root));
@@ -187,9 +187,9 @@ ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recv
     NVTX3_PAYLOAD(comm ? comm->commHash : 0, recvcount * ncclTypeSize(datatype), op));
 
   if (NCCL_REDUCESCATTER_ALGO != NCCL_REDUCESCATTER_ALGO::orig &&
-      ctranReduceScatterSupport(comm->ctranComm_.get())) {
+      ctranReduceScatterSupport(comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO)) {
     return metaCommToNccl(ctranReduceScatter(
-        sendbuff, recvbuff, recvcount, ncclToMetaComm(datatype), ncclToMetaComm(op), comm->ctranComm_.get(), stream));
+        sendbuff, recvbuff, recvcount, ncclToMetaComm(datatype), ncclToMetaComm(op), comm->ctranComm_.get(), stream, NCCL_REDUCESCATTER_ALGO));
   }
 
   struct ncclInfo info = { ncclFuncReduceScatter, "ReduceScatter",
@@ -225,7 +225,7 @@ ncclResult_t ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatyp
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  if ((ncclx::algoconf::getSendRecvAlgo() == NCCL_SENDRECV_ALGO::ctran) &&
+  if ((ncclx::algoconf::getSendRecvAlgo() != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get())) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two
@@ -267,7 +267,7 @@ ncclResult_t ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int
   }
   SetCudaDevRAII setCudaDev(comm->cudaDev);
 
-  if ((ncclx::algoconf::getSendRecvAlgo() == NCCL_SENDRECV_ALGO::ctran) &&
+  if ((ncclx::algoconf::getSendRecvAlgo() != NCCL_SENDRECV_ALGO::orig) &&
       ctranSendRecvSupport(peer, comm->ctranComm_.get())) {
     // ctran send/recvs are enqueued within ctran wherease other non-ctran ones
     // are enqueued in the original queue. When reaching group end, these two
@@ -315,8 +315,8 @@ ncclResult_t ncclAllToAll(
   }
 
   if ((NCCL_ALLTOALL_ALGO == NCCL_ALLTOALL_ALGO::ctran) &&
-      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get())) {
-    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream));
+      ctranAllToAllSupport(count, ncclToMetaComm(datatype), comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO)) {
+    return metaCommToNccl(ctranAllToAll(sendbuff, recvbuff, count, ncclToMetaComm(datatype), comm->ctranComm_.get(), stream, NCCL_ALLTOALL_ALGO));
   }
 
   // fallback to baseline send/recv based alltoall

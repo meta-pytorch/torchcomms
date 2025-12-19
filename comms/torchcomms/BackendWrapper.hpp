@@ -2,9 +2,11 @@
 #pragma once
 
 #include <torch/csrc/distributed/c10d/Backend.hpp> // @manual=//caffe2:torch-cpp-cpu
+#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
 
 #include "comms/torchcomms/TorchCommBackend.hpp"
+#include "comms/torchcomms/TorchCommTypes.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
 namespace torch {
@@ -30,6 +32,16 @@ using c10d::kUnsetTimeout;
 
 class BackendWrapper : public c10d::Backend {
  public:
+  struct TORCH_API Options : c10d::Backend::Options {
+    bool abort_process_on_timeout_or_error{true};
+    std::chrono::milliseconds timeout{kDefaultTimeout};
+    bool high_priority_stream{false};
+    c10::intrusive_ptr<c10d::Store> store{nullptr};
+    std::unordered_map<std::string, std::string> hints;
+
+    explicit Options() : c10d::Backend::Options("torchcomms") {}
+  };
+
   explicit BackendWrapper(std::shared_ptr<TorchComm> comm);
   ~BackendWrapper() override = default;
 
@@ -105,9 +117,24 @@ class BackendWrapper : public c10d::Backend {
   // Get the underlying backend comm for backend-specific operations
   std::shared_ptr<TorchComm> getComm() const;
 
+  c10::intrusive_ptr<Options> getOptions() {
+    return options_;
+  }
+
+  const std::string getBackendName() const override;
+
+  c10::intrusive_ptr<c10d::Backend::Options> getBackendOptions() override;
+
+  // Split communicator into a subgroup and return a new BackendWrapper
+  c10::intrusive_ptr<Backend> split(
+      const c10::intrusive_ptr<c10d::Store>& store,
+      const std::vector<int>& ranks,
+      const c10::intrusive_ptr<c10d::Backend::Options>& opts) override;
+
  private:
   std::shared_ptr<TorchComm> comm_;
   std::shared_ptr<TorchCommBackend> backend_;
+  c10::intrusive_ptr<Options> options_;
 };
 
 } // namespace comms

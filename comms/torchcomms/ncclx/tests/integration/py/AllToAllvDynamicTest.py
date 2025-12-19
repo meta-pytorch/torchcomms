@@ -4,15 +4,41 @@
 
 import itertools
 import os
+import random
 import unittest
+from contextlib import nullcontext
+
+from typing import List
 
 import torch
+from parameterized import parameterized_class
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
     TorchCommTestWrapper,
 )
 
 
+def generate_random_split(n: int, total_sum: int) -> List[int]:
+    """
+    Give an input total_sum and n. Generate a random list of length n that sums to total_sum.
+    """
+    num_cuts = min(total_sum, n - 1)
+    cuts = sorted(random.sample(range(0, total_sum), num_cuts))
+    split = [a - b for a, b in zip(cuts + [total_sum], [0] + cuts)]
+    # Pad with zeros if we have fewer cuts than needed
+    while len(split) < n:
+        split.append(0)
+    return split
+
+
+@parameterized_class(
+    ("name", "use_ib"),
+    [
+        ("ib", True),
+        ("nvlink", False),
+    ],
+    class_name_func=lambda cls, _, params: f"{cls.__name__}_{params['name']}",
+)
 class AllToAllvDynamicDispatchTest(unittest.TestCase):
     """Test class for alltoallv_dynamic_dispatch and alltoallv_dynamic_combine operations.
 
@@ -45,6 +71,8 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         """Set up test environment before each test."""
         # NCCLX alltoallvDynamic requires NCCL_CTRAN_ENABLE=1
         os.environ["NCCL_CTRAN_ENABLE"] = "1"
+        if self.use_ib:
+            os.environ["NCCL_COMM_STATE_DEBUG_TOPO"] = "nolocal"
         self.wrapper = self.get_wrapper()
         self.torchcomm = self.wrapper.get_torchcomm()
         self.rank = self.torchcomm.get_rank()
@@ -351,6 +379,206 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
 
             # Run sync alltoallv_dynamic_dispatch with combine
             self._sync_alltoallv_dynamic(chunk_size, dtype)
+
+    def _run_rail_base_e2e(
+        self, sub_torchcomm, E: int, T: int, ETP: int, TP: int, use_cudagraph: bool
+    ):
+        """Run DP2EP end-to-end test with specified torch comm sub-group."""
+        D = 1024
+        torch.manual_seed(42)
+        rank = sub_torchcomm.get_rank()
+        comm_size = sub_torchcomm.get_size()
+        backend = sub_torchcomm.unsafe_get_backend()
+        assert ETP == 1 or TP == ETP, "Test cases only support ETP=1 or ETP==TP for now"
+        TP2EP = TP // ETP
+        NUM_LOCAL_EXPERTS = E // comm_size // TP2EP
+        # Setup input dispatch indices and combine indices
+        stride = E // comm_size
+        start = self.rank % TP2EP * NUM_LOCAL_EXPERTS
+        dispatch_indices_list = []
+        for _ in range(comm_size):
+            dispatch_indices_list.extend(list(range(start, start + NUM_LOCAL_EXPERTS)))
+            start += stride
+        dispatch_indices = torch.tensor(
+            dispatch_indices_list, dtype=torch.long, device=self.device
+        )
+        start = dispatch_indices_list[NUM_LOCAL_EXPERTS * rank]
+        combine_indices_list = []
+        for _ in range(comm_size):
+            combine_indices_list.extend(list(range(start, start + NUM_LOCAL_EXPERTS)))
+            start += E
+        combine_indices = torch.tensor(
+            combine_indices_list, dtype=torch.long, device=self.device
+        )
+
+        # Setup indices per rank
+        indices_per_rank = torch.full(
+            (comm_size,),
+            NUM_LOCAL_EXPERTS,
+            dtype=torch.long,
+            device=self.device,
+        )
+        # Setup input and output tensors
+        input_tensor = torch.randn((T, D), dtype=torch.bfloat16, device=self.device)
+        output_tensor = torch.empty(
+            (comm_size, T, D), dtype=torch.bfloat16, device=self.device
+        )
+        original_input_tensor = input_tensor.clone()
+        input_split_sizes = torch.tensor(
+            generate_random_split(E, T), dtype=torch.long, device=self.device
+        )
+        output_split_sizes = torch.empty(
+            (comm_size, E), dtype=torch.long, device=self.device
+        )
+        # Actual runs.
+        g = torch.cuda.CUDAGraph()
+        ctx = nullcontext()
+        if use_cudagraph:
+            ctx = torch.cuda.graph(g)
+        with ctx:
+            backend.alltoallv_dynamic_dispatch(
+                list(output_tensor.chunk(comm_size)),
+                output_split_sizes,
+                input_tensor,
+                input_split_sizes,
+                dispatch_indices,
+                indices_per_rank,
+                D,
+                False,
+            )
+
+            combine_output_tensor = torch.empty_like(original_input_tensor)
+            backend.alltoallv_dynamic_combine(
+                combine_output_tensor,
+                output_tensor.view(-1, D),
+                output_split_sizes.flatten(),
+                combine_indices,
+                indices_per_rank,
+                D,
+                False,
+            )
+        if use_cudagraph:
+            g.replay()
+        if ETP == TP:
+            torch.testing.assert_close(
+                combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
+            )
+        else:
+            expected_vals = []
+            output_vals = []
+            input_split_sizes_list = input_split_sizes.tolist()
+            split_vals = original_input_tensor.split(input_split_sizes_list)
+            split_output_vals = combine_output_tensor.split(input_split_sizes_list)
+            for i in dispatch_indices_list:
+                expected_vals.append(split_vals[i])
+                output_vals.append(split_output_vals[i])
+            expected_vals = torch.cat(expected_vals)
+            output_vals = torch.cat(output_vals)
+            torch.testing.assert_close(output_vals, expected_vals, rtol=0.0, atol=0.0)
+        g.reset()
+        del g
+
+    def test_rail_base_e2e(self):
+        """Run DP2EP>1 end-to-end test with rail-based all2all.
+        For example, when we have 4 processes with world rank [0, 1, 2, 3]. Comms group are set up as [[0, 2], [1, 3]].
+        Two common use cases in prod are
+        1) ETP==TP
+        Experts weight sharding are [[W00, W10], [W01, W11], [W20, W30], [W21, W31]] asumming TP=ETP=2, EP=2, DP=2.
+        For a sample visualization of how inputs are setup for this case. Visit https://fburl.com/3j8akuwm with tab DP2EP in RL.
+        2) ETP=1
+        Experts weight sharding are [[W0], [W1], [W2], [W3]] assuming TP=2, ETP=1, EP=4, DP=2.
+        For a sample visualization of how inputs are setup for this case. Visit https://fburl.com/3j8akuwm with tab DP2EP + TP2EP in RL.
+        """
+        DP2EP_SIZE = 2
+        TP_SIZE = self.num_ranks // DP2EP_SIZE
+        ranks = list(range(self.num_ranks))
+        ep_modulo_tp_ranks = [ranks[i::TP_SIZE] for i in range(TP_SIZE)]
+        my_group_rank = None
+        for rank_list in ep_modulo_tp_ranks:
+            if self.rank in rank_list:
+                my_group_rank = rank_list
+                break
+        ep_modulo_tp_comm = self.torchcomm.split(my_group_rank, name="ep_modulo_tp")
+        for E, T, ETP_SIZE, use_cudagraph in itertools.product(
+            [16, 128], [32, 1024], [1, TP_SIZE], [False, True]
+        ):
+            self._run_rail_base_e2e(
+                ep_modulo_tp_comm, E, T, ETP_SIZE, TP_SIZE, use_cudagraph
+            )
+        ep_modulo_tp_comm.finalize()
+
+    def _run_full_e2e(self, E: int, T: int, use_cudagraph: bool):
+        D = 1024
+        torch.manual_seed(42)
+        NUM_LOCAL_EXPERTS = E // self.num_ranks
+        # Setup input dispatch indices and combine indices
+        dispatch_indices = torch.arange(0, E, dtype=torch.long, device=self.device)
+        start = NUM_LOCAL_EXPERTS * self.rank
+        combine_indices_list = []
+        for _ in range(self.num_ranks):
+            combine_indices_list.extend(list(range(start, start + NUM_LOCAL_EXPERTS)))
+            start += E
+        combine_indices = torch.tensor(
+            combine_indices_list, dtype=torch.long, device=self.device
+        )
+
+        # Setup indices per rank.
+        indices_per_rank = torch.full(
+            (self.num_ranks,), NUM_LOCAL_EXPERTS, dtype=torch.long, device=self.device
+        )
+        # Setup input and output tensors
+        input_tensor = torch.randn((T, D), dtype=torch.bfloat16, device=self.device)
+        output_tensor = torch.empty(
+            (self.num_ranks, T, D), dtype=torch.bfloat16, device=self.device
+        )
+        original_input_tensor = input_tensor.clone()
+        input_split_sizes = torch.tensor(
+            generate_random_split(E, T), dtype=torch.long, device=self.device
+        )
+        output_split_sizes = torch.empty(
+            (self.num_ranks, E), dtype=torch.long, device=self.device
+        )
+        # Actual runs.
+        g = torch.cuda.CUDAGraph()
+        ctx = nullcontext()
+        if use_cudagraph:
+            ctx = torch.cuda.graph(g)
+        with ctx:
+            self.ncclx_backend.alltoallv_dynamic_dispatch(
+                list(output_tensor.chunk(self.num_ranks)),
+                output_split_sizes,
+                input_tensor,
+                input_split_sizes,
+                dispatch_indices,
+                indices_per_rank,
+                D,
+                False,
+            )
+
+            combine_output_tensor = torch.empty_like(original_input_tensor)
+            self.ncclx_backend.alltoallv_dynamic_combine(
+                combine_output_tensor,
+                output_tensor.view(-1, D),
+                output_split_sizes.flatten(),
+                combine_indices,
+                indices_per_rank,
+                D,
+                False,
+            )
+        if use_cudagraph:
+            g.replay()
+        torch.testing.assert_close(
+            combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
+        )
+        g.reset()
+        del g
+
+    def test_full_e2e(self):
+        """Run full all2all based e2e tests. This corresponds to prod use cases when SP is used and each rank has different data."""
+        for E, T, use_cudagraph in itertools.product(
+            [16, 128], [32, 1024], [False, True]
+        ):
+            self._run_full_e2e(E, T, use_cudagraph)
 
 
 if __name__ == "__main__":

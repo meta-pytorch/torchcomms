@@ -10,6 +10,7 @@
 #include "comms/ctran/bootstrap/ISocketFactory.h"
 #include "comms/ctran/bootstrap/tests/MockIServerSocket.h"
 #include "comms/ctran/bootstrap/tests/MockISocket.h"
+#include "comms/ctran/utils/Exception.h"
 
 namespace ctran::bootstrap::testing {
 
@@ -42,9 +43,10 @@ class MockInjectorSocketFactory : public ISocketFactory {
   std::unique_ptr<ISocket> createClientSocket(
       std::shared_ptr<ctran::utils::Abort> abort = nullptr) override {
     if (currentIndex_ >= mockSockets_.size()) {
-      throw std::runtime_error(
+      throw ctran::utils::Exception(
           "MockInjectorSocketFactory: No more mocked sockets available. "
-          "Test attempted to create more sockets than provided.");
+          "Test attempted to create more sockets than provided.",
+          commInvalidUsage);
     }
 
     auto& mock = mockSockets_[currentIndex_++];
@@ -56,9 +58,10 @@ class MockInjectorSocketFactory : public ISocketFactory {
       const folly::SocketAddress& peerAddr,
       std::shared_ptr<ctran::utils::Abort> abort = nullptr) override {
     if (currentIndex_ >= mockSockets_.size()) {
-      throw std::runtime_error(
+      throw ctran::utils::Exception(
           "MockInjectorSocketFactory: No more mocked sockets available. "
-          "Test attempted to create more sockets than provided.");
+          "Test attempted to create more sockets than provided.",
+          commInvalidUsage);
     }
 
     auto& mock = mockSockets_[currentIndex_++];
@@ -69,10 +72,11 @@ class MockInjectorSocketFactory : public ISocketFactory {
       int acceptRetryCnt,
       std::shared_ptr<ctran::utils::Abort> abort = nullptr) override {
     if (currentServerIndex_ >= mockServerSockets_.size()) {
-      throw std::runtime_error(
+      throw ctran::utils::Exception(
           "MockInjectorSocketFactory: No more mocked server sockets "
           "available. Test attempted to create more server sockets than "
-          "provided.");
+          "provided.",
+          commInvalidUsage);
     }
 
     auto& mock = mockServerSockets_[currentServerIndex_++];

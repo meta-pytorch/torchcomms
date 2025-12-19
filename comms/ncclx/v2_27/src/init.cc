@@ -1546,7 +1546,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     if (job->excludeRanksCount) {
       NCCLCHECKGOTO(getParentRanks(job->parent->nRanks, job->parent->rank, job->excludeRanksList, job->excludeRanksCount, &job->nranks, &job->myrank, parentRanks), res, fail);
     } else {
-      if (NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid) {
+      if (isFastInitRingMode(job->parent->config.fastInitMode)) {
         NCCLCHECKGOTO(ncclxCommGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
       } else {
         NCCLCHECKGOTO(commGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
@@ -1578,7 +1578,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     comm->commHash = commIdHash = getHash(job->commId->internal, NCCL_UNIQUE_ID_BYTES);
     // [Meta] Fast-init mode won't get unique commId for different communicators
     // use ctran helper function to generate unique hash
-    if (NCCL_FASTINIT_MODE != NCCL_FASTINIT_MODE::none) {
+    if (isFastInitRingMode(comm->config.fastInitMode)) {
       comm->commHash = commIdHash = ctran::utils::generateCommHash(job->nranks);
     }
     INFO(NCCL_INIT, "%s comm %p rank %d nranks %d cudaDev %d nvmlDev %d busId %lx commId 0x%llx - Init START", job->funcName,
@@ -1888,6 +1888,13 @@ static void ncclxParseCommConfig(
       NCCL_LAZY_SETUP_CHANNELS,
       "lazySetupChannels",
       "%d");
+  NCCL_CONFIG_DEFAULT(
+      internalConfigPtr,
+      fastInitMode,
+      NCCL_CONFIG_UNDEF_INT,
+      NCCL_FAST_INIT_MODE_DEFAULT,
+      "fastInitMode",
+      "%d");
 
   comm->config.commDesc = internalConfigPtr->commDesc;
   comm->config.splitGroupRanks = internalConfigPtr->splitGroupRanks;
@@ -1897,6 +1904,7 @@ static void ncclxParseCommConfig(
       : nullptr;
   comm->config.lazyConnect = internalConfigPtr->lazyConnect;
   comm->config.lazySetupChannels = internalConfigPtr->lazySetupChannels;
+  comm->config.fastInitMode = internalConfigPtr->fastInitMode;
 }
 
 static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
@@ -2107,7 +2115,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   /* start with ncclInProgress and will be changed to ncclSuccess if init succeeds. */
   comm->initState = ncclInProgress;
   *newcomm = comm;
-  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  sampleGuardBegin.sample().setCommunicatorMetadata(comm ? &comm->logMetaData: nullptr);
 
   NCCLCHECKGOTO(ncclCalloc(&job, 1), res, fail);
   job->nId = nId;
@@ -2123,7 +2131,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   NCCLCHECKGOTO(ncclCalloc(&job->commId, nId), res, fail);
   memcpy(job->commId, commId, nId * NCCL_UNIQUE_ID_BYTES);
 
-  if (NCCL_COMM_ID.size() && myrank == 0 && NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::none) {
+  if (NCCL_COMM_ID.size() && myrank == 0 && !isFastInitRingMode(comm->config.fastInitMode)) {
     // create root-rank server in non-meta-fast-init mode
     commIdEnv = NCCL_COMM_ID.c_str();
     INFO(NCCL_ENV, "NCCL_COMM_ID set by environment to %s", commIdEnv);
@@ -2265,7 +2273,8 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
 
   char allZeroUniqueId[NCCL_UNIQUE_ID_BYTES] = {0};
   bool uniqueIdIsInitialized = memcmp(commId.internal, allZeroUniqueId, NCCL_UNIQUE_ID_BYTES) != 0;
-  if (NCCL_FASTINIT_MODE != NCCL_FASTINIT_MODE::none) {
+  int fastInitMode = config ? config->fastInitMode : NCCL_FAST_INIT_MODE_DEFAULT;
+  if (isFastInitRingMode(fastInitMode)) {
     // in meta-fast-init mode, we don't need commId
     if (uniqueIdIsInitialized) {
       WARN("No need to broadcast uniqueId in meta-fast-init mode, please set TORCH_NCCL_BCAST_UNIQUEID=0");

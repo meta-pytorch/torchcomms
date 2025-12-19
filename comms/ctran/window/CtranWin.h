@@ -10,6 +10,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/hints/Hints.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/ctran/utils/DevMemType.h"
 #include "comms/ctran/window/Types.h"
@@ -28,22 +29,32 @@ struct CtranWin {
   std::vector<window::RemWinInfo> remWinInfo;
 
   // User specified size in bytes of the data buffer per rank in this window
-  size_t dataSize{0};
+  size_t dataBytes{0};
   // User specified signal buffer size(in uint64_t) per rank in this window
   size_t signalSize{0};
-  // The ctran mapper handles for caching the segment
-  void* segHdl{nullptr};
-  // The ctran mapper handles for caching the registration
-  void* regHdl{nullptr};
-  // The base pointer of the data buffer of this window
+  // The ctran mapper handles for caching the allocated buffer segment
+  void* baseSegHdl{nullptr};
+  // The ctran mapper handles for caching the allocated buffer registration
+  void* baseRegHdl{nullptr};
+  // The ctran mapper handles for caching the data segment
+  void* dataSegHdl{nullptr};
+  // The ctran mapper handles for caching the data registration
+  void* dataRegHdl{nullptr};
+  // The base pointer of allocated buffer by the window
   void* winBasePtr{nullptr};
-  // The base pointer of the signal buffer of this window
-  uint64_t* winBaseSignalPtr{nullptr};
+  // The pointer of the data buffer of this window
+  void* winDataPtr{nullptr};
+  // The pointer of the signal buffer of this window
+  uint64_t* winSignalPtr{nullptr};
+  // Stores signal values for waiting, used to track progress
+  std::deque<std::atomic<uint64_t>> waitSignalVal{};
+
+  // Stores signal values for sent signals, used to track progress
+  std::deque<std::atomic<uint64_t>> signalVal{};
 
   CtranWin(
       CtranComm* comm,
       size_t dataSize,
-      size_t signalSize,
       DevMemType bufType = DevMemType::kCumem);
 
   inline uint64_t updateOpCount(
@@ -64,7 +75,25 @@ struct CtranWin {
     return opCount;
   }
 
-  commResult_t allocate();
+  inline uint64_t ctranNextWaitSignalVal(int peer) {
+    FB_CHECKTHROW(
+        peer < signalSize,
+        "peer rank {} exceed window signal buffer size {}",
+        peer,
+        signalSize);
+    return waitSignalVal[peer].fetch_add(1, std::memory_order_relaxed);
+  }
+
+  inline uint64_t ctranNextSignalVal(int peer) {
+    FB_CHECKTHROW(
+        peer < signalSize,
+        "peer rank {} exceed window signal buffer size {}",
+        peer,
+        signalSize);
+    return signalVal[peer].fetch_add(1, std::memory_order_relaxed);
+  }
+
+  commResult_t allocate(void* userBufPtr = nullptr);
   commResult_t exchange();
 
   commResult_t free();
@@ -78,6 +107,8 @@ struct CtranWin {
 
  private:
   DevMemType bufType_{DevMemType::kCumem};
+  // whether allocate window data buffer or provided by users
+  bool allocDataBuf_{true};
   // rank: window::OpCountType as key
   folly::Synchronized<
       std::unordered_map<std::pair<int, window::OpCountType>, uint64_t>>
@@ -90,6 +121,13 @@ commResult_t ctranWinAllocate(
     size_t size,
     CtranComm* comm,
     void** baseptr,
+    CtranWin** win,
+    const meta::comms::Hints& hints = meta::comms::Hints());
+
+commResult_t ctranWinRegister(
+    const void* baseptr,
+    size_t size,
+    CtranComm* comm,
     CtranWin** win,
     const meta::comms::Hints& hints = meta::comms::Hints());
 

@@ -9,12 +9,12 @@
 namespace torch {
 namespace comms {
 
-class DummyTorchCommBackend : public TorchCommBackend {
+class TorchCommDummy : public TorchCommBackend {
  public:
   static constexpr std::string_view kBackendName = "dummy";
 
-  DummyTorchCommBackend();
-  ~DummyTorchCommBackend() override = default;
+  TorchCommDummy();
+  ~TorchCommDummy() override = default;
 
   // Initialize the communication backend
   void init(
@@ -130,10 +130,7 @@ class DummyTorchCommBackend : public TorchCommBackend {
       const GatherOptions& options = {}) override;
 
   // Window & One-sidede Operations
-  std::shared_ptr<TorchCommWindow> window_allocate(
-      const size_t window_size,
-      bool cpu_buf = false,
-      const size_t signal_size = 256) override;
+  std::shared_ptr<TorchCommWindow> new_window() override;
 
   // Communicator Management
   std::shared_ptr<TorchCommBackend> split(

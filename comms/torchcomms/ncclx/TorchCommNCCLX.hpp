@@ -22,6 +22,7 @@
 #include "comms/torchcomms/TorchCommBatch.hpp"
 #include "comms/torchcomms/device/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
+#include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 
@@ -173,6 +174,31 @@ class TorchCommNCCLX : public TorchCommBackend,
       const at::Tensor& input_chunk_count_per_rank,
       bool async_op);
 
+  c10::intrusive_ptr<TorchCommNCCLXPersistentRequest> alltoallv_dedup_init(
+      const int num_send_blocks,
+      const int block_count,
+      const int block_num_recv_buckets,
+      const int num_recv_buckets,
+      at::ScalarType dtype,
+      bool async_op);
+
+  c10::intrusive_ptr<TorchWork> alltoallv_dedup_exec(
+      at::Tensor& output_tensor,
+      at::Tensor& recv_block_ids,
+      const at::Tensor& input_tensor,
+      const at::Tensor& send_indices,
+      const at::Tensor& forward_indices,
+      const at::Tensor& recv_indices,
+      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
+
+  c10::intrusive_ptr<TorchWork> alltoallv_dedup_combine(
+      at::Tensor& output_tensor,
+      const at::Tensor& input_tensor,
+      const at::Tensor& send_indices,
+      const at::Tensor& forward_indices,
+      const at::Tensor& recv_indices,
+      at::intrusive_ptr<TorchCommNCCLXPersistentRequest> pReq);
+
   c10::intrusive_ptr<TorchWork> barrier(
       bool async_op,
       const BarrierOptions& options = {}) override;
@@ -192,10 +218,7 @@ class TorchCommNCCLX : public TorchCommBackend,
       const GatherOptions& options = {}) override;
 
   // Window & One-sidede Operations
-  std::shared_ptr<TorchCommWindow> window_allocate(
-      const size_t window_size,
-      bool cpu_buf = false,
-      const size_t signal_size = 256) override;
+  std::shared_ptr<TorchCommWindow> new_window() override;
 
   // Communicator Management
   std::shared_ptr<TorchCommBackend> split(
@@ -268,6 +291,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   void register_address(const AddressWithLen& addr);
   void deregister_address(const Address& addr);
   ncclDataType_t getNcclDataType(const at::Tensor& tensor);
+  ncclDataType_t getNcclDataType(const at::ScalarType scalar_type);
 
   c10::intrusive_ptr<TorchWorkNCCLX> createWork(
       cudaStream_t stream,
@@ -279,7 +303,14 @@ class TorchCommNCCLX : public TorchCommBackend,
       std::chrono::milliseconds timeout,
       const at::Tensor& inputTensor);
 
-  NcclxWindowCmpOp getNcclSignalCmpOp(SignalCmpOp op);
+  // Stream and work management for Window operations
+  cudaStream_t getOperationStream(bool async_op);
+  void enqueueWork(
+      c10::intrusive_ptr<TorchWorkNCCLX> work,
+      cudaStream_t stream);
+  cudaStream_t getInternalStream() const {
+    return internal_stream_;
+  }
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -339,11 +370,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
   void checkWorkQueue();
-  void enqueueWork(
-      c10::intrusive_ptr<TorchWorkNCCLX> work,
-      cudaStream_t stream);
   bool getGraphCaptureMode();
-  cudaStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
 
   void attachMemoryHook();
@@ -354,6 +381,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   at::Device device_;
   int comm_size_{};
   int rank_{};
+  size_t split_counter_{};
   CommOptions options_;
 
   struct Configs {

@@ -6,7 +6,7 @@ import os
 from typing import Tuple, Union
 
 import torch
-from torchcomms import new_comm, RedOpType, SignalCmpOp
+from torchcomms import new_comm, RedOpType
 from torchcomms._comms import _get_store
 
 
@@ -48,17 +48,6 @@ def get_op_name(op):
         return "PremulSum"
     else:
         return "Unknown: " + str(op.type)
-
-
-def get_signal_cmp_op_name(op):
-    """Helper function to get a string representation of the reduction operation."""
-    if op == SignalCmpOp.EQ:
-        return "EQ"
-    elif op == SignalCmpOp.GE:
-        return "GE"
-    elif op == SignalCmpOp.LE:
-        return "LE"
-        return "Unknown"
 
 
 def get_rank_and_size() -> Tuple[int, int]:
@@ -225,6 +214,12 @@ class TorchCommTestWrapper:
         device_id = rank % torch.cuda.device_count()
         return torch.device(f"cuda:{device_id}")
 
+    def get_hints_from_env(self):
+        hints = {}
+        if fast_init_mode := os.environ.get("TEST_FAST_INIT_MODE"):
+            hints.update({"fastInitMode": fast_init_mode})
+        return hints
+
     def __init__(self, store=None):
         maybe_set_rank_envs()
 
@@ -235,6 +230,7 @@ class TorchCommTestWrapper:
 
         rank, size = get_rank_and_size()
         device = self.get_device(os.environ["TEST_BACKEND"], rank)
+        hints = self.get_hints_from_env()
         # Create and initialize TorchComm instance
         TorchCommTestWrapper.NEXT_COMM_ID += 1
         self.torchcomm = new_comm(
@@ -242,6 +238,7 @@ class TorchCommTestWrapper:
             device,
             store=store,
             name=f"comms_test_{TorchCommTestWrapper.NEXT_COMM_ID}",
+            hints=hints,
         )
 
         print(

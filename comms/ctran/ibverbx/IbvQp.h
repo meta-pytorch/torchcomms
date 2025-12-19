@@ -7,6 +7,7 @@
 #include <deque>
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/ctran/ibverbx/device/structs.h"
 
 namespace ibverbx {
 
@@ -24,6 +25,11 @@ class IbvQp {
   IbvQp& operator=(IbvQp&& other) noexcept;
 
   ibv_qp* qp() const;
+  int32_t getDeviceId() const;
+
+  // create device qp, map qp buffer to GPU
+  folly::Expected<struct device_qp, Error> getDeviceQp(
+      device_cq* cq) const noexcept;
 
   folly::Expected<folly::Unit, Error> modifyQp(ibv_qp_attr* attr, int attrMask);
   folly::Expected<std::pair<ibv_qp_attr, ibv_qp_init_attr>, Error> queryQp(
@@ -61,11 +67,13 @@ class IbvQp {
     uint64_t physicalWrId{0};
     uint64_t virtualWrId{0};
   };
-  explicit IbvQp(ibv_qp* qp);
+  explicit IbvQp(ibv_qp* qp, int32_t deviceId);
 
   ibv_qp* qp_{nullptr};
   std::deque<PhysicalSendWrStatus> physicalSendWrStatus_;
   std::deque<PhysicalRecvWrStatus> physicalRecvWrStatus_;
+  int32_t deviceId_{-1}; // The IbvDevice's DeviceId that corresponds to this
+                         // Queue Pair (QP)
 };
 
 // IbvQp inline functions

@@ -98,10 +98,13 @@ TEST_F(CtranTest, CTranDisabled) {
   EXPECT_FALSE(
       ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO));
   EXPECT_FALSE(ctranAllReduceSupport(comm->ctranComm_.get()));
-  EXPECT_FALSE(ctranBroadcastSupport(comm->ctranComm_.get()));
-  EXPECT_FALSE(ctranReduceScatterSupport(comm->ctranComm_.get()));
+  EXPECT_FALSE(
+      ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO));
+  EXPECT_FALSE(ctranReduceScatterSupport(
+      comm->ctranComm_.get(), NCCL_REDUCESCATTER_ALGO));
   EXPECT_FALSE(ctranSendRecvSupport(0, comm->ctranComm_.get()));
-  EXPECT_FALSE(ctranAllToAllSupport(1048576, commInt, comm->ctranComm_.get()));
+  EXPECT_FALSE(ctranAllToAllSupport(
+      1048576, commInt, comm->ctranComm_.get(), NCCL_ALLTOALL_ALGO::ctran));
   EXPECT_FALSE(ctranAllToAllvSupport(comm->ctranComm_.get()));
   meta::comms::Hints hints;
 
@@ -275,7 +278,7 @@ TEST_F(CtranTest, AlgoDeviceState) {
   EXPECT_EQ(statexDev.pid(), getpid());
 
   for (int i = 0; i < nLocalRanks; i++) {
-    if (i == localRank) {
+    if (i == comm->ctranComm_->statex_->localRank()) {
       EXPECT_EQ(devState.remoteSyncsMap[i], nullptr);
       EXPECT_EQ(devState.localSyncsMap[i], nullptr);
       EXPECT_EQ(devState.remoteStagingBufsMap[i], nullptr);

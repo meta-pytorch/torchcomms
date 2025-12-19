@@ -10,6 +10,7 @@
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/IbvDevice.h" // IWYU pragma: keep
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/ctran/ibverbx/Mlx5dv.h"
 
 namespace ibverbx {
 
@@ -27,12 +28,5 @@ ibvGetCqEvent(ibv_comp_channel* channel, ibv_cq** cq, void** cq_context);
 
 // Acknowledge completion events
 void ibvAckCqEvents(ibv_cq* cq, unsigned int nevents);
-
-class Mlx5dv {
- public:
-  static folly::Expected<folly::Unit, Error> initObj(
-      mlx5dv_obj* obj,
-      uint64_t obj_type);
-};
 
 } // namespace ibverbx

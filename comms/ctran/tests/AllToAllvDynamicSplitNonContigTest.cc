@@ -14,7 +14,7 @@
 #endif
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/tests_common.cuh"
 
@@ -45,7 +45,7 @@ __global__ void initializeBufferPtrKernel(
     size_t maxCount,
     int* sendbuff,
     int** sendbuffs,
-    size_t* sendSplitLengthsDev);
+    size_t* inputChunkSizesDev);
 __global__ void checkDataBuffersKernel(
     size_t maxCount,
     size_t* counts,
@@ -57,7 +57,7 @@ __global__ void checkDataBuffersNonContigKernel(
     size_t* recvSplits,
     size_t* recvIndices,
     size_t* recvIndicesBlockLengths,
-    size_t numSendSplitLengths,
+    size_t inputChunkSizesCount,
     int** recvbuffs,
     int globalRank);
 __global__ void equalCountsKernel(size_t* sendCounts, size_t count);
@@ -75,7 +75,7 @@ __global__ void checkRandomCountsKernel(
 __global__ void checkRandomCountsNonContigKernel(
     size_t* recvSplits,
     size_t* randomCountsMatrix,
-    size_t numSendSplitLengths,
+    size_t inputChunkSizesCount,
     int numRanks,
     int maxNumExperts);
 __global__ void initRecvIndicesKernel(
@@ -87,22 +87,28 @@ __global__ void initRecvIndicesBlockLengthKernel(
     size_t* recvIndicesBlockLengths,
     size_t myIndicesBlockLengths);
 
-class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
+class AllToAllvDynamicSplitNonContigTestCommon
+    : public ctran::CtranDistTestFixture {
  public:
   AllToAllvDynamicSplitNonContigTestCommon() = default;
   void SetUp() override {
-    CtranDistTest::SetUp();
-    comm = commRAII->ctranComm;
-
-    CUDACHECK_TEST(cudaSetDevice(localRank));
-    CUDACHECK_TEST(cudaStreamCreate(&stream));
+    ctran::CtranDistTestFixture::SetUp();
+    // Create CtranComm using the fixture's helper
+    ctranComm = makeCtranComm();
+    comm = ctranComm.get();
+    // stream and device already set by fixture
 
     maxAllowedCount = MAX_MEM_USAGE / (2 * numRanks * sizeof(int));
   }
 
   void TearDown() override {
-    CUDACHECK_TEST(cudaStreamDestroy(stream));
-    CtranDistTest::TearDown();
+    // Destroy comm before fixture teardown
+    if (ctranComm) {
+      ctranComm->destroy();
+      ctranComm.reset();
+    }
+    // stream destroyed by fixture
+    ctran::CtranDistTestFixture::TearDown();
   }
 
   void InitTestSetup(size_t maxCount_, int numExperts_, bool dupExpertFlag) {
@@ -131,13 +137,13 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   void AllocateBuffers(MemAllocType memType, bool registFlag) {
     // Create metadata buffers
     CUDACHECK_TEST(cudaMalloc(
-        &sendSplitLengthsDev, numRanks * maxNumExperts * sizeof(size_t)));
-    CUDACHECK_TEST(
-        cudaMalloc(&sendIndicesDev, numRanks * maxNumExperts * sizeof(size_t)));
+        &inputChunkSizesDev, numRanks * maxNumExperts * sizeof(size_t)));
+    CUDACHECK_TEST(cudaMalloc(
+        &inputChunkIndicesDev, numRanks * maxNumExperts * sizeof(size_t)));
     CUDACHECK_TEST(
         cudaMalloc(&recvIndicesDev, numRanks * maxNumExperts * sizeof(size_t)));
     CUDACHECK_TEST(cudaHostAlloc(
-        &sendIndicesHost,
+        &inputChunkIndicesHost,
         numRanks * maxNumExperts * sizeof(size_t),
         cudaHostAllocDefault));
     CUDACHECK_TEST(cudaHostAlloc(
@@ -145,11 +151,11 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         numRanks * maxNumExperts * sizeof(size_t),
         cudaHostAllocDefault));
     CUDACHECK_TEST(
-        cudaMalloc(&sendIndicesBlockLengthsDev, numRanks * sizeof(size_t)));
+        cudaMalloc(&inputChunkCountPerRankDev, numRanks * sizeof(size_t)));
     CUDACHECK_TEST(
         cudaMalloc(&recvIndicesBlockLengthsDev, numRanks * sizeof(size_t)));
     CUDACHECK_TEST(cudaHostAlloc(
-        &sendIndicesBlockLengthsHost,
+        &inputChunkCountPerRankHost,
         numRanks * sizeof(size_t),
         cudaHostAllocDefault));
     CUDACHECK_TEST(cudaHostAlloc(
@@ -241,14 +247,14 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     CUDACHECK_TEST(cudaFree(recvbuffsDev));
 
     // Free metadata buffers
-    CUDACHECK_TEST(cudaFree(sendSplitLengthsDev));
-    CUDACHECK_TEST(cudaFree(sendIndicesDev));
+    CUDACHECK_TEST(cudaFree(inputChunkSizesDev));
+    CUDACHECK_TEST(cudaFree(inputChunkIndicesDev));
     CUDACHECK_TEST(cudaFree(recvIndicesDev));
-    CUDACHECK_TEST(cudaFreeHost(sendIndicesHost));
+    CUDACHECK_TEST(cudaFreeHost(inputChunkIndicesHost));
     CUDACHECK_TEST(cudaFreeHost(recvIndicesHost));
-    CUDACHECK_TEST(cudaFree(sendIndicesBlockLengthsDev));
+    CUDACHECK_TEST(cudaFree(inputChunkCountPerRankDev));
     CUDACHECK_TEST(cudaFree(recvIndicesBlockLengthsDev));
-    CUDACHECK_TEST(cudaFreeHost(sendIndicesBlockLengthsHost));
+    CUDACHECK_TEST(cudaFreeHost(inputChunkCountPerRankHost));
     CUDACHECK_TEST(cudaFreeHost(recvIndicesBlockLengthsHost));
     CUDACHECK_TEST(cudaFree(recvSplitsDev));
   }
@@ -258,16 +264,16 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     kernelArgs.push_back((void*)&maxCount);
     kernelArgs.push_back((void*)&sendbuffsDev);
     kernelArgs.push_back((void*)&recvbuffsDev);
-    kernelArgs.push_back((void*)&sendSplitLengthsDev);
+    kernelArgs.push_back((void*)&inputChunkSizesDev);
     kernelArgs.push_back((void*)&maxTotalExperts);
     kernelArgs.push_back((void*)&numRanks);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)initializeDataBuffersKernel,
-        numSendSplitLengths,
+        inputChunkSizesCount,
         1024,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   void EnqueueInitializeBufferPtrKernel() {
@@ -275,14 +281,14 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     kernelArgs.push_back((void*)&maxCount);
     kernelArgs.push_back((void*)&sendbuffDev);
     kernelArgs.push_back((void*)&sendbuffsDev);
-    kernelArgs.push_back((void*)&sendSplitLengthsDev);
+    kernelArgs.push_back((void*)&inputChunkSizesDev);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)initializeBufferPtrKernel,
-        numSendSplitLengths,
+        inputChunkSizesCount,
         1,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   void EnqueueDataBuffersCheck() {
@@ -292,7 +298,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     kernelArgs.push_back((void*)&recvSplitsDev);
     kernelArgs.push_back((void*)&recvIndicesDev);
     kernelArgs.push_back((void*)&recvIndicesBlockLengthsDev);
-    kernelArgs.push_back((void*)&numSendSplitLengths);
+    kernelArgs.push_back((void*)&inputChunkSizesCount);
     kernelArgs.push_back((void*)&recvbuffsDev);
     kernelArgs.push_back((void*)&globalRank);
     CUDACHECK_TEST(cudaLaunchKernel(
@@ -301,17 +307,17 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         1,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   // TODO: will need to add unit test for combine. Now only have dispatch.
   void EnqueueAllToAllvDynamicSplitNonContig() {
     auto res = ctranAlltoallvDynamicSplitNonContig(
         sendbuffDev,
-        sendSplitLengthsDev,
-        numSendSplitLengths,
-        sendIndicesDev,
-        sendIndicesBlockLengthsDev,
+        inputChunkSizesDev,
+        inputChunkSizesCount,
+        inputChunkIndicesDev,
+        inputChunkCountPerRankDev,
         recvbuffsHost,
         nullptr,
         maxSendcount,
@@ -319,7 +325,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
         hints,
         commInt32,
         comm,
-        stream,
+        stream->get(),
         false,
         recvSplitsDev);
     ASSERT_EQ(res, commSuccess);
@@ -331,52 +337,52 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   };
 
   void InitSendIndices(bool expertType) {
-    // Initilze sendIndicesBlockLengthsDev
-    numSendSplitLengths = 0;
+    // Initilze inputChunkCountPerRankDev
+    inputChunkSizesCount = 0;
     for (int r = 0; r < numRanks; r++) {
-      sendIndicesBlockLengthsHost[r] = numExperts;
+      inputChunkCountPerRankHost[r] = numExperts;
       if (expertType) {
-        sendIndicesBlockLengthsHost[r] += r % (maxNumExperts - numExperts + 1);
+        inputChunkCountPerRankHost[r] += r % (maxNumExperts - numExperts + 1);
       }
-      numSendSplitLengths += sendIndicesBlockLengthsHost[r];
+      inputChunkSizesCount += inputChunkCountPerRankHost[r];
     }
     CUDACHECK_TEST(cudaMemcpy(
-        sendIndicesBlockLengthsDev,
-        sendIndicesBlockLengthsHost,
+        inputChunkCountPerRankDev,
+        inputChunkCountPerRankHost,
         numRanks * sizeof(size_t),
         cudaMemcpyDefault));
 
-    // Initialize sendIndicesDev
+    // Initialize inputChunkIndicesDev
     auto sendIndicesPos = 0;
     if (contigSendIndices) {
       auto lastIndices = 0;
       for (int r = 0; r < numRanks; r++) {
-        for (int i = 0; i < sendIndicesBlockLengthsHost[r]; i++) {
-          sendIndicesHost[sendIndicesPos + i] = lastIndices;
+        for (int i = 0; i < inputChunkCountPerRankHost[r]; i++) {
+          inputChunkIndicesHost[sendIndicesPos + i] = lastIndices;
           lastIndices++;
         }
-        sendIndicesPos += sendIndicesBlockLengthsHost[r];
+        sendIndicesPos += inputChunkCountPerRankHost[r];
       }
     } else {
       auto lastIndices = numRanks * numExperts;
       for (int r = 0; r < numRanks; r++) {
         // the extra indices will start from lastIndices, and will be coninuous
         // for each rank
-        for (int i = 0; i < sendIndicesBlockLengthsHost[r]; i++) {
+        for (int i = 0; i < inputChunkCountPerRankHost[r]; i++) {
           if (i < numExperts) {
-            sendIndicesHost[sendIndicesPos + i] = r + numRanks * i;
+            inputChunkIndicesHost[sendIndicesPos + i] = r + numRanks * i;
           } else {
-            sendIndicesHost[sendIndicesPos + i] = lastIndices;
+            inputChunkIndicesHost[sendIndicesPos + i] = lastIndices;
             lastIndices++;
           }
         }
-        sendIndicesPos += sendIndicesBlockLengthsHost[r];
+        sendIndicesPos += inputChunkCountPerRankHost[r];
       }
     }
     CUDACHECK_TEST(cudaMemcpy(
-        sendIndicesDev,
-        sendIndicesHost,
-        numSendSplitLengths * sizeof(size_t),
+        inputChunkIndicesDev,
+        inputChunkIndicesHost,
+        inputChunkSizesCount * sizeof(size_t),
         cudaMemcpyDefault));
   }
 
@@ -387,7 +393,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     std::vector<void*> kernelArgs;
     // Initialize sendSplitLengthsDev
     if (type == CountType::EQUAL) {
-      kernelArgs.push_back((void*)&sendSplitLengthsDev);
+      kernelArgs.push_back((void*)&inputChunkSizesDev);
       kernelArgs.push_back((void*)&count);
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)equalCountsKernel,
@@ -395,9 +401,9 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
           numRanks * maxNumExperts,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     } else {
-      kernelArgs.push_back((void*)&sendSplitLengthsDev);
+      kernelArgs.push_back((void*)&inputChunkSizesDev);
       kernelArgs.push_back((void*)&randomCountsMatricesDev[matrixId]);
       kernelArgs.push_back((void*)&globalRank);
       kernelArgs.push_back((void*)&numRanks);
@@ -407,7 +413,7 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
           numRanks * maxNumExperts,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     }
   }
 
@@ -423,23 +429,23 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)checkEqualCountsKernel,
           1,
-          numSendSplitLengths * numRanks,
+          inputChunkSizesCount * numRanks,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     } else {
       kernelArgs.push_back((void*)&recvSplitsDev);
       kernelArgs.push_back((void*)&randomCountsMatricesDev[matrixId]);
-      kernelArgs.push_back((void*)&numSendSplitLengths);
+      kernelArgs.push_back((void*)&inputChunkSizesCount);
       kernelArgs.push_back((void*)&numRanks);
       kernelArgs.push_back((void*)&maxNumExperts);
       CUDACHECK_TEST(cudaLaunchKernel(
           (void*)checkRandomCountsNonContigKernel,
           numRanks,
-          numSendSplitLengths,
+          inputChunkSizesCount,
           kernelArgs.data(),
           0,
-          stream));
+          stream->get()));
     }
   }
 
@@ -447,32 +453,32 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
     // Initialize recvIndicesDev
     curSendIndicesPos = 0;
     for (int r = 0; r < globalRank; r++) {
-      curSendIndicesPos += sendIndicesBlockLengthsHost[r];
+      curSendIndicesPos += inputChunkCountPerRankHost[r];
     }
 
     std::vector<void*> kernelArgs;
     kernelArgs.push_back((void*)&recvIndicesBlockLengthsDev);
-    kernelArgs.push_back((void*)&sendIndicesBlockLengthsHost[globalRank]);
+    kernelArgs.push_back((void*)&inputChunkCountPerRankHost[globalRank]);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)initRecvIndicesBlockLengthKernel,
         numRanks,
         1,
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
 
     kernelArgs.clear();
     kernelArgs.push_back((void*)&recvIndicesDev);
     kernelArgs.push_back((void*)&recvIndicesBlockLengthsDev);
-    kernelArgs.push_back((void*)&sendIndicesDev);
+    kernelArgs.push_back((void*)&inputChunkIndicesDev);
     kernelArgs.push_back((void*)&curSendIndicesPos);
     CUDACHECK_TEST(cudaLaunchKernel(
         (void*)initRecvIndicesKernel,
         numRanks,
-        sendIndicesBlockLengthsHost[globalRank],
+        inputChunkCountPerRankHost[globalRank],
         kernelArgs.data(),
         0,
-        stream));
+        stream->get()));
   }
 
   void InitializeRandomMatrices(int numMatrices) {
@@ -527,8 +533,9 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   }
 
  protected:
+  std::unique_ptr<CtranComm> ctranComm; // Own the CtranComm instance
   CtranComm* comm{nullptr};
-  cudaStream_t stream{};
+  // Note: stream is inherited from CtranDistTestFixture
   int numExperts{0};
   int maxNumExperts{0};
   int maxTotalExperts{0};
@@ -544,13 +551,13 @@ class AllToAllvDynamicSplitNonContigTestCommon : public CtranDistTest {
   std::vector<void*> sendhdls;
   std::vector<void*> recvhdls;
 
-  size_t* sendSplitLengthsDev{nullptr};
-  size_t numSendSplitLengths{0};
+  size_t* inputChunkSizesDev{nullptr};
+  size_t inputChunkSizesCount{0};
 
-  size_t* sendIndicesDev{nullptr};
-  size_t* sendIndicesHost{nullptr};
-  size_t* sendIndicesBlockLengthsDev{nullptr};
-  size_t* sendIndicesBlockLengthsHost{nullptr};
+  size_t* inputChunkIndicesDev{nullptr};
+  size_t* inputChunkIndicesHost{nullptr};
+  size_t* inputChunkCountPerRankDev{nullptr};
+  size_t* inputChunkCountPerRankHost{nullptr};
   size_t curSendIndicesPos{0};
 
   size_t* recvIndicesDev{nullptr};
@@ -607,7 +614,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedEqualCounts) {
   EnqueueRecvIndicesInitialization();
 
   // Wait for count update to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   EnqueueInitializeBufferPtrKernel();
 
@@ -624,7 +631,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedEqualCounts) {
   EnqueueDataBuffersCheck();
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   DeallocateBuffers(memType, registFlag);
 }
@@ -673,7 +680,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, ChangedEqualCounts) {
   EnqueueDataBuffersCheck();
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   DeallocateBuffers(memType, registFlag);
 }
@@ -710,7 +717,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedRandomCounts) {
   EnqueueRecvIndicesInitialization();
 
   // Wait for count update to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Enqueue buffer ptr initialization
   EnqueueInitializeBufferPtrKernel();
@@ -728,7 +735,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedRandomCounts) {
   EnqueueDataBuffersCheck();
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Overwrite the registFlag to true. Change it back after fix the small buffer
   // reigstration issue.
@@ -783,7 +790,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, ChangedRandomCounts) {
   EnqueueDataBuffersCheck();
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Overwrite the registFlag to true. Change it back after fix the small buffer
   // reigstration issue.
@@ -842,7 +849,7 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, MultipleRandomCounts) {
   }
 
   // Wait for everything to finish
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   // Overwrite the registFlag to true. Change it back after fix the small buffer
   // reigstration issue.
@@ -870,7 +877,8 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedEqualCountsGraph) {
 
   cudaGraph_t graph;
   cudaGraphExec_t instance;
-  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(stream->get(), cudaStreamCaptureModeGlobal));
 
   // Enqueue count initialization
   EnqueueSplitsInitialization(maxCount, CountType::EQUAL, -1);
@@ -893,17 +901,17 @@ TEST_P(AllToAllvDynamicSplitNonContigTestSuite, UnchangedEqualCountsGraph) {
   // Enqueue data check
   EnqueueDataBuffersCheck();
 
-  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  CUDACHECK_TEST(cudaStreamEndCapture(stream->get(), &graph));
   CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
 
   constexpr int numIters = 10;
   for (int i = 0; i < numIters; i++) {
-    CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
+    CUDACHECK_TEST(cudaGraphLaunch(instance, stream->get()));
     auto nelems = comm->ctran_->gpe->numInUseKernelElems();
     EXPECT_NE(nelems, 0);
   }
 
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   CUDACHECK_TEST(cudaGraphExecDestroy(instance));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
@@ -935,7 +943,8 @@ TEST_P(
 
   cudaGraph_t graph;
   cudaGraphExec_t instance;
-  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal));
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(stream->get(), cudaStreamCaptureModeGlobal));
 
   // Enqueue count initialization
   EnqueueSplitsInitialization(maxCount, CountType::EQUAL, -1);
@@ -958,19 +967,19 @@ TEST_P(
   // Enqueue data check
   EnqueueDataBuffersCheck();
 
-  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  CUDACHECK_TEST(cudaStreamEndCapture(stream->get(), &graph));
   CUDACHECK_TEST(cudaGraphInstantiate(&instance, graph, nullptr, nullptr, 0));
 
   // When using cudagraph aware, need double-buffer to avoid data race on one
   // buffer because of skipping sync. For simplicity, we use 1 iteration here.
   constexpr int numIters = 1;
   for (int i = 0; i < numIters; i++) {
-    CUDACHECK_TEST(cudaGraphLaunch(instance, stream));
+    CUDACHECK_TEST(cudaGraphLaunch(instance, stream->get()));
     auto nelems = comm->ctran_->gpe->numInUseKernelElems();
     EXPECT_NE(nelems, 0);
   }
 
-  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream->get()));
 
   CUDACHECK_TEST(cudaGraphExecDestroy(instance));
   CUDACHECK_TEST(cudaGraphDestroy(graph));
@@ -1025,7 +1034,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new CtranDistTestEnvironment);
+  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

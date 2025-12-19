@@ -11,6 +11,7 @@
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <folly/stop_watch.h>
 
+#include "comms/testinfra/BenchUtils.h"
 #include "comms/torchcomms/transport/RdmaTransport.h"
 
 using namespace torch::comms;
@@ -144,50 +145,39 @@ static void RdmaTransport_Read(
       iters, bufferSize, counters, RdmaMemoryOperation::WRITE);
 }
 
-#define BENCHMARK_PARAM_COUNTERS(name, param)                     \
-  BENCHMARK_IMPL_COUNTERS(                                        \
-      FB_CONCATENATE(name, FB_CONCATENATE(_, param)),             \
-      FOLLY_PP_STRINGIZE(name) "(" FOLLY_PP_STRINGIZE(param) ")", \
-      counters,                                                   \
-      iters,                                                      \
-      unsigned,                                                   \
-      iters) {                                                    \
-    name(iters, param, counters);                                 \
-  }
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 8192);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 16384);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 32768);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 65536);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 131072);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 262144);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 524288);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 1048576);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 2097152);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 4194304);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 8388608);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 16777216);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 33554432);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 67108864);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 134217728);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Write, 268435456);
 
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 8192);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 16384);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 32768);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 65536);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 131072);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 262144);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 524288);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 1048576);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 2097152);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 4194304);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 8388608);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 16777216);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 33554432);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 67108864);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 134217728);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Write, 268435456);
-
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 8192);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 16384);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 32768);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 65536);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 131072);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 262144);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 524288);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 1048576);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 2097152);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 4194304);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 8388608);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 16777216);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 33554432);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 67108864);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 134217728);
-BENCHMARK_PARAM_COUNTERS(RdmaTransport_Read, 268435456);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 8192);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 16384);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 32768);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 65536);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 131072);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 262144);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 524288);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 1048576);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 2097152);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 4194304);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 8388608);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 16777216);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 33554432);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 67108864);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 134217728);
+BENCHMARK_SINGLE_PARAM_COUNTERS(RdmaTransport_Read, 268435456);
 
 // Custom main function to handle initialization
 int main(int argc, char** argv) {

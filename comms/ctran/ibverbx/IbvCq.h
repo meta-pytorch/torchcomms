@@ -3,8 +3,10 @@
 #pragma once
 
 #include <folly/Expected.h>
+
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/ctran/ibverbx/device/structs.h"
 
 namespace ibverbx {
 
@@ -23,6 +25,11 @@ class IbvCq {
   IbvCq& operator=(IbvCq&& other) noexcept;
 
   ibv_cq* cq() const;
+  int32_t getDeviceId() const;
+
+  // create device cq, map cq buffer to GPU
+  folly::Expected<struct device_cq, Error> getDeviceCq() const noexcept;
+
   inline folly::Expected<std::vector<ibv_wc>, Error> pollCq(int numEntries);
 
   // Request notification when the next completion is added to this CQ
@@ -31,9 +38,11 @@ class IbvCq {
  private:
   friend class IbvDevice;
 
-  explicit IbvCq(ibv_cq* cq);
+  IbvCq(ibv_cq* cq, int32_t deviceId);
 
   ibv_cq* cq_{nullptr};
+  int32_t deviceId_{-1}; // The IbvDevice's DeviceId that corresponds to this
+                         // Completion Queue (CQ)
 };
 
 // IbvCq inline functions

@@ -14,6 +14,7 @@
 #include "comms/ctran/CtranExImpl.h"
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/window/CtranWin.h"
@@ -68,11 +69,11 @@ struct OpElem {
   // If true, stream must be a valid cuda stream; otherwise, it is unused.
   bool isDevice{true};
 
-  // TCP Device Memory unpack pool index for this operation.
+  // TCP Device Memory unpack pool for this operation.
   // Allocated by prepareUnpackConsumer() and freed during GPE kernel teardown.
   // Used by algorithm implementations to populate CtranMapperContext and
   // pass it down to CtranTcpDm::irecvConnected().
-  int unpackPoolId{-1};
+  void* unpackPool{nullptr};
 
   union {
     struct {
@@ -162,6 +163,7 @@ struct OpElem {
       KernelElem* kElem;
       // Persistent args for persistent alltoallv_dynamic.
       void* pArgs;
+      bool combine;
     } alltoallv_dynamic;
     struct {
       const void* sendbuff;
@@ -228,7 +230,6 @@ struct OpElem {
     struct {
       const uint64_t* signalAddr;
       uint64_t cmpVal;
-      commCmpOp_t cmpOp;
       ctran::CtranWin* win;
     } waitsignal;
     struct {
@@ -285,6 +286,7 @@ struct KernelConfig {
     SENDRECV_NOTIFY,
     RECV_UNPACK,
     SENDRECV_UNPACK,
+    SENDRECV_STAGED,
     ALLTOALL,
     ALLTOALLV,
     ALLTOALLV_DYNAMIC,
@@ -309,7 +311,7 @@ struct KernelConfig {
   CtranKernelArgs args;
   // Pointer to argument struct specific to each algorithm
   void* algoArgs{nullptr};
-  int unpackPoolId{-1};
+  void* unpackPool{nullptr};
 
   const std::string algoName;
   // Copied after collective called ctran->updateOpCount()
@@ -483,6 +485,11 @@ extern __global__ void ncclKernelSendRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
     CtranKernelSendRecvArgs args);
+
+extern __global__ void ncclKernelSendRecvStaged(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::sendrecv::KernArgs args);
 
 template <bool UNPACK>
 __global__ void ncclKernelBroadcast(

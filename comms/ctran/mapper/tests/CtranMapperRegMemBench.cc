@@ -22,7 +22,7 @@ class CtranDistMapperRegMemBench : public NcclxBaseTest {
     setenv("NCCL_FASTINIT_MODE", "ring_hybrid", 1);
     NcclxBaseTest::SetUp();
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
 
     commDeprecated_ = createNcclComm(globalRank, numRanks, localRank);
     comm_ = commDeprecated_->ctranComm_.get();
@@ -48,7 +48,7 @@ class CtranDistMapperRegMemBench : public NcclxBaseTest {
     NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT = -1;
 
     NCCLCHECK_TEST(ncclCommDestroy(commDeprecated_));
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
     NcclxBaseTest::TearDown();
   }
 

@@ -98,7 +98,9 @@ class TorchCommNCCLXTest : public ::testing::Test {
   void setupNormalDestruction(TestTorchCommNCCLX& torchcomm, int times = 1);
 
   // Helper method to create a tensor for testing
-  at::Tensor createTestTensor(const std::vector<int64_t>& sizes);
+  at::Tensor createTestTensor(
+      const std::vector<int64_t>& sizes,
+      const at::ScalarType type = at::kFloat);
 
   void setupWorkToTimeout(WorkEvent& work_event);
 

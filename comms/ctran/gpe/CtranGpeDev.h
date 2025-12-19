@@ -253,13 +253,14 @@ struct CtranKernelAllToAllvDynamicArgs {
   };
   union {
     struct {
-      const size_t* sendIndices{nullptr};
-      size_t* sendIndicesTmpbufCPU{nullptr};
-      const size_t* sendIndicesBlockLengths{nullptr};
-      size_t* sendIndicesBlockLengthsTmpbufCPU{nullptr};
-      size_t maxSendIndicesBlockLength{0};
+      const size_t* inputChunkIndices{nullptr};
+      size_t* inputChunkIndicesTmpbufCPU{nullptr};
+      const size_t* inputChunkCountPerRank{nullptr};
+      size_t* inputChunkCountPerRankTmpbufCPU{nullptr};
+      size_t maxInputChunkCountPerRank{0};
       size_t maxRecvcount{0};
       size_t maxSendcount{0};
+      bool combine;
     } nonContig;
     struct {
     } contig;

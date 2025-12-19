@@ -88,35 +88,43 @@ struct TestExecWgParam {
 class AllToAllvDedupTestBase {
  public:
   AllToAllvDedupTestBase() = default;
-  ~AllToAllvDedupTestBase() = default;
+  ~AllToAllvDedupTestBase() {
+    allRankBlkBkts_.clear();
+  };
 
  protected:
   void setPersistArgs(
       const TestPArgsParam& pArgs,
-      const int numSkippedBuckets = 0) {
+      const int numAllowedBuckets = -1) {
     const auto nRanks = statex_->nRanks();
     pArgs_ = pArgs;
-    // update blockNumRecvBuckets to reflect skipped buckets
-    pArgs_.blockNumRecvBuckets = std::min(
-        nRanks * pArgs.numRecvBuckets - numSkippedBuckets,
-        pArgs.blockNumRecvBuckets);
+    // update blockNumRecvBuckets based on allowed buckets
+    // if numAllowedBuckets is -1, use all buckets (nRanks * numRecvBuckets)
+    const auto totalBuckets = nRanks * pArgs.numRecvBuckets;
+    const auto effectiveAllowedBuckets =
+        numAllowedBuckets == -1 ? totalBuckets : numAllowedBuckets;
+
+    pArgs_.blockNumRecvBuckets =
+        std::min(effectiveAllowedBuckets, pArgs.blockNumRecvBuckets);
   }
 
   std::vector<size_t> getRecvBlockIds(const int* recvIdx, const int count)
       const;
-  // generate receive buckets for all send ranks; optional skippedBuckets
-  // argument allows to customize the generation of special block distribution
-  // such as no block for a set of buckets
-  void genAllRankIndices(
-      const int seed,
-      const std::unordered_set<int>& skippedBuckets);
-  // generate receive buckets for a single send rank; can be used to generate
-  // special block distribution such as inter-node only
+
+  // Generate a vector of all bucket indices from 0 to totalBuckets-1, excluding
+  // buckets in excludeBuckets
+  std::vector<int> genAllowBuckets(
+      const int totalBuckets,
+      const std::unordered_set<int>& excludeBuckets) const;
+
+  // Generate receive buckets for a single send rank based on the provided
+  // allowBuckets filter. The allowBuckets parameter specifies which buckets
+  // are allowed to be assigned, and the results are stored in the buckets
+  // output parameter. If seed is provided, uses deterministic bucket selection.
   void genRankBlockRecvBuckets(
-      const int sendRank,
-      const int iter,
-      const std::unordered_set<int>& skippedBuckets,
-      std::vector<int>& buckets) const;
+      const std::vector<int>& allowBuckets,
+      int* chosenBuckets,
+      std::optional<unsigned int> seed = std::nullopt) const;
 
   void setupIndices(
       std::vector<int>& sendIdxH,
@@ -128,7 +136,7 @@ class AllToAllvDedupTestBase {
       const std::vector<int>& sendIdxH,
       const std::vector<int>& fwdIdxH,
       const std::vector<int>& recvIdxH,
-      const int iter);
+      const int iter) const;
 
  private:
   inline int bucketToNode(int bucket) const {
@@ -144,11 +152,15 @@ class AllToAllvDedupTestBase {
 
  protected:
   CommStateX* statex_{nullptr};
+  std::vector<std::vector<int>> allRankBlkBkts_;
+
   void setStatex(CommStateX* statex) {
     statex_ = statex;
   }
 
-  TestPArgsParam pArgs_;
+  void setAllRankBlkBkts(const std::vector<std::vector<int>>& allRankBlkBkts) {
+    allRankBlkBkts_ = allRankBlkBkts;
+  };
 
-  std::vector<std::vector<int>> allRankBlkBkts_;
+  TestPArgsParam pArgs_;
 };

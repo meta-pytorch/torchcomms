@@ -94,7 +94,7 @@ TEST_P(ReduceScatterTestParam, Test) {
 #endif
 
   if (algo != NCCL_REDUCESCATTER_ALGO::orig &&
-      !ctranReduceScatterSupport(comm->ctranComm_.get())) {
+      !ctranReduceScatterSupport(comm->ctranComm_.get(), algo)) {
     GTEST_SKIP() << "Ctran algorithm is not supported, skip test";
   }
 

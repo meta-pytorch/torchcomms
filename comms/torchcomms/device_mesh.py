@@ -11,6 +11,14 @@ from torch.distributed.device_mesh import _mesh_resources
 
 from torchcomms._comms import _BackendWrapper, _get_store, new_comm, TorchComm
 
+try:
+    from torch.distributed.distributed_c10d import GroupName
+except ImportError:
+    print("GroupName is not available.")
+    # Fallback: GroupName is effectively just str when not available from torch
+    # We use cast to satisfy type checkers while keeping runtime behavior simple
+    GroupName = str  # type: ignore[misc]
+
 
 def _create_torchcomm_process_group(
     comm: TorchComm,
@@ -33,13 +41,17 @@ def _create_torchcomm_process_group(
     Returns:
         The created and registered ProcessGroup instance
     """
+    # Make the linter happy. GroupName is just an alias for str. The cost of
+    # this conversion is negligible.
+    group_name = GroupName(group_name)
+
     wrapper = _BackendWrapper(comm)  # noqa: F405
     backend_type = dist.ProcessGroup.BackendType.CUSTOM  # noqa: F841
     backend_config = dist.BackendConfig(dist.Backend(backend_str))
 
     # Create process group
     # pyre-fixme[6]: support store=None
-    pg = dist.ProcessGroup(None, comm.get_rank(), comm.get_size())
+    pg = dist.ProcessGroup(prefix_store, comm.get_rank(), comm.get_size())
 
     # Register backend
     # pyre-fixme[6]: BackendWrapper implements dist.Backend but types isn't aware

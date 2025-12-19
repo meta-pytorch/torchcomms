@@ -9,12 +9,13 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/logger/LogUtils.h"
 
 class CtranMapperTest : public ::testing::Test {
  public:
-  std::unique_ptr<TestCtranCommRAII> commRAII_;
+  std::unique_ptr<ctran::TestCtranCommRAII> commRAII_;
   CtranComm* dummyComm_{nullptr};
 
   std::unique_ptr<CtranMapper> mapper;
@@ -30,10 +31,10 @@ class CtranMapperTest : public ::testing::Test {
     ncclCvarInit();
     setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "true", 1);
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
 
-    commRAII_ = createDummyCtranComm();
-    dummyComm_ = commRAII_->ctranComm;
+    commRAII_ = ctran::createDummyCtranComm();
+    dummyComm_ = commRAII_->ctranComm.get();
     CUDACHECK_TEST(cudaSetDevice(cudaDev));
     CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
     CUDACHECK_TEST(cudaMalloc(&buf2, bufSize));
@@ -54,14 +55,14 @@ class CtranMapperTest : public ::testing::Test {
     // Cleanup cached segments in global cache for each test
     EXPECT_EQ(regCache->destroy(), commSuccess);
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
   }
 };
 TEST(CtranMapperUT, EnableBackendThroughCVARs) {
   setenv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket", 1);
   ncclCvarInit();
-  auto commRAII = createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm;
+  auto commRAII = ctran::createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm.get();
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::IB));
@@ -73,46 +74,58 @@ TEST(CtranMapperUT, EnableBackendThroughCVARs) {
 TEST(CtranMapperUT, EnableBackendThroughCVARsWithoutIB) {
   setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
   ncclCvarInit();
-  auto commRAII = createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm;
+  auto commRAII = ctran::createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm.get();
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
   EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
 }
-TEST(CtranMapperUT, EnableBackendWithMCCLBackendUNSET) {
+TEST(CtranMapperUT, EnableBackendWithConfigUnset) {
+  // Test that when config_.backends contains only UNSET, mapper falls back
+  // to using NCCL_CTRAN_BACKENDS CVAR.
   setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
-  setenv("MCCL_CTRAN_BACKENDS", "not_set", 1);
   ncclCvarInit();
-  auto commRAII = createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm;
+  auto commRAII = ctran::createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm.get();
+  dummyComm->config_.backends = {CommBackend::UNSET}; // Test fallback behavior
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
   EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::IB));
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
-  unsetenv("MCCL_CTRAN_BACKENDS");
 }
 
-TEST(CtranMapperUT, EnableBackendWithMCCLBackendOverride) {
+TEST(CtranMapperUT, EnableBackendWithExplicitConfigOverride) {
+  // Test that when config_.backends is explicitly set,
+  // it overrides the NCCL_CTRAN_BACKENDS CVAR.
   setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
-  setenv("MCCL_CTRAN_BACKENDS", "ib", 1);
   ncclCvarInit();
-  auto commRAII = createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm;
+  auto commRAII = ctran::createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm.get();
+  // Explicitly set config_.backends to IB only.
+  dummyComm->config_.backends = {CommBackend::IB};
   auto mapper = std::make_unique<CtranMapper>(dummyComm);
   auto rank = dummyComm->statex_->rank();
+  // Verify config_.backends={IB} overrides NCCL_CTRAN_BACKENDS={nvl, socket}
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::IB));
   EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
   EXPECT_FALSE(mapper->hasBackend(rank, CtranMapperBackend::SOCKET));
-  unsetenv("MCCL_CTRAN_BACKENDS");
 }
 
 TEST(CtranMapperUT, EnableBackendThroughCVARsWithTCPandIB) {
   setenv("NCCL_CTRAN_BACKENDS", "nvl, ib, socket, tcpdm", 1);
   ncclCvarInit();
-  EXPECT_THROW(createDummyCtranComm(), std::runtime_error);
+  std::optional<std::exception> ex;
+  try {
+    ctran::createDummyCtranComm();
+  } catch (const std::runtime_error& e) {
+    ex = e;
+  } catch (const ctran::utils::Exception& e) {
+    ex = e;
+  }
+  ASSERT_TRUE(ex.has_value());
 }
 
 TEST(CtranMapperUT, BackendEnum) {
@@ -348,7 +361,7 @@ TEST_F(CtranMapperTest, regMemEager) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void *segHdl = nullptr, *regHdl = nullptr;
           auto res =
@@ -396,7 +409,7 @@ TEST_F(CtranMapperTest, regMemForce) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void *segHdl = nullptr, *regHdl = nullptr;
           auto res =
@@ -443,7 +456,7 @@ TEST_F(CtranMapperTest, regMemNMissingDereg) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void* hdl = nullptr;
           EXPECT_EQ(mapper->regMem(buf, bufSize, &hdl, false), commSuccess);
@@ -481,7 +494,7 @@ TEST_F(CtranMapperTest, searchRegHandleMiss) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void* regHdl = nullptr;
           bool dynamicRegist = false;
@@ -534,7 +547,7 @@ TEST_F(CtranMapperTest, searchRegHandleHit) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void* regHdl = nullptr;
           bool dynamicRegist = false;
@@ -592,7 +605,7 @@ TEST_F(CtranMapperTest, RegMemAndsearchRegHandleHit) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           // Some threads will register buf2 while the other threads are
           // searching
@@ -645,7 +658,7 @@ TEST_F(CtranMapperTest, RegMemAndsearchRegHandleMiss) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           // Some threads will register buf2 while the other threads are
           // searching
@@ -820,7 +833,7 @@ TEST_F(CtranMapperTest, AsyncRegMemAndSearchRegHandleHit) {
         [&](int tid) {
           // Help label in NCCL logging
           std::string threadName = "TestThread" + std::to_string(tid);
-          commSetMyThreadLoggingName(threadName.c_str());
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
 
           void* regHdl = nullptr;
           bool dynamicRegist = false;
@@ -1100,7 +1113,8 @@ TEST_F(CtranMapperTest, getMultiSegRegElems) {
   void* buf_ = nullptr;
   std::vector<TestMemSegment> segments;
   std::vector<size_t> segSizes(3, 1048576);
-  EXPECT_EQ(commMemAllocDisjoint(&buf_, segSizes, segments), commSuccess);
+  EXPECT_EQ(
+      ctran::commMemAllocDisjoint(&buf_, segSizes, segments), commSuccess);
 
   std::vector<void*> segHdls;
   for (auto& seg : segments) {
@@ -1152,7 +1166,7 @@ TEST_F(CtranMapperTest, getMultiSegRegElems) {
   for (auto& hdl : segHdls) {
     EXPECT_EQ(mapper->deregMem(hdl), commSuccess);
   }
-  EXPECT_EQ(commMemFreeDisjoint(buf_, segSizes), commSuccess);
+  EXPECT_EQ(ctran::commMemFreeDisjoint(buf_, segSizes), commSuccess);
 }
 
 TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
@@ -1215,7 +1229,7 @@ TEST_F(CtranMapperTest, ExportRegCache) {
 
 class CtranMapperTestDisjoint : public ::testing::Test {
  public:
-  std::unique_ptr<TestCtranCommRAII> commRAII_;
+  std::unique_ptr<ctran::TestCtranCommRAII> commRAII_;
   CtranComm* dummyComm_{nullptr};
 
   std::unique_ptr<CtranMapper> mapper;
@@ -1241,10 +1255,10 @@ class CtranMapperTestDisjoint : public ::testing::Test {
     ncclCvarInit();
     setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "true", 1);
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
 
-    commRAII_ = createDummyCtranComm();
-    dummyComm_ = commRAII_->ctranComm;
+    commRAII_ = ctran::createDummyCtranComm();
+    dummyComm_ = commRAII_->ctranComm.get();
     CUDACHECK_TEST(cudaSetDevice(cudaDev));
 
     // Skip test if cuMem is not supported since we need disjoint allocations
@@ -1256,7 +1270,8 @@ class CtranMapperTestDisjoint : public ::testing::Test {
     // registration
     std::vector<TestMemSegment> segments;
     disjointSegSizes = {bufBaseSize / 2, bufBaseSize / 2};
-    auto result = commMemAllocDisjoint(&bufBase, disjointSegSizes, segments);
+    auto result =
+        ctran::commMemAllocDisjoint(&bufBase, disjointSegSizes, segments);
     if (result != commSuccess) {
       GTEST_SKIP()
           << "Disjoint allocation failed, cannot test multiple allocation scenario";
@@ -1287,13 +1302,14 @@ class CtranMapperTestDisjoint : public ::testing::Test {
   void TearDown() override {
     // Free disjoint allocation properly if it was used
     if (usedDisjointAllocation) {
-      EXPECT_EQ(commMemFreeDisjoint(bufBase, disjointSegSizes), commSuccess);
+      EXPECT_EQ(
+          ctran::commMemFreeDisjoint(bufBase, disjointSegSizes), commSuccess);
     }
 
     // Cleanup cached segments in global cache for each test
     EXPECT_EQ(regCache->destroy(), commSuccess);
 
-    logGpuMemoryStats(cudaDev);
+    ctran::logGpuMemoryStats(cudaDev);
   }
 };
 

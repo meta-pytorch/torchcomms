@@ -15,8 +15,7 @@ TorchWorkRCCLX::TorchWorkRCCLX(
     : inputTensors_(inputTensors),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      state_(WorkStatus::NOT_STARTED) {
+      timeout_ms_(timeout_ms) {
   start_event_ = comm_->getEvent();
   end_event_ = comm_->getEvent();
 
@@ -30,17 +29,12 @@ TorchWorkRCCLX::TorchWorkRCCLX(TorchWorkRCCLX&& other) noexcept
       end_event_(other.end_event_),
       stream_(other.stream_),
       timeout_ms_(other.timeout_ms_),
-      state_(WorkStatus::NOT_STARTED), // Initialize with default value
       start_completed_time_(std::move(other.start_completed_time_)) {
-  // Copy the atomic state using load/store
-  state_.store(other.state_.load());
-
   // Transfer ownership of resources and reset the source object
   other.start_event_ = nullptr;
   other.end_event_ = nullptr;
   other.stream_ = nullptr;
   other.timeout_ms_ = std::chrono::milliseconds(0);
-  other.state_.store(WorkStatus::NOT_STARTED);
   other.start_completed_time_.reset();
 }
 
@@ -52,8 +46,7 @@ TorchWorkRCCLX::TorchWorkRCCLX(
     : inputTensor_(inputTensor),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      state_(WorkStatus::NOT_STARTED) {
+      timeout_ms_(timeout_ms) {
   // If not in graph capture mode, create the events for start and end
   // recording
   start_event_ = comm_->getEvent();
@@ -110,15 +103,11 @@ void TorchWorkRCCLX::recordEnd() {
       "Failed to record end event");
 }
 
-bool TorchWorkRCCLX::isCompleted() {
-  return state_ == WorkStatus::COMPLETED;
-}
-
 TorchWorkRCCLX::WorkStatus TorchWorkRCCLX::checkStatus() {
   // If already marked as completed, return COMPLETED
-  if (state_ == WorkStatus::COMPLETED || state_ == WorkStatus::ERROR ||
-      state_ == WorkStatus::TIMEDOUT) {
-    return state_;
+  if (status() == WorkStatus::COMPLETED || status() == WorkStatus::ERROR ||
+      status() == WorkStatus::TIMEDOUT) {
+    return status();
   }
 
   // Step 1: If start_completed_time_ doesn't have a value yet, query the start
@@ -129,14 +118,14 @@ TorchWorkRCCLX::WorkStatus TorchWorkRCCLX::checkStatus() {
     if (start_status == hipSuccess) {
       // Start event has completed, store the current time
       start_completed_time_ = std::chrono::steady_clock::now();
-      state_ = WorkStatus::INPROGRESS;
+      setStatus(WorkStatus::INPROGRESS);
     } else if (start_status != hipErrorNotReady) {
       // Some other error occurred with the start event
-      state_ = WorkStatus::ERROR;
+      setStatus(WorkStatus::ERROR);
     }
   }
-  if (state_ == WorkStatus::NOT_STARTED || state_ == WorkStatus::ERROR) {
-    return state_;
+  if (status() == WorkStatus::NOT_STARTED || status() == WorkStatus::ERROR) {
+    return status();
   }
 
   // Step 2: If we get here, start event has completed, so query the end event
@@ -144,7 +133,7 @@ TorchWorkRCCLX::WorkStatus TorchWorkRCCLX::checkStatus() {
 
   if (end_status == hipSuccess) {
     // End event has completed, mark the work as completed
-    state_ = WorkStatus::COMPLETED;
+    setStatus(WorkStatus::COMPLETED);
 
     // Release the input tensors to keep the lifetime of the tensors short
     inputTensors_.clear();
@@ -158,18 +147,18 @@ TorchWorkRCCLX::WorkStatus TorchWorkRCCLX::checkStatus() {
     // Check if the operation has timed out
     if (elapsed_milliseconds > timeout_ms_) {
       // Operation has timed out
-      state_ = WorkStatus::TIMEDOUT;
+      setStatus(WorkStatus::TIMEDOUT);
     }
   } else {
     // Some other error occurred with the end event
-    state_ = WorkStatus::ERROR;
+    setStatus(WorkStatus::ERROR);
   }
-  return state_;
+  return status();
 }
 
 void TorchWorkRCCLX::wait() {
   // If already completed, return immediately
-  WorkStatus local_state = state_;
+  WorkStatus local_state = status();
   if (local_state == WorkStatus::COMPLETED ||
       local_state == WorkStatus::ERROR || local_state == WorkStatus::TIMEDOUT) {
     return;

@@ -27,7 +27,10 @@ class CtranWinTest : public NcclxBaseTest {
     NcclxBaseTest::SetUp();
     CUDACHECK_TEST(cudaSetDevice(this->localRank));
   }
-  void TearDown() override {}
+  void TearDown() override {
+    // Check that all allocated memory segments have been freed
+    EXPECT_TRUE(segments.empty()) << "Not all memory segments were freed";
+  }
 
   void barrier(ncclComm_t comm, cudaStream_t stream) {
     // simple Allreduce as barrier before get data from other ranks
@@ -47,14 +50,59 @@ class CtranWinTest : public NcclxBaseTest {
     CUDACHECK_TEST(cudaMemcpy(
         buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
   }
+
+  void createWin(
+      ncclComm_t comm,
+      bool isUserBuf,
+      MemAllocType bufType,
+      void** winBasePtr,
+      CtranWin** winPtr,
+      size_t sizeBytes) {
+    meta::comms::Hints hints;
+    auto res = commSuccess;
+    // If userBuf is true, allocate buffer and use ctranWinRegister API
+    if (isUserBuf) {
+      *winBasePtr = commMemAlloc(sizeBytes, bufType, segments);
+
+      res = ctranWinRegister(
+          (void*)*winBasePtr, sizeBytes, comm->ctranComm_.get(), winPtr, hints);
+
+    } else {
+      hints.set(
+          "window_buffer_location",
+          bufType == MemAllocType::kMemHostManaged ||
+                  bufType == MemAllocType::kMemHostUnregistered
+              ? "cpu"
+              : "gpu");
+      res = ctranWinAllocate(
+          sizeBytes, comm->ctranComm_.get(), (void**)winBasePtr, winPtr, hints);
+    }
+    ASSERT_EQ(res, commSuccess);
+    ASSERT_NE(*winBasePtr, nullptr);
+  }
+
+  void
+  freeWinBuf(bool isUserBuf, void* ptr, size_t size, MemAllocType bufType) {
+    if (isUserBuf) {
+      commMemFree(ptr, size, bufType);
+      // Remove the segment from the tracking vector
+      segments.erase(
+          std::remove_if(
+              segments.begin(),
+              segments.end(),
+              [ptr](const TestMemSegment& seg) { return seg.ptr == ptr; }),
+          segments.end());
+    }
+  }
+  std::vector<TestMemSegment> segments;
 };
 
 class CtranWinTestParam
     : public CtranWinTest,
-      public ::testing::WithParamInterface<std::tuple<bool>> {};
+      public ::testing::WithParamInterface<std::tuple<MemAllocType, bool>> {};
 
-TEST_P(CtranWinTestParam, winCreation) {
-  auto [cpuWin] = GetParam();
+TEST_P(CtranWinTestParam, winAllocCreate) {
+  auto [bufType, userBuf] = GetParam();
 
   ncclComm_t comm = createNcclComm(
       this->globalRank,
@@ -73,15 +121,8 @@ TEST_P(CtranWinTestParam, winCreation) {
   CtranWin* win = nullptr;
   size_t sizeBytes = 8192 * sizeof(int);
   void* winBase = nullptr;
+  createWin(comm, userBuf, bufType, &winBase, &win, sizeBytes);
 
-  meta::comms::Hints hints;
-  if (cpuWin) {
-    hints.set("window_buffer_location", "cpu");
-  }
-  auto res = ctranWinAllocate(
-      sizeBytes, comm->ctranComm_.get(), &winBase, &win, hints);
-  ASSERT_EQ(res, commSuccess);
-  ASSERT_NE(winBase, nullptr);
   EXPECT_THAT(win, testing::NotNull());
 
   // Expect window allocation would trigger internal buffer registration export
@@ -90,14 +131,18 @@ TEST_P(CtranWinTestParam, winCreation) {
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
-    res = ctranWinSharedQuery(peer, win, &remoteAddr);
+    auto res = ctranWinSharedQuery(peer, win, &remoteAddr);
     EXPECT_EQ(res, commSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
       // For CPU window or peers on remote node, remote address is null
-    } else if (cpuWin || statex->node() != statex->node(peer)) {
+    } else if (!(statex->node(peer) == statex->node() &&
+                 win->nvlEnabled(peer))) {
       EXPECT_THAT(remoteAddr, testing::IsNull());
     } else {
+      // Do actual copy to validate remote address is accessible
+      FB_CUDACHECKIGNORE(
+          cudaMemcpy(remoteAddr, winBase, sizeBytes, cudaMemcpyDefault));
       EXPECT_THAT(remoteAddr, testing::NotNull());
     }
   }
@@ -113,13 +158,15 @@ TEST_P(CtranWinTestParam, winCreation) {
   // Barrier to ensure all peers have finished creation and query
   this->barrier(comm, stream);
 
-  res = ctranWinFree(win);
+  auto res = ctranWinFree(win);
   EXPECT_EQ(res, commSuccess);
 
   // This test only exported buffers in window, thus expect all exported cache
   // is freed upon window free
   const auto dump1 = comm->ctranComm_->ctran_->mapper->dumpExportRegCache();
   EXPECT_EQ(dump1.size(), 0);
+
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   finalizeNcclComm(globalRank, server.get());
   NCCLCHECK_TEST(ncclCommDestroy(comm));
@@ -240,10 +287,14 @@ TEST_F(CtranWinTest, nvlDisabled) {
 INSTANTIATE_TEST_SUITE_P(
     CtranWinInstance,
     CtranWinTestParam,
-    ::testing::Values(
-        // cpuWin
-        std::make_tuple(true),
-        std::make_tuple(true)));
+    ::testing::Combine(
+        // bufType, userBuf
+        ::testing::Values(
+            MemAllocType::kMemCuMemAlloc,
+            MemAllocType::kMemCudaMalloc,
+            MemAllocType::kMemHostManaged,
+            MemAllocType::kMemHostUnregistered),
+        ::testing::Values(true, false)));
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

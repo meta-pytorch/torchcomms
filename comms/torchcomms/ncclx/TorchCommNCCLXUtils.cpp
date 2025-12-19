@@ -13,8 +13,8 @@ namespace comms {
 
 namespace {
 
-ncclDataType_t getNcclDataTypeInternal(const at::Tensor& tensor) {
-  switch (tensor.scalar_type()) {
+ncclDataType_t getNcclDataTypeInternal(const at::ScalarType scalar_type) {
+  switch (scalar_type) {
     case at::ScalarType::Byte:
       return ncclUint8;
     case at::ScalarType::Char:
@@ -42,8 +42,12 @@ ncclDataType_t getNcclDataTypeInternal(const at::Tensor& tensor) {
     case at::ScalarType::UInt64:
       return ncclUint64;
     default:
-      throw std::runtime_error("Unsupported tensor data type for NCCLX");
+      throw std::runtime_error("Unsupported scaler data type for NCCLX");
   }
+}
+
+ncclDataType_t getNcclDataTypeInternal(const at::Tensor& tensor) {
+  return getNcclDataTypeInternal(tensor.scalar_type());
 }
 
 template <typename T, ncclDataType_t dataType>
@@ -121,6 +125,11 @@ ncclDataType_t TorchCommNCCLX::getNcclDataType(const at::Tensor& tensor) {
   return getNcclDataTypeInternal(tensor);
 }
 
+ncclDataType_t TorchCommNCCLX::getNcclDataType(
+    const at::ScalarType scalar_type) {
+  return getNcclDataTypeInternal(scalar_type);
+}
+
 TorchCommNCCLX::RedOpRAII TorchCommNCCLX::getNcclReduceOp(
     const ReduceOp& op,
     const ncclComm_t comm,
@@ -149,24 +158,6 @@ TorchCommNCCLX::RedOpRAII TorchCommNCCLX::getNcclReduceOp(
   }
 }
 
-NcclxWindowCmpOp TorchCommNCCLX::getNcclSignalCmpOp(SignalCmpOp op) {
-#ifdef NCCL_RMA_SUPPORTED
-  switch (op) {
-    case SignalCmpOp::EQ:
-      return ncclCmpEQ;
-    case SignalCmpOp::GE:
-      return ncclCmpGE;
-    case SignalCmpOp::LE:
-      return ncclCmpLE;
-    default:
-      throw std::runtime_error("Unsupported signal compare operation");
-  }
-#else
-  (void)op;
-  throw std::logic_error("NCCL RMA is not supported");
-#endif
-}
-
 void TorchCommNCCLX::checkWorkQueue() {
   TorchWorkNCCLX::WorkStatus status = workq_.garbageCollect();
 
@@ -187,6 +178,13 @@ void TorchCommNCCLX::checkWorkQueue() {
 // it cudaEventQuery.
 void TorchCommNCCLX::timeoutWatchdog() noexcept {
   TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
+
+  cudaStreamCaptureMode mode = cudaStreamCaptureModeThreadLocal;
+  CUDA_CHECK(
+      cuda_api_,
+      cuda_api_->threadExchangeStreamCaptureMode(&mode),
+      "Failed to swap capture mode for timeout thread");
+
   while (!shutdown_) {
     {
       std::unique_lock<std::mutex> lock(timeout_mutex_);

@@ -2,49 +2,69 @@
 
 #include "comms/ctran/algos/AllToAllvDedup/tests/AllToAllvDedupTestBase.h"
 #include <iostream>
+#include <optional>
+#include <random>
 #include "comms/ctran/utils/Utils.h"
 
+namespace {
+
+// Returns numBuckets of unique integers chosen from allowBuckets
+// If seed is provided, uses deterministic bucket assignment
+inline std::unordered_set<int> getUniqueBuckets(
+    const int numBuckets,
+    const std::vector<int>& allowBuckets,
+    std::optional<unsigned int> seed = std::nullopt) {
+  // Validate input
+  if (numBuckets < 0) {
+    throw std::invalid_argument("numBuckets cannot be negative");
+  }
+  const auto totalBuckets = allowBuckets.size();
+  if (static_cast<size_t>(numBuckets) > totalBuckets) {
+    throw std::invalid_argument("numBuckets cannot exceed allowBuckets.size()");
+  }
+
+  // Create a shuffled copy of allowBuckets for O(n) selection
+  std::vector<int> shuffledBuckets = allowBuckets;
+  std::mt19937 gen(seed.has_value() ? seed.value() : std::random_device{}());
+  std::shuffle(shuffledBuckets.begin(), shuffledBuckets.end(), gen);
+
+  // Take first numBuckets elements from shuffled vector
+  std::unordered_set<int> chosenBuckets(
+      shuffledBuckets.begin(), shuffledBuckets.begin() + numBuckets);
+  return chosenBuckets;
+}
+} // namespace
+
+std::vector<int> AllToAllvDedupTestBase::genAllowBuckets(
+    const int totalBuckets,
+    const std::unordered_set<int>& excludeBuckets) const {
+  std::vector<int> buckets;
+  buckets.reserve(totalBuckets - excludeBuckets.size());
+  for (int i = 0; i < totalBuckets; i++) {
+    if (excludeBuckets.find(i) == excludeBuckets.end()) {
+      buckets.push_back(i);
+    }
+  }
+  return buckets;
+}
+
 void AllToAllvDedupTestBase::genRankBlockRecvBuckets(
-    const int sendRank,
-    const int iter,
-    const std::unordered_set<int>& skippedBuckets,
-    std::vector<int>& buckets) const {
-  const int nRanks = statex_->nRanks();
+    const std::vector<int>& allowBuckets,
+    int* buckets,
+    std::optional<unsigned int> seed) const {
   const int blockNumRecvBuckets = pArgs_.blockNumRecvBuckets;
 
   for (int i = 0; i < pArgs_.totalNumSendBlocks; i++) {
-    // each rank sends to 2 peers from itself, and shift by one for each
-    // block. E.g., rank 0: block0->[0,1], block1->[1,2], block2->[2,3],
-    // blcok3->[3,4]...). For each iteration, shift the starting block by
-    // one.
-    int recvRankStart =
-        (sendRank + iter + i) % (nRanks * pArgs_.numRecvBuckets);
+    // Create unique seed per block to ensure different bucket selection
+    // across blocks while maintaining reproducibility when seed is provided
+    std::optional<unsigned int> blockSeed =
+        seed.has_value() ? std::make_optional(seed.value() + i) : std::nullopt;
+    auto chosenBuckets =
+        getUniqueBuckets(blockNumRecvBuckets, allowBuckets, blockSeed);
     for (int j = 0; j < blockNumRecvBuckets; j++) {
-      int recvBucket = (recvRankStart + j) % (nRanks * pArgs_.numRecvBuckets);
-      if (skippedBuckets.contains(recvBucket)) {
-        // ensure the replaced bucket is not already contained
-        recvBucket = (recvRankStart + blockNumRecvBuckets) %
-            (nRanks * pArgs_.numRecvBuckets);
-      }
-      buckets[i * blockNumRecvBuckets + j] = recvBucket;
+      buckets[i * blockNumRecvBuckets + j] =
+          *std::next(chosenBuckets.begin(), j);
     }
-  }
-}
-
-void AllToAllvDedupTestBase::genAllRankIndices(
-    const int iter,
-    const std::unordered_set<int>& skippedBuckets) {
-  const auto numBlocksFromRank =
-      pArgs_.totalNumSendBlocks * pArgs_.blockNumRecvBuckets;
-  const int nRanks = statex_->nRanks();
-  allRankBlkBkts_.resize(nRanks);
-
-  // Generating allRankBlkBkts_ for all ranks to get expected
-  // prepare outputs
-  for (int sendRank = 0; sendRank < nRanks; sendRank++) {
-    allRankBlkBkts_[sendRank].resize(numBlocksFromRank);
-    auto& buckets = allRankBlkBkts_[sendRank];
-    genRankBlockRecvBuckets(sendRank, iter, skippedBuckets, buckets);
   }
 }
 
@@ -130,12 +150,21 @@ void AllToAllvDedupTestBase::logIndices(
     const std::vector<int>& sendIdxH,
     const std::vector<int>& fwdIdxH,
     const std::vector<int>& recvIdxH,
-    const int iter) {
+    const int iter) const {
   const int nNodes = statex_->nNodes();
   const int nLocalRanks = statex_->nLocalRanks();
   const int myRank = statex_->rank();
   const int nRanks = statex_->nRanks();
 
+  std::cout << "TEST prepare iteration " << iter << ": rank " << myRank
+            << " allRankBlkBkts[myRank]: "
+            << ::ctran::utils::array2DToStr(
+                   allRankBlkBkts_[myRank].data(),
+                   pArgs_.totalNumSendBlocks,
+                   pArgs_.blockNumRecvBuckets,
+                   20,
+                   10)
+            << std::endl;
   std::cout << "TEST prepare iteration " << iter << ": rank " << myRank
             << " sendIdx: "
             << ::ctran::utils::array2DToStr(

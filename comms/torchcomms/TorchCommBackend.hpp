@@ -11,8 +11,6 @@
 #include <comms/torchcomms/TorchCommUtils.hpp>
 #include <comms/torchcomms/TorchCommWindow.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
-#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
-#include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <memory>
 #include <vector>
 
@@ -154,15 +152,9 @@ class TorchCommBackend {
   virtual const at::Device& getDevice() const = 0;
   // Window & One-sidede Operations, not required for all backends, so we added
   // default implementation here
-  virtual std::shared_ptr<TorchCommWindow> window_allocate(
-      const size_t window_size,
-      bool cpu_buf = false,
-      const size_t signalSize = 256) {
-    (void)(window_size);
-    (void)(cpu_buf);
-    (void)(signalSize);
+  virtual std::shared_ptr<TorchCommWindow> new_window() {
     throw std::logic_error(
-        "[TorchCommBackend]: window_allocate not implemented for communicator:" +
+        "[TorchCommBackend]: new_window not implemented for communicator:" +
         std::string(getCommName()));
     return nullptr;
   }

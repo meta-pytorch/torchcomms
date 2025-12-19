@@ -70,20 +70,28 @@ void NcclxMock::setupDefaultBehaviors() {
   ON_CALL(*this, reduceScatter(_, _, _, _, _, _, _))
       .WillByDefault(Return(ncclSuccess));
 
-  ON_CALL(*this, winAllocate(_, _, _, _, _, _))
+  ON_CALL(*this, alltoallvDedupInit(_, _, _, _, _, _, _, _))
+      .WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, alltoallvDedupExec(_, _, _, _, _, _, _))
+      .WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, alltoallvDedupCombine(_, _, _, _, _, _))
+      .WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, pFree(_)).WillByDefault(Return(ncclSuccess));
+
+  ON_CALL(*this, commWindowRegister(_, _, _, _))
       .WillByDefault(DoAll(
           SetArgPointee<3>(reinterpret_cast<NcclxWindow>(0x5000)),
           Return(ncclSuccess)));
-  ON_CALL(*this, winFree(_, _)).WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, commWindowDeregister(_, _)).WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, winPut(_, _, _, _, _, _, _))
       .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, winSharedQuery(_, _, _, _))
       .WillByDefault(DoAll(
           SetArgPointee<3>(reinterpret_cast<void*>(0x5000)),
           Return(ncclSuccess)));
-  ON_CALL(*this, winSignal(_, _, _, _, _)).WillByDefault(Return(ncclSuccess));
-  ON_CALL(*this, winWaitSignal(_, _, _, _, _))
-      .WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, winSignal(_, _, _)).WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, winWaitSignal(_, _, _)).WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, winGetAttributes(_, _, _)).WillByDefault(Return(ncclSuccess));
 
   // Group operations - return success by default
   ON_CALL(*this, groupStart()).WillByDefault(Return(ncclSuccess));

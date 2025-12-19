@@ -114,8 +114,6 @@ class CtranIb {
   // Unlock the entire CtranIb instance.
   commResult_t epochUnlock();
 
-  static bool isEnabled();
-
   // Register control message callback function if have any.
   // Input arguments:
   //   - ctrlMgr: the ctranCtrlManager to manage the control message
@@ -484,6 +482,14 @@ class CtranIb {
   // Return the listen address of the listen socket.
   folly::Expected<folly::SocketAddress, int> getListenSocketListenAddr() {
     return listenSocket->getListenAddress();
+  }
+
+  int getRank() const {
+    return rank;
+  }
+
+  uint64_t getCommHash() const {
+    return commHash;
   }
 
  private:
@@ -1141,7 +1147,8 @@ class CtranIbEpochRAII {
   // needed only for selected cases.
   explicit CtranIbEpochRAII(CtranIb* ctranIb) : ctranIb_(ctranIb) {
     if (ctranIb_ != nullptr) {
-      FB_COMMCHECKTHROW(ctranIb_->epochLock());
+      FB_COMMCHECKTHROW_EX(
+          ctranIb_->epochLock(), ctranIb_->getRank(), ctranIb_->getCommHash());
     }
   }
 

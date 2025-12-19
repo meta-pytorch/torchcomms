@@ -2,7 +2,7 @@
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/MemUtils.h"
@@ -45,7 +45,7 @@ TEST(MemUtilsTest, MultipleSegmentAllocation) {
   const size_t segmentSize = 2097152; // 2MB per segment
   std::vector<size_t> segSizes = {segmentSize, segmentSize};
 
-  auto result = commMemAllocDisjoint(&bufBase, segSizes, segments);
+  auto result = ctran::commMemAllocDisjoint(&bufBase, segSizes, segments);
   if (result != commSuccess) {
     GTEST_SKIP() << "Disjoint allocation failed";
   }
@@ -57,7 +57,7 @@ TEST(MemUtilsTest, MultipleSegmentAllocation) {
       << "Buffer spanning multiple segments should be detected as multiple allocations";
 
   // Clean up
-  EXPECT_EQ(commMemFreeDisjoint(bufBase, segSizes), commSuccess);
+  EXPECT_EQ(ctran::commMemFreeDisjoint(bufBase, segSizes), commSuccess);
 }
 
 TEST(MemUtilsTest, SingleAllocationManaged) {

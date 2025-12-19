@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/tests/bootstrap/IntraProcessBootstrap.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -27,13 +28,14 @@ void IntraProcessBootstrap::barrierNamed(
     while (state_->sense.load() != local_sense) {
       auto now = std::chrono::high_resolution_clock::now();
       if (now - startTs > timeout) {
-        throw std::runtime_error(
+        throw ctran::utils::Exception(
             fmt::format(
                 "rank [{}/{}] barrier '{}' timeout after {}s",
                 rank,
                 nRanks,
                 name,
-                timeoutSeconds));
+                timeoutSeconds),
+            commInternalError);
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
@@ -118,11 +120,13 @@ folly::SemiFuture<int> IntraProcessBootstrap::barrierIntraNode(
 }
 folly::SemiFuture<int>
 IntraProcessBootstrap::send(void* buf, int len, int peer, int tag) {
-  throw std::runtime_error("IntraProcessBootstrap::send not implemented");
+  throw ctran::utils::Exception(
+      "IntraProcessBootstrap::send not implemented", commInvalidUsage);
 }
 folly::SemiFuture<int>
 IntraProcessBootstrap::recv(void* buf, int len, int peer, int tag) {
-  throw std::runtime_error("IntraProcessBootstrap::recv not implemented");
+  throw ctran::utils::Exception(
+      "IntraProcessBootstrap::recv not implemented", commInvalidUsage);
 }
 
 } // namespace ctran::testing

@@ -450,6 +450,44 @@ TEST_F(IbverbxTestFixture, IbvDeviceQueries) {
   EXPECT_GT(activePort.value(), 0);
 }
 
+TEST_F(IbverbxTestFixture, IbvDeviceMultiThreadUniqueDeviceId) {
+  constexpr int kNumThreads = 4;
+  constexpr int kDevicesPerThread = 10;
+  constexpr int kTotalDevices = kNumThreads * kDevicesPerThread;
+
+  std::set<int32_t> deviceIds;
+  std::mutex numsMutex;
+
+  auto createDevices = [&]() {
+    std::vector<int32_t> localDeviceIds;
+    localDeviceIds.reserve(kDevicesPerThread);
+
+    for (int i = 0; i < kDevicesPerThread; i++) {
+      auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+      ASSERT_TRUE(devices);
+      for (auto& device : *devices) {
+        localDeviceIds.push_back(device.getDeviceId());
+      }
+    }
+
+    std::lock_guard<std::mutex> lock(numsMutex);
+    deviceIds.insert(localDeviceIds.begin(), localDeviceIds.end());
+  };
+
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+  for (int i = 0; i < kNumThreads; i++) {
+    threads.emplace_back(createDevices);
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  ASSERT_EQ(deviceIds.size(), kTotalDevices)
+      << "All device IDs should be distinct";
+}
+
 TEST_F(IbverbxTestFixture, IbvCq) {
   auto devices = IbvDevice::ibvGetDeviceList();
   ASSERT_TRUE(devices);
@@ -479,17 +517,19 @@ TEST_F(IbverbxTestFixture, IbvVirtualCq) {
   int cqe = 100;
   auto cq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
   ASSERT_TRUE(cq);
-  ASSERT_NE(cq->getPhysicalCqRef().cq(), nullptr);
-  auto cqRawPtr = cq->getPhysicalCqRef().cq();
+  ASSERT_NE(cq->getPhysicalCqsRef().at(0).cq(), nullptr);
+  auto cqRawPtr = cq->getPhysicalCqsRef().at(0).cq();
 
   // move constructor
   auto cq1 = std::move(*cq);
-  ASSERT_EQ(cq->getPhysicalCqRef().cq(), nullptr);
-  ASSERT_EQ(cq1.getPhysicalCqRef().cq(), cqRawPtr);
+  ASSERT_TRUE(cq->getPhysicalCqsRef().empty());
+  ASSERT_EQ(cq1.getPhysicalCqsRef().size(), 1);
+  ASSERT_EQ(cq1.getPhysicalCqsRef().at(0).cq(), cqRawPtr);
 
   IbvVirtualCq cq2(std::move(cq1));
-  ASSERT_EQ(cq1.getPhysicalCqRef().cq(), nullptr);
-  ASSERT_EQ(cq2.getPhysicalCqRef().cq(), cqRawPtr);
+  ASSERT_TRUE(cq1.getPhysicalCqsRef().empty());
+  ASSERT_EQ(cq2.getPhysicalCqsRef().size(), 1);
+  ASSERT_EQ(cq2.getPhysicalCqsRef().at(0).cq(), cqRawPtr);
 }
 
 TEST_F(IbverbxTestFixture, IbvQp) {
@@ -559,10 +599,10 @@ TEST_F(IbverbxTestFixture, IbvVirtualQp) {
   int cqe = 100;
   auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
   ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+  ASSERT_NE(maybeVirtualCq->getPhysicalCqsRef().at(0).cq(), nullptr);
   auto virtualCq = std::move(*maybeVirtualCq);
 
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
   auto pd = device.allocPd();
   ASSERT_TRUE(pd);
 
@@ -618,7 +658,8 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpMultiThreadUniqueQpNum) {
       ASSERT_TRUE(maybeVirtualCq);
       auto virtualCq = std::move(*maybeVirtualCq);
 
-      auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+      auto initAttr =
+          makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
       auto pd = device.allocPd();
       ASSERT_TRUE(pd);
 
@@ -660,10 +701,10 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpFindAvailableSendQp) {
   int cqe = 100;
   auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
   ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+  ASSERT_NE(maybeVirtualCq->getPhysicalCqsRef().at(0).cq(), nullptr);
   auto virtualCq = std::move(*maybeVirtualCq);
 
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
   auto pd = device.allocPd();
   ASSERT_TRUE(pd);
 
@@ -801,10 +842,10 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpUpdatePhysicalSendWrFromVirtualSendWr) {
   int cqe = 100;
   auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
   ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+  ASSERT_NE(maybeVirtualCq->getPhysicalCqsRef().at(0).cq(), nullptr);
   auto virtualCq = std::move(*maybeVirtualCq);
 
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
   auto pd = device.allocPd();
   ASSERT_TRUE(pd);
 
@@ -988,10 +1029,10 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpBusinessCard) {
   int cqe = 100;
   auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
   ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+  ASSERT_NE(maybeVirtualCq->getPhysicalCqsRef().at(0).cq(), nullptr);
   auto virtualCq = std::move(*maybeVirtualCq);
 
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
   auto pd = device.allocPd();
   ASSERT_TRUE(pd);
 
@@ -1081,10 +1122,10 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpBusinessCardSerializeAndDeserialize) {
   int cqe = 100;
   auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
   ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+  ASSERT_NE(maybeVirtualCq->getPhysicalCqsRef().at(0).cq(), nullptr);
   auto virtualCq = std::move(*maybeVirtualCq);
 
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
   auto pd = device.allocPd();
   ASSERT_TRUE(pd);
 
@@ -1141,10 +1182,10 @@ TEST_F(IbverbxTestFixture, Coordinator) {
   int cqe = 100;
   auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
   ASSERT_TRUE(maybeVirtualCq);
-  ASSERT_NE(maybeVirtualCq->getPhysicalCqRef().cq(), nullptr);
+  ASSERT_NE(maybeVirtualCq->getPhysicalCqsRef().at(0).cq(), nullptr);
   auto virtualCq = std::move(*maybeVirtualCq);
 
-  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
   auto pd = device.allocPd();
   ASSERT_TRUE(pd);
 
@@ -1178,34 +1219,43 @@ TEST_F(IbverbxTestFixture, Coordinator) {
   ASSERT_NE(recvCqIt, virtualQpToRecvCqMap.end());
   ASSERT_EQ(recvCqIt->second, virtualCqNum);
 
-  // 3. Test physicalQpNumToVirtualQpNum_ mapping
-  const auto& physicalQpToVirtualQpMap =
-      coordinator->getPhysicalQpToVirtualQpMap();
+  // 3. Test qpIdToVirtualQpNum_ mapping
+  const auto& qpIdToVirtualQpMap = coordinator->getQpIdToVirtualQpMap();
   ASSERT_EQ(
-      physicalQpToVirtualQpMap.size(),
+      qpIdToVirtualQpMap.size(),
       totalQps + 1); // totalQps + 1 to consider notifyQp
   for (const auto& physicalQp : virtualQp.getQpsRef()) {
     uint32_t physicalQpNum = physicalQp.qp()->qp_num;
-    auto virtualQpNumIt = physicalQpToVirtualQpMap.find(physicalQpNum);
-    ASSERT_NE(virtualQpNumIt, physicalQpToVirtualQpMap.end());
+    int32_t deviceId = physicalQp.getDeviceId();
+    QpId key{.deviceId = deviceId, .qpNum = physicalQpNum};
+    auto virtualQpNumIt = qpIdToVirtualQpMap.find(key);
+    ASSERT_NE(virtualQpNumIt, qpIdToVirtualQpMap.end());
     ASSERT_EQ(virtualQpNumIt->second, virtualQpNum);
   }
   uint32_t notifyQpNum = virtualQp.getNotifyQpRef().qp()->qp_num;
-  auto notifyQpIt = physicalQpToVirtualQpMap.find(notifyQpNum);
-  ASSERT_NE(notifyQpIt, physicalQpToVirtualQpMap.end());
+  int32_t notifyDeviceId = virtualQp.getNotifyQpRef().getDeviceId();
+  QpId notifyKey{.deviceId = notifyDeviceId, .qpNum = notifyQpNum};
+  auto notifyQpIt = qpIdToVirtualQpMap.find(notifyKey);
+  ASSERT_NE(notifyQpIt, qpIdToVirtualQpMap.end());
   ASSERT_EQ(notifyQpIt->second, virtualQpNum);
 
   // 4. Test that all physical QP numbers are unique and properly mapped
   std::set<uint32_t> physicalQpNums;
   for (const auto& physicalQp : virtualQp.getQpsRef()) {
     uint32_t physicalQpNum = physicalQp.qp()->qp_num;
+    uint32_t deviceId = physicalQp.getDeviceId();
     ASSERT_TRUE(
         physicalQpNums.insert(physicalQpNum).second); // Should be unique
     ASSERT_EQ(
-        coordinator->getVirtualQpByPhysicalQpNum(physicalQpNum), &virtualQp);
+        coordinator->getVirtualQpByPhysicalQpNumAndDeviceId(
+            physicalQpNum, deviceId),
+        &virtualQp);
   }
   ASSERT_TRUE(physicalQpNums.insert(notifyQpNum).second); // Should be unique
-  ASSERT_EQ(coordinator->getVirtualQpByPhysicalQpNum(notifyQpNum), &virtualQp);
+  ASSERT_EQ(
+      coordinator->getVirtualQpByPhysicalQpNumAndDeviceId(
+          notifyQpNum, notifyDeviceId),
+      &virtualQp);
 }
 
 TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {
@@ -1239,7 +1289,8 @@ TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {
       auto virtualCq2 = std::move(*maybeVirtualCq2);
       virtualCqNum2 = virtualCq2.getVirtualCqNum();
 
-      auto initAttr = makeIbvQpInitAttr(virtualCq1.getPhysicalCqRef().cq());
+      auto initAttr =
+          makeIbvQpInitAttr(virtualCq1.getPhysicalCqsRef().at(0).cq());
       auto pd = device.allocPd();
       ASSERT_TRUE(pd);
 
@@ -1298,7 +1349,7 @@ TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {
     ASSERT_TRUE(maybeVirtualCq);
     auto virtualCq = std::move(*maybeVirtualCq);
 
-    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqRef().cq());
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
     auto pd = device.allocPd();
     ASSERT_TRUE(pd);
 
@@ -1340,7 +1391,8 @@ TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {
     ASSERT_TRUE(maybeVirtualCq);
     auto virtualCq1 = std::move(*maybeVirtualCq);
 
-    auto initAttr = makeIbvQpInitAttr(virtualCq1.getPhysicalCqRef().cq());
+    auto initAttr =
+        makeIbvQpInitAttr(virtualCq1.getPhysicalCqsRef().at(0).cq());
     auto pd = device.allocPd();
     ASSERT_TRUE(pd);
 
@@ -1611,6 +1663,105 @@ TEST_F(IbverbxTestFixture, DqplbSeqTrackerProcessReceivedImm) {
                            // notification bit set. So notify4 is 1
   }
 }
+
+TEST_F(IbverbxTestFixture, IbvCqGetDeviceCq) {
+#if defined(__HIP_PLATFORM_AMD__)
+  GTEST_SKIP() << "Skipping getDeviceCq test on AMD platform: not supported";
+#else
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 256;
+  auto cq = device.createCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(cq);
+  ASSERT_NE(cq->cq(), nullptr);
+
+  // Test getDeviceCq
+  auto maybeDeviceCq = cq->getDeviceCq();
+  ASSERT_TRUE(maybeDeviceCq);
+  auto& deviceCq = *maybeDeviceCq;
+
+  // Verify device CQ fields are populated
+  ASSERT_NE(deviceCq.cq_buf, nullptr);
+  ASSERT_GT(deviceCq.ncqes, 0);
+  // MLX5 may allocate more CQEs than requested (driver may round up for
+  // alignment/performance)
+  // TODO: we see driver allocates 512 CQE even when we only ask for 256
+  ASSERT_GE(deviceCq.ncqes, cqe);
+  ASSERT_NE(deviceCq.cq_dbrec, nullptr);
+
+  XLOGF(
+      INFO,
+      "Device CQ: cq_buf={}, ncqes={}, cq_dbrec={}",
+      deviceCq.cq_buf,
+      deviceCq.ncqes,
+      (void*)deviceCq.cq_dbrec);
+#endif
+}
+
+TEST_F(IbverbxTestFixture, IbvQpGetDeviceQp) {
+#if defined(__HIP_PLATFORM_AMD__)
+  GTEST_SKIP() << "Skipping getDeviceQp test on AMD platform: not supported";
+#else
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 256;
+  auto cq = device.createCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(cq);
+  ASSERT_NE(cq->cq(), nullptr);
+
+  // Get device CQ first
+  auto maybeDeviceCq = cq->getDeviceCq();
+  ASSERT_TRUE(maybeDeviceCq);
+  auto deviceCq = *maybeDeviceCq;
+
+  // Allocate device memory for device_cq
+  device_cq* d_cq;
+  CUDA_CHECK(cudaMalloc(&d_cq, sizeof(device_cq)));
+  CUDA_CHECK(
+      cudaMemcpy(d_cq, &deviceCq, sizeof(device_cq), cudaMemcpyHostToDevice));
+
+  // Create QP
+  auto initAttr = makeIbvQpInitAttr(cq->cq());
+  auto pd = device.allocPd();
+  ASSERT_TRUE(pd);
+  auto qp = pd->createQp(&initAttr);
+  ASSERT_TRUE(qp);
+  ASSERT_NE(qp->qp(), nullptr);
+
+  // Test getDeviceQp
+  auto maybeDeviceQp = qp->getDeviceQp(d_cq);
+  ASSERT_TRUE(maybeDeviceQp);
+  auto& deviceQp = *maybeDeviceQp;
+
+  // Verify device QP fields are populated
+  ASSERT_EQ(deviceQp.qp_num, qp->qp()->qp_num);
+  ASSERT_NE(deviceQp.wq_buf, nullptr);
+  ASSERT_GT(deviceQp.nwqes, 0);
+  ASSERT_NE(deviceQp.sq_dbrec, nullptr);
+  ASSERT_NE(deviceQp.bf_reg, nullptr);
+  ASSERT_EQ(deviceQp.cq, d_cq);
+  ASSERT_EQ(deviceQp.producer_idx, 0);
+  ASSERT_EQ(deviceQp.consumer_idx, 0);
+
+  XLOGF(
+      INFO,
+      "Device QP: qp_num={}, wq_buf={}, nwqes={}, sq_dbrec={}, bf_reg={}, cq={}",
+      deviceQp.qp_num,
+      deviceQp.wq_buf,
+      deviceQp.nwqes,
+      (void*)deviceQp.sq_dbrec,
+      (void*)deviceQp.bf_reg,
+      (void*)deviceQp.cq);
+
+  // Cleanup
+  CUDA_CHECK(cudaFree(d_cq));
+#endif
+}
+
 } // namespace ibverbx
 
 int main(int argc, char* argv[]) {

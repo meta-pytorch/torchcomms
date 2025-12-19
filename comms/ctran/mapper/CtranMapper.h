@@ -779,18 +779,18 @@ class CtranMapper {
       KernelConfig& config) {
     if (this->ctranTcpDm != nullptr) {
       auto ret = this->ctranTcpDm->prepareUnpackConsumer(
-          sqs, blocks, &config.unpackPoolId);
+          sqs, blocks, &config.unpackPool);
       for (auto& op : opGroup) {
-        op->unpackPoolId = config.unpackPoolId;
+        op->unpackPool = config.unpackPool;
       }
       return ret;
     }
     return commSuccess;
   }
 
-  commResult_t teardownUnpackConsumer(int poolIndex) {
+  commResult_t teardownUnpackConsumer(void* pool) {
     if (this->ctranTcpDm != nullptr) {
-      return this->ctranTcpDm->teardownUnpackConsumer(poolIndex);
+      return this->ctranTcpDm->teardownUnpackConsumer(pool);
     }
     return commSuccess;
   }
@@ -1784,7 +1784,7 @@ class CtranMapper {
           (void*)rbuff,
           len,
           notify->tcpDmReq,
-          this->context.unpackPoolId));
+          this->context.unpackPool));
     }
 
     notify->update(peerRank, kernElem, backend, notifyCnt);
@@ -1918,8 +1918,11 @@ class CtranMapper {
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
   std::unique_ptr<class CtranCtrlManager> ctrlMgr{nullptr};
-  std::vector<CtranMapperBackend> rankBackendMap;
-  std::vector<CtranMapperBackend> backends;
+
+  // holds enabled backends when the mapper is created.
+  // A unified struct for holding all available backends.
+  std::vector<bool> enableBackends_{
+      std::vector<bool>(CtranMapperBackend::NUM_BACKENDS, false)};
 
   // Lightweight request object to track mapper internal callback ctrl msgs
   class CbCtrlRequest {

@@ -15,6 +15,7 @@
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/utils/commSpecs.h"
@@ -1341,7 +1342,7 @@ class CtranIbVirtualConn {
       // If this was the final put, move the PutInfo descriptor from pending
       // to outstanding
       if (put->offset != put->len) {
-        throw std::runtime_error("Mismatch of length");
+        throw ctran::utils::Exception("Mismatch of length", commInternalError);
       }
       outstandingPuts_.push_back(std::move(pendingPuts_.front()));
       pendingPuts_.pop_front();
@@ -1399,7 +1400,7 @@ class CtranIbVirtualConn {
       // If this was the final get, move the getInfo descriptor from pending
       // to outstanding
       if (get->offset != get->len) {
-        throw std::runtime_error("Mismatch of length");
+        throw ctran::utils::Exception("Mismatch of length", commInternalError);
       }
       outstandingGets_.push_back(std::move(pendingGets_.front()));
       pendingGets_.pop_front();

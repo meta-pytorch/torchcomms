@@ -27,6 +27,9 @@ void HipMock::setupDefaultBehaviors() {
   ON_CALL(*this, streamDestroy(_)).WillByDefault(Return(hipSuccess));
   ON_CALL(*this, streamSynchronize(_)).WillByDefault(Return(hipSuccess));
 
+  ON_CALL(*this, threadExchangeStreamCaptureMode(_))
+      .WillByDefault(Return(hipSuccess));
+
   // Default event operations
   ON_CALL(*this, eventCreate(_))
       .WillByDefault(DoAll(

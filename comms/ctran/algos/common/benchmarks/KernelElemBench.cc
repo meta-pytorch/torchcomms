@@ -178,18 +178,18 @@ static void KernelElemWaitNotify(
 //------------------------------------------------------------------------------
 
 // Test with different numbers of thread block groups
-BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 1);
-BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 2);
-BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 4);
-BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 8);
-BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 16);
-BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 32);
-BENCHMARK_PARAM_COUNTERS(KernelElemPutNotify, 64);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemPutNotify, 1);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemPutNotify, 2);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemPutNotify, 4);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemPutNotify, 8);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemPutNotify, 16);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemPutNotify, 32);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemPutNotify, 64);
 
 // Test with different numbers of threads per group
-BENCHMARK_PARAM_COUNTERS(KernelElemWaitNotify, 256);
-BENCHMARK_PARAM_COUNTERS(KernelElemWaitNotify, 512);
-BENCHMARK_PARAM_COUNTERS(KernelElemWaitNotify, 1024);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemWaitNotify, 256);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemWaitNotify, 512);
+BENCHMARK_SINGLE_PARAM_COUNTERS(KernelElemWaitNotify, 1024);
 
 int main(int argc, char** argv) {
   CHECK_GE(bench_utils::getNumCudaDevices(), 1);

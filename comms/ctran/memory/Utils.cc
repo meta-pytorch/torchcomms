@@ -3,6 +3,7 @@
 #include "comms/ctran/memory/Utils.h"
 
 #include <folly/Format.h>
+#include <sstream>
 
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
@@ -41,8 +42,10 @@ commResult_t allocateShareableBuffer(
   // grab memory from cache if available, otherwise always allocate new memory
   CUmemGenericAllocationHandle handle;
   if (memCache) {
+    std::stringstream ss;
+    ss << use << ":0x" << std::hex << commHash;
     FB_COMMCHECK(memCache->getCachedCuMemById(
-        folly::sformat("{}:{:#x}", use, commHash), /*key*/
+        ss.str(), /*key*/
         ptr,
         &handle,
         size,

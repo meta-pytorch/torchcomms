@@ -7,13 +7,9 @@
 namespace torch {
 namespace comms {
 
-#ifdef NCCL_RMA_SUPPORTED
-using NcclxWindow = ncclWin_t;
-using NcclxWindowCmpOp = ncclCmpOp_t;
-#else
-using NcclxWindow = void*;
-using NcclxWindowCmpOp = int;
-#endif
+using NcclxWindow = ncclWindow_t;
+using NcclxWindowAccessType = ncclWinAccessType;
+using NcclxWindowAttr = ncclWinAttr_t;
 
 /**
  * Abstract interface for NCCL API operations.
@@ -176,36 +172,61 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t winAllocate(
-      size_t size,
+  virtual ncclResult_t alltoallvDedupInit(
+      const size_t totalNumSendBlocks, // number of blocks (tokens) per batch
+      const size_t blockCount, // number of elements per block (token)
+      const size_t blockNumRecvBuckets, // number of receiving buckets for each
+                                        // block (experts per token, topK)
+      const int numRecvBuckets, // number of receiving buckets per rank (expert
+                                // per rank)
+      ncclDataType_t datatype,
       ncclComm_t comm,
-      void** baseptr,
-      NcclxWindow* winPtr,
-      bool cpuBuf,
-      const size_t signal_size = 256) = 0;
-  virtual ncclResult_t winFree(ncclComm_t comm, NcclxWindow win) = 0;
+      cudaStream_t stream,
+      void** request) = 0;
+
+  virtual ncclResult_t alltoallvDedupExec(
+      const void* sendBuff,
+      const int* sendIdx,
+      const int* fwdIdx,
+      const int* recvIdx,
+      void* recvBuff,
+      int recvBlockIds[],
+      void* request) = 0;
+
+  virtual ncclResult_t alltoallvDedupCombine(
+      const void* sendBuff,
+      const int* sendIdx,
+      const int* fwdIdx,
+      const int* recvIdx,
+      void* recvBuff,
+      void* request) = 0;
+
+  virtual ncclResult_t pFree(void* request) = 0;
+
+  virtual ncclResult_t commWindowRegister(
+      void* baseptr,
+      const size_t size,
+      ncclComm_t comm,
+      NcclxWindow* winPtr) = 0;
+  virtual ncclResult_t commWindowDeregister(
+      ncclComm_t comm,
+      NcclxWindow win) = 0;
   virtual ncclResult_t winPut(
       const void* originBuff,
       size_t count,
       ncclDataType_t datatype,
       int peer,
-      size_t targetDisp,
+      size_t targetOffsetNelems,
       NcclxWindow win,
       cudaStream_t stream) = 0;
   virtual ncclResult_t
   winSharedQuery(int rank, ncclComm_t comm, NcclxWindow win, void** addr) = 0;
-  virtual ncclResult_t winSignal(
-      size_t signalDisp,
-      uint64_t signalVal,
-      int peer,
-      NcclxWindow win,
-      cudaStream_t stream) = 0;
-  virtual ncclResult_t winWaitSignal(
-      size_t signal_disp,
-      uint64_t cmp_val,
-      NcclxWindowCmpOp cmp_op,
-      NcclxWindow win,
-      cudaStream_t stream) = 0;
+  virtual ncclResult_t
+  winSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
+  virtual ncclResult_t
+  winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
+  virtual ncclResult_t
+  winGetAttributes(int peer, NcclxWindow win, NcclxWindowAttr* attrPtr) = 0;
 
   virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
   virtual ncclResult_t memFree(void* buff) = 0;
@@ -386,21 +407,48 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  // Window RMA operations
-  ncclResult_t winAllocate(
-      size_t size,
+  ncclResult_t alltoallvDedupInit(
+      const size_t totalNumSendBlocks,
+      const size_t blockCount,
+      const size_t blockNumRecvBuckets,
+      const int numRecvBuckets,
+      ncclDataType_t datatype,
       ncclComm_t comm,
-      void** baseptr,
-      NcclxWindow* winPtr,
-      bool cpuBuf,
-      const size_t signal_size = 256) override;
-  ncclResult_t winFree(ncclComm_t comm, NcclxWindow win) override;
+      cudaStream_t stream,
+      void** request) override;
+
+  ncclResult_t alltoallvDedupExec(
+      const void* sendBuff,
+      const int* sendIdx,
+      const int* fwdIdx,
+      const int* recvIdx,
+      void* recvBuff,
+      int recvBlockIds[],
+      void* request) override;
+
+  ncclResult_t alltoallvDedupCombine(
+      const void* sendBuff,
+      const int* sendIdx,
+      const int* fwdIdx,
+      const int* recvIdx,
+      void* recvBuff,
+      void* request) override;
+
+  ncclResult_t pFree(void* request) override;
+
+  // Window RMA operations
+  ncclResult_t commWindowRegister(
+      void* baseptr,
+      const size_t size,
+      ncclComm_t comm,
+      NcclxWindow* winPtr) override;
+  ncclResult_t commWindowDeregister(ncclComm_t comm, NcclxWindow win) override;
   ncclResult_t winPut(
       const void* originBuff,
       size_t count,
       ncclDataType_t datatype,
       int peer,
-      size_t targetDisp,
+      size_t targetOffsetNelems,
       NcclxWindow win,
       cudaStream_t stream) override;
   ncclResult_t winSharedQuery(
@@ -408,18 +456,14 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       NcclxWindow win,
       void** addr) override;
-  ncclResult_t winSignal(
-      size_t signalDisp,
-      uint64_t signalVal,
+  ncclResult_t winSignal(int peer, NcclxWindow win, cudaStream_t stream)
+      override;
+  ncclResult_t winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream)
+      override;
+  ncclResult_t winGetAttributes(
       int peer,
       NcclxWindow win,
-      cudaStream_t stream) override;
-  ncclResult_t winWaitSignal(
-      size_t signal_disp,
-      uint64_t cmp_val,
-      NcclxWindowCmpOp cmp_op,
-      NcclxWindow win,
-      cudaStream_t stream) override;
+      NcclxWindowAttr* attrPtr) override;
 
   ncclResult_t memAlloc(void** buff, size_t size) override;
   ncclResult_t memFree(void* buff) override;

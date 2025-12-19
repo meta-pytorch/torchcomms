@@ -2,20 +2,28 @@
 
 #pragma once
 
+#include <unordered_map>
 #include <vector>
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
 namespace ibverbx {
+
+struct MemoryRegionKeys {
+  uint32_t lkey{0};
+  uint32_t rkey{0};
+};
 
 struct VirtualSendWr {
   VirtualSendWr(
       const ibv_send_wr& wr,
       int expectedMsgCnt,
       int remainingMsgCnt,
-      bool sendExtraNotifyImm)
+      bool sendExtraNotifyImm,
+      const std::unordered_map<int32_t, MemoryRegionKeys>& deviceIdToKeys = {})
       : expectedMsgCnt(expectedMsgCnt),
         remainingMsgCnt(remainingMsgCnt),
-        sendExtraNotifyImm(sendExtraNotifyImm) {
+        sendExtraNotifyImm(sendExtraNotifyImm),
+        deviceIdToKeys(deviceIdToKeys) {
     // Make an explicit copy of the ibv_send_wr structure
     this->wr = wr;
 
@@ -43,7 +51,8 @@ struct VirtualSendWr {
   int offset{
       0}; // Address offset to be used for the next message send operation
   bool sendExtraNotifyImm{false}; // Whether to send an extra notify IMM message
-                                  // for the current VirtualSendWr
+  std::unordered_map<int32_t, MemoryRegionKeys>
+      deviceIdToKeys; // Map from deviceId to device-specific keys (lkey, rkey)
 };
 
 struct VirtualRecvWr {

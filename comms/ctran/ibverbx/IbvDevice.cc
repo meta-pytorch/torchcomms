@@ -181,7 +181,7 @@ std::vector<IbvDevice> IbvDevice::ibvFilterDeviceList(
 }
 
 IbvDevice::IbvDevice(ibv_device* ibvDevice, int port, bool dataDirect)
-    : device_(ibvDevice) {
+    : device_(ibvDevice), deviceId_(nextDeviceId_.fetch_add(1)) {
   port_ = port;
   context_ = ibvSymbols.ibv_internal_open_device(device_);
   if (!context_) {
@@ -203,7 +203,12 @@ IbvDevice::~IbvDevice() {
   if (context_) {
     int rc = ibvSymbols.ibv_internal_close_device(context_);
     if (rc != 0) {
-      XLOGF(ERR, "Failed to close device rc: {}, {}", rc, strerror(errno));
+      XLOGF(
+          WARN,
+          "Failed to close device rc: {}, {}. "
+          "This is a post-failure warning likely due to an uncleaned RDMA resource on the failure path.",
+          rc,
+          strerror(errno));
     }
   }
 }
@@ -213,9 +218,11 @@ IbvDevice::IbvDevice(IbvDevice&& other) noexcept {
   context_ = other.context_;
   port_ = other.port_;
   dataDirect_ = other.dataDirect_;
+  deviceId_ = other.deviceId_;
 
   other.device_ = nullptr;
   other.context_ = nullptr;
+  other.deviceId_ = -1;
 }
 
 IbvDevice& IbvDevice::operator=(IbvDevice&& other) noexcept {
@@ -223,9 +230,11 @@ IbvDevice& IbvDevice::operator=(IbvDevice&& other) noexcept {
   context_ = other.context_;
   port_ = other.port_;
   dataDirect_ = other.dataDirect_;
+  deviceId_ = other.deviceId_;
 
   other.device_ = nullptr;
   other.context_ = nullptr;
+  other.deviceId_ = -1;
   return *this;
 }
 
@@ -241,13 +250,17 @@ int IbvDevice::port() const {
   return port_;
 }
 
+int32_t IbvDevice::getDeviceId() const {
+  return deviceId_;
+}
+
 folly::Expected<IbvPd, Error> IbvDevice::allocPd() {
   ibv_pd* pd;
   pd = ibvSymbols.ibv_internal_alloc_pd(context_);
   if (!pd) {
     return folly::makeUnexpected(Error(errno));
   }
-  return IbvPd(pd, dataDirect_);
+  return IbvPd(pd, deviceId_, dataDirect_);
 }
 
 folly::Expected<IbvPd, Error> IbvDevice::allocParentDomain(
@@ -263,7 +276,7 @@ folly::Expected<IbvPd, Error> IbvDevice::allocParentDomain(
   if (!pd) {
     return folly::makeUnexpected(Error(errno));
   }
-  return IbvPd(pd, dataDirect_);
+  return IbvPd(pd, deviceId_, dataDirect_);
 }
 
 folly::Expected<ibv_device_attr, Error> IbvDevice::queryDevice() const {
@@ -307,7 +320,7 @@ folly::Expected<IbvCq, Error> IbvDevice::createCq(
   if (!cq) {
     return folly::makeUnexpected(Error(errno));
   }
-  return IbvCq(cq);
+  return IbvCq(cq, deviceId_);
 }
 
 folly::Expected<IbvVirtualCq, Error> IbvDevice::createVirtualCq(
@@ -330,7 +343,7 @@ folly::Expected<IbvCq, Error> IbvDevice::createCq(
     return folly::makeUnexpected(Error(errno));
   }
   ibv_cq* cq = ibv_cq_ex_to_cq(cqEx);
-  return IbvCq(cq);
+  return IbvCq(cq, deviceId_);
 }
 
 folly::Expected<ibv_comp_channel*, Error> IbvDevice::createCompChannel() const {

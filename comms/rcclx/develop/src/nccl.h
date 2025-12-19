@@ -949,4 +949,70 @@ ncclResult_t pncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
 } // end extern "C"
 #endif
 
+#ifdef __cplusplus
+namespace ncclx {
+
+using kvType = std::unordered_map<std::string, std::string>;
+class Hints {
+    public:
+        Hints();
+        ncclResult_t set(const std::string& key, const std::string& val);
+        ncclResult_t get(const std::string& key, std::string& val) const;
+
+    private:
+        kvType kv;
+};
+
+/*
+ * All-To-Allv Dynamic
+ * Device (i) sends scounts[j] of data from sbuf[j] to device (j).
+ * At the same time, device (i) receives rcounts[j] of data from device (j)
+ * to be placed at rbuf[j]. scounts and rcounts are
+ * measured in the units of datatype, not bytes. Only out-of-place operation
+ * is allowed (i.e., sbufs and rbufs cannot overlap).
+ * Arguments:
+ *    IN  sbufs       - Data array to send (contains blocks for each other rank)
+ *    IN  scounts     - Length of each block in sbuf
+ *    OUT rbufs       - Data array to receive (contains blocks for each other rank)
+ *    IN  max_rcounts - Max length of each block in rbuf
+ *    OUT actual_rcounts - Actual length of each block in rbuf
+ *    IN  hints       - Hints for performance
+ *    IN  datatype    - Type of each data element
+ *    IN  comm
+ *    IN  stream
+ *
+ * Accepted hints:
+ *   ncclx_alltoallv_dynamic_sendbuffs_contig: {true, false} (default: false)
+ *   --- indicating whether all sendbuffs are part of a single contiguous memory allocation.
+ *   ncclx_alltoallv_dynamic_recvbuffs_contig: {true, false} (default: false)
+ *   --- indicating whether all recvbuffs are part of a single contiguous memory allocation.
+ *   ncclx_alltoallv_dynamic_sendbuffs_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of the pointers of sendbuffs (not the location of each sendbuff).
+ *   ncclx_alltoallv_dynamic_sendcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of sendcounts.
+ *   ncclx_alltoallv_dynamic_recvbuffs_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of the pointers of recvbuffs (not the location of each recvbuff).
+ *   ncclx_alltoallv_dynamic_max_sendcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of maxSendcounts.
+ *   ncclx_alltoallv_dynamic_max_recvcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of maxRecvcounts.
+ *   ncclx_alltoallv_dynamic_actual_recvcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of actualRecvcounts.
+ */
+ncclResult_t alltoallvDynamic(const void * const* sendbuffs, const size_t* sendcounts, void * const* recvbuffs,
+    size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts,
+    const Hints& hints, ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
+
+ncclResult_t alltoallvDynamicSplit(const void* sendbuff, const size_t* sendSplitLengths, void* const* recvbuffs,
+    size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts, const Hints& hints,
+    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
+
+ncclResult_t alltoallvDynamicSplitNonContig( const void* sendbuff, const size_t* sendSplitLengths,
+    size_t numSendSplitLengths, const size_t* sendIndices, const size_t* sendIndicesBlockLengths, void* const* recvbuffs,
+    size_t* recvAllSplitLengths, size_t* recvIndices, size_t* recvIndicesBlockLengths, size_t maxSendcount,
+    size_t maxRecvcount, const Hints& hints, ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
+
+} // namespace ncclx
+#endif // __cplusplus
+
 #endif // end include guard

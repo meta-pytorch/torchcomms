@@ -56,7 +56,7 @@ Why torchcomms?
 torchcomms addresses several key challenges in distributed PyTorch training:
 
 * **Simplified API**: Clean, object-oriented interface that abstracts away low-level communication details
-* **Backend Flexibility**: Easily switch between different communication backends (NCCLX, NCCL, Gloo, RCCL) without changing your code
+* **Backend Flexibility**: Easily switch between different communication backends (NCCLX, RCCLX, NCCL, RCCL, Gloo) without changing your code
 * **Production-Ready**: NCCLX backend is battle-tested in Meta's production environments powering large-scale AI workloads
 * **Type Safety**: Full type hints and validation for better development experience
 * **Performance**: Optimized implementations with support for GPU-accelerated communication
@@ -70,9 +70,10 @@ Multiple Backends
 torchcomms supports several communication backends out of the box:
 
 * **NCCLX**: Meta's enhanced NCCL implementation with additional optimizations
+* **RCCLX**: Meta's enhanced RCCL implementation with additional optimizations
 * **NCCL**: NVIDIA's Collective Communications Library for multi-GPU communication
-* **Gloo**: Facebook's collective communications library for both CPU and GPU
 * **RCCL**: AMD ROCm Collective Communications Library for AMD GPUs
+* **Gloo**: Facebook's collective communications library for both CPU and GPU
 
 Comprehensive Collective Operations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

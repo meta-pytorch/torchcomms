@@ -18,6 +18,8 @@
 #include "meta/lpcoll/low_precision_alltoall.h"
 #include "meta/lpcoll/low_precision_reduce_scatter.h"
 #include "meta/lpcoll/p2p_allgather.h"
+#include "comms/ctran/Ctran.h"
+#include "MetaFactory.h"
 
 using namespace rccl;
 

@@ -75,6 +75,8 @@ class CudaApi {
       cudaGraph_t* graph_out,
       const cudaGraphNode_t** dependencies_out,
       size_t* numDependencies_out) = 0;
+  virtual cudaError_t threadExchangeStreamCaptureMode(
+      enum cudaStreamCaptureMode* mode) = 0;
 
   // Memory management
   virtual cudaError_t malloc(void** devPtr, size_t size) = 0;
@@ -154,6 +156,8 @@ class DefaultCudaApi : public CudaApi {
       cudaGraph_t* graph_out,
       const cudaGraphNode_t** dependencies_out,
       size_t* numDependencies_out) override;
+  cudaError_t threadExchangeStreamCaptureMode(
+      enum cudaStreamCaptureMode* mode) override;
 
   // Memory management
   cudaError_t malloc(void** devPtr, size_t size) override;

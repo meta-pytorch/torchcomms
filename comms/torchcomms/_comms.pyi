@@ -31,11 +31,6 @@ class ReduceOp:
     @property
     def type(self) -> RedOpType: ...
 
-class SignalCmpOp(Enum):
-    EQ = auto()
-    GE = auto()
-    LE = auto()
-
 class CommOptions:
     abort_process_on_timeout_or_error: bool
     timeout: timedelta
@@ -128,37 +123,52 @@ class TorchWork:
     def is_completed(self) -> bool: ...
     def wait(self) -> None: ...
 
+class TorchCommlWinAccessType(Enum):
+    WIN_ACCESS_TYPE_UNIFIED = auto()
+    WIN_ACCESS_TYPE_SEPARATE = auto()
+
+class TorchCommWindowAttr:
+    def __init__(self) -> None: ...
+    access_type: TorchCommlWinAccessType
+
 class TorchCommWindow:
     def get_size(self) -> int: ...
     def get_device(self) -> Any: ...
+    def tensor_register(
+        self,
+        tensor: Any,
+    ) -> None: ...
+    def tensor_deregister(
+        self,
+    ) -> None: ...
     def put(
         self,
         tensor: Any,
         dst_rank: int,
-        target_disp: int,
+        target_offset_nelems: int,
         async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
     ) -> TorchWork: ...
     def signal(
         self,
-        signal_disp: int,
-        signal_val: int,
         dst_rank: int,
         async_op: bool,
-    ) -> None: ...
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> TorchWork: ...
     def wait_signal(
         self,
-        signal_disp: int,
-        signal_val: int,
-        cmp_op: SignalCmpOp,
+        peer_rank: int,
         async_op: bool,
-    ) -> None: ...
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> TorchWork: ...
     def get_tensor(
         self,
         rank: int,
-        sizes: List[int],
-        dtype: Any,
-        offset: int,
     ) -> Any: ...
+    def get_attr(self, peer_rank: int) -> TorchCommWindowAttr: ...
 
 class P2POpType(Enum):
     SEND = auto()
@@ -337,12 +347,7 @@ class TorchComm:
         timeout: timedelta | None = None,
     ) -> TorchComm: ...
     def batch_op_create(self) -> BatchSendRecv: ...
-    def window_allocate(
-        self,
-        window_size: int,
-        cpu_buf: bool | None = False,
-        signal_size: int | None = None,
-    ) -> TorchCommWindow: ...
+    def new_window(self) -> TorchCommWindow: ...
     def mem_allocator(self) -> Any: ...
 
 def new_comm(

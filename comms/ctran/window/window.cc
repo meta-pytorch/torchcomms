@@ -15,12 +15,20 @@
 using ctran::window::RemWinInfo;
 
 namespace ctran {
-CtranWin::CtranWin(
-    CtranComm* comm,
-    size_t size,
-    size_t signalSize,
-    DevMemType bufType)
-    : comm(comm), dataSize(size), signalSize(signalSize), bufType_(bufType) {}
+CtranWin::CtranWin(CtranComm* comm, size_t size, DevMemType bufType)
+    : comm(comm), dataBytes(size), bufType_(bufType) {
+  if (comm == nullptr) {
+    FB_CHECKABORT(
+        commInternalError, "CtranWin: comm is nullptr when creating window.");
+  }
+  signalSize = comm->statex_.get()->nRanks();
+  signalVal.resize(signalSize);
+  waitSignalVal.resize(signalSize);
+  for (auto& val : signalVal)
+    val.store(1);
+  for (auto& val : waitSignalVal)
+    val.store(1);
+}
 
 commResult_t CtranWin::exchange() {
   auto statex = comm->statex_.get();
@@ -31,33 +39,62 @@ commResult_t CtranWin::exchange() {
 
   auto mapper = comm->ctran_->mapper.get();
   CtranMapperEpochRAII epochRAII(mapper);
-
-  auto signalByteSize = signalSize * sizeof(uint64_t);
-
   // Registration via ctran mapper.
-  FB_COMMCHECK(comm->ctran_->mapper->regMem(
+  FB_COMMCHECK(mapper->regMem(
       winBasePtr,
-      dataSize + signalByteSize,
-      &(segHdl),
+      range_,
+      &(baseSegHdl),
       true,
       true, /* NCCL managed buffer */
-      &regHdl));
+      &baseRegHdl));
+
+  if (allocDataBuf_) {
+    dataSegHdl = baseSegHdl;
+    dataRegHdl = baseRegHdl;
+  } else {
+    // if data buffer is provided by user, we need to register it
+    FB_COMMCHECK(mapper->regMem(
+        winDataPtr,
+        dataBytes,
+        &(dataSegHdl),
+        true,
+        true, /* NCCL managed buffer */
+        &dataRegHdl));
+  }
 
   // Handshake with other peers for registration exchange and network
   // connection setup
-  std::vector<void*> remoteBufs(nRanks);
-  std::vector<struct CtranMapperRemoteAccessKey> remoteAccessKeys(nRanks);
-  FB_COMMCHECK(
-      mapper->allGatherCtrl(winBasePtr, regHdl, remoteBufs, remoteAccessKeys));
-  for (auto r = 0; r < nRanks; r++) {
-    remWinInfo[r].dataAddr = remoteBufs[r];
-    remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(
-        reinterpret_cast<size_t>(remoteBufs[r]) + dataSize);
+  std::vector<void*> remoteBaseBufs(nRanks);
+  std::vector<void*> remoteUserBufs(nRanks);
+  std::vector<struct CtranMapperRemoteAccessKey> remoteBaseBufAccessKeys(
+      nRanks);
+  std::vector<struct CtranMapperRemoteAccessKey> remoteUserBufAccessKeys(
+      nRanks);
 
-    remWinInfo[r].dataRkey = remoteAccessKeys[r];
-    remWinInfo[r].signalRkey = remoteAccessKeys[r];
+  FB_COMMCHECK(mapper->allGatherCtrl(
+      winBasePtr, baseRegHdl, remoteBaseBufs, remoteBaseBufAccessKeys));
+
+  if (!allocDataBuf_) {
+    // if data buffer is provided by user, extra round of handler exchange is
+    // needed
+    FB_COMMCHECK(mapper->allGatherCtrl(
+        winDataPtr, dataRegHdl, remoteUserBufs, remoteUserBufAccessKeys));
   }
 
+  for (auto r = 0; r < nRanks; r++) {
+    if (allocDataBuf_) {
+      remWinInfo[r].dataAddr = remoteBaseBufs[r];
+      remWinInfo[r].dataRkey = remoteBaseBufAccessKeys[r];
+      remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(
+          reinterpret_cast<size_t>(remoteBaseBufs[r]) + dataBytes);
+      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[r];
+    } else {
+      remWinInfo[r].dataAddr = remoteUserBufs[r];
+      remWinInfo[r].dataRkey = remoteUserBufAccessKeys[r];
+      remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(remoteBaseBufs[r]);
+      remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[r];
+    }
+  }
   CLOGF_SUBSYS(
       INFO,
       INIT,
@@ -83,7 +120,7 @@ commResult_t CtranWin::exchange() {
   return commSuccess;
 }
 
-commResult_t CtranWin::allocate() {
+commResult_t CtranWin::allocate(void* userBufPtr) {
   auto statex = comm->statex_.get();
   const auto myRank = statex->rank();
 
@@ -91,14 +128,15 @@ commResult_t CtranWin::allocate() {
     FB_ERRORRETURN(commInternalError, "CtranWin already allocated.");
   }
 
+  // If no buffer is provided by the user, the Window object is responsible for
+  // allocating a new buffer internally.
+  allocDataBuf_ = userBufPtr == nullptr ? true : false;
+
   void* addr = nullptr;
   CUmemGenericAllocationHandle allocHandle;
-
-  size_t allocSize = dataSize + signalSize * sizeof(uint64_t);
-  if (bufType_ == DevMemType::kHostPinned) {
-    FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
-    range_ = allocSize;
-  } else {
+  auto signalBytes = signalSize * sizeof(uint64_t);
+  size_t allocSize = allocDataBuf_ ? dataBytes + signalBytes : signalBytes;
+  if (isGpuMem()) {
     FB_COMMCHECK(
         utils::commCuMemAlloc(
             &addr,
@@ -111,21 +149,31 @@ commResult_t CtranWin::allocate() {
     // query the actually allocated range of the memory
     CUdeviceptr pbase = 0;
     FB_CUCHECK(cuMemGetAddressRange(&pbase, &range_, (CUdeviceptr)addr));
+  } else {
+    FB_CUDACHECK(cudaMallocHost(&addr, allocSize));
+    range_ = allocSize;
   }
 
   winBasePtr = addr;
-  winBaseSignalPtr =
-      reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr) + dataSize);
+
+  if (allocDataBuf_) {
+    winDataPtr = addr;
+    winSignalPtr =
+        reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr) + dataBytes);
+  } else {
+    winDataPtr = userBufPtr;
+    winSignalPtr = reinterpret_cast<uint64_t*>(reinterpret_cast<size_t>(addr));
+  }
 
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-WINDOW: Rank {} allocated local winBase {} winSigBase {} "
-      "dataSize {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}]",
+      "CTRAN-WINDOW: Rank {} allocated local window data buffer base {} signal buffer base {} "
+      "dataBytes {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}]",
       myRank,
-      winBasePtr,
-      (void*)winBaseSignalPtr,
-      dataSize,
+      winDataPtr,
+      (void*)winSignalPtr,
+      dataBytes,
       signalSize,
       (void*)this,
       (void*)comm,
@@ -141,7 +189,8 @@ commResult_t CtranWin::free() {
   if (statex == nullptr) {
     FB_ERRORRETURN(commInternalError, "Empty communicator statex.");
   }
-  CtranMapperEpochRAII epochRAII(comm->ctran_->mapper.get());
+  auto mapper = comm->ctran_->mapper.get();
+  CtranMapperEpochRAII epochRAII(mapper);
 
   CLOGF_SUBSYS(
       INFO,
@@ -157,32 +206,55 @@ commResult_t CtranWin::free() {
   // NOTE: the window object is not aware of CUDA streams, users need to
   // ensure the host process waits for CUDA streams where put/wait operations
   // are launched.
-  FB_COMMCHECK(comm->ctran_->mapper->barrier());
+  FB_COMMCHECK(mapper->barrier());
 
-  if (segHdl != nullptr) {
-    FB_COMMCHECK(
-        comm->ctran_->mapper->deregMem(segHdl, true /* skipRemRelease */));
-  }
-
-  // Deregister remote memory for ctran mapper
   auto nRanks = statex->nRanks();
+
+  // utils funcs to deregister memory
+  auto deregMemIfNotNull = [&](void* segHdl) {
+    if (segHdl != nullptr) {
+      FB_COMMCHECK(mapper->deregMem(segHdl, true /* skipRemRelease */));
+    }
+    return commSuccess;
+  };
+
+  // utils func to free memory
+  auto freeMem = [&](void* addr) {
+    if (isGpuMem()) {
+      FB_COMMCHECK(utils::commCuMemFree(addr));
+    } else {
+      FB_CUDACHECK(cudaFreeHost(addr));
+    }
+    return commSuccess;
+  };
+
+  // deregistr buffer
+  deregMemIfNotNull(baseSegHdl);
+  // deregister remote buf
   for (auto i = 0; i < nRanks; ++i) {
     if (i != statex->rank()) {
-      FB_COMMCHECK(comm->ctran_->mapper->deregRemReg(&remWinInfo[i].dataRkey));
+      // the signal buffer is always allocated by window internally, so we only
+      // need to dereg using the signalRkey
+      FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].signalRkey));
     }
   }
-  // Release local memory
-  if (bufType_ == DevMemType::kHostPinned) {
-    FB_CUDACHECK(cudaFreeHost(winBasePtr));
-  } else {
-    FB_COMMCHECK(utils::commCuMemFree(remWinInfo[statex->rank()].dataAddr));
+
+  // if data buffer is provided by user, we need to dereg the data buffer
+  if (!allocDataBuf_) {
+    deregMemIfNotNull(dataSegHdl);
+    for (auto i = 0; i < nRanks; ++i) {
+      if (i != statex->rank()) {
+        FB_COMMCHECK(mapper->deregRemReg(&remWinInfo[i].dataRkey));
+      }
+    }
   }
+  freeMem(winBasePtr);
 
   return commSuccess;
 }
 
 bool CtranWin::nvlEnabled(int rank) const {
-  return bufType_ != DevMemType::kHostPinned &&
+  return isGpuMem() &&
       comm->ctran_->mapper->hasBackend(rank, CtranMapperBackend::NVL);
 }
 
@@ -201,24 +273,77 @@ commResult_t ctranWinAllocate(
         CTRAN_MIN_REGISTRATION_SIZE);
     size = CTRAN_MIN_REGISTRATION_SIZE;
   }
-  // Round up size to be divisible by 8 (size % 8 == 0)
+  // Round up data buffer size to be divisible by 8.
+  // This ensures that when data and signal buffers (n * uint64_t) are allocated
+  // contiguously, the signal buffer remains 8-byte aligned for atomic
+  // operations (assuming the base allocation is 8-byte aligned).
   size = (size + 7) & ~7;
   std::string locationRes;
   std::string sigBufSize;
 
   hints.get("window_buffer_location", locationRes);
-  hints.get("window_signal_bufsize", sigBufSize);
 
   CtranWin* newWin = new CtranWin(
       comm,
       size,
-      sigBufSize.empty() ? NCCL_CTRAN_WIN_SIGNAL_SIZE : std::stoi(sigBufSize),
       locationRes == "cpu" ? DevMemType::kHostPinned : DevMemType::kCumem);
-  FB_COMMCHECK(newWin->allocate());
+  FB_COMMCHECK(newWin->allocate(nullptr));
   FB_COMMCHECK(newWin->exchange());
   if (baseptr) {
-    *baseptr = newWin->winBasePtr;
+    *baseptr = newWin->winDataPtr;
   }
+  *win = newWin;
+  return commSuccess;
+}
+
+commResult_t checkUserBufType(const DevMemType bufType) {
+  if (bufType == DevMemType::kCumem || bufType == DevMemType::kHostPinned ||
+      bufType == DevMemType::kHostUnregistered ||
+      bufType == DevMemType::kCudaMalloc) {
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-WINDOW: Buffer Type {} is provided by user while registering window",
+        devMemTypeStr(bufType));
+    return commSuccess;
+  }
+  CLOGF(
+      ERR,
+      "CTRAN-WINDOW: Unsupported buffer type {} provided when registering window. Supported buffer types are kCumem, kHostPinned, kHostUnregistered, kCudaMalloc",
+      devMemTypeStr(bufType));
+
+  return commInvalidUsage;
+}
+
+commResult_t ctranWinRegister(
+    const void* databuf,
+    size_t size,
+    CtranComm* comm,
+    CtranWin** win,
+    const meta::comms::Hints& hints) {
+  if (databuf == nullptr) {
+    FB_ERRORRETURN(
+        commInternalError,
+        "CtranWin: Valid data buffer must be provided while the ctranWinRegister is used.");
+  }
+
+  DevMemType userBufType =
+      DevMemType::kCumem; // will be overwritten by getDevMemType
+  FB_COMMCHECK(getDevMemType(databuf, comm->statex_->cudaDev(), userBufType));
+  FB_COMMCHECK(checkUserBufType(userBufType));
+
+  CtranWin* newWin = new struct CtranWin(
+      comm,
+      // byte size of user provided data buffer
+      size,
+      // if user buffer is on host CPU, allocate kHostPinned buffer for
+      // signal otherwise is on GPU device, allocate kCumem buffer for signal
+      userBufType);
+
+  FB_COMMCHECK(newWin->allocate((void*)databuf));
+
+  FB_COMMCHECK(newWin->exchange()); // register and exchange both signal
+                                    // & data buffer
   *win = newWin;
   return commSuccess;
 }

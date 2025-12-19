@@ -33,8 +33,8 @@ DeviceBuffer& DeviceBuffer::operator=(DeviceBuffer&& other) noexcept {
   return *this;
 }
 
-CudaStream::CudaStream() {
-  CUDA_CHECK(cudaStreamCreate(&stream_));
+CudaStream::CudaStream(unsigned int flags) {
+  CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, flags));
 }
 
 CudaStream::~CudaStream() {

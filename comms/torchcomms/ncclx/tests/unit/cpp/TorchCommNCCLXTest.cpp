@@ -40,6 +40,71 @@ TEST_F(TorchCommNCCLXTest, TestOptionsEnvironmentVariables) {
   EXPECT_EQ(options2.timeout, std::chrono::milliseconds(1500));
 }
 
+TEST_F(TorchCommNCCLXTest, UniqueCommDesc) {
+  setupRankAndSize(0, 4); // rank 0, size 4
+  cuda_mock_->setupDefaultBehaviors();
+  mock_hook_->setupDefaultBehaviors();
+
+  ON_CALL(*nccl_mock_, getUniqueId(_))
+      .WillByDefault(
+          DoAll(SetArgPointee<0>(ncclUniqueId{}), Return(ncclSuccess)));
+
+  ON_CALL(*nccl_mock_, commInitRankConfig(_, _, _, 0, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<0>(reinterpret_cast<ncclComm_t>(0x3000)),
+          Return(ncclSuccess)));
+
+  ON_CALL(*nccl_mock_, commSplit(_, _, _, _, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<3>(reinterpret_cast<ncclComm_t>(0x4000)),
+          Return(ncclSuccess)));
+
+  auto validateCommNameUnique =
+      [](std::vector<std::shared_ptr<TorchCommBackend>> comms) {
+        for (size_t i = 0; i < comms.size(); i++) {
+          for (size_t j = i + 1; j < comms.size(); j++) {
+            EXPECT_NE(comms[i]->getCommName(), comms[j]->getCommName());
+          }
+        }
+      };
+
+  auto comm1 = createMockedTorchComm();
+  auto comm2 = createMockedTorchComm();
+
+  EXPECT_NO_THROW(comm1->init(at::kCUDA, "test_name1", default_options_));
+  EXPECT_NO_THROW(comm2->init(at::kCUDA, "test_name2", default_options_));
+
+  auto split_comm1 = comm1->split({0, 1, 2, 3}, "split_comm");
+  EXPECT_TRUE(split_comm1 != nullptr);
+  auto split_comm2 = comm2->split({0, 1, 2, 3}, "split_comm");
+  EXPECT_TRUE(split_comm2 != nullptr);
+
+  auto split_comm1_2 = split_comm1->split({0, 1}, "split_comm");
+  EXPECT_TRUE(split_comm1_2 != nullptr);
+  auto split_comm1_3 = split_comm1->split({0, 1, 2}, "split_comm");
+  EXPECT_TRUE(split_comm1_3 != nullptr);
+
+  auto split_comm2_2 = split_comm2->split({0, 1}, "split_comm");
+  EXPECT_TRUE(split_comm2_2 != nullptr);
+  auto split_comm2_3 = split_comm2->split({0, 1, 2}, "split_comm");
+  EXPECT_TRUE(split_comm2_3 != nullptr);
+
+  std::vector<std::shared_ptr<TorchCommBackend>> comms = {
+      comm1,
+      comm2,
+      split_comm1,
+      split_comm2,
+      split_comm1_2,
+      split_comm1_3,
+      split_comm2_2,
+      split_comm2_3};
+
+  validateCommNameUnique(comms);
+  for (auto& comm : comms) {
+    comm->finalize();
+  }
+}
+
 TEST_F(TorchCommNCCLXTest, InitializationRank0GetUniqueId) {
   // Test: if node is rank 0, it will try to get a unique id and store it in the
   // store
@@ -1259,10 +1324,14 @@ TEST_F(TorchCommNCCLXTest, AlltoallvDynamicDispatchCombine) {
   auto input_tensor = createTestTensor({100});
   std::vector<at::Tensor> output_tensor_list = {
       createTestTensor({50}), createTestTensor({50})};
-  auto input_chunk_sizes = createTestTensor({2});
-  auto input_chunk_indices = createTestTensor({2});
-  auto input_chunk_count_per_rank = createTestTensor({2});
-  auto output_chunk_sizes_per_rank = createTestTensor({4});
+  auto input_chunk_sizes =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_indices =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_count_per_rank =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto output_chunk_sizes_per_rank =
+      at::ones({4}, at::TensorOptions().device(*device_).dtype(at::kLong));
   auto output_tensor = createTestTensor({100});
 
   // Test alltoallv_dynamic_dispatch
@@ -1294,6 +1363,77 @@ TEST_F(TorchCommNCCLXTest, AlltoallvDynamicDispatchCombine) {
       input_chunk_count_per_rank,
       false);
 
+  EXPECT_NE(work2, nullptr);
+
+  setupNormalDestruction(*comm);
+  comm->finalize();
+}
+
+TEST_F(TorchCommNCCLXTest, AlltoallvDedupExecCombine) {
+  setupRankAndSize(0, 4);
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  comm->init(*device_, "test_name", default_options_);
+
+  const int nnodes = 2;
+  const int nranks = 4;
+  const int nlocalranks = 2;
+  const int num_send_blocks = 16;
+  const int block_count = 64;
+  const int block_num_recv_buckets = 2;
+  const int num_recv_buckets = 2;
+  const at::ScalarType dtype = at::ScalarType::Float;
+  const bool async_op = true;
+
+  // Create test tensors
+  auto input_tensor = createTestTensor({100}, dtype);
+  auto output_tensor = createTestTensor({100}, dtype);
+  auto recv_block_ids = createTestTensor({100}, at::kInt);
+  auto send_indices = createTestTensor({nnodes * num_send_blocks}, at::kInt);
+  auto forward_indices =
+      createTestTensor({nnodes * nlocalranks * num_send_blocks}, at::kInt);
+  auto recv_indices =
+      createTestTensor({num_recv_buckets * nranks * num_send_blocks}, at::kInt);
+
+  EXPECT_CALL(*nccl_mock_, alltoallvDedupInit(_, _, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSuccess));
+
+  EXPECT_CALL(*nccl_mock_, pFree(_)).WillOnce(Return(ncclSuccess));
+
+  EXPECT_CALL(*nccl_mock_, alltoallvDedupExec(_, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSuccess));
+
+  auto pReq = comm->alltoallv_dedup_init(
+      num_send_blocks,
+      block_count,
+      block_num_recv_buckets,
+      num_recv_buckets,
+      dtype,
+      async_op);
+  EXPECT_NE(pReq, nullptr);
+
+  auto work1 = comm->alltoallv_dedup_exec(
+      output_tensor,
+      recv_block_ids,
+      input_tensor,
+      send_indices,
+      forward_indices,
+      recv_indices,
+      pReq);
+  EXPECT_NE(work1, nullptr);
+
+  auto work2 = comm->alltoallv_dedup_combine(
+      output_tensor,
+      input_tensor,
+      send_indices,
+      forward_indices,
+      recv_indices,
+      pReq);
   EXPECT_NE(work2, nullptr);
 
   setupNormalDestruction(*comm);

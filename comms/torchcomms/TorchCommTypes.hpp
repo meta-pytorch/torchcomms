@@ -5,8 +5,6 @@
 #include <ATen/ATen.h>
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
-#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
-#include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <chrono>
 #include <variant>
 
@@ -82,13 +80,6 @@ class ReduceOp {
 
   RedOpType type_{RedOpType::SUM};
   std::optional<const PreMulSumFactorT> factor_{std::nullopt};
-};
-
-// CmpOp enum for comparison operations in Signal
-enum class SignalCmpOp {
-  EQ = 0,
-  GE,
-  LE,
 };
 
 // Default timeout for collective operations.  It can be overridden during

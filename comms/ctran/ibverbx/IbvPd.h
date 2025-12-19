@@ -28,6 +28,7 @@ class IbvPd {
 
   ibv_pd* pd() const;
   bool useDataDirect() const;
+  int32_t getDeviceId() const;
 
   folly::Expected<IbvMr, Error>
   regMr(void* addr, size_t length, ibv_access_flags access) const;
@@ -57,9 +58,11 @@ class IbvPd {
  private:
   friend class IbvDevice;
 
-  IbvPd(ibv_pd* pd, bool dataDirect = false);
+  IbvPd(ibv_pd* pd, int32_t deviceId, bool dataDirect = false);
 
   ibv_pd* pd_{nullptr};
+  int32_t deviceId_{-1}; // The IbvDevice's DeviceId that corresponds to this
+                         // Protection Domain (PD)
   bool dataDirect_{false}; // Relevant only to mlx5
 };
 

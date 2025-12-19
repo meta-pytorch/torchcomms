@@ -3,7 +3,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "comms/ctran/algos/common/SpscP2pSync.h"
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
 using ctran::algos::SpscP2pSync;
@@ -222,74 +223,6 @@ TEST_P(SpscP2pSyncDistTestParamFixture, Check) {
   if (consumerRank == myLocalRank) {
     CUDACHECK_ASSERT(cudaFree(outputData));
   }
-  releaseIpcBufs();
-}
-
-// TODO: convert to Google benchmark for dist environment
-TEST_F(SpscP2pSyncDistTestParamFixture, Perf) {
-  constexpr auto count = 0; // skip data copy
-
-  int numWarm = 10;
-  int numIter = 1000;
-  int numRuns = 100;
-
-  const auto myLocalRank = comm_->statex_->localRank();
-  // rank 0 is producer, rank 1 is consumer
-  const auto consumerRank = 1;
-
-  // dataSize
-  int *shmData = nullptr, *outputData = nullptr;
-
-  std::vector<void*> remBufs;
-  // sync on consumerRank; for simplicity, allocate on both ranks
-  initIpcBufs(sizeof(SpscP2pSync), remBufs);
-
-  SpscP2pSync* sync =
-      reinterpret_cast<SpscP2pSync*>((char*)remBufs[consumerRank]);
-
-  // consumer to initialize sync and data
-  if (consumerRank == myLocalRank) {
-    SpscP2pSync syncH = SpscP2pSync();
-    CUDACHECK_ASSERT(
-        cudaMemcpy(sync, &syncH, sizeof(SpscP2pSync), cudaMemcpyDefault));
-  }
-  // waits consumer finish initialization before both ranks start
-  barrier();
-
-  dim3 grid = {1, 1, 1};
-  dim3 block = {256, 1, 1};
-  void* execArgs[6] = {
-      (void*)&myLocalRank,
-      (void*)&numIter,
-      (void*)&count,
-      (void*)&shmData,
-      (void*)&sync,
-      (void*)&outputData};
-
-  for (auto x = 0; x < numWarm; x++) {
-    CUDACHECK_ASSERT(
-        cudaLaunchKernel((void*)SpscP2pSyncTestKernel, grid, block, execArgs));
-  }
-  CUDACHECK_ASSERT(cudaDeviceSynchronize());
-
-  CUDACHECK_ASSERT(cudaEventRecord(start_, 0));
-  for (auto x = 0; x < numRuns; x++) {
-    CUDACHECK_ASSERT(
-        cudaLaunchKernel((void*)SpscP2pSyncTestKernel, grid, block, execArgs));
-  }
-  CUDACHECK_ASSERT(cudaEventRecord(stop_, 0));
-  CUDACHECK_ASSERT(cudaEventSynchronize(stop_));
-  CUDACHECK_ASSERT(cudaDeviceSynchronize());
-  float timeMs;
-  ASSERT_EQ(cudaEventElapsedTime(&timeMs, start_, stop_), cudaSuccess);
-
-  std::cout
-      << fmt::format(
-             "Perf: {:.2f} us per iteration, averaged from {} runs, each with {} iterations",
-             timeMs * 1e3 / numIter / numRuns,
-             numRuns,
-             numIter)
-      << std::endl;
   releaseIpcBufs();
 }
 

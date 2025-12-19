@@ -11,7 +11,6 @@ struct CtranKernelPutSignalArgs {
 struct CtranKernelWaitSignalArgs {
   uint64_t* signalAddr;
   uint64_t cmpVal;
-  commCmpOp_t cmpOp;
 };
 
 struct CtranKernelSignalArgs {

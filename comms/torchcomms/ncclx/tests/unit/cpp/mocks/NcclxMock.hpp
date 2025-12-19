@@ -224,18 +224,51 @@ class NcclxMock : public NcclxApi {
 
   MOCK_METHOD(
       ncclResult_t,
-      winAllocate,
-      (size_t size,
+      alltoallvDedupInit,
+      (const size_t totalNumSendBlocks,
+       const size_t blockCount,
+       const size_t blockNumRecvBuckets,
+       const int numRecvBuckets,
+       ncclDataType_t datatype,
        ncclComm_t comm,
-       void** baseptr,
-       NcclxWindow* win,
-       bool cpuBuf,
-       const size_t signal_size),
+       cudaStream_t stream,
+       void** reques),
       (override));
 
   MOCK_METHOD(
       ncclResult_t,
-      winFree,
+      alltoallvDedupExec,
+      (const void* sendBuff,
+       const int* sendIdx,
+       const int* fwdIdx,
+       const int* recvIdx,
+       void* recvBuff,
+       int recvBlockIds[],
+       void* request),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      alltoallvDedupCombine,
+      (const void* sendBuff,
+       const int* sendIdx,
+       const int* fwdIdx,
+       const int* recvIdx,
+       void* recvBuff,
+       void* request),
+      (override));
+
+  MOCK_METHOD(ncclResult_t, pFree, (void* request), (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      commWindowRegister,
+      (void* baseptr, size_t size, ncclComm_t comm, NcclxWindow* win),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      commWindowDeregister,
       (ncclComm_t comm, NcclxWindow win),
       (override));
 
@@ -246,7 +279,7 @@ class NcclxMock : public NcclxApi {
        size_t count,
        ncclDataType_t datatype,
        int peer,
-       size_t targetDisp,
+       size_t targetOffsetNelems,
        NcclxWindow win,
        cudaStream_t stream),
       (override));
@@ -260,21 +293,19 @@ class NcclxMock : public NcclxApi {
   MOCK_METHOD(
       ncclResult_t,
       winSignal,
-      (size_t signalDisp,
-       uint64_t signalVal,
-       int peer,
-       NcclxWindow win,
-       cudaStream_t stream),
+      (int peer, NcclxWindow win, cudaStream_t stream),
       (override));
 
   MOCK_METHOD(
       ncclResult_t,
       winWaitSignal,
-      (size_t signal_disp,
-       uint64_t cmp_val,
-       NcclxWindowCmpOp cmp_op,
-       NcclxWindow win,
-       cudaStream_t stream),
+      (int peer, NcclxWindow win, cudaStream_t stream),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      winGetAttributes,
+      (int peer, NcclxWindow win, NcclxWindowAttr* attrPtr),
       (override));
 
   MOCK_METHOD(ncclResult_t, memAlloc, (void** buff, size_t size), (override));

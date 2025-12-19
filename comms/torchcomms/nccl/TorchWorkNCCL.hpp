@@ -29,15 +29,6 @@ class TorchCommNCCLTest;
 
 class TorchWorkNCCL : public TorchWork {
  public:
-  // Status of a work object
-  enum class WorkStatus {
-    NOT_STARTED, // Work has not started yet
-    INPROGRESS, // Work is still in progress,
-    COMPLETED, // Work has completed successfully
-    TIMEDOUT, // Work has timed out
-    ERROR // Work has encountered an error
-  };
-
   TorchWorkNCCL(
       std::shared_ptr<TorchCommNCCL> comm,
       cudaStream_t stream,
@@ -59,7 +50,6 @@ class TorchWorkNCCL : public TorchWork {
   TorchWorkNCCL& operator=(TorchWorkNCCL&&) = delete;
 
   // Override virtual functions from TorchWork
-  bool isCompleted() override;
   void wait() override;
 
  protected:
@@ -85,9 +75,6 @@ class TorchWorkNCCL : public TorchWork {
   cudaStream_t stream_; // stream is not owned by this class
 
   std::chrono::milliseconds timeout_ms_;
-
-  // state machine variables. TODO: convert to state machine later
-  std::atomic<WorkStatus> state_;
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
   std::shared_ptr<TorchCommTracing> tracing_;

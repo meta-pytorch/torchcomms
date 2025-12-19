@@ -3,9 +3,10 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/CudaWrap.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/logger/Logger.h"
 

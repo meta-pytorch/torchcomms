@@ -22,7 +22,7 @@ class CtranTcpDmRequest {
     }
 
     // Can't access request after testRequest for send requests.
-    bool isRecv = request_->op == ::comms::tcp_devmem::RequestOp::Recv;
+    bool isRecv = request_->getOp() == ::comms::tcp_devmem::RequestOp::Recv;
 
     int requestDone = 0;
     COMMCHECKTHROW(
@@ -49,16 +49,16 @@ class CtranTcpDmRequest {
   }
 
   void track(
-      std::shared_ptr<::comms::tcp_devmem::Transport> transport,
-      ::comms::tcp_devmem::Request* request) {
+      ::comms::tcp_devmem::TransportInterface* transport,
+      ::comms::tcp_devmem::RequestInterface* request) {
     done_ = false;
     transport_ = transport;
     request_ = request;
   }
 
  private:
-  ::comms::tcp_devmem::Request* request_{nullptr};
-  std::shared_ptr<::comms::tcp_devmem::Transport> transport_{nullptr};
+  ::comms::tcp_devmem::RequestInterface* request_{nullptr};
+  ::comms::tcp_devmem::TransportInterface* transport_{nullptr};
   bool done_{false};
 };
 

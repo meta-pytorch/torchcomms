@@ -3,11 +3,23 @@
 #include "comms/ctran/window/CtranWin.h"
 
 using ctran::CtranWin;
+
+// MockCtranComm is needed to test CtranWin, which requires a comm object.
+// CtranWin accesses comm->stateX to initialize signal counters.
+class MockCtranComm : public CtranComm {
+ public:
+  MockCtranComm() {
+    std::vector<ncclx::RankTopology> rankTopologies;
+    std::vector<int> commRanksToWorldRanks = {0};
+    statex_ = std::make_unique<ncclx::CommStateX>(
+        0, 1, 0, 0, 0, 0, rankTopologies, commRanksToWorldRanks, "mock_comm");
+  }
+};
 TEST(CtranWinUT, OpCount) {
-  CtranComm* dummyComm = nullptr;
+  auto dummyComm = std::make_unique<MockCtranComm>();
+
   const size_t size = 8192;
-  auto win =
-      std::make_unique<CtranWin>(dummyComm, size, NCCL_CTRAN_WIN_SIGNAL_SIZE);
+  auto win = std::make_unique<CtranWin>(dummyComm.get(), size);
 
   ctran::window::OpCountType opType = ctran::window::OpCountType::kPut;
   auto opCount = win->updateOpCount(8, opType);

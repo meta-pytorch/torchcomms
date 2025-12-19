@@ -19,8 +19,6 @@ class CtranTcpDm {
   CtranTcpDm(CtranComm* comm, CtranCtrlManager* ctrlMgr);
   ~CtranTcpDm();
 
-  static bool isEnabled();
-
   commResult_t preConnect(const std::unordered_set<int>& peerRanks);
 
   static commResult_t
@@ -41,7 +39,7 @@ class CtranTcpDm {
       void* data,
       size_t size,
       CtranTcpDmRequest& req,
-      int unpackPoolId);
+      void* unpackPool);
 
   commResult_t iput(
       const void* sbuf,
@@ -83,16 +81,16 @@ class CtranTcpDm {
   commResult_t progress();
 
   // Export the location of GPU kernel consumer queues.
-  // Returns the allocated pool index via the out parameter poolIndex.
+  // Returns the allocated pool via the out parameter pool.
   commResult_t
-  prepareUnpackConsumer(SQueues* sqs, size_t blocks, int* poolIndex = nullptr);
+  prepareUnpackConsumer(SQueues* sqs, size_t blocks, void** pool = nullptr);
 
   // Return GPU kernel consumer queues to the pool.
-  // poolIndex: the pool index returned by prepareUnpackConsumer.
-  commResult_t teardownUnpackConsumer(int poolIndex);
+  // pool: the pool returned by prepareUnpackConsumer.
+  commResult_t teardownUnpackConsumer(void* pool);
 
  private:
-  std::shared_ptr<::comms::tcp_devmem::Transport> transport_{nullptr};
+  ::comms::tcp_devmem::TransportInterface* transport_{nullptr};
   ctran::bootstrap::ServerSocket listenSocket_{
       static_cast<int>(NCCL_SOCKET_RETRY_CNT)};
   std::vector<sockaddr_storage> allListenSocketAddrs_{};
@@ -103,11 +101,13 @@ class CtranTcpDm {
   int nRanks_{-1};
   uint64_t commHash_{0};
   std::string commDesc_;
-  ::comms::tcp_devmem::NetDev* netdev_{nullptr};
+  ::comms::tcp_devmem::NetDevInterface* netdev_{nullptr};
 
   std::mutex mutex_;
-  std::unordered_map<int, ::comms::tcp_devmem::Communicator*> recvComms_;
-  std::unordered_map<int, ::comms::tcp_devmem::Communicator*> sendComms_;
+  std::unordered_map<int, ::comms::tcp_devmem::CommunicatorInterface*>
+      recvComms_;
+  std::unordered_map<int, ::comms::tcp_devmem::CommunicatorInterface*>
+      sendComms_;
 
   struct RecvRequest {
     int peerRank{-1};
@@ -115,7 +115,7 @@ class CtranTcpDm {
     void* data{nullptr};
     size_t size{0};
     CtranTcpDmRequest* req{nullptr};
-    int unpackPoolId{-1};
+    void* unpackPool{nullptr};
   };
   std::list<std::unique_ptr<RecvRequest>> queuedRecv_;
 
@@ -124,11 +124,11 @@ class CtranTcpDm {
   void bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap);
   void bootstrapAddRecvPeer(
       int peerRank,
-      ::comms::tcp_devmem::Communicator* comm);
+      ::comms::tcp_devmem::CommunicatorInterface* comm);
   void bootstrapAccept();
   void bootstrapAddSendPeer(
       int peerRank,
-      ::comms::tcp_devmem::Communicator* comm);
+      ::comms::tcp_devmem::CommunicatorInterface* comm);
   commResult_t bootstrapConnect(
       int peerRank,
       const folly::SocketAddress& peerSockAddr);
@@ -139,7 +139,7 @@ class CtranTcpDm {
       void* data,
       size_t size,
       CtranTcpDmRequest& req,
-      int unpackPoolId);
+      void* unpackPool);
 };
 
 } // namespace ctran

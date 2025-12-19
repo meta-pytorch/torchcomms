@@ -1435,7 +1435,9 @@ std::shared_ptr<c10::Allocator> TorchCommNCCL::getMemAllocator() {
   c10::DeviceIndex deviceIdx = device_.index();
   if (!deviceSupportsMulticast(deviceIdx)) {
     TORCH_CHECK(
-        false, "NCCL mem allocator is not supported in this NCCL version");
+        false,
+        "NCCL mem allocator is not supported in CUDART version %d",
+        CUDART_VERSION);
   }
   static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
       ncclMemAllocator =

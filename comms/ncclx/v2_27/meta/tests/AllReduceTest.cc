@@ -133,7 +133,7 @@ class AllReduceTest
         ncclCommRegister(comm, recvBuf, count * sizeof(T), &recvHandle));
 
     if (enableDequant) {
-      auto envGuard =
+      auto dequantEnvGuard =
           EnvRAII(NCCL_ALLREDUCE_TYPE, NCCL_ALLREDUCE_TYPE::ncclFloat32);
     }
 

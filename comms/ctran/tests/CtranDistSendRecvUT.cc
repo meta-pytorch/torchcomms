@@ -36,7 +36,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     setenv("NCCL_CTRAN_ALGO_PROFILING_SAMPLING_WEIGHT", "1", 0);
     NcclxBaseTest::SetUp();
     srand(time(NULL));
-    logGpuMemoryStats(globalRank);
+    ctran::logGpuMemoryStats(globalRank);
 
     regCache = CtranMapperRegCache::getInstance();
     CHECK_VALID_REGCACHE(regCache);
@@ -69,13 +69,14 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
   }
 
   void TearDown() override {
-    logGpuMemoryStats(globalRank);
+    ctran::logGpuMemoryStats(globalRank);
     NcclxBaseTest::TearDown();
   }
 
   static void checkProfiler(ctran::Profiler* profiler, uint64_t opCount) {
     // algo profiler currently only enabled for IB backend
-    if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
+    if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE ||
+        NCCL_SENDRECV_ALGO == NCCL_SENDRECV_ALGO::ctstaged) {
       return;
     }
     ASSERT_NE(profiler, nullptr);
@@ -232,7 +233,8 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
       }
     }
 
-    if (globalRank == sendRank) {
+    if (globalRank == sendRank &&
+        (NCCL_SENDRECV_ALGO != NCCL_SENDRECV_ALGO::ctstaged)) {
       verifyBackendsUsed(
           comm->ctranComm_->ctran_.get(),
           comm->ctranComm_->statex_.get(),
@@ -299,6 +301,16 @@ TEST_P(CtranTestParamFixture, sendRecv) {
 
   regCache->init();
 
+  runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
+
+  // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
+  COMMCHECK_TEST(regCache->destroy());
+}
+
+TEST_P(CtranTestParamFixture, sendRecvStagedCopyKernel) {
+  const auto& [offset, count, numMaxQp, memType] = GetParam();
+  EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctstaged);
+  regCache->init();
   runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
 
   // Destroy regCache for later test with different NCCL_CTRAN_REGISTER config.
@@ -402,6 +414,7 @@ INSTANTIATE_TEST_SUITE_P(
         // unaligned addr and size
         std::make_tuple(5, 2097155, 1, kMemNcclMemAlloc),
         // unaligned size
+        // TODO: hang here
         std::make_tuple(0, 2097155, 1, kMemNcclMemAlloc),
         // unaligned with multiple QPs
         std::make_tuple(0, 2097155, 8, kMemNcclMemAlloc),

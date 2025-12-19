@@ -236,7 +236,7 @@ static commResult_t impl(
     stepCount = totalStepCount;
   }
   // Get allreduce specific IB config
-  static CtranIbConfig* allReduceConfig =
+  static thread_local auto allReduceConfig =
       comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
 
   while (totalStepCount) {

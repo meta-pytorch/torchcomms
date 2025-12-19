@@ -1,8 +1,12 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-#include "comms/ctran/algos/common/MPSCTbSync.h"
+
+#include <cuda_runtime.h>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "comms/ctran/tests/CtranXPlatUtUtils.h"
+#include "comms/ctran/algos/common/MPSCTbSync.h"
+#include "comms/ctran/utils/Utils.h"
+#include "comms/testinfra/TestXPlatUtils.h"
 
 using ctran::algos::MPSCTbSync;
 

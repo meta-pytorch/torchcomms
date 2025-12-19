@@ -38,6 +38,7 @@ extern "C" {
 #define NCCL_COMM_SPLIT_GROUP_RANKS_SUPPORTED
 #define NCCL_ALLTOALLV_SUPPORTED
 #define NCCL_ALLTOALLV_DYNAMIC_SUPPORTED
+#define NCCL_ALLTOALLV_DEDUP_SUPPORTED
 #define NCCL_ALLTOALL_SUPPORTED
 #define NCCL_PERSISTENT_COLL_SUPPORTED
 #define NCCL_COMM_ALGO_CONTROL_SUPPORTED
@@ -48,6 +49,9 @@ extern "C" {
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
 typedef struct ncclWindow* ncclWindow_t;
+// TODO: ncclWin_t is needed only for old code path before the NCCLX PG is deprecated,
+// we will remove it once the PG is deprecated.
+typedef ncclWindow_t ncclWin_t;
 #define NCCL_COMM_NULL NULL
 extern ncclComm_t ncclCommWorld;
 #define NCCL_COMM_WORLD ncclCommWorld
@@ -56,7 +60,15 @@ extern ncclComm_t ncclCommWorld;
 typedef struct ncclUniqueId { char internal[NCCL_UNIQUE_ID_BYTES] = {0};} ncclUniqueId;
 
 #define NCCL_RMA_SUPPORTED
-typedef struct ncclWin* ncclWin_t;
+typedef enum {
+  ncclWinAccessUnified = 0,
+  ncclWinAccessSeparate = 1,
+} ncclWinAccessType;
+typedef struct {
+  // attributes of the window
+  ncclWinAccessType accessType;
+} ncclWinAttr;
+typedef ncclWinAttr* ncclWinAttr_t;
 
 /* Error type */
 typedef enum { ncclSuccess                 =  0,
@@ -86,6 +98,10 @@ typedef enum { ncclSuccess                 =  0,
 #define NCCL_SHRINK_DEFAULT 0x00 /* shrink the parent communicator */
 #define NCCL_SHRINK_ABORT 0x01   /* First, terminate ongoing parent operations, and then shrink the parent communicator */
 
+/* ncclConfig initMode */
+#define NCCL_FAST_INIT_MODE_DEFAULT 0x00
+#define NCCL_FAST_INIT_MODE_RING 0x01
+
 /* Communicator configuration. Users can assign value to attributes to specify the
  * behavior of a communicator. */
 typedef struct ncclConfig_v22700 {
@@ -112,7 +128,7 @@ typedef struct ncclConfig_v22700 {
    */
 
   // communicator process group information.
-  const char* commDesc;
+  const char* commDesc{nullptr};
 
   // commSplit group ranks information
   int* splitGroupRanks;
@@ -124,6 +140,9 @@ typedef struct ncclConfig_v22700 {
   // control the lazy connect features
   int lazyConnect{NCCL_CONFIG_UNDEF_INT};
   int lazySetupChannels{NCCL_CONFIG_UNDEF_INT};
+
+  // control the fast init features
+  int fastInitMode{NCCL_CONFIG_UNDEF_INT};
 } ncclConfig_t;
 
 /* Config initializer must be assigned to initialize config structure when it is created.
@@ -150,6 +169,7 @@ typedef struct ncclConfig_v22700 {
   NCCL_CONFIG_UNDEF_PTR,                    /* ncclAllGatherAlgo */     \
   NCCL_CONFIG_UNDEF_INT,                    /* lazyConnect */           \
   NCCL_CONFIG_UNDEF_INT,                    /* lazySetupChannels */     \
+  NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
 }
 
 /* This struct will be used by ncclGroupSimulateEnd() API to query information about simulation. */
@@ -670,20 +690,33 @@ class Hints {
  *   window_buffer_location: {cpu, gpu} (default: gpu)
  *   --- indicating the location of the allocated window buffers.
  */
-ncclResult_t  ncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWin_t* win, const ncclx::Hints& hints = ncclx::Hints());
-ncclResult_t pncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWin_t* win, const ncclx::Hints& hints = ncclx::Hints());
+// TODO: ncclWinAllocate is needed only before the NCCLX PG is deprecated,
+// we will remove it once the PG is deprecated.
+__attribute__((deprecated("Use ncclCommWindowRegister instead")))
+ncclResult_t  ncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWindow_t* win, const ncclx::Hints& hints = ncclx::Hints());
+__attribute__((deprecated("Use ncclCommWindowRegister instead")))
+ncclResult_t pncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWindow_t* win, const ncclx::Hints& hints = ncclx::Hints());
 
 /*
  * Query the address of the shared memory on remote peer
  */
-ncclResult_t  ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWin_t win, void **addr);
-ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWin_t win, void **addr);
+ncclResult_t  ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
+ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
 
 /*
- * Free the window object and free the allocated memory
+ * Query the window attributes
  */
-ncclResult_t  ncclWinFree(ncclComm_t comm, ncclWin_t win);
-ncclResult_t pncclWinFree(ncclComm_t comm, ncclWin_t win);
+ncclResult_t ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr);
+
+/*
+ * Free the window object and free the allocated memory allocated within the communicator.
+ */
+// TODO: ncclWinFree is needed only before the NCCLX PG is deprecated,
+// we will remove it once the PG is deprecated.
+__attribute__((deprecated("Use ncclCommWindowDeregister instead")))
+ncclResult_t  ncclWinFree(ncclComm_t comm, ncclWindow_t win);
+__attribute__((deprecated("Use ncclCommWindowDeregister instead")))
+ncclResult_t pncclWinFree(ncclComm_t comm, ncclWindow_t win);
 
 /*
  * One-side put operation from a local buffer to a remote peer's pre-allocated
@@ -695,7 +728,7 @@ ncclResult_t ncclPutSignal(
     ncclDataType_t datatype,
     int peer,
     size_t targetDisp,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 ncclResult_t pncclPutSignal(
     const void* originBuff,
@@ -703,8 +736,10 @@ ncclResult_t pncclPutSignal(
     ncclDataType_t datatype,
     int peer,
     size_t targetDisp,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
+// TODO: ncclPutSignal_v2 will be removed once the PG is deprecated.
+__attribute__((deprecated("Use ncclPutSignal instead")))
 ncclResult_t ncclPutSignal_v2(
     const void* originBuff,
     size_t targetDisp,
@@ -713,7 +748,7 @@ ncclResult_t ncclPutSignal_v2(
     size_t signalDisp,
     uint64_t signalVal,
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 
 /*
@@ -726,7 +761,7 @@ ncclResult_t ncclPutSignal_v2(
     ncclDataType_t datatype,
     int peer,
     size_t targetDisp,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 
 /*
@@ -739,30 +774,32 @@ ncclResult_t ncclPutSignal_v2(
     size_t count,
     ncclDataType_t datatype,
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 
 /*
  * Wait for a signal from remote peer to complete the put operation.
  */
-ncclResult_t ncclWaitSignal(int peer, ncclWin_t win, cudaStream_t stream);
-ncclResult_t pncclWaitSignal(int peer, ncclWin_t win, cudaStream_t stream);
+ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
+ncclResult_t pncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
 
 /*
  * Wait for a signal given the local signal displacement, the signal value, and the comparison op.
  */
+// TODO: ncclWaitSignal_v2 will be removed once the PG is deprecated.
+__attribute__((deprecated("Use ncclWaitSignal instead")))
 ncclResult_t ncclWaitSignal_v2(
     size_t signalDisp,
     uint64_t cmpVal,
     ncclCmpOp_t cmpOp,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream);
 
 ncclResult_t ncclSignal(
     size_t signalDisp,
     uint64_t signalVal,
     int peer,
-    ncclWin_t win,
+    ncclWindow_t win,
     cudaStream_t stream
 );
 

@@ -14,9 +14,8 @@ commResult_t ctranBroadcast(
     commDataType_t datatype,
     int root,
     CtranComm* comm,
-    cudaStream_t stream) {
-  auto algo = NCCL_BROADCAST_ALGO;
-
+    cudaStream_t stream,
+    enum NCCL_BROADCAST_ALGO algo) {
   CTRAN_COLL_INFO(
       broadcastAlgoName(algo).c_str(),
       sendbuff,
@@ -28,6 +27,7 @@ commResult_t ctranBroadcast(
       stream);
 
   if (algo == NCCL_BROADCAST_ALGO::ctran) {
+    CLOGF_SUBSYS(INFO, COLL, "Running Broadcast ctbtree algorithm");
     algo = NCCL_BROADCAST_ALGO::ctbtree;
   }
 
@@ -63,7 +63,11 @@ bool CtranAlgo::supportBroadcast(
 
 bool ctranBroadcastSupport(
     CtranComm* comm,
+    enum NCCL_BROADCAST_ALGO algo,
     std::optional<CtranMapperBackend> specifiedBackend) {
+  if (algo == NCCL_BROADCAST_ALGO::orig) {
+    return false;
+  }
   return ctranInitialized(comm) &&
       comm->ctran_->algo->supportBroadcast(specifiedBackend);
 }

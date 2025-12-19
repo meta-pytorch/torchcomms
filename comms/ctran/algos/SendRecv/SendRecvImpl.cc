@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
 #include "comms/ctran/algos/SendRecv/SendRecvCEImpl.h"
+#include "comms/ctran/algos/SendRecv/SendRecvStagedCopyImpl.h"
 namespace {
 
 unsigned int bestThreadBlockSize = 0;
@@ -34,17 +35,26 @@ inline unsigned int getThreadBlockSize() {
     // collectives calling getThreadBlockSize().
   }
 
-  return NCCL_CTRAN_NVL_SENDRECV_THREAD_BLOCK_SIZE == -1
+  return NCCL_CTRAN_NVL_SENDRECV_ZCOPY_THREAD_BLOCK_SIZE == -1
       ? bestThreadBlockSize
-      : NCCL_CTRAN_NVL_SENDRECV_THREAD_BLOCK_SIZE;
+      : NCCL_CTRAN_NVL_SENDRECV_ZCOPY_THREAD_BLOCK_SIZE;
 }
 
 } // namespace
 
 namespace ctran::sendrecv {
-KernelConfig::KernelType
-getKernelType(bool hasSend, bool hasRecv, bool hasTcpDmRecv) {
+KernelConfig::KernelType getKernelType(
+    bool hasSend,
+    bool hasRecv,
+    bool hasTcpDmRecv,
+    enum NCCL_SENDRECV_ALGO algo) {
   KernelConfig::KernelType kernelType = KernelConfig::KernelType::SENDRECV;
+  if (algo == NCCL_SENDRECV_ALGO::ctstaged) {
+    kernelType = KernelConfig::KernelType::SENDRECV_STAGED;
+    return kernelType;
+  }
+  // TODO: send/recv/sendrecv kernels should be combined into one kernel just
+  // like SENDRECV_STAGED
   if (hasSend && hasRecv) {
     if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
       kernelType = KernelConfig::KernelType::SENDRECV_NOTIFY;
@@ -72,7 +82,8 @@ commResult_t setupGpeOp(
     std::vector<OpElem*>& nvlOps,
     std::vector<OpElem*>& sendNvlOps,
     std::vector<OpElem*>& ibOps,
-    std::vector<std::unique_ptr<OpElem>>& gpeOpGroup) {
+    std::vector<std::unique_ptr<OpElem>>& gpeOpGroup,
+    enum NCCL_SENDRECV_ALGO algo) {
   if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
     if (!nvlOps.empty()) {
       // first, send/recv NVL ops with copy engine
@@ -80,7 +91,9 @@ commResult_t setupGpeOp(
     }
   }
 
-  if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
+  // If kernel is copy-engine or copy-based, GPE deals with IB ops only.
+  if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE ||
+      algo == NCCL_SENDRECV_ALGO::ctstaged) {
     // next, deal with IB ops
     if (!ibOps.empty()) {
       gpeOpGroup.reserve(ibOps.size());
@@ -90,7 +103,7 @@ commResult_t setupGpeOp(
       ibOps.clear();
     }
   } else {
-    // if copy engine is not enabled, submit all ops to GPE
+    // otherwise, submit all ops to GPE
     gpeOpGroup.reserve(allOps.size());
     for (auto x : allOps) {
       gpeOpGroup.push_back(std::unique_ptr<OpElem>(x));
@@ -102,9 +115,14 @@ commResult_t setupGpeOp(
 commResult_t setupKernelConfig(
     CtranComm* comm,
     const std::vector<OpElem*>& opGroup,
-    KernelConfig& config) {
+    const std::vector<OpElem*>& nvlOps,
+    KernelConfig& config,
+    ctran::sendrecv::KernArgs& kernArgs) {
   const auto statex = comm->statex_.get();
   config.args.devState_d = comm->ctran_->algo->getDevState();
+  if (config.type == KernelConfig::KernelType::SENDRECV_STAGED) {
+    return setupStagedCopyKernelConfig(comm, nvlOps, config, kernArgs);
+  }
   auto putNotifyList = CommonList<KernelElem>();
   auto waitNotifyList = CommonList<KernelElem>();
   int maxNumBlocks = 1;

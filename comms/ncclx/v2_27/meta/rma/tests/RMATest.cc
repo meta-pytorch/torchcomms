@@ -31,6 +31,8 @@ class RMATest : public ::testing::Test {
   void TearDown() override {
     // Destroy the communicator at the end
     NCCLCHECK_TEST(ncclCommDestroy(this->comm));
+    // Check that all allocated memory segments have been freed
+    EXPECT_TRUE(segments.empty()) << "Not all memory segments were freed";
   }
 
   void barrier(ncclComm_t ncclComm, cudaStream_t stream) {
@@ -87,9 +89,53 @@ class RMATest : public ::testing::Test {
     return errs;
   }
 
+  void createWin(
+      bool isUserBuf,
+      MemAllocType bufType,
+      void** winBasePtr,
+      ncclWindow_t* winPtr,
+      size_t sizeBytes,
+      std::vector<int>& buf) {
+    auto res = ncclSuccess;
+    ncclx::Hints hints;
+
+    // If userBuf is true, allocate buffer and use ctranWinRegister API
+    if (isUserBuf) {
+      *winBasePtr = testAllocBuf(sizeBytes, bufType, segments);
+      res = ncclCommWindowRegister(
+          comm, *winBasePtr, sizeBytes, winPtr, NCCL_WIN_DEFAULT);
+
+    } else {
+      hints.set(
+          "window_buffer_location",
+          bufType == MemAllocType::kMemHostManaged ||
+                  bufType == MemAllocType::kMemHostUnregistered
+              ? "cpu"
+              : "gpu");
+      res = ncclWinAllocate(sizeBytes, comm, winBasePtr, winPtr, hints);
+    }
+    ASSERT_EQ(res, ncclSuccess);
+    ASSERT_NE(*winBasePtr, nullptr);
+  }
+
+  void
+  freeWinBuf(bool isUserBuf, void* ptr, size_t size, MemAllocType bufType) {
+    if (isUserBuf) {
+      testFreeBuf(ptr, size, bufType);
+      // Remove the segment from the tracking vector
+      segments.erase(
+          std::remove_if(
+              segments.begin(),
+              segments.end(),
+              [ptr](const TestMemSegment& seg) { return seg.ptr == ptr; }),
+          segments.end());
+    }
+  }
+
   int localRank{0};
   int globalRank{0};
   int numRanks{0};
+  std::vector<TestMemSegment> segments;
 };
 
 class MultiWindowTestParam
@@ -116,7 +162,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
         cudaStreamCreateWithFlags(&wait_stream, cudaStreamNonBlocking));
 
     size_t sizeBytes = numElements * sizeof(int) * statex->nRanks();
-    ncclWin_t win = nullptr;
+    ncclWindow_t win = nullptr;
     void* winBase = nullptr;
     auto res = ncclWinAllocate(sizeBytes, comm, &winBase, &win);
     ASSERT_EQ(res, ncclSuccess);
@@ -165,10 +211,12 @@ TEST_P(MultiWindowTestParam, multiWindow) {
 
 class RMATestParam : public RMATest,
                      public ::testing::WithParamInterface<
-                         std::tuple<size_t, size_t, bool, bool>> {};
+                         std::tuple<size_t, size_t, bool, MemAllocType, bool>> {
+};
 
 TEST_P(RMATestParam, winPutWait) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin] = GetParam();
+  const auto& [kNumElements, kNumIters, ctranAllReduce, bufType, userBuf] =
+      GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
 
@@ -194,16 +242,11 @@ TEST_P(RMATestParam, winPutWait) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclx::Hints hints;
-  if (cpuWin) {
-    hints.set("window_buffer_location", "cpu");
-  }
-
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
-  auto res = ncclWinAllocate(sizeBytes, comm, &winBase, &win, hints);
-  ASSERT_EQ(res, ncclSuccess);
-  ASSERT_NE(winBase, nullptr);
+  std::vector<int> buf(kNumElements * statex->nRanks(), 0);
+
+  createWin(userBuf, bufType, &winBase, &win, sizeBytes, buf);
 
   // Always allocate localBuf from GPU mem so it can be used in ctranAllReduce
   int* localBuf = nullptr;
@@ -218,11 +261,14 @@ TEST_P(RMATestParam, winPutWait) {
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
-    res = ncclWinSharedQuery(peer, comm, win, &remoteAddr);
+    auto res = ncclWinSharedQuery(peer, comm, win, &remoteAddr);
     EXPECT_EQ(res, ncclSuccess);
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
-    } else if (cpuWin || statex->node() != statex->node(peer)) {
+    } else if (
+        bufType == MemAllocType::kMemHostManaged ||
+        bufType == MemAllocType::kMemHostUnregistered ||
+        statex->node() != statex->node(peer)) {
       EXPECT_THAT(remoteAddr, testing::IsNull());
     } else {
       EXPECT_THAT(remoteAddr, testing::NotNull());
@@ -284,21 +330,23 @@ TEST_P(RMATestParam, winPutWait) {
         cudaEventElapsedTime(&elapsed_time_ms, start_event, end_event));
     // time captured with kNumIters - 1 iterations
     float achieved_bw = chunkBytes / elapsed_time_ms / 1e6 * (kNumIters - 1);
-    printf(
+    XLOGF(
+        INFO,
         "[%d] elapsed time %.2f ms for %zu bytes * %ld iterations (%.2f GB/s), on %s\n",
         statex->rank(),
         elapsed_time_ms,
         chunkBytes,
         kNumIters,
         achieved_bw,
-        cpuWin ? "cpuWin" : "gpuWin");
+        testMemAllocTypeToStr(bufType));
   }
 
-  res = ncclWinFree(comm, win);
+  auto res = ncclWinFree(comm, win);
   EXPECT_EQ(res, ncclSuccess);
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaEventDestroy(start_event));
   CUDACHECK_TEST(cudaEventDestroy(end_event));
@@ -309,7 +357,8 @@ TEST_P(RMATestParam, winPutWait) {
 }
 
 TEST_P(RMATestParam, winPutOnly) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin] = GetParam();
+  const auto& [kNumElements, kNumIters, ctranAllReduce, bufType, userBuf] =
+      GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
 
@@ -329,13 +378,12 @@ TEST_P(RMATestParam, winPutOnly) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
-  ncclx::Hints hints;
-  hints.set("window_buffer_location", cpuWin ? "cpu" : "gpu");
-  auto res = ncclWinAllocate(sizeBytes, comm, &winBase, &win, hints);
-  ASSERT_EQ(res, ncclSuccess);
-  ASSERT_NE(winBase, nullptr);
+
+  std::vector<int> buf(kNumElements * statex->nRanks(), 0);
+
+  createWin(userBuf, bufType, &winBase, &win, sizeBytes, buf);
 
   // Always allocate localBuf from GPU mem
   int* localBuf = nullptr;
@@ -389,18 +437,20 @@ TEST_P(RMATestParam, winPutOnly) {
       1,
       main_stream);
 
-  res = ncclWinFree(comm, win);
+  auto res = ncclWinFree(comm, win);
   EXPECT_EQ(res, ncclSuccess);
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaStreamDestroy(put_stream));
   EXPECT_EQ(errs, 0);
 }
 
 TEST_P(RMATestParam, winGet) {
-  const auto& [kNumElements, kNumIters, ctranAllReduce, cpuWin] = GetParam();
+  const auto& [kNumElements, kNumIters, ctranAllReduce, bufType, userBuf] =
+      GetParam();
   EXPECT_GE(kNumElements, 8192);
   EXPECT_GE(kNumIters, 1);
 
@@ -420,13 +470,11 @@ TEST_P(RMATestParam, winGet) {
 
   size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
 
-  ncclWin_t win = nullptr;
+  ncclWindow_t win = nullptr;
   void* winBase = nullptr;
-  ncclx::Hints hints;
-  hints.set("window_buffer_location", cpuWin ? "cpu" : "gpu");
-  auto res = ncclWinAllocate(sizeBytes, comm, &winBase, &win, hints);
-  ASSERT_EQ(res, ncclSuccess);
-  ASSERT_NE(winBase, nullptr);
+  std::vector<int> buf(kNumElements * statex->nRanks(), 0);
+
+  createWin(userBuf, bufType, &winBase, &win, sizeBytes, buf);
 
   // Always allocate localBuf from GPU mem
   int* localBuf = nullptr;
@@ -478,11 +526,12 @@ TEST_P(RMATestParam, winGet) {
   int errs =
       checkChunkValue((int*)localBuf, kNumElements, nextPeer, 0, main_stream);
 
-  res = ncclWinFree(comm, win);
+  auto res = ncclWinFree(comm, win);
   EXPECT_EQ(res, ncclSuccess);
 
   ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
   ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
 
   CUDACHECK_TEST(cudaStreamDestroy(get_stream));
   EXPECT_EQ(errs, 0);
@@ -491,24 +540,30 @@ TEST_P(RMATestParam, winGet) {
 INSTANTIATE_TEST_SUITE_P(
     RMATestInstance,
     RMATestParam,
-    ::testing::Values(
-        // kNumElements, kNumIters, ctranAllReduce, cpuWin
-        std::make_tuple(8192, 500, false, false),
-        std::make_tuple(8 * 1024 * 1024, 500, false, false),
-        std::make_tuple(8 * 1024 * 1024, 500, true, false),
-        std::make_tuple(8 * 1024 * 1024, 500, true, true),
-        std::make_tuple(8 * 1024 * 1024, 500, false, true)),
+    ::testing::Combine(
+        // kNumElements, kNumIters, ctranAllReduce, bufType, userBuf
+        ::testing::Values(8192, 8 * 1024 * 1024),
+        ::testing::Values(500),
+        ::testing::Values(true, false),
+        ::testing::Values(
+            MemAllocType::kMemNcclMemAlloc,
+            MemAllocType::kMemCudaMalloc,
+            MemAllocType::kMemHostManaged,
+            MemAllocType::kMemHostUnregistered),
+        ::testing::Values(true, false)),
     [](const testing::TestParamInfo<RMATestParam::ParamType>& info) {
       const auto kNumElements = std::get<0>(info.param);
       const auto kNumIters = std::get<1>(info.param);
       const auto ctranAllReduce = std::get<2>(info.param);
-      const auto cpuWin = std::get<3>(info.param);
+      const auto bufType = std::get<3>(info.param);
+      const auto userBuf = std::get<4>(info.param);
       std::string name = fmt::format(
-          "numElem{}_numIters{}_{}_{}",
+          "numElem{}_numIters{}_{}_{}_{}",
           kNumElements,
           kNumIters,
           ctranAllReduce ? "ctranAR" : "ncclAR",
-          cpuWin ? "cpuWin" : "gpuWin");
+          testMemAllocTypeToStr(bufType),
+          userBuf ? "userBuf" : "allocBuf");
       return name;
     });
 
@@ -516,6 +571,66 @@ INSTANTIATE_TEST_SUITE_P(
     MultiWindowTestInstance,
     MultiWindowTestParam,
     ::testing::Values(std::make_tuple(8, 10)));
+
+class NvlEnabledTestParam
+    : public RMATest,
+      public ::testing::WithParamInterface<
+          std::tuple<std::vector<enum NCCL_CTRAN_BACKENDS>, bool>> {};
+
+TEST_P(NvlEnabledTestParam, ncclWinGetAttributes) {
+  const auto& [backends, expectNvlEnabled] = GetParam();
+  EnvRAII envBackend(NCCL_CTRAN_BACKENDS, backends);
+
+  // create a test comm using the provided backends
+  ncclComm_t comm = createNcclComm(
+      this->globalRank, this->numRanks, this->localRank, false, nullptr);
+  ASSERT_NE(comm, nullptr);
+
+  auto statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
+  EXPECT_EQ(statex->nRanks(), this->numRanks);
+
+  size_t sizeBytes = 8192 * sizeof(int);
+  ncclWindow_t win = nullptr;
+  void* winBase = nullptr;
+  ASSERT_EQ(ncclWinAllocate(sizeBytes, comm, &winBase, &win), ncclSuccess);
+  ASSERT_NE(winBase, nullptr);
+
+  EXPECT_THAT(win, testing::NotNull());
+
+  for (int peer = 0; peer < this->numRanks; peer++) {
+    ncclWinAttr_t winAttr;
+    EXPECT_EQ(ncclWinGetAttributes(peer, win, &winAttr), ncclSuccess);
+
+    // NVL is only expected to be enabled for local peers when NVL backend is
+    // configured
+    bool expectedEnabled =
+        expectNvlEnabled && (statex->node() == statex->node(peer));
+    auto expectedType = expectedEnabled
+        ? ncclWinAccessType::ncclWinAccessUnified
+        : ncclWinAccessType::ncclWinAccessSeparate;
+    EXPECT_EQ(winAttr->accessType, expectedType)
+        << "Peer " << peer << ": expected accessType=" << expectedType
+        << ", got " << winAttr->accessType;
+    delete winAttr;
+  }
+
+  EXPECT_EQ(ncclWinFree(comm, win), ncclSuccess);
+
+  NCCLCHECK_TEST(ncclCommDestroy(comm));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    NvlEnabledTestInstance,
+    NvlEnabledTestParam,
+    ::testing::Values(
+        std::make_tuple(
+            std::vector<enum NCCL_CTRAN_BACKENDS>(
+                {NCCL_CTRAN_BACKENDS::nvl, NCCL_CTRAN_BACKENDS::ib}),
+            true),
+        std::make_tuple(
+            std::vector<enum NCCL_CTRAN_BACKENDS>({NCCL_CTRAN_BACKENDS::ib}),
+            false)));
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

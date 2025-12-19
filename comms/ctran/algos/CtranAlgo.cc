@@ -14,6 +14,12 @@
 
 CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
     : comm_(comm), ctran_(ctran) {
+  all2allvDynamicMaxSendcounts =
+      NCCL_CTRAN_ALLTOALLV_DYNAMIC_MAX_NUM_COUNTS_PER_PEER *
+      comm_->statex_->nRanks();
+  all2allvDynamicMaxNumSplitsPerRank =
+      NCCL_CTRAN_ALLTOALLV_DYNAMIC_MAX_NUM_COUNTS_PER_PEER;
+
   // Always initialize kernel resources since the current impl requires barrier
   // among all local ranks. It should not be triggered on-demand at local
   // getDevState() call.
@@ -25,14 +31,14 @@ CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
 
   FB_CUDACHECKTHROW(cudaHostAlloc(
       &this->sendCountsTmpbufCPU,
-      sizeof(size_t) * CTRAN_MAX_TOTAL_SENDBUFFS,
+      sizeof(size_t) * all2allvDynamicMaxSendcounts,
       cudaHostAllocDefault));
   tmpbufSegments[TmpbufType::SENDCOUNTS_TMPBUF_CPU] = this->sendCountsTmpbufCPU;
   tmpbufSegmentOffsets[TmpbufType::SENDCOUNTS_TMPBUF_CPU] = 0;
 
   FB_CUDACHECKTHROW(cudaHostAlloc(
       &this->sendIndicesTmpbufCPU,
-      sizeof(size_t) * CTRAN_MAX_TOTAL_SENDBUFFS,
+      sizeof(size_t) * all2allvDynamicMaxSendcounts,
       cudaHostAllocDefault));
   tmpbufSegments[TmpbufType::SENDINDICES_TMPBUF_CPU] =
       this->sendIndicesTmpbufCPU;
@@ -48,7 +54,7 @@ CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
 
   FB_CUDACHECKTHROW(cudaHostAlloc(
       &this->sendbuffsPtrTmpbufCPU,
-      sizeof(void*) * CTRAN_MAX_TOTAL_SENDBUFFS,
+      sizeof(void*) * all2allvDynamicMaxSendcounts,
       cudaHostAllocDefault));
   tmpbufSegments[TmpbufType::SENDBUFFS_PTR_TMPBUF_CPU] =
       this->sendbuffsPtrTmpbufCPU;
@@ -267,12 +273,13 @@ commResult_t CtranAlgo::initKernelResources() {
             (statex->nLocalRanks() - 1) +
         NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE +
         (CTRAN_ALGO_MAX_THREAD_BLOCKS / 2) * sizeof(size_t) *
-            (CTRAN_MAX_TOTAL_SENDBUFFS + 1 + CTRAN_MAX_NUM_SPLITS_PER_RANK) *
+            (all2allvDynamicMaxSendcounts + 1 +
+             all2allvDynamicMaxNumSplitsPerRank) *
             statex->nLocalRanks();
     for (int i = 0; i < CTRAN_ALGO_MAX_THREAD_BLOCKS; i++) {
       alltoallvDynamicSendbuffsMap[i] = reinterpret_cast<void**>(
           alltoallvDynamicSendbuffsMap_d +
-          i * sizeof(void*) * CTRAN_MAX_TOTAL_SENDBUFFS);
+          i * sizeof(void*) * all2allvDynamicMaxSendcounts);
     }
   }
 
@@ -318,7 +325,7 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   // Can add ifdef to reduce size for contig kernel, which only need 1 size_t
   // for one send/recv pair.
   shmSize += (CTRAN_ALGO_MAX_THREAD_BLOCKS / 2) * sizeof(size_t) *
-      (CTRAN_MAX_TOTAL_SENDBUFFS + 1 + CTRAN_MAX_NUM_SPLITS_PER_RANK) *
+      (all2allvDynamicMaxSendcounts + 1 + all2allvDynamicMaxNumSplitsPerRank) *
       nLocalRanks;
 
   DevMemType memType = DevMemType::kCumem;
@@ -330,8 +337,8 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   }
 
   /* allocate extra buffer for AllToAllvDynamic sendbuffers. */
-  shmSize +=
-      CTRAN_ALGO_MAX_THREAD_BLOCKS * sizeof(void*) * CTRAN_MAX_TOTAL_SENDBUFFS;
+  shmSize += CTRAN_ALGO_MAX_THREAD_BLOCKS * sizeof(void*) *
+      all2allvDynamicMaxSendcounts;
 
   // Throw exception if fails to allocate memory
   this->ipcMem_ = std::make_unique<ctran::utils::CtranIpcMem>(
@@ -683,15 +690,15 @@ commResult_t CtranAlgo::initTmpBufs() {
       TmpbufType::MIN_REG_DST_TMPBUF, CTRAN_MIN_REGISTRATION_SIZE);
 
   // counts buffers for GPU resident collectives
-  // To be improve: as CTRAN_MAX_TOTAL_SENDBUFFS size is large, can consider to
-  // initilze it with algo type using ifdefine, as dynamic and split only need
-  // to be nRanks.
+  // To be improve: as all2allvDynamicMaxSendcounts size is large, can consider
+  // to initilze it with algo type using ifdefine, as dynamic and split only
+  // need to be nRanks.
   segmentManager.insert(
       TmpbufType::SENDCOUNTS_TMPBUF,
-      sizeof(size_t) * CTRAN_MAX_TOTAL_SENDBUFFS);
+      sizeof(size_t) * all2allvDynamicMaxSendcounts);
   segmentManager.insert(
       TmpbufType::RECVCOUNTS_TMPBUF,
-      sizeof(size_t) * comm_->statex_->nRanks() * CTRAN_MAX_TOTAL_SENDBUFFS);
+      sizeof(size_t) * all2allvDynamicMaxSendcounts);
 
   segmentManager.insert(
       TmpbufType::RING_TMP_SEND_BUF,
@@ -704,8 +711,10 @@ commResult_t CtranAlgo::initTmpBufs() {
 
   // request slab buffer from memory pool
   if (comm_->memCache_) {
-    this->tmpBufKey = folly::sformat(
-        "Ctran::InitTmpBuf {}", this->comm_->statex_->commHash());
+    std::stringstream ss;
+    ss << "Ctran::InitTmpBuf " << this->comm_->statex_->commHash();
+    this->tmpBufKey = ss.str();
+
     FB_COMMCHECKTHROW(comm_->memCache_->getCachedCuMemById(
         this->tmpBufKey,
         &this->tmpbuf,

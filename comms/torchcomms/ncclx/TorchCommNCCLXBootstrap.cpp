@@ -4,6 +4,7 @@
 
 #include <ATen/cuda/CUDAContext.h>
 #include <dlfcn.h>
+#include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
@@ -18,9 +19,24 @@ namespace comms {
 // Initialize the static counter
 int TorchCommNCCLXBootstrap::counter_ = 0;
 
+namespace {
+
 const std::string kUniqueidXchgMethodAuto = "auto";
 const std::string kUniqueidXchgMethodTCPStore = "tcpstore";
 const std::string kUniqueidXchgMethodDefault = kUniqueidXchgMethodAuto;
+
+bool isFastInitEnable(ncclConfig_t config) {
+  if (config.fastInitMode == NCCL_FAST_INIT_MODE_RING) {
+    return true;
+  }
+  const char* env = std::getenv("NCCL_FASTINIT_MODE");
+  if (env == nullptr) {
+    return false;
+  }
+  return std::string(env) == "ring_hybrid";
+}
+
+} // namespace
 
 TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
     c10::intrusive_ptr<c10d::Store> store,
@@ -109,7 +125,25 @@ int TorchCommNCCLXBootstrap::getNCCLXStoreKeyCounter() {
   return counter_;
 }
 
-ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueIdStore() {
+void TorchCommNCCLXBootstrap::createStore(std::string_view name) {
+  if (store_ == nullptr) {
+    bool is_tcp_store_enabled =
+        std::getenv("MASTER_ADDR") && std::getenv("MASTER_PORT");
+    if (uniqueid_xchg_method_ != kUniqueidXchgMethodAuto &&
+        uniqueid_xchg_method_ != kUniqueidXchgMethodTCPStore) {
+      throw std::runtime_error(
+          "Invalid unique ID exchange method " + uniqueid_xchg_method_);
+    }
+    if (!is_tcp_store_enabled) {
+      throw std::runtime_error("No way to exchange unique ID");
+    }
+    store_ = StoreManager::get().getStore(
+        TorchCommNCCLX::kBackendName, name, timeout_);
+    created_internal_store_ = true;
+  }
+}
+
+ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueId() {
   ncclUniqueId uniqueId;
 
   auto key = getNCCLXStoreKey();
@@ -137,36 +171,6 @@ ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueIdStore() {
   }
 
   return uniqueId;
-}
-
-ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueIdTCPStore(
-    std::string_view name) {
-  store_ = StoreManager::get().getStore(
-      TorchCommNCCLX::kBackendName, name, timeout_);
-  created_internal_store_ = true;
-
-  return exchangeUniqueIdStore();
-}
-
-bool TorchCommNCCLXBootstrap::isTCPStoreEnabled() {
-  return std::getenv("MASTER_ADDR") && std::getenv("MASTER_PORT");
-}
-
-ncclUniqueId TorchCommNCCLXBootstrap::exchangeUniqueId(std::string_view name) {
-  if (store_ != nullptr) {
-    return exchangeUniqueIdStore();
-  }
-
-  bool is_tcp_store_enabled = isTCPStoreEnabled();
-  if (uniqueid_xchg_method_ != kUniqueidXchgMethodAuto &&
-      uniqueid_xchg_method_ != kUniqueidXchgMethodTCPStore) {
-    throw std::runtime_error(
-        "Invalid unique ID exchange method " + uniqueid_xchg_method_);
-  }
-  if (!is_tcp_store_enabled) {
-    throw std::runtime_error("No way to exchange unique ID");
-  }
-  return exchangeUniqueIdTCPStore(name);
 }
 
 void TorchCommNCCLXBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
@@ -208,7 +212,6 @@ void populateNcclConfigFromHints(
   // it is hard to figure out the ownership structure.  Here, we create a copy
   // of the string and pass it to NCCLX, so that it is responsible for freeing
   // it.
-
   for (const auto& [key, val] : options.hints) {
     if (key == "blocking") {
       config.blocking = std::stoi(val);
@@ -269,6 +272,11 @@ void populateNcclConfigFromHints(
       TC_LOG(INFO, nullptr)
           << "[comm=" << name
           << "] Setting config.ncclAllGatherAlgo=" << config.ncclAllGatherAlgo;
+    } else if (key == "fastInitMode") {
+      config.fastInitMode = std::stoi(val);
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name
+          << "] Setting config.fastInitMode=" << config.fastInitMode;
     } else {
       TC_LOG(WARNING)
           << "NCCL hint '" << key
@@ -278,22 +286,49 @@ void populateNcclConfigFromHints(
   }
 }
 
+bool TorchCommNCCLXBootstrap::useFastInit(ncclConfig_t config) {
+  if (isFastInitEnable(config)) {
+    bool isTcpStore = [this]() {
+      if (store_ == nullptr) {
+        return false;
+      }
+      if (auto store =
+              c10::dynamic_intrusive_pointer_cast<c10d::PrefixStore>(store_)) {
+        return c10::dynamic_intrusive_pointer_cast<c10d::TCPStore>(
+                   store->getUnderlyingNonPrefixStore()) != nullptr;
+      }
+      return c10::dynamic_intrusive_pointer_cast<c10d::TCPStore>(store_) !=
+          nullptr;
+    }();
+    if (!isTcpStore) {
+      throw std::invalid_argument("TcpStore is required for fast init");
+    }
+    return isTcpStore;
+  }
+  return false;
+}
+
 ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
     const std::string& name,
     const CommOptions& options) {
   ncclUniqueId uniqueId;
   ncclComm_t nccl_comm = nullptr;
 
-  uniqueId = exchangeUniqueId(name);
-
   // TODO: add logging on failures and successes
   // TODO: use scalable init
   // TODO: get the local rank
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.commDesc = strdup(name.c_str());
+  createStore(name);
 
   // Populate NCCL config from user-provided hints
   populateNcclConfigFromHints(config, options, name);
+
+  if (useFastInit(config)) {
+    memset(&uniqueId, 0, sizeof(ncclUniqueId));
+  } else {
+    uniqueId = exchangeUniqueId();
+  }
 
   ncclResult_t ncclErr = nccl_api_->commInitRankConfig(
       &nccl_comm, comm_size_, uniqueId, rank_, &config);
