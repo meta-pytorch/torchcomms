@@ -92,6 +92,18 @@ void initCommLogging(bool alwaysInit = false);
       fmt,                                                                     \
       ##__VA_ARGS__)
 
+#define CLOGF_EVERY_MS(level, ms, fmt, ...)                           \
+  CLOGF_IF(                                                           \
+      level,                                                          \
+      [_folly_detail_xlog_ms = ms] {                                  \
+        static ::folly::logging::IntervalRateLimiter                  \
+            folly_detail_xlog_limiter(                                \
+                1, std::chrono::milliseconds(_folly_detail_xlog_ms)); \
+        return folly_detail_xlog_limiter.check();                     \
+      }(),                                                            \
+      fmt,                                                            \
+      ##__VA_ARGS__)
+
 /* Trace level log API. Use cvar NCCL_CTRAN_ENABLE_TRACE_LOG to control for
  * backward compatibility  */
 #define CLOGF_TRACE(subsys, fmt, ...)                                          \
