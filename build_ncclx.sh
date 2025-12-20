@@ -270,16 +270,14 @@ THRIFT_SERVICE_LDFLAGS=(
   "-Wl,--end-group"
   "-l:libwangle.a"
   "-l:libfizz.a"
-  "-l:libcrypto.a"
-  "-l:libssl.a"
   "-l:libxxhash.a"
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
 THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libfmt.a "
+  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libfmt.a -l:libssl.a -l:libcrypto.a"
 else
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt "
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto"
 fi
 
 if [[ -z "${NVCC_GENCODE-}" ]]; then
@@ -330,6 +328,54 @@ function build_nccl {
     CUDARTLIB="$CUDARTLIB"
 }
 
-build_nccl
+function build_and_install_nccl {
+make VERBOSE=1 -j \
+    src.install \
+    BUILDDIR="$BUILDDIR" \
+    NVCC_GENCODE="$NVCC_GENCODE" \
+    CUDA_HOME="$CUDA_HOME" \
+    NCCL_HOME="$NCCL_HOME" \
+    NCCL_SUFFIX="x" \
+    DEV_SIGNATURE="$DEV_SIGNATURE" \
+    NCCL_FP8="$NCCL_FP8" \
+    BASE_DIR="$BASE_DIR" \
+    CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
+    CONDA_LIB_DIR="$CONDA_LIB_DIR" \
+    THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
+    NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE" \
+    CUDARTLIB="$CUDARTLIB"
+}
+
+if [[ -z "${NCCL_BUILD_INSTALL_NCCL}" ]]; then
+  build_nccl
+else
+  build_and_install_nccl
+fi
+
+# sanity check
+if [ -n "${NCCL_RUN_SANITY_CHECK}" ]; then
+    pushd examples
+    export NCCL_DEBUG=WARN
+    export LD_LIBRARY_PATH=$BUILDDIR/lib
+
+    make all \
+      NVCC_GENCODE="$NVCC_GENCODE" \
+      CUDA_HOME="$CUDA_HOME" \
+      NCCL_HOME="$CONDA_PREFIX" \
+      DEV_SIGNATURE="$DEV_SIGNATURE" \
+      FBCODE_DIR="$FBCODE_DIR" \
+      CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
+      CONDA_LIB_DIR="$CONDA_LIB_DIR" \
+      NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE"
+
+    set +e
+
+    TIMEOUT=10s
+    timeout $TIMEOUT "$BUILDDIR"/examples/HelloWorld
+    if [ "$?" == "124" ]; then
+        echo "Program TIMEOUT in ${TIMEOUT}. Terminate."
+    fi
+    popd
+fi
 
 popd

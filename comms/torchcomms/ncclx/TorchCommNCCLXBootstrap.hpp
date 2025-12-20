@@ -53,10 +53,9 @@ class TorchCommNCCLXBootstrap {
   }
 
  private:
-  ncclUniqueId exchangeUniqueId(std::string_view name);
-  ncclUniqueId exchangeUniqueIdStore();
-  ncclUniqueId exchangeUniqueIdTCPStore(std::string_view name);
-  bool isTCPStoreEnabled();
+  ncclUniqueId exchangeUniqueId();
+  void createStore(std::string_view name);
+  bool useFastInit(ncclConfig_t config);
   void cleanupTCPStore(ncclComm_t nccl_comm);
 
  private:
