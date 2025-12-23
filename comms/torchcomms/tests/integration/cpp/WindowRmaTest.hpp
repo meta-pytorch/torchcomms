@@ -49,6 +49,8 @@ class WindowRmaTest : public ::testing::TestWithParam<
   int device_index_;
   c10::DeviceType device_type_;
 
+  // Global allocator obtained once in SetUp
+  std::shared_ptr<c10::Allocator> allocator_;
   // Memory pool for NCCL allocations
   std::unique_ptr<at::cuda::MemPool> memPool_;
 

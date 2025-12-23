@@ -198,6 +198,26 @@ void TorchCommFactory::register_backend(
   backends_.emplace(backend, loader_fn);
 }
 
+// Allocator factory methods implementation
+std::shared_ptr<c10::Allocator> TorchCommFactory::get_allocator(
+    const std::string& backend) {
+  std::lock_guard<std::mutex> guard(mutex_);
+
+  auto it = allocator_factories_.find(backend);
+  if (it != allocator_factories_.end()) {
+    return it->second();
+  }
+
+  TORCH_CHECK(false, "No allocator factory registered for backend: ", backend);
+}
+
+void TorchCommFactory::register_allocator_factory(
+    const std::string& backend,
+    const std::function<std::shared_ptr<c10::Allocator>()>& factory) {
+  std::lock_guard<std::mutex> guard(mutex_);
+  allocator_factories_.emplace(backend, factory);
+}
+
 TorchCommFactory& TorchCommFactory::get() {
   static TorchCommFactory instance;
   return instance;

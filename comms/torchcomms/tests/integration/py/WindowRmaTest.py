@@ -9,6 +9,7 @@ import unittest
 import psutil
 
 import torch
+import torchcomms
 from torchcomms import TorchCommlWinAccessType
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
@@ -29,7 +30,11 @@ class WindowRmaTest(unittest.TestCase):
         self.num_ranks = self.torchcomm.get_size()
         self.device = self.torchcomm.get_device()
 
+        # Get allocator using global function - obtained once and reused
+        self.allocator = torchcomms.get_mem_allocator(self.torchcomm.get_backend())
+
     def tearDown(self):
+        self.allocator = None
         self.torchcomm = None
         self.wrapper = None
 
@@ -43,7 +48,8 @@ class WindowRmaTest(unittest.TestCase):
             )
             * self.rank
         )
-        pool = torch.cuda.MemPool(self.torchcomm.mem_allocator)
+        # Use the global allocator obtained in setUp
+        pool = torch.cuda.MemPool(self.allocator)
         with torch.cuda.use_mem_pool(pool):
             win_buf = torch.ones(
                 [count * self.num_ranks], dtype=dtype, device=self.device

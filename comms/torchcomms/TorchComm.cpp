@@ -212,11 +212,6 @@ const at::Device& TorchComm::getDevice() const {
   return impl_->getDevice();
 }
 
-// Memory Management
-std::shared_ptr<c10::Allocator> TorchComm::getMemAllocator() {
-  return impl_->getMemAllocator();
-}
-
 // Batch Operations
 
 BatchSendRecv::BatchSendRecv(TorchComm* parent) : parent_(parent) {}
@@ -245,6 +240,11 @@ c10::intrusive_ptr<TorchWork> BatchSendRecv::issue(
     bool async_op,
     const BatchP2POptions& options) {
   return parent_->getBackendImpl()->batch_op_issue(ops, async_op, options);
+}
+
+// Global memory allocator function implementation
+std::shared_ptr<c10::Allocator> get_mem_allocator(const std::string& backend) {
+  return TorchCommFactory::get().get_allocator(backend);
 }
 
 } // namespace comms

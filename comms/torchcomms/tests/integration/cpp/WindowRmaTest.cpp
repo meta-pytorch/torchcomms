@@ -17,10 +17,18 @@ void WindowRmaTest::SetUp() {
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
   device_index_ = rank_ % at::cuda::device_count();
+
+  // Get allocator using global function - obtained once and reused
+  allocator_ = torch::comms::get_mem_allocator(torchcomm_->getBackend());
 }
 
 void WindowRmaTest::TearDown() {
-  // Explicitly reset the TorchComm object to ensure proper cleanup
+  // Clean up memory pool if it was created
+  cleanupMemPool();
+
+  // Explicitly reset the allocator and TorchComm object to ensure proper
+  // cleanup
+  allocator_.reset();
   torchcomm_.reset();
   wrapper_.reset();
 }
@@ -166,10 +174,10 @@ void WindowRmaTest::setupMemPool() {
     return; // Already set up
   }
 
-  auto allocator = torchcomm_->getMemAllocator();
+  // Use the global allocator obtained in SetUp
   auto cudaAllocator =
       std::dynamic_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
-          allocator);
+          allocator_);
   memPool_ = std::make_unique<at::cuda::MemPool>(cudaAllocator.get());
 
   auto tid = std::this_thread::get_id();

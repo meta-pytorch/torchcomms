@@ -16,6 +16,9 @@ class MemPoolTorchCommTest(unittest.TestCase):
         self.device_ = torch.device("cuda")
         self.backend_ = os.environ["TEST_BACKEND"]
 
+        # Get allocator using global function - can be obtained once and reused
+        self.allocator_ = torchcomms.get_mem_allocator(self.backend_)
+
         self.num_comms_ = 16
         self.tensor_size_ = 1024 * 1024
         self.comms_ = []
@@ -48,9 +51,10 @@ class MemPoolTorchCommTest(unittest.TestCase):
         "Skipping NCCLX/NCCL-only mem pool tests",
     )
     def test_mem_pool(self) -> None:
+        # Use the global allocator obtained in setUp - shared across all comms
         tensors = []
         for comm in self.comms_:
-            pool = torch.cuda.MemPool(comm.mem_allocator)
+            pool = torch.cuda.MemPool(self.allocator_)
             with torch.cuda.use_mem_pool(pool):
                 tensor = self._create_input_tensor(comm)
             tensors.append(tensor)
