@@ -389,8 +389,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::send(
       name_, comm_size_, "send", dst, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("send");
@@ -498,7 +503,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_tensors);
+      async_op ? input_tensors : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operations
   work->recordStart("batch_op_issue");
@@ -572,8 +577,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::broadcast(
 
   cudaStream_t stream = getOperationStream(async_op);
 
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("broadcast");
@@ -612,8 +622,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_reduce(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("all_reduce");
@@ -659,8 +674,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
   if (rank_ == root) {
     output_tensors.push_back(tensor);
   }
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("reduce");
@@ -729,10 +749,12 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather(
           .requires_grad(false));
 
   // Pass both input tensor and temp_tensor to createWork for refcounting
+  // when async_op is true
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      {tensor, temp_tensor});
+      async_op ? std::vector<at::Tensor>{tensor, temp_tensor}
+               : std::vector<at::Tensor>{});
 
   work->recordStart("all_gather");
 
@@ -796,8 +818,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   work->recordStart("all_gather_v");
 
@@ -852,8 +879,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
       name_, comm_size_, "all_gather_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), input);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   work->recordStart("all_gather_single");
 
@@ -908,7 +940,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_list);
+      async_op ? input_list : std::vector<at::Tensor>{});
 
   work->recordStart("reduce_scatter");
 
@@ -979,7 +1011,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_list);
+      async_op ? input_list : std::vector<at::Tensor>{});
 
   work->recordStart("reduce_scatter_v");
 
@@ -1052,8 +1084,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), input);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("reduce_scatter_single");
@@ -1105,8 +1142,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
       name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), input);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("all_to_all_single");
@@ -1161,8 +1203,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
       name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), input);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("all_to_all_v_single");
@@ -1248,7 +1295,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_tensor_list);
+      async_op ? input_tensor_list : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operations
   work->recordStart("all_to_all");
@@ -1335,11 +1382,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
   auto work = createWork(
       stream,
       options_.timeout,
-      {input_tensor,
-       input_chunk_sizes,
-       input_chunk_indices,
-       input_chunk_count_per_rank,
-       output_tensor_ptrs});
+      async_op
+          ? std::vector<
+                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank, output_tensor_ptrs}
+          : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_dispatch");
@@ -1409,10 +1455,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   auto work = createWork(
       stream,
       options_.timeout,
-      {input_tensor,
-       input_chunk_sizes,
-       input_chunk_indices,
-       input_chunk_count_per_rank});
+      async_op
+          ? std::vector<
+                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank}
+          : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_combine");
@@ -1676,7 +1722,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::scatter(
 
   cudaStream_t stream = getOperationStream(async_op);
   std::vector<at::Tensor> input_tensors;
-  if (rank_ == root) {
+  if (async_op && rank_ == root) {
     input_tensors = input_tensor_list;
   }
   auto work = createWork(
@@ -1769,10 +1815,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
   if (rank_ == root) {
     output_tensors = output_tensor_list;
   }
-  auto work = createWork(
-      stream,
-      getOperationTimeout(options.timeout, options_.timeout),
-      input_tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input_tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operations
   work->recordStart("gather");
