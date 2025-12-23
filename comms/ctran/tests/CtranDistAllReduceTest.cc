@@ -13,7 +13,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
-#include "comms/ctran/tracing/CollTraceWrapper.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"

@@ -8,6 +8,7 @@
 
 #include <folly/File.h>
 #include <folly/Synchronized.h>
+#include <folly/Utility.h>
 #include <folly/logging/FileWriterFactory.h>
 #include <folly/logging/LogConfig.h>
 #include <folly/logging/LogFormatter.h>
@@ -35,7 +36,7 @@ struct NcclLoggerInitConfig {
   std::function<int(void)> threadContextFn{[]() { return 0; }};
 };
 
-class NcclLogger {
+class NcclLogger : folly::NonCopyableNonMovable {
  public:
   // This is not thread safe! Only provides bare minimal support for
   // simultanious calls to init.
@@ -48,8 +49,6 @@ class NcclLogger {
 
   static std::atomic_flag firstInit_;
 
-  NcclLogger(const NcclLogger&) = delete;
-  NcclLogger& operator=(const NcclLogger&) = delete;
   ~NcclLogger();
 };
 

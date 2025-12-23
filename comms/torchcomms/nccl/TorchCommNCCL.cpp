@@ -1402,57 +1402,6 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
   return new_torchcomm;
 }
 
-// Allocate function
-static void* _ncclMemAlloc(
-    std::shared_ptr<NcclApi> nccl_api,
-    size_t size,
-    int device,
-    void* stream) {
-  at::cuda::OptionalCUDAGuard gpuGuard(device);
-  void* ptr = nullptr;
-  TORCH_CHECK(
-      nccl_api->memAlloc(&ptr, size) == ncclSuccess, "ncclMemAlloc failed");
-  LOG(INFO) << "NCCL mem allocator: allocated " << ptr << " with " << size
-            << " bytes in stream " << stream;
-  return ptr;
-}
-
-// Free function
-static void _ncclMemFree(
-    std::shared_ptr<NcclApi> nccl_api,
-    void* ptr,
-    size_t size,
-    int device,
-    void* stream) {
-  LOG(INFO) << "NCCL mem allocator: freeing " << ptr << " with " << size
-            << " bytes in stream " << stream;
-  at::cuda::OptionalCUDAGuard gpuGuard(device);
-  TORCH_CHECK(nccl_api->memFree(ptr) == ncclSuccess, "ncclMemFree failed");
-}
-
-// Create a `CUDAPluggableAllocator` that uses the above functions.
-std::shared_ptr<c10::Allocator> TorchCommNCCL::getMemAllocator() {
-  c10::DeviceIndex deviceIdx = device_.index();
-  if (!deviceSupportsMulticast(deviceIdx)) {
-    TORCH_CHECK(
-        false,
-        "NCCL mem allocator is not supported in CUDART version %d",
-        CUDART_VERSION);
-  }
-  static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
-      ncclMemAllocator =
-          torch::cuda::CUDAPluggableAllocator::createCustomAllocator(
-              // alloc_fn
-              [this](size_t size, int device, cudaStream_t stream) {
-                return _ncclMemAlloc(nccl_api_, size, device, stream);
-              },
-              // free_fn
-              [this](void* ptr, size_t size, int device, cudaStream_t stream) {
-                return _ncclMemFree(nccl_api_, ptr, size, device, stream);
-              });
-  return ncclMemAllocator;
-}
-
 void TorchCommNCCL::register_address(
     const TorchCommNCCL::AddressWithLen& addr) {
   // We got a register after we got rid of the comm. Is this a fatal error?
@@ -1519,6 +1468,48 @@ class NCCLRegistration {
     torch::comms::TorchCommFactory::get().register_backend("nccl", []() {
       return std::make_shared<torch::comms::TorchCommNCCL>();
     });
+
+    // Register allocator factory with its own nccl_api instance
+    torch::comms::TorchCommFactory::get().register_allocator_factory(
+        "nccl", []() {
+          // Create nccl_api for this allocator (captured in lambdas below)
+          auto nccl_api = std::make_shared<torch::comms::DefaultNcclApi>();
+
+          static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
+              nccl_allocator =
+                  torch::cuda::CUDAPluggableAllocator::createCustomAllocator(
+                      // alloc_fn
+                      [nccl_api](size_t size, int device, cudaStream_t stream) {
+                        at::cuda::OptionalCUDAGuard gpuGuard(device);
+                        void* ptr = nullptr;
+                        ncclResult_t result = nccl_api->memAlloc(&ptr, size);
+                        TORCH_CHECK(
+                            result == ncclSuccess,
+                            "ncclMemAlloc failed: ",
+                            nccl_api->getErrorString(result));
+                        LOG(INFO) << "NCCL mem allocator: allocated " << ptr
+                                  << " with " << size << " bytes in stream "
+                                  << stream;
+                        return ptr;
+                      },
+                      // free_fn
+                      [nccl_api](
+                          void* ptr,
+                          size_t size,
+                          int device,
+                          cudaStream_t stream) {
+                        LOG(INFO)
+                            << "NCCL mem allocator: freeing " << ptr << " with "
+                            << size << " bytes in stream " << stream;
+                        at::cuda::OptionalCUDAGuard gpuGuard(device);
+                        ncclResult_t result = nccl_api->memFree(ptr);
+                        TORCH_CHECK(
+                            result == ncclSuccess,
+                            "ncclMemFree failed: ",
+                            nccl_api->getErrorString(result));
+                      });
+          return nccl_allocator;
+        });
   }
 };
 

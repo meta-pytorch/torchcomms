@@ -10,7 +10,7 @@
 #include "comm.h"
 #include "nccl.h"
 
-#include "comms/ctran/tracing/MapperTrace.h"
+#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/colltrace/plugins/CommDumpPlugin.h"

@@ -23,7 +23,7 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTraceFunc.h"
 #include "meta/colltrace/CollTraceLegacyHandle.h"
-#include "comms/ctran/tracing/CollTraceWrapper.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/utils/InitFolly.h"
 
 #include "meta/algoconf/AlgoConfig.h"

@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include <ATen/ATen.h>
+#include <c10/core/Allocator.h>
 #include <c10/core/Device.h>
 #include <comms/torchcomms/TorchCommBackend.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
@@ -30,6 +31,13 @@ class TorchCommFactory {
       const std::string& backend,
       const std::function<std::shared_ptr<TorchCommBackend>()>& factory);
 
+  // Allocator factory methods
+  std::shared_ptr<c10::Allocator> get_allocator(const std::string& backend);
+
+  void register_allocator_factory(
+      const std::string& backend,
+      const std::function<std::shared_ptr<c10::Allocator>()>& factory);
+
  private:
   std::shared_ptr<TorchCommBackend> create_generic_backend(
       const std::string& backend);
@@ -40,6 +48,10 @@ class TorchCommFactory {
       std::string,
       std::function<std::shared_ptr<TorchCommBackend>()>>
       backends_;
+  std::unordered_map<
+      std::string,
+      std::function<std::shared_ptr<c10::Allocator>()>>
+      allocator_factories_;
 };
 } // namespace comms
 } // namespace torch

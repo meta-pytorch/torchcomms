@@ -9,7 +9,7 @@
 #include "comms/torchcomms/tests/integration/cpp/TorchCommTestHelpers.h"
 
 class WindowRmaTest : public ::testing::TestWithParam<
-                          std::tuple<int, at::ScalarType, bool, bool, bool>> {
+                          std::tuple<int, at::ScalarType, bool, bool>> {
  public:
   WindowRmaTest() : WindowRmaTest(c10::DeviceType::CUDA) {}
   explicit WindowRmaTest(c10::DeviceType device_type)
@@ -20,13 +20,6 @@ class WindowRmaTest : public ::testing::TestWithParam<
       int count,
       at::ScalarType dtype,
       bool async_op,
-      bool signal,
-      bool async_signal);
-  void testWindowCpuPut(
-      int count,
-      at::ScalarType dtype,
-      bool async_op,
-      bool signal,
       bool async_signal);
 
   bool checkIfSkip();
@@ -37,11 +30,6 @@ class WindowRmaTest : public ::testing::TestWithParam<
 
   void TearDown() override;
 
-  // Setup memory pool for allocations - call this before allocating tensors
-  void setupMemPool();
-  // Cleanup memory pool - call after done with tensor allocations
-  void cleanupMemPool();
-
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;
   int rank_;
@@ -49,16 +37,22 @@ class WindowRmaTest : public ::testing::TestWithParam<
   int device_index_;
   c10::DeviceType device_type_;
 
-  // Memory pool for NCCL allocations
-  std::unique_ptr<at::cuda::MemPool> memPool_;
-
-  static constexpr int num_replays = 4;
+  // Global allocator obtained once in SetUp
+  std::shared_ptr<c10::Allocator> allocator_;
 
   // Helper function declarations with parameters
-  at::Tensor createWindowRmaTensor(
-      int value,
-      int count,
-      at::ScalarType dtype,
-      bool use_mem_pool = false);
+  at::Tensor createWindowRmaTensor(int value, int count, at::ScalarType dtype);
   void verifyWindowRmaResults(const at::Tensor& tensor, int value);
+
+  // Performs one iteration of window put/signal/wait/verify cycle
+  void performWindowPutIteration(
+      std::shared_ptr<torch::comms::TorchCommWindow> win,
+      const at::Tensor& input_tensor,
+      int dst_rank,
+      int src_rank,
+      int count,
+      bool async_op,
+      bool async_signal,
+      at::cuda::CUDAStream put_stream,
+      at::cuda::CUDAStream wait_stream);
 };

@@ -119,6 +119,14 @@ class EventsScubaUtil {
    public:
     ShallowCopyRequestContextScopeGuard();
     ~ShallowCopyRequestContextScopeGuard();
+    ShallowCopyRequestContextScopeGuard(
+        const ShallowCopyRequestContextScopeGuard&) = delete;
+    ShallowCopyRequestContextScopeGuard& operator=(
+        const ShallowCopyRequestContextScopeGuard&) = delete;
+    ShallowCopyRequestContextScopeGuard(ShallowCopyRequestContextScopeGuard&&) =
+        delete;
+    ShallowCopyRequestContextScopeGuard& operator=(
+        ShallowCopyRequestContextScopeGuard&&) = delete;
 
    private:
     Context prevContext_;

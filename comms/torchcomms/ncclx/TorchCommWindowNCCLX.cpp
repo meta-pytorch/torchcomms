@@ -136,9 +136,19 @@ at::Tensor TorchCommWindowNCCLX::get_tensor(int rank) {
 
   CHECK_NOTNULL(base_ptr);
 
-  // Create tensor view of the entire registered buffer
+  // Use target_device() to bypass ATen's device validation when wrapping
+  // memory pointers. This enables creating tensors from pointers where the
+  // memory device differs from the caller's device.
+  //
+  // Memory lifetime managed by Window (freed on tensor_deregister).
+  // No manual cleanup needed.
+  //
+  // Reference: aten/src/ATen/ops/from_blob.h:53-57
   auto options = at::TensorOptions().dtype(buf_dtype_).device(buf_device_);
-  auto t = at::from_blob(base_ptr, buf_shape_, options);
+  auto t = at::for_blob(base_ptr, buf_shape_)
+               .options(options)
+               .target_device(buf_device_)
+               .make_tensor();
 
   return t;
 }
