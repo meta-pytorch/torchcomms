@@ -532,6 +532,19 @@ commResult_t ctranAllReduceDirect(
   int nNodes = statex->nNodes();
   int node = statex->node();
 
+  if (nRanks == 1) {
+    // For single-rank comm, allreduce is a no-op if sendbuff == recvbuff
+    if (sendbuff == recvbuff) {
+      return commSuccess;
+    }
+
+    // otherwise, allreduce is just a copy
+    size_t size = count * commTypeSize(datatype);
+    FB_CUDACHECK(
+        cudaMemcpyAsync(recvbuff, sendbuff, size, cudaMemcpyDefault, stream));
+    return commSuccess;
+  }
+
   // Prevent buffer overflow in localReduce.srcs array
   if (nLocalRanks > CTRAN_MAX_NVL_PEERS) {
     CLOGF(
