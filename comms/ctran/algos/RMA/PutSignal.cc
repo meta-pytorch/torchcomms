@@ -5,9 +5,9 @@
 #include "Types.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/logger/LogUtils.h"
 

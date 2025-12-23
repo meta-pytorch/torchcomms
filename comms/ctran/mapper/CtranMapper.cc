@@ -11,8 +11,8 @@
 #include <string>
 
 #include "comms/ctran/backends/CtranCtrl.h"
+#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
-#include "comms/ctran/tracing/MapperTrace.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"

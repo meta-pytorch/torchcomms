@@ -5,7 +5,7 @@
 
 #include "comm.h"
 
-#include "comms/ctran/tracing/MapperTrace.h"
+#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
 #include "meta/colltrace/CollTrace.h"

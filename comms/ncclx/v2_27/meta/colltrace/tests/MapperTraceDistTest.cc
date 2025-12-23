@@ -13,7 +13,7 @@
 #include <unordered_map>
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tracing/MapperTrace.h"
+#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"

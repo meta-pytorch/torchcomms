@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/ctran/tracing/MapperTrace.h"
+#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 
 #include <gmock/gmock.h>

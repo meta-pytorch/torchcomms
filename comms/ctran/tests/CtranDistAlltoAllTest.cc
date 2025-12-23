@@ -15,7 +15,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"
-#include "comms/ctran/tracing/CollTraceWrapper.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
