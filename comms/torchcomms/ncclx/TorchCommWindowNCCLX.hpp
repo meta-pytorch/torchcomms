@@ -49,7 +49,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
       int peerRank,
       bool asyncOp,
       const WaitSignalOptions& options = {}) override;
-  at::Tensor get_tensor(int rank) override;
+  at::Tensor map_remote_tensor(int rank) override;
 
   std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) override;
 

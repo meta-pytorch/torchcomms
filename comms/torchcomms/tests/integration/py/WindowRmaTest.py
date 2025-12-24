@@ -88,7 +88,7 @@ class WindowRmaTest(unittest.TestCase):
                 if async_signal:
                     wait_signal_work.wait()
 
-                local_tensor = win.get_tensor(self.rank)
+                local_tensor = win.map_remote_tensor(self.rank)
 
             # wait for the data from the previous rank to be ready
             wait_stream.synchronize()
@@ -114,9 +114,7 @@ class WindowRmaTest(unittest.TestCase):
         # Cleanup
         wait_stream.synchronize()
         put_stream.synchronize()
-        self.torchcomm.barrier(False)
         win.tensor_deregister()
-        self.torchcomm.barrier(False)
         del win
         del pool
         torch.cuda.synchronize()
@@ -150,15 +148,14 @@ class WindowRmaTest(unittest.TestCase):
             )
 
         # Cleanup
-        self.torchcomm.barrier(False)
         win.tensor_deregister()
         del win
         del pool
 
-    def _get_tensor_device_agnostic_test(self, count, dtype):
-        """Helper function to test get_tensor with device-agnostic access."""
+    def _map_remote_tensor_device_agnostic_test(self, count, dtype):
+        """Helper function to test map_remote_tensor with device-agnostic access."""
         print(
-            f"Testing get_tensor_device_agnostic with count={count}, dtype={get_dtype_name(dtype)}"
+            f"Testing map_remote_tensor_device_agnostic with count={count}, dtype={get_dtype_name(dtype)}"
         )
 
         # Create memory pool and allocate window buffer within it
@@ -173,7 +170,7 @@ class WindowRmaTest(unittest.TestCase):
         self.torchcomm.barrier(False)
 
         # Test local access
-        local_tensor = win.get_tensor(self.rank)
+        local_tensor = win.map_remote_tensor(self.rank)
         self.assertEqual(local_tensor.dtype, win_buf.dtype)
         self.assertEqual(local_tensor.shape, win_buf.shape)
         torch.testing.assert_close(local_tensor, win_buf, rtol=0, atol=0)
@@ -182,7 +179,7 @@ class WindowRmaTest(unittest.TestCase):
         remote_rank = (self.rank + 1) % self.num_ranks
         win_attr = win.get_attr(remote_rank)
         if win_attr.access_type == TorchCommlWinAccessType.WIN_ACCESS_TYPE_UNIFIED:
-            remote_tensor = win.get_tensor(remote_rank)
+            remote_tensor = win.map_remote_tensor(remote_rank)
             self.assertEqual(remote_tensor.dtype, dtype)
             self.assertEqual(remote_tensor.shape, win_buf.shape)
 
@@ -194,7 +191,6 @@ class WindowRmaTest(unittest.TestCase):
             )
 
         # Cleanup
-        self.torchcomm.barrier(False)
         win.tensor_deregister()
         del win
         del pool
@@ -241,12 +237,12 @@ class WindowRmaTest(unittest.TestCase):
             print(f"Running _window_attributes_test with parameters: {test_name}")
             self._window_attributes_test(count, dtype)
 
-        # Test get_tensor_device_agnostic with specific dtypes
+        # Test map_remote_tensor_device_agnostic with specific dtypes
         dtypes_to_test = [torch.float32, torch.int32, torch.bfloat16]
         count = 1024
         for dtype in dtypes_to_test:
-            print("Running _get_tensor_device_agnostic_test")
-            self._get_tensor_device_agnostic_test(count, dtype)
+            print("Running _map_remote_tensor_device_agnostic_test")
+            self._map_remote_tensor_device_agnostic_test(count, dtype)
 
 
 if __name__ == "__main__":

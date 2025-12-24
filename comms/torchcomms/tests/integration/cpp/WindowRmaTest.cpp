@@ -130,14 +130,13 @@ void WindowRmaTest::testWindowPutBasic(
   }
 
   // Cleanup sequence
-  // 1. Final barrier and stream sync before deregistering
+  // 1. Sync streams before deregistering
   put_stream.synchronize();
   wait_stream.synchronize();
-  torchcomm_->barrier(false);
 
-  // 2. Deregister tensor from window (now safe)
+  // 2. Deregister tensor from window (collective operation with internal
+  // barriers)
   win->tensor_deregister();
-  torchcomm_->barrier(false);
 
   // 3. Explicitly destroy the window object
   win.reset();
@@ -213,7 +212,7 @@ void WindowRmaTest::performWindowPutIteration(
       wait_signal_work->wait();
     }
 
-    local_tensor = win->get_tensor(rank_);
+    local_tensor = win->map_remote_tensor(rank_);
   }
 
   // Wait for wait_stream to complete before slicing

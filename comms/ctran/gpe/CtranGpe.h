@@ -184,7 +184,7 @@ struct OpElem {
       void* pArgs;
       void* algoResource;
       void* algoConfig;
-      void* ctran_trace_logger;
+      void* perfTracer;
     } alltoallv_dedup_exec;
     struct {
       const void* sendbuff;

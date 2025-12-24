@@ -42,7 +42,7 @@ class TorchCommWindow {
       size_t targetOffsetNelems,
       bool asyncOp,
       const PutOptions& options = {}) = 0;
-  virtual at::Tensor get_tensor(int rank) = 0;
+  virtual at::Tensor map_remote_tensor(int rank) = 0;
   virtual c10::intrusive_ptr<TorchWork>
   signal(int peerRank, bool asyncOp, const SignalOptions& options = {}) = 0;
   virtual c10::intrusive_ptr<TorchWork> wait_signal(

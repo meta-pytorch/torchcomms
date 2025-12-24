@@ -181,6 +181,12 @@ void TorchWorkNCCLX::wait() {
       comm_->getCudaApi(),
       comm_->getCudaApi()->streamWaitEvent(current_stream, end_event_, 0),
       "Failed to make stream wait for event");
+
+  // Release tensor references. The CUDA caching allocator manages stream
+  // semantics and will not reclaim memory until the stream operations
+  // complete.
+  inputTensors_.clear();
+  inputTensor_.reset();
 }
 } // namespace comms
 } // namespace torch

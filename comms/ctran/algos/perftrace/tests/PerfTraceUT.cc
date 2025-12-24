@@ -6,19 +6,22 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "comms/ctran/algos/perftrace/Record.h"
+#include "comms/ctran/algos/perftrace/TimeInterval.h"
+#include "comms/ctran/algos/perftrace/TimestampPoint.h"
+#include "comms/ctran/algos/perftrace/Tracer.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
-#include "comms/ctran/utils/CtranTraceLogger.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 
-class CtranTraceLoggerTest : public ::testing::Test {
+class PerfTraceTest : public ::testing::Test {
  public:
   double expectedDurMS;
-  CtranTraceLoggerTest() = default;
+  PerfTraceTest() = default;
 
  protected:
   void SetUp() override {
-    setenv("NCCL_CTRAN_ENABLE_TRACE_LOGGER", "1", 1);
+    setenv("NCCL_CTRAN_ENABLE_PERFTRACE", "1", 1);
 
     // Ensure logger is initialized
     ncclCvarInit();
@@ -31,14 +34,14 @@ class CtranTraceLoggerTest : public ::testing::Test {
   void TearDown() override {}
 };
 
-namespace ctran::utils {
-TEST_F(CtranTraceLoggerTest, Simple) {
+namespace ctran::perftrace {
+TEST_F(PerfTraceTest, Simple) {
   auto dummyAlgo = "Ring";
-  auto ts = std::make_unique<TraceRecord>(dummyAlgo);
+  auto ts = std::make_unique<Record>(dummyAlgo);
   EXPECT_THAT(ts, testing::NotNull());
 }
 
-TEST_F(CtranTraceLoggerTest, Timer) {
+TEST_F(PerfTraceTest, Timer) {
   auto timeInterval = std::unique_ptr<TimeInterval>(new TimeInterval(0));
   EXPECT_THAT(timeInterval, testing::NotNull());
 
@@ -55,21 +58,21 @@ TEST_F(CtranTraceLoggerTest, Timer) {
   EXPECT_GE(durUs, expectedDurMS * 1000);
 };
 
-TEST_F(CtranTraceLoggerTest, TimestampPoint) {
+TEST_F(PerfTraceTest, TimestampPoint) {
   int peer = 0;
   auto tp = std::unique_ptr<TimestampPoint>(new TimestampPoint(peer));
   EXPECT_THAT(tp, testing::NotNull());
 }
 
-TEST_F(CtranTraceLoggerTest, Timestamp) {
+TEST_F(PerfTraceTest, Timestamp) {
   auto dummyAlgo = "Ring";
-  auto ts = std::make_unique<TraceRecord>(dummyAlgo);
+  auto ts = std::make_unique<Record>(dummyAlgo);
   EXPECT_THAT(ts, testing::NotNull());
 }
 
-TEST_F(CtranTraceLoggerTest, TraceTimestampPointWithSeqNum) {
+TEST_F(PerfTraceTest, TraceTimestampPointWithSeqNum) {
   auto dummyAlgo = "Ring";
-  auto ts = std::make_unique<TraceRecord>(dummyAlgo, 1 /* rank */);
+  auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
   EXPECT_THAT(ts, testing::NotNull());
 
   // Insert two points with increasing seqNum
@@ -111,9 +114,9 @@ TEST_F(CtranTraceLoggerTest, TraceTimestampPointWithSeqNum) {
   }
 }
 
-TEST_F(CtranTraceLoggerTest, TraceTimeIntervalWithSeqNum) {
+TEST_F(PerfTraceTest, TraceTimeIntervalWithSeqNum) {
   auto dummyAlgo = "Ring";
-  auto ts = std::make_unique<TraceRecord>(dummyAlgo, 1 /* rank */);
+  auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
   EXPECT_THAT(ts, testing::NotNull());
 
   // Insert two points with increasing seqNum
@@ -167,12 +170,12 @@ TEST_F(CtranTraceLoggerTest, TraceTimeIntervalWithSeqNum) {
   }
 }
 
-TEST_F(CtranTraceLoggerTest, TraceTimeIntervalWithMetaData) {
+TEST_F(PerfTraceTest, TraceTimeIntervalWithMetaData) {
   auto dummyAlgo = "Ring";
-  auto temp = getenv("NCCL_CTRAN_ENABLE_TRACE_LOGGER");
+  auto temp = getenv("NCCL_CTRAN_ENABLE_PERFTRACE");
   EXPECT_EQ(std::string(temp), "1");
 
-  auto ts = std::make_unique<TraceRecord>(dummyAlgo, 1 /* rank */);
+  auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
   EXPECT_THAT(ts, testing::NotNull());
 
   // Insert two points with increasing seqNum
@@ -211,33 +214,33 @@ TEST_F(CtranTraceLoggerTest, TraceTimeIntervalWithMetaData) {
   }
 }
 
-TEST_F(CtranTraceLoggerTest, TraceTimeIntervalWithNonexistStart) {
+TEST_F(PerfTraceTest, TraceTimeIntervalWithNonexistStart) {
   auto dummyAlgo = "Ring";
-  auto temp = getenv("NCCL_CTRAN_ENABLE_TRACE_LOGGER");
+  auto temp = getenv("NCCL_CTRAN_ENABLE_PERFTRACE");
   EXPECT_EQ(std::string(temp), "1");
 
-  auto ts = std::make_unique<TraceRecord>(dummyAlgo, 1 /* rank */);
+  auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
   EXPECT_THAT(ts, testing::NotNull());
 
   EXPECT_FALSE(ts->hasInterval("sendTrans", 1));
   EXPECT_DEATH(ts->endInterval("sendTrans", 1), "");
 }
 
-TEST_F(CtranTraceLoggerTest, CtranTraceLoggerSimple) {
-  auto temp = getenv("NCCL_CTRAN_ENABLE_TRACE_LOGGER");
+TEST_F(PerfTraceTest, TracerSimple) {
+  auto temp = getenv("NCCL_CTRAN_ENABLE_PERFTRACE");
   EXPECT_EQ(std::string(temp), "1");
 
-  std::unique_ptr<TraceLogger> ctran_trace_logger{nullptr};
-  ctran_trace_logger = std::make_unique<TraceLogger>(0);
-  EXPECT_EQ(ctran_trace_logger->isTraceEnabled(), true);
+  std::unique_ptr<Tracer> perfTracer{nullptr};
+  perfTracer = std::make_unique<Tracer>(0);
+  EXPECT_EQ(perfTracer->isTraceEnabled(), true);
 
   auto dummyAlgo = "Ring";
-  auto ts = std::make_unique<TraceRecord>(dummyAlgo, 1 /* rank */);
+  auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
   EXPECT_THAT(ts, testing::NotNull());
 
   EXPECT_FALSE(ts->hasInterval("sendTrans", 1));
   EXPECT_DEATH(ts->endInterval("sendTrans", 1), "");
-  ctran_trace_logger->addTraceRecord(std::move(ts));
+  perfTracer->addRecord(std::move(ts));
 }
 
-} // namespace ctran::utils
+} // namespace ctran::perftrace

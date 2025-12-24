@@ -179,6 +179,10 @@ Args:
           R"(
 Deregister the window and free all associated resources.
 
+This is a collective operation that includes internal barriers to ensure:
+1. All ranks have finished using the window before deregistration
+2. All ranks have completed deregistration before proceeding
+
       )",
           py::call_guard<py::gil_scoped_release>())
       .def(
@@ -228,7 +232,7 @@ Example usage:
   work.wait()
 
   # on the remote side, get the tensor from the window after waiting on the remote signal
-  tensor = window.get_tensor(rank)
+  tensor = window.map_remote_tensor(rank)
 
   # safely use the tensor after the collective completes
   tensor.sum()
@@ -299,8 +303,8 @@ Args:
           py::arg("peer_rank"),
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "get_tensor",
-          &TorchCommWindow::get_tensor,
+          "map_remote_tensor",
+          &TorchCommWindow::map_remote_tensor,
           R"(
 Get the entire tensor view from the remote rank's window buffer.
 
@@ -315,7 +319,7 @@ Returns:
 
 Example:
     If the registered buffer has shape [100, 512, 128]:
-    - full_tensor = get_tensor(rank=0)
+    - full_tensor = map_remote_tensor(rank=0)
       returns a tensor with shape [100, 512, 128]
     - You can then slice it: sliced = full_tensor[20:65]
 
