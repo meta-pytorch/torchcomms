@@ -168,9 +168,10 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-WINDOW: Rank {} allocated local window data buffer base {} signal buffer base {} "
+      "CTRAN-WINDOW: Rank {} window buffer is {} window data buffer base {} signal buffer base {} "
       "dataBytes {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}]",
       myRank,
+      allocDataBuf_ ? "Allocated" : "User Provided",
       winDataPtr,
       (void*)winSignalPtr,
       dataBytes,
