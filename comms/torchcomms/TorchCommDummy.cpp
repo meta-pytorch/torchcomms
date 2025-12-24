@@ -27,7 +27,7 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)options;
     return c10::make_intrusive<TorchWorkCompleted>();
   }
-  at::Tensor get_tensor(int rank) override {
+  at::Tensor map_remote_tensor(int rank) override {
     (void)rank;
     return at::Tensor();
   }

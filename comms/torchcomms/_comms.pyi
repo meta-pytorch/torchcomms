@@ -164,7 +164,7 @@ class TorchCommWindow:
         hints: Dict[str, str] | None = None,
         timeout: timedelta | None = None,
     ) -> TorchWork: ...
-    def get_tensor(
+    def map_remote_tensor(
         self,
         rank: int,
     ) -> Any: ...
