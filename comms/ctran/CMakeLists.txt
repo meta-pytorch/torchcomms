@@ -8,6 +8,7 @@ file(GLOB_RECURSE CTRAN_SOURCES
 )
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/tests/.*")
 list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/benchmarks/.*")
+list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/examples/.*")
 if (NOT DEFINED ENABLE_TCPDM OR NOT ENABLE_TCPDM)
     add_compile_definitions(CTRAN_DISABLE_TCPDM)
     list(FILTER CTRAN_SOURCES EXCLUDE REGEX ".*/ctran/backends/tcpdevmem/.*")

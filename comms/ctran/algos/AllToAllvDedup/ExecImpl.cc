@@ -56,11 +56,11 @@ commResult_t execGpeFn(
   const int nNodes = statex->nNodes();
   const int nLocalRanks = statex->nLocalRanks();
 
-  auto ctran_trace_logger = reinterpret_cast<utils::TraceLogger*>(
-      op->alltoallv_dedup_exec.ctran_trace_logger);
-  // Always create traceRecord for code simplicity, all recording should be
+  auto perfTracer =
+      reinterpret_cast<perftrace::Tracer*>(op->alltoallv_dedup_exec.perfTracer);
+  // Always create record for code simplicity, all recording should be
   // no-op if trace is disabled
-  auto ts = std::make_unique<utils::TraceRecord>(
+  auto ts = std::make_unique<perftrace::Record>(
       fmt::format("allToAllvDedupExec_{}", thOpCount), myRank);
   setCommonTraceMetadata(ts.get(), op, kIsExec);
 
@@ -104,7 +104,7 @@ commResult_t execGpeFn(
   // next dedup can always start from remote chunk 0 for simplicity
   FB_COMMCHECK(waitSyncComplete(ctx, state, kIsExec));
 
-  ctran_trace_logger->addTraceRecord(std::move(ts));
+  perfTracer->addRecord(std::move(ts));
   return commSuccess;
 }
 
@@ -248,7 +248,7 @@ commResult_t AlgoImpl::exec(const ExecArgs& execArgs, const uint64_t opCount) {
       config_,
       comm_,
       opGroup,
-      ctran_trace_logger.get());
+      perfTracer.get());
 
   FB_COMMCHECK(ctran_->gpe->submit(
       std::move(opGroup),

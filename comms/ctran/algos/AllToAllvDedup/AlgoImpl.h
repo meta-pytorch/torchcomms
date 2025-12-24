@@ -5,8 +5,8 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllToAllvDedup/ResourceImpl.h"
 #include "comms/ctran/algos/AllToAllvDedup/Types.h"
+#include "comms/ctran/algos/perftrace/Tracer.h"
 #include "comms/ctran/gpe/CtranGpe.h"
-#include "comms/ctran/utils/CtranTraceLogger.h"
 
 namespace ctran::alltoallvdedup {
 
@@ -43,7 +43,7 @@ class AlgoImpl {
   commResult_t exec(const ExecArgs& args, const uint64_t opCount);
 
   // todo setup in initialize?
-  std::unique_ptr<ctran::utils::TraceLogger> ctran_trace_logger{nullptr};
+  std::unique_ptr<ctran::perftrace::Tracer> perfTracer{nullptr};
 
  private:
   // initialize constant configuration

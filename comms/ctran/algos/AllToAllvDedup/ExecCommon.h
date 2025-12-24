@@ -43,7 +43,7 @@ struct ExecCtx {
   PersistConfig* config;
   ncclx::CommStateX* commStatex;
   CtranMapper* mapper;
-  utils::TraceRecord* ts;
+  perftrace::Record* ts;
   uint64_t opCount;
 };
 
@@ -823,7 +823,7 @@ updateProgressXNodeRecvState(ExecCtx& ctx, ProgressState& state, bool isExec) {
 }
 
 inline void setCommonTraceMetadata(
-    utils::TraceRecord* ts,
+    perftrace::Record* ts,
     struct OpElem* op,
     const bool isExec) {
   auto comm = op->comm_;
@@ -875,7 +875,7 @@ inline void setupGpeOp(
     PersistConfig& config,
     CtranComm* comm,
     std::vector<std::unique_ptr<struct OpElem>>& opGroup,
-    utils::TraceLogger* ctran_trace_logger) {
+    perftrace::Tracer* perfTracer) {
   std::unique_ptr<struct OpElem> op = std::unique_ptr<struct OpElem>(
       new OpElem(OpElem::opType::ALLTOALLV_DEDUP, comm, opCount));
 
@@ -883,8 +883,7 @@ inline void setupGpeOp(
       const_cast<void*>(reinterpret_cast<const void*>(&pArgs));
   op->alltoallv_dedup_exec.algoResource = &resRef;
   op->alltoallv_dedup_exec.algoConfig = &config;
-  op->alltoallv_dedup_exec.ctran_trace_logger =
-      reinterpret_cast<void*>(ctran_trace_logger);
+  op->alltoallv_dedup_exec.perfTracer = reinterpret_cast<void*>(perfTracer);
 
   opGroup.push_back(std::move(op));
 }

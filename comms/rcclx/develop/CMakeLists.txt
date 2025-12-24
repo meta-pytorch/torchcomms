@@ -1020,8 +1020,14 @@ set(CTRAN_FILES
   comms/ctran/utils/CtranIpc.cc
   comms/ctran/utils/CtranIpc.h
   comms/ctran/utils/CtranPerf.h
-  comms/ctran/utils/CtranTraceLogger.cc
-  comms/ctran/utils/CtranTraceLogger.h
+  comms/ctran/algos/perftrace/Record.cc
+  comms/ctran/algos/perftrace/Record.h
+  comms/ctran/algos/perftrace/TimeInterval.cc
+  comms/ctran/algos/perftrace/TimeInterval.h
+  comms/ctran/algos/perftrace/TimestampPoint.cc
+  comms/ctran/algos/perftrace/TimestampPoint.h
+  comms/ctran/algos/perftrace/Tracer.cc
+  comms/ctran/algos/perftrace/Tracer.h
   comms/ctran/utils/CudaGraphUtils.h
   comms/ctran/utils/CudaUtils.cc
   comms/ctran/utils/CudaUtils.h

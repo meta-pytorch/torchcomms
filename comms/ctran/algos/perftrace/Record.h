@@ -2,7 +2,6 @@
 
 #pragma once
 
-#include <folly/Synchronized.h>
 #include <chrono>
 #include <map>
 #include <memory>
@@ -10,109 +9,18 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "comms/ctran/algos/perftrace/TimeInterval.h"
+#include "comms/ctran/algos/perftrace/TimestampPoint.h"
 #include "comms/ctran/utils/Checks.h"
 
-namespace ctran::utils {
+namespace ctran::perftrace {
 
-class TimestampPoint {
+// Record is not thread safe, assume it is only used in one thread
+class Record {
  public:
-  explicit TimestampPoint() {
-    TimestampPoint(0);
-  }
-
-  explicit TimestampPoint(int peer) {
-    this->now_ = std::chrono::system_clock::now();
-    this->peer_ = peer;
-  }
-  ~TimestampPoint() = default;
-
-  int64_t durationMs(
-      const std::chrono::time_point<std::chrono::system_clock>& begin) const {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(now_ - begin)
-        .count();
-  }
-
-  int64_t durationUs(
-      const std::chrono::time_point<std::chrono::system_clock>& begin) const {
-    return std::chrono::duration_cast<std::chrono::microseconds>(now_ - begin)
-        .count();
-  }
-
-  std::string toJsonEntry(
-      const std::string& name,
-      int id,
-      const int pid,
-      const int seqNum = -1) const;
-
-  void setMetadata(const std::map<std::string, std::string>& metaData) {
-    this->metaData_ = metaData;
-  }
-
- private:
-  std::chrono::time_point<std::chrono::system_clock> now_;
-  int peer_;
-  std::map<std::string, std::string> metaData_;
-};
-
-class TimeInterval {
- public:
-  explicit TimeInterval() {
-    TimeInterval(0);
-  }
-
-  explicit TimeInterval(int peer) {
-    start_ = std::chrono::system_clock::now();
-    peer_ = peer;
-    completed_ = false;
-  }
-  ~TimeInterval() = default;
-
-  std::string toJsonEntry(
-      const std::string& name,
-      int id,
-      const int pid,
-      const int seqNum = -1) const;
-
-  inline void start() {
-    this->start_ = std::chrono::system_clock::now();
-  }
-
-  inline void end() {
-    if (!completed_) {
-      this->end_ = std::chrono::system_clock::now();
-      completed_ = true;
-    }
-  }
-
-  inline int64_t durationMs() const {
-    return std::chrono::duration_cast<std::chrono::milliseconds>(
-               end_ - this->start_)
-        .count();
-  }
-
-  inline int64_t durationUs() const {
-    return std::chrono::duration_cast<std::chrono::microseconds>(
-               end_ - this->start_)
-        .count();
-  }
-
-  inline void setMetadata(const std::map<std::string, std::string>& metaData) {
-    this->metaData_ = metaData;
-  }
-
- private:
-  std::chrono::time_point<std::chrono::system_clock> start_;
-  std::chrono::time_point<std::chrono::system_clock> end_;
-  bool completed_ = false;
-  int peer_;
-  std::map<std::string, std::string> metaData_;
-};
-
-// Trace record is not thread safe, assume it is only used in one thread
-class TraceRecord {
- public:
-  explicit TraceRecord(const std::string& algo, const int rank = -1);
-  ~TraceRecord() = default;
+  explicit Record(const std::string& algo, const int rank = -1);
+  ~Record() = default;
 
   // Add a point with sequence number. If the key <name, seqNum> already
   // exists, it will hit an assertion fail. Caller is responsible to ensure
@@ -237,24 +145,4 @@ class TraceRecord {
   int rank_{-1};
 };
 
-// TraceLogger is thread safe, allowing multiple threads to add trace
-// records
-class TraceLogger {
- public:
-  explicit TraceLogger(int rank);
-  ~TraceLogger();
-
-  bool isTraceEnabled() {
-    return traceEnabled_;
-  }
-
-  void addTraceRecord(std::unique_ptr<TraceRecord> traceRecord);
-
- private:
-  void reportTracing();
-  bool traceEnabled_ = false;
-  int rank_;
-  folly::Synchronized<std::vector<std::unique_ptr<TraceRecord>>> traceRecords_;
-};
-
-} // namespace ctran::utils
+} // namespace ctran::perftrace
