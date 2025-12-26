@@ -105,7 +105,7 @@ TEST_F(CtranExTest, InitializedWithInvalidPort) {
   } catch (const std::bad_alloc& e) {
     GTEST_SKIP() << "CTRAN-IB: IB backend not enabled. Skip test";
   } catch (const std::runtime_error& e) {
-    EXPECT_THAT(e.what(), testing::HasSubstr("Invalid port number -1"));
+    EXPECT_THAT(e.what(), ::testing::HasSubstr("Invalid port number -1"));
     ASSERT_EQ(ctranEx, nullptr);
     return;
   }

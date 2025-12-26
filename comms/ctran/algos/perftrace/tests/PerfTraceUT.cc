@@ -38,12 +38,12 @@ namespace ctran::perftrace {
 TEST_F(PerfTraceTest, Simple) {
   auto dummyAlgo = "Ring";
   auto ts = std::make_unique<Record>(dummyAlgo);
-  EXPECT_THAT(ts, testing::NotNull());
+  EXPECT_THAT(ts, ::testing::NotNull());
 }
 
 TEST_F(PerfTraceTest, Timer) {
   auto timeInterval = std::unique_ptr<TimeInterval>(new TimeInterval(0));
-  EXPECT_THAT(timeInterval, testing::NotNull());
+  EXPECT_THAT(timeInterval, ::testing::NotNull());
 
   int expectedDurMS;
   expectedDurMS = folly::Random::rand32() % 5 + 1;
@@ -61,19 +61,19 @@ TEST_F(PerfTraceTest, Timer) {
 TEST_F(PerfTraceTest, TimestampPoint) {
   int peer = 0;
   auto tp = std::unique_ptr<TimestampPoint>(new TimestampPoint(peer));
-  EXPECT_THAT(tp, testing::NotNull());
+  EXPECT_THAT(tp, ::testing::NotNull());
 }
 
 TEST_F(PerfTraceTest, Timestamp) {
   auto dummyAlgo = "Ring";
   auto ts = std::make_unique<Record>(dummyAlgo);
-  EXPECT_THAT(ts, testing::NotNull());
+  EXPECT_THAT(ts, ::testing::NotNull());
 }
 
 TEST_F(PerfTraceTest, TraceTimestampPointWithSeqNum) {
   auto dummyAlgo = "Ring";
   auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
-  EXPECT_THAT(ts, testing::NotNull());
+  EXPECT_THAT(ts, ::testing::NotNull());
 
   // Insert two points with increasing seqNum
   int seqNum = 1;
@@ -117,7 +117,7 @@ TEST_F(PerfTraceTest, TraceTimestampPointWithSeqNum) {
 TEST_F(PerfTraceTest, TraceTimeIntervalWithSeqNum) {
   auto dummyAlgo = "Ring";
   auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
-  EXPECT_THAT(ts, testing::NotNull());
+  EXPECT_THAT(ts, ::testing::NotNull());
 
   // Insert two points with increasing seqNum
   int seqNum = 1;
@@ -176,7 +176,7 @@ TEST_F(PerfTraceTest, TraceTimeIntervalWithMetaData) {
   EXPECT_EQ(std::string(temp), "1");
 
   auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
-  EXPECT_THAT(ts, testing::NotNull());
+  EXPECT_THAT(ts, ::testing::NotNull());
 
   // Insert two points with increasing seqNum
   int seqNum = 1;
@@ -220,7 +220,7 @@ TEST_F(PerfTraceTest, TraceTimeIntervalWithNonexistStart) {
   EXPECT_EQ(std::string(temp), "1");
 
   auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
-  EXPECT_THAT(ts, testing::NotNull());
+  EXPECT_THAT(ts, ::testing::NotNull());
 
   EXPECT_FALSE(ts->hasInterval("sendTrans", 1));
   EXPECT_DEATH(ts->endInterval("sendTrans", 1), "");
@@ -236,7 +236,7 @@ TEST_F(PerfTraceTest, TracerSimple) {
 
   auto dummyAlgo = "Ring";
   auto ts = std::make_unique<Record>(dummyAlgo, 1 /* rank */);
-  EXPECT_THAT(ts, testing::NotNull());
+  EXPECT_THAT(ts, ::testing::NotNull());
 
   EXPECT_FALSE(ts->hasInterval("sendTrans", 1));
   EXPECT_DEATH(ts->endInterval("sendTrans", 1), "");

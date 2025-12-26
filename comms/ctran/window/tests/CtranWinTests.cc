@@ -123,7 +123,7 @@ TEST_P(CtranWinTestParam, winAllocCreate) {
   void* winBase = nullptr;
   createWin(comm, userBuf, bufType, &winBase, &win, sizeBytes);
 
-  EXPECT_THAT(win, testing::NotNull());
+  EXPECT_THAT(win, ::testing::NotNull());
 
   // Expect window allocation would trigger internal buffer registration export
   const auto dump0 = comm->ctranComm_->ctran_->mapper->dumpExportRegCache();
@@ -138,12 +138,12 @@ TEST_P(CtranWinTestParam, winAllocCreate) {
       // For CPU window or peers on remote node, remote address is null
     } else if (!(statex->node(peer) == statex->node() &&
                  win->nvlEnabled(peer))) {
-      EXPECT_THAT(remoteAddr, testing::IsNull());
+      EXPECT_THAT(remoteAddr, ::testing::IsNull());
     } else {
       // Do actual copy to validate remote address is accessible
       FB_CUDACHECKIGNORE(
           cudaMemcpy(remoteAddr, winBase, sizeBytes, cudaMemcpyDefault));
-      EXPECT_THAT(remoteAddr, testing::NotNull());
+      EXPECT_THAT(remoteAddr, ::testing::NotNull());
     }
   }
 
@@ -214,7 +214,7 @@ TEST_F(CtranWinTest, directCopy) {
       void* remoteWinBase = nullptr;
       res = ctranWinSharedQuery(peer, win, &remoteWinBase);
       EXPECT_EQ(res, commSuccess);
-      EXPECT_THAT(remoteWinBase, testing::NotNull());
+      EXPECT_THAT(remoteWinBase, ::testing::NotNull());
 
       FB_CUDACHECKIGNORE(cudaMemcpy(
           remoteData_host.data(),
@@ -263,7 +263,7 @@ TEST_F(CtranWinTest, nvlDisabled) {
   ASSERT_EQ(res, commSuccess);
   ASSERT_NE(winBase, nullptr);
 
-  EXPECT_THAT(win, testing::NotNull());
+  EXPECT_THAT(win, ::testing::NotNull());
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     ASSERT_EQ(win->nvlEnabled(peer), false);
@@ -273,7 +273,7 @@ TEST_F(CtranWinTest, nvlDisabled) {
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
     } else {
-      EXPECT_THAT(remoteAddr, testing::IsNull());
+      EXPECT_THAT(remoteAddr, ::testing::IsNull());
     }
   }
 

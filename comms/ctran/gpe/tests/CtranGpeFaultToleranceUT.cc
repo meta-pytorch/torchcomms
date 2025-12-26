@@ -12,7 +12,7 @@
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
-#include "comms/ctran/tests/CtranStandaloneUTUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -114,24 +114,23 @@ commResult_t CtranGpeFtTestAlgoFn(
   return commSuccess;
 }
 
-class CtranGpeFaultToleranceTestBase
-    : public ::ctran::testing::CtranStandaloneBaseTest {
+class CtranGpeFaultToleranceTestBase : public ::ctran::CtranStandaloneFixture {
  protected:
   static constexpr int kNumBlocks = 4;
   static constexpr int kNumThreads = 64;
   volatile int* testFlag;
   CtranAlgoDeviceState* devState_d{nullptr};
 
-  // ctranComm, rank, cudaDev from parent
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
 
   cudaStream_t stream{nullptr};
 
   int* oobKernelTerminateFlag;
 
   void SetUpInternal(bool abortEnabled) {
-    setupBase();
+    CtranStandaloneFixture::SetUp();
 
-    initCtranComm(::ctran::utils::createAbort(abortEnabled));
+    ctranComm = makeCtranComm(::ctran::utils::createAbort(abortEnabled));
 
     ASSERT_CUDASUCCESS(cudaStreamCreate(&stream));
 

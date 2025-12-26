@@ -7,12 +7,20 @@
 #include <cuda_runtime.h> // @manual
 #include <gtest/gtest.h>
 #include <mpi.h>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <thread>
 #include <vector>
+
+#include <folly/futures/Future.h>
+
 #include "caffe2/torch/csrc/distributed/c10d/TCPStore.hpp"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/interfaces/ICtran.h"
+#include "comms/ctran/tests/bootstrap/IntraProcessBootstrap.h"
+#include "comms/ctran/tests/bootstrap/MockBootstrap.h"
+#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
@@ -173,7 +181,7 @@ void* commMemAlloc(
 void commMemFree(void* buf, size_t bufSize, MemAllocType memType);
 
 // Bootstrap initialization type
-enum class InitEnvType { MPI, TCP_STORE };
+enum class InitEnvType { MPI, TCP_STORE, STANDALONE };
 
 inline bool checkTcpStoreEnv() {
   // Check if LOCAL_RANK, GLOBAL_RANK, WORLD_SIZE, MASTER_ADDR and MASTER_PORT
@@ -200,9 +208,66 @@ class CtranEnvironmentBase : public ::testing::Environment {
   void TearDown() override;
 };
 
+// ============================================================================
+// Base Test Fixture Hierarchy
+// ============================================================================
+//
+// CtranTestFixtureBase
+//       |
+//       +-- CtranStandaloneFixture (single-rank with MockBootstrap)
+//       |
+//       +-- CtranDistTestFixture (multi-rank distributed tests)
+//       |       - MPI mode: real multi-process with MPI bootstrap
+//       |       - TCPStore mode: real multi-process with TCPStore bootstrap
+//       |       - Standalone mode: single-rank with IntraProcessBootstrap
+//       |
+//       +-- CtranIntraProcessFixture (multi-rank simulation in single process)
+//               - Uses threads + IntraProcessBootstrap
+//               - Orchestrated work dispatch via run(rank, work)
+//
+// ============================================================================
+
+// Base class with common utilities for all Ctran test fixtures.
+// Provides environment setup (logger, cvars) and CUDA initialization.
+class CtranTestFixtureBase : public ::testing::Test {
+ protected:
+  void SetUp() override;
+  void TearDown() override;
+
+  // Initialize environment variables, logger, and CUDA library.
+  // This is called automatically by SetUp().
+  void setupEnvironment();
+
+  // CUDA device index (defaults to 0 for standalone, localRank for distributed)
+  int cudaDev{0};
+
+  // CUDA stream for tests (RAII managed)
+  std::optional<meta::comms::CudaStream> stream{std::nullopt};
+};
+
+// Standalone mode fixture for single-rank testing with MockBootstrap.
+// Use this for testing GPU kernels, GPE, mapper, etc. without multi-process
+// coordination or the overhead of mpirun/TCPStore.
+class CtranStandaloneFixture : public CtranTestFixtureBase {
+ protected:
+  static constexpr std::string_view kCommDesc{"ut_comm_desc"};
+
+  void SetUp() override;
+  void TearDown() override;
+
+  // Create a CtranComm with MockBootstrap for single-rank testing.
+  // @param abort: Optional abort control for fault tolerance testing.
+  //               Defaults to enabled abort.
+  std::unique_ptr<CtranComm> makeCtranComm(
+      std::shared_ptr<::ctran::utils::Abort> abort =
+          ctran::utils::createAbort(/*enabled=*/true));
+
+  int rank{0}; // Always 0 for standalone tests
+};
+
 // CtranDistTestFixture is a fixture for testing Ctran with multiple
 // processes/ranks that supports both MPI and TCPStore bootstrap methods.
-class CtranDistTestFixture : public ::testing::Test {
+class CtranDistTestFixture : public CtranTestFixtureBase {
  public:
  protected:
   void SetUp() override;
@@ -217,9 +282,6 @@ class CtranDistTestFixture : public ::testing::Test {
   int numLocalRanks_{-1};
   bool enableNolocal{false};
 
-  // CUDA stream for tests (RAII managed)
-  std::optional<meta::comms::CudaStream> stream{std::nullopt};
-
  private:
   void setUpMpi();
   void setUpTcpStore();
@@ -232,6 +294,65 @@ class CtranDistTestFixture : public ::testing::Test {
 
   // Test counter for TCP Store key generation
   static std::atomic<int> testCount_;
+};
+
+// Intra-process multi-rank fixture for testing with IntraProcessBootstrap.
+// This allows testing multi-rank scenarios within a single process using
+// threads, without requiring mpirun or external coordination.
+//
+// Use this fixture for:
+// - Unit tests that need multi-rank semantics without real networking
+// - Tests where you need to orchestrate different work to different ranks
+// - Fast multi-rank tests without mpirun overhead
+//
+// For true distributed testing (multiple processes), use CtranDistTestFixture.
+class CtranIntraProcessFixture : public CtranTestFixtureBase {
+ public:
+  static constexpr size_t kBufferSize = 128 * 1024;
+
+  struct PerRankState;
+  using Work = std::function<void(PerRankState&)>;
+
+  struct PerRankState {
+    // Ideally we could use the IBootstrap interface, but it makes UT debugging
+    // hard since the barriers are not named. We use the specific
+    // IntraProcessBootstrap class for namedBarriers.
+    ::ctran::testing::IntraProcessBootstrap* getBootstrap() {
+      return reinterpret_cast<::ctran::testing::IntraProcessBootstrap*>(
+          ctranComm->bootstrap_.get());
+    }
+
+    std::shared_ptr<::ctran::testing::IntraProcessBootstrap::State>
+        sharedBootstrapState;
+    std::unique_ptr<CtranComm> ctranComm{nullptr};
+    int nRanks{1};
+    int rank{0};
+    int cudaDev{0};
+    cudaStream_t stream{nullptr};
+
+    // device buffer for collectives
+    void* srcBuffer{nullptr};
+    void* dstBuffer{nullptr};
+
+    folly::Promise<Work> workPromise;
+    folly::SemiFuture<Work> workSemiFuture{workPromise.getSemiFuture()};
+  };
+
+ protected:
+  std::vector<PerRankState> perRankStates_;
+  std::vector<std::thread> workers_;
+
+  void SetUp() override;
+
+  void startWorkers(
+      int nRanks,
+      const std::vector<std::shared_ptr<::ctran::utils::Abort>>& aborts);
+
+  void run(int rank, const Work& work) {
+    perRankStates_[rank].workPromise.setValue(work);
+  }
+
+  void TearDown() override;
 };
 
 } // namespace ctran
