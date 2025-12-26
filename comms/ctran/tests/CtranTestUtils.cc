@@ -866,3 +866,135 @@ void CtranIntraProcessFixture::TearDown() {
 }
 
 } // namespace ctran
+
+// ============================================================================
+// CtranTestHelpers Implementation
+// ============================================================================
+
+namespace ctran {
+
+CtranTestHelpers::CtranTestHelpers() {
+  pageSize_ = getpagesize();
+}
+
+bool CtranTestHelpers::isBackendValid(
+    const std::vector<CtranMapperBackend>& excludedBackends,
+    CtranMapperBackend backend) {
+  return std::find(excludedBackends.begin(), excludedBackends.end(), backend) ==
+      excludedBackends.end();
+}
+
+void CtranTestHelpers::verifyGpeLeak(ICtran* ctran) {
+  ASSERT_EQ(ctran->gpe->numInUseKernelElems(), 0);
+  ASSERT_EQ(ctran->gpe->numInUseKernelFlags(), 0);
+}
+
+void CtranTestHelpers::resetBackendsUsed(ICtran* ctran) {
+  ctran->mapper->iPutCount[CtranMapperBackend::NVL] = 0;
+  ctran->mapper->iPutCount[CtranMapperBackend::IB] = 0;
+}
+
+void CtranTestHelpers::verifyBackendsUsed(
+    ICtran* ctran,
+    const ncclx::CommStateX* statex,
+    MemAllocType memType) {
+  verifyBackendsUsed(ctran, statex, memType, {});
+}
+
+void CtranTestHelpers::verifyBackendsUsed(
+    ICtran* ctran,
+    const ncclx::CommStateX* statex,
+    MemAllocType memType,
+    const std::vector<CtranMapperBackend>& excludedBackends) {
+  const int nRanks = statex->nRanks();
+  const int nLocalRanks = statex->nLocalRanks();
+
+  switch (memType) {
+    case kMemNcclMemAlloc:
+    case kCuMemAllocDisjoint:
+      // Expect usage from NVL backend unless excluded by particular
+      // collective
+      if (nLocalRanks > 1 &&
+          isBackendValid(excludedBackends, CtranMapperBackend::NVL)) {
+        if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
+          ASSERT_GT(ctran->mapper->iCopyCount, 0);
+        } else {
+          ASSERT_GT(ctran->mapper->iPutCount[CtranMapperBackend::NVL], 0);
+        }
+      } else {
+        ASSERT_EQ(ctran->mapper->iPutCount[CtranMapperBackend::NVL], 0);
+      }
+
+      // Expect usage from IB backend unless excluded by particular collective
+      if (nRanks > nLocalRanks &&
+          isBackendValid(excludedBackends, CtranMapperBackend::IB)) {
+        ASSERT_GT(ctran->mapper->iPutCount[CtranMapperBackend::IB], 0);
+      }
+      // Do not assume no IB usage, because IB backend may be used also for
+      // local ranks if NVL backend is not available
+      break;
+
+    case kMemCudaMalloc:
+      // memType is kMemCudaMalloc
+      // Expect usage from IB backend as long as nRanks > 1, unless excluded
+      // by particular collective
+      if (nRanks > 1 &&
+          isBackendValid(excludedBackends, CtranMapperBackend::IB)) {
+        ASSERT_GT(ctran->mapper->iPutCount[CtranMapperBackend::IB], 0);
+      }
+      // Do not assume no IB usage, because IB backend may be used also for
+      // local ranks if NVL backend is not available
+      break;
+
+    default:
+      ASSERT_TRUE(false) << "Unsupported memType " << memType;
+  }
+}
+
+void CtranTestHelpers::allocDevArg(size_t nbytes, void*& ptr) {
+  CUDACHECK_ASSERT(cudaMalloc(&ptr, nbytes));
+  devArgs_.insert(ptr);
+}
+
+void CtranTestHelpers::releaseDevArgs() {
+  for (auto ptr : devArgs_) {
+    CUDACHECK_TEST(cudaFree(ptr));
+  }
+  devArgs_.clear();
+}
+
+void CtranTestHelpers::releaseDevArg(void* ptr) {
+  cudaFree(ptr);
+  devArgs_.erase(ptr);
+}
+
+void* CtranTestHelpers::prepareBuf(
+    size_t bufSize,
+    MemAllocType memType,
+    std::vector<TestMemSegment>& segments) {
+  void* buf = nullptr;
+  if (memType == kMemCudaMalloc) {
+    CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+    segments.emplace_back(buf, bufSize);
+  } else {
+    XLOG(FATAL)
+        << "CtranTestHelpers only supports kMemCudaMalloc. "
+        << "Use CtranNcclTestHelpers for kMemNcclMemAlloc or kCuMemAllocDisjoint.";
+  }
+  return buf;
+}
+
+void CtranTestHelpers::releaseBuf(
+    void* buf,
+    size_t bufSize,
+    MemAllocType memType) {
+  if (memType == kMemCudaMalloc) {
+    CUDACHECK_TEST(cudaFree(buf));
+  } else {
+    XLOG(FATAL)
+        << "CtranTestHelpers only supports kMemCudaMalloc. "
+        << "Use CtranNcclTestHelpers for kMemNcclMemAlloc or kCuMemAllocDisjoint.";
+  }
+}
+
+} // namespace ctran

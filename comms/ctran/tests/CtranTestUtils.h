@@ -11,12 +11,15 @@
 #include <memory>
 #include <optional>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include <folly/futures/Future.h>
 
 #include "caffe2/torch/csrc/distributed/c10d/TCPStore.hpp"
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/tests/bootstrap/IntraProcessBootstrap.h"
 #include "comms/ctran/tests/bootstrap/MockBootstrap.h"
@@ -353,6 +356,140 @@ class CtranIntraProcessFixture : public CtranTestFixtureBase {
   }
 
   void TearDown() override;
+};
+
+// ============================================================================
+// Test Helpers (Utility class, not a fixture)
+// ============================================================================
+//
+// CtranTestHelpers provides common verification and memory utilities for
+// NCCL-integrated CTRAN tests. This is a utility class (not a test fixture)
+// that can be composed into test fixtures or inherited as a mixin.
+//
+// Use this for:
+// - Backend usage verification (verifyBackendsUsed)
+// - GPE leak checking (verifyGpeLeak)
+// - Device memory argument helpers (allocDevArg, checkDevArg, etc.)
+// - Buffer preparation with different memory types (prepareBuf, releaseBuf)
+//
+// ============================================================================
+
+class CtranTestHelpers {
+ public:
+  CtranTestHelpers();
+
+  // Check no GPE internal memory leak after finished collective kernel
+  void verifyGpeLeak(ICtran* ctran);
+
+  // Reset backend usage counters
+  void resetBackendsUsed(ICtran* ctran);
+
+  // Verify the traffic at each backend is expected based on the memType and
+  // statex topo.
+  void verifyBackendsUsed(
+      ICtran* ctran,
+      const ncclx::CommStateX* statex,
+      MemAllocType memType);
+
+  // Verify backends used with excluded backends list
+  void verifyBackendsUsed(
+      ICtran* ctran,
+      const ncclx::CommStateX* statex,
+      MemAllocType memType,
+      const std::vector<CtranMapperBackend>& excludedBackends);
+
+  // Allocate device memory without initialization
+  void allocDevArg(size_t nbytes, void*& ptr);
+
+  // Allocate device memory and copy from vector
+  template <typename T>
+  void allocDevArg(const std::vector<T>& argVec, T*& ptr) {
+    void* ptr_ = nullptr;
+    size_t nbytes = sizeof(T) * argVec.size();
+    allocDevArg(nbytes, ptr_);
+    CUDACHECK_ASSERT(cudaMemcpy(
+        ptr_, argVec.data(), argVec.size() * sizeof(T), cudaMemcpyDefault));
+    ptr = reinterpret_cast<T*>(ptr_);
+  }
+
+  // Release all device arguments allocated by allocDevArg
+  void releaseDevArgs();
+
+  // Release a single device argument
+  void releaseDevArg(void* ptr);
+
+  // Asynchronously assign value to device argument from vector
+  template <typename T>
+  void assignDevArg(T* buf, const std::vector<T>& vals, cudaStream_t stream) {
+    CUDACHECK_ASSERT(cudaMemcpyAsync(
+        buf, vals.data(), vals.size() * sizeof(T), cudaMemcpyDefault, stream));
+  }
+
+  // Asynchronously fill device argument with single value
+  template <typename T>
+  void assignDevArg(T* buf, int count, T val, cudaStream_t stream) {
+    std::vector<T> expVals(count, val);
+    return assignDevArg(buf, expVals, stream);
+  }
+
+  // Check device argument values against expected vector
+  template <typename T>
+  void checkDevArg(
+      const T* buf,
+      const std::vector<T> expVals,
+      std::vector<std::string>& errs,
+      int maxNumErrs = 10) {
+    const auto count = expVals.size();
+    std::vector<T> obsVals(count, static_cast<T>(-1));
+    CUDACHECK_ASSERT(
+        cudaMemcpy(obsVals.data(), buf, count * sizeof(T), cudaMemcpyDefault));
+    errs.reserve(maxNumErrs);
+    for (size_t i = 0; i < count; ++i) {
+      if (obsVals[i] != expVals[i] &&
+          errs.size() < static_cast<size_t>(maxNumErrs)) {
+        errs.push_back(
+            fmt::format(
+                "observed[{}] = {}, expected = {}", i, obsVals[i], expVals[i]));
+      }
+    }
+  }
+
+  // Check device argument values against single expected value
+  template <typename T>
+  void checkDevArg(
+      const T* buf,
+      int count,
+      T expVal,
+      std::vector<std::string>& errs,
+      int maxNumErrs = 10) {
+    std::vector<T> expVals(count, expVal);
+    return checkDevArg(buf, expVals, errs, maxNumErrs);
+  }
+
+  // Prepare buffer with kMemCudaMalloc memory type.
+  // For NCCL memory types (kMemNcclMemAlloc, kCuMemAllocDisjoint),
+  // use CtranNcclTestHelpers instead.
+  void* prepareBuf(
+      size_t bufSize,
+      MemAllocType memType,
+      std::vector<TestMemSegment>& segments);
+
+  // Release buffer allocated by prepareBuf.
+  // For NCCL memory types, use CtranNcclTestHelpers instead.
+  void releaseBuf(void* buf, size_t bufSize, MemAllocType memType);
+
+  // Align size to page boundary
+  size_t pageAligned(size_t nBytes) const {
+    return ((nBytes + pageSize_ - 1) / pageSize_) * pageSize_;
+  }
+
+ private:
+  bool isBackendValid(
+      const std::vector<CtranMapperBackend>& excludedBackends,
+      CtranMapperBackend backend);
+
+  size_t pageSize_{0};
+  std::unordered_set<void*> devArgs_;
 };
 
 } // namespace ctran
