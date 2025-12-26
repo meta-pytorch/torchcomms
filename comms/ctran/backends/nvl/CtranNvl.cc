@@ -165,9 +165,10 @@ CtranNvl::exportMem(const void* buf, void* nvlRegElem, ControlMsg& msg) {
 
   // Fill ctrl msg content
   msg.setType(ControlMsgType::NVL_EXPORT_MEM);
-  FB_COMMCHECK(reg->ipcMem.ipcExport(msg.nvlExp.ipcDesc));
+  auto ipcMem = reg->ipcMem.wlock();
+  FB_COMMCHECK(ipcMem->ipcExport(msg.nvlExp.ipcDesc));
   msg.nvlExp.offset = reinterpret_cast<size_t>(buf) -
-      reinterpret_cast<size_t>(reg->ipcMem.getBase());
+      reinterpret_cast<size_t>(ipcMem->getBase());
 
   return commSuccess;
 }
@@ -201,7 +202,7 @@ commResult_t
 CtranNvl::remReleaseMem(void* nvlRegElem, int rank, ControlMsg& msg) {
   auto reg = reinterpret_cast<CtranNvlRegElem*>(nvlRegElem);
   msg.setType(ControlMsgType::NVL_RELEASE_MEM);
-  msg.nvlRls.base = reg->ipcMem.getBase();
+  msg.nvlRls.base = reg->ipcMem.rlock()->getBase();
   return commSuccess;
 }
 
