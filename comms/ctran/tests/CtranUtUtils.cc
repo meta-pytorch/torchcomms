@@ -1,10 +1,14 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "CtranUtUtils.h"
+#include "comms/ctran/tests/CtranNcclTestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 
 ncclComm_t CtranDistBaseTest::commWorld = NCCL_COMM_NULL;
 std::unique_ptr<c10d::TCPStore> CtranDistBaseTest::tcpStoreServer = nullptr;
+
+// Static helper instance for NCCL memory allocation
+static ctran::CtranNcclTestHelpers ncclHelpers;
 
 void CtranDistBaseTest::TearDownTestSuite() {
   LOG(INFO) << "CtranBaseTest::TearDownTestSuite: Release commWorld "
@@ -84,36 +88,16 @@ void* CtranBaseTest::prepareBuf(
     size_t bufSize,
     MemAllocType memType,
     std::vector<TestMemSegment>& segments) {
-  void* buf = nullptr;
-  if (memType == kMemCudaMalloc) {
-    CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
-    segments.emplace_back(buf, bufSize);
-  } else if (memType == kMemNcclMemAlloc) {
-    NCCLCHECK_TEST(ncclMemAlloc(&buf, bufSize));
-    segments.emplace_back(buf, bufSize);
-  } else {
-    std::vector<size_t> disjointSegmentSizes(2);
-    disjointSegmentSizes[0] = bufSize / 2;
-    disjointSegmentSizes[1] = bufSize / 2;
-    NCCLCHECK_TEST(ncclMemAllocDisjoint(&buf, disjointSegmentSizes, segments));
-  }
-  return buf;
+  // Delegate to CtranNcclTestHelpers for all memory types
+  return ncclHelpers.prepareBuf(bufSize, memType, segments);
 }
 
 void CtranBaseTest::releaseBuf(
     void* buf,
     size_t bufSize,
     MemAllocType memType) {
-  if (memType == kMemCudaMalloc) {
-    CUDACHECK_TEST(cudaFree(buf));
-  } else if (memType == kMemNcclMemAlloc) {
-    NCCLCHECK_TEST(ncclMemFreeWithRefCheck(buf));
-  } else {
-    std::vector<size_t> disjointSegmentSizes(2);
-    disjointSegmentSizes[0] = bufSize / 2;
-    disjointSegmentSizes[1] = bufSize / 2;
-    NCCLCHECK_TEST(ncclMemFreeDisjoint(buf, disjointSegmentSizes));
-  }
+  // Delegate to CtranNcclTestHelpers for all memory types
+  ncclHelpers.releaseBuf(buf, bufSize, memType);
 }
 
 void CtranBaseTest::allocDevArg(const size_t nbytes, void*& ptr) {

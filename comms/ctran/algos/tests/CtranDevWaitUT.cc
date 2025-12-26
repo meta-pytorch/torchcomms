@@ -7,16 +7,16 @@
 
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/algos/tests/CtranDevWaitUTKernels.cuh"
-#include "comms/ctran/tests/CtranStandaloneUTUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 
 namespace ctran::testing {
 
-class CtranDeviceWaitUT : public CtranStandaloneBaseTest {
+class CtranDeviceWaitUT : public CtranStandaloneFixture {
  protected:
   void SetUp() override {
-    setupBase();
+    CtranStandaloneFixture::SetUp();
 
     FB_CUDACHECKTHROW(
         cudaHostAlloc(&flag_, kNBlocks * sizeof(int), cudaHostAllocDefault));

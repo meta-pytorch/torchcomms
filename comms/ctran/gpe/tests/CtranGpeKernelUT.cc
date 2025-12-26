@@ -9,7 +9,7 @@
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
-#include "comms/ctran/tests/CtranStandaloneUTUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Abort.h"
 
 namespace ctran::testing {
@@ -32,21 +32,21 @@ using GpeKernelTestParams =
     std::tuple<std::string, OpElem::opType, KernelConfig::KernelType>;
 
 class CtranGpeKernelTestBase
-    : public ::ctran::testing::CtranStandaloneBaseTest,
+    : public ::ctran::CtranStandaloneFixture,
       public ::testing::WithParamInterface<GpeKernelTestParams> {
  protected:
   static constexpr int kNumBlocks = CTRAN_ALGO_MAX_THREAD_BLOCKS;
   volatile int* testFlag_;
   CtranAlgoDeviceState* devState_d_{nullptr};
 
-  // ctranComm, rank, cudaDev from parent
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
 
   cudaStream_t stream_{nullptr};
 
   void SetUp() override {
-    setupBase();
+    CtranStandaloneFixture::SetUp();
 
-    initCtranComm(ctran::utils::createAbort(/*enabled=*/true));
+    ctranComm = makeCtranComm(ctran::utils::createAbort(/*enabled=*/true));
 
     ASSERT_CUDASUCCESS(cudaStreamCreate(&stream_));
     ASSERT_CUDASUCCESS(cudaHostAlloc(

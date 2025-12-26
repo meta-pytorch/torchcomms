@@ -6,14 +6,14 @@
 #include <gtest/gtest.h>
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranStandaloneUTUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 
 namespace ctran::testing {
 
 static const std::chrono::milliseconds kDefaultTimeoutTwoSeconds =
     std::chrono::milliseconds(2000);
 
-class CtranSendRecvTest : public CtranStandaloneMultiRankBaseTest {
+class CtranSendRecvTest : public CtranIntraProcessFixture {
  public:
   using PeerConfig = std::pair<int, size_t>; // {rank, nElems}
 
@@ -28,7 +28,7 @@ class CtranSendRecvTest : public CtranStandaloneMultiRankBaseTest {
     setenv("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal", 1);
     setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1", 1);
 
-    CtranStandaloneMultiRankBaseTest::SetUp();
+    CtranIntraProcessFixture::SetUp();
   }
   void startWorkers(bool abortEnabled) {
     std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
@@ -37,7 +37,7 @@ class CtranSendRecvTest : public CtranStandaloneMultiRankBaseTest {
         aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
       }
     }
-    CtranStandaloneMultiRankBaseTest::startWorkers(kNRanks, /*aborts=*/aborts);
+    CtranIntraProcessFixture::startWorkers(kNRanks, /*aborts=*/aborts);
   }
 
   void runSend(
@@ -173,8 +173,7 @@ TEST_F(CtranSendRecvTest, SendRecvBidirectional) {
   }
 }
 
-std::future<void> launchWatcher(
-    CtranStandaloneMultiRankBaseTest::PerRankState& state) {
+std::future<void> launchWatcher(CtranIntraProcessFixture::PerRankState& state) {
   return std::async(std::launch::async, [&]() {
     std::this_thread::sleep_for(kDefaultTimeoutTwoSeconds);
     EXPECT_EQ(cudaErrorNotReady, cudaStreamQuery(state.stream));

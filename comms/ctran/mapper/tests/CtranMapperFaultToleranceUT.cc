@@ -6,15 +6,17 @@
 #include <memory>
 
 #include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/ctran/tests/CtranStandaloneUTUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 
 namespace ctran::testing {
 
-class CtranMapperFaultToleranceTest : public CtranStandaloneBaseTest {
+class CtranMapperFaultToleranceTest : public CtranStandaloneFixture {
  protected:
+  std::unique_ptr<CtranComm> ctranComm{nullptr};
+
   void SetUp() override {
-    setupBase();
-    initCtranComm(::ctran::utils::createAbort(/*enabled=*/true));
+    CtranStandaloneFixture::SetUp();
+    ctranComm = makeCtranComm(::ctran::utils::createAbort(/*enabled=*/true));
   }
   void startTimer(int delaySeconds, std::function<void()> routine) {
     timer_ = std::thread([delaySeconds, routine = std::move(routine)]() {
@@ -24,7 +26,7 @@ class CtranMapperFaultToleranceTest : public CtranStandaloneBaseTest {
   }
 
   void TearDown() override {
-    CtranStandaloneBaseTest::TearDown();
+    CtranStandaloneFixture::TearDown();
     timer_.join();
   }
 

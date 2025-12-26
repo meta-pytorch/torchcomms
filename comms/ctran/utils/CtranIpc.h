@@ -135,6 +135,8 @@ class CtranIpcMem {
   //   - memType: the device memory type. Support kCumem and kCudaMalloc.
   //   - cuMemHandleType: the type of the handle to be used for importing and
   //   exporting the memory. Only used when memType is kCumem.
+  // NOTE: this class need to be accessed in a thread-safe manner; it does not
+  // have any internal locking mechanism. For additional context, see D89740579
   CtranIpcMem(
       const size_t size,
       const int cudaDev,
@@ -184,13 +186,13 @@ class CtranIpcMem {
   commResult_t free();
 
   // Return the base address of the memory range
-  inline void* getBase() {
+  inline void* getBase() const {
     return reinterpret_cast<void*>(pbase_);
   }
 
   // Return the range of the memory range (it may be greater or equal to the
   // user specified size)
-  inline size_t getRange() {
+  inline size_t getRange() const {
     return range_;
   }
 

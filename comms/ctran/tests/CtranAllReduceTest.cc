@@ -11,7 +11,7 @@
 #include <folly/synchronization/Baton.h>
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranStandaloneUTUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
@@ -27,7 +27,7 @@ enum class CtranAllReduceRingMinSizeTestOpt {
 };
 
 class CtranAllReduceTest
-    : public CtranStandaloneMultiRankBaseTest,
+    : public CtranIntraProcessFixture,
       public ::testing::WithParamInterface<AllReduceTestParam> {
  protected:
   static constexpr int kNRanks = 4;
@@ -41,7 +41,7 @@ class CtranAllReduceTest
     setenv("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal", 1);
     setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1", 1);
 
-    CtranStandaloneMultiRankBaseTest::SetUp();
+    CtranIntraProcessFixture::SetUp();
   }
   void startWorkers(bool abortEnabled) {
     std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
@@ -50,7 +50,7 @@ class CtranAllReduceTest
         aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
       }
     }
-    CtranStandaloneMultiRankBaseTest::startWorkers(kNRanks, /*aborts=*/aborts);
+    CtranIntraProcessFixture::startWorkers(kNRanks, /*aborts=*/aborts);
   }
 
   void validateConfigs(size_t nElem) {
@@ -273,7 +273,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Test fixture for ctring minimum message size validation
 class CtranAllReduceRingMinSizeTest
-    : public CtranStandaloneMultiRankBaseTest,
+    : public CtranIntraProcessFixture,
       public ::testing::WithParamInterface<AllReduceMinMsgSizeTestParam> {
  protected:
   static constexpr int kDefaultNumRanks = 4;
@@ -283,7 +283,7 @@ class CtranAllReduceRingMinSizeTest
   void SetUp() override {
     setenv("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal", 1);
     setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1", 1);
-    CtranStandaloneMultiRankBaseTest::SetUp();
+    CtranIntraProcessFixture::SetUp();
   }
 
   void startWorkers(int numRanks = kDefaultNumRanks) {
@@ -292,7 +292,7 @@ class CtranAllReduceRingMinSizeTest
     for (int i = 0; i < numRanks; ++i) {
       aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
     }
-    CtranStandaloneMultiRankBaseTest::startWorkers(numRanks, /*aborts=*/aborts);
+    CtranIntraProcessFixture::startWorkers(numRanks, /*aborts=*/aborts);
   }
 
   void runTest(
@@ -400,7 +400,7 @@ INSTANTIATE_TEST_SUITE_P(
         std::make_tuple<>(8, commFloat),
         std::make_tuple<>(8, commInt8)));
 
-class CtranAllReduceRingOneRankTest : public CtranStandaloneMultiRankBaseTest {
+class CtranAllReduceRingOneRankTest : public CtranIntraProcessFixture {
  protected:
   static constexpr int kNRanks = 1;
   static constexpr commRedOp_t kReduceOpType = commSum;
@@ -411,13 +411,13 @@ class CtranAllReduceRingOneRankTest : public CtranStandaloneMultiRankBaseTest {
   void SetUp() override {
     setenv("NCCL_ALLREDUCE_ALGO", "ctring", 1);
 
-    CtranStandaloneMultiRankBaseTest::SetUp();
+    CtranIntraProcessFixture::SetUp();
   }
 
   void runAllReduce(size_t nElem) {
     ASSERT_EQ(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::ctring);
 
-    CtranStandaloneMultiRankBaseTest::startWorkers(
+    CtranIntraProcessFixture::startWorkers(
         kNRanks, /*aborts=*/{ctran::utils::createAbort(/*enabled=*/true)});
 
     run(/*rank=*/0, [this, nElem](PerRankState& state) {

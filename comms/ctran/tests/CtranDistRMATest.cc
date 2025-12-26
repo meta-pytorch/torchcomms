@@ -166,7 +166,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
     ASSERT_NE(winBase, nullptr);
     int* localbuf = reinterpret_cast<int*>(winBase);
 
-    EXPECT_THAT(win, testing::NotNull());
+    EXPECT_THAT(win, ::testing::NotNull());
     // localbuf: range from [myrank, myrank + numElements * numRanks]
     assignChunkValue(
         localbuf, numElements * statex->nRanks(), statex->rank(), 1);
@@ -260,7 +260,7 @@ TEST_P(CtranRMATestParam, winPutWait) {
       ncclCommRegister(comm, localBuf, kNumElements * sizeof(int), &localHdl),
       ncclSuccess);
 
-  EXPECT_THAT(win, testing::NotNull());
+  EXPECT_THAT(win, ::testing::NotNull());
 
   for (int peer = 0; peer < this->numRanks; peer++) {
     void* remoteAddr = nullptr;
@@ -269,9 +269,9 @@ TEST_P(CtranRMATestParam, winPutWait) {
     if (peer == statex->rank()) {
       EXPECT_EQ(remoteAddr, winBase);
     } else if (!win->nvlEnabled(peer)) {
-      EXPECT_THAT(remoteAddr, testing::IsNull());
+      EXPECT_THAT(remoteAddr, ::testing::IsNull());
     } else {
-      EXPECT_THAT(remoteAddr, testing::NotNull());
+      EXPECT_THAT(remoteAddr, ::testing::NotNull());
     }
   }
 
@@ -621,7 +621,7 @@ INSTANTIATE_TEST_SUITE_P(
             MemAllocType::kMemHostManaged,
             MemAllocType::kMemHostUnregistered),
         ::testing::Values(true, false)),
-    [](const testing::TestParamInfo<CtranRMATestParam::ParamType>& info) {
+    [](const ::testing::TestParamInfo<CtranRMATestParam::ParamType>& info) {
       const auto kNumElements = std::get<0>(info.param);
       const auto kNumIters = std::get<1>(info.param);
       const auto ctranAllReduce = std::get<2>(info.param);
@@ -655,7 +655,7 @@ INSTANTIATE_TEST_SUITE_P(
             MemAllocType::kMemHostUnregistered),
         ::testing::Values(true, false),
         ::testing::Values(true, false)),
-    [](const testing::TestParamInfo<RMATestSignalParam::ParamType>& info) {
+    [](const ::testing::TestParamInfo<RMATestSignalParam::ParamType>& info) {
       const auto kNumIters = std::get<0>(info.param);
       const auto bufType = std::get<1>(info.param);
       const auto signalOnly = std::get<2>(info.param);

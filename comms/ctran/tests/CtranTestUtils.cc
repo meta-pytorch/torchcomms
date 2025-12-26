@@ -8,12 +8,20 @@
 
 #include <folly/logging/xlog.h>
 
+#include "comms/ctran/tests/bootstrap/MockBootstrap.h"
+#include "comms/ctran/utils/Alloc.h"
+#include "comms/ctran/utils/Checks.h"
+#include "comms/ctran/utils/CudaUtils.h"
+#include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/ErrorStackTraceUtil.h"
 #include "comms/ctran/utils/LogInit.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/mccl/utils/Utils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
+#include "comms/utils/InitFolly.h"
+#include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/Logger.h"
 
 namespace ctran {
 
@@ -405,6 +413,90 @@ void CtranEnvironmentBase::TearDown() {
   // TCPStore doesn't need global cleanup
 }
 
+// ============================================================================
+// CtranTestFixtureBase Implementation
+// ============================================================================
+
+void CtranTestFixtureBase::SetUp() {
+  setupEnvironment();
+}
+
+void CtranTestFixtureBase::TearDown() {
+  stream.reset();
+}
+
+void CtranTestFixtureBase::setupEnvironment() {
+  setenv("NCCL_CTRAN_ENABLE", "1", 1);
+  setenv("NCCL_DEBUG", "INFO", 1);
+
+  FB_CUDACHECKIGNORE(cudaSetDevice(cudaDev));
+
+  // Ensure logger and libraries are initialized (uses call_once internally)
+  static folly::once_flag once;
+  folly::call_once(once, [] {
+    meta::comms::initFolly();
+    ncclCvarInit();
+    ctran::utils::commCudaLibraryInit();
+    ctran::logging::initCtranLogging(true /*alwaysInit*/);
+  });
+}
+
+// ============================================================================
+// CtranStandaloneFixture Implementation
+// ============================================================================
+
+void CtranStandaloneFixture::SetUp() {
+  rank = 0;
+  cudaDev = 0;
+  CtranTestFixtureBase::SetUp();
+}
+
+void CtranStandaloneFixture::TearDown() {
+  CtranTestFixtureBase::TearDown();
+}
+
+std::unique_ptr<CtranComm> CtranStandaloneFixture::makeCtranComm(
+    std::shared_ptr<::ctran::utils::Abort> abort) {
+  auto ctranComm = std::make_unique<CtranComm>(abort);
+
+  ctranComm->bootstrap_ = std::make_unique<testing::MockBootstrap>();
+  static_cast<testing::MockBootstrap*>(ctranComm->bootstrap_.get())
+      ->expectSuccessfulCtranInitCalls();
+
+  ncclx::RankTopology topo;
+  topo.rank = rank;
+  std::strncpy(topo.dc, "ut_dc", ncclx::kMaxNameLen);
+  std::strncpy(topo.zone, "ut_zone", ncclx::kMaxNameLen);
+  std::strncpy(topo.host, "ut_host", ncclx::kMaxNameLen);
+  // we can only set one of the two, rtsw or su.
+  std::strncpy(topo.rtsw, "", ncclx::kMaxNameLen);
+  std::strncpy(topo.su, "ut_su", ncclx::kMaxNameLen);
+
+  std::vector<ncclx::RankTopology> rankTopologies = {topo};
+  std::vector<int> commRanksToWorldRanks = {0};
+
+  ctranComm->statex_ = std::make_unique<ncclx::CommStateX>(
+      /*rank=*/0,
+      /*nRanks=*/1,
+      /*cudaDev=*/cudaDev,
+      /*cudaArch=*/900, // H100
+      /*busId=*/-1,
+      /*commHash=*/1234,
+      /*rankTopologies=*/std::move(rankTopologies),
+      /*commRanksToWorldRanks=*/std::move(commRanksToWorldRanks),
+      /*commDesc=*/std::string(kCommDesc));
+
+  EXPECT_EQ(ctranInit(ctranComm.get()), commSuccess);
+
+  CLOGF(INFO, "UT CTran initialized");
+
+  return ctranComm;
+}
+
+// ============================================================================
+// CtranDistTestFixture Implementation
+// ============================================================================
+
 void CtranDistTestFixture::SetUp() {
   const auto initType = getInitEnvType();
 
@@ -415,12 +507,14 @@ void CtranDistTestFixture::SetUp() {
     setUpTcpStore();
   }
 
-  // Initialize ctran settings
+  // Set cudaDev based on localRank before calling base SetUp
+  cudaDev = localRank;
+
+  // Call base class SetUp which handles environment setup
+  CtranTestFixtureBase::SetUp();
+
+  // Initialize additional ctran settings
   setenv("RANK", std::to_string(globalRank).c_str(), 1);
-  CUDACHECK_TEST(cudaSetDevice(localRank));
-  ncclCvarInit();
-  ctran::logging::initCtranLogging(true /*alwaysInit*/);
-  COMMCHECK_TEST(ctran::utils::commCudaLibraryInit());
 
 #ifdef NCCL_COMM_STATE_DEBUG_TOPO_NOLOCAL
   enableNolocal = true;
@@ -595,6 +689,312 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
   COMMCHECK_TEST(ctranInit(comm.get()));
   CHECK(ctranInitialized(comm.get())) << "Ctran not initialized";
   return comm;
+}
+
+// ============================================================================
+// CtranIntraProcessFixture Implementation
+// ============================================================================
+
+namespace {
+
+void initRankStatesTopologyWrapper(
+    ncclx::CommStateX* statex,
+    ctran::bootstrap::IBootstrap* bootstrap,
+    int nRanks) {
+  // Fake topology with nLocalRanks=1
+  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
+    statex->initRankTopologyNolocal();
+  } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
+    ASSERT_GE(nRanks, NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
+    statex->initRankTopologyVnode(NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS);
+  } else {
+    statex->initRankStatesTopology(std::move(bootstrap));
+  }
+}
+
+using PerRankState = CtranIntraProcessFixture::PerRankState;
+static void resetPerRankState(PerRankState& state) {
+  if (state.dstBuffer != nullptr) {
+    FB_COMMCHECKTHROW(ctran::utils::commCudaFree(state.dstBuffer));
+  }
+  if (state.srcBuffer != nullptr) {
+    FB_COMMCHECKTHROW(ctran::utils::commCudaFree(state.srcBuffer));
+  }
+  if (state.stream != nullptr) {
+    FB_CUDACHECKTHROW(cudaStreamDestroy(state.stream));
+  }
+  state.ctranComm.reset(nullptr);
+}
+
+constexpr uint64_t kMultiRankCommId{21};
+constexpr int kMultiRankCommHash{-1};
+constexpr std::string_view kMultiRankCommDesc{"ut_multirank_comm_desc"};
+
+void initCtranCommMultiRank(
+    std::shared_ptr<ctran::testing::IntraProcessBootstrap::State>
+        sharedBootstrapState,
+    CtranComm* ctranComm,
+    int nRanks,
+    int rank,
+    int cudaDev) {
+  FB_CUDACHECKTHROW(cudaSetDevice(cudaDev));
+
+  ctranComm->bootstrap_ =
+      std::make_unique<ctran::testing::IntraProcessBootstrap>(
+          sharedBootstrapState);
+
+  ctranComm->logMetaData_.commId = kMultiRankCommId;
+  ctranComm->logMetaData_.commHash = kMultiRankCommHash;
+  ctranComm->logMetaData_.commDesc = std::string(kMultiRankCommDesc);
+  ctranComm->logMetaData_.rank = rank;
+  ctranComm->logMetaData_.nRanks = nRanks;
+
+  const int cudaArch = ctran::utils::getCudaArch(cudaDev).value_or(-1);
+  const int64_t busId = ctran::utils::BusId::makeFrom(cudaDev).toInt64();
+
+  std::vector<ncclx::RankTopology> rankTopologies{};
+  std::vector<int> commRanksToWorldRanks{};
+  ctranComm->statex_ = std::make_unique<ncclx::CommStateX>(
+      rank,
+      nRanks,
+      cudaDev,
+      cudaArch,
+      busId,
+      kMultiRankCommHash,
+      std::move(rankTopologies),
+      std::move(commRanksToWorldRanks),
+      std::string{kMultiRankCommDesc});
+  initRankStatesTopologyWrapper(
+      ctranComm->statex_.get(), ctranComm->bootstrap_.get(), nRanks);
+
+  FB_COMMCHECKTHROW(ctranInit(ctranComm));
+
+  CLOGF(INFO, "UT MultiRank CTran initialized");
+}
+
+void workerRoutine(PerRankState& state) {
+  // set dev first for correct logging
+  ASSERT_EQ(cudaSuccess, cudaSetDevice(state.cudaDev));
+
+  int rank = state.rank;
+  SCOPE_EXIT {
+    resetPerRankState(state);
+  };
+  CLOGF(
+      INFO,
+      "rank [{}/{}] worker started, cudaDev {}",
+      rank,
+      state.nRanks,
+      state.cudaDev);
+
+  initCtranCommMultiRank(
+      state.sharedBootstrapState,
+      state.ctranComm.get(),
+      state.nRanks,
+      state.rank,
+      state.cudaDev);
+  FB_CUDACHECKTHROW(cudaStreamCreate(&state.stream));
+  FB_COMMCHECKTHROW_EX(
+      ctran::utils::commCudaMalloc(
+          reinterpret_cast<char**>(&state.srcBuffer),
+          CtranIntraProcessFixture::kBufferSize,
+          &state.ctranComm->logMetaData_,
+          "UT_workerRoutine"),
+      rank,
+      kMultiRankCommHash);
+  FB_COMMCHECKTHROW_EX(
+      ctran::utils::commCudaMalloc(
+          reinterpret_cast<char**>(&state.dstBuffer),
+          CtranIntraProcessFixture::kBufferSize,
+          &state.ctranComm->logMetaData_,
+          "UT_workerRoutine"),
+      rank,
+      kMultiRankCommHash);
+
+  CLOGF(INFO, "rank [{}/{}] worker waiting for work", rank, state.nRanks);
+
+  auto& sf = state.workSemiFuture;
+  sf.wait();
+
+  CLOGF(INFO, "rank [{}/{}] worker received work", rank, state.nRanks);
+
+  auto work = sf.value();
+  work(state);
+
+  CLOGF(INFO, "rank [{}/{}] worker completed work", rank, state.nRanks);
+}
+
+} // namespace
+
+void CtranIntraProcessFixture::SetUp() {
+  // Call base class setup which handles environment variables,
+  // CUDA library init, and logging initialization
+  CtranTestFixtureBase::SetUp();
+}
+
+void CtranIntraProcessFixture::startWorkers(
+    int nRanks,
+    const std::vector<std::shared_ptr<::ctran::utils::Abort>>& aborts) {
+  ASSERT_TRUE(aborts.size() == 0 || aborts.size() == nRanks)
+      << "must supply either 0 or nRanks number of abort controls";
+
+  // Create shared bootstrap state for all workers
+  auto sharedBootstrapState =
+      std::make_shared<testing::IntraProcessBootstrap::State>();
+
+  // Reserve space to prevent reallocation that would invalidate references
+  perRankStates_.reserve(nRanks);
+
+  for (int i = 0; i < nRanks; ++i) {
+    perRankStates_.emplace_back();
+    auto& state = perRankStates_.back();
+    state.sharedBootstrapState = sharedBootstrapState;
+    state.ctranComm = std::make_unique<CtranComm>(
+        aborts.size() == 0 ? ::ctran::utils::createAbort(/*enabled=*/false)
+                           : folly::copy(aborts[i]));
+    state.nRanks = nRanks;
+    state.rank = i;
+    state.cudaDev = i;
+    workers_.emplace_back(&workerRoutine, std::ref(state));
+  }
+}
+
+void CtranIntraProcessFixture::TearDown() {
+  for (auto& worker : workers_) {
+    worker.join();
+  }
+}
+
+} // namespace ctran
+
+// ============================================================================
+// CtranTestHelpers Implementation
+// ============================================================================
+
+namespace ctran {
+
+CtranTestHelpers::CtranTestHelpers() {
+  pageSize_ = getpagesize();
+}
+
+bool CtranTestHelpers::isBackendValid(
+    const std::vector<CtranMapperBackend>& excludedBackends,
+    CtranMapperBackend backend) {
+  return std::find(excludedBackends.begin(), excludedBackends.end(), backend) ==
+      excludedBackends.end();
+}
+
+void CtranTestHelpers::verifyGpeLeak(ICtran* ctran) {
+  ASSERT_EQ(ctran->gpe->numInUseKernelElems(), 0);
+  ASSERT_EQ(ctran->gpe->numInUseKernelFlags(), 0);
+}
+
+void CtranTestHelpers::resetBackendsUsed(ICtran* ctran) {
+  ctran->mapper->iPutCount[CtranMapperBackend::NVL] = 0;
+  ctran->mapper->iPutCount[CtranMapperBackend::IB] = 0;
+}
+
+void CtranTestHelpers::verifyBackendsUsed(
+    ICtran* ctran,
+    const ncclx::CommStateX* statex,
+    MemAllocType memType) {
+  verifyBackendsUsed(ctran, statex, memType, {});
+}
+
+void CtranTestHelpers::verifyBackendsUsed(
+    ICtran* ctran,
+    const ncclx::CommStateX* statex,
+    MemAllocType memType,
+    const std::vector<CtranMapperBackend>& excludedBackends) {
+  const int nRanks = statex->nRanks();
+  const int nLocalRanks = statex->nLocalRanks();
+
+  switch (memType) {
+    case kMemNcclMemAlloc:
+    case kCuMemAllocDisjoint:
+      // Expect usage from NVL backend unless excluded by particular
+      // collective
+      if (nLocalRanks > 1 &&
+          isBackendValid(excludedBackends, CtranMapperBackend::NVL)) {
+        if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
+          ASSERT_GT(ctran->mapper->iCopyCount, 0);
+        } else {
+          ASSERT_GT(ctran->mapper->iPutCount[CtranMapperBackend::NVL], 0);
+        }
+      } else {
+        ASSERT_EQ(ctran->mapper->iPutCount[CtranMapperBackend::NVL], 0);
+      }
+
+      // Expect usage from IB backend unless excluded by particular collective
+      if (nRanks > nLocalRanks &&
+          isBackendValid(excludedBackends, CtranMapperBackend::IB)) {
+        ASSERT_GT(ctran->mapper->iPutCount[CtranMapperBackend::IB], 0);
+      }
+      // Do not assume no IB usage, because IB backend may be used also for
+      // local ranks if NVL backend is not available
+      break;
+
+    case kMemCudaMalloc:
+      // memType is kMemCudaMalloc
+      // Expect usage from IB backend as long as nRanks > 1, unless excluded
+      // by particular collective
+      if (nRanks > 1 &&
+          isBackendValid(excludedBackends, CtranMapperBackend::IB)) {
+        ASSERT_GT(ctran->mapper->iPutCount[CtranMapperBackend::IB], 0);
+      }
+      // Do not assume no IB usage, because IB backend may be used also for
+      // local ranks if NVL backend is not available
+      break;
+
+    default:
+      ASSERT_TRUE(false) << "Unsupported memType " << memType;
+  }
+}
+
+void CtranTestHelpers::allocDevArg(size_t nbytes, void*& ptr) {
+  CUDACHECK_ASSERT(cudaMalloc(&ptr, nbytes));
+  devArgs_.insert(ptr);
+}
+
+void CtranTestHelpers::releaseDevArgs() {
+  for (auto ptr : devArgs_) {
+    CUDACHECK_TEST(cudaFree(ptr));
+  }
+  devArgs_.clear();
+}
+
+void CtranTestHelpers::releaseDevArg(void* ptr) {
+  cudaFree(ptr);
+  devArgs_.erase(ptr);
+}
+
+void* CtranTestHelpers::prepareBuf(
+    size_t bufSize,
+    MemAllocType memType,
+    std::vector<TestMemSegment>& segments) {
+  void* buf = nullptr;
+  if (memType == kMemCudaMalloc) {
+    CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+    segments.emplace_back(buf, bufSize);
+  } else {
+    XLOG(FATAL)
+        << "CtranTestHelpers only supports kMemCudaMalloc. "
+        << "Use CtranNcclTestHelpers for kMemNcclMemAlloc or kCuMemAllocDisjoint.";
+  }
+  return buf;
+}
+
+void CtranTestHelpers::releaseBuf(
+    void* buf,
+    size_t bufSize,
+    MemAllocType memType) {
+  if (memType == kMemCudaMalloc) {
+    CUDACHECK_TEST(cudaFree(buf));
+  } else {
+    XLOG(FATAL)
+        << "CtranTestHelpers only supports kMemCudaMalloc. "
+        << "Use CtranNcclTestHelpers for kMemNcclMemAlloc or kCuMemAllocDisjoint.";
+  }
 }
 
 } // namespace ctran
