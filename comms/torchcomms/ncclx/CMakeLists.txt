@@ -8,30 +8,34 @@ file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/CudaApi.cpp")
 find_package(CUDA)
 
 # NCCLX handling
+# Always use built NCCLX for headers (has extended fields like trafficClass, commName, etc.)
+set(NCCLX_BUILD_DIR $ENV{BUILDDIR})
+if(NOT NCCLX_BUILD_DIR)
+    set(NCCLX_BUILD_DIR "${ROOT}/build/ncclx")
+endif()
+
+# Always use NCCLX headers from build directory
+set(NCCLX_INCLUDE "${NCCLX_BUILD_DIR}/include")
+
 if(USE_SYSTEM_LIBS)
-    set(NCCLX_INCLUDE "${CONDA_INCLUDE}")
     set(NCCLX_STATIC_LIB "${CONDA_LIB}/libnccl_static.a")
-    set(NCCLX_SHARED_LIB "${CONDA_LIB}/libnccl.so")
+    set(NCCLX_SHARED_LIB "${NCCLX_BUILD_DIR}/lib/libnccl.so")
 else()
-    set(NCCLX_BUILD_DIR $ENV{BUILDDIR})
-    if(NOT NCCLX_BUILD_DIR)
-        set(NCCLX_BUILD_DIR "${ROOT}/build/ncclx")
-    endif()
-    set(NCCLX_INCLUDE "${NCCLX_BUILD_DIR}/include")
     set(NCCLX_STATIC_LIB "${NCCLX_BUILD_DIR}/lib/libnccl_static.a")
     set(NCCLX_SHARED_LIB "${NCCLX_BUILD_DIR}/lib/libnccl.so")
     set(FMT_INCLUDE "${ROOT}/third-party/fmt/include")
+endif()
 
-    if (NOT EXISTS "${NCCLX_BUILD_DIR}")
-        execute_process(
-            COMMAND ${ROOT}/build_ncclx.sh
-            WORKING_DIRECTORY ${ROOT}
-            RESULT_VARIABLE result
-            OUTPUT_VARIABLE output
-        )
-        if(result)
-            message(FATAL_ERROR "NCCLX build failed: ${result}")
-        endif()
+# Build NCCLX if not already built
+if (NOT EXISTS "${NCCLX_BUILD_DIR}")
+    execute_process(
+        COMMAND ${ROOT}/build_ncclx.sh
+        WORKING_DIRECTORY ${ROOT}
+        RESULT_VARIABLE result
+        OUTPUT_VARIABLE output
+    )
+    if(result)
+        message(FATAL_ERROR "NCCLX build failed: ${result}")
     endif()
 endif()
 
@@ -65,6 +69,8 @@ set_target_properties(torchcomms_comms_ncclx PROPERTIES
     OUTPUT_NAME "_comms_ncclx"
     SUFFIX ".${Python3_SOABI}.so"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms"
+    BUILD_RPATH "${NCCLX_BUILD_DIR}/lib"
+    INSTALL_RPATH "${NCCLX_BUILD_DIR}/lib"
 )
 target_include_directories(torchcomms_comms_ncclx PRIVATE
     ${ROOT}
