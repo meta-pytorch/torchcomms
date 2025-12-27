@@ -999,10 +999,12 @@ set(CTRAN_FILES
   comms/ctran/profiler/Profiler.h
   comms/ctran/profiler/QueuePairProfilerModule.cc
   comms/ctran/profiler/QueuePairProfilerModule.h
-  comms/ctran/tracing/CollTraceWrapper.cc
-  comms/ctran/tracing/CollTraceWrapper.h
-  comms/ctran/tracing/MapperTrace.cc
-  comms/ctran/tracing/MapperTrace.h
+  comms/ctran/colltrace/CollTraceWrapper.cc
+  comms/ctran/colltrace/CollTraceWrapper.h
+  comms/ctran/colltrace/MapperTrace.cc
+  comms/ctran/colltrace/MapperTrace.h
+  comms/ctran/ibverbx/device/structs.h
+  comms/ctran/ibverbx/Mlx5dv.h
   comms/ctran/utils/Abort.cc
   comms/ctran/utils/Abort.h
   comms/ctran/utils/Alloc.cc
