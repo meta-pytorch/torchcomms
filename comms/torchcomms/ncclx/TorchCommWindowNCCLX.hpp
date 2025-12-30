@@ -19,6 +19,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
  public:
   TorchCommWindowNCCLX() = delete;
   explicit TorchCommWindowNCCLX(
+      uint64_t window_id,
       ncclComm_t ncclComm,
       std::shared_ptr<TorchCommNCCLX> torchComm);
   ~TorchCommWindowNCCLX() noexcept override;
@@ -52,6 +53,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   at::Tensor map_remote_tensor(int rank) override;
 
   std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) override;
+  std::shared_ptr<TorchCommBackend> getCommBackend() const override;
 
  protected:
   friend class TorchCommNCCLX;

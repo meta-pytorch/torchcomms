@@ -8,9 +8,10 @@ namespace torch {
 namespace comms {
 
 TorchCommWindowNCCLX::TorchCommWindowNCCLX(
+    uint64_t window_id,
     ncclComm_t ncclComm,
     std::shared_ptr<TorchCommNCCLX> torchComm)
-    : nccl_comm_(ncclComm), torch_comm_(torchComm) {
+    : TorchCommWindow(window_id), nccl_comm_(ncclComm), torch_comm_(torchComm) {
   // make sure the torchComm & ncclComm are not null
   checkCommAndThrow();
 
@@ -261,5 +262,8 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX::get_attr(
   return attr;
 }
 
+std::shared_ptr<TorchCommBackend> TorchCommWindowNCCLX::getCommBackend() const {
+  return std::static_pointer_cast<TorchCommBackend>(torch_comm_);
+}
 } // namespace comms
 } // namespace torch
