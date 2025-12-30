@@ -3,14 +3,54 @@
 
 """Functional collectives implementation for torchcomms."""
 
+import threading
 from datetime import timedelta
 
 import torch
 
 # Import TorchComm, TorchCommWindow, and BatchSendRecv
 from torchcomms._comms import BatchSendRecv, ReduceOp, TorchComm, TorchCommWindow
-
 from torchcomms.functional.registry import finalize_registration, register_collective
+
+
+# === Coalescing Context Tracking ===
+# Thread-local storage for the active CoalescingManager.
+# This enables torch.compile fullgraph support by tracking tensors at the Python
+# level during both eager execution and tracing.
+# We store a reference to the manager so tensors are associated directly with it.
+_coalescing_context = threading.local()
+
+
+def _start_coalescing_context(manager: "CoalescingManager") -> None:  # noqa: F821
+    """Start tracking coalesced tensors with the given manager.
+
+    Args:
+        manager: The CoalescingManager to register tensors with.
+
+    Raises:
+        RuntimeError: If a coalescing context is already active (no nesting allowed).
+    """
+    if getattr(_coalescing_context, "manager", None) is not None:
+        raise RuntimeError(
+            "Nested coalescing blocks are not supported. "
+            "A coalescing context is already active."
+        )
+    _coalescing_context.manager = manager
+
+
+def _end_coalescing_context() -> None:
+    """End coalescing tracking."""
+    _coalescing_context.manager = None
+
+
+def _is_coalescing_active() -> bool:
+    """Check if we're in a coalescing context."""
+    return getattr(_coalescing_context, "manager", None) is not None
+
+
+def _get_coalescing_manager() -> "CoalescingManager | None":  # noqa: F821
+    """Get the active CoalescingManager, or None if not in a coalescing context."""
+    return getattr(_coalescing_context, "manager", None)
 
 
 # Only create library if not already registered
@@ -25,7 +65,16 @@ if lib is not None:
     _TENSOR_TO_WORK: dict[int, object] = {}
 
     def _register_tensor_work(tensor: torch.Tensor, work: object) -> None:
-        """Register a work handle for a tensor (only during eager execution)."""
+        """Register a work handle for a tensor (only during eager execution).
+
+        Also tracks tensors during coalescing mode for torch.compile fullgraph support.
+        """
+        # Track tensor if we're in coalescing mode (works during tracing too)
+        # Append directly to the manager's tensors list
+        manager = _get_coalescing_manager()
+        if manager is not None:
+            manager.tensors.append(tensor)
+
         if not torch.compiler.is_compiling():
             _TENSOR_TO_WORK[tensor.data_ptr()] = work
         return None
@@ -167,6 +216,12 @@ if lib is not None:
         "Autograd",
         with_keyset=True,
     )
+
+    def _end_coalescing_meta(
+        comm: TorchComm,
+        async_op: bool,
+    ) -> torch.Tensor:
+        return torch.empty(0, device=comm.get_device(), dtype=torch.int)
 
     def _get_tensor_meta(
         window: TorchCommWindow,  # actually a FakeScriptObject
@@ -428,7 +483,11 @@ if lib is not None:
             if i == rank:
                 grad_input_list.append(grad_output)
             else:
-                grad_input_list.append(torch.zeros(shape, dtype=grad_output.dtype, device=grad_output.device))
+                grad_input_list.append(
+                    torch.zeros(
+                        shape, dtype=grad_output.dtype, device=grad_output.device
+                    )
+                )
 
         return grad_input_list
 
@@ -791,6 +850,21 @@ if lib is not None:
         ],
         backward_fn=_gather_backward,
         setup_context_fn=_gather_setup_context,
+    )
+
+    register_collective(
+        TorchComm,
+        TorchComm.start_coalescing,
+        param_specs=[],
+    )
+
+    register_collective(
+        TorchComm,
+        TorchComm.end_coalescing,
+        param_specs=[
+            ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=True),
+        ],
+        meta_fn=_end_coalescing_meta,
     )
 
     register_collective(
