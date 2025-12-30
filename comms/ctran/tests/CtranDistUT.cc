@@ -97,7 +97,8 @@ TEST_F(CtranTest, CTranDisabled) {
   // Expect all CTran collective support to be false
   EXPECT_FALSE(
       ctranAllGatherSupport(comm->ctranComm_.get(), NCCL_ALLGATHER_ALGO));
-  EXPECT_FALSE(ctranAllReduceSupport(comm->ctranComm_.get()));
+  EXPECT_FALSE(ctranAllReduceSupport(
+      comm->ctranComm_.get(), NCCL_ALLREDUCE_ALGO::ctran));
   EXPECT_FALSE(
       ctranBroadcastSupport(comm->ctranComm_.get(), NCCL_BROADCAST_ALGO));
   EXPECT_FALSE(ctranReduceScatterSupport(
