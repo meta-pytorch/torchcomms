@@ -60,6 +60,7 @@ class CtranAllReduceTest
   void runAllReduce(
       size_t nElem,
       PerRankState& state,
+      enum NCCL_ALLREDUCE_ALGO algo,
       bool expectError = false,
       std::shared_ptr<folly::Baton<>> workEnqueued = nullptr,
       std::optional<std::chrono::milliseconds> timeout = std::nullopt) {
@@ -95,7 +96,7 @@ class CtranAllReduceTest
             kReduceOpType,
             state.ctranComm.get(),
             state.stream,
-            std::nullopt,
+            algo,
             timeout));
     if (workEnqueued) {
       workEnqueued->post();
@@ -129,34 +130,34 @@ class CtranAllReduceTest
 
 TEST_P(CtranAllReduceTest, BasicRunAbortDisabled) {
   auto [algoName, algo] = GetParam();
-  NCCL_ALLREDUCE_ALGO = algo;
 
   startWorkers(/*abortEnabled=*/false);
   for (int rank = 0; rank < kNRanks; ++rank) {
-    run(rank,
-        [this](PerRankState& state) { runAllReduce(kBufferNElem, state); });
+    run(rank, [this, algo](PerRankState& state) {
+      runAllReduce(kBufferNElem, state, algo);
+    });
   }
 }
 
 TEST_P(CtranAllReduceTest, BasicRunAbortEnabled) {
   auto [algoName, algo] = GetParam();
-  NCCL_ALLREDUCE_ALGO = algo;
 
   startWorkers(/*abortEnabled=*/true);
   for (int rank = 0; rank < kNRanks; ++rank) {
-    run(rank,
-        [this](PerRankState& state) { runAllReduce(kBufferNElem, state); });
+    run(rank, [this, algo](PerRankState& state) {
+      runAllReduce(kBufferNElem, state, algo);
+    });
   }
 }
 
 TEST_P(CtranAllReduceTest, SmallMessageSize) {
   auto [algoName, algo] = GetParam();
-  NCCL_ALLREDUCE_ALGO = algo;
 
   startWorkers(/*abortEnabled=*/true);
   for (int rank = 0; rank < kNRanks; ++rank) {
-    run(rank,
-        [this](PerRankState& state) { runAllReduce(/*nElem=*/1, state); });
+    run(rank, [this, algo](PerRankState& state) {
+      runAllReduce(/*nElem=*/1, state, algo);
+    });
   }
 }
 
@@ -165,14 +166,13 @@ void CtranAllReduceTest::runTestRanksAbsent(
     std::vector<int> ranksAbsent,
     std::optional<std::chrono::milliseconds> timeout) {
   auto [algoName, algo] = GetParam();
-  NCCL_ALLREDUCE_ALGO = algo;
 
   startWorkers(/*abortEnabled=*/true);
 
   for (auto rank : ranksToRunCollective) {
-    run(rank, [this, timeout](PerRankState& state) {
+    run(rank, [this, timeout, algo](PerRankState& state) {
       // warmup
-      runAllReduce(kBufferNElem, state);
+      runAllReduce(kBufferNElem, state, algo);
 
       state.getBootstrap()->barrierNamed(
           state.rank,
@@ -208,6 +208,7 @@ void CtranAllReduceTest::runTestRanksAbsent(
       runAllReduce(
           kBufferNElem,
           state,
+          algo,
           /*expectError=*/true,
           workEnqueued,
           timeout);
@@ -218,9 +219,9 @@ void CtranAllReduceTest::runTestRanksAbsent(
   }
 
   for (auto rank : ranksAbsent) {
-    run(rank, [this](PerRankState& state) {
+    run(rank, [this, algo](PerRankState& state) {
       // warmup
-      runAllReduce(kBufferNElem, state);
+      runAllReduce(kBufferNElem, state, algo);
 
       state.getBootstrap()->barrierNamed(
           state.rank,
@@ -303,7 +304,8 @@ class CtranAllReduceRingMinSizeTest
     startWorkers(numRanks);
     for (int rank = 0; rank < numRanks; ++rank) {
       run(rank, [this, count, dt, testOpt](PerRankState& state) {
-        ASSERT_TRUE(ctranAllReduceSupport(state.ctranComm.get()));
+        ASSERT_TRUE(ctranAllReduceSupport(
+            state.ctranComm.get(), NCCL_ALLREDUCE_ALGO::ctring));
 
         size_t bufferSize = count * commTypeSize(dt);
         if (bufferSize < CTRAN_MIN_REGISTRATION_SIZE) {
@@ -409,14 +411,10 @@ class CtranAllReduceRingOneRankTest : public CtranIntraProcessFixture {
   static constexpr size_t kBufferNElem = kBufferSize / kTypeSize;
 
   void SetUp() override {
-    setenv("NCCL_ALLREDUCE_ALGO", "ctring", 1);
-
     CtranIntraProcessFixture::SetUp();
   }
 
   void runAllReduce(size_t nElem) {
-    ASSERT_EQ(NCCL_ALLREDUCE_ALGO, NCCL_ALLREDUCE_ALGO::ctring);
-
     CtranIntraProcessFixture::startWorkers(
         kNRanks, /*aborts=*/{ctran::utils::createAbort(/*enabled=*/true)});
 
@@ -464,7 +462,7 @@ class CtranAllReduceRingOneRankTest : public CtranIntraProcessFixture {
               kReduceOpType,
               state.ctranComm.get(),
               state.stream,
-              std::nullopt,
+              NCCL_ALLREDUCE_ALGO::ctring,
               /*timeout=*/std::nullopt));
 
       CLOGF(INFO, "rank {} allReduce scheduled", state.rank);

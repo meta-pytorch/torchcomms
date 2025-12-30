@@ -50,9 +50,6 @@ class CtranAllReduceTest : public CtranDistBaseTest {
     comm = commWorld;
     segments.clear();
     segHandles.clear();
-    if (!ctranAllReduceSupport(comm->ctranComm_.get())) {
-      GTEST_SKIP() << "ctranAllReduceSupport returns fails, skip test";
-    }
   }
 
   void TearDown() override {
@@ -171,6 +168,10 @@ class CtranAllReduceTest : public CtranDistBaseTest {
     }
 
     memorySetUp(count, inplace, op, memType);
+
+    if (!ctranAllReduceSupport(comm->ctranComm_.get(), algo)) {
+      GTEST_SKIP() << "ctranAllReduceSupport returns fails, skip test";
+    }
 
     for (auto& segment : segments) {
       void* hdl = nullptr;
