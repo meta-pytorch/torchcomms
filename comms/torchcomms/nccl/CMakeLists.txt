@@ -8,8 +8,12 @@ if(USE_SYSTEM_LIBS)
     # Use system installed NCCL
     set(NCCL_INCLUDE "${CONDA_INCLUDE}")
     set(NCCL_SHARED_LIB "${CONDA_LIB}/libnccl.so")
+elseif(EXISTS "${TORCH_INSTALL_PREFIX}/../build/nccl/include/nccl.h")
+    # Use NCCL from PyTorch source build
+    set(NCCL_INCLUDE "${TORCH_INSTALL_PREFIX}/../build/nccl/include")
+    set(NCCL_STATIC_LIB "${TORCH_INSTALL_PREFIX}/../build/nccl/lib/libnccl_static.a")
 else()
-    # Use NCCL packaged with PyTorch
+    # Use NCCL packaged with PyTorch (pip install)
     set(NCCL_INCLUDE "${TORCH_INSTALL_PREFIX}/../nvidia/nccl/include")
     set(NCCL_SHARED_LIB
         "${TORCH_INSTALL_PREFIX}/../nvidia/nccl/lib/libnccl.so.2"
