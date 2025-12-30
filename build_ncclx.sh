@@ -229,7 +229,7 @@ export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
 export LIB_PREFIX="lib64"
 
 BUILDDIR=${BUILDDIR:="${PWD}/build/ncclx"}
-NVCC_ARCH=${NVCC_ARCH:="a100,h100"}
+NVCC_ARCH=${NVCC_ARCH:="a100,h100,b200"}
 CUDA_HOME=${CUDA_HOME:="/usr/local/cuda"}
 NCCL_FP8=${NCCL_FP8:=1}
 CLEAN_BUILD=${CLEAN_BUILD:=0}
@@ -297,6 +297,9 @@ if [[ -z "${NVCC_GENCODE-}" ]]; then
         ;;
         "h100")
             arch_gencode="$arch_gencode -gencode=arch=compute_90,code=sm_90"
+        ;;
+        "b200")
+            arch_gencode="$arch_gencode -gencode=arch=compute_100,code=sm_100"
         ;;
         esac
     done
