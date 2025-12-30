@@ -5,6 +5,7 @@
 #include <ATen/ATen.h>
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
+#include <comms/torchcomms/CollectiveCoalescer.hpp>
 #include <comms/torchcomms/TorchCommBatch.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
@@ -19,7 +20,7 @@ namespace comms {
 
 inline const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
 
-class TorchCommBackend {
+class TorchCommBackend : public CollectiveCoalescer {
  public:
   virtual ~TorchCommBackend() = default;
 
@@ -138,6 +139,12 @@ class TorchCommBackend {
       int root,
       bool async_op,
       const GatherOptions& options = {}) = 0;
+
+  // Coalescing Operations inherited from CollectiveCoalescer:
+  // - startCoalescing()
+  // - endCoalescing()
+  // Backends implement: onCoalescingStart(), onCoalescingEnd(),
+  // createCoalescedWork()
 
   // Communicator Management
   virtual std::shared_ptr<TorchCommBackend> split(

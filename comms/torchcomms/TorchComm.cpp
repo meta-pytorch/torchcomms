@@ -193,6 +193,14 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather(
       output_tensor_list, input_tensor, root, async_op, options);
 }
 
+void TorchComm::startCoalescing() {
+  impl_->startCoalescing();
+}
+
+c10::intrusive_ptr<TorchWork> TorchComm::endCoalescing() {
+  return impl_->endCoalescing();
+}
+
 std::shared_ptr<TorchCommWindow> TorchComm::new_window() {
   return impl_->new_window();
 }
