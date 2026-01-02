@@ -139,7 +139,9 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
 
   ncclComm_t childComm = nullptr;
   ncclConfig_t childCommConfig = ncclConfigInitHelper(enableFastInitConfig);
-  childCommConfig.commDesc = "child_communicator";
+  int color = globalRank % 2;
+  std::string childCommDesc = "child_communicator_" + std::to_string(color);
+  childCommConfig.commDesc = childCommDesc.c_str();
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
   for (int i = 0; i < groupSize; ++i) {
@@ -148,7 +150,7 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
   childCommConfig.splitGroupRanks = groupRanks;
   childCommConfig.splitGroupSize = groupSize;
   NCCLCHECK_TEST(ncclCommSplit(
-      rootComm, globalRank % 2, globalRank / 2, &childComm, &childCommConfig));
+      rootComm, color, globalRank / 2, &childComm, &childCommConfig));
   ASSERT_NE(nullptr, childComm);
 
   const auto statex1 = childComm->ctranComm_->statex_.get();
@@ -203,7 +205,9 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
 
   // child comm config
   ncclConfig_t childCommConfig = ncclConfigInitHelper(enableFastInitConfig);
-  childCommConfig.commDesc = "child_communicator";
+  int color = globalRank % 2;
+  std::string childCommDesc = "child_communicator_" + std::to_string(color);
+  childCommConfig.commDesc = childCommDesc.c_str();
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
   for (int i = 0; i < groupSize; ++i) {
@@ -214,13 +218,13 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
 
   ncclComm_t childComm1 = nullptr;
   NCCLCHECK_TEST(ncclCommSplit(
-      rootComm, globalRank % 2, globalRank / 2, &childComm1, &childCommConfig));
+      rootComm, color, globalRank / 2, &childComm1, &childCommConfig));
   ASSERT_NE(nullptr, childComm1);
 
   // split again with same config
   ncclComm_t childComm2 = nullptr;
   NCCLCHECK_TEST(ncclCommSplit(
-      rootComm, globalRank % 2, globalRank / 2, &childComm2, &childCommConfig));
+      rootComm, color, globalRank / 2, &childComm2, &childCommConfig));
   ASSERT_NE(nullptr, childComm2);
 
   const auto statex1 = childComm1->ctranComm_->statex_.get();
