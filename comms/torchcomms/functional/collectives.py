@@ -86,7 +86,8 @@ if lib is not None:
             if work is not None:
                 work.wait()  # type: ignore[attr-defined]
         # Clone AFTER wait so clones have the completed data
-        return [t.clone() for t in inputs]
+        return inputs
+        # return [t.clone() for t in inputs]
 
     # === FUNCTIONALIZE IMPL FOR INPLACE WAIT ===
     # Register py_functionalize_impl to swap inplace for functional
@@ -535,7 +536,7 @@ if lib is not None:
         TorchComm,
         TorchComm.all_gather,
         param_specs=[
-            ParamSpec("tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=True),
+            ParamSpec("tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=True, write_only=True),
             ParamSpec("tensor", ParamKind.INPUT, torch.Tensor, mutable=False),
             ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
             ParamSpec(
@@ -604,7 +605,7 @@ if lib is not None:
         TorchComm,
         TorchComm.recv,
         param_specs=[
-            ParamSpec("tensor", ParamKind.INPUT, torch.Tensor, mutable=True),
+            ParamSpec("tensor", ParamKind.INPUT, torch.Tensor, mutable=True, write_only=True),
             ParamSpec("src", ParamKind.EXTRA, int),
             ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
             ParamSpec(
@@ -620,7 +621,7 @@ if lib is not None:
         TorchComm,
         TorchComm.all_gather_single,
         param_specs=[
-            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True),
+            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True, write_only=True),
             ParamSpec("input", ParamKind.INPUT, torch.Tensor, mutable=False),
             ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
             ParamSpec(
@@ -637,7 +638,7 @@ if lib is not None:
         TorchComm,
         TorchComm.all_gather_v,
         param_specs=[
-            ParamSpec("tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=True),
+            ParamSpec("tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=True, write_only=True),
             ParamSpec("tensor", ParamKind.INPUT, torch.Tensor, mutable=False),
             ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
             ParamSpec(
@@ -653,7 +654,7 @@ if lib is not None:
         TorchComm,
         TorchComm.reduce_scatter_single,
         param_specs=[
-            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True),
+            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True, write_only=True),
             ParamSpec("input", ParamKind.INPUT, torch.Tensor, mutable=False),
             ParamSpec("op", ParamKind.EXTRA, ReduceOp),
             ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
@@ -671,7 +672,7 @@ if lib is not None:
         TorchComm,
         TorchComm.reduce_scatter_v,
         param_specs=[
-            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True),
+            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True, write_only=True),
             ParamSpec("input_list", ParamKind.INPUT, list[torch.Tensor], mutable=False),
             ParamSpec("op", ParamKind.EXTRA, ReduceOp),
             ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
@@ -687,7 +688,7 @@ if lib is not None:
         TorchComm,
         TorchComm.all_to_all_single,
         param_specs=[
-            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True),
+            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True, write_only=True),
             ParamSpec("input", ParamKind.INPUT, torch.Tensor, mutable=False),
             ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
             ParamSpec(
@@ -704,7 +705,7 @@ if lib is not None:
         TorchComm,
         TorchComm.all_to_all_v_single,
         param_specs=[
-            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True),
+            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True, write_only=True),
             ParamSpec("input", ParamKind.INPUT, torch.Tensor, mutable=False),
             ParamSpec("output_split_sizes", ParamKind.EXTRA, list[int]),
             ParamSpec("input_split_sizes", ParamKind.EXTRA, list[int]),
@@ -722,7 +723,7 @@ if lib is not None:
         TorchComm.all_to_all,
         param_specs=[
             ParamSpec(
-                "output_tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=True
+                "output_tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=True, write_only=True
             ),
             ParamSpec(
                 "input_tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=False
@@ -740,7 +741,7 @@ if lib is not None:
         TorchComm,
         TorchComm.reduce_scatter,
         param_specs=[
-            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True),
+            ParamSpec("output", ParamKind.INPUT, torch.Tensor, mutable=True, write_only=True),
             ParamSpec("input_list", ParamKind.INPUT, list[torch.Tensor], mutable=False),
             ParamSpec("op", ParamKind.EXTRA, ReduceOp),
             ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
@@ -758,7 +759,7 @@ if lib is not None:
         TorchComm,
         TorchComm.scatter,
         param_specs=[
-            ParamSpec("output_tensor", ParamKind.INPUT, torch.Tensor, mutable=True),
+            ParamSpec("output_tensor", ParamKind.INPUT, torch.Tensor, mutable=True, write_only=True),
             ParamSpec(
                 "input_tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=False
             ),
@@ -779,7 +780,7 @@ if lib is not None:
         TorchComm.gather,
         param_specs=[
             ParamSpec(
-                "output_tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=True
+                "output_tensor_list", ParamKind.INPUT, list[torch.Tensor], mutable=True, write_only=True
             ),
             ParamSpec("input_tensor", ParamKind.INPUT, torch.Tensor, mutable=False),
             ParamSpec("root", ParamKind.EXTRA, int),
@@ -806,7 +807,7 @@ if lib is not None:
         BatchSendRecv,
         BatchSendRecv.recv,
         param_specs=[
-            ParamSpec("tensor", ParamKind.INPUT, torch.Tensor, mutable=True),
+            ParamSpec("tensor", ParamKind.INPUT, torch.Tensor, mutable=True, write_only=True),
             ParamSpec("src", ParamKind.EXTRA, int),
         ],
     )
