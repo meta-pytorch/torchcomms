@@ -26,6 +26,7 @@ from typing import Callable
 
 import torch
 from torch.distributed.device_mesh import DeviceMesh
+from torch.fx.traceback import annotate_fn
 from torchcomms._comms import ReduceOp, TorchComm
 from torchcomms.coalescing import coalesce
 from torchcomms.functional.async_tensor import (
@@ -58,6 +59,10 @@ logger = logging.getLogger(__name__)
 _registered = False
 
 
+# Annotation for regional inductor compilation
+_TORCHCOMMS_ANNOTATION = {"compile_with_inductor": "torchcomms_collective"}
+
+
 def _get_comm(mesh: DeviceMesh, mesh_dim: int) -> TorchComm:
     """Get torchcomms comm object from mesh."""
     comm: TorchComm | None = mesh.get_comm_object("torchcomms", mesh_dim)  # type: ignore
@@ -75,8 +80,10 @@ def register_functional_collective(name: str) -> Callable:
     """Decorator to register a functional collective implementation."""
 
     def decorator(fn: Callable[..., torch.Tensor]) -> Callable[..., torch.Tensor]:
-        _FUNCTIONAL_COLLECTIVE_IMPLS[name] = fn
-        return fn
+        # Wrap with torchcomms annotation for regional inductor compilation
+        wrapped = annotate_fn(_TORCHCOMMS_ANNOTATION)(fn)
+        _FUNCTIONAL_COLLECTIVE_IMPLS[name] = wrapped
+        return wrapped
 
     return decorator
 
