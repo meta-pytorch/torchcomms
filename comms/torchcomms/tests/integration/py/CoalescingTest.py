@@ -193,7 +193,7 @@ class CoalescingTest(unittest.TestCase):
         tensor2 = torch.full((20,), float(self.rank + 1), device=self.device)
         tensor3 = torch.full((15,), float(self.rank + 1), device=self.device)
 
-        with torchcomms.coalesce(self.torchcomm) as cm:
+        with torchcomms.coalescing.coalesce(self.torchcomm) as cm:
             self.torchcomm.all_reduce(tensor1, ReduceOp.SUM, async_op=True)
             self.torchcomm.all_reduce(tensor2, ReduceOp.SUM, async_op=True)
             self.torchcomm.all_reduce(tensor3, ReduceOp.SUM, async_op=True)
@@ -221,7 +221,7 @@ class CoalescingTest(unittest.TestCase):
         scatter_input = torch.full((5,), float(self.rank + 1), device=self.device)
         scatter_output = torch.empty(5 * self.num_ranks, device=self.device)
 
-        with torchcomms.coalesce(self.torchcomm) as cm:
+        with torchcomms.coalescing.coalesce(self.torchcomm) as cm:
             self.torchcomm.all_reduce(reduce_tensor, ReduceOp.SUM, async_op=True)
             self.torchcomm.all_gather_single(
                 scatter_output, scatter_input, async_op=True
@@ -257,7 +257,7 @@ class CoalescingTest(unittest.TestCase):
         """Test coalescing with just one operation."""
         tensor = torch.full((10,), float(self.rank + 1), device=self.device)
 
-        with torchcomms.coalesce(self.torchcomm) as cm:
+        with torchcomms.coalescing.coalesce(self.torchcomm) as cm:
             self.torchcomm.all_reduce(tensor, ReduceOp.SUM, async_op=True)
 
         cm.wait()
@@ -276,7 +276,7 @@ class CoalescingTest(unittest.TestCase):
             for _ in range(num_tensors)
         ]
 
-        with torchcomms.coalesce(self.torchcomm) as cm:
+        with torchcomms.coalescing.coalesce(self.torchcomm) as cm:
             for t in tensors:
                 self.torchcomm.all_reduce(t, ReduceOp.SUM, async_op=True)
 
@@ -294,7 +294,7 @@ class CoalescingTest(unittest.TestCase):
         tensor1 = torch.full((10,), float(self.rank + 1), device=self.device)
         tensor2 = torch.full((20,), float(self.rank + 1), device=self.device)
 
-        with torchcomms.coalesce(self.torchcomm):
+        with torchcomms.coalescing.coalesce(self.torchcomm):
             # Using async_op=False - ops should complete at block exit
             self.torchcomm.all_reduce(tensor1, ReduceOp.SUM, async_op=False)
             self.torchcomm.all_reduce(tensor2, ReduceOp.SUM, async_op=False)
@@ -320,7 +320,7 @@ class CoalescingTest(unittest.TestCase):
         )
         output_tensor = torch.empty(10, device=self.device)
 
-        with torchcomms.coalesce(self.torchcomm) as cm:
+        with torchcomms.coalescing.coalesce(self.torchcomm) as cm:
             self.torchcomm.reduce_scatter_single(
                 output_tensor, input_tensor, ReduceOp.SUM, async_op=True
             )
@@ -332,6 +332,36 @@ class CoalescingTest(unittest.TestCase):
         self.assertTrue(
             torch.allclose(output_tensor, torch.full_like(output_tensor, expected_sum)),
             f"reduce_scatter mismatch: expected {expected_sum}, got {output_tensor[0].item()}",
+        )
+
+    def test_coalesced_mixed_ops(self):
+        """Test coalescing with different operation types in the same block."""
+        # Create input tensors
+        all_reduce_tensor = torch.full((10,), float(self.rank + 1), device=self.device)
+        broadcast_tensor = torch.full(
+            (15,), float(self.rank + 1) if self.rank == 0 else 0.0, device=self.device
+        )
+
+        with torchcomms.coalescing.coalesce(self.torchcomm) as cm:
+            # Mix all_reduce and broadcast in the same block
+            self.torchcomm.all_reduce(all_reduce_tensor, ReduceOp.SUM, async_op=True)
+            self.torchcomm.broadcast(broadcast_tensor, root=0, async_op=True)
+
+        cm.wait()
+
+        # Verify all_reduce result - sum of all ranks
+        expected_sum = sum(range(1, self.num_ranks + 1))
+        self.assertTrue(
+            torch.allclose(
+                all_reduce_tensor, torch.full_like(all_reduce_tensor, expected_sum)
+            ),
+            f"all_reduce mismatch: expected {expected_sum}, got {all_reduce_tensor[0].item()}",
+        )
+
+        # Verify broadcast result - should be rank 0's value (1.0) on all ranks
+        self.assertTrue(
+            torch.allclose(broadcast_tensor, torch.full_like(broadcast_tensor, 1.0)),
+            f"broadcast mismatch: expected 1.0, got {broadcast_tensor[0].item()}",
         )
 
     def test_error_end_without_start(self):
@@ -355,7 +385,7 @@ class CoalescingTest(unittest.TestCase):
 
         def coalesced_all_reduce(comm, tensor1, tensor2):
             """Function to compile that uses coalescing."""
-            with torchcomms.coalesce(comm) as cm:
+            with torchcomms.coalescing.coalesce(comm) as cm:
                 comm.all_reduce(tensor1, ReduceOp.SUM, async_op=True)
                 comm.all_reduce(tensor2, ReduceOp.SUM, async_op=True)
             cm.wait()
@@ -371,7 +401,7 @@ class CoalescingTest(unittest.TestCase):
             backend=self._create_graph_logging_backend(
                 "test_coalescing_with_torch_compile"
             ),
-            fullgraph=False,
+            fullgraph=True,
         )
 
         # Run the compiled function
@@ -401,7 +431,7 @@ class CoalescingTest(unittest.TestCase):
             y = y + 1
 
             # Coalesced collectives
-            with torchcomms.coalesce(comm) as cm:
+            with torchcomms.coalescing.coalesce(comm) as cm:
                 comm.all_reduce(x, ReduceOp.SUM, async_op=True)
                 comm.all_reduce(y, ReduceOp.SUM, async_op=True)
             cm.wait()
@@ -415,7 +445,7 @@ class CoalescingTest(unittest.TestCase):
         compiled_model = torch.compile(
             model_with_coalescing,
             backend=self._create_graph_logging_backend("test_coalescing_compile"),
-            fullgraph=False,
+            fullgraph=True,
         )
 
         result = compiled_model(self.torchcomm, tensor1, tensor2)
@@ -440,7 +470,7 @@ class CoalescingTest(unittest.TestCase):
         import logging
 
         def coalesced_reduce(comm, tensors):
-            with torchcomms.coalesce(comm) as cm:
+            with torchcomms.coalescing.coalesce(comm) as cm:
                 for t in tensors:
                     comm.all_reduce(t, ReduceOp.SUM, async_op=True)
             cm.wait()
@@ -450,7 +480,7 @@ class CoalescingTest(unittest.TestCase):
         compiled_fn = torch.compile(
             coalesced_reduce,
             backend=self._create_graph_logging_backend("test_multiple_tensors"),
-            fullgraph=False,
+            fullgraph=True,
         )
 
         # Run once with multiple tensors
@@ -474,7 +504,7 @@ class CoalescingTest(unittest.TestCase):
         """Test that calling wait() twice on a CoalescingManager raises an error."""
         tensor = torch.full((10,), float(self.rank + 1), device=self.device)
 
-        with torchcomms.coalesce(self.torchcomm) as cm:
+        with torchcomms.coalescing.coalesce(self.torchcomm) as cm:
             self.torchcomm.all_reduce(tensor, ReduceOp.SUM, async_op=True)
 
         # First wait should succeed
