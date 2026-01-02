@@ -34,6 +34,7 @@ class ParamSpec:
     )
     default_value: Any = _NO_DEFAULT
     mutable: bool = True
+    write_only: bool = False  # If True, tensor is write-only (can use empty_like instead of clone)
 
     def has_default(self) -> bool:
         return self.default_value is not _NO_DEFAULT
