@@ -112,13 +112,16 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce(
 c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce_coalesced(
     std::vector<at::Tensor>& tensors,
     const c10d::AllreduceCoalescedOptions& opts) {
-  TORCH_INTERNAL_ASSERT(tensors.size() == 1, "Only single tensor supported");
   AllReduceOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(backend_->all_reduce(
-      tensors.at(0), toReduceOp(opts.reduceOp), opts.asyncOp, bopts));
+  comm_->startCoalescing();
+  for (auto& tensor : tensors) {
+    backend_->all_reduce(
+        tensor, toReduceOp(opts.reduceOp), opts.asyncOp, bopts);
+  }
+  return c10::make_intrusive<WorkWrapper>(comm_->endCoalescing());
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce(
@@ -158,34 +161,37 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_coalesced(
     std::vector<at::Tensor>& inputTensors,
     const c10d::AllgatherOptions& opts) {
   TORCH_INTERNAL_ASSERT(
-      outputTensorLists.size() == 1, "Only single tensor supported");
-  TORCH_INTERNAL_ASSERT(
-      inputTensors.size() == 1, "Only single tensor supported");
+      outputTensorLists.size() == inputTensors.size(),
+      "Output and input tensor lists must have the same size");
   AllGatherOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(backend_->all_gather(
-      outputTensorLists.at(0), inputTensors.at(0), opts.asyncOp, bopts));
+  comm_->startCoalescing();
+  for (size_t i = 0; i < inputTensors.size(); ++i) {
+    backend_->all_gather(
+        outputTensorLists[i], inputTensors[i], opts.asyncOp, bopts);
+  }
+  return c10::make_intrusive<WorkWrapper>(comm_->endCoalescing());
 }
 
-// TODO: Need to implement the case when input/output tensors are larger than
-// one. since this a coalesced version. We only support one input/output tensor
-// for now.
 c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_into_tensor_coalesced(
     std::vector<at::Tensor>& output_tensors,
     std::vector<at::Tensor>& inputTensors,
     const c10d::AllgatherOptions& opts) {
   TORCH_INTERNAL_ASSERT(
-      output_tensors.size() == 1, "Only single tensor supported");
-  TORCH_INTERNAL_ASSERT(
-      inputTensors.size() == 1, "Only single tensor supported");
+      output_tensors.size() == inputTensors.size(),
+      "Output and input tensor lists must have the same size");
   AllGatherSingleOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(backend_->all_gather_single(
-      output_tensors.at(0), inputTensors.at(0), opts.asyncOp, bopts));
+  comm_->startCoalescing();
+  for (size_t i = 0; i < inputTensors.size(); ++i) {
+    backend_->all_gather_single(
+        output_tensors[i], inputTensors[i], opts.asyncOp, bopts);
+  }
+  return c10::make_intrusive<WorkWrapper>(comm_->endCoalescing());
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::_allgather_base(
@@ -257,27 +263,27 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter(
       bopts));
 }
 
-// TODO: Need to implement the case when input/output tensors are larger than
-// one. since this a coalesced version. We only support one input/output tensor
-// for now.
 c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter_tensor_coalesced(
     std::vector<at::Tensor>& outputTensors,
     std::vector<at::Tensor>& inputTensors,
     const c10d::ReduceScatterOptions& opts) {
   TORCH_INTERNAL_ASSERT(
-      outputTensors.size() == 1, "Only single tensor supported");
-  TORCH_INTERNAL_ASSERT(
-      inputTensors.size() == 1, "Only single tensor supported");
+      outputTensors.size() == inputTensors.size(),
+      "Output and input tensor lists must have the same size");
   ReduceScatterSingleOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(backend_->reduce_scatter_single(
-      outputTensors.at(0),
-      inputTensors.at(0),
-      toReduceOp(opts.reduceOp),
-      opts.asyncOp,
-      bopts));
+  comm_->startCoalescing();
+  for (size_t i = 0; i < inputTensors.size(); ++i) {
+    backend_->reduce_scatter_single(
+        outputTensors[i],
+        inputTensors[i],
+        toReduceOp(opts.reduceOp),
+        opts.asyncOp,
+        bopts);
+  }
+  return c10::make_intrusive<WorkWrapper>(comm_->endCoalescing());
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::_reduce_scatter_base(
