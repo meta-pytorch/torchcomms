@@ -227,17 +227,26 @@ def _generate_lib_ops(lib: Any) -> None:
                 def _functional_eager(*args):
                     parsed = captured_schema.parse_lib_args(args)
 
-                    # Clone mutable inputs
+                    # Clone mutable inputs (or empty_like for write-only outputs)
                     cloned_values = parsed.to_values()
                     mutable_indices = parsed.get_mutable_tensor_indices()
                     clones = []
 
                     for idx in mutable_indices:
                         orig = parsed.values[idx]
-                        if isinstance(orig, list):
-                            clone = [t.clone() for t in orig]
+                        spec = parsed.all_params[idx]
+                        if spec.write_only:
+                            # Write-only buffer, empty_like is fine
+                            if isinstance(orig, list):
+                                clone = [torch.empty_like(t) for t in orig]
+                            else:
+                                clone = torch.empty_like(orig)
                         else:
-                            clone = orig.clone()
+                            # Read+write, need actual clone to preserve input data
+                            if isinstance(orig, list):
+                                clone = [t.clone() for t in orig]
+                            else:
+                                clone = orig.clone()
                         cloned_values[idx] = clone
                         clones.append(clone)
 
