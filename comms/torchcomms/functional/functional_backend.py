@@ -296,6 +296,9 @@ def _all_reduce_funcol(
     comm = _get_comm(mesh, mesh_dim)
     op = _get_reduce_op(reduce_op)
 
+    # NCCL requires contiguous tensors
+    tensor = tensor.contiguous()
+
     # The patched comm.all_reduce will dispatch to functional op when requires_grad=True or FakeTensor
     work = comm.all_reduce(tensor, op, async_op=True)
     return _maybe_wrap_tensor(tensor, work)
@@ -308,6 +311,9 @@ def _all_gather_tensor_funcol(
     """all_gather_tensor: funcol(tensor, gather_dim, mesh, mesh_dim)"""
     comm = _get_comm(mesh, mesh_dim)
     group_size = comm.get_size()
+
+    # NCCL requires contiguous tensors
+    tensor = tensor.contiguous()
 
     # Create output tensor with correct shape for all_gather_single (always gathers on dim 0)
     out_size = list(tensor.size())
