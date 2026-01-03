@@ -43,8 +43,13 @@ class ICtran {
   virtual uint64_t getCtranOpCount() const = 0;
 
   std::unique_ptr<CtranMapper> mapper{nullptr};
-  std::unique_ptr<CtranGpe> gpe{nullptr};
+  // IMPORTANT: Member destruction order matters! C++ destroys members in
+  // reverse order of declaration. algo must be declared BEFORE gpe so that
+  // gpe is destroyed first. This ensures the GPE thread is terminated
+  // (via ~CtranGpe -> terminate()) before ~CtranAlgo runs and frees CUDA
+  // resources that the GPE thread might still be using.
   std::unique_ptr<CtranAlgo> algo{nullptr};
+  std::unique_ptr<CtranGpe> gpe{nullptr};
   std::unique_ptr<ctran::Profiler> profiler{nullptr};
 
   uint64_t numGroupedDefaultOps{0};
