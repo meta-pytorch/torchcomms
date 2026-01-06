@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cuda.h>
+#include "comms/common/DevUtils.cuh"
 
 namespace ctran::utils {
 
@@ -95,68 +96,6 @@ inline __host__ __device__ int log2Down(Int x) {
 
 inline __host__ __device__ long log2i(long n) {
   return log2Down(n);
-}
-
-__device__ __forceinline__ int loadInt(volatile int* ptr) {
-#if defined(__HIP_PLATFORM_AMD__)
-  int v = *ptr;
-  return v;
-#else
-  int v;
-  asm volatile("ld.volatile.global.s32 %0, [%1];" : "=r"(v) : "l"(ptr));
-  return v;
-#endif
-}
-
-__device__ __forceinline__ void storeInt(volatile int* ptr, int val) {
-#if defined(__HIP_PLATFORM_AMD__)
-  *ptr = val;
-#else
-  asm volatile("st.volatile.global.s32 [%0], %1;" ::"l"(ptr), "r"(val));
-#endif
-}
-
-__device__ __forceinline__ int loadIntAcq(int* ptr) {
-#if defined(__HIP_PLATFORM_AMD__)
-  int v = __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
-  return v;
-#else
-  int v;
-  asm volatile("ld.global.acquire.sys.s32 %0, [%1];"
-               : "=r"(v)
-               : "l"(ptr)
-               : "memory");
-  return v;
-#endif
-}
-
-__device__ __forceinline__ void storeIntRel(int* ptr, int val) {
-#if defined(__HIP_PLATFORM_AMD__)
-  __atomic_store_n(ptr, val, __ATOMIC_RELEASE);
-#else
-  asm volatile("st.global.release.sys.s32 [%0], %1;" ::"l"(ptr), "r"(val)
-               : "memory");
-#endif
-}
-
-__device__ __forceinline__ void storeIntRelax(int* ptr, int val) {
-#if defined(__HIP_PLATFORM_AMD__)
-  __atomic_store_n(ptr, val, __ATOMIC_RELAXED);
-#else
-  asm volatile("st.relaxed.sys.global.s32 [%0], %1;" ::"l"(ptr), "r"(val)
-               : "memory");
-#endif
-}
-
-__device__ __forceinline__ uint64_t loadUint64(volatile uint64_t* ptr) {
-#if defined(__HIP_PLATFORM_AMD__)
-  uint64_t v = *ptr;
-  return v;
-#else
-  uint64_t v;
-  asm volatile("ld.volatile.global.u64 %0, [%1];" : "=l"(v) : "l"(ptr));
-  return v;
-#endif
 }
 
 template <typename INPUT, typename OUTPUT>

@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "comms/common/DevUtils.cuh"
 #include "comms/ctran/algos/DevShmState.cuh"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/utils/DevUtils.cuh"
@@ -29,11 +30,11 @@ static inline __device__ void KernelStartGpe(volatile int* flag) {
   if (KernelTestHostAbort(flag)) {
     return;
   }
-  ctran::utils::storeInt(flag, KERNEL_STARTED);
+  comms::device::storeInt(flag, KERNEL_STARTED);
 }
 
 static inline __device__ void KernelStartGpeAndExit(volatile int* flag) {
-  ctran::utils::storeInt(flag, KERNEL_STARTED_AND_EXIT);
+  comms::device::storeInt(flag, KERNEL_STARTED_AND_EXIT);
 }
 
 static inline __device__ bool KernelTestHostAbort(volatile int* flag) {
@@ -46,7 +47,7 @@ static inline __device__ bool KernelTestHostAbort(volatile int* flag) {
   // abort is enabled for CtranComm.
   return shmDevState.enableCancellableWaits &&
       (kernelDoAbort ||
-       (flag && ctran::utils::loadInt(flag) == KERNEL_HOST_ABORT));
+       (flag && comms::device::loadInt(flag) == KERNEL_HOST_ABORT));
 }
 
 static inline __device__ bool KernelTestHostAbortBlock(volatile int* flag) {
@@ -59,13 +60,13 @@ static inline __device__ bool KernelTestHostAbortBlock(volatile int* flag) {
 static inline __device__ void KernelWaitGpeTerminate(volatile int* flag) {
   int flagVal = KERNEL_STARTED;
   do {
-    flagVal = ctran::utils::loadInt(flag);
+    flagVal = comms::device::loadInt(flag);
   } while (
       flagVal != KERNEL_TERMINATE &&
       !(shmDevState.enableCancellableWaits && flagVal == KERNEL_HOST_ABORT));
 
   // Mark the flag as unset for reclaim
-  ctran::utils::storeInt(flag, KERNEL_UNSET);
+  comms::device::storeInt(flag, KERNEL_UNSET);
 }
 
 } // namespace ctran::device

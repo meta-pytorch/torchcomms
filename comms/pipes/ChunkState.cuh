@@ -6,54 +6,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "comms/common/DevUtils.cuh"
 
 namespace comms::pipes {
 
 // Forward declaration for thread-safe overloads
 struct ThreadGroup;
-
-// =============================================================================
-// Atomic operations with system-wide visibility for NVLink cross-GPU signaling
-// =============================================================================
-//
-// WHY .global QUALIFIER?
-// ======================
-// Without explicit .global, the compiler uses generic addressing which adds:
-//   1. Runtime address space detection (global vs shared vs local)
-//   2. Extra instructions for address translation
-//   3. Potential predicated branches in generated SASS
-//
-// With explicit .global:
-//   1. Compiler knows memory space at compile time
-//   2. Direct addressing with no runtime checks
-//   3. Simpler, faster instruction encoding (~2% throughput improvement)
-//
-// WHY .sys SCOPE?
-// ===============
-// The .sys (system) scope is required for cross-GPU NVLink communication:
-//   - .cta  = visible only within thread block
-//   - .gpu  = visible only within same GPU
-//   - .sys  = visible across all GPUs + CPU
-//
-// For P2P NVLink, sender writes to memory that receiver reads via NVLink peer
-// mapping. The .sys scope ensures the NVLink coherence protocol propagates
-// writes across GPU boundaries.
-
-__device__ __forceinline__ void store_int_release(int* addr, int value) {
-  asm volatile("st.release.sys.global.s32 [%0], %1;"
-               :
-               : "l"(addr), "r"(value)
-               : "memory");
-}
-
-__device__ __forceinline__ int load_int_acquire(int* addr) {
-  int value;
-  asm volatile("ld.acquire.sys.global.s32 %0, [%1];"
-               : "=r"(value)
-               : "l"(addr)
-               : "memory");
-  return value;
-}
 
 /**
  * ChunkState - State machine for P2P NVLink chunk synchronization
@@ -197,11 +155,11 @@ struct alignas(128) ChunkState {
 
  private:
   __device__ __forceinline__ int load() const {
-    return load_int_acquire(const_cast<int*>(&value_));
+    return comms::device::loadIntAcq(const_cast<int*>(&value_));
   }
 
   __device__ __forceinline__ void store(int v) {
-    store_int_release(&value_, v);
+    comms::device::storeIntRel(&value_, v);
   }
 };
 

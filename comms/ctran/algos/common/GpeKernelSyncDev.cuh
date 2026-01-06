@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
+#include "comms/common/DevUtils.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
@@ -33,7 +34,7 @@ waitPost(GpeKernelSync* sync, const int workerId, const int step) {
   if (threadIdx.x == 0) {
     int val;
     do {
-      val = ctran::utils::loadIntAcq(&sync->postFlag[workerId]);
+      val = comms::device::loadIntAcq(&sync->postFlag[workerId]);
     } while (step > val && !ctran::device::KernelTestHostAbort(kernelFlag));
   }
   __syncthreads();
@@ -45,7 +46,7 @@ waitPostWarp(GpeKernelSync* sync, const int workerId, const int step) {
   if (laneId == 0) {
     int val;
     do {
-      val = ctran::utils::loadIntAcq(&sync->postFlag[workerId]);
+      val = comms::device::loadIntAcq(&sync->postFlag[workerId]);
     } while (step > val && !ctran::device::KernelTestHostAbort(kernelFlag));
   }
   syncwarp();
@@ -55,7 +56,7 @@ __device__ __forceinline__ bool
 checkPost(GpeKernelSync* sync, const int workerId, const int step) {
   __shared__ bool found;
   if (threadIdx.x == 0) {
-    int val = ctran::utils::loadIntAcq(&sync->postFlag[workerId]);
+    int val = comms::device::loadIntAcq(&sync->postFlag[workerId]);
     found = step > val ? false : true;
   }
   __syncthreads();
@@ -66,7 +67,7 @@ __device__ __forceinline__ void
 complete(GpeKernelSync* sync, const int workerId, const int step) {
   __syncthreads();
   if (threadIdx.x == 0) {
-    ctran::utils::storeIntRel(&sync->completeFlag[workerId], step);
+    comms::device::storeIntRel(&sync->completeFlag[workerId], step);
   }
 }
 } // namespace ctran::algos::GpeKernelSyncDev
