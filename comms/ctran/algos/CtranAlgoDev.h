@@ -24,10 +24,6 @@
 #endif
 #endif
 
-// Statically define the warp size (unlike warpSize, this can be used in
-// constexpr expressions)
-constexpr int kWarpSize = 32;
-
 struct alignas(16) CtranAlgoDeviceSyncPadded {
   // The step values are padded to take up entire cache lines to reduce latency
   // (different step value updates won't invalidate each others' cache lines)

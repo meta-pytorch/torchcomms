@@ -17,12 +17,12 @@ __device__ __forceinline__ void reset(GpeKernelSync* sync, const int workerId) {
 __device__ __forceinline__ void resetWarp(
     GpeKernelSync* sync,
     const int nworkers) {
-  const auto laneId = threadIdx.x & (kWarpSize - 1);
+  const auto laneId = threadIdx.x & (comms::device::kWarpSize - 1);
   if (laneId == 0) {
     sync->nworkers = nworkers;
   }
 
-  for (auto i = laneId; i < nworkers; i += kWarpSize) {
+  for (auto i = laneId; i < nworkers; i += comms::device::kWarpSize) {
     sync->postFlag[i] = GpeKernelSync::Status::kUnset;
     sync->completeFlag[i] = GpeKernelSync::Status::kUnset;
   }
@@ -42,7 +42,7 @@ waitPost(GpeKernelSync* sync, const int workerId, const int step) {
 
 __device__ __forceinline__ void
 waitPostWarp(GpeKernelSync* sync, const int workerId, const int step) {
-  const auto laneId = threadIdx.x & (kWarpSize - 1);
+  const auto laneId = threadIdx.x & (comms::device::kWarpSize - 1);
   if (laneId == 0) {
     int val;
     do {

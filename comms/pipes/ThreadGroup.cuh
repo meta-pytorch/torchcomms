@@ -5,11 +5,10 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
+#include "comms/common/DevUtils.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 
 namespace comms::pipes {
-
-constexpr uint32_t WARP_SIZE = 32;
 
 enum class SyncScope { WARP, TILE };
 
@@ -408,16 +407,16 @@ __device__ inline PartitionResult ThreadGroup::partition(
 
 __device__ inline ThreadGroup make_warp_group() {
 #ifdef __CUDA_ARCH__
-  uint32_t warps_per_block = blockDim.x / WARP_SIZE;
-  uint32_t warp_id_in_block = threadIdx.x / WARP_SIZE;
+  uint32_t warps_per_block = blockDim.x / comms::device::kWarpSize;
+  uint32_t warp_id_in_block = threadIdx.x / comms::device::kWarpSize;
   uint32_t global_warp_id = blockIdx.x * warps_per_block + warp_id_in_block;
   uint32_t total_warps = gridDim.x * warps_per_block;
 
-  uint32_t lane_id = threadIdx.x % WARP_SIZE;
+  uint32_t lane_id = threadIdx.x % comms::device::kWarpSize;
 
   return ThreadGroup{
       .thread_id_in_group = lane_id,
-      .group_size = WARP_SIZE,
+      .group_size = comms::device::kWarpSize,
       .group_id = global_warp_id,
       .total_groups = total_warps,
       .scope = SyncScope::WARP};

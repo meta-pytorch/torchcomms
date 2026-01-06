@@ -460,8 +460,9 @@ __device__ __forceinline__ void copyWarp(
     const size_t count,
     const int warpId = 0,
     const int numWarps = 1) {
-  const auto laneId = warpId * kWarpSize + threadIdx.x & (kWarpSize - 1);
-  for (size_t i = laneId; i < count; i += kWarpSize * numWarps) {
+  const auto laneId = warpId * comms::device::kWarpSize + threadIdx.x &
+      (comms::device::kWarpSize - 1);
+  for (size_t i = laneId; i < count; i += comms::device::kWarpSize * numWarps) {
     dst[i] = src[i];
   }
 }

@@ -3,8 +3,11 @@
 #pragma once
 
 #include <cuda.h>
+#include <cstdint>
 
 namespace comms::device {
+
+constexpr uint32_t kWarpSize = 32;
 
 __device__ __forceinline__ int loadInt(volatile int* ptr) {
 #if defined(__HIP_PLATFORM_AMD__)
