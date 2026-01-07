@@ -3,7 +3,7 @@
 #pragma once
 
 #include <cuda.h>
-#include "comms/common/DevUtils.cuh"
+#include "comms/common/AtomicUtils.cuh"
 
 namespace ctran::utils {
 

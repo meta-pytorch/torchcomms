@@ -6,7 +6,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include "comms/common/DevUtils.cuh"
+#include "comms/common/AtomicUtils.cuh"
 
 namespace comms::pipes {
 
@@ -43,7 +43,7 @@ struct ThreadGroup;
  *   3. readyToSend()           - Transition to READY_TO_SEND
  *
  * MEMORY LAYOUT:
- * - First 4 bytes: state value (int)
+ * - First 4 bytes: state value (int32_t)
  * - Remaining 124 bytes: padding for cache line isolation
  * - Total size: 128 bytes (cache line aligned)
  *
@@ -53,10 +53,10 @@ struct ThreadGroup;
  * - Uses .sys scope for cross-GPU NVLink coherence
  */
 struct alignas(128) ChunkState {
-  static constexpr int READY_TO_SEND = -1;
+  static constexpr int32_t READY_TO_SEND = -1;
 
-  int value_;
-  char padding_[128 - sizeof(int)]{};
+  int32_t value_;
+  char padding_[128 - sizeof(int32_t)]{};
 
   __host__ __device__ ChunkState() : value_(READY_TO_SEND) {}
 
@@ -93,7 +93,7 @@ struct alignas(128) ChunkState {
    * @param stepId The step identifier for this data
    */
   __device__ __forceinline__ void readyToRecv(std::size_t stepId) {
-    store(static_cast<int>(stepId));
+    store(static_cast<int32_t>(stepId));
   }
 
   // ===========================================================================
@@ -109,7 +109,7 @@ struct alignas(128) ChunkState {
    * @param stepId The step identifier to wait for
    */
   __device__ __forceinline__ void waitReadyToRecv(std::size_t stepId) const {
-    while (load() != static_cast<int>(stepId)) {
+    while (load() != static_cast<int32_t>(stepId)) {
     }
   }
 
@@ -120,7 +120,7 @@ struct alignas(128) ChunkState {
    * @return true if data is ready, false otherwise
    */
   __device__ __forceinline__ bool isReadyToRecv(std::size_t stepId) const {
-    return load() == static_cast<int>(stepId);
+    return load() == static_cast<int32_t>(stepId);
   }
 
   /**
@@ -154,12 +154,12 @@ struct alignas(128) ChunkState {
   __device__ __forceinline__ void readyToSend(ThreadGroup& group);
 
  private:
-  __device__ __forceinline__ int load() const {
-    return comms::device::loadIntAcq(const_cast<int*>(&value_));
+  __device__ __forceinline__ int32_t load() const {
+    return comms::device::ld_acquire_sys_global(const_cast<int32_t*>(&value_));
   }
 
-  __device__ __forceinline__ void store(int v) {
-    comms::device::storeIntRel(&value_, v);
+  __device__ __forceinline__ void store(int32_t v) {
+    comms::device::st_release_sys_global(&value_, v);
   }
 };
 
@@ -194,7 +194,7 @@ __device__ __forceinline__ void ChunkState::waitReadyToRecv(
     std::size_t stepId) const {
   // All threads poll: slightly lower latency for small messages
   // (avoids sync barrier overhead after leader-only poll)
-  while (load() != static_cast<int>(stepId)) {
+  while (load() != static_cast<int32_t>(stepId)) {
   }
 }
 
@@ -203,7 +203,7 @@ __device__ __forceinline__ void ChunkState::readyToRecv(
     std::size_t stepId) {
   group.sync();
   if (group.is_leader()) {
-    store(static_cast<int>(stepId));
+    store(static_cast<int32_t>(stepId));
   }
 }
 
