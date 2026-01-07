@@ -335,9 +335,9 @@ commResult_t ctranPutSignal(
       comm,
       stream);
 
-  // Check if the target displacement exceeds the window size
+  // Check if the target displacement exceeds the remote peer's window size
   FB_COMMCHECK(checkDisplacementBounds(
-      targetDisp, commTypeSize(datatype), count, win->dataBytes));
+      targetDisp, commTypeSize(datatype), count, win->getDataSize(peer)));
   size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
   size_t countNbytes = count * commTypeSize(datatype);
   uint64_t* signalAddr = nullptr;
