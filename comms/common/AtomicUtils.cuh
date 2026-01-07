@@ -53,8 +53,6 @@ namespace comms::device {
 // - SM 7.0+ (Volta): Native acquire/release/fence support
 // - SM < 7.0: Fall back to volatile + membar.sys
 
-constexpr uint32_t kWarpSize = 32;
-
 // =============================================================================
 // Address Space Conversion
 // =============================================================================

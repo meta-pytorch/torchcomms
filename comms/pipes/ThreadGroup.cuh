@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/common/DeviceConstants.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 
 namespace comms::pipes {

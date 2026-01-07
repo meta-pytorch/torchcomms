@@ -18,6 +18,7 @@
 #include <hip/hip_fp8.h>
 #endif
 
+#include "comms/common/DeviceConstants.cuh"
 #include "comms/ctran/utils/DevUtils.cuh"
 
 /* FIXME: We are not currently using vectorized arithmetic.  We only
