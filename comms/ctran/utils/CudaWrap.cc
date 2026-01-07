@@ -228,7 +228,7 @@ static commResult_t initCommCudaLibraryOnce_() {
   FB_CUDACHECK_RETURN(cudaGetDevice(&cudaDev), commCudaLibraryInitResult);
   FB_CUDACHECK_RETURN(
       cudaDriverGetVersion(&driverVersion), commCudaLibraryInitResult);
-  CLOGF_SUBSYS(INFO, INIT, "cudaDriverVersion {}", driverVersion);
+  CLOGF(WARN, "cudaDriverVersion {}", driverVersion);
   if (cudaPfnFuncLoader() != commSuccess) {
     CLOGF(WARN, "CUDA some PFN functions not found in the library");
     return commCudaLibraryInitResult;
