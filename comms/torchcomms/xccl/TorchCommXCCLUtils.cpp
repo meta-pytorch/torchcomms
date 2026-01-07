@@ -136,16 +136,19 @@ TorchCommXCCL::getXcclReduceOp(const ReduceOp &op, const onecclComm_t comm,
     return onecclMin;
   case ReduceOp::RedOpType::MAX:
     return onecclMax;
-  case ReduceOp::RedOpType::BAND:
-    return onecclSum; // XCCL doesn't have bitwise AND, using SUM as fallback
-  case ReduceOp::RedOpType::BOR:
-    return onecclSum; // XCCL doesn't have bitwise OR, using SUM as fallback
-  case ReduceOp::RedOpType::BXOR:
-    return onecclSum; // XCCL doesn't have bitwise XOR, using SUM as fallback
   case ReduceOp::RedOpType::PREMUL_SUM:
     return RedOpRAII(op, comm, dataType, xccl_api_);
   case ReduceOp::RedOpType::AVG:
     return onecclAvg;
+  case ReduceOp::RedOpType::BAND:
+    // XCCL doesn't have bitwise AND
+    throw std::runtime_error("Unsupported BAND reduce operation");
+  case ReduceOp::RedOpType::BOR:
+    // XCCL doesn't have bitwise OR
+    throw std::runtime_error("Unsupported BOR reduce operation");
+  case ReduceOp::RedOpType::BXOR:
+    // XCCL doesn't have bitwise XOR
+    throw std::runtime_error("Unsupported BXOR reduce operation");
   default:
     throw std::runtime_error("Unsupported reduce operation");
   }

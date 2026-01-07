@@ -95,7 +95,7 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
       // Operation has timed out
       state_ = WorkStatus::TIMEDOUT;
     }
-  } else if (end_status != XPU_ERROR_UNSUPPORTED) {
+  } else {
     // Some other error occurred with the end event
     TC_LOG(ERROR) << "XPU error during end event query: "
                   << comm_->getXpuApi()->getErrorString(end_status) << " ("

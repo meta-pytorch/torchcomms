@@ -103,9 +103,7 @@ xpu_result_t DefaultXpuApi::streamCreateWithPriority(
     unsigned int flags,
     int priority) {
     try {
-        // Map priority: priority < 0 = high, priority >= 0 = normal
-        bool isHighPriority = (priority < 0);
-        stream = ::c10::xpu::getStreamFromPool(isHighPriority);
+        stream = ::c10::xpu::getStreamFromPool(priority);
         return XPU_SUCCESS;
     } catch (const std::exception& e) {
         return XPU_ERROR_INVALID_VALUE;
