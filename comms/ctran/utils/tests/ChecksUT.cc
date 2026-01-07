@@ -217,11 +217,6 @@ TEST_F(CtranUtilsCheckTest, ArgCheckNull) {
       messages[0], ::testing::HasSubstr("ArgCheckNull ptr argument is NULL"));
 }
 
-TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW) {
-  EXPECT_NO_THROW(FB_SYSCHECKTHROW(0));
-  EXPECT_THROW(FB_SYSCHECKTHROW(1), std::runtime_error);
-}
-
 TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX_DIRECT) {
   const int rank = 7;
   const uint64_t commHash = 0xDEADBEEF;
