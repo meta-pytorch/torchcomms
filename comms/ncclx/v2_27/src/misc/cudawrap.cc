@@ -261,6 +261,9 @@ static void initOnceFunc() {
 
   CUDACHECKGOTO(cudaDriverGetVersion(&driverVersion), ret, error);
   INFO(NCCL_INIT, "cudaDriverVersion %d", driverVersion);
+#ifdef CUDART_VERSION
+  WARN("ncclx 2.27: CUDART_VERSION %d", CUDART_VERSION);
+#endif
 
   if (driverVersion < CUDA_DRIVER_MIN_VERSION) {
     // WARN("CUDA Driver version found is %d. Minimum requirement is %d", driverVersion, CUDA_DRIVER_MIN_VERSION);
