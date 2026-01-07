@@ -9,8 +9,32 @@
 
 #if CUDART_VERSION >= 11030
 
-#if CUDART_VERSION >= 12000
-#define FB_LOAD_SYM(symbol, ignore)                                          \
+#if CUDART_VERSION >= 13000
+#define FB_LOAD_SYM(symbol, version, ignore)                                 \
+  do {                                                                       \
+    cudaDriverEntryPointQueryResult driverStatus =                           \
+        cudaDriverEntryPointSymbolNotFound;                                  \
+    res = cudaGetDriverEntryPointByVersion(                                  \
+        #symbol,                                                             \
+        (void**)(&pfn_##symbol),                                             \
+        version,                                                             \
+        cudaEnableDefault,                                                   \
+        &driverStatus);                                                      \
+    if (res != cudaSuccess || driverStatus != cudaDriverEntryPointSuccess) { \
+      if (!ignore) {                                                         \
+        CLOGF(                                                               \
+            WARN,                                                            \
+            "Retrieve {} version {} failed with {} status {}",               \
+            #symbol,                                                         \
+            version,                                                         \
+            static_cast<int>(res),                                           \
+            static_cast<int>(driverStatus));                                 \
+        return commSystemError;                                              \
+      }                                                                      \
+    }                                                                        \
+  } while (0)
+#elif CUDART_VERSION >= 12000
+#define FB_LOAD_SYM(symbol, version, ignore)                                 \
   do {                                                                       \
     cudaDriverEntryPointQueryResult driverStatus =                           \
         cudaDriverEntryPointSymbolNotFound;                                  \
@@ -29,7 +53,7 @@
     }                                                                        \
   } while (0)
 #else
-#define FB_LOAD_SYM(symbol, ignore)                           \
+#define FB_LOAD_SYM(symbol, version, ignore)                  \
   do {                                                        \
     res = cudaGetDriverEntryPoint(                            \
         #symbol, (void**)(&pfn_##symbol), cudaEnableDefault); \
@@ -95,6 +119,12 @@ DECLARE_CUDA_PFN(cuMulticastCreate, 12010);
 DECLARE_CUDA_PFN(cuMulticastGetGranularity, 12010);
 DECLARE_CUDA_PFN(cuMulticastUnbind, 12010);
 #endif
+/* Stream MemOp support */
+DECLARE_CUDA_PFN(cuStreamBatchMemOp, 11070);
+DECLARE_CUDA_PFN(cuStreamWaitValue32, 11070);
+DECLARE_CUDA_PFN(cuStreamWaitValue64, 11070);
+DECLARE_CUDA_PFN(cuStreamWriteValue32, 11070);
+DECLARE_CUDA_PFN(cuStreamWriteValue64, 11070);
 #endif
 
 bool getCuMemSysSupported() {
@@ -170,49 +200,55 @@ static commResult_t cudaPfnFuncLoader(void) {
 #else
   cudaError_t res;
 
-  FB_LOAD_SYM(cuGetErrorString, 0);
-  FB_LOAD_SYM(cuGetErrorName, 0);
-  FB_LOAD_SYM(cuDeviceGet, 0);
-  FB_LOAD_SYM(cuDeviceGetAttribute, 0);
-  FB_LOAD_SYM(cuMemGetAddressRange, 1);
-  FB_LOAD_SYM(cuCtxCreate, 1);
-  FB_LOAD_SYM(cuCtxDestroy, 1);
-  FB_LOAD_SYM(cuCtxGetCurrent, 1);
-  FB_LOAD_SYM(cuCtxSetCurrent, 1);
-  FB_LOAD_SYM(cuCtxGetDevice, 1);
-  FB_LOAD_SYM(cuLaunchKernel, 1);
-  FB_LOAD_SYM(cuMemHostGetDevicePointer, 1);
+  FB_LOAD_SYM(cuGetErrorString, 6000, 0);
+  FB_LOAD_SYM(cuGetErrorName, 6000, 0);
+  FB_LOAD_SYM(cuDeviceGet, 2000, 0);
+  FB_LOAD_SYM(cuDeviceGetAttribute, 2000, 0);
+  FB_LOAD_SYM(cuMemGetAddressRange, 3020, 1);
+  FB_LOAD_SYM(cuCtxCreate, 11040, 1);
+  FB_LOAD_SYM(cuCtxDestroy, 4000, 1);
+  FB_LOAD_SYM(cuCtxGetCurrent, 4000, 1);
+  FB_LOAD_SYM(cuCtxSetCurrent, 4000, 1);
+  FB_LOAD_SYM(cuCtxGetDevice, 2000, 1);
+  FB_LOAD_SYM(cuLaunchKernel, 4000, 1);
+  FB_LOAD_SYM(cuMemHostGetDevicePointer, 3020, 1);
 #if CUDA_VERSION >= 11080
-  FB_LOAD_SYM(cuLaunchKernelEx, 1);
+  FB_LOAD_SYM(cuLaunchKernelEx, 11060, 1);
 #endif
   /* cuMem API support */
-  FB_LOAD_SYM(cuMemAddressReserve, 1);
-  FB_LOAD_SYM(cuMemAddressFree, 1);
-  FB_LOAD_SYM(cuMemCreate, 1);
-  FB_LOAD_SYM(cuMemGetAllocationGranularity, 1);
-  FB_LOAD_SYM(cuMemExportToShareableHandle, 1);
-  FB_LOAD_SYM(cuMemImportFromShareableHandle, 1);
-  FB_LOAD_SYM(cuMemMap, 1);
-  FB_LOAD_SYM(cuMemRelease, 1);
-  FB_LOAD_SYM(cuMemRetainAllocationHandle, 1);
-  FB_LOAD_SYM(cuMemSetAccess, 1);
-  FB_LOAD_SYM(cuMemGetAccess, 1);
-  FB_LOAD_SYM(cuMemUnmap, 1);
-  FB_LOAD_SYM(cuMemGetAllocationPropertiesFromHandle, 1);
-  /* MemAlloc/Free */
-  FB_LOAD_SYM(cuPointerGetAttribute, 1);
+  FB_LOAD_SYM(cuMemAddressReserve, 10020, 1);
+  FB_LOAD_SYM(cuMemAddressFree, 10020, 1);
+  FB_LOAD_SYM(cuMemCreate, 10020, 1);
+  FB_LOAD_SYM(cuMemGetAllocationGranularity, 10020, 1);
+  FB_LOAD_SYM(cuMemExportToShareableHandle, 10020, 1);
+  FB_LOAD_SYM(cuMemImportFromShareableHandle, 10020, 1);
+  FB_LOAD_SYM(cuMemMap, 10020, 1);
+  FB_LOAD_SYM(cuMemRelease, 10020, 1);
+  FB_LOAD_SYM(cuMemRetainAllocationHandle, 11000, 1);
+  FB_LOAD_SYM(cuMemSetAccess, 10020, 1);
+  FB_LOAD_SYM(cuMemGetAccess, 10020, 1);
+  FB_LOAD_SYM(cuMemUnmap, 10020, 1);
+  FB_LOAD_SYM(cuMemGetAllocationPropertiesFromHandle, 10020, 1);
+  /* ncclMemAlloc/Free */
+  FB_LOAD_SYM(cuPointerGetAttribute, 4000, 1);
 #if CUDA_VERSION >= 11070
-  FB_LOAD_SYM(cuMemGetHandleForAddressRange, 1); // DMA-BUF support
+  FB_LOAD_SYM(cuMemGetHandleForAddressRange, 11070, 1); // DMA-BUF support
 #endif
 #if CUDA_VERSION >= 12010
   /* NVSwitch Multicast support */
-  FB_LOAD_SYM(cuMulticastAddDevice, 1);
-  FB_LOAD_SYM(cuMulticastBindMem, 1);
-  FB_LOAD_SYM(cuMulticastBindAddr, 1);
-  FB_LOAD_SYM(cuMulticastCreate, 1);
-  FB_LOAD_SYM(cuMulticastGetGranularity, 1);
-  FB_LOAD_SYM(cuMulticastUnbind, 1);
+  FB_LOAD_SYM(cuMulticastAddDevice, 12010, 1);
+  FB_LOAD_SYM(cuMulticastBindMem, 12010, 1);
+  FB_LOAD_SYM(cuMulticastBindAddr, 12010, 1);
+  FB_LOAD_SYM(cuMulticastCreate, 12010, 1);
+  FB_LOAD_SYM(cuMulticastGetGranularity, 12010, 1);
+  FB_LOAD_SYM(cuMulticastUnbind, 12010, 1);
 #endif
+  /* Stream MemOp support */
+  FB_LOAD_SYM(cuStreamBatchMemOp, 11070, 1);
+  FB_LOAD_SYM(cuStreamWaitValue32, 11070, 1);
+  FB_LOAD_SYM(cuStreamWaitValue64, 11070, 1);
+  FB_LOAD_SYM(cuStreamWriteValue32, 11070, 1);
+  FB_LOAD_SYM(cuStreamWriteValue64, 11070, 1);
   return commSuccess;
 #endif
 }
@@ -229,6 +265,9 @@ static commResult_t initCommCudaLibraryOnce_() {
   FB_CUDACHECK_RETURN(
       cudaDriverGetVersion(&driverVersion), commCudaLibraryInitResult);
   CLOGF_SUBSYS(INFO, INIT, "cudaDriverVersion {}", driverVersion);
+#ifdef CUDART_VERSION
+  CLOGF_SUBSYS(INFO, INIT, "CUDART_VERSION {}", CUDART_VERSION);
+#endif
   if (cudaPfnFuncLoader() != commSuccess) {
     CLOGF(WARN, "CUDA some PFN functions not found in the library");
     return commCudaLibraryInitResult;
