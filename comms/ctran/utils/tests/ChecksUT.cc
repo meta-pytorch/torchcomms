@@ -222,7 +222,55 @@ TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW) {
   EXPECT_THROW(FB_SYSCHECKTHROW(1), std::runtime_error);
 }
 
-TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX) {
+TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX_DIRECT) {
+  const int rank = 7;
+  const uint64_t commHash = 0xDEADBEEF;
+  const std::string desc = "testDesc";
+
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_SYSCHECKTHROW_EX_DIRECT(0, rank, commHash, desc));
+
+  // Failure case: ctran::utils::Exception thrown with correct properties
+  bool caughtException = false;
+  try {
+    FB_SYSCHECKTHROW_EX_DIRECT(EINVAL, rank, commHash, desc);
+  } catch (const ctran::utils::Exception& e) {
+    EXPECT_EQ(e.rank(), rank);
+    EXPECT_EQ(e.commHash(), commHash);
+    EXPECT_THAT(std::string(e.what()), ::testing::HasSubstr("System error:"));
+    caughtException = true;
+  }
+  ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+}
+
+TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX_LOGDATA) {
+  const int rank = 7;
+  const uint64_t commHash = 0xDEADBEEF;
+  const std::string desc = "testDesc";
+
+  CommLogData logData = {
+      .rank = rank,
+      .commHash = commHash,
+      .commDesc = desc,
+  };
+
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_SYSCHECKTHROW_EX_LOGDATA(cudaSuccess, logData));
+
+  // Failure case: ctran::utils::Exception thrown with correct properties
+  bool caughtException = false;
+  try {
+    FB_SYSCHECKTHROW_EX_LOGDATA(cudaErrorInvalidValue, logData);
+  } catch (const ctran::utils::Exception& e) {
+    EXPECT_EQ(e.rank(), rank);
+    EXPECT_EQ(e.commHash(), commHash);
+    EXPECT_THAT(std::string(e.what()), ::testing::HasSubstr("System error:"));
+    caughtException = true;
+  }
+  ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+}
+
+TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX_4ARGS) {
   const int rank = 7;
   const uint64_t commHash = 0xDEADBEEF;
   const std::string desc = "testDesc";
@@ -234,6 +282,33 @@ TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX) {
   bool caughtException = false;
   try {
     FB_SYSCHECKTHROW_EX(EINVAL, rank, commHash, desc);
+  } catch (const ctran::utils::Exception& e) {
+    EXPECT_EQ(e.rank(), rank);
+    EXPECT_EQ(e.commHash(), commHash);
+    EXPECT_THAT(std::string(e.what()), ::testing::HasSubstr("System error:"));
+    caughtException = true;
+  }
+  ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+}
+
+TEST_F(CtranUtilsCheckTest, FB_SYSCHECKTHROW_EX_2ARGS) {
+  const int rank = 7;
+  const uint64_t commHash = 0xDEADBEEF;
+  const std::string desc = "testDesc";
+
+  CommLogData logData = {
+      .rank = rank,
+      .commHash = commHash,
+      .commDesc = desc,
+  };
+
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_SYSCHECKTHROW_EX(cudaSuccess, logData));
+
+  // Failure case: ctran::utils::Exception thrown with correct properties
+  bool caughtException = false;
+  try {
+    FB_SYSCHECKTHROW_EX(cudaErrorInvalidValue, logData);
   } catch (const ctran::utils::Exception& e) {
     EXPECT_EQ(e.rank(), rank);
     EXPECT_EQ(e.commHash(), commHash);
