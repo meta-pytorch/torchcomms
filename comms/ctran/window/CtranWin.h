@@ -76,7 +76,7 @@ struct CtranWin {
   }
 
   inline uint64_t ctranNextWaitSignalVal(int peer) {
-    FB_CHECKTHROW(
+    FB_CHECKTHROW_EX_NOCOMM(
         peer < signalSize,
         "peer rank {} exceed window signal buffer size {}",
         peer,
@@ -85,7 +85,7 @@ struct CtranWin {
   }
 
   inline uint64_t ctranNextSignalVal(int peer) {
-    FB_CHECKTHROW(
+    FB_CHECKTHROW_EX_NOCOMM(
         peer < signalSize,
         "peer rank {} exceed window signal buffer size {}",
         peer,
