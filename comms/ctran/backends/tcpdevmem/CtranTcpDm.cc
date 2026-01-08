@@ -54,7 +54,11 @@ void CtranTcpDm::bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap) {
       sizeof(allListenSocketAddrs_.at(0)),
       rank_,
       nRanks_);
-  FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+  FB_COMMCHECKTHROW_EX(
+      static_cast<commResult_t>(std::move(resFuture).get()),
+      rank_,
+      commHash_,
+      commDesc_);
 
   for (int i = 0; i < nRanks_; i++) {
     sockaddr_in6* sin =
