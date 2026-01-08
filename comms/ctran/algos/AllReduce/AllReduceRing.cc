@@ -141,10 +141,10 @@ inline bool progressSendCheckRemRecvBuf(
   }
 
   auto& resp = bufSyncRResps.at(prevRound);
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX(
       resp != nullptr,
-      "bufSyncRResps is not initialized at round {}",
-      prevRound);
+      resource.comm->logMetaData_,
+      fmt::format("bufSyncRResps is not initialized at round {}", prevRound));
 
   if (resp) {
     bool isComplete = false;
@@ -239,7 +239,10 @@ inline void progressSendPostTrans(
   int tmpChunkId = getTmpChunkId(algoCtx, round);
   auto chunkArg = getRoundArgs<Op::kSendTrans>(algoCtx, round, opStep);
   // A ready to send round should never be with empty chunk
-  FB_CHECKTHROW(chunkArg.numel > 0, "Unexpected empty chunk");
+  FB_CHECKTHROW_EX(
+      chunkArg.numel > 0,
+      resource.comm->logMetaData_,
+      "Unexpected empty chunk");
 
   char* tmpRemoteRecvBuf = reinterpret_cast<char*>(args.rightRemBuf) +
       tmpChunkId * algoCtx.chunkSize;
@@ -344,12 +347,14 @@ inline bool progressRecvCheckFlush(
   int step = algoCtx.opRounds[Op::kRecvFlush].doneStep.step;
   int chunkId = getTmpChunkId(algoCtx, round);
 
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX(
       flushResps.at(round) != nullptr,
-      "Flush resp is not initialized at round {} step {} chunkId {}",
-      round,
-      step,
-      chunkId);
+      resource.comm->logMetaData_,
+      fmt::format(
+          "Flush resp is not initialized at round {} step {} chunkId {}",
+          round,
+          step,
+          chunkId));
   auto& resp = flushResps.at(round);
 
   bool isComplete = false;
@@ -814,11 +819,13 @@ commResult_t ctranAllReduceRing(
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   std::unique_ptr<struct OpElem> op;
 
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX(
       typeToFunc.contains(std::make_pair(datatype, redOp)),
-      "typeToFunc does not contain datatype {} with op {}",
-      datatype,
-      redOp);
+      comm->logMetaData_,
+      fmt::format(
+          "typeToFunc does not contain datatype {} with op {}",
+          datatype,
+          redOp));
   const void* func = typeToFunc.at(std::make_pair(datatype, redOp));
 
   int numBlocks = 0;
@@ -846,8 +853,9 @@ commResult_t ctranAllReduceRing(
   constexpr size_t kAllReduceRingNumSyncs = 3;
   FB_COMMCHECK(comm->ctran_->gpe->allocGpeKernelSyncs(
       kAllReduceRingNumSyncs, numBlocks, gpeKernelSyncs));
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX(
       gpeKernelSyncs.size() == kAllReduceRingNumSyncs,
+      comm->logMetaData_,
       "Failed to allocate GpeKernelSync");
   hostResource->sendCopySync = gpeKernelSyncs[0];
   hostResource->recvRedCopySync = gpeKernelSyncs[1];
