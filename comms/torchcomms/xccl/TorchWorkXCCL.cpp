@@ -1,18 +1,22 @@
 #include "comms/torchcomms/xccl/TorchWorkXCCL.hpp"
+#include <ATen/xpu/XPUContext.h>
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
-#include <ATen/xpu/XPUContext.h>
 
 namespace torch {
 namespace comms {
 
-TorchWorkXCCL::TorchWorkXCCL(std::shared_ptr<TorchCommXCCL> comm,
-                             xpuStream_t stream,
-                             std::chrono::milliseconds timeout_ms,
-                             const std::vector<at::Tensor> &inputTensors,
-                             std::shared_ptr<TorchCommTracing> tracing)
-    : inputTensors_(inputTensors), comm_(std::move(comm)), stream_(stream),
-      timeout_ms_(timeout_ms), state_(WorkStatus::NOT_STARTED),
+TorchWorkXCCL::TorchWorkXCCL(
+    std::shared_ptr<TorchCommXCCL> comm,
+    xpuStream_t stream,
+    std::chrono::milliseconds timeout_ms,
+    const std::vector<at::Tensor>& inputTensors,
+    std::shared_ptr<TorchCommTracing> tracing)
+    : inputTensors_(inputTensors),
+      comm_(std::move(comm)),
+      stream_(stream),
+      timeout_ms_(timeout_ms),
+      state_(WorkStatus::NOT_STARTED),
       tracing_(std::move(tracing)) {
   // If not in graph capture mode, create the events for start and end
   // recording
@@ -32,18 +36,22 @@ TorchWorkXCCL::~TorchWorkXCCL() {
 }
 
 void TorchWorkXCCL::recordStart() {
-  XPU_CHECK(comm_->getXpuApi(),
-            comm_->getXpuApi()->eventRecord(start_event_, stream_),
-            "Failed to record start event");
+  XPU_CHECK(
+      comm_->getXpuApi(),
+      comm_->getXpuApi()->eventRecord(start_event_, stream_),
+      "Failed to record start event");
 }
 
 void TorchWorkXCCL::recordEnd() {
-  XPU_CHECK(comm_->getXpuApi(),
-            comm_->getXpuApi()->eventRecord(end_event_, stream_),
-            "Failed to record end event");
+  XPU_CHECK(
+      comm_->getXpuApi(),
+      comm_->getXpuApi()->eventRecord(end_event_, stream_),
+      "Failed to record end event");
 }
 
-bool TorchWorkXCCL::isCompleted() { return state_ == WorkStatus::COMPLETED; }
+bool TorchWorkXCCL::isCompleted() {
+  return state_ == WorkStatus::COMPLETED;
+}
 
 TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
   // If already marked as completed, return COMPLETED
@@ -61,8 +69,9 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
       // Start event has completed, store the current time
       start_completed_time_ = std::chrono::steady_clock::now();
       state_ = WorkStatus::INPROGRESS;
-    } else if (start_status != XPU_ERROR_NOT_READY &&
-               start_status != XPU_ERROR_UNSUPPORTED) {
+    } else if (
+        start_status != XPU_ERROR_NOT_READY &&
+        start_status != XPU_ERROR_UNSUPPORTED) {
       // Some other error occurred with the start event
       TC_LOG(ERROR) << "XPU error during start event query: "
                     << comm_->getXpuApi()->getErrorString(start_status) << " ("
@@ -122,9 +131,10 @@ void TorchWorkXCCL::wait() {
   // Add a dependency from the work's stream to the current stream
   // This makes the current stream wait for the end_event_ recorded on the
   // work's stream
-  XPU_CHECK(comm_->getXpuApi(),
-            comm_->getXpuApi()->streamWaitEvent(current_stream, end_event_, 0),
-            "Failed to make stream wait for event");
+  XPU_CHECK(
+      comm_->getXpuApi(),
+      comm_->getXpuApi()->streamWaitEvent(current_stream, end_event_, 0),
+      "Failed to make stream wait for event");
 }
 } // namespace comms
 } // namespace torch
