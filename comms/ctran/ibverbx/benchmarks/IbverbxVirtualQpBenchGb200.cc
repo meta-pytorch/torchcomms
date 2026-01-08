@@ -534,7 +534,10 @@ static void BM_Ibverbx_VirtualQp_RdmaRead(benchmark::State& state) {
       BenchmarkSetup::pollCqUntilCompletion(setup.receiver->cq, "Receiver");
     }
 
-    state.SetBytesProcessed(state.iterations() * bufferSize);
+    // Calculate and report bandwidth using custom counters
+    double totalBytes = static_cast<double>(state.iterations()) * bufferSize;
+    state.counters["BW_GBps"] =
+        benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
   } catch (const std::exception& e) {
     XLOGF(FATAL, "Benchmark setup failed: {}", e.what());
     return;
@@ -577,7 +580,10 @@ static void BM_Ibverbx_VirtualQp_RdmaWrite(benchmark::State& state) {
       BenchmarkSetup::pollCqUntilCompletion(setup.sender->cq, "Sender");
     }
 
-    state.SetBytesProcessed(state.iterations() * bufferSize);
+    // Calculate and report bandwidth using custom counters
+    double totalBytes = static_cast<double>(state.iterations()) * bufferSize;
+    state.counters["BW_GBps"] =
+        benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
   } catch (const std::exception& e) {
     XLOGF(FATAL, "[BM_RdmaWrite] Benchmark setup failed: {}", e.what());
     return;
@@ -635,7 +641,10 @@ static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm(
       BenchmarkSetup::pollCqUntilCompletion(setup.receiver->cq, "Receiver");
     }
 
-    state.SetBytesProcessed(state.iterations() * bufferSize);
+    // Calculate and report bandwidth using custom counters
+    double totalBytes = static_cast<double>(state.iterations()) * bufferSize;
+    state.counters["BW_GBps"] =
+        benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
   } catch (const std::exception& e) {
     XLOGF(FATAL, "Benchmark setup failed: {}", e.what());
     return;
