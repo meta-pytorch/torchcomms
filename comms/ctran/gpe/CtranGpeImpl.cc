@@ -241,7 +241,8 @@ commResult_t CtranGpe::Impl::submit(
   // FIXME: the multi-stream order enforcement is not compatible with cuda graph
   // capture; disable it under cuda graph capture as a workaround. We'd need
   // proper fix to support the compatibility.
-  if (streamCaptureInfo.status != cudaStreamCaptureStatusActive) {
+  if (streamCaptureInfo.status != cudaStreamCaptureStatusActive &&
+      kernelConfig.linearExecution) {
     FB_COMMCHECK(preKernelLaunch(kernelConfig.stream));
   }
 
@@ -363,7 +364,8 @@ commResult_t CtranGpe::Impl::submit(
   // FIXME: the multi-stream order enforcement is not compatible with cuda graph
   // capture; disable it under cuda graph capture as a workaround. We'd need
   // proper fix to support the compatibility.
-  if (streamCaptureInfo.status != cudaStreamCaptureStatusActive) {
+  if (streamCaptureInfo.status != cudaStreamCaptureStatusActive &&
+      kernelConfig.linearExecution) {
     FB_COMMCHECK(postKernelLaunch(kernelConfig.stream));
   }
 

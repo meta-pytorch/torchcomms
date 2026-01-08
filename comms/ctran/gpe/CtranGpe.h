@@ -320,24 +320,33 @@ struct KernelConfig {
   const uint64_t opCount;
   bool isDevice{true};
 
+  const bool linearExecution{true};
+
  public:
   KernelConfig(
       enum KernelType type,
       cudaStream_t stream,
       const std::string& algoName,
-      const uint64_t opCount)
-      : type(type), stream(stream), algoName(algoName), opCount(opCount) {};
+      const uint64_t opCount,
+      const bool linearExecution = true)
+      : type(type),
+        stream(stream),
+        algoName(algoName),
+        opCount(opCount),
+        linearExecution(linearExecution) {};
   KernelConfig(
       enum KernelType type,
       cudaStream_t stream,
       const std::string& algoName,
       void* algoArgs,
-      const uint64_t opCount)
+      const uint64_t opCount,
+      const bool linearExecution = true)
       : type(type),
         stream(stream),
         algoArgs(algoArgs),
         algoName(algoName),
-        opCount(opCount) {};
+        opCount(opCount),
+        linearExecution(linearExecution) {};
   std::string toString();
   ~KernelConfig() {};
 };
