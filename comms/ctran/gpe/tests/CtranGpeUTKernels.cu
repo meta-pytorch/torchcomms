@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/common/DevUtils.cuh"
+#include "comms/common/AtomicUtils.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/common/GpeKernelDev.cuh"
 // FIXME [REBASE]: update the path once moved to fbcode/comms
@@ -111,7 +111,7 @@ __global__ void CtranGpeTestFtDisabledOobTerminateKernel(
 
   devStateLoadToShm(devState_d);
 
-  while (comms::device::loadInt(args.terminate) == 0)
+  while (comms::device::ld_volatile_global(args.terminate) == 0)
     ;
 
   // FtDisabled: GpeThread will terminate after setting AsyncEx_, and will not
@@ -130,7 +130,7 @@ __global__ void CtranGpeTestFtEnabledOobTerminateKernel(
 
   devStateLoadToShm(devState_d);
 
-  while (comms::device::loadInt(args.terminate) == 0)
+  while (comms::device::ld_volatile_global(args.terminate) == 0)
     ;
 
   // FtEnabled: GpeThread will abort kernel after setting AsyncEx_.
