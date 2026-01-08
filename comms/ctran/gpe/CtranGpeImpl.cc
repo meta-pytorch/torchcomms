@@ -544,9 +544,7 @@ void CtranGpe::Impl::gpeThreadFn() {
         // info at failure or throw exception from bottom.
         CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(comm, {
           FB_COMMCHECKTHROW_EX(
-              cmd->coll.func(cmd->coll.opGroup),
-              statex->rank(),
-              statex->commHash());
+              cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
         });
 
         if (cmd->persistent) {

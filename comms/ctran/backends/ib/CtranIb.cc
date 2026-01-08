@@ -397,8 +397,7 @@ void CtranIb::init(
   this->bootstrapMode = bootstrapMode;
   this->devices.resize(NCCL_CTRAN_IB_DEVICES_PER_RANK);
   this->cqs.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
-  FB_COMMCHECKTHROW_EX(
-      this->setPgToTrafficClassMap(), this->rank, this->commHash);
+  FB_COMMCHECKTHROW_EX(this->setPgToTrafficClassMap(), this->ncclLogData);
 
   CtranIbSingleton& s = CtranIbSingleton::getInstance();
 
@@ -668,8 +667,7 @@ void CtranIb::bootstrapStart(
         comm->statex_->nRanks());
     FB_COMMCHECKTHROW_EX(
         static_cast<commResult_t>(std::move(resFuture).get()),
-        this->rank,
-        this->commHash);
+        this->ncclLogData);
   }
 
   this->listenThread = std::thread{bootstrapAccept, this};
@@ -1066,7 +1064,7 @@ std::string CtranIb::getLocalVcIdentifier(const int peerRank) {
     const std::lock_guard<std::mutex> lock(vc->mutex);
     localBusCard.resize(vc->getBusCardSize());
     FB_COMMCHECKTHROW_EX(
-        vc->getLocalBusCard(localBusCard.data()), this->rank, this->commHash);
+        vc->getLocalBusCard(localBusCard.data()), this->ncclLogData);
   }
   return localBusCard;
 }
@@ -1079,9 +1077,7 @@ commResult_t CtranIb::connectVcDirect(
   {
     const std::lock_guard<std::mutex> lock(vc->mutex);
     FB_COMMCHECKTHROW_EX(
-        vc->setupVc((void*)remoteVcIdentifier.data()),
-        this->rank,
-        this->commHash);
+        vc->setupVc((void*)remoteVcIdentifier.data()), this->ncclLogData);
   }
 
   uint32_t controlQp = vc->getControlQpNum();
@@ -1091,7 +1087,7 @@ commResult_t CtranIb::connectVcDirect(
 
   // Till now VC is not yet exposed to local rank. Local rank can use the VC
   // once updated the vcStateMaps.
-  FB_COMMCHECKTHROW_EX(updateVcState(vc, peerRank), this->rank, this->commHash);
+  FB_COMMCHECKTHROW_EX(updateVcState(vc, peerRank), this->ncclLogData);
 
   CLOGF_SUBSYS(
       INFO,
