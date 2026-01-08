@@ -19,7 +19,7 @@ cas(uint32_t* addr, uint32_t compare, uint32_t val) {
   ::cuda::atomic_ref<uint32_t, ::cuda::thread_scope_system> ref(*addr);
   ref.compare_exchange_strong(compare, val, ::cuda::std::memory_order(Sem));
   return compare;
-#elif defined(USE_ROCM)
+#elif defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__)
   __atomic_compare_exchange_n(
       addr, &compare, val, false, static_cast<int>(Sem), __ATOMIC_RELAXED);
   return compare;
