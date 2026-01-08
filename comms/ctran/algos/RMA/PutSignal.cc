@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <cuda.h>
 #include <memory>
 
 #include "Types.h"
@@ -8,6 +9,7 @@
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -284,7 +286,7 @@ static commResult_t signalImpl(
   return commSuccess;
 }
 
-static commResult_t waitSignalImpl(
+static commResult_t waitSignalSpinningKernelImpl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   struct OpElem* op = opGroup.front().get();
   auto comm = op->comm_;
@@ -294,7 +296,7 @@ static commResult_t waitSignalImpl(
   CtranAlgoRMALogger logger("ctranWaitSignal", op->opCount, -1, win, comm);
   CLOGF_TRACE(
       COLL,
-      "waitSignalImpl: signalAddr {}, cmpVal={}",
+      "waitSignalSpinningKernelImpl: signalAddr {}, cmpVal={}",
       (void*)const_cast<uint64_t*>(op->waitsignal.signalAddr),
       op->waitsignal.cmpVal);
   // Spin-wait until the signal is received.
@@ -415,26 +417,69 @@ commResult_t ctranPutSignal(
   return commSuccess;
 }
 
-commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
+// Hardware-accelerated wait using CUDA Driver API directly
+// Returns commSuccess if hardware wait was used, otherwise returns error to
+// fallback This avoids GPU spinning kernel overhead by using hardware memory
+// polling
+static commResult_t
+waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
+#if CUDART_VERSION >= 11070
+  // Check if hardware wait is available at runtime
+  if (FB_CUPFN(cuStreamWaitValue64) == nullptr) {
+    return commInternalError;
+  }
+
+  // Get the signal address
+  const uint64_t* signalAddr = win->winSignalPtr + peer;
+  // Get the expected compare value
+  uint64_t cmpVal = win->ctranNextWaitSignalVal(peer);
+
+  // Use hardware-accelerated stream wait (zero GPU overhead!)
+  // This uses hardware memory polling
+  CUresult result = FB_CUPFN(cuStreamWaitValue64)(
+      (CUstream)stream,
+      (CUdeviceptr)signalAddr,
+      cmpVal,
+      CU_STREAM_WAIT_VALUE_GEQ);
+
+  if (result != CUDA_SUCCESS) {
+    const char* errStr = nullptr;
+    FB_CUPFN(cuGetErrorString)(result, &errStr);
+
+    // Only fallback on NOT_SUPPORTED - this is safe (hardware doesn't support)
+    // Other errors (e.g., INVALID_VALUE) may indicate prior async failures
+    // that could cause the spinning kernel to hang, so propagate them
+    if (result == CUDA_ERROR_NOT_SUPPORTED) {
+      CLOGF(
+          WARN,
+          "CTRAN RMA: Hardware wait not supported ({}), falling back to spinning kernel",
+          errStr ? errStr : "unknown error");
+      return commInvalidUsage;
+    }
+
+    // Propagate other errors - do not fallback as they may indicate
+    // stream corruption from prior async operations
+    CLOGF(
+        ERR,
+        "CTRAN RMA: Hardware wait failed with error ({}), not falling back",
+        errStr ? errStr : "unknown error");
+    return commInternalError;
+  }
+
+  return commSuccess;
+#else
+  // CUDA < 11.7 doesn't support cuStreamWaitValue64
+  return commInvalidUsage;
+#endif
+}
+
+static commResult_t waitSignalSpinningKernel(
+    int peer,
+    CtranWin* win,
+    cudaStream_t stream,
+    uint64_t waitOpCount) {
   CtranComm* comm = win->comm;
-  auto statex = comm->statex_.get();
   auto waitSignalVal = win->ctranNextWaitSignalVal(peer);
-  const auto winOpCount = win->updateOpCount(peer);
-  const auto waitOpCount =
-      win->updateOpCount(peer, window::OpCountType::kWaitSignal);
-  CTRAN_RMA_INFO(
-      "ctranWaitSignal",
-      waitOpCount,
-      winOpCount,
-      nullptr,
-      peer, // signal disp
-      size_t(1), // signal count
-      commDataType_t::commUint64, // signal datatype
-      statex->rank(),
-      peer,
-      win,
-      comm,
-      stream);
 
   const uint64_t* signalAddr = win->winSignalPtr + peer;
 
@@ -468,7 +513,7 @@ commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
 
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
-      waitSignalImpl,
+      waitSignalSpinningKernelImpl,
       config,
       reinterpret_cast<void*>(ncclKernelWaitSignal)));
   return commSuccess;
@@ -528,4 +573,58 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
       config,
       reinterpret_cast<void*>(ncclKernelSignal)));
   return commSuccess;
+}
+
+// Hardware-accelerated wait with automatic fallback to spinning kernel
+// This is the recommended API for best performance
+// Tries hardware wait first (CUDA 11.7+), falls back to spinning kernel
+commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
+  CtranComm* comm = win->comm;
+  auto statex = comm->statex_.get();
+
+  // Track op counts for BOTH implementations
+  const auto winOpCount = win->updateOpCount(peer);
+  const auto waitOpCount =
+      win->updateOpCount(peer, window::OpCountType::kWaitSignal);
+
+  // Log this operation for BOTH implementations
+  CTRAN_RMA_INFO(
+      "ctranWaitSignal",
+      waitOpCount,
+      winOpCount,
+      nullptr,
+      peer,
+      size_t(1),
+      commDataType_t::commUint64,
+      statex->rank(),
+      peer,
+      win,
+      comm,
+      stream);
+
+  // Only try hardware wait for GPU memory windows
+  if (win->isGpuMem()) {
+    // Try hardware-accelerated wait first (zero GPU overhead!)
+    commResult_t hwResult = waitSignalDriverApi(peer, win, stream);
+
+    if (hwResult == commSuccess) {
+      CLOGF_TRACE(
+          COLL, "CTRAN RMA: WaitSignal successful using hardware acceleration");
+      return commSuccess;
+    }
+
+    // Only fallback on commInvalidUsage (CUDA_ERROR_NOT_SUPPORTED)
+    // Other errors (commInternalError) are propagated to avoid masking
+    // potential stream corruption from prior async operations
+    if (hwResult != commInvalidUsage) {
+      return hwResult;
+    }
+  }
+
+  // Fallback to spinning kernel implementation
+  CLOGF(
+      INFO,
+      "CTRAN RMA: WaitSignal falling back to spinning kernel (peer={})",
+      peer);
+  return waitSignalSpinningKernel(peer, win, stream, waitOpCount);
 }
