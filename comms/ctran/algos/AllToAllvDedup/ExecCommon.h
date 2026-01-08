@@ -178,7 +178,7 @@ inline CtranMapperRequest* getReservedReq(
     std::vector<CtranMapperRequest>& vec,
     const int reserved) {
   auto& req = vec.emplace_back();
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX_NOCOMM(
       vec.size() <= reserved,
       "Emplace {}-th request exceeds reserved {}. It is likely a bug",
       vec.size() - 1,
