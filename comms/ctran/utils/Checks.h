@@ -158,16 +158,6 @@
     }                                                             \
   } while (0)
 
-#define FB_SYSCHECKTHROW(cmd)                                                  \
-  do {                                                                         \
-    int err = cmd;                                                             \
-    if (err != 0) {                                                            \
-      auto errstr = folly::errnoStr(err);                                      \
-      CLOGF(ERR, "{}:{} -> {} ({})", __FILE__, __LINE__, err, errstr.c_str()); \
-      throw std::runtime_error(std::string("System error: ") + errstr);        \
-    }                                                                          \
-  } while (0)
-
 #define FB_SYSCHECKTHROW_EX_DIRECT(cmd, rank, commHash, desc)                  \
   do {                                                                         \
     int err = cmd;                                                             \
