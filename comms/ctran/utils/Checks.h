@@ -43,6 +43,10 @@
 
 #define FB_CUDACHECK(cmd) FB_CUDACHECK_RETURN(cmd, commUnhandledCudaError)
 
+// Note: when writing code for the comms/ctran directory, prefer the
+// FB_CUDACHECKTHROW_EX or FB_CUDACHECKTHROW_EX_NOCOMM macros.
+//
+// TODO(T250777174): Move this definition out of the ctran directory.
 #define FB_CUDACHECKTHROW(cmd)                                      \
   do {                                                              \
     cudaError_t err = cmd;                                          \
@@ -99,6 +103,12 @@
       UNUSED_PLACEHOLDER_3_ARGS,    \
       FB_CUDACHECKTHROW_EX_LOGDATA, \
       UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
+
+// For contexts where rank/commHash/commDesc are not available
+// (e.g., utility functions, initialization code, standalone CUDA operations).
+// Use FB_CUDACHECKTHROW_EX when communicator context is available.
+#define FB_CUDACHECKTHROW_EX_NOCOMM(cmd) \
+  FB_CUDACHECKTHROW_EX_DIRECT(cmd, std::nullopt, std::nullopt, std::nullopt)
 
 #define FB_CUDACHECKGOTO(cmd, RES, label)                     \
   do {                                                        \

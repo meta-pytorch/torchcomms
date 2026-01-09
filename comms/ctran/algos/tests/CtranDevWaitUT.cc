@@ -18,7 +18,7 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
   void SetUp() override {
     CtranStandaloneFixture::SetUp();
 
-    FB_CUDACHECKTHROW(
+    FB_CUDACHECKTHROW_EX_NOCOMM(
         cudaHostAlloc(&flag_, kNBlocks * sizeof(int), cudaHostAllocDefault));
     for (int i = 0; i < kNBlocks; i++) {
       *flag_ = KERNEL_STARTED;
@@ -30,7 +30,7 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
         /*commHash=*/0);
 
     memset(&args_, 0, sizeof(args_));
-    FB_CUDACHECKTHROW(
+    FB_CUDACHECKTHROW_EX_NOCOMM(
         cudaHostAlloc(&args_.h2d, sizeof(*args_.h2d), cudaHostAllocDefault));
     args_.h2d->intSync = 0;
     args_.h2d->elem.ngroups = kNBlocks;
@@ -43,7 +43,7 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
             &args_.d2h, 1, /*logMetaData=*/nullptr, "CtranDeviceWaitUT"),
         /*rank=*/0,
         /*commHash=*/0);
-    FB_CUDACHECKTHROW(cudaMemset(args_.d2h, 0, sizeof(*args_.d2h)));
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaMemset(args_.d2h, 0, sizeof(*args_.d2h)));
 
     d2h_.revoked = false;
     d2h_.warpTested = false;
@@ -51,10 +51,10 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
   void TearDown() override {
     FB_COMMCHECKTHROW_EX(
         ctran::utils::commCudaFree(args_.d2h), /*rank=*/0, /*commHash=*/0);
-    FB_CUDACHECKTHROW(cudaFreeHost(args_.h2d));
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaFreeHost(args_.h2d));
     FB_COMMCHECKTHROW_EX(
         ctran::utils::commCudaFree(devState_), /*rank=*/0, /*commHash=*/0);
-    FB_CUDACHECKTHROW(cudaFreeHost(flag_));
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaFreeHost(flag_));
   }
 
   void waitStreamFor(bool expectFinish, std::chrono::seconds secs) {
@@ -75,7 +75,7 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
   void verifyKernelUnblockBehavior(FnName fnName, bool enableCancellableWaits) {
     args_.h2d->fnName = fnName;
 
-    FB_CUDACHECKTHROW(cudaMemcpy(
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaMemcpy(
         &devState_->enableCancellableWaits,
         &enableCancellableWaits,
         sizeof(bool),
