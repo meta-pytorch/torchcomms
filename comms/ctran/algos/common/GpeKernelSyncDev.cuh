@@ -2,6 +2,7 @@
 
 #pragma once
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/common/DeviceConstants.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
