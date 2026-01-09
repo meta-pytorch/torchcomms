@@ -164,7 +164,7 @@ function build_third_party {
         ninja
         jemalloc
         gtest
-        boost
+        libboost
         double-conversion
         libevent
         conda-forge::libsodium
@@ -323,7 +323,6 @@ function build_nccl {
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
-    NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE" \
     CUDARTLIB="$CUDARTLIB"
 }
 
@@ -340,11 +339,10 @@ make VERBOSE=1 -j \
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
-    NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE" \
     CUDARTLIB="$CUDARTLIB"
 }
 
-if [[ -z "${NCCL_BUILD_INSTALL_NCCL}" ]]; then
+if [[ -z "${NCCL_BUILD_AND_INSTALL}" ]]; then
   build_nccl
 else
   build_and_install_nccl
@@ -359,12 +357,7 @@ if [ -n "${NCCL_RUN_SANITY_CHECK}" ]; then
     make all \
       NVCC_GENCODE="$NVCC_GENCODE" \
       CUDA_HOME="$CUDA_HOME" \
-      NCCL_HOME="$CONDA_PREFIX" \
-      DEV_SIGNATURE="$DEV_SIGNATURE" \
-      FBCODE_DIR="$FBCODE_DIR" \
-      CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
-      CONDA_LIB_DIR="$CONDA_LIB_DIR" \
-      NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE"
+      NCCL_HOME="$NCCL_HOME"
 
     set +e
 
