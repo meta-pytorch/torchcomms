@@ -78,7 +78,7 @@ void CtranTcpDm::bootstrapAddRecvPeer(
 
 void CtranTcpDm::bootstrapAccept() {
   // Set cudaDev for logging
-  FB_CUDACHECKTHROW(cudaSetDevice(cudaDev_));
+  FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev_), rank_, commHash_, commDesc_);
   commNamedThreadStart(
       "CTranTcpListen", rank_, commHash_, commDesc_.c_str(), __func__);
 
