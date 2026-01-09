@@ -593,8 +593,9 @@ void CtranGpe::Impl::gpeThreadFn() {
         // the allocations in the round robin fashion to avoid immediate
         // reuse.
         if (cmd->unpackPool != nullptr) {
-          FB_COMMCHECKTHROW(
-              comm->ctran_->mapper->teardownUnpackConsumer(cmd->unpackPool));
+          FB_COMMCHECKTHROW_EX(
+              comm->ctran_->mapper->teardownUnpackConsumer(cmd->unpackPool),
+              comm->logMetaData_);
         }
       }
 
