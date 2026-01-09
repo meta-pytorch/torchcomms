@@ -27,7 +27,7 @@ CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
   // among all local ranks. It should not be triggered on-demand at local
   // getDevState() call.
   // TODO: Properly move some heavy allocation to on-demand.
-  FB_COMMCHECKTHROW(initKernelResources());
+  FB_COMMCHECKTHROW_EX(initKernelResources(), comm_->logMetaData_);
   if (!comm->runtimeConn_) {
     FB_COMMCHECKIGNORE(initTmpBufs());
   }
@@ -63,7 +63,7 @@ CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
       this->sendbuffsPtrTmpbufCPU;
   tmpbufSegmentOffsets[TmpbufType::SENDBUFFS_PTR_TMPBUF_CPU] = 0;
 
-  FB_COMMCHECKTHROW(initializeCommAttributesMap());
+  FB_COMMCHECKTHROW_EX(initializeCommAttributesMap(), comm_->logMetaData_);
 
   return;
 }
@@ -92,13 +92,15 @@ CtranAlgo::~CtranAlgo() {
   }
   if (this->tmpbuf) {
     if (comm_->memCache_) {
-      FB_COMMCHECKTHROW(comm_->memCache_->release({this->tmpBufKey}));
+      FB_COMMCHECKTHROW_EX(
+          comm_->memCache_->release({this->tmpBufKey}), comm_->logMetaData_);
     } else {
       // `ctran::utils::commCudaFree` automatically decides whether to use
       // commCuMemFree
       // or cudaFree to free buffer based on cuMem support
-      FB_COMMCHECKTHROW(
-          ctran::utils::commCudaFree(this->tmpbuf, &this->comm_->logMetaData_));
+      FB_COMMCHECKTHROW_EX(
+          ctran::utils::commCudaFree(this->tmpbuf, &this->comm_->logMetaData_),
+          comm_->logMetaData_);
     }
   }
   if (this->sendCountsTmpbufCPU) {
@@ -367,7 +369,8 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   void* devShmPtr = this->ipcMem_->getBase();
   this->devShmPtr = devShmPtr;
 
-  FB_COMMCHECKTHROW(this->ipcMem_->ipcExport(ipcDescs[localRank]));
+  FB_COMMCHECKTHROW_EX(
+      this->ipcMem_->ipcExport(ipcDescs[localRank]), comm_->logMetaData_);
 
   // Initialize device state and chunk state for each peer
   for (int i = 0; i < nLocalRanks; i++) {
@@ -414,7 +417,9 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
       localRank,
       nLocalRanks,
       statex->localRankToRanks());
-  FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+  FB_COMMCHECKTHROW_EX(
+      static_cast<commResult_t>(std::move(resFuture).get()),
+      comm_->logMetaData_);
 
   // Setup mapped shared memory region pointers for all local ranks
   this->mappedDevShmPtrs.resize(nLocalRanks);
@@ -441,7 +446,9 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   // other ranks are still importing, which may fail.
   resFuture = comm_->bootstrap_->barrierIntraNode(
       localRank, nLocalRanks, statex->localRankToRanks());
-  FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+  FB_COMMCHECKTHROW_EX(
+      static_cast<commResult_t>(std::move(resFuture).get()),
+      comm_->logMetaData_);
 
   CLOGF(
       INFO,
@@ -744,30 +751,35 @@ commResult_t CtranAlgo::initTmpBufs() {
     ss << "Ctran::InitTmpBuf " << this->comm_->statex_->commHash();
     this->tmpBufKey = ss.str();
 
-    FB_COMMCHECKTHROW(comm_->memCache_->getCachedCuMemById(
-        this->tmpBufKey,
-        &this->tmpbuf,
-        /*cuHandle=*/nullptr,
-        segmentManager.totalLen,
-        &this->comm_->logMetaData_,
-        __func__));
+    FB_COMMCHECKTHROW_EX(
+        comm_->memCache_->getCachedCuMemById(
+            this->tmpBufKey,
+            &this->tmpbuf,
+            /*cuHandle=*/nullptr,
+            segmentManager.totalLen,
+            &this->comm_->logMetaData_,
+            __func__),
+        comm_->logMetaData_);
   } else {
     // `ctran::utils::commCudaMalloc` automatically decides whether to use cuMem
     // or cudaMalloc to allocate buffer based on cuMem support
-    FB_COMMCHECKTHROW(
+    FB_COMMCHECKTHROW_EX(
         ctran::utils::commCudaMalloc(
             (char**)&this->tmpbuf,
             segmentManager.totalLen,
             &this->comm_->logMetaData_,
-            "initTmpBufs"));
+            "initTmpBufs"),
+        comm_->logMetaData_);
   }
-  FB_COMMCHECKTHROW(ctran_->mapper->regMem(
-      this->tmpbuf,
-      segmentManager.totalLen,
-      &this->tmpbufSegHdl,
-      true,
-      true,
-      &this->tmpbufRegHdl));
+  FB_COMMCHECKTHROW_EX(
+      ctran_->mapper->regMem(
+          this->tmpbuf,
+          segmentManager.totalLen,
+          &this->tmpbufSegHdl,
+          true,
+          true,
+          &this->tmpbufRegHdl),
+      comm_->logMetaData_);
 
   // set offsets within the slab buffer for each tmpbuf type
   // note SENDCOUNTS_TMPBUF_CPU is a CPU type buffer, both its size and offset
@@ -839,7 +851,7 @@ CtranAlgo::getRemoteTmpBufInfo(int peer) {
   // ensure all tmp buffers are exchanged, will be a no-op if already done
   // we only do on demand exchange at here to avoid a race condition for
   // intra-node buff exchange.
-  FB_COMMCHECKTHROW(this->exchangePeerTmpbuf(peer));
+  FB_COMMCHECKTHROW_EX(this->exchangePeerTmpbuf(peer), comm_->logMetaData_);
 
   return std::make_tuple(
       this->remoteTmpbuffs.at(peer), this->remoteTmpAccessKeys.at(peer));
@@ -848,7 +860,7 @@ CtranAlgo::getRemoteTmpBufInfo(int peer) {
 std::tuple<void*, struct CtranMapperRemoteAccessKey>
 CtranAlgo::getInterNodeTmpBufInfo(int peer) {
   // ensure all tmp buffers are exchanged, will be a no-op if already done
-  FB_COMMCHECKTHROW(this->exchangeInterNodeTmpbuf());
+  FB_COMMCHECKTHROW_EX(this->exchangeInterNodeTmpbuf(), comm_->logMetaData_);
 
   return std::make_tuple(
       this->remoteTmpbuffs.at(peer), this->remoteTmpAccessKeys.at(peer));

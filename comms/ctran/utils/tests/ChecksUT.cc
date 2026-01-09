@@ -175,16 +175,17 @@ TEST_F(CtranUtilsCheckTest, ErrorThrow) {
 }
 
 TEST_F(CtranUtilsCheckTest, ErrorThrowEx) {
-  auto dummyFn = [](int rank, uint64_t commHash) {
-    FB_COMMCHECKTHROW_EX(commSystemError, rank, commHash);
+  auto dummyFn = [](int rank, uint64_t commHash, std::string commDesc) {
+    FB_COMMCHECKTHROW_EX(commSystemError, rank, commHash, commDesc);
     return commSuccess;
   };
 
   const auto rank = 1;
   const auto commHash = 0x1234;
+  const std::string commDesc = "testDesc";
   bool caughtException = false;
   try {
-    dummyFn(rank, commHash);
+    dummyFn(rank, commHash, commDesc);
   } catch (const ctran::utils::Exception& e) {
     auto errMsg = std::string(e.what());
     EXPECT_THAT(errMsg, ::testing::HasSubstr("COMM internal failure:"));
@@ -327,4 +328,145 @@ TEST_F(CtranUtilsCheckTest, FB_SYSCHECKRETURN) {
 
   EXPECT_EQ(testFn(false), NOERROR);
   EXPECT_EQ(testFn(true), ERRORCODE2);
+}
+
+TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_DIRECT) {
+  const int rank = 7;
+  const uint64_t commHash = 0xDEADBEEF;
+  const std::string commDesc = "testDesc";
+
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(
+      FB_COMMCHECKTHROW_EX_DIRECT(commSuccess, rank, commHash, commDesc));
+
+  for (size_t i = 0; i < commNumResults; i++) {
+    const auto commResult = static_cast<commResult_t>(i);
+    if (commResult == commSuccess || commResult == commInProgress) {
+      continue;
+    }
+
+    // Failure case: ctran::utils::Exception thrown with correct properties
+    bool caughtException = false;
+    try {
+      FB_COMMCHECKTHROW_EX_DIRECT(commResult, rank, commHash, commDesc);
+    } catch (const ctran::utils::Exception& e) {
+      EXPECT_EQ(e.result(), commResult);
+      EXPECT_EQ(e.rank(), rank);
+      EXPECT_EQ(e.commHash(), commHash);
+      EXPECT_THAT(
+          std::string(e.what()),
+          ::testing::HasSubstr("COMM internal failure:"));
+      caughtException = true;
+    }
+    ASSERT_TRUE(caughtException)
+        << "Expected ctran::utils::Exception for commResult=" << commResult;
+  }
+}
+
+TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_LOGDATA) {
+  const int rank = 7;
+  const uint64_t commHash = 0xDEADBEEF;
+  const std::string commDesc = "testDesc";
+
+  CommLogData logData = {
+      .rank = rank,
+      .commHash = commHash,
+      .commDesc = commDesc,
+  };
+
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_COMMCHECKTHROW_EX_LOGDATA(commSuccess, logData));
+
+  for (size_t i = 0; i < commNumResults; i++) {
+    const auto commResult = static_cast<commResult_t>(i);
+    if (commResult == commSuccess || commResult == commInProgress) {
+      continue;
+    }
+
+    // Failure case: ctran::utils::Exception thrown with correct properties
+    bool caughtException = false;
+    try {
+      FB_COMMCHECKTHROW_EX_LOGDATA(commResult, logData);
+    } catch (const ctran::utils::Exception& e) {
+      EXPECT_EQ(e.result(), commResult);
+      EXPECT_EQ(e.rank(), rank);
+      EXPECT_EQ(e.commHash(), commHash);
+      EXPECT_THAT(
+          std::string(e.what()),
+          ::testing::HasSubstr("COMM internal failure:"));
+      caughtException = true;
+    }
+    ASSERT_TRUE(caughtException)
+        << "Expected ctran::utils::Exception for commResult=" << commResult;
+  }
+}
+
+TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_3ARGS) {
+  const int rank = 7;
+  const uint64_t commHash = 0xDEADBEEF;
+  const std::string commDesc = "testDesc";
+
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_COMMCHECKTHROW_EX(commSuccess, rank, commHash, commDesc));
+
+  for (size_t i = 0; i < commNumResults; i++) {
+    const auto commResult = static_cast<commResult_t>(i);
+    if (commResult == commSuccess || commResult == commInProgress) {
+      continue;
+    }
+
+    // Failure case: ctran::utils::Exception thrown with correct properties
+    bool caughtException = false;
+    try {
+      FB_COMMCHECKTHROW_EX(commResult, rank, commHash, commDesc);
+    } catch (const ctran::utils::Exception& e) {
+      EXPECT_EQ(e.result(), commResult);
+      EXPECT_EQ(e.rank(), rank);
+      EXPECT_EQ(e.commHash(), commHash);
+      EXPECT_THAT(
+          std::string(e.what()),
+          ::testing::HasSubstr("COMM internal failure:"));
+      caughtException = true;
+    }
+    ASSERT_TRUE(caughtException)
+        << "Expected ctran::utils::Exception for commResult=" << commResult;
+  }
+}
+
+TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_2ARGS) {
+  const int rank = 7;
+  const uint64_t commHash = 0xDEADBEEF;
+  const std::string commDesc = "testDesc";
+
+  CommLogData logData = {
+      .rank = rank,
+      .commHash = commHash,
+      .commDesc = commDesc,
+  };
+
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_COMMCHECKTHROW_EX(commSuccess, logData));
+
+  for (size_t i = 0; i < commNumResults; i++) {
+    const auto commResult = static_cast<commResult_t>(i);
+    if (commResult == commSuccess || commResult == commInProgress) {
+      continue;
+    }
+
+    // Failure case: ctran::utils::Exception thrown with correct properties
+    bool caughtException = false;
+    try {
+      FB_COMMCHECKTHROW_EX(commResult, logData);
+    } catch (const ctran::utils::Exception& e) {
+      EXPECT_EQ(e.result(), commResult);
+      EXPECT_EQ(e.rank(), rank);
+      EXPECT_EQ(e.commHash(), commHash);
+      EXPECT_THAT(
+          std::string(e.what()),
+          ::testing::HasSubstr("COMM internal failure:"));
+      caughtException = true;
+    }
+    ASSERT_TRUE(caughtException)
+        << "Expected ctran::utils::Exception for commResult=" << commResult;
+  }
 }

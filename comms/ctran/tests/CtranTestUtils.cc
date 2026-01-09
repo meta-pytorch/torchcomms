@@ -800,16 +800,14 @@ void workerRoutine(PerRankState& state) {
           CtranIntraProcessFixture::kBufferSize,
           &state.ctranComm->logMetaData_,
           "UT_workerRoutine"),
-      rank,
-      kMultiRankCommHash);
+      state.ctranComm->logMetaData_);
   FB_COMMCHECKTHROW_EX(
       ctran::utils::commCudaMalloc(
           reinterpret_cast<char**>(&state.dstBuffer),
           CtranIntraProcessFixture::kBufferSize,
           &state.ctranComm->logMetaData_,
           "UT_workerRoutine"),
-      rank,
-      kMultiRankCommHash);
+      state.ctranComm->logMetaData_);
 
   CLOGF(INFO, "rank [{}/{}] worker waiting for work", rank, state.nRanks);
 

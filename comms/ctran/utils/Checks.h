@@ -358,25 +358,47 @@
     }                                                  \
   } while (0)
 
-#define FB_COMMCHECKTHROW_EX(cmd, rank, commHash)      \
-  do {                                                 \
-    commResult_t RES = cmd;                            \
-    if (RES != commSuccess && RES != commInProgress) { \
-      CLOGF(                                           \
-          ERR,                                         \
-          "{}:{} -> {} ({})",                          \
-          __FILE__,                                    \
-          __LINE__,                                    \
-          RES,                                         \
-          ::meta::comms::commCodeToString(RES));       \
-      throw ctran::utils::Exception(                   \
-          std::string("COMM internal failure: ") +     \
-              ::meta::comms::commCodeToString(RES),    \
-          RES,                                         \
-          rank,                                        \
-          commHash);                                   \
-    }                                                  \
+#define FB_COMMCHECKTHROW_EX_DIRECT(cmd, rank, commHash, commDesc) \
+  do {                                                             \
+    commResult_t RES = cmd;                                        \
+    if (RES != commSuccess && RES != commInProgress) {             \
+      CLOGF(                                                       \
+          ERR,                                                     \
+          "{}:{} -> {} ({})",                                      \
+          __FILE__,                                                \
+          __LINE__,                                                \
+          RES,                                                     \
+          ::meta::comms::commCodeToString(RES));                   \
+      throw ctran::utils::Exception(                               \
+          std::string("COMM internal failure: ") +                 \
+              ::meta::comms::commCodeToString(RES),                \
+          RES,                                                     \
+          rank,                                                    \
+          commHash,                                                \
+          commDesc);                                               \
+    }                                                              \
   } while (0)
+
+#define FB_COMMCHECKTHROW_EX_LOGDATA(cmd, logData) \
+  FB_COMMCHECKTHROW_EX_DIRECT(                     \
+      cmd, (logData).rank, (logData).commHash, (logData).commDesc)
+
+// Selector macro, used with FB_COMMCHECKTHROW_EX to delegate
+// based on the number of arguments.
+// The dummy placeholders ensure correct selection for 2, and 3 arguments.
+#define GET_FB_COMMCHECKTHROW_EX_MACRO(_1, _2, _3, _4, NAME, ...) NAME
+
+// Delegates to either FB_COMMCHECKTHROW_EX_DIRECT or
+// FB_COMMCHECKTHROW_EX_LOGDATA based on the number of arguments.
+// - 4 args (cmd, rank, commHash, commDesc): uses FB_COMMCHECKTHROW_EX_DIRECT
+// - 2 args (cmd, logData): uses FB_COMMCHECKTHROW_EX_LOGDATA
+#define FB_COMMCHECKTHROW_EX(...)   \
+  GET_FB_COMMCHECKTHROW_EX_MACRO(   \
+      __VA_ARGS__,                  \
+      FB_COMMCHECKTHROW_EX_DIRECT,  \
+      UNUSED_PLACEHOLDER_3_ARGS,    \
+      FB_COMMCHECKTHROW_EX_LOGDATA, \
+      UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
 
 #define FB_COMMCHECKGOTO(call, RES, label)                \
   do {                                                    \
