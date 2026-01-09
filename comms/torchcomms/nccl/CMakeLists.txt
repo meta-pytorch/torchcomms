@@ -4,16 +4,17 @@ file(GLOB TORCHCOMMS_NCCL_SOURCES "comms/torchcomms/nccl/*.cpp")
 file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/CudaApi.cpp")
 find_package(CUDA)
 
+# Use NCCLX headers from build directory (has newer API with all required fields)
+set(NCCLX_BUILD_DIR $ENV{BUILDDIR})
+if(NOT NCCLX_BUILD_DIR)
+    set(NCCLX_BUILD_DIR "${ROOT}/build/ncclx")
+endif()
+set(NCCL_INCLUDE "${NCCLX_BUILD_DIR}/include")
+
 if(USE_SYSTEM_LIBS)
-    # Use system installed NCCL
-    set(NCCL_INCLUDE "${CONDA_INCLUDE}")
-    set(NCCL_SHARED_LIB "${CONDA_LIB}/libnccl.so")
+    set(NCCL_SHARED_LIB "${NCCLX_BUILD_DIR}/lib/libnccl.so")
 else()
-    # Use NCCL packaged with PyTorch
-    set(NCCL_INCLUDE "${TORCH_INSTALL_PREFIX}/../nvidia/nccl/include")
-    set(NCCL_SHARED_LIB
-        "${TORCH_INSTALL_PREFIX}/../nvidia/nccl/lib/libnccl.so.2"
-    )
+    set(NCCL_SHARED_LIB "${NCCLX_BUILD_DIR}/lib/libnccl.so")
 endif()
 
 add_library(torchcomms_comms_nccl MODULE
