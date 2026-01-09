@@ -341,6 +341,11 @@
     }                                        \
   } while (0)
 
+// Note: this macro should NOT be used within Ctran code.
+// Prefer FB_COMMCHECKTHROW_EX or FB_COMMCHECKTHROW_EX_NOCOMM
+// instead when writing code witin the "comms/ctran/" directory.
+//
+// TODO(T250686203): Move this macro's definition somewhere else.
 #define FB_COMMCHECKTHROW(cmd)                         \
   do {                                                 \
     commResult_t RES = cmd;                            \
@@ -399,6 +404,24 @@
       UNUSED_PLACEHOLDER_3_ARGS,    \
       FB_COMMCHECKTHROW_EX_LOGDATA, \
       UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
+
+#define FB_COMMCHECKTHROW_EX_NOCOMM(cmd)               \
+  do {                                                 \
+    commResult_t RES = cmd;                            \
+    if (RES != commSuccess && RES != commInProgress) { \
+      CLOGF(                                           \
+          ERR,                                         \
+          "{}:{} -> {} ({})",                          \
+          __FILE__,                                    \
+          __LINE__,                                    \
+          RES,                                         \
+          ::meta::comms::commCodeToString(RES));       \
+      throw ctran::utils::Exception(                   \
+          std::string("COMM internal failure: ") +     \
+              ::meta::comms::commCodeToString(RES),    \
+          RES);                                        \
+    }                                                  \
+  } while (0)
 
 #define FB_COMMCHECKGOTO(call, RES, label)                \
   do {                                                    \

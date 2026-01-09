@@ -292,7 +292,7 @@ void CtranMapperRegCache::asyncRegThreadFn(int cudaDev) {
     //   executes the registration request, e.g., too slow asyncReg thread.
     //   Then, asyncReg thread will also tread it as dynamic registration and
     //   skip.
-    FB_COMMCHECKTHROW(regRange(
+    FB_COMMCHECKTHROW_EX_NOCOMM(regRange(
         cmd.buf,
         cmd.len,
         cmd.cudaDev,

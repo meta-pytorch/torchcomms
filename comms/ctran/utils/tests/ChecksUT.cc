@@ -470,3 +470,29 @@ TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_2ARGS) {
         << "Expected ctran::utils::Exception for commResult=" << commResult;
   }
 }
+
+TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_NOCOMM) {
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_COMMCHECKTHROW_EX_NOCOMM(commSuccess));
+
+  for (size_t i = 0; i < commNumResults; i++) {
+    const auto commResult = static_cast<commResult_t>(i);
+    if (commResult == commSuccess || commResult == commInProgress) {
+      continue;
+    }
+
+    // Failure case: ctran::utils::Exception thrown with correct properties
+    bool caughtException = false;
+    try {
+      FB_COMMCHECKTHROW_EX_NOCOMM(commResult);
+    } catch (const ctran::utils::Exception& e) {
+      EXPECT_EQ(e.result(), commResult);
+      EXPECT_THAT(
+          std::string(e.what()),
+          ::testing::HasSubstr("COMM internal failure:"));
+      caughtException = true;
+    }
+    ASSERT_TRUE(caughtException)
+        << "Expected ctran::utils::Exception for commResult=" << commResult;
+  }
+}
