@@ -327,18 +327,19 @@
 #define FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(RES) \
   FOLLY_EXPECTED_CHECKTHROW_EX(RES, std::nullopt, std::nullopt, std::nullopt)
 
-#define FOLLY_EXPECTED_CHECKGOTO(RES, label) \
-  do {                                       \
-    if (RES.hasError()) {                    \
-      CLOGF(                                 \
-          ERR,                               \
-          "{}:{} -> {} ({})",                \
-          __FILE__,                          \
-          __LINE__,                          \
-          RES.error().errNum,                \
-          RES.error().errStr);               \
-      goto label;                            \
-    }                                        \
+#define FOLLY_EXPECTED_CHECKGOTO(RES, label, info) \
+  do {                                             \
+    if (RES.hasError()) {                          \
+      CLOGF(                                       \
+          ERR,                                     \
+          "{}:{} -> {} ({}). {}",                  \
+          __FILE__,                                \
+          __LINE__,                                \
+          RES.error().errNum,                      \
+          RES.error().errStr,                      \
+          info);                                   \
+      goto label;                                  \
+    }                                              \
   } while (0)
 
 // Note: this macro should NOT be used within Ctran code.

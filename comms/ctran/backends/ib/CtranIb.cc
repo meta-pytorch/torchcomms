@@ -818,10 +818,26 @@ commResult_t CtranIb::regMem(
     int dmaBufFd = useDmaBuf
         ? ctran::utils::getCuMemDmaBufFd(buf, len, pd.useDataDirect())
         : -1;
+    auto makeErrorInfo = [&]() {
+      return fmt::format(
+          "CTRAN-IB: buffer registration failed: cudaDev={}, nicIdx={}, "
+          "nicName={}, pdIdx={}, buf={}, len={}, dmaBufSupport={}, "
+          "useDataDirect={}. If dmaBufSupport=true but registration fails "
+          "with error 524 (ENOMEDIUM), the GPU and NIC are not PCIe-close - "
+          "check NCCL_IB_HCA order for GPU-to-NIC affinity",
+          cudaDev,
+          device,
+          pd.getDeviceName(),
+          pdIdx,
+          buf,
+          len,
+          dmaBufSupport,
+          pd.useDataDirect());
+    };
     if (useDmaBuf && dmaBufFd != -1) {
       auto maybeDmabufMr = pd.regDmabufMr(
           0, len, reinterpret_cast<uint64_t>(buf), dmaBufFd, access);
-      FOLLY_EXPECTED_CHECKGOTO(maybeDmabufMr, fail);
+      FOLLY_EXPECTED_CHECKGOTO(maybeDmabufMr, fail, makeErrorInfo());
       mrs->emplace_back(std::move(*maybeDmabufMr));
     } else {
       // fall back to ibv_reg_mr
@@ -835,7 +851,7 @@ commResult_t CtranIb::regMem(
         return commInvalidUsage;
       }
       auto maybeMr = pd.regMr((void*)buf, len, access);
-      FOLLY_EXPECTED_CHECKGOTO(maybeMr, fail);
+      FOLLY_EXPECTED_CHECKGOTO(maybeMr, fail, makeErrorInfo());
       mrs->emplace_back(std::move(*maybeMr));
     }
     if (dmaBufFd != -1) {
@@ -849,14 +865,6 @@ commResult_t CtranIb::regMem(
   return res;
 
 fail:
-  CLOGF(
-      ERR,
-      "CTRAN-IB: buffer registration failed: buf = {}, len = {}, dmaBufSupport = {}, NCCL_CTRAN_IB_DMABUF_ENABLE = {}, useDmaBuf = {}",
-      buf,
-      len,
-      dmaBufSupport,
-      NCCL_CTRAN_IB_DMABUF_ENABLE,
-      useDmaBuf);
   return commSystemError;
 }
 
