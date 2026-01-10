@@ -326,6 +326,12 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
             } else {
               NCCLCHECKGOTO(ncclLaunchKernel(comm, plan), result, failure);
             }
+            INFO(NCCL_COLL, "comm %s %p opCount %ld launched kernel for plan %p",  ctran::utils::parseCommDesc(comm->config.commDesc), comm, comm->opCount, plan);
+            // NOTE: bump up opCount right after launching kernel as this field is dedicated to track number of kernels
+            // including both p2p and collective kernels, no matter proxyOp existance.
+            // Known limitation: It won't be updated properly under cuda graph replay since it is not captured by the graph.
+            // But it is sufficient to unblock log based debugging in eager mode.
+            comm->opCount++;
           }
           // Barrier reduction input indicates if we require further rounds.
           if (useBarrier) ncclCommIntraBarrierIn(comm, comm->planner.unlaunchedPlansHead != nullptr ? 1 : 0);
