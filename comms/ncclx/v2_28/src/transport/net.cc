@@ -21,6 +21,8 @@
 #include "meta/colltrace/ProxyTrace.h"
 
 
+#include "comms/ctran/memory/Utils.h"
+
 static_assert(sizeof(ncclNetHandle_t) <= CONNECT_SIZE, "NET Connect info is too large");
 
 #define NCCL_NET_MAP_HOSTMEM 0
@@ -654,8 +656,10 @@ static ncclResult_t sharedNetBuffersInit(struct ncclProxyState* proxyState, int 
 
   if (cuda && state->cudaBuff == NULL) {
     if (sameProcess == 0 || ncclCuMemEnable()) {
-      NCCLCHECK(ncclP2pAllocateShareableBuffer(state->size, 0, &state->ipcDesc, (void**)&state->cudaBuff));
+      auto callsite = fmt::format("sharedNetBuffersInit:{}/{}/{}", proxyState->owner->commHash, tpLocalRank, type);
+      NCCLCHECK(ncclP2pAllocateShareableBuffer(state->size, 0, &state->ipcDesc, (void**)&state->cudaBuff, proxyState->owner, callsite.c_str()));
     } else {
+      memLogMetaData = proxyState->owner->logMetaData;
       NCCLCHECK(ncclCudaCalloc(&state->cudaBuff, state->size));
     }
   }
@@ -906,10 +910,18 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
 
   if (map->mems[NCCL_NET_MAP_DEVMEM].size) {
     if (resources->shared == 0) {
+      memLogMetaData = proxyState->owner->logMetaData;
       if (!map->sameProcess || ncclCuMemEnable()) {
         ALIGN_SIZE(map->mems[NCCL_NET_MAP_DEVMEM].size, CUDA_IPC_MIN);
+        auto callsite = ncclx::memory::genKey(
+          "ProxyConnect",
+          /*isP2p=*/false,
+          /*isSend=*/true,
+          resources->channelId,
+          resources->connIndex,
+          resources->tpRemoteRank);
         NCCLCHECK(ncclP2pAllocateShareableBuffer(map->mems[NCCL_NET_MAP_DEVMEM].size, 0, &map->mems[NCCL_NET_MAP_DEVMEM].ipcDesc,
-                                                 (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr));
+                                                 (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr, proxyState->owner, callsite.c_str()));
       } else {
         NCCLCHECK(ncclCudaCalloc(&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr, map->mems[NCCL_NET_MAP_DEVMEM].size));
       }
@@ -928,7 +940,7 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
   }
   if (ncclGdrCopy && map->sameProcess && ncclParamGdrCopySyncEnable()) {
     uint64_t *cpuPtr, *gpuPtr;
-    NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 1, &resources->gdrDesc));
+    NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 1, &resources->gdrDesc, proxyState->owner->logMetaData));
 
     resources->gdcSync = cpuPtr;
     struct connectMapMem* gdcMem = map->mems+NCCL_NET_MAP_GDCMEM;
@@ -1072,9 +1084,17 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
 
   if (map->mems[NCCL_NET_MAP_DEVMEM].size) {
     if (resources->shared == 0) {
+      memLogMetaData = proxyState->owner->logMetaData;
       if (ncclCuMemEnable()) {
+        std::string callsite = ncclx::memory::genKey(
+          "ProxyConnect",
+          /*isP2p=*/false,
+          /*isSend=*/false,
+          resources->channelId,
+          resources->connIndex,
+          resources->tpRemoteRank);
         NCCLCHECK(ncclP2pAllocateShareableBuffer(map->mems[NCCL_NET_MAP_DEVMEM].size, 0, &map->mems[NCCL_NET_MAP_DEVMEM].ipcDesc,
-                                                 (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr));
+                                                 (void**)&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr, proxyState->owner, callsite.c_str()));
       } else {
         NCCLCHECK(ncclCudaCalloc(&map->mems[NCCL_NET_MAP_DEVMEM].gpuPtr, map->mems[NCCL_NET_MAP_DEVMEM].size));
       }
@@ -1085,7 +1105,7 @@ static ncclResult_t recvProxyConnect(struct ncclProxyConnection* connection, str
   map->mems[NCCL_NET_MAP_HOSTMEM].gpuPtr = map->mems[NCCL_NET_MAP_HOSTMEM].cpuPtr;
   if (ncclGdrCopy && map->sameProcess) {
     uint64_t *cpuPtr, *gpuPtr;
-    NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 2, &resources->gdrDesc));
+    NCCLCHECK(ncclGdrCudaCalloc(&cpuPtr, &gpuPtr, 2, &resources->gdrDesc, proxyState->owner->logMetaData));
 
     if (ncclParamGdrCopySyncEnable()) {
       resources->gdcSync = cpuPtr;

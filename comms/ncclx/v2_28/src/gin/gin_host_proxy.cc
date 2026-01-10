@@ -74,7 +74,8 @@ template <typename T>
 static ncclResult_t allocMemCPUAccessible(T **ptr, T **devPtr, size_t nelem, int host_flags,
                                           void **gdrHandle, bool forceHost = false) {
   if (ncclGdrCopy && !forceHost) {
-    NCCLCHECK(ncclGdrCudaCalloc(ptr, devPtr, nelem, gdrHandle));
+    struct CommLogData dummyLogMeta;
+    NCCLCHECK(ncclGdrCudaCalloc(ptr, devPtr, nelem, gdrHandle, dummyLogMeta));
   } else {
     NCCLCHECK(ncclCuMemHostAlloc((void **)ptr, NULL, nelem * sizeof(T)));
     memset((void *)*ptr, 0, nelem * sizeof(T));
@@ -365,7 +366,7 @@ ncclResult_t ncclGinProxyCreateContext(struct ncclComm *comm, void *collComm, in
   // signals.
   size_t signalsBufSize = nSignals * sizeof(uint64_t);
   NCCLCHECK(ncclCuMemAlloc((void **)&proxyCtx->signalsDev, &proxyCtx->signalsCumemhandle,
-                           CU_MEM_HANDLE_TYPE_NONE, signalsBufSize));
+                           CU_MEM_HANDLE_TYPE_NONE, signalsBufSize, "ncclGinProxyCreateContext"));
   CUDACHECK(cudaMemset(proxyCtx->signalsDev, 0, signalsBufSize));
   NCCLCHECK(ncclGinProxyRegMrSym(ginComm, proxyCtx, proxyCtx->signalsDev, signalsBufSize,
                                  NCCL_PTR_CUDA, NCCL_NET_MR_FLAG_FORCE_SO,
