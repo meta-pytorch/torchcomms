@@ -173,7 +173,7 @@ class GdakiHostGPUMemHandle {
     EQCHECK(this->host_buf, nullptr);
 
     NCCLCHECK(ncclCuMemAlloc((void **)&this->gpu_buf, &this->cumemhandle, CU_MEM_HANDLE_TYPE_NONE,
-                             num_elements * sizeof(T)));
+                             num_elements * sizeof(T), "GdakiHostGPUMemHandle"));
 
     this->num_elements = num_elements;
 
@@ -225,7 +225,7 @@ class GdakiGlobalGPUBufferTable {
 
   ncclResult_t allocate(unsigned int num_elements, unsigned int num_ranks) {
     NCCLCHECK(ncclCuMemAlloc((void **)&this->gpu_ptr, &this->cumemhandle, CU_MEM_HANDLE_TYPE_NONE,
-                             num_elements * sizeof(T)));
+                             num_elements * sizeof(T), "GdakiGlobalGPUBufferTable"));
     CUDACHECK(cudaMemset(this->gpu_ptr, 0, num_elements * sizeof(T)));
     NCCLCHECK(this->rkeys_hd_mhandle.allocate(num_ranks));
 
@@ -710,7 +710,7 @@ ncclResult_t ncclGinGdakiCreateContext(void *collComm, int nSignals, int nCounte
   }
 
   NCCLCHECKGOTO(ncclCuMemAlloc((void **)&sink_buffer, &sink_buffer_mhandle, CU_MEM_HANDLE_TYPE_NONE,
-                               sizeof(uint64_t)),
+                               sizeof(uint64_t), "ncclGinGdakiCreateContext"),
                 status, out);
 
   NCCLCHECKGOTO(gdakiRegMr(&sink_buffer_mr, gdaki_ctx->ib_pd, sink_buffer, sizeof(uint64_t),

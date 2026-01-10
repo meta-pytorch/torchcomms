@@ -16,11 +16,15 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <optional>
 
 #if CUDART_VERSION >= 11030
 #include <cuda.h>
 #include "cudawrap.h"
 #endif
+
+#include "comms/utils/commSpecs.h"
+#include "comms/utils/logger/alloc.h"
 
 uint64_t clockNano(); // from utils.h with which we have a circular dependency
 
@@ -28,6 +32,8 @@ template<typename T>
 constexpr size_t ncclSizeOfT() { return sizeof(T); }
 template<>
 constexpr size_t ncclSizeOfT<void>() { return 1; }
+
+inline thread_local CommLogData memLogMetaData;
 
 #if CUDART_VERSION >= 12020
 
@@ -204,7 +210,7 @@ static inline ncclResult_t ncclCuMemFreeAddr(void *ptr) {
   return result;
 }
 
-static inline ncclResult_t ncclCuMemAlloc(void **ptr, CUmemGenericAllocationHandle *handlep, CUmemAllocationHandleType type, size_t size) {
+static inline ncclResult_t ncclCuMemAlloc(void **ptr, CUmemGenericAllocationHandle *handlep, CUmemAllocationHandleType type, size_t size, const char* callsite) {
   ncclResult_t result = ncclSuccess;
   size_t granularity = 0;
   CUdevice currentDev;
@@ -237,6 +243,13 @@ static inline ncclResult_t ncclCuMemAlloc(void **ptr, CUmemGenericAllocationHand
   CUCHECK(cuMemSetAccess((CUdeviceptr)*ptr, size, &accessDesc, 1));
   if (handlep) *handlep = handle;
   TRACE(NCCL_ALLOC, "CuMem Alloc Size %zu pointer %p handle %llx", size, *ptr, handle);
+  logMemoryEvent(
+    memLogMetaData,
+    callsite,
+    "ncclCuMemAlloc",
+    reinterpret_cast<uintptr_t>(*ptr),
+    size);
+  memLogMetaData = CommLogData{};
   return result;
 }
 
@@ -252,6 +265,8 @@ static inline ncclResult_t ncclCuMemFree(void *ptr) {
   CUCHECK(cuMemUnmap((CUdeviceptr)ptr, size));
   CUCHECK(cuMemRelease(handle));
   CUCHECK(cuMemAddressFree((CUdeviceptr)ptr, size));
+  logMemoryEvent(memLogMetaData, "", "ncclCuMemFree", reinterpret_cast<uintptr_t>(ptr));
+  memLogMetaData = CommLogData{};
   return result;
 }
 
@@ -283,11 +298,12 @@ template <typename T>
 ncclResult_t ncclCudaMallocDebug(T** ptr, size_t nelem, const char *filefunc, int line) {
   ncclResult_t result = ncclSuccess;
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  std::string callsite = fmt::format("{}:{}", filefunc, line);
   *ptr = nullptr;
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (nelem > 0) {
     if (ncclCuMemEnable()) {
-      NCCLCHECKGOTO(ncclCuMemAlloc((void **)ptr, NULL, ncclCuMemHandleType, nelem*ncclSizeOfT<T>()), result, finish);
+      NCCLCHECKGOTO(ncclCuMemAlloc((void **)ptr, NULL, ncclCuMemHandleType, nelem*ncclSizeOfT<T>(), callsite.c_str()), result, finish);
     } else {
       CUDACHECKGOTO(cudaMalloc(ptr, nelem*ncclSizeOfT<T>()), result, finish);
     }
@@ -296,6 +312,15 @@ finish:
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (*ptr == nullptr && nelem > 0) WARN("Failed to CUDA malloc %ld bytes", nelem*ncclSizeOfT<T>());
   INFO(NCCL_ALLOC, "%s:%d Cuda Alloc Size %ld pointer %p", filefunc, line, nelem*ncclSizeOfT<T>(), *ptr);
+  if (!ncclCuMemEnable()) {
+    logMemoryEvent(
+        memLogMetaData,
+        callsite.c_str(),
+        "ncclCudaMalloc",
+        reinterpret_cast<uintptr_t>(*ptr),
+        nelem*ncclSizeOfT<T>());
+    memLogMetaData = CommLogData{};
+  }
   return result;
 }
 #define ncclCudaMalloc(...) ncclCudaMallocDebug(__VA_ARGS__, __FILE__, __LINE__)
@@ -304,6 +329,7 @@ template <typename T>
 ncclResult_t ncclCudaCallocDebug(T** ptr, size_t nelem, const char *filefunc, int line) {
   ncclResult_t result = ncclSuccess;
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  std::string callsite = fmt::format("{}:{}", filefunc, line);
   *ptr = nullptr;
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (nelem > 0) {
@@ -311,7 +337,7 @@ ncclResult_t ncclCudaCallocDebug(T** ptr, size_t nelem, const char *filefunc, in
     cudaStream_t stream;
     CUDACHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     if (ncclCuMemEnable()) {
-      NCCLCHECKGOTO(ncclCuMemAlloc((void **)ptr, NULL, ncclCuMemHandleType, nelem*ncclSizeOfT<T>()), result, finish);
+      NCCLCHECKGOTO(ncclCuMemAlloc((void **)ptr, NULL, ncclCuMemHandleType, nelem*ncclSizeOfT<T>(), callsite.c_str()), result, finish);
     } else {
       CUDACHECKGOTO(cudaMalloc(ptr, nelem*ncclSizeOfT<T>()), result, finish);
     }
@@ -323,6 +349,15 @@ finish:
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (*ptr == nullptr && nelem > 0) WARN("Failed to CUDA calloc %ld bytes", nelem*ncclSizeOfT<T>());
   INFO(NCCL_ALLOC, "%s:%d Cuda Alloc Size %ld pointer %p", filefunc, line, nelem*ncclSizeOfT<T>(), *ptr);
+  if (!ncclCuMemEnable()) {
+    logMemoryEvent(
+      memLogMetaData,
+      callsite.c_str(),
+      "ncclCudaCalloc",
+      reinterpret_cast<uintptr_t>(*ptr),
+      nelem * ncclSizeOfT<T>());
+    memLogMetaData = CommLogData{};
+  }
   return result;
 }
 #define ncclCudaCalloc(...) ncclCudaCallocDebug(__VA_ARGS__, __FILE__, __LINE__)
@@ -331,11 +366,12 @@ template <typename T>
 ncclResult_t ncclCudaCallocAsyncDebug(T** ptr, size_t nelem, cudaStream_t stream, const char *filefunc, int line) {
   ncclResult_t result = ncclSuccess;
   cudaStreamCaptureMode mode = cudaStreamCaptureModeRelaxed;
+  std::string callsite = fmt::format("{}:{}", filefunc, line);
   *ptr = nullptr;
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (nelem > 0) {
     if (ncclCuMemEnable()) {
-      NCCLCHECKGOTO(ncclCuMemAlloc((void **)ptr, NULL, ncclCuMemHandleType, nelem*ncclSizeOfT<T>()), result, finish);
+      NCCLCHECKGOTO(ncclCuMemAlloc((void **)ptr, NULL, ncclCuMemHandleType, nelem*ncclSizeOfT<T>(), callsite.c_str()), result, finish);
     } else {
       CUDACHECKGOTO(cudaMalloc(ptr, nelem*ncclSizeOfT<T>()), result, finish);
     }
@@ -345,6 +381,15 @@ finish:
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   if (*ptr == nullptr && nelem > 0) WARN("Failed to CUDA calloc async %ld bytes", nelem*ncclSizeOfT<T>());
   INFO(NCCL_ALLOC, "%s:%d Cuda Alloc Size %ld pointer %p", filefunc, line, nelem*ncclSizeOfT<T>(), *ptr);
+  if (!ncclCuMemEnable()) {
+    logMemoryEvent(
+        memLogMetaData,
+        callsite,
+        "ncclCudaCallocAsync",
+        reinterpret_cast<uintptr_t>(*ptr),
+        nelem*ncclSizeOfT<T>());
+      memLogMetaData = CommLogData{};
+  }
   return result;
 }
 #define ncclCudaCallocAsync(...) ncclCudaCallocAsyncDebug(__VA_ARGS__, __FILE__, __LINE__)
@@ -388,6 +433,14 @@ ncclResult_t ncclCudaFree(T* ptr) {
     CUDACHECKGOTO(cudaFree(ptr), result, finish);
   }
 finish:
+  if (!ncclCuMemEnable()) {
+    logMemoryEvent(
+        memLogMetaData,
+        "",
+        "ncclCudaFree",
+        reinterpret_cast<uintptr_t>(ptr));
+    memLogMetaData = CommLogData{};
+  }
   CUDACHECK(cudaThreadExchangeStreamCaptureMode(&mode));
   return result;
 }

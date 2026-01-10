@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
-#include "comms/common/DevUtils.cuh"
+#include "comms/common/AtomicUtils.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/common/MPSCTbSync.h"
@@ -13,7 +13,7 @@ __device__ __forceinline__ void waitReady(MPSCTbSync<>* sync, int workerId) {
   if (threadIdx.x == 0) {
     int cur;
     do {
-      cur = comms::device::loadIntAcq(&sync->flags[workerId]);
+      cur = comms::device::ld_acquire_sys_global(&sync->flags[workerId]);
     } while (cur != MPSCTbSync<>::Status::kUnset);
   }
   __syncthreads();
@@ -23,7 +23,7 @@ __device__ __forceinline__ void waitReady(MPSCTbSync<>* sync, int workerId) {
 __device__ __forceinline__ void post(MPSCTbSync<>* sync, int workerId) {
   __syncthreads();
   if (threadIdx.x == 0) {
-    comms::device::storeIntRel(
+    comms::device::st_release_sys_global(
         &sync->flags[workerId], MPSCTbSync<>::Status::kPosted);
   }
 }
@@ -35,7 +35,7 @@ __device__ __forceinline__ void waitPost(MPSCTbSync<>* sync) {
   for (auto w = threadIdx.x; w < sync->numProducers; w += blockDim.x) {
     int val = MPSCTbSync<>::Status::kUnset;
     do {
-      val = comms::device::loadIntAcq(&sync->flags[w]);
+      val = comms::device::ld_acquire_sys_global(&sync->flags[w]);
     } while (val != MPSCTbSync<>::Status::kPosted);
   }
 
@@ -48,7 +48,8 @@ __device__ __forceinline__ void complete(MPSCTbSync<>* sync) {
   __syncthreads();
   // Let different threads update the flags in parallel
   for (auto w = threadIdx.x; w < sync->numProducers; w += blockDim.x) {
-    comms::device::storeIntRel(&sync->flags[w], MPSCTbSync<>::Status::kUnset);
+    comms::device::st_release_sys_global(
+        &sync->flags[w], MPSCTbSync<>::Status::kUnset);
   }
 }
 
@@ -60,7 +61,7 @@ waitStep(MPSCTbSync<1>* sync, int threadId, int base, int step) {
   if (threadIdx.x == threadId) {
     int cur;
     do {
-      cur = comms::device::loadIntAcq(&sync->flags[0]) + base;
+      cur = comms::device::ld_acquire_sys_global(&sync->flags[0]) + base;
     } while (cur < step);
   }
 }
@@ -70,7 +71,7 @@ waitStep(MPSCTbSync<1>* sync, int threadId, int base, int step) {
 __device__ __forceinline__ void
 postStep(MPSCTbSync<1>* sync, int threadId, int step) {
   if (threadIdx.x == threadId) {
-    comms::device::storeIntRel(&sync->flags[0], step);
+    comms::device::st_release_sys_global(&sync->flags[0], step);
   }
 }
 

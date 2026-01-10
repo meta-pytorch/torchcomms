@@ -1,7 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
-#include "comms/common/DevUtils.cuh"
+#include "comms/common/AtomicUtils.cuh"
+#include "comms/common/DeviceConstants.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevShmState.cuh"
 #include "comms/ctran/algos/common/GpeKernelDev.cuh"
@@ -65,7 +66,7 @@ elemWaitPostOrRevoke(KernelElem* elem, int groupIdx, bool* revoked) {
   int val;
   bool aborted;
   do {
-    val = comms::device::loadInt(&elem->status[groupIdx]);
+    val = comms::device::ld_volatile_global(&elem->status[groupIdx]);
   } while (KernelElem::ElemStatus::POSTED != val &&
            KernelElem::ElemStatus::REVOKED != val &&
            !(aborted = ctran::device::KernelTestHostAbort(kernelFlag)));
@@ -118,7 +119,7 @@ __device__ __forceinline__ uint64_t elemWaitPostOrRevokeByGroupForMultiPut(
   __shared__ uint64_t recvbuffAddr;
   if (threadIdx.x == 0) {
     elemWaitPostOrRevoke(elem, groupIdx, &revoked_);
-    recvbuffAddr = comms::device::loadUint64(&elem->putNotify.recvbuff);
+    recvbuffAddr = comms::device::ld_volatile_global(&elem->putNotify.recvbuff);
   }
   __syncthreads();
   *revoked = revoked_;
@@ -138,7 +139,7 @@ __device__ __forceinline__ void elemsFreeListByGroup(
     KernelElem* elem = elemsList;
     while (elem != nullptr) {
       if (!FreeAll) {
-        int status = comms::device::loadInt(&elem->status[groupIdx]);
+        int status = comms::device::ld_volatile_global(&elem->status[groupIdx]);
         if (status == KernelElem::ElemStatus::REVOKED) {
           elemFree(elem, groupIdx);
         }
@@ -231,7 +232,7 @@ devSyncSetStep(int* sync, int groupIdx, int val) {
   __syncthreads();
 
   if (threadIdx.x == 0) {
-    comms::device::storeIntRel(sync, val);
+    comms::device::st_release_sys_global(sync, val);
 
     CTRAN_DEV_TRACE("set step %d to groupIdx %d\n", val, groupIdx);
   }
@@ -250,7 +251,7 @@ devSyncWaitStep(int* sync, int groupIdx, int val) {
   if (threadIdx.x == 0) {
     int cur;
     do {
-      cur = comms::device::loadIntAcq(sync);
+      cur = comms::device::ld_acquire_sys_global(sync);
     } while (cur != val && !ctran::device::KernelTestHostAbort(kernelFlag));
 
     CTRAN_DEV_TRACE("waited step %d groupIdx %d\n", val, groupIdx);
@@ -277,13 +278,13 @@ __device__ __forceinline__ void devSyncSetNotify(
     // a previous put to the same peer
     int cur;
     do {
-      cur =
-          comms::device::loadIntAcq(&sync->syncs[groupIdx].stepOnSameBlockIdx);
+      cur = comms::device::ld_acquire_sys_global(
+          &sync->syncs[groupIdx].stepOnSameBlockIdx);
     } while (cur != CTRAN_ALGO_NOTIFY_RESET &&
              !ctran::device::KernelTestHostAbort(kernelFlag));
 
     // Update notification
-    comms::device::storeIntRel(
+    comms::device::st_release_sys_global(
         &sync->syncs[groupIdx].stepOnSameBlockIdx, CTRAN_ALGO_NOTIFY_SET);
   }
 }
@@ -299,13 +300,13 @@ __device__ __forceinline__ void devSyncWaitNotify(
     // Wait notification from each remote group
     int cur;
     do {
-      cur =
-          comms::device::loadIntAcq(&sync->syncs[groupIdx].stepOnSameBlockIdx);
+      cur = comms::device::ld_acquire_sys_global(
+          &sync->syncs[groupIdx].stepOnSameBlockIdx);
     } while (cur != CTRAN_ALGO_NOTIFY_SET &&
              !ctran::device::KernelTestHostAbort(kernelFlag));
 
     // Mark notify has been used, thus peer can use for next notify
-    comms::device::storeIntRel(
+    comms::device::st_release_sys_global(
         &sync->syncs[groupIdx].stepOnSameBlockIdx, CTRAN_ALGO_NOTIFY_RESET);
   }
 

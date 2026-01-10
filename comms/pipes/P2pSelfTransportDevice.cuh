@@ -6,7 +6,6 @@
 #include <cstddef>
 
 #include "comms/pipes/CopyUtils.cuh"
-#include "comms/pipes/P2pTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -34,10 +33,10 @@ namespace comms::pipes {
  *   SelfTransportDevice transport;
  *   transport.write(dst_d, src_d, nbytes);
  */
-class P2pSelfTransportDevice : public P2pTransportDevice {
+class P2pSelfTransportDevice {
  public:
   __host__ __device__ P2pSelfTransportDevice() = default;
-  __host__ __device__ ~P2pSelfTransportDevice() override = default;
+  __host__ __device__ ~P2pSelfTransportDevice() = default;
 
   /**
    * send - Not implemented for SelfTransportDevice
@@ -45,8 +44,7 @@ class P2pSelfTransportDevice : public P2pTransportDevice {
    * Self transport is for local copies only, not for sending to peers.
    * Calling this method will trap and abort the kernel.
    */
-  __device__ void send(ThreadGroup& group, void* srcbuff, std::size_t nbytes)
-      override {
+  __device__ void send(ThreadGroup& group, void* srcbuff, std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
     __trap(); // Abort kernel if send is called on SelfTransportDevice
 #endif
@@ -58,8 +56,7 @@ class P2pSelfTransportDevice : public P2pTransportDevice {
    * Self transport is for local copies only, not for receiving from peers.
    * Calling this method will trap and abort the kernel.
    */
-  __device__ void recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes)
-      override {
+  __device__ void recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
     __trap(); // Abort kernel if recv is called on SelfTransportDevice
 #endif
@@ -83,7 +80,7 @@ class P2pSelfTransportDevice : public P2pTransportDevice {
       ThreadGroup& group,
       char* dst_d,
       const char* src_d,
-      std::size_t nbytes) override {
+      std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
     // Check for buffer overlap - only support non-overlapping buffers
     if (!(src_d + nbytes <= dst_d || dst_d + nbytes <= src_d)) {

@@ -27,7 +27,8 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
         ctran::utils::commCudaMalloc(
             &devState_, 1, /*logMetaData=*/nullptr, "CtranDeviceWaitUT"),
         /*rank=*/0,
-        /*commHash=*/0);
+        /*commHash=*/0,
+        /*commDesc=*/std::string(""));
 
     memset(&args_, 0, sizeof(args_));
     FB_CUDACHECKTHROW(
@@ -42,7 +43,8 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
         ctran::utils::commCudaMalloc(
             &args_.d2h, 1, /*logMetaData=*/nullptr, "CtranDeviceWaitUT"),
         /*rank=*/0,
-        /*commHash=*/0);
+        /*commHash=*/0,
+        /*commDesc=*/std::string(""));
     FB_CUDACHECKTHROW(cudaMemset(args_.d2h, 0, sizeof(*args_.d2h)));
 
     d2h_.revoked = false;
@@ -50,10 +52,16 @@ class CtranDeviceWaitUT : public CtranStandaloneFixture {
   }
   void TearDown() override {
     FB_COMMCHECKTHROW_EX(
-        ctran::utils::commCudaFree(args_.d2h), /*rank=*/0, /*commHash=*/0);
+        ctran::utils::commCudaFree(args_.d2h),
+        /*rank=*/0,
+        /*commHash=*/0,
+        /*commDesc=*/std::string(""));
     FB_CUDACHECKTHROW(cudaFreeHost(args_.h2d));
     FB_COMMCHECKTHROW_EX(
-        ctran::utils::commCudaFree(devState_), /*rank=*/0, /*commHash=*/0);
+        ctran::utils::commCudaFree(devState_),
+        /*rank=*/0,
+        /*commHash=*/0,
+        /*commDesc=*/std::string(""));
     FB_CUDACHECKTHROW(cudaFreeHost(flag_));
   }
 
