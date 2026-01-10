@@ -168,6 +168,8 @@ class AllGatherTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_results(output_tensors)
 
+            graph.reset()
+
     def _graph_all_gather_input_deleted(self, count, dtype):
         """Test CUDA Graph all_gather with input deleted after graph creation."""
         print(
@@ -206,6 +208,8 @@ class AllGatherTest(unittest.TestCase):
 
                 # Verify the results after each replay
                 self._verify_results(output_tensors)
+
+            graph.reset()
 
     def _create_input_tensor(self, count, dtype):
         """Create input tensor with rank-specific values."""

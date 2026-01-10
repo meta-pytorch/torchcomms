@@ -270,6 +270,8 @@ void BatchSendRecvTest::testGraphBatchSendRecv(
     // Verify the results after each replay
     verifyResults(params.recv_tensors, params.recv_ranks[0]);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for batch SendRecv operations with input deleted
@@ -356,6 +358,8 @@ void BatchSendRecvTest::testGraphBatchSendRecvInputDeleted(
     // Verify the results after each replay
     verifyResults(recv_tensors, recv_ranks[0]);
   }
+
+  graph.reset();
 }
 
 // Helper function to create send tensor with tensor-specific values

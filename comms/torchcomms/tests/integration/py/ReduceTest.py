@@ -175,6 +175,8 @@ class ReduceTest(unittest.TestCase):
                 # Verify the results on root rank after each replay
                 self._verify_results(tensor, op, root_rank)
 
+            graph.reset()
+
     def _graph_reduce_input_deleted(self, count, dtype, op):
         """Test CUDA Graph reduce with input deleted after graph creation."""
         print(
@@ -209,6 +211,8 @@ class ReduceTest(unittest.TestCase):
                 # Note: For reduce with deleted input, we can't verify results
                 # since the tensor was deleted. This test primarily validates
                 # that the graph replay completes without crashing.
+
+            graph.reset()
 
     def _create_input_tensor(self, count, dtype):
         """Create input tensor with rank-specific values."""

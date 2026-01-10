@@ -96,4 +96,6 @@ void BarrierTest::testGraphBarrier() {
 
     // No explicit verification needed for barrier, just ensure it completes
   }
+
+  graph.reset();
 }
