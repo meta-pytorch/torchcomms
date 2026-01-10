@@ -66,8 +66,13 @@ class P2pSelfTransportDevice {
    * write - Direct local memory copy using vectorized operations
    *
    * Performs a high-performance vectorized copy from src_d to dst_d using
-   * copy_chunk_vectorized with zero offsets. Creates a warp group internally
-   * to enable cooperative copy.
+   * copy_chunk_vectorized. The work is distributed across ALL thread groups
+   * using for_each_item_contiguous, so each group processes only its portion
+   * of the data.
+   *
+   * The chunk size is computed dynamically as (nbytes / total_groups) to
+   * ensure good parallelism, with a minimum of 16 bytes per chunk for
+   * vectorized access efficiency.
    *
    * NOTE: only support no overlap copy for now
    *
@@ -82,19 +87,47 @@ class P2pSelfTransportDevice {
       const char* src_d,
       std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
+    // Early return for no-op cases (check before overlap to handle dst == src)
+    if (nbytes == 0 || dst_d == src_d) {
+      return;
+    }
+
     // Check for buffer overlap - only support non-overlapping buffers
     if (!(src_d + nbytes <= dst_d || dst_d + nbytes <= src_d)) {
       __trap(); // Abort kernel if buffers overlap
     }
 
-    // Use copy_chunk_vectorized with zero offsets
-    copy_chunk_vectorized<uint4>(
-        dst_d, // dst_base
-        src_d, // src_base
-        nbytes, // chunk_bytes
-        0, // dst_offset
-        0, // src_offset
-        group);
+    // Compute chunk size: aim for nbytes / total_groups per chunk,
+    // aligned to 16 bytes (uint4 size) for efficient vectorized access
+    constexpr std::size_t kAlignment = 16;
+    const std::size_t targetChunkSize = nbytes / group.total_groups;
+    // Round up to nearest 16-byte boundary, minimum 16 bytes
+    const std::size_t chunkSize =
+        ((targetChunkSize + kAlignment - 1) / kAlignment) * kAlignment;
+    // Ensure minimum chunk size
+    const std::size_t alignedChunkSize = chunkSize > 0 ? chunkSize : kAlignment;
+
+    const std::size_t numChunks =
+        (nbytes + alignedChunkSize - 1) / alignedChunkSize;
+
+    // Distribute chunks across all groups using for_each_item_contiguous
+    // Each group processes its assigned contiguous range of chunks
+    group.for_each_item_contiguous(numChunks, [&](uint32_t chunkIdx) {
+      const std::size_t chunkOffset = chunkIdx * alignedChunkSize;
+      const std::size_t chunkBytes = (chunkOffset + alignedChunkSize <= nbytes)
+          ? alignedChunkSize
+          : nbytes - chunkOffset;
+
+      if (chunkBytes > 0) {
+        copy_chunk_vectorized<uint4>(
+            dst_d + chunkOffset, // dst_base
+            src_d + chunkOffset, // src_base
+            chunkBytes, // chunk_bytes
+            0, // dst_offset
+            0, // src_offset
+            group);
+      }
+    });
 #endif
   }
 };
