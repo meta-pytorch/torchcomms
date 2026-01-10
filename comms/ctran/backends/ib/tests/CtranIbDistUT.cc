@@ -20,6 +20,7 @@
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/bootstrap/Socket.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"

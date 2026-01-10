@@ -8,6 +8,7 @@
 
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/socket/CtranSocket.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 

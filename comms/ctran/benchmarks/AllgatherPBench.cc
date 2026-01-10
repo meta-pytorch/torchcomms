@@ -9,6 +9,7 @@
 #include <memory>
 #include <vector>
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 
@@ -61,7 +62,7 @@ struct BenchmarkResult {
 class CtranAllgatherPBenchTestEnv : public ctran::CtranEnvironmentBase {
  public:
   void SetUp() override {
-    CtranEnvironmentBase::SetUp();
+    ctran::CtranEnvironmentBase::SetUp();
 
     // set logging level to WARN
     setenv("NCCL_DEBUG", "WARN", 1);

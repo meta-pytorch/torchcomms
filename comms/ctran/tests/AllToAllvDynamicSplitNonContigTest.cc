@@ -14,6 +14,7 @@
 #endif
 
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/tests_common.cuh"

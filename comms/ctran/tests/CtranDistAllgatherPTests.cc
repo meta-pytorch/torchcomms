@@ -15,6 +15,7 @@
 #include <nccl.h>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
@@ -37,7 +38,7 @@
 class CtranAllgatherPTestEnv : public ctran::CtranEnvironmentBase {
  public:
   void SetUp() override {
-    CtranEnvironmentBase::SetUp();
+    ctran::CtranEnvironmentBase::SetUp();
 
     // set logging level to WARN but allow override by manual run
     setenv("NCCL_DEBUG", "WARN", 0);
