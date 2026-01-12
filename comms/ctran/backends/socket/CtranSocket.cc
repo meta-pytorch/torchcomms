@@ -197,7 +197,7 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
 
 void CtranSocket::bootstrapAccept() {
   // Set cudaDev for logging
-  FB_CUDACHECKTHROW(cudaSetDevice(cudaDev_));
+  FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev_), comm->logMetaData_);
   commNamedThreadStart(
       "CTranSocketListen", rank_, commHash_, commDesc_, __func__);
   while (1) {
