@@ -42,9 +42,30 @@ struct ThreadGroup;
  *   2. [copy data from buffer]
  *   3. readyToSend()           - Transition to READY_TO_SEND
  *
+ * CALL INDEX FOR MULTI-CALL SAFETY:
+ * ==================================
+ * In send_one/recv_one, ChunkState[0] is used to transfer metadata (nbytes,
+ * offset, total_chunks). ALL thread-groups synchronize on ChunkState[0] to
+ * read this metadata before processing the data transfer.
+ *
+ * Problem: When send_one/recv_one is called multiple times in the same kernel,
+ * idle thread groups (those not assigned to any chunk) may race ahead and see
+ * stale stepId values from previous calls. Since all thread-groups share
+ * ChunkState[0], a fast thread-group completing call N could see the stepId
+ * from call N+1 before the sender has updated the metadata for call N+1.
+ *
+ * Solution: The call_index_ field disambiguates calls:
+ * - readyToRecv(group, stepId, call_index) - writes call_index before stepId
+ * - waitReadyToRecv(group, stepId, call_index) - waits for stepId, then
+ *   verifies call_index matches; if not, retries until correct call arrives
+ *
  * MEMORY LAYOUT:
- * - First 4 bytes: state value (int32_t)
- * - Remaining 124 bytes: padding for cache line isolation
+ * - Bytes 0-3: value_ (int) - sync state
+ * - Bytes 4-7: call_index_ (int32_t) - call disambiguation
+ * - Bytes 8-15: total_chunks (size_t) - total chunks being sent
+ * - Bytes 16-23: nbytes (size_t) - current chunk size
+ * - Bytes 24-31: offset (size_t) - current chunk offset
+ * - Bytes 32-127: padding for cache line isolation
  * - Total size: 128 bytes (cache line aligned)
  *
  * MEMORY SEMANTICS:
@@ -55,10 +76,19 @@ struct ThreadGroup;
 struct alignas(128) ChunkState {
   static constexpr int32_t READY_TO_SEND = -1;
 
-  int32_t value_;
-  char padding_[128 - sizeof(int32_t)]{};
+  int32_t value_; // 4 bytes - sync state (stepId or READY_TO_SEND)
+  int32_t call_index_; // 4 bytes - call disambiguation for multi-call safety
+  size_t total_chunks; // 8 bytes - total chunks being sent (for send_multiple)
+  size_t nbytes; // 8 bytes - current chunk size (for send_multiple)
+  size_t offset; // 8 bytes - current chunk offset (for send_multiple)
+  char padding_[128 - 2 * sizeof(int32_t) - 3 * sizeof(size_t)]{};
 
-  __host__ __device__ ChunkState() : value_(READY_TO_SEND) {}
+  __host__ __device__ ChunkState()
+      : value_(READY_TO_SEND),
+        call_index_(0),
+        total_chunks(0),
+        nbytes(0),
+        offset(0) {}
 
   // ===========================================================================
   // Sender Operations
@@ -142,16 +172,30 @@ struct alignas(128) ChunkState {
   // - For waits (waitReadyToSend, waitReadyToRecv): all threads poll for better
   // latency
   //
+  // The optional call_index parameter (default=0) disambiguates multiple calls
+  // to send_one/recv_one in the same kernel. When call_index=0, the simple
+  // stepId-only logic is used. When call_index!=0, call_index is also checked.
+  //
   // This ensures all threads in the group see consistent state.
 
   __device__ __forceinline__ void waitReadyToSend(ThreadGroup& group) const;
   __device__ __forceinline__ void waitReadyToRecv(
       ThreadGroup& group,
-      std::size_t stepId) const;
-  __device__ __forceinline__ void readyToRecv(
-      ThreadGroup& group,
-      std::size_t stepId);
+      std::size_t stepId,
+      int32_t call_index = 0) const;
+  __device__ __forceinline__ void
+  readyToRecv(ThreadGroup& group, std::size_t stepId, int32_t call_index = 0);
   __device__ __forceinline__ void readyToSend(ThreadGroup& group);
+  __device__ __forceinline__ void writeMetaData(
+      ThreadGroup& group,
+      std::size_t nbytes_val,
+      std::size_t offset_val,
+      std::size_t total_chunks_val);
+  __device__ __forceinline__ void readMetaData(
+      ThreadGroup& group,
+      std::size_t& nbytes_val,
+      std::size_t& offset_val,
+      std::size_t& total_chunks_val) const;
 
  private:
   __device__ __forceinline__ int32_t load() const {
@@ -191,18 +235,30 @@ __device__ __forceinline__ void ChunkState::waitReadyToSend(
 
 __device__ __forceinline__ void ChunkState::waitReadyToRecv(
     ThreadGroup& group,
-    std::size_t stepId) const {
-  // All threads poll: slightly lower latency for small messages
-  // (avoids sync barrier overhead after leader-only poll)
-  while (load() != static_cast<int32_t>(stepId)) {
+    std::size_t stepId,
+    int32_t call_index) const {
+  // All threads poll for better latency.
+  // Wait for stepId match AND call_index match.
+  // If call_index doesn't match, this is a stale signal from a previous call,
+  // so we retry until we see the correct call_index.
+  while (true) {
+    int current_value = load();
+    if (current_value == static_cast<int32_t>(stepId) &&
+        call_index_ == call_index) {
+      return;
+    }
   }
 }
 
 __device__ __forceinline__ void ChunkState::readyToRecv(
     ThreadGroup& group,
-    std::size_t stepId) {
+    std::size_t stepId,
+    int32_t call_index) {
   group.sync();
   if (group.is_leader()) {
+    // Write call_index BEFORE release-store of value_.
+    // This ensures receiver sees call_index after acquire-load of value_.
+    call_index_ = call_index;
     store(static_cast<int32_t>(stepId));
   }
 }
@@ -212,6 +268,28 @@ __device__ __forceinline__ void ChunkState::readyToSend(ThreadGroup& group) {
   if (group.is_leader()) {
     store(READY_TO_SEND);
   }
+}
+
+__device__ __forceinline__ void ChunkState::writeMetaData(
+    ThreadGroup& group,
+    std::size_t nbytes_val,
+    std::size_t offset_val,
+    std::size_t total_chunks_val) {
+  if (group.is_leader()) {
+    nbytes = nbytes_val;
+    offset = offset_val;
+    total_chunks = total_chunks_val;
+  }
+}
+
+__device__ __forceinline__ void ChunkState::readMetaData(
+    ThreadGroup& group,
+    std::size_t& nbytes_val,
+    std::size_t& offset_val,
+    std::size_t& total_chunks_val) const {
+  nbytes_val = nbytes;
+  offset_val = offset;
+  total_chunks_val = total_chunks;
 }
 
 } // namespace comms::pipes
