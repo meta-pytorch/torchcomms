@@ -95,6 +95,8 @@ class BarrierTest(unittest.TestCase):
 
                 # No explicit verification needed for barrier, just ensure it completes
 
+            graph.reset()
+
     def test_sync_barrier(self):
         """Test synchronous barrier with work object."""
         self._sync_barrier()

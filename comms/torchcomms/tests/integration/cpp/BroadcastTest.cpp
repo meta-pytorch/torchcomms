@@ -192,6 +192,8 @@ void BroadcastTest::testGraphBroadcast(int count, at::ScalarType dtype) {
     // Verify the results after each replay
     verifyBroadcastResults(tensor, root_value);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for broadcast with input deleted after graph
@@ -239,6 +241,8 @@ void BroadcastTest::testGraphBroadcastInputDeleted(
     // Note: Cannot verify results since tensor is deleted
     // This test validates that the graph replay completes without crashing
   }
+
+  graph.reset();
 }
 
 // Helper function to create tensor for broadcast

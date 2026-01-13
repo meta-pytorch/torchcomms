@@ -181,6 +181,8 @@ class BroadcastTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_broadcast_results(tensor, root_value)
 
+            graph.reset()
+
     def _graph_broadcast_input_deleted(self, count, dtype):
         """Test CUDA Graph broadcast with input deleted after graph creation."""
         print(
@@ -215,6 +217,8 @@ class BroadcastTest(unittest.TestCase):
 
             # Note: Cannot verify results since tensor is deleted
             # This test validates that the graph replay completes without crashing
+
+        graph.reset()
 
     def _create_broadcast_tensor(self, root_rank, value, count, dtype):
         """Create tensor for broadcast with different values based on rank."""
