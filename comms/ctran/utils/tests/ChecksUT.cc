@@ -597,3 +597,20 @@ TEST_F(CtranUtilsCheckTest, FB_CUDACHECKTHROW_EX_2ARGS) {
   }
   ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
 }
+
+TEST_F(
+    CtranUtilsCheckTest,
+    FB_CUDACHECKTHROW_EX_NOCOMM) { // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_CUDACHECKTHROW_EX_NOCOMM(cudaSuccess));
+
+  // Failure case: ctran::utils::Exception thrown with correct properties
+  bool caughtException = false;
+  try {
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaErrorInvalidValue);
+  } catch (const ctran::utils::Exception& e) {
+    EXPECT_EQ(e.result(), cudaErrorInvalidValue);
+    EXPECT_THAT(std::string(e.what()), ::testing::HasSubstr("Cuda failure:"));
+    caughtException = true;
+  }
+  ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+}
