@@ -5,6 +5,7 @@
 
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/TorchCommUtils.hpp"
 
 using namespace torch::comms;
 
@@ -118,6 +119,11 @@ std::tuple<int, int> getRankAndSize() {
 
   if (torchrun_rank && torchrun_size) {
     return {std::stoi(torchrun_rank), std::stoi(torchrun_size)};
+  }
+
+  const auto [rank, size] = query_pals_ranksize();
+  if (rank > -1 && size > 0) {
+    return {rank, size};
   }
 
   throw std::runtime_error(
