@@ -17,7 +17,8 @@ std::vector<std::vector<std::string>> CtranTcpDmSingleton::getIfNames(
     std::vector<std::string> tokens;
     folly::split(':', s, tokens);
     if (tokens.empty() || tokens[0].empty()) {
-      FB_ERRORTHROW(commInvalidArgument, "TCP-DEVMEM: invalid hcaList");
+      FB_ERRORTHROW_EX_NOCOMM(
+          commInvalidArgument, "TCP-DEVMEM: invalid hcaList");
     }
     std::filesystem::path inputPath =
         "/sys/class/infiniband/" + tokens[0] + "/device/net";
@@ -42,7 +43,8 @@ bool CtranTcpDmSingleton::supportBondTransport() {
   struct utsname uts{};
 
   if (uname(&uts) != 0) {
-    FB_ERRORTHROW(commSystemError, "uname() failed with errno {}", errno);
+    FB_ERRORTHROW_EX_NOCOMM(
+        commSystemError, "uname() failed with errno {}", errno);
   }
 
   if (!std::strcmp("aarch64", uts.machine)) {

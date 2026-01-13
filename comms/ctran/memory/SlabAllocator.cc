@@ -12,7 +12,7 @@ namespace ncclx::memory {
 
 SlabAllocator::SlabAllocator() {
   if (!ctran::utils::getCuMemSysSupported()) {
-    FB_ERRORTHROW(
+    FB_ERRORTHROW_EX_NOCOMM(
         commInvalidUsage,
         "NCCLX slab allocator only works with low-level cuMem APIs. Make sure CUDA Toolkit is 11.3 or higher.");
   }

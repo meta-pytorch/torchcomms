@@ -614,3 +614,71 @@ TEST_F(
   }
   ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
 }
+TEST_F(CtranUtilsCheckTest, FB_ERRORTHROW_EX) {
+  const int rank = 7;
+  const uint64_t commHash = 0xDEADBEEF;
+  const std::string commDesc = "testDesc";
+
+  CommLogData logData = {
+      .rank = rank,
+      .commHash = commHash,
+      .commDesc = commDesc,
+  };
+
+  for (size_t i = 0; i < commNumResults; i++) {
+    const auto commResult = static_cast<commResult_t>(i);
+    if (commResult == commSuccess || commResult == commInProgress) {
+      continue;
+    }
+
+    auto dummyFn = [logData, commResult]() {
+      FB_ERRORTHROW_EX(
+          commResult, logData, "test FB_ERRORTHROW_EX - no failure");
+      return commSuccess;
+    };
+
+    bool caughtException = false;
+    try {
+      dummyFn();
+    } catch (const ctran::utils::Exception& e) {
+      EXPECT_EQ(e.rank(), rank);
+      EXPECT_EQ(e.commHash(), commHash);
+      EXPECT_EQ(e.result(), commResult);
+      EXPECT_THAT(
+          std::string(e.what()),
+          ::testing::HasSubstr("COMM internal failure:"));
+      caughtException = true;
+    }
+
+    ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+  }
+}
+
+TEST_F(CtranUtilsCheckTest, FB_ERRORTHROW_EX_NOCOMM) {
+  for (size_t i = 0; i < commNumResults; i++) {
+    const auto commResult = static_cast<commResult_t>(i);
+    if (commResult == commSuccess || commResult == commInProgress) {
+      continue;
+    }
+
+    auto dummyFn = [commResult]() {
+      FB_ERRORTHROW_EX_NOCOMM(
+          commResult, "test FB_ERRORTHROW_EX_NOCOMM - no failure");
+      return commSuccess;
+    };
+
+    bool caughtException = false;
+    try {
+      dummyFn();
+    } catch (const ctran::utils::Exception& e) {
+      EXPECT_THAT(
+          std::string(e.what()),
+          ::testing::HasSubstr("COMM internal failure:"));
+      EXPECT_EQ(e.result(), commResult);
+      EXPECT_EQ(e.result(), commResult);
+      caughtException = true;
+    }
+
+    ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+  }
+}
