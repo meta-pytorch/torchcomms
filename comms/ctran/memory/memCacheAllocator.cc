@@ -348,7 +348,7 @@ size_t memCacheAllocator::getUsedMem() const {
 
 void memCacheAllocator::printSnapshot() const {
   size_t avai_bytes = 0, total_bytes = 0;
-  FB_CUDACHECKTHROW(cudaMemGetInfo(&avai_bytes, &total_bytes));
+  FB_CUDACHECKTHROW_EX_NOCOMM(cudaMemGetInfo(&avai_bytes, &total_bytes));
   // convert to GiB
   double avai_mem = avai_bytes / (1024 * 1024 * 1024);
   double total_mem = total_bytes / (1024 * 1024 * 1024);

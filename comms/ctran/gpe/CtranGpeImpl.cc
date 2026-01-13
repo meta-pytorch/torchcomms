@@ -797,7 +797,7 @@ void KernelElem::wait(std::shared_ptr<ctran::utils::Abort> abort, int groupId) {
 }
 
 KernelElemPool::KernelElemPool(size_t capacity) : capacity_(capacity) {
-  FB_CUDACHECKTHROW(cudaHostAlloc(
+  FB_CUDACHECKTHROW_EX_NOCOMM(cudaHostAlloc(
       &this->memPtr_,
       this->capacity_ * sizeof(struct KernelElem),
       cudaHostAllocDefault));
