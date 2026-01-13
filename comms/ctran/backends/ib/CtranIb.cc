@@ -1134,7 +1134,8 @@ commResult_t CtranIb::connectVcDirect(
 
 void CtranIb::bootstrapAccept(CtranIb* ib) {
   // Set cudaDev for logging
-  FB_CUDACHECKTHROW(cudaSetDevice(ib->cudaDev));
+  FB_CUDACHECKTHROW_EX(
+      cudaSetDevice(ib->cudaDev), ib->rank, ib->commHash, ib->commDesc);
   commNamedThreadStart(
       "CTranIbListen", ib->rank, ib->commHash, ib->commDesc.c_str(), __func__);
   while (1) {
