@@ -15,6 +15,7 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/backends/nvl/CtranNvlImpl.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 

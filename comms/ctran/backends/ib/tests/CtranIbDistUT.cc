@@ -20,6 +20,7 @@
 #include "comms/ctran/backends/ib/CtranIbBase.h"
 #include "comms/ctran/bootstrap/Socket.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -41,7 +42,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
  public:
   CtranIbTest() = default;
   void SetUp() override {
-    ctran::CtranDistTestFixture::SetUp();
+    CtranDistTestFixture::SetUp();
     this->comm_ = makeCtranComm();
     this->comm = this->comm_.get();
     this->ctrlMgr = std::make_unique<CtranCtrlManager>();
@@ -51,7 +52,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
   void TearDown() override {
     this->ctrlMgr.reset();
     this->comm_.reset();
-    ctran::CtranDistTestFixture::TearDown();
+    CtranDistTestFixture::TearDown();
     ASSERT_EQ(getIbRegCount(), 0);
   }
 

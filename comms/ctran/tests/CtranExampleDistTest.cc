@@ -9,6 +9,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -17,7 +18,7 @@ using namespace meta::comms;
 class CtranExampleEnvironment : public ctran::CtranEnvironmentBase {
  public:
   void SetUp() override {
-    CtranEnvironmentBase::SetUp();
+    ctran::CtranEnvironmentBase::SetUp();
 
     // set logging level to WARN
     setenv("NCCL_DEBUG", "WARN", 1);
