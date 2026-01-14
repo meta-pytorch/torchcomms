@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#define __HIP_PLATFORM_AMD__
 #include "comms/torchcomms/rccl/tests/unit/cpp/mocks/RcclMock.hpp"
 
 #include <rccl.h> // @manual
