@@ -105,7 +105,7 @@ TEST_P(ThreadGroupContiguousTest, ForEachItemContiguousLocality) {
       numItems * sizeof(uint32_t),
       cudaMemcpyDeviceToHost));
 
-  const uint32_t warpsPerBlock = blockSize / WARP_SIZE;
+  const uint32_t warpsPerBlock = blockSize / comms::device::kWarpSize;
   const uint32_t totalWarps = numBlocks * warpsPerBlock;
   const uint32_t itemsPerGroup = (numItems + totalWarps - 1) / totalWarps;
 
@@ -262,7 +262,8 @@ class ThreadGroupPartitionTest
 
 TEST_P(ThreadGroupPartitionTest, PartitionEven) {
   const auto& params = GetParam();
-  const uint32_t totalWarps = params.numBlocks * (params.blockSize / WARP_SIZE);
+  const uint32_t totalWarps =
+      params.numBlocks * (params.blockSize / comms::device::kWarpSize);
   const uint32_t numPartitions = params.numPartitions;
 
   DeviceBuffer partitionIdsBuffer(totalWarps * sizeof(uint32_t));
@@ -449,7 +450,8 @@ INSTANTIATE_TEST_SUITE_P(
 TEST_F(ThreadGroupTestFixture, SubgroupPropertiesPreserved) {
   const int numBlocks = 4;
   const int blockSize = 256;
-  const uint32_t totalWarps = numBlocks * (blockSize / WARP_SIZE);
+  const uint32_t totalWarps =
+      numBlocks * (blockSize / comms::device::kWarpSize);
   const uint32_t numPartitions = 2;
 
   DeviceBuffer threadIdsBuffer(totalWarps * sizeof(uint32_t));
@@ -490,10 +492,11 @@ TEST_F(ThreadGroupTestFixture, SubgroupPropertiesPreserved) {
       totalWarps * sizeof(uint32_t),
       cudaMemcpyDeviceToHost));
 
-  // All warps should have WARP_SIZE group_size
+  // All warps should have comms::device::kWarpSize group_size
   for (uint32_t warpId = 0; warpId < totalWarps; warpId++) {
-    EXPECT_EQ(groupSizes_h[warpId], WARP_SIZE)
-        << "Warp " << warpId << " subgroup should have group_size == WARP_SIZE";
+    EXPECT_EQ(groupSizes_h[warpId], comms::device::kWarpSize)
+        << "Warp " << warpId
+        << " subgroup should have group_size == comms::device::kWarpSize";
   }
 }
 
@@ -572,7 +575,8 @@ std::vector<uint32_t> computePartitionBoundaries(
 
 TEST_P(ThreadGroupWeightedPartitionTest, WeightedPartition) {
   const auto& params = GetParam();
-  const uint32_t totalWarps = params.numBlocks * (params.blockSize / WARP_SIZE);
+  const uint32_t totalWarps =
+      params.numBlocks * (params.blockSize / comms::device::kWarpSize);
   const uint32_t numPartitions = static_cast<uint32_t>(params.weights.size());
 
   DeviceBuffer partitionIdsBuffer(totalWarps * sizeof(uint32_t));

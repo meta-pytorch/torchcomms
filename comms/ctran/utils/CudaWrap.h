@@ -284,6 +284,7 @@ FB_DECLARE_CUDA_PFN_EXTERN(cuMemGetAllocationPropertiesFromHandle, 10020);
 FB_DECLARE_CUDA_PFN_EXTERN(cuPointerGetAttribute, 4000);
 #if CUDA_VERSION >= 11070
 FB_DECLARE_CUDA_PFN_EXTERN(cuMemGetHandleForAddressRange, 11070);
+FB_DECLARE_CUDA_PFN_EXTERN(cuStreamWaitValue64, 11070);
 #endif
 #if CUDA_VERSION >= 12010
 /* NVSwitch Multicast support */

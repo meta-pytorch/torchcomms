@@ -16,6 +16,10 @@ void NcclxMock::setupDefaultBehaviors() {
   ON_CALL(*this, getErrorString(_))
       .WillByDefault(Return("mock nccl error string"));
 
+  // Last error - return a default mock last error string
+  ON_CALL(*this, getLastError(_))
+      .WillByDefault(Return("mock nccl last error details"));
+
   // Unique ID generation - return success and set a mock unique ID
   ON_CALL(*this, getUniqueId(_))
       .WillByDefault(

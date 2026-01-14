@@ -33,7 +33,7 @@ CtranMapperRequest::CtranMapperRequest(
         ERR,
         "CTRAN-MAPPER: Unsupported backend {} for CtranMapperRequest",
         backend);
-    FB_COMMCHECKTHROW(commInternalError);
+    FB_COMMCHECKTHROW_EX_NOCOMM(commInternalError);
   }
 }
 
