@@ -59,17 +59,19 @@ CtranGpe::Impl::Impl() {
   this->gpeKernelSyncPool =
       std::make_unique<GpeKernelSyncPool>(NCCL_CTRAN_NUM_GPE_KERNEL_SYNCS);
 
-  FB_CUDACHECKTHROW(
-      cudaEventCreateWithFlags(&execEvent_, cudaEventDisableTiming));
-  FB_CUDACHECKTHROW(
-      cudaStreamCreateWithFlags(&execOrderStream_, cudaStreamNonBlocking));
+  FB_CUDACHECKTHROW_EX(
+      cudaEventCreateWithFlags(&execEvent_, cudaEventDisableTiming),
+      comm->logMetaData_);
+  FB_CUDACHECKTHROW_EX(
+      cudaStreamCreateWithFlags(&execOrderStream_, cudaStreamNonBlocking),
+      comm->logMetaData_);
 
   return;
 }
 
 CtranGpe::Impl::~Impl() {
-  FB_CUDACHECKTHROW(cudaEventDestroy(execEvent_));
-  FB_CUDACHECKTHROW(cudaStreamDestroy(execOrderStream_));
+  FB_CUDACHECKTHROW_EX(cudaEventDestroy(execEvent_), comm->logMetaData_);
+  FB_CUDACHECKTHROW_EX(cudaStreamDestroy(execOrderStream_), comm->logMetaData_);
 }
 
 struct cmdCbPlan {
@@ -462,7 +464,7 @@ void CtranGpe::Impl::gpeThreadFn() {
       __func__);
 
   CTRAN_ASYNC_ERR_GUARD(comm->getAsyncError(), {
-    FB_CUDACHECKTHROW(cudaSetDevice(cudaDev));
+    FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev), comm->logMetaData_);
 
     while (1) {
       auto cmd = cmdDequeue();
@@ -795,7 +797,7 @@ void KernelElem::wait(std::shared_ptr<ctran::utils::Abort> abort, int groupId) {
 }
 
 KernelElemPool::KernelElemPool(size_t capacity) : capacity_(capacity) {
-  FB_CUDACHECKTHROW(cudaHostAlloc(
+  FB_CUDACHECKTHROW_EX_NOCOMM(cudaHostAlloc(
       &this->memPtr_,
       this->capacity_ * sizeof(struct KernelElem),
       cudaHostAllocDefault));

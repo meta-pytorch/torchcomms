@@ -721,7 +721,8 @@ static void resetPerRankState(PerRankState& state) {
     FB_COMMCHECKTHROW_EX_NOCOMM(ctran::utils::commCudaFree(state.srcBuffer));
   }
   if (state.stream != nullptr) {
-    FB_CUDACHECKTHROW(cudaStreamDestroy(state.stream));
+    FB_CUDACHECKTHROW_EX(
+        cudaStreamDestroy(state.stream), state.ctranComm->logMetaData_);
   }
   state.ctranComm.reset(nullptr);
 }
@@ -737,7 +738,11 @@ void initCtranCommMultiRank(
     int nRanks,
     int rank,
     int cudaDev) {
-  FB_CUDACHECKTHROW(cudaSetDevice(cudaDev));
+  FB_CUDACHECKTHROW_EX(
+      cudaSetDevice(cudaDev),
+      rank,
+      kMultiRankCommHash,
+      std::string(kMultiRankCommDesc));
 
   ctranComm->bootstrap_ =
       std::make_unique<ctran::testing::IntraProcessBootstrap>(
@@ -793,7 +798,8 @@ void workerRoutine(PerRankState& state) {
       state.nRanks,
       state.rank,
       state.cudaDev);
-  FB_CUDACHECKTHROW(cudaStreamCreate(&state.stream));
+  FB_CUDACHECKTHROW_EX(
+      cudaStreamCreate(&state.stream), state.ctranComm->logMetaData_);
   FB_COMMCHECKTHROW_EX(
       ctran::utils::commCudaMalloc(
           reinterpret_cast<char**>(&state.srcBuffer),

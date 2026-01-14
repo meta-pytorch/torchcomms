@@ -32,33 +32,41 @@ CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
     FB_COMMCHECKIGNORE(initTmpBufs());
   }
 
-  FB_CUDACHECKTHROW(cudaHostAlloc(
-      &this->sendCountsTmpbufCPU,
-      sizeof(size_t) * all2allvDynamicMaxSendcounts,
-      cudaHostAllocDefault));
+  FB_CUDACHECKTHROW_EX(
+      cudaHostAlloc(
+          &this->sendCountsTmpbufCPU,
+          sizeof(size_t) * all2allvDynamicMaxSendcounts,
+          cudaHostAllocDefault),
+      comm->logMetaData_);
   tmpbufSegments[TmpbufType::SENDCOUNTS_TMPBUF_CPU] = this->sendCountsTmpbufCPU;
   tmpbufSegmentOffsets[TmpbufType::SENDCOUNTS_TMPBUF_CPU] = 0;
 
-  FB_CUDACHECKTHROW(cudaHostAlloc(
-      &this->sendIndicesTmpbufCPU,
-      sizeof(size_t) * all2allvDynamicMaxSendcounts,
-      cudaHostAllocDefault));
+  FB_CUDACHECKTHROW_EX(
+      cudaHostAlloc(
+          &this->sendIndicesTmpbufCPU,
+          sizeof(size_t) * all2allvDynamicMaxSendcounts,
+          cudaHostAllocDefault),
+      comm->logMetaData_);
   tmpbufSegments[TmpbufType::SENDINDICES_TMPBUF_CPU] =
       this->sendIndicesTmpbufCPU;
   tmpbufSegmentOffsets[TmpbufType::SENDINDICES_TMPBUF_CPU] = 0;
 
-  FB_CUDACHECKTHROW(cudaHostAlloc(
-      &this->sendIndicesBlockLengthsTmpbufCPU,
-      sizeof(size_t) * comm_->statex_->nRanks(),
-      cudaHostAllocDefault));
+  FB_CUDACHECKTHROW_EX(
+      cudaHostAlloc(
+          &this->sendIndicesBlockLengthsTmpbufCPU,
+          sizeof(size_t) * comm_->statex_->nRanks(),
+          cudaHostAllocDefault),
+      comm->logMetaData_);
   tmpbufSegments[TmpbufType::SENDINDICES_BLOCKLEN_TMPBUF_CPU] =
       this->sendIndicesBlockLengthsTmpbufCPU;
   tmpbufSegmentOffsets[TmpbufType::SENDINDICES_BLOCKLEN_TMPBUF_CPU] = 0;
 
-  FB_CUDACHECKTHROW(cudaHostAlloc(
-      &this->sendbuffsPtrTmpbufCPU,
-      sizeof(void*) * all2allvDynamicMaxSendcounts,
-      cudaHostAllocDefault));
+  FB_CUDACHECKTHROW_EX(
+      cudaHostAlloc(
+          &this->sendbuffsPtrTmpbufCPU,
+          sizeof(void*) * all2allvDynamicMaxSendcounts,
+          cudaHostAllocDefault),
+      comm->logMetaData_);
   tmpbufSegments[TmpbufType::SENDBUFFS_PTR_TMPBUF_CPU] =
       this->sendbuffsPtrTmpbufCPU;
   tmpbufSegmentOffsets[TmpbufType::SENDBUFFS_PTR_TMPBUF_CPU] = 0;
@@ -386,11 +394,13 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
     for (int j = 0; j < CTRAN_ALGO_MAX_THREAD_BLOCKS; j++) {
       syncInitialVal.syncs[j].stepOnSameBlockIdx = CTRAN_ALGO_STEP_RESET;
     }
-    FB_CUDACHECKTHROW(cudaMemcpy(
-        statePtr_d,
-        &syncInitialVal,
-        sizeof(CtranAlgoDeviceSync),
-        cudaMemcpyHostToDevice));
+    FB_CUDACHECKTHROW_EX(
+        cudaMemcpy(
+            statePtr_d,
+            &syncInitialVal,
+            sizeof(CtranAlgoDeviceSync),
+            cudaMemcpyHostToDevice),
+        comm->logMetaData_);
 
     void* chunkStatePtr_d = reinterpret_cast<char*>(devShmPtr) +
         (nLocalRanks - 1) *
@@ -399,11 +409,13 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
         pos * getPerPeerChunkStatesSize();
     std::vector<ChunkState> initStates(
         CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS, ChunkState());
-    FB_CUDACHECKTHROW(cudaMemcpy(
-        chunkStatePtr_d,
-        initStates.data(),
-        getPerPeerChunkStatesSize(),
-        cudaMemcpyHostToDevice));
+    FB_CUDACHECKTHROW_EX(
+        cudaMemcpy(
+            chunkStatePtr_d,
+            initStates.data(),
+            getPerPeerChunkStatesSize(),
+            cudaMemcpyHostToDevice),
+        comm->logMetaData_);
   }
 
   // Exchange IPC handle with all local ranks
@@ -810,8 +822,9 @@ size_t CtranAlgo::getTmpBufOffset(const TmpbufType type) {
   if (it != tmpbufSegments.end()) {
     offset = tmpbufSegmentOffsets.at(type);
   } else {
-    FB_ERRORTHROW(
+    FB_ERRORTHROW_EX(
         commInternalError,
+        comm_->logMetaData_,
         "Failed to find tmpbuf for type {} during getTmpBufOffset",
         static_cast<int>(type));
   }
@@ -825,8 +838,9 @@ std::tuple<void*, void*> CtranAlgo::getTmpBufInfo(const TmpbufType type) {
 
   auto it = tmpbufSegments.find(type);
   if (it == tmpbufSegments.end()) {
-    FB_ERRORTHROW(
+    FB_ERRORTHROW_EX(
         commInternalError,
+        comm_->logMetaData_,
         "Failed to find tmpbuf for type {} during getTmpBufInfo",
         static_cast<int>(type));
   } else {

@@ -43,6 +43,10 @@
 
 #define FB_CUDACHECK(cmd) FB_CUDACHECK_RETURN(cmd, commUnhandledCudaError)
 
+// Note: when writing code for the comms/ctran directory, prefer the
+// FB_CUDACHECKTHROW_EX or FB_CUDACHECKTHROW_EX_NOCOMM macros.
+//
+// TODO(T250777174): Move this definition out of the ctran directory.
 #define FB_CUDACHECKTHROW(cmd)                                      \
   do {                                                              \
     cudaError_t err = cmd;                                          \
@@ -58,6 +62,53 @@
           std::string("Cuda failure: ") + cudaGetErrorString(err)); \
     }                                                               \
   } while (false)
+
+#define FB_CUDACHECKTHROW_EX_DIRECT(cmd, rank, commHash, desc)     \
+  do {                                                             \
+    cudaError_t err = cmd;                                         \
+    if (err != cudaSuccess) {                                      \
+      CLOGF(                                                       \
+          ERR,                                                     \
+          "{}:{} Cuda failure {}",                                 \
+          __FILE__,                                                \
+          __LINE__,                                                \
+          cudaGetErrorString(err));                                \
+      (void)cudaGetLastError();                                    \
+      throw ctran::utils::Exception(                               \
+          std::string("Cuda failure: ") + cudaGetErrorString(err), \
+          commUnhandledCudaError,                                  \
+          rank,                                                    \
+          commHash,                                                \
+          desc);                                                   \
+    }                                                              \
+  } while (false)
+
+#define FB_CUDACHECKTHROW_EX_LOGDATA(cmd, logData) \
+  FB_CUDACHECKTHROW_EX_DIRECT(                     \
+      cmd, (logData).rank, (logData).commHash, (logData).commDesc)
+
+// Selector macro, used with FB_CUDACHECKTHROW_EX to delegate
+// based on the number of arguments.
+// The dummy placeholders ensure correct selection for 2, 3, and 4 arguments.
+#define GET_FB_CUDACHECKTHROW_EX_MACRO(_1, _2, _3, _4, NAME, ...) NAME
+
+// Delegates to either FB_CUDACHECKTHROW_EX_DIRECT or
+// FB_CUDACHECKTHROW_EX_LOGDATA based on the number of arguments.
+// - 4 args (cmd, rank, commHash, desc): uses FB_CUDACHECKTHROW_EX_DIRECT
+// - 2 args (cmd, logData): uses FB_CUDACHECKTHROW_EX_LOGDATA
+#define FB_CUDACHECKTHROW_EX(...)   \
+  GET_FB_CUDACHECKTHROW_EX_MACRO(   \
+      __VA_ARGS__,                  \
+      FB_CUDACHECKTHROW_EX_DIRECT,  \
+      UNUSED_PLACEHOLDER_3_ARGS,    \
+      FB_CUDACHECKTHROW_EX_LOGDATA, \
+      UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
+
+// For contexts where rank/commHash/commDesc are not available
+// (e.g., utility functions, initialization code, standalone CUDA operations).
+// Use FB_CUDACHECKTHROW_EX when communicator context is available.
+#define FB_CUDACHECKTHROW_EX_NOCOMM(cmd) \
+  FB_CUDACHECKTHROW_EX_DIRECT(cmd, std::nullopt, std::nullopt, std::nullopt)
 
 #define FB_CUDACHECKGOTO(cmd, RES, label)                     \
   do {                                                        \
@@ -537,10 +588,36 @@
     return error;                                                   \
   } while (0)
 
+// Note: when writing code within the comms/ctran directory,
+// prefer the FB_ERRORTHROW_EX or FB_ERRORTHROW_EX_NOCOMM macros.
+//
+// TODO(T250696492): move this macro definition outside the ctran directory.
 #define FB_ERRORTHROW(error, ...)                \
   do {                                           \
     CLOGF(ERR, ##__VA_ARGS__);                   \
     throw std::runtime_error(                    \
         std::string("COMM internal failure: ") + \
         ::meta::comms::commCodeToString(error)); \
+  } while (0)
+
+#define FB_ERRORTHROW_EX(error, logData, ...)       \
+  do {                                              \
+    CLOGF(ERR, ##__VA_ARGS__);                      \
+    throw ctran::utils::Exception(                  \
+        std::string("COMM internal failure: ") +    \
+            ::meta::comms::commCodeToString(error), \
+        error,                                      \
+        (logData).rank,                             \
+        (logData).commHash,                         \
+        (logData).commDesc);                        \
+  } while (0)
+
+// For contexts where rank/commHash are not available
+#define FB_ERRORTHROW_EX_NOCOMM(error, ...)         \
+  do {                                              \
+    CLOGF(ERR, ##__VA_ARGS__);                      \
+    throw ctran::utils::Exception(                  \
+        std::string("COMM internal failure: ") +    \
+            ::meta::comms::commCodeToString(error), \
+        error);                                     \
   } while (0)

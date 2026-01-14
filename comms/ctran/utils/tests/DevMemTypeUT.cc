@@ -18,7 +18,7 @@ class DevMemTypeTest : public ::testing::Test {
  protected:
   void SetUp() override {
     ctran::utils::commCudaLibraryInit();
-    FB_CUDACHECKTHROW(cudaSetDevice(cudaDev_));
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaSetDevice(cudaDev_));
   }
 
   void TearDown() override {
@@ -32,11 +32,12 @@ class DevMemTypeTest : public ::testing::Test {
       CUmemGenericAllocationHandle* pHandle = nullptr) {
     void* ptr = nullptr;
     if (type == DevMemType::kCudaMalloc) {
-      FB_CUDACHECKTHROW(cudaMalloc(&ptr, size));
+      FB_CUDACHECKTHROW_EX_NOCOMM(cudaMalloc(&ptr, size));
     } else if (type == DevMemType::kHostPinned) {
-      FB_CUDACHECKTHROW(cudaHostAlloc(&ptr, size, cudaHostAllocDefault));
+      FB_CUDACHECKTHROW_EX_NOCOMM(
+          cudaHostAlloc(&ptr, size, cudaHostAllocDefault));
     } else if (type == DevMemType::kManaged) {
-      FB_CUDACHECKTHROW(cudaMallocManaged(&ptr, size));
+      FB_CUDACHECKTHROW_EX_NOCOMM(cudaMallocManaged(&ptr, size));
     } else if (type == DevMemType::kCumem) {
       CUmemAllocationHandleType handleType =
           ctran::utils::getCuMemAllocHandleType();

@@ -66,8 +66,10 @@ CtranNvl::CtranNvl(CtranComm* comm) {
         continue;
       }
       int canAccessPeer = 1;
-      FB_CUDACHECKTHROW(cudaDeviceCanAccessPeer(
-          &canAccessPeer, statex->cudaDev(), peerDevs[i]));
+      FB_CUDACHECKTHROW_EX(
+          cudaDeviceCanAccessPeer(
+              &canAccessPeer, statex->cudaDev(), peerDevs[i]),
+          comm->logMetaData_);
       if (canAccessPeer) {
         this->pimpl_->nvlRankSupportMode[statex->localRankToRank(i)]
             .nvlIntraHost = true;
