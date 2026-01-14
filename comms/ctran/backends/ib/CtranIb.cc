@@ -397,8 +397,7 @@ void CtranIb::init(
   this->bootstrapMode = bootstrapMode;
   this->devices.resize(NCCL_CTRAN_IB_DEVICES_PER_RANK);
   this->cqs.reserve(NCCL_CTRAN_IB_DEVICES_PER_RANK);
-  FB_COMMCHECKTHROW_EX(
-      this->setPgToTrafficClassMap(), this->rank, this->commHash);
+  FB_COMMCHECKTHROW_EX(this->setPgToTrafficClassMap(), this->ncclLogData);
 
   CtranIbSingleton& s = CtranIbSingleton::getInstance();
 
@@ -668,8 +667,7 @@ void CtranIb::bootstrapStart(
         comm->statex_->nRanks());
     FB_COMMCHECKTHROW_EX(
         static_cast<commResult_t>(std::move(resFuture).get()),
-        this->rank,
-        this->commHash);
+        this->ncclLogData);
   }
 
   this->listenThread = std::thread{bootstrapAccept, this};
@@ -820,10 +818,26 @@ commResult_t CtranIb::regMem(
     int dmaBufFd = useDmaBuf
         ? ctran::utils::getCuMemDmaBufFd(buf, len, pd.useDataDirect())
         : -1;
+    auto makeErrorInfo = [&]() {
+      return fmt::format(
+          "CTRAN-IB: buffer registration failed: cudaDev={}, nicIdx={}, "
+          "nicName={}, pdIdx={}, buf={}, len={}, dmaBufSupport={}, "
+          "useDataDirect={}. If dmaBufSupport=true but registration fails "
+          "with error 524 (ENOMEDIUM), the GPU and NIC are not PCIe-close - "
+          "check NCCL_IB_HCA order for GPU-to-NIC affinity",
+          cudaDev,
+          device,
+          pd.getDeviceName(),
+          pdIdx,
+          buf,
+          len,
+          dmaBufSupport,
+          pd.useDataDirect());
+    };
     if (useDmaBuf && dmaBufFd != -1) {
       auto maybeDmabufMr = pd.regDmabufMr(
           0, len, reinterpret_cast<uint64_t>(buf), dmaBufFd, access);
-      FOLLY_EXPECTED_CHECKGOTO(maybeDmabufMr, fail);
+      FOLLY_EXPECTED_CHECKGOTO(maybeDmabufMr, fail, makeErrorInfo());
       mrs->emplace_back(std::move(*maybeDmabufMr));
     } else {
       // fall back to ibv_reg_mr
@@ -837,7 +851,7 @@ commResult_t CtranIb::regMem(
         return commInvalidUsage;
       }
       auto maybeMr = pd.regMr((void*)buf, len, access);
-      FOLLY_EXPECTED_CHECKGOTO(maybeMr, fail);
+      FOLLY_EXPECTED_CHECKGOTO(maybeMr, fail, makeErrorInfo());
       mrs->emplace_back(std::move(*maybeMr));
     }
     if (dmaBufFd != -1) {
@@ -851,14 +865,6 @@ commResult_t CtranIb::regMem(
   return res;
 
 fail:
-  CLOGF(
-      ERR,
-      "CTRAN-IB: buffer registration failed: buf = {}, len = {}, dmaBufSupport = {}, NCCL_CTRAN_IB_DMABUF_ENABLE = {}, useDmaBuf = {}",
-      buf,
-      len,
-      dmaBufSupport,
-      NCCL_CTRAN_IB_DMABUF_ENABLE,
-      useDmaBuf);
   return commSystemError;
 }
 
@@ -1066,7 +1072,7 @@ std::string CtranIb::getLocalVcIdentifier(const int peerRank) {
     const std::lock_guard<std::mutex> lock(vc->mutex);
     localBusCard.resize(vc->getBusCardSize());
     FB_COMMCHECKTHROW_EX(
-        vc->getLocalBusCard(localBusCard.data()), this->rank, this->commHash);
+        vc->getLocalBusCard(localBusCard.data()), this->ncclLogData);
   }
   return localBusCard;
 }
@@ -1079,9 +1085,7 @@ commResult_t CtranIb::connectVcDirect(
   {
     const std::lock_guard<std::mutex> lock(vc->mutex);
     FB_COMMCHECKTHROW_EX(
-        vc->setupVc((void*)remoteVcIdentifier.data()),
-        this->rank,
-        this->commHash);
+        vc->setupVc((void*)remoteVcIdentifier.data()), this->ncclLogData);
   }
 
   uint32_t controlQp = vc->getControlQpNum();
@@ -1091,7 +1095,7 @@ commResult_t CtranIb::connectVcDirect(
 
   // Till now VC is not yet exposed to local rank. Local rank can use the VC
   // once updated the vcStateMaps.
-  FB_COMMCHECKTHROW_EX(updateVcState(vc, peerRank), this->rank, this->commHash);
+  FB_COMMCHECKTHROW_EX(updateVcState(vc, peerRank), this->ncclLogData);
 
   CLOGF_SUBSYS(
       INFO,
@@ -1130,7 +1134,8 @@ commResult_t CtranIb::connectVcDirect(
 
 void CtranIb::bootstrapAccept(CtranIb* ib) {
   // Set cudaDev for logging
-  FB_CUDACHECKTHROW(cudaSetDevice(ib->cudaDev));
+  FB_CUDACHECKTHROW_EX(
+      cudaSetDevice(ib->cudaDev), ib->rank, ib->commHash, ib->commDesc);
   commNamedThreadStart(
       "CTranIbListen", ib->rank, ib->commHash, ib->commDesc.c_str(), __func__);
   while (1) {
