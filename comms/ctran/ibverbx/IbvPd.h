@@ -29,6 +29,7 @@ class IbvPd {
   ibv_pd* pd() const;
   bool useDataDirect() const;
   int32_t getDeviceId() const;
+  std::string getDeviceName() const;
 
   folly::Expected<IbvMr, Error>
   regMr(void* addr, size_t length, ibv_access_flags access) const;
