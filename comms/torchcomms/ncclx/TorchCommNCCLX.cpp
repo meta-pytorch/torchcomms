@@ -11,6 +11,7 @@
 #include <string>
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/TorchCommObjectId.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 #include "nccl.h" // @manual
@@ -1891,9 +1892,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 
 // Window & One-sidede Operations
 std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window() {
-  auto win =
-      std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, shared_from_this());
-  return win;
+  return std::make_shared<TorchCommWindowNCCLX>(
+      next_object_id(), nccl_comm_, shared_from_this());
 }
 
 std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(

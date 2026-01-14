@@ -24,7 +24,7 @@ class TorchWin;
 
 class TorchComm {
  public:
-  ~TorchComm() = default;
+  ~TorchComm();
 
   void finalize();
   int getRank();
