@@ -1070,6 +1070,7 @@ set(COMMON_FILES
   comms/common/algorithms/AlgoFactory.cuh
   comms/common/algorithms/AlgoUtils.cc
   comms/common/algorithms/AlgoUtils.h
+  comms/common/HipBf16Compat.h
   comms/common/algorithms/all_reduce/AlgoAllReduce.cu
   comms/common/algorithms/all_reduce/AlgoAllReduce.cuh
   comms/common/algorithms/all_reduce/AllReduceAlgoManager.cu
