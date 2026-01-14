@@ -14,7 +14,7 @@ namespace ctran::utils {
 
 /* static */ BusId BusId::makeFrom(const int cudaDev) {
   BusId val;
-  FB_CUDACHECKTHROW(
+  FB_CUDACHECKTHROW_EX_NOCOMM(
       cudaDeviceGetPCIBusId(val.busId_.data(), val.busId_.size(), cudaDev));
   return val;
 }
@@ -75,9 +75,9 @@ folly::Expected<int, std::string> getCudaArch(int cudaDev) {
   int archMajor = -1;
   int archMinor = -1;
   try {
-    FB_CUDACHECKTHROW(cudaDeviceGetAttribute(
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaDeviceGetAttribute(
         &archMajor, cudaDevAttrComputeCapabilityMajor, cudaDev));
-    FB_CUDACHECKTHROW(cudaDeviceGetAttribute(
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaDeviceGetAttribute(
         &archMinor, cudaDevAttrComputeCapabilityMinor, cudaDev));
   } catch (const std::exception& ex) {
     return folly::makeUnexpected<std::string>(
