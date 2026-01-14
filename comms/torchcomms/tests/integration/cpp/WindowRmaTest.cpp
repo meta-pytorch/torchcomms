@@ -2,7 +2,6 @@
 #include "WindowRmaTest.hpp"
 
 #include <gtest/gtest.h>
-#include <ifaddrs.h>
 #include <algorithm>
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
@@ -13,6 +12,11 @@ std::unique_ptr<TorchCommTestWrapper> WindowRmaTest::createWrapper() {
 
 // Called before EACH test run - create fresh instance per test
 void WindowRmaTest::SetUp() {
+  // Check skip condition FIRST, before any initialization
+  if (checkIfSkip()) {
+    GTEST_SKIP() << "Skipping RMA tests (RUN_RMA_TEST not set)";
+  }
+
   wrapper_ = createWrapper();
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
@@ -30,42 +34,18 @@ void WindowRmaTest::TearDown() {
 }
 
 bool WindowRmaTest::checkIfSkip() {
-  // Check 1: beth0 NIC exists (OSS env requirements)
-  struct ifaddrs* ifaddr;
-  if (getifaddrs(&ifaddr) == -1) {
-    return true; // skip if can't get interface info
+  // Check RUN_RMA_TEST env var (set by BUCK for NCCLX + CTran configurations)
+  const char* rma_env = getenv("RUN_RMA_TEST");
+  if (!rma_env) {
+    return true; // skip if not set
   }
-  bool nic_found = false;
-  for (struct ifaddrs* ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
-    if (ifa->ifa_name &&
-        std::string(ifa->ifa_name).find("beth0") != std::string::npos) {
-      nic_found = true;
-      break;
-    }
-  }
-  freeifaddrs(ifaddr);
-  if (!nic_found) {
-    return true; // skip if NIC not found
-  }
-
-  // Check 2: NCCL_CTRAN_ENABLE is "1" or "true"
-  const char* ctran_env = getenv("NCCL_CTRAN_ENABLE");
-  if (!ctran_env) {
-    return true; // skip if env not set
-  }
-  std::string val(ctran_env);
-  std::transform(val.begin(), val.end(), val.begin(), ::tolower);
-  if (val != "1" && val != "true") {
+  std::string rma_val(rma_env);
+  std::transform(rma_val.begin(), rma_val.end(), rma_val.begin(), ::tolower);
+  if (rma_val != "1" && rma_val != "true") {
     return true; // skip if not enabled
   }
 
-  // Check 3: TEST_BACKEND is "ncclx"
-  const char* backend_env = getenv("TEST_BACKEND");
-  if (!backend_env || std::string(backend_env) != "ncclx") {
-    return true; // skip if backend is not ncclx
-  }
-
-  // All conditions met, don't skip
+  // RUN_RMA_TEST is set, don't skip
   return false;
 }
 
@@ -226,9 +206,6 @@ void WindowRmaTest::performWindowPutIteration(
 }
 
 TEST_P(WindowRmaTest, WindowPutBasic) {
-  if (checkIfSkip()) {
-    GTEST_SKIP() << "Skipping NCCLX-CTRAN-only window tests";
-  }
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
   bool async_op = std::get<2>(GetParam());
