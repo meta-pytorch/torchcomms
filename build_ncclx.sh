@@ -229,7 +229,7 @@ export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
 export LIB_PREFIX="lib64"
 
 BUILDDIR=${BUILDDIR:="${PWD}/build/ncclx"}
-NVCC_ARCH=${NVCC_ARCH:="a100,h100,b200"}
+NVCC_ARCH=${NVCC_ARCH:="a100,h100"}
 CUDA_HOME=${CUDA_HOME:="/usr/local/cuda"}
 NCCL_FP8=${NCCL_FP8:=1}
 CLEAN_BUILD=${CLEAN_BUILD:=0}
@@ -298,9 +298,6 @@ if [[ -z "${NVCC_GENCODE-}" ]]; then
         "h100")
             arch_gencode="$arch_gencode -gencode=arch=compute_90,code=sm_90"
         ;;
-        "b200")
-            arch_gencode="$arch_gencode -gencode=arch=compute_100,code=sm_100"
-        ;;
         esac
     done
     NVCC_GENCODE=$arch_gencode
@@ -320,8 +317,7 @@ function build_nccl {
     NVCC_GENCODE="$NVCC_GENCODE" \
     CUDA_HOME="$CUDA_HOME" \
     NCCL_HOME="$NCCL_HOME" \
-    NCCL_SUFFIX="x" \
-    DEV_SIGNATURE="$DEV_SIGNATURE" \
+    NCCL_SUFFIX="x-${DEV_SIGNATURE}" \
     NCCL_FP8="$NCCL_FP8" \
     BASE_DIR="$BASE_DIR" \
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
@@ -338,8 +334,7 @@ make VERBOSE=1 -j \
     NVCC_GENCODE="$NVCC_GENCODE" \
     CUDA_HOME="$CUDA_HOME" \
     NCCL_HOME="$NCCL_HOME" \
-    NCCL_SUFFIX="x" \
-    DEV_SIGNATURE="$DEV_SIGNATURE" \
+    NCCL_SUFFIX="x-${DEV_SIGNATURE}" \
     NCCL_FP8="$NCCL_FP8" \
     BASE_DIR="$BASE_DIR" \
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \

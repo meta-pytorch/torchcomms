@@ -284,12 +284,16 @@ TEST_F(CtranTest, AlgoDeviceState) {
       EXPECT_EQ(devState.localSyncsMap[i], nullptr);
       EXPECT_EQ(devState.remoteStagingBufsMap[i], nullptr);
       EXPECT_EQ(devState.localStagingBufsMap[i], nullptr);
+      EXPECT_EQ(devState.remoteChunkStatesMap[i], nullptr);
+      EXPECT_EQ(devState.localChunkStatesMap[i], nullptr);
       continue;
     }
     EXPECT_NE(devState.remoteSyncsMap[i], nullptr);
     EXPECT_NE(devState.localSyncsMap[i], nullptr);
     EXPECT_NE(devState.remoteStagingBufsMap[i], nullptr);
     EXPECT_NE(devState.localStagingBufsMap[i], nullptr);
+    EXPECT_NE(devState.remoteChunkStatesMap[i], nullptr);
+    EXPECT_NE(devState.localChunkStatesMap[i], nullptr);
 
     // Copy buffer state to host and check values are reset to default
     struct CtranAlgoDeviceSync localStateVal, remoteStateVal;

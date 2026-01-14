@@ -198,7 +198,10 @@ benchmarkIput(benchmark::State& state, CtranIbConfig config, bool withNotify) {
     }
   }
 
-  state.SetBytesProcessed(state.iterations() * bufferSize);
+  // Calculate and report bandwidth using custom counters
+  double totalBytes = static_cast<double>(state.iterations()) * bufferSize;
+  state.counters["BW_GBps"] =
+      benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
   cleanupBenchmarkContext(ctx);
 }
 
@@ -231,7 +234,10 @@ benchmarkIget(benchmark::State& state, CtranIbConfig config, bool withNotify) {
     } while (!ibReq.isComplete());
   }
 
-  state.SetBytesProcessed(state.iterations() * bufferSize);
+  // Calculate and report bandwidth using custom counters
+  double totalBytes = static_cast<double>(state.iterations()) * bufferSize;
+  state.counters["BW_GBps"] =
+      benchmark::Counter(totalBytes / 1e9, benchmark::Counter::kIsRate);
   cleanupBenchmarkContext(ctx);
 }
 
@@ -312,8 +318,6 @@ static auto* registered_benchmark_iget =
 
 // Custom main function to handle initialization
 int main(int argc, char** argv) {
-  folly::Init init(&argc, &argv);
-
   ncclCvarInit();
   ctran::utils::commCudaLibraryInit();
 

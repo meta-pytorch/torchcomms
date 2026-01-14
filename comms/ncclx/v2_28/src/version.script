@@ -1,0 +1,17 @@
+/*
+version.script controls symbol visibility, it exposes
+nccl: nccl(x)-related symbols
+cxa: Folly’s exception tracer intercepts all exceptions and uses
+    dlsym(RTLD_NEXT, "cxa...") to find the corresponding real symbols.
+    Therefore, it is necessary to expose certain cxa symbols from the libstdc++.
+    For further details, refer to the discussion in D64442615.
+*/
+{
+  global:
+      *nccl*;
+      *ctran*;
+      *cxa*;
+  /* Transitive symbols (e.g. coming from static libs) are not exported */
+  local:
+      *;
+};
