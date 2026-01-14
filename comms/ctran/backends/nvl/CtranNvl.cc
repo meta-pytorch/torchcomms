@@ -28,7 +28,9 @@ CtranNvl::CtranNvl(CtranComm* comm) {
       myLocalRank,
       nLocalRanks,
       statex->localRankToRanks());
-  FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+  FB_COMMCHECKTHROW_EX(
+      static_cast<commResult_t>(std::move(resFuture).get()),
+      comm->logMetaData_);
 
   this->pimpl_ = std::make_unique<Impl>();
   this->pimpl_->comm = comm;
@@ -64,8 +66,10 @@ CtranNvl::CtranNvl(CtranComm* comm) {
         continue;
       }
       int canAccessPeer = 1;
-      FB_CUDACHECKTHROW(cudaDeviceCanAccessPeer(
-          &canAccessPeer, statex->cudaDev(), peerDevs[i]));
+      FB_CUDACHECKTHROW_EX(
+          cudaDeviceCanAccessPeer(
+              &canAccessPeer, statex->cudaDev(), peerDevs[i]),
+          comm->logMetaData_);
       if (canAccessPeer) {
         this->pimpl_->nvlRankSupportMode[statex->localRankToRank(i)]
             .nvlIntraHost = true;
