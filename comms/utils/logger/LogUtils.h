@@ -52,6 +52,21 @@ void initCommLogging(bool alwaysInit = false);
 #define CLOGF(level, ...) XLOGF(level, ##__VA_ARGS__)
 
 /**
+ * Log a pre-formatted message string.
+ *
+ * Usage:
+ *   auto msg = fmt::format("Check failed: {} - {}", statement, details);
+ *   CLOG(ERR, msg);
+ *
+ * This is useful when the same message needs to be used for both logging
+ * and another purpose (e.g., exception message), avoiding redundant formatting.
+ *
+ * @param level The log level (DBG, INFO, WARN, ERR, FATAL)
+ * @param msg The pre-formatted message string
+ */
+#define CLOG(level, msg) XLOG(level) << msg
+
+/**
  * Usage:
  *   CLOGF_IF(INFO, size > threshold, "Large data: {} bytes", size);
  *
