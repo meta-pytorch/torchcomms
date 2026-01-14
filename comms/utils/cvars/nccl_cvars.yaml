@@ -1418,6 +1418,15 @@ cvars:
     point-to-point staged data copy channel between every two peers.
 
 
+ - name        : CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS
+   type        : uint64_t
+   default     : 128
+   description : |-
+     Maximum chunks of a staging buffer in P2P NVL copy-based kernel, this is
+     used to allocate IPC buffer for chunk states. The value = 16M/128k (maximum
+     staging buffer / minimum chunk size). The size of per-peer ChunkState buffer
+     is CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS * sizeof(ChunkState)=128*128=16KB
+
  - name        : NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE
    type        : uint64_t
    default     : 33554432
