@@ -805,3 +805,28 @@ TEST_F(CtranUtilsCheckTest, FB_CHECKTHROW_EX_3ARGS) {
   }
   EXPECT_NE(res, commSuccess) << "Expected ctran::utils::Exception";
 }
+
+TEST_F(CtranUtilsCheckTest, FB_CHECKTHROW_EX_NOCOMM) {
+  // Success case: no exception thrown
+  EXPECT_NO_THROW(FB_CHECKTHROW_EX_NOCOMM(
+      true, "test FB_CHECKTHROW_EX_NOCOMM -> NO throw"));
+
+  // Failure case: ctran::utils::Exception thrown with correct properties
+  auto errorResult = folly::Expected<int, MockError>(folly::makeUnexpected(
+      MockError{
+          .errNum = EINVAL,
+          .errStr = "mock error message",
+      }));
+
+  bool caughtException = false;
+  try {
+    FB_CHECKTHROW_EX_NOCOMM(false, "test FB_CHECKTHROW_EX_NOCOMM -> throw");
+  } catch (const ctran::utils::Exception& e) {
+    EXPECT_THAT(
+        std::string(e.what()),
+        ::testing::HasSubstr(
+            "Check failed: false - test FB_CHECKTHROW_EX_NOCOMM -> throw"));
+    caughtException = true;
+  }
+  ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
+}
