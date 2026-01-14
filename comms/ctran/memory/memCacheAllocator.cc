@@ -43,7 +43,7 @@ commResult_t memCacheAllocator::init() {
     if (NCCL_MEM_POOL_SIZE > 0) {
       // preallocate the memory pool
       size_t newSlabSize = NCCL_MEM_POOL_SIZE;
-      FB_COMMCHECKTHROW(slabAllocator_->cuMalloc(
+      FB_COMMCHECKTHROW_EX_NOCOMM(slabAllocator_->cuMalloc(
           (void**)&poolPtr_,
           NCCL_MEM_POOL_SIZE,
           "memCacheAllocator::init",
@@ -97,7 +97,7 @@ commResult_t memCacheAllocator::reset() {
 
 memCacheAllocator::~memCacheAllocator() {
   CLOGF_SUBSYS(INFO, INIT, "Shutting down NCCLX memory cache allocator");
-  FB_COMMCHECKTHROW(reset());
+  FB_COMMCHECKTHROW_EX_NOCOMM(reset());
 }
 
 std::shared_ptr<memRegion> memCacheAllocator::getFreeMemReg(
@@ -151,7 +151,7 @@ std::shared_ptr<memRegion> memCacheAllocator::createNewMemReg(
     // no free region is available, request a new memory region from allocator
     CUmemGenericAllocationHandle handle{};
 
-    FB_COMMCHECKTHROW(slabAllocator_->cuMalloc(
+    FB_COMMCHECKTHROW_EX_NOCOMM(slabAllocator_->cuMalloc(
         &region->ptr, nBytes, callsite, logMetaData, &handle));
     region->cuHandle = handle;
 

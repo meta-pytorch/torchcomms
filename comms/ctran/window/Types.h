@@ -23,5 +23,6 @@ struct RemWinInfo {
   uint64_t* signalAddr{nullptr};
   CtranMapperRemoteAccessKey dataRkey{CtranMapperBackend::UNSET};
   CtranMapperRemoteAccessKey signalRkey{CtranMapperBackend::UNSET};
+  size_t dataBytes{0};
 };
 } // namespace ctran::window
