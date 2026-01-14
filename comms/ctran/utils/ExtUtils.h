@@ -91,8 +91,9 @@ struct SocketServerAddr {
 
 inline folly::SocketAddress toSocketAddress(const SocketServerAddr& addr) {
   if (addr.port < 0) {
-    throw std::runtime_error(
-        "Invalid port number " + std::to_string(addr.port));
+    throw ctran::utils::Exception(
+        "Invalid port number " + std::to_string(addr.port),
+        commInvalidArgument);
   }
   return folly::SocketAddress(
       addr.ipv6.empty() ? addr.ipv4 : addr.ipv6,

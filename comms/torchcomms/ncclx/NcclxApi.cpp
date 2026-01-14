@@ -17,6 +17,11 @@ const char* DefaultNcclxApi::getErrorString(ncclResult_t result) {
   return ncclGetErrorString(result);
 }
 
+std::string DefaultNcclxApi::getLastError(ncclComm_t comm) {
+  const char* error = ncclGetLastError(comm);
+  return error != nullptr ? std::string(error) : std::string();
+}
+
 ncclResult_t DefaultNcclxApi::getUniqueId(ncclUniqueId* uniqueId) {
   return ncclGetUniqueId(uniqueId);
 }
