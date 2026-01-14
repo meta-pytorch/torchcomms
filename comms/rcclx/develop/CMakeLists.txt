@@ -1089,62 +1089,79 @@ set(CTRAN_FILES
 
 # TODO: Add back comms/common/ files
 # Run this command to get COMMON_FILES:
-# find comms/utils/ comms/common  -type f ! -path "*/tests/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
+# find comms/utils/ comms/common -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
 set(COMMON_FILES
   comms/common/algorithms/AlgoFactory.cu
   comms/common/algorithms/AlgoFactory.cuh
   comms/common/algorithms/AlgoUtils.cc
   comms/common/algorithms/AlgoUtils.h
-  comms/common/algorithms/all_reduce/AlgoAllReduce.cu
-  comms/common/algorithms/all_reduce/AlgoAllReduce.cuh
-  comms/common/algorithms/all_reduce/AllReduceAlgoManager.cu
-  comms/common/algorithms/all_reduce/AllReduceAlgoManager.h
-  comms/common/algorithms/all_reduce/all_reduce_dda.cuh
-
   comms/common/algorithms/all_gather/AlgoAllGather.cu
   comms/common/algorithms/all_gather/AlgoAllGather.cuh
   comms/common/algorithms/all_gather/AllGatherAlgoManager.cu
   comms/common/algorithms/all_gather/AllGatherAlgoManager.h
   comms/common/algorithms/all_gather/all_gather_dda.cuh
+  comms/common/algorithms/all_reduce/AlgoAllReduce.cu
+  comms/common/algorithms/all_reduce/AlgoAllReduce.cuh
+  comms/common/algorithms/all_reduce/AllReduceAlgoManager.cu
+  comms/common/algorithms/all_reduce/AllReduceAlgoManager.h
+  comms/common/algorithms/all_reduce/all_reduce_dda.cuh
   comms/common/algorithms/all_to_all/AlgoAllToAll.cu
   comms/common/algorithms/all_to_all/AlgoAllToAll.cuh
   comms/common/algorithms/all_to_all/AllToAllAlgoManager.cu
   comms/common/algorithms/all_to_all/AllToAllAlgoManager.h
   comms/common/algorithms/all_to_all/all_to_all_dda.cuh
-
   comms/common/algorithms/CollCommon.cuh
   comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cu
   comms/common/algorithms/reduce_scatter/AlgoReduceScatter.cuh
   comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.cu
   comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h
   comms/common/algorithms/reduce_scatter/reduce_scatter_dda.cuh
-
+  comms/common/AtomicUtils.cuh
+  comms/common/DeviceConstants.cuh
   comms/common/IpcGpuBarrier.cu
   comms/common/IpcGpuBarrier.cuh
   comms/common/IpcMemHandler.cc
   comms/common/IpcMemHandler.h
-  comms/ctran/interfaces/IBootstrap.h
+# comms/pipes/AllToAllv.cuh
+  comms/pipes/ChunkState.cuh
+# comms/pipes/CopyUtils.cuh
+  comms/pipes/DeviceSpan.cuh
+# comms/pipes/MultiPeerNvlTransport.cc
+# comms/pipes/MultiPeerNvlTransport.h
+# comms/pipes/P2pNvlTransportDevice.cuh
+# comms/pipes/P2pSelfTransportDevice.cuh
+  comms/pipes/ThreadGroup.cuh
   comms/utils/checks.h
-
   comms/utils/colltrace/CollMetadata.h
+  comms/utils/colltrace/CollMetadataImpl.cc
   comms/utils/colltrace/CollMetadataImpl.h
+  comms/utils/colltrace/CollRecord.cc
   comms/utils/colltrace/CollRecord.h
+  comms/utils/colltrace/CollTrace.cc
   comms/utils/colltrace/CollTraceEvent.h
   comms/utils/colltrace/CollTrace.h
+  comms/utils/colltrace/CollTraceHandle.cc
   comms/utils/colltrace/CollTraceHandle.h
   comms/utils/colltrace/CollTraceInterface.h
   comms/utils/colltrace/CollTracePlugin.h
   comms/utils/colltrace/CollWaitEvent.h
+  comms/utils/colltrace/CommLogDataSerialize.cc
   comms/utils/colltrace/CommLogDataSerialize.h
+  comms/utils/colltrace/CPUWaitEvent.cc
   comms/utils/colltrace/CPUWaitEvent.h
+  comms/utils/colltrace/CudaEventPool.cc
   comms/utils/colltrace/CudaEventPool.h
+  comms/utils/colltrace/CudaWaitEvent.cc
   comms/utils/colltrace/CudaWaitEvent.h
   comms/utils/colltrace/DummyCollTraceHandle.h
+  comms/utils/colltrace/GenericMetadata.cc
   comms/utils/colltrace/GenericMetadata.h
+  comms/utils/colltrace/NetworkPerfMonitor.cc
   comms/utils/colltrace/NetworkPerfMonitor.h
+  comms/utils/colltrace/plugins/CommDumpPlugin.cc
   comms/utils/colltrace/plugins/CommDumpPlugin.h
+  comms/utils/colltrace/plugins/WatchdogPlugin.cc
   comms/utils/colltrace/plugins/WatchdogPlugin.h
-
   comms/utils/CommsMaybeChecks.h
   comms/utils/commSpecs.cc
   comms/utils/commSpecs.h
@@ -1158,6 +1175,8 @@ set(COMMON_FILES
   comms/utils/cvars/nccl_cvars.h
   comms/utils/EnvUtils.cc
   comms/utils/EnvUtils.h
+  comms/utils/InitFolly.cc
+  comms/utils/InitFolly.h
   comms/utils/logger/alloc.cc
   comms/utils/logger/alloc.h
   comms/utils/logger/BackendTopologyUtil.cc
@@ -1187,6 +1206,8 @@ set(COMMON_FILES
   comms/utils/logger/ProcessGlobalErrorsUtil.h
   comms/utils/logger/ScubaLogger.cc
   comms/utils/logger/ScubaLogger.h
+  comms/utils/MemUtils.cc
+  comms/utils/MemUtils.h
   comms/utils/RankUtils.cc
   comms/utils/RankUtils.h
   comms/utils/StrUtils.h
