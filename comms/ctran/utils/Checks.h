@@ -218,7 +218,8 @@
       throw std::runtime_error(std::string("System error: ") + errstr);        \
     }                                                                          \
   } while (0)
-#define FB_SYSCHECKTHROW_EX(cmd, rank, commHash, desc)                         \
+
+#define FB_SYSCHECKTHROW_EX_DIRECT(cmd, rank, commHash, desc)                  \
   do {                                                                         \
     int err = cmd;                                                             \
     if (err != 0) {                                                            \
@@ -232,6 +233,27 @@
           desc);                                                               \
     }                                                                          \
   } while (0)
+
+#define FB_SYSCHECKTHROW_EX_LOGDATA(cmd, logData) \
+  FB_SYSCHECKTHROW_EX_DIRECT(                     \
+      cmd, (logData).rank, (logData).commHash, (logData).commDesc)
+
+// Selector macro, used with FB_SYSCHECKTHROW_EX to delegate
+// based on the number of arguments.
+// The dummy placeholders ensure correct selection for 2, 3, and 4 arguments.
+#define GET_FB_SYSCHECKTHROW_EX_MACRO(_1, _2, _3, _4, NAME, ...) NAME
+
+// Delegates to either FB_SYSCHECKTHROW_EX_DIRECT or
+// FB_SYSCHECKTHROW_EX_LOGDATA based on the number of arguments.
+// - 4 args (cmd, rank, commHash, desc): uses FB_SYSCHECKTHROW_EX_DIRECT
+// - 2 args (cmd, logData): uses FB_SYSCHECKTHROW_EX_LOGDATA
+#define FB_SYSCHECKTHROW_EX(...)   \
+  GET_FB_SYSCHECKTHROW_EX_MACRO(   \
+      __VA_ARGS__,                 \
+      FB_SYSCHECKTHROW_EX_DIRECT,  \
+      UNUSED_PLACEHOLDER_3_ARGS,   \
+      FB_SYSCHECKTHROW_EX_LOGDATA, \
+      UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
 
 #define FB_SYSCHECKRETURN(cmd, retval)                                         \
   do {                                                                         \
