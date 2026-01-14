@@ -670,8 +670,8 @@ TEST_F(CollTraceTest, winPutWait) {
   }
 
   for (int i = 0; i < kNumIters; i++) {
-    EXPECT_EQ(pastCollsJson[2 * i]["opName"].asString(), "PutNotify");
-    EXPECT_EQ(pastCollsJson[2 * i + 1]["opName"].asString(), "WaitNotify");
+    EXPECT_EQ(pastCollsJson[2 * i]["opName"].asString(), "PutSignal");
+    EXPECT_EQ(pastCollsJson[2 * i + 1]["opName"].asString(), "WaitSignal");
   }
 
   for (int i = 0; i < kNumIters; i++) {
@@ -979,10 +979,9 @@ TEST_F(CollTraceTest, CollTraceTestEnqueueMoreThanPendingQueue) {
         nextPeer,
         kNumElements * statex->rank(),
         win,
-        win->comm,
         put_stream,
         true));
-    COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, win->comm, wait_stream));
+    COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, wait_stream));
   }
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
