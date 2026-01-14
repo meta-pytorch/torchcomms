@@ -1244,8 +1244,8 @@ TEST_F(CollTraceTest, winPutWait) {
   // 1 put + 1 wait + 1 allreduce per iteration
   EXPECT_EQ(dump.pastColls.size(), 3 * kNumIters);
   for (int i = 0; i < kNumIters; i++) {
-    EXPECT_EQ(dump.pastColls[2 * i].opName, "PutNotify");
-    EXPECT_EQ(dump.pastColls[2 * i + 1].opName, "WaitNotify");
+    EXPECT_EQ(dump.pastColls[2 * i].opName, "PutSignal");
+    EXPECT_EQ(dump.pastColls[2 * i + 1].opName, "WaitSignal");
   }
 
   for (int i = 0; i < kNumIters; i++) {

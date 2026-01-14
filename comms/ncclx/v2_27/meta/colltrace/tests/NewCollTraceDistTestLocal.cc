@@ -143,7 +143,7 @@ TEST_F(CollTraceTestLocal, winSignalAllToAll) {
       0, comm->ctranComm_.get(), (void**)&winBase, &win, hints);
   ASSERT_EQ(res, commSuccess);
   ASSERT_NE(winBase, nullptr);
-  uint64_t* signalBase = win->winBaseSignalPtr;
+  uint64_t* signalBase = win->winSignalPtr;
   ASSERT_NE(signalBase, nullptr);
 
   // initialize with 1000UL, a random number
