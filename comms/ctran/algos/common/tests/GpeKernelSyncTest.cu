@@ -8,7 +8,7 @@ using namespace ctran::algos;
 __global__ void GpeKernelSyncResetKernel(
     GpeKernelSync* sync,
     const int nworkers) {
-  const auto warpId = threadIdx.x / kWarpSize;
+  const auto warpId = threadIdx.x / comms::device::kWarpSize;
   if (warpId == 0) {
     GpeKernelSyncDev::resetWarp(sync, nworkers);
   }

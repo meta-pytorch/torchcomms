@@ -10,7 +10,6 @@ import shlex
 import sys
 
 import torch
-
 from setuptools import Extension, find_packages, setup
 from setuptools.command.build_ext import build_ext as build_ext_orig
 from torch.utils.cpp_extension import _get_pybind11_abi_build_flags

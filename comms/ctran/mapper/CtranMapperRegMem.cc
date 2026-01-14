@@ -174,7 +174,7 @@ void CtranMapperRegCache::init() {
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
       !asyncRegThread_.joinable()) {
     int cudaDev;
-    FB_CUDACHECKTHROW(cudaGetDevice(&cudaDev));
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaGetDevice(&cudaDev));
     asyncRegThread_ =
         std::thread{&CtranMapperRegCache::asyncRegThreadFn, this, cudaDev};
   }
@@ -247,7 +247,7 @@ void CtranMapperRegCache::asyncRegThreadFn(int cudaDev) {
   folly::setThreadName("CTranAsyncReg");
   commNamedThreadStart("CTranAsyncReg");
 
-  FB_CUDACHECKTHROW(cudaSetDevice(cudaDev));
+  FB_CUDACHECKTHROW_EX_NOCOMM(cudaSetDevice(cudaDev));
 
   while (true) {
     AsyncRegCmd cmd;
@@ -292,7 +292,7 @@ void CtranMapperRegCache::asyncRegThreadFn(int cudaDev) {
     //   executes the registration request, e.g., too slow asyncReg thread.
     //   Then, asyncReg thread will also tread it as dynamic registration and
     //   skip.
-    FB_COMMCHECKTHROW(regRange(
+    FB_COMMCHECKTHROW_EX_NOCOMM(regRange(
         cmd.buf,
         cmd.len,
         cmd.cudaDev,
