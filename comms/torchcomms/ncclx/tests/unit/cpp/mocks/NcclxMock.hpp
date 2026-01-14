@@ -21,6 +21,7 @@ class NcclxMock : public NcclxApi {
 
   // Error handling
   MOCK_METHOD(const char*, getErrorString, (ncclResult_t result), (override));
+  MOCK_METHOD(std::string, getLastError, (ncclComm_t comm), (override));
 
   // Unique ID generation
   MOCK_METHOD(ncclResult_t, getUniqueId, (ncclUniqueId * uniqueId), (override));

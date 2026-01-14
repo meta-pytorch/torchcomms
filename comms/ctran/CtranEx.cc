@@ -10,6 +10,7 @@
 
 #include "comms/ctran/CtranExImpl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/utils/logger/LogUtils.h"
 
 #include "comms/ctran/utils/LogInit.h"
@@ -83,7 +84,8 @@ void CtranExImpl::initialize(
         break;
       default:
         CLOGF(WARN, "CTRAN-EX: Unknown backend {}", backend);
-        throw std::runtime_error("Unknown backend");
+        throw ctran::utils::Exception(
+            fmt::format("Unknown backend {}", backend), commInvalidArgument);
     };
   }
 }
