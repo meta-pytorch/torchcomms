@@ -553,7 +553,7 @@ def populateCCFile(
     indent(file, "static void readCvarEnv() {")
     for cvar in allcvars:
         cvar.readenv(file)
-        indent(file, f'if ({cvar.name}_DEFAULTCVARVALUE != {cvar.name}) {"{"}')
+        indent(file, f"if ({cvar.name}_DEFAULTCVARVALUE != {cvar.name}) {'{'}")
         indent(
             file,
             f'  CVAR_INFO("NCCL Config - CVAR {{}} has an override", "{cvar.name}");',

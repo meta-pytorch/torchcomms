@@ -18,7 +18,8 @@ TorchCommNCCLXPersistentRequest::~TorchCommNCCLXPersistentRequest() {
   auto nccl_api = comm_->getNcclApi();
   ncclResult_t result = nccl_api->pFree(hdl_);
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api, "NCCL pFree failed", result);
+    throw NCCLException(
+        *nccl_api, "NCCL pFree failed", result, comm_->nccl_comm_);
   }
   TC_LOG(INFO, nullptr) << "Finalized persistent request";
 }

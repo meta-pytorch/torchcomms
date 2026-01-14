@@ -406,8 +406,8 @@ resetTmpRecvIdx(ExecKernArgs& args, const int nRanks, const int nLocalRanks) {
 
 // single thread block to reset all sync objects
 __device__ inline void resetSync(ExecKernArgs& args, const bool kIsExec) {
-  const auto warpId = threadIdx.x / kWarpSize;
-  const auto numWraps = blockDim.x / kWarpSize;
+  const auto warpId = threadIdx.x / comms::device::kWarpSize;
+  const auto numWraps = blockDim.x / comms::device::kWarpSize;
   const auto& config = args.config;
 
   if (threadIdx.x == 0) {

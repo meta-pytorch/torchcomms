@@ -23,7 +23,7 @@ enum commResult_t {
   commInvalidUsage = 5,
   commRemoteError = 6,
   commInProgress = 7,
-  commNumResults = 8
+  commNumResults = 8,
 };
 
 constexpr const char* commResultToString(commResult_t res) {

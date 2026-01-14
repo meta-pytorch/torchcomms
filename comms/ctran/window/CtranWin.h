@@ -25,12 +25,12 @@ struct CtranWin {
   // 3. the communicator's bootstrap for intra node bootstrap all gather.
   CtranComm* comm;
 
-  // remote window info (addr, rkey) for peers participated in this window
+  // Remote window info (addr, rkey, dataBytes) for all peers in this window
   std::vector<window::RemWinInfo> remWinInfo;
 
-  // User specified size in bytes of the data buffer per rank in this window
+  // This rank's local data buffer size in bytes
   size_t dataBytes{0};
-  // User specified signal buffer size(in uint64_t) per rank in this window
+  // Signal buffer size in number of uint64_t elements per rank
   size_t signalSize{0};
   // The ctran mapper handles for caching the allocated buffer segment
   void* baseSegHdl{nullptr};
@@ -99,6 +99,14 @@ struct CtranWin {
   commResult_t free();
 
   bool nvlEnabled(int rank) const;
+
+  // Get data size for specific rank
+  inline size_t getDataSize(int rank) const {
+    if (rank >= 0 && rank < static_cast<int>(remWinInfo.size())) {
+      return remWinInfo[rank].dataBytes;
+    }
+    return 0; // invalid rank
+  }
 
   inline bool isGpuMem() const {
     return bufType_ == DevMemType::kCudaMalloc ||
