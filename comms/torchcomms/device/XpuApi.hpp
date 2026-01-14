@@ -1,10 +1,10 @@
 #pragma once
 
-#include <sycl/sycl.hpp>
 #include <ATen/xpu/XPUContext.h>
 #include <ATen/xpu/XPUEvent.h>
-#include <c10/xpu/XPUStream.h>
 #include <c10/xpu/XPUFunctions.h>
+#include <c10/xpu/XPUStream.h>
+#include <sycl/sycl.hpp>
 
 namespace torch {
 namespace comms {
@@ -13,22 +13,22 @@ using xpuStream_t = ::c10::xpu::XPUStream;
 using xpuEvent_t = ::at::xpu::XPUEvent;
 
 struct xpuDeviceProp {
-    char name[256];
-    size_t totalGlobalMem;
-    int multiProcessorCount;
-    int maxThreadsPerBlock;
-    int maxThreadsDim[3];
+  char name[256];
+  size_t totalGlobalMem;
+  int multiProcessorCount;
+  int maxThreadsPerBlock;
+  int maxThreadsDim[3];
 };
 
 // Graph-related types (placeholder - unsupported in XPU)
 using xpuGraph_t = void*;
 using xpuGraphNode_t = void*;
 using xpuUserObject_t = void*;
-using xpuHostFn_t = void(*)(void*);
+using xpuHostFn_t = void (*)(void*);
 
 // Stream capture status (not supported in XPU)
 enum xpuStreamCaptureStatus {
-    xpuStreamCaptureStatusNone = 0,
+  xpuStreamCaptureStatusNone = 0,
 };
 
 // Error code type
@@ -40,15 +40,15 @@ constexpr xpu_result_t XPU_ERROR_INVALID_HANDLE = 3;
 constexpr xpu_result_t XPU_ERROR_OUT_OF_MEMORY = 4;
 constexpr xpu_result_t XPU_ERROR_UNSUPPORTED = 5;
 
-#define XPU_CHECK(xpu_api, call, err_str)                                 \
-  do {                                                                    \
-    xpu_result_t status = call;                                           \
-    if (status != XPU_SUCCESS) {                                          \
-      std::stringstream ss;                                               \
-      ss << err_str << ": " << xpu_api->getErrorString(status) << " at "  \
-         << __FILE__ << ":" << __LINE__;                                  \
-      throw std::runtime_error(ss.str());                                 \
-    }                                                                     \
+#define XPU_CHECK(xpu_api, call, err_str)                                \
+  do {                                                                   \
+    xpu_result_t status = call;                                          \
+    if (status != XPU_SUCCESS) {                                         \
+      std::stringstream ss;                                              \
+      ss << err_str << ": " << xpu_api->getErrorString(status) << " at " \
+         << __FILE__ << ":" << __LINE__;                                 \
+      throw std::runtime_error(ss.str());                                \
+    }                                                                    \
   } while (0)
 
 /**
@@ -101,7 +101,9 @@ class XpuApi {
       xpuEvent_t& event,
       unsigned int flags) = 0;
   virtual xpu_result_t eventDestroy(const xpuEvent_t& event) = 0;
-  virtual xpu_result_t eventRecord(xpuEvent_t& event, const xpuStream_t& stream) = 0;
+  virtual xpu_result_t eventRecord(
+      xpuEvent_t& event,
+      const xpuStream_t& stream) = 0;
   virtual xpu_result_t eventQuery(const xpuEvent_t& event) = 0;
 
   // Graph operations (unsupported, kept for API compatibility)
@@ -169,9 +171,11 @@ class DefaultXpuApi : public XpuApi {
 
   // Event management
   xpu_result_t eventCreate(xpuEvent_t& event) override;
-  xpu_result_t eventCreateWithFlags(xpuEvent_t& event, unsigned int flags) override;
+  xpu_result_t eventCreateWithFlags(xpuEvent_t& event, unsigned int flags)
+      override;
   xpu_result_t eventDestroy(const xpuEvent_t& event) override;
-  xpu_result_t eventRecord(xpuEvent_t& event, const xpuStream_t& stream) override;
+  xpu_result_t eventRecord(xpuEvent_t& event, const xpuStream_t& stream)
+      override;
   xpu_result_t eventQuery(const xpuEvent_t& event) override;
 
   // Graph operations (unsupported)

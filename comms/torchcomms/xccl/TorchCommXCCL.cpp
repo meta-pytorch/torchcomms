@@ -1,17 +1,19 @@
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
-#include "comms/torchcomms/TorchCommFactory.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
-#include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
 #include <ATen/xpu/XPUContext.h>
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+#include "comms/torchcomms/TorchCommFactory.hpp"
+#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
 
 namespace torch {
 namespace comms {
 
-onecclResult_t XCCLException::getResult() const { return result_; }
+onecclResult_t XCCLException::getResult() const {
+  return result_;
+}
 
 static void preReduce(at::Tensor& tensor, const ReduceOp& r) {
   if (r.type() == ReduceOp::RedOpType::PREMUL_SUM) {
@@ -20,12 +22,16 @@ static void preReduce(at::Tensor& tensor, const ReduceOp& r) {
 }
 
 TorchCommXCCL::TorchCommXCCL()
-    : xccl_comm_{nullptr}, device_(at::kXPU),
-      init_state_(InitializationState::UNINITIALIZED), shutdown_(false) {}
+    : xccl_comm_{nullptr},
+      device_(at::kXPU),
+      init_state_(InitializationState::UNINITIALIZED),
+      shutdown_(false) {}
 
 TorchCommXCCL::TorchCommXCCL(const onecclComm_t xccl_comm)
-    : xccl_comm_(xccl_comm), device_(at::kXPU),
-      init_state_(InitializationState::UNINITIALIZED), shutdown_(false) {}
+    : xccl_comm_(xccl_comm),
+      device_(at::kXPU),
+      init_state_(InitializationState::UNINITIALIZED),
+      shutdown_(false) {}
 
 TorchCommXCCL::~TorchCommXCCL() {
   if (init_state_ == InitializationState::INITIALIZED) {
@@ -39,8 +45,10 @@ TorchCommXCCL::~TorchCommXCCL() {
   }
 }
 
-void TorchCommXCCL::init(at::Device device, const std::string &name,
-                         const CommOptions &options) {
+void TorchCommXCCL::init(
+    at::Device device,
+    const std::string& name,
+    const CommOptions& options) {
   // Initialize private members
   device_ = device;
   name_ = name;
@@ -77,8 +85,10 @@ void TorchCommXCCL::init(at::Device device, const std::string &name,
   }
 
   // Set XPU device and verify it' accessible
-  XPU_CHECK(xpu_api_, xpu_api_->setDevice(device_.index()),
-            "Failed to set XPU device to " + std::to_string(device_.index()));
+  XPU_CHECK(
+      xpu_api_,
+      xpu_api_->setDevice(device_.index()),
+      "Failed to set XPU device to " + std::to_string(device_.index()));
 
   // Verify device properties and memory availability
   [[maybe_unused]] xpuDeviceProp device_prop = {};
@@ -97,7 +107,7 @@ void TorchCommXCCL::init(at::Device device, const std::string &name,
           std::to_string(device_.index()));
 
   // Read hints and store them
-  for (auto const &[key, val] : options_.hints) {
+  for (auto const& [key, val] : options_.hints) {
     if (key.starts_with("torchcomm::xccl::")) {
       if (key == "torchcomm::xccl::high_priority_stream") {
         high_priority_stream_ = string_to_bool(val);
@@ -119,23 +129,28 @@ void TorchCommXCCL::init(at::Device device, const std::string &name,
 
   // Initialize internal stream
   xpuStream_t temp_stream = xpu_api_->getCurrentXPUStream(device_.index());
-  XPU_CHECK(xpu_api_,
-            xpu_api_->streamCreateWithPriority(temp_stream, /*flags=*/0,
-                                               stream_priority),
-            "Failed to create internal XPU stream on device " +
-                std::to_string(device_.index()));
+  XPU_CHECK(
+      xpu_api_,
+      xpu_api_->streamCreateWithPriority(
+          temp_stream, /*flags=*/0, stream_priority),
+      "Failed to create internal XPU stream on device " +
+          std::to_string(device_.index()));
   internal_stream_ = std::move(temp_stream);
 
   // Create dependency event for stream synchronization
   xpuEvent_t temp_event(/*enable_timing=*/false);
-  XPU_CHECK(xpu_api_, xpu_api_->eventCreateWithFlags(temp_event, /*flags=*/0),
-            "Failed to create dependency event on device " +
-                std::to_string(device_.index()));
+  XPU_CHECK(
+      xpu_api_,
+      xpu_api_->eventCreateWithFlags(temp_event, /*flags=*/0),
+      "Failed to create dependency event on device " +
+          std::to_string(device_.index()));
   dependency_event_ = std::move(temp_event);
 
   // Allocate XPU buffer for barrier operations
-  XPU_CHECK(xpu_api_, xpu_api_->malloc(&barrier_buffer_, sizeof(float)),
-            "Failed to allocate barrier buffer");
+  XPU_CHECK(
+      xpu_api_,
+      xpu_api_->malloc(&barrier_buffer_, sizeof(float)),
+      "Failed to allocate barrier buffer");
 
   if (options_.hints.contains("torchcomm::xccl::max_event_pool_size")) {
     max_event_pool_size_ =
@@ -223,29 +238,35 @@ void TorchCommXCCL::finalize() {
     while (!event_pool_.empty()) {
       xpuEvent_t event = std::move(event_pool_.front());
       event_pool_.pop();
-      XPU_CHECK(xpu_api_, xpu_api_->eventDestroy(event),
-                "Failed to destroy event");
+      XPU_CHECK(
+          xpu_api_, xpu_api_->eventDestroy(event), "Failed to destroy event");
     }
   }
 
   // Free barrier buffer. TODO: handle errors on xpu free and stream destroy
   if (barrier_buffer_) {
-    XPU_CHECK(xpu_api_, xpu_api_->free(barrier_buffer_),
-              "Failed to free barrier buffer");
+    XPU_CHECK(
+        xpu_api_,
+        xpu_api_->free(barrier_buffer_),
+        "Failed to free barrier buffer");
     barrier_buffer_ = nullptr;
   }
 
   // Destroy dependency event
   if (dependency_event_.has_value()) {
-    XPU_CHECK(xpu_api_, xpu_api_->eventDestroy(dependency_event_.value()),
-              "Failed to destroy dependency event");
+    XPU_CHECK(
+        xpu_api_,
+        xpu_api_->eventDestroy(dependency_event_.value()),
+        "Failed to destroy dependency event");
     dependency_event_.reset();
   }
 
   // Destroy internal stream
   if (internal_stream_.has_value()) {
-    XPU_CHECK(xpu_api_, xpu_api_->streamDestroy(internal_stream_.value()),
-              "Failed to destroy internal stream");
+    XPU_CHECK(
+        xpu_api_,
+        xpu_api_->streamDestroy(internal_stream_.value()),
+        "Failed to destroy internal stream");
     internal_stream_.reset();
   }
 
@@ -290,13 +311,17 @@ int TorchCommXCCL::getSize() const {
   return comm_size;
 }
 
-std::string_view TorchCommXCCL::getBackendName() const { return kBackendName; }
+std::string_view TorchCommXCCL::getBackendName() const {
+  return kBackendName;
+}
 
-std::string_view TorchCommXCCL::getCommName() const { return name_; }
+std::string_view TorchCommXCCL::getCommName() const {
+  return name_;
+}
 
-static inline std::chrono::milliseconds
-getOperationTimeout(std::chrono::milliseconds timeout,
-                    std::chrono::milliseconds default_timeout) {
+static inline std::chrono::milliseconds getOperationTimeout(
+    std::chrono::milliseconds timeout,
+    std::chrono::milliseconds default_timeout) {
   // If timeout is kNoTimeout (0ms), use the default timeout from options
   if (timeout == kNoTimeout) {
     return default_timeout;
@@ -305,35 +330,48 @@ getOperationTimeout(std::chrono::milliseconds timeout,
 }
 
 // Point-to-Point Operations
-c10::intrusive_ptr<TorchWork> TorchCommXCCL::send(const at::Tensor &tensor,
-                                               int dst, bool async_op,
-                                               const SendOptions &options) {
-  throw std::runtime_error("XCCL send is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::send(
+    const at::Tensor& tensor,
+    int dst,
+    bool async_op,
+    const SendOptions& options) {
+  throw std::runtime_error(
+      "XCCL send is not supported now and will be added later");
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommXCCL::recv(at::Tensor &tensor, int src,
-                                               bool async_op,
-                                               const RecvOptions &options) {
-  throw std::runtime_error("XCCL recv is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::recv(
+    at::Tensor& tensor,
+    int src,
+    bool async_op,
+    const RecvOptions& options) {
+  throw std::runtime_error(
+      "XCCL recv is not supported now and will be added later");
 }
 
 // Batch P2P Operations
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::batch_op_issue(const std::vector<BatchSendRecv::P2POp> &ops,
-                              bool async_op, const BatchP2POptions &options) {
-  throw std::runtime_error("XCCL batch_op_issue is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
+    const std::vector<BatchSendRecv::P2POp>& ops,
+    bool async_op,
+    const BatchP2POptions& options) {
+  throw std::runtime_error(
+      "XCCL batch_op_issue is not supported now and will be added later");
 }
 
 // Collective Operations
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::broadcast(at::Tensor &tensor, int root, bool async_op,
-                         const BroadcastOptions &options) {
-  throw std::runtime_error("XCCL broadcast is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::broadcast(
+    at::Tensor& tensor,
+    int root,
+    bool async_op,
+    const BroadcastOptions& options) {
+  throw std::runtime_error(
+      "XCCL broadcast is not supported now and will be added later");
 }
 
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::all_reduce(at::Tensor &tensor, const ReduceOp &op, bool async_op,
-                          const AllReduceOptions &options) {
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
+    at::Tensor& tensor,
+    const ReduceOp& op,
+    bool async_op,
+    const AllReduceOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
@@ -366,8 +404,11 @@ TorchCommXCCL::all_reduce(at::Tensor &tensor, const ReduceOp &op, bool async_op,
   onecclResult_t result = xccl_api_->allReduce(
       tensor.data_ptr(),
       tensor.data_ptr(), // In-place operation
-      tensor.numel(), dataType, getXcclReduceOp(op, xccl_comm_, dataType),
-      xccl_comm_, stream);
+      tensor.numel(),
+      dataType,
+      getXcclReduceOp(op, xccl_comm_, dataType),
+      xccl_comm_,
+      stream);
 
   if (result != onecclSuccess) {
     throw XCCLException(*xccl_api_, "XCCL AllReduce failed", result);
@@ -380,97 +421,133 @@ TorchCommXCCL::all_reduce(at::Tensor &tensor, const ReduceOp &op, bool async_op,
   return work;
 }
 
-c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(const at::Tensor &tensor,
-                                                 int root, const ReduceOp &op,
-                                                 bool async_op,
-                                                 const ReduceOptions &options) {
-    throw std::runtime_error("XCCL reduce is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
+    const at::Tensor& tensor,
+    int root,
+    const ReduceOp& op,
+    bool async_op,
+    const ReduceOptions& options) {
+  throw std::runtime_error(
+      "XCCL reduce is not supported now and will be added later");
 }
 
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::all_gather(const std::vector<at::Tensor> &tensor_list,
-                          const at::Tensor &tensor, bool async_op,
-                          const AllGatherOptions &options) {
-    throw std::runtime_error("XCCL all_gather is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  throw std::runtime_error(
+      "XCCL all_gather is not supported now and will be added later");
 }
 
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::all_gather_v(const std::vector<at::Tensor> &tensor_list,
-                            const at::Tensor &tensor, bool async_op,
-                            const AllGatherOptions &options) {
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_v(
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
   throw std::runtime_error("all_gather_v is not supported in XCCL backend");
 }
 
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::all_gather_single(at::Tensor &output, const at::Tensor &input,
-                                 bool async_op,
-                                 const AllGatherSingleOptions &options) {
-    throw std::runtime_error("XCCL all_gather_single is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_single(
+    at::Tensor& output,
+    const at::Tensor& input,
+    bool async_op,
+    const AllGatherSingleOptions& options) {
+  throw std::runtime_error(
+      "XCCL all_gather_single is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
-    at::Tensor &output, const std::vector<at::Tensor> &input_list, const ReduceOp &op,
-    bool async_op, const ReduceScatterOptions &options) {
-    throw std::runtime_error("XCCL reduce_scatter is not supported now and will be added later");
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    const ReduceOp& op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  throw std::runtime_error(
+      "XCCL reduce_scatter is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
-    at::Tensor &output, const std::vector<at::Tensor> &input_list,
-    const ReduceOp &op, bool async_op, const ReduceScatterOptions &options) {
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    const ReduceOp& op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
   throw std::runtime_error("reduce_scatter_v is not supported in XCCL backend");
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
-    at::Tensor &output, const at::Tensor &input, const ReduceOp &op, bool async_op,
-    const ReduceScatterSingleOptions &options) {
-    throw std::runtime_error("XCCL reduce_scatter_single is not supported now and will be added later");
+    at::Tensor& output,
+    const at::Tensor& input,
+    const ReduceOp& op,
+    bool async_op,
+    const ReduceScatterSingleOptions& options) {
+  throw std::runtime_error(
+      "XCCL reduce_scatter_single is not supported now and will be added later");
 }
 
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::all_to_all_single(at::Tensor &output, const at::Tensor &input,
-                                 bool async_op,
-                                 const AllToAllSingleOptions &options) {
-    throw std::runtime_error("XCCL all_to_all_single is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_single(
+    at::Tensor& output,
+    const at::Tensor& input,
+    bool async_op,
+    const AllToAllSingleOptions& options) {
+  throw std::runtime_error(
+      "XCCL all_to_all_single is not supported now and will be added later");
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
-    at::Tensor &output, const at::Tensor &input,
-    const std::vector<uint64_t> &output_split_sizes,
-    const std::vector<uint64_t> &input_split_sizes, bool async_op,
-    const AllToAllvSingleOptions &options) {
-    throw std::runtime_error("XCCL all_to_all_v_single is not supported now and will be added later");
+    at::Tensor& output,
+    const at::Tensor& input,
+    const std::vector<uint64_t>& output_split_sizes,
+    const std::vector<uint64_t>& input_split_sizes,
+    bool async_op,
+    const AllToAllvSingleOptions& options) {
+  throw std::runtime_error(
+      "XCCL all_to_all_v_single is not supported now and will be added later");
 }
 
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::all_to_all(const std::vector<at::Tensor> &output_tensor_list,
-                          const std::vector<at::Tensor> &input_tensor_list,
-                          bool async_op, const AllToAllOptions &options) {
-    throw std::runtime_error("XCCL all_to_all is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
+    const std::vector<at::Tensor>& output_tensor_list,
+    const std::vector<at::Tensor>& input_tensor_list,
+    bool async_op,
+    const AllToAllOptions& options) {
+  throw std::runtime_error(
+      "XCCL all_to_all is not supported now and will be added later");
 }
 
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::barrier(bool async_op, const BarrierOptions &options) {
-    throw std::runtime_error("XCCL barrier is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::barrier(
+    bool async_op,
+    const BarrierOptions& options) {
+  throw std::runtime_error(
+      "XCCL barrier is not supported now and will be added later");
 }
 
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::scatter(at::Tensor &output_tensor,
-                       const std::vector<at::Tensor> &input_tensor_list,
-                       int root, bool async_op, const ScatterOptions &options) {
-    throw std::runtime_error("XCCL scatter is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
+    at::Tensor& output_tensor,
+    const std::vector<at::Tensor>& input_tensor_list,
+    int root,
+    bool async_op,
+    const ScatterOptions& options) {
+  throw std::runtime_error(
+      "XCCL scatter is not supported now and will be added later");
 }
 
-c10::intrusive_ptr<TorchWork>
-TorchCommXCCL::gather(const std::vector<at::Tensor> &output_tensor_list,
-                      const at::Tensor &input_tensor, int root, bool async_op,
-                      const GatherOptions &options) {
-    throw std::runtime_error("XCCL gather is not supported now and will be added later");
+c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
+    const std::vector<at::Tensor>& output_tensor_list,
+    const at::Tensor& input_tensor,
+    int root,
+    bool async_op,
+    const GatherOptions& options) {
+  throw std::runtime_error(
+      "XCCL gather is not supported now and will be added later");
 }
 
-std::shared_ptr<TorchCommBackend>
-TorchCommXCCL::split(const std::vector<int> &ranks, const std::string &name,
-                     const CommOptions &options) {
-  throw std::runtime_error("XCCL split is not supported now and will be added later");
+std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
+    const std::vector<int>& ranks,
+    const std::string& name,
+    const CommOptions& options) {
+  throw std::runtime_error(
+      "XCCL split is not supported now and will be added later");
 }
 
 std::shared_ptr<c10::Allocator> TorchCommXCCL::getMemAllocator() {
@@ -494,7 +571,7 @@ const char* XCCLException::what() const noexcept {
 
 namespace {
 class XCCLRegistration {
-public:
+ public:
   XCCLRegistration() {
     torch::comms::TorchCommFactory::get().register_backend("xccl", []() {
       return std::make_shared<torch::comms::TorchCommXCCL>();
