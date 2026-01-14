@@ -30,7 +30,6 @@ from importlib import metadata
 
 sys.path.insert(0, os.path.abspath("."))
 import pytorch_sphinx_theme2
-
 import torch  # noqa: F401
 import torchcomms  # noqa: F401
 

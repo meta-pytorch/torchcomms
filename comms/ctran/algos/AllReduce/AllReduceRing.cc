@@ -121,8 +121,7 @@ inline void prePostRecvRemRecvBuf(
     CtranMapperRequest* req;
     FB_COMMCHECKTHROW_EX(
         resource.comm->ctran_->mapper->irecvCtrl(args.rightRank, &req),
-        resource.comm->statex_->rank(),
-        resource.comm->statex_->commHash());
+        resource.comm->logMetaData_);
     bufSyncRResps.at(round).reset(req);
   }
 }
@@ -150,8 +149,7 @@ inline bool progressSendCheckRemRecvBuf(
     bool isComplete = false;
     FB_COMMCHECKTHROW_EX(
         resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
-        resource.comm->statex_->rank(),
-        resource.comm->statex_->commHash());
+        resource.comm->logMetaData_);
     if (isComplete) {
       int tmpChunkId = getTmpChunkId(algoCtx, round);
       CLOGF_TRACE(
@@ -182,8 +180,7 @@ inline void progressSendCheckTrans(
       bool isComplete = false;
       FB_COMMCHECKTHROW_EX(
           resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
-          resource.comm->statex_->rank(),
-          resource.comm->statex_->commHash());
+          resource.comm->logMetaData_);
       if (isComplete) {
         // FIXME: step might be incorrect
         CLOGF_TRACE(
@@ -263,8 +260,7 @@ inline void progressSendPostTrans(
               .notify_ = true,
               .ibConfig_ = allReduceConfig},
           &req),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   dataSResps.at(round).reset(req);
 
   CLOGF_TRACE(
@@ -296,8 +292,7 @@ inline bool progressRecvCheckTrans(
   bool done = false;
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->checkNotify(args.leftNotify.get(), &done),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   if (done) {
     CLOGF_TRACE(
         COLL,
@@ -330,8 +325,7 @@ inline void progressRecvPostFlush(
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->iflush(
           tmpRecvBuf, resource.tmpRecvBufHdl, &req),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   flushResps.at(round).reset(req);
 }
 
@@ -355,8 +349,7 @@ inline bool progressRecvCheckFlush(
   bool isComplete = false;
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   if (isComplete) {
     CLOGF_TRACE(
         COLL, "{} done", roundLogPrefix<Op::kRecvFlush>(round, step, algoCtx));
@@ -449,8 +442,7 @@ inline void progressRecvPostRecvBuf(
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->isendCtrl(args.leftRank, &req),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   bufSyncSResps.at(round).reset(req);
 }
 
@@ -548,9 +540,7 @@ inline int waitAllResps(
     if (req) {
       numComplete++;
       FB_COMMCHECKTHROW_EX(
-          comm->ctran_->mapper->waitRequest(req.get()),
-          comm->statex_->rank(),
-          comm->statex_->commHash());
+          comm->ctran_->mapper->waitRequest(req.get()), comm->logMetaData_);
     }
   }
   return numComplete;

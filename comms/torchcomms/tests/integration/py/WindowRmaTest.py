@@ -6,8 +6,6 @@ import itertools
 import os
 import unittest
 
-import psutil
-
 import torch
 import torchcomms
 from torchcomms import TorchCommlWinAccessType
@@ -196,14 +194,9 @@ class WindowRmaTest(unittest.TestCase):
         del pool
 
     @unittest.skipIf(
-        os.getenv("NCCL_CTRAN_ENABLE", "").lower() not in ("1", "true"),
-        "NCCLX baseline window operations not yet supported, skipping non-Ctran tests",
+        os.getenv("RUN_RMA_TEST", "").lower() not in ("1", "true"),
+        "RMA tests require NCCLX backend with CTran enabled (RUN_RMA_TEST=true)",
     )
-    @unittest.skipIf(
-        os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only window tests"
-    )
-    # TODO: Remove this skip when we have an ENV to detect if this is OSS env
-    @unittest.skipIf("beth0" not in psutil.net_if_addrs(), "RDMA nic required")
     def test_all_tests(self):
         """Run all tests with all parameter combinations."""
         counts = [4, 1024, 1024 * 1024]
