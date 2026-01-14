@@ -328,7 +328,7 @@ CtranIbVirtualConn::CtranIbVirtualConn(
       cudaDev_(cudaDev) {
   // set default QP configs based on topology and user-specified CVARs, if
   // provided
-  FB_COMMCHECKTHROW(setDefaultQPConfig());
+  FB_COMMCHECKTHROW_EX(setDefaultQPConfig(), comm->logMetaData_);
 }
 
 CtranIbVirtualConn::~CtranIbVirtualConn() {

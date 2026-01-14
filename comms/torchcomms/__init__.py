@@ -84,8 +84,7 @@ def _load_backend(backend: str) -> None:
     found = entry_points(group="torchcomms.backends", name=backend)
     if not found:
         raise ModuleNotFoundError(
-            f"failed to find backend {backend}, "
-            "is it registered via entry_points.txt?"
+            f"failed to find backend {backend}, is it registered via entry_points.txt?"
         )
     (wheel,) = found
     wheel.load()

@@ -6,7 +6,6 @@ import unittest
 from datetime import timedelta
 
 import torch
-
 from torchcomms import ReduceOp
 from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
 

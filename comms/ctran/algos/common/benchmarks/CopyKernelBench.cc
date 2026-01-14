@@ -87,7 +87,7 @@ class CopyBenchSetup : public CudaBenchBase {
 static void p2pCopyKernel(
     uint32_t iters,
     size_t nBytes,
-    int nGroups,
+    int nBlocks,
     folly::UserCounters& counters) {
   const int nRunsPerIter = 50;
 
@@ -115,7 +115,7 @@ static void p2pCopyKernel(
     {
       void* kernArgs[4] = {
           (void*)&srcPtr, (void*)&dstPtr, (void*)&count, (void*)&nRunsPerIter};
-      dim3 grid = {(unsigned int)nGroups, 1, 1};
+      dim3 grid = {(unsigned int)nBlocks, 1, 1};
       dim3 blocks = {256, 1, 1};
       CHECK_EQ(
           cudaLaunchKernel(
@@ -135,14 +135,14 @@ static void p2pCopyKernel(
 
   float avgTimeUs =
       (totalTimeMs / iters / nRunsPerIter) * 1000.0f; // Convert ms to us
-  float busBwGBps = (nBytes / (float)(1 << 30)) /
-      (avgTimeUs / 1e6f); // GB/s = bytes / time_in_seconds
+  float busBwGBps =
+      (nBytes / 1e9f) / (avgTimeUs / 1e6f); // GB/s = bytes / time_in_seconds
   counters["deviceTimeUs"] =
       folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
   counters["busBwGBps"] =
       folly::UserMetric(busBwGBps, folly::UserMetric::Type::METRIC);
-  counters["nGroups"] =
-      folly::UserMetric(nGroups, folly::UserMetric::Type::METRIC);
+  counters["nBlocks"] =
+      folly::UserMetric(nBlocks, folly::UserMetric::Type::METRIC);
 
   CHECK_EQ(cudaFree(srcPtr), cudaSuccess);
 }
@@ -154,7 +154,7 @@ static void p2pCopyKernel(
 static void d2dCopyKernel(
     uint32_t iters,
     size_t nBytes,
-    int nGroups,
+    int nBlocks,
     folly::UserCounters& counters) {
   const int nRunsPerIter = 50;
 
@@ -175,7 +175,7 @@ static void d2dCopyKernel(
     {
       void* kernArgs[4] = {
           (void*)&srcPtr, (void*)&dstPtr, (void*)&count, (void*)&nRunsPerIter};
-      dim3 grid = {(unsigned int)nGroups, 1, 1};
+      dim3 grid = {(unsigned int)nBlocks, 1, 1};
       dim3 blocks = {256, 1, 1};
       CHECK_EQ(
           cudaLaunchKernel(
@@ -195,14 +195,14 @@ static void d2dCopyKernel(
 
   float avgTimeUs =
       (totalTimeMs / iters / nRunsPerIter) * 1000.0f; // Convert ms to us
-  float busBwGBps = (nBytes / (float)(1 << 30)) /
-      (avgTimeUs / 1e6f); // GB/s = bytes / time_in_seconds
+  float busBwGBps =
+      (nBytes / 1e9f) / (avgTimeUs / 1e6f); // GB/s = bytes / time_in_seconds
   counters["deviceTimeUs"] =
       folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
   counters["busBwGBps"] =
       folly::UserMetric(busBwGBps, folly::UserMetric::Type::METRIC);
-  counters["nGroups"] =
-      folly::UserMetric(nGroups, folly::UserMetric::Type::METRIC);
+  counters["nBlocks"] =
+      folly::UserMetric(nBlocks, folly::UserMetric::Type::METRIC);
 
   CHECK_EQ(cudaFree(srcPtr), cudaSuccess);
   CHECK_EQ(cudaFree(dstPtr), cudaSuccess);
@@ -215,16 +215,16 @@ static void d2dCopyKernel(
 // Helper macro to register benchmarks for all group counts for a given size
 #define REGISTER_COPY_BENCH_FOR_SIZE(func, sizeMB)     \
   BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_1g, sizeMB * 1024 * 1024, 1);   \
+      func, sizeMB##MB_1b, sizeMB * 1024 * 1024, 1);   \
   BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_2g, sizeMB * 1024 * 1024, 2);   \
+      func, sizeMB##MB_2b, sizeMB * 1024 * 1024, 2);   \
   BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_4g, sizeMB * 1024 * 1024, 4);   \
+      func, sizeMB##MB_4b, sizeMB * 1024 * 1024, 4);   \
   BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_8g, sizeMB * 1024 * 1024, 8);   \
+      func, sizeMB##MB_8b, sizeMB * 1024 * 1024, 8);   \
   BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_16g, sizeMB * 1024 * 1024, 16); \
-  BENCHMARK_MULTI_PARAM_COUNTERS(func, sizeMB##MB_32g, sizeMB * 1024 * 1024, 32)
+      func, sizeMB##MB_16b, sizeMB * 1024 * 1024, 16); \
+  BENCHMARK_MULTI_PARAM_COUNTERS(func, sizeMB##MB_32b, sizeMB * 1024 * 1024, 32)
 
 // Helper macro to register benchmarks for all standard sizes
 #define REGISTER_COPY_BENCH_ALL_SIZES(func) \
