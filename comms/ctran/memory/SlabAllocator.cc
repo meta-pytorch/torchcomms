@@ -16,7 +16,7 @@ SlabAllocator::SlabAllocator() {
         commInvalidUsage,
         "NCCLX slab allocator only works with low-level cuMem APIs. Make sure CUDA Toolkit is 11.3 or higher.");
   }
-  FB_COMMCHECKTHROW(computeCumemGranualirity());
+  FB_COMMCHECKTHROW_EX_NOCOMM(computeCumemGranualirity());
 }
 
 commResult_t SlabAllocator::cuCallocAsync(

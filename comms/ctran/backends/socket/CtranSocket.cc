@@ -169,7 +169,9 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
         sizeof(allListenSocketAddrs_[0]),
         comm->statex_->rank(),
         comm->statex_->nRanks());
-    FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+    FB_COMMCHECKTHROW_EX(
+        static_cast<commResult_t>(std::move(resFuture).get()),
+        comm->logMetaData_);
   } else {
     // use provided addr(i.e. ip, port, host) to initialize ctranSocket
     auto serverAddrSockAddr = toSocketAddress(serverAddr);
@@ -224,8 +226,9 @@ void CtranSocket::bootstrapAccept() {
         peerRank);
 
     // Store the nccl socket
-    FB_COMMCHECKTHROW(checkValidPeer(peerRank));
-    FB_COMMCHECKTHROW(updateSocket(std::move(socket), peerRank));
+    FB_COMMCHECKTHROW_EX(checkValidPeer(peerRank), comm->logMetaData_);
+    FB_COMMCHECKTHROW_EX(
+        updateSocket(std::move(socket), peerRank), comm->logMetaData_);
   }
 
   CLOGF_SUBSYS(
@@ -289,7 +292,8 @@ commResult_t CtranSocket::bootstrapConnect(
 
   // Store the nccl socket
   FB_COMMCHECK(checkValidPeer(peerRank));
-  FB_COMMCHECKTHROW(updateSocket(std::move(socket), peerRank));
+  FB_COMMCHECKTHROW_EX(
+      updateSocket(std::move(socket), peerRank), comm->logMetaData_);
 
 exit:
 
