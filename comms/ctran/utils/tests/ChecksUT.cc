@@ -282,10 +282,15 @@ TEST_F(CtranUtilsCheckTest, FOLLY_EXPECTED_CHECKTHROW_EX) {
   const uint64_t commHash = 0xCAFEBABE;
   const std::string desc = "testDesc";
 
+  CommLogData logData = {
+      .rank = rank,
+      .commHash = commHash,
+      .commDesc = desc,
+  };
+
   // Success case: no exception thrown
   auto successResult = folly::Expected<int, MockError>(42);
-  EXPECT_NO_THROW(
-      FOLLY_EXPECTED_CHECKTHROW_EX(successResult, rank, commHash, desc));
+  EXPECT_NO_THROW(FOLLY_EXPECTED_CHECKTHROW_EX(successResult, logData));
 
   // Failure case: ctran::utils::Exception thrown with correct properties
   auto errorResult = folly::Expected<int, MockError>(folly::makeUnexpected(
@@ -296,10 +301,11 @@ TEST_F(CtranUtilsCheckTest, FOLLY_EXPECTED_CHECKTHROW_EX) {
 
   bool caughtException = false;
   try {
-    FOLLY_EXPECTED_CHECKTHROW_EX(errorResult, rank, commHash, desc);
+    FOLLY_EXPECTED_CHECKTHROW_EX(errorResult, logData);
   } catch (const ctran::utils::Exception& e) {
     EXPECT_EQ(e.rank(), rank);
     EXPECT_EQ(e.commHash(), commHash);
+    EXPECT_EQ(e.result(), commInternalError);
     EXPECT_THAT(
         std::string(e.what()), ::testing::HasSubstr("COMM internal failure:"));
     EXPECT_THAT(

@@ -340,6 +340,10 @@
     }                             \
   } while (0)
 
+// Note: when writing Ctran code, prefer the FOLLY_EXPECTED_CHECKTHROW_EX or
+// FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM macros instead of this one.
+//
+// TODO(T251293921): Move this definition out of the `comms/ctran` directory.
 #define FOLLY_EXPECTED_CHECKTHROW(RES)                                  \
   do {                                                                  \
     if (RES.hasError()) {                                               \
@@ -355,7 +359,7 @@
     }                                                                   \
   } while (0)
 
-#define FOLLY_EXPECTED_CHECKTHROW_EX(RES, rank, commHash, desc)        \
+#define FOLLY_EXPECTED_CHECKTHROW_EX(RES, commLogData)                 \
   do {                                                                 \
     if (RES.hasError()) {                                              \
       CLOGF(                                                           \
@@ -368,15 +372,28 @@
       throw ctran::utils::Exception(                                   \
           std::string("COMM internal failure: ") + RES.error().errStr, \
           commInternalError,                                           \
-          rank,                                                        \
-          commHash,                                                    \
-          desc);                                                       \
+          (commLogData).rank,                                          \
+          (commLogData).commHash,                                      \
+          (commLogData).commDesc);                                     \
     }                                                                  \
   } while (0)
 
 // For singleton/global contexts where rank/commHash/commDesc are not available
-#define FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(RES) \
-  FOLLY_EXPECTED_CHECKTHROW_EX(RES, std::nullopt, std::nullopt, std::nullopt)
+#define FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(RES)                       \
+  do {                                                                 \
+    if (RES.hasError()) {                                              \
+      CLOGF(                                                           \
+          ERR,                                                         \
+          "{}:{} -> {} ({})",                                          \
+          __FILE__,                                                    \
+          __LINE__,                                                    \
+          RES.error().errNum,                                          \
+          RES.error().errStr);                                         \
+      throw ctran::utils::Exception(                                   \
+          std::string("COMM internal failure: ") + RES.error().errStr, \
+          commInternalError);                                          \
+    }                                                                  \
+  } while (0)
 
 #define FOLLY_EXPECTED_CHECKGOTO(RES, label, info) \
   do {                                             \
