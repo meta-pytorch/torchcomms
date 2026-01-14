@@ -715,13 +715,14 @@ void initRankStatesTopologyWrapper(
 using PerRankState = CtranIntraProcessFixture::PerRankState;
 static void resetPerRankState(PerRankState& state) {
   if (state.dstBuffer != nullptr) {
-    FB_COMMCHECKTHROW(ctran::utils::commCudaFree(state.dstBuffer));
+    FB_COMMCHECKTHROW_EX_NOCOMM(ctran::utils::commCudaFree(state.dstBuffer));
   }
   if (state.srcBuffer != nullptr) {
-    FB_COMMCHECKTHROW(ctran::utils::commCudaFree(state.srcBuffer));
+    FB_COMMCHECKTHROW_EX_NOCOMM(ctran::utils::commCudaFree(state.srcBuffer));
   }
   if (state.stream != nullptr) {
-    FB_CUDACHECKTHROW(cudaStreamDestroy(state.stream));
+    FB_CUDACHECKTHROW_EX(
+        cudaStreamDestroy(state.stream), state.ctranComm->logMetaData_);
   }
   state.ctranComm.reset(nullptr);
 }
@@ -737,7 +738,11 @@ void initCtranCommMultiRank(
     int nRanks,
     int rank,
     int cudaDev) {
-  FB_CUDACHECKTHROW(cudaSetDevice(cudaDev));
+  FB_CUDACHECKTHROW_EX(
+      cudaSetDevice(cudaDev),
+      rank,
+      kMultiRankCommHash,
+      std::string(kMultiRankCommDesc));
 
   ctranComm->bootstrap_ =
       std::make_unique<ctran::testing::IntraProcessBootstrap>(
@@ -767,7 +772,7 @@ void initCtranCommMultiRank(
   initRankStatesTopologyWrapper(
       ctranComm->statex_.get(), ctranComm->bootstrap_.get(), nRanks);
 
-  FB_COMMCHECKTHROW(ctranInit(ctranComm));
+  FB_COMMCHECKTHROW_EX_NOCOMM(ctranInit(ctranComm));
 
   CLOGF(INFO, "UT MultiRank CTran initialized");
 }
@@ -793,23 +798,22 @@ void workerRoutine(PerRankState& state) {
       state.nRanks,
       state.rank,
       state.cudaDev);
-  FB_CUDACHECKTHROW(cudaStreamCreate(&state.stream));
+  FB_CUDACHECKTHROW_EX(
+      cudaStreamCreate(&state.stream), state.ctranComm->logMetaData_);
   FB_COMMCHECKTHROW_EX(
       ctran::utils::commCudaMalloc(
           reinterpret_cast<char**>(&state.srcBuffer),
           CtranIntraProcessFixture::kBufferSize,
           &state.ctranComm->logMetaData_,
           "UT_workerRoutine"),
-      rank,
-      kMultiRankCommHash);
+      state.ctranComm->logMetaData_);
   FB_COMMCHECKTHROW_EX(
       ctran::utils::commCudaMalloc(
           reinterpret_cast<char**>(&state.dstBuffer),
           CtranIntraProcessFixture::kBufferSize,
           &state.ctranComm->logMetaData_,
           "UT_workerRoutine"),
-      rank,
-      kMultiRankCommHash);
+      state.ctranComm->logMetaData_);
 
   CLOGF(INFO, "rank [{}/{}] worker waiting for work", rank, state.nRanks);
 

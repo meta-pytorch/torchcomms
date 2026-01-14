@@ -55,6 +55,13 @@ int32_t IbvPd::getDeviceId() const {
   return deviceId_;
 }
 
+std::string IbvPd::getDeviceName() const {
+  if (pd_ && pd_->context && pd_->context->device) {
+    return std::string(pd_->context->device->name);
+  }
+  return "unknown";
+}
+
 folly::Expected<IbvMr, Error>
 IbvPd::regMr(void* addr, size_t length, ibv_access_flags access) const {
   ibv_mr* mr;
