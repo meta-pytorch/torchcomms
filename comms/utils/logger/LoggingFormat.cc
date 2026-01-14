@@ -4,6 +4,7 @@
 
 #include <unistd.h>
 #include <cstring>
+#include <sstream>
 
 #include <fmt/chrono.h>
 #include <fmt/format.h>
@@ -335,17 +336,16 @@ std::string NcclLogFormatter::formatMessage(
 
 const char* getLastCommsError() {
   // Only write the error message to the buffer once requested
-  // TODO: Currently we have quite a few string copies during the process. Try
-  // eliminating them.
-  std::string fullError = {};
+  std::ostringstream ss;
   {
     auto lastCommsErrorRLocked = lastCommsError.rlock();
-    auto stackTrace = folly::join('\n', lastCommsErrorRLocked->lastErrorStack);
-    fullError = fmt::format(
-        "{}\nNCCL Stack trace:\n{}",
-        lastCommsErrorRLocked->lastErrorMessage,
-        stackTrace);
+    ss << lastCommsErrorRLocked->lastErrorMessage << "\nNCCL Stack trace:";
+    for (const auto& stack : lastCommsErrorRLocked->lastErrorStack) {
+      ss << '\n' << stack;
+    }
   }
+
+  auto fullError = std::move(ss).str();
 
   // Write the error message to the buffer
   auto lastCommsErrorStrWLocked = lastCommsErrorStr.wlock();

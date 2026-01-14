@@ -492,6 +492,10 @@ class CtranIb {
     return commHash;
   }
 
+  std::string getCommDesc() const {
+    return commDesc;
+  }
+
  private:
   friend class CtranIbRequest;
   void init(
@@ -1148,7 +1152,10 @@ class CtranIbEpochRAII {
   explicit CtranIbEpochRAII(CtranIb* ctranIb) : ctranIb_(ctranIb) {
     if (ctranIb_ != nullptr) {
       FB_COMMCHECKTHROW_EX(
-          ctranIb_->epochLock(), ctranIb_->getRank(), ctranIb_->getCommHash());
+          ctranIb_->epochLock(),
+          ctranIb_->getRank(),
+          ctranIb_->getCommHash(),
+          ctranIb_->getCommDesc());
     }
   }
 

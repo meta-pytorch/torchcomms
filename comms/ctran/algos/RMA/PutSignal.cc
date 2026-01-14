@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <cuda.h>
 #include <memory>
 
 #include "Types.h"
@@ -8,6 +9,7 @@
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -73,99 +75,6 @@ inline static commResult_t checkSignalDisplacement(
         signalSize);
     return commInvalidArgument;
   }
-  return commSuccess;
-}
-
-static commResult_t putNotifyImpl(
-    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
-  struct OpElem* op = opGroup.front().get();
-  auto comm = op->comm_;
-  auto win = op->putnotify.win;
-  int peerRank = op->putnotify.peerRank;
-
-  CtranAlgoRMALogger logger(
-      op->putnotify.notify ? "ctranPutSignal" : "ctranPut",
-      op->opCount,
-      peerRank,
-      win,
-      comm);
-
-  // If NVL is not enabled, the IB backend must be available
-  if (!win->nvlEnabled(peerRank) &&
-      !comm->ctran_->mapper->hasBackend(peerRank, CtranMapperBackend::IB)) {
-    CLOGF(ERR, "Put notify doesn't have IB backend");
-    return commInternalError;
-  }
-
-  size_t putSize = op->putnotify.count * commTypeSize(op->putnotify.datatype);
-  size_t targetDispNbytes =
-      op->putnotify.targetDisp * commTypeSize(op->putnotify.datatype);
-  void* dstPtr = reinterpret_cast<void*>(
-      reinterpret_cast<size_t>(win->remWinInfo[peerRank].dataAddr) +
-      targetDispNbytes);
-
-  // Get registration handle for local send buffer
-  void* localMemHdl = nullptr;
-  bool localReg = false;
-  FB_COMMCHECK(comm->ctran_->mapper->searchRegHandle(
-      op->putnotify.sendbuff, putSize, &localMemHdl, &localReg));
-
-  CLOGF_TRACE(
-      COLL,
-      "putNotifyImpl: sbuf {}, rbuf {} (base {} + offset {}), size {}",
-      op->putnotify.sendbuff,
-      dstPtr,
-      win->remWinInfo[peerRank].dataAddr,
-      targetDispNbytes,
-      putSize);
-
-  CtranMapperRequest* req = nullptr;
-  FB_COMMCHECK(comm->ctran_->mapper->iput(
-      op->putnotify.sendbuff,
-      dstPtr,
-      putSize,
-      peerRank,
-      CtranMapperConfig{
-          .memHdl_ = localMemHdl,
-          .remoteAccessKey_ = win->remWinInfo[peerRank].dataRkey,
-          .notify_ = op->putnotify.notify,
-      },
-      &req));
-
-  auto putReq = std::unique_ptr<CtranMapperRequest>(req);
-  FB_COMMCHECK(comm->ctran_->mapper->waitRequest(putReq.get()));
-
-  // Deregister the sendbuffer if it is automatically registered by the
-  // mapper->searchRegHandle()
-  if (localReg) {
-    FB_COMMCHECK(comm->ctran_->mapper->deregDynamic(localMemHdl));
-  }
-  return commSuccess;
-}
-
-static commResult_t waitNotifyImpl(
-    const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
-  struct OpElem* op = opGroup.front().get();
-  int peerRank = op->waitnotify.peerRank;
-  auto comm = op->comm_;
-  auto win = op->waitnotify.win;
-  CtranAlgoRMALogger logger(
-      "ctranWaitNotify", op->opCount, peerRank, win, comm);
-
-  if (!win->nvlEnabled(peerRank) &&
-      !comm->ctran_->mapper->hasBackend(peerRank, CtranMapperBackend::IB)) {
-    CLOGF(ERR, "Wait notify doesn't have IB backend");
-    return commInternalError;
-  }
-
-  CLOGF_TRACE(COLL, "waitNotifyImpl: peerRank={}", op->waitnotify.peerRank);
-
-  std::unique_ptr<CtranMapperNotify> notify =
-      std::make_unique<CtranMapperNotify>();
-  // we don't have the local RegElem so we cannot call mapper's initNotify,
-  // directly update the notify object instead
-  notify->update(peerRank, nullptr, CtranMapperBackend::IB);
-  FB_COMMCHECK(comm->ctran_->mapper->waitNotify(notify.get()));
   return commSuccess;
 }
 
@@ -284,7 +193,7 @@ static commResult_t signalImpl(
   return commSuccess;
 }
 
-static commResult_t waitSignalImpl(
+static commResult_t waitSignalSpinningKernelImpl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
   struct OpElem* op = opGroup.front().get();
   auto comm = op->comm_;
@@ -294,7 +203,7 @@ static commResult_t waitSignalImpl(
   CtranAlgoRMALogger logger("ctranWaitSignal", op->opCount, -1, win, comm);
   CLOGF_TRACE(
       COLL,
-      "waitSignalImpl: signalAddr {}, cmpVal={}",
+      "waitSignalSpinningKernelImpl: signalAddr {}, cmpVal={}",
       (void*)const_cast<uint64_t*>(op->waitsignal.signalAddr),
       op->waitsignal.cmpVal);
   // Spin-wait until the signal is received.
@@ -335,9 +244,9 @@ commResult_t ctranPutSignal(
       comm,
       stream);
 
-  // Check if the target displacement exceeds the window size
+  // Check if the target displacement exceeds the remote peer's window size
   FB_COMMCHECK(checkDisplacementBounds(
-      targetDisp, commTypeSize(datatype), count, win->dataBytes));
+      targetDisp, commTypeSize(datatype), count, win->getDataSize(peer)));
   size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
   size_t countNbytes = count * commTypeSize(datatype);
   uint64_t* signalAddr = nullptr;
@@ -415,26 +324,69 @@ commResult_t ctranPutSignal(
   return commSuccess;
 }
 
-commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
+// Hardware-accelerated wait using CUDA Driver API directly
+// Returns commSuccess if hardware wait was used, otherwise returns error to
+// fallback This avoids GPU spinning kernel overhead by using hardware memory
+// polling
+static commResult_t
+waitSignalDriverApi(int peer, CtranWin* win, cudaStream_t stream) {
+#if CUDART_VERSION >= 11070
+  // Check if hardware wait is available at runtime
+  if (FB_CUPFN(cuStreamWaitValue64) == nullptr) {
+    return commInternalError;
+  }
+
+  // Get the signal address
+  const uint64_t* signalAddr = win->winSignalPtr + peer;
+  // Get the expected compare value
+  uint64_t cmpVal = win->ctranNextWaitSignalVal(peer);
+
+  // Use hardware-accelerated stream wait (zero GPU overhead!)
+  // This uses hardware memory polling
+  CUresult result = FB_CUPFN(cuStreamWaitValue64)(
+      (CUstream)stream,
+      (CUdeviceptr)signalAddr,
+      cmpVal,
+      CU_STREAM_WAIT_VALUE_GEQ);
+
+  if (result != CUDA_SUCCESS) {
+    const char* errStr = nullptr;
+    FB_CUPFN(cuGetErrorString)(result, &errStr);
+
+    // Only fallback on NOT_SUPPORTED - this is safe (hardware doesn't support)
+    // Other errors (e.g., INVALID_VALUE) may indicate prior async failures
+    // that could cause the spinning kernel to hang, so propagate them
+    if (result == CUDA_ERROR_NOT_SUPPORTED) {
+      CLOGF(
+          WARN,
+          "CTRAN RMA: Hardware wait not supported ({}), falling back to spinning kernel",
+          errStr ? errStr : "unknown error");
+      return commInvalidUsage;
+    }
+
+    // Propagate other errors - do not fallback as they may indicate
+    // stream corruption from prior async operations
+    CLOGF(
+        ERR,
+        "CTRAN RMA: Hardware wait failed with error ({}), not falling back",
+        errStr ? errStr : "unknown error");
+    return commInternalError;
+  }
+
+  return commSuccess;
+#else
+  // CUDA < 11.7 doesn't support cuStreamWaitValue64
+  return commInvalidUsage;
+#endif
+}
+
+static commResult_t waitSignalSpinningKernel(
+    int peer,
+    CtranWin* win,
+    cudaStream_t stream,
+    uint64_t waitOpCount) {
   CtranComm* comm = win->comm;
-  auto statex = comm->statex_.get();
   auto waitSignalVal = win->ctranNextWaitSignalVal(peer);
-  const auto winOpCount = win->updateOpCount(peer);
-  const auto waitOpCount =
-      win->updateOpCount(peer, window::OpCountType::kWaitSignal);
-  CTRAN_RMA_INFO(
-      "ctranWaitSignal",
-      waitOpCount,
-      winOpCount,
-      nullptr,
-      peer, // signal disp
-      size_t(1), // signal count
-      commDataType_t::commUint64, // signal datatype
-      statex->rank(),
-      peer,
-      win,
-      comm,
-      stream);
 
   const uint64_t* signalAddr = win->winSignalPtr + peer;
 
@@ -468,7 +420,7 @@ commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
 
   FB_COMMCHECK(comm->ctran_->gpe->submit(
       std::move(opGroup),
-      waitSignalImpl,
+      waitSignalSpinningKernelImpl,
       config,
       reinterpret_cast<void*>(ncclKernelWaitSignal)));
   return commSuccess;
@@ -528,4 +480,58 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
       config,
       reinterpret_cast<void*>(ncclKernelSignal)));
   return commSuccess;
+}
+
+// Hardware-accelerated wait with automatic fallback to spinning kernel
+// This is the recommended API for best performance
+// Tries hardware wait first (CUDA 11.7+), falls back to spinning kernel
+commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
+  CtranComm* comm = win->comm;
+  auto statex = comm->statex_.get();
+
+  // Track op counts for BOTH implementations
+  const auto winOpCount = win->updateOpCount(peer);
+  const auto waitOpCount =
+      win->updateOpCount(peer, window::OpCountType::kWaitSignal);
+
+  // Log this operation for BOTH implementations
+  CTRAN_RMA_INFO(
+      "ctranWaitSignal",
+      waitOpCount,
+      winOpCount,
+      nullptr,
+      peer,
+      size_t(1),
+      commDataType_t::commUint64,
+      statex->rank(),
+      peer,
+      win,
+      comm,
+      stream);
+
+  // Only try hardware wait for GPU memory windows
+  if (win->isGpuMem()) {
+    // Try hardware-accelerated wait first (zero GPU overhead!)
+    commResult_t hwResult = waitSignalDriverApi(peer, win, stream);
+
+    if (hwResult == commSuccess) {
+      CLOGF_TRACE(
+          COLL, "CTRAN RMA: WaitSignal successful using hardware acceleration");
+      return commSuccess;
+    }
+
+    // Only fallback on commInvalidUsage (CUDA_ERROR_NOT_SUPPORTED)
+    // Other errors (commInternalError) are propagated to avoid masking
+    // potential stream corruption from prior async operations
+    if (hwResult != commInvalidUsage) {
+      return hwResult;
+    }
+  }
+
+  // Fallback to spinning kernel implementation
+  CLOGF(
+      INFO,
+      "CTRAN RMA: WaitSignal falling back to spinning kernel (peer={})",
+      peer);
+  return waitSignalSpinningKernel(peer, win, stream, waitOpCount);
 }
