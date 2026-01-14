@@ -39,7 +39,7 @@ class PinnedHostPool {
   PinnedHostPool() = delete;
 
   explicit PinnedHostPool(size_t capacity) : capacity_(capacity) {
-    FB_CUDACHECKTHROW(cudaHostAlloc(
+    FB_CUDACHECKTHROW_EX_NOCOMM(cudaHostAlloc(
         &this->memPtr_, this->capacity_ * sizeof(T), cudaHostAllocDefault));
 
     for (int i = 0; i < capacity_; ++i) {
