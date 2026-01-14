@@ -1937,7 +1937,7 @@ class CtranMapper {
         tcpDmReq = ctran::CtranTcpDmRequest();
       } else {
         CLOGF(ERR, "CTRAN-MAPPER: Unsupported backend {}", backend);
-        FB_COMMCHECKTHROW(commInternalError);
+        FB_COMMCHECKTHROW_EX_NOCOMM(commInternalError);
       }
     };
     ~CbCtrlRequest() {};
@@ -1985,7 +1985,7 @@ class CtranMapperEpochRAII {
   // needed only for selected cases.
   explicit CtranMapperEpochRAII(CtranMapper* mapper) : mapper_(mapper) {
     if (mapper_ != nullptr) {
-      FB_COMMCHECKTHROW(mapper_->epochLock());
+      FB_COMMCHECKTHROW_EX_NOCOMM(mapper_->epochLock());
     }
   }
 

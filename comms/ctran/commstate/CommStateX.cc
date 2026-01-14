@@ -125,7 +125,11 @@ void CommStateX::initRankStatesTopology(
   allTopos.at(rank_) = *myTopo;
   auto resFuture = bootstrap->allGather(
       allTopos.data(), sizeof(ncclx::RankTopology), rank_, nRanks_);
-  FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+  FB_COMMCHECKTHROW_EX(
+      static_cast<commResult_t>(std::move(resFuture).get()),
+      rank_,
+      commHash_,
+      commDesc_);
 
   // Create statex variable
   setRankStatesTopologies(std::move(allTopos));

@@ -3,7 +3,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import unittest
-
 from contextlib import contextmanager
 from datetime import timedelta
 

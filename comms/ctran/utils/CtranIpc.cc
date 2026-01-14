@@ -50,15 +50,15 @@ ctran::utils::CtranIpcMem::CtranIpcMem(
       memType_(memType),
       cuMemHandleType_(cuMemHandleType) {
   if (!CtranIpcSupport()) {
-    FB_COMMCHECKTHROW(commInternalError);
+    FB_COMMCHECKTHROW_EX_NOCOMM(commInternalError);
   }
-  FB_COMMCHECKTHROW(this->alloc(size));
+  FB_COMMCHECKTHROW_EX_NOCOMM(this->alloc(size));
 };
 
 ctran::utils::CtranIpcMem::CtranIpcMem(const int cudaDev, const char* desc)
     : cudaDev_(cudaDev), mode_(CtranIpcMem::Mode::LOAD), desc_(desc) {
   if (!CtranIpcSupport()) {
-    FB_COMMCHECKTHROW(commInternalError);
+    FB_COMMCHECKTHROW_EX_NOCOMM(commInternalError);
   }
   // Empty instance for loading existing memory range via load()
 };
@@ -397,9 +397,9 @@ ctran::utils::CtranIpcRemMem::CtranIpcRemMem(
       memType_(ipcDesc.memType),
       cuMemHandleType_(ipcDesc.cuMemHandleType) {
   if (!CtranIpcSupport()) {
-    FB_COMMCHECKTHROW(commInternalError);
+    FB_COMMCHECKTHROW_EX_NOCOMM(commInternalError);
   }
-  FB_COMMCHECKTHROW(this->import(ipcDesc));
+  FB_COMMCHECKTHROW_EX_NOCOMM(this->import(ipcDesc));
 };
 
 ctran::utils::CtranIpcRemMem::~CtranIpcRemMem() {
