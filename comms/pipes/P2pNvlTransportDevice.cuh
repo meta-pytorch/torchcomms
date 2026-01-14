@@ -5,13 +5,9 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cstddef>
-#include <cstdint>
-#include <vector>
-
 #include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
-#include "comms/pipes/P2pTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -240,7 +236,7 @@ struct P2pNvlTransportOptions {
  * local buffers
  *   }
  */
-class P2pNvlTransportDevice : public P2pTransportDevice {
+class P2pNvlTransportDevice {
  public:
   __host__ __device__ P2pNvlTransportDevice(
       int myRank,
@@ -254,7 +250,7 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
         localState_(localState),
         remoteState_(remoteState) {}
 
-  __host__ __device__ ~P2pNvlTransportDevice() override = default;
+  __host__ __device__ ~P2pNvlTransportDevice() = default;
 
   /**
    * send - Transfer data to peer GPU over NVLink
@@ -307,7 +303,7 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
    *   stepOffset = stepId × dataBufferSize               (into source data)
    **/
   __device__ __forceinline__ void
-  send(ThreadGroup& group, void* srcbuff, std::size_t nbytes) override {
+  send(ThreadGroup& group, void* srcbuff, std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
     char* src = reinterpret_cast<char*>(srcbuff);
 
@@ -408,7 +404,7 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
    *                                   state = -1 ────────▶ [sender unblocks]
    */
   __device__ __forceinline__ void
-  recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes) override {
+  recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
     char* dst = reinterpret_cast<char*>(dstbuff);
 
@@ -488,7 +484,7 @@ class P2pNvlTransportDevice : public P2pTransportDevice {
       ThreadGroup& group,
       char* dst_d,
       const char* src_d,
-      std::size_t nbytes) override {
+      std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
     __trap(); // Abort kernel if write is called on P2pNvlTransportDevice
 #endif
