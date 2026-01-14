@@ -118,7 +118,7 @@ inline CtranCommWithBootstrap createCtranCommWithBootstrap(
     ctranComm->statex_->initRankTopologyNolocal();
   }
 
-  FB_COMMCHECKTHROW(ctranInit(ctranComm.get()));
+  FB_COMMCHECKTHROW_EX(ctranInit(ctranComm.get()), ctranComm->logMetaData_);
 
   return CtranCommWithBootstrap{
       .bootstrap = std::move(bootstrap),
