@@ -229,8 +229,16 @@ export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
 export LIB_PREFIX="lib64"
 
 BUILDDIR=${BUILDDIR:="${PWD}/build/ncclx"}
-NVCC_ARCH=${NVCC_ARCH:="a100,h100,b200"}
 CUDA_HOME=${CUDA_HOME:="/usr/local/cuda"}
+NVCC_ARCH=${NVCC_ARCH:="a100,h100"}
+
+# Add b200 support if CUDA 12.8+ is available
+CUDA_VERSION=$("${CUDA_HOME}/bin/nvcc" --version | grep -oP 'release \K[0-9]+\.[0-9]+')
+CUDA_MAJOR=$(echo "$CUDA_VERSION" | cut -d. -f1)
+CUDA_MINOR=$(echo "$CUDA_VERSION" | cut -d. -f2)
+if [[ "$CUDA_MAJOR" -gt 12 ]] || [[ "$CUDA_MAJOR" -eq 12 && "$CUDA_MINOR" -ge 8 ]]; then
+    NVCC_ARCH="${NVCC_ARCH},b200"
+fi
 NCCL_FP8=${NCCL_FP8:=1}
 CLEAN_BUILD=${CLEAN_BUILD:=0}
 LIB_SUFFIX=${LIB_SUFFIX:-lib}
@@ -320,8 +328,7 @@ function build_nccl {
     NVCC_GENCODE="$NVCC_GENCODE" \
     CUDA_HOME="$CUDA_HOME" \
     NCCL_HOME="$NCCL_HOME" \
-    NCCL_SUFFIX="x" \
-    DEV_SIGNATURE="$DEV_SIGNATURE" \
+    NCCL_SUFFIX="x-${DEV_SIGNATURE}" \
     NCCL_FP8="$NCCL_FP8" \
     BASE_DIR="$BASE_DIR" \
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
@@ -338,8 +345,7 @@ make VERBOSE=1 -j \
     NVCC_GENCODE="$NVCC_GENCODE" \
     CUDA_HOME="$CUDA_HOME" \
     NCCL_HOME="$NCCL_HOME" \
-    NCCL_SUFFIX="x" \
-    DEV_SIGNATURE="$DEV_SIGNATURE" \
+    NCCL_SUFFIX="x-${DEV_SIGNATURE}" \
     NCCL_FP8="$NCCL_FP8" \
     BASE_DIR="$BASE_DIR" \
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
