@@ -109,7 +109,7 @@ class CtranIbConnectionTest : public ::testing::Test {
       void* remoteRecvBuf = nullptr;
       CtranIbRemoteAccessKey remoteKey;
       EXPECT_EQ(
-          ctranIb->importMem(&remoteRecvBuf, &remoteKey, exportMsg),
+          CtranIb::importMem(&remoteRecvBuf, &remoteKey, exportMsg),
           commSuccess);
 
       // Lock epoch before operations
@@ -155,7 +155,7 @@ class CtranIbConnectionTest : public ::testing::Test {
 
       // Export receive buffer memory and send to sender
       ControlMsg exportMsg;
-      EXPECT_EQ(ctranIb->exportMem(buffer, regElem, exportMsg), commSuccess);
+      EXPECT_EQ(CtranIb::exportMem(buffer, regElem, exportMsg), commSuccess);
       syncObjects.memoryExportPromise.setValue(exportMsg);
 
       // Lock epoch for operations

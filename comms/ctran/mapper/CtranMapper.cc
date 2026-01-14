@@ -430,8 +430,7 @@ commResult_t CtranMapper::remReleaseMem(CtranMapperRegElem* regElem) {
       std::unique_ptr<CbCtrlRequest> req =
           std::make_unique<CbCtrlRequest>(peerRank, backend);
 
-      FB_COMMCHECK(this->ctranNvl->remReleaseMem(
-          regElem->nvlRegElem, peerRank, req->msg));
+      FB_COMMCHECK(CtranNvl::remReleaseMem(regElem->nvlRegElem, req->msg));
       if (this->ctranIb) {
         FB_COMMCHECK(this->ctranIb->isendCtrlMsg(
             req->msg.type,
