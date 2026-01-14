@@ -18,6 +18,7 @@
 #include <hip/hip_fp8.h>
 #endif
 
+#include "comms/common/DeviceConstants.cuh"
 #include "comms/ctran/utils/DevUtils.cuh"
 
 /* FIXME: We are not currently using vectorized arithmetic.  We only
@@ -183,12 +184,13 @@ __device__ __forceinline__ void localReduceVectorized(
 
   // Each warp will handle kUnroll values (warp contiguous and sequential)
   // at a time, resulting in each warp processing this many T-word per iteration
-  constexpr uint32_t kWordsPerWarp = kWarpSize * kWordsPerVectorLoad * kUnroll;
+  constexpr uint32_t kWordsPerWarp =
+      comms::device::kWarpSize * kWordsPerVectorLoad * kUnroll;
 
   const uint32_t linearThreadId = blockDim.x * workerId + threadIdx.x;
-  const uint32_t warpId = linearThreadId / kWarpSize;
-  const uint32_t laneId = threadIdx.x % kWarpSize;
-  const uint32_t numWarps = numWorkers * blockDim.x / kWarpSize;
+  const uint32_t warpId = linearThreadId / comms::device::kWarpSize;
+  const uint32_t laneId = threadIdx.x % comms::device::kWarpSize;
+  const uint32_t numWarps = numWorkers * blockDim.x / comms::device::kWarpSize;
   const uint32_t reduceStride = numWorkers * blockDim.x;
 
   const uint32_t u32Count = uint32_t(count);
@@ -214,7 +216,7 @@ __device__ __forceinline__ void localReduceVectorized(
 #pragma unroll
       for (int k = 0; k < kUnroll; ++k) {
         s[k][j] = *reinterpret_cast<const TVec*>(
-            &srcs[j][i + k * kWarpSize * kWordsPerVectorLoad]);
+            &srcs[j][i + k * comms::device::kWarpSize * kWordsPerVectorLoad]);
       }
     }
 
@@ -234,7 +236,8 @@ __device__ __forceinline__ void localReduceVectorized(
 #pragma unroll
       for (int d = 0; d < NDsts; ++d) {
         *reinterpret_cast<TVec*>(
-            &localDsts[d][j * kWarpSize * kWordsPerVectorLoad]) = s[j][0];
+            &localDsts[d][j * comms::device::kWarpSize * kWordsPerVectorLoad]) =
+            s[j][0];
       }
     }
 #pragma unroll
@@ -293,12 +296,13 @@ __device__ __forceinline__ void localReduceFallback(
 
   // Each warp will handle kUnroll values (warp contiguous and sequential)
   // at a time
-  constexpr uint32_t kWordsPerWarp = kWarpSize * kUnroll;
+  constexpr uint32_t kWordsPerWarp = comms::device::kWarpSize * kUnroll;
 
   const uint32_t linearThreadId = blockDim.x * workerId + threadIdx.x;
-  const uint32_t globalWarpId = linearThreadId / kWarpSize;
-  const uint32_t laneId = threadIdx.x % kWarpSize;
-  const uint32_t numGlobalWarps = numWorkers * blockDim.x / kWarpSize;
+  const uint32_t globalWarpId = linearThreadId / comms::device::kWarpSize;
+  const uint32_t laneId = threadIdx.x % comms::device::kWarpSize;
+  const uint32_t numGlobalWarps =
+      numWorkers * blockDim.x / comms::device::kWarpSize;
 
   const size_t limitCount = ctran::utils::roundDown(count, kWordsPerWarp);
 
@@ -309,7 +313,7 @@ __device__ __forceinline__ void localReduceFallback(
     for (uint32_t j = 0; j < nsrcs; ++j) {
 #pragma unroll
       for (int k = 0; k < kUnroll; ++k) {
-        s[k][j] = *(&srcs[j][i + k * kWarpSize]);
+        s[k][j] = *(&srcs[j][i + k * comms::device::kWarpSize]);
       }
     }
 
@@ -325,7 +329,7 @@ __device__ __forceinline__ void localReduceFallback(
       }
 
       for (int d = 0; d < ndsts; ++d) {
-        dsts[d][i + j * kWarpSize] = s[j][0];
+        dsts[d][i + j * comms::device::kWarpSize] = s[j][0];
       }
     }
   }
@@ -484,12 +488,12 @@ __device__ __forceinline__ void localReduceForDequantAllToAll(
 
   // Each warp will handle kUnroll values (warp contiguous and sequential)
   // at a time
-  constexpr auto kWordsPerWarp = kWarpSize * kUnroll;
+  constexpr auto kWordsPerWarp = comms::device::kWarpSize * kUnroll;
 
   const auto linearThreadId = blockDim.x * blockIdx.x + threadIdx.x;
-  const auto globalWarpId = linearThreadId / kWarpSize;
-  const auto laneId = threadIdx.x % kWarpSize;
-  const auto numGlobalWarps = gridDim.x * blockDim.x / kWarpSize;
+  const auto globalWarpId = linearThreadId / comms::device::kWarpSize;
+  const auto laneId = threadIdx.x % comms::device::kWarpSize;
+  const auto numGlobalWarps = gridDim.x * blockDim.x / comms::device::kWarpSize;
 
   const auto limitCount = ctran::utils::roundDown(count, kWordsPerWarp);
 
@@ -517,8 +521,8 @@ __device__ __forceinline__ void localReduceForDequantAllToAll(
 
 #pragma unroll
       for (auto k = 0; k < kUnroll; ++k) {
-        RedT curr =
-            ctran::utils::castTo<T, RedT>(src[i + k * kWarpSize + offset]);
+        RedT curr = ctran::utils::castTo<T, RedT>(
+            src[i + k * comms::device::kWarpSize + offset]);
         res[k][vecIdx] = curr;
       }
 
@@ -546,7 +550,8 @@ __device__ __forceinline__ void localReduceForDequantAllToAll(
       if constexpr (RedOp == commAvg) {
         res[j][0] = res[j][0] / int(nRanks);
       }
-      dst[i + j * kWarpSize] = ctran::utils::castTo<RedT, T>(res[j][0]);
+      dst[i + j * comms::device::kWarpSize] =
+          ctran::utils::castTo<RedT, T>(res[j][0]);
     }
   }
 

@@ -40,7 +40,7 @@ class DevMemTypeTest : public ::testing::Test {
     } else if (type == DevMemType::kCumem) {
       CUmemAllocationHandleType handleType =
           ctran::utils::getCuMemAllocHandleType();
-      FB_COMMCHECKTHROW(
+      FB_COMMCHECKTHROW_EX_NOCOMM(
           ctran::utils::commCuMemAlloc(
               &ptr, pHandle, handleType, size, nullptr, "DevMemTypeUT"));
     } else if (type == DevMemType::kHostUnregistered) {
@@ -105,7 +105,7 @@ TEST_P(DevMemTypeSizeTest, GetCorrectDevMemType) {
   for (const auto& size : sizes) {
     void* ptr = allocMem(allocType, size);
     DevMemType expectedType;
-    FB_COMMCHECKTHROW(getDevMemType(ptr, cudaDev_, expectedType));
+    FB_COMMCHECKTHROW_EX_NOCOMM(getDevMemType(ptr, cudaDev_, expectedType));
     EXPECT_EQ(allocType, expectedType);
     EXPECT_EQ(freeMem(allocType, ptr), commSuccess);
     EXPECT_NE(freeMem(allocType, ptr), commSuccess);
