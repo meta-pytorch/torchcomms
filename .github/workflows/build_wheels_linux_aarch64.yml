@@ -10,7 +10,7 @@ on:
 
 jobs:
   generate-matrix:
-    uses: pytorch/test-infra/.github/workflows/generate_binary_build_matrix.yml@main
+    uses: pytorch/test-infra/.github/workflows/generate_binary_build_matrix.yml@docker-aarch64
     with:
       package-type: wheel
       os: linux-aarch64
