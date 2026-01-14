@@ -822,8 +822,9 @@ size_t CtranAlgo::getTmpBufOffset(const TmpbufType type) {
   if (it != tmpbufSegments.end()) {
     offset = tmpbufSegmentOffsets.at(type);
   } else {
-    FB_ERRORTHROW(
+    FB_ERRORTHROW_EX(
         commInternalError,
+        comm_->logMetaData_,
         "Failed to find tmpbuf for type {} during getTmpBufOffset",
         static_cast<int>(type));
   }
@@ -837,8 +838,9 @@ std::tuple<void*, void*> CtranAlgo::getTmpBufInfo(const TmpbufType type) {
 
   auto it = tmpbufSegments.find(type);
   if (it == tmpbufSegments.end()) {
-    FB_ERRORTHROW(
+    FB_ERRORTHROW_EX(
         commInternalError,
+        comm_->logMetaData_,
         "Failed to find tmpbuf for type {} during getTmpBufInfo",
         static_cast<int>(type));
   } else {

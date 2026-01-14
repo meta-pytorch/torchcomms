@@ -588,10 +588,36 @@
     return error;                                                   \
   } while (0)
 
+// Note: when writing code within the comms/ctran directory,
+// prefer the FB_ERRORTHROW_EX or FB_ERRORTHROW_EX_NOCOMM macros.
+//
+// TODO(T250696492): move this macro definition outside the ctran directory.
 #define FB_ERRORTHROW(error, ...)                \
   do {                                           \
     CLOGF(ERR, ##__VA_ARGS__);                   \
     throw std::runtime_error(                    \
         std::string("COMM internal failure: ") + \
         ::meta::comms::commCodeToString(error)); \
+  } while (0)
+
+#define FB_ERRORTHROW_EX(error, logData, ...)       \
+  do {                                              \
+    CLOGF(ERR, ##__VA_ARGS__);                      \
+    throw ctran::utils::Exception(                  \
+        std::string("COMM internal failure: ") +    \
+            ::meta::comms::commCodeToString(error), \
+        error,                                      \
+        (logData).rank,                             \
+        (logData).commHash,                         \
+        (logData).commDesc);                        \
+  } while (0)
+
+// For contexts where rank/commHash are not available
+#define FB_ERRORTHROW_EX_NOCOMM(error, ...)         \
+  do {                                              \
+    CLOGF(ERR, ##__VA_ARGS__);                      \
+    throw ctran::utils::Exception(                  \
+        std::string("COMM internal failure: ") +    \
+            ::meta::comms::commCodeToString(error), \
+        error);                                     \
   } while (0)
