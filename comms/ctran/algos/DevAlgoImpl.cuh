@@ -373,6 +373,8 @@ __device__ __forceinline__ void ctranKernMultiReduce(
 
     // Load reduce argument from host pinned memory
     CtranAlgoDevReduceArg redArg;
+    // FIXME: sizeof(CtranAlgoDevReduceArg) is 1.2KB, load from host-pinned can
+    // cause 40us overhead
     loadAlgoDevArg<CtranAlgoDevReduceArg>(redArg, &elem->reduce);
 
     // Perform reduce op with loaded local argument

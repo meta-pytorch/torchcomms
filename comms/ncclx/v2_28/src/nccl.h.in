@@ -1,0 +1,1076 @@
+/*************************************************************************
+ * Copyright (c) 2015-2021, NVIDIA CORPORATION. All rights reserved.
+ *
+ * See LICENSE.txt for license information
+ ************************************************************************/
+
+#ifndef NCCL_H_
+#define NCCL_H_
+
+#include <cuda_runtime.h>
+#include <cuda_fp16.h>
+#if CUDART_VERSION >= 11000
+#include <cuda_bf16.h>
+#endif
+#if __cplusplus && CUDART_VERSION >= 11080
+#include <cuda_fp8.h>
+#endif
+
+#define NCCL_MAJOR ${nccl:Major}
+#define NCCL_MINOR ${nccl:Minor}
+#define NCCL_PATCH ${nccl:Patch}
+#define NCCL_SUFFIX "${nccl:Suffix}"
+
+#define NCCL_VERSION_CODE ${nccl:Version}
+
+#define IS_NCCLX
+
+#define NCCL_VERSION(X,Y,Z) (((X) <= 2 && (Y) <= 8) ? (X) * 1000 + (Y) * 100 + (Z) : (X) * 10000 + (Y) * 100 + (Z))
+
+#ifdef __cplusplus
+#include <memory>
+#include <string>
+#include <unordered_map>
+extern "C" {
+#endif
+
+#include <limits.h>
+#include <stdint.h>
+#define NCCL_COMM_DESCRIPTION // used for nccl-pg to set it https://fburl.com/code/th293cmh
+#define NCCL_COMM_SPLIT_GROUP_RANKS_SUPPORTED
+#define NCCL_ALLTOALLV_SUPPORTED
+#define NCCL_ALLTOALLV_DYNAMIC_SUPPORTED
+#define NCCL_ALLTOALLV_DEDUP_SUPPORTED
+#define NCCL_ALLTOALL_SUPPORTED
+#define NCCL_PERSISTENT_COLL_SUPPORTED
+#define NCCL_COMM_ALGO_CONTROL_SUPPORTED
+#define NCCL_COMM_DUMP
+#define NCCL_COMM_GET_UNIQUE_HASH
+#define NCCL_COLLTRACE_CUDA_GRAPH_COMPATIBLE
+
+/* Opaque handle to communicator */
+typedef struct ncclComm* ncclComm_t;
+typedef struct ncclWindow_vidmem* ncclWindow_t;
+// TODO: ncclWin_t is needed only for old code path before the NCCLX PG is deprecated,
+// we will remove it once the PG is deprecated.
+typedef ncclWindow_t ncclWin_t;
+#define NCCL_COMM_NULL NULL
+extern ncclComm_t ncclCommWorld;
+#define NCCL_COMM_WORLD ncclCommWorld
+
+#define NCCL_UNIQUE_ID_BYTES 128
+typedef struct ncclUniqueId { char internal[NCCL_UNIQUE_ID_BYTES] = {0};} ncclUniqueId;
+
+#define NCCL_RMA_SUPPORTED
+typedef enum {
+  ncclWinAccessUnified = 0,
+  ncclWinAccessSeparate = 1,
+} ncclWinAccessType;
+typedef struct {
+  // attributes of the window
+  ncclWinAccessType accessType;
+} ncclWinAttr;
+typedef ncclWinAttr* ncclWinAttr_t;
+
+/* Error type */
+typedef enum { ncclSuccess                 =  0,
+               ncclUnhandledCudaError      =  1,
+               ncclSystemError             =  2,
+               ncclInternalError           =  3,
+               ncclInvalidArgument         =  4,
+               ncclInvalidUsage            =  5,
+               ncclRemoteError             =  6,
+               ncclInProgress              =  7,
+               ncclNumResults              =  8 } ncclResult_t;
+
+#define NCCL_CONFIG_UNDEF_INT INT_MIN
+#define NCCL_CONFIG_UNDEF_PTR NULL
+#define NCCL_SPLIT_NOCOLOR -1
+#define NCCL_UNDEF_FLOAT -1.0f
+
+/* Window Registration flags */
+#define NCCL_WIN_DEFAULT 0x00
+#define NCCL_WIN_COLL_SYMMETRIC 0x01
+
+#define NCCL_WIN_REQUIRED_ALIGNMENT 4096
+
+/* NCCL performance policy */
+#define NCCL_CTA_POLICY_DEFAULT 0x00
+#define NCCL_CTA_POLICY_EFFICIENCY 0x01
+#define NCCL_CTA_POLICY_ZERO 0x02
+
+/* ncclCommShrink flags*/
+#define NCCL_SHRINK_DEFAULT 0x00 /* shrink the parent communicator */
+#define NCCL_SHRINK_ABORT 0x01   /* First, terminate ongoing parent operations, and then shrink the parent communicator */
+
+/* ncclCommRevoke flags */
+#define NCCL_REVOKE_DEFAULT 0x00 /* reserved for future use; must be 0 */
+
+/* ncclConfig initMode */
+#define NCCL_FAST_INIT_MODE_DEFAULT 0x00
+#define NCCL_FAST_INIT_MODE_RING 0x01
+
+/* Communicator configuration. Users can assign value to attributes to specify the
+ * behavior of a communicator. */
+typedef struct ncclConfig_v22800 {
+  /* attributes that users should never touch. */
+  size_t size;
+  unsigned int magic;
+  unsigned int version;
+  /* attributes that users are able to customize. */
+  int blocking;
+  int cgaClusterSize;
+  int minCTAs;
+  int maxCTAs;
+  const char *netName;
+  int splitShare;
+  int trafficClass;
+  const char *commName;
+  int collnetEnable;
+  int CTAPolicy;
+  int shrinkShare;
+  int nvlsCTAs;
+  int nChannelsPerNetPeer;
+  int nvlinkCentricSched;
+
+  //
+  // [NCCLX] Attributes following here are specific to NCCLX
+  //
+
+  // communicator process group information.
+  const char* commDesc{nullptr};
+
+  // commSplit group ranks information
+  int* splitGroupRanks;
+  int splitGroupSize;
+
+  // control allgather algo at comm level
+  const char* ncclAllGatherAlgo{nullptr};
+
+  // control the lazy connect features
+  int lazyConnect{NCCL_CONFIG_UNDEF_INT};
+  int lazySetupChannels{NCCL_CONFIG_UNDEF_INT};
+
+  // control the fast init features
+  int fastInitMode{NCCL_CONFIG_UNDEF_INT};
+} ncclConfig_t;
+
+/* Config initializer must be assigned to initialize config structure when it is created.
+ * Not initialized config will result in NCCL error. */
+#define NCCL_CONFIG_INITIALIZER {                                       \
+  sizeof(ncclConfig_t), /* size */                                      \
+  0xcafebeef,           /* magic */                                     \
+  NCCL_VERSION(NCCL_MAJOR, NCCL_MINOR, NCCL_PATCH), /* version */       \
+  NCCL_CONFIG_UNDEF_INT,                    /* blocking */              \
+  NCCL_CONFIG_UNDEF_INT,                    /* cgaClusterSize */        \
+  NCCL_CONFIG_UNDEF_INT,                    /* minCTAs */               \
+  NCCL_CONFIG_UNDEF_INT,                    /* maxCTAs */               \
+  NCCL_CONFIG_UNDEF_PTR,                    /* netName */               \
+  NCCL_CONFIG_UNDEF_INT,                    /* splitShare */            \
+  NCCL_CONFIG_UNDEF_INT,                    /* trafficClass */          \
+  NCCL_CONFIG_UNDEF_PTR,                    /* commName */              \
+  NCCL_CONFIG_UNDEF_INT,                    /* collnetEnable */         \
+  NCCL_CONFIG_UNDEF_INT,                    /* CTAPolicy */             \
+  NCCL_CONFIG_UNDEF_INT,                    /* shrinkShare */           \
+  NCCL_CONFIG_UNDEF_INT,                    /* nvlsCTAs */              \
+  NCCL_CONFIG_UNDEF_INT,                    /* nChannelsPerNetPeer */   \
+  NCCL_CONFIG_UNDEF_INT,                    /* nvlinkCentricSched */    \
+  NCCL_CONFIG_UNDEF_PTR,                    /* commDesc */              \
+  NCCL_CONFIG_UNDEF_PTR,                    /* splitGroupRanks */       \
+  NCCL_CONFIG_UNDEF_INT,                    /* splitGroupSize */        \
+  NCCL_CONFIG_UNDEF_PTR,                    /* ncclAllGatherAlgo */     \
+  NCCL_CONFIG_UNDEF_INT,                    /* lazyConnect */           \
+  NCCL_CONFIG_UNDEF_INT,                    /* lazySetupChannels */     \
+  NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
+}
+
+/* This struct will be used by ncclGroupSimulateEnd() API to query information about simulation. */
+typedef struct ncclSimInfo_v22200 {
+    size_t size;
+    unsigned int magic;
+    unsigned int version;
+    float estimatedTime;
+} ncclSimInfo_t;
+
+/* NCCL_SIM_INFO_INITIALIZER must be assigned to initialize simInfo structure when it is created.
+ * Not initialized simInfo will result in NCCL error. */
+#define NCCL_SIM_INFO_INITIALIZER {                                         \
+  sizeof(ncclSimInfo_t),                            /* size */              \
+  0x74685283,                                       /* magic */             \
+  NCCL_VERSION(NCCL_MAJOR, NCCL_MINOR, NCCL_PATCH), /* version */           \
+  NCCL_UNDEF_FLOAT                                  /* estimated time */    \
+}
+
+/* NCCL malloc and free function for all types of NCCL optimizations
+ * (e.g. user buffer registration). The actual allocated size might
+ * be larger than requested due to granularity requirement. */
+ncclResult_t  ncclMemAlloc(void** ptr, size_t size);
+ncclResult_t pncclMemAlloc(void** ptr, size_t size);
+
+ncclResult_t  ncclMemFree(void *ptr);
+ncclResult_t pncclMemFree(void *ptr);
+
+/* Return the NCCL_VERSION_CODE of the NCCL library in the supplied integer.
+ * This integer is coded with the MAJOR, MINOR and PATCH level of the
+ * NCCL library
+ */
+ncclResult_t  ncclGetVersion(int *version);
+ncclResult_t pncclGetVersion(int *version);
+
+/* Generates an Id to be used in ncclCommInitRank. ncclGetUniqueId should be
+ * called once and the Id should be distributed to all ranks in the
+ * communicator before calling ncclCommInitRank. */
+ncclResult_t  ncclGetUniqueId(ncclUniqueId* uniqueId);
+ncclResult_t pncclGetUniqueId(ncclUniqueId* uniqueId);
+
+/* Create a new communicator (multi thread/process version) with a configuration
+ * set by users. */
+ncclResult_t  ncclCommInitRankConfig(ncclComm_t* comm, int nranks, ncclUniqueId commId, int rank, ncclConfig_t* config);
+ncclResult_t pncclCommInitRankConfig(ncclComm_t* comm, int nranks, ncclUniqueId commId, int rank, ncclConfig_t* config);
+
+/* Creates a new communicator (multi thread/process version).
+ * rank must be between 0 and nranks-1 and unique within a communicator clique.
+ * Each rank is associated to a CUDA device, which has to be set before calling
+ * ncclCommInitRank.
+ * ncclCommInitRank implicitly syncronizes with other ranks, so it must be
+ * called by different threads/processes or use ncclGroupStart/ncclGroupEnd. */
+ncclResult_t  ncclCommInitRank(ncclComm_t* comm, int nranks, ncclUniqueId commId, int rank);
+ncclResult_t pncclCommInitRank(ncclComm_t* comm, int nranks, ncclUniqueId commId, int rank);
+
+/* Creates a clique of communicators (single process version).
+ * This is a convenience function to create a single-process communicator clique.
+ * Returns an array of ndev newly initialized communicators in comm.
+ * comm should be pre-allocated with size at least ndev*sizeof(ncclComm_t).
+ * If devlist is NULL, the first ndev CUDA devices are used.
+ * Order of devlist defines user-order of processors within the communicator. */
+ncclResult_t  ncclCommInitAll(ncclComm_t* comm, int ndev, const int* devlist);
+ncclResult_t pncclCommInitAll(ncclComm_t* comm, int ndev, const int* devlist);
+
+/* Finalize a communicator. ncclCommFinalize flushes all issued communications,
+ * and marks communicator state as ncclInProgress. The state will change to ncclSuccess
+ * when the communicator is globally quiescent and related resources are freed; then,
+ * calling ncclCommDestroy can locally free the rest of the resources (e.g. communicator
+ * itself) without blocking. */
+ncclResult_t  ncclCommFinalize(ncclComm_t comm);
+ncclResult_t pncclCommFinalize(ncclComm_t comm);
+
+/* Frees local resources associated with communicator object. */
+ncclResult_t  ncclCommDestroy(ncclComm_t comm);
+ncclResult_t pncclCommDestroy(ncclComm_t comm);
+
+/* Frees resources associated with communicator object and aborts any operations
+ * that might still be running on the device. */
+ncclResult_t  ncclCommAbort(ncclComm_t comm);
+ncclResult_t pncclCommAbort(ncclComm_t comm);
+
+/* Revoke a communicator. ncclCommRevoke stops all in-flight operations
+ * and marks communicator state as ncclInProgress. The state will change to ncclSuccess
+ * when the communicator is quiescent; then, management operations (destroy, split,
+ * shrink) can proceed safely. Calling ncclCommFinalize after revoke is invalid.
+ * Additionally, resource sharing via splitShare/shrinkShare is disabled while revoked.
+ * revokeFlags must be NCCL_REVOKE_DEFAULT (0). */
+ncclResult_t  ncclCommRevoke(ncclComm_t comm, int revokeFlags);
+ncclResult_t pncclCommRevoke(ncclComm_t comm, int revokeFlags);
+
+/* Creates one or more communicators from an existing one.
+ * Ranks with the same color will end up in the same communicator.
+ * Within the new communicator, key will be used to order ranks.
+ * NCCL_SPLIT_NOCOLOR as color will indicate the rank will not be part of any group
+ * and will therefore return a NULL communicator.
+ * If config is NULL, the new communicator will inherit the original communicator's
+ * configuration*/
+ncclResult_t  ncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *newcomm, ncclConfig_t* config);
+ncclResult_t pncclCommSplit(ncclComm_t comm, int color, int key, ncclComm_t *newcomm, ncclConfig_t* config);
+
+/* Shrink existing communicator.
+ * Ranks in excludeRanksList will be removed form the existing communicator.
+ * Within the new communicator, ranks will be re-ordered to fill the gap of removed ones.
+ * If config is NULL, the new communicator will inherit the original communicator's configuration
+ * The flag enables NCCL to adapt to various states of the parent communicator, see NCCL_SHRINK flags.*/
+ncclResult_t  ncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeRanksCount, ncclComm_t* newcomm, ncclConfig_t* config, int shrinkFlags);
+ncclResult_t pncclCommShrink(ncclComm_t comm, int* excludeRanksList, int excludeRanksCount, ncclComm_t* newcomm, ncclConfig_t* config, int shrinkFlags);
+
+/* Creates a new communicator (multi thread/process version), similar to ncclCommInitRankConfig.
+ * Allows to use more than one ncclUniqueId (up to one per rank), indicated by nId, to accelerate the init operation.
+ * The number of ncclUniqueIds and their order must be the same for every rank.
+ */
+ncclResult_t ncclCommInitRankScalable(ncclComm_t* newcomm, int nranks, int myrank, int nId, ncclUniqueId* commIds, ncclConfig_t* config);
+ncclResult_t pncclCommInitRankScalable(ncclComm_t* newcomm, int nranks, int myrank, int nId, ncclUniqueId* commIds, ncclConfig_t* config);
+
+/* Returns a string for each error code. */
+const char*  ncclGetErrorString(ncclResult_t result);
+const char* pncclGetErrorString(ncclResult_t result);
+
+/* Returns a human-readable message of the last error that occurred. */
+const char*  ncclGetLastError(ncclComm_t comm);
+const char* pncclGetLastError(ncclComm_t comm);
+
+/* Reload environment variables that determine logging. */
+__attribute__ ((deprecated("ncclResetDebugInit is not supported as part of the NCCL API and will be removed in the future")))
+void  ncclResetDebugInit();
+__attribute__ ((deprecated("pncclResetDebugInit is not supported as part of the NCCL API and will be removed in the future")))
+void pncclResetDebugInit();
+
+/* Checks whether the comm has encountered any asynchronous errors */
+ncclResult_t  ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t *asyncError);
+ncclResult_t pncclCommGetAsyncError(ncclComm_t comm, ncclResult_t *asyncError);
+
+/* Gets the number of ranks in the communicator clique. */
+ncclResult_t  ncclCommCount(const ncclComm_t comm, int* count);
+ncclResult_t pncclCommCount(const ncclComm_t comm, int* count);
+
+/* Returns the cuda device number associated with the communicator. */
+ncclResult_t  ncclCommCuDevice(const ncclComm_t comm, int* device);
+ncclResult_t pncclCommCuDevice(const ncclComm_t comm, int* device);
+
+/* Returns the user-ordered "rank" associated with the communicator. */
+ncclResult_t  ncclCommUserRank(const ncclComm_t comm, int* rank);
+ncclResult_t pncclCommUserRank(const ncclComm_t comm, int* rank);
+
+/* Register CUDA buffer for zero-copy operation */
+ncclResult_t  ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
+ncclResult_t pncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
+
+/* Deregister CUDA buffer */
+ncclResult_t  ncclCommDeregister(const ncclComm_t comm, void* handle);
+ncclResult_t pncclCommDeregister(const ncclComm_t comm, void* handle);
+
+/* Register memory window  */
+ncclResult_t  ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
+ncclResult_t pncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
+
+/* Deregister symmetric memory */
+ncclResult_t  ncclCommWindowDeregister(ncclComm_t comm, ncclWindow_t win);
+ncclResult_t pncclCommWindowDeregister(ncclComm_t comm, ncclWindow_t win);
+
+/* Reduction operation selector */
+typedef enum { ncclNumOps_dummy = 5 } ncclRedOp_dummy_t;
+typedef enum { ncclSum        = 0,
+               ncclProd       = 1,
+               ncclMax        = 2,
+               ncclMin        = 3,
+               ncclAvg        = 4,
+               /* ncclNumOps: The number of built-in ncclRedOp_t values. Also
+                * serves as the least possible value for dynamic ncclRedOp_t's
+                * as constructed by ncclRedOpCreate*** functions. */
+               ncclNumOps     = 5,
+               /* ncclMaxRedOp: The largest valid value for ncclRedOp_t.
+                * It is defined to be the largest signed value (since compilers
+                * are permitted to use signed enums) that won't grow
+                * sizeof(ncclRedOp_t) when compared to previous NCCL versions to
+                * maintain ABI compatibility. */
+               ncclMaxRedOp   = 0x7fffffff>>(32-8*sizeof(ncclRedOp_dummy_t))
+             } ncclRedOp_t;
+
+/* Comparison operation selector */
+typedef enum { ncclCmpEQ = 0, ncclCmpGE = 1, ncclCmpLE = 2, ncclNumCmpOps = 3} ncclCmpOp_t;
+
+/* Data types */
+typedef enum { ncclInt8       = 0, ncclChar       = 0,
+               ncclUint8      = 1,
+               ncclInt32      = 2, ncclInt        = 2,
+               ncclUint32     = 3,
+               ncclInt64      = 4,
+               ncclUint64     = 5,
+               ncclFloat16    = 6, ncclHalf       = 6,
+               ncclFloat32    = 7, ncclFloat      = 7,
+               ncclFloat64    = 8, ncclDouble     = 8,
+               ncclBfloat16   = 9,
+               ncclFloat8e4m3 = 10,
+               ncclFloat8e5m2 = 11,
+               ncclNumTypes   = 12
+} ncclDataType_t;
+
+/* ncclScalarResidence_t: Location and dereferencing logic for scalar arguments. */
+typedef enum {
+  /* ncclScalarDevice: The scalar is in device-visible memory and will be
+   * dereferenced while the collective is running. */
+  ncclScalarDevice = 0,
+
+  /* ncclScalarHostImmediate: The scalar is in host-visible memory and will be
+   * dereferenced before the ncclRedOpCreate***() function returns. */
+  ncclScalarHostImmediate = 1
+} ncclScalarResidence_t;
+
+/*
+ * ncclRedOpCreatePreMulSum
+ *
+ * Creates a new reduction operator which pre-multiplies input values by a given
+ * scalar locally before reducing them with peer values via summation. For use
+ * only with collectives launched against *comm* and *datatype*. The
+ * *residence* argument indicates how/when the memory pointed to by *scalar*
+ * will be dereferenced. Upon return, the newly created operator's handle
+ * is stored in *op*.
+ */
+ncclResult_t  ncclRedOpCreatePreMulSum(ncclRedOp_t *op, void *scalar, ncclDataType_t datatype, ncclScalarResidence_t residence, ncclComm_t comm);
+ncclResult_t pncclRedOpCreatePreMulSum(ncclRedOp_t *op, void *scalar, ncclDataType_t datatype, ncclScalarResidence_t residence, ncclComm_t comm);
+
+/*
+ * ncclRedOpDestroy
+ *
+ * Destroys the reduction operator *op*. The operator must have been created by
+ * ncclRedOpCreatePreMul with the matching communicator *comm*. An operator may be
+ * destroyed as soon as the last NCCL function which is given that operator returns.
+ */
+ncclResult_t ncclRedOpDestroy(ncclRedOp_t op, ncclComm_t comm);
+ncclResult_t pncclRedOpDestroy(ncclRedOp_t op, ncclComm_t comm);
+
+/*
+ * Collective communication operations
+ *
+ * Collective communication operations must be called separately for each
+ * communicator in a communicator clique.
+ *
+ * They return when operations have been enqueued on the CUDA stream.
+ *
+ * Since they may perform inter-CPU synchronization, each call has to be done
+ * from a different thread or process, or need to use Group Semantics (see
+ * below).
+ */
+
+/*
+ * Reduce
+ *
+ * Reduces data arrays of length count in sendbuff into recvbuff using op
+ * operation.
+ * recvbuff may be NULL on all calls except for root device.
+ * root is the rank (not the CUDA device) where data will reside after the
+ * operation is complete.
+ *
+ * In-place operation will happen if sendbuff == recvbuff.
+ */
+ncclResult_t  ncclReduce(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype,
+    ncclRedOp_t op, int root, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclReduce(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype,
+    ncclRedOp_t op, int root, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * All-Reduce-Sparse-block (out-place)
+ *
+ * Reduces data arrays of variable length count in sendbuff using op operation, and
+ * leaves identical copies of result on each recvbuff.
+ *
+ * Arguments:
+ *    IN  sendbuff      - Pointer to sendbuf containing data with block_count * block_length number of elements.
+ *                        Only out-place is supported at this time. Thus sendbuff must be different from recvbuff.
+ *    IN  recvIndices   - List of indices for data blocks in sendbuff. Each index corresponds to the element-wise relative offset of a data block in the recvbuff
+ *    IN  blockCount    - Number of blocks in sendbuff
+ *    IN  blockLength   - Length of each block in sendbuff
+ *    OUT recvbuff      - Pointer to recvbuf that will receive recvcount number of elements
+ *    IN  recvCount     - Number of elements in recvbuff. recvcount must be equal or larger than blockcount * blocklength
+ *    IN  datatype      - Type of each data element
+ *    IN  ncclRedOp_t op - Reduce operation. Only ncclSum is supported at this time.
+ *    IN  ncclComm* comm
+ *    IN  cudaStream_t stream
+ *
+ * Example:
+ * INPUT:
+ *    rank0: sendbuff = [1,1,  2,2,  3,3               6,6,    7,7], recv_indices= [0,2,4,10,12], block_count=5, block_length=2, recv_count=14
+ *    rank1: sendbuff = [      2,2,  3,3,        5,5,  6,6],         recv_indices= [2,4,8,10], block_count=4, block_length=2, recv_count=14
+ *    rank2: sendbuff = [1,1,        3,3   4,4,        6,6],         recv_indices= [0,4,6,10], block_count=4, block_length=2, recv_count=14
+ *    rank3: sendbuff = [1,1,  2,2,  3,3,  4,4,  5,5,  6,6,    7,7], recv_indices= [0,2,4,6,8,10,12], block_count=7, block_length=2, recv_count=14
+ * OUTPUT:
+ *    rank0: recvbuff = [3,3,  6,6,  12,12, 8,8, 10,10, 24,24, 14,14]
+ *    rank1: recvbuff = [3,3,  6,6,  12,12, 8,8, 10,10, 24,24, 14,14]
+ *    rank2: recvbuff = [3,3,  6,6,  12,12, 8,8, 10,10, 24,24, 14,14]
+ *    rank3: recvbuff = [3,3,  6,6,  12,12, 8,8, 10,10, 24,24, 14,14]
+ */
+ncclResult_t  ncclAllReduceSparseBlock(const void* sendbuff, const int64_t* recvIndices, size_t blockCount,
+    size_t blockLength, void* recvbuff, size_t recvCount, ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t  pncclAllReduceSparseBlock(const void* sendbuff, const int64_t* recvIndices, size_t blockCount,
+    size_t blockLength, void* recvbuff, size_t recvCount, ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * (deprecated) Broadcast (in-place)
+ *
+ * Copies count values from root to all other devices.
+ * root is the rank (not the CUDA device) where data resides before the
+ * operation is started.
+ *
+ * This operation is implicitely in place.
+ */
+ncclResult_t  ncclBcast(void* buff, size_t count, ncclDataType_t datatype, int root,
+    ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclBcast(void* buff, size_t count, ncclDataType_t datatype, int root,
+    ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Broadcast
+ *
+ * Copies count values from root to all other devices.
+ * root is the rank (not the CUDA device) where data resides before the
+ * operation is started.
+ *
+ * In-place operation will happen if sendbuff == recvbuff.
+ */
+ncclResult_t  ncclBroadcast(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype, int root,
+    ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclBroadcast(const void* sendbuff, void* recvbuff, size_t count, ncclDataType_t datatype, int root,
+    ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * All-Reduce
+ *
+ * Reduces data arrays of length count in sendbuff using op operation, and
+ * leaves identical copies of result on each recvbuff.
+ *
+ * In-place operation will happen if sendbuff == recvbuff.
+ */
+ncclResult_t  ncclAllReduce(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclAllReduce(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Reduce-Scatter
+ *
+ * Reduces data in sendbuff using op operation and leaves reduced result
+ * scattered over the devices so that recvbuff on rank i will contain the i-th
+ * block of the result.
+ * Assumes sendcount is equal to nranks*recvcount, which means that sendbuff
+ * should have a size of at least nranks*recvcount elements.
+ *
+ * In-place operations will happen if recvbuff == sendbuff + rank * recvcount.
+ */
+ncclResult_t  ncclReduceScatter(const void* sendbuff, void* recvbuff,
+    size_t recvcount, ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm,
+    cudaStream_t stream);
+ncclResult_t pncclReduceScatter(const void* sendbuff, void* recvbuff,
+    size_t recvcount, ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm,
+    cudaStream_t stream);
+
+/*
+ * All-Gather
+ *
+ * Each device gathers sendcount values from other GPUs into recvbuff,
+ * receiving data from rank i at offset i*sendcount.
+ * Assumes recvcount is equal to nranks*sendcount, which means that recvbuff
+ * should have a size of at least nranks*sendcount elements.
+ *
+ * In-place operations will happen if sendbuff == recvbuff + rank * sendcount.
+ */
+ncclResult_t  ncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcount,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclAllGather(const void* sendbuff, void* recvbuff, size_t sendcount,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * [NCCLX] All-To-Allv
+ * Device (i) sends sendcounts[j] of data from offset sdispls[j] to device (j).
+ * At the same time, device (i) receives recvcounts[j] of data from device (j)
+ * to be placed at rdispls[j]. sendcounts, sdispls, recvcounts and rdispls are
+ * all measured in the units of datatype, not bytes. Only out-of-place operation
+ * is allowed (i.e., sendbuff != recvbuff).
+ * Arguments:
+ *    IN  sendbuff    - Data array to send (contains blocks for each other rank)
+ *    IN  sendcounts  - Length of each block in sendbuff
+ *    IN  sdispls     - Offsets into sendbuff for each participating rank
+ *    OUT recvbuff    - Pointer to recvbuf that will receive blocks from other ranks
+ *    IN  recvcounts  - Length of each block in recvbuff
+ *    IN  rdispls     - Offsets into recvbuff for each participating rank
+ *    IN  datatype      - Type of each data element
+ *    IN  ncclComm* comm
+ *    IN  cudaStream_t stream
+ */
+ncclResult_t  ncclAllToAllv(const void *sendbuff, const size_t sendcounts[],
+    const size_t sdispls[], void *recvbuff, const size_t recvcounts[],
+    const size_t rdispls[], ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclAllToAllv(const void *sendbuff, const size_t sendcounts[],
+    const size_t sdispls[], void *recvbuff, const size_t recvcounts[],
+    const size_t rdispls[], ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * [NCCLX] All-To-All
+ * Device (i) sends count of data from offset sendbuff+count*j to device (j).
+ * At the same time, device (i) receives count of data from device (j)
+ * to be placed at recvbuff+count*j. Only out-of-place operation is allowed
+ * (i.e., sendbuff != recvbuff).
+ * Arguments:
+ *    IN  sendbuff    - Pointer to sendbuf
+ *    OUT recvbuff    - Pointer to recvbuf
+ *    IN  count       - count of elements to send to (receive from) each rank
+ *    IN  datatype      - Type of each data element
+ *    IN  ncclComm* comm
+ *    IN  cudaStream_t stream
+ */
+ncclResult_t  ncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t  pncclAllToAll(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * All-to-All
+ *
+ * Each device sends count values to all other devices and receives count values
+ * from all other devices. Data to send to destination rank j is taken from
+ * sendbuff+j*count and data received from source rank i is placed at
+ * recvbuff+i*count.
+ */
+ncclResult_t  ncclAlltoAll(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclAlltoAll(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Gather
+ *
+ * Each rank sends count elements from sendbuff to the root rank.
+ * On the root rank, data from rank i is placed at recvbuff + i*count.
+ * On non-root ranks, recvbuff is not used.
+ * root is the rank where data will be gathered.
+ *
+ * In-place operations will happen if sendbuff == recvbuff + root * count.
+ */
+ncclResult_t  ncclGather(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, int root, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclGather(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, int root, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Scatter
+ *
+ * On the root rank, count elements from sendbuff+i*count are sent to rank i.
+ * On non-root ranks, sendbuff is not used.
+ * Each rank receives count elements into recvbuff.
+ * root is the rank that will distribute the data.
+ *
+ * In-place operations will happen if recvbuff == sendbuff + root * count.
+ */
+ncclResult_t  ncclScatter(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, int root, ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclScatter(const void* sendbuff, void* recvbuff, size_t count,
+    ncclDataType_t datatype, int root, ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Send
+ *
+ * Send data from sendbuff to rank peer.
+ *
+ * Rank peer needs to call ncclRecv with the same datatype and the same count from this
+ * rank.
+ *
+ * This operation is blocking for the GPU. If multiple ncclSend and ncclRecv operations
+ * need to progress concurrently to complete, they must be fused within a ncclGroupStart/
+ * ncclGroupEnd section.
+ */
+ncclResult_t  ncclSend(const void* sendbuff, size_t count, ncclDataType_t datatype, int peer,
+    ncclComm_t comm, cudaStream_t stream);
+ncclResult_t pncclSend(const void* sendbuff, size_t count, ncclDataType_t datatype, int peer,
+    ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Receive
+ *
+ * Receive data from rank peer into recvbuff.
+ *
+ * Rank peer needs to call ncclSend with the same datatype and the same count to this
+ * rank.
+ *
+ * This operation is blocking for the GPU. If multiple ncclSend and ncclRecv operations
+ * need to progress concurrently to complete, they must be fused within a ncclGroupStart/
+ * ncclGroupEnd section.
+ */
+ncclResult_t pncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int peer,
+    ncclComm_t comm, cudaStream_t stream);
+ncclResult_t  ncclRecv(void* recvbuff, size_t count, ncclDataType_t datatype, int peer,
+    ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Group semantics
+ *
+ * When managing multiple GPUs from a single thread, and since NCCL collective
+ * calls may perform inter-CPU synchronization, we need to "group" calls for
+ * different ranks/devices into a single call.
+ *
+ * Grouping NCCL calls as being part of the same collective operation is done
+ * using ncclGroupStart and ncclGroupEnd. ncclGroupStart will enqueue all
+ * collective calls until the ncclGroupEnd call, which will wait for all calls
+ * to be complete. Note that for collective communication, ncclGroupEnd only
+ * guarantees that the operations are enqueued on the streams, not that
+ * the operation is effectively done.
+ *
+ * Both collective communication and ncclCommInitRank can be used in conjunction
+ * of ncclGroupStart/ncclGroupEnd, but not together.
+ *
+ * Group semantics also allow to fuse multiple operations on the same device
+ * to improve performance (for aggregated collective calls), or to permit
+ * concurrent progress of multiple send/receive operations.
+ */
+
+/*
+ * Group Start
+ *
+ * Start a group call. All calls to NCCL until ncclGroupEnd will be fused into
+ * a single NCCL operation. Nothing will be started on the CUDA stream until
+ * ncclGroupEnd.
+ */
+ncclResult_t  ncclGroupStart();
+ncclResult_t pncclGroupStart();
+
+/*
+ * Group End
+ *
+ * End a group call. Start a fused NCCL operation consisting of all calls since
+ * ncclGroupStart. Operations on the CUDA stream depending on the NCCL operations
+ * need to be called after ncclGroupEnd.
+ */
+ncclResult_t  ncclGroupEnd();
+ncclResult_t pncclGroupEnd();
+
+/*
+ * Group Simulate End
+ *
+ * Simulate a ncclGroupEnd() call and return NCCL's simulation info in a struct.
+ */
+ncclResult_t  ncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
+ncclResult_t pncclGroupSimulateEnd(ncclSimInfo_t* simInfo);
+
+#ifdef __cplusplus
+namespace ncclx {
+typedef std::unordered_map<std::string, std::string> kvType;
+/*
+* NCCL hints object - Allows us to set hints (key, value) in the form
+* of strings, to be used by other operations.
+*/
+class Hints {
+    public:
+        Hints();
+        ncclResult_t set(const std::string& key, const std::string& val);
+        ncclResult_t get(const std::string& key, std::string& val) const;
+
+    private:
+        kvType kv;
+};
+} // namespace ncclx
+
+#endif
+
+/*
+ * Window Allocattion
+ *
+ * Create a window object for one-sided communication
+ * and shared memory access for GPUs on the same NVLink
+ * domain. It allocates memory at each rank in the
+ * communicator
+* Accepted hints:
+ *   window_buffer_location: {cpu, gpu} (default: gpu)
+ *   --- indicating the location of the allocated window buffers.
+ */
+// TODO: ncclWinAllocate APIs are needed only before the NCCLX PG is deprecated,
+// we will remove them once the PG is deprecated.
+__attribute__((deprecated("Use ncclCommWindowRegister instead")))
+ncclResult_t  ncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWindow_t* win, const ncclx::Hints& hints = ncclx::Hints());
+__attribute__((deprecated("Use ncclCommWindowRegister instead")))
+ncclResult_t pncclWinAllocate(size_t size, ncclComm_t comm, void **baseptr, ncclWindow_t* win, const ncclx::Hints& hints = ncclx::Hints());
+
+
+/*
+ * Query the address of the shared memory on remote peer
+ */
+/*
+ * Query the address of the shared memory on remote peer
+ */
+ncclResult_t  ncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
+ncclResult_t pncclWinSharedQuery(int rank, ncclComm_t comm, ncclWindow_t win, void **addr);
+
+
+/*
+ * Query the window attributes
+ */
+ncclResult_t ncclWinGetAttributes(int rank, ncclWindow_t win, ncclWinAttr_t* attr);
+
+/*
+ * Free the window object and free the allocated memory
+ */
+// TODO: ncclWinFree APIs are needed only before the NCCLX PG is deprecated,
+// we will remove them once the PG is deprecated.
+__attribute__((deprecated("Use ncclCommWindowDeregister instead")))
+ncclResult_t  ncclWinFree(ncclComm_t comm, ncclWindow_t win);
+__attribute__((deprecated("Use ncclCommWindowDeregister instead")))
+ncclResult_t pncclWinFree(ncclComm_t comm, ncclWindow_t win);
+
+/*
+ * One-side put operation from a local buffer to a remote peer's pre-allocated
+ * and registered buffer within a NCCL window.
+ */
+ncclResult_t ncclPutSignal(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+ncclResult_t pncclPutSignal(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+// TODO: ncclPutSignal_v2 will be removed once the PG is deprecated.
+__attribute__((deprecated("Use ncclPutSignal instead")))
+ncclResult_t ncclPutSignal_v2(
+    const void* originBuff,
+    size_t targetDisp,
+    size_t count,
+    ncclDataType_t datatype,
+    size_t signalDisp,
+    uint64_t signalVal,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+/*
+ * One-side put operation from a local buffer to a remote peer's pre-allocated
+ * and registered buffer within a NCCL window. Without signaling.
+ */
+ ncclResult_t ncclPut(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+/*
+ * One-side get operation from a remote peer's pre-allocated and registered buffer
+ * to a local buffer within a NCCL window. Without signaling.
+ */
+ ncclResult_t ncclGet(
+    void* targetBuff,
+    size_t targetDisp,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+/*
+ * Wait for a signal from remote peer to complete the put operation.
+ */
+ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
+ncclResult_t pncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
+
+/*
+ * Wait for a signal given the local signal displacement, the signal value, and the comparison op.
+ */
+// TODO: ncclWaitSignal_v2 will be removed once the PG is deprecated.
+__attribute__((deprecated("Use ncclWaitSignal instead")))
+ncclResult_t ncclWaitSignal_v2(
+    size_t signalDisp,
+    uint64_t cmpVal,
+    ncclCmpOp_t cmpOp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+ncclResult_t ncclSignal(
+    size_t signalDisp,
+    uint64_t signalVal,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream
+);
+
+/* Return the unique hash of the communicator.
+ * For all ranks in a given communicator, this hash will be the same.
+ */
+ncclResult_t  ncclCommGetUniqueHash(ncclComm_t comm, uint64_t* uniqueHash);
+ncclResult_t  pncclCommGetUniqueHash(ncclComm_t comm, uint64_t* uniqueHash);
+
+#ifdef __cplusplus
+} // end extern "C"
+#endif
+
+#ifdef __cplusplus
+#define NCCL_COMM_DUMP
+#define NCCL_COMM_DUMP_ALL
+
+#include <unordered_map>
+#include <string>
+/* Dump NCCL current internal state for a given communicator in a key-value store format.
+ * define outside extern "C"{} to pass C++ template */
+ncclResult_t  ncclCommDump(ncclComm_t comm, std::unordered_map<std::string, std::string>& map);
+
+/* Dump NCCL current internal state for all the communicators.
+ * The returned map is in the format {commHash: {key: value}} where
+ * {key: value} is the result of ncclCommDump in the communicator with hash commHash.
+ */
+ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<std::string, std::string>>& map);
+
+#define NCCL_HAS_COMMS_TRACING_SERVICE_PORT
+ncclResult_t ncclCommsTracingServicePort(int& port);
+
+namespace ncclx {
+
+/*
+ * All-To-Allv Dynamic
+ * Device (i) sends scounts[j] of data from sbuf[j] to device (j).
+ * At the same time, device (i) receives rcounts[j] of data from device (j)
+ * to be placed at rbuf[j]. scounts and rcounts are
+ * measured in the units of datatype, not bytes. Only out-of-place operation
+ * is allowed (i.e., sbufs and rbufs cannot overlap).
+ * Arguments:
+ *    IN  sbufs       - Data array to send (contains blocks for each other rank)
+ *    IN  scounts     - Length of each block in sbuf
+ *    OUT rbufs       - Data array to receive (contains blocks for each other rank)
+ *    IN  max_rcounts - Max length of each block in rbuf
+ *    OUT actual_rcounts - Actual length of each block in rbuf
+ *    IN  hints       - Hints for performance
+ *    IN  datatype    - Type of each data element
+ *    IN  comm
+ *    IN  stream
+ *
+ * Accepted hints:
+ *   ncclx_alltoallv_dynamic_sendbuffs_contig: {true, false} (default: false)
+ *   --- indicating whether all sendbuffs are part of a single contiguous memory allocation.
+ *   ncclx_alltoallv_dynamic_recvbuffs_contig: {true, false} (default: false)
+ *   --- indicating whether all recvbuffs are part of a single contiguous memory allocation.
+ *   ncclx_alltoallv_dynamic_sendbuffs_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of the pointers of sendbuffs (not the location of each sendbuff).
+ *   ncclx_alltoallv_dynamic_sendcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of sendcounts.
+ *   ncclx_alltoallv_dynamic_recvbuffs_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of the pointers of recvbuffs (not the location of each recvbuff).
+ *   ncclx_alltoallv_dynamic_max_sendcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of maxSendcounts.
+ *   ncclx_alltoallv_dynamic_max_recvcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of maxRecvcounts.
+ *   ncclx_alltoallv_dynamic_actual_recvcounts_location: {cpu, gpu, auto} (default: auto)
+ *   --- indicating the location of actualRecvcounts.
+ */
+ncclResult_t alltoallvDynamic(const void * const* sendbuffs, const size_t* sendcounts, void * const* recvbuffs,
+    size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts,
+    const Hints& hints, ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+ncclResult_t alltoallvDynamicSplit(const void* sendbuff, const size_t* sendSplitLengths, void* const* recvbuffs,
+    size_t maxSendcount, size_t maxRecvcount, size_t* actualRecvcounts, const ncclx::Hints& hints,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+ncclResult_t alltoallvDynamicSplitNonContig( const void* sendbuff, const size_t* sendSplitLengths,
+    size_t numSendSplitLengths, const size_t* sendIndices, const size_t* sendIndicesBlockLengths, void* const* recvbuffs,
+    size_t* recvAllSplitLengths, size_t* recvIndices, size_t* recvIndicesBlockLengths, size_t maxSendcount,
+    size_t maxRecvcount, const ncclx::Hints& hints, ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+ncclResult_t alltoallvDynamicDispatch( const void* sendbuff, const size_t* sendSplitLengths,
+    size_t numSendSplitLengths, const size_t* sendIndices, const size_t* sendIndicesBlockLengths, void* const* recvbuffs,
+    size_t* recvAllSplitLengths, size_t maxSendcount, size_t maxRecvcount, const ncclx::Hints& hints,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream);
+
+ncclResult_t alltoallvDynamicCombine( const void* sendbuff, const size_t* sendSplitLengths,
+    size_t numSendSplitLengths, const size_t* sendIndices, const size_t* sendIndicesBlockLengths, void* recvbuff,
+    size_t maxSendcount, size_t maxRecvcount, const ncclx::Hints& hints, ncclDataType_t datatype,
+    ncclComm_t comm, cudaStream_t stream);
+
+/*
+ * Persistent All-Gather similar to ncclAllgather, the key difference is that
+ * the execution will be deferred until allGatherExec is called
+ * Arguments:
+ *    OUT recvbuff     - Pointer to recvbuf that will receive blocks from other ranks
+ *    IN  maxRecvCount - Count of elements of recvbuff
+ *    IN  hints        - Hints for skipping control msg
+ *    IN  datatype     - NCCL data type
+ *    IN  comm         - NCCL communicator
+ *    IN  stream       - CUDA stream
+ *    OUT request      - Request to be used in ncclCommExec to trigger the execution
+ */
+ncclResult_t allGatherInit(void* recvbuff, const size_t maxRecvCount, const Hints& hints,
+    ncclDataType_t datatype, ncclComm_t comm, cudaStream_t stream, void** request);
+
+
+/* Execute the persistent collective operation created by ncclAllGatherInit.
+ * Arguments:
+ *    IN  sendbuff    - Pointer to sendbuf
+ *    IN  count       - count of elements to send to (receive from) each rank
+ *    IN  datatype    - NCCL data type used for the allgather execution. It may be different
+ *                      from the datatype used in ncclAllGatherInit.
+ *    IN  stream      - CUDA stream
+ *    IN  request     - Request created by ncclAllGatherInit
+ */
+ncclResult_t allGatherExec(
+    const void* sendbuff,
+    const size_t count,
+    const ncclDataType_t datatype,
+    void* request);
+
+ncclResult_t allToAllvDedupInit(
+    const size_t totalNumSendBlocks, // number of blocks (tokens) per batch
+    const size_t blockCount, // number of elements per block (token)
+    const size_t blockNumRecvBuckets, // number of receiving buckets for each
+                                      // block (experts per token, topK)
+    const int numRecvBuckets, // number of receiving buckets per rank (expert
+                              // per rank)
+    const ncclx::Hints& hints,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    void** request);
+
+ncclResult_t allToAllvDedupExec(
+    const void* sendBuff,
+    const int* sendIdx,
+    const int* fwdIdx,
+    const int* recvIdx,
+    void* recvBuff,
+    int recvBlockIds[],
+    void* request);
+
+/*
+ * Trigger the execution of a request of persistent collective operation
+ * created by ncclAllGatherInit or ncclAllToAllDedupInit
+ */
+ncclResult_t pExec(void* request);
+
+/*
+ * Persistent AllToAll similar to ncclAllToAll, the key difference is that
+ * AllToAllP requires user to stick with the same recvbuff so that NCCL can exchange
+ * recvbuff and hdl once and skip control msg in the future.
+ * Arguments:
+ *    IN  recvbuff       - Pointer to recvbuf that will receive blocks from other ranks
+ *    IN  maxRecvCount   - Max count of elements recved from all ranks
+ *    IN  hints          - Hints for skipping control msg
+ *    IN  datatype       - NCCL data type
+ *    IN  comm           - NCCL communicator
+ *    IN  stream         - CUDA stream
+ *    OUT request        - Request to be used in ncclCommExec to trigger the execution
+ */
+ncclResult_t AllToAllInit(
+    void* recvbuff,
+    const size_t maxRecvCount,
+    const Hints& hints,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    cudaStream_t stream,
+    void*& request);
+
+/*
+ * Trigger the execution of a request of persistent collective operation
+ * created by AllToAllInit.
+ */
+ncclResult_t AllToAllExec(
+    const void* sendbuff,
+    const size_t count,
+    void* request);
+
+/*
+ * Free the Persistent collective request
+ */
+ncclResult_t  pFree(void* request);
+
+std::shared_ptr<const std::unordered_map<std::string, std::string>> getNcclxInfo();
+
+// Set up hints that are supposed to be global to all NCCL communicators. How
+// exactly the hints are used and what will happen if the hints are set after
+// initialization depends on the receiver of the hints.
+ncclResult_t setGlobalHint(std::string key, std::string val);
+
+} // namespace ncclx
+
+#else
+#warning "NCCL C++ API is disabled because C compiler is being used. Please use a C++ compiler to build NCCL."
+#endif
+
+
+#endif // end include guard

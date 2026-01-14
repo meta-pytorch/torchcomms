@@ -1439,6 +1439,136 @@ TEST_F(TorchCommNCCLXTest, AlltoallvDedupExecCombine) {
   setupNormalDestruction(*comm);
   comm->finalize();
 }
+
+// ============================================================================
+// NCCLException TESTS
+// ============================================================================
+
+TEST_F(TorchCommNCCLXTest, NCCLExceptionIncludesLastErrorString) {
+  // Test that NCCLException message includes the NCCL last error string
+  // from getLastError() API
+
+  nccl_mock_->setupDefaultBehaviors();
+
+  // Set up specific return values for error strings
+  const std::string error_string = "internal error";
+  const std::string last_error_string = "Detailed NCCL error: rank 0 timed out";
+
+  EXPECT_CALL(*nccl_mock_, getErrorString(ncclInternalError))
+      .WillOnce(Return(error_string.c_str()));
+  EXPECT_CALL(*nccl_mock_, getLastError(_)).WillOnce(Return(last_error_string));
+
+  // Create the exception
+  ncclComm_t mock_comm = reinterpret_cast<ncclComm_t>(0x3000);
+  NCCLException exception(
+      *nccl_mock_, "Test operation failed", ncclInternalError, mock_comm);
+
+  // Verify the exception message contains both the error string and last error
+  std::string what_message = exception.what();
+  EXPECT_TRUE(what_message.find("Test operation failed") != std::string::npos)
+      << "Exception message should contain the operation message";
+  EXPECT_TRUE(what_message.find(error_string) != std::string::npos)
+      << "Exception message should contain the NCCL error string";
+  EXPECT_TRUE(what_message.find(last_error_string) != std::string::npos)
+      << "Exception message should contain the NCCL last error string";
+  EXPECT_TRUE(what_message.find("NCCL Last Error:") != std::string::npos)
+      << "Exception message should contain 'NCCL Last Error:' label";
+
+  // Verify the result code is preserved
+  EXPECT_EQ(exception.getResult(), ncclInternalError);
+}
+
+TEST_F(TorchCommNCCLXTest, NCCLExceptionFromFailedSendIncludesLastError) {
+  // Test that when send() fails, the thrown NCCLException includes
+  // the NCCL last error string
+  setupRankAndSize(0, 2);
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  comm->init(*device_, "test_name", default_options_);
+
+  auto tensor = createTestTensor({10, 10});
+
+  // Set up send to fail with ncclInternalError
+  const std::string last_error_detail =
+      "Connection to peer 1 failed: timeout after 30s";
+  EXPECT_CALL(*nccl_mock_, send(_, _, _, _, _, _))
+      .WillOnce(Return(ncclInternalError));
+  EXPECT_CALL(*nccl_mock_, getErrorString(ncclInternalError))
+      .WillRepeatedly(Return("internal error"));
+  EXPECT_CALL(*nccl_mock_, getLastError(_)).WillOnce(Return(last_error_detail));
+
+  // Attempt send and verify the exception message
+  EXPECT_THROW(
+      {
+        try {
+          comm->send(tensor, 1, false);
+        } catch (const NCCLException& e) {
+          std::string what_message = e.what();
+          EXPECT_TRUE(
+              what_message.find("NCCL Send failed") != std::string::npos)
+              << "Exception should mention the failed operation";
+          EXPECT_TRUE(what_message.find(last_error_detail) != std::string::npos)
+              << "Exception should include the NCCL last error detail: "
+              << what_message;
+          EXPECT_EQ(e.getResult(), ncclInternalError);
+          throw;
+        }
+      },
+      NCCLException);
+
+  comm->finalize();
+}
+
+TEST_F(TorchCommNCCLXTest, NCCLExceptionFromFailedAllReduceIncludesLastError) {
+  // Test that when all_reduce() fails, the thrown NCCLException includes
+  // the NCCL last error string
+  setupRankAndSize(0, 2);
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  comm->init(*device_, "test_name", default_options_);
+
+  auto tensor = createTestTensor({10, 10});
+
+  // Set up allReduce to fail with ncclSystemError
+  const std::string last_error_detail = "CUDA error: out of memory on device 0";
+  EXPECT_CALL(*nccl_mock_, allReduce(_, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSystemError));
+  EXPECT_CALL(*nccl_mock_, getErrorString(ncclSystemError))
+      .WillRepeatedly(Return("system error"));
+  EXPECT_CALL(*nccl_mock_, getLastError(_)).WillOnce(Return(last_error_detail));
+
+  // Attempt all_reduce and verify the exception message
+  EXPECT_THROW(
+      {
+        try {
+          comm->all_reduce(tensor, ReduceOp::SUM, false);
+        } catch (const NCCLException& e) {
+          std::string what_message = e.what();
+          EXPECT_TRUE(
+              what_message.find("NCCL AllReduce failed") != std::string::npos)
+              << "Exception should mention the failed operation";
+          EXPECT_TRUE(what_message.find(last_error_detail) != std::string::npos)
+              << "Exception should include the NCCL last error detail: "
+              << what_message;
+          EXPECT_EQ(e.getResult(), ncclSystemError);
+          throw;
+        }
+      },
+      NCCLException);
+
+  comm->finalize();
+}
+
 } // namespace test
 } // namespace comms
 } // namespace torch
