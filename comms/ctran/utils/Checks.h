@@ -538,11 +538,16 @@
     }                                             \
   } while (0);
 
+// Note: when writing code within comms/ctran, prefer FB_CHECKTHROW_EX
+// and FB_CHECKTHROW_EX_NOCOMM to FB_CHECKTHROW.
+//
+// TODO(T250693645): Move this macro definition outside of ctran directory.
 #define FB_CHECKTHROW(statement, ...)                                          \
   do {                                                                         \
     if (!(statement)) {                                                        \
-      CLOGF(                                                                   \
-          ERR, "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__)); \
+      auto errorMsg =                                                          \
+          fmt::format("Check failed: {} - {}", #statement, __VA_ARGS__);       \
+      CLOGF(ERR, errorMsg);                                                    \
       throw std::runtime_error(                                                \
           fmt::format(                                                         \
               "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__))); \
@@ -592,6 +597,17 @@
       UNUSED_PLACEHOLDER_3_ARGS, \
       FB_CHECKTHROW_EX_LOGDATA,  \
       UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
+
+// For contexts where rank/commHash/commDesc are not available.
+#define FB_CHECKTHROW_EX_NOCOMM(statement, ...)                          \
+  do {                                                                   \
+    if (!(statement)) {                                                  \
+      auto errorMsg =                                                    \
+          fmt::format("Check failed: {} - {}", #statement, __VA_ARGS__); \
+      CLOGF(ERR, errorMsg);                                              \
+      throw ctran::utils::Exception(errorMsg, commInternalError);        \
+    }                                                                    \
+  } while (0)
 
 #define FB_COMMWAIT(call, cond, abortFlagPtr)             \
   do {                                                    \

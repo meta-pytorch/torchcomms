@@ -603,7 +603,8 @@ inline commResult_t completeHostResourceSetup(
 
 static commResult_t impl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
-  FB_CHECKTHROW(opGroup.size() == 1, "ctring opGroup expected exactly one op");
+  FB_CHECKTHROW_EX_NOCOMM(
+      opGroup.size() == 1, "ctring opGroup expected exactly one op");
   struct OpElem* op = opGroup.front().get();
   CtranComm* comm = opGroup.front()->comm_;
   CtranAlgoLogger logger(allReduceAlgoName(myAlgo), op->opCount, comm);
