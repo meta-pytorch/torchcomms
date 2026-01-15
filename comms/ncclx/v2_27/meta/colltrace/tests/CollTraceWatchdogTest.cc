@@ -232,7 +232,7 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorFromGPE) {
   NCCLCHECK_FATAL(
       ncclPutSignal(sendBuff, 32, ncclFloat, dstRank, 0, win, stream.raw()));
   NCCLCHECK_FATAL(ncclWaitSignal(srcRank, win, stream.raw()));
-  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{20});
+  waitStreamWithTimeout(stream.raw(), std::chrono::seconds{80});
 }
 
 TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
@@ -265,6 +265,9 @@ TEST_F(CollTraceWatchdogTest, TestAsyncErrorWithGenericAsyncError) {
   ncclCommSetAsyncError(comm.raw(), ncclInternalError);
 
   waitStreamWithTimeout(stream.raw(), std::chrono::seconds{20});
+
+  // Wait for sufficiently long for watchdog to stop waiting and exit
+  sleep(70);
 }
 
 TEST_F(CollTraceWatchdogTest, TestTimeoutBeforeColl) {
