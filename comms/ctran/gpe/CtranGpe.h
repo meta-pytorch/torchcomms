@@ -320,6 +320,11 @@ struct KernelConfig {
   const uint64_t opCount;
   bool isDevice{true};
 
+  // Experimental: allows one-sided communication, such as signal/waitSignal and
+  // scatterSignal/multiWaitSignal, to run in parallel when launched in a single
+  // GPE thread.
+  bool canConcurrent{false};
+
  public:
   KernelConfig(
       enum KernelType type,

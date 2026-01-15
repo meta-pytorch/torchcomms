@@ -259,6 +259,7 @@ commResult_t ctranPutSignal(
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::PUTSIGNAL, stream, "PutSignal", putOpCount);
   config.args.devState_d = comm->ctran_->algo->getDevState();
+  config.canConcurrent = true;
 
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   opGroup.clear();
@@ -393,6 +394,7 @@ static commResult_t waitSignalSpinningKernel(
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::WAITSIGNAL, stream, "WaitSignal", waitOpCount);
   config.args.devState_d = comm->ctran_->algo->getDevState();
+  config.canConcurrent = true;
 
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   opGroup.clear();
@@ -453,6 +455,7 @@ commResult_t ctranSignal(int peer, CtranWin* win, cudaStream_t stream) {
   KernelConfig config = KernelConfig(
       KernelConfig::KernelType::SIGNAL, stream, "Signal", sigOpCount);
   config.args.devState_d = comm->ctran_->algo->getDevState();
+  config.canConcurrent = true;
 
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   opGroup.clear();
