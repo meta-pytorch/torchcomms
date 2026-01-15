@@ -2777,6 +2777,38 @@ cvars:
      Usage: If the NCCL_CTRAN_BACKENS is set with certain values,
      this config will allow MCCL to override backends.
 
+ - name        : MCCL_SCUBA_ENABLED
+   type        : bool
+   default     : false
+   description : |-
+     Enable MCCL Scuba structured logging. When enabled, MCCL will log
+     events to dedicated MCCL Scuba tables for observability and debugging.
+     This is separate from NCCLX logging to minimize risk.
+
+ - name        : MCCL_SCUBA_MAX_QUEUE_SIZE
+   type        : int
+   default     : 10000
+   description : |-
+     Maximum number of samples in the MCCL logging queue before dropping.
+     Non-critical samples will be dropped when the queue is full.
+     CRITICAL samples are never dropped.
+
+ - name        : MCCL_SCUBA_NUM_WORKERS
+   type        : int
+   default     : 8
+   description : |-
+     Number of background worker threads for MCCL log processing.
+     More workers provide better throughput during burst logging scenarios.
+
+ - name        : MCCL_SCUBA_SAMPLE_RATE
+   type        : int
+   default     : 100
+   description : |-
+     Sampling rate percentage for MCCL Scuba logging.
+     100 means log everything, 50 means log 50% of events, etc.
+     Does not affect CRITICAL priority logs which are always logged.
+     Valid range: 1-100. Values outside this range will be clamped.
+
  - name        : NCCL_GIN_GDAKI_NIC_HANDLER
    type        : int
    default     : 0
