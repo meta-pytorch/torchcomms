@@ -512,7 +512,25 @@ commResult_t ctranWaitSignal(int peer, CtranWin* win, cudaStream_t stream) {
   // Only try hardware wait for GPU memory windows
   if (win->isGpuMem()) {
     // Try hardware-accelerated wait first (zero GPU overhead!)
+
+    // CollTrace tracing logic for hardware-accelerated case. In this case the
+    // wait will not trigger gpe->submit, so we need to record manually in the
+    // algo. In other cases, this handle would be a no-op and the tracing
+    // will take place in the gpe function.
+    auto colltraceHandle = meta::comms::colltrace::getCollTraceHandleRMA(
+        comm,
+        {},
+        KernelConfig{
+            KernelConfig::KernelType::WAITSIGNAL,
+            stream,
+            "WaitSignal",
+            waitOpCount},
+        true);
+    colltraceHandle->trigger(CollTraceHandleTriggerState::BeforeEnqueueKernel);
+
     commResult_t hwResult = waitSignalDriverApi(peer, win, stream);
+
+    colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
 
     if (hwResult == commSuccess) {
       CLOGF_TRACE(

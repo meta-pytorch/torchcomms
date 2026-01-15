@@ -3,6 +3,7 @@
 #include "comms/utils/colltrace/plugins/WatchdogPlugin.h"
 
 #include <folly/Unit.h>
+#include <folly/json.h>
 #include <folly/logging/xlog.h>
 
 namespace meta::comms::colltrace {
@@ -63,7 +64,15 @@ CommsMaybeVoid WatchdogPlugin::afterCollKernelStart(
 
 CommsMaybeVoid WatchdogPlugin::collEventProgressing(
     CollTraceEvent& curEvent) noexcept {
+  XLOGF(
+      DBG0,
+      "WatchdogPlugin::collEventProgressing for CollTraceEvent {}",
+      folly::toJson(curEvent.collRecord->toDynamic()));
+
   if (config_.checkAsyncError && config_.funcIfError()) {
+    XLOG(DBG)
+        << "WatchdogPlugin::collEventProgressing: triggering async error handling";
+
     config_.funcTriggerOnError(curEvent);
   }
   if (config_.checkTimeout) {
