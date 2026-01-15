@@ -265,7 +265,7 @@ TEST_P(CtranNvlTestSuite, ExportImportMem) {
     CtranNvlRegElem* nvlRegElem = reinterpret_cast<CtranNvlRegElem*>(regElems);
     ControlMsg msg(ControlMsgType::NVL_EXPORT_MEM);
 
-    COMMCHECK_TEST(ctranNvl->exportMem(data, regElems, msg));
+    COMMCHECK_TEST(CtranNvl::exportMem(data, regElems, msg));
     auto ipcMem = nvlRegElem->ipcMem.rlock();
     dataRange = ipcMem->getRange();
 
@@ -287,7 +287,7 @@ TEST_P(CtranNvlTestSuite, ExportImportMem) {
 
     // Remote release - check control message content and send to peer
     ControlMsg releaseMsg;
-    ctranNvl->remReleaseMem(nvlRegElem, peer, releaseMsg);
+    CtranNvl::remReleaseMem(nvlRegElem, releaseMsg);
     EXPECT_EQ(releaseMsg.type, ControlMsgType::NVL_RELEASE_MEM);
     EXPECT_EQ(releaseMsg.nvlRls.base, msg.nvlExp.ipcDesc.base);
 
