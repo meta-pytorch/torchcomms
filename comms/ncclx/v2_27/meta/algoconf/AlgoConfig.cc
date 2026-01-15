@@ -44,8 +44,10 @@ inline const std::string algoValToStr(enum NCCL_ALLGATHER_ALGO val) {
       return "ctrd";
     case NCCL_ALLGATHER_ALGO::ctbrucks:
       return "ctbrucks";
-      break;
+    case NCCL_ALLGATHER_ALGO::ctwindow:
+      return "ctwindow";
   }
+  return "orig";
 }
 
 inline void algoStrToVal(
@@ -61,6 +63,8 @@ inline void algoStrToVal(
     val = NCCL_ALLGATHER_ALGO::ctrd;
   } else if (str == "ctbrucks") {
     val = NCCL_ALLGATHER_ALGO::ctbrucks;
+  } else if (str == "ctwindow") {
+    val = NCCL_ALLGATHER_ALGO::ctwindow;
   } else {
     val = NCCL_ALLGATHER_ALGO::orig;
   }
