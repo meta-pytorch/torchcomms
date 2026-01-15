@@ -429,6 +429,8 @@ TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_DIRECT) {
       EXPECT_EQ(e.result(), commResult);
       EXPECT_EQ(e.rank(), rank);
       EXPECT_EQ(e.commHash(), commHash);
+      EXPECT_EQ(e.desc(), commDesc);
+      EXPECT_EQ(e.result(), commResult);
       EXPECT_THAT(
           std::string(e.what()),
           ::testing::HasSubstr("COMM internal failure:"));
@@ -467,6 +469,8 @@ TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_LOGDATA) {
       EXPECT_EQ(e.result(), commResult);
       EXPECT_EQ(e.rank(), rank);
       EXPECT_EQ(e.commHash(), commHash);
+      EXPECT_EQ(e.desc(), commDesc);
+      EXPECT_EQ(e.result(), commResult);
       EXPECT_THAT(
           std::string(e.what()),
           ::testing::HasSubstr("COMM internal failure:"));
@@ -499,6 +503,8 @@ TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_3ARGS) {
       EXPECT_EQ(e.result(), commResult);
       EXPECT_EQ(e.rank(), rank);
       EXPECT_EQ(e.commHash(), commHash);
+      EXPECT_EQ(e.desc(), commDesc);
+      EXPECT_EQ(e.result(), commResult);
       EXPECT_THAT(
           std::string(e.what()),
           ::testing::HasSubstr("COMM internal failure:"));
@@ -537,6 +543,8 @@ TEST_F(CtranUtilsCheckTest, FB_COMMCHECKTHROW_EX_2ARGS) {
       EXPECT_EQ(e.result(), commResult);
       EXPECT_EQ(e.rank(), rank);
       EXPECT_EQ(e.commHash(), commHash);
+      EXPECT_EQ(e.desc(), commDesc);
+      EXPECT_EQ(e.result(), commResult);
       EXPECT_THAT(
           std::string(e.what()),
           ::testing::HasSubstr("COMM internal failure:"));
