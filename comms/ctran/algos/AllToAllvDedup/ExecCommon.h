@@ -687,12 +687,16 @@ waitSyncComplete(ExecCtx& ctx, ProgressState& state, const bool isExec) {
     if (nodeSyncs.size()) {
       const auto myLocalRank = statex->localRank();
       const auto railPeerRank = statex->localRankToRank(myLocalRank, node);
-      FB_CHECKTHROW(
+      FB_CHECKTHROW_EX(
           state.lastTransAck[node] == lastTransAckValue(railPeerRank),
-          "Unexpected lastTransAck value {} from rail peer rank {} on node {}",
-          state.lastTransAck[node],
-          railPeerRank,
-          node);
+          statex->rank(),
+          statex->commHash(),
+          statex->commDesc(),
+          fmt::format(
+              "Unexpected lastTransAck value {} from rail peer rank {} on node {}",
+              state.lastTransAck[node],
+              railPeerRank,
+              node));
     }
   }
 

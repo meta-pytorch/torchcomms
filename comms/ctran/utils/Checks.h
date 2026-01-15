@@ -549,6 +549,50 @@
     }                                                                          \
   } while (0)
 
+#define FB_CHECKTHROW_EX_DIRECT(statement, rank, commHash, commDesc, msg) \
+  do {                                                                    \
+    if (!(statement)) {                                                   \
+      CLOGF(ERR, "Check failed: {} - {}", #statement, msg);               \
+      throw ctran::utils::Exception(                                      \
+          fmt::format("Check failed: {} - {}", #statement, msg),          \
+          commInternalError,                                              \
+          rank,                                                           \
+          commHash,                                                       \
+          commDesc);                                                      \
+    }                                                                     \
+  } while (0)
+
+#define FB_CHECKTHROW_EX_LOGDATA(statement, commLogData, msg)    \
+  do {                                                           \
+    if (!(statement)) {                                          \
+      CLOGF(ERR, "Check failed: {} - {}", #statement, msg);      \
+      throw ctran::utils::Exception(                             \
+          fmt::format("Check failed: {} - {}", #statement, msg), \
+          commInternalError,                                     \
+          (commLogData).rank,                                    \
+          (commLogData).commHash,                                \
+          (commLogData).commDesc);                               \
+    }                                                            \
+  } while (0)
+
+// Selector macro, used with FB_CHECKTHROW_EX to delegate
+// based on the number of arguments.
+// The dummy placeholders ensure correct selection for 3 and 5 arguments.
+#define GET_FB_CHECKTHROW_EX_MACRO(_1, _2, _3, _4, _5, NAME, ...) NAME
+
+// Delegates to either FB_CHECKTHROW_EX_DIRECT or
+// FB_CHECKTHROW_EX_LOGDATA based on the number of arguments.
+// - 5 args (statement, rank, commHash, commDesc, msg): uses
+// FB_CHECKTHROW_EX_DIRECT
+// - 3 args (statement, commLogData, msg): uses FB_CHECKTHROW_EX_LOGDATA
+#define FB_CHECKTHROW_EX(...)    \
+  GET_FB_CHECKTHROW_EX_MACRO(    \
+      __VA_ARGS__,               \
+      FB_CHECKTHROW_EX_DIRECT,   \
+      UNUSED_PLACEHOLDER_3_ARGS, \
+      FB_CHECKTHROW_EX_LOGDATA,  \
+      UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
+
 #define FB_COMMWAIT(call, cond, abortFlagPtr)             \
   do {                                                    \
     uint32_t* tmpAbortFlag = (abortFlagPtr);              \
