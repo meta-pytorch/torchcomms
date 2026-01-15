@@ -139,7 +139,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     COMMCHECK_TEST(
         CtranIb::regMem(
             buf, bufCount * sizeof(int) * numPuts, this->localRank, &handle));
-    COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
+    COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
     ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
     if (preConnect) {
@@ -331,7 +331,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     // Register and export to a control msg
     COMMCHECK_TEST(
         CtranIb::regMem(buf, bufCount * sizeof(int), this->localRank, &handle));
-    COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
+    COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
     ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
     // Rank whose data will be read sends the remoteAddr and rkey to sender
@@ -519,7 +519,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     // Register and export to a control msg
     COMMCHECK_TEST(
         CtranIb::regMem(buf, bufCount * sizeof(int), this->localRank, &handle));
-    COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
+    COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
     ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
     // Receiver sends the remoteAddr and rkey to sender
@@ -768,7 +768,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     COMMCHECK_TEST(
         CtranIb::regMem(
             buf, bufCount * sizeof(uint64_t), this->localRank, &handle));
-    COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
+    COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
     ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
     // Receiver sends the remoteAddr and rkey to sender
@@ -1119,7 +1119,7 @@ TEST_F(CtranIbTest, ExportMem) {
     EXPECT_NE(handle, nullptr);
     ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
-    COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
+    COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
     EXPECT_EQ(msg.type, ControlMsgType::IB_EXPORT_MEM);
     EXPECT_EQ(msg.ibExp.remoteAddr, reinterpret_cast<uint64_t>(buf));
     auto mrs = reinterpret_cast<std::vector<ibverbx::ibv_mr*>*>(handle);
@@ -1726,7 +1726,7 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
     }
 
     // All rank sends the remoteAddr and rkey to rootRank
-    COMMCHECK_TEST(ctranIb->exportMem(buf, handle, sendMsg));
+    COMMCHECK_TEST(CtranIb::exportMem(buf, handle, sendMsg));
     COMMCHECK_TEST(ctranIb->isendCtrlMsg(
         sendMsg.type, &sendMsg, sizeof(sendMsg), rootRank, ctrlSReq));
 
@@ -1895,7 +1895,7 @@ TEST_F(CtranIbTest, InvalidMemoryWaitNotify) {
   // Allocate and register memory
   CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
   COMMCHECK_TEST(CtranIb::regMem(buf, bufSize, this->localRank, &handle));
-  COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
+  COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
 
   if (this->globalRank == sendRank) {
     // Use invalid remote address (corrupted)
@@ -2384,7 +2384,7 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
   // Register and export to a control msg
   COMMCHECK_TEST(
       CtranIb::regMem(buf, bufCount * sizeof(int), this->localRank, &handle));
-  COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
+  COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
   ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
   // Receiver sends the remoteAddr and rkey to sender
@@ -2550,7 +2550,7 @@ TEST_P(CtranIbTestParam, GpuMemPutNoSignalMixedFastRegular) {
   // Register and export to a control msg
   COMMCHECK_TEST(
       CtranIb::regMem(buf, bufCount * sizeof(int), this->localRank, &handle));
-  COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
+  COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
   ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
   // Receiver sends the remoteAddr and rkey to sender
@@ -2651,7 +2651,7 @@ TEST_P(CtranIbTestParam, GpuMemPutNotifyLastMixedFastRegular) {
   // Register and export to a control msg
   COMMCHECK_TEST(
       CtranIb::regMem(buf, bufCount * sizeof(int), this->localRank, &handle));
-  COMMCHECK_TEST(ctranIb->exportMem(buf, handle, msg));
+  COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
   ASSERT_EQ(getIbRegCount(), commIbRegCount + 1);
 
   // Receiver sends the remoteAddr and rkey to sender

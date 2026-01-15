@@ -350,12 +350,10 @@ class P2pNvlTransportDevice {
 
         chunkState.waitReadyToSend(group);
 
-        copy_chunk_vectorized<uint4>(
-            sendBuffer,
-            src,
+        memcpy_vectorized(
+            sendBuffer + dataBufferOffset + chunkOffset,
+            src + stepOffset + chunkOffset,
             chunkBytes,
-            dataBufferOffset + chunkOffset,
-            stepOffset + chunkOffset,
             group);
 
         chunkState.readyToRecv(group, stepId);
@@ -450,12 +448,10 @@ class P2pNvlTransportDevice {
 
         chunkState.waitReadyToRecv(group, stepId);
 
-        copy_chunk_vectorized<uint4>(
-            dst,
-            recvBuffer,
+        memcpy_vectorized(
+            dst + stepOffset + chunkOffset,
+            recvBuffer + dataBufferOffset + chunkOffset,
             chunkBytes,
-            stepOffset + chunkOffset,
-            dataBufferOffset + chunkOffset,
             group);
 
         chunkState.readyToSend(group);
