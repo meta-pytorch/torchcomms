@@ -62,6 +62,12 @@ __global__ void p2pBidirectional(
     std::size_t nBytes,
     bool useBlockGroups = false);
 
+// Barrier kernel - synchronize between two peers
+__global__ void p2pBarrierThreadGroup(
+    P2pNvlTransportDevice p2p,
+    int nSteps,
+    bool useBlockGroups = false);
+
 /**
  * AllToAllv benchmark kernel.
  * All ranks participate in all-to-all communication with variable chunk sizes.

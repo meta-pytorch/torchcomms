@@ -97,6 +97,17 @@ __global__ void p2pBidirectional(
   }
 }
 
+__global__ void p2pBarrierThreadGroup(
+    P2pNvlTransportDevice p2p,
+    int nSteps,
+    bool useBlockGroups) {
+  auto group = getThreadGroup(useBlockGroups);
+
+  for (int step = 0; step < nSteps; ++step) {
+    p2p.barrier_threadgroup(group);
+  }
+}
+
 __global__ void allToAllvKernel(
     void* recvbuff_d,
     const void* sendbuff_d,
