@@ -8,6 +8,7 @@
 #include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
+#include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -21,10 +22,16 @@ namespace comms::pipes {
  *
  * This means LocalState buffers are the DESTINATION for incoming data.
  * Uses DeviceSpan for safe, bounds-checked access to chunk states.
+ *
+ * For barrier synchronization:
+ * - signalState: Local SignalState that peer signals to (via NVLink).
+ *   Local PE waits on this state's signal_ counter to know peer has reached
+ *   barrier. The localState_ counter tracks how many signals we expect.
  */
 struct LocalState {
   char* dataBuffer;
   DeviceSpan<ChunkState> stateBuffer;
+  SignalState* signalState;
 };
 
 /**
@@ -36,10 +43,15 @@ struct LocalState {
  *
  * These pointers are obtained via IPC and point to peer's LocalState buffers.
  * Uses DeviceSpan for safe, bounds-checked access to chunk states.
+ *
+ * For barrier synchronization:
+ * - signalState: Pointer to peer's SignalState (via NVLink). Local PE signals
+ *   this state to notify peer that we have reached the barrier.
  */
 struct RemoteState {
   char* dataBuffer;
   DeviceSpan<ChunkState> stateBuffer;
+  SignalState* signalState;
 };
 
 /**
@@ -470,11 +482,23 @@ class P2pNvlTransportDevice {
   }
 
   /**
-   * write - Not implemented for P2pNvlTransportDevice
+   * write - Direct local memory copy using vectorized operations
    *
-   * P2pNvlTransportDevice is designed for remote P2P transfers over NVLink.
-   * For local memory copies, use P2pSelfTransportDevice instead.
-   * Calling this method will trap and abort the kernel.
+   * Performs a high-performance vectorized copy from src_d to dst_d using
+   * memcpy_vectorized. The work is distributed across ALL thread groups
+   * using for_each_item_contiguous, so each group processes only its portion
+   * of the data.
+   *
+   * The chunk size is computed dynamically as (nbytes / total_groups) to
+   * ensure good parallelism, with a minimum of 16 bytes per chunk for
+   * vectorized access efficiency.
+   *
+   * NOTE: only support no overlap copy for now
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param dst_d Destination pointer (device memory)
+   * @param src_d Source pointer (device memory)
+   * @param nbytes Number of bytes to write
    */
   __device__ __forceinline__ void write(
       ThreadGroup& group,
@@ -482,8 +506,122 @@ class P2pNvlTransportDevice {
       const char* src_d,
       std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
-    __trap(); // Abort kernel if write is called on P2pNvlTransportDevice
+    // Early return for no-op cases
+    if (nbytes == 0) {
+      return;
+    }
+
+    // Compute chunk size: aim for nbytes / total_groups per chunk,
+    // aligned to 16 bytes (uint4 size) for efficient vectorized access
+    constexpr std::size_t kAlignment = 16;
+    const std::size_t targetChunkSize = nbytes / group.total_groups;
+    // Round up to nearest 16-byte boundary, minimum 16 bytes
+    const std::size_t chunkSize =
+        ((targetChunkSize + kAlignment - 1) / kAlignment) * kAlignment;
+    // Ensure minimum chunk size
+    const std::size_t alignedChunkSize = chunkSize > 0 ? chunkSize : kAlignment;
+
+    const std::size_t numChunks =
+        (nbytes + alignedChunkSize - 1) / alignedChunkSize;
+
+    // Distribute chunks across all groups using for_each_item_contiguous
+    // Each group processes its assigned contiguous range of chunks
+    group.for_each_item_contiguous(numChunks, [&](uint32_t chunkIdx) {
+      const std::size_t chunkOffset = chunkIdx * alignedChunkSize;
+      const std::size_t chunkBytes = (chunkOffset + alignedChunkSize <= nbytes)
+          ? alignedChunkSize
+          : nbytes - chunkOffset;
+
+      if (chunkBytes > 0) {
+        memcpy_vectorized(
+            dst_d + chunkOffset, // dst_base
+            src_d + chunkOffset, // src_base
+            chunkBytes, // chunk_bytes
+            group);
+      }
+    });
 #endif
+  }
+
+  /**
+   * barrier - Pairwise barrier synchronization with peer GPU
+   *
+   * Ensures both this PE and the peer PE have reached this point before
+   * either proceeds. Uses signal/wait pattern over NVLink for synchronization.
+   *
+   * ALGORITHM (Pairwise Barrier):
+   * =============================
+   *
+   * Each barrier() call increments a monotonic counter. The protocol is:
+   *
+   *   1. SIGNAL: Call signal() on PEER's local SignalState (via NVLink)
+   *      - Atomically increments peer's signal_ counter
+   *      - This tells peer "I have reached barrier N"
+   *
+   *   2. WAIT: Call wait() on LOCAL SignalState
+   *      - Increments local localState_ to get expected count
+   *      - Polls local signal_ until it reaches expected count
+   *      - This waits for peer to signal "I have reached barrier N"
+   *
+   *   PE 0 (myRank=0)                    PE 1 (peerRank=1)
+   *   ───────────────                    ─────────────────
+   *   signal_=0, localState_=0           signal_=0, localState_=0
+   *       │                                  │
+   *       │ signal() on peer's state ───────▶│ PE1.signal_++
+   *       │                                  │
+   *       │ PE0.signal_++ ◀──────────────────│ signal() on peer's state
+   *       │                                  │
+   *   wait() on own state               wait() on own state
+   *     localState_++ → expected=1        localState_++ → expected=1
+   *     poll signal_ >= 1                 poll signal_ >= 1
+   *       │                                  │
+   *   barrier complete                   barrier complete
+   *
+   * MEMORY ORDERING:
+   * ================
+   * - All RMA operations before barrier() are visible to peer after barrier()
+   * - Uses acquire/release semantics for proper memory ordering
+   * - __threadfence_system() ensures all prior writes are globally visible
+   *
+   * USAGE EXAMPLE:
+   * ==============
+   *   // GPU 0 kernel (sender)
+   *   __global__ void kernel(P2pNvlTransportDevice p2p, void* src, size_t n) {
+   *     auto group = make_warp_group();
+   *     p2p.write(group, src1, nbytes);  // Write data to peer
+   *     p2p.write(group, src2, nbytes);  // Write data to peer
+   *     p2p.barrier(group);        // Notify peer we're done
+   *     // Now safe to reuse src buffer
+   *   }
+   *
+   *   // GPU 1 kernel (receiver)
+   *   __global__ void kernel(P2pNvlTransportDevice p2p, void* dst, size_t n) {
+   *     auto group = make_warp_group();
+   *     p2p.barrier(group);        // Wait for peer to finish
+   *     // Now safe to use data
+   *   }
+   *
+   * @param group ThreadGroup for cooperative processing (leader signals/waits)
+   */
+  __device__ __forceinline__ void barrier_threadgroup(ThreadGroup& group) {
+    // Ensure all prior memory operations are complete
+    group.sync();
+
+    // Only global leader performs barrier operations to avoid races where
+    // different threads read different counter values.
+    if (group.is_leader()) {
+      // Memory fence here to make sure memory visible to all system
+      comms::device::threadfence_system();
+
+      // Signal peer - write to peer's local barrier state via NVLink
+      remoteState_.signalState->signal();
+
+      // Wait for peer - poll local barrier state until peer signals
+      localState_.signalState->wait();
+    }
+
+    // Ensure all threads wait for leader to complete barrier
+    group.sync();
   }
 
  private:
