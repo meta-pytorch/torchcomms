@@ -17,10 +17,11 @@
 typedef enum {
   NCCL_LOG_NONE = 0,
   NCCL_LOG_VERSION = 1,
-  NCCL_LOG_WARN = 2,
-  NCCL_LOG_INFO = 3,
-  NCCL_LOG_ABORT = 4,
-  NCCL_LOG_TRACE = 5
+  NCCL_LOG_ERROR = 2,
+  NCCL_LOG_WARN = 3,
+  NCCL_LOG_INFO = 4,
+  NCCL_LOG_ABORT = 5,
+  NCCL_LOG_TRACE = 6
 } ncclDebugLogLevel;
 
 typedef enum {
@@ -43,7 +44,7 @@ typedef enum {
   NCCL_ALL = ~0
 } ncclDebugLogSubSys;
 
-typedef void (*ncclDebugLogger_t)(ncclDebugLogLevel level, unsigned long flags, const char *file, int line, const char *fmt, ...);
+typedef void (*ncclDebugLogger_t)(ncclDebugLogLevel level, unsigned long flags, const char *file, const char *func, int line, const char *fmt, ...);
 
 // NCCL core profiler callback for network defined events instrumentation
 enum {
