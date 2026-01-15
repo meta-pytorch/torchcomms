@@ -106,4 +106,23 @@ void testWeightedRecvSend(
     uint32_t sendWeight,
     GroupType groupType = GroupType::WARP);
 
+// Test write() - one-sided direct memory write to peer GPU
+// Unlike send()/recv(), put() writes directly to dst_d without staging buffers
+void testWrite(
+    P2pNvlTransportDevice p2p,
+    char* dst_d, // Destination on peer GPU (must be NVLink-accessible)
+    const char* src_d, // Source on local GPU
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType = GroupType::WARP);
+
+// Test barrier() - GPU-side pairwise barrier synchronization
+// Signals peer and waits for peer to signal back
+void testBarrier(
+    P2pNvlTransportDevice p2p,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType = GroupType::WARP);
+
 } // namespace comms::pipes::test

@@ -1,6 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/tests/Checks.h"
 #include "comms/pipes/tests/P2pNvlTransportTest.cuh"
 
@@ -239,6 +238,53 @@ void testWeightedRecvSend(
     GroupType groupType) {
   testWeightedRecvSendKernel<<<numBlocks, blockSize>>>(
       p2p, recv_d, send_d, nbytes, recvWeight, sendWeight, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// write() test kernel and wrapper
+// =============================================================================
+
+__global__ void testWriteKernel(
+    P2pNvlTransportDevice p2p,
+    char* dst_d,
+    const char* src_d,
+    size_t nbytes,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  p2p.write(group, dst_d, src_d, nbytes);
+}
+
+void testWrite(
+    P2pNvlTransportDevice p2p,
+    char* dst_d,
+    const char* src_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType) {
+  testWriteKernel<<<numBlocks, blockSize>>>(
+      p2p, dst_d, src_d, nbytes, groupType);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// barrier() test kernel and wrapper
+// =============================================================================
+
+__global__ void testBarrierKernel(
+    P2pNvlTransportDevice p2p,
+    GroupType groupType) {
+  auto group = make_group(groupType);
+  p2p.barrier_threadgroup(group);
+}
+
+void testBarrier(
+    P2pNvlTransportDevice p2p,
+    int numBlocks,
+    int blockSize,
+    GroupType groupType) {
+  testBarrierKernel<<<numBlocks, blockSize>>>(p2p, groupType);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

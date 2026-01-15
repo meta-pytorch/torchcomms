@@ -105,4 +105,31 @@ __device__ __forceinline__ void memcpy_vectorized(
 #endif // __CUDA_ARCH__
 }
 
+/**
+ * assert_buffer_non_overlap - Assert that source and destination buffers do not
+ * overlap
+ *
+ * Checks that the memory regions [src_d, src_d + nbytes) and
+ * [dst_d, dst_d + nbytes) are disjoint (non-overlapping). If they overlap,
+ * the kernel is aborted via __trap().
+ *
+ * This is a safety check for memory copy operations that assume non-overlapping
+ * buffers. Overlapping buffers with memcpy-style operations lead to undefined
+ * behavior.
+ *
+ * @param dst_d Destination buffer pointer
+ * @param src_d Source buffer pointer
+ * @param nbytes Size of both buffers in bytes
+ *
+ * Note: Only active on device (__CUDA_ARCH__). No-op on host.
+ */
+__device__ __forceinline__ void
+assert_buffer_non_overlap(char* dst_d, const char* src_d, std::size_t nbytes) {
+#ifdef __CUDA_ARCH__
+  if (!(src_d + nbytes <= dst_d || dst_d + nbytes <= src_d)) {
+    __trap(); // Abort kernel if buffers overlap
+  }
+#endif // __CUDA_ARCH__
+}
+
 } // namespace comms::pipes
