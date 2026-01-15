@@ -378,6 +378,19 @@ __device__ __forceinline__ void st_release_sys_global(
  *   while (gdr_mapped_flag != expected) { spin; }
  *   // After seeing flag, data is guaranteed visible due to fence+relaxed store
  */
+
+__device__ __forceinline__ void threadfence() {
+#if defined(__CUDA_ARCH__) || defined(__HIP_ARCH__)
+  __threadfence();
+#endif
+}
+
+__device__ __forceinline__ void threadfence_system() {
+#if defined(__CUDA_ARCH__) || defined(__HIP_ARCH__)
+  __threadfence_system();
+#endif
+}
+
 __device__ __forceinline__ void fence_acq_rel_sys() {
 #if defined(__HIP_PLATFORM_AMD__)
 #ifdef __HIP_ARCH__
@@ -456,6 +469,38 @@ store128_volatile_global(volatile uint64_t* ptr, uint64_t v0, uint64_t v1) {
                :
                : "l"(v0), "l"(v1), "l"(ptr)
                : "memory");
+#endif
+}
+
+// =============================================================================
+// Atomic Operation
+// =============================================================================
+
+__device__ __forceinline__ uint64_t
+atomic_fetch_add_sys_global(uint64_t* ptr, uint64_t val) {
+#ifdef __CUDA_ARCH__
+  uint64_t old_val;
+  asm volatile("atom.add.sys.u64.global %0, [%1], %2;"
+               : "=l"(old_val)
+               : "l"(ptr), "l"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_SEQ_CST);
+#endif
+}
+
+__device__ __forceinline__ uint64_t
+atomic_fetch_add_gpu_global(uint64_t* ptr, uint64_t val) {
+#ifdef __CUDA_ARCH__
+  uint64_t old_val;
+  asm volatile("atom.add.gpu.u64.global %0, [%1], %2;"
+               : "=l"(old_val)
+               : "l"(ptr), "l"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_SEQ_CST);
 #endif
 }
 
