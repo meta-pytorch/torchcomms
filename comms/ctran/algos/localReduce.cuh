@@ -8,7 +8,6 @@
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
 #include <hip/hip_fp8.h>
-#include "comms/common/HipBf16Compat.h"
 #else
 #include <cuda.h>
 #include <cuda_fp16.h>

@@ -5,7 +5,6 @@
 #include <functional>
 // Ctran compiles collectives for bf16 and fp8 when the corresponding macros
 // are defined by the CUDA/HIP headers. Include them here to enable the types.
-#include "comms/common/HipBf16Compat.h"
 #if CUDART_VERSION >= 11000
 #include <cuda_bf16.h>
 #endif

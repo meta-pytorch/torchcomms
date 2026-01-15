@@ -6,7 +6,6 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_bfloat16.h>
 #include <hip/hip_fp16.h>
-#include "comms/common/HipBf16Compat.h"
 #else
 #include <cuda.h>
 #include <cuda_bf16.h>
