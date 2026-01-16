@@ -208,6 +208,19 @@ __device__ __forceinline__ void allToAllv(
   assert(nranks == send_chunk_infos.size());
   assert(nranks == recv_chunk_infos.size());
 
+  // Single rank case - just do self-copy
+  if (nranks == 1) {
+    const auto& send_info = send_chunk_infos[my_rank_id];
+    const auto& recv_info = recv_chunk_infos[my_rank_id];
+    const char* src = static_cast<const char*>(sendbuff_d) + send_info.offset;
+    char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
+
+    auto& transport = transports_per_rank[my_rank_id];
+    assert(transport.type == TransportType::SELF);
+    transport.self.write(group, dst, src, send_info.nbytes);
+    return;
+  }
+
   // 1. partition into per rank groups using partition
   auto [peer_rank_id, group_per_rank] = group.partition(nranks);
 
@@ -219,6 +232,9 @@ __device__ __forceinline__ void allToAllv(
     const auto& send_info = send_chunk_infos[my_rank_id];
     const auto& recv_info = recv_chunk_infos[my_rank_id];
     assert(send_info.nbytes == recv_info.nbytes);
+
+    const char* src = static_cast<const char*>(sendbuff_d) + send_info.offset;
+    char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
 
 #ifdef DEBUG_ALLTOALLV
     if (group_per_rank.is_global_leader()) {
@@ -234,14 +250,7 @@ __device__ __forceinline__ void allToAllv(
     }
 #endif
 
-    // Perform self-copy if there's data
-    if (send_info.nbytes > 0) {
-      transport.self.write(
-          group_per_rank,
-          static_cast<char*>(recvbuff_d) + recv_info.offset,
-          static_cast<const char*>(sendbuff_d) + send_info.offset,
-          send_info.nbytes);
-    }
+    transport.self.write(group_per_rank, dst, src, send_info.nbytes);
     return;
   }
 
