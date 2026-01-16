@@ -164,7 +164,7 @@ class CtranIb {
   // Output arguments:
   //   - msg: the reference to the control message to be sent to remote rank.
   //          Contents filled at return.
-  inline commResult_t
+  static inline commResult_t
   exportMem(const void* buf, void* ibRegElem, ControlMsg& msg) {
     return exportMemImpl(buf, ibRegElem, msg);
   }
@@ -175,7 +175,7 @@ class CtranIb {
   //   - key: the remoteAccessKey (rkey) of the remote buffer.
   //   - rank: the rank of the remote peer in the current communicator
   //   - msg: the reference to the control message received from remote rank.
-  inline commResult_t
+  static inline commResult_t
   importMem(void** buf, CtranIbRemoteAccessKey* key, const ControlMsg& msg) {
     return importMemImpl(buf, key, msg);
   }
@@ -492,6 +492,10 @@ class CtranIb {
     return commHash;
   }
 
+  std::string getCommDesc() const {
+    return commDesc;
+  }
+
  private:
   friend class CtranIbRequest;
   void init(
@@ -727,7 +731,7 @@ class CtranIb {
     return commSuccess;
   }
 
-  inline commResult_t
+  static inline commResult_t
   exportMemImpl(const void* buf, void* ibRegElem, ControlMsg& msg) {
     msg.setType(ControlMsgType::IB_EXPORT_MEM);
     msg.ibExp.remoteAddr = reinterpret_cast<uint64_t>(buf);
@@ -737,7 +741,7 @@ class CtranIb {
     return commSuccess;
   }
 
-  inline commResult_t importMemImpl(
+  static inline commResult_t importMemImpl(
       void** buf,
       CtranIbRemoteAccessKey* key,
       const ControlMsg& msg) {
@@ -1148,7 +1152,10 @@ class CtranIbEpochRAII {
   explicit CtranIbEpochRAII(CtranIb* ctranIb) : ctranIb_(ctranIb) {
     if (ctranIb_ != nullptr) {
       FB_COMMCHECKTHROW_EX(
-          ctranIb_->epochLock(), ctranIb_->getRank(), ctranIb_->getCommHash());
+          ctranIb_->epochLock(),
+          ctranIb_->getRank(),
+          ctranIb_->getCommHash(),
+          ctranIb_->getCommDesc());
     }
   }
 

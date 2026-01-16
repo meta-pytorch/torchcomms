@@ -30,7 +30,11 @@ void CtranTcpDm::bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap) {
   sin6.sin6_family = AF_INET6;
   sin6.sin6_addr = dev->addr;
   ifAddrSockAddr.setFromSockaddr(&sin6);
-  FB_SYSCHECKTHROW(listenSocket_.bindAndListen(ifAddrSockAddr, *dev->name));
+  FB_SYSCHECKTHROW_EX(
+      listenSocket_.bindAndListen(ifAddrSockAddr, *dev->name),
+      rank_,
+      commHash_,
+      commDesc_);
 
   std::string line =
       ::comms::tcp_devmem::addrToString(&dev->addr, 0, *dev->name);
@@ -45,7 +49,7 @@ void CtranTcpDm::bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap) {
   allListenSocketAddrs_.resize(nRanks_);
   auto maybeListenAddr = listenSocket_.getListenAddress();
   if (maybeListenAddr.hasError()) {
-    FB_SYSCHECKTHROW(maybeListenAddr.error());
+    FB_SYSCHECKTHROW_EX(maybeListenAddr.error(), rank_, commHash_, commDesc_);
   }
   maybeListenAddr->getAddress(&allListenSocketAddrs_[rank_]);
 
@@ -54,7 +58,11 @@ void CtranTcpDm::bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap) {
       sizeof(allListenSocketAddrs_.at(0)),
       rank_,
       nRanks_);
-  FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+  FB_COMMCHECKTHROW_EX(
+      static_cast<commResult_t>(std::move(resFuture).get()),
+      rank_,
+      commHash_,
+      commDesc_);
 
   for (int i = 0; i < nRanks_; i++) {
     sockaddr_in6* sin =
@@ -78,7 +86,7 @@ void CtranTcpDm::bootstrapAddRecvPeer(
 
 void CtranTcpDm::bootstrapAccept() {
   // Set cudaDev for logging
-  FB_CUDACHECKTHROW(cudaSetDevice(cudaDev_));
+  FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev_), rank_, commHash_, commDesc_);
   commNamedThreadStart(
       "CTranTcpListen", rank_, commHash_, commDesc_.c_str(), __func__);
 
@@ -92,16 +100,18 @@ void CtranTcpDm::bootstrapAccept() {
       if (maybeSocket.error() == EBADF || maybeSocket.error() == EINVAL) {
         break; // listen socket is closed
       }
-      FB_SYSCHECKTHROW(maybeSocket.error());
+      FB_SYSCHECKTHROW_EX(maybeSocket.error(), rank_, commHash_, commDesc_);
     }
     auto& socket = maybeSocket.value();
-    FB_SYSCHECKTHROW(socket.recv(&peerRank, sizeof(int)));
+    FB_SYSCHECKTHROW_EX(
+        socket.recv(&peerRank, sizeof(int)), rank_, commHash_, commDesc_);
 
     ::comms::tcp_devmem::Handle handle{};
     ::comms::tcp_devmem::ListenerInterface* listenComm{};
     COMMCHECKTHROW(transport_->listen(netdev_, &handle, &listenComm));
 
-    FB_SYSCHECKTHROW(socket.send(&handle, sizeof(handle)));
+    FB_SYSCHECKTHROW_EX(
+        socket.send(&handle, sizeof(handle)), rank_, commHash_, commDesc_);
 
     ::comms::tcp_devmem::CommunicatorInterface* recvComm;
     COMMCHECKTHROW(transport_->accept(listenComm, &recvComm));

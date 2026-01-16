@@ -11,7 +11,7 @@
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllToAll/AllToAllDedupImpl.h"
-#include "comms/ctran/tracing/CollTraceWrapper.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/commDump.h"
@@ -98,40 +98,6 @@ class ctranAllToAllDedupTest : public CtranDistBaseTest {
       NCCLCHECK_TEST(ncclCommDeregister(comm, handle));
     }
     NCCLCHECK_TEST(ncclMemFreeWithRefCheck(buf));
-  }
-
-  template <typename T>
-  void assignChunkValue(T* buf, size_t chunkCount, T val) {
-    std::vector<T> expectedVals(chunkCount, val);
-    CUDACHECK_TEST(cudaMemcpy(
-        buf,
-        expectedVals.data(),
-        chunkCount * sizeof(T),
-        cudaMemcpyHostToDevice));
-  }
-
-  template <typename T>
-  int checkChunkValue(T* buf, size_t chunkCount, T val) {
-    std::vector<T> observedVals(chunkCount, -1);
-    CUDACHECK_TEST(cudaMemcpy(
-        observedVals.data(), buf, chunkCount * sizeof(T), cudaMemcpyDefault));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print first 10 failing
-    // location
-    for (auto i = 0; i < chunkCount; ++i) {
-      if (observedVals[i] != val) {
-        if (errs < 10) {
-          printf(
-              "[%d] observedVals[%d] = %d, expectedVal = %d\n",
-              globalRank,
-              i,
-              observedVals[i],
-              val);
-        }
-        errs++;
-      }
-    }
-    return errs;
   }
 
   void SetUp() override {

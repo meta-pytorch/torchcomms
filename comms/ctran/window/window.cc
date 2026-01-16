@@ -62,6 +62,14 @@ commResult_t CtranWin::exchange() {
         &dataRegHdl));
   }
 
+  // Exchange each rank's data buffer size via bootstrap allGather
+  // This populates remWinInfo[r].dataBytes for all ranks
+  std::vector<size_t> allRankSizes(nRanks);
+  allRankSizes[myRank] = dataBytes;
+  auto resFuture = comm->bootstrap_->allGather(
+      allRankSizes.data(), sizeof(size_t), myRank, nRanks);
+  FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
+
   // Handshake with other peers for registration exchange and network
   // connection setup
   std::vector<void*> remoteBaseBufs(nRanks);
@@ -82,11 +90,12 @@ commResult_t CtranWin::exchange() {
   }
 
   for (auto r = 0; r < nRanks; r++) {
+    remWinInfo[r].dataBytes = allRankSizes[r];
     if (allocDataBuf_) {
       remWinInfo[r].dataAddr = remoteBaseBufs[r];
       remWinInfo[r].dataRkey = remoteBaseBufAccessKeys[r];
       remWinInfo[r].signalAddr = reinterpret_cast<uint64_t*>(
-          reinterpret_cast<size_t>(remoteBaseBufs[r]) + dataBytes);
+          reinterpret_cast<size_t>(remoteBaseBufs[r]) + allRankSizes[r]);
       remWinInfo[r].signalRkey = remoteBaseBufAccessKeys[r];
     } else {
       remWinInfo[r].dataAddr = remoteUserBufs[r];
@@ -108,9 +117,10 @@ commResult_t CtranWin::exchange() {
     CLOGF_SUBSYS(
         INFO,
         INIT,
-        "CTRAN-WINDOW     Peer {}: addr {} rkey {}",
+        "CTRAN-WINDOW     Peer {}: addr {} size {} rkey {}",
         i,
         (void*)remWinInfo[i].dataAddr,
+        allRankSizes[i],
         myRank == i ? "(local)" : remWinInfo[i].dataRkey.toString());
   }
 
@@ -168,9 +178,10 @@ commResult_t CtranWin::allocate(void* userBufPtr) {
   CLOGF_SUBSYS(
       INFO,
       INIT,
-      "CTRAN-WINDOW: Rank {} allocated local window data buffer base {} signal buffer base {} "
+      "CTRAN-WINDOW: Rank {} window buffer is {} window data buffer base {} signal buffer base {} "
       "dataBytes {} signalSize {} win {} comm {} commHash {:x} [nnodes={} nranks={} localRanks={}]",
       myRank,
+      allocDataBuf_ ? "Allocated" : "User Provided",
       winDataPtr,
       (void*)winSignalPtr,
       dataBytes,

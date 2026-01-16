@@ -10,7 +10,7 @@
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
-#include "comms/ctran/tracing/CollTraceWrapper.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"

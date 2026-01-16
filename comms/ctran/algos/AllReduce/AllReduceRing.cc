@@ -121,8 +121,7 @@ inline void prePostRecvRemRecvBuf(
     CtranMapperRequest* req;
     FB_COMMCHECKTHROW_EX(
         resource.comm->ctran_->mapper->irecvCtrl(args.rightRank, &req),
-        resource.comm->statex_->rank(),
-        resource.comm->statex_->commHash());
+        resource.comm->logMetaData_);
     bufSyncRResps.at(round).reset(req);
   }
 }
@@ -141,17 +140,16 @@ inline bool progressSendCheckRemRecvBuf(
   }
 
   auto& resp = bufSyncRResps.at(prevRound);
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX(
       resp != nullptr,
-      "bufSyncRResps is not initialized at round {}",
-      prevRound);
+      resource.comm->logMetaData_,
+      fmt::format("bufSyncRResps is not initialized at round {}", prevRound));
 
   if (resp) {
     bool isComplete = false;
     FB_COMMCHECKTHROW_EX(
         resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
-        resource.comm->statex_->rank(),
-        resource.comm->statex_->commHash());
+        resource.comm->logMetaData_);
     if (isComplete) {
       int tmpChunkId = getTmpChunkId(algoCtx, round);
       CLOGF_TRACE(
@@ -182,8 +180,7 @@ inline void progressSendCheckTrans(
       bool isComplete = false;
       FB_COMMCHECKTHROW_EX(
           resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
-          resource.comm->statex_->rank(),
-          resource.comm->statex_->commHash());
+          resource.comm->logMetaData_);
       if (isComplete) {
         // FIXME: step might be incorrect
         CLOGF_TRACE(
@@ -239,7 +236,10 @@ inline void progressSendPostTrans(
   int tmpChunkId = getTmpChunkId(algoCtx, round);
   auto chunkArg = getRoundArgs<Op::kSendTrans>(algoCtx, round, opStep);
   // A ready to send round should never be with empty chunk
-  FB_CHECKTHROW(chunkArg.numel > 0, "Unexpected empty chunk");
+  FB_CHECKTHROW_EX(
+      chunkArg.numel > 0,
+      resource.comm->logMetaData_,
+      "Unexpected empty chunk");
 
   char* tmpRemoteRecvBuf = reinterpret_cast<char*>(args.rightRemBuf) +
       tmpChunkId * algoCtx.chunkSize;
@@ -263,8 +263,7 @@ inline void progressSendPostTrans(
               .notify_ = true,
               .ibConfig_ = allReduceConfig},
           &req),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   dataSResps.at(round).reset(req);
 
   CLOGF_TRACE(
@@ -296,8 +295,7 @@ inline bool progressRecvCheckTrans(
   bool done = false;
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->checkNotify(args.leftNotify.get(), &done),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   if (done) {
     CLOGF_TRACE(
         COLL,
@@ -330,8 +328,7 @@ inline void progressRecvPostFlush(
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->iflush(
           tmpRecvBuf, resource.tmpRecvBufHdl, &req),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   flushResps.at(round).reset(req);
 }
 
@@ -344,19 +341,20 @@ inline bool progressRecvCheckFlush(
   int step = algoCtx.opRounds[Op::kRecvFlush].doneStep.step;
   int chunkId = getTmpChunkId(algoCtx, round);
 
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX(
       flushResps.at(round) != nullptr,
-      "Flush resp is not initialized at round {} step {} chunkId {}",
-      round,
-      step,
-      chunkId);
+      resource.comm->logMetaData_,
+      fmt::format(
+          "Flush resp is not initialized at round {} step {} chunkId {}",
+          round,
+          step,
+          chunkId));
   auto& resp = flushResps.at(round);
 
   bool isComplete = false;
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   if (isComplete) {
     CLOGF_TRACE(
         COLL, "{} done", roundLogPrefix<Op::kRecvFlush>(round, step, algoCtx));
@@ -449,8 +447,7 @@ inline void progressRecvPostRecvBuf(
   CtranMapperRequest* req;
   FB_COMMCHECKTHROW_EX(
       resource.comm->ctran_->mapper->isendCtrl(args.leftRank, &req),
-      resource.comm->statex_->rank(),
-      resource.comm->statex_->commHash());
+      resource.comm->logMetaData_);
   bufSyncSResps.at(round).reset(req);
 }
 
@@ -548,9 +545,7 @@ inline int waitAllResps(
     if (req) {
       numComplete++;
       FB_COMMCHECKTHROW_EX(
-          comm->ctran_->mapper->waitRequest(req.get()),
-          comm->statex_->rank(),
-          comm->statex_->commHash());
+          comm->ctran_->mapper->waitRequest(req.get()), comm->logMetaData_);
     }
   }
   return numComplete;
@@ -608,7 +603,8 @@ inline commResult_t completeHostResourceSetup(
 
 static commResult_t impl(
     const std::vector<std::unique_ptr<struct OpElem>>& opGroup) {
-  FB_CHECKTHROW(opGroup.size() == 1, "ctring opGroup expected exactly one op");
+  FB_CHECKTHROW_EX_NOCOMM(
+      opGroup.size() == 1, "ctring opGroup expected exactly one op");
   struct OpElem* op = opGroup.front().get();
   CtranComm* comm = opGroup.front()->comm_;
   CtranAlgoLogger logger(allReduceAlgoName(myAlgo), op->opCount, comm);
@@ -814,11 +810,13 @@ commResult_t ctranAllReduceRing(
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   std::unique_ptr<struct OpElem> op;
 
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX(
       typeToFunc.contains(std::make_pair(datatype, redOp)),
-      "typeToFunc does not contain datatype {} with op {}",
-      datatype,
-      redOp);
+      comm->logMetaData_,
+      fmt::format(
+          "typeToFunc does not contain datatype {} with op {}",
+          datatype,
+          redOp));
   const void* func = typeToFunc.at(std::make_pair(datatype, redOp));
 
   int numBlocks = 0;
@@ -846,8 +844,9 @@ commResult_t ctranAllReduceRing(
   constexpr size_t kAllReduceRingNumSyncs = 3;
   FB_COMMCHECK(comm->ctran_->gpe->allocGpeKernelSyncs(
       kAllReduceRingNumSyncs, numBlocks, gpeKernelSyncs));
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX(
       gpeKernelSyncs.size() == kAllReduceRingNumSyncs,
+      comm->logMetaData_,
       "Failed to allocate GpeKernelSync");
   hostResource->sendCopySync = gpeKernelSyncs[0];
   hostResource->recvRedCopySync = gpeKernelSyncs[1];

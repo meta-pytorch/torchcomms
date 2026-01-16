@@ -7,3 +7,4 @@ dist/
 .lintbin/
 .pyre/
 .third-party-cache
+torch_compile_debug/

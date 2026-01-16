@@ -6,13 +6,22 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h> // @manual
 #include <gtest/gtest.h>
-#include <mpi.h>
+#include <functional>
 #include <memory>
 #include <optional>
+#include <thread>
+#include <unordered_set>
 #include <vector>
-#include "caffe2/torch/csrc/distributed/c10d/TCPStore.hpp"
+
+#include <folly/futures/Future.h>
+
+#include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/interfaces/ICtran.h"
+#include "comms/ctran/tests/bootstrap/IntraProcessBootstrap.h"
+#include "comms/ctran/tests/bootstrap/MockBootstrap.h"
+#include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
@@ -107,7 +116,7 @@ inline CtranCommWithBootstrap createCtranCommWithBootstrap(
     ctranComm->statex_->initRankTopologyNolocal();
   }
 
-  FB_COMMCHECKTHROW(ctranInit(ctranComm.get()));
+  FB_COMMCHECKTHROW_EX(ctranInit(ctranComm.get()), ctranComm->logMetaData_);
 
   return CtranCommWithBootstrap{
       .bootstrap = std::move(bootstrap),
@@ -173,7 +182,7 @@ void* commMemAlloc(
 void commMemFree(void* buf, size_t bufSize, MemAllocType memType);
 
 // Bootstrap initialization type
-enum class InitEnvType { MPI, TCP_STORE };
+enum class InitEnvType { MPI, TCP_STORE, STANDALONE };
 
 inline bool checkTcpStoreEnv() {
   // Check if LOCAL_RANK, GLOBAL_RANK, WORLD_SIZE, MASTER_ADDR and MASTER_PORT
@@ -189,49 +198,254 @@ inline bool checkTcpStoreEnv() {
       masterAddrEnv && masterPortEnv);
 }
 
-std::unique_ptr<c10d::TCPStore> createTcpStore(bool isServer);
+// ============================================================================
+// Base Test Fixture Hierarchy
+// ============================================================================
+//
+// CtranTestFixtureBase
+//       |
+//       +-- CtranStandaloneFixture (single-rank with MockBootstrap)
+//       |
+//       +-- CtranDistTestFixture (multi-rank distributed tests) [in
+//       CtranDistTestUtils.h] |       - MPI mode: real multi-process with MPI
+//       bootstrap |       - TCPStore mode: real multi-process with TCPStore
+//       bootstrap
+//       |
+//       +-- CtranIntraProcessFixture (multi-rank simulation in single process)
+//               - Uses threads + IntraProcessBootstrap
+//               - Orchestrated work dispatch via run(rank, work)
+//
+// ============================================================================
 
-// Detect which initialization environment to use
-InitEnvType getInitEnvType();
-
-class CtranEnvironmentBase : public ::testing::Environment {
- public:
-  void SetUp() override;
-  void TearDown() override;
-};
-
-// CtranDistTestFixture is a fixture for testing Ctran with multiple
-// processes/ranks that supports both MPI and TCPStore bootstrap methods.
-class CtranDistTestFixture : public ::testing::Test {
- public:
+// Base class with common utilities for all Ctran test fixtures.
+// Provides environment setup (logger, cvars) and CUDA initialization.
+class CtranTestFixtureBase : public ::testing::Test {
  protected:
   void SetUp() override;
   void TearDown() override;
 
-  std::unique_ptr<CtranComm> makeCtranComm();
+  // Initialize environment variables, logger, and CUDA library.
+  // This is called automatically by SetUp().
+  void setupEnvironment();
 
-  // Rank information
-  int globalRank{-1};
-  int numRanks{-1};
-  int localRank{-1};
-  int numLocalRanks_{-1};
-  bool enableNolocal{false};
+  // CUDA device index (defaults to 0 for standalone, localRank for distributed)
+  int cudaDev{0};
 
   // CUDA stream for tests (RAII managed)
   std::optional<meta::comms::CudaStream> stream{std::nullopt};
+};
+
+// Standalone mode fixture for single-rank testing with MockBootstrap.
+// Use this for testing GPU kernels, GPE, mapper, etc. without multi-process
+// coordination or the overhead of mpirun/TCPStore.
+class CtranStandaloneFixture : public CtranTestFixtureBase {
+ protected:
+  static constexpr std::string_view kCommDesc{"ut_comm_desc"};
+
+  void SetUp() override;
+  void TearDown() override;
+
+  // Create a CtranComm with MockBootstrap for single-rank testing.
+  // @param abort: Optional abort control for fault tolerance testing.
+  //               Defaults to enabled abort.
+  std::unique_ptr<CtranComm> makeCtranComm(
+      std::shared_ptr<::ctran::utils::Abort> abort =
+          ctran::utils::createAbort(/*enabled=*/true));
+
+  int rank{0}; // Always 0 for standalone tests
+};
+
+// Intra-process multi-rank fixture for testing with IntraProcessBootstrap.
+// This allows testing multi-rank scenarios within a single process using
+// threads, without requiring mpirun or external coordination.
+//
+// Use this fixture for:
+// - Unit tests that need multi-rank semantics without real networking
+// - Tests where you need to orchestrate different work to different ranks
+// - Fast multi-rank tests without mpirun overhead
+//
+// For true distributed testing (multiple processes), use CtranDistTestFixture.
+class CtranIntraProcessFixture : public CtranTestFixtureBase {
+ public:
+  static constexpr size_t kBufferSize = 128 * 1024;
+
+  struct PerRankState;
+  using Work = std::function<void(PerRankState&)>;
+
+  struct PerRankState {
+    // Ideally we could use the IBootstrap interface, but it makes UT debugging
+    // hard since the barriers are not named. We use the specific
+    // IntraProcessBootstrap class for namedBarriers.
+    ::ctran::testing::IntraProcessBootstrap* getBootstrap() {
+      return reinterpret_cast<::ctran::testing::IntraProcessBootstrap*>(
+          ctranComm->bootstrap_.get());
+    }
+
+    std::shared_ptr<::ctran::testing::IntraProcessBootstrap::State>
+        sharedBootstrapState;
+    std::unique_ptr<CtranComm> ctranComm{nullptr};
+    int nRanks{1};
+    int rank{0};
+    int cudaDev{0};
+    cudaStream_t stream{nullptr};
+
+    // device buffer for collectives
+    void* srcBuffer{nullptr};
+    void* dstBuffer{nullptr};
+
+    folly::Promise<Work> workPromise;
+    folly::SemiFuture<Work> workSemiFuture{workPromise.getSemiFuture()};
+  };
+
+ protected:
+  std::vector<PerRankState> perRankStates_;
+  std::vector<std::thread> workers_;
+
+  void SetUp() override;
+
+  void startWorkers(
+      int nRanks,
+      const std::vector<std::shared_ptr<::ctran::utils::Abort>>& aborts);
+
+  void run(int rank, const Work& work) {
+    perRankStates_[rank].workPromise.setValue(work);
+  }
+
+  void TearDown() override;
+};
+
+// ============================================================================
+// Test Helpers (Utility class, not a fixture)
+// ============================================================================
+//
+// CtranTestHelpers provides common verification and memory utilities for
+// NCCL-integrated CTRAN tests. This is a utility class (not a test fixture)
+// that can be composed into test fixtures or inherited as a mixin.
+//
+// Use this for:
+// - Backend usage verification (verifyBackendsUsed)
+// - GPE leak checking (verifyGpeLeak)
+// - Device memory argument helpers (allocDevArg, checkDevArg, etc.)
+// - Buffer preparation with different memory types (prepareBuf, releaseBuf)
+//
+// ============================================================================
+
+class CtranTestHelpers {
+ public:
+  CtranTestHelpers();
+
+  // Check no GPE internal memory leak after finished collective kernel
+  void verifyGpeLeak(ICtran* ctran);
+
+  // Reset backend usage counters
+  void resetBackendsUsed(ICtran* ctran);
+
+  // Verify the traffic at each backend is expected based on the memType and
+  // statex topo.
+  void verifyBackendsUsed(
+      ICtran* ctran,
+      const ncclx::CommStateX* statex,
+      MemAllocType memType);
+
+  // Verify backends used with excluded backends list
+  void verifyBackendsUsed(
+      ICtran* ctran,
+      const ncclx::CommStateX* statex,
+      MemAllocType memType,
+      const std::vector<CtranMapperBackend>& excludedBackends);
+
+  // Allocate device memory without initialization
+  void allocDevArg(size_t nbytes, void*& ptr);
+
+  // Allocate device memory and copy from vector
+  template <typename T>
+  void allocDevArg(const std::vector<T>& argVec, T*& ptr) {
+    void* ptr_ = nullptr;
+    size_t nbytes = sizeof(T) * argVec.size();
+    allocDevArg(nbytes, ptr_);
+    CUDACHECK_ASSERT(cudaMemcpy(
+        ptr_, argVec.data(), argVec.size() * sizeof(T), cudaMemcpyDefault));
+    ptr = reinterpret_cast<T*>(ptr_);
+  }
+
+  // Release all device arguments allocated by allocDevArg
+  void releaseDevArgs();
+
+  // Release a single device argument
+  void releaseDevArg(void* ptr);
+
+  // Asynchronously assign value to device argument from vector
+  template <typename T>
+  void assignDevArg(T* buf, const std::vector<T>& vals, cudaStream_t stream) {
+    CUDACHECK_ASSERT(cudaMemcpyAsync(
+        buf, vals.data(), vals.size() * sizeof(T), cudaMemcpyDefault, stream));
+  }
+
+  // Asynchronously fill device argument with single value
+  template <typename T>
+  void assignDevArg(T* buf, int count, T val, cudaStream_t stream) {
+    std::vector<T> expVals(count, val);
+    return assignDevArg(buf, expVals, stream);
+  }
+
+  // Check device argument values against expected vector
+  template <typename T>
+  void checkDevArg(
+      const T* buf,
+      const std::vector<T> expVals,
+      std::vector<std::string>& errs,
+      int maxNumErrs = 10) {
+    const auto count = expVals.size();
+    std::vector<T> obsVals(count, static_cast<T>(-1));
+    CUDACHECK_ASSERT(
+        cudaMemcpy(obsVals.data(), buf, count * sizeof(T), cudaMemcpyDefault));
+    errs.reserve(maxNumErrs);
+    for (size_t i = 0; i < count; ++i) {
+      if (obsVals[i] != expVals[i] &&
+          errs.size() < static_cast<size_t>(maxNumErrs)) {
+        errs.push_back(
+            fmt::format(
+                "observed[{}] = {}, expected = {}", i, obsVals[i], expVals[i]));
+      }
+    }
+  }
+
+  // Check device argument values against single expected value
+  template <typename T>
+  void checkDevArg(
+      const T* buf,
+      int count,
+      T expVal,
+      std::vector<std::string>& errs,
+      int maxNumErrs = 10) {
+    std::vector<T> expVals(count, expVal);
+    return checkDevArg(buf, expVals, errs, maxNumErrs);
+  }
+
+  // Prepare buffer with kMemCudaMalloc memory type.
+  // For NCCL memory types (kMemNcclMemAlloc, kCuMemAllocDisjoint),
+  // use CtranNcclTestHelpers instead.
+  void* prepareBuf(
+      size_t bufSize,
+      MemAllocType memType,
+      std::vector<TestMemSegment>& segments);
+
+  // Release buffer allocated by prepareBuf.
+  // For NCCL memory types, use CtranNcclTestHelpers instead.
+  void releaseBuf(void* buf, size_t bufSize, MemAllocType memType);
+
+  // Align size to page boundary
+  size_t pageAligned(size_t nBytes) const {
+    return ((nBytes + pageSize_ - 1) / pageSize_) * pageSize_;
+  }
 
  private:
-  void setUpMpi();
-  void setUpTcpStore();
+  bool isBackendValid(
+      const std::vector<CtranMapperBackend>& excludedBackends,
+      CtranMapperBackend backend);
 
-  // TCP Store support
-  std::unique_ptr<c10d::TCPStore> tcpStore_{nullptr};
-  bool isTcpStoreServer() const;
-  std::vector<std::string>
-  exchangeInitUrls(const std::string& selfUrl, int numRanks, int selfRank);
-
-  // Test counter for TCP Store key generation
-  static std::atomic<int> testCount_;
+  size_t pageSize_{0};
+  std::unordered_set<void*> devArgs_;
 };
 
 } // namespace ctran

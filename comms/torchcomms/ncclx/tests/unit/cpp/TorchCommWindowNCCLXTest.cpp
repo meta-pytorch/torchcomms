@@ -47,7 +47,7 @@ TEST_F(TorchCommWindowNCCLXTest, windowPutExceedWindowSize) {
   testOperation([&]() { win->put(large_input_tensor, 0, 0, false); });
 
   testOperation([&]() {
-    auto remote_tensor = win->get_tensor(0);
+    auto remote_tensor = win->map_remote_tensor(0);
     // Try to access beyond window size via slicing
     remote_tensor.index({at::indexing::Slice(0, large_input_tensor.numel())});
   });

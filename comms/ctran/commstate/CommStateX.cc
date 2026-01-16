@@ -103,8 +103,12 @@ void CommStateX::initRankStatesTopology(
     ctran::bootstrap::IBootstrap* bootstrap) {
   auto myTopo = ctran::commstate::loadTopology(rank_, NCCL_TOPO_FILE_PATH);
   if (!myTopo) {
-    FB_CHECKTHROW(
-        false, "Failed to load topology from {}", NCCL_TOPO_FILE_PATH);
+    FB_CHECKTHROW_EX(
+        false,
+        rank_,
+        commHash_,
+        commDesc_,
+        fmt::format("Failed to load topology from {}", NCCL_TOPO_FILE_PATH));
   } else {
     CLOGF_SUBSYS(
         INFO,
@@ -125,7 +129,11 @@ void CommStateX::initRankStatesTopology(
   allTopos.at(rank_) = *myTopo;
   auto resFuture = bootstrap->allGather(
       allTopos.data(), sizeof(ncclx::RankTopology), rank_, nRanks_);
-  FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+  FB_COMMCHECKTHROW_EX(
+      static_cast<commResult_t>(std::move(resFuture).get()),
+      rank_,
+      commHash_,
+      commDesc_);
 
   // Create statex variable
   setRankStatesTopologies(std::move(allTopos));

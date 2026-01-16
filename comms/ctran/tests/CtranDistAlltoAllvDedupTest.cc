@@ -428,7 +428,7 @@ TEST_F(CtranAllToAllvDedupTest, TracingExec) {
   const TestTmpChunkParam tmpChkParam{4, 8};
   const TestExecWgParam execWgParam{1, 4, 16, 1, 8, 8, 8};
 
-  EnvRAII<bool> envTraceLogger(NCCL_CTRAN_ENABLE_TRACE_LOGGER, true);
+  EnvRAII<bool> envTrace(NCCL_CTRAN_ENABLE_PERFTRACE, true);
   SET_TMPCHK_ENVRAII(tmpChkParam);
   SET_EXEC_WG_ENVRAII(execWgParam);
 
@@ -446,7 +446,7 @@ TEST_F(CtranAllToAllvDedupTest, TracingExecSmall) {
   const TestTmpChunkParam tmpChkParam{4, 8};
   const TestExecWgParam execWgParam{1, 4, 4, 1, 4, 1, 1};
 
-  EnvRAII<bool> envTraceLogger(NCCL_CTRAN_ENABLE_TRACE_LOGGER, true);
+  EnvRAII<bool> envTrace(NCCL_CTRAN_ENABLE_PERFTRACE, true);
   SET_TMPCHK_ENVRAII(tmpChkParam);
   SET_EXEC_WG_ENVRAII(execWgParam);
 

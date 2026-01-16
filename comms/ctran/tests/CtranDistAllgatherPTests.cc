@@ -15,6 +15,7 @@
 #include <nccl.h>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/AllGatherP/AlgoImpl.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
@@ -37,7 +38,7 @@
 class CtranAllgatherPTestEnv : public ctran::CtranEnvironmentBase {
  public:
   void SetUp() override {
-    CtranEnvironmentBase::SetUp();
+    ctran::CtranEnvironmentBase::SetUp();
 
     // set logging level to WARN but allow override by manual run
     setenv("NCCL_DEBUG", "WARN", 0);
@@ -124,6 +125,30 @@ class CtranAllgatherPTest : public ctran::CtranDistTestFixture {
     }
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
+  }
+
+  void
+  cumemBufSetup(size_t sendCount, size_t recvCount, char** sBuf, char** rBuf) {
+    expectedVal = globalRank;
+
+    const size_t pageSize = getpagesize();
+    auto sBytes = sendCount * commTypeSize(dt);
+    auto rBytes = recvCount * commTypeSize(dt);
+
+    size_t bufSize;
+    bufSize = ((sBytes + pageSize - 1) / pageSize) * pageSize;
+    *sBuf = prepareBuf(bufSize, kMemNcclMemAlloc);
+    bufSize = ((rBytes + pageSize - 1) / pageSize) * pageSize;
+    *rBuf = prepareBuf(bufSize, kMemNcclMemAlloc);
+
+    CUDACHECK_TEST(cudaMemset(*sBuf, expectedVal, sBytes));
+    CUDACHECK_TEST(cudaMemset(*rBuf, rand(), rBytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+  }
+
+  void cumemBufCleanUp(void* sBuf, void* rBuf) {
+    releaseBuf((char*)sBuf, kMemNcclMemAlloc);
+    releaseBuf((char*)rBuf, kMemNcclMemAlloc);
   }
 
   void memoryCleanUp(MemAllocType memType) {
@@ -470,6 +495,91 @@ TEST_F(CtranAllgatherPTest, InternalRegisteredMemory) {
 
   ASSERT_EQ(ctran::allGatherPDestroy(request), commSuccess);
   delete request;
+}
+
+TEST_F(CtranAllgatherPTest, SharePersistentBuffer) {
+  // Test use case where AGP uses the same persistent buffer for multiple
+  // communicators
+  const auto recvCount = 67108864;
+  const auto sendCount = recvCount / numRanks;
+
+  const auto kComms = 20;
+  const auto kBufs = 3;
+  std::vector<cudaStream_t> streams(kComms);
+  std::vector<std::unique_ptr<CtranComm>> testComms(kComms);
+  std::vector<CtranPersistentRequest*> requests(kComms * kBufs);
+  std::vector<char*> sendBufs(kBufs);
+  std::vector<char*> recvBufs(kBufs);
+  std::vector<void*> sendHdls(kBufs);
+  std::vector<void*> recvHdls(kBufs);
+
+  for (int c = 0; c < kComms; c++) {
+    CUDACHECK_TEST(cudaStreamCreate(&streams[c]));
+    testComms[c] = makeCtranComm();
+  }
+
+  if (ncclIsCuMemSupported() == false) {
+    XLOG(INFO)
+        << "CuMem not supported, skipping InvalidCount test with memType = kMemNcclMemAlloc";
+    ;
+    return;
+  }
+
+  // allocate persistent buffers
+  for (int b = 0; b < kBufs; b++) {
+    cumemBufSetup(sendCount, recvCount, &sendBufs.at(b), &recvBufs.at(b));
+    // use default ctran comm to register buffers once
+    COMMCHECK_TEST(ctranComm->ctran_->commRegister(
+        recvBufs.at(b), recvCount * commTypeSize(dt), &recvHdls.at(b)));
+    COMMCHECK_TEST(ctranComm->ctran_->commRegister(
+        sendBufs.at(b), sendCount * commTypeSize(dt), &sendHdls.at(b)));
+  }
+  // Convert to int8_t for init to mimic FSDP use case
+  const auto initMaxRecvCount =
+      recvCount * commTypeSize(dt) / commTypeSize(commInt8);
+  const auto initDt = commInt8;
+
+  for (int b = 0; b < kBufs; b++) {
+    for (int c = 0; c < kComms; c++) {
+      meta::comms::Hints hints;
+      COMMCHECK_TEST(
+          ctran::allGatherPInit(
+              recvBufs.at(b),
+              initMaxRecvCount,
+              hints,
+              initDt,
+              testComms[c].get(),
+              streams.at(c),
+              requests.at(c * kBufs + b)));
+    }
+  }
+
+  // Run allgather execute in parallel
+  for (int b = 0; b < kBufs; b++) {
+    for (int c = 0; c < kComms; c++) {
+      ASSERT_EQ(
+          ctran::allGatherPExec(
+              sendBufs.at(b), sendCount, dt, requests[c * kBufs + b]),
+          commSuccess);
+    }
+  }
+
+  // synchronize all streams
+  for (int c = 0; c < kComms; c++) {
+    ASSERT_EQ(cudaStreamSynchronize(streams.at(c)), cudaSuccess);
+  }
+
+  // Release resources
+  for (int r = 0; r < requests.size(); r++) {
+    ASSERT_EQ(ctran::allGatherPDestroy(requests[r]), commSuccess);
+  }
+
+  // deregister buffers
+  for (int b = 0; b < kBufs; b++) {
+    COMMCHECK_TEST(ctranComm->ctran_->commDeregister(sendHdls.at(b)));
+    COMMCHECK_TEST(ctranComm->ctran_->commDeregister(recvHdls.at(b)));
+    cumemBufCleanUp(sendBufs.at(b), recvBufs.at(b));
+  }
 }
 
 inline std::string getTestName(

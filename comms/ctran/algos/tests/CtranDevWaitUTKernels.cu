@@ -27,8 +27,8 @@ __device__ void testDeviceWait(int bId, CtranTestDeviceWaitArgs& args) {
           &args.h2d->gpeKernelSync, /*workerId=*/bId, /*step=*/1);
       break;
     case FnName::waitPostWarp:
-      const auto wId = threadIdx.x / kWarpSize;
-      const auto laneId = threadIdx.x & (kWarpSize - 1);
+      const auto wId = threadIdx.x / comms::device::kWarpSize;
+      const auto laneId = threadIdx.x & (comms::device::kWarpSize - 1);
       // ensure warps operate independently
       if (wId == 1) {
         if (laneId == 0) {

@@ -53,8 +53,8 @@ commResult_t allToAllvDedupInit(
       new alltoallvdedup::AlgoImpl(comm, statex, comm->ctran_.get(), stream);
   request->algo = algo;
   const auto myRank = statex->rank();
-  algo->ctran_trace_logger = std::make_unique<utils::TraceLogger>(myRank);
-  auto ts = std::make_unique<utils::TraceRecord>("allToAllvDedup", myRank);
+  algo->perfTracer = std::make_unique<perftrace::Tracer>(myRank);
+  auto ts = std::make_unique<perftrace::Record>("allToAllvDedup", myRank);
   ts->startInterval("allToAllvDedupInit", 0, myRank);
 
   CLOGF_SUBSYS(INFO, INIT, "Rank {} allToAllvDedupInit START", myRank);
@@ -86,7 +86,7 @@ commResult_t allToAllvDedupInit(
       (void*)request);
 
   ts->endInterval("allToAllvDedupInit", 0);
-  algo->ctran_trace_logger->addTraceRecord(std::move(ts));
+  algo->perfTracer->addRecord(std::move(ts));
   return commSuccess;
 }
 

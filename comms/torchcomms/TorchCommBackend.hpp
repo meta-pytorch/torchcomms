@@ -145,8 +145,6 @@ class TorchCommBackend {
       const std::string& name,
       const CommOptions& options = {}) = 0;
 
-  virtual std::shared_ptr<c10::Allocator> getMemAllocator() = 0;
-
   virtual const CommOptions& getOptions() const = 0;
 
   virtual const at::Device& getDevice() const = 0;

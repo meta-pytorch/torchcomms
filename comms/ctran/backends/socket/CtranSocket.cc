@@ -147,8 +147,9 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
     }
 
     folly::SocketAddress ifAddrSockAddr(maybeAddr.value(), 0 /* port */);
-    FB_SYSCHECKTHROW(
-        listenSocket_.bindAndListen(ifAddrSockAddr, NCCL_SOCKET_IFNAME));
+    FB_SYSCHECKTHROW_EX(
+        listenSocket_.bindAndListen(ifAddrSockAddr, NCCL_SOCKET_IFNAME),
+        ncclLogData_);
     CLOGF_SUBSYS(
         INFO,
         INIT,
@@ -159,7 +160,7 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
     allListenSocketAddrs_.resize(comm->statex_->nRanks());
     auto maybeListenAddr = listenSocket_.getListenAddress();
     if (maybeListenAddr.hasError()) {
-      FB_SYSCHECKTHROW(maybeListenAddr.error());
+      FB_SYSCHECKTHROW_EX(maybeListenAddr.error(), ncclLogData_);
     }
     maybeListenAddr->getAddress(&allListenSocketAddrs_[rank_]);
 
@@ -169,7 +170,9 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
         sizeof(allListenSocketAddrs_[0]),
         comm->statex_->rank(),
         comm->statex_->nRanks());
-    FB_COMMCHECKTHROW(static_cast<commResult_t>(std::move(resFuture).get()));
+    FB_COMMCHECKTHROW_EX(
+        static_cast<commResult_t>(std::move(resFuture).get()),
+        comm->logMetaData_);
   } else {
     // use provided addr(i.e. ip, port, host) to initialize ctranSocket
     auto serverAddrSockAddr = toSocketAddress(serverAddr);
@@ -195,7 +198,7 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
 
 void CtranSocket::bootstrapAccept() {
   // Set cudaDev for logging
-  FB_CUDACHECKTHROW(cudaSetDevice(cudaDev_));
+  FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev_), comm->logMetaData_);
   commNamedThreadStart(
       "CTranSocketListen", rank_, commHash_, commDesc_, __func__);
   while (1) {
@@ -206,11 +209,11 @@ void CtranSocket::bootstrapAccept() {
       if (maybeSocket.error() == EBADF || maybeSocket.error() == EINVAL) {
         break; // listen socket is closed
       }
-      FB_SYSCHECKTHROW(maybeSocket.error());
+      FB_SYSCHECKTHROW_EX(maybeSocket.error(), ncclLogData_);
     }
     auto socket = std::make_unique<ctran::bootstrap::Socket>(
         std::move(maybeSocket.value()));
-    FB_SYSCHECKTHROW(socket->recv(&peerRank, sizeof(int)));
+    FB_SYSCHECKTHROW_EX(socket->recv(&peerRank, sizeof(int)), ncclLogData_);
 
     CLOGF_SUBSYS(
         INFO,
@@ -224,8 +227,9 @@ void CtranSocket::bootstrapAccept() {
         peerRank);
 
     // Store the nccl socket
-    FB_COMMCHECKTHROW(checkValidPeer(peerRank));
-    FB_COMMCHECKTHROW(updateSocket(std::move(socket), peerRank));
+    FB_COMMCHECKTHROW_EX(checkValidPeer(peerRank), comm->logMetaData_);
+    FB_COMMCHECKTHROW_EX(
+        updateSocket(std::move(socket), peerRank), comm->logMetaData_);
   }
 
   CLOGF_SUBSYS(
@@ -289,7 +293,8 @@ commResult_t CtranSocket::bootstrapConnect(
 
   // Store the nccl socket
   FB_COMMCHECK(checkValidPeer(peerRank));
-  FB_COMMCHECKTHROW(updateSocket(std::move(socket), peerRank));
+  FB_COMMCHECKTHROW_EX(
+      updateSocket(std::move(socket), peerRank), comm->logMetaData_);
 
 exit:
 

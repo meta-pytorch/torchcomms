@@ -11,8 +11,8 @@
 #include <string>
 
 #include "comms/ctran/backends/CtranCtrl.h"
+#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
-#include "comms/ctran/tracing/MapperTrace.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
@@ -49,7 +49,7 @@ std::vector<CtranMapperBackend> getToEnableBackends(
         "CTRAN-MAPPER: Try to override backends through Ctran Config. Currently it is specific config for MCCL. If you are using NCCL with NCCL_CTRAN_BACKENDS, please report this to MCCL team");
     for (auto& b : overrideBackend) {
       if (b == CommBackend::UNSET) {
-        FB_ERRORTHROW(
+        FB_ERRORTHROW_EX_NOCOMM(
             commInvalidUsage, "CTRAN-MAPPER: Invalid override backend UNSET");
       }
       enableBackends.emplace_back(b);
@@ -94,8 +94,9 @@ CtranMapper::CtranMapper(CtranComm* comm) {
        enableBackends_[CtranMapperBackend::NVL] ||
        enableBackends_[CtranMapperBackend::SOCKET]) &&
       enableBackends_[CtranMapperBackend::TCPDM]) {
-    FB_ERRORTHROW(
+    FB_ERRORTHROW_EX(
         commInvalidArgument,
+        comm->logMetaData_,
         "CTRAN-MAPPER: TCPDM can not be enabled with IB, NVL or Socket backends");
   }
 
@@ -429,8 +430,7 @@ commResult_t CtranMapper::remReleaseMem(CtranMapperRegElem* regElem) {
       std::unique_ptr<CbCtrlRequest> req =
           std::make_unique<CbCtrlRequest>(peerRank, backend);
 
-      FB_COMMCHECK(this->ctranNvl->remReleaseMem(
-          regElem->nvlRegElem, peerRank, req->msg));
+      FB_COMMCHECK(CtranNvl::remReleaseMem(regElem->nvlRegElem, req->msg));
       if (this->ctranIb) {
         FB_COMMCHECK(this->ctranIb->isendCtrlMsg(
             req->msg.type,

@@ -13,13 +13,13 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/backends/socket/CtranSocket.h"
+#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/mapper/CtranMapperRegMem.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/profiler/Profiler.h"
-#include "comms/ctran/tracing/MapperTrace.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
@@ -1082,13 +1082,13 @@ class CtranMapper {
     }
 
     if (backend == CtranMapperBackend::NVL) {
-      FB_COMMCHECK(this->ctranNvl->exportMem(buf, regElem->nvlRegElem, msg));
+      FB_COMMCHECK(CtranNvl::exportMem(buf, regElem->nvlRegElem, msg));
 
       // Record the exported remote rank to notify at deregistration
       exportRegCache_.wlock()->record(regElem, rank);
 
     } else if (backend == CtranMapperBackend::IB) {
-      FB_COMMCHECK(this->ctranIb->exportMem(buf, regElem->ibRegElem, msg));
+      FB_COMMCHECK(CtranIb::exportMem(buf, regElem->ibRegElem, msg));
     } else if (backend == CtranMapperBackend::TCPDM) {
       // No need to export the buffers, TCP device memory is steered by
       // the receiver.
@@ -1119,7 +1119,7 @@ class CtranMapper {
           return commInternalError;
         }
         remKey->backend = CtranMapperBackend::IB;
-        FB_COMMCHECK(this->ctranIb->importMem(buf, &(remKey->ibKey), msg));
+        FB_COMMCHECK(CtranIb::importMem(buf, &(remKey->ibKey), msg));
         break;
       case ControlMsgType::NVL_EXPORT_MEM:
         if (!this->ctranNvl) {
@@ -1937,7 +1937,7 @@ class CtranMapper {
         tcpDmReq = ctran::CtranTcpDmRequest();
       } else {
         CLOGF(ERR, "CTRAN-MAPPER: Unsupported backend {}", backend);
-        FB_COMMCHECKTHROW(commInternalError);
+        FB_COMMCHECKTHROW_EX_NOCOMM(commInternalError);
       }
     };
     ~CbCtrlRequest() {};
@@ -1985,7 +1985,7 @@ class CtranMapperEpochRAII {
   // needed only for selected cases.
   explicit CtranMapperEpochRAII(CtranMapper* mapper) : mapper_(mapper) {
     if (mapper_ != nullptr) {
-      FB_COMMCHECKTHROW(mapper_->epochLock());
+      FB_COMMCHECKTHROW_EX_NOCOMM(mapper_->epochLock());
     }
   }
 

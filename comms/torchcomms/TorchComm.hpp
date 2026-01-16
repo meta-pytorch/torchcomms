@@ -134,9 +134,6 @@ class TorchComm {
       const std::string& name,
       const CommOptions& options = {});
 
-  // Memory Management
-  std::shared_ptr<c10::Allocator> getMemAllocator();
-
   // Batch Operations
   BatchSendRecv batch_op_create();
 
@@ -190,6 +187,11 @@ std::shared_ptr<TorchComm> new_comm(
     at::Device device,
     const std::string& name,
     const CommOptions& options = {});
+
+// Global memory allocator function
+// Returns a static allocator for the specified backend
+// Note: Allocator is created once per backend and reused across all instances
+std::shared_ptr<c10::Allocator> get_mem_allocator(const std::string& backend);
 
 } // namespace comms
 } // namespace torch

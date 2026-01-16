@@ -982,10 +982,12 @@ set(CTRAN_FILES
   comms/ctran/profiler/Profiler.h
   comms/ctran/profiler/QueuePairProfilerModule.cc
   comms/ctran/profiler/QueuePairProfilerModule.h
-  comms/ctran/tracing/CollTraceWrapper.cc
-  comms/ctran/tracing/CollTraceWrapper.h
-  comms/ctran/tracing/MapperTrace.cc
-  comms/ctran/tracing/MapperTrace.h
+  comms/ctran/colltrace/CollTraceWrapper.cc
+  comms/ctran/colltrace/CollTraceWrapper.h
+  comms/ctran/colltrace/MapperTrace.cc
+  comms/ctran/colltrace/MapperTrace.h
+  comms/ctran/ibverbx/device/structs.h
+  comms/ctran/ibverbx/Mlx5dv.h
   comms/ctran/utils/Abort.cc
   comms/ctran/utils/Abort.h
   comms/ctran/utils/Alloc.cc
@@ -1003,8 +1005,14 @@ set(CTRAN_FILES
   comms/ctran/utils/CtranIpc.cc
   comms/ctran/utils/CtranIpc.h
   comms/ctran/utils/CtranPerf.h
-  comms/ctran/utils/CtranTraceLogger.cc
-  comms/ctran/utils/CtranTraceLogger.h
+  comms/ctran/algos/perftrace/Record.cc
+  comms/ctran/algos/perftrace/Record.h
+  comms/ctran/algos/perftrace/TimeInterval.cc
+  comms/ctran/algos/perftrace/TimeInterval.h
+  comms/ctran/algos/perftrace/TimestampPoint.cc
+  comms/ctran/algos/perftrace/TimestampPoint.h
+  comms/ctran/algos/perftrace/Tracer.cc
+  comms/ctran/algos/perftrace/Tracer.h
   comms/ctran/utils/CudaGraphUtils.h
   comms/ctran/utils/CudaUtils.cc
   comms/ctran/utils/CudaUtils.h

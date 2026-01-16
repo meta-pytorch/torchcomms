@@ -18,7 +18,7 @@
 #include "comms/ctran/bootstrap/tests/MockIServerSocket.h"
 #include "comms/ctran/bootstrap/tests/MockISocket.h"
 #include "comms/ctran/bootstrap/tests/MockInjectorSocketFactory.h"
-#include "comms/ctran/tests/CtranStandaloneUTUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 

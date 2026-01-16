@@ -15,6 +15,7 @@
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/backends/nvl/CtranNvlImpl.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 
@@ -265,14 +266,15 @@ TEST_P(CtranNvlTestSuite, ExportImportMem) {
     CtranNvlRegElem* nvlRegElem = reinterpret_cast<CtranNvlRegElem*>(regElems);
     ControlMsg msg(ControlMsgType::NVL_EXPORT_MEM);
 
-    COMMCHECK_TEST(ctranNvl->exportMem(data, regElems, msg));
-    dataRange = nvlRegElem->ipcMem.getRange();
+    COMMCHECK_TEST(CtranNvl::exportMem(data, regElems, msg));
+    auto ipcMem = nvlRegElem->ipcMem.rlock();
+    dataRange = ipcMem->getRange();
 
     EXPECT_EQ(msg.type, ControlMsgType::NVL_EXPORT_MEM);
     EXPECT_EQ(
         reinterpret_cast<void*>(msg.nvlExp.ipcDesc.base),
-        reinterpret_cast<void*>(nvlRegElem->ipcMem.getBase()));
-    EXPECT_EQ(msg.nvlExp.ipcDesc.range, nvlRegElem->ipcMem.getRange());
+        reinterpret_cast<void*>(ipcMem->getBase()));
+    EXPECT_EQ(msg.nvlExp.ipcDesc.range, ipcMem->getRange());
     EXPECT_EQ(msg.nvlExp.ipcDesc.numSegments, 1);
     EXPECT_NE(msg.nvlExp.ipcDesc.segments[0].sharedHandle.fd, 0);
     EXPECT_GT(msg.nvlExp.ipcDesc.segments[0].range, 0);
@@ -286,7 +288,7 @@ TEST_P(CtranNvlTestSuite, ExportImportMem) {
 
     // Remote release - check control message content and send to peer
     ControlMsg releaseMsg;
-    ctranNvl->remReleaseMem(nvlRegElem, peer, releaseMsg);
+    CtranNvl::remReleaseMem(nvlRegElem, releaseMsg);
     EXPECT_EQ(releaseMsg.type, ControlMsgType::NVL_RELEASE_MEM);
     EXPECT_EQ(releaseMsg.nvlRls.base, msg.nvlExp.ipcDesc.base);
 

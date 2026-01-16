@@ -9,13 +9,13 @@
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvDynamicPImpl.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/gpe/CtranChecksum.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/gpe/CtranGpeImpl.h"
 #include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/ctran/tracing/CollTraceWrapper.h"
-#include "comms/ctran/tracing/MapperTrace.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/Debug.h"
@@ -59,17 +59,19 @@ CtranGpe::Impl::Impl() {
   this->gpeKernelSyncPool =
       std::make_unique<GpeKernelSyncPool>(NCCL_CTRAN_NUM_GPE_KERNEL_SYNCS);
 
-  FB_CUDACHECKTHROW(
-      cudaEventCreateWithFlags(&execEvent_, cudaEventDisableTiming));
-  FB_CUDACHECKTHROW(
-      cudaStreamCreateWithFlags(&execOrderStream_, cudaStreamNonBlocking));
+  FB_CUDACHECKTHROW_EX(
+      cudaEventCreateWithFlags(&execEvent_, cudaEventDisableTiming),
+      comm->logMetaData_);
+  FB_CUDACHECKTHROW_EX(
+      cudaStreamCreateWithFlags(&execOrderStream_, cudaStreamNonBlocking),
+      comm->logMetaData_);
 
   return;
 }
 
 CtranGpe::Impl::~Impl() {
-  FB_CUDACHECKTHROW(cudaEventDestroy(execEvent_));
-  FB_CUDACHECKTHROW(cudaStreamDestroy(execOrderStream_));
+  FB_CUDACHECKTHROW_EX(cudaEventDestroy(execEvent_), comm->logMetaData_);
+  FB_CUDACHECKTHROW_EX(cudaStreamDestroy(execOrderStream_), comm->logMetaData_);
 }
 
 struct cmdCbPlan {
@@ -462,7 +464,7 @@ void CtranGpe::Impl::gpeThreadFn() {
       __func__);
 
   CTRAN_ASYNC_ERR_GUARD(comm->getAsyncError(), {
-    FB_CUDACHECKTHROW(cudaSetDevice(cudaDev));
+    FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev), comm->logMetaData_);
 
     while (1) {
       auto cmd = cmdDequeue();
@@ -544,9 +546,7 @@ void CtranGpe::Impl::gpeThreadFn() {
         // info at failure or throw exception from bottom.
         CTRAN_ASYNC_ERR_GUARD_FAULT_TOLERANCE(comm, {
           FB_COMMCHECKTHROW_EX(
-              cmd->coll.func(cmd->coll.opGroup),
-              statex->rank(),
-              statex->commHash());
+              cmd->coll.func(cmd->coll.opGroup), comm->logMetaData_);
         });
 
         if (cmd->persistent) {
@@ -595,8 +595,9 @@ void CtranGpe::Impl::gpeThreadFn() {
         // the allocations in the round robin fashion to avoid immediate
         // reuse.
         if (cmd->unpackPool != nullptr) {
-          FB_COMMCHECKTHROW(
-              comm->ctran_->mapper->teardownUnpackConsumer(cmd->unpackPool));
+          FB_COMMCHECKTHROW_EX(
+              comm->ctran_->mapper->teardownUnpackConsumer(cmd->unpackPool),
+              comm->logMetaData_);
         }
       }
 
@@ -796,7 +797,7 @@ void KernelElem::wait(std::shared_ptr<ctran::utils::Abort> abort, int groupId) {
 }
 
 KernelElemPool::KernelElemPool(size_t capacity) : capacity_(capacity) {
-  FB_CUDACHECKTHROW(cudaHostAlloc(
+  FB_CUDACHECKTHROW_EX_NOCOMM(cudaHostAlloc(
       &this->memPtr_,
       this->capacity_ * sizeof(struct KernelElem),
       cudaHostAllocDefault));

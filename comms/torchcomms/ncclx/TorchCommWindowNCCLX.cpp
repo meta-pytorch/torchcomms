@@ -82,6 +82,11 @@ void TorchCommWindowNCCLX::tensor_register(const at::Tensor& tensor) {
 
 void TorchCommWindowNCCLX::tensor_deregister() {
   checkCommAndThrow();
+
+  // Barrier to ensure all ranks have finished using the window
+  // before anyone deregisters (prevents use-after-free)
+  torch_comm_->barrier(false);
+
   if (win_ == nullptr) {
     throw std::runtime_error(
         "[TorchCommWindowNCCLX]: Double deregistration error: win_ == nullptr");
@@ -91,6 +96,9 @@ void TorchCommWindowNCCLX::tensor_deregister() {
   win_ = nullptr;
   win_size_ = 0;
   buf_tensor_.reset(); // Release the tensor reference
+
+  // Barrier to ensure all ranks completed deregistration before cleanup
+  torch_comm_->barrier(false);
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
@@ -126,7 +134,7 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
   return work;
 }
 
-at::Tensor TorchCommWindowNCCLX::get_tensor(int rank) {
+at::Tensor TorchCommWindowNCCLX::map_remote_tensor(int rank) {
   checkCommAndThrow();
   checkWindowAndThrow();
   void* base_ptr = nullptr;
@@ -136,9 +144,19 @@ at::Tensor TorchCommWindowNCCLX::get_tensor(int rank) {
 
   CHECK_NOTNULL(base_ptr);
 
-  // Create tensor view of the entire registered buffer
+  // Use target_device() to bypass ATen's device validation when wrapping
+  // memory pointers. This enables creating tensors from pointers where the
+  // memory device differs from the caller's device.
+  //
+  // Memory lifetime managed by Window (freed on tensor_deregister).
+  // No manual cleanup needed.
+  //
+  // Reference: aten/src/ATen/ops/from_blob.h:53-57
   auto options = at::TensorOptions().dtype(buf_dtype_).device(buf_device_);
-  auto t = at::from_blob(base_ptr, buf_shape_, options);
+  auto t = at::for_blob(base_ptr, buf_shape_)
+               .options(options)
+               .target_device(buf_device_)
+               .make_tensor();
 
   return t;
 }

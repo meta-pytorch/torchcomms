@@ -6,7 +6,6 @@
 #include <cstddef>
 
 #include "comms/pipes/CopyUtils.cuh"
-#include "comms/pipes/P2pTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -21,7 +20,7 @@ namespace comms::pipes {
  *
  * IMPLEMENTATION:
  * ===============
- * - write(): Implemented using copy_chunk_vectorized with zero offsets
+ * - write(): Implemented using memcpy_vectorized with zero offsets
  * - send(): Not implemented (pure virtual from base)
  * - recv(): Not implemented (pure virtual from base)
  *
@@ -32,12 +31,12 @@ namespace comms::pipes {
  *
  * Example:
  *   SelfTransportDevice transport;
- *   transport.write(dst_d, src_d, nbytes);
+ *   transport.write(group, dst_d, src_d, nbytes);
  */
-class P2pSelfTransportDevice : public P2pTransportDevice {
+class P2pSelfTransportDevice {
  public:
   __host__ __device__ P2pSelfTransportDevice() = default;
-  __host__ __device__ ~P2pSelfTransportDevice() override = default;
+  __host__ __device__ ~P2pSelfTransportDevice() = default;
 
   /**
    * send - Not implemented for SelfTransportDevice
@@ -45,8 +44,7 @@ class P2pSelfTransportDevice : public P2pTransportDevice {
    * Self transport is for local copies only, not for sending to peers.
    * Calling this method will trap and abort the kernel.
    */
-  __device__ void send(ThreadGroup& group, void* srcbuff, std::size_t nbytes)
-      override {
+  __device__ void send(ThreadGroup& group, void* srcbuff, std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
     __trap(); // Abort kernel if send is called on SelfTransportDevice
 #endif
@@ -58,8 +56,7 @@ class P2pSelfTransportDevice : public P2pTransportDevice {
    * Self transport is for local copies only, not for receiving from peers.
    * Calling this method will trap and abort the kernel.
    */
-  __device__ void recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes)
-      override {
+  __device__ void recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
     __trap(); // Abort kernel if recv is called on SelfTransportDevice
 #endif
@@ -69,8 +66,13 @@ class P2pSelfTransportDevice : public P2pTransportDevice {
    * write - Direct local memory copy using vectorized operations
    *
    * Performs a high-performance vectorized copy from src_d to dst_d using
-   * copy_chunk_vectorized with zero offsets. Creates a warp group internally
-   * to enable cooperative copy.
+   * memcpy_vectorized. The work is distributed across ALL thread groups
+   * using for_each_item_contiguous, so each group processes only its portion
+   * of the data.
+   *
+   * The chunk size is computed dynamically as (nbytes / total_groups) to
+   * ensure good parallelism, with a minimum of 16 bytes per chunk for
+   * vectorized access efficiency.
    *
    * NOTE: only support no overlap copy for now
    *
@@ -83,21 +85,47 @@ class P2pSelfTransportDevice : public P2pTransportDevice {
       ThreadGroup& group,
       char* dst_d,
       const char* src_d,
-      std::size_t nbytes) override {
+      std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
+    // Early return for no-op cases (check before overlap to handle dst == src)
+    if (nbytes == 0 || dst_d == src_d) {
+      return;
+    }
+
     // Check for buffer overlap - only support non-overlapping buffers
     if (!(src_d + nbytes <= dst_d || dst_d + nbytes <= src_d)) {
       __trap(); // Abort kernel if buffers overlap
     }
 
-    // Use copy_chunk_vectorized with zero offsets
-    copy_chunk_vectorized<uint4>(
-        dst_d, // dst_base
-        src_d, // src_base
-        nbytes, // chunk_bytes
-        0, // dst_offset
-        0, // src_offset
-        group);
+    // Compute chunk size: aim for nbytes / total_groups per chunk,
+    // aligned to 16 bytes (uint4 size) for efficient vectorized access
+    constexpr std::size_t kAlignment = 16;
+    const std::size_t targetChunkSize = nbytes / group.total_groups;
+    // Round up to nearest 16-byte boundary, minimum 16 bytes
+    const std::size_t chunkSize =
+        ((targetChunkSize + kAlignment - 1) / kAlignment) * kAlignment;
+    // Ensure minimum chunk size
+    const std::size_t alignedChunkSize = chunkSize > 0 ? chunkSize : kAlignment;
+
+    const std::size_t numChunks =
+        (nbytes + alignedChunkSize - 1) / alignedChunkSize;
+
+    // Distribute chunks across all groups using for_each_item_contiguous
+    // Each group processes its assigned contiguous range of chunks
+    group.for_each_item_contiguous(numChunks, [&](uint32_t chunkIdx) {
+      const std::size_t chunkOffset = chunkIdx * alignedChunkSize;
+      const std::size_t chunkBytes = (chunkOffset + alignedChunkSize <= nbytes)
+          ? alignedChunkSize
+          : nbytes - chunkOffset;
+
+      if (chunkBytes > 0) {
+        memcpy_vectorized(
+            dst_d + chunkOffset, // dst_base
+            src_d + chunkOffset, // src_base
+            chunkBytes, // chunk_bytes
+            group);
+      }
+    });
 #endif
   }
 };

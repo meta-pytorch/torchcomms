@@ -5,9 +5,9 @@
 #include "Types.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/ctran/tracing/CollTraceWrapper.h"
 #include "comms/ctran/window/CtranWin.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -101,16 +101,18 @@ commResult_t ctranGet(
       comm,
       stream);
 
-  // Check if the target displacement exceeds the window size
+  // Check if the target displacement exceeds the remote peer's window size
   size_t targetDispNbytes = targetDisp * commTypeSize(datatype);
   size_t countNbytes = count * commTypeSize(datatype);
-  if ((targetDispNbytes + countNbytes) > win->dataBytes) {
+  size_t peerWinSize = win->getDataSize(peer);
+  if ((targetDispNbytes + countNbytes) > peerWinSize) {
     CLOGF(
         ERR,
-        "Invalid target displacement from {} bytes to {} bytes exceeding the window size {}",
+        "Invalid target displacement from {} bytes to {} bytes exceeding peer {}'s window size {}",
         targetDispNbytes,
         targetDispNbytes + countNbytes,
-        win->dataBytes);
+        peer,
+        peerWinSize);
     return commInvalidArgument;
   }
 

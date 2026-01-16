@@ -120,7 +120,7 @@ ncclResult_t ncclAllReduce(const void* sendbuff, void* recvbuff, size_t count,
   auto algo = ncclx::algoconf::getAllReduceAlgo();
 
   // [NCCLX] Redirect to CTRAN if enabled and applicable
-  if (algo != NCCL_ALLREDUCE_ALGO::orig && ctranAllReduceSupport(comm->ctranComm_.get())) {
+  if (algo != NCCL_ALLREDUCE_ALGO::orig && ctranAllReduceSupport(comm->ctranComm_.get(), algo)) {
     return metaCommToNccl(ctranAllReduce(
         sendbuff, recvbuff, count, ncclToMetaComm(datatype), ncclToMetaComm(op), comm->ctranComm_.get(), stream, algo));
   }

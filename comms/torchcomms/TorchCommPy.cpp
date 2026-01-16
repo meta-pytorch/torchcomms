@@ -179,6 +179,10 @@ Args:
           R"(
 Deregister the window and free all associated resources.
 
+This is a collective operation that includes internal barriers to ensure:
+1. All ranks have finished using the window before deregistration
+2. All ranks have completed deregistration before proceeding
+
       )",
           py::call_guard<py::gil_scoped_release>())
       .def(
@@ -228,7 +232,7 @@ Example usage:
   work.wait()
 
   # on the remote side, get the tensor from the window after waiting on the remote signal
-  tensor = window.get_tensor(rank)
+  tensor = window.map_remote_tensor(rank)
 
   # safely use the tensor after the collective completes
   tensor.sum()
@@ -299,8 +303,8 @@ Args:
           py::arg("peer_rank"),
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "get_tensor",
-          &TorchCommWindow::get_tensor,
+          "map_remote_tensor",
+          &TorchCommWindow::map_remote_tensor,
           R"(
 Get the entire tensor view from the remote rank's window buffer.
 
@@ -315,7 +319,7 @@ Returns:
 
 Example:
     If the registered buffer has shape [100, 512, 128]:
-    - full_tensor = get_tensor(rank=0)
+    - full_tensor = map_remote_tensor(rank=0)
       returns a tensor with shape [100, 512, 128]
     - You can then slice it: sliced = full_tensor[20:65]
 
@@ -1205,9 +1209,13 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
           &TorchComm::batch_op_create,
           "Create a batch operation object for batched P2P operations.",
           py::call_guard<py::gil_scoped_release>())
+      // NOTE: This property is kept temporarily to avoid breaking upstream
+      // callers. The allocator is actually a global static per backend
+      // (accessed via get_mem_allocator(backend)), not tied to the comm
+      // instance lifetime. Future code should use the global function directly.
       .def_property_readonly(
           "mem_allocator",
-          &TorchComm::getMemAllocator,
+          [](TorchComm& self) { return get_mem_allocator(self.getBackend()); },
           "Get the communication-specific memory allocator");
 
   intrusive_ptr_class_<BackendWrapper, c10d::Backend>(m, "_BackendWrapper")
@@ -1246,5 +1254,24 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       py::arg("backend_name"),
       py::arg("name"),
       py::arg("timeout") = std::chrono::milliseconds(60000),
+      py::call_guard<py::gil_scoped_release>());
+
+  m.def(
+      "get_mem_allocator",
+      [](const std::string& backend) { return get_mem_allocator(backend); },
+      R"(
+      Get the global memory allocator for the specified backend.
+
+      This allocator is static per backend and not tied to any specific
+      communicator instance. Memory allocated with this allocator can be
+      shared across multiple communicators of the same backend.
+
+      Args:
+          backend: The backend name (e.g., "nccl", "ncclx")
+
+      Returns:
+          A c10::Allocator object for the specified backend.
+      )",
+      py::arg("backend"),
       py::call_guard<py::gil_scoped_release>());
 }

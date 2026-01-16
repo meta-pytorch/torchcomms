@@ -229,8 +229,16 @@ export CMAKE_PREFIX_PATH="$CONDA_PREFIX"
 export LIB_PREFIX="lib64"
 
 BUILDDIR=${BUILDDIR:="${PWD}/build/ncclx"}
-NVCC_ARCH=${NVCC_ARCH:="a100,h100"}
 CUDA_HOME=${CUDA_HOME:="/usr/local/cuda"}
+NVCC_ARCH=${NVCC_ARCH:="a100,h100"}
+
+# Add b200 support if CUDA 12.8+ is available
+CUDA_VERSION=$("${CUDA_HOME}/bin/nvcc" --version | grep -oP 'release \K[0-9]+\.[0-9]+')
+CUDA_MAJOR=$(echo "$CUDA_VERSION" | cut -d. -f1)
+CUDA_MINOR=$(echo "$CUDA_VERSION" | cut -d. -f2)
+if [[ "$CUDA_MAJOR" -gt 12 ]] || [[ "$CUDA_MAJOR" -eq 12 && "$CUDA_MINOR" -ge 8 ]]; then
+    NVCC_ARCH="${NVCC_ARCH},b200"
+fi
 NCCL_FP8=${NCCL_FP8:=1}
 CLEAN_BUILD=${CLEAN_BUILD:=0}
 LIB_SUFFIX=${LIB_SUFFIX:-lib}
@@ -270,16 +278,14 @@ THRIFT_SERVICE_LDFLAGS=(
   "-Wl,--end-group"
   "-l:libwangle.a"
   "-l:libfizz.a"
-  "-l:libcrypto.a"
-  "-l:libssl.a"
   "-l:libxxhash.a"
 )
 THIRD_PARTY_LDFLAGS+="${THRIFT_SERVICE_LDFLAGS[*]} "
 THIRD_PARTY_LDFLAGS+="$(pkg-config --libs --static libfolly) "
 if [[ -z "${USE_SYSTEM_LIBS}" ]]; then
-  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libfmt.a "
+  THIRD_PARTY_LDFLAGS+="-l:libglog.a -l:libgflags.a -l:libboost_context.a -l:libfmt.a -l:libssl.a -l:libcrypto.a"
 else
-  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt "
+  THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto"
 fi
 
 if [[ -z "${NVCC_GENCODE-}" ]]; then
@@ -300,6 +306,9 @@ if [[ -z "${NVCC_GENCODE-}" ]]; then
         "h100")
             arch_gencode="$arch_gencode -gencode=arch=compute_90,code=sm_90"
         ;;
+        "b200")
+            arch_gencode="$arch_gencode -gencode=arch=compute_100,code=sm_100"
+        ;;
         esac
     done
     NVCC_GENCODE=$arch_gencode
@@ -319,8 +328,7 @@ function build_nccl {
     NVCC_GENCODE="$NVCC_GENCODE" \
     CUDA_HOME="$CUDA_HOME" \
     NCCL_HOME="$NCCL_HOME" \
-    NCCL_SUFFIX="x" \
-    DEV_SIGNATURE="$DEV_SIGNATURE" \
+    NCCL_SUFFIX="x-${DEV_SIGNATURE}" \
     NCCL_FP8="$NCCL_FP8" \
     BASE_DIR="$BASE_DIR" \
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
@@ -330,6 +338,53 @@ function build_nccl {
     CUDARTLIB="$CUDARTLIB"
 }
 
-build_nccl
+function build_and_install_nccl {
+make VERBOSE=1 -j \
+    src.install \
+    BUILDDIR="$BUILDDIR" \
+    NVCC_GENCODE="$NVCC_GENCODE" \
+    CUDA_HOME="$CUDA_HOME" \
+    NCCL_HOME="$NCCL_HOME" \
+    NCCL_SUFFIX="x-${DEV_SIGNATURE}" \
+    NCCL_FP8="$NCCL_FP8" \
+    BASE_DIR="$BASE_DIR" \
+    CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
+    CONDA_LIB_DIR="$CONDA_LIB_DIR" \
+    THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
+    NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE" \
+    CUDARTLIB="$CUDARTLIB"
+}
+
+if [[ -z "${NCCL_BUILD_INSTALL_NCCL}" ]]; then
+  build_nccl
+else
+  build_and_install_nccl
+fi
+
+# sanity check
+if [ -n "${NCCL_RUN_SANITY_CHECK}" ]; then
+    pushd examples
+    export NCCL_DEBUG=WARN
+    export LD_LIBRARY_PATH=$BUILDDIR/lib
+
+    make all \
+      NVCC_GENCODE="$NVCC_GENCODE" \
+      CUDA_HOME="$CUDA_HOME" \
+      NCCL_HOME="$CONDA_PREFIX" \
+      DEV_SIGNATURE="$DEV_SIGNATURE" \
+      FBCODE_DIR="$FBCODE_DIR" \
+      CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
+      CONDA_LIB_DIR="$CONDA_LIB_DIR" \
+      NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE"
+
+    set +e
+
+    TIMEOUT=10s
+    timeout $TIMEOUT "$BUILDDIR"/examples/HelloWorld
+    if [ "$?" == "124" ]; then
+        echo "Program TIMEOUT in ${TIMEOUT}. Terminate."
+    fi
+    popd
+fi
 
 popd

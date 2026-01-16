@@ -36,7 +36,11 @@ constexpr bool kDefaultEnableCudaGraphSupport = true;
 // Custom exception class for better error handling
 class NCCLException : public std::exception {
  public:
-  NCCLException(NcclxApi& api, const std::string& message, ncclResult_t result);
+  NCCLException(
+      NcclxApi& api,
+      const std::string& message,
+      ncclResult_t result,
+      ncclComm_t comm);
 
   const char* what() const noexcept override;
   ncclResult_t getResult() const;
@@ -226,12 +230,11 @@ class TorchCommNCCLX : public TorchCommBackend,
       const std::string& name,
       const CommOptions& options = {}) override;
 
-  std::shared_ptr<c10::Allocator> getMemAllocator() override;
-
   // Friend access for TorchCommNCCLX
   friend class TorchWorkNCCLX;
   friend class CachingAllocatorHookImpl;
   friend class TorchCommWindowNCCLX;
+  friend class TorchCommNCCLXPersistentRequest;
 
   // Getter for CUDA API (for friend classes)
   CudaApi* getCudaApi() const {

@@ -7,7 +7,7 @@
 #include <gtest/gtest.h>
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/tests/CtranStandaloneUTUtils.h"
+#include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ctran::testing {
@@ -17,7 +17,7 @@ struct TestParam {
   enum NCCL_ALLGATHER_ALGO algo;
 };
 
-class CtranAllGatherTest : public CtranStandaloneMultiRankBaseTest,
+class CtranAllGatherTest : public CtranIntraProcessFixture,
                            public ::testing::WithParamInterface<TestParam> {
  protected:
   static constexpr int kNRanks = 4;
@@ -27,7 +27,7 @@ class CtranAllGatherTest : public CtranStandaloneMultiRankBaseTest,
   static constexpr size_t kBufferNElem = kBufferSize / kTypeSize;
 
   void SetUp() override {
-    CtranStandaloneMultiRankBaseTest::SetUp();
+    CtranIntraProcessFixture::SetUp();
   }
 
   void overrideEnvConfig(const TestParam& param) {
@@ -46,7 +46,7 @@ class CtranAllGatherTest : public CtranStandaloneMultiRankBaseTest,
       std::optional<std::vector<std::shared_ptr<::ctran::utils::Abort>>>
           aborts = std::nullopt) {
     overrideEnvConfig(param);
-    CtranStandaloneMultiRankBaseTest::startWorkers(
+    CtranIntraProcessFixture::startWorkers(
         kNRanks,
         /*aborts=*/
         aborts.value_or(std::vector<std::shared_ptr<::ctran::utils::Abort>>{}));

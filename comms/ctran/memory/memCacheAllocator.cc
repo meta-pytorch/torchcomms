@@ -27,7 +27,8 @@ std::shared_ptr<memCacheAllocator> memCacheAllocator::getInstance() {
   }
   auto obj = memCacheAllocatorSingleton.try_get();
   if (!obj) {
-    throw std::runtime_error("Failed to get memCacheAllocator singleton");
+    throw ctran::utils::Exception(
+        "Failed to get memCacheAllocator singleton", commInternalError);
   }
   obj->init();
   return obj;
@@ -43,7 +44,7 @@ commResult_t memCacheAllocator::init() {
     if (NCCL_MEM_POOL_SIZE > 0) {
       // preallocate the memory pool
       size_t newSlabSize = NCCL_MEM_POOL_SIZE;
-      FB_COMMCHECKTHROW(slabAllocator_->cuMalloc(
+      FB_COMMCHECKTHROW_EX_NOCOMM(slabAllocator_->cuMalloc(
           (void**)&poolPtr_,
           NCCL_MEM_POOL_SIZE,
           "memCacheAllocator::init",
@@ -97,7 +98,7 @@ commResult_t memCacheAllocator::reset() {
 
 memCacheAllocator::~memCacheAllocator() {
   CLOGF_SUBSYS(INFO, INIT, "Shutting down NCCLX memory cache allocator");
-  FB_COMMCHECKTHROW(reset());
+  FB_COMMCHECKTHROW_EX_NOCOMM(reset());
 }
 
 std::shared_ptr<memRegion> memCacheAllocator::getFreeMemReg(
@@ -151,7 +152,7 @@ std::shared_ptr<memRegion> memCacheAllocator::createNewMemReg(
     // no free region is available, request a new memory region from allocator
     CUmemGenericAllocationHandle handle{};
 
-    FB_COMMCHECKTHROW(slabAllocator_->cuMalloc(
+    FB_COMMCHECKTHROW_EX_NOCOMM(slabAllocator_->cuMalloc(
         &region->ptr, nBytes, callsite, logMetaData, &handle));
     region->cuHandle = handle;
 
@@ -348,7 +349,7 @@ size_t memCacheAllocator::getUsedMem() const {
 
 void memCacheAllocator::printSnapshot() const {
   size_t avai_bytes = 0, total_bytes = 0;
-  FB_CUDACHECKTHROW(cudaMemGetInfo(&avai_bytes, &total_bytes));
+  FB_CUDACHECKTHROW_EX_NOCOMM(cudaMemGetInfo(&avai_bytes, &total_bytes));
   // convert to GiB
   double avai_mem = avai_bytes / (1024 * 1024 * 1024);
   double total_mem = total_bytes / (1024 * 1024 * 1024);

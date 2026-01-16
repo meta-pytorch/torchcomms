@@ -1418,6 +1418,15 @@ cvars:
     point-to-point staged data copy channel between every two peers.
 
 
+ - name        : CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS
+   type        : uint64_t
+   default     : 128
+   description : |-
+     Maximum chunks of a staging buffer in P2P NVL copy-based kernel, this is
+     used to allocate IPC buffer for chunk states. The value = 16M/128k (maximum
+     staging buffer / minimum chunk size). The size of per-peer ChunkState buffer
+     is CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS * sizeof(ChunkState)=128*128=16KB
+
  - name        : NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE
    type        : uint64_t
    default     : 33554432
@@ -2459,17 +2468,17 @@ cvars:
      (runtime allocation and mapping of buffers is not CUDA graph
      safe).
 
- - name        : NCCL_CTRAN_ENABLE_TRACE_LOGGER
+ - name        : NCCL_CTRAN_ENABLE_PERFTRACE
    type        : bool
    default     : false
    description : |-
-     Enable profilings to trace json to allow ctran trace debugging.
+     Enable trace for ctran algorithm performance profiling.
 
- - name        : NCCL_CTRAN_TRACE_LOGGER_LOCAL_DIR
+ - name        : NCCL_CTRAN_PERFTRACE_DIR
    type        : string
    default     : "/tmp/"
    description : |-
-     The local directory to store kineto profile json files.
+     The local directory to store ctran perftrace json files.
      The default value is /tmp/, and the trace file will be stored in /tmp/ctran_trace_log.*.log.
      If want to upload to manifold, set this as /tmp/{uuid}, then manually upload to manifold.
 

@@ -15,16 +15,18 @@ bool ctranReduceScatterSupport(
 
   // Check if ctran is initialized
   if (!ctranInitialized(comm)) {
-    CLOGF(
+    CLOGF_EVERY_MS(
         WARN,
+        60000,
         "ctranReduceScatterSupport: CTRAN not initialized, falling back to baseline");
     return false;
   }
 
   // Check backend availability (except for single rank case)
   if (nRanks > 1 && !comm->ctran_->mapper->hasBackend()) {
-    CLOGF(
+    CLOGF_EVERY_MS(
         WARN,
+        60000,
         "ctranReduceScatterSupport: no backend available, falling back to baseline");
     for (int peer = 0; peer < nRanks; peer++) {
       if (peer != rank &&
@@ -43,16 +45,18 @@ bool ctranReduceScatterSupport(
   switch (algo) {
     case NCCL_REDUCESCATTER_ALGO::ctdirect:
       if (nNodes > 1) {
-        CLOGF(
+        CLOGF_EVERY_MS(
             WARN,
+            60000,
             "ctranReduceScatterSupport: ctdirect only supports nNodes=1. Falling back to baseline.");
         return false;
       }
       break;
     case NCCL_REDUCESCATTER_ALGO::ctring:
       if (nLocalRanks > 1) {
-        CLOGF(
+        CLOGF_EVERY_MS(
             WARN,
+            60000,
             "ctranReduceScatterSupport: ctring only supports nLocalRanks=1. Falling back to baseline.");
         return false;
       }
@@ -62,8 +66,9 @@ bool ctranReduceScatterSupport(
       // buffer size is smaller than NCCL_CTRAN_INTERNODE_TMPBUF_SIZE.
       // Currently, we return false here since we can't check the data buffer
       // size.
-      CLOGF(
+      CLOGF_EVERY_MS(
           WARN,
+          60000,
           "ctranReduceScatterSupport returns false for all cases of algo=ctrhd. Falling back to baseline.");
       return false;
     case NCCL_REDUCESCATTER_ALGO::ctran:
@@ -71,8 +76,9 @@ bool ctranReduceScatterSupport(
       // we return false here. If a new ctran algo is added that supports this
       // case, we can remove this check.
       if (nNodes > 1 && nLocalRanks > 1) {
-        CLOGF(
+        CLOGF_EVERY_MS(
             WARN,
+            60000,
             "ctranReduceScatterSupport: ctran only supports nLocalRanks=1 or nNodes=1. Falling back to baseline.");
         return false;
       }

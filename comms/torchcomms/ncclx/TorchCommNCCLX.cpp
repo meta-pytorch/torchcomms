@@ -268,7 +268,8 @@ void TorchCommNCCLX::finalize() {
     comm_state_ = CommState::ERROR;
     ncclResult_t asyncErr;
     nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
-    NCCLException ncclException(*nccl_api_, "NCCL Async Error", asyncErr);
+    NCCLException ncclException(
+        *nccl_api_, "NCCL Async Error", asyncErr, nccl_comm_);
     abortNcclComm();
     throw ncclException;
   }
@@ -341,7 +342,8 @@ int TorchCommNCCLX::getRank() const {
   int rank;
   ncclResult_t ncclErr = nccl_api_->commUserRank(nccl_comm_, &rank);
   if (ncclErr != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL User Rank failed", ncclErr);
+    throw NCCLException(
+        *nccl_api_, "NCCL User Rank failed", ncclErr, nccl_comm_);
   }
   return rank;
 }
@@ -352,7 +354,7 @@ int TorchCommNCCLX::getSize() const {
   int comm_size;
   ncclResult_t ncclErr = nccl_api_->commCount(nccl_comm_, &comm_size);
   if (ncclErr != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Count failed", ncclErr);
+    throw NCCLException(*nccl_api_, "NCCL Count failed", ncclErr, nccl_comm_);
   }
   return comm_size;
 }
@@ -389,8 +391,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::send(
       name_, comm_size_, "send", dst, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("send");
@@ -404,7 +411,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::send(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Send failed", result);
+    throw NCCLException(*nccl_api_, "NCCL Send failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -444,7 +451,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::recv(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Recv failed", result);
+    throw NCCLException(*nccl_api_, "NCCL Recv failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -498,7 +505,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_tensors);
+      async_op ? input_tensors : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operations
   work->recordStart("batch_op_issue");
@@ -506,7 +513,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
   // Start NCCL group for batched operations
   ncclResult_t result = nccl_api_->groupStart();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
   }
 
   // Issue each operation individually
@@ -523,7 +531,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
       if (result != ncclSuccess) {
         nccl_api_->groupEnd(); // Clean up group on error
         throw NCCLException(
-            *nccl_api_, "NCCL Send failed in batch operation", result);
+            *nccl_api_,
+            "NCCL Send failed in batch operation",
+            result,
+            nccl_comm_);
       }
     } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
       result = nccl_api_->recv(
@@ -537,7 +548,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
       if (result != ncclSuccess) {
         nccl_api_->groupEnd(); // Clean up group on error
         throw NCCLException(
-            *nccl_api_, "NCCL Recv failed in batch operation", result);
+            *nccl_api_,
+            "NCCL Recv failed in batch operation",
+            result,
+            nccl_comm_);
       }
     }
   }
@@ -545,7 +559,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
   // End NCCL group
   result = nccl_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operations
@@ -572,8 +586,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::broadcast(
 
   cudaStream_t stream = getOperationStream(async_op);
 
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("broadcast");
@@ -587,7 +606,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::broadcast(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Broadcast failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL Broadcast failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -612,8 +632,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_reduce(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("all_reduce");
@@ -629,7 +654,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_reduce(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL AllReduce failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL AllReduce failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -659,8 +685,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
   if (rank_ == root) {
     output_tensors.push_back(tensor);
   }
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("reduce");
@@ -677,7 +708,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Reduce failed", result);
+    throw NCCLException(*nccl_api_, "NCCL Reduce failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -729,10 +760,12 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather(
           .requires_grad(false));
 
   // Pass both input tensor and temp_tensor to createWork for refcounting
+  // when async_op is true
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      {tensor, temp_tensor});
+      async_op ? std::vector<at::Tensor>{tensor, temp_tensor}
+               : std::vector<at::Tensor>{});
 
   work->recordStart("all_gather");
 
@@ -746,7 +779,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL AllGather failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL AllGather failed", result, nccl_comm_);
   }
 
   // Copy data from temporary tensor to individual output tensors
@@ -796,8 +830,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   work->recordStart("all_gather_v");
 
@@ -852,8 +891,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
       name_, comm_size_, "all_gather_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), input);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   work->recordStart("all_gather_single");
 
@@ -866,7 +910,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL AllGather failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL AllGather failed", result, nccl_comm_);
   }
 
   work->recordEnd();
@@ -908,7 +953,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_list);
+      async_op ? input_list : std::vector<at::Tensor>{});
 
   work->recordStart("reduce_scatter");
 
@@ -979,7 +1024,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_list);
+      async_op ? input_list : std::vector<at::Tensor>{});
 
   work->recordStart("reduce_scatter_v");
 
@@ -1052,8 +1097,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), input);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("reduce_scatter_single");
@@ -1069,7 +1119,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL ReduceScatter failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL ReduceScatter failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1105,8 +1156,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
       name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), input);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("all_to_all_single");
@@ -1122,7 +1178,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL AllToAll failed", result);
+    throw NCCLException(*nccl_api_, "NCCL AllToAll failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1161,8 +1217,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
       name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), input);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("all_to_all_v_single");
@@ -1205,7 +1266,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL AllToAllv failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL AllToAllv failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1248,7 +1310,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_tensor_list);
+      async_op ? input_tensor_list : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operations
   work->recordStart("all_to_all");
@@ -1335,11 +1397,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
   auto work = createWork(
       stream,
       options_.timeout,
-      {input_tensor,
-       input_chunk_sizes,
-       input_chunk_indices,
-       input_chunk_count_per_rank,
-       output_tensor_ptrs});
+      async_op
+          ? std::vector<
+                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank, output_tensor_ptrs}
+          : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_dispatch");
@@ -1365,7 +1426,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
 
   if (result != ncclSuccess) {
     throw NCCLException(
-        *nccl_api_, "NCCL alltoallvDynamicDispatch failed", result);
+        *nccl_api_, "NCCL alltoallvDynamicDispatch failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1409,10 +1470,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   auto work = createWork(
       stream,
       options_.timeout,
-      {input_tensor,
-       input_chunk_sizes,
-       input_chunk_indices,
-       input_chunk_count_per_rank});
+      async_op
+          ? std::vector<
+                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank}
+          : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_combine");
@@ -1438,7 +1499,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
 
   if (result != ncclSuccess) {
     throw NCCLException(
-        *nccl_api_, "NCCL alltoallvDynamicCombine failed", result);
+        *nccl_api_, "NCCL alltoallvDynamicCombine failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1477,7 +1538,8 @@ TorchCommNCCLX::alltoallv_dedup_init(
       &pReq);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL alltoallvDedupInit failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL alltoallvDedupInit failed", result, nccl_comm_);
   }
   return at::make_intrusive<TorchCommNCCLXPersistentRequest>(
       shared_from_this(), pReq, stream);
@@ -1536,7 +1598,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_exec(
       pReq->getRequestPtr());
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL alltoallvDedupExec failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL alltoallvDedupExec failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1595,7 +1658,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_combine(
 
   if (result != ncclSuccess) {
     throw NCCLException(
-        *nccl_api_, "NCCL alltoallvDedupCombine failed", result);
+        *nccl_api_, "NCCL alltoallvDedupCombine failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1633,7 +1696,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::barrier(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Barrier failed", result);
+    throw NCCLException(*nccl_api_, "NCCL Barrier failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1676,7 +1739,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::scatter(
 
   cudaStream_t stream = getOperationStream(async_op);
   std::vector<at::Tensor> input_tensors;
-  if (rank_ == root) {
+  if (async_op && rank_ == root) {
     input_tensors = input_tensor_list;
   }
   auto work = createWork(
@@ -1769,10 +1832,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
   if (rank_ == root) {
     output_tensors = output_tensor_list;
   }
-  auto work = createWork(
-      stream,
-      getOperationTimeout(options.timeout, options_.timeout),
-      input_tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input_tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operations
   work->recordStart("gather");
@@ -1898,7 +1964,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   ncclResult_t result =
       nccl_api_->commSplit(nccl_comm_, color, new_rank, &new_comm, &config);
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL split failed", result);
+    throw NCCLException(*nccl_api_, "NCCL split failed", result, nccl_comm_);
   }
 
   if (new_rank == -1) {
@@ -1912,57 +1978,6 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   new_torchcomm->init(device_, commDesc, options);
 
   return new_torchcomm;
-}
-
-// Allocate function
-static void* _ncclMemAlloc(
-    std::shared_ptr<NcclxApi> nccl_api,
-    size_t size,
-    int device,
-    void* stream) {
-  at::cuda::OptionalCUDAGuard gpuGuard(device);
-  void* ptr = nullptr;
-  TORCH_CHECK(
-      nccl_api->memAlloc(&ptr, size) == ncclSuccess, "ncclMemAlloc failed");
-  LOG(INFO) << "NCCL mem allocator: allocated " << ptr << " with " << size
-            << " bytes in stream " << stream;
-  return ptr;
-}
-
-// Free function
-static void _ncclMemFree(
-    std::shared_ptr<NcclxApi> nccl_api,
-    void* ptr,
-    size_t size,
-    int device,
-    void* stream) {
-  LOG(INFO) << "NCCL mem allocator: freeing " << ptr << " with " << size
-            << " bytes in stream " << stream;
-  at::cuda::OptionalCUDAGuard gpuGuard(device);
-  TORCH_CHECK(nccl_api->memFree(ptr) == ncclSuccess, "ncclMemFree failed");
-}
-
-// Create a `CUDAPluggableAllocator` that uses the above functions.
-std::shared_ptr<c10::Allocator> TorchCommNCCLX::getMemAllocator() {
-  c10::DeviceIndex deviceIdx = device_.index();
-  if (!deviceSupportsMulticast(deviceIdx)) {
-    TORCH_CHECK(
-        false,
-        "NCCLX mem allocator is not supported in CUDART version %d",
-        CUDART_VERSION);
-  }
-  static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
-      ncclMemAllocator =
-          torch::cuda::CUDAPluggableAllocator::createCustomAllocator(
-              // alloc_fn
-              [this](size_t size, int device, cudaStream_t stream) {
-                return _ncclMemAlloc(nccl_api_, size, device, stream);
-              },
-              // free_fn
-              [this](void* ptr, size_t size, int device, cudaStream_t stream) {
-                return _ncclMemFree(nccl_api_, ptr, size, device, stream);
-              });
-  return ncclMemAllocator;
 }
 
 void TorchCommNCCLX::register_address(
@@ -2013,8 +2028,11 @@ void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {
 NCCLException::NCCLException(
     NcclxApi& nccl_api,
     const std::string& message,
-    ncclResult_t result)
-    : message_(message + ": " + nccl_api.getErrorString(result)),
+    ncclResult_t result,
+    ncclComm_t comm)
+    : message_(
+          message + ": " + nccl_api.getErrorString(result) +
+          " \nNCCL Last Error: " + nccl_api.getLastError(comm)),
       result_(result) {}
 
 const char* NCCLException::what() const noexcept {
@@ -2027,6 +2045,44 @@ class NCCLXRegistration {
   NCCLXRegistration() {
     TorchCommFactory::get().register_backend(
         "ncclx", []() { return std::make_shared<TorchCommNCCLX>(); });
+
+    // Register allocator factory with its own nccl_api instance
+    TorchCommFactory::get().register_allocator_factory("ncclx", []() {
+      // Create nccl_api for this allocator (captured in lambdas below)
+      auto nccl_api = std::make_shared<DefaultNcclxApi>();
+
+      static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
+          ncclx_allocator =
+              torch::cuda::CUDAPluggableAllocator::createCustomAllocator(
+                  // alloc_fn
+                  [nccl_api](size_t size, int device, cudaStream_t stream) {
+                    at::cuda::OptionalCUDAGuard gpuGuard(device);
+                    void* ptr = nullptr;
+                    ncclResult_t result = nccl_api->memAlloc(&ptr, size);
+                    TORCH_CHECK(
+                        result == ncclSuccess,
+                        "ncclMemAlloc failed: ",
+                        nccl_api->getErrorString(result));
+                    LOG(INFO)
+                        << "NCCL mem allocator: allocated " << ptr << " with "
+                        << size << " bytes in stream " << stream;
+                    return ptr;
+                  },
+                  // free_fn
+                  [nccl_api](
+                      void* ptr, size_t size, int device, cudaStream_t stream) {
+                    LOG(INFO)
+                        << "NCCL mem allocator: freeing " << ptr << " with "
+                        << size << " bytes in stream " << stream;
+                    at::cuda::OptionalCUDAGuard gpuGuard(device);
+                    ncclResult_t result = nccl_api->memFree(ptr);
+                    TORCH_CHECK(
+                        result == ncclSuccess,
+                        "ncclMemFree failed: ",
+                        nccl_api->getErrorString(result));
+                  });
+      return ncclx_allocator;
+    });
   }
 };
 

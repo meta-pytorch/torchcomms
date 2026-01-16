@@ -3,6 +3,7 @@
 #ifndef CTRAN_NVL_IMPL_H_
 #define CTRAN_NVL_IMPL_H_
 
+#include <folly/Synchronized.h>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -15,21 +16,24 @@ struct CtranNvlRegElem {
   // User passed addr, size at ncclCommRegister
   const void* buf{nullptr};
   const size_t len{0};
-  ctran::utils::CtranIpcMem ipcMem;
+  folly::Synchronized<ctran::utils::CtranIpcMem> ipcMem;
 
  public:
   CtranNvlRegElem(const void* buf, const size_t len, int cudaDev)
-      : buf(buf), len(len), ipcMem(cudaDev, "NVL RegElem") {};
+      : buf(buf),
+        len(len),
+        ipcMem(ctran::utils::CtranIpcMem(cudaDev, "NVL RegElem")) {};
   ~CtranNvlRegElem() {};
 
   commResult_t tryLoad(bool& supported, bool shouldSupportCudaMalloc) {
-    return ipcMem.tryLoad(buf, len, supported, shouldSupportCudaMalloc);
+    return ipcMem.wlock()->tryLoad(
+        buf, len, supported, shouldSupportCudaMalloc);
   }
 
   std::string toString() const {
     std::stringstream ss;
     ss << "buf: " << buf << ", len: " << len
-       << ", ipcMem: " << ipcMem.toString();
+       << ", ipcMem: " << ipcMem.rlock()->toString();
     return ss.str();
   }
 };

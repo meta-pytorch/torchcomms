@@ -8,7 +8,11 @@ namespace meta {
 namespace comms {
 
 inline uint32_t divRoundUp(size_t a, size_t b) {
-  return static_cast<uint32_t>((a + b - 1) / b);
+  uint32_t y = static_cast<uint32_t>((a + b - 1) / b);
+  if (y == 0) {
+    y = 1;
+  }
+  return y;
 }
 
 constexpr uint32_t
@@ -18,7 +22,11 @@ calcBlockCount(size_t numThreads, size_t threadsPerBlock, size_t maxBlocks) {
   // Overflow safe variant of (a + b - 1) / b
   const uint64_t blocks =
       uNumThreads / uThreadsPerBlock + (uNumThreads % uThreadsPerBlock != 0);
-  return static_cast<uint32_t>(std::min(blocks, maxBlocks));
+  uint32_t y = static_cast<uint32_t>(std::min(blocks, maxBlocks));
+  if (y == 0) {
+    y = 1;
+  }
+  return y;
 }
 
 std::pair<dim3, dim3>

@@ -87,7 +87,7 @@ commResult_t ctranReduceScatter(
     cudaStream_t stream,
     enum NCCL_REDUCESCATTER_ALGO algo);
 
-bool ctranAllReduceSupport(CtranComm* comm);
+bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo);
 commResult_t ctranAllReduce(
     const void* sendbuff,
     void* recvbuff,
@@ -96,7 +96,7 @@ commResult_t ctranAllReduce(
     commRedOp_t redOp,
     CtranComm* comm,
     cudaStream_t stream,
-    std::optional<const enum NCCL_ALLREDUCE_ALGO> algoSpecified = std::nullopt,
+    enum NCCL_ALLREDUCE_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
 bool ctranAllToAllSupport(
