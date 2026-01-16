@@ -42,36 +42,6 @@ class SendRecvTest : public NcclxBaseTest {
     NcclxBaseTest::TearDown();
   }
 
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> expectedVals(count, val);
-    CUDACHECKIGNORE(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
-  template <typename T>
-  int checkChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> observedVals(count, -1);
-    CUDACHECK_TEST(cudaMemcpy(
-        observedVals.data(), buf, count * sizeof(T), cudaMemcpyDefault));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print failing location
-    for (auto i = 0; i < count; ++i) {
-      if (observedVals[i] != val) {
-        if (errs < 10) {
-          printf(
-              "[%d] observedVals[%d] = %d, expectedVal = %d\n",
-              this->globalRank,
-              i,
-              observedVals[i],
-              val);
-        }
-        errs++;
-      }
-    }
-    return errs;
-  }
-
   void prepareBufs(const size_t count, bool registFlag = false) {
     CUDACHECK_TEST(cudaMalloc(&sendBuf, count * sizeof(int)));
     CUDACHECK_TEST(cudaMalloc(&recvBuf, count * sizeof(int)));
