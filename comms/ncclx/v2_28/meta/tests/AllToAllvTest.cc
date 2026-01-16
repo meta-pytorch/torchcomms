@@ -43,36 +43,6 @@ class AllToAllvTest
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
   }
 
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T val) {
-    if (count == 0) {
-      return;
-    }
-    std::vector<T> expectedVals(count, val);
-    CUDACHECKIGNORE(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
-  template <typename T>
-  int checkChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> observedVals(count, -1);
-    CUDACHECK_TEST(cudaMemcpy(
-        observedVals.data(), buf, count * sizeof(T), cudaMemcpyDefault));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print failing location
-    for (auto i = 0; i < count; ++i) {
-      if (observedVals[i] != val) {
-        if (errs < 10) {
-          std::cout << "[" << this->globalRank << "] observedVals[" << i
-                    << "] = " << observedVals[i] << ", expectedVal = " << val
-                    << "\n";
-        }
-        errs++;
-      }
-    }
-    return errs;
-  }
-
   void runReuseSharedBuffer(bool registFlag = false) {
     if (this->globalRank > 1) {
       return;

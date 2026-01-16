@@ -6,7 +6,6 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h> // @manual
 #include <gtest/gtest.h>
-#include <mpi.h>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -16,7 +15,6 @@
 
 #include <folly/futures/Future.h>
 
-#include "caffe2/torch/csrc/distributed/c10d/TCPStore.hpp"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/commstate/CommStateX.h"
@@ -200,17 +198,6 @@ inline bool checkTcpStoreEnv() {
       masterAddrEnv && masterPortEnv);
 }
 
-std::unique_ptr<c10d::TCPStore> createTcpStore(bool isServer);
-
-// Detect which initialization environment to use
-InitEnvType getInitEnvType();
-
-class CtranEnvironmentBase : public ::testing::Environment {
- public:
-  void SetUp() override;
-  void TearDown() override;
-};
-
 // ============================================================================
 // Base Test Fixture Hierarchy
 // ============================================================================
@@ -219,10 +206,10 @@ class CtranEnvironmentBase : public ::testing::Environment {
 //       |
 //       +-- CtranStandaloneFixture (single-rank with MockBootstrap)
 //       |
-//       +-- CtranDistTestFixture (multi-rank distributed tests)
-//       |       - MPI mode: real multi-process with MPI bootstrap
-//       |       - TCPStore mode: real multi-process with TCPStore bootstrap
-//       |       - Standalone mode: single-rank with IntraProcessBootstrap
+//       +-- CtranDistTestFixture (multi-rank distributed tests) [in
+//       CtranDistTestUtils.h] |       - MPI mode: real multi-process with MPI
+//       bootstrap |       - TCPStore mode: real multi-process with TCPStore
+//       bootstrap
 //       |
 //       +-- CtranIntraProcessFixture (multi-rank simulation in single process)
 //               - Uses threads + IntraProcessBootstrap
@@ -266,37 +253,6 @@ class CtranStandaloneFixture : public CtranTestFixtureBase {
           ctran::utils::createAbort(/*enabled=*/true));
 
   int rank{0}; // Always 0 for standalone tests
-};
-
-// CtranDistTestFixture is a fixture for testing Ctran with multiple
-// processes/ranks that supports both MPI and TCPStore bootstrap methods.
-class CtranDistTestFixture : public CtranTestFixtureBase {
- public:
- protected:
-  void SetUp() override;
-  void TearDown() override;
-
-  std::unique_ptr<CtranComm> makeCtranComm();
-
-  // Rank information
-  int globalRank{-1};
-  int numRanks{-1};
-  int localRank{-1};
-  int numLocalRanks_{-1};
-  bool enableNolocal{false};
-
- private:
-  void setUpMpi();
-  void setUpTcpStore();
-
-  // TCP Store support
-  std::unique_ptr<c10d::TCPStore> tcpStore_{nullptr};
-  bool isTcpStoreServer() const;
-  std::vector<std::string>
-  exchangeInitUrls(const std::string& selfUrl, int numRanks, int selfRank);
-
-  // Test counter for TCP Store key generation
-  static std::atomic<int> testCount_;
 };
 
 // Intra-process multi-rank fixture for testing with IntraProcessBootstrap.
