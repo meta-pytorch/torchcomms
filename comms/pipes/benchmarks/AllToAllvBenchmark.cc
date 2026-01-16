@@ -187,7 +187,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     }
 
     CudaEvent start, stop;
-    const int nIter = 500;
+    const int nIter = 100;
     const int nIterWarmup = 5;
 
     // Warmup
@@ -229,7 +229,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
 
     // Algorithm bandwidth: total data moved (send + recv) / time
     std::size_t totalDataMoved = 2 * totalBytes; // send + recv
-    float bandwidth_GBps = (totalDataMoved / (1024.0f * 1024.0f * 1024.0f)) /
+    float bandwidth_GBps = (totalDataMoved / (1000.0f * 1000.0f * 1000.0f)) /
         (avgTime_ms / 1000.0f);
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -349,7 +349,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
         &recv_chunk_infos};
 
     CudaEvent start, stop;
-    const int nIter = 500;
+    const int nIter = 100;
     const int nIterWarmup = 5;
 
     // Warmup
@@ -376,7 +376,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     // Algorithm bandwidth: total data moved (send + recv) / time
     // Each rank sends nranks * bytesPerPeer and receives nranks * bytesPerPeer
     std::size_t totalDataMoved = 2 * totalBytes; // send + recv
-    float bandwidth_GBps = (totalDataMoved / (1024.0f * 1024.0f * 1024.0f)) /
+    float bandwidth_GBps = (totalDataMoved / (1000.0f * 1000.0f * 1000.0f)) /
         (avgTime_ms / 1000.0f);
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
