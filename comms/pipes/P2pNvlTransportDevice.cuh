@@ -302,8 +302,11 @@ class P2pNvlTransportDevice {
    *   stateOffset = pipelineIdx × chunksPerStep          (into state buffer)
    *   stepOffset = stepId × dataBufferSize               (into source data)
    **/
-  __device__ __forceinline__ void
-  send(ThreadGroup& group, void* srcbuff, std::size_t nbytes) {
+  __device__ __forceinline__ void send(
+      ThreadGroup& group,
+      void* srcbuff,
+      std::size_t nbytes,
+      int32_t call_index = 0) {
 #ifdef __CUDA_ARCH__
     char* src = reinterpret_cast<char*>(srcbuff);
 
@@ -356,7 +359,7 @@ class P2pNvlTransportDevice {
             chunkBytes,
             group);
 
-        chunkState.readyToRecv(group, stepId);
+        chunkState.readyToRecv(group, stepId, call_index);
       });
     }
 #endif
@@ -401,8 +404,11 @@ class P2pNvlTransportDevice {
    *                                   copy data to dst
    *                                   state = -1 ────────▶ [sender unblocks]
    */
-  __device__ __forceinline__ void
-  recv(ThreadGroup& group, void* dstbuff, std::size_t nbytes) {
+  __device__ __forceinline__ void recv(
+      ThreadGroup& group,
+      void* dstbuff,
+      std::size_t nbytes,
+      int32_t call_index = 0) {
 #ifdef __CUDA_ARCH__
     char* dst = reinterpret_cast<char*>(dstbuff);
 
@@ -446,7 +452,7 @@ class P2pNvlTransportDevice {
 
         ChunkState& chunkState = recvStates[stateOffset + chunkIdx];
 
-        chunkState.waitReadyToRecv(group, stepId);
+        chunkState.waitReadyToRecv(group, stepId, call_index);
 
         memcpy_vectorized(
             dst + stepOffset + chunkOffset,
@@ -460,6 +466,282 @@ class P2pNvlTransportDevice {
 #endif
   }
 
+  /**
+   * send_one - Send a single chunk with metadata
+   *
+   * Sends a single data chunk to the peer GPU along with metadata.
+   * Thread-group 0 writes metadata (nbytes, offset, total_chunks) to the
+   * receiver's first ChunkState before the data transfer begins.
+   * The metadata is communicated through ChunkState fields and becomes
+   * visible to the receiver when readyToRecv is signaled (via release-store).
+   *
+   * INPUTS:
+   * @param group ThreadGroup for cooperative processing (all threads
+   *              participate)
+   * @param src Source data pointer (device memory, can be nullptr if nbytes=0)
+   * @param nbytes Number of bytes to send (can be 0 for metadata-only signal)
+   * @param call_index Call index for disambiguating multiple send_one calls
+   *                  in the same kernel (default: 0)
+   * @param offset_in_output Offset in the receiver's output buffer where this
+   *                         chunk should be placed (default: 0)
+   * @param total_chunks Total number of chunks in the complete transfer
+   *                     (default: 1 for single chunk transfers)
+   */
+  __device__ void send_one(
+      ThreadGroup& group,
+      const void* src,
+      std::size_t nbytes,
+      int32_t call_index = 0,
+      std::size_t offset_in_output = 0,
+      std::size_t total_chunks = 1) {
+#ifdef __CUDA_ARCH__
+    ChunkState* const sendStates = remoteState_.stateBuffer.data();
+
+    // same as send(), wait for previous recv_one() to complete
+    sendStates[0].waitReadyToSend(group);
+
+    // Thread-group 0 writes metadata to receiver's chunk 0
+    // This happens before send() starts, so receiver can read it
+    if (group.group_id == 0) {
+      sendStates[0].writeMetaData(
+          group, nbytes, offset_in_output, total_chunks);
+    }
+
+    // empty data transfer, just do the signaling
+    if (nbytes == 0) {
+      if (group.group_id == 0) {
+        sendStates[0].readyToRecv(group, 0, call_index);
+      }
+      return;
+    }
+
+    // Now call regular send() to transfer the data
+    // send() will handle all the pipelining and synchronization
+    send(group, const_cast<void*>(src), nbytes, call_index);
+#endif
+  }
+
+  /**
+   * recv_one - Receive a single chunk with metadata
+   *
+   * Receives a single data chunk from the peer GPU along with metadata.
+   * All thread-groups first wait for chunk 0 to receive metadata from sender,
+   * then call regular recv() to receive the data.
+   * The metadata (nbytes, offset, total_chunks) is read from ChunkState[0]
+   * which was pre-written by the sender's thread-group 0.
+   *
+   * INPUTS:
+   * @param group ThreadGroup for cooperative processing (all threads
+   *              participate)
+   * @param dst_base Base pointer to the destination buffer (device memory)
+   * @param call_index Call index for disambiguating multiple recv_one calls
+   *                  in the same kernel (default: 0)
+   *
+   * OUTPUTS (optional, pass nullptr to ignore):
+   * @param nbytes Receives number of bytes in this chunk (default: nullptr)
+   * @param offset_in_output Receives offset in dst_base where this chunk
+   *                         was placed (default: nullptr)
+   * @param total_chunks Receives total number of chunks in complete transfer
+   *                     (default: nullptr)
+   */
+  __device__ void recv_one(
+      ThreadGroup& group,
+      void* dst_base,
+      int32_t call_index = 0,
+      std::size_t* nbytes = nullptr,
+      std::size_t* offset_in_output = nullptr,
+      std::size_t* total_chunks = nullptr) {
+#ifdef __CUDA_ARCH__
+    ChunkState* const recvStates = localState_.stateBuffer.data();
+
+    // ALL thread-groups wait for chunk 0's readyToRecv to get metadata
+    // Step 0 is used for the metadata exchange
+    recvStates[0].waitReadyToRecv(group, 0, call_index);
+
+    // ALL threads read metadata from chunk 0
+    // (all threads need nbytes_val to call recv())
+    std::size_t nbytes_val, offset_val, total_chunks_val;
+    recvStates[0].readMetaData(group, nbytes_val, offset_val, total_chunks_val);
+
+    // Calculate destination pointer using offset
+    char* dst = reinterpret_cast<char*>(dst_base) + offset_val;
+
+    if (nbytes != nullptr) {
+      *nbytes = nbytes_val;
+    }
+    if (offset_in_output != nullptr) {
+      *offset_in_output = offset_val;
+    }
+    if (total_chunks != nullptr) {
+      *total_chunks = total_chunks_val;
+    }
+
+    // empty data transfer, just do the signaling
+    if (nbytes_val == 0) {
+      if (group.group_id == 0) {
+        recvStates[0].readyToSend(group);
+      }
+      return;
+    }
+
+    // Now call regular recv() to receive the data
+    // recv() will handle all the pipelining and synchronization
+    // and will signal readyToSend() for ChunkState[0] after completion
+    recv(group, dst, nbytes_val, call_index);
+#endif
+  }
+
+  /**
+   * send_multiple - Transfer multiple chunks with varying sizes to peer GPU
+   *
+   * Sends multiple data chunks specified by indices from srcbuff to the peer
+   * GPU. First sends complete chunk sizes array via regular send(), then
+   * transfers actual data chunks using send_one() which handles metadata.
+   *
+   * INPUTS:
+   * @param group ThreadGroup for cooperative processing
+   * @param srcbuff_d Source buffer containing all chunks laid out sequentially
+   * @param chunk_sizes DeviceSpan of ALL chunk sizes
+   * @param chunk_indices DeviceSpan of indices of chunks to send to this peer
+   *
+   * EXAMPLE:
+   *   srcbuff_d layout: [chunk0: 100B][chunk1: 200B][chunk2: 150B][chunk3: 50B]
+   *   chunk_sizes = {100, 200, 150, 50}
+   *   chunk_indices = {1, 3}
+   *   -> Sends chunk1 (200B) and chunk3 (50B) to peer
+   *
+   * PROTOCOL:
+   * Phase 1: Send complete chunk sizes array (regular send)
+   * Phase 2: For each chunk (or total_chunks=0 signal if no chunks):
+   *           - Use send_one() to transfer data with metadata
+   */
+  __device__ __forceinline__ void send_multiple(
+      ThreadGroup& group,
+      const void* srcbuff_d,
+      DeviceSpan<const std::size_t> chunk_sizes,
+      DeviceSpan<const std::size_t> chunk_indices) {
+#ifdef __CUDA_ARCH__
+    // Extract raw pointers before loops to avoid aliasing issues
+    // (see DeviceSpan.cuh "Lambda Capture and Aliasing" note)
+    const std::size_t* const chunk_sizes_ptr = chunk_sizes.data();
+    const std::size_t* const chunk_indices_ptr = chunk_indices.data();
+    const std::size_t chunk_sizes_count = chunk_sizes.size();
+    const std::size_t chunk_indices_count = chunk_indices.size();
+
+    // Phase 1: Send complete chunk sizes array
+    send(
+        group,
+        const_cast<void*>(reinterpret_cast<const void*>(chunk_sizes_ptr)),
+        chunk_sizes_count * sizeof(std::size_t),
+        0);
+
+    // Phase 2: Send each data chunk with metadata
+    // Special case: If chunk_indices is empty, send total_chunks=0 signal
+    if (chunk_indices_count == 0) {
+      // Send empty signal with total_chunks=0 so receiver knows to stop
+      send_one(
+          group,
+          nullptr, // No data
+          0, // nbytes = 0
+          1, // callIndex = 1
+          0, // offset = 0
+          0); // total_chunks = 0
+      return;
+    }
+
+    for (std::size_t i = 0; i < chunk_indices_count; i++) {
+      std::size_t chunk_idx = chunk_indices_ptr[i];
+      std::size_t chunk_size = chunk_sizes_ptr[chunk_idx];
+
+      // Calculate offset in srcbuff_d (sum of sizes of chunks 0..chunk_idx-1)
+      std::size_t offset = 0;
+      for (std::size_t j = 0; j < chunk_idx; j++) {
+        offset += chunk_sizes_ptr[j];
+      }
+
+      // Send this chunk with metadata
+      const char* src_ptr = reinterpret_cast<const char*>(srcbuff_d) + offset;
+      send_one(
+          group,
+          src_ptr,
+          chunk_size,
+          static_cast<int32_t>(i + 1), // callIndex increments for each call
+          offset, // offset in output buffer
+          chunk_indices_count); // total_chunks
+    }
+#endif
+  }
+
+  /**
+   * recv_multiple - Receive multiple chunks with varying sizes from peer GPU
+   *
+   * Receives multiple data chunks into recvbuff. First receives complete chunk
+   * sizes array via regular recv(), then receives actual data chunks using
+   * recv_one() which reads metadata.
+   *
+   * INPUTS:
+   * @param group ThreadGroup for cooperative processing
+   *
+   * OUTPUTS:
+   * @param recvbuff Destination buffer where chunks are written at their
+   *                 original offsets (based on chunk_sizes)
+   * @param chunk_sizes DeviceSpan populated with received chunk sizes
+   *
+   * EXAMPLE:
+   *   Sender sends chunk1 (200B) and chunk3 (50B) from 4-chunk buffer
+   *   chunk_sizes.size() = 4
+   *   -> chunk_sizes receives {100, 200, 150, 50}
+   *   -> recvbuff written at: offset 100 (200B), offset 450 (50B)
+   *
+   * PROTOCOL:
+   * Phase 1: Receive complete chunk sizes array (regular recv)
+   * Phase 2: Use recv_one() to receive each chunk with metadata
+   *          - If total_chunks=0, no data chunks follow
+   *          - Otherwise, receive total_chunks data chunks
+   */
+  __device__ void recv_multiple(
+      ThreadGroup& group,
+      void* recvbuff,
+      DeviceSpan<std::size_t> chunk_sizes) {
+#ifdef __CUDA_ARCH__
+    // Extract raw pointer before use (see DeviceSpan.cuh "Lambda Capture and
+    // Aliasing" note)
+    std::size_t* const chunk_sizes_ptr = chunk_sizes.data();
+    const std::size_t chunk_sizes_count = chunk_sizes.size();
+
+    // Phase 1: Receive complete chunk sizes array
+    recv(
+        group,
+        reinterpret_cast<void*>(chunk_sizes_ptr),
+        chunk_sizes_count * sizeof(std::size_t));
+
+    // Phase 2: Receive chunks
+    // First chunk's ChunkState contains total_chunks metadata
+    char* dst_base = reinterpret_cast<char*>(recvbuff);
+
+    std::size_t total_chunks = 0;
+    std::size_t nbytes_first = 0;
+    std::size_t offset_first = 0;
+
+    // Read first ChunkState to get total_chunks
+    recv_one(group, dst_base, 1, &nbytes_first, &offset_first, &total_chunks);
+
+    // If total_chunks is 0, we're done (Send0Chunks case)
+    if (total_chunks == 0) {
+      return;
+    }
+
+    // Receive remaining chunks (already received the first one above)
+    for (std::size_t i = 1; i < total_chunks; i++) {
+      recv_one(
+          group,
+          dst_base,
+          static_cast<int32_t>(i + 1)); // callIndex increments for each call
+    }
+#endif
+  }
+
+ public:
   // Getters for testing
   __host__ const LocalState& getLocalState() const {
     return localState_;
