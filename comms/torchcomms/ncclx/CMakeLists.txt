@@ -1,5 +1,44 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Extension: torchcomms._comms_ncclx
+
+# NCCLX handling - paths are set by cmake/NCCLX.cmake or for system libs
+# NCCLX requires Meta's extended NCCL headers, not standard NCCL
+if(USE_SYSTEM_LIBS)
+    # When using system libs, check if NCCLX headers are available in CONDA
+    # NCCLX has types like ncclWinAccessType that don't exist in standard NCCL
+    if(EXISTS "${CONDA_INCLUDE}/nccl.h")
+        file(STRINGS "${CONDA_INCLUDE}/nccl.h" NCCLX_CHECK REGEX "ncclWinAccessType")
+        if(NCCLX_CHECK)
+            set(NCCLX_INCLUDE "${CONDA_INCLUDE}")
+            set(NCCLX_SHARED_LIB "${CONDA_LIB}/libnccl.so")
+            set(HAVE_NCCLX TRUE)
+        else()
+            message(STATUS "NCCL found in CONDA but lacks NCCLX extensions - skipping ncclx module")
+            set(HAVE_NCCLX FALSE)
+        endif()
+    else()
+        message(STATUS "NCCLX headers not found in CONDA - skipping ncclx module (standard NCCL from PyTorch doesn't have NCCLX extensions)")
+        set(HAVE_NCCLX FALSE)
+    endif()
+
+    if(NOT HAVE_NCCLX)
+        return()
+    endif()
+else()
+    # NCCLX_INCLUDE, NCCLX_STATIC_LIB, NCCLX_SHARED_LIB are set by cmake/NCCLX.cmake
+    # and will be built by ncclx_build target
+    if(NOT DEFINED NCCLX_INCLUDE)
+        set(NCCLX_BUILD_DIR $ENV{BUILDDIR})
+        if(NOT NCCLX_BUILD_DIR)
+            set(NCCLX_BUILD_DIR "${CMAKE_BINARY_DIR}/ncclx")
+        endif()
+        set(NCCLX_INCLUDE "${NCCLX_BUILD_DIR}/include")
+        set(NCCLX_STATIC_LIB "${NCCLX_BUILD_DIR}/lib/libnccl_static.a")
+        set(NCCLX_SHARED_LIB "${NCCLX_BUILD_DIR}/lib/libnccl.so")
+    endif()
+endif()
+message(STATUS "NCCLX include: ${NCCLX_INCLUDE}")
+
 file(GLOB TORCHCOMMS_NCCLX_SOURCES
     "comms/torchcomms/ncclx/*.cpp"
 )
@@ -7,53 +46,24 @@ file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/CudaApi.cpp")
 
 find_package(CUDA)
 
-# NCCLX handling
-if(USE_SYSTEM_LIBS)
-    set(NCCLX_INCLUDE "${CONDA_INCLUDE}")
-    set(NCCLX_STATIC_LIB "${CONDA_LIB}/libnccl_static.a")
-    set(NCCLX_SHARED_LIB "${CONDA_LIB}/libnccl.so")
-else()
-    set(NCCLX_BUILD_DIR $ENV{BUILDDIR})
-    if(NOT NCCLX_BUILD_DIR)
-        set(NCCLX_BUILD_DIR "${ROOT}/build/ncclx")
-    endif()
-    set(NCCLX_INCLUDE "${NCCLX_BUILD_DIR}/include")
-    set(NCCLX_STATIC_LIB "${NCCLX_BUILD_DIR}/lib/libnccl_static.a")
-    set(NCCLX_SHARED_LIB "${NCCLX_BUILD_DIR}/lib/libnccl.so")
-    set(FMT_INCLUDE "${ROOT}/third-party/fmt/include")
-
-    if (NOT EXISTS "${NCCLX_BUILD_DIR}")
-        execute_process(
-            COMMAND ${ROOT}/build_ncclx.sh
-            WORKING_DIRECTORY ${ROOT}
-            RESULT_VARIABLE result
-            OUTPUT_VARIABLE output
-        )
-        if(result)
-            message(FATAL_ERROR "NCCLX build failed: ${result}")
-        endif()
-    endif()
-endif()
-
-# Get folly LDFLAGS using pkg-config
+# Get folly LDFLAGS using pkg-config (will fail during configure if deps not built,
+# but that's okay - deps will be built first due to target dependencies)
 set(ENV{PKG_CONFIG_PATH} "${CONDA_LIB}/pkgconfig")
 execute_process(
     COMMAND pkg-config --libs --static libfolly
     OUTPUT_VARIABLE FOLLY_LDFLAGS_RAW
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE PKG_RESULT
+    ERROR_QUIET
 )
-if(NOT PKG_RESULT EQUAL 0)
-    message(FATAL_ERROR "pkg-config for libfolly failed")
-endif()
-separate_arguments(FOLLY_LDFLAGS NATIVE_COMMAND "${FOLLY_LDFLAGS_RAW}")
-
-# Remove any -l:libglog.a from FOLLY_LDFLAGS
-list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX ".*libglog.*")
-
-# Check NCCLX include exists
-if(NOT EXISTS "${NCCLX_INCLUDE}")
-    message(FATAL_ERROR "NCCLX include not found at ${NCCLX_INCLUDE}")
+if(PKG_RESULT EQUAL 0)
+    separate_arguments(FOLLY_LDFLAGS NATIVE_COMMAND "${FOLLY_LDFLAGS_RAW}")
+    # Remove any -l:libglog.a from FOLLY_LDFLAGS
+    list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX ".*libglog.*")
+else()
+    # Deps not built yet, will be built before this target
+    set(FOLLY_LDFLAGS "")
+    message(STATUS "pkg-config for libfolly not available yet, deps will be built first")
 endif()
 
 add_library(torchcomms_comms_ncclx MODULE
@@ -86,6 +96,11 @@ if(USE_SYSTEM_LIBS)
         "-lfmt"
     )
 else()
+    # Add dependency on ncclx build target
+    if(TARGET ncclx_build)
+        add_dependencies(torchcomms_comms_ncclx ncclx_build)
+    endif()
+
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_STATIC_LIB}
         "-l:libcomms_tracing_service.a"

@@ -1,14 +1,28 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Extension: torchcomms._comms_gloo
 
-include(FetchContent)
-FetchContent_Declare(
-  gloo
-  GIT_REPOSITORY https://github.com/pytorch/gloo.git
-  GIT_TAG        main
-)
-# fetch but don't build
-FetchContent_Populate(gloo)
+# Allow using a pre-existing gloo source directory via environment variable
+# This avoids network fetching when gloo is already available locally
+if(DEFINED ENV{GLOO_SOURCE_DIR})
+    set(gloo_SOURCE_DIR "$ENV{GLOO_SOURCE_DIR}")
+    message(STATUS "Using GLOO_SOURCE_DIR from environment: ${gloo_SOURCE_DIR}")
+elseif(NOT gloo_SOURCE_DIR)
+    include(FetchContent)
+    # Silence deprecation warning for FetchContent_Populate
+    # We only want the source, not to build gloo as a subproject
+    if(POLICY CMP0169)
+        cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Declare(
+      gloo
+      GIT_REPOSITORY https://github.com/pytorch/gloo.git
+      GIT_TAG        main
+    )
+    # Fetch but don't build - we only need the headers
+    FetchContent_Populate(gloo)
+endif()
+
+message(STATUS "Gloo source directory: ${gloo_SOURCE_DIR}")
 
 file(GLOB TORCHCOMMS_GLOO_SOURCES "comms/torchcomms/gloo/*.cpp")
 
@@ -21,7 +35,6 @@ set_target_properties(torchcomms_comms_gloo PROPERTIES
 )
 target_include_directories(torchcomms_comms_gloo PRIVATE
     ${ROOT}
-    ${FMT_INCLUDE}
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
     ${gloo_SOURCE_DIR}

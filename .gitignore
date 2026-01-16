@@ -7,3 +7,4 @@ dist/
 .lintbin/
 .pyre/
 torch_compile_debug/
+.claude/settings.local.json
