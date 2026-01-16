@@ -75,6 +75,36 @@ folly::Expected<std::pair<ibv_qp_attr, ibv_qp_init_attr>, Error> IbvQp::queryQp(
   return std::make_pair(qpAttr, initAttr);
 }
 
+void IbvQp::logInfo() const {
+  auto maybeQpAttrPair = queryQp(IBV_QP_STATE | IBV_QP_CAP | IBV_QP_PKEY_INDEX);
+  if (maybeQpAttrPair.hasValue()) {
+    auto [qpAttr, initAttr] = maybeQpAttrPair.value();
+    XLOGF(
+        INFO,
+        "QP details: qp_num={}, qp_ptr={}, context={}, pd={}, state info: state={}, max_send_wr={}, max_recv_wr={}, max_send_sge={}, max_recv_sge={}, pkey_index={}",
+        qp_->qp_num,
+        fmt::ptr(qp_),
+        fmt::ptr(qp_->context),
+        fmt::ptr(qp_->pd),
+        static_cast<int>(qpAttr.qp_state),
+        qpAttr.cap.max_send_wr,
+        qpAttr.cap.max_recv_wr,
+        qpAttr.cap.max_send_sge,
+        qpAttr.cap.max_recv_sge,
+        qpAttr.pkey_index);
+  } else {
+    XLOGF(
+        ERR,
+        "QP details: qp_num={}, qp_ptr={}, context={}, pd={}, Failed to query local QP state: errno={} ({})",
+        qp_->qp_num,
+        fmt::ptr(qp_),
+        fmt::ptr(qp_->context),
+        fmt::ptr(qp_->pd),
+        maybeQpAttrPair.error().errNum,
+        maybeQpAttrPair.error().errStr);
+  }
+}
+
 void IbvQp::enquePhysicalSendWrStatus(int physicalWrId, int virtualWrId) {
   physicalSendWrStatus_.emplace_back(physicalWrId, virtualWrId);
 }

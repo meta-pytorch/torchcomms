@@ -35,6 +35,9 @@ class IbvQp {
   folly::Expected<std::pair<ibv_qp_attr, ibv_qp_init_attr>, Error> queryQp(
       int attrMask) const;
 
+  // Log QP details for debugging
+  void logInfo() const;
+
   inline uint32_t getQpNum() const;
   inline folly::Expected<folly::Unit, Error> postRecv(
       ibv_recv_wr* recvWr,
