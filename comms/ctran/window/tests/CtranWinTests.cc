@@ -44,16 +44,6 @@ class CtranWinTest : public NcclxBaseTest {
     CUDACHECK_TEST(cudaFree(buf));
   }
 
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T seed, T inc) {
-    std::vector<T> expectedVals(count, 0);
-    for (size_t i = 0; i < count; ++i) {
-      expectedVals[i] = seed + i * inc;
-    }
-    CUDACHECK_TEST(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
   void createWin(
       ncclComm_t comm,
       bool isUserBuf,
@@ -308,16 +298,6 @@ class CtranWinDistTest : public ctran::CtranDistTestFixture {
         comm->statex_->rank(), comm->statex_->nRanks());
     ASSERT_EQ(
         static_cast<commResult_t>(std::move(resFuture).get()), commSuccess);
-  }
-
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T seed, T inc) {
-    std::vector<T> expectedVals(count, 0);
-    for (size_t i = 0; i < count; ++i) {
-      expectedVals[i] = seed + i * inc;
-    }
-    CUDACHECK_TEST(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
   }
 };
 
