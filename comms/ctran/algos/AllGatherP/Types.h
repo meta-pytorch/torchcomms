@@ -3,10 +3,10 @@
 #pragma once
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/utils/commSpecs.h"
+#include "comms/ctran/mapper/CtranMapperTypes.h"
 
 using ctran::algos::GpeKernelSync;
 
-struct CtranMapperRemoteAccessKey;
 namespace ctran::allgatherp {
 struct PersistArgs {
   void* recvbuff;

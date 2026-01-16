@@ -39,7 +39,9 @@ USE_NCCLX = flag_enabled("USE_NCCLX", True)
 USE_GLOO = flag_enabled("USE_GLOO", True)
 USE_RCCL = flag_enabled("USE_RCCL", False)
 USE_RCCLX = flag_enabled("USE_RCCLX", False)
-USE_TRANSPORT = flag_enabled("USE_TRANSPORT", True)
+IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
+# Transport is CUDA-only; disable by default on ROCm but allow explicit opt-in.
+USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
 
 requirement_path = os.path.join(ROOT, "requirements.txt")
 try:

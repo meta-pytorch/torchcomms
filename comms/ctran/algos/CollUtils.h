@@ -3,10 +3,8 @@
 #pragma once
 
 #include <functional>
-// Ctran compiles collectives for bf16 and fbp8 types if
-// __CUDA_BF16_TYPES_EXIST__ defined but it's defined in correcponding cuda
-// headers. So we need to include them here to make sure Ctran compiles
-// collectives for bf16 and fbp8 types.
+// Ctran compiles collectives for bf16 and fp8 when the corresponding macros
+// are defined by the CUDA/HIP headers. Include them here to enable the types.
 #if CUDART_VERSION >= 11000
 #include <cuda_bf16.h>
 #endif
