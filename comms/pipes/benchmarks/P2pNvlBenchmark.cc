@@ -116,10 +116,6 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     MpiBaseTestFixture::SetUp();
     cudaSetDevice(globalRank);
 
-    // Set NCCL channels to 32 for maximum bandwidth
-    setenv("NCCL_MIN_NCHANNELS", "32", 1);
-    setenv("NCCL_MAX_NCHANNELS", "32", 1);
-
     // Initialize NCCL
     NCCL_CHECK_VOID(
         ncclCommInitRank(&ncclComm_, numRanks, getNCCLId(), globalRank));
@@ -787,6 +783,154 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .chunkSize = 512 * 1024,
       .useBlockGroups = true,
       .name = "Bidir_1GB_Block",
+  });
+
+  // === NCCL-LIKE WARP-BASED CONFIGURATIONS ===
+
+  // 32MB with 16 blocks, warp-based (chunkSize = 32KB)
+  configs.push_back({
+      .nBytes = 32 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 16,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 32 * 1024,
+      .useBlockGroups = false,
+      .name = "NCCL_32M_16B_Warp",
+  });
+
+  // 64MB with 16 blocks, warp-based (chunkSize = 32KB)
+  configs.push_back({
+      .nBytes = 64 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 16,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 32 * 1024,
+      .useBlockGroups = false,
+      .name = "NCCL_64M_16B_Warp",
+  });
+
+  // 128MB with 16 blocks, warp-based (chunkSize = 32KB)
+  configs.push_back({
+      .nBytes = 128 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 16,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 32 * 1024,
+      .useBlockGroups = false,
+      .name = "NCCL_128M_16B_Warp",
+  });
+
+  // 256MB with 16 blocks, warp-based (chunkSize = 32KB)
+  configs.push_back({
+      .nBytes = 256 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 16,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 32 * 1024,
+      .useBlockGroups = false,
+      .name = "NCCL_256M_16B_Warp",
+  });
+
+  // 512MB with 32 blocks, warp-based (chunkSize = 16KB)
+  configs.push_back({
+      .nBytes = 512 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 16 * 1024,
+      .useBlockGroups = false,
+      .name = "NCCL_512M_32B_Warp",
+  });
+
+  // 1GB with 32 blocks, warp-based (chunkSize = 16KB)
+  configs.push_back({
+      .nBytes = 1024 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 16 * 1024,
+      .useBlockGroups = false,
+      .name = "NCCL_1G_32B_Warp",
+  });
+
+  // === NCCL-LIKE BLOCK-BASED CONFIGURATIONS ===
+
+  // 32MB with 16 blocks, block-based (chunkSize = 1MB)
+  configs.push_back({
+      .nBytes = 32 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 16,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 1024 * 1024,
+      .useBlockGroups = true,
+      .name = "NCCL_32M_16B_Block",
+  });
+
+  // 64MB with 16 blocks, block-based (chunkSize = 1MB)
+  configs.push_back({
+      .nBytes = 64 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 16,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 1024 * 1024,
+      .useBlockGroups = true,
+      .name = "NCCL_64M_16B_Block",
+  });
+
+  // 128MB with 16 blocks, block-based (chunkSize = 1MB)
+  configs.push_back({
+      .nBytes = 128 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 16,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 1024 * 1024,
+      .useBlockGroups = true,
+      .name = "NCCL_128M_16B_Block",
+  });
+
+  // 256MB with 16 blocks, block-based (chunkSize = 1MB)
+  configs.push_back({
+      .nBytes = 256 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 16,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 1024 * 1024,
+      .useBlockGroups = true,
+      .name = "NCCL_256M_16B_Block",
+  });
+
+  // 512MB with 32 blocks, block-based (chunkSize = 512KB)
+  configs.push_back({
+      .nBytes = 512 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 512 * 1024,
+      .useBlockGroups = true,
+      .name = "NCCL_512M_32B_Block",
+  });
+
+  // 1GB with 32 blocks, block-based (chunkSize = 512KB)
+  configs.push_back({
+      .nBytes = 1024 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 512 * 1024,
+      .useBlockGroups = true,
+      .name = "NCCL_1G_32B_Block",
   });
 
   std::vector<BenchmarkResult> results;
