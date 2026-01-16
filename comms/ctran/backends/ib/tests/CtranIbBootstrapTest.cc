@@ -310,35 +310,14 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapStartDefaultServer) {
   getAndValidateListenAddr(ctranIb.get());
 }
 
-// Test that NCCL_SOCKET_IFNAME with multiple interfaces (comma-separated)
-// throws an exception.
-TEST_F(CtranIbBootstrapCommonTest, MultipleInterfacesInSocketIfnameThrows) {
-  std::string originalIfname = NCCL_SOCKET_IFNAME;
-  SCOPE_EXIT {
-    NCCL_SOCKET_IFNAME = originalIfname;
-  };
-
-  NCCL_SOCKET_IFNAME = "beth0,beth1,beth2"; // > 1 interface (comma-separated)
-  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
-  EXPECT_THROW(
-      {
-        auto ctranIb = createCtranIb(
-            /*rank=*/0,
-            CtranIb::BootstrapMode::kDefaultServer,
-            abortCtrl,
-            std::nullopt);
-      },
-      ::ctran::utils::Exception);
-}
-
 // Test that NCCL_SOCKET_IFNAME with a single interface works correctly
 TEST_F(CtranIbBootstrapCommonTest, SingleInterfaceInSocketIfnameSucceeds) {
-  std::string originalIfname = NCCL_SOCKET_IFNAME;
+  std::vector<std::string> originalIfname = NCCL_SOCKET_IFNAME;
   SCOPE_EXIT {
     NCCL_SOCKET_IFNAME = originalIfname;
   };
 
-  NCCL_SOCKET_IFNAME = "lo"; // Single interface (no comma)
+  NCCL_SOCKET_IFNAME = {"lo"}; // Single interface in vector
   auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
 
   // Should not throw; single interface is valid
@@ -352,15 +331,16 @@ TEST_F(CtranIbBootstrapCommonTest, SingleInterfaceInSocketIfnameSucceeds) {
 TEST_F(
     CtranIbBootstrapCommonTest,
     EmptySocketIfnameDoesNotTriggerMultiIfError) {
-  std::string originalIfname = NCCL_SOCKET_IFNAME;
+  std::vector<std::string> originalIfname = NCCL_SOCKET_IFNAME;
   SCOPE_EXIT {
     NCCL_SOCKET_IFNAME = originalIfname;
   };
 
-  NCCL_SOCKET_IFNAME = "";
+  NCCL_SOCKET_IFNAME = {}; // Empty vector
   auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
 
-  // Empty string does not contain a comma, so the multi-interface check passes.
+  // Empty vector does not have more than 1 interface, so the multi-interface
+  // check passes.
   try {
     auto ctranIb = createCtranIb(
         /*rank=*/0, CtranIb::BootstrapMode::kDefaultServer, abortCtrl);

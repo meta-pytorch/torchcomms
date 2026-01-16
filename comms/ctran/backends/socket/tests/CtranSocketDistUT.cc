@@ -54,7 +54,7 @@ TEST_F(CtranSocketTest, NormalInitialize) {
 }
 
 TEST_F(CtranSocketTest, InitializeWithoutComm) {
-  const std::string eth = "eth1";
+  const std::vector<std::string> eth = {"eth1"};
   EnvRAII env1(NCCL_SOCKET_IFNAME, eth);
   printTestDesc(
       "InitializeWithoutComm",
@@ -65,16 +65,17 @@ TEST_F(CtranSocketTest, InitializeWithoutComm) {
   const auto& commHash = comm->statex_->commHash();
   const auto& commDesc = comm->config_.commDesc;
 
+  const std::string socketIfName =
+      NCCL_SOCKET_IFNAME.empty() ? "" : NCCL_SOCKET_IFNAME[0];
   auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-      NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+      socketIfName, NCCL_SOCKET_IPADDR_PREFIX);
   ASSERT_FALSE(maybeAddr.hasError());
 
   // Create server socket, and bind it to reserve the port. The subsequent test
   // can use that port. The socket object will be destroyed (& port released)
   // when it goes out of scope.
   ctran::bootstrap::ServerSocket serverSocket(1);
-  serverSocket.bind(
-      folly::SocketAddress(*maybeAddr, 0), NCCL_SOCKET_IFNAME, true);
+  serverSocket.bind(folly::SocketAddress(*maybeAddr, 0), socketIfName, true);
   int port = serverSocket.getListenAddress()->getPort();
   SocketServerAddr serverAddr{.port = port, .ipv6 = maybeAddr->str()};
 

@@ -302,8 +302,14 @@ std::unique_ptr<CtranComm> CtranDistTestFixture::makeCtranComm() {
   } else {
     // For TCP Store, create and initialize mccl::bootstrap::Bootstrap
     // then wrap with CtranAdapter
+    std::string ifname;
+    if (NCCL_SOCKET_IFNAME.empty()) {
+      ifname = "";
+    } else {
+      ifname = NCCL_SOCKET_IFNAME[0];
+    }
     auto bootstrap = std::make_shared<mccl::bootstrap::Bootstrap>(
-        NCCL_SOCKET_IFNAME,
+        ifname,
         mccl::bootstrap::Options{
             .port = 0, .ifAddrPrefix = NCCL_SOCKET_IPADDR_PREFIX});
 
