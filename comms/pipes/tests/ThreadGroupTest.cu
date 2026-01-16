@@ -196,6 +196,51 @@ void testPartitionSubgroupProperties(
 }
 
 // =============================================================================
+// Partition Interleaved Tests
+// =============================================================================
+
+__global__ void testPartitionInterleavedKernel(
+    uint32_t* partitionIds,
+    uint32_t* subgroupIds,
+    uint32_t* subgroupTotalGroups,
+    uint32_t numPartitions,
+    uint32_t* errorCount) {
+  auto warp = make_warp_group();
+
+  auto [partition_id, subgroup] = warp.partition_interleaved(numPartitions);
+
+  // Bounds check
+  if (partition_id >= numPartitions) {
+    atomicAdd(errorCount, 1);
+    return;
+  }
+
+  // Record results for CPU verification (one write per warp)
+  if (warp.is_leader()) {
+    partitionIds[warp.group_id] = partition_id;
+    subgroupIds[warp.group_id] = subgroup.group_id;
+    subgroupTotalGroups[warp.group_id] = subgroup.total_groups;
+  }
+}
+
+void testPartitionInterleaved(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testPartitionInterleavedKernel<<<numBlocks, blockSize>>>(
+      partitionIds_d,
+      subgroupIds_d,
+      subgroupTotalGroups_d,
+      numPartitions,
+      errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
 // Weighted Partition Tests
 // =============================================================================
 
