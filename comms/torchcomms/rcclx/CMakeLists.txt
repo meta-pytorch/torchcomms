@@ -13,8 +13,6 @@ message(STATUS "RCCLX_INCLUDE is set to ${RCCLX_INCLUDE}")
 set(RCCLX_SHARED_LIB $ENV{RCCLX_LIB}/librccl.so)
 message(STATUS "RCCLX_SHARED_LIB is set to ${RCCLX_SHARED_LIB}")
 
-set(FMT_INCLUDE "${ROOT}/third-party/fmt/include")
-
 add_library(torchcomms_comms_rcclx MODULE ${TORCHCOMMS_RCCLX_SOURCES})
 set_target_properties(torchcomms_comms_rcclx PROPERTIES
     PREFIX ""
@@ -26,7 +24,6 @@ set_target_properties(torchcomms_comms_rcclx PROPERTIES
 target_include_directories(torchcomms_comms_rcclx PRIVATE
     ${ROOT}
     ${RCCLX_INCLUDE}
-    ${FMT_INCLUDE}
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
     ${ROCM_INCLUDE}

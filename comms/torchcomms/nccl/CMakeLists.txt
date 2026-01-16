@@ -4,21 +4,21 @@ file(GLOB TORCHCOMMS_NCCL_SOURCES "comms/torchcomms/nccl/*.cpp")
 file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/CudaApi.cpp")
 find_package(CUDA)
 
-if(USE_SYSTEM_LIBS)
-    # Use system installed NCCL
+# Find NCCL - check various locations in order of preference
+if(USE_SYSTEM_LIBS AND EXISTS "${CONDA_INCLUDE}/nccl.h")
+    # Use system installed NCCL from conda
     set(NCCL_INCLUDE "${CONDA_INCLUDE}")
     set(NCCL_SHARED_LIB "${CONDA_LIB}/libnccl.so")
 elseif(EXISTS "${TORCH_INSTALL_PREFIX}/../build/nccl/include/nccl.h")
     # Use NCCL from PyTorch source build
     set(NCCL_INCLUDE "${TORCH_INSTALL_PREFIX}/../build/nccl/include")
-    set(NCCL_STATIC_LIB "${TORCH_INSTALL_PREFIX}/../build/nccl/lib/libnccl_static.a")
+    set(NCCL_SHARED_LIB "${TORCH_INSTALL_PREFIX}/../build/nccl/lib/libnccl.so")
 else()
     # Use NCCL packaged with PyTorch (pip install)
     set(NCCL_INCLUDE "${TORCH_INSTALL_PREFIX}/../nvidia/nccl/include")
-    set(NCCL_SHARED_LIB
-        "${TORCH_INSTALL_PREFIX}/../nvidia/nccl/lib/libnccl.so.2"
-    )
+    set(NCCL_SHARED_LIB "${TORCH_INSTALL_PREFIX}/../nvidia/nccl/lib/libnccl.so.2")
 endif()
+message(STATUS "NCCL include: ${NCCL_INCLUDE}")
 
 add_library(torchcomms_comms_nccl MODULE
     ${TORCHCOMMS_NCCL_SOURCES}
@@ -42,16 +42,8 @@ target_link_libraries(torchcomms_comms_nccl PRIVATE
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
     torchcomms
+    ${NCCL_SHARED_LIB}
 )
-if(USE_SYSTEM_LIBS)
-    target_link_libraries(torchcomms_comms_nccl PRIVATE
-        ${NCCL_SHARED_LIB}
-    )
-else()
-    target_link_libraries(torchcomms_comms_nccl PRIVATE
-        ${NCCL_STATIC_LIB}
-    )
-endif()
 
 if(CUDA_FOUND)
     target_link_libraries(torchcomms_comms_nccl PRIVATE CUDA::cudart)
