@@ -388,7 +388,7 @@ ncclResult_t ncclFindInterfaces(char* ifNames, union ncclSocketAddress *ifAddrs,
   // Allow user to force the INET socket family selection
   int sock_family = envSocketFamily();
   // User specified interface
-  const char* env = NCCL_SOCKET_IFNAME.c_str();
+  const char* env = NCCL_SOCKET_IFNAME.empty() ? NULL : NCCL_SOCKET_IFNAME[0].c_str();
   *nIfs = 0;
   if (env && strlen(env) > 1) {
     INFO(NCCL_ENV, "NCCL_SOCKET_IFNAME set by environment to %s", env);
@@ -863,7 +863,7 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
     NCCLCHECKGOTO(socketResetFd(sock), ret, fail);
     if (NCCL_SOCKET_TOS_CONFIG != -1) {
     // referenced D77281608
-      if (family == AF_INET6) { 
+      if (family == AF_INET6) {
         // For IPv6 set the traffic class field
         SYSCHECK(setsockopt(sock->fd, IPPROTO_IPV6, IPV6_TCLASS, (char*)&NCCL_SOCKET_TOS_CONFIG, sizeof(int)), "setsockopt");
       } else {

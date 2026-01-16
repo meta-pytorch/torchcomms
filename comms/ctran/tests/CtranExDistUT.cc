@@ -21,8 +21,13 @@ class CtranExTest : public CtranExBaseTest {
   void SetUp() override {
     CtranExBaseTest::SetUp();
     // Reserved a port for CTRAN server
-    serverSocket_.bind(
-        folly::SocketAddress("::0", 0), NCCL_SOCKET_IFNAME, true);
+    std::string socketIfName;
+    if (NCCL_SOCKET_IFNAME.empty()) {
+      socketIfName = "";
+    } else {
+      socketIfName = NCCL_SOCKET_IFNAME[0];
+    }
+    serverSocket_.bind(folly::SocketAddress("::0", 0), socketIfName, true);
   }
 
   int getReservedPort() {

@@ -750,7 +750,7 @@ cvars:
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-family
 
  - name        : NCCL_SOCKET_IFNAME
-   type        : string
+   type        : stringlist
    default     : ""
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-ifname
 

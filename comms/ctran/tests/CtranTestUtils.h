@@ -70,8 +70,14 @@ inline CtranCommWithBootstrap createCtranCommWithBootstrap(
       ::ctran::utils::createAbort(/*enabled=*/false));
 
   // Create and initialize bootstrap; needed for CTRAN backend initialization
+  std::string ifname;
+  if (NCCL_SOCKET_IFNAME.empty()) {
+    ifname = "";
+  } else {
+    ifname = NCCL_SOCKET_IFNAME[0];
+  }
   auto bootstrap = std::make_shared<mccl::bootstrap::Bootstrap>(
-      NCCL_SOCKET_IFNAME,
+      ifname,
       mccl::bootstrap::Options{
           .port = 0, .ifAddrPrefix = NCCL_SOCKET_IPADDR_PREFIX});
 

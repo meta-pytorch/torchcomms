@@ -932,8 +932,10 @@ TEST_F(CtranIbTest, NormalInitialize) {
 }
 
 TEST_F(CtranIbTest, InitializeWithoutComm) {
-  const std::string eth = "eth0";
+  const std::vector<std::string> eth = {"eth0"};
   EnvRAII env1(NCCL_SOCKET_IFNAME, eth);
+  const std::string socketIfName =
+      NCCL_SOCKET_IFNAME.empty() ? "" : NCCL_SOCKET_IFNAME[0];
   this->printTestDesc(
       "InitializeWithoutComm",
       "Expect CtranIb to be initialized without internal error.");
@@ -944,20 +946,19 @@ TEST_F(CtranIbTest, InitializeWithoutComm) {
   const auto& commDesc = this->comm->config_.commDesc;
 
   auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-      NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+      socketIfName, NCCL_SOCKET_IPADDR_PREFIX);
   ASSERT_FALSE(maybeAddr.hasError());
 
   // Create server socket, and bind it to reserve the port. The subsequent
   // test can use that port. The socket object will be destroyed (& port
   // released) when it goes out of scope.
   ctran::bootstrap::ServerSocket serverSocket(1);
-  serverSocket.bind(
-      folly::SocketAddress(*maybeAddr, 0), NCCL_SOCKET_IFNAME, true);
+  serverSocket.bind(folly::SocketAddress(*maybeAddr, 0), socketIfName, true);
   int port = serverSocket.getListenAddress()->getPort();
   SocketServerAddr qpServerAddr{
       .port = port,
       .ipv6 = maybeAddr->str(),
-      .ifName = NCCL_SOCKET_IFNAME // use same ifname as server
+      .ifName = socketIfName // use same ifname as server
   };
 
   std::unique_ptr<CtranIb> ctranIb{nullptr};
@@ -1032,7 +1033,7 @@ TEST_F(CtranIbTest, InitializeWithoutComm) {
 }
 
 TEST_F(CtranIbTest, InitializeWithoutCommAndExternalBootstrap) {
-  const std::string eth = "eth0";
+  const std::vector<std::string> eth = {"eth0"};
   EnvRAII env1(NCCL_SOCKET_IFNAME, eth);
   this->printTestDesc(
       "InitializeWithoutCommAndExternalBootstrap",
@@ -2176,8 +2177,10 @@ TEST_F(CtranIbTest, pgTrafficClassConfig) {
 }
 
 TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
-  const std::string eth = "eth0";
+  const std::vector<std::string> eth = {"eth0"};
   EnvRAII env1(NCCL_SOCKET_IFNAME, eth);
+  const std::string socketIfName =
+      NCCL_SOCKET_IFNAME.empty() ? "" : NCCL_SOCKET_IFNAME[0];
   std::vector<std::string> pgTrafficClass = {"PP_P2P_0:200", "PP_P2P_1:208"};
   EnvRAII env2(NCCL_CTRAN_IB_PG_TRAFFIC_CLASS, pgTrafficClass);
   const auto& rank = this->comm->statex_->rank();
@@ -2186,15 +2189,14 @@ TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
   const auto& commDesc = this->comm->config_.commDesc;
 
   auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-      NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+      socketIfName, NCCL_SOCKET_IPADDR_PREFIX);
   ASSERT_FALSE(maybeAddr.hasError());
 
   // Create server socket, and bind it to reserve the port. The subsequent
   // test can use that port. The socket object will be destroyed (& port
   // released) when it goes out of scope.
   ctran::bootstrap::ServerSocket serverSocket(1);
-  serverSocket.bind(
-      folly::SocketAddress(*maybeAddr, 0), NCCL_SOCKET_IFNAME, true);
+  serverSocket.bind(folly::SocketAddress(*maybeAddr, 0), socketIfName, true);
   int port = serverSocket.getListenAddress()->getPort();
   SocketServerAddr qpServerAddr{.port = port, .ipv6 = maybeAddr->str()};
 
