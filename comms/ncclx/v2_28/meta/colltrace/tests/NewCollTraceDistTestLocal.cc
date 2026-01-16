@@ -16,6 +16,7 @@
 #include "nccl.h" // @manual
 
 #include "comms/ctran/Ctran.h"
+#include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/commDump.h"
@@ -58,47 +59,7 @@ class CollTraceTestLocal : public NcclxBaseTest {
     }
   }
 
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T seed, T inc) {
-    std::vector<T> expectedVals(count, 0);
-    for (size_t i = 0; i < count; ++i) {
-      expectedVals[i] = seed + i * inc;
-    }
-    CUDACHECK_TEST(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
-  template <typename T>
-  int checkChunkValue(
-      T* buf,
-      size_t count,
-      T seed,
-      T inc,
-      cudaStream_t checkStream) {
-    std::vector<T> observedVals(count, -1);
-    CUDACHECK_TEST(cudaMemcpyAsync(
-        observedVals.data(),
-        buf,
-        count * sizeof(T),
-        cudaMemcpyDefault,
-        checkStream));
-    CUDACHECK_TEST(cudaStreamSynchronize(checkStream));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print failing location.
-    for (auto i = 0; i < count; ++i) {
-      T val = seed + inc * i;
-      if (observedVals[i] != val) {
-        if (errs < 10) {
-          // avoid using formatted string since we don't know the value type
-          std::cout << "[" << this->globalRank << "] observedVals[" << i
-                    << "] = " << observedVals[i] << ", expectedVal = " << val
-                    << std::endl;
-        }
-        errs++;
-      }
-    }
-    return errs;
-  }
+  // Use MPI to ensure
 
   // Use MPI to ensure that we don't see additional all reduce for that nccl
   // communicator
@@ -166,8 +127,6 @@ TEST_F(CollTraceTestLocal, winSignalAllToAll) {
     }
   }
 
-  CUDACHECK_TEST(cudaStreamSynchronize(wait_stream));
-
   int errs = 0;
   for (auto peerRank = 0; peerRank < numRanks; peerRank++) {
     if (peerRank == myrank) {
@@ -178,6 +137,7 @@ TEST_F(CollTraceTestLocal, winSignalAllToAll) {
         kNumElements,
         (uint64_t)peerRank,
         0UL,
+        this->globalRank,
         wait_stream);
   }
   EXPECT_EQ(errs, 0);
@@ -264,12 +224,12 @@ TEST_F(CollTraceTestLocal, winPutOnly) {
   CUDACHECK_TEST(cudaStreamSynchronize(put_stream));
   this->barrier();
 
-  // allreduce ensures all remote puts have finished
   int errs = checkChunkValue(
       (int*)winBase + kNumElements * prevPeer,
       kNumElements,
       prevPeer,
       1,
+      this->globalRank,
       main_stream);
 
   res = ctranWinFree(win);
