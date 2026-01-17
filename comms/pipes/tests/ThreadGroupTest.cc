@@ -443,6 +443,200 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 // =============================================================================
+// Partition Interleaved Tests (Parameterized)
+// =============================================================================
+
+// Parameterized test fixture for partition_interleaved tests
+// Uses the same PartitionTestParams as regular partition tests
+class ThreadGroupPartitionInterleavedTest
+    : public ThreadGroupTestFixture,
+      public ::testing::WithParamInterface<PartitionTestParams> {};
+
+// Test: partition_interleaved round-robin assignment
+// Verifies:
+// - partition_id = group_id % num_partitions (round-robin)
+// - subgroup.group_id = group_id / num_partitions (renumbered within partition)
+// - subgroup.total_groups = (total_groups + num_partitions - 1 - pid) /
+// num_partitions
+//
+// Example with 8 warps and 2 partitions:
+// - Partition 0 gets warps 0, 2, 4, 6 (even)
+// - Partition 1 gets warps 1, 3, 5, 7 (odd)
+// - Warp 4 has partition_id=0, subgroup.group_id=2, subgroup.total_groups=4
+TEST_P(ThreadGroupPartitionInterleavedTest, PartitionInterleaved) {
+  const auto& params = GetParam();
+  const uint32_t totalWarps =
+      params.numBlocks * (params.blockSize / comms::device::kWarpSize);
+  const uint32_t numPartitions = params.numPartitions;
+
+  DeviceBuffer partitionIdsBuffer(totalWarps * sizeof(uint32_t));
+  DeviceBuffer subgroupIdsBuffer(totalWarps * sizeof(uint32_t));
+  DeviceBuffer subgroupTotalGroupsBuffer(totalWarps * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto partitionIds_d = static_cast<uint32_t*>(partitionIdsBuffer.get());
+  auto subgroupIds_d = static_cast<uint32_t*>(subgroupIdsBuffer.get());
+  auto subgroupTotalGroups_d =
+      static_cast<uint32_t*>(subgroupTotalGroupsBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(
+      cudaMemset(partitionIds_d, 0xFF, totalWarps * sizeof(uint32_t)));
+  CUDACHECK_TEST(
+      cudaMemset(subgroupIds_d, 0xFF, totalWarps * sizeof(uint32_t)));
+  CUDACHECK_TEST(
+      cudaMemset(subgroupTotalGroups_d, 0xFF, totalWarps * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  test::testPartitionInterleaved(
+      partitionIds_d,
+      subgroupIds_d,
+      subgroupTotalGroups_d,
+      numPartitions,
+      errorCount_d,
+      params.numBlocks,
+      params.blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify no kernel errors
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0)
+      << "partition_interleaved should not produce errors";
+
+  // Copy results to host
+  std::vector<uint32_t> partitionIds_h(totalWarps);
+  std::vector<uint32_t> subgroupIds_h(totalWarps);
+  std::vector<uint32_t> subgroupTotalGroups_h(totalWarps);
+
+  CUDACHECK_TEST(cudaMemcpy(
+      partitionIds_h.data(),
+      partitionIds_d,
+      totalWarps * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      subgroupIds_h.data(),
+      subgroupIds_d,
+      totalWarps * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      subgroupTotalGroups_h.data(),
+      subgroupTotalGroups_d,
+      totalWarps * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  // Build expected data based on semantic understanding of interleaved
+  // partitioning: warps are assigned to partitions in round-robin fashion
+  // (0,1,2,...,N-1,0,1,2,...), and within each partition, warps are numbered
+  // sequentially starting from 0.
+
+  // First, determine which warps belong to each partition by simulation
+  std::vector<std::vector<uint32_t>> partitionMembers(numPartitions);
+  for (uint32_t warpId = 0; warpId < totalWarps; warpId++) {
+    // Round-robin: warp goes to next partition in sequence
+    uint32_t partition = warpId % numPartitions;
+    partitionMembers[partition].push_back(warpId);
+  }
+
+  // Build expected vectors from partition membership
+  std::vector<uint32_t> expectedPartitionIds(totalWarps);
+  std::vector<uint32_t> expectedSubgroupIds(totalWarps);
+  std::vector<uint32_t> expectedTotalGroups(totalWarps);
+
+  for (uint32_t partition = 0; partition < numPartitions; partition++) {
+    const auto& members = partitionMembers[partition];
+    for (uint32_t subgroupId = 0; subgroupId < members.size(); subgroupId++) {
+      uint32_t warpId = members[subgroupId];
+      expectedPartitionIds[warpId] = partition;
+      expectedSubgroupIds[warpId] = subgroupId;
+      expectedTotalGroups[warpId] = static_cast<uint32_t>(members.size());
+    }
+  }
+
+  // Compare entire vectors
+  EXPECT_EQ(partitionIds_h, expectedPartitionIds)
+      << "Partition IDs should follow interleaved (round-robin) pattern";
+  EXPECT_EQ(subgroupIds_h, expectedSubgroupIds)
+      << "Subgroup IDs should be sequential within each partition";
+  EXPECT_EQ(subgroupTotalGroups_h, expectedTotalGroups)
+      << "Total groups should equal partition size";
+
+  // Verify all partitions are used and have correct distribution
+  std::vector<uint32_t> partitionCounts(numPartitions, 0);
+  for (uint32_t warpId = 0; warpId < totalWarps; warpId++) {
+    if (partitionIds_h[warpId] < numPartitions) {
+      partitionCounts[partitionIds_h[warpId]]++;
+    }
+  }
+
+  // All partitions should have warps
+  for (uint32_t i = 0; i < numPartitions; i++) {
+    uint32_t expectedCount =
+        (totalWarps + numPartitions - 1 - i) / numPartitions;
+    EXPECT_EQ(partitionCounts[i], expectedCount)
+        << "Partition " << i << " should have " << expectedCount << " warps";
+  }
+
+  // Total assigned should equal total warps
+  uint32_t totalAssigned = 0;
+  for (uint32_t i = 0; i < numPartitions; i++) {
+    totalAssigned += partitionCounts[i];
+  }
+  EXPECT_EQ(totalAssigned, totalWarps) << "All warps should be assigned";
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PartitionInterleavedConfigs,
+    ThreadGroupPartitionInterleavedTest,
+    ::testing::Values(
+        // Even 2-way split: 64 warps, partition 0 gets 32 (even), partition 1
+        // gets 32 (odd)
+        PartitionTestParams{
+            .numPartitions = 2,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .testName = "TwoPartitions_Even"},
+        // 3-way split: 64 warps
+        // Partition 0: warps 0,3,6,... = 22 warps (ceil(64/3))
+        // Partition 1: warps 1,4,7,... = 21 warps
+        // Partition 2: warps 2,5,8,... = 21 warps
+        PartitionTestParams{
+            .numPartitions = 3,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .testName = "ThreePartitions_Uneven"},
+        // Single partition: all warps in partition 0
+        PartitionTestParams{
+            .numPartitions = 1,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .testName = "SinglePartition"},
+        // Partition count equals group count: each warp is its own partition
+        PartitionTestParams{
+            .numPartitions = 64,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .testName = "OneWarpPerPartition"},
+        // 4-way split: 64 / 4 = 16 each
+        PartitionTestParams{
+            .numPartitions = 4,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .testName = "FourPartitions_Even"},
+        // Smaller config: 8 warps with 2 partitions
+        // Partition 0: warps 0,2,4,6 = 4 warps
+        // Partition 1: warps 1,3,5,7 = 4 warps
+        PartitionTestParams{
+            .numPartitions = 2,
+            .numBlocks = 1,
+            .blockSize = 256,
+            .testName = "SmallConfig_TwoPartitions"}),
+    [](const ::testing::TestParamInfo<PartitionTestParams>& info) {
+      return info.param.testName;
+    });
+
+// =============================================================================
 // Subgroup Properties Preservation Test
 // =============================================================================
 
