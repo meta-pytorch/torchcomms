@@ -465,6 +465,15 @@ set(SRC_FILES
   src/device/reduce_kernel.h
   src/device/reduce_scatter.h
   src/device/sendrecv.h
+  src/device/symmetric/all_gather.cuh
+  src/device/symmetric/all_gather.h
+  src/device/symmetric/all_reduce.h
+  src/device/symmetric/kernel.cuh
+  src/device/symmetric/kernel.h
+  src/device/symmetric/primitives.cuh
+  src/device/symmetric/primitives.h
+  src/device/symmetric/reduce_scatter.cuh
+  src/device/symmetric/reduce_scatter.h
   src/enhcompat.cc
   src/enqueue.cc
   src/graph/connect.cc
@@ -481,8 +490,8 @@ set(SRC_FILES
   src/graph/xml.cc
   src/graph/xml.h
   src/group.cc
-  src/include/alloc.h
   src/include/allocator.h
+  src/include/alloc.h
   src/include/alt_rsmi.h
   src/include/api_trace.h
   src/include/archinfo.h
@@ -511,6 +520,14 @@ set(SRC_FILES
   src/include/ibvwrap.h
   src/include/info.h
   src/include/ipcsocket.h
+  src/include/latency_profiler/CollTraceEvent.h
+  src/include/latency_profiler/CollTraceFunc.h
+  src/include/latency_profiler/CollTrace.h
+  src/include/latency_profiler/CollTraceUtils.h
+  src/include/latency_profiler/EventQueue.h
+  src/include/mlx5/mlx5dvcore.h
+  src/include/mlx5/mlx5dvsymbols.h
+  src/include/mlx5/mlx5dvwrap.h
   src/include/mnnvl.h
   src/include/msccl/msccl_kernel.h
   src/include/msccl/msccl_lifecycle.h
@@ -521,12 +538,6 @@ set(SRC_FILES
   src/include/msccl/msccl_struct.h
   src/include/mscclpp/mscclpp_nccl.h
   src/include/nccl_common.h
-  src/include/plugin/nccl_net.h
-  src/include/plugin/nccl_profiler.h
-  src/include/plugin/nccl_tuner.h
-  src/include/mlx5/mlx5dvwrap.h
-  src/include/mlx5/mlx5dvcore.h
-  src/include/mlx5/mlx5dvsymbols.h
   src/include/net_device.h
   src/include/net.h
   src/include/npkit/npkit_event.h
@@ -572,25 +583,46 @@ set(SRC_FILES
   src/include/nvtx_stub.h
   src/include/p2p.h
   src/include/param.h
+  src/include/plugin/nccl_net.h
+  src/include/plugin/nccl_profiler.h
+  src/include/plugin/nccl_tuner.h
+  src/include/plugin/net/net_v10.h
+  src/include/plugin/net/net_v6.h
+  src/include/plugin/net/net_v7.h
+  src/include/plugin/net/net_v8.h
+  src/include/plugin/net/net_v9.h
+  src/include/plugin/plugin.h
+  src/include/plugin/profiler/net_ib.h
+  src/include/plugin/profiler/net_ib_v1.h
+  src/include/plugin/profiler/net_socket.h
+  src/include/plugin/profiler/net_socket_v1.h
+  src/include/plugin/profiler/profiler_v1.h
+  src/include/plugin/profiler/profiler_v2.h
+  src/include/plugin/profiler/profiler_v3.h
+  src/include/plugin/profiler/profiler_v4.h
+  src/include/plugin/tuner/tuner_v2.h
+  src/include/plugin/tuner/tuner_v3.h
+  src/include/plugin/tuner/tuner_v4.h
   src/include/profiler.h
   src/include/proxy.h
+  src/include/proxy_trace/proxy_trace.h
   src/include/ras.h
   src/include/rccl_common.h
   src/include/rccl_float8.h
   src/include/rccl_vars.h
   src/include/recorder.h
   src/include/register.h
+  src/include/register_inline.h
   src/include/rocm_smi_wrap.h
   src/include/rocmwrap.h
   src/include/roctx.h
   src/include/shm.h
   src/include/shmutils.h
   src/include/signals.h
-  src/include/symmetric.h
   src/include/socket.h
   src/include/strongstream.h
+  src/include/symmetric.h
   src/include/timer.h
-  src/include/plugin/profiler/profiler_v4.h
   src/include/transport.h
   src/include/trees.h
   src/include/tuner.h
@@ -606,43 +638,23 @@ set(SRC_FILES
   src/misc/ibvsymbols.cc
   src/misc/ibvwrap.cc
   src/misc/ipcsocket.cc
+  src/misc/latency_profiler/CollTrace.cc
+  src/misc/latency_profiler/CollTraceEvent.cc
+  src/misc/latency_profiler/CollTraceFunc.cc
+  src/misc/latency_profiler/CollTraceUtils.cc
+  src/misc/mlx5dvsymbols.cc
+  src/misc/mlx5dvwrap.cc
   src/misc/msccl/msccl_lifecycle.cc
   src/misc/msccl/msccl_parser.cc
   src/misc/msccl/msccl_setup.cc
   src/misc/msccl/msccl_status.cc
   src/misc/mscclpp/mscclpp_nccl.cc
+# src/misc/msccl_stub.cc
   src/misc/npkit.cc
 # src/misc/nvmlwrap.cc
   src/misc/nvmlwrap_stub.cc
   src/misc/param.cc
-  src/plugin/profiler.cc
-  src/include/plugin/net/net_v6.h
-  src/include/plugin/net/net_v7.h
-  src/include/plugin/net/net_v8.h
-  src/include/plugin/net/net_v9.h
-  src/include/plugin/net/net_v10.h
-  src/include/plugin/nccl_net.h
-  src/include/plugin/nccl_profiler.h
-  src/include/plugin/nccl_tuner.h
-  src/include/plugin/plugin.h
-  src/include/plugin/net/net_v6.h
-  src/include/plugin/net/net_v7.h
-  src/include/plugin/net/net_v8.h
-  src/include/plugin/net/net_v9.h
-  src/include/plugin/net/net_v10.h
-  src/include/plugin/profiler/net_ib_v1.h
-  src/include/plugin/profiler/net_ib.h
-  src/include/plugin/profiler/net_socket_v1.h
-  src/include/plugin/profiler/net_socket.h
-  src/include/plugin/profiler/profiler_v1.h
-  src/include/plugin/profiler/profiler_v2.h
-  src/include/plugin/profiler/profiler_v3.h
-  src/include/plugin/profiler/profiler_v4.h
-  src/include/plugin/tuner/tuner_v2.h
-  src/include/plugin/tuner/tuner_v3.h
-  src/include/plugin/tuner/tuner_v4.h
-  src/include/proxy_trace/proxy_trace.h
-  src/include/register_inline.h
+  src/misc/proxy_trace/proxy_trace.cc
   src/misc/recorder.cc
   src/misc/rocm_smi_wrap.cc
   src/misc/rocmwrap.cc
@@ -656,6 +668,21 @@ set(SRC_FILES
   src/msccl.cc
   src/nccl.h
   src/plugin/net.cc
+  src/plugin/net/net_v10.cc
+  src/plugin/net/net_v6.cc
+  src/plugin/net/net_v7.cc
+  src/plugin/net/net_v8.cc
+  src/plugin/net/net_v9.cc
+  src/plugin/plugin_open.cc
+  src/plugin/profiler.cc
+  src/plugin/profiler/profiler_v1.cc
+  src/plugin/profiler/profiler_v2.cc
+  src/plugin/profiler/profiler_v3.cc
+  src/plugin/profiler/profiler_v4.cc
+  src/plugin/tuner.cc
+  src/plugin/tuner/tuner_v2.cc
+  src/plugin/tuner/tuner_v3.cc
+  src/plugin/tuner/tuner_v4.cc
   src/proxy.cc
   src/ras/client.cc
   src/ras/client_support.cc
@@ -669,6 +696,7 @@ set(SRC_FILES
   src/register/coll_reg.cc
   src/register/register.cc
   src/register/sendrecv_reg.cc
+  src/symmetric.cc
   src/transport.cc
   src/transport/coll_net.cc
   src/transport/generic.cc
@@ -679,15 +707,6 @@ set(SRC_FILES
   src/transport/p2p.cc
   src/transport/profiler.cc
   src/transport/shm.cc
-  src/include/latency_profiler/CollTrace.h
-  src/include/latency_profiler/CollTraceEvent.h
-  src/include/latency_profiler/CollTraceFunc.h
-  src/include/latency_profiler/CollTraceUtils.h
-  src/include/latency_profiler/EventQueue.h
-  src/misc/latency_profiler/CollTrace.cc
-  src/misc/latency_profiler/CollTraceEvent.cc
-  src/misc/latency_profiler/CollTraceFunc.cc
-  src/misc/latency_profiler/CollTraceUtils.cc
 )
 
 # Run this command to get META_FILES:
