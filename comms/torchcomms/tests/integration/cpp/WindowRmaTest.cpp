@@ -71,8 +71,8 @@ void WindowRmaTest::testWindowPutBasic(
   auto cuda_allocator =
       torch::comms::get_mem_allocator(torchcomm_->getBackend());
   auto mem_pool = std::make_unique<at::cuda::MemPool>(
-      static_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator*>(
-          cuda_allocator.get()));
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          cuda_allocator));
   c10::cuda::CUDACachingAllocator::beginAllocateToPool(
       mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
 
