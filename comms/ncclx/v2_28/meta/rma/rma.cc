@@ -137,17 +137,10 @@ ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
 NCCL_API(
     ncclResult_t,
     ncclSignal,
-    size_t signalDisp,
-    uint64_t signalVal,
     int peer,
     ncclWindow_t win,
     cudaStream_t stream);
-ncclResult_t ncclSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    ncclWindow_t win,
-    cudaStream_t stream) {
+ncclResult_t ncclSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
   ncclWin* ncclWinPtr = nullptr;
   NCCLCHECK(getValidatedNcclWin(win, &ncclWinPtr, "ncclSignal"));
   return metaCommToNccl(ctranSignal(peer, ncclWinPtr->ctranWindow, stream));

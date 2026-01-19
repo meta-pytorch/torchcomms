@@ -775,8 +775,6 @@ ncclResult_t pncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
  * Wait for a signal given the local signal displacement, the signal value, and the comparison op.
  */
 ncclResult_t ncclSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
     int peer,
     ncclWindow_t win,
     cudaStream_t stream
