@@ -98,6 +98,13 @@ class IbvVirtualQp {
       ibv_send_wr* sendWrBad,
       const std::unordered_map<int32_t, MemoryRegionKeys>& deviceIdToKeys = {});
 
+  // Scatter-gather version of postSend with per-buffer device keys
+  // Each buffer in the scatter-gather list can have its own set of device keys
+  inline folly::Expected<folly::Unit, Error> postSendScatterGather(
+      ibv_send_wr* sendWr,
+      ibv_send_wr* sendWrBad,
+      const std::vector<ScatterGatherBufferKeys>& perBufferKeys);
+
   inline folly::Expected<folly::Unit, Error> postRecv(
       ibv_recv_wr* ibvRecvWr,
       ibv_recv_wr* badIbvRecvWr);
@@ -119,6 +126,18 @@ class IbvVirtualQp {
       VirtualSendWr& virtualSendWr,
       ibv_send_wr* sendWr,
       ibv_sge* sendSg,
+      int32_t deviceId = 0);
+
+  // Scatter-gather list array for physical work requests
+  ibv_sge sendPutSgList_[kMaxSgBuffersPerWr]{};
+
+  // Helper function to build scatter-gather list from current offset position
+  // Returns the number of SGE entries populated and actual bytes to send
+  inline std::pair<int, uint64_t> buildScatterGatherList(
+      VirtualSendWr& virtualSendWr,
+      ibv_sge* sgList,
+      int maxSgElements,
+      uint64_t maxBytesToSend,
       int32_t deviceId = 0);
 
   friend class IbvPd;
@@ -214,11 +233,76 @@ IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
     // Update the physical send work request with virtual one
     ibv_send_wr sendWr_{};
     ibv_sge sendSg_{};
-    updatePhysicalSendWrFromVirtualSendWr(
-        virtualSendWr,
-        &sendWr_,
-        &sendSg_,
-        physicalQps_.at(availableQpIdx).getDeviceId());
+    int32_t deviceId = physicalQps_.at(availableQpIdx).getDeviceId();
+    uint64_t actualBytesToSend = 0;
+
+    // Check if this is a scatter-gather operation
+    if (virtualSendWr.isScatterGatherEnabled()) {
+      // Build scatter-gather list from current offset position
+      uint64_t totalLen = virtualSendWr.getTotalLength();
+      uint64_t remData = totalLen - virtualSendWr.offset;
+      uint64_t maxWqeSize =
+          std::min(remData, static_cast<uint64_t>(maxMsgSize_));
+
+      auto [numSge, bytesToSend] = buildScatterGatherList(
+          virtualSendWr,
+          sendPutSgList_,
+          kMaxSgBuffersPerWr,
+          maxWqeSize,
+          deviceId);
+
+      if (numSge == 0) {
+        // No more data to send - shouldn't happen normally
+        pendingSendVirtualWrQue_.pop_front();
+        continue;
+      }
+
+      actualBytesToSend = bytesToSend;
+      sendWr_.wr_id = nextPhysicalWrId_++;
+      sendWr_.next = nullptr;
+      sendWr_.sg_list = sendPutSgList_;
+      sendWr_.num_sge = numSge;
+
+      // Set opcode and other fields
+      // NOTE: For scatter-gather, perBufferDeviceKeys contains lkeys for
+      // SOURCE buffers only. The rkey for the DESTINATION buffer always
+      // comes from virtualSendWr.wr.wr.rdma.rkey (set by the user).
+      // Only RDMA_WRITE and RDMA_WRITE_WITH_IMM are supported for
+      // scatter-gather.
+      switch (virtualSendWr.wr.opcode) {
+        case IBV_WR_RDMA_WRITE:
+          sendWr_.opcode = virtualSendWr.wr.opcode;
+          sendWr_.send_flags = virtualSendWr.wr.send_flags;
+          sendWr_.wr.rdma.remote_addr =
+              virtualSendWr.wr.wr.rdma.remote_addr + virtualSendWr.offset;
+          // rkey is for the destination buffer - always use the original
+          sendWr_.wr.rdma.rkey = virtualSendWr.wr.wr.rdma.rkey;
+          break;
+        case IBV_WR_RDMA_WRITE_WITH_IMM:
+          sendWr_.opcode = (loadBalancingScheme_ == LoadBalancingScheme::SPRAY)
+              ? IBV_WR_RDMA_WRITE
+              : IBV_WR_RDMA_WRITE_WITH_IMM;
+          sendWr_.send_flags = IBV_SEND_SIGNALED;
+          sendWr_.wr.rdma.remote_addr =
+              virtualSendWr.wr.wr.rdma.remote_addr + virtualSendWr.offset;
+          // rkey is for the destination buffer - always use the original
+          sendWr_.wr.rdma.rkey = virtualSendWr.wr.wr.rdma.rkey;
+          break;
+        default:
+          break;
+      }
+
+      if (sendWr_.opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
+          loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
+        sendWr_.imm_data =
+            dqplbSeqTracker.getSendImm(virtualSendWr.remainingMsgCnt);
+      }
+    } else {
+      // Single buffer - use the existing path
+      updatePhysicalSendWrFromVirtualSendWr(
+          virtualSendWr, &sendWr_, &sendSg_, deviceId);
+      actualBytesToSend = sendWr_.sg_list->length;
+    }
 
     // Call ibv_post_send to send the message
     ibv_send_wr badSendWr_{};
@@ -233,8 +317,8 @@ IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
         .physicalSendWrStatus_.emplace_back(
             sendWr_.wr_id, virtualSendWr.wr.wr_id);
 
-    // Decide if need to deque the front of vSendQ_
-    virtualSendWr.offset += sendWr_.sg_list->length;
+    // Update offset based on actual bytes sent
+    virtualSendWr.offset += actualBytesToSend;
     virtualSendWr.remainingMsgCnt--;
     if (virtualSendWr.remainingMsgCnt == 0) {
       pendingSendVirtualWrQue_.pop_front();
@@ -249,6 +333,75 @@ IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
     }
   }
   return folly::unit;
+}
+
+inline std::pair<int, uint64_t> IbvVirtualQp::buildScatterGatherList(
+    VirtualSendWr& virtualSendWr,
+    ibv_sge* sgList,
+    int maxSgElements,
+    uint64_t maxBytesToSend,
+    int32_t deviceId) {
+  int numSge = 0;
+  uint64_t remainingToSend = maxBytesToSend;
+  uint64_t currentOffset = virtualSendWr.offset;
+  uint64_t cumulativeBufOffset = 0;
+  uint64_t actualBytesToSend = 0;
+
+  for (size_t bufIdx = 0; bufIdx < virtualSendWr.sgList.size() &&
+       remainingToSend > 0 && numSge < maxSgElements;
+       ++bufIdx) {
+    uint64_t bufLen = virtualSendWr.sbufLens.empty()
+        ? virtualSendWr.sgList[bufIdx].length
+        : virtualSendWr.sbufLens[bufIdx];
+
+    // Skip buffers that are before our current offset
+    if (currentOffset >= cumulativeBufOffset + bufLen) {
+      cumulativeBufOffset += bufLen;
+      continue;
+    }
+
+    // Calculate how much data to take from this buffer
+    uint64_t bufStartOffset = 0;
+    if (currentOffset > cumulativeBufOffset) {
+      bufStartOffset = currentOffset - cumulativeBufOffset;
+    }
+
+    uint64_t bufRemaining = bufLen - bufStartOffset;
+    uint64_t bufToSend = std::min(bufRemaining, remainingToSend);
+
+    // Add this buffer segment to scatter-gather list
+    sgList[numSge].addr = virtualSendWr.sgList[bufIdx].addr + bufStartOffset;
+    sgList[numSge].length = bufToSend;
+
+    // Use the lkey for this specific buffer and device
+    if (!virtualSendWr.perBufferDeviceKeys.empty() &&
+        bufIdx < virtualSendWr.perBufferDeviceKeys.size()) {
+      auto& bufferKeys = virtualSendWr.perBufferDeviceKeys[bufIdx];
+      auto it = bufferKeys.deviceIdToKeys.find(deviceId);
+      if (it != bufferKeys.deviceIdToKeys.end()) {
+        sgList[numSge].lkey = it->second.lkey;
+      } else {
+        sgList[numSge].lkey = virtualSendWr.sgList[bufIdx].lkey;
+      }
+    } else if (!virtualSendWr.deviceIdToKeys.empty()) {
+      // Fallback to single-buffer device keys (all buffers use same keys)
+      auto it = virtualSendWr.deviceIdToKeys.find(deviceId);
+      if (it != virtualSendWr.deviceIdToKeys.end()) {
+        sgList[numSge].lkey = it->second.lkey;
+      } else {
+        sgList[numSge].lkey = virtualSendWr.sgList[bufIdx].lkey;
+      }
+    } else {
+      sgList[numSge].lkey = virtualSendWr.sgList[bufIdx].lkey;
+    }
+
+    remainingToSend -= bufToSend;
+    actualBytesToSend += bufToSend;
+    cumulativeBufOffset += bufLen;
+    numSge++;
+  }
+
+  return {numSge, actualBytesToSend};
 }
 
 inline int IbvVirtualQp::findAvailableSendQp() {
@@ -361,6 +514,83 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
     sendWr->imm_data =
         dqplbSeqTracker.getSendImm(virtualSendWr.remainingMsgCnt);
   }
+}
+
+inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendScatterGather(
+    ibv_send_wr* sendWr,
+    ibv_send_wr* sendWrBad,
+    const std::vector<ScatterGatherBufferKeys>& perBufferKeys) {
+  // Report error if deviceCnt_ > 1 and perBufferKeys is not provided
+  if (deviceCnt_ > 1 && perBufferKeys.empty()) {
+    return folly::makeUnexpected(Error(
+        EINVAL,
+        "In IbvVirtualQp::postSendScatterGather, perBufferKeys must be provided when using multiple NICs"));
+  }
+
+  // Report error if num_sge is less than 2 (not a scatter-gather operation)
+  if (sendWr->num_sge < 2) {
+    return folly::makeUnexpected(Error(
+        EINVAL,
+        "In IbvVirtualQp::postSendScatterGather, num_sge must be >= 2 for scatter-gather operations"));
+  }
+
+  // Report error if opcode is not supported by scatter-gather
+  // Only RDMA_WRITE and RDMA_WRITE_WITH_IMM are supported for scatter-gather
+  switch (sendWr->opcode) {
+    case IBV_WR_RDMA_WRITE:
+    case IBV_WR_RDMA_WRITE_WITH_IMM:
+      break;
+    default:
+      return folly::makeUnexpected(Error(
+          EINVAL,
+          "In IbvVirtualQp::postSendScatterGather, only RDMA_WRITE and RDMA_WRITE_WITH_IMM opcodes are supported"));
+  }
+
+  // Calculate total length across all scatter-gather buffers
+  uint64_t totalLen = 0;
+  for (int i = 0; i < sendWr->num_sge; ++i) {
+    totalLen += sendWr->sg_list[i].length;
+  }
+
+  // Calculate the chunk number for the current message and update sendWqe
+  bool sendExtraNotifyImm =
+      (sendWr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
+       loadBalancingScheme_ == LoadBalancingScheme::SPRAY);
+  int expectedMsgCnt = (totalLen + maxMsgSize_ - 1) / maxMsgSize_;
+  if (sendExtraNotifyImm) {
+    expectedMsgCnt += 1; // After post send all data messages, will post send
+                         // 1 more notification message on QP 0
+  }
+
+  // Submit request to virtualCq to enqueue VirtualWc
+  VirtualCqRequest request = {
+      .type = RequestType::SEND,
+      .virtualQpNum = (int)virtualQpNum_,
+      .expectedMsgCnt = expectedMsgCnt,
+      .sendWr = sendWr,
+      .sendExtraNotifyImm = sendExtraNotifyImm};
+  auto coordinator = Coordinator::getCoordinator();
+  CHECK(coordinator)
+      << "Coordinator should not be nullptr during postSendScatterGather!";
+  coordinator->submitRequestToVirtualCq(std::move(request));
+
+  // Set up the send work request with the completion queue entry and enqueue
+  // Note: The VirtualSendWr constructor will handle deep copying of sendWr,
+  // sg_list, and perBufferKeys
+  pendingSendVirtualWrQue_.emplace_back(
+      *sendWr,
+      expectedMsgCnt,
+      expectedMsgCnt,
+      sendExtraNotifyImm,
+      perBufferKeys);
+
+  // Map large messages from vSendQ_ to pQps_
+  if (mapPendingSendQueToPhysicalQp().hasError()) {
+    *sendWrBad = *sendWr;
+    return folly::makeUnexpected(Error(errno));
+  }
+
+  return folly::unit;
 }
 
 inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend(
