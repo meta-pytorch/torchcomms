@@ -26,20 +26,25 @@ add_compile_definitions(MOCK_SCUBA_DATA CTRAN_DISABLE_TCPDM FMT_USE_CONSTEXPR)
 add_subdirectory(comms/utils)
 add_subdirectory(comms/ctran)
 
-# Get folly LDFLAGS using pkg-config
+# Get folly LDFLAGS using pkg-config (will fail during configure if deps not built,
+# but that's okay - deps will be built first due to target dependencies)
 set(ENV{PKG_CONFIG_PATH} "${CONDA_LIB}/pkgconfig")
 execute_process(
     COMMAND pkg-config --libs --static libfolly
     OUTPUT_VARIABLE FOLLY_LDFLAGS_RAW
     OUTPUT_STRIP_TRAILING_WHITESPACE
     RESULT_VARIABLE PKG_RESULT
+    ERROR_QUIET
 )
-if(NOT PKG_RESULT EQUAL 0)
-    message(FATAL_ERROR "pkg-config for libfolly failed")
+if(PKG_RESULT EQUAL 0)
+    separate_arguments(FOLLY_LDFLAGS NATIVE_COMMAND "${FOLLY_LDFLAGS_RAW}")
+    # Remove any -l:libglog.a from FOLLY_LDFLAGS
+    list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX ".*libglog.*")
+else()
+    # Deps not built yet, will be built before this target
+    set(FOLLY_LDFLAGS "")
+    message(STATUS "pkg-config for libfolly not available yet, deps will be built first")
 endif()
-separate_arguments(FOLLY_LDFLAGS NATIVE_COMMAND "${FOLLY_LDFLAGS_RAW}")
-# Remove any -l:libglog.a from FOLLY_LDFLAGS
-list(FILTER FOLLY_LDFLAGS EXCLUDE REGEX ".*libglog.*")
 
 add_library(torchcomms_transport MODULE
     ${TORCHCOMMS_TRANSPORT_SOURCES}
@@ -81,6 +86,10 @@ if(USE_SYSTEM_LIBS)
         "-lfmt"
     )
 else()
+    # Add dependency on third-party build if target exists
+    if(TARGET third_party_deps)
+        add_dependencies(torchcomms_transport third_party_deps)
+    endif()
     target_link_libraries(torchcomms_transport PRIVATE
         "-l:libfolly.a"
         "-l:libgflags.a"

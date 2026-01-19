@@ -3,7 +3,10 @@
 cmake_minimum_required(VERSION 3.22)
 project(torchcomms_ncclx)
 set(CMAKE_VERBOSE_MAKEFILE ON)
-set(FETCHCONTENT_BASE_DIR "build/fetchcontent")
+set(FETCHCONTENT_BASE_DIR "${CMAKE_BINARY_DIR}/fetchcontent")
+
+# Add cmake module path
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Options
 option(USE_NCCL "Whether to build NCCL or not" ON)
@@ -56,6 +59,19 @@ set(CONDA_LIB "${CONDA_PREFIX}/${LIB_SUFFIX}")
 set(CONDA_INCLUDE "${CONDA_PREFIX}/include")
 set(TORCH_PYTHON_LIB "${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so")
 
+# Build third-party dependencies and NCCLX if needed
+# The cmake modules handle USE_SYSTEM_LIBS and NCCL_BUILD_SKIP_DEPS internally
+if(USE_NCCLX)
+    include(ThirdParty)
+    include(CommsTracingService)
+    include(NCCLX)
+endif()
+
+# Set FMT_INCLUDE for use by sub-CMakeLists
+if(NOT USE_SYSTEM_LIBS)
+    set(FMT_INCLUDE "${CONDA_INCLUDE}")
+endif()
+
 # Core libtorchcomms
 add_library(torchcomms SHARED ${TORCHCOMMS_SOURCES})
 set_target_properties(torchcomms PROPERTIES
@@ -78,13 +94,17 @@ if(USE_SYSTEM_LIBS)
     )
 else()
     target_include_directories(torchcomms PRIVATE
-        ${ROOT}/third-party/fmt/include
+        ${FMT_INCLUDE}
     )
     target_link_libraries(torchcomms PRIVATE
         "-l:libglog.a"
         "-l:libgflags.a"
         "-l:libfmt.a"
     )
+    # Add dependency on third-party build if ncclx is enabled
+    if(USE_NCCLX AND TARGET third_party_deps)
+        add_dependencies(torchcomms third_party_deps)
+    endif()
 endif()
 
 # Extension: torchcomms._comms
