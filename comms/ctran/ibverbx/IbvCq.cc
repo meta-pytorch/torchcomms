@@ -8,6 +8,7 @@
 #include "comms/ctran/ibverbx/IbvCq.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/Mlx5dv.h"
+#include "comms/ctran/utils/Exception.h"
 
 namespace {
 
@@ -84,7 +85,8 @@ folly::Expected<folly::Unit, Error> IbvCq::reqNotifyCq(
 
 folly::Expected<struct device_cq, Error> IbvCq::getDeviceCq() const noexcept {
 #if defined(__HIP_PLATFORM_AMD__)
-  throw std::runtime_error("getDeviceQp() is not supported on AMD GPUs");
+  throw ctran::utils::Exception(
+      "getDeviceQp() is not supported on AMD GPUs", commInvalidUsage);
 #else
   struct device_cq deviceCq{};
 

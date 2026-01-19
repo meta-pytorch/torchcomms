@@ -10,6 +10,7 @@
 #include "comms/ctran/ibverbx/Ibvcore.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 #include "comms/ctran/ibverbx/Mlx5dv.h"
+#include "comms/ctran/utils/Exception.h"
 
 namespace ibverbx {
 
@@ -108,7 +109,8 @@ bool IbvQp::isRecvQueueAvailable(int maxMsgCntPerQp) const {
 folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
     device_cq* cq) const noexcept {
 #if defined(__HIP_PLATFORM_AMD__)
-  throw std::runtime_error("getDeviceQp() is not supported on AMD GPUs");
+  throw ctran::utils::Exception(
+      "getDeviceQp() is not supported on AMD GPUs", commInvalidUsage);
 #else
   struct device_qp deviceQp;
   deviceQp.cq = cq;
