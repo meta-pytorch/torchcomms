@@ -181,6 +181,8 @@ void AllReduceTest::testGraphAllReduce(
     // Verify the results after each replay
     verifyResults(input, op);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for all_reduce with input deleted after graph
@@ -226,6 +228,8 @@ void AllReduceTest::testGraphAllReduceInputDeleted(
     // Note: Cannot verify results since input tensor is deleted
     // This test validates that the graph replay completes without crashing
   }
+
+  graph.reset();
 }
 
 // Helper function to create input tensor

@@ -174,6 +174,8 @@ void AllToAllTest::testGraphAllToAll(int count, at::ScalarType dtype) {
     // Verify the results after each replay
     verifyResults(output_tensors, expected_output);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for all_to_all with input deleted after graph
@@ -232,6 +234,8 @@ void AllToAllTest::testGraphAllToAllInputDeleted(
     // Verify the results after each replay
     verifyResults(output_tensors, expected_output);
   }
+
+  graph.reset();
 }
 
 // Helper function to create input tensors

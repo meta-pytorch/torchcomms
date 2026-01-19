@@ -280,6 +280,8 @@ class BatchSendRecvTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_results(recv_tensors, prev_rank)
 
+            graph.reset()
+
     def _graph_batch_sendrecv_input_deleted(self, count, dtype):
         """Test CUDA Graph batch SendRecv operations with input deleted after graph creation."""
         print(
@@ -337,6 +339,8 @@ class BatchSendRecvTest(unittest.TestCase):
 
                 # Verify the results after each replay
                 self._verify_results(recv_tensors, prev_rank)
+
+            graph.reset()
 
     def _create_send_tensor(self, count, dtype, tensor_id):
         """Create send tensor with rank and tensor-specific values."""

@@ -203,6 +203,8 @@ class ScatterTest(unittest.TestCase):
                 # Verify the results after each replay
                 self._verify_results(output)
 
+            graph.reset()
+
     def _graph_scatter_input_deleted(self, count, dtype):
         """Test CUDA Graph scatter with input deleted after graph creation."""
         print(
@@ -247,6 +249,8 @@ class ScatterTest(unittest.TestCase):
 
                 # Verify the results after each replay
                 self._verify_results(output)
+
+            graph.reset()
 
     def _create_input_tensors(self, count, dtype):
         """Create input tensors with rank-specific values."""

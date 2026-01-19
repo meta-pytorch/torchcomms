@@ -270,6 +270,8 @@ void SendRecvTest::testGraphSendRecv(int count, at::ScalarType dtype) {
     // Verify the results after each replay
     verifyResults(params.recv_tensor, params.recv_rank);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for send/recv with input deleted after graph
@@ -334,4 +336,6 @@ void SendRecvTest::testGraphSendRecvInputDeleted(
     // Verify the results after each replay
     verifyResults(recv_tensor, recv_rank);
   }
+
+  graph.reset();
 }

@@ -179,6 +179,8 @@ void AllGatherSingleTest::testGraphAllGatherSingle(
     // Verify the results after each replay
     verifyResults(output);
   }
+
+  graph.reset();
 }
 
 // CUDA Graph test function for all_gather_single with input deleted after graph
@@ -228,6 +230,8 @@ void AllGatherSingleTest::testGraphAllGatherSingleInputDeleted(
     // Verify the results after each replay
     verifyResults(output);
   }
+
+  graph.reset();
 }
 
 // Helper function to create input tensor
