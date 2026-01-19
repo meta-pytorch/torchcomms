@@ -127,12 +127,17 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
     this->preConnectPeerMap_.resize(comm->statex_->nRanks(), false);
     // only exchange listen sockets with bootstrapAllGather when using comm to
     // initialize CtranSocket
+    // Extract first element from stringlist for interface name
+    std::string socketIfName;
+    if (!NCCL_SOCKET_IFNAME.empty()) {
+      socketIfName = NCCL_SOCKET_IFNAME[0];
+    }
     auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
-        NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+        socketIfName, NCCL_SOCKET_IPADDR_PREFIX);
     if (maybeAddr.hasError()) {
       std::string msg = fmt::format(
           "CTRAN-SOCKET: No socket interfaces found (NCCL_SOCKET_IFNAME={}, NCCL_SOCKET_IPADDR_PREFIX={})",
-          NCCL_SOCKET_IFNAME,
+          socketIfName,
           NCCL_SOCKET_IPADDR_PREFIX);
       CLOGF(ERR, msg);
       throw ctran::utils::Exception(
@@ -143,12 +148,12 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
           INIT,
           "CTRAN-SOCKET: socket address set to {} on interface {}",
           maybeAddr->str(),
-          NCCL_SOCKET_IFNAME);
+          socketIfName);
     }
 
     folly::SocketAddress ifAddrSockAddr(maybeAddr.value(), 0 /* port */);
     FB_SYSCHECKTHROW_EX(
-        listenSocket_.bindAndListen(ifAddrSockAddr, NCCL_SOCKET_IFNAME),
+        listenSocket_.bindAndListen(ifAddrSockAddr, socketIfName),
         ncclLogData_);
     CLOGF_SUBSYS(
         INFO,
@@ -198,7 +203,7 @@ void CtranSocket::init(const SocketServerAddr& serverAddr) {
 
 void CtranSocket::bootstrapAccept() {
   // Set cudaDev for logging
-  FB_CUDACHECKTHROW_EX(cudaSetDevice(cudaDev_), comm->logMetaData_);
+  FB_CUDACHECKTHROW(cudaSetDevice(cudaDev_));
   commNamedThreadStart(
       "CTranSocketListen", rank_, commHash_, commDesc_, __func__);
   while (1) {

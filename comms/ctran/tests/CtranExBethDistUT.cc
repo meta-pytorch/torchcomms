@@ -49,7 +49,8 @@ TEST_F(CtranExBethTest, InitializedWithClientIfName) {
   std::string ipv6;
   {
     // Temporarily overwrite NCCL_SOCKET_IFNAME to get its ipv6
-    EnvRAII socketIfname(NCCL_SOCKET_IFNAME, exIfname);
+    const std::vector<std::string> exIfnameVec = {exIfname};
+    EnvRAII socketIfname(NCCL_SOCKET_IFNAME, exIfnameVec);
     ipv6 = getIPv6();
     if (ipv6.empty()) {
       GTEST_SKIP() << "CTRAN-IB: No socket interfaces found. Skip test";
@@ -58,7 +59,13 @@ TEST_F(CtranExBethTest, InitializedWithClientIfName) {
 
   // Use CTRAN ServerSocket to get a free port
   ctran::bootstrap::ServerSocket serverSocket(1);
-  serverSocket.bind(folly::SocketAddress("::0", 0), NCCL_SOCKET_IFNAME, true);
+  std::string socketIfName;
+  if (NCCL_SOCKET_IFNAME.empty()) {
+    socketIfName = "";
+  } else {
+    socketIfName = NCCL_SOCKET_IFNAME[0];
+  }
+  serverSocket.bind(folly::SocketAddress("::0", 0), socketIfName, true);
 
   // Use different ifName to create CtranEx
   std::unique_ptr<CtranEx> ctranEx = nullptr;

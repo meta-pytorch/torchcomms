@@ -463,13 +463,31 @@ def printAutogenFooter(file):
 def populateValidator(file):
     # Generate cvars validator to make sure no cvar conflicts
     indent(file, "static void validateCvarEnv() {")
+    # Helper lambda to check if a stringlist contains "beth"
     indent(
         file,
-        'if (NCCL_SOCKET_IFNAME.find("beth") != NCCL_CLIENT_SOCKET_IFNAME.find("beth")) {',
+        "auto containsBeth = [](const std::vector<std::string>& list) {",
     )
     indent(
         file,
-        'CVAR_ERROR( "CVAR incompatible: NCCL_SOCKET_IFNAME({}) vs NCCL_CLIENT_SOCKET_IFNAME({})", NCCL_SOCKET_IFNAME, NCCL_CLIENT_SOCKET_IFNAME);',
+        '  for (const auto& s : list) { if (s.find("beth") != std::string::npos) return true; }',
+    )
+    indent(file, "  return false;")
+    indent(file, "};")
+    indent(
+        file,
+        'if (containsBeth(NCCL_SOCKET_IFNAME) != (NCCL_CLIENT_SOCKET_IFNAME.find("beth") != std::string::npos)) {',
+    )
+    indent(
+        file,
+        'CVAR_ERROR("CVAR incompatibility: NCCL_SOCKET_IFNAME ({}) vs NCCL_CLIENT_SOCKET_IFNAME ({}); mismatched beth interface usage", folly::join(",", NCCL_SOCKET_IFNAME), NCCL_CLIENT_SOCKET_IFNAME);',
+    )
+    indent(file, "}")
+    # Validate that NCCL_SOCKET_IFNAME has at most one interface
+    indent(file, "if (NCCL_SOCKET_IFNAME.size() > 1) {")
+    indent(
+        file,
+        'CVAR_ERROR("NCCL_SOCKET_IFNAME should specify only one interface, but {} were specified", NCCL_SOCKET_IFNAME.size());',
     )
     indent(file, "}")
     indent(file, "}")
