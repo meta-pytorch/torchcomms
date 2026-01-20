@@ -1919,7 +1919,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
 
   // Determine the color and new rank for this rank
   int color;
-  int new_rank = -1;
+  int new_rank;
 
   if (ranks.empty()) {
     // Empty list means exclude all ranks - use NCCL_SPLIT_NOCOLOR

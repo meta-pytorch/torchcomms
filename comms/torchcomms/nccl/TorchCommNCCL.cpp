@@ -1345,7 +1345,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
 
   // Determine the color for this rank
   int color;
-  int new_rank = -1; // Rank within the new communicator
+  int new_rank; // Rank within the new communicator
 
   if (ranks.empty()) {
     // Empty list means exclude all ranks - use NCCL_SPLIT_NOCOLOR
