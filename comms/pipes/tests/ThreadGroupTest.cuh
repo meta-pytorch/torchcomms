@@ -72,4 +72,18 @@ void testWeightedPartition(
     int numBlocks,
     int blockSize);
 
+// Tests partition_interleaved(num_partitions) - round-robin partition
+// Verifies:
+// - Each group gets partition_id = group_id % num_partitions
+// - subgroup.group_id is renumbered as group_id / num_partitions
+// - subgroup.total_groups is correctly computed for interleaved assignment
+void testPartitionInterleaved(
+    uint32_t* partitionIds_d,
+    uint32_t* subgroupIds_d,
+    uint32_t* subgroupTotalGroups_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
 } // namespace comms::pipes::test

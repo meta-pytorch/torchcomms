@@ -5,6 +5,7 @@
  ************************************************************************/
 
 #include "EnvVars.hpp"
+#include "Float8Hack.hpp"
 #include "CollectiveArgs.hpp"
 #include <cstdlib>
 #include <unistd.h>
