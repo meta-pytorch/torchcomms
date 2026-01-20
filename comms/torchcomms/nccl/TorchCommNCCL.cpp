@@ -1513,5 +1513,5 @@ class NCCLRegistration {
   }
 };
 
-static NCCLRegistration registration{};
+static const NCCLRegistration registration{};
 } // namespace

@@ -1400,7 +1400,7 @@ class GlooRegistration {
   }
 };
 
-static GlooRegistration registration{};
+static const GlooRegistration registration{};
 } // namespace
 
 } // namespace comms
