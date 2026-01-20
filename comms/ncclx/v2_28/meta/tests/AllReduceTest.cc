@@ -59,6 +59,7 @@ class AllReduceTest
     NcclxBaseTest::TearDown();
   }
 
+  // TODO: support bf16 in assignChunkValue in TestUtils.h and replace here.
   template <typename T>
   void assignChunkValue(T* buf, size_t count, T val) {
     std::vector<T> expectedVals(count, val);

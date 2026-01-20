@@ -145,6 +145,20 @@ class ParsedArgs:
         return False
 
     @cached_property
+    def _has_meta(self) -> bool:
+        """Check if any tensor-like input has requires_grad."""
+        for idx in self._tensor_input_indices:
+            if idx < len(self.values):
+                tensor = self.values[idx]
+                if isinstance(tensor, torch.Tensor) and tensor.is_meta:
+                    return True
+                if isinstance(tensor, (list, tuple)):
+                    for t in tensor:
+                        if isinstance(t, torch.Tensor) and t.is_meta:
+                            return True
+        return False
+
+    @cached_property
     def _has_fake_or_functional_tensor(self) -> bool:
         """Check if any tensor-like input is a FakeTensor or FunctionalTensor."""
         for idx in self._tensor_input_indices:
@@ -221,6 +235,10 @@ class ParsedArgs:
     def has_requires_grad(self) -> bool:
         """Check if any tensor-like input has requires_grad."""
         return self._has_requires_grad
+
+    def has_meta(self) -> bool:
+        """Check if any tensor-like input has is_meta."""
+        return self._has_meta
 
     def has_fake_or_functional_tensor(self) -> bool:
         """Check if any tensor-like input is a FakeTensor or FunctionalTensor."""

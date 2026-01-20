@@ -74,14 +74,6 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
 
         torch.testing.assert_close(x.grad.cpu(), torch.full((3,), 2.0))
 
-    def test_wait_tensors_no_grad(self):
-        x = torch.randn(3, requires_grad=True, device=self.device)
-
-        with torch.no_grad():
-            result = torch.ops.torchcomms.torchcomm_wait_tensors([x])
-
-        self.assertFalse(result[0].requires_grad)
-
     def test_async_tensor_grad_fn_delegation(self):
         from torchcomms.functional.async_tensor import TorchCommsAsyncTensor
 

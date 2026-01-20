@@ -21,17 +21,19 @@ class _OnceWaitWork:
     in the traced graph.
     """
 
-    __slots__ = ["_work", "_waited"]
+    __slots__ = ["_work", "_waited", "_cached_result"]
 
     def __init__(self, work: Any) -> None:
         self._work = work
         self._waited = False
+        self._cached_result = None
 
-    def wait(self) -> None:
+    def wait(self):
         if not self._waited:
             self._waited = True
             if self._work is not None:
-                self._work.wait()
+                self._cached_result = self._work.wait()
+        return self._cached_result
 
 
 class FakeWork:
@@ -45,17 +47,64 @@ class FakeWork:
     wait() creates proper data dependencies by waiting on these result tensors.
     """
 
-    __slots__ = ["tensors", "_waited"]
+    __slots__ = ["tensors", "_waited", "_original_result"]
 
-    def __init__(self, tensors: list) -> None:
-        assert len(tensors) > 0, "Cannot create FakeWork without an anchor tensor."
-        self.tensors = tensors
+    def __init__(self, result: list | torch.Tensor) -> None:
+        """Initialize with the original result structure.
+
+        Args:
+            result: The original op result - can be a single tensor, list of tensors,
+                   or nested structure. The structure is preserved for wait() return.
+        """
+        self._original_result = result
+        self.tensors = self._flatten(result)
         self._waited = False
 
-    def wait(self) -> None:
+    @staticmethod
+    def _flatten(x) -> list[torch.Tensor]:
+        """Flatten any tensor structure into a flat list for wait_tensors."""
+        if x is None:
+            return []
+        if isinstance(x, torch.Tensor):
+            return [x]
+        if isinstance(x, (list, tuple)):
+            tensors = []
+            for item in x:
+                tensors.extend(FakeWork._flatten(item))
+            return tensors
+        return []
+
+    def _unflatten(self, waited_tensors: list[torch.Tensor], template):
+        """Reconstruct the original structure with waited tensors.
+
+        The waited_tensors list elements are already properly associated with
+        traced getitem nodes by functionalization/ProxyTensorMode. We just
+        need to reconstruct the original structure by indexing.
+        """
+        idx = 0
+
+        def reconstruct(t):
+            nonlocal idx
+            if t is None:
+                return None
+            if isinstance(t, torch.Tensor):
+                result = waited_tensors[idx]
+                idx += 1
+                return result
+            if isinstance(t, (list, tuple)):
+                return type(t)(reconstruct(item) for item in t)
+            return t
+
+        return reconstruct(template)
+
+    def wait(self):
         if not self._waited:
             self._waited = True
-            torch.ops.torchcomms.torchcomm_wait_tensors_(self.tensors)
+            if not self.tensors:
+                return self._original_result
+            waited = torch.ops.torchcomms.torchcomm_wait_tensors_(self.tensors)
+            self._original_result = self._unflatten(waited, self._original_result)
+        return self._original_result
 
 
 class TorchCommsAsyncTensor(torch.Tensor):
@@ -225,6 +274,10 @@ def _maybe_wrap_tensor(
         return work
 
     if _are_we_tracing():
+        if isinstance(work, (FakeWork, _OnceWaitWork)):
+            # If we're tracing, wait on the result tensors from FakeWork
+            # and return the original result structure
+            return work.wait()
         work.wait()
         return tensor
 

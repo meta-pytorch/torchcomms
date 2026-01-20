@@ -16,14 +16,11 @@ Usage:
 
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 import torch
-from torch._dynamo import variables
 from torch._dynamo.variables.base import VariableTracker
 from torch._dynamo.variables.constant import ConstantVariable
-from torch._dynamo.variables.lists import ListVariable
 
 
 if TYPE_CHECKING:
@@ -117,96 +114,12 @@ def _dynamo_register_coalesced_tensors(
                 f"total mutable_vars: {len(work.mutable_vars)}"
             )
 
-
-@dataclass
-class ConstantMethodInfo:
-    """Information about a constant method registered for a class."""
-
-    target_class: type
-    method_name: str
-    handler: Callable[[Any], Any]  # Takes instance, returns constant value
-
-
-# Registry mapping (target_class, method_name) to ConstantMethodInfo
-# Similar to method_to_op in registry.py but for constant methods
-_CONSTANT_METHOD_REGISTRY: dict[tuple[type, str], ConstantMethodInfo] = {}
-
 # Mapping from opaque type name to class, shared with registry.py
 _TYPE_NAME_TO_CLASS: dict[str, type] = {}
 
 # Registry mapping (target_class, method_name) to op_info for collective methods
 # Populated by _patch_dynamo_for_opaque_methods from _REGISTERED_COLLECTIVES
 _METHOD_TO_OP: dict[tuple[type, str], dict[str, Any]] = {}
-
-
-def register_constant_method(
-    target_class: type,
-    method_name: str,
-    handler: Callable[[Any], Any],
-) -> None:
-    """
-    Register a method that should return a constant value during tracing.
-
-    This follows the same pattern as register_collective in registry.py,
-    using class-based registration for proper FakeScriptObject handling.
-
-    Args:
-        target_class: The class this method belongs to (e.g., TorchComm).
-        method_name: The name of the method on the class.
-        handler: A callable that takes the instance and returns the constant value.
-
-    Example:
-        register_constant_method(TorchComm, "get_rank", lambda comm: comm.get_rank())
-    """
-    from torch._library.opaque_object import (
-        get_opaque_type_name,
-        is_opaque_type,
-        register_opaque_type,
-    )
-
-    # Register the class as opaque type if not already done
-    if not is_opaque_type(target_class):
-        register_opaque_type(target_class, typ="reference")
-    opaque_type_name = get_opaque_type_name(target_class)
-
-    # Store mapping from type name to class for FakeScriptObject handling
-    _TYPE_NAME_TO_CLASS[opaque_type_name] = target_class
-
-    key = (target_class, method_name)
-    _CONSTANT_METHOD_REGISTRY[key] = ConstantMethodInfo(
-        target_class=target_class,
-        method_name=method_name,
-        handler=handler,
-    )
-    logger.info(f"Registered constant method: ({target_class.__name__}, {method_name})")
-
-
-class TorchCommConstantMethodVariable(VariableTracker):
-    """Variable that returns a constant value when called.
-
-    Used for methods like get_rank(), get_size() that return constant values.
-    """
-
-    def __init__(
-        self,
-        obj_var: "TorchScriptObjectVariable",
-        method_info: ConstantMethodInfo,
-        constant_value: Any,
-        **kwargs: Any,
-    ) -> None:
-        super().__init__(**kwargs)
-        self.obj_var = obj_var
-        self.method_info = method_info
-        self.constant_value = constant_value
-
-    def call_function(
-        self,
-        tx: "InstructionTranslator",
-        args: Sequence[VariableTracker],
-        kwargs: dict[str, VariableTracker],
-    ) -> VariableTracker:
-        # Return the pre-computed constant value
-        return variables.ConstantVariable.create(self.constant_value)
 
 
 class TorchCommMethodVariable(VariableTracker):
@@ -591,7 +504,7 @@ class AsyncWorkVariable(VariableTracker):
         tensor_proxies = [tv.as_proxy() for tv in self.tensor_vars]
         proxy = tx.output.create_proxy(
             "call_function",
-            torch.ops.torchcomms.torchcomm_wait_tensors.default,
+            torch.ops.torchcomms.torchcomm_wait_tensors_.default,
             (tensor_proxies,),
             {},
         )
@@ -759,17 +672,10 @@ def _create_op_wrapper_with_defaults(
         is_async = parsed.get_value("async_op") or False
 
         if has_mutable_inputs:
-            # Get result tensors for tracking (in-place ops now return the tensors)
-            if result is None:
-                result_tensors = []
-            elif isinstance(result, (list, tuple)):
-                result_tensors = list(result)
-            else:
-                result_tensors = [result]
 
             # For async ops, return a FakeWork object that tracks the result tensors
             if is_async:
-                return FakeWork(result_tensors)
+                return FakeWork(result)
 
             # Sync ops - return None (caller will use the original tensor which
             # has in-place semantics from user's perspective)
@@ -795,12 +701,6 @@ def _patch_dynamo_for_opaque_methods(
         registered_collectives: Dict mapping op_name to collective info from registry.
         type_name_to_class: Dict mapping opaque type names to classes.
     """
-    try:
-        from torch._library.opaque_object import is_opaque_type
-    except ImportError:
-        logger.info("Dynamo not available, skipping opaque method patching")
-        return
-
     # Update our global type name to class mapping
     _TYPE_NAME_TO_CLASS.update(type_name_to_class)
 
@@ -821,77 +721,16 @@ def _patch_dynamo_for_opaque_methods(
 
     logger.info(f"_TYPE_NAME_TO_CLASS = {_TYPE_NAME_TO_CLASS}")
 
-    # Patch maybe_to_fake_obj to create FakeScriptObject with constants for our opaque types
-    # This allows get_device_from_object and _get_group_size to work during tracing
-    from torch._library import fake_class_registry
-    from torch._library.opaque_object import FakeOpaqueObject, get_opaque_type_name
-
-    original_maybe_to_fake_obj = fake_class_registry.maybe_to_fake_obj  # type: ignore[attr-defined]
-
-    def patched_maybe_to_fake_obj(fake_mode: Any, x: Any) -> Any:
-        # Check if this is one of the opaque types associated
-        # with one of our classes (e.g., TorchComm, TorchCommWindow)
-        if x is not None and is_opaque_type(type(x)):
-            type_name = get_opaque_type_name(type(x))
-            if type_name in _TYPE_NAME_TO_CLASS:
-                target_class = _TYPE_NAME_TO_CLASS.get(type_name)
-
-                # Use FakeOpaqueObject
-                fake = FakeOpaqueObject()
-
-                # Store ALL constant method values on FakeOpaqueObject
-                # so they can be retrieved during tracing (in setup_context, backward, etc.)
-                if target_class is not None:
-                    constant_values = {}
-                    for (
-                        cls,
-                        method_name,
-                    ), method_info in _CONSTANT_METHOD_REGISTRY.items():
-                        if cls == target_class:
-                            try:
-                                constant_values[method_name] = method_info.handler(x)
-                            except Exception as e:
-                                logger.warning(
-                                    f"Failed to get constant value for {method_name}: {e}"
-                                )
-                    if constant_values:
-                        fake._torchcomms_constants = constant_values  # type: ignore[attr-defined]
-                fake_x_wrapped = fake_class_registry.FakeScriptObject(
-                    fake, type_name, x=None
-                )
-                return fake_x_wrapped
-        # Fall back to original behavior
-        return original_maybe_to_fake_obj(fake_mode, x)
-
-    fake_class_registry.maybe_to_fake_obj = patched_maybe_to_fake_obj  # type: ignore[attr-defined]
-    logger.info("Patched maybe_to_fake_obj to store constants for our opaque types")
-
     from torch._library.fake_class_registry import FakeScriptObject
 
     # Capture the original before patching (closure variable, not global)
     _original_fake_getattr = FakeScriptObject.__getattribute__
 
     def patched_fake_getattr(self, name):
-        # Check if this is a constant method we've stored
-        # Use object.__getattribute__ to avoid recursion (since we patched __getattribute__)
-        try:
-            wrapped_obj = object.__getattribute__(self, "wrapped_obj")
-            if wrapped_obj is not None:
-                try:
-                    constants = object.__getattribute__(
-                        wrapped_obj, "_torchcomms_constants"
-                    )
-                    if name in constants:
-                        # Return a callable that returns the constant value
-                        # This makes e.g., comm.get_size() work transparently
-                        return lambda: constants[name]
-                except AttributeError:
-                    pass
-        except AttributeError:
-            pass
-
         # Check if this is a collective method - return a wrapper that invokes the torch op
         # with default values applied from the param specs
+        # Note: Constant methods (get_rank, get_size, etc.) are now handled by
+        # register_opaque_type with members=MemberType.USE_REAL
         try:
             script_class_name = object.__getattribute__(self, "script_class_name")
             target_class = _TYPE_NAME_TO_CLASS.get(script_class_name)
@@ -921,7 +760,7 @@ def _patch_dynamo_for_opaque_methods(
 
     FakeScriptObject.__getattribute__ = patched_fake_getattr  # type: ignore[method-assign]
     logger.info(
-        "Patched FakeScriptObject.__getattribute__ to handle constants and collective methods"
+        "Patched FakeScriptObject.__getattribute__ to handle collective methods"
     )
 
     # Note: We intentionally do NOT register FakeScriptObject as a pytree node.
@@ -929,14 +768,19 @@ def _patch_dynamo_for_opaque_methods(
     # the correct behavior for opaque objects like FakeScriptObject.
 
     # Note: The actual var_getattr patching is done in _patch_var_getattr
-    # which handles both constant methods and collective methods
+    # which handles collective methods (constant methods are now handled by
+    # register_opaque_type with members=MemberType.USE_REAL)
     logger.info(
         f"Registered {len(_METHOD_TO_OP)} collective methods for dynamo patching"
     )
 
 
 def _patch_var_getattr() -> None:
-    """Patch TorchScriptObjectVariable.var_getattr for both constant and collective methods."""
+    """Patch TorchScriptObjectVariable.var_getattr for collective methods.
+
+    Constant methods (get_rank, get_size, etc.) are now handled by
+    register_opaque_type with members=MemberType.USE_REAL.
+    """
     from torch._dynamo.source import AttrSource
     from torch._dynamo.variables.script_object import TorchScriptObjectVariable
 
@@ -951,63 +795,22 @@ def _patch_var_getattr() -> None:
         # Check if this is one of our registered opaque types
         value = self.value
         target_class = None
-        real_object = None
 
         # Handle FakeScriptObject wrapping - get the class from script_class_name
         if hasattr(value, "script_class_name"):
             script_class_name = object.__getattribute__(value, "script_class_name")
             target_class = _TYPE_NAME_TO_CLASS.get(script_class_name)
-            # For FakeScriptObject, the real object is stored in x attribute
-            if hasattr(value, "x"):
-                real_object = object.__getattribute__(value, "x")
         else:
             # Not a FakeScriptObject - check if it's a known class directly
             for cls in _TYPE_NAME_TO_CLASS.values():
                 if isinstance(value, cls):
                     target_class = cls
-                    real_object = value
                     break
 
         if target_class is not None:
             key = (target_class, name)
 
-            # First check for constant methods (get_rank, get_size, etc.)
-            if key in _CONSTANT_METHOD_REGISTRY:
-                method_info = _CONSTANT_METHOD_REGISTRY[key]
-                constant_value = None
-
-                # Try to get the constant value from the real object first
-                if real_object is not None:
-                    try:
-                        constant_value = method_info.handler(real_object)
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to get constant value for {target_class.__name__}.{name}: {e}"
-                        )
-
-                # If no real object, try to get from stored constants on FakeOpaqueObject
-                if constant_value is None and hasattr(value, "wrapped_obj"):
-                    wrapped_obj = object.__getattribute__(value, "wrapped_obj")
-                    if hasattr(wrapped_obj, "_torchcomms_constants"):
-                        constants = object.__getattribute__(
-                            wrapped_obj, "_torchcomms_constants"
-                        )  # type: ignore[arg-type]
-                        constant_value = constants.get(name)
-
-                if constant_value is not None:
-                    logger.info(
-                        f"patched_var_getattr: returning constant for "
-                        f"{target_class.__name__}.{name}() = {constant_value}"
-                    )
-                    source = AttrSource(self.source, name) if self.source else None  # type: ignore[call-arg]
-                    return TorchCommConstantMethodVariable(
-                        obj_var=self,
-                        method_info=method_info,
-                        constant_value=constant_value,
-                        source=source,
-                    )
-
-            # Then check for collective methods (all_reduce, broadcast, etc.)
+            # Check for collective methods (all_reduce, broadcast, etc.)
             if key in _METHOD_TO_OP:
                 source = AttrSource(self.source, name) if self.source else None  # type: ignore[call-arg]
                 op_info = _METHOD_TO_OP[key]
@@ -1027,10 +830,8 @@ def _patch_var_getattr() -> None:
     # Apply the patch
     TorchScriptObjectVariable.var_getattr = patched_var_getattr  # type: ignore[method-assign]
 
-    total_methods = len(_CONSTANT_METHOD_REGISTRY) + len(_METHOD_TO_OP)
     logger.info(
-        f"Patched TorchScriptObjectVariable.var_getattr for {total_methods} methods "
-        f"({len(_CONSTANT_METHOD_REGISTRY)} constant, {len(_METHOD_TO_OP)} collective)"
+        f"Patched TorchScriptObjectVariable.var_getattr for {len(_METHOD_TO_OP)} collective methods"
     )
 
 
@@ -1039,12 +840,10 @@ def register_with_dynamo() -> None:
     Register TorchComm method handlers with dynamo.
 
     This patches TorchScriptObjectVariable.var_getattr to intercept TorchComm
-    method calls (like get_rank(), get_size()) and return constants instead of
-    raising unimplemented errors.
+    collective method calls and generate torch op calls directly.
 
-    TorchComm objects are registered as opaque types, so they flow through
-    TorchScriptObjectVariable. This patch intercepts method access before the
-    default "unimplemented" error is raised for opaque types.
+    Constant methods (get_rank, get_size, etc.) are handled by register_opaque_type
+    with members=MemberType.USE_REAL in collectives.py.
     """
     # Import _TYPE_NAME_TO_CLASS from param_parsing to merge registrations
     try:

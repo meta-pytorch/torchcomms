@@ -48,48 +48,6 @@ class CtranRMATest : public CtranDistBaseTest {
     CUDACHECK_TEST(cudaFree(buf));
   }
 
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T seed, T inc) {
-    std::vector<T> expectedVals(count, 0);
-    for (size_t i = 0; i < count; ++i) {
-      expectedVals[i] = seed + i * inc;
-    }
-    CUDACHECK_TEST(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
-  template <typename T>
-  int checkChunkValue(
-      T* buf,
-      size_t count,
-      T seed,
-      T inc,
-      cudaStream_t stream) {
-    std::vector<T> observedVals(count, -1);
-    CUDACHECK_TEST(cudaMemcpyAsync(
-        observedVals.data(),
-        buf,
-        count * sizeof(T),
-        cudaMemcpyDefault,
-        stream));
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print failing location.
-    for (auto i = 0; i < count; ++i) {
-      T val = seed + inc * i;
-      if (observedVals[i] != val) {
-        if (errs < 10) {
-          // avoid using formatted string since we don't know the value type
-          std::cout << "[" << this->globalRank << "] observedVals[" << i
-                    << "] = " << observedVals[i] << ", expectedVal = " << val
-                    << std::endl;
-        }
-        errs++;
-      }
-    }
-    return errs;
-  }
-
   void createWin(
       bool isUserBuf,
       MemAllocType bufType,
@@ -192,11 +150,12 @@ TEST_P(MultiWindowTestParam, multiWindow) {
     this->barrier(comm, main_stream);
 
     // Check results
-    int errs = checkChunkValue(
+    size_t errs = checkChunkValue(
         localbuf + numElements * prevPeer,
         numElements,
         prevPeer + (int)numElements * prevPeer,
         1,
+        this->globalRank,
         wait_stream);
     EXPECT_EQ(errs, 0);
 
@@ -314,11 +273,12 @@ TEST_P(CtranRMATestParam, winPutWait) {
         wait_stream));
   }
 
-  int errs = checkChunkValue(
+  size_t errs = checkChunkValue(
       (int*)winBase + kNumElements * prevPeer,
       kNumElements,
       prevPeer,
       1,
+      this->globalRank,
       wait_stream);
 
   CUDACHECK_TEST(cudaStreamSynchronize(put_stream));
@@ -424,11 +384,12 @@ TEST_P(CtranRMATestParam, winPutOnly) {
   this->barrier(comm, main_stream);
 
   // allreduce ensures all remote puts have finished
-  int errs = checkChunkValue(
+  size_t errs = checkChunkValue(
       (int*)winBase + kNumElements * prevPeer,
       kNumElements,
       prevPeer,
       1,
+      this->globalRank,
       main_stream);
 
   auto res = ctranWinFree(win);
@@ -510,8 +471,8 @@ TEST_P(CtranRMATestParam, winGet) {
   this->barrier(comm, main_stream);
 
   // allreduce ensures all remote puts have finished
-  int errs =
-      checkChunkValue((int*)localBuf, kNumElements, nextPeer, 0, main_stream);
+  size_t errs = checkChunkValue(
+      (int*)localBuf, kNumElements, nextPeer, 0, this->globalRank, main_stream);
 
   auto res = ctranWinFree(win);
   EXPECT_EQ(res, ncclSuccess);
@@ -592,7 +553,12 @@ TEST_P(RMATestSignalParam, winSignalWait) {
       continue;
     }
     errs += checkChunkValue(
-        signalBase + peerRank, 1, (uint64_t)kNumIters, 0UL, wait_stream);
+        signalBase + peerRank,
+        1,
+        (uint64_t)kNumIters,
+        0UL,
+        this->globalRank,
+        wait_stream);
   }
   EXPECT_EQ(errs, 0);
   // For signalWait, this is necessary since we must ensure all ctranSignal
