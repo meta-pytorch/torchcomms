@@ -54,37 +54,6 @@ class CtranAllToAllTest : public CtranDistBaseTest {
     CUDACHECK_TEST(cudaFree(buf));
   }
 
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> expectedVals(count, val);
-    CUDACHECKIGNORE(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
-  template <typename T>
-  int checkChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> observedVals(count, -1);
-    CUDACHECK_TEST(cudaMemcpy(
-        observedVals.data(), buf, count * sizeof(T), cudaMemcpyDefault));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print first 10 failing
-    // location
-    for (auto i = 0; i < count; ++i) {
-      if (observedVals[i] != val) {
-        if (errs < 10) {
-          printf(
-              "[%d] observedVals[%d] = %d, expectedVal = %d\n",
-              globalRank,
-              i,
-              int(observedVals[i]),
-              int(val));
-        }
-        errs++;
-      }
-    }
-    return errs;
-  }
-
   bool checkTestPrerequisite(size_t count, commDataType_t dataType) {
     EXPECT_NE(nullptr, comm);
     EXPECT_NE(nullptr, comm->ctranComm_->ctran_);
