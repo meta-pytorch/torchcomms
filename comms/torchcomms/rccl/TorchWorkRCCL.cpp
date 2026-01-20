@@ -17,7 +17,7 @@ TorchWorkRCCL::TorchWorkRCCL(
       comm_(std::move(comm)),
       stream_(stream),
       timeout_ms_(timeout_ms),
-      tracing_(tracing) {
+      tracing_(std::move(tracing)) {
   start_event_ = comm_->getEvent();
   end_event_ = comm_->getEvent();
 
@@ -34,7 +34,7 @@ TorchWorkRCCL::TorchWorkRCCL(
       comm_(std::move(comm)),
       stream_(stream),
       timeout_ms_(timeout_ms),
-      tracing_(tracing) {
+      tracing_(std::move(tracing)) {
   start_event_ = comm_->getEvent();
   end_event_ = comm_->getEvent();
 
