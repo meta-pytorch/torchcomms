@@ -392,6 +392,96 @@ INSTANTIATE_TEST_SUITE_P(
             .name = "64B_32T"}),
     threadConfigParamName);
 
+// Helper for unaligned pointer tests - uses byte-level operations instead of
+// int* because unaligned int* casts are undefined behavior
+void runUnalignedWriteTest(
+    char* dst_d,
+    char* src_d,
+    size_t nbytes,
+    const std::string& testName) {
+  const char testValue = 0x42;
+
+  // Initialize using cudaMemset (works with any alignment)
+  CUDACHECK_TEST(cudaMemset(src_d, testValue, nbytes));
+  CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Launch write kernel
+  const int numBlocks = 4;
+  const int blockSize = 256;
+  test::testSelfWrite(dst_d, src_d, nbytes, numBlocks, blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Copy back to host and verify byte-by-byte
+  std::vector<char> h_recv(nbytes);
+  CUDACHECK_TEST(
+      cudaMemcpy(h_recv.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
+
+  int errorCount = 0;
+  for (size_t i = 0; i < nbytes; ++i) {
+    if (h_recv[i] != testValue) {
+      ++errorCount;
+    }
+  }
+
+  ASSERT_EQ(errorCount, 0) << "Test '" << testName << "' found " << errorCount
+                           << " errors out of " << nbytes << " bytes";
+}
+
+class UnalignedPointerTestFixture
+    : public SelfTransportDeviceTestFixture,
+      public ::testing::WithParamInterface<size_t> {};
+
+TEST_P(UnalignedPointerTestFixture, WriteWithUnalignedSrcPointer) {
+  const size_t offset = GetParam();
+  const size_t nbytes = 1024;
+
+  // Allocate buffers
+  DeviceBuffer sendBuffer(nbytes);
+  DeviceBuffer recvBuffer(nbytes + offset);
+
+  auto send_d = static_cast<char*>(sendBuffer.get());
+  auto recv_d = static_cast<char*>(recvBuffer.get()) + offset;
+
+  runUnalignedWriteTest(
+      send_d, recv_d, nbytes, "UnalignedSrc_" + std::to_string(offset));
+}
+
+TEST_P(UnalignedPointerTestFixture, WriteWithUnalignedDstPointer) {
+  const size_t offset = GetParam();
+  const size_t nbytes = 1024;
+
+  // Allocate buffers
+  DeviceBuffer sendBuffer(nbytes + offset);
+  DeviceBuffer recvBuffer(nbytes);
+
+  auto send_d = static_cast<char*>(sendBuffer.get()) + offset;
+  auto recv_d = static_cast<char*>(recvBuffer.get());
+
+  runUnalignedWriteTest(
+      send_d, recv_d, nbytes, "UnalignedDst_" + std::to_string(offset));
+}
+
+TEST_P(UnalignedPointerTestFixture, WriteWithBothPointersUnaligned) {
+  const size_t offset = GetParam();
+  const size_t nbytes = 1024;
+
+  // Allocate buffers
+  DeviceBuffer sendBuffer(nbytes + offset);
+  DeviceBuffer recvBuffer(nbytes + offset);
+
+  auto send_d = static_cast<char*>(sendBuffer.get()) + offset;
+  auto recv_d = static_cast<char*>(recvBuffer.get()) + offset;
+
+  runUnalignedWriteTest(
+      send_d, recv_d, nbytes, "BothUnaligned_" + std::to_string(offset));
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    UnalignedPointerEdgeCases,
+    UnalignedPointerTestFixture,
+    ::testing::Values(1, 2, 3, 4, 5, 7, 8, 9, 13, 15));
+
 } // namespace comms::pipes
 
 int main(int argc, char* argv[]) {

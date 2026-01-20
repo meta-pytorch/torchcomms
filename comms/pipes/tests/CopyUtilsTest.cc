@@ -38,7 +38,7 @@ class CopyUtilsTestParameterized
     : public CopyUtilsTestFixture,
       public ::testing::WithParamInterface<CopyChunkVectorizedParams> {};
 
-// Test copy_chunk_vectorized() with uint4 vectorized loads/stores.
+// Test memcpy_vectorized() with uint4 vectorized loads/stores.
 // The function uses 16-byte (uint4) vectorized memory operations with 4x
 // unrolling to efficiently copy data. Threads within a warp cooperate to
 // process the chunk, with each thread handling a strided subset of the data.

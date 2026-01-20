@@ -16,9 +16,8 @@ namespace ctran::ib {
 
 LocalVirtualConn::LocalVirtualConn(
     std::vector<CtranIbDevice>& devices,
-    const uint64_t commHash,
-    const std::string& commDesc)
-    : devices_(devices), commHash_(commHash), commDesc_(commDesc) {
+    CommLogData commLogData)
+    : devices_(devices), commLogData_(std::move(commLogData)) {
   FB_CHECKABORT(
       devices_.size() == NCCL_CTRAN_IB_DEVICES_PER_RANK,
       "Invalid number of devices {} received in flush virtual connection compared to NCCL_CTRAN_IB_DEVICES_PER_RANK {}",
@@ -31,7 +30,7 @@ LocalVirtualConn::LocalVirtualConn(
   for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
     auto maybeMr = devices_[device].ibvPd->regMr(
         &buf_, sizeof(int), ibverbx::IBV_ACCESS_LOCAL_WRITE);
-    FOLLY_EXPECTED_CHECKTHROW(maybeMr);
+    FOLLY_EXPECTED_CHECKTHROW_EX(maybeMr, commLogData_);
     ibvMrs_.emplace_back(std::move(*maybeMr));
 
     memset(&sgs_[device], 0, sizeof(sgs_[device]));
@@ -44,7 +43,7 @@ LocalVirtualConn::LocalVirtualConn(
     ibverbx::ibv_port_attr portAttr;
     auto maybePortAttr =
         devices[device].ibvDevice->queryPort(devices[device].port);
-    FOLLY_EXPECTED_CHECKTHROW(maybePortAttr);
+    FOLLY_EXPECTED_CHECKTHROW_EX(maybePortAttr, commLogData_);
     portAttr = std::move(*maybePortAttr);
 
     CtranIbRemoteQpInfo remoteQpInfo = {
@@ -58,7 +57,7 @@ LocalVirtualConn::LocalVirtualConn(
 
       auto maybeGid = devices[device].ibvDevice->queryGid(
           devices[device].port, static_cast<int>(NCCL_IB_GID_INDEX));
-      FOLLY_EXPECTED_CHECKTHROW(maybeGid);
+      FOLLY_EXPECTED_CHECKTHROW_EX(maybeGid, commLogData_);
       gid = std::move(*maybeGid);
       remoteQpInfo.u.eth.spn = gid.global.subnet_prefix;
       remoteQpInfo.u.eth.iid = gid.global.interface_id;
@@ -68,25 +67,27 @@ LocalVirtualConn::LocalVirtualConn(
 
     auto ibvQpCreateResult =
         ctranIbQpCreate(devices_[device].ibvPd, devices_[device].ibvCq->cq());
-    FOLLY_EXPECTED_CHECKTHROW(ibvQpCreateResult);
+    FOLLY_EXPECTED_CHECKTHROW_EX(ibvQpCreateResult, commLogData_);
     ibvQps_.emplace_back(std::move(*ibvQpCreateResult));
-    FOLLY_EXPECTED_CHECKTHROW(ctranIbQpInit(
-        ibvQps_[device],
-        devices_[device].port,
-        ibverbx::IBV_ACCESS_LOCAL_WRITE | ibverbx::IBV_ACCESS_REMOTE_READ));
+    FOLLY_EXPECTED_CHECKTHROW_EX(
+        ctranIbQpInit(
+            ibvQps_[device],
+            devices_[device].port,
+            ibverbx::IBV_ACCESS_LOCAL_WRITE | ibverbx::IBV_ACCESS_REMOTE_READ),
+        commLogData_);
 
     remoteQpInfo.qpn = ibvQps_[device].qp()->qp_num;
-    FOLLY_EXPECTED_CHECKTHROW(
-        ctranIbQpRTR(remoteQpInfo, ibvQps_[device], NCCL_IB_TC));
+    FOLLY_EXPECTED_CHECKTHROW_EX(
+        ctranIbQpRTR(remoteQpInfo, ibvQps_[device], NCCL_IB_TC), commLogData_);
 
-    FOLLY_EXPECTED_CHECKTHROW(ctranIbQpRTS(ibvQps_[device]));
+    FOLLY_EXPECTED_CHECKTHROW_EX(ctranIbQpRTS(ibvQps_[device]), commLogData_);
 
     CLOGF_SUBSYS(
         INFO,
         INIT,
         "CTRAN-IB: Established connection: commHash {:x}, commDesc {}, flush qpn {} on port {}",
-        commHash,
-        commDesc,
+        commLogData_.commHash,
+        commLogData_.commDesc,
         ibvQps_[device].qp()->qp_num,
         devices_[device].port);
   }
