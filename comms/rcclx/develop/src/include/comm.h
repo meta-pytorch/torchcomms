@@ -743,7 +743,7 @@ struct ncclComm {
   CUmemGenericAllocationHandle symMCHandle;
   struct ncclIntruQueue<struct ncclSymRegTask, &ncclSymRegTask::next> symRegTaskQueue;
 
-  // Unroll factor for comm [RCCL]
+  // unroll factor for comm [RCCL]
   int unroll;
 
   // Low precision collectives buffer pool for CUDA graph compatibility
@@ -752,6 +752,10 @@ struct ncclComm {
   // custom collective [RCCL]
   bool enableCustColl;
 
+  // gfx name from hipDeviceProp_t [RCCL]
+  char* archName;
+  // multiProcessorCount from hipDeviceProp_t [RCCL]
+  int cuCount;
   // This is the only bridge between ctran and baseline code
   std::unique_ptr<CtranComm> ctranComm_;
 

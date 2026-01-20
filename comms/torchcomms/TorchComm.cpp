@@ -2,8 +2,6 @@
 
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
-#include "comms/torchcomms/TorchCommObjectId.hpp"
-#include "comms/torchcomms/TorchCommWindow.hpp"
 
 namespace torch {
 namespace comms {
@@ -12,8 +10,6 @@ TorchComm::TorchComm(
     const std::string& backend_name,
     std::shared_ptr<TorchCommBackend> impl)
     : backend_(backend_name), impl_(std::move(impl)) {}
-
-TorchComm::~TorchComm() = default;
 
 std::shared_ptr<TorchComm> new_comm(
     const std::string& backend_name,
@@ -25,8 +21,6 @@ std::shared_ptr<TorchComm> new_comm(
   return std::shared_ptr<TorchComm>(
       new TorchComm(backend_name, std::move(backend_impl)));
 }
-
-TorchCommWindow::~TorchCommWindow() = default;
 
 void TorchComm::finalize() {
   impl_->finalize();
@@ -228,8 +222,7 @@ const at::Device& TorchComm::getDevice() const {
 
 // Batch Operations
 
-BatchSendRecv::BatchSendRecv(uint64_t id, TorchComm* parent)
-    : parent_(parent), id_(id) {}
+BatchSendRecv::BatchSendRecv(TorchComm* parent) : parent_(parent) {}
 
 BatchSendRecv::P2POp::P2POp(OpType type, const at::Tensor& tensor, int peer) {
   this->type = type;
@@ -238,11 +231,7 @@ BatchSendRecv::P2POp::P2POp(OpType type, const at::Tensor& tensor, int peer) {
 }
 
 BatchSendRecv TorchComm::batch_op_create() {
-  return BatchSendRecv(next_object_id(), this);
-}
-
-uint64_t BatchSendRecv::getId() const {
-  return id_;
+  return BatchSendRecv(this);
 }
 
 void BatchSendRecv::send(const at::Tensor& tensor, int dst) {
@@ -264,10 +253,6 @@ c10::intrusive_ptr<TorchWork> BatchSendRecv::issue(
 // Global memory allocator function implementation
 std::shared_ptr<c10::Allocator> get_mem_allocator(const std::string& backend) {
   return TorchCommFactory::get().get_allocator(backend);
-}
-
-std::shared_ptr<TorchCommBackend> BatchSendRecv::getCommBackend() const {
-  return parent_->getBackendImpl();
 }
 
 } // namespace comms
