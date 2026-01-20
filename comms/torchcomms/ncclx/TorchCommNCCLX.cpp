@@ -2086,7 +2086,7 @@ class NCCLXRegistration {
   }
 };
 
-static NCCLXRegistration registration{};
+static const NCCLXRegistration registration{};
 } // namespace
 
 } // namespace comms
