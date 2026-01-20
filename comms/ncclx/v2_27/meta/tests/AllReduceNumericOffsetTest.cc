@@ -50,12 +50,6 @@ class AllReduceNumericOffsetTest : public NcclxBaseTest {
     NcclxBaseTest::TearDown();
   }
 
-  void assignChunkValue(TYPE* buf, size_t count, TYPE val) {
-    std::vector<TYPE> expectedVals(count, val);
-    CUDACHECKIGNORE(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(TYPE), cudaMemcpyDefault));
-  }
-
   void verifyMaxDiff(
       TYPE* tensorA,
       TYPE* tensorB,

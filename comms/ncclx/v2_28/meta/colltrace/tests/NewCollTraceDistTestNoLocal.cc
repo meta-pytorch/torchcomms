@@ -557,16 +557,6 @@ TEST_F(CollTraceTest, SimulateCtranPPSendRecv) {
   }
 }
 
-template <typename T>
-void assignChunkValue(T* buf, size_t count, T seed, T inc) {
-  std::vector<T> expectedVals(count, 0);
-  for (size_t i = 0; i < count; ++i) {
-    expectedVals[i] = seed + i * inc;
-  }
-  CUDACHECK_TEST(cudaMemcpy(
-      buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-}
-
 TEST_F(CollTraceTest, winPutWait) {
   constexpr auto kNumElements = 1 << 20;
   constexpr auto kNumIters = 10;
