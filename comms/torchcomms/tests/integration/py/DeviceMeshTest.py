@@ -141,6 +141,74 @@ class DeviceMeshTest(unittest.TestCase):
             sub_comm.finalize()
         comm.finalize()
 
+    def _validate_sub_mesh(self, sub_mesh, sub_comm, dim_mesh_name, cur_rank, device):
+        """Validate a sub-mesh and its associated communicator."""
+        self.assertEqual(sub_mesh.get_rank(), cur_rank)
+        self.assertEqual(sub_mesh.size(), sub_comm.get_size())
+        sub_group = sub_mesh.get_group()
+        self.assertEqual(sub_group.group_name, dim_mesh_name)
+
+        t = torch.ones(10, device=device, dtype=torch.int32)
+        dist.all_reduce(t, group=sub_group)
+
+        # Device-aware synchronization
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        # No synchronization needed for CPU
+
+        self.assertEqual(t[0].item(), sub_comm.get_size())
+        tag = c10d._get_group_tag(sub_group)
+        self.assertEqual(tag, f"ptd:{dim_mesh_name}")
+        pg_group_ranks = c10d.get_process_group_ranks(sub_group)
+        self.assertEqual(len(pg_group_ranks), sub_comm.get_size())
+
+    def _find_ranks_for_mesh_dims(self, mesh, mesh_dim_names, cur_rank):
+        """Find the ranks for each mesh dimension that contain the current rank."""
+        ranks_per_dim = {}
+        for idx, dim_name in enumerate(mesh_dim_names):
+            # Calculate global ranks mapping for this mesh dimension
+            global_ranks = mesh.transpose(idx, -1).reshape(-1, mesh.size(idx)).tolist()
+            for row in global_ranks:
+                if cur_rank in row:
+                    ranks_per_dim[dim_name] = row
+                    break
+        return ranks_per_dim
+
+    def _setup_flattened_mesh_dim(
+        self, device_mesh_3d, flatten_dim_name, flatten_mesh_dim_names, comm, ranks
+    ):
+        """Set up a flattened mesh dimension with proper layout."""
+        sizes = []
+        strides = []
+        # This is important because we need to make sure the layout is correct
+        for dim_name in flatten_mesh_dim_names[flatten_dim_name]:
+            layout = device_mesh_3d[dim_name]._layout
+            sizes.append(layout.sizes)
+            strides.append(layout.strides)
+        # pyre-fixme[19]: _MeshLayout dataclass accepts positional args
+        flatten_layout = _MeshLayout(tuple(sizes), tuple(strides))
+        _flatten_with_comm(
+            device_mesh_3d,
+            flatten_dim_name,
+            comm,
+            ranks,
+            flatten_layout,
+        )
+
+    def _find_flatten_ranks_per_dim(
+        self, flatten_mesh, flattened_mesh_dim_names, cur_rank
+    ):
+        """Find ranks for each flattened mesh dimension that contain the current rank."""
+        flatten_ranks_per_dim = {}
+        for idx, dim_name in enumerate(flattened_mesh_dim_names):
+            # Calculate global ranks mapping for this mesh dimension
+            global_ranks = flatten_mesh[idx].transpose(idx, -1).tolist()
+            for row in global_ranks:
+                if cur_rank in row:
+                    flatten_ranks_per_dim[dim_name] = row
+                    break
+        return flatten_ranks_per_dim
+
     @unittest.skipIf(
         torch.cuda.device_count() < 8 or not HAS_MESH_LAYOUT,
         "Skipping non GPU situations for now",
@@ -167,15 +235,8 @@ class DeviceMeshTest(unittest.TestCase):
         cur_rank = comm.get_rank()
 
         mesh_dim_names = ["pp", "cp", "ep"]
-        ranks_per_dim = {}
+        ranks_per_dim = self._find_ranks_for_mesh_dims(mesh, mesh_dim_names, cur_rank)
         comm_per_dim = {}
-        for idx, dim_name in enumerate(mesh_dim_names):
-            # Calculate global ranks mapping for this mesh dimension
-            global_ranks = mesh.transpose(idx, -1).reshape(-1, mesh.size(idx)).tolist()
-            for row in global_ranks:
-                if cur_rank in row:
-                    ranks_per_dim[dim_name] = row
-                    break
 
         # Create communicators using the new single-list API
         for dim_name, ranks in ranks_per_dim.items():
@@ -207,34 +268,18 @@ class DeviceMeshTest(unittest.TestCase):
 
         flattened_mesh_dim_names = ["pp_cp", "cp_ep"]
         flatten_mesh_dim_names = {"pp_cp": ["pp", "cp"], "cp_ep": ["cp", "ep"]}
-        flatten_ranks_per_dim = {}
-        # For DP communication: find which column contains current rank
-        for idx, dim_name in enumerate(flattened_mesh_dim_names):
-            # Calculate global ranks mapping for this mesh dimension
-            global_ranks = flatten_mesh[idx].transpose(idx, -1).tolist()
-
-            for row in global_ranks:
-                if cur_rank in row:
-                    flatten_ranks_per_dim[dim_name] = row
-                    break
+        flatten_ranks_per_dim = self._find_flatten_ranks_per_dim(
+            flatten_mesh, flattened_mesh_dim_names, cur_rank
+        )
 
         for flatten_dim_name, ranks in flatten_ranks_per_dim.items():
             comm_per_dim[flatten_dim_name] = comm.split(ranks, flatten_dim_name)
-            sizes = []
-            strides = []
-            # This is important because we need to make sure the layout is correct
-            for dim_name in flatten_mesh_dim_names[flatten_dim_name]:
-                layout = device_mesh_3d[dim_name]._layout
-                sizes.append(layout.sizes)
-                strides.append(layout.strides)
-            # pyre-fixme[19]: _MeshLayout dataclass accepts positional args
-            flatten_layout = _MeshLayout(tuple(sizes), tuple(strides))
-            _flatten_with_comm(
+            self._setup_flattened_mesh_dim(
                 device_mesh_3d,
                 flatten_dim_name,
+                flatten_mesh_dim_names,
                 comm_per_dim[flatten_dim_name],
                 ranks,
-                flatten_layout,
             )
 
         dims_to_test = ["cp", "pp_cp", "cp_ep"]
@@ -242,24 +287,7 @@ class DeviceMeshTest(unittest.TestCase):
         for dim_mesh_name in dims_to_test:
             sub_comm = comm_per_dim[dim_mesh_name]
             sub_mesh = device_mesh_3d[dim_mesh_name]
-            self.assertEqual(sub_mesh.get_rank(), cur_rank)
-            self.assertEqual(sub_mesh.size(), sub_comm.get_size())
-            sub_group = sub_mesh.get_group()
-            self.assertEqual(sub_group.group_name, dim_mesh_name)
-
-            t = torch.ones(10, device=device, dtype=torch.int32)
-            dist.all_reduce(t, group=sub_group)
-
-            # Device-aware synchronization
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            # No synchronization needed for CPU
-
-            self.assertEqual(t[0].item(), sub_comm.get_size())
-            tag = c10d._get_group_tag(sub_group)
-            self.assertEqual(tag, f"ptd:{dim_mesh_name}")
-            pg_group_ranks = c10d.get_process_group_ranks(sub_group)
-            self.assertEqual(len(pg_group_ranks), sub_comm.get_size())
+            self._validate_sub_mesh(sub_mesh, sub_comm, dim_mesh_name, cur_rank, device)
 
         for sub_comm in comm_per_dim.values():
             sub_comm.finalize()
