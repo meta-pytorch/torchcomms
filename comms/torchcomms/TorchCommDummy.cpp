@@ -2,7 +2,6 @@
 
 #include <comms/torchcomms/TorchCommDummy.hpp>
 #include <comms/torchcomms/TorchCommFactory.hpp>
-#include <comms/torchcomms/TorchCommObjectId.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 
@@ -11,8 +10,6 @@ namespace comms {
 
 class DummyTorchCommWindow : public TorchCommWindow {
  public:
-  explicit DummyTorchCommWindow(uint64_t window_id)
-      : TorchCommWindow(window_id) {}
   void tensor_register(const at::Tensor& tensor) override {
     (void)tensor;
   }
@@ -53,10 +50,6 @@ class DummyTorchCommWindow : public TorchCommWindow {
 
   std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) override {
     (void)peerRank;
-    return nullptr;
-  }
-
-  std::shared_ptr<TorchCommBackend> getCommBackend() const override {
     return nullptr;
   }
 };
@@ -244,7 +237,8 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::gather(
 }
 
 std::shared_ptr<TorchCommWindow> TorchCommDummy::new_window() {
-  return std::make_shared<DummyTorchCommWindow>(next_object_id());
+  auto win = std::make_shared<DummyTorchCommWindow>();
+  return win;
 }
 
 std::shared_ptr<TorchCommBackend> TorchCommDummy::split(
