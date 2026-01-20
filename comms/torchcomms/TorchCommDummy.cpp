@@ -268,7 +268,7 @@ class DummyRegistration {
   }
 };
 
-static DummyRegistration registration{};
+static const DummyRegistration registration{};
 } // namespace
 
 } // namespace comms
