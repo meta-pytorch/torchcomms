@@ -191,6 +191,47 @@ This is a collective operation that includes internal barriers to ensure:
           R"(Get the size of the window)",
           py::call_guard<py::gil_scoped_release>())
       .def(
+          "get_buf_dtype",
+          [](TorchCommWindow& self) {
+            return py::reinterpret_steal<py::object>(
+                THPDtype_New(self.getBufDtype(), "torch"));
+          },
+          R"(Get the dtype of the registered buffer tensor.
+
+Returns:
+    torch.dtype: The dtype of the registered buffer, e.g. torch.float32.
+
+Note:
+    This is primarily used by torch.compile's meta kernel to determine
+    the output tensor dtype for map_remote_tensor() operations.
+          )")
+      .def(
+          "get_buf_shape",
+          [](TorchCommWindow& self) { return self.getBufShape(); },
+          R"(Get the shape of the registered buffer tensor.
+
+Returns:
+    list[int]: The shape of the registered buffer as a list of dimensions.
+
+Note:
+    This is primarily used by torch.compile's meta kernel to determine
+    the output tensor shape for get_temap_remote_tensornsor() operations.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_buf_device",
+          [](TorchCommWindow& self) { return self.getBufDevice(); },
+          R"(Get the device of the registered buffer tensor.
+
+Returns:
+    torch.device: The device of the registered buffer.
+
+Note:
+    This is primarily used by torch.compile's meta kernel to determine
+    the output tensor device for map_remote_tensor() operations.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
           "put",
           [](TorchCommWindow& self,
              const at::Tensor& tensor,
