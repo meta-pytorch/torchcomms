@@ -113,7 +113,7 @@ bool IsGoogleLoggingInitialized();
 
 namespace {
 
-void tryTorchCommLoggingInit(std::string_view name) {
+[[maybe_unused]] void tryTorchCommLoggingInit(std::string_view name) {
   // This trick can only be used on UNIX platforms
   if (!::google::glog_internal_namespace_::IsGoogleLoggingInitialized()) {
     ::google::InitGoogleLogging(name.data());
@@ -126,7 +126,7 @@ void tryTorchCommLoggingInit(std::string_view name) {
   }
 }
 
-torch::comms::TorchCommBackend* getDefaultCommunicator() {
+[[maybe_unused]] torch::comms::TorchCommBackend* getDefaultCommunicator() {
   static torch::comms::TorchCommBackend* defaultCommunicator = nullptr;
   return defaultCommunicator;
 }
