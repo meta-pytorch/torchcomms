@@ -202,8 +202,7 @@ commResult_t CtranNvl::importMem(
   return commSuccess;
 }
 
-commResult_t
-CtranNvl::remReleaseMem(void* nvlRegElem, int rank, ControlMsg& msg) {
+commResult_t CtranNvl::remReleaseMem(void* nvlRegElem, ControlMsg& msg) {
   auto reg = reinterpret_cast<CtranNvlRegElem*>(nvlRegElem);
   msg.setType(ControlMsgType::NVL_RELEASE_MEM);
   msg.nvlRls.base = reg->ipcMem.rlock()->getBase();

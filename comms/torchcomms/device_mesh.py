@@ -241,9 +241,6 @@ def init_native_device_mesh(
 
     register_torchcomms_funcols_impl()
 
-    for comm in dim_comms.values():
-        comm.barrier(async_op=False)
-
     return device_mesh
 
 

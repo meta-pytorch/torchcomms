@@ -42,32 +42,6 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     CHECK_VALID_REGCACHE(regCache);
   }
 
-  template <typename T>
-  int checkChunkValue(T* buf, ssize_t count, T seed, T inc = 0) {
-    std::vector<T> observedVals(count, -1);
-    CUDACHECK_TEST(cudaMemcpy(
-        observedVals.data(), buf, count * sizeof(T), cudaMemcpyDefault));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print first 10 failing
-    // location
-    T expVal = seed;
-    for (auto i = 0; i < count; ++i) {
-      if (observedVals[i] != expVal) {
-        if (errs < 10) {
-          printf(
-              "[%d] observedVals[%d] = %d, expectedVal = %d\n",
-              globalRank,
-              i,
-              observedVals[i],
-              expVal);
-        }
-        errs++;
-      }
-      expVal += inc;
-    }
-    return errs;
-  }
-
   void TearDown() override {
     ctran::logGpuMemoryStats(globalRank);
     NcclxBaseTest::TearDown();
@@ -229,7 +203,8 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
       }
 
       if (isReceiver) {
-        EXPECT_EQ(checkChunkValue(buf, count, sendRank + x, 1), 0);
+        EXPECT_EQ(
+            checkChunkValue(buf, count, sendRank + x, 1, this->globalRank), 0);
       }
     }
 
