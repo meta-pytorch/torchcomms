@@ -277,6 +277,8 @@ class CtranMapperRegCache {
   commResult_t destroy();
 
   // Thread-safe functions to cache a buffer range into the global cache.
+  // This function discovers all physical segments underlying the given buffer
+  // and caches each one individually.
   // input:
   //   - buf: the buffer to be cached
   //   - len: the length of the buffer
@@ -286,16 +288,16 @@ class CtranMapperRegCache {
   //               (logging purpose only, since commHash may not be 100%
   //               unique).
   // output:
-  //   - segment: the cached segment
-  //   - segHdl: the handle of the cached segment
+  //   - segments: vector of cached segments (one per physical segment chunk)
+  //   - segHdls: vector of handles for the cached segments
   commResult_t cacheSegment(
       const void* buf,
       const std::size_t len,
       const int cudaDev,
       const bool ncclManaged,
       uint64_t commHash,
-      CtranMapperSegment** segment,
-      void** segHdl);
+      std::vector<CtranMapperSegment*>& segments,
+      std::vector<void*>& segHdls);
 
   // Thread-safe functions to register a given buffer range.
   // If the buffer is already registered and cached, the pre-existing handle is

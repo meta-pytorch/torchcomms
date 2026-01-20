@@ -412,10 +412,25 @@ commResult_t CtranMapperSegmentRange::pinRange(
   DevMemType memType{DevMemType::kCumem};
   FB_COMMCHECK(getDevMemType(ptr, cudaDev, memType));
 
+  CLOGF_SUBSYS(
+      INFO,
+      ALLOC,
+      "CTRAN-MAPPER pinRange: input ptr={} len={} cudaDev={} memType={}",
+      ptr,
+      len,
+      cudaDev,
+      (int)memType);
+
   // Host unregistered memory or host pinned or cudaMalloc-ed buffer, return
   // entire range as a single segment
   if (memType != DevMemType::kCumem) {
     segRangs.emplace_back(ptr, len, memType);
+    CLOGF_SUBSYS(
+        INFO,
+        ALLOC,
+        "CTRAN-MAPPER pinRange: non-cumem single segment ptr={} len={}",
+        ptr,
+        len);
     return commSuccess;
   }
 
@@ -427,20 +442,43 @@ commResult_t CtranMapperSegmentRange::pinRange(
   FB_CUCHECK(cuMemGetAddressRange(&curPbase, &curRange, ptr_));
   segRangs.emplace_back(
       reinterpret_cast<const void*>(curPbase), curRange, memType);
+  CLOGF_SUBSYS(
+      INFO,
+      ALLOC,
+      "CTRAN-MAPPER pinRange: discovered segment[0] pbase={:#x} range={}",
+      (uintptr_t)curPbase,
+      curRange);
 
   // - Continue search the remaining ranges until reached the end of the buffer
   size_t cur_offset = (size_t)ctran::utils::subDevicePtr(
       ctran::utils::addDevicePtr(curPbase, curRange), (void*)ptr_);
+  int segmentIdx = 1;
   while (cur_offset < len) {
     CUdeviceptr curPtr_ = ctran::utils::addDevicePtr(ptr_, cur_offset);
     FB_CUCHECK(
         cuMemGetAddressRange(&curPbase, &curRange, (CUdeviceptr)curPtr_));
     segRangs.emplace_back(
         reinterpret_cast<const void*>(curPbase), curRange, memType);
+    CLOGF_SUBSYS(
+        INFO,
+        ALLOC,
+        "CTRAN-MAPPER pinRange: discovered segment[{}] pbase={:#x} range={} (offset={})",
+        segmentIdx,
+        (uintptr_t)curPbase,
+        curRange,
+        cur_offset);
 
     cur_offset = (size_t)ctran::utils::subDevicePtr(
         ctran::utils::addDevicePtr(curPbase, curRange), (void*)ptr_);
+    segmentIdx++;
   }
+
+  CLOGF_SUBSYS(
+      INFO,
+      ALLOC,
+      "CTRAN-MAPPER pinRange: total {} segments discovered for input len={}",
+      segRangs.size(),
+      len);
 
   // MIN_TODO: check properties
 
@@ -453,59 +491,71 @@ commResult_t CtranMapperRegCache::cacheSegment(
     const int cudaDev,
     const bool ncclManaged,
     uint64_t commHash,
-    CtranMapperSegment** segment,
-    void** segHdl) {
+    std::vector<CtranMapperSegment*>& segments,
+    std::vector<void*>& segHdls) {
   SetCudaDevRAII setCudaDev(cudaDev);
   {
     auto segmentsAvl = segmentsAvl_.wlock();
 
-    // If the segment is already registered, increase its refcount and return
-    // the segment
-    void* avlHdl = nullptr;
-    avlHdl = segmentsAvl->search(ptr, len);
-    if (avlHdl) {
-      auto foundSeg =
-          reinterpret_cast<CtranMapperSegment*>(segmentsAvl->lookup(avlHdl));
-      {
-        auto segState = foundSeg->stateMnger.wlock();
-        segState->refCount++;
-        *segHdl = foundSeg->avlHdl_;
-      }
-      *segment = foundSeg;
-      return commSuccess;
-    }
-
-    // Otherwise, load the segment range and create a new cache entry for it
+    // First, discover all physical segments underlying this buffer
     std::vector<CtranMapperSegmentRange> ranges;
     FB_COMMCHECK(CtranMapperSegmentRange::pinRange(ptr, cudaDev, len, ranges));
-    FB_CHECKABORT(
-        ranges.size() == 1,
-        "Expected only one range for a user cached segment ptr {} len {}, but got {} ranges",
+
+    CLOGF_SUBSYS(
+        INFO,
+        ALLOC,
+        "CTRAN-MAPPER cacheSegment: ptr={} len={} discovered {} physical segments",
         ptr,
         len,
         ranges.size());
 
-    // FIXME: cleanup AVL tree to be able to host unique_ptr
-    const auto& range = ranges.at(0);
-    auto newSeg = new CtranMapperSegment(range, cudaDev, ncclManaged);
-    avlHdl = segmentsAvl->insert(range.buf, range.len, newSeg);
-    newSeg->avlHdl_ = avlHdl;
-    *segment = newSeg;
-    *segHdl = avlHdl;
+    // Cache each discovered physical segment chunk
+    for (size_t i = 0; i < ranges.size(); i++) {
+      const auto& range = ranges.at(i);
+      void* avlHdl = nullptr;
 
-    auto type = newSeg->getType();
-    CLOGF_TRACE(
-        ALLOC,
-        "Cached segment {} type {} ({}) segHdl {} ptr {} len {} ncclManaged {} cudaDev {}, cache size {}",
-        (void*)newSeg,
-        (int)type,
-        devMemTypeStr(type),
-        (void*)avlHdl,
-        range.buf,
-        range.len,
-        ncclManaged,
-        cudaDev,
-        segmentsAvl->size());
+      // Check if this segment is already cached
+      avlHdl = segmentsAvl->search(range.buf, range.len);
+      if (avlHdl) {
+        // Segment already cached, increase refcount
+        auto foundSeg =
+            reinterpret_cast<CtranMapperSegment*>(segmentsAvl->lookup(avlHdl));
+        {
+          auto segState = foundSeg->stateMnger.wlock();
+          segState->refCount++;
+        }
+        segments.push_back(foundSeg);
+        segHdls.push_back(foundSeg->avlHdl_);
+
+        CLOGF_TRACE(
+            ALLOC,
+            "CTRAN-MAPPER cacheSegment: segment[{}] already cached ptr={} len={} refCount++",
+            i,
+            range.buf,
+            range.len);
+      } else {
+        // Create new cache entry for this segment
+        auto newSeg = new CtranMapperSegment(range, cudaDev, ncclManaged);
+        avlHdl = segmentsAvl->insert(range.buf, range.len, newSeg);
+        newSeg->avlHdl_ = avlHdl;
+        segments.push_back(newSeg);
+        segHdls.push_back(avlHdl);
+
+        auto type = newSeg->getType();
+        CLOGF_TRACE(
+            ALLOC,
+            "CTRAN-MAPPER cacheSegment: segment[{}] cached type={} ({}) segHdl={} ptr={} len={} ncclManaged={} cudaDev={}, cache size={}",
+            i,
+            (int)type,
+            devMemTypeStr(type),
+            (void*)avlHdl,
+            range.buf,
+            range.len,
+            ncclManaged,
+            cudaDev,
+            segmentsAvl->size());
+      }
+    }
   }
 
   profiler.wlock()->record(CtranRegCacheEventType::kCacheSegEvent);

@@ -471,11 +471,11 @@ commResult_t CtranMapper::regMem(
   CHECK_VALID_REGCACHE(regCache);
 
   const int cudaDev = comm->statex_->cudaDev();
-  // Cache segment.
-  // regCache either returns an already cached handle or create a
-  // new entry if the segment is not yet cached.
-  CtranMapperSegment* segment = nullptr;
-  void* segHdl_ = nullptr;
+  // Cache segment chunks.
+  // regCache discovers all physical allocations underlying the buffer and
+  // caches each one individually.
+  std::vector<CtranMapperSegment*> segments;
+  std::vector<void*> segHdls;
 
   FB_COMMCHECK(regCache->cacheSegment(
       buf,
@@ -483,16 +483,29 @@ commResult_t CtranMapper::regMem(
       cudaDev,
       ncclManaged,
       logMetaData_.commHash,
-      &segment,
-      &segHdl_));
+      segments,
+      segHdls));
 
-  // Register the segment only if in Eager mode or forced by caller
+  FB_CHECKABORT(
+      !segments.empty(),
+      "cacheSegment returned no segments for buf {} len {}",
+      buf,
+      len);
+
+  // Register the segment(s) only if in Eager mode or forced by caller
+  // Use the full range from first segment to last segment for registration
   CtranMapperRegElem* regHdl_ = nullptr;
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::eager || forceRegist) {
     bool didRegister = false;
+    // Calculate total range from first to last segment
+    const void* firstBuf = segments.front()->range.buf;
+    size_t totalLen = 0;
+    for (const auto& seg : segments) {
+      totalLen += seg->range.len;
+    }
     FB_COMMCHECK(regCache->regRange(
-        segment->range.buf,
-        segment->range.len,
+        firstBuf,
+        totalLen,
         cudaDev,
         "eagerRegMem",
         logMetaData_,
@@ -502,7 +515,7 @@ commResult_t CtranMapper::regMem(
         ncclManaged));
   }
 
-  *segHdl = segHdl_;
+  *segHdl = segHdls.front();
   if (regHdl) {
     *regHdl = regHdl_;
   }
