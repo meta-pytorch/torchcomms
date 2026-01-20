@@ -227,6 +227,7 @@ static ncclResult_t sendSetup(struct ncclComm* comm, struct ncclTopoGraph* graph
   req.connIndex = connIndex;
   req.curr_hdp_reg = 0;
   req.netDev = -1;
+  // Determine if this is a P2P connection or not based on the graph pointer
   if(graph == NULL) {
     req.isP2p = 1;
   } else {
@@ -777,11 +778,11 @@ static ncclResult_t sendProxyConnect(struct ncclProxyConnection* connection, str
   commConfig.trafficClass = req->trafficClass == NCCL_CONFIG_UNDEF_INT ? NCCL_NET_TRAFFIC_CLASS_UNDEF : req->trafficClass;
   NCCLCHECK(ncclNetGetDeviceHandle(resources->netDeviceType, resources->netDeviceVersion, false /*isRecv*/, &resources->netDeviceHandle));
   bool rccl_anp = !(strcmp(proxyState->ncclNet->name, RCCL_ANP_PLUGIN_STR));
-
+  
   if (rcclNetP2pPolicy) {
     NCCLCHECK(rcclNetP2pPolicy(req->handle, resources->isP2p));
   }
-
+  
   if (resources->shared) {
     // Shared buffers
     struct ncclProxyProgressState* progressState = &proxyState->progressState;

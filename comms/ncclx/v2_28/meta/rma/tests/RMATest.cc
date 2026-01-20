@@ -45,50 +45,6 @@ class RMATest : public ::testing::Test {
     CUDACHECK_TEST(cudaFree(buf));
   }
 
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T seed, T inc) {
-    std::vector<T> expectedVals(count, 0);
-    for (size_t i = 0; i < count; ++i) {
-      expectedVals[i] = seed + i * inc;
-    }
-    CUDACHECK_TEST(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
-  template <typename T>
-  int checkChunkValue(
-      T* buf,
-      size_t count,
-      T seed,
-      T inc,
-      cudaStream_t stream) {
-    std::vector<T> observedVals(count, -1);
-    CUDACHECK_TEST(cudaMemcpyAsync(
-        observedVals.data(),
-        buf,
-        count * sizeof(T),
-        cudaMemcpyDefault,
-        stream));
-    CUDACHECK_TEST(cudaStreamSynchronize(stream));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print failing location.
-    for (auto i = 0; i < count; ++i) {
-      T val = seed + inc * i;
-      if (observedVals[i] != val) {
-        if (errs < 10) {
-          printf(
-              "[%d] observedVals[%d] = %d, expectedVal = %d\n",
-              this->globalRank,
-              i,
-              observedVals[i],
-              val);
-        }
-        errs++;
-      }
-    }
-    return errs;
-  }
-
   void createWin(
       bool isUserBuf,
       MemAllocType bufType,
@@ -202,6 +158,7 @@ TEST_P(MultiWindowTestParam, multiWindow) {
         numElements,
         prevPeer + (int)numElements * prevPeer,
         1,
+        this->globalRank,
         wait_stream);
     EXPECT_EQ(errs, 0);
 
@@ -322,6 +279,7 @@ TEST_P(RMATestParam, winPutWait) {
       kNumElements,
       prevPeer,
       1,
+      this->globalRank,
       wait_stream);
 
   CUDACHECK_TEST(cudaStreamSynchronize(put_stream));
@@ -431,15 +389,14 @@ TEST_P(RMATestParam, winPutOnly) {
         comm,
         put_stream));
   }
-  CUDACHECK_TEST(cudaStreamSynchronize(put_stream));
-
   // allreduce ensures all remote puts have finished
   int errs = checkChunkValue(
       (int*)winBase + kNumElements * prevPeer,
       kNumElements,
       prevPeer,
       1,
-      main_stream);
+      this->globalRank,
+      put_stream);
 
   auto res = ncclWinFree(comm, win);
   EXPECT_EQ(res, ncclSuccess);
@@ -527,8 +484,8 @@ TEST_P(RMATestParam, winGet) {
   this->barrier(comm, main_stream);
 
   // allreduce ensures all remote puts have finished
-  int errs =
-      checkChunkValue((int*)localBuf, kNumElements, nextPeer, 0, main_stream);
+  int errs = checkChunkValue(
+      (int*)localBuf, kNumElements, nextPeer, 0, this->globalRank, get_stream);
 
   auto res = ncclWinFree(comm, win);
   EXPECT_EQ(res, ncclSuccess);

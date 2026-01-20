@@ -7,6 +7,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
+#include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"

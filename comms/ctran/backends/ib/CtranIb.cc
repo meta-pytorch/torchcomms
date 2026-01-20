@@ -463,8 +463,7 @@ void CtranIb::init(
 
     ibverbx::ibv_device_attr devAttr;
     auto maybeDeviceAttr = devices[device].ibvDevice->queryDevice();
-    FOLLY_EXPECTED_CHECKTHROW_EX(
-        maybeDeviceAttr, this->rank, this->commHash, this->commDesc);
+    FOLLY_EXPECTED_CHECKTHROW_EX(maybeDeviceAttr, ncclLogData);
     devAttr = std::move(*maybeDeviceAttr);
 
     // Found available port for the given device
@@ -539,15 +538,14 @@ void CtranIb::init(
     // access it yet.
     auto maybeCq =
         devices[device].ibvDevice->createCq(maxCqe, nullptr, nullptr, 0);
-    FOLLY_EXPECTED_CHECKTHROW_EX(
-        maybeCq, this->rank, this->commHash, this->commDesc);
+    FOLLY_EXPECTED_CHECKTHROW_EX(maybeCq, ncclLogData);
     cqs.emplace_back(std::move(*maybeCq));
     devices[device].ibvCq = &cqs[device];
     // FIXME: use initRemoteTransStates() to create cq
   }
 
   if (enableLocalFlush) {
-    localVc = std::make_unique<LocalVirtualConn>(devices, commHash, commDesc);
+    localVc = std::make_unique<LocalVirtualConn>(devices, ncclLogData);
   }
 
   // Record reference to CtranIbSingleton
@@ -971,7 +969,7 @@ commResult_t CtranIb::initRemoteTransStates(void) {
   // create local VC
   {
     std::unique_lock<std::mutex> lock(localVcMutex);
-    localVc = std::make_unique<LocalVirtualConn>(devices, commHash, commDesc);
+    localVc = std::make_unique<LocalVirtualConn>(devices, ncclLogData);
   }
 
   cqMutex.unlock();
