@@ -1082,13 +1082,13 @@ class CtranMapper {
     }
 
     if (backend == CtranMapperBackend::NVL) {
-      FB_COMMCHECK(this->ctranNvl->exportMem(buf, regElem->nvlRegElem, msg));
+      FB_COMMCHECK(CtranNvl::exportMem(buf, regElem->nvlRegElem, msg));
 
       // Record the exported remote rank to notify at deregistration
       exportRegCache_.wlock()->record(regElem, rank);
 
     } else if (backend == CtranMapperBackend::IB) {
-      FB_COMMCHECK(this->ctranIb->exportMem(buf, regElem->ibRegElem, msg));
+      FB_COMMCHECK(CtranIb::exportMem(buf, regElem->ibRegElem, msg));
     } else if (backend == CtranMapperBackend::TCPDM) {
       // No need to export the buffers, TCP device memory is steered by
       // the receiver.
@@ -1119,7 +1119,7 @@ class CtranMapper {
           return commInternalError;
         }
         remKey->backend = CtranMapperBackend::IB;
-        FB_COMMCHECK(this->ctranIb->importMem(buf, &(remKey->ibKey), msg));
+        FB_COMMCHECK(CtranIb::importMem(buf, &(remKey->ibKey), msg));
         break;
       case ControlMsgType::NVL_EXPORT_MEM:
         if (!this->ctranNvl) {

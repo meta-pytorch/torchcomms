@@ -24,8 +24,8 @@ __global__ void copyKernel(
       (start_offset < nBytes) ? end_offset - start_offset : 0;
 
   for (int run = 0; run < nRuns; ++run) {
-    copy_chunk_vectorized<uint4>(
-        dst, src, chunk_bytes, start_offset, start_offset, group);
+    memcpy_vectorized(
+        dst + start_offset, src + start_offset, chunk_bytes, group);
   }
 }
 
