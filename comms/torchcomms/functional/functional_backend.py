@@ -31,6 +31,7 @@ from torchcomms.functional.async_tensor import (
     _are_we_tracing,
     _maybe_wrap_tensor,
     _OnceWaitWork,
+    FakeWork,
 )
 
 
@@ -165,6 +166,15 @@ def _gather(
             return list(work)
         elif isinstance(work, list):
             return work
+
+        # During tracing, FakeWork.wait() returns the full list structure
+        # so we should call it once and return that list, not wrap each tensor
+        if _are_we_tracing():
+            if isinstance(work, FakeWork):
+                gather_list = work.wait()
+            else:
+                work.wait()
+            return gather_list or []
 
         work = _OnceWaitWork(work)
 
@@ -376,9 +386,14 @@ def _all_gather_tensor_funcol(
 
     # Rearrange if gather_dim != 0
     if gather_dim != 0:
-        work.wait()
-        output = torch.cat(torch.chunk(output, group_size, dim=0), dim=gather_dim)
-        return output
+        # IMPORTANT: Use the result of wait(), not the original output tensor!
+        # work.wait() returns the waited tensor with proper graph connectivity.
+        if _are_we_tracing():
+            if isinstance(work, FakeWork):
+                output = work.wait()
+            else:
+                work.wait()
+        return torch.cat(torch.chunk(output, group_size, dim=0), dim=gather_dim)
 
     return _maybe_wrap_tensor(output, work)
 

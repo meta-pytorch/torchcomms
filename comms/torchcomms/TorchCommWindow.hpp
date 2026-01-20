@@ -5,13 +5,11 @@
 #include <c10/core/Device.h>
 #include <comms/torchcomms/TorchCommOptions.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
-
 namespace torch {
 namespace comms {
 
 // Forward declaration
 class TorchWork;
-class TorchCommBackend;
 
 typedef enum {
   WIN_ACCESS_TYPE_UNIFIED = 0,
@@ -26,8 +24,7 @@ class TorchCommWindowAttr {
 class TorchCommWindow {
  public:
   TorchCommWindow() = default;
-  explicit TorchCommWindow(uint64_t id) : id_(id) {}
-  virtual ~TorchCommWindow();
+  virtual ~TorchCommWindow() = default;
 
   // Disable copy and move semantics
   TorchCommWindow(const TorchCommWindow&) = delete;
@@ -55,18 +52,6 @@ class TorchCommWindow {
 
   virtual std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) = 0;
 
-  // Get the name of the parent communicator (for pickle support)
-  virtual std::shared_ptr<TorchCommBackend> getCommBackend() const = 0;
-
-  size_t get_size() const {
-    return win_size_;
-  }
-
-  // Get the unique window ID (for pickle identity preservation)
-  uint64_t getId() const {
-    return id_;
-  }
-
   // Get the registered buffer's dtype (for torch.compile meta kernel)
   at::ScalarType getBufDtype() const {
     return buf_dtype_;
@@ -82,11 +67,18 @@ class TorchCommWindow {
     return buf_device_;
   }
 
+  size_t get_size() const {
+    return win_size_;
+  }
+
  protected:
   void* base_ptr_{};
+  // device_: The device where the window is allocated.
+  //  The device where the window is allocated may differ from the device used
+  //  by the communicator. For example, the window could be allocated on the CPU
+  //  while the communicator operates on the GPU. However, if both are using the
+  //  GPU, they should reside on the same device.
   size_t win_size_{0};
-  // Unique ID for pickle identity preservation (0 means not assigned)
-  uint64_t id_{0};
   // Store a copy of the user-provided tensor buffer to ensure its storage
   // remains valid for the lifetime of the window. This prevents use-after-free
   // issues by holding a reference count on the tensor's storage.

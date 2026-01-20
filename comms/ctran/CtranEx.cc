@@ -210,8 +210,9 @@ commResult_t CtranEx::isendCtrl(
 
   CtranIbEpochRAII epochRAII(impl->ctranIb.get());
   // Fill in ctrl msg
-  FB_COMMCHECK(impl->ctranIb->exportMem(
-      buf, const_cast<void*>(bufRegHdl), reqImpl->sendCtrl.msg));
+  FB_COMMCHECK(
+      CtranIb::exportMem(
+          buf, const_cast<void*>(bufRegHdl), reqImpl->sendCtrl.msg));
 
   FB_COMMCHECK(impl->ctranIb->isendCtrlMsg(
       reqImpl->sendCtrl.msg.type,
