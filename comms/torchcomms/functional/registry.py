@@ -963,7 +963,9 @@ def _patch_eager_autograd() -> None:
             has_requires_grad = parsed.has_requires_grad()
             fake_mode = torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FAKE)
             in_tracing_context = (
-                fake_mode is not None or parsed.has_fake_or_functional_tensor()
+                fake_mode is not None
+                or parsed.has_fake_or_functional_tensor()
+                or parsed.has_meta()
             )
 
             if not has_requires_grad and not in_tracing_context:
@@ -988,20 +990,7 @@ def _patch_eager_autograd() -> None:
 
             # For async ops, wrap result with work handle
             if in_tracing_context:
-                # Tracing context - use FakeWork
-                def flatten_tensors(x):
-                    if x is None:
-                        return []
-                    if isinstance(x, torch.Tensor):
-                        return [x]
-                    if isinstance(x, (list, tuple)):
-                        tensors = []
-                        for item in x:
-                            tensors.extend(flatten_tensors(item))
-                        return tensors
-                    return []
-
-                return FakeWork(flatten_tensors(result))
+                return FakeWork(result)
             else:
                 # Eager context - wrap with registered work handle
                 return _wrap_result_with_registered_work(result)

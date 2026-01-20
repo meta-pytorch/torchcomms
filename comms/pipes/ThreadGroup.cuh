@@ -167,6 +167,8 @@ struct ThreadGroup {
       uint32_t num_partitions) const;
   __device__ inline struct PartitionResult partition(
       DeviceSpan<const uint32_t> weights) const;
+  __device__ inline struct PartitionResult partition_interleaved(
+      uint32_t num_partitions) const;
 };
 
 /**
@@ -402,6 +404,63 @@ __device__ inline PartitionResult ThreadGroup::partition(
     }
     partition_start = partition_end;
   }
+#endif
+  return PartitionResult{};
+}
+
+/**
+ * partition_interleaved - Interleaved partitioning (odd/even for 2 partitions)
+ *
+ * Unlike partition() which creates contiguous partitions (0-15, 16-31),
+ * partition_interleaved distributes groups in a round-robin fashion:
+ * - Partition 0: groups 0, 2, 4, 6, ... (even groups)
+ * - Partition 1: groups 1, 3, 5, 7, ... (odd groups)
+ *
+ * This interleaves send/recv blocks across SMs for better load distribution
+ * and can improve performance with clustered launches.
+ *
+ * EXAMPLE (32 blocks, 2 partitions):
+ * =================================
+ *   auto [partition_id, subgroup] = group.partition_interleaved(2);
+ *   if (partition_id == 0) {
+ *     p2p.recv(subgroup, recvBuff, nBytes);  // blocks 0,2,4,...,30
+ *   } else {
+ *     p2p.send(subgroup, sendBuff, nBytes);  // blocks 1,3,5,...,31
+ *   }
+ *
+ * @param num_partitions Number of partitions (typically 2 for send/recv)
+ * @return {partition_id, subgroup} where subgroup has renumbered group_id
+ */
+__device__ inline PartitionResult ThreadGroup::partition_interleaved(
+    uint32_t num_partitions) const {
+#ifdef __CUDA_ARCH__
+  if (num_partitions > total_groups) {
+    printf(
+        "partition_interleaved: num_partitions (%u) must be <= total_groups (%u)\n",
+        num_partitions,
+        total_groups);
+    __trap();
+  }
+
+  // Interleaved assignment: group_id % num_partitions
+  uint32_t pid = group_id % num_partitions;
+
+  // Count how many groups are in this partition
+  // Groups assigned: pid, pid+num_partitions, pid+2*num_partitions, ...
+  uint32_t groups_in_partition =
+      (total_groups + num_partitions - 1 - pid) / num_partitions;
+
+  // Renumber group_id within partition: 0, 1, 2, ...
+  uint32_t new_group_id = group_id / num_partitions;
+
+  return PartitionResult{
+      .partition_id = pid,
+      .subgroup = ThreadGroup{
+          .thread_id_in_group = thread_id_in_group,
+          .group_size = group_size,
+          .group_id = new_group_id,
+          .total_groups = groups_in_partition,
+          .scope = scope}};
 #endif
   return PartitionResult{};
 }

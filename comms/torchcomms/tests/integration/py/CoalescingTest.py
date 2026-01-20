@@ -521,7 +521,7 @@ class CoalescingTest(unittest.TestCase):
         """Test that calling an unsupported operation inside a coalescing block raises an error."""
         # barrier does not support coalescing because it uses internal groupStart/groupEnd
         with self.assertRaises(RuntimeError) as context:
-            with torchcomms.coalesce(self.torchcomm):
+            with torchcomms.coalescing.coalesce(self.torchcomm):
                 self.torchcomm.barrier(async_op=True)
 
         self.assertIn("does not support coalescing", str(context.exception))

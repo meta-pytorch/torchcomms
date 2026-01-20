@@ -10,21 +10,19 @@
 namespace comms::pipes {
 
 /**
- * copy_chunk_vectorized - High-performance vectorized memory copy
+ * memcpy_vectorized_aligned - High-performance vectorized memory copy
  *
  * Cooperative memory copy optimized for GPU-to-GPU transfers with:
  *   - Configurable unrolling via template parameter (default 4x)
  *   - Vectorized loads/stores (16-byte uint4 operations)
  *   - Coalesced memory access pattern
- *   - Remainder handling for non-aligned sizes
+ *   - Requires aligned memory (aligned with vector load/store size)
  *
  * @tparam VecType Vector type for loads/stores (typically uint4 = 16 bytes)
  * @tparam kUnroll Unroll factor (default 4, optimal for most transfers)
  * @param dst_base Base pointer to destination buffer
  * @param src_base Base pointer to source buffer
- * @param chunk_bytes Number of bytes to copy
- * @param dst_offset Offset into destination buffer (in bytes)
- * @param src_offset Offset into source buffer (in bytes)
+ * @param nelems Number of elements of VecType to copy
  * @param group ThreadGroup for cooperative copy (all threads participate)
  *
  * STRIDING PATTERN
@@ -47,24 +45,17 @@ namespace comms::pipes {
  * - kUnroll=2: For very small messages or high register pressure scenarios
  */
 template <typename VecType, int kUnroll = 8>
-__device__ __forceinline__ void copy_chunk_vectorized(
-    char* dst_base,
-    const char* src_base,
-    std::size_t chunk_bytes,
-    std::size_t dst_offset,
-    std::size_t src_offset,
+__device__ __forceinline__ void memcpy_vectorized_aligned(
+    VecType* dst_p,
+    const VecType* src_p,
+    std::size_t nelems,
     const ThreadGroup& group) {
 #ifdef __CUDA_ARCH__
-  constexpr std::size_t kVecSize = sizeof(VecType);
-
   // Loop stride: group_size threads × kUnroll elements each
   const std::size_t kLoopStride = group.group_size * kUnroll;
-  const std::size_t numVecs = chunk_bytes / kVecSize;
-  const std::size_t numVecsAligned = (numVecs / kLoopStride) * kLoopStride;
-
-  const VecType* srcVec =
-      reinterpret_cast<const VecType*>(src_base + src_offset);
-  VecType* dstVec = reinterpret_cast<VecType*>(dst_base + dst_offset);
+  const std::size_t numVecsAligned = (nelems / kLoopStride) * kLoopStride;
+  VecType* __restrict__ dst = dst_p;
+  const VecType* __restrict__ src = src_p;
 
   // Main loop: coalesced strided access pattern (deep_ep style)
   // Each thread loads kUnroll elements, strided by group_size
@@ -73,31 +64,44 @@ __device__ __forceinline__ void copy_chunk_vectorized(
     VecType v[kUnroll];
 #pragma unroll
     for (int j = 0; j < kUnroll; ++j) {
-      v[j] = srcVec[i + j * group.group_size];
+      v[j] = src[i + j * group.group_size];
     }
 #pragma unroll
     for (int j = 0; j < kUnroll; ++j) {
-      dstVec[i + j * group.group_size] = v[j];
+      dst[i + j * group.group_size] = v[j];
     }
   }
 
   // Handle remaining vectors (not fitting in kLoopStride groups)
-  for (std::size_t i = numVecsAligned + group.thread_id_in_group; i < numVecs;
+  for (std::size_t i = numVecsAligned + group.thread_id_in_group; i < nelems;
        i += group.group_size) {
-    dstVec[i] = srcVec[i];
+    dst[i] = src[i];
+  }
+#endif // __CUDA_ARCH__
+}
+
+template <int kUnroll = 8>
+__device__ __forceinline__ void memcpy_vectorized(
+    char* dst,
+    const char* src,
+    std::size_t len,
+    const ThreadGroup& group) {
+#ifdef __CUDA_ARCH__
+  constexpr std::size_t kAlignment = sizeof(uint4);
+  if ((uintptr_t)dst % kAlignment == 0 && (uintptr_t)src % kAlignment == 0) {
+    const std::size_t nelems = len / kAlignment;
+    uint4* __restrict__ dst_p = reinterpret_cast<uint4*>(dst);
+    const uint4* __restrict__ src_p = reinterpret_cast<const uint4*>(src);
+    memcpy_vectorized_aligned<uint4, kUnroll>(dst_p, src_p, nelems, group);
+    len -= nelems * kAlignment;
+    if (len == 0) {
+      return;
+    }
+    dst = reinterpret_cast<char*>(dst_p + nelems);
+    src = reinterpret_cast<const char*>(src_p + nelems);
   }
 
-  // Handle remainder bytes (non-vector-aligned tail)
-  const std::size_t vec_aligned_bytes = numVecs * kVecSize;
-  const std::size_t remainder = chunk_bytes - vec_aligned_bytes;
-  if (remainder > 0) {
-    const char* src_remainder = src_base + src_offset + vec_aligned_bytes;
-    char* dst_remainder = dst_base + dst_offset + vec_aligned_bytes;
-    for (std::size_t i = group.thread_id_in_group; i < remainder;
-         i += group.group_size) {
-      dst_remainder[i] = src_remainder[i];
-    }
-  }
+  memcpy_vectorized_aligned<char, kUnroll>(dst, src, len, group);
 #endif // __CUDA_ARCH__
 }
 

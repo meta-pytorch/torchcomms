@@ -19,7 +19,7 @@ __global__ void testCopyChunkVectorizedKernel(
     uint32_t* errorCount_d) {
   auto warp = make_warp_group();
 
-  copy_chunk_vectorized<uint4>(dst_d, src_d, chunk_bytes, 0, 0, warp);
+  memcpy_vectorized(dst_d, src_d, chunk_bytes, warp);
 
   __syncthreads();
 

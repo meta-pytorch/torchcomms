@@ -5,14 +5,12 @@
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <torch/csrc/Dtype.h> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/utils/pybind.h>
 
 #include "comms/torchcomms/BackendWrapper.hpp"
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
-#include "comms/torchcomms/TorchCommWindow.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
 namespace py = pybind11;
@@ -21,174 +19,8 @@ using namespace torch::comms;
 template <typename T, typename... TOptions>
 using intrusive_ptr_class_ = py::class_<T, c10::intrusive_ptr<T>, TOptions...>;
 
-// Python object registries for maintaining object identity across pickle.
-// These are heap-allocated and intentionally leaked to avoid static
-// destruction order issues during Python interpreter shutdown.
-struct PyRegistries {
-  std::unordered_map<std::string, py::weakref> comm_registry;
-  std::unordered_map<uint64_t, py::weakref> window_registry;
-  std::unordered_map<uint64_t, py::weakref> batch_registry;
-  std::mutex mutex;
-
-  static PyRegistries& get() {
-    // Intentionally leaked to avoid static destruction order issues
-    static PyRegistries* instance = new PyRegistries();
-    return *instance;
-  }
-};
-
 PYBIND11_MODULE(_comms, m) {
   m.doc() = "Python bindings for TorchComm";
-
-  // Register unpickle functions at module initialization (must be pickleable)
-  m.def(
-      "_unpickle_comm",
-      [](const std::string& backend,
-         const c10::Device& device,
-         const std::string& name,
-         const CommOptions& options) -> py::object {
-        // Check Python registry for object identity
-        auto& reg = PyRegistries::get();
-        {
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          auto it = reg.comm_registry.find(name);
-          if (it != reg.comm_registry.end()) {
-            py::object obj = it->second();
-            if (!obj.is_none()) {
-              return obj;
-            }
-            reg.comm_registry.erase(it);
-          }
-        }
-
-        // Object not found in registry - this shouldn't happen for same-process
-        // pickle/unpickle since we preserve identity via weakref, but create
-        // a new comm as fallback
-        return py::cast(new_comm(backend, device, name, options));
-      },
-      "Unpickle a TorchComm object");
-
-  m.def(
-      "_unpickle_window",
-      [](uint64_t window_id,
-         const std::string& comm_name,
-         const std::vector<int64_t>& buf_shape,
-         int buf_dtype_int,
-         const std::string& buf_device_str) -> py::object {
-        // Check Python registry for object identity
-        auto& reg = PyRegistries::get();
-        {
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          auto it = reg.window_registry.find(window_id);
-          if (it != reg.window_registry.end()) {
-            py::object obj = it->second();
-            if (!obj.is_none()) {
-              return obj;
-            }
-            reg.window_registry.erase(it);
-          }
-        }
-
-        // Window not found - look up parent comm and recreate window
-        py::object comm_obj;
-        {
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          auto it = reg.comm_registry.find(comm_name);
-          if (it != reg.comm_registry.end()) {
-            comm_obj = it->second();
-            if (comm_obj.is_none()) {
-              throw std::runtime_error(
-                  "Cannot unpickle TorchCommWindow: parent TorchComm '" +
-                  comm_name + "' has been garbage collected.");
-            }
-          } else {
-            throw std::runtime_error(
-                "Cannot unpickle TorchCommWindow: parent TorchComm '" +
-                comm_name + "' not found in registry.");
-          }
-        }
-
-        // Recreate the window
-        auto& comm = comm_obj.cast<TorchComm&>();
-        auto new_window = comm.new_window();
-
-        // Re-register a tensor buffer with the same shape/dtype/device
-        if (!buf_shape.empty()) {
-          auto buf_dtype = static_cast<at::ScalarType>(buf_dtype_int);
-          auto buf_device = c10::Device(buf_device_str);
-          auto tensor_opts =
-              at::TensorOptions().dtype(buf_dtype).device(buf_device);
-          auto buf_tensor = at::empty(buf_shape, tensor_opts);
-          // NOTE: this could cause issues in the event that the registered
-          // tensor is used outside of the window. when i originally added this,
-          // the buffer was managed by the window (and construction
-          // wasn't accessible to the user)
-          new_window->tensor_register(buf_tensor);
-        }
-
-        // Register in Python registry and return as Python object
-        // Use the original window_id for registry key to maintain identity
-        // across multiple unpickle calls with the same pickled data
-        py::object window_obj = py::cast(new_window);
-        {
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          reg.window_registry[window_id] = py::weakref(window_obj);
-        }
-        return window_obj;
-      },
-      "Unpickle a TorchCommWindow object");
-
-  m.def(
-      "_unpickle_batch_sendrecv",
-      [](uint64_t batch_id, const std::string& comm_name) -> py::object {
-        // Check Python registry for object identity
-        auto& reg = PyRegistries::get();
-        {
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          auto it = reg.batch_registry.find(batch_id);
-          if (it != reg.batch_registry.end()) {
-            py::object obj = it->second();
-            if (!obj.is_none()) {
-              return obj;
-            }
-            reg.batch_registry.erase(it);
-          }
-        }
-
-        // Look up the comm by name from registry
-        py::object comm_obj;
-        {
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          auto it = reg.comm_registry.find(comm_name);
-          if (it != reg.comm_registry.end()) {
-            comm_obj = it->second();
-            if (comm_obj.is_none()) {
-              throw std::runtime_error(
-                  "Cannot unpickle BatchSendRecv: parent TorchComm '" +
-                  comm_name + "' has been garbage collected.");
-            }
-          } else {
-            throw std::runtime_error(
-                "Cannot unpickle BatchSendRecv: parent TorchComm '" +
-                comm_name + "' not found in registry.");
-          }
-        }
-
-        // Batch not found - create a new one
-        auto& comm = comm_obj.cast<TorchComm&>();
-        BatchSendRecv batch = comm.batch_op_create();
-
-        // Register and return
-        // Use the original batch_id for registry key to maintain identity
-        // across multiple unpickle calls with the same pickled data
-        py::object batch_obj = py::cast(batch);
-        {
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          reg.batch_registry[batch_id] = py::weakref(batch_obj);
-        }
-        return batch_obj;
-      },
-      "Unpickle a BatchSendRecv object");
 
   // Bind RedOpType enum
   py::enum_<ReduceOp::RedOpType>(
@@ -228,64 +60,8 @@ PYBIND11_MODULE(_comms, m) {
           "BOR", &ReduceOp::BOR, "Bitwise OR reduction operation")
       .def_readonly_static(
           "BXOR", &ReduceOp::BXOR, "Bitwise XOR reduction operation")
-      .def_readonly_static("AVG", &ReduceOp::AVG, "Average reduction operation")
-      // Pickle support for ReduceOp - needed for torch.compile backward graph
-      // deepcopy during lazy backward compilation
-      .def(
-          py::pickle(
-              [](const ReduceOp& op) {
-                // __getstate__: return tuple of (type, factor)
-                // factor is None for non-PREMUL_SUM ops
-                int type_value = static_cast<int>(op.type());
-                const auto& factor_opt = op.factor();
-                if (factor_opt.has_value()) {
-                  const auto& factor = factor_opt.value();
-                  if (std::holds_alternative<double>(factor)) {
-                    return py::make_tuple(type_value, std::get<double>(factor));
-                  } else if (std::holds_alternative<at::Tensor>(factor)) {
-                    return py::make_tuple(
-                        type_value, std::get<at::Tensor>(factor));
-                  } else {
-                    throw std::runtime_error(
-                        "Invalid ReduceOp pickle state: unsupported factor type. Expected double or Tensor.");
-                  }
-                }
-                return py::make_tuple(type_value, py::none());
-              },
-              [](py::tuple t) {
-                // __setstate__: reconstruct from (type, factor)
-                if (t.size() != 2) {
-                  throw std::runtime_error("Invalid ReduceOp pickle state");
-                }
-                int type_value = t[0].cast<int>();
-                auto factor_obj = t[1];
-
-                if (type_value ==
-                    static_cast<int>(ReduceOp::RedOpType::PREMUL_SUM)) {
-                  // PREMUL_SUM requires a factor
-                  if (factor_obj.is_none()) {
-                    throw std::runtime_error(
-                        "PREMUL_SUM requires a non-None factor");
-                  }
-                  // Try float first (also handle int which Python may use)
-                  if (py::isinstance<py::float_>(factor_obj) ||
-                      py::isinstance<py::int_>(factor_obj)) {
-                    return ReduceOp::make_nccl_premul_sum(
-                        factor_obj.cast<double>());
-                  }
-                  // Try tensor - use try/catch since isinstance may not work
-                  // correctly for unpickled tensors
-                  try {
-                    at::Tensor tensor = factor_obj.cast<at::Tensor>();
-                    return ReduceOp::make_nccl_premul_sum(tensor);
-                  } catch (const py::cast_error&) {
-                    throw std::runtime_error(
-                        "PREMUL_SUM requires a float or Tensor factor, got: " +
-                        std::string(py::str(factor_obj.get_type())));
-                  }
-                }
-                return ReduceOp(static_cast<ReduceOp::RedOpType>(type_value));
-              }));
+      .def_readonly_static(
+          "AVG", &ReduceOp::AVG, "Average reduction operation");
 
   // Bind CommOptions structure
   py::class_<CommOptions>(
@@ -306,46 +82,7 @@ PYBIND11_MODULE(_comms, m) {
       .def_readwrite(
           "hints",
           &CommOptions::hints,
-          "Dictionary of string hints for backend-specific options")
-      // Pickle support for CommOptions - needed for torch.compile
-      .def(
-          py::pickle(
-              [](const CommOptions& opts) {
-                // Serialize store as py::object so Python's pickle handles it
-                py::object store_obj = py::none();
-                if (opts.store) {
-                  // Cast the c10d::Store to a Python object
-                  store_obj = py::cast(opts.store);
-                }
-                return py::make_tuple(
-                    opts.abort_process_on_timeout_or_error,
-                    opts.timeout,
-                    opts.high_priority_stream,
-                    opts.hints,
-                    store_obj);
-              },
-              [](py::tuple t) {
-                if (t.size() != 5) {
-                  throw std::runtime_error(
-                      "Invalid CommOptions pickle state: expected 5 elements");
-                }
-
-                CommOptions opts;
-                opts.abort_process_on_timeout_or_error = t[0].cast<bool>();
-                opts.timeout = t[1].cast<std::chrono::milliseconds>();
-                opts.high_priority_stream = t[2].cast<bool>();
-                opts.hints =
-                    t[3].cast<std::unordered_map<std::string, std::string>>();
-
-                // Restore store from Python object
-                py::object store_obj = t[4];
-                if (!store_obj.is_none()) {
-                  opts.store =
-                      store_obj.cast<c10::intrusive_ptr<c10d::Store>>();
-                }
-
-                return opts;
-              }));
+          "Dictionary of string hints for backend-specific options");
 
   py::class_<BatchP2POptions>(
       m, "BatchP2POptions", "Options for batched P2P operations.")
@@ -629,66 +366,7 @@ Example:
 
       )",
           py::arg("rank"),
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "get_comm_backend",
-          &TorchCommWindow::getCommBackend,
-          "Get the parent TorchCommBackend",
-          py::call_guard<py::gil_scoped_release>())
-      // Pickle support for TorchCommWindow - needed for torch.compile
-      // Use __reduce__ to maintain Python object identity
-      .def(
-          "__reduce__",
-          [](py::object self) {
-            auto window_ptr = self.cast<std::shared_ptr<TorchCommWindow>>();
-
-            // Get window ID (assigned during construction)
-            uint64_t window_id = window_ptr->getId();
-
-            // Store Python object in registry for identity preservation
-            auto& reg = PyRegistries::get();
-            {
-              std::lock_guard<std::mutex> lock(reg.mutex);
-              reg.window_registry[window_id] = py::weakref(self);
-            }
-
-            auto backend = window_ptr->getCommBackend();
-            std::string comm_name(backend->getCommName());
-
-            // Get buffer info for re-registration on unpickle
-            auto buf_shape = window_ptr->getBufShape();
-            auto buf_dtype = window_ptr->getBufDtype();
-            auto buf_device = window_ptr->getBufDevice();
-
-            // Return (unpickle_fn, args) - use Python wrapper for pickleability
-            py::module_ pickle_support =
-                py::module_::import("torchcomms._pickle_support");
-            return py::make_tuple(
-                pickle_support.attr("_unpickle_window"),
-                py::make_tuple(
-                    window_id,
-                    comm_name,
-                    buf_shape,
-                    static_cast<int>(buf_dtype),
-                    buf_device.str()));
-          })
-      // Clean up Python registry on deletion
-      .def("__del__", [](py::object self) {
-        if (!Py_IsInitialized() || _Py_IsFinalizing()) {
-          return;
-        }
-
-        try {
-          auto window_ptr = self.cast<std::shared_ptr<TorchCommWindow>>();
-          uint64_t window_id = window_ptr->getId();
-
-          auto& reg = PyRegistries::get();
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          reg.window_registry.erase(window_id);
-        } catch (...) {
-          // Ignore exceptions in destructor
-        }
-      });
+          py::call_guard<py::gil_scoped_release>());
 
   // Bind BatchSendRecv::P2POp class
   py::class_<BatchSendRecv::P2POp>(
@@ -709,26 +387,7 @@ Args:
           py::call_guard<py::gil_scoped_release>())
       .def_readwrite("type", &BatchSendRecv::P2POp::type, "Operation type")
       .def_readwrite("tensor", &BatchSendRecv::P2POp::tensor, "Tensor")
-      .def_readwrite("peer", &BatchSendRecv::P2POp::peer, "Peer rank")
-      // Pickle support for P2POp
-      .def(
-          py::pickle(
-              [](const BatchSendRecv::P2POp& op) {
-                // __getstate__: return tuple of (type, tensor, peer)
-                return py::make_tuple(
-                    static_cast<int>(op.type), op.tensor, op.peer);
-              },
-              [](py::tuple t) {
-                // __setstate__: reconstruct from tuple
-                if (t.size() != 3) {
-                  throw std::runtime_error("Invalid P2POp pickle state");
-                }
-                auto type =
-                    static_cast<BatchSendRecv::P2POp::OpType>(t[0].cast<int>());
-                auto tensor = t[1].cast<at::Tensor>();
-                auto peer = t[2].cast<int>();
-                return BatchSendRecv::P2POp(type, tensor, peer);
-              }));
+      .def_readwrite("peer", &BatchSendRecv::P2POp::peer, "Peer rank");
 
   // Bind P2POp::OpType enum
   py::enum_<BatchSendRecv::P2POp::OpType>(
@@ -777,55 +436,18 @@ Args:
           "issue",
           [](BatchSendRecv& self,
              bool async_op,
-             std::optional<std::unordered_map<std::string, std::string>> hints,
-             std::optional<std::chrono::milliseconds> timeout) {
-            BatchP2POptions opts;
-            if (hints) {
-              opts.hints = *hints;
-            }
-            if (timeout) {
-              opts.timeout = *timeout;
-            }
-            return self.issue(async_op, opts);
+             const BatchP2POptions& options) {
+            return self.issue(async_op, options);
           },
           "Issues the batched operations",
           py::arg("async_op"),
-          py::arg("hints") = std::nullopt,
-          py::arg("timeout") = std::nullopt,
+          py::arg("options") = BatchP2POptions(),
           py::call_guard<py::gil_scoped_release>())
       .def_readwrite(
           "ops",
           &BatchSendRecv::ops,
           "List of P2P operations",
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "get_comm_backend",
-          [](BatchSendRecv& self) { return self.getCommBackend(); },
-          "Get the parent TorchCommBackend")
-      // Pickle support for BatchSendRecv - needed for torch.compile
-      // Use __reduce__ to maintain Python object identity
-      .def("__reduce__", [](py::object self) {
-        auto& batch = self.cast<BatchSendRecv&>();
-
-        // Get batch ID and parent comm name
-        uint64_t batch_id = batch.getId();
-
-        // Store Python object in registry for identity preservation
-        auto& reg = PyRegistries::get();
-        {
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          reg.batch_registry[batch_id] = py::weakref(self);
-        }
-
-        std::string comm_name(batch.getCommBackend()->getCommName());
-
-        // Return (unpickle_fn, args) - ops are assumed empty on unpickle
-        py::module_ pickle_support =
-            py::module_::import("torchcomms._pickle_support");
-        return py::make_tuple(
-            pickle_support.attr("_unpickle_batch_sendrecv"),
-            py::make_tuple(batch_id, comm_name));
-      });
+          py::call_guard<py::gil_scoped_release>());
 
   m.def(
       "new_comm",
@@ -836,12 +458,10 @@ Args:
          std::optional<std::chrono::milliseconds> timeout,
          std::optional<bool> high_priority_stream,
          std::optional<c10::intrusive_ptr<c10d::Store>> store,
-         std::optional<std::unordered_map<std::string, std::string>> hints)
-          -> py::object {
+         std::optional<std::unordered_map<std::string, std::string>> hints) {
         py::module_ torchcomms = py::module_::import("torchcomms");
         torchcomms.attr("_load_backend")(backend);
 
-        std::shared_ptr<TorchComm> comm;
         {
           py::gil_scoped_release release{};
 
@@ -863,18 +483,8 @@ Args:
             opts.hints = *hints;
           }
 
-          comm = new_comm(backend, device, name, opts);
+          return new_comm(backend, device, name, opts);
         }
-
-        // Register the new TorchComm in the Python registry for pickle support
-        py::object comm_obj = py::cast(comm);
-        {
-          auto& reg = PyRegistries::get();
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          reg.comm_registry[name] = py::weakref(comm_obj);
-        }
-
-        return comm_obj;
       },
       R"(
 Create a new communicator.
@@ -914,14 +524,7 @@ Args:
   py::class_<TorchCommBackend, std::shared_ptr<TorchCommBackend>>(
       m,
       "TorchCommBackend",
-      "Abstract class that all torchcomms Backends implement.")
-      .def(
-          "get_name",
-          [](TorchCommBackend& self) {
-            return std::string(self.getCommName());
-          },
-          "Get the name of the communicator",
-          py::call_guard<py::gil_scoped_release>());
+      "Abstract class that all torchcomms Backends implement.");
 
   // Bind TorchComm class
   py::class_<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
@@ -1624,30 +1227,15 @@ Returns:
       // window operations
       .def(
           "new_window",
-          [](TorchComm& self) -> py::object {
-            std::shared_ptr<TorchCommWindow> window;
-            {
-              py::gil_scoped_release release{};
-              window = self.new_window();
-            }
-
-            // Register the window in the Python registry for pickle support
-            py::object window_obj = py::cast(window);
-            {
-              auto& reg = PyRegistries::get();
-              std::lock_guard<std::mutex> lock(reg.mutex);
-              reg.window_registry[window->getId()] = py::weakref(window_obj);
-            }
-
-            return window_obj;
-          },
+          [](TorchComm& self) { return self.new_window(); },
           R"(
 Create a new window object for RMA operations.
 
 Returns:
     TorchCommWindow: An unregistered window object. Call window.tensor_register(tensor) to register a tensor buffer.
 
-      )")
+      )",
+          py::call_guard<py::gil_scoped_release>())
 
       // Communicator Management
       .def(
@@ -1690,20 +1278,9 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       // Batch Operations
       .def(
           "batch_op_create",
-          [](TorchComm& self) -> py::object {
-            BatchSendRecv batch = self.batch_op_create();
-
-            // Register the batch in the Python registry for pickle support
-            py::object batch_obj = py::cast(batch);
-            {
-              auto& reg = PyRegistries::get();
-              std::lock_guard<std::mutex> lock(reg.mutex);
-              reg.batch_registry[batch.getId()] = py::weakref(batch_obj);
-            }
-
-            return batch_obj;
-          },
-          "Create a batch operation object for batched P2P operations.")
+          &TorchComm::batch_op_create,
+          "Create a batch operation object for batched P2P operations.",
+          py::call_guard<py::gil_scoped_release>())
       // NOTE: This property is kept temporarily to avoid breaking upstream
       // callers. The allocator is actually a global static per backend
       // (accessed via get_mem_allocator(backend)), not tied to the comm
@@ -1711,51 +1288,7 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       .def_property_readonly(
           "mem_allocator",
           [](TorchComm& self) { return get_mem_allocator(self.getBackend()); },
-          "Get the communication-specific memory allocator")
-      // Pickle support for TorchComm - needed for torch.compile to serialize
-      // the comm as a graph input
-      // Use __reduce__ to maintain Python object identity
-      .def(
-          "__reduce__",
-          [](py::object self) {
-            auto& comm = self.cast<TorchComm&>();
-            std::string name(comm.getCommName());
-
-            // Store Python object in registry for identity preservation
-            auto& reg = PyRegistries::get();
-            {
-              std::lock_guard<std::mutex> lock(reg.mutex);
-              reg.comm_registry[name] = py::weakref(self);
-            }
-
-            // Return (unpickle_fn, args) - use Python wrapper for pickleability
-            py::module_ pickle_support =
-                py::module_::import("torchcomms._pickle_support");
-            return py::make_tuple(
-                pickle_support.attr("_unpickle_comm"),
-                py::make_tuple(
-                    comm.getBackend(),
-                    comm.getDevice(),
-                    std::string(comm.getCommName()),
-                    comm.getOptions()));
-          })
-      // Clean up Python registry on deletion
-      .def("__del__", [](py::object self) {
-        if (!Py_IsInitialized() || _Py_IsFinalizing()) {
-          return;
-        }
-
-        try {
-          auto comm = self.cast<std::shared_ptr<TorchComm>>();
-          std::string name(comm->getCommName());
-
-          auto& reg = PyRegistries::get();
-          std::lock_guard<std::mutex> lock(reg.mutex);
-          reg.comm_registry.erase(name);
-        } catch (...) {
-          // Ignore exceptions in destructor
-        }
-      });
+          "Get the communication-specific memory allocator");
 
   intrusive_ptr_class_<BackendWrapper, c10d::Backend>(m, "_BackendWrapper")
       .def(
