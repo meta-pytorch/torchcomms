@@ -31,36 +31,6 @@ class AllGatherPTest : public ::testing::Test {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
   }
 
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> expectedVals(count, val);
-    CUDACHECK_TEST(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
-  template <typename T>
-  int checkChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> observedVals(count, -1);
-    CUDACHECK_TEST(cudaMemcpy(
-        observedVals.data(), buf, count * sizeof(T), cudaMemcpyDefault));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print failing location
-    for (auto i = 0; i < count; ++i) {
-      if (observedVals[i] != val) {
-        if (errs < 10) {
-          printf(
-              "[%d] observedVals[%d] = %d, expectedVal = %d\n",
-              globalRank,
-              i,
-              observedVals[i],
-              val);
-        }
-        errs++;
-      }
-    }
-    return errs;
-  }
-
   void* prepareBuf(size_t bufSize, MemAllocType memType) {
     void* buf = nullptr;
     if (memType == kMemCudaMalloc) {

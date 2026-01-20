@@ -89,7 +89,7 @@ __global__ void p2pBidirectional(
   auto group = getThreadGroup(useBlockGroups);
 
   // Partition groups into 2: half for send, half for recv
-  auto [partition_id, subgroup] = group.partition(2);
+  auto [partition_id, subgroup] = group.partition_interleaved(2);
   if (partition_id == 0) {
     p2p.send(subgroup, sendBuff, nBytes);
   } else {
