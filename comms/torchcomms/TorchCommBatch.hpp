@@ -13,11 +13,10 @@ namespace comms {
 // Forward declaration
 class TorchComm;
 class TorchWork;
-class TorchCommBackend;
 
 class BatchSendRecv {
  public:
-  explicit BatchSendRecv(uint64_t id, TorchComm* parent);
+  explicit BatchSendRecv(TorchComm* parent);
   ~BatchSendRecv() = default;
   BatchSendRecv(const BatchSendRecv&) = default;
   BatchSendRecv& operator=(const BatchSendRecv&) = default;
@@ -29,9 +28,6 @@ class BatchSendRecv {
   c10::intrusive_ptr<TorchWork> issue(
       bool async_op,
       const BatchP2POptions& options = {});
-  // Get the name of the parent communicator (for pickle support)
-  std::shared_ptr<TorchCommBackend> getCommBackend() const;
-  uint64_t getId() const;
 
   class P2POp {
    public:
@@ -52,7 +48,6 @@ class BatchSendRecv {
 
  private:
   TorchComm* parent_;
-  uint64_t id_;
 };
 
 } // namespace comms
