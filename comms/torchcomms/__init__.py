@@ -31,9 +31,6 @@ def _load_libtorchcomms() -> None:
 
 _load_libtorchcomms()
 from torchcomms._comms import *  # noqa: F401, F403
-
-# Import pickle support for object identity preservation
-import torchcomms._pickle_support  # noqa: F401
 import torchcomms.objcol as objcol  # noqa: F401, F403
 
 if os.environ.get("TORCHCOMMS_PATCH_FOR_COMPILE", "").lower() in ("1", "true"):

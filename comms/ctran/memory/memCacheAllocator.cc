@@ -27,7 +27,8 @@ std::shared_ptr<memCacheAllocator> memCacheAllocator::getInstance() {
   }
   auto obj = memCacheAllocatorSingleton.try_get();
   if (!obj) {
-    throw std::runtime_error("Failed to get memCacheAllocator singleton");
+    throw ctran::utils::Exception(
+        "Failed to get memCacheAllocator singleton", commInternalError);
   }
   obj->init();
   return obj;

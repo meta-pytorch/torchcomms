@@ -809,18 +809,6 @@ ncclResult_t pncclPutSignal(
     size_t targetDisp,
     ncclWindow_t win,
     cudaStream_t stream);
-// TODO: ncclPutSignal_v2 will be removed once the PG is deprecated.
-__attribute__((deprecated("Use ncclPutSignal instead")))
-ncclResult_t ncclPutSignal_v2(
-    const void* originBuff,
-    size_t targetDisp,
-    size_t count,
-    ncclDataType_t datatype,
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    ncclWindow_t win,
-    cudaStream_t stream);
 
 /*
  * One-side put operation from a local buffer to a remote peer's pre-allocated
@@ -857,14 +845,6 @@ ncclResult_t pncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
 /*
  * Wait for a signal given the local signal displacement, the signal value, and the comparison op.
  */
-// TODO: ncclWaitSignal_v2 will be removed once the PG is deprecated.
-__attribute__((deprecated("Use ncclWaitSignal instead")))
-ncclResult_t ncclWaitSignal_v2(
-    size_t signalDisp,
-    uint64_t cmpVal,
-    ncclCmpOp_t cmpOp,
-    ncclWindow_t win,
-    cudaStream_t stream);
 
 ncclResult_t ncclSignal(
     size_t signalDisp,
