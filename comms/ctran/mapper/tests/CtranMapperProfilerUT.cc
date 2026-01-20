@@ -5,7 +5,7 @@
 #include <filesystem>
 
 #include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -300,8 +300,8 @@ TEST_F(CtranMapperProfilerTest, regSnapshot) {
   }
   CUDACHECK_TEST(cudaFree(repeatedBuf));
 
-  auto regCache = CtranMapperRegCache::getInstance();
-  CHECK_VALID_REGCACHE(regCache);
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
 
   regCache->profiler.rlock()->reportSnapshot();
 
