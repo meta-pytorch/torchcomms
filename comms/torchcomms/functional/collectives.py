@@ -143,28 +143,33 @@ if lib is not None:
         )
 
     # Collective Registrations
+    from torch._library.opaque_object import MemberType, register_opaque_type
+
     from torchcomms.functional.async_tensor import _maybe_wrap_tensor
-    from torchcomms.functional.dynamo import register_constant_method
     from torchcomms.functional.param_parsing import ParamKind, ParamSpec
 
-    # Register constant methods for TorchComm (get_rank, get_size, get_name, get_device)
-    register_constant_method(TorchComm, "get_rank", lambda comm: comm.get_rank())
-    register_constant_method(TorchComm, "get_size", lambda comm: comm.get_size())
-    register_constant_method(TorchComm, "get_name", lambda comm: comm.get_name())
-    register_constant_method(TorchComm, "get_device", lambda comm: comm.get_device())
+    # Register TorchComm as opaque type with constant methods
+    register_opaque_type(
+        TorchComm,
+        typ="reference",
+        members={
+            "get_rank": MemberType.USE_REAL,
+            "get_size": MemberType.USE_REAL,
+            "get_name": MemberType.USE_REAL,
+            "get_device": MemberType.USE_REAL,
+        },
+    )
 
-    # Register constant methods for TorchCommWindow
-    register_constant_method(
-        TorchCommWindow, "get_size", lambda window: window.get_size()
-    )
-    register_constant_method(
-        TorchCommWindow, "get_buf_dtype", lambda window: window.get_buf_dtype()
-    )
-    register_constant_method(
-        TorchCommWindow, "get_buf_shape", lambda window: window.get_buf_shape()
-    )
-    register_constant_method(
-        TorchCommWindow, "get_buf_device", lambda window: window.get_buf_device()
+    # Register TorchCommWindow as opaque type with constant methods
+    register_opaque_type(
+        TorchCommWindow,
+        typ="reference",
+        members={
+            "get_size": MemberType.USE_REAL,
+            "get_buf_dtype": MemberType.USE_REAL,
+            "get_buf_shape": MemberType.USE_REAL,
+            "get_buf_device": MemberType.USE_REAL,
+        },
     )
 
     register_collective(

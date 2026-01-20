@@ -209,16 +209,7 @@
     }                                                             \
   } while (0)
 
-#define FB_SYSCHECKTHROW(cmd)                                                  \
-  do {                                                                         \
-    int err = cmd;                                                             \
-    if (err != 0) {                                                            \
-      auto errstr = folly::errnoStr(err);                                      \
-      CLOGF(ERR, "{}:{} -> {} ({})", __FILE__, __LINE__, err, errstr.c_str()); \
-      throw std::runtime_error(std::string("System error: ") + errstr);        \
-    }                                                                          \
-  } while (0)
-#define FB_SYSCHECKTHROW_EX(cmd, rank, commHash, desc)                         \
+#define FB_SYSCHECKTHROW_EX_DIRECT(cmd, rank, commHash, desc)                  \
   do {                                                                         \
     int err = cmd;                                                             \
     if (err != 0) {                                                            \
@@ -232,6 +223,27 @@
           desc);                                                               \
     }                                                                          \
   } while (0)
+
+#define FB_SYSCHECKTHROW_EX_LOGDATA(cmd, logData) \
+  FB_SYSCHECKTHROW_EX_DIRECT(                     \
+      cmd, (logData).rank, (logData).commHash, (logData).commDesc)
+
+// Selector macro, used with FB_SYSCHECKTHROW_EX to delegate
+// based on the number of arguments.
+// The dummy placeholders ensure correct selection for 2, 3, and 4 arguments.
+#define GET_FB_SYSCHECKTHROW_EX_MACRO(_1, _2, _3, _4, NAME, ...) NAME
+
+// Delegates to either FB_SYSCHECKTHROW_EX_DIRECT or
+// FB_SYSCHECKTHROW_EX_LOGDATA based on the number of arguments.
+// - 4 args (cmd, rank, commHash, desc): uses FB_SYSCHECKTHROW_EX_DIRECT
+// - 2 args (cmd, logData): uses FB_SYSCHECKTHROW_EX_LOGDATA
+#define FB_SYSCHECKTHROW_EX(...)   \
+  GET_FB_SYSCHECKTHROW_EX_MACRO(   \
+      __VA_ARGS__,                 \
+      FB_SYSCHECKTHROW_EX_DIRECT,  \
+      UNUSED_PLACEHOLDER_3_ARGS,   \
+      FB_SYSCHECKTHROW_EX_LOGDATA, \
+      UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
 
 #define FB_SYSCHECKRETURN(cmd, retval)                                         \
   do {                                                                         \
@@ -340,6 +352,10 @@
     }                             \
   } while (0)
 
+// Note: when writing Ctran code, prefer the FOLLY_EXPECTED_CHECKTHROW_EX or
+// FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM macros instead of this one.
+//
+// TODO(T251293921): Move this definition out of the `comms/ctran` directory.
 #define FOLLY_EXPECTED_CHECKTHROW(RES)                                  \
   do {                                                                  \
     if (RES.hasError()) {                                               \
@@ -355,7 +371,7 @@
     }                                                                   \
   } while (0)
 
-#define FOLLY_EXPECTED_CHECKTHROW_EX(RES, rank, commHash, desc)        \
+#define FOLLY_EXPECTED_CHECKTHROW_EX(RES, commLogData)                 \
   do {                                                                 \
     if (RES.hasError()) {                                              \
       CLOGF(                                                           \
@@ -368,15 +384,28 @@
       throw ctran::utils::Exception(                                   \
           std::string("COMM internal failure: ") + RES.error().errStr, \
           commInternalError,                                           \
-          rank,                                                        \
-          commHash,                                                    \
-          desc);                                                       \
+          (commLogData).rank,                                          \
+          (commLogData).commHash,                                      \
+          (commLogData).commDesc);                                     \
     }                                                                  \
   } while (0)
 
 // For singleton/global contexts where rank/commHash/commDesc are not available
-#define FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(RES) \
-  FOLLY_EXPECTED_CHECKTHROW_EX(RES, std::nullopt, std::nullopt, std::nullopt)
+#define FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM(RES)                       \
+  do {                                                                 \
+    if (RES.hasError()) {                                              \
+      CLOGF(                                                           \
+          ERR,                                                         \
+          "{}:{} -> {} ({})",                                          \
+          __FILE__,                                                    \
+          __LINE__,                                                    \
+          RES.error().errNum,                                          \
+          RES.error().errStr);                                         \
+      throw ctran::utils::Exception(                                   \
+          std::string("COMM internal failure: ") + RES.error().errStr, \
+          commInternalError);                                          \
+    }                                                                  \
+  } while (0)
 
 #define FOLLY_EXPECTED_CHECKGOTO(RES, label, info) \
   do {                                             \
@@ -509,15 +538,75 @@
     }                                             \
   } while (0);
 
+// Note: when writing code within comms/ctran, prefer FB_CHECKTHROW_EX
+// and FB_CHECKTHROW_EX_NOCOMM to FB_CHECKTHROW.
+//
+// TODO(T250693645): Move this macro definition outside of ctran directory.
 #define FB_CHECKTHROW(statement, ...)                                          \
   do {                                                                         \
     if (!(statement)) {                                                        \
-      CLOGF(                                                                   \
-          ERR, "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__)); \
+      auto errorMsg =                                                          \
+          fmt::format("Check failed: {} - {}", #statement, __VA_ARGS__);       \
+      CLOGF(ERR, errorMsg);                                                    \
       throw std::runtime_error(                                                \
           fmt::format(                                                         \
               "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__))); \
     }                                                                          \
+  } while (0)
+
+#define FB_CHECKTHROW_EX_DIRECT(statement, rank, commHash, commDesc, msg) \
+  do {                                                                    \
+    if (!(statement)) {                                                   \
+      CLOGF(ERR, "Check failed: {} - {}", #statement, msg);               \
+      throw ctran::utils::Exception(                                      \
+          fmt::format("Check failed: {} - {}", #statement, msg),          \
+          commInternalError,                                              \
+          rank,                                                           \
+          commHash,                                                       \
+          commDesc);                                                      \
+    }                                                                     \
+  } while (0)
+
+#define FB_CHECKTHROW_EX_LOGDATA(statement, commLogData, msg)    \
+  do {                                                           \
+    if (!(statement)) {                                          \
+      CLOGF(ERR, "Check failed: {} - {}", #statement, msg);      \
+      throw ctran::utils::Exception(                             \
+          fmt::format("Check failed: {} - {}", #statement, msg), \
+          commInternalError,                                     \
+          (commLogData).rank,                                    \
+          (commLogData).commHash,                                \
+          (commLogData).commDesc);                               \
+    }                                                            \
+  } while (0)
+
+// Selector macro, used with FB_CHECKTHROW_EX to delegate
+// based on the number of arguments.
+// The dummy placeholders ensure correct selection for 3 and 5 arguments.
+#define GET_FB_CHECKTHROW_EX_MACRO(_1, _2, _3, _4, _5, NAME, ...) NAME
+
+// Delegates to either FB_CHECKTHROW_EX_DIRECT or
+// FB_CHECKTHROW_EX_LOGDATA based on the number of arguments.
+// - 5 args (statement, rank, commHash, commDesc, msg): uses
+// FB_CHECKTHROW_EX_DIRECT
+// - 3 args (statement, commLogData, msg): uses FB_CHECKTHROW_EX_LOGDATA
+#define FB_CHECKTHROW_EX(...)    \
+  GET_FB_CHECKTHROW_EX_MACRO(    \
+      __VA_ARGS__,               \
+      FB_CHECKTHROW_EX_DIRECT,   \
+      UNUSED_PLACEHOLDER_3_ARGS, \
+      FB_CHECKTHROW_EX_LOGDATA,  \
+      UNUSED_PLACEHOLDER_1_ARG)(__VA_ARGS__)
+
+// For contexts where rank/commHash/commDesc are not available.
+#define FB_CHECKTHROW_EX_NOCOMM(statement, ...)                          \
+  do {                                                                   \
+    if (!(statement)) {                                                  \
+      auto errorMsg =                                                    \
+          fmt::format("Check failed: {} - {}", #statement, __VA_ARGS__); \
+      CLOGF(ERR, errorMsg);                                              \
+      throw ctran::utils::Exception(errorMsg, commInternalError);        \
+    }                                                                    \
   } while (0)
 
 #define FB_COMMWAIT(call, cond, abortFlagPtr)             \

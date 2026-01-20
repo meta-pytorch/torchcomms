@@ -74,6 +74,5 @@ TEST_F(CtranMapperTcpdmTest, OverrideBackendThroughHints) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new ctran::CtranEnvironmentBase);
   return RUN_ALL_TESTS();
 }
