@@ -1461,5 +1461,5 @@ class RCCLRegistration {
   }
 };
 
-static RCCLRegistration registration{};
+static const RCCLRegistration registration{};
 } // namespace
