@@ -33,13 +33,8 @@ class AllReduceSparseBlockTest : public ::testing::Test {
     CUDACHECK_TEST(cudaStreamDestroy(this->stream));
   }
 
-  template <typename T>
-  void assignChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> expectedVals(count, val);
-    CUDACHECKIGNORE(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
+  // TODO [test-cleanup]: port to common checkChunkValue in
+  // testinfra/TestUtils.h
   template <typename T>
   int checkChunkValue(T* buf, size_t count, std::vector<T>& expectedVals) {
     std::vector<T> observedVals(count, -1);

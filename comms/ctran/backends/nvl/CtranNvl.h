@@ -74,16 +74,16 @@ class CtranNvl {
   // Output arguments:
   //   - msg: the reference to the control message to be sent to remote rank.
   //          Contents filled at return.
-  commResult_t exportMem(const void* buf, void* nvlRegElem, ControlMsg& msg);
+  static commResult_t
+  exportMem(const void* buf, void* nvlRegElem, ControlMsg& msg);
 
   // Release the exported memory on remote rank.
   // Input arguments:
   //   - nvlRegElem: local registration
-  //   - rank: the remote rank
   // Output arguments:
   //   - msg: the reference to the control message to be sent to remote rank.
   //          Contents filled at return.
-  commResult_t remReleaseMem(void* nvlRegElem, int rank, ControlMsg& msg);
+  static commResult_t remReleaseMem(void* nvlRegElem, ControlMsg& msg);
 
   // Callback (CB) function to handle incoming NVL_RELEASE_MEM CB_CTRL msg
   // Input arguments:

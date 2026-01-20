@@ -20,7 +20,7 @@ namespace comms::pipes {
  *
  * IMPLEMENTATION:
  * ===============
- * - write(): Implemented using copy_chunk_vectorized with zero offsets
+ * - write(): Implemented using memcpy_vectorized with zero offsets
  * - send(): Not implemented (pure virtual from base)
  * - recv(): Not implemented (pure virtual from base)
  *
@@ -31,7 +31,7 @@ namespace comms::pipes {
  *
  * Example:
  *   SelfTransportDevice transport;
- *   transport.write(dst_d, src_d, nbytes);
+ *   transport.write(group, dst_d, src_d, nbytes);
  */
 class P2pSelfTransportDevice {
  public:
@@ -66,7 +66,7 @@ class P2pSelfTransportDevice {
    * write - Direct local memory copy using vectorized operations
    *
    * Performs a high-performance vectorized copy from src_d to dst_d using
-   * copy_chunk_vectorized. The work is distributed across ALL thread groups
+   * memcpy_vectorized. The work is distributed across ALL thread groups
    * using for_each_item_contiguous, so each group processes only its portion
    * of the data.
    *
@@ -119,12 +119,10 @@ class P2pSelfTransportDevice {
           : nbytes - chunkOffset;
 
       if (chunkBytes > 0) {
-        copy_chunk_vectorized<uint4>(
+        memcpy_vectorized(
             dst_d + chunkOffset, // dst_base
             src_d + chunkOffset, // src_base
             chunkBytes, // chunk_bytes
-            0, // dst_offset
-            0, // src_offset
             group);
       }
     });

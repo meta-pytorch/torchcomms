@@ -140,7 +140,7 @@ void ResourceImpl::initBufMd(
 
   // Sanity check we don't miss any
   const auto numBufNames = static_cast<size_t>(ResourceBufName::kNumBufsNames);
-  FB_CHECKTHROW(
+  FB_CHECKTHROW_EX_NOCOMM(
       map.size() == numBufNames,
       "map.size() {} != {}",
       map.size(),
