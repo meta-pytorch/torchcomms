@@ -42,6 +42,10 @@ PYBIND11_MODULE(_comms, m) {
           "Create default ReduceOp",
           py::arg("opType"),
           py::call_guard<py::gil_scoped_release>())
+      .def("__copy__", [](const ReduceOp& self) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const ReduceOp& self, py::dict) { return self; })
       .def_property_readonly(
           "type", &ReduceOp::type, "Get the type of the operation")
       .def_static(
@@ -159,6 +163,14 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
   // Bind TorchCommWindow class
   py::class_<TorchCommWindow, std::shared_ptr<TorchCommWindow>>(
       m, "TorchCommWindow")
+      .def(
+          "__copy__",
+          [](const std::shared_ptr<TorchCommWindow>& self) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const std::shared_ptr<TorchCommWindow>& self, py::dict) {
+            return self;
+          })
       .def(
           "tensor_register",
           [](TorchCommWindow& self, const at::Tensor& tensor) {
@@ -487,6 +499,12 @@ Args:
 
   // Bind TorchComm class
   py::class_<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
+      .def(
+          "__copy__",
+          [](const std::shared_ptr<TorchComm>& self) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const std::shared_ptr<TorchComm>& self, py::dict) { return self; })
       .def(
           "finalize",
           &TorchComm::finalize,
