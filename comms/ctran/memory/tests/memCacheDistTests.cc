@@ -117,39 +117,6 @@ class NcclxMemDistTestFixture : public NcclxBaseTestFixture {
   }
 
   template <typename T>
-  void assignChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> expectedVals(count, val);
-    CUDACHECK_TEST(cudaMemcpy(
-        buf, expectedVals.data(), count * sizeof(T), cudaMemcpyDefault));
-  }
-
-  template <typename T>
-  int checkChunkValue(T* buf, size_t count, T val) {
-    std::vector<T> observedVals(count, -1);
-    CUDACHECK_TEST(cudaMemcpy(
-        observedVals.data(), buf, count * sizeof(T), cudaMemcpyDefault));
-    int errs = 0;
-    // Use manual print rather than EXPECT_THAT to print failing location
-    for (auto i = 0; i < count; ++i) {
-      if (std::fabs(observedVals[i] - val) > kTol) {
-        if (errs < 10) {
-          printf(
-              "[%d] observedVals[%d/%ld] = %f, expectedVal = %f, at buf %p (offset 0x%lx)\n",
-              globalRank,
-              i,
-              count,
-              (float)observedVals[i],
-              (float)val,
-              buf,
-              sizeof(T) * i);
-        }
-        errs++;
-      }
-    }
-    return errs;
-  }
-
-  template <typename T>
   bool
   checkLocalResults(T* recvBuf, int count, ncclComm_t comm, ncclFunc func) {
     int nRanks = comm->nRanks;

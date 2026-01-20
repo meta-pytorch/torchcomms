@@ -15,8 +15,7 @@ class LocalVirtualConn {
  public:
   LocalVirtualConn(
       std::vector<CtranIbDevice>& devices,
-      const uint64_t commHash,
-      const std::string& commDesc);
+      CommLogData commLogData);
   ~LocalVirtualConn() = default;
 
   commResult_t
@@ -34,8 +33,9 @@ class LocalVirtualConn {
   std::vector<ibverbx::ibv_sge> sgs_;
 
   std::vector<CtranIbDevice> devices_;
-  const uint64_t commHash_;
-  const std::string commDesc_;
+
+  // Diagnostic context for error reporting (communicator-level metadata)
+  CommLogData commLogData_;
 
   // Track completion of outstanding flushes
   std::deque<CtranIbRequest*> outstandingReqs_;
