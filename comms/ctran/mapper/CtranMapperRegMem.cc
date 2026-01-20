@@ -863,7 +863,7 @@ commResult_t CtranMapperRegElem::doRegister(const std::vector<bool>& backends) {
       // the buffer, avoiding any premature deallocation issues.
       FB_COMMCHECK(
           CtranNvl::regMem(buf, len, cudaDev_, &nvlRegElem, ncclManaged_));
-    } catch (const std::bad_alloc& e) {
+    } catch ([[maybe_unused]] const std::bad_alloc& e) {
       CLOGF(
           WARN,
           "CTRAN-MAPPER: NVL backend not enabled. Skip NVL registration for buf {} len {}",
@@ -876,7 +876,7 @@ commResult_t CtranMapperRegElem::doRegister(const std::vector<bool>& backends) {
   if (backends[CommBackend::IB]) {
     try {
       FB_COMMCHECK(CtranIb::regMem(buf, len, cudaDev_, &ibRegElem));
-    } catch (const std::bad_alloc& e) {
+    } catch ([[maybe_unused]] const std::bad_alloc& e) {
       CLOGF(
           WARN,
           "CTRAN-MAPPER: IB backend not enabled. Skip IB registration for buf {} len {}",
