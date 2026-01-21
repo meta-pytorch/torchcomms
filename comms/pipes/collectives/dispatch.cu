@@ -77,7 +77,17 @@ __device__ __forceinline__ void handleSelfCopy(
       input_chunk_sizes_count * sizeof(std::size_t));
 }
 
-__global__ void dispatchKernel(
+/**
+ * Vertical sharding dispatch kernel.
+ *
+ * Uses vertical sharding with round-robin tournament scheduling:
+ * All warps work on one peer at a time, cycling through all peers sequentially.
+ * This maximizes SM utilization per operation but processes peers sequentially.
+ *
+ * Best for: Large messages, imbalanced workloads where full SM power per
+ *           operation is beneficial.
+ */
+__global__ void dispatchKernelVertical(
     DeviceSpan<Transport> transports,
     int my_rank,
     const void* sendbuff_d,
@@ -176,6 +186,112 @@ __global__ void dispatchKernel(
       output_chunk_sizes_ptr + my_rank * input_chunk_sizes_count);
 }
 
+/**
+ * Horizontal sharding dispatch kernel.
+ *
+ * Uses horizontal sharding like alltoallv: partition warps across all peers
+ * first, then partition each peer's warps into send/recv groups for
+ * simultaneous operation. This enables all peer communications to happen
+ * in parallel with smaller thread groups per peer.
+ *
+ * Comparison with vertical sharding:
+ * - Vertical: All warps work on one peer at a time (sequential across peers)
+ * - Horizontal: Warps distributed across all peers (parallel across peers)
+ */
+__global__ void dispatchKernelHorizontal(
+    DeviceSpan<Transport> transports,
+    int my_rank,
+    const void* sendbuff_d,
+    DeviceSpan<void* const> recvbuffs,
+    DeviceSpan<const std::size_t> input_chunk_sizes,
+    const std::size_t* input_chunk_indices_d,
+    DeviceSpan<const std::size_t> input_chunk_indices_count_per_rank,
+    DeviceSpan<std::size_t> output_chunk_sizes_per_rank) {
+  auto group = make_warp_group();
+
+  // Extract raw pointers to avoid aliasing issues (see DeviceSpan.cuh)
+  Transport* const transports_ptr = transports.data();
+  void* const* const recvbuffs_ptr = recvbuffs.data();
+  const std::size_t* const input_chunk_sizes_ptr = input_chunk_sizes.data();
+  const std::size_t* const indices_count_per_rank_ptr =
+      input_chunk_indices_count_per_rank.data();
+  std::size_t* const output_chunk_sizes_ptr =
+      output_chunk_sizes_per_rank.data();
+  const int n_ranks = static_cast<int>(transports.size());
+  const std::size_t input_chunk_sizes_count = input_chunk_sizes.size();
+
+  // HORIZONTAL SHARDING: Partition warps across all peers for parallel
+  // processing.
+  //
+  // Step 1: Partition warps across n_ranks peers
+  // Step 2: For self-rank: handle self-copy
+  // Step 3: For peer ranks: partition into send/recv groups (simultaneous)
+  //
+  // Example with 8 ranks, 32 warps:
+  //   - First partition: 4 warps per rank
+  //   - For peer ranks: 2 warps send, 2 warps recv (simultaneous)
+
+  auto [peer_rank, group_per_rank] = group.partition(n_ranks);
+
+  if (peer_rank == my_rank) {
+    // Self partition: handle self-copy
+    Transport& selfTransport = transports_ptr[my_rank];
+
+    // Compute offset for self by summing counts for ranks 0..my_rank-1
+    std::size_t self_offset = 0;
+    for (int r = 0; r < my_rank; r++) {
+      self_offset += indices_count_per_rank_ptr[r];
+    }
+    std::size_t self_count = indices_count_per_rank_ptr[my_rank];
+    const std::size_t* self_indices = input_chunk_indices_d + self_offset;
+
+    handleSelfCopy(
+        group_per_rank,
+        selfTransport,
+        sendbuff_d,
+        recvbuffs_ptr[my_rank],
+        input_chunk_sizes_ptr,
+        input_chunk_sizes_count,
+        self_indices,
+        self_count,
+        output_chunk_sizes_ptr + my_rank * input_chunk_sizes_count);
+    return;
+  }
+
+  // Peer communication: partition into send/recv groups
+  auto [partition_id, send_recv_group] = group_per_rank.partition(2);
+
+  Transport& peerTransport = transports_ptr[peer_rank];
+
+  if (partition_id == 0) {
+    // Send group
+    // Compute offset for peer by summing counts for ranks 0..peer-1
+    std::size_t send_offset = 0;
+    for (int r = 0; r < peer_rank; r++) {
+      send_offset += indices_count_per_rank_ptr[r];
+    }
+    std::size_t send_count = indices_count_per_rank_ptr[peer_rank];
+    const std::size_t* send_indices = input_chunk_indices_d + send_offset;
+
+    peerTransport.p2p_nvl.send_multiple(
+        send_recv_group,
+        sendbuff_d,
+        DeviceSpan<const std::size_t>(
+            input_chunk_sizes_ptr, input_chunk_sizes_count),
+        DeviceSpan<const std::size_t>(send_indices, send_count));
+  } else {
+    // Recv group
+    void* recv_buffer = recvbuffs_ptr[peer_rank];
+    std::size_t* recv_output_sizes =
+        output_chunk_sizes_ptr + peer_rank * input_chunk_sizes_count;
+
+    peerTransport.p2p_nvl.recv_multiple(
+        send_recv_group,
+        recv_buffer,
+        DeviceSpan<std::size_t>(recv_output_sizes, input_chunk_sizes_count));
+  }
+}
+
 void dispatch(
     // Outputs
     DeviceSpan<void* const> recvbuffs,
@@ -189,16 +305,32 @@ void dispatch(
     DeviceSpan<const std::size_t> input_chunk_indices_count_per_rank,
     cudaStream_t stream,
     int num_blocks,
-    int num_threads) {
-  dispatchKernel<<<num_blocks, num_threads, 0, stream>>>(
-      transports,
-      my_rank,
-      sendbuff_d,
-      recvbuffs,
-      input_chunk_sizes,
-      input_chunk_indices_d,
-      input_chunk_indices_count_per_rank,
-      output_chunk_sizes_per_rank);
+    int num_threads,
+    ShardingMode mode) {
+  switch (mode) {
+    case ShardingMode::VERTICAL:
+      dispatchKernelVertical<<<num_blocks, num_threads, 0, stream>>>(
+          transports,
+          my_rank,
+          sendbuff_d,
+          recvbuffs,
+          input_chunk_sizes,
+          input_chunk_indices_d,
+          input_chunk_indices_count_per_rank,
+          output_chunk_sizes_per_rank);
+      break;
+    case ShardingMode::HORIZONTAL:
+      dispatchKernelHorizontal<<<num_blocks, num_threads, 0, stream>>>(
+          transports,
+          my_rank,
+          sendbuff_d,
+          recvbuffs,
+          input_chunk_sizes,
+          input_chunk_indices_d,
+          input_chunk_indices_count_per_rank,
+          output_chunk_sizes_per_rank);
+      break;
+  }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

@@ -11,6 +11,9 @@
 
 namespace comms::pipes::test {
 
+// Re-export ShardingMode for test code
+using collectives::ShardingMode;
+
 // Wrapper to call dispatch from test code
 // This ensures proper CUDA compilation for types used in the test
 void testDispatch(
@@ -26,6 +29,7 @@ void testDispatch(
     DeviceSpan<const std::size_t> input_chunk_indices_count_per_rank,
     cudaStream_t stream,
     int num_blocks,
-    int num_threads);
+    int num_threads,
+    ShardingMode mode = ShardingMode::HORIZONTAL);
 
 } // namespace comms::pipes::test

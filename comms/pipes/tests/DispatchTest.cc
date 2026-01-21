@@ -16,6 +16,7 @@
 #include "comms/utils/CudaRAII.h"
 
 using namespace meta::comms; // NOLINT(google-build-using-namespace)
+using comms::pipes::test::ShardingMode;
 
 namespace comms::pipes::tests {
 
@@ -28,6 +29,7 @@ struct DispatchTestParams {
   std::string name;
   std::vector<size_t> countsPerRank; // How many chunks go to each rank
   std::vector<size_t> chunkSizes; // Size of each chunk
+  ShardingMode mode; // Sharding mode to test
 };
 
 // Test configuration derived from params
@@ -230,11 +232,16 @@ class DispatchTestFixture : public MpiBaseTestFixture {
   // Run dispatch
   void runDispatch(
       const DispatchTestConfig& config,
-      DispatchDeviceBuffers& buffers) {
+      DispatchDeviceBuffers& buffers,
+      ShardingMode mode) {
     size_t numChunks = config.chunkSizes.size();
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    XLOGF(INFO, "Rank {}: Calling dispatch", globalRank);
+    XLOGF(
+        INFO,
+        "Rank {}: Calling dispatch with {} sharding",
+        globalRank,
+        mode == ShardingMode::HORIZONTAL ? "HORIZONTAL" : "VERTICAL");
 
     test::testDispatch(
         // Outputs
@@ -258,8 +265,9 @@ class DispatchTestFixture : public MpiBaseTestFixture {
                 buffers.chunkIndicesCountPerRankDevice->get()),
             numRanks),
         nullptr, // default stream
-        4, // num_blocks
-        256); // num_threads
+        16, // num_blocks (need enough for horizontal sharding with 8 ranks)
+        256, // num_threads
+        mode);
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
     XLOGF(INFO, "Rank {}: Dispatch completed", globalRank);
@@ -363,7 +371,7 @@ class DispatchTestFixture : public MpiBaseTestFixture {
   }
 
   // Run a complete dispatch test with given config
-  void runDispatchTest(const DispatchTestConfig& config) {
+  void runDispatchTest(const DispatchTestConfig& config, ShardingMode mode) {
     if (numRanks != 8) {
       XLOGF(
           WARNING, "Skipping test: requires exactly 8 ranks, got {}", numRanks);
@@ -395,7 +403,7 @@ class DispatchTestFixture : public MpiBaseTestFixture {
     setupRecvBuffers(buffers);
     setupChunkMetadata(config, buffers);
 
-    runDispatch(config, buffers);
+    runDispatch(config, buffers, mode);
 
     verifyReceivedData(config, buffers);
     verifyOutputChunkSizes(config, buffers);
@@ -412,9 +420,14 @@ class DispatchParamTest
 // The parameterized test
 TEST_P(DispatchParamTest, Run) {
   auto params = GetParam();
-  XLOGF(INFO, "Rank {}: Starting test '{}'", globalRank, params.name);
+  XLOGF(
+      INFO,
+      "Rank {}: Starting test '{}' with {} sharding",
+      globalRank,
+      params.name,
+      params.mode == ShardingMode::HORIZONTAL ? "HORIZONTAL" : "VERTICAL");
   auto config = makeConfigFromParams(params);
-  runDispatchTest(config);
+  runDispatchTest(config, params.mode);
 }
 
 // Custom naming function for better test output
@@ -423,54 +436,118 @@ std::string DispatchTestName(
   return info.param.name;
 }
 
-// Balanced test cases: uniform counts, uniform/mixed sizes
+// Balanced test cases with HORIZONTAL sharding
 INSTANTIATE_TEST_SUITE_P(
-    Balanced,
+    BalancedHorizontal,
     DispatchParamTest,
     ::testing::Values(
         // Each rank sends 1 small chunk (16KB) to each peer
         DispatchTestParams{
-            "Uniform_1x16K",
+            "Uniform_1x16K_H",
             {1, 1, 1, 1, 1, 1, 1, 1},
-            uniformSizes(8, kSmallChunkSize)},
+            uniformSizes(8, kSmallChunkSize),
+            ShardingMode::HORIZONTAL},
         // Each rank sends 2 small chunks (16KB each) to each peer
         DispatchTestParams{
-            "Uniform_2x16K",
+            "Uniform_2x16K_H",
             {2, 2, 2, 2, 2, 2, 2, 2},
-            uniformSizes(16, kSmallChunkSize)},
+            uniformSizes(16, kSmallChunkSize),
+            ShardingMode::HORIZONTAL},
         // Each rank sends 2 large chunks (1MB each) to each peer
         DispatchTestParams{
-            "Uniform_2x1M",
+            "Uniform_2x1M_H",
             {2, 2, 2, 2, 2, 2, 2, 2},
-            uniformSizes(16, kLargeChunkSize)},
+            uniformSizes(16, kLargeChunkSize),
+            ShardingMode::HORIZONTAL},
         // Each rank sends 2 chunks with alternating sizes (16KB, 1MB) to each
         // peer
         DispatchTestParams{
-            "Mixed_2xAlt",
+            "Mixed_2xAlt_H",
             {2, 2, 2, 2, 2, 2, 2, 2},
-            alternatingSizes(16, kSmallChunkSize, kLargeChunkSize)}),
+            alternatingSizes(16, kSmallChunkSize, kLargeChunkSize),
+            ShardingMode::HORIZONTAL}),
     DispatchTestName);
 
-// Imbalanced test cases: variable counts and/or variable sizes
+// Balanced test cases with VERTICAL sharding
 INSTANTIATE_TEST_SUITE_P(
-    Imbalanced,
+    BalancedVertical,
+    DispatchParamTest,
+    ::testing::Values(
+        // Each rank sends 1 small chunk (16KB) to each peer
+        DispatchTestParams{
+            "Uniform_1x16K_V",
+            {1, 1, 1, 1, 1, 1, 1, 1},
+            uniformSizes(8, kSmallChunkSize),
+            ShardingMode::VERTICAL},
+        // Each rank sends 2 small chunks (16KB each) to each peer
+        DispatchTestParams{
+            "Uniform_2x16K_V",
+            {2, 2, 2, 2, 2, 2, 2, 2},
+            uniformSizes(16, kSmallChunkSize),
+            ShardingMode::VERTICAL},
+        // Each rank sends 2 large chunks (1MB each) to each peer
+        DispatchTestParams{
+            "Uniform_2x1M_V",
+            {2, 2, 2, 2, 2, 2, 2, 2},
+            uniformSizes(16, kLargeChunkSize),
+            ShardingMode::VERTICAL},
+        // Each rank sends 2 chunks with alternating sizes (16KB, 1MB) to each
+        // peer
+        DispatchTestParams{
+            "Mixed_2xAlt_V",
+            {2, 2, 2, 2, 2, 2, 2, 2},
+            alternatingSizes(16, kSmallChunkSize, kLargeChunkSize),
+            ShardingMode::VERTICAL}),
+    DispatchTestName);
+
+// Imbalanced test cases with HORIZONTAL sharding
+INSTANTIATE_TEST_SUITE_P(
+    ImbalancedHorizontal,
     DispatchParamTest,
     ::testing::Values(
         // Alternating chunk counts per peer: 1,3,1,3... (some peers get more)
         DispatchTestParams{
-            "VarCounts",
+            "VarCounts_H",
             {1, 3, 1, 3, 1, 3, 1, 3},
-            uniformSizes(16, kSmallChunkSize)},
+            uniformSizes(16, kSmallChunkSize),
+            ShardingMode::HORIZONTAL},
         // Uniform counts but ascending chunk sizes: 8KB, 16KB, 32KB, 64KB
         DispatchTestParams{
-            "VarSizes",
+            "VarSizes_H",
             {2, 2, 2, 2, 2, 2, 2, 2},
-            ascendingSizes(16)},
+            ascendingSizes(16),
+            ShardingMode::HORIZONTAL},
         // Both variable counts (1,2,3,2,1,2,3,2) and variable sizes
         DispatchTestParams{
-            "VarBoth",
+            "VarBoth_H",
             {1, 2, 3, 2, 1, 2, 3, 2},
-            variableSizes(16)}),
+            variableSizes(16),
+            ShardingMode::HORIZONTAL}),
+    DispatchTestName);
+
+// Imbalanced test cases with VERTICAL sharding
+INSTANTIATE_TEST_SUITE_P(
+    ImbalancedVertical,
+    DispatchParamTest,
+    ::testing::Values(
+        // Alternating chunk counts per peer: 1,3,1,3... (some peers get more)
+        DispatchTestParams{
+            "VarCounts_V",
+            {1, 3, 1, 3, 1, 3, 1, 3},
+            uniformSizes(16, kSmallChunkSize),
+            ShardingMode::VERTICAL},
+        // Uniform counts but ascending chunk sizes: 8KB, 16KB, 32KB, 64KB
+        DispatchTestParams{
+            "VarSizes_V",
+            {2, 2, 2, 2, 2, 2, 2, 2},
+            ascendingSizes(16),
+            ShardingMode::VERTICAL},
+        // Both variable counts (1,2,3,2,1,2,3,2) and variable sizes
+        DispatchTestParams{
+            "VarBoth_V",
+            {1, 2, 3, 2, 1, 2, 3, 2},
+            variableSizes(16),
+            ShardingMode::VERTICAL}),
     DispatchTestName);
 
 } // namespace comms::pipes::tests

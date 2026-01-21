@@ -19,7 +19,8 @@ void testDispatch(
     DeviceSpan<const std::size_t> input_chunk_indices_count_per_rank,
     cudaStream_t stream,
     int num_blocks,
-    int num_threads) {
+    int num_threads,
+    ShardingMode mode) {
   collectives::dispatch(
       recvbuffs,
       output_chunk_sizes_per_rank,
@@ -31,7 +32,8 @@ void testDispatch(
       input_chunk_indices_count_per_rank,
       stream,
       num_blocks,
-      num_threads);
+      num_threads,
+      mode);
 }
 
 } // namespace comms::pipes::test
