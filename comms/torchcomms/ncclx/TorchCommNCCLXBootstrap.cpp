@@ -324,7 +324,7 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   populateNcclConfigFromHints(config, options, name);
 
   if (useFastInit(config)) {
-    memset(&uniqueId, 0, sizeof(ncclUniqueId));
+    uniqueId = ncclUniqueId{};
   } else {
     uniqueId = exchangeUniqueId();
   }
