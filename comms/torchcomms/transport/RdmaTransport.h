@@ -208,7 +208,7 @@ class __attribute__((visibility("default"))) RdmaTransport {
    *           the NIC associated with specified cudaDevice.
    * evb - EventLoop to drive the RDMA operations.
    */
-  RdmaTransport(int cudaDev, folly::EventBase* evb = nullptr);
+  explicit RdmaTransport(int cudaDev, folly::EventBase* evb = nullptr);
 
   ~RdmaTransport();
 

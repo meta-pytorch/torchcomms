@@ -7,7 +7,7 @@ namespace comms {
 // Wrap c10d store as Gloo store
 class TORCH_API GlooStore : public ::gloo::rendezvous::Store {
  public:
-  GlooStore(c10::intrusive_ptr<::c10d::Store> store)
+  explicit GlooStore(c10::intrusive_ptr<::c10d::Store> store)
       : store_(std::move(store)) {}
 
   void setUint(const std::string& key, const std::vector<uint8_t>& value) {
