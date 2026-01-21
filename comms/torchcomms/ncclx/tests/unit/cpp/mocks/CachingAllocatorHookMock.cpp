@@ -4,7 +4,6 @@
 
 using ::testing::_;
 using ::testing::DoAll;
-using ::testing::Invoke;
 using ::testing::Return;
 
 namespace torch {
@@ -13,22 +12,22 @@ namespace test {
 
 void CachingAllocatorHookMock::setupDefaultBehaviors() {
   // Set up default behavior for registerComm
-  ON_CALL(*this, registerComm(_))
-      .WillByDefault(Invoke(
-          [this](TorchCommNCCLX* comm) { registered_comms_.insert(comm); }));
+  ON_CALL(*this, registerComm(_)).WillByDefault([this](TorchCommNCCLX* comm) {
+    registered_comms_.insert(comm);
+  });
 
   // Set up default behavior for deregisterComm
-  ON_CALL(*this, deregisterComm(_))
-      .WillByDefault(Invoke(
-          [this](TorchCommNCCLX* comm) { registered_comms_.erase(comm); }));
+  ON_CALL(*this, deregisterComm(_)).WillByDefault([this](TorchCommNCCLX* comm) {
+    registered_comms_.erase(comm);
+  });
 
   // Set up default behavior for regDeregMem (no-op by default)
   ON_CALL(*this, regDeregMem(_)).WillByDefault(Return());
 
   // Set up default behavior for clear
-  ON_CALL(*this, clear()).WillByDefault(Invoke([this]() {
+  ON_CALL(*this, clear()).WillByDefault([this]() {
     registered_comms_.clear();
-  }));
+  });
 }
 
 void CachingAllocatorHookMock::reset() {
