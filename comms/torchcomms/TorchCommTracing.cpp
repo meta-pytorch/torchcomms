@@ -87,7 +87,8 @@ void TorchCommTracing::recordEventWithInputOutput(
       output_split_sizes, // outSplitSizes
       -1, // TODO: fix global rank start
       -1, // TODO: fix global rank stride
-      comm_size_); // worldSize
+      comm_size_, // worldSize
+      true); // isAsyncOp
 }
 
 std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
@@ -127,7 +128,8 @@ std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
       output_split_sizes,
       -1, // TODO: fix global rank start
       -1, // TODO: fix global rank stride
-      comm_size);
+      comm_size,
+      true); // isAsynchronizedOp
 }
 
 void TorchCommTracingGuard::initializeTracingCommon(
