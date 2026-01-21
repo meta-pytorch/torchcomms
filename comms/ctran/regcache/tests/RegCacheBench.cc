@@ -7,15 +7,15 @@
 #include <iostream>
 #include <memory>
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "nccl.h"
 
-class CtranDistMapperRegMemBench : public NcclxBaseTest {
+class RegCacheBench : public NcclxBaseTest {
  public:
   int cudaDev{0};
-  std::shared_ptr<CtranMapperRegCache> regCache{nullptr};
+  std::shared_ptr<ctran::RegCache> regCache{nullptr};
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
@@ -36,7 +36,7 @@ class CtranDistMapperRegMemBench : public NcclxBaseTest {
     }
 
     // Setup regCache pointer to be used in test
-    regCache = CtranMapperRegCache::getInstance();
+    regCache = ctran::RegCache::getInstance();
     ASSERT_NE(regCache, nullptr);
   }
 
@@ -57,11 +57,11 @@ class CtranDistMapperRegMemBench : public NcclxBaseTest {
   CtranComm* comm_{nullptr};
 };
 
-class CtranDistMapperRegMemTestParam
-    : public CtranDistMapperRegMemBench,
+class RegCacheTestParam
+    : public RegCacheBench,
       public ::testing::WithParamInterface<std::tuple<size_t, int, size_t>> {};
 
-TEST_P(CtranDistMapperRegMemTestParam, RegMemAndSearchRegHandleTime) {
+TEST_P(RegCacheTestParam, RegMemAndSearchRegHandleTime) {
   auto& [offset, numSegments, segmentSize] = GetParam();
 
   constexpr int numIter = 100;
@@ -135,8 +135,8 @@ TEST_P(CtranDistMapperRegMemTestParam, RegMemAndSearchRegHandleTime) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    CtranDistMapperRegMemBench1,
-    CtranDistMapperRegMemTestParam,
+    RegCacheBench1,
+    RegCacheTestParam,
     ::testing::Combine(
         testing::Values(0),
         testing::Values(1),
@@ -147,22 +147,20 @@ INSTANTIATE_TEST_SUITE_P(
             20 * 1024 * 1024 * 8,
             20 * 1024 * 1024 * 16,
             20 * 1024 * 1024 * 32)),
-    [&](const testing::TestParamInfo<CtranDistMapperRegMemTestParam::ParamType>&
-            info) {
+    [&](const testing::TestParamInfo<RegCacheTestParam::ParamType>& info) {
       return std::to_string(std::get<0>(info.param)) + "offset_" +
           std::to_string(std::get<1>(info.param)) + "numSeg_" +
           std::to_string(std::get<2>(info.param)) + "SegSize";
     });
 
 INSTANTIATE_TEST_SUITE_P(
-    CtranDistMapperRegMemBench2,
-    CtranDistMapperRegMemTestParam,
+    RegCacheBench2,
+    RegCacheTestParam,
     ::testing::Combine(
         testing::Values(0),
         testing::Values(1, 2, 4, 8, 16, 32),
         testing::Values(20 * 1024 * 1024)),
-    [&](const testing::TestParamInfo<CtranDistMapperRegMemTestParam::ParamType>&
-            info) {
+    [&](const testing::TestParamInfo<RegCacheTestParam::ParamType>& info) {
       return std::to_string(std::get<0>(info.param)) + "offset_" +
           std::to_string(std::get<1>(info.param)) + "numSeg_" +
           std::to_string(std::get<2>(info.param)) + "SegSize";
