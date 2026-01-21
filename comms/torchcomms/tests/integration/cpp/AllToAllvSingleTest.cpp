@@ -257,14 +257,15 @@ void AllToAllvSingleTest::testSyncAllToAllvSingleMultiDimTensor(
       ::testing::Message() << "Testing sync all_to_all_v_single with dtype="
                            << getDtypeName(dtype));
 
+  // Create input and output tensors using original sizes
+  at::Tensor input = createInputTensor(input_split_sizes_, dtype);
+  input = input.reshape({input.numel() / 2, 2});
+  at::Tensor output = createOutputTensor(output_split_sizes_, dtype);
+  output = output.reshape({output.numel() / 2, 2});
+
+  // Copy split sizes before modifying them
   std::vector<uint64_t> input_split_sizes = input_split_sizes_;
   std::vector<uint64_t> output_split_sizes = output_split_sizes_;
-
-  // Create input and output tensors
-  at::Tensor input = createInputTensor(input_split_sizes, dtype);
-  input = input.reshape({input.numel() / 2, 2});
-  at::Tensor output = createOutputTensor(output_split_sizes, dtype);
-  output = output.reshape({output.numel() / 2, 2});
 
   // Reduce each value in input_split_sizes and output_split_sizes by half
   for (size_t i = 0; i < input_split_sizes.size(); ++i) {
