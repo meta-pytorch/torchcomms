@@ -17,32 +17,34 @@ class AllReduceTest
       : rank_(0), num_ranks_(0), device_type_(device_type) {}
 
   // Test function declarations with parameters
-  void
-  testSyncAllReduce(int count, at::ScalarType dtype, torch::comms::ReduceOp op);
+  void testSyncAllReduce(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
   void testSyncAllReduceNoWork(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testAsyncAllReduce(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testAsyncAllReduceEarlyReset(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testAllReduceInputDeleted(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testGraphAllReduce(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testGraphAllReduceInputDeleted(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
 
  protected:
   virtual std::unique_ptr<TorchCommTestWrapper> createWrapper();
@@ -62,6 +64,6 @@ class AllReduceTest
   // Helper function declarations with parameters
   virtual at::Tensor createInputTensor(int count, at::ScalarType dtype);
   virtual at::Tensor createPreMulFactorTensor(at::ScalarType dtype);
-  double calculateExpectedResult(torch::comms::ReduceOp op);
-  void verifyResults(const at::Tensor& input, torch::comms::ReduceOp op);
+  double calculateExpectedResult(const torch::comms::ReduceOp& op);
+  void verifyResults(const at::Tensor& input, const torch::comms::ReduceOp& op);
 };

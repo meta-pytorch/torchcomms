@@ -14,12 +14,12 @@
 #include "comms/torchcomms/TorchComm.hpp"
 
 std::string getDtypeName(at::ScalarType dtype);
-std::string getOpName(torch::comms::ReduceOp op);
+std::string getOpName(const torch::comms::ReduceOp& op);
 std::tuple<int, int> getRankAndSize();
 c10::intrusive_ptr<c10d::Store> createStore();
 void destroyStore(
     c10::intrusive_ptr<c10d::Store>&& store,
-    std::shared_ptr<torch::comms::TorchComm> torchcomm);
+    const std::shared_ptr<torch::comms::TorchComm>& torchcomm);
 
 // Convert a tensor to a string representation with nested brackets for each
 // dimension. Supports any N-dimensional tensor.
