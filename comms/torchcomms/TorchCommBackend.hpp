@@ -18,7 +18,7 @@
 namespace torch {
 namespace comms {
 
-inline const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
+inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
 
 class TorchCommBackend : public CollectiveCoalescer {
  public:
