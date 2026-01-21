@@ -7,7 +7,7 @@
 #include <memory>
 
 #include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 
 using ctran::CtranTcpDm;

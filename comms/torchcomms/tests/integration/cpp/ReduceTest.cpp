@@ -33,7 +33,7 @@ void ReduceTest::TearDown() {
 void ReduceTest::testSyncReduce(
     int count,
     at::ScalarType dtype,
-    torch::comms::ReduceOp op) {
+    const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
       ::testing::Message() << "Testing sync reduce with count=" << count
                            << " and dtype=" << getDtypeName(dtype)
@@ -56,7 +56,7 @@ void ReduceTest::testSyncReduce(
 void ReduceTest::testSyncReduceNoWork(
     int count,
     at::ScalarType dtype,
-    torch::comms::ReduceOp op) {
+    const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing sync reduce without work object with count=" << count
@@ -78,7 +78,7 @@ void ReduceTest::testSyncReduceNoWork(
 void ReduceTest::testAsyncReduce(
     int count,
     at::ScalarType dtype,
-    torch::comms::ReduceOp op) {
+    const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
       ::testing::Message() << "Testing async reduce with count=" << count
                            << " and dtype=" << getDtypeName(dtype)
@@ -103,7 +103,7 @@ void ReduceTest::testAsyncReduce(
 void ReduceTest::testAsyncReduceEarlyReset(
     int count,
     at::ScalarType dtype,
-    torch::comms::ReduceOp op) {
+    const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing async reduce with early reset with count=" << count
@@ -131,7 +131,7 @@ void ReduceTest::testAsyncReduceEarlyReset(
 void ReduceTest::testReduceInputDeleted(
     int count,
     at::ScalarType dtype,
-    torch::comms::ReduceOp op) {
+    const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing async reduce with input deleted after enqueue with count="
@@ -175,7 +175,7 @@ at::Tensor ReduceTest::createInputTensor(int count, at::ScalarType dtype) {
 }
 
 // Helper function to calculate expected result
-int ReduceTest::calculateExpectedResult(torch::comms::ReduceOp op) {
+int ReduceTest::calculateExpectedResult(const torch::comms::ReduceOp& op) {
   if (op == torch::comms::ReduceOp::SUM) {
     return num_ranks_ * (num_ranks_ + 1) / 2;
   } else if (op == torch::comms::ReduceOp::MAX) {
@@ -188,7 +188,7 @@ int ReduceTest::calculateExpectedResult(torch::comms::ReduceOp op) {
 // Helper function to verify results
 void ReduceTest::verifyResults(
     const at::Tensor& output,
-    torch::comms::ReduceOp op,
+    const torch::comms::ReduceOp& op,
     int root_rank) {
   if (rank_ != root_rank) {
     synchronizeStream();
@@ -207,7 +207,7 @@ void ReduceTest::verifyResults(
 void ReduceTest::testGraphReduce(
     int count,
     at::ScalarType dtype,
-    torch::comms::ReduceOp op) {
+    const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
       ::testing::Message() << "Testing CUDA Graph reduce with count=" << count
                            << " and dtype=" << getDtypeName(dtype)
@@ -253,7 +253,7 @@ void ReduceTest::testGraphReduce(
 void ReduceTest::testGraphReduceInputDeleted(
     int count,
     at::ScalarType dtype,
-    torch::comms::ReduceOp op) {
+    const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing CUDA Graph reduce with input deleted after graph creation with count="

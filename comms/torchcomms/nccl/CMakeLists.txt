@@ -11,7 +11,9 @@ if(USE_SYSTEM_LIBS)
 elseif(EXISTS "${TORCH_INSTALL_PREFIX}/../build/nccl/include/nccl.h")
     # Use NCCL from PyTorch source build
     set(NCCL_INCLUDE "${TORCH_INSTALL_PREFIX}/../build/nccl/include")
-    set(NCCL_STATIC_LIB "${TORCH_INSTALL_PREFIX}/../build/nccl/lib/libnccl_static.a")
+    set(NCCL_STATIC_LIB
+        "${TORCH_INSTALL_PREFIX}/../build/nccl/lib/libnccl_static.a"
+    )
 else()
     # Use NCCL packaged with PyTorch (pip install)
     set(NCCL_INCLUDE "${TORCH_INSTALL_PREFIX}/../nvidia/nccl/include")
