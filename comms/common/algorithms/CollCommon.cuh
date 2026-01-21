@@ -2,16 +2,32 @@
 
 #pragma once
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#include <hip/hip_bfloat16.h>
+#include <hip/hip_fp16.h>
+#include <hip/hip_runtime.h>
+// Include amd_hip_bf16.h for __hip_bfloat16 used by hipified code
+#include <hip/amd_detail/amd_hip_bf16.h>
+using bf16 = hip_bfloat16;
+#else
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+using bf16 = __nv_bfloat16;
+using bf162 = __nv_bfloat162;
+#endif
 
 namespace meta::comms {
 
+// On HIP, hipified code uses __hip_bfloat16 which is a separate type from
+// hip_bfloat16. Include both in the concept to support hipified test code.
 template <typename T>
 concept SupportedTypes =
-    (std::same_as<T, float> || std::same_as<T, half> ||
-     std::same_as<T, __nv_bfloat16>);
+    (std::same_as<T, float> || std::same_as<T, half> || std::same_as<T, bf16>
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+     || std::same_as<T, __hip_bfloat16>
+#endif
+    );
 
 template <SupportedTypes T>
 static inline __device__ uint32_t
@@ -28,13 +44,21 @@ vecElementAdd(const uint32_t& a, const uint32_t& b) {
     __half2 q = __halves2half2(y[0], y[1]);
     __half2 z = __hadd2(p, q);
     return (reinterpret_cast<uint32_t*>(&z))[0];
-  } else if constexpr (std::is_same<T, __nv_bfloat16>::value) {
-    const __nv_bfloat16* x = reinterpret_cast<const __nv_bfloat16*>(&a);
-    const __nv_bfloat16* y = reinterpret_cast<const __nv_bfloat16*>(&b);
-    __nv_bfloat162 p = {x[0], x[1]};
-    __nv_bfloat162 q = {y[0], y[1]};
-    __nv_bfloat162 z = __hadd2(p, q);
+  } else if constexpr (std::is_same<T, bf16>::value) {
+    const bf16* x = reinterpret_cast<const bf16*>(&a);
+    const bf16* y = reinterpret_cast<const bf16*>(&b);
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+    uint32_t out = 0;
+    bf16* z = reinterpret_cast<bf16*>(&out);
+    z[0] = x[0] + y[0];
+    z[1] = x[1] + y[1];
+    return out;
+#else
+    bf162 p = {x[0], x[1]};
+    bf162 q = {y[0], y[1]};
+    bf162 z = __hadd2(p, q);
     return (reinterpret_cast<uint32_t*>(&z))[0];
+#endif
   }
   return 0;
 }
