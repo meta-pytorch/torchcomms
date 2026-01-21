@@ -109,7 +109,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
       this->ctranIb =
           std::make_unique<class CtranIb>(comm, this->ctrlMgr.get());
       this->ctranIb->regCtrlCb(this->ctrlMgr);
-    } catch (const std::bad_alloc& e) {
+    } catch ([[maybe_unused]] const std::bad_alloc& e) {
       ctranIb = nullptr;
       enableBackends_[CtranMapperBackend::IB] = false;
       CLOGF(WARN, "CTRAN-MAPPER: IB backend not enabled");
@@ -139,7 +139,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
       try {
         this->ctranNvl = std::make_unique<class CtranNvl>(comm);
         this->ctranNvl->regCtrlCb(this->ctrlMgr);
-      } catch (const std::bad_alloc& e) {
+      } catch ([[maybe_unused]] const std::bad_alloc& e) {
         enableBackends_[CtranMapperBackend::NVL] = false;
         // FIXME: give more specific exception + error message
         CLOGF(
