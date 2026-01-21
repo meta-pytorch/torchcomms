@@ -141,10 +141,10 @@ Returns:
              at::ScalarType dtype,
              bool async_op) {
             return self.alltoallv_dedup_init(
-                num_send_blocks,
-                block_count,
-                block_num_recv_buckets,
-                num_recv_buckets,
+                static_cast<int>(num_send_blocks),
+                static_cast<int>(block_count),
+                static_cast<int>(block_num_recv_buckets),
+                static_cast<int>(num_recv_buckets),
                 dtype,
                 async_op);
           },
