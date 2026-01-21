@@ -10,7 +10,7 @@ namespace comms {
 TorchCommWindowNCCLX::TorchCommWindowNCCLX(
     ncclComm_t ncclComm,
     std::shared_ptr<TorchCommNCCLX> torchComm)
-    : nccl_comm_(ncclComm), torch_comm_(torchComm) {
+    : nccl_comm_(ncclComm), torch_comm_(std::move(torchComm)) {
   // make sure the torchComm & ncclComm are not null
   checkCommAndThrow();
 
@@ -108,11 +108,11 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
     bool asyncOp,
     const PutOptions& options) {
   checkCommAndThrow();
+  checkWindowAndThrow();
   const auto req_size =
       (tensor.numel() + targetOffsetNelems) * tensor.element_size();
 
   checkRequestSizeAndThrow(req_size);
-  CHECK_NOTNULL(win_);
 
   checkDeviceAndThrow(tensor);
   auto stream = torch_comm_->getOperationStream(asyncOp);
