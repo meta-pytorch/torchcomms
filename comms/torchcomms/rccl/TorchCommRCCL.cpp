@@ -694,10 +694,10 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather(
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather_v(
-    const std::vector<at::Tensor>& tensor_list,
-    const at::Tensor& tensor,
-    bool async_op,
-    const AllGatherOptions& options) {
+    const std::vector<at::Tensor>& /* tensor_list */,
+    const at::Tensor& /* tensor */,
+    bool /* async_op */,
+    const AllGatherOptions& /* options */) {
   throw std::runtime_error("all_gather_v not implemented");
 }
 
@@ -822,11 +822,11 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter(
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter_v(
-    at::Tensor& output,
-    const std::vector<at::Tensor>& input_list,
-    const ReduceOp& op,
-    bool async_op,
-    const ReduceScatterOptions& options) {
+    at::Tensor& /* output */,
+    const std::vector<at::Tensor>& /* input_list */,
+    const ReduceOp& /* op */,
+    bool /* async_op */,
+    const ReduceScatterOptions& /* options */) {
   throw std::runtime_error("reduce_scatter_v not implemented");
 }
 
@@ -1334,7 +1334,7 @@ std::shared_ptr<TorchCommBackend> TorchCommRCCL::split(
 
   // Determine the color for this rank
   int color;
-  int new_rank = -1; // Rank within the new communicator
+  int new_rank;
 
   if (ranks.empty()) {
     // Empty list means exclude all ranks - use NCCL_SPLIT_NOCOLOR
@@ -1461,5 +1461,5 @@ class RCCLRegistration {
   }
 };
 
-static RCCLRegistration registration{};
+static const RCCLRegistration registration{};
 } // namespace

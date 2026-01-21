@@ -314,12 +314,12 @@ ncclResult_t DefaultNcclxApi::alltoallvDedupExec(
 }
 
 ncclResult_t DefaultNcclxApi::alltoallvDedupCombine(
-    const void* sendBuff,
-    const int* sendIdx,
-    const int* fwdIdx,
-    const int* recvIdx,
-    void* recvBuff,
-    void* request) {
+    const void* /* sendBuff */,
+    const int* /* sendIdx */,
+    const int* /* fwdIdx */,
+    const int* /* recvIdx */,
+    void* /* recvBuff */,
+    void* /* request */) {
   // placeholder for now; will add support after landed NCCLX side
   throw std::logic_error(
       "NCCL allToAllvDedupCombine is not supported in this build");

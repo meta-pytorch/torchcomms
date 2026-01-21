@@ -20,31 +20,31 @@ class ReduceScatterTest
   void testSyncReduceScatter(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testSyncReduceScatterNoWork(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testAsyncReduceScatter(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testAsyncReduceScatterEarlyReset(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testReduceScatterInputDeleted(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testGraphReduceScatter(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testGraphReduceScatterInputDeleted(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
 
  protected:
   virtual std::unique_ptr<TorchCommTestWrapper> createWrapper();
@@ -66,6 +66,8 @@ class ReduceScatterTest
       int count,
       at::ScalarType dtype);
   virtual at::Tensor createOutputTensor(int count, at::ScalarType dtype);
-  int calculateExpectedResult(torch::comms::ReduceOp op);
-  void verifyResults(const at::Tensor& output, torch::comms::ReduceOp op);
+  int calculateExpectedResult(const torch::comms::ReduceOp& op);
+  void verifyResults(
+      const at::Tensor& output,
+      const torch::comms::ReduceOp& op);
 };

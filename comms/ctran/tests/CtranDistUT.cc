@@ -14,7 +14,7 @@
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/mapper/CtranMapper.h"
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/wrapper/MetaFactory.h"
@@ -346,7 +346,7 @@ TEST_F(CtranTest, RegMemReuseInMultiComms) {
     }
   }
 
-  auto regCache = CtranMapperRegCache::getInstance();
+  auto regCache = ctran::RegCache::getInstance();
   ASSERT_NE(regCache, nullptr);
 
   auto allHandles = regCache->getSegments();
@@ -455,7 +455,7 @@ TEST_F(CtranTest, CommAbortWithRegMem) {
   ASSERT_NE(nullptr, comm);
   ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
 
-  CtranMapperRegCache* regCache = CtranMapperRegCache::getInstance().get();
+  ctran::RegCache* regCache = ctran::RegCache::getInstance().get();
   ASSERT_NE(regCache, nullptr);
 
   auto allHandles = regCache->getSegments();
