@@ -603,6 +603,167 @@ class P2pNvlTransportDevice {
 #endif
   }
 
+  /**
+   * send_multiple - Transfer multiple chunks with varying sizes to peer GPU
+   *
+   * Sends multiple data chunks specified by indices from srcbuff to the peer
+   * GPU. First sends complete chunk sizes array via regular send(), then
+   * transfers actual data chunks using send_one() which handles metadata.
+   *
+   * INPUTS:
+   * @param group ThreadGroup for cooperative processing
+   * @param srcbuff_d Source buffer containing all chunks laid out sequentially
+   * @param chunk_sizes DeviceSpan of ALL chunk sizes
+   * @param chunk_indices DeviceSpan of indices of chunks to send to this peer
+   *
+   * EXAMPLE:
+   *   srcbuff_d layout: [chunk0: 100B][chunk1: 200B][chunk2: 150B][chunk3: 50B]
+   *   chunk_sizes = {100, 200, 150, 50}
+   *   chunk_indices = {1, 3}
+   *   -> Sends chunk1 (200B) and chunk3 (50B) to peer
+   *
+   * PROTOCOL:
+   * Phase 1: Send complete chunk sizes array (regular send)
+   * Phase 2: For each chunk, use send_one() to transfer data with metadata
+   *          - has_more=true for all chunks except the last
+   *          - has_more=false for the last chunk (or if no chunks)
+   */
+  __device__ __forceinline__ void send_multiple(
+      ThreadGroup& group,
+      const void* srcbuff_d,
+      DeviceSpan<const std::size_t> chunk_sizes,
+      DeviceSpan<const std::size_t> chunk_indices) {
+#ifdef __CUDA_ARCH__
+    // Extract raw pointers before loops to avoid aliasing issues
+    // (see DeviceSpan.cuh "Lambda Capture and Aliasing" note)
+    const std::size_t* const chunk_sizes_ptr = chunk_sizes.data();
+    const std::size_t* const chunk_indices_ptr = chunk_indices.data();
+    const std::size_t chunk_sizes_count = chunk_sizes.size();
+    const std::size_t chunk_indices_count = chunk_indices.size();
+
+    // Phase 1: Send complete chunk sizes array
+    send(
+        group,
+        const_cast<void*>(reinterpret_cast<const void*>(chunk_sizes_ptr)),
+        chunk_sizes_count * sizeof(std::size_t),
+        0);
+
+    // Phase 2: Send each data chunk with metadata
+    // Special case: If chunk_indices is empty, send has_more=false signal
+    if (chunk_indices_count == 0) {
+      // Send empty signal with has_more=false so receiver knows to stop
+      send_one(
+          group,
+          nullptr, // No data
+          0, // nbytes = 0
+          1, // callIndex = 1
+          0, // offset = 0
+          false); // has_more = false (no more chunks)
+      return;
+    }
+
+    // Track cumulative offset to avoid recalculating from 0 for each chunk
+    // Assumes chunk_indices are sorted in increasing order
+    std::size_t cumulative_offset = 0;
+    std::size_t cumulative_idx =
+        0; // Offset computed for chunks [0, cumulative_idx)
+
+    for (std::size_t i = 0; i < chunk_indices_count; i++) {
+      std::size_t chunk_idx = chunk_indices_ptr[i];
+      std::size_t chunk_size = chunk_sizes_ptr[chunk_idx];
+
+      // Extend cumulative_offset to cover chunks [cumulative_idx, chunk_idx)
+      while (cumulative_idx < chunk_idx) {
+        cumulative_offset += chunk_sizes_ptr[cumulative_idx];
+        cumulative_idx++;
+      }
+
+      // Send this chunk with metadata
+      // has_more = true for all chunks except the last one
+      const char* src_ptr =
+          reinterpret_cast<const char*>(srcbuff_d) + cumulative_offset;
+      bool has_more = (i < chunk_indices_count - 1);
+      send_one(
+          group,
+          src_ptr,
+          chunk_size,
+          static_cast<uint32_t>(i + 1), // callIndex increments for each call
+          cumulative_offset, // offset in output buffer
+          has_more);
+    }
+#endif
+  }
+
+  /**
+   * recv_multiple - Receive multiple chunks with varying sizes from peer GPU
+   *
+   * Receives multiple data chunks into recvbuff. First receives complete chunk
+   * sizes array via regular recv(), then receives actual data chunks using
+   * recv_one() which reads metadata.
+   *
+   * INPUTS:
+   * @param group ThreadGroup for cooperative processing
+   *
+   * OUTPUTS:
+   * @param recvbuff Destination buffer where chunks are written at their
+   *                 original offsets (based on chunk_sizes)
+   * @param chunk_sizes DeviceSpan populated with received chunk sizes
+   *
+   * EXAMPLE:
+   *   Sender sends chunk1 (200B) and chunk3 (50B) from 4-chunk buffer
+   *   chunk_sizes.size() = 4
+   *   -> chunk_sizes receives {100, 200, 150, 50}
+   *   -> recvbuff written at: offset 100 (200B), offset 450 (50B)
+   *
+   * PROTOCOL:
+   * Phase 1: Receive complete chunk sizes array (regular recv)
+   * Phase 2: Use recv_one() to receive chunks until has_more=false
+   *          - If first chunk has nbytes=0 and has_more=false, no data chunks
+   *          - Otherwise, keep receiving until has_more=false
+   */
+  __device__ void recv_multiple(
+      ThreadGroup& group,
+      void* recvbuff,
+      DeviceSpan<std::size_t> chunk_sizes) {
+#ifdef __CUDA_ARCH__
+    // Extract raw pointer before use (see DeviceSpan.cuh "Lambda Capture and
+    // Aliasing" note)
+    std::size_t* const chunk_sizes_ptr = chunk_sizes.data();
+    const std::size_t chunk_sizes_count = chunk_sizes.size();
+
+    // Phase 1: Receive complete chunk sizes array
+    uint32_t call_index = 0;
+    recv(
+        group,
+        reinterpret_cast<void*>(chunk_sizes_ptr),
+        chunk_sizes_count * sizeof(std::size_t),
+        call_index);
+
+    // Phase 2: Receive chunks until has_more=false
+    char* dst_base = reinterpret_cast<char*>(recvbuff);
+
+    std::size_t nbytes_val = 0;
+    std::size_t offset_val = 0;
+    bool has_more = false;
+
+    // Receive first chunk
+    call_index++;
+    recv_one(group, dst_base, &nbytes_val, call_index, &offset_val, &has_more);
+
+    // If nbytes=0 and has_more=false, this is the empty signal (no chunks)
+    if (nbytes_val == 0 && !has_more) {
+      return;
+    }
+
+    // Keep receiving while there are more chunks
+    while (has_more) {
+      call_index++;
+      recv_one(
+          group, dst_base, &nbytes_val, call_index, &offset_val, &has_more);
+    }
+#endif
+  }
+
  public:
   // Getters for testing
   __host__ const LocalState& getLocalState() const {
