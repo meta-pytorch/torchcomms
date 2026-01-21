@@ -1,5 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#pragma once
+
 #include <c10/util/intrusive_ptr.h>
 #include <gloo/rendezvous/store.h>
 #include <torch/csrc/Export.h> // @manual=//caffe2:torch-cpp-cpu
