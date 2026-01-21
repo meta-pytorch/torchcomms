@@ -25,14 +25,41 @@ std::vector<int64_t> getVectorRingFromArray(int nRanks, int* ring) {
   return ringVec;
 }
 
-std::array<int, NCCL_MAX_TREE_ARITY> getTreeChildArray(int* treeDown) {
-  std::array<int, NCCL_MAX_TREE_ARITY> childNodes{};
-  for (int i = 0; i < NCCL_MAX_TREE_ARITY; i++) {
-    childNodes[i] = treeDown[i];
-  }
-  return childNodes;
-}
 } // namespace
+
+::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm) {
+  std::vector<std::vector<int64_t>> rings(comm->nChannels);
+  std::vector<::comms::TopoTreeNodeInfo> trees(comm->nChannels);
+  for (int i = 0; i < comm->nChannels; i++) {
+    auto& channel = comm->channels[i];
+    if (comm->lazySetupChannels && comm->nChannels != comm->nChannelsReady) {
+      rings[i] = getVectorRingFromArray(
+          comm->nRanks, comm->rings.value().data() + i * comm->nRanks);
+    } else {
+      rings[i] = getVectorRingFromArray(comm->nRanks, channel.ring.userRanks);
+    }
+    ::comms::TopoTreeNodeInfo curTreeNodeInfo;
+    // TODO: Verify if parent node of root node is -1
+    curTreeNodeInfo.parentNode() = channel.tree.up;
+    std::vector<int64_t> childNodes(NCCL_MAX_TREE_ARITY);
+    for (int j = 0; j < NCCL_MAX_TREE_ARITY; j++) {
+      childNodes[j] = channel.tree.down[j];
+    }
+    curTreeNodeInfo.childrenNodes() = std::move(childNodes);
+    curTreeNodeInfo.rank() = comm->rank;
+    trees[i] = curTreeNodeInfo;
+  }
+
+  ::comms::CommsTopologyInfo thriftTopoInfo;
+  thriftTopoInfo.nChannels() = comm->nChannels;
+  thriftTopoInfo.rings() = std::move(rings);
+  thriftTopoInfo.treeInfos() = std::move(trees);
+  thriftTopoInfo.commDesc() = comm->config.commDesc;
+  thriftTopoInfo.globalRank() = comm->rank;
+  thriftTopoInfo.localRank() = comm->localRank;
+
+  return thriftTopoInfo;
+}
 
 folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
     commsMonitorSingleton{};
@@ -52,62 +79,11 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
   return NcclCommMonitorInfo{
       .logMetaData = comm->logMetaData,
       .commState = ncclx::CommStateX{*comm->ctranComm_->statex_},
-      .topoInfo = NcclTopoInfo::fromNcclComm(comm),
+      .topoInfo = getTopoInfoFromNcclComm(comm),
       .collTrace = comm->collTrace,
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
       .newCollTrace = comm->newCollTrace};
-}
-
-NcclTopoInfo NcclTopoInfo::fromNcclComm(ncclComm_t comm) {
-  NcclTopoInfo topoInfo;
-  // TODO: currently we only support
-  topoInfo.nChannels = comm->nChannels;
-  topoInfo.rings.reserve(topoInfo.nChannels);
-  topoInfo.trees.reserve(topoInfo.nChannels);
-  for (int i = 0; i < topoInfo.nChannels; i++) {
-    auto& channel = comm->channels[i];
-    if (comm->lazySetupChannels && comm->nChannels != comm->nChannelsReady) {
-      topoInfo.rings.emplace_back(getVectorRingFromArray(
-          comm->nRanks, comm->rings.value().data() + i * comm->nRanks));
-    } else {
-      topoInfo.rings.emplace_back(
-          getVectorRingFromArray(comm->nRanks, channel.ring.userRanks));
-    }
-    topoInfo.trees.emplace_back(
-        NcclTreeNodeInfo{
-            .parentNode = channel.tree.up,
-            .childrenNodes = getTreeChildArray(channel.tree.down)});
-  }
-  return topoInfo;
-}
-
-::comms::NCCLTreeNodeInfo NcclTreeNodeInfo::toThrift() const {
-  ::comms::NCCLTreeNodeInfo thriftNcclTreeNodeInfo;
-  thriftNcclTreeNodeInfo.parentNode() = this->parentNode;
-
-  std::vector<int64_t> childNodes;
-  childNodes.reserve(this->childrenNodes.size());
-  for (auto child : this->childrenNodes) {
-    childNodes.emplace_back(child);
-  }
-
-  thriftNcclTreeNodeInfo.childrenNodes() = std::move(childNodes);
-  return thriftNcclTreeNodeInfo;
-}
-
-::comms::NCCLTopologyInfo NcclTopoInfo::toThrift() const {
-  ::comms::NCCLTopologyInfo thriftNcclTopoInfo;
-  thriftNcclTopoInfo.nChannels() = this->nChannels;
-  thriftNcclTopoInfo.rings() = this->rings;
-
-  std::vector<::comms::NCCLTreeNodeInfo> treeInfos;
-  treeInfos.reserve(this->trees.size());
-  for (const auto& treeInfo : this->trees) {
-    treeInfos.emplace_back(treeInfo.toThrift());
-  }
-  thriftNcclTopoInfo.treeInfos() = std::move(treeInfos);
-  return thriftNcclTopoInfo;
 }
 
 bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {
