@@ -3,7 +3,6 @@
 #include <stdexcept>
 
 #include <ATen/cuda/CUDAContext.h>
-#include <dlfcn.h>
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/StoreManager.hpp"
