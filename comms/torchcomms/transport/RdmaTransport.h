@@ -243,7 +243,7 @@ class __attribute__((visibility("default"))) RdmaTransport {
    */
   folly::SemiFuture<commResult_t> write(
       RdmaMemory::View localBuffer,
-      RdmaRemoteBuffer remoteBuffer,
+      const RdmaRemoteBuffer& remoteBuffer,
       bool notify);
 
   /*
