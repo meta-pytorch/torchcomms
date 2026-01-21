@@ -191,3 +191,136 @@ TEST_F(CommsMonitorTest, TestNcclTopoInfoFromNcclCommMultiRank) {
   EXPECT_EQ(topoInfo.trees[0].parentNode, 0);
   EXPECT_EQ(topoInfo.trees[1].parentNode, 1);
 }
+
+TEST_F(CommsMonitorTest, TestNcclTreeNodeInfoToThrift) {
+  // Create test NcclTreeNodeInfo with various child node configurations
+  NcclTreeNodeInfo treeNodeInfo;
+  treeNodeInfo.parentNode = 42;
+
+  // Initialize children array with mix of valid nodes and -1 (no child)
+  treeNodeInfo.childrenNodes[0] = 1;
+  treeNodeInfo.childrenNodes[1] = 3;
+  treeNodeInfo.childrenNodes[2] = -1; // No child for this slot
+
+  // Convert to thrift
+  auto thriftTreeNodeInfo = treeNodeInfo.toThrift();
+
+  // Verify parent node
+  EXPECT_EQ(thriftTreeNodeInfo.parentNode(), 42);
+
+  // Verify children nodes
+  ASSERT_EQ(thriftTreeNodeInfo.childrenNodes()->size(), NCCL_MAX_TREE_ARITY);
+  EXPECT_EQ(thriftTreeNodeInfo.childrenNodes()[0], 1);
+  EXPECT_EQ(thriftTreeNodeInfo.childrenNodes()[1], 3);
+  EXPECT_EQ(thriftTreeNodeInfo.childrenNodes()[2], -1);
+}
+
+TEST_F(CommsMonitorTest, TestNcclTreeNodeInfoToThriftAllChildren) {
+  // Test case with all children slots filled
+  NcclTreeNodeInfo treeNodeInfo;
+  treeNodeInfo.parentNode = 0;
+
+  // Fill all children slots
+  for (int i = 0; i < NCCL_MAX_TREE_ARITY; i++) {
+    treeNodeInfo.childrenNodes[i] = i + 10;
+  }
+
+  // Convert to thrift
+  auto thriftTreeNodeInfo = treeNodeInfo.toThrift();
+
+  // Verify parent node
+  EXPECT_EQ(thriftTreeNodeInfo.parentNode(), 0);
+
+  // Verify all children nodes
+  ASSERT_EQ(thriftTreeNodeInfo.childrenNodes()->size(), NCCL_MAX_TREE_ARITY);
+  for (int i = 0; i < NCCL_MAX_TREE_ARITY; i++) {
+    EXPECT_EQ(thriftTreeNodeInfo.childrenNodes()[i], i + 10);
+  }
+}
+
+TEST_F(CommsMonitorTest, TestNcclTopoInfoToThrift) {
+  // Create test NcclTopoInfo with multiple channels and rings
+  NcclTopoInfo topoInfo;
+  topoInfo.nChannels = 2;
+
+  // Setup rings - Channel 0: [0, 1, 2], Channel 1: [2, 1, 0]
+  topoInfo.rings.push_back({0, 1, 2});
+  topoInfo.rings.push_back({2, 1, 0});
+
+  // Setup tree node info for each channel
+  NcclTreeNodeInfo treeNode0;
+  treeNode0.parentNode = 1;
+  treeNode0.childrenNodes[0] = 0;
+  treeNode0.childrenNodes[1] = 2;
+  treeNode0.childrenNodes[2] = -1;
+
+  NcclTreeNodeInfo treeNode1;
+  treeNode1.parentNode = 0;
+  treeNode1.childrenNodes[0] = 1;
+  treeNode1.childrenNodes[1] = -1;
+  treeNode1.childrenNodes[2] = -1;
+
+  topoInfo.trees.push_back(treeNode0);
+  topoInfo.trees.push_back(treeNode1);
+
+  // Convert to thrift
+  auto thriftTopoInfo = topoInfo.toThrift();
+
+  // Verify nChannels
+  EXPECT_EQ(thriftTopoInfo.nChannels(), 2);
+
+  // Verify rings
+  ASSERT_TRUE(thriftTopoInfo.rings().has_value());
+  const auto& rings = thriftTopoInfo.rings().value();
+  ASSERT_EQ(rings.size(), 2);
+
+  // Channel 0 ring
+  ASSERT_EQ(rings[0].size(), 3);
+  EXPECT_EQ(rings[0][0], 0);
+  EXPECT_EQ(rings[0][1], 1);
+  EXPECT_EQ(rings[0][2], 2);
+
+  // Channel 1 ring
+  ASSERT_EQ(rings[1].size(), 3);
+  EXPECT_EQ(rings[1][0], 2);
+  EXPECT_EQ(rings[1][1], 1);
+  EXPECT_EQ(rings[1][2], 0);
+
+  // Verify tree infos
+  ASSERT_EQ(thriftTopoInfo.treeInfos()->size(), 2);
+
+  // Tree info for channel 0
+  const auto& thriftTree0 = thriftTopoInfo.treeInfos()[0];
+  EXPECT_EQ(thriftTree0.parentNode(), 1);
+  ASSERT_EQ(thriftTree0.childrenNodes()->size(), NCCL_MAX_TREE_ARITY);
+  EXPECT_EQ(thriftTree0.childrenNodes()[0], 0);
+  EXPECT_EQ(thriftTree0.childrenNodes()[1], 2);
+  EXPECT_EQ(thriftTree0.childrenNodes()[2], -1);
+
+  // Tree info for channel 1
+  const auto& thriftTree1 = thriftTopoInfo.treeInfos()[1];
+  EXPECT_EQ(thriftTree1.parentNode(), 0);
+  ASSERT_EQ(thriftTree1.childrenNodes()->size(), NCCL_MAX_TREE_ARITY);
+  EXPECT_EQ(thriftTree1.childrenNodes()[0], 1);
+  EXPECT_EQ(thriftTree1.childrenNodes()[1], -1);
+  EXPECT_EQ(thriftTree1.childrenNodes()[2], -1);
+}
+
+TEST_F(CommsMonitorTest, TestNcclTopoInfoToThriftEmptyRingsAndTrees) {
+  // Test edge case with empty rings and trees
+  NcclTopoInfo topoInfo;
+  topoInfo.nChannels = 0;
+
+  // Convert to thrift
+  auto thriftTopoInfo = topoInfo.toThrift();
+
+  // Verify nChannels
+  EXPECT_EQ(thriftTopoInfo.nChannels(), 0);
+
+  // Verify rings (should be empty)
+  ASSERT_TRUE(thriftTopoInfo.rings().has_value());
+  EXPECT_TRUE(thriftTopoInfo.rings().value().empty());
+
+  // Verify tree infos (should be empty)
+  EXPECT_TRUE(thriftTopoInfo.treeInfos()->empty());
+}
