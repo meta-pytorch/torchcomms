@@ -189,11 +189,11 @@ TEST_F(CommDumpTest, SingleComm) {
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
-  // Check if ncclTopoInfo field exists and is valid JSON
-  EXPECT_EQ(dump.count("ncclTopoInfo"), 1);
-  if (dump.count("ncclTopoInfo")) {
-    EXPECT_NO_THROW(folly::parseJson(dump["ncclTopoInfo"]));
-    auto topoInfoObj = folly::parseJson(dump["ncclTopoInfo"]);
+  // Check if commsTopoInfo field exists and is valid JSON
+  EXPECT_EQ(dump.count("commsTopoInfo"), 1);
+  if (dump.count("commsTopoInfo")) {
+    EXPECT_NO_THROW(folly::parseJson(dump["commsTopoInfo"]));
+    auto topoInfoObj = folly::parseJson(dump["commsTopoInfo"]);
     EXPECT_TRUE(topoInfoObj.count("nChannels"));
     EXPECT_TRUE(topoInfoObj.count("rings"));
     EXPECT_TRUE(topoInfoObj.count("treeInfos"));

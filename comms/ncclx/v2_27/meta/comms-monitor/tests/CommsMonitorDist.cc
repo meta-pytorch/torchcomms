@@ -118,39 +118,40 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoFromNcclComm) {
   NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
 
   // Call fromNcclComm on the real communicator
-  auto topoInfo = NcclTopoInfo::fromNcclComm(comm);
+  auto topoInfo = getTopoInfoFromNcclComm(comm);
 
   // Verify basic structure
-  EXPECT_GE(topoInfo.nChannels, 0);
-  EXPECT_EQ(topoInfo.rings.size(), topoInfo.nChannels);
-  EXPECT_EQ(topoInfo.trees.size(), topoInfo.nChannels);
+  EXPECT_GE(topoInfo.nChannels(), 0);
+  EXPECT_EQ(topoInfo.rings()->size(), topoInfo.nChannels());
+  EXPECT_EQ(topoInfo.treeInfos()->size(), topoInfo.nChannels());
 
   // If channels are present, verify their structure
-  if (topoInfo.nChannels > 0) {
-    for (size_t i = 0; i < topoInfo.nChannels; i++) {
+  if (topoInfo.nChannels() > 0) {
+    for (size_t i = 0; i < topoInfo.nChannels(); i++) {
       // Each ring should have numRanks elements
-      EXPECT_EQ(topoInfo.rings[i].size(), static_cast<size_t>(this->numRanks));
+      EXPECT_EQ(
+          (*topoInfo.rings())[i].size(), static_cast<size_t>(this->numRanks));
 
       // Verify all ranks are present in the ring
       std::set<int> ringRanks(
-          topoInfo.rings[i].begin(), topoInfo.rings[i].end());
+          (*topoInfo.rings())[i].begin(), (*topoInfo.rings())[i].end());
       EXPECT_EQ(ringRanks.size(), static_cast<size_t>(this->numRanks));
 
       // Verify all rank values are valid (0 to numRanks-1)
-      for (int rank : topoInfo.rings[i]) {
+      for (int rank : (*topoInfo.rings())[i]) {
         EXPECT_GE(rank, 0);
         EXPECT_LT(rank, this->numRanks);
       }
 
       // Tree parent should be a valid rank or -1 (no parent)
-      EXPECT_GE(topoInfo.trees[i].parentNode, -1);
-      if (topoInfo.trees[i].parentNode >= 0) {
-        EXPECT_LT(topoInfo.trees[i].parentNode, this->numRanks);
+      EXPECT_GE((*topoInfo.treeInfos())[i].parentNode(), -1);
+      if ((*topoInfo.treeInfos())[i].parentNode() >= 0) {
+        EXPECT_LT((*topoInfo.treeInfos())[i].parentNode(), this->numRanks);
       }
 
       // Tree children should be valid ranks or -1 (no child)
       for (int j = 0; j < NCCL_MAX_TREE_ARITY; j++) {
-        int child = topoInfo.trees[i].childrenNodes[j];
+        int child = (*topoInfo.treeInfos())[i].childrenNodes()[j];
         EXPECT_GE(child, -1);
         if (child >= 0) {
           EXPECT_LT(child, this->numRanks);
@@ -164,7 +165,7 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoConsistencyAcrossOperations) {
   NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
 
   // Get topology info before any operations
-  auto topoInfoBefore = NcclTopoInfo::fromNcclComm(comm);
+  auto topoInfoBefore = getTopoInfoFromNcclComm(comm);
 
   // Perform some collective operations
   auto count = 1 << 10;
@@ -177,26 +178,28 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoConsistencyAcrossOperations) {
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
   // Get topology info after operations
-  auto topoInfoAfter = NcclTopoInfo::fromNcclComm(comm);
+  auto topoInfoAfter = getTopoInfoFromNcclComm(comm);
 
   // Topology should remain consistent
-  EXPECT_EQ(topoInfoBefore.nChannels, topoInfoAfter.nChannels);
-  EXPECT_EQ(topoInfoBefore.rings.size(), topoInfoAfter.rings.size());
-  EXPECT_EQ(topoInfoBefore.trees.size(), topoInfoAfter.trees.size());
+  EXPECT_EQ(topoInfoBefore.nChannels(), topoInfoAfter.nChannels());
+  EXPECT_EQ(topoInfoBefore.rings()->size(), topoInfoAfter.rings()->size());
+  EXPECT_EQ(
+      topoInfoBefore.treeInfos()->size(), topoInfoAfter.treeInfos()->size());
 
   // Compare ring structures
-  for (size_t i = 0; i < topoInfoBefore.rings.size(); i++) {
-    EXPECT_EQ(topoInfoBefore.rings[i], topoInfoAfter.rings[i]);
+  for (size_t i = 0; i < topoInfoBefore.rings()->size(); i++) {
+    EXPECT_EQ((*topoInfoBefore.rings())[i], (*topoInfoAfter.rings())[i]);
   }
 
   // Compare tree structures
-  for (size_t i = 0; i < topoInfoBefore.trees.size(); i++) {
+  for (size_t i = 0; i < topoInfoBefore.treeInfos()->size(); i++) {
     EXPECT_EQ(
-        topoInfoBefore.trees[i].parentNode, topoInfoAfter.trees[i].parentNode);
+        (*topoInfoBefore.treeInfos())[i].parentNode(),
+        (*topoInfoAfter.treeInfos())[i].parentNode());
     for (int j = 0; j < NCCL_MAX_TREE_ARITY; j++) {
       EXPECT_EQ(
-          topoInfoBefore.trees[i].childrenNodes[j],
-          topoInfoAfter.trees[i].childrenNodes[j]);
+          (*topoInfoBefore.treeInfos())[i].childrenNodes()[j],
+          (*topoInfoAfter.treeInfos())[i].childrenNodes()[j]);
     }
   }
 }
@@ -205,7 +208,7 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoFromSplitComm) {
   NcclCommRAII origComm{this->globalRank, this->numRanks, this->localRank};
 
   // Get topology info from original communicator
-  auto origTopoInfo = NcclTopoInfo::fromNcclComm(origComm);
+  auto origTopoInfo = getTopoInfoFromNcclComm(origComm);
 
   // Create a split communicator
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
@@ -216,21 +219,23 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoFromSplitComm) {
   ncclCommSplit(origComm, globalRank % 2, globalRank, &splitComm, &config);
 
   // Get topology info from split communicator
-  auto splitTopoInfo = NcclTopoInfo::fromNcclComm(splitComm);
+  auto splitTopoInfo = getTopoInfoFromNcclComm(splitComm);
 
   // Split communicator should have valid topology
-  EXPECT_GE(splitTopoInfo.nChannels, 0);
-  EXPECT_EQ(splitTopoInfo.rings.size(), splitTopoInfo.nChannels);
-  EXPECT_EQ(splitTopoInfo.trees.size(), splitTopoInfo.nChannels);
+  EXPECT_GE(splitTopoInfo.nChannels(), 0);
+  EXPECT_EQ(splitTopoInfo.rings()->size(), splitTopoInfo.nChannels());
+  EXPECT_EQ(splitTopoInfo.treeInfos()->size(), splitTopoInfo.nChannels());
 
   // If split communicator has channels, verify structure
-  if (splitTopoInfo.nChannels > 0) {
-    for (size_t i = 0; i < splitTopoInfo.nChannels; i++) {
+  if (splitTopoInfo.nChannels() > 0) {
+    for (size_t i = 0; i < splitTopoInfo.nChannels(); i++) {
       // Split communicator should have fewer ranks than original
-      EXPECT_LE(splitTopoInfo.rings[i].size(), origTopoInfo.rings[i].size());
+      EXPECT_LE(
+          (*splitTopoInfo.rings())[i].size(),
+          (*origTopoInfo.rings())[i].size());
 
       // Verify all ranks in split are valid
-      for (int rank : splitTopoInfo.rings[i]) {
+      for (int rank : (*splitTopoInfo.rings())[i]) {
         EXPECT_GE(rank, 0);
         // Split comm has its own rank space, so we can't directly compare
         // with original comm's numRanks
@@ -246,27 +251,29 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoFromMultipleComms) {
   NcclCommRAII comm2{this->globalRank, this->numRanks, this->localRank};
 
   // Get topology info from both communicators
-  auto topoInfo1 = NcclTopoInfo::fromNcclComm(comm1);
-  auto topoInfo2 = NcclTopoInfo::fromNcclComm(comm2);
+  auto topoInfo1 = getTopoInfoFromNcclComm(comm1);
+  auto topoInfo2 = getTopoInfoFromNcclComm(comm2);
 
   // Both communicators should have identical topology since they're created
   // with the same parameters
-  EXPECT_EQ(topoInfo1.nChannels, topoInfo2.nChannels);
-  EXPECT_EQ(topoInfo1.rings.size(), topoInfo2.rings.size());
-  EXPECT_EQ(topoInfo1.trees.size(), topoInfo2.trees.size());
+  EXPECT_EQ(topoInfo1.nChannels(), topoInfo2.nChannels());
+  EXPECT_EQ(topoInfo1.rings()->size(), topoInfo2.rings()->size());
+  EXPECT_EQ(topoInfo1.treeInfos()->size(), topoInfo2.treeInfos()->size());
 
   // Compare ring structures
-  for (size_t i = 0; i < topoInfo1.rings.size(); i++) {
-    EXPECT_EQ(topoInfo1.rings[i], topoInfo2.rings[i]);
+  for (size_t i = 0; i < topoInfo1.rings()->size(); i++) {
+    EXPECT_EQ((*topoInfo1.rings())[i], (*topoInfo2.rings())[i]);
   }
 
   // Compare tree structures
-  for (size_t i = 0; i < topoInfo1.trees.size(); i++) {
-    EXPECT_EQ(topoInfo1.trees[i].parentNode, topoInfo2.trees[i].parentNode);
+  for (size_t i = 0; i < topoInfo1.treeInfos()->size(); i++) {
+    EXPECT_EQ(
+        (*topoInfo1.treeInfos())[i].parentNode(),
+        (*topoInfo2.treeInfos())[i].parentNode());
     for (int j = 0; j < NCCL_MAX_TREE_ARITY; j++) {
       EXPECT_EQ(
-          topoInfo1.trees[i].childrenNodes[j],
-          topoInfo2.trees[i].childrenNodes[j]);
+          (*topoInfo1.treeInfos())[i].childrenNodes()[j],
+          (*topoInfo2.treeInfos())[i].childrenNodes()[j]);
     }
   }
 }
@@ -278,11 +285,11 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoRingConnectivity) {
   }
 
   NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
-  auto topoInfo = NcclTopoInfo::fromNcclComm(comm);
+  auto topoInfo = getTopoInfoFromNcclComm(comm);
 
-  if (topoInfo.nChannels > 0) {
-    for (size_t i = 0; i < topoInfo.nChannels; i++) {
-      const auto& ring = topoInfo.rings[i];
+  if (topoInfo.nChannels() > 0) {
+    for (size_t i = 0; i < topoInfo.nChannels(); i++) {
+      const auto& ring = (*topoInfo.rings())[i];
 
       // Ring should form a proper cycle where each rank appears exactly once
       std::set<int> uniqueRanks(ring.begin(), ring.end());
@@ -305,20 +312,20 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoTreeStructure) {
   }
 
   NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
-  auto topoInfo = NcclTopoInfo::fromNcclComm(comm);
+  auto topoInfo = getTopoInfoFromNcclComm(comm);
 
-  if (topoInfo.nChannels > 0) {
-    for (size_t i = 0; i < topoInfo.nChannels; i++) {
-      const auto& tree = topoInfo.trees[i];
+  if (topoInfo.nChannels() > 0) {
+    for (size_t i = 0; i < topoInfo.nChannels(); i++) {
+      const auto& tree = (*topoInfo.treeInfos())[i];
 
       // Collect all valid child nodes
       std::vector<int> children;
       for (int j = 0; j < NCCL_MAX_TREE_ARITY; j++) {
-        if (tree.childrenNodes[j] >= 0) {
-          children.push_back(tree.childrenNodes[j]);
+        if (tree.childrenNodes()[j] >= 0) {
+          children.push_back(tree.childrenNodes()[j]);
           // Child should be a valid rank
-          EXPECT_LT(tree.childrenNodes[j], this->numRanks)
-              << "Invalid child rank " << tree.childrenNodes[j] << " in tree "
+          EXPECT_LT(tree.childrenNodes()[j], this->numRanks)
+              << "Invalid child rank " << tree.childrenNodes()[j] << " in tree "
               << i;
         }
       }
@@ -331,9 +338,10 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoTreeStructure) {
       // If comm has more than 1 rank, at least one of parentNode or one child
       // should be valid (not -1) to form a connected tree
       if (this->numRanks > 1) {
-        bool hasValidParent = (tree.parentNode >= 0);
-        bool hasValidChild = std::ranges::any_of(
-            tree.childrenNodes, [](auto num) { return num >= 0; });
+        bool hasValidParent = (tree.parentNode() >= 0);
+        const auto& childNodes = *tree.childrenNodes();
+        bool hasValidChild =
+            std::ranges::any_of(childNodes, [](auto num) { return num >= 0; });
         EXPECT_TRUE(hasValidParent || hasValidChild)
             << "Tree " << i << " with " << this->numRanks
             << " ranks must have at least one valid parent or child connection";
@@ -481,7 +489,7 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoFromSplitCommWithLazySetupChannel) {
   NcclCommRAII origComm{this->globalRank, this->numRanks, this->localRank};
 
   // Get topology info from original communicator
-  auto origTopoInfo = NcclTopoInfo::fromNcclComm(origComm);
+  auto origTopoInfo = getTopoInfoFromNcclComm(origComm);
 
   // Create a split communicator
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
@@ -492,21 +500,23 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoFromSplitCommWithLazySetupChannel) {
   ncclCommSplit(origComm, globalRank % 2, globalRank, &splitComm, &config);
 
   // Get topology info from split communicator
-  auto splitTopoInfo = NcclTopoInfo::fromNcclComm(splitComm);
+  auto splitTopoInfo = getTopoInfoFromNcclComm(splitComm);
 
   // Split communicator should have valid topology
-  EXPECT_GE(splitTopoInfo.nChannels, 0);
-  EXPECT_EQ(splitTopoInfo.rings.size(), splitTopoInfo.nChannels);
-  EXPECT_EQ(splitTopoInfo.trees.size(), splitTopoInfo.nChannels);
+  EXPECT_GE(splitTopoInfo.nChannels(), 0);
+  EXPECT_EQ(splitTopoInfo.rings()->size(), splitTopoInfo.nChannels());
+  EXPECT_EQ(splitTopoInfo.treeInfos()->size(), splitTopoInfo.nChannels());
 
   // If split communicator has channels, verify structure
-  if (splitTopoInfo.nChannels > 0) {
-    for (size_t i = 0; i < splitTopoInfo.nChannels; i++) {
+  if (splitTopoInfo.nChannels() > 0) {
+    for (size_t i = 0; i < splitTopoInfo.nChannels(); i++) {
       // Split communicator should have fewer ranks than original
-      EXPECT_LE(splitTopoInfo.rings[i].size(), origTopoInfo.rings[i].size());
+      EXPECT_LE(
+          (*splitTopoInfo.rings())[i].size(),
+          (*origTopoInfo.rings())[i].size());
 
       // Verify all ranks in split are valid
-      for (int rank : splitTopoInfo.rings[i]) {
+      for (int rank : (*splitTopoInfo.rings())[i]) {
         EXPECT_GE(rank, 0);
         // Split comm has its own rank space, so we can't directly compare
         // with original comm's numRanks
@@ -526,20 +536,20 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoTreeStructureWithLazySetupChannels) {
   }
 
   NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
-  auto topoInfo = NcclTopoInfo::fromNcclComm(comm);
+  auto topoInfo = getTopoInfoFromNcclComm(comm);
 
-  if (topoInfo.nChannels > 0) {
-    for (size_t i = 0; i < topoInfo.nChannels; i++) {
-      const auto& tree = topoInfo.trees[i];
+  if (topoInfo.nChannels() > 0) {
+    for (size_t i = 0; i < topoInfo.nChannels(); i++) {
+      const auto& tree = (*topoInfo.treeInfos())[i];
 
       // Collect all valid child nodes
       std::vector<int> children;
       for (int j = 0; j < NCCL_MAX_TREE_ARITY; j++) {
-        if (tree.childrenNodes[j] >= 0) {
-          children.push_back(tree.childrenNodes[j]);
+        if (tree.childrenNodes()[j] >= 0) {
+          children.push_back(tree.childrenNodes()[j]);
           // Child should be a valid rank
-          EXPECT_LT(tree.childrenNodes[j], this->numRanks)
-              << "Invalid child rank " << tree.childrenNodes[j] << " in tree "
+          EXPECT_LT(tree.childrenNodes()[j], this->numRanks)
+              << "Invalid child rank " << tree.childrenNodes()[j] << " in tree "
               << i;
         }
       }
@@ -552,9 +562,10 @@ TEST_F(CommsMonitorDist, testNcclTopoInfoTreeStructureWithLazySetupChannels) {
       // If comm has more than 1 rank, at least one of parentNode or one child
       // should be valid (not -1) to form a connected tree
       if (this->numRanks > 1) {
-        bool hasValidParent = (tree.parentNode >= 0);
-        bool hasValidChild = std::ranges::any_of(
-            tree.childrenNodes, [](auto num) { return num >= 0; });
+        bool hasValidParent = (tree.parentNode() >= 0);
+        const auto& childNodes = *tree.childrenNodes();
+        bool hasValidChild =
+            std::ranges::any_of(childNodes, [](auto num) { return num >= 0; });
         EXPECT_TRUE(hasValidParent || hasValidChild)
             << "Tree " << i << " with " << this->numRanks
             << " ranks must have at least one valid parent or child connection";

@@ -207,27 +207,30 @@ struct NCCLCommRawEntry {
   // serialized json of ProcessGlobalErrors
   23: string processGlobalErrors;
   24: string NetworkPerfMonitor;
-  25: string ncclTopoInfo;
+  25: string commsTopoInfo;
 }
 
-struct NCCLTreeNodeInfo {
+struct TopoTreeNodeInfo {
   1: i64 parentNode;
-  // We should have at max three nodes in this list. In the list, -1 means no
-  // child node.
   2: list<i64> childrenNodes;
+  3: i64 rank;
 }
 
-struct NCCLTopologyInfo {
+struct CommsTopologyInfo {
   // For checking the correctness of treeInfo and rings. We should have a total
   // of nChannels of NCCLTreeNodeInfo for treeInfo and list<i64> for rings.
   1: i64 nChannels;
   // Information for who this local rank is connected in trees for each channel
   // We will report this for every rank and it is required to gather
   // the information from all the ranks to form the overall tree topology.
-  2: list<NCCLTreeNodeInfo> treeInfos;
+  2: list<TopoTreeNodeInfo> treeInfos;
   // All the rings nccl uses in the current communicator. Currently only rank 0
   // will report this.
+  // TODO: Check if only rank 0 creates the rings.
   3: optional list<list<i64>> rings;
+  4: string commDesc;
+  5: i64 globalRank;
+  6: i64 localRank;
 }
 
 // Reserving 24 for NetworkPerfMonitor, need to get the struct for it.
@@ -253,7 +256,7 @@ struct NCCLParsedEntry {
   18: map<CommRank, i64> MT_putFinishedByPeer;
   22: string stage;
   23: ProcessGlobalErrors processGlobalErrors;
-  25: NCCLTopologyInfo ncclTopoInfo;
+  25: CommsTopologyInfo commsTopoInfo;
 }
 
 struct GlobalInfo {
