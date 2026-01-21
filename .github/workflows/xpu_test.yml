@@ -7,6 +7,7 @@ on:
       - .github/workflows/xpu_test.yml
       - .github/scripts/xpu_test.sh
       - CMakeLists.txt
+      - comms/torchcomms/TorchComm.hpp
       - comms/torchcomms/device/XpuApi.cpp
       - comms/torchcomms/device/XpuApi.hpp
       - comms/torchcomms/tests/integration/py/TorchCommTestHelpers.py
@@ -28,10 +29,7 @@ jobs:
     timeout-minutes: 120
     runs-on: linux.idc.xpu.dist
     env:
-      DOCKER_IMAGE: ci-image:pytorch-linux-noble-xpu-n-py3
-      PYTORCH_RETRY_TEST_CASES: 1
-      PYTORCH_OVERRIDE_FLAKY_SIGNAL: 1
-      XLA_CLANG_CACHE_S3_BUCKET_NAME: ossci-compiler-clang-cache-circleci-xla
+      DOCKER_IMAGE: ghcr.io/pytorch/ci-image:pytorch-linux-noble-xpu-n-py3
     steps:
       - name: Checkout PyTorch
         uses: actions/checkout@v4
@@ -45,11 +43,7 @@ jobs:
       - name: Checkout Torchcomms
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.head_ref || github.ref }}
           path: torchcomms
-          fetch-depth: 1
-          submodules: recursive
 
       - name: Clean all stopped docker containers
         if: always()
@@ -97,44 +91,21 @@ jobs:
           render_gid=`cat /etc/group | grep render | cut -d: -f3`
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/dri --group-add video --group-add $render_gid" >> "${GITHUB_ENV}"
 
-      - name: configure aws credentials
-        id: aws_creds
-        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
-        with:
-          role-to-assume: arn:aws:iam::308535385114:role/gha_workflow_s3_and_ecr_read_only
-          aws-region: us-east-1
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
-
-      - name: Calculate docker image
-        id: calculate-docker-image
-        uses: pytorch/test-infra/.github/actions/calculate-docker-image@main
-        with:
-          docker-image-name: ${{ env.DOCKER_IMAGE }}
-          working-directory: pytorch
-          repo-name: pytorch
-
-      - name: Use following to pull public copy of the image
-        id: print-ghcr-mirror
-        env:
-          ECR_DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
-        shell: bash
+      - name: Get docker image
+        id: get-docker-image
+        working-directory: pytorch
         run: |
-          tag=${ECR_DOCKER_IMAGE##*:}
-          echo "docker pull ghcr.io/pytorch/ci-image:${tag/:/-}"
-
-      - name: Pull docker image
-        uses: pytorch/test-infra/.github/actions/pull-docker-image@main
-        with:
-          docker-image: ${{ steps.calculate-docker-image.outputs.docker-image }}
+          DOCKER_BUILD_DIR=".ci/docker"
+          DOCKER_IMAGE_TAG=$(git rev-parse HEAD:"${DOCKER_BUILD_DIR}")
+          DOCKER_IMAGE_NAME=${{ env.DOCKER_IMAGE }}-${DOCKER_IMAGE_TAG}
+          echo "docker-image=${DOCKER_IMAGE_NAME}" >> "${GITHUB_OUTPUT}"
+          docker pull "${DOCKER_IMAGE_NAME}"
 
       - name: Test
         id: test
         env:
           TEST_COMMAND: torchcomms/.github/scripts/xpu_test.sh
-          DOCKER_IMAGE: ${{ steps.calculate-docker-image.outputs.docker-image }}
+          DOCKER_IMAGE: ${{ steps.get-docker-image.outputs.docker-image }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_WORKFLOW: ${{ github.workflow }}
@@ -163,7 +134,6 @@ jobs:
             -e JOB_ID \
             -e BRANCH \
             -e SHA1 \
-            --user $(id -u):$(id -g) \
             --ulimit stack=10485760:83886080 \
             --ulimit core=0 \
             --security-opt seccomp=unconfined \
@@ -171,7 +141,6 @@ jobs:
             --shm-size="8g" \
             --tty \
             --detach \
-            --name="${container_name}" \
             --user jenkins \
             --privileged \
             -v "${GITHUB_WORKSPACE}:/var/lib/jenkins/workspace" \
