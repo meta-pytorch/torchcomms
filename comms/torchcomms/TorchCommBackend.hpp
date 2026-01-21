@@ -154,7 +154,6 @@ class TorchCommBackend {
     throw std::logic_error(
         "[TorchCommBackend]: new_window not implemented for communicator:" +
         std::string(getCommName()));
-    return nullptr;
   }
 };
 

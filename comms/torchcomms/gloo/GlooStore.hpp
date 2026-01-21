@@ -1,5 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+
+#pragma once
+
+#include <c10/util/intrusive_ptr.h>
 #include <gloo/rendezvous/store.h>
+#include <torch/csrc/Export.h> // @manual=//caffe2:torch-cpp-cpu
+#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
 namespace torch {
 namespace comms {
@@ -7,7 +13,7 @@ namespace comms {
 // Wrap c10d store as Gloo store
 class TORCH_API GlooStore : public ::gloo::rendezvous::Store {
  public:
-  GlooStore(c10::intrusive_ptr<::c10d::Store> store)
+  explicit GlooStore(c10::intrusive_ptr<::c10d::Store> store)
       : store_(std::move(store)) {}
 
   void setUint(const std::string& key, const std::vector<uint8_t>& value) {

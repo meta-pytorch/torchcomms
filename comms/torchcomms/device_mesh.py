@@ -44,7 +44,7 @@ def _create_torchcomm_process_group(
     group_name = GroupName(group_name)
 
     wrapper = _BackendWrapper(comm)  # noqa: F405
-    backend_type = dist.ProcessGroup.BackendType.CUSTOM  # noqa: F841
+    backend_type = dist.ProcessGroup.BackendType.CUSTOM
     backend_config = dist.BackendConfig(dist.Backend(backend_str))
 
     # Create process group

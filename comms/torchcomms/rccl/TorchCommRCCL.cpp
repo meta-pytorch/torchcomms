@@ -602,10 +602,6 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce(
   tracing_->recordEventWithInputOutput("reduce", root, {tensor}, {tensor});
 
   hipStream_t stream = getOperationStream(async_op);
-  std::vector<at::Tensor> output_tensors;
-  if (rank_ == root) {
-    output_tensors.push_back(tensor);
-  }
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 
@@ -1352,7 +1348,7 @@ std::shared_ptr<TorchCommBackend> TorchCommRCCL::split(
     }
     // Set color to the lowest rank in the group and calculate new rank
     color = *std::min_element(ranks.begin(), ranks.end());
-    new_rank = std::distance(ranks.begin(), it);
+    new_rank = static_cast<int>(std::distance(ranks.begin(), it));
   }
 
   // Create a new NCCL communicator
