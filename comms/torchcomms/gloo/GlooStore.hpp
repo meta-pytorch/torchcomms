@@ -1,5 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+
+#include <c10/util/intrusive_ptr.h>
 #include <gloo/rendezvous/store.h>
+#include <torch/csrc/Export.h> // @manual=//caffe2:torch-cpp-cpu
+#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
 namespace torch {
 namespace comms {
