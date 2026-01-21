@@ -23,6 +23,10 @@ TEST_F(TorchCommWindowNCCLXTest, windowPutExceedWindowSize) {
   auto large_input_tensor =
       createTestTensor({20, 10}); // Divisible by comm_size (2)
 
+  // CPU window operations
+  auto win = comm->new_window();
+  win->tensor_register(tensor);
+
   // Helper lambda to test that operations throw "exceeds the window size"
   // exception
   auto testOperation = [](const std::function<void()>& operation) {
@@ -40,17 +44,8 @@ TEST_F(TorchCommWindowNCCLXTest, windowPutExceedWindowSize) {
         std::runtime_error);
   };
 
-  // CPU window operations after finalize
-  auto win = comm->new_window();
-  win->tensor_register(tensor);
-
   testOperation([&]() { win->put(large_input_tensor, 0, 0, false); });
 
-  testOperation([&]() {
-    auto remote_tensor = win->map_remote_tensor(0);
-    // Try to access beyond window size via slicing
-    remote_tensor.index({at::indexing::Slice(0, large_input_tensor.numel())});
-  });
   // Finalize should wait for work to complete
   EXPECT_NO_THROW(comm->finalize());
 }

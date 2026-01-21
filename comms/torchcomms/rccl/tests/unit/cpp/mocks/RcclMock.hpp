@@ -171,6 +171,20 @@ class RcclMock : public RcclApi {
   MOCK_METHOD(ncclResult_t, groupStart, (), (override));
   MOCK_METHOD(ncclResult_t, groupEnd, (), (override));
   MOCK_METHOD(const char*, getErrorString, (ncclResult_t result), (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      redOpCreatePreMulSum,
+      (ncclRedOp_t * op,
+       void* scalar,
+       ncclDataType_t datatype,
+       ncclScalarResidence_t residence,
+       ncclComm_t comm),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      redOpDestroy,
+      (ncclRedOp_t op, ncclComm_t comm),
+      (override));
 
   // Helper method to set up default behaviors for common operations
   void setupDefaultBehaviors();

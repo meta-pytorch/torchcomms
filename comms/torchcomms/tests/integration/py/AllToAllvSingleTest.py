@@ -351,6 +351,66 @@ class AllToAllvSingleTest(unittest.TestCase):
                     )
             offset += output_split_sizes[i]
 
+    def _create_uniform_sizes(self, count):
+        """Create size vectors for uniform pattern."""
+        # Test with uniform sizes
+        input_sizes = [count] * self.num_ranks
+        output_sizes = [count] * self.num_ranks
+        return input_sizes, output_sizes
+
+    def _create_variable_sizes(self, count):
+        """Create size vectors for variable pattern."""
+        # Test with variable sizes - create a symmetric communication pattern
+        # Each rank i sends (i+1)*count elements to each other rank j
+        # So rank j should expect to receive (i+1)*count elements from rank i
+        input_sizes = []
+        output_sizes = []
+        for i in range(self.num_ranks):
+            # This rank sends (rank+1)*count elements to rank i
+            input_sizes.append((self.rank + 1) * count)
+            # This rank receives (i+1)*count elements from rank i
+            output_sizes.append((i + 1) * count)
+        return input_sizes, output_sizes
+
+    def _create_zero_sizes(self, count):
+        """Create size vectors for zero sizes pattern."""
+        # Test with some zero sizes - ensure symmetric pattern
+        input_sizes = []
+        output_sizes = []
+        for i in range(self.num_ranks):
+            # Create a pattern where some communications have zero size
+            # If this rank sends 0 to rank i, then rank i sends 0 to this rank
+            size = 0 if (self.rank + i) % 3 == 0 else count
+            input_sizes.append(size)
+
+            # This rank receives from rank i what rank i sends to this rank
+            recv_size = 0 if (i + self.rank) % 3 == 0 else count
+            output_sizes.append(recv_size)
+        return input_sizes, output_sizes
+
+    def _create_asymmetric_sizes(self, count):
+        """Create size vectors for asymmetric pattern."""
+        # Create an asymmetric pattern where even ranks send data but odd ranks don't
+        # However, odd ranks receive data from even ranks
+        input_sizes = []
+        output_sizes = []
+
+        for i in range(self.num_ranks):
+            if self.rank % 2 == 0:
+                # Even ranks send data to all ranks
+                input_sizes.append(count)
+            else:
+                # Odd ranks don't send any data
+                input_sizes.append(0)
+
+            if i % 2 == 0:
+                # All ranks receive data from even ranks
+                output_sizes.append(count)
+            else:
+                # All ranks don't receive from odd ranks (since they don't send)
+                output_sizes.append(0)
+        return input_sizes, output_sizes
+
     def test_all_tests(self):
         """Run all tests with all parameter combinations."""
 
@@ -361,47 +421,20 @@ class AllToAllvSingleTest(unittest.TestCase):
             ZERO_SIZES = "ZeroSizes"
 
         # Define size patterns to test (excluding AllZero which is handled separately)
-        size_patterns = [
-            SizePattern.UNIFORM,
-            SizePattern.VARIABLE,
-            SizePattern.ZERO_SIZES,
-        ]
+        size_pattern_creators = {
+            SizePattern.UNIFORM: self._create_uniform_sizes,
+            SizePattern.VARIABLE: self._create_variable_sizes,
+            SizePattern.ZERO_SIZES: self._create_zero_sizes,
+        }
 
         runCudaGraphTests = os.getenv("TEST_BACKEND") == "ncclx"
 
         # Nested loops for all parameter combinations (counts x patterns x dtypes)
         for count, pattern, dtype in itertools.product(
-            self.counts, size_patterns, self.dtypes
+            self.counts, size_pattern_creators.keys(), self.dtypes
         ):
             # Create size vectors based on pattern and count
-            if pattern == SizePattern.UNIFORM:
-                # Test with uniform sizes
-                input_sizes = [count] * self.num_ranks
-                output_sizes = [count] * self.num_ranks
-            elif pattern == SizePattern.VARIABLE:
-                # Test with variable sizes - create a symmetric communication pattern
-                # Each rank i sends (i+1)*count elements to each other rank j
-                # So rank j should expect to receive (i+1)*count elements from rank i
-                input_sizes = []
-                output_sizes = []
-                for i in range(self.num_ranks):
-                    # This rank sends (rank+1)*count elements to rank i
-                    input_sizes.append((self.rank + 1) * count)
-                    # This rank receives (i+1)*count elements from rank i
-                    output_sizes.append((i + 1) * count)
-            elif pattern == SizePattern.ZERO_SIZES:
-                # Test with some zero sizes - ensure symmetric pattern
-                input_sizes = []
-                output_sizes = []
-                for i in range(self.num_ranks):
-                    # Create a pattern where some communications have zero size
-                    # If this rank sends 0 to rank i, then rank i sends 0 to this rank
-                    size = 0 if (self.rank + i) % 3 == 0 else count
-                    input_sizes.append(size)
-
-                    # This rank receives from rank i what rank i sends to this rank
-                    recv_size = 0 if (i + self.rank) % 3 == 0 else count
-                    output_sizes.append(recv_size)
+            input_sizes, output_sizes = size_pattern_creators[pattern](count)
 
             # Create a descriptive test name for better test output
             test_name = f"{pattern.value}_{count}_{get_dtype_name(dtype)}"
@@ -473,25 +506,7 @@ class AllToAllvSingleTest(unittest.TestCase):
         # Test asymmetric communication: some ranks have all zero inputs but non-zero outputs
         for count in self.counts:
             for dtype in self.dtypes:
-                # Create an asymmetric pattern where even ranks send data but odd ranks don't
-                # However, odd ranks receive data from even ranks
-                input_sizes = []
-                output_sizes = []
-
-                for i in range(self.num_ranks):
-                    if self.rank % 2 == 0:
-                        # Even ranks send data to all ranks
-                        input_sizes.append(count)
-                    else:
-                        # Odd ranks don't send any data
-                        input_sizes.append(0)
-
-                    if i % 2 == 0:
-                        # All ranks receive data from even ranks
-                        output_sizes.append(count)
-                    else:
-                        # All ranks don't receive from odd ranks (since they don't send)
-                        output_sizes.append(0)
+                input_sizes, output_sizes = self._create_asymmetric_sizes(count)
 
                 # Create a descriptive test name for better test output
                 test_name = f"AsymmetricZeroInput_{count}_{get_dtype_name(dtype)}"
