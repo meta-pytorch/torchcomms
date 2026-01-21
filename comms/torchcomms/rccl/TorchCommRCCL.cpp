@@ -1352,7 +1352,7 @@ std::shared_ptr<TorchCommBackend> TorchCommRCCL::split(
     }
     // Set color to the lowest rank in the group and calculate new rank
     color = *std::min_element(ranks.begin(), ranks.end());
-    new_rank = std::distance(ranks.begin(), it);
+    new_rank = static_cast<int>(std::distance(ranks.begin(), it));
   }
 
   // Create a new NCCL communicator
