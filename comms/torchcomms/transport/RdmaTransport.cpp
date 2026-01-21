@@ -2,6 +2,8 @@
 
 #include "RdmaTransport.h"
 
+#include <folly/synchronization/CallOnce.h>
+
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
@@ -13,9 +15,9 @@ constexpr std::chrono::microseconds kProgressInterval{0};
 constexpr int kDummyRank = 0;
 constexpr int kDummyDevice = 0;
 
-std::once_flag initOnceFlag;
+folly::once_flag initOnceFlag;
 void initEnvironment() {
-  std::call_once(initOnceFlag, [] {
+  folly::call_once(initOnceFlag, [] {
     ncclCvarInit();
     ctran::logging::initCtranLogging();
     ctran::utils::commCudaLibraryInit();
@@ -84,10 +86,10 @@ RdmaTransport::RdmaTransport(int cudaDev, folly::EventBase* evb)
 RdmaTransport::~RdmaTransport() {}
 
 namespace {
-std::once_flag queryRdmaSupportOnceFlag;
+folly::once_flag queryRdmaSupportOnceFlag;
 bool rdmaSupport = false;
 bool queryRdmaSupport() {
-  std::call_once(queryRdmaSupportOnceFlag, [] {
+  folly::call_once(queryRdmaSupportOnceFlag, [] {
     XLOG(INFO) << "Querying RdmaTransport support";
     try {
       auto ib = std::make_unique<CtranIb>(
