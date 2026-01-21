@@ -1,18 +1,20 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
-#include <ATen/cuda/CUDAContext.h>
 #include <gtest/gtest.h>
 #include <json/reader.h>
 #include <json/value.h>
 #include <torch/csrc/autograd/profiler_kineto.h> // @manual=//caffe2:torch-cpp-cpu
 #include <filesystem>
+#include <functional>
+#include <map>
 #include <vector>
 #include "comms/torchcomms/TorchComm.hpp"
 
-constexpr int kTensorCount = 4;
-constexpr at::ScalarType kTensorDtype = at::kFloat;
+constexpr int kProfilerTestTensorCount = 4;
+constexpr at::ScalarType kProfilerTestTensorDtype = at::kFloat;
 
+// RAII guard for profiler setup/teardown
 class ProfilerGuard {
  public:
   ProfilerGuard() {
@@ -29,6 +31,7 @@ class ProfilerGuard {
     torch::autograd::profiler::prepareProfiler(cfg, activities);
     torch::autograd::profiler::enableProfiler(cfg, activities);
   }
+
   // Disable copy and move semantics
   ProfilerGuard(ProfilerGuard&&) = delete;
   ProfilerGuard& operator=(ProfilerGuard&&) = delete;
@@ -51,28 +54,42 @@ class ProfilerGuard {
   std::optional<std::string> trace_file_{std::nullopt};
 };
 
+// Validation function type: takes parsed events map and performs assertions
+using ProfilerValidationFunc =
+    std::function<void(const std::map<std::string, std::vector<Json::Value>>&)>;
+
+// Backend-agnostic profiler test base class
 class ProfilerTest : public ::testing::Test {
  public:
-  ProfilerTest() : ProfilerTest(c10::DeviceType::CUDA) {}
-  explicit ProfilerTest(c10::DeviceType device_type)
-      : rank_(0), num_ranks_(0), device_type_(device_type) {}
+  ProfilerTest(
+      std::string backend,
+      c10::DeviceType device_type,
+      ProfilerValidationFunc validation_func)
+      : backend_(std::move(backend)),
+        device_type_(device_type),
+        validation_func_(std::move(validation_func)),
+        rank_(0),
+        num_ranks_(0) {}
 
-  // Helper function declarations with parameters
-  Json::Value readTraceFile(std::filesystem::path& trace_file);
+  ~ProfilerTest() override = default;
 
-  void sanityCheckProfilerMeta(
-      Json::Value& json_value,
+  // Helper functions
+  static Json::Value readTraceFile(const std::filesystem::path& trace_file);
+
+  static void sanityCheckProfilerMeta(
+      const Json::Value& json_value,
       std::map<std::string, std::vector<Json::Value>>& events);
 
   c10::intrusive_ptr<torch::comms::TorchWork> runAllCollectiveOperations();
 
  protected:
   void SetUp() override;
-
   void TearDown() override;
 
+  std::string backend_;
+  c10::DeviceType device_type_;
+  ProfilerValidationFunc validation_func_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;
   int rank_;
   int num_ranks_;
-  c10::DeviceType device_type_;
 };
