@@ -172,6 +172,12 @@ ncclResult_t DefaultNcclApi::allToAll(
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 28, 0)
   return ncclAlltoAll(sendbuff, recvbuff, count, datatype, comm, stream);
 #else
+  (void)sendbuff;
+  (void)recvbuff;
+  (void)count;
+  (void)datatype;
+  (void)comm;
+  (void)stream;
   TC_LOG(ERROR) << "NCCL version " << NCCL_VERSION_CODE
                 << " does not support ncclAlltoAll API";
   return ncclInvalidUsage;

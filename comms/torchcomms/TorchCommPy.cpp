@@ -43,9 +43,7 @@ PYBIND11_MODULE(_comms, m) {
           py::arg("opType"),
           py::call_guard<py::gil_scoped_release>())
       .def("__copy__", [](const ReduceOp& self) { return self; })
-      .def(
-          "__deepcopy__",
-          [](const ReduceOp& self, py::dict) { return self; })
+      .def("__deepcopy__", [](const ReduceOp& self, py::dict) { return self; })
       .def_property_readonly(
           "type", &ReduceOp::type, "Get the type of the operation")
       .def_static(
@@ -177,10 +175,22 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
             self.tensor_register(tensor);
           },
           R"(
-Register a tensor buffer to a window for RMA operations.
+Register a tensor buffer with the window for RMA operations.
 
 Args:
-    tensor: the contiguous tensor buffer to register as a window
+    tensor (torch.Tensor): Contiguous tensor to register. Must be allocated
+        via ``comm.mem_allocator`` using cuMem APIs.
+
+Raises:
+    RuntimeError: If tensor is not contiguous or a buffer is already registered.
+
+Example:
+
+.. code-block:: python
+
+    buffer = comm.mem_allocator.allocate(size, dtype, device)
+    window = comm.new_window()
+    window.tensor_register(buffer)
 
       )",
           py::arg("tensor"),
@@ -189,18 +199,29 @@ Args:
           "tensor_deregister",
           &TorchCommWindow::tensor_deregister,
           R"(
-Deregister the window and free all associated resources.
+Deregister the tensor buffer and free window resources.
 
-This is a collective operation that includes internal barriers to ensure:
-1. All ranks have finished using the window before deregistration
-2. All ranks have completed deregistration before proceeding
+This is a collective operation with internal barriers ensuring all ranks
+finish using the window before deregistration.
+
+Raises:
+    RuntimeError: If no tensor is currently registered.
+
+Note:
+    Any tensors from ``map_remote_tensor`` become invalid after this call.
 
       )",
           py::call_guard<py::gil_scoped_release>())
       .def(
           "get_size",
           &TorchCommWindow::get_size,
-          R"(Get the size of the window)",
+          R"(
+Get the size of the registered window buffer in bytes.
+
+Returns:
+    int: Size in bytes, or 0 if no tensor is registered.
+
+      )",
           py::call_guard<py::gil_scoped_release>())
       .def(
           "get_buf_dtype",
@@ -264,31 +285,37 @@ Note:
           },
 
           R"(
-Put allows you to put a tensor into the previously allocated remote window.
+Write data to a remote rank's window buffer (one-sided put).
+
+The receiver does not participate; use ``signal``/``wait_signal`` to
+synchronize before accessing the data.
 
 Args:
-    tensor: the tensor to put
-    dst_rank: the destination rank
-    target_offset_nelems: the target offset in number of elements
-    async_op: if this is true, the operation is asynced and will be enqueued on a background stream and a TorchWork object is returned.
+    tensor (torch.Tensor): Data to write. Must match the window buffer dtype.
+    dst_rank (int): Destination rank.
+    target_offset_nelems (int): Offset in destination buffer (in elements).
+    async_op (bool): if this is true, the operation is asynced and will be enqueued on a background stream and a TorchWork object is returned.
+    hints (Dict[str, str], optional): Backend-specific hints.
+    timeout (timedelta, optional): Operation timeout.
 
+Returns:
+    TorchWork: Work object for synchronization.
 
-Example usage:
+Raises:
+    RuntimeError: If data exceeds window buffer size.
+
+Example:
 
 .. code-block:: python
 
-  tensor = ...
-  # create a window
-  window = torchcomms.create_window(window_size, cpu_buf)
-  # put a tensor into the window
-  work = window.put(tensor, dst_rank, target_offset_nelems, async_op=True)
-  work.wait()
+    # Sender (rank 0)
+    work = window.put(data, dst_rank=1, target_offset_nelems=0, async_op=True)
+    work.wait()
+    window.signal(peer_rank=1, async_op=False)
 
-  # on the remote side, get the tensor from the window after waiting on the remote signal
-  tensor = window.map_remote_tensor(rank)
-
-  # safely use the tensor after the collective completes
-  tensor.sum()
+    # Receiver (rank 1)
+    window.wait_signal(peer_rank=0, async_op=False)
+    received = buffer[:data.numel()]
 
       )",
           py::arg("tensor"),
@@ -315,11 +342,25 @@ Example usage:
             return self.signal(peer_rank, async_op, opts);
           },
           R"(
-Atomic signal to notify remote peer of a change in state.
+Atomically send a signal to notify a remote peer that data is ready.
+
+Used with ``wait_signal`` to synchronize.
 
 Args:
-    peer_rank: the rank of the remote peer to signal.
-    async_op: if this is true, the operation is asynced.
+    peer_rank (int): Destination rank to signal.
+    async_op (bool): If True, returns TorchWork for async completion.
+    hints (Dict[str, str], optional): Backend-specific hints.
+    timeout (timedelta, optional): Operation timeout.
+
+Returns:
+    TorchWork: Work object for synchronization.
+
+Example:
+
+.. code-block:: python
+
+    window.put(data, dst_rank=1, ...)
+    window.signal(peer_rank=1, async_op=False)
 
       )",
           py::arg("peer_rank"),
@@ -343,7 +384,29 @@ Args:
             }
             return self.wait_signal(peer_rank, async_op, opts);
           },
-          "wait for a signal from remote peer",
+          R"(
+Wait for a signal from a remote peer.
+
+Blocks until the peer calls ``signal``. Used to synchronize before
+accessing data written by ``put``.
+
+Args:
+    peer_rank (int): Rank to wait for signal from.
+    async_op (bool): If True, returns TorchWork for async completion.
+    hints (Dict[str, str], optional): Backend-specific hints.
+    timeout (timedelta, optional): Operation timeout.
+
+Returns:
+    TorchWork: Work object for synchronization.
+
+Example:
+
+.. code-block:: python
+
+    window.wait_signal(peer_rank=0, async_op=False)
+    received = buffer[:size]
+
+      )",
           py::arg("peer_rank"),
           py::arg("async_op"),
           py::arg("hints") = std::nullopt,
@@ -352,29 +415,57 @@ Args:
       .def(
           "get_attr",
           &TorchCommWindow::get_attr,
-          "get the attribute of the window",
+          R"(
+Get window attributes for a peer rank.
+
+Args:
+    peer_rank (int): Rank to query attributes for.
+
+Returns:
+    TorchCommWindowAttr: Contains ``access_type``:
+        - ``WIN_ACCESS_TYPE_UNIFIED``: Direct memory access (NVLink)
+        - ``WIN_ACCESS_TYPE_SEPARATE``: Network-based access
+
+Example:
+
+.. code-block:: python
+
+    attr = window.get_attr(peer_rank=1)
+    if attr.access_type == torchcomms.TorchCommlWinAccessType.WIN_ACCESS_TYPE_UNIFIED:
+        remote = window.map_remote_tensor(rank=1)
+
+      )",
           py::arg("peer_rank"),
           py::call_guard<py::gil_scoped_release>())
       .def(
           "map_remote_tensor",
           &TorchCommWindow::map_remote_tensor,
           R"(
-Get the entire tensor view from the remote rank's window buffer.
+Map a remote rank's window buffer as a local tensor.
 
-This method returns a tensor view of the complete registered buffer from
-the specified rank's window. Users can slice the returned tensor as needed.
+Only supported when ``get_attr(rank)`` returns ``WIN_ACCESS_TYPE_UNIFIED``
+(direct memory access via NVLink). Network-based access (``WIN_ACCESS_TYPE_SEPARATE``)
+is not yet supported.
 
 Args:
-    rank: The rank whose window to access.
+    rank (int): Remote rank whose buffer to map.
 
 Returns:
-    A tensor view with the same shape as the registered buffer.
+    torch.Tensor: View of the remote rank's window buffer.
+
+Raises:
+    RuntimeError: If direct memory access is not available.
+
+Note:
+    Tensor becomes invalid after ``tensor_deregister()``.
 
 Example:
-    If the registered buffer has shape [100, 512, 128]:
-    - full_tensor = map_remote_tensor(rank=0)
-      returns a tensor with shape [100, 512, 128]
-    - You can then slice it: sliced = full_tensor[20:65]
+
+.. code-block:: python
+
+    attr = window.get_attr(peer_rank=1)
+    if attr.access_type == torchcomms.TorchCommlWinAccessType.WIN_ACCESS_TYPE_UNIFIED:
+        remote = window.map_remote_tensor(rank=1)
 
       )",
           py::arg("rank"),
@@ -706,7 +797,7 @@ Args:
           "all_reduce",
           [](TorchComm& self,
              at::Tensor& tensor,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -740,7 +831,7 @@ Args:
           [](TorchComm& self,
              const at::Tensor& tensor,
              int root,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -883,7 +974,7 @@ Args:
           [](TorchComm& self,
              at::Tensor& output,
              const std::vector<at::Tensor>& input_list,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -919,7 +1010,7 @@ Args:
           [](TorchComm& self,
              at::Tensor& output,
              const std::vector<at::Tensor>& input_list,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -956,7 +1047,7 @@ Args:
           [](TorchComm& self,
              at::Tensor& output,
              const at::Tensor& input,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -1216,10 +1307,36 @@ Args:
           "new_window",
           [](TorchComm& self) { return self.new_window(); },
           R"(
-Create a new window object for RMA operations.
+Create a new window object for Remote Memory Access (RMA) operations.
+
+Windows enable one-sided communication where data can be written directly
+to a remote rank's buffer without receiver-side participation.
 
 Returns:
-    TorchCommWindow: An unregistered window object. Call window.tensor_register(tensor) to register a tensor buffer.
+    TorchCommWindow: Unregistered window object.
+
+Note:
+    Requires ``ncclx`` backend.
+
+Example:
+
+.. code-block:: python
+
+    # Create window and register buffer (must use mem_allocator)
+    buffer = comm.mem_allocator.allocate(size, dtype, device)
+    window = comm.new_window()
+    window.tensor_register(buffer)
+
+    # Sender
+    window.put(data, dst_rank=1, target_offset_nelems=0, async_op=False)
+    window.signal(peer_rank=1, async_op=False)
+
+    # Receiver
+    window.wait_signal(peer_rank=0, async_op=False)
+    received = buffer[:size]
+
+    # Cleanup
+    window.tensor_deregister()
 
       )",
           py::call_guard<py::gil_scoped_release>())
