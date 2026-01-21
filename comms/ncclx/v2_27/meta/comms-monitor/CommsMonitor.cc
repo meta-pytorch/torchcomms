@@ -16,8 +16,8 @@ namespace ncclx::comms_monitor {
 namespace {
 struct CommsMonitorSingletonTag {};
 
-std::vector<int> getVectorRingFromArray(int nRanks, int* ring) {
-  std::vector<int> ringVec;
+std::vector<int64_t> getVectorRingFromArray(int nRanks, int* ring) {
+  std::vector<int64_t> ringVec;
   ringVec.reserve(nRanks);
   for (int i = 0; i < nRanks; i++) {
     ringVec.push_back(ring[i]);
@@ -80,6 +80,34 @@ NcclTopoInfo NcclTopoInfo::fromNcclComm(ncclComm_t comm) {
             .childrenNodes = getTreeChildArray(channel.tree.down)});
   }
   return topoInfo;
+}
+
+::comms::NCCLTreeNodeInfo NcclTreeNodeInfo::toThrift() const {
+  ::comms::NCCLTreeNodeInfo thriftNcclTreeNodeInfo;
+  thriftNcclTreeNodeInfo.parentNode() = this->parentNode;
+
+  std::vector<int64_t> childNodes;
+  childNodes.reserve(this->childrenNodes.size());
+  for (auto child : this->childrenNodes) {
+    childNodes.emplace_back(child);
+  }
+
+  thriftNcclTreeNodeInfo.childrenNodes() = std::move(childNodes);
+  return thriftNcclTreeNodeInfo;
+}
+
+::comms::NCCLTopologyInfo NcclTopoInfo::toThrift() const {
+  ::comms::NCCLTopologyInfo thriftNcclTopoInfo;
+  thriftNcclTopoInfo.nChannels() = this->nChannels;
+  thriftNcclTopoInfo.rings() = this->rings;
+
+  std::vector<::comms::NCCLTreeNodeInfo> treeInfos;
+  treeInfos.reserve(this->trees.size());
+  for (const auto& treeInfo : this->trees) {
+    treeInfos.emplace_back(treeInfo.toThrift());
+  }
+  thriftNcclTopoInfo.treeInfos() = std::move(treeInfos);
+  return thriftNcclTopoInfo;
 }
 
 bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {
