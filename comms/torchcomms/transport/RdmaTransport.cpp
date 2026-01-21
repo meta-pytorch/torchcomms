@@ -140,7 +140,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
   CHECK_THROW(evb_, std::runtime_error);
   CHECK_THROW(localBuffer.size() <= remoteBuffer.len, std::runtime_error);
 
-  CHECK(cudaDev_ == localBuffer->getDevice());
+  CHECK_EQ(cudaDev_, localBuffer->getDevice());
 
   auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
   auto work = std::make_unique<Work>();
@@ -190,7 +190,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
   CHECK_THROW(connected(), std::runtime_error);
   CHECK_THROW(evb_, std::runtime_error);
 
-  CHECK(cudaDev_ == localBuffer->getDevice());
+  CHECK_EQ(cudaDev_, localBuffer->getDevice());
 
   auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
   auto work = std::make_unique<Work>();
