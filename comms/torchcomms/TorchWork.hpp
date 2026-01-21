@@ -59,7 +59,7 @@ class TorchWorkCompleted : public TorchWork {
 
 class TorchWorkThread : public TorchWork {
  public:
-  TorchWorkThread(std::function<void()> fn);
+  explicit TorchWorkThread(std::function<void()> fn);
   ~TorchWorkThread() override = default;
 
   // Override virtual functions from TorchWork
