@@ -93,8 +93,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
-      backend_->broadcast(tensors.at(0), opts.rootRank, opts.asyncOp, bopts));
+  return c10::make_intrusive<WorkWrapper>(backend_->broadcast(
+      tensors.at(0), static_cast<int>(opts.rootRank), opts.asyncOp, bopts));
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce(
@@ -131,7 +131,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce(
   }
   return c10::make_intrusive<WorkWrapper>(backend_->reduce(
       tensors.at(0),
-      opts.rootRank,
+      static_cast<int>(opts.rootRank),
       toReduceOp(opts.reduceOp),
       opts.asyncOp,
       bopts));
@@ -213,7 +213,10 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::gather(
     bopts.timeout = opts.timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->gather(
-      outputTensors.at(0), inputTensors.at(0), opts.rootRank, opts.asyncOp));
+      outputTensors.at(0),
+      inputTensors.at(0),
+      static_cast<int>(opts.rootRank),
+      opts.asyncOp));
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::scatter(
@@ -234,7 +237,10 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::scatter(
     inputTensors.emplace_back();
   }
   return c10::make_intrusive<WorkWrapper>(backend_->scatter(
-      outputTensors.at(0), inputTensors.at(0), opts.rootRank, opts.asyncOp));
+      outputTensors.at(0),
+      inputTensors.at(0),
+      static_cast<int>(opts.rootRank),
+      opts.asyncOp));
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter(
