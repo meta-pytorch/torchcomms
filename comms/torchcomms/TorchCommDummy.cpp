@@ -8,6 +8,7 @@
 namespace torch {
 namespace comms {
 
+namespace {
 class DummyTorchCommWindow : public TorchCommWindow {
  public:
   void tensor_register(const at::Tensor& tensor) override {
@@ -53,6 +54,7 @@ class DummyTorchCommWindow : public TorchCommWindow {
     return nullptr;
   }
 };
+} // namespace
 
 TorchCommDummy::TorchCommDummy()
     : initialized_(false), device_(at::kCPU), rank_(0), size_(1) {}
