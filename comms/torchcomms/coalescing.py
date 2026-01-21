@@ -9,7 +9,20 @@ import torch
 from torchcomms._comms import TorchComm, TorchWork
 
 logger: logging.Logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
+logger_is_enabled_for_debug: bool = logger.isEnabledFor(logging.DEBUG)
+
+
+def _log(msg: str, *args: object) -> None:
+    """Log a message, using HOP print during compilation if DEBUG is enabled."""
+    if torch.compiler.is_compiling():
+        if logger_is_enabled_for_debug:
+            # Use HOP print to avoid graph breaks during compilation
+            # and gate behind logger_is_enabled_for_debug so we don't
+            # pollute the graph unless absolutely needed.
+            formatted = msg % args if args else msg
+            torch._higher_order_ops.print("{}", formatted)
+    else:
+        logger.debug(msg, *args)
 
 
 def _are_we_tracing() -> bool:
@@ -22,6 +35,27 @@ def _are_we_tracing() -> bool:
     if torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FAKE) is not None:
         return True
     return False
+
+
+def _log_coalesced_ops(
+    manager: "CoalescingManager",
+    comm: "TorchComm",  # noqa: F405
+) -> None:
+    """Log information about coalesced operations."""
+    num_tensors = len(manager.tensors)
+    _log(
+        "[torchcomms] Coalescing block ended on comm=%s with %d tensor(s)",
+        comm.get_name(),
+        num_tensors,
+    )
+
+    if num_tensors > 0:
+        # Log tensor details
+        tensor_info = []
+        for i, t in enumerate(manager.tensors):
+            info = f"  [{i}] shape={list(t.shape)}, dtype={t.dtype}, device={t.device}"
+            tensor_info.append(info)
+        _log("[torchcomms] Coalesced tensors:\n%s", "\n".join(tensor_info))
 
 
 class CoalescingManager:
@@ -107,13 +141,11 @@ def coalesce(
 
     manager = CoalescingManager()
 
-    # fullgraph=True doesn't support logger
-    if not torch.compiler.is_compiling():
-        logger.info(
-            "[torchcomms] Starting coalescing block on comm=%s (tracing=%s)",
-            comm.get_name(),
-            _are_we_tracing(),
-        )
+    _log(
+        "[torchcomms] Starting coalescing block on comm=%s (tracing=%s)",
+        comm.get_name(),
+        _are_we_tracing(),
+    )
 
     # Start Python-level tracking for torch.compile fullgraph support
     # Pass the manager so tensors are registered directly on it
@@ -125,3 +157,4 @@ def coalesce(
     finally:
         manager.work = comm.end_coalescing()
         _end_coalescing_context()
+        _log_coalesced_ops(manager, comm)

@@ -11,42 +11,37 @@
 #include <vector>
 
 void ProfilerTest::SetUp() {
-  // Create CUDA device
   c10::Device device = c10::Device(device_type_);
-
-  // Create TorchComm with options (but no store)
-  std::string backend = "ncclx";
-
   torch::comms::CommOptions options;
   torchcomm_ =
-      torch::comms::new_comm(backend, device, "comms_test_name", options);
+      torch::comms::new_comm(backend_, device, "comms_test_name", options);
 }
 
 void ProfilerTest::TearDown() {
-  // Reset the TorchComm object to ensure proper cleanup
   if (torchcomm_) {
     torchcomm_.reset();
   }
 }
 
-Json::Value ProfilerTest::readTraceFile(std::filesystem::path& trace_file) {
+Json::Value ProfilerTest::readTraceFile(
+    const std::filesystem::path& trace_file) {
   Json::Value result;
-  std::ifstream people_file(trace_file, std::ifstream::binary);
-  people_file >> result;
+  std::ifstream file(trace_file, std::ifstream::binary);
+  file >> result;
   return result;
 }
 
 void ProfilerTest::sanityCheckProfilerMeta(
-    Json::Value& json_value,
+    const Json::Value& json_value,
     std::map<std::string, std::vector<Json::Value>>& events) {
   ASSERT_GT(json_value["traceEvents"].size(), 1u);
 
-  for (auto& event : json_value["traceEvents"]) {
+  for (const auto& event : json_value["traceEvents"]) {
     if (event["name"] != "record_param_comms") {
       continue;
     }
 
-    auto& args = event["args"];
+    const auto& args = event["args"];
     auto coll_name = args["Collective name"].asString();
     ASSERT_NE(coll_name, "");
     ASSERT_NE(args["dtype"], "");
@@ -67,37 +62,41 @@ void ProfilerTest::sanityCheckProfilerMeta(
 
 c10::intrusive_ptr<torch::comms::TorchWork>
 ProfilerTest::runAllCollectiveOperations() {
-  auto options = at::TensorOptions().dtype(kTensorDtype).device(device_type_);
+  auto options =
+      at::TensorOptions().dtype(kProfilerTestTensorDtype).device(device_type_);
 
-  // Prepare multiple tensors for all the operations to be tested.
-  auto send_tensor = at::ones(kTensorCount, options) * float(rank_ + 1);
-  auto recv_tensor = at::zeros(kTensorCount, options);
+  auto send_tensor =
+      at::ones(kProfilerTestTensorCount, options) * float(rank_ + 1);
+  auto recv_tensor = at::zeros(kProfilerTestTensorCount, options);
+
   std::vector<at::Tensor> tensors_all_ranks;
   tensors_all_ranks.reserve(num_ranks_);
   for (int i = 0; i < num_ranks_; i++) {
-    tensors_all_ranks.push_back(at::zeros(kTensorCount, options));
+    tensors_all_ranks.push_back(at::zeros(kProfilerTestTensorCount, options));
   }
+
   std::vector<at::Tensor> input_tensors;
   input_tensors.reserve(num_ranks_);
   for (int i = 0; i < num_ranks_; i++) {
-    input_tensors.push_back(at::zeros(kTensorCount, options));
+    input_tensors.push_back(at::zeros(kProfilerTestTensorCount, options));
   }
-  auto recv_tensor_single = at::zeros(kTensorCount * num_ranks_, options);
-  auto send_tensor_single = at::zeros(kTensorCount * num_ranks_, options);
 
-  // Create split sizes for all_to_all_v_single
-  std::vector<uint64_t> input_split_sizes(num_ranks_, kTensorCount);
-  std::vector<uint64_t> output_split_sizes(num_ranks_, kTensorCount);
+  auto recv_tensor_single =
+      at::zeros(kProfilerTestTensorCount * num_ranks_, options);
+  auto send_tensor_single =
+      at::zeros(kProfilerTestTensorCount * num_ranks_, options);
+
+  std::vector<uint64_t> input_split_sizes(num_ranks_, kProfilerTestTensorCount);
+  std::vector<uint64_t> output_split_sizes(
+      num_ranks_, kProfilerTestTensorCount);
 
   int send_rank = (rank_ + 1) % num_ranks_;
   int recv_rank = (rank_ + num_ranks_ - 1) % num_ranks_;
 
   if (rank_ % 2 == 0) {
-    // Even ranks: send first, then receive
     torchcomm_->send(send_tensor, send_rank, false);
     torchcomm_->recv(recv_tensor, recv_rank, false);
   } else {
-    // Odd ranks: receive first, then send
     torchcomm_->recv(recv_tensor, recv_rank, false);
     torchcomm_->send(send_tensor, send_rank, false);
   }

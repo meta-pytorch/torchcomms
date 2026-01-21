@@ -103,8 +103,8 @@ std::pair<int, int> query_ranksize() {
       ranksize_query_method.begin(),
       [](unsigned char c) { return std::tolower(c); });
 
-  int rank = -1;
-  int comm_size = -1;
+  int rank;
+  int comm_size;
 
   do {
     // Read from TORCHCOMM_RANK and TORCHCOMM_SIZE environment variables
