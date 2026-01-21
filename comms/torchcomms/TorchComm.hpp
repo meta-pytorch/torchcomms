@@ -128,6 +128,11 @@ class TorchComm {
       bool async_op,
       const GatherOptions& options = {});
 
+  // start a coalescing block - subsequent collectives will be batched
+  void startCoalescing();
+  // end the current coalescing block and execute all batched collectives
+  c10::intrusive_ptr<TorchWork> endCoalescing();
+
   // Communicator Management
   std::shared_ptr<TorchComm> split(
       const std::vector<int>& ranks,

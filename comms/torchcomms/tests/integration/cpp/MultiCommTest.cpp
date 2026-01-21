@@ -94,7 +94,7 @@ class MultiCommTest : public ::testing::Test, public MultiCommTestBase {
 
   void destroyStoreAndSyncStream(
       c10::intrusive_ptr<c10d::Store>&& store,
-      std::shared_ptr<torch::comms::TorchComm> torchcomm) {
+      const std::shared_ptr<torch::comms::TorchComm>& torchcomm) {
     destroyStore(std::move(store), torchcomm);
 
     int rank = torchcomm->getRank();

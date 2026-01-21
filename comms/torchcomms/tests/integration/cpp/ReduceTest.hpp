@@ -16,28 +16,34 @@ class ReduceTest
       : rank_(0), num_ranks_(0), device_index_(0), device_type_(device_type) {}
 
   // Test function declarations with parameters
-  void
-  testSyncReduce(int count, at::ScalarType dtype, torch::comms::ReduceOp op);
+  void testSyncReduce(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
   void testSyncReduceNoWork(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
-  void
-  testAsyncReduce(int count, at::ScalarType dtype, torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
+  void testAsyncReduce(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
   void testAsyncReduceEarlyReset(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
   void testReduceInputDeleted(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
-  void
-  testGraphReduce(int count, at::ScalarType dtype, torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
+  void testGraphReduce(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
   void testGraphReduceInputDeleted(
       int count,
       at::ScalarType dtype,
-      torch::comms::ReduceOp op);
+      const torch::comms::ReduceOp& op);
 
  protected:
   virtual void synchronizeStream();
@@ -59,9 +65,9 @@ class ReduceTest
 
   // Helper function declarations with parameters
   virtual at::Tensor createInputTensor(int count, at::ScalarType dtype);
-  int calculateExpectedResult(torch::comms::ReduceOp op);
+  int calculateExpectedResult(const torch::comms::ReduceOp& op);
   void verifyResults(
       const at::Tensor& output,
-      torch::comms::ReduceOp op,
+      const torch::comms::ReduceOp& op,
       int root_rank);
 };
