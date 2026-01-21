@@ -10,7 +10,7 @@ namespace comms {
 TorchCommWindowNCCLX::TorchCommWindowNCCLX(
     ncclComm_t ncclComm,
     std::shared_ptr<TorchCommNCCLX> torchComm)
-    : nccl_comm_(ncclComm), torch_comm_(torchComm) {
+    : nccl_comm_(ncclComm), torch_comm_(std::move(torchComm)) {
   // make sure the torchComm & ncclComm are not null
   checkCommAndThrow();
 
