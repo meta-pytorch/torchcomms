@@ -740,7 +740,7 @@ Args:
           "all_reduce",
           [](TorchComm& self,
              at::Tensor& tensor,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -774,7 +774,7 @@ Args:
           [](TorchComm& self,
              const at::Tensor& tensor,
              int root,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -917,7 +917,7 @@ Args:
           [](TorchComm& self,
              at::Tensor& output,
              const std::vector<at::Tensor>& input_list,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -953,7 +953,7 @@ Args:
           [](TorchComm& self,
              at::Tensor& output,
              const std::vector<at::Tensor>& input_list,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
@@ -990,7 +990,7 @@ Args:
           [](TorchComm& self,
              at::Tensor& output,
              const at::Tensor& input,
-             ReduceOp op,
+             const ReduceOp& op,
              bool async_op,
              std::optional<std::unordered_map<std::string, std::string>> hints,
              std::optional<std::chrono::milliseconds> timeout) {
