@@ -86,6 +86,7 @@ class RdmaMemory : folly::MoveOnly {
 
   RdmaMemory(const void* buf, size_t len, int cudaDev);
   RdmaMemory(RdmaMemory&& other) noexcept;
+  RdmaMemory& operator=(RdmaMemory&& other) = delete;
   ~RdmaMemory();
 
   View createView() const {
@@ -211,6 +212,12 @@ class __attribute__((visibility("default"))) RdmaTransport {
   explicit RdmaTransport(int cudaDev, folly::EventBase* evb = nullptr);
 
   ~RdmaTransport();
+
+  // Non-copyable and non-movable
+  RdmaTransport(const RdmaTransport&) = delete;
+  RdmaTransport& operator=(const RdmaTransport&) = delete;
+  RdmaTransport(RdmaTransport&&) = delete;
+  RdmaTransport& operator=(RdmaTransport&&) = delete;
 
   /* Query whether RDMA is supported on the platform.
    * If not, it is likely that the platform does not have backend NIC or no
