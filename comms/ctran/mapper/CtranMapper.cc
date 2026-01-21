@@ -1,6 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/ctran/mapper/CtranMapper.h"
 #include <unistd.h>
 #include <cassert>
 #include <cstdio>
@@ -12,7 +11,9 @@
 
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
+#include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/commSpecs.h"
@@ -108,7 +109,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
       this->ctranIb =
           std::make_unique<class CtranIb>(comm, this->ctrlMgr.get());
       this->ctranIb->regCtrlCb(this->ctrlMgr);
-    } catch (const std::bad_alloc& e) {
+    } catch ([[maybe_unused]] const std::bad_alloc& e) {
       ctranIb = nullptr;
       enableBackends_[CtranMapperBackend::IB] = false;
       CLOGF(WARN, "CTRAN-MAPPER: IB backend not enabled");
@@ -138,7 +139,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
       try {
         this->ctranNvl = std::make_unique<class CtranNvl>(comm);
         this->ctranNvl->regCtrlCb(this->ctrlMgr);
-      } catch (const std::bad_alloc& e) {
+      } catch ([[maybe_unused]] const std::bad_alloc& e) {
         enableBackends_[CtranMapperBackend::NVL] = false;
         // FIXME: give more specific exception + error message
         CLOGF(
@@ -411,7 +412,7 @@ commResult_t CtranMapper::epochUnlock() {
   return commSuccess;
 }
 
-commResult_t CtranMapper::remReleaseMem(CtranMapperRegElem* regElem) {
+commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
   if (!this->atDestruction) {
     // Notify remote rank to release previous imported memory via NVL backend.
     // Skip if deregMem is called at destruction, since remote rank will release
@@ -467,14 +468,14 @@ commResult_t CtranMapper::regMem(
     bool forceRegist,
     bool ncclManaged,
     void** regHdl) {
-  auto regCache = CtranMapperRegCache::getInstance();
-  CHECK_VALID_REGCACHE(regCache);
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
 
   const int cudaDev = comm->statex_->cudaDev();
   // Cache segment.
   // regCache either returns an already cached handle or create a
   // new entry if the segment is not yet cached.
-  CtranMapperSegment* segment = nullptr;
+  ctran::regcache::Segment* segment = nullptr;
   void* segHdl_ = nullptr;
 
   FB_COMMCHECK(regCache->cacheSegment(
@@ -487,7 +488,7 @@ commResult_t CtranMapper::regMem(
       &segHdl_));
 
   // Register the segment only if in Eager mode or forced by caller
-  CtranMapperRegElem* regHdl_ = nullptr;
+  ctran::regcache::RegElem* regHdl_ = nullptr;
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::eager || forceRegist) {
     bool didRegister = false;
     FB_COMMCHECK(regCache->regRange(
@@ -510,16 +511,16 @@ commResult_t CtranMapper::regMem(
 }
 
 DevMemType CtranMapper::segmentType(void* segHdl) {
-  auto regCache = CtranMapperRegCache::getInstance();
-  CHECK_VALID_REGCACHE(regCache);
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
 
-  CtranMapperSegment* segment = regCache->getSegment(segHdl);
+  ctran::regcache::Segment* segment = regCache->getSegment(segHdl);
   return segment->getType();
 }
 
 commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
-  auto regCache = CtranMapperRegCache::getInstance();
-  CHECK_VALID_REGCACHE(regCache);
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
 
   // Fast return for nullptr handle
   if (segHdl == nullptr) {
@@ -559,7 +560,7 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
   // - If the segment no longer exists in cache, likely double dereg.
   //   ncclInvaidUsage is returned.
   bool freed = false, ncclManaged = false;
-  std::vector<std::unique_ptr<CtranMapperRegElem>> regElemsFreed;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElemsFreed;
   FB_COMMCHECK(
       regCache->freeSegment(segHdl, freed, ncclManaged, regElemsFreed));
 
@@ -583,10 +584,10 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
 }
 
 commResult_t CtranMapper::deregDynamic(void* regHdl) {
-  auto regCache = CtranMapperRegCache::getInstance();
-  CHECK_VALID_REGCACHE(regCache);
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
 
-  auto* regElem = reinterpret_cast<CtranMapperRegElem*>(regHdl);
+  auto* regElem = reinterpret_cast<ctran::regcache::RegElem*>(regHdl);
 
   // Remote Release
   //
@@ -621,8 +622,8 @@ commResult_t CtranMapper::regAsync(const void* buf, const size_t len) {
     return commSuccess;
   }
 
-  auto regCache = CtranMapperRegCache::getInstance();
-  CHECK_VALID_REGCACHE(regCache);
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
 
   // Already registered
   if (regCache->isRegistered(buf, len)) {
@@ -659,8 +660,8 @@ commResult_t CtranMapper::searchRegHandle(
     void** regHdl,
     bool* dynamicRegist,
     bool allowDynamic) {
-  auto regCache = CtranMapperRegCache::getInstance();
-  CHECK_VALID_REGCACHE(regCache);
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
 
   const int cudaDev = comm->statex_->cudaDev();
   *dynamicRegist = false;
@@ -671,7 +672,7 @@ commResult_t CtranMapper::searchRegHandle(
   // (i.e., cached) by user, regRange will internally perform the
   // registration and cache it. All logic should be handled within a single
   // global lock.
-  CtranMapperRegElem* regHdl_ = nullptr;
+  ctran::regcache::RegElem* regHdl_ = nullptr;
   bool didRegister = false;
   FB_COMMCHECK(regCache->regRange(
       buf,
@@ -936,7 +937,7 @@ commResult_t CtranMapper::intraBarrier() {
   return commSuccess;
 }
 
-std::unordered_map<CtranMapperRegElem*, std::unordered_set<int>>
+std::unordered_map<ctran::regcache::RegElem*, std::unordered_set<int>>
 CtranMapper::dumpExportRegCache() const {
   return exportRegCache_.rlock()->dump();
 }

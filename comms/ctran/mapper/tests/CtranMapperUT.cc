@@ -8,7 +8,7 @@
 
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperImpl.h"
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/logger/LogUtils.h"
@@ -24,7 +24,7 @@ class CtranMapperTest : public ::testing::Test {
   void* hdl = nullptr;
   int cudaDev = 0;
   CtranMapperTest() = default;
-  std::shared_ptr<CtranMapperRegCache> regCache{nullptr};
+  std::shared_ptr<ctran::RegCache> regCache{nullptr};
 
  protected:
   void SetUp() override {
@@ -44,7 +44,7 @@ class CtranMapperTest : public ::testing::Test {
     NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT = 0;
 
     // Setup regCache pointer to be used in test
-    regCache = CtranMapperRegCache::getInstance();
+    regCache = ctran::RegCache::getInstance();
     ASSERT_NE(regCache, nullptr);
   }
 
@@ -1057,7 +1057,7 @@ TEST_F(CtranMapperTest, getNumSegments) {
   EXPECT_EQ(res, commSuccess);
   EXPECT_THAT(segHdl, testing::NotNull());
   EXPECT_THAT(regHdl, testing::NotNull());
-  EXPECT_EQ(((CtranMapperRegElem*)regHdl)->numSegments(), 1);
+  EXPECT_EQ(((ctran::regcache::RegElem*)regHdl)->numSegments(), 1);
 }
 
 TEST_F(CtranMapperTest, getRegElems) {
@@ -1193,8 +1193,8 @@ TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
 TEST_F(CtranMapperTest, ExportRegCache) {
   std::unique_ptr<ctran::ExportRegCache> cache =
       std::make_unique<ctran::ExportRegCache>();
-  const CtranMapperRegElem* dummyRegElem0 =
-      reinterpret_cast<CtranMapperRegElem*>(0x12345);
+  const ctran::regcache::RegElem* dummyRegElem0 =
+      reinterpret_cast<ctran::regcache::RegElem*>(0x12345);
   const std::vector<int> peers = {0, 1, 2, 3};
 
   for (auto peer : peers) {
@@ -1208,8 +1208,8 @@ TEST_F(CtranMapperTest, ExportRegCache) {
   EXPECT_EQ(it->first, dummyRegElem0);
   EXPECT_EQ(it->second.size(), peers.size());
 
-  const CtranMapperRegElem* dummyRegElem1 =
-      reinterpret_cast<CtranMapperRegElem*>(0x12346);
+  const ctran::regcache::RegElem* dummyRegElem1 =
+      reinterpret_cast<ctran::regcache::RegElem*>(0x12346);
 
   // Expect return empty vector for non-existing regElem
   auto cachedPeers = cache->remove(dummyRegElem1);
@@ -1243,7 +1243,7 @@ class CtranMapperTestDisjoint : public ::testing::Test {
   void* hdl = nullptr;
   int cudaDev = 0;
   CtranMapperTestDisjoint() = default;
-  std::shared_ptr<CtranMapperRegCache> regCache{nullptr};
+  std::shared_ptr<ctran::RegCache> regCache{nullptr};
 
   // Store segment sizes for proper cleanup of disjoint allocation
   std::vector<size_t> disjointSegSizes;
@@ -1295,7 +1295,7 @@ class CtranMapperTestDisjoint : public ::testing::Test {
     NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT = 0;
 
     // Setup regCache pointer to be used in test
-    regCache = CtranMapperRegCache::getInstance();
+    regCache = ctran::RegCache::getInstance();
     ASSERT_NE(regCache, nullptr);
   }
 

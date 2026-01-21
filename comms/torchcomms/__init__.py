@@ -6,7 +6,7 @@ import logging
 import os
 from contextlib import contextmanager
 from importlib.metadata import entry_points
-from typing import Generator, List, Optional
+from typing import Generator, Optional
 
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
@@ -56,21 +56,11 @@ __all__ = [  # noqa: F405
     "CoalescingManager",
 ]
 
-# Set __module__ for C++ bindings (Python-defined ones are set automatically)
-_cpp_exports = [
-    "new_comm",
-    "TorchComm",
-    "ReduceOp",
-    "TorchWork",
-    "BatchP2POptions",
-    "BatchSendRecv",
-    "P2POp",
-    "CommOptions",
-    "TorchCommWindow",
-]
-for name in _cpp_exports:
-    type = globals()[name]
-    type.__module__ = "torchcomms"
+for name in __all__:
+    try:
+        globals()[name].__module__ = "torchcomms"
+    except KeyError: # ignore non-c++ bindings
+        pass
 
 
 def _load_backend(backend: str) -> None:
@@ -87,18 +77,6 @@ def _load_backend(backend: str) -> None:
     wheel.load()
 
 
-def _are_we_tracing() -> bool:
-    """Check if we're in a tracing/compiling context."""
-    from torch.compiler import is_compiling as is_torchdynamo_compiling
-
-    if is_torchdynamo_compiling():
-        return True
-    # If fake mode is turned on, we are almost definitely compiling/tracing
-    if torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FAKE) is not None:
-        return True
-    return False
-
-
 class CoalescingManager:
     """Manager returned by coalescing() context manager.
 
@@ -108,14 +86,11 @@ class CoalescingManager:
 
     def __init__(self) -> None:
         self.work: Optional["TorchWork"] = None  # noqa: F405
-        self.tensors: List[torch.Tensor] = []
         self._waited: bool = False
 
     def wait(self) -> None:
         """Wait for all coalesced operations to complete.
 
-        In tracing/compile mode, this generates a torchcomm_wait_tensors_ op
-        that establishes proper data dependencies for all coalesced tensors.
         In eager mode, it waits on the work handle directly.
 
         Raises:
@@ -126,70 +101,11 @@ class CoalescingManager:
                 "CoalescingManager.wait() has already been called. "
                 "Each coalescing block can only be waited on once."
             )
+        
         self._waited = True
 
-        if _are_we_tracing() and self.tensors:
-            # Use the wait_tensors op to establish data dependencies in traced graph
-            # This is critical for torch.compile - it creates a dependency from
-            # all output tensors to this wait point
-            torch.ops.torchcomms.torchcomm_wait_tensors_(self.tensors)
-        elif self.work is not None:
-            # Eager mode - wait on the work handle
+        if self.work is not None:
             self.work.wait()
-
-
-def _log_coalesced_ops(
-    manager: CoalescingManager,
-    comm: "TorchComm",  # noqa: F405
-) -> None:
-    """Log information about coalesced operations.
-
-    Logs tensor shapes/dtypes and, if in compile mode, attempts to log
-    FX graph information.
-    """
-    num_tensors = len(manager.tensors)
-    logger.info(
-        "[torchcomms] Coalescing block ended on comm=%s with %d tensor(s)",
-        comm.get_name(),
-        num_tensors,
-    )
-
-    if num_tensors > 0:
-        # Log tensor details
-        tensor_info = []
-        for i, t in enumerate(manager.tensors):
-            info = f"  [{i}] shape={list(t.shape)}, dtype={t.dtype}, device={t.device}"
-            tensor_info.append(info)
-        logger.info("[torchcomms] Coalesced tensors:\n%s", "\n".join(tensor_info))
-
-    # If we're in compile/tracing mode, try to get FX graph info
-    if _are_we_tracing():
-        try:
-            # Try to get the current FX tracer context
-            from torch._dynamo import current_trace
-            from torch._dynamo.output_graph import OutputGraph
-
-            tracer = current_trace()
-            if tracer is not None and isinstance(tracer, OutputGraph):
-                # Log the graph nodes related to our coalesced tensors
-                logger.info(
-                    "[torchcomms] FX graph capture active, graph has %d nodes",
-                    len(tracer.graph.nodes),
-                )
-                # Log the most recent nodes (likely our collectives)
-                nodes = list(tracer.graph.nodes)
-                recent_nodes = nodes[-min(10, len(nodes)) :]
-                node_strs = []
-                for node in recent_nodes:
-                    node_strs.append(f"  {node.op}: {node.name} = {node.target}")
-                if node_strs:
-                    logger.info(
-                        "[torchcomms] Recent FX graph nodes:\n%s",
-                        "\n".join(node_strs),
-                    )
-        except Exception as e:
-            # Don't fail if we can't get the graph - this is just for debugging
-            logger.debug("[torchcomms] Could not capture FX graph info: %s", str(e))
 
 
 @contextmanager
@@ -220,9 +136,8 @@ def coalesce(
     manager = CoalescingManager()
 
     logger.info(
-        "[torchcomms] Starting coalescing block on comm=%s (tracing=%s)",
+        "[torchcomms] Starting coalescing block on comm=%s",
         comm.get_name(),
-        _are_we_tracing(),
     )
 
     comm.start_coalescing()
@@ -230,4 +145,7 @@ def coalesce(
         yield manager
     finally:
         manager.work = comm.end_coalescing()
-        _log_coalesced_ops(manager, comm)
+        logger.info(
+            "[torchcomms] Coalescing block ended on comm=%s",
+            comm.get_name(),
+        )
