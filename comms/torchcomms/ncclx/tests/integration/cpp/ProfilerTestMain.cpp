@@ -1,23 +1,49 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "ProfilerTest.hpp"
+#include "comms/torchcomms/tests/integration/cpp/ProfilerTest.hpp"
 
 #include <gtest/gtest.h>
 #include <json/value.h>
 #include <filesystem>
 #include <vector>
 
-/***
- * Test class to verify tracing output  across all operations in TorchComms.
- */
-TEST_F(ProfilerTest, AllTests) {
+// ncclx-specific validation function
+void validateNcclxProfilerEvents(
+    const std::map<std::string, std::vector<Json::Value>>& events) {
+  ASSERT_EQ(events.at("barrier").size(), 1);
+  ASSERT_EQ(events.at("wait").size(), 1);
+  ASSERT_EQ(events.at("send").size(), 1);
+  ASSERT_EQ(events.at("recv").size(), 1);
+  ASSERT_EQ(events.at("all_reduce").size(), 1);
+  ASSERT_EQ(events.at("reduce").size(), 1);
+  ASSERT_EQ(events.at("all_gather_single").size(), 1);
+  ASSERT_EQ(events.at("all_gather").size(), 1);
+  ASSERT_EQ(events.at("gather").size(), 1);
+  ASSERT_EQ(events.at("reduce_scatter").size(), 1);
+  ASSERT_EQ(events.at("reduce_scatter_single").size(), 1);
+  ASSERT_EQ(events.at("scatter").size(), 1);
+  ASSERT_EQ(events.at("all_to_all").size(), 1);
+  ASSERT_EQ(events.at("all_to_all_single").size(), 1);
+  ASSERT_EQ(events.at("all_to_all_v_single").size(), 1);
+  ASSERT_EQ(events.at("broadcast").size(), 1);
+}
+
+class ProfilerNcclxTest : public ProfilerTest {
+ public:
+  ProfilerNcclxTest()
+      : ProfilerTest(
+            "ncclx",
+            c10::DeviceType::CUDA,
+            validateNcclxProfilerEvents) {}
+};
+
+TEST_F(ProfilerNcclxTest, AllTests) {
   namespace fs = std::filesystem;
   fs::path trace_file;
 
   {
     ProfilerGuard profilerGuard;
 
-    // Set rank and size information
     rank_ = torchcomm_->getRank();
     num_ranks_ = torchcomm_->getSize();
 
@@ -39,28 +65,13 @@ TEST_F(ProfilerTest, AllTests) {
     std::map<std::string, std::vector<Json::Value>> events;
     sanityCheckProfilerMeta(json_value, events);
 
-    ASSERT_EQ(events["barrier"].size(), 1);
-    ASSERT_EQ(events["wait"].size(), 1);
-    ASSERT_EQ(events["send"].size(), 1);
-    ASSERT_EQ(events["recv"].size(), 1);
-    ASSERT_EQ(events["all_reduce"].size(), 1);
-    ASSERT_EQ(events["reduce"].size(), 1);
-    ASSERT_EQ(events["all_gather_single"].size(), 1);
-    ASSERT_EQ(events["all_gather"].size(), 1);
-    ASSERT_EQ(events["gather"].size(), 1);
-    ASSERT_EQ(events["reduce_scatter"].size(), 1);
-    ASSERT_EQ(events["reduce_scatter_single"].size(), 1);
-    ASSERT_EQ(events["scatter"].size(), 1);
-    ASSERT_EQ(events["all_to_all"].size(), 1);
-    ASSERT_EQ(events["all_to_all_single"].size(), 1);
-    ASSERT_EQ(events["all_to_all_v_single"].size(), 1);
-    ASSERT_EQ(events["broadcast"].size(), 1);
+    // Call the validation function
+    validation_func_(events);
 
     std::filesystem::remove(trace_file);
   }
 }
 
-// This main function is provided by gtest
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
