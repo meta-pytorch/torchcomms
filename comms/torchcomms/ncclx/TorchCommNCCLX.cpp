@@ -681,10 +681,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
       name_, comm_size_, "reduce", root, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
-  std::vector<at::Tensor> output_tensors;
-  if (rank_ == root) {
-    output_tensors.push_back(tensor);
-  }
   auto work = async_op
       ? createWork(
             stream,
