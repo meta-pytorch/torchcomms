@@ -132,7 +132,7 @@ function build_third_party {
   if [ "$CLEAN_THIRD_PARTY" == 1 ]; then
     rm -f "${CONDA_PREFIX}"/*.cmake 2>/dev/null || true
   fi
-  local third_party_tag="v2025.12.15.00"
+  local third_party_tag="v2026.01.19.00"
 
   mkdir -p /tmp/third-party
   pushd /tmp/third-party
@@ -178,15 +178,19 @@ function build_third_party {
         zstd
         conda-forge::zlib
         conda-forge::libopenssl-static
+        conda-forge::folly
         fmt
       )
       conda install "${DEPS[@]}" --yes
     fi
-    build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly
   fi
-  build_fb_oss_library "https://github.com/facebookincubator/fizz.git" "$third_party_tag" fizz "-DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF"
-  build_fb_oss_library "https://github.com/facebook/mvfst" "$third_party_tag" quic
-  build_fb_oss_library "https://github.com/facebook/wangle.git" "$third_party_tag" wangle "-DBUILD_TESTS=OFF"
+
+  # TODO: migrate out all dependencies for feedstock
+  if [[ -z "${NCCL_FEEDSTOCK_BUILD}" ]]; then
+    build_fb_oss_library "https://github.com/facebookincubator/fizz.git" "$third_party_tag" fizz "-DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF"
+    build_fb_oss_library "https://github.com/facebook/mvfst" "$third_party_tag" quic
+    build_fb_oss_library "https://github.com/facebook/wangle.git" "$third_party_tag" wangle "-DBUILD_TESTS=OFF"
+  fi
   build_fb_oss_library "https://github.com/facebook/fbthrift.git" "$third_party_tag" thrift
   popd
 }
@@ -288,6 +292,8 @@ else
   THIRD_PARTY_LDFLAGS+="-lglog -lgflags -lboost_context -lfmt -lssl -lcrypto"
 fi
 
+echo "$THIRD_PARTY_LDFLAGS"
+
 if [[ -z "${NVCC_GENCODE-}" ]]; then
     IFS=',' read -ra arch_array <<< "$NVCC_ARCH"
     arch_gencode=""
@@ -334,7 +340,6 @@ function build_nccl {
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
-    NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE" \
     CUDARTLIB="$CUDARTLIB"
 }
 
@@ -351,11 +356,10 @@ make VERBOSE=1 -j \
     CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
     CONDA_LIB_DIR="$CONDA_LIB_DIR" \
     THIRD_PARTY_LDFLAGS="$THIRD_PARTY_LDFLAGS" \
-    NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE" \
     CUDARTLIB="$CUDARTLIB"
 }
 
-if [[ -z "${NCCL_BUILD_INSTALL_NCCL}" ]]; then
+if [[ -z "${NCCL_BUILD_AND_INSTALL}" ]]; then
   build_nccl
 else
   build_and_install_nccl
@@ -370,12 +374,7 @@ if [ -n "${NCCL_RUN_SANITY_CHECK}" ]; then
     make all \
       NVCC_GENCODE="$NVCC_GENCODE" \
       CUDA_HOME="$CUDA_HOME" \
-      NCCL_HOME="$CONDA_PREFIX" \
-      DEV_SIGNATURE="$DEV_SIGNATURE" \
-      FBCODE_DIR="$FBCODE_DIR" \
-      CONDA_INCLUDE_DIR="$CONDA_INCLUDE_DIR" \
-      CONDA_LIB_DIR="$CONDA_LIB_DIR" \
-      NCCL_ENABLE_IN_TRAINER_TUNE="$NCCL_ENABLE_IN_TRAINER_TUNE"
+      NCCL_HOME="$CONDA_PREFIX"
 
     set +e
 

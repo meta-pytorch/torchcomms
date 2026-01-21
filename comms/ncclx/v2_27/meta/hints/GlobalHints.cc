@@ -167,7 +167,7 @@ std::optional<T> getTypedGlobalHint(std::string_view key) {
   T valT;
   try {
     valT = folly::to<T>(*val);
-  } catch (const std::exception& e) {
+  } catch ([[maybe_unused]] const std::exception& e) {
     return std::nullopt;
   }
   return valT;

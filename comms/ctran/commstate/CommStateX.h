@@ -26,6 +26,9 @@ struct RankTopology {
   // rank-id
   int rank{-1};
 
+  // process id
+  int pid{-1};
+
   // host name e.g twshared0265.02.nha1
   char host[kMaxNameLen];
 
@@ -155,6 +158,11 @@ class CommStateX {
   // get globalRank for a given rank, default to current rank
   int gRank(int rank = -1) const;
 
+  // get global pid (hostname:pid) for a given rank, default to current rank
+  // This serves as the global identifier for a rank, used when gRank is not
+  // supported in non-eager-init mode
+  std::string gPid(int rank = -1) const;
+
   // check if two ranks are on the same node
   bool isSameNode(int myRank, int peer) const;
 
@@ -189,6 +197,8 @@ class CommStateX {
   // TODO: merge with RankTopology, there is redundancy in these two structures
   struct RankState {
     int rank{-1};
+
+    int pid{-1};
 
     std::string host;
 
