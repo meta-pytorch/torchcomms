@@ -1,4 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+#include <unistd.h>
 #include <fstream>
 
 #include "comms/ctran/commstate/Topology.h"
@@ -121,6 +122,7 @@ std::optional<ncclx::RankTopology> loadTopology(
 
   ncclx::RankTopology topo;
   topo.rank = rank;
+  topo.pid = getpid();
   topo.rackSerial = rackSerial;
   std::strncpy(topo.dc, dc.c_str(), ncclx::kMaxNameLen);
   std::strncpy(topo.zone, zone.c_str(), ncclx::kMaxNameLen);

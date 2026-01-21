@@ -374,7 +374,7 @@ c10::intrusive_ptr<c10d::Backend::Options> BackendWrapper::getBackendOptions() {
 }
 
 c10::intrusive_ptr<c10d::Backend> BackendWrapper::split(
-    const c10::intrusive_ptr<c10d::Store>& store,
+    const c10::intrusive_ptr<c10d::Store>& /* store */,
     const std::vector<int>& ranks,
     const c10::intrusive_ptr<c10d::Backend::Options>& opts) {
   auto comm = getComm();

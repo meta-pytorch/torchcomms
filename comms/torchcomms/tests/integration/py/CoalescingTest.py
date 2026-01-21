@@ -13,7 +13,6 @@ from torchcomms import ReduceOp
 from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 class CoalescingTest(unittest.TestCase):

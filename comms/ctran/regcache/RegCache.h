@@ -2,9 +2,9 @@
 #pragma once
 
 #include <folly/Synchronized.h>
+#include <memory>
 #include <queue>
 #include <unordered_map>
-#include <unordered_set>
 
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
@@ -16,16 +16,19 @@
 
 using meta::comms::CommBackend;
 
-struct CtranMapperSegmentRange {
+namespace ctran {
+
+class RegCache;
+
+namespace regcache {
+
+struct SegmentRange {
   const void* buf{nullptr};
   const std::size_t len{0};
   DevMemType type{DevMemType::kCudaMalloc};
 
  public:
-  CtranMapperSegmentRange(
-      const void* buf,
-      const std::size_t len,
-      DevMemType type)
+  SegmentRange(const void* buf, const std::size_t len, DevMemType type)
       : buf(buf), len(len), type(type) {};
 
   std::string toString() const {
@@ -40,38 +43,35 @@ struct CtranMapperSegmentRange {
       const void* ptr,
       const int cudaDev,
       size_t len,
-      std::vector<CtranMapperSegmentRange>& segRangs);
+      std::vector<SegmentRange>& segRangs);
 };
 
-struct CtranMapperSegmentStateMnger {
+struct SegmentStateMnger {
   // The number of communicators having cached the segment.
   // The segment must be removed and any associated RegElem must be deregistered
   // when the refCount is 0
   int64_t refCount{1};
 };
 
-struct CtranMapperRegElem;
+struct RegElem;
 
-struct CtranMapperSegment {
-  CtranMapperSegmentRange range;
+struct Segment {
+  SegmentRange range;
   const int cudaDev;
   bool ncclManaged{false};
 
-  folly::Synchronized<CtranMapperSegmentStateMnger> stateMnger;
+  folly::Synchronized<SegmentStateMnger> stateMnger;
 
  public:
-  CtranMapperSegment(
-      CtranMapperSegmentRange range,
-      const int cudaDev,
-      const bool ncclManaged)
+  Segment(SegmentRange range, const int cudaDev, const bool ncclManaged)
       : range(range), cudaDev(cudaDev), ncclManaged(ncclManaged) {};
 
   DevMemType getType() const {
     return range.type;
   }
 
-  friend struct CtranMapperRegElem;
-  friend class CtranMapperRegCache;
+  friend struct RegElem;
+  friend class ::ctran::RegCache;
 
  protected:
   void* avlHdl_{nullptr};
@@ -87,24 +87,16 @@ struct CtranMapperSegment {
   }
 };
 
-enum CtranMapperRegElemState {
+enum RegElemState {
   REGISTERED,
   DEREGISTERED,
 };
 
-template <>
-struct fmt::formatter<CtranMapperRegElemState> : fmt::formatter<int> {
-  template <typename FormatContext>
-  auto format(CtranMapperRegElemState status, FormatContext& ctx) const {
-    return fmt::formatter<int>::format(static_cast<int>(status), ctx);
-  }
+struct RegElemStateMnger {
+  RegElemState state{RegElemState::REGISTERED};
 };
 
-struct CtranMapperRegElemStateMnger {
-  CtranMapperRegElemState state{CtranMapperRegElemState::REGISTERED};
-};
-
-struct CtranMapperRegElem {
+struct RegElem {
   const void* buf{nullptr};
   const std::size_t len{0};
   void* ibRegElem{nullptr};
@@ -123,10 +115,10 @@ struct CtranMapperRegElem {
   // Concurrent reads:
   //   - segment may be looked up and accessed the internal fields by multiple
   //     GPE threads at collective time
-  folly::Synchronized<CtranMapperRegElemStateMnger> stateMnger;
+  folly::Synchronized<RegElemStateMnger> stateMnger;
 
  public:
-  CtranMapperRegElem(
+  RegElem(
       const void* buf,
       std::size_t len,
       const int cudaDev,
@@ -139,11 +131,11 @@ struct CtranMapperRegElem {
         isDynamic_(isDynamic),
         type_(type),
         ncclManaged_(ncclManaged) {}
-  CtranMapperRegElem(
+  RegElem(
       const void* buf,
       std::size_t len,
       const int cudaDev,
-      std::vector<CtranMapperSegment*>& segments,
+      std::vector<Segment*>& segments,
       bool ncclManaged = false)
       // Explicitly copy segments to avoid changing passed-in vector which
       // may be used after the call
@@ -168,14 +160,14 @@ struct CtranMapperRegElem {
     return segments_.size() == 1 && segments_.at(0)->ncclManaged;
   }
 
-  friend class CtranMapperRegCache;
+  friend class ::ctran::RegCache;
 
  protected:
   int cudaDev_{-1};
   bool isDynamic_{false};
   // Number of times the registration is reused by collective
   size_t lookupHit_{0};
-  std::vector<CtranMapperSegment*> segments_;
+  std::vector<Segment*> segments_;
   DevMemType type_{DevMemType::kCudaMalloc};
   bool ncclManaged_{false};
 
@@ -192,13 +184,12 @@ struct CtranMapperRegElem {
   // Thread-unsafe function to print internal fields.
   // It is only used for debugging purpose. Caller should ensure thread-safety
   // by locking the stateMnger.
-  std::string toString(const CtranMapperRegElemState state) const {
+  std::string toString(const RegElemState state) const {
     std::stringstream ss;
     ss << "buf: " << buf << ", len: " << len << ", state: "
-       << (state == CtranMapperRegElemState::REGISTERED ? "REGISTERED"
-                                                        : "DEREGISTERED")
+       << (state == RegElemState::REGISTERED ? "REGISTERED" : "DEREGISTERED")
        << ", isDynamic: " << isDynamic_ << ", lookupHit: " << lookupHit_;
-    if (state == CtranMapperRegElemState::REGISTERED) {
+    if (state == RegElemState::REGISTERED) {
       ss << ", ibRegElem: " << ibRegElem << ", nvlRegElem: " << nvlRegElem
          << ", tcpRegElem: " << tcpRegElem;
     }
@@ -213,7 +204,7 @@ struct CtranMapperRegElem {
   }
 };
 
-enum CtranRegCacheEventType {
+enum EventType {
   kCacheSegEvent,
   kFreeSegEvent,
   kRegMemEvent,
@@ -222,7 +213,7 @@ enum CtranRegCacheEventType {
   kAsyncRegMemEvent,
 };
 
-struct CtranMapperRegCacheSnapshot {
+struct Snapshot {
   uint32_t currentNumCache{0};
   uint32_t currentNumReg{0};
 
@@ -236,40 +227,42 @@ struct CtranMapperRegCacheSnapshot {
   double deregMemLatency{0};
 };
 
-class CtranMapperRegCacheProfiler {
-  std::unordered_map<CtranRegCacheEventType, double> latencyMap;
-  std::unordered_map<CtranRegCacheEventType, uint32_t> totalCountMap;
-  std::unordered_map<CtranRegCacheEventType, uint32_t> currentCountMap;
+class Profiler {
+  std::unordered_map<EventType, double> latencyMap;
+  std::unordered_map<EventType, uint32_t> totalCountMap;
+  std::unordered_map<EventType, uint32_t> currentCountMap;
 
  public:
-  CtranMapperRegCacheProfiler();
+  Profiler();
 
   // Record an event with latency
-  void record(CtranRegCacheEventType type, CtranMapperTimer& dur);
+  void record(EventType type, CtranMapperTimer& dur);
 
   // Record an event without latency
-  void record(CtranRegCacheEventType type);
+  void record(EventType type);
 
   // Report the snapshot of the profiler via NCCL log
   void reportSnapshot() const;
 
   // Get an snapshot copy of the profiler
-  CtranMapperRegCacheSnapshot getSnapshot() const;
+  Snapshot getSnapshot() const;
 
   // Reset the profiler records; used for testing only
   void reset();
 };
 
+} // namespace regcache
+
 /**
  * Singleton class to hold the IB network resources that are reused by all
  * communicators in the lifetime of program.
  */
-class CtranMapperRegCache {
+class RegCache {
  public:
-  CtranMapperRegCache();
-  ~CtranMapperRegCache();
+  RegCache();
+  ~RegCache();
 
-  static std::shared_ptr<CtranMapperRegCache> getInstance();
+  static std::shared_ptr<RegCache> getInstance();
 
   // Implement actual init/destroy logic here and called by
   // constructor/destructor. This allows test to manually trigger if needed.
@@ -294,7 +287,7 @@ class CtranMapperRegCache {
       const int cudaDev,
       const bool ncclManaged,
       uint64_t commHash,
-      CtranMapperSegment** segment,
+      regcache::Segment** segment,
       void** segHdl);
 
   // Thread-safe functions to register a given buffer range.
@@ -323,7 +316,7 @@ class CtranMapperRegCache {
       const struct CommLogData& logMetaData,
       const std::vector<bool>& backends,
       bool& didRegister,
-      CtranMapperRegElem** regHdl,
+      regcache::RegElem** regHdl,
       bool ncclManaged = false);
 
   // Thread-safe functions to dynamically register a segment.
@@ -340,14 +333,14 @@ class CtranMapperRegCache {
       const size_t len,
       int cudaDev,
       const std::vector<bool>& backends,
-      CtranMapperRegElem** regHdl);
+      regcache::RegElem** regHdl);
 
   // Thread-safe functions to deregister a dynamic registration.
   // Unlike freeSegment(), it always deregisters since only the calling
   // communicator uses it.
   // input:
   //   - regHdl: the dynamic registration handle
-  commResult_t deregDynamic(CtranMapperRegElem* regHdl);
+  commResult_t deregDynamic(regcache::RegElem* regHdl);
 
   // Thread-safe functions to free a cached segment from the global cache and
   // deregister any associated registration. If the segment is still in use by
@@ -364,13 +357,13 @@ class CtranMapperRegCache {
       void* segHdl,
       bool& freed,
       bool& ncclManaged,
-      std::vector<std::unique_ptr<CtranMapperRegElem>>& regElems);
+      std::vector<std::unique_ptr<regcache::RegElem>>& regElems);
 
-  CtranMapperSegment* getSegment(void* segHdl);
+  regcache::Segment* getSegment(void* segHdl);
 
   // Get vector of regElem associated with the specified segHdl.
   // If no regElem is associated, empty vector is returned
-  std::vector<CtranMapperRegElem*> getRegElems(const void* segHdl) const;
+  std::vector<regcache::RegElem*> getRegElems(const void* segHdl) const;
 
   // Thread-safe functions to get a list of all cached segments in the global
   // cache.
@@ -394,7 +387,7 @@ class CtranMapperRegCache {
 
   // Profiler to record the events of the global cache.
   // Check its APIs for more details.
-  folly::Synchronized<CtranMapperRegCacheProfiler> profiler;
+  folly::Synchronized<regcache::Profiler> profiler;
 
  private:
   // AVL tree based segment cache
@@ -403,11 +396,11 @@ class CtranMapperRegCache {
    public:
     // Map holds the ownership of all regElems, with reg handle (regElem raw
     // pointer) as key.
-    std::unordered_map<CtranMapperRegElem*, std::unique_ptr<CtranMapperRegElem>>
+    std::unordered_map<regcache::RegElem*, std::unique_ptr<regcache::RegElem>>
         regHdlToElemMap;
     // Correlate segment with all associated regElems, used in freeSegment() to
     // deregister all regElems when segment is freed
-    std::unordered_map<CtranMapperSegment*, std::vector<CtranMapperRegElem*>>
+    std::unordered_map<regcache::Segment*, std::vector<regcache::RegElem*>>
         segToRegElemsMap;
   };
   folly::Synchronized<RegElemMaps> regElemsMaps_;
@@ -427,13 +420,21 @@ class CtranMapperRegCache {
   void asyncRegThreadFn(int cudaDev);
 
   // Thread-safe function to search given <ptr, len> range in regElem cache.
-  CtranMapperRegElem* searchRegElem(const void* ptr, const size_t len);
+  regcache::RegElem* searchRegElem(const void* ptr, const size_t len);
 
-  commResult_t deregElem(CtranMapperRegElem* regElem);
+  commResult_t deregElem(regcache::RegElem* regElem);
 };
 
-static inline void CHECK_VALID_REGCACHE(
-    std::shared_ptr<CtranMapperRegCache> regCache) {
-  FB_CHECKABORT(
-      regCache != nullptr, "Failed to get CtranMapperRegCache instance");
+static inline void CHECK_VALID_REGCACHE(std::shared_ptr<RegCache> regCache) {
+  FB_CHECKABORT(regCache != nullptr, "Failed to get RegCache instance");
 }
+
+} // namespace ctran
+
+template <>
+struct fmt::formatter<ctran::regcache::RegElemState> : fmt::formatter<int> {
+  template <typename FormatContext>
+  auto format(ctran::regcache::RegElemState status, FormatContext& ctx) const {
+    return fmt::formatter<int>::format(static_cast<int>(status), ctx);
+  }
+};

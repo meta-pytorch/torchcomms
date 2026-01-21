@@ -35,7 +35,8 @@ void AllGatherVTest::testSyncAllGatherV(int count, at::ScalarType dtype) {
     counts[i] = count + i;
   }
   at::Tensor input = createInputTensor(counts[rank_], dtype);
-  std::vector<at::Tensor> outputs = createOutputTensors(counts, dtype);
+  std::vector<at::Tensor> outputs =
+      createOutputTensors(std::move(counts), dtype);
 
   // Call all_gather_v
   auto work = torchcomm_->all_gather_v(outputs, input, false);
