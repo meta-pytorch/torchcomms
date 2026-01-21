@@ -54,7 +54,7 @@ std::string getDtypeName(at::ScalarType dtype) {
   }
 }
 
-std::string getOpName(torch::comms::ReduceOp op) {
+std::string getOpName(const torch::comms::ReduceOp& op) {
   switch (op) {
     case torch::comms::ReduceOp::RedOpType::SUM:
       return "Sum";
@@ -138,7 +138,7 @@ c10::intrusive_ptr<c10d::Store> createStore() {
 
 void destroyStore(
     c10::intrusive_ptr<c10d::Store>&& store,
-    std::shared_ptr<torch::comms::TorchComm> torchcomm) {
+    const std::shared_ptr<torch::comms::TorchComm>& torchcomm) {
   // Move the store to a local variable that will be destroyed when this
   // function exits
   auto local_store = std::move(store);
