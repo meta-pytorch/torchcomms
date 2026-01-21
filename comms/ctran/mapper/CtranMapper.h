@@ -17,9 +17,9 @@
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/ctran/mapper/CtranMapperImpl.h"
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
 #include "comms/ctran/utils/Exception.h"
@@ -887,7 +887,7 @@ class CtranMapper {
   }
 
   // Dump exported registration cache, for testing only
-  std::unordered_map<CtranMapperRegElem*, std::unordered_set<int>>
+  std::unordered_map<ctran::regcache::RegElem*, std::unordered_set<int>>
   dumpExportRegCache() const;
 
  protected:
@@ -1072,7 +1072,7 @@ class CtranMapper {
       void* hdl,
       ControlMsg& msg,
       CtranMapperBackend backend = CtranMapperBackend::UNSET) {
-    auto regElem = reinterpret_cast<CtranMapperRegElem*>(hdl);
+    auto regElem = reinterpret_cast<ctran::regcache::RegElem*>(hdl);
 
     // For a NVL peer, send NVL registration if the buffer has been registered
     // as NVL sharable buffer (i.e., allocated by cuMem). Otherwise pass IB
@@ -1144,7 +1144,7 @@ class CtranMapper {
   }
 
   inline CtranMapperBackend queryPeerBackend(
-      CtranMapperRegElem* regElem,
+      ctran::regcache::RegElem* regElem,
       int rank) {
     if (this->ctranNvl && this->ctranNvl->isSupported(rank) &&
         regElem->nvlRegElem) {
@@ -1458,8 +1458,8 @@ class CtranMapper {
         put.req->setConfig(put.config);
       }
 
-      struct CtranMapperRegElem* regElem =
-          reinterpret_cast<struct CtranMapperRegElem*>(shdl);
+      struct ctran::regcache::RegElem* regElem =
+          reinterpret_cast<struct ctran::regcache::RegElem*>(shdl);
       auto regLk = regElem->stateMnger.rlock();
       CLOGF_TRACE(
           COLL,
@@ -1531,8 +1531,8 @@ class CtranMapper {
         }
       }
 
-      struct CtranMapperRegElem* regElem =
-          reinterpret_cast<struct CtranMapperRegElem*>(shdl);
+      struct ctran::regcache::RegElem* regElem =
+          reinterpret_cast<struct ctran::regcache::RegElem*>(shdl);
       auto regLk = regElem->stateMnger.rlock();
 
       if (this->ctranIb != nullptr) {
@@ -1658,8 +1658,8 @@ class CtranMapper {
         }
       }
 
-      struct CtranMapperRegElem* regElem =
-          reinterpret_cast<struct CtranMapperRegElem*>(shdl);
+      struct ctran::regcache::RegElem* regElem =
+          reinterpret_cast<struct ctran::regcache::RegElem*>(shdl);
       auto regLk = regElem->stateMnger.rlock();
 
       if (this->ctranIb != nullptr) {
@@ -1738,7 +1738,7 @@ class CtranMapper {
       KernelElem* kernElem,
       CtranMapperNotify* notify,
       int notifyCnt) {
-    auto regElem = reinterpret_cast<CtranMapperRegElem*>(recvHdl);
+    auto regElem = reinterpret_cast<ctran::regcache::RegElem*>(recvHdl);
     auto regLk = regElem->stateMnger.rlock();
 
     auto backend = this->queryPeerBackend(regElem, peerRank);
@@ -1909,7 +1909,7 @@ class CtranMapper {
     return commSuccess;
   }
 
-  commResult_t remReleaseMem(CtranMapperRegElem* regElem);
+  commResult_t remReleaseMem(ctran::regcache::RegElem* regElem);
 
   bool atDestruction{false};
 

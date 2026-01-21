@@ -132,7 +132,7 @@ bool RdmaTransport::connected() const {
 
 folly::SemiFuture<commResult_t> RdmaTransport::write(
     RdmaMemory::View localBuffer,
-    RdmaRemoteBuffer remoteBuffer,
+    const RdmaRemoteBuffer& remoteBuffer,
     bool notify) {
   CHECK_THROW(connected(), std::runtime_error);
   CHECK_THROW(evb_, std::runtime_error);

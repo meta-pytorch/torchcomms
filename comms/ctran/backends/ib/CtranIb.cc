@@ -608,6 +608,20 @@ void CtranIb::bootstrapStart(
   folly::SocketAddress addrSockAddr;
   if (this->bootstrapMode == BootstrapMode::kDefaultServer) {
     ifnamePtr = &NCCL_SOCKET_IFNAME;
+    // Validate that NCCL_SOCKET_IFNAME contains only one interface
+    if (NCCL_SOCKET_IFNAME.find(',') != std::string::npos) {
+      CLOGF(
+          WARN,
+          "CTRAN-IB: NCCL_SOCKET_IFNAME contains multiple interfaces ({}). "
+          "Only one interface should be specified.",
+          NCCL_SOCKET_IFNAME);
+      throw ::ctran::utils::Exception(
+          "CTRAN-IB: NCCL_SOCKET_IFNAME should specify only one interface",
+          commInvalidArgument,
+          this->rank,
+          this->commHash,
+          this->commDesc);
+    }
     // Use default NCCL socket ifname
     auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
         NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
