@@ -3,10 +3,10 @@
 
 namespace ctran {
 std::unordered_set<int> ExportRegCache::remove(
-    const CtranMapperRegElem* regElem) {
+    const regcache::RegElem* regElem) {
   std::unordered_set<int> nvlRanks;
 
-  auto it = map_.find(const_cast<CtranMapperRegElem*>(regElem));
+  auto it = map_.find(const_cast<regcache::RegElem*>(regElem));
   if (it != map_.end()) {
     nvlRanks = it->second;
     map_.erase(it);
@@ -15,7 +15,7 @@ std::unordered_set<int> ExportRegCache::remove(
   return nvlRanks;
 }
 
-std::unordered_map<CtranMapperRegElem*, std::unordered_set<int>>
+std::unordered_map<regcache::RegElem*, std::unordered_set<int>>
 ExportRegCache::dump() const {
   return map_;
 }
