@@ -10,7 +10,7 @@
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/CommGroupUtils.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
@@ -24,7 +24,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
  public:
   std::vector<TestMemSegment> segments;
   std::vector<void*> segHandles;
-  std::shared_ptr<CtranMapperRegCache> regCache{nullptr};
+  std::shared_ptr<ctran::RegCache> regCache{nullptr};
 
   void SetUp() override {
     setenv("NCCL_COLLTRACE", "trace", 0);
@@ -38,8 +38,8 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     srand(time(NULL));
     ctran::logGpuMemoryStats(globalRank);
 
-    regCache = CtranMapperRegCache::getInstance();
-    CHECK_VALID_REGCACHE(regCache);
+    regCache = ctran::RegCache::getInstance();
+    ctran::CHECK_VALID_REGCACHE(regCache);
   }
 
   void TearDown() override {

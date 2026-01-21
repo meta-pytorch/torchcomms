@@ -41,9 +41,11 @@ RankTopology createRankTopology(
     const std::string& su,
     const std::string& rtsw,
     const std::string& host,
-    int rackSerial = -1) {
+    int rackSerial = -1,
+    int pid = -1) {
   RankTopology topo;
   topo.rank = rank;
+  topo.pid = pid;
   std::strcpy(topo.host, host.c_str());
   std::strcpy(topo.rtsw, rtsw.c_str());
   std::strcpy(topo.su, su.c_str());
@@ -477,6 +479,49 @@ TEST(CommStateXTest, CommRankToWorldRanks) {
   EXPECT_EQ(commState->gRank(1), 5);
   EXPECT_EQ(commState->gRank(2), 6);
   EXPECT_EQ(commState->gRank(3), 7);
+}
+
+TEST(CommStateXTest, gPidTest) {
+  const int nRanks = 4;
+  const int cudaDev = 0;
+  const int cudaArch = 90;
+  const int64_t busId = 25;
+  const uint64_t commHash = 0;
+  const std::string kSu;
+
+  std::vector<RankTopology> rankTopologies{};
+  rankTopologies.emplace_back(
+      createRankTopology(0, kDc, kZone, kSu, kRtsw0, kHost0, -1, 1000));
+  rankTopologies.emplace_back(
+      createRankTopology(1, kDc, kZone, kSu, kRtsw0, kHost0, -1, 1001));
+  rankTopologies.emplace_back(
+      createRankTopology(2, kDc, kZone, kSu, kRtsw0, kHost1, -1, 2000));
+  rankTopologies.emplace_back(
+      createRankTopology(3, kDc, kZone, kSu, kRtsw0, kHost1, -1, 2001));
+
+  for (int rank = 0; rank < nRanks; ++rank) {
+    auto commState = std::make_unique<CommStateX>(
+        rank,
+        nRanks,
+        cudaDev,
+        cudaArch,
+        busId,
+        commHash,
+        rankTopologies,
+        std::vector<int>{});
+
+    // Test gPid() for default (current) rank
+    std::string expectedGPid = std::string(rankTopologies[rank].host) + ":" +
+        std::to_string(rankTopologies[rank].pid);
+    EXPECT_EQ(commState->gPid(), expectedGPid);
+
+    // Test gPid(rank) for all ranks
+    for (int r = 0; r < nRanks; ++r) {
+      std::string expected = std::string(rankTopologies[r].host) + ":" +
+          std::to_string(rankTopologies[r].pid);
+      EXPECT_EQ(commState->gPid(r), expected);
+    }
+  }
 }
 
 TEST(CommStateXTest, TopologySetInvalidNvlFabricTopos) {

@@ -1,64 +1,71 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include <folly/Singleton.h>
 #include <folly/system/ThreadName.h>
 
-#include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/backends/ib/CtranIb.h"
+#include "comms/ctran/backends/nvl/CtranNvl.h"
+#ifdef CTRAN_DISABLE_TCPDM
+#include "comms/ctran/backends/mock/CtranTcpDmMock.h"
+#else
+#include "comms/ctran/backends/tcpdevmem/CtranTcpDm.h"
+#endif
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
+#include "comms/ctran/utils/ExtUtils.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/logger/alloc.h"
 
-static folly::Singleton<CtranMapperRegCache> regCacheSingleton;
-std::shared_ptr<CtranMapperRegCache> CtranMapperRegCache::getInstance() {
+static folly::Singleton<ctran::RegCache> regCacheSingleton;
+std::shared_ptr<ctran::RegCache> ctran::RegCache::getInstance() {
   return regCacheSingleton.try_get();
 }
 
-CtranMapperRegCache::CtranMapperRegCache(void) {
+ctran::RegCache::RegCache(void) {
   init();
 }
 
-CtranMapperRegCache::~CtranMapperRegCache(void) {
+ctran::RegCache::~RegCache(void) {
   // Define separate destroy() function to allow test to call it explicitly
   FB_COMMCHECKIGNORE(destroy());
 }
 
-static const std::unordered_map<CtranRegCacheEventType, std::string>
+static const std::unordered_map<ctran::regcache::EventType, std::string>
     RegCacheEventNameMap = {
-        {kCacheSegEvent, "CACHE"},
-        {kRegMemEvent, "REG"},
-        {kDeregMemEvent, "DEREG"},
-        {kDynamicRegMemEvent, "DYNAMIC_REG"},
-        {kAsyncRegMemEvent, "ASYNC_REG"},
+        {ctran::regcache::kCacheSegEvent, "CACHE"},
+        {ctran::regcache::kRegMemEvent, "REG"},
+        {ctran::regcache::kDeregMemEvent, "DEREG"},
+        {ctran::regcache::kDynamicRegMemEvent, "DYNAMIC_REG"},
+        {ctran::regcache::kAsyncRegMemEvent, "ASYNC_REG"},
 };
 
 // Currently cached and registered buffers.
 // The number may change overtime if any buffer is deregistered.
-static const std::vector<CtranRegCacheEventType> currentEvents = {
-    CtranRegCacheEventType::kCacheSegEvent,
-    CtranRegCacheEventType::kRegMemEvent,
+static const std::vector<ctran::regcache::EventType> currentEvents = {
+    ctran::regcache::EventType::kCacheSegEvent,
+    ctran::regcache::EventType::kRegMemEvent,
 };
 
-static const std::vector<CtranRegCacheEventType> latencyEvents = {
-    CtranRegCacheEventType::kRegMemEvent,
-    CtranRegCacheEventType::kDeregMemEvent,
+static const std::vector<ctran::regcache::EventType> latencyEvents = {
+    ctran::regcache::EventType::kRegMemEvent,
+    ctran::regcache::EventType::kDeregMemEvent,
 };
 
-static const std::vector<CtranRegCacheEventType> totalEvents = {
-    CtranRegCacheEventType::kCacheSegEvent,
-    CtranRegCacheEventType::kRegMemEvent,
-    CtranRegCacheEventType::kDeregMemEvent,
-    CtranRegCacheEventType::kDynamicRegMemEvent,
-    CtranRegCacheEventType::kAsyncRegMemEvent,
+static const std::vector<ctran::regcache::EventType> totalEvents = {
+    ctran::regcache::EventType::kCacheSegEvent,
+    ctran::regcache::EventType::kRegMemEvent,
+    ctran::regcache::EventType::kDeregMemEvent,
+    ctran::regcache::EventType::kDynamicRegMemEvent,
+    ctran::regcache::EventType::kAsyncRegMemEvent,
 };
 
-CtranMapperRegCacheProfiler::CtranMapperRegCacheProfiler() {
+ctran::regcache::Profiler::Profiler() {
   reset();
 }
 
-void CtranMapperRegCacheProfiler::reset(void) {
+void ctran::regcache::Profiler::reset(void) {
   for (const auto type : latencyEvents) {
     latencyMap[type] = 0;
   }
@@ -70,8 +77,8 @@ void CtranMapperRegCacheProfiler::reset(void) {
   }
 }
 
-void CtranMapperRegCacheProfiler::record(
-    CtranRegCacheEventType type,
+void ctran::regcache::Profiler::record(
+    ctran::regcache::EventType type,
     CtranMapperTimer& dur) {
   if (NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT < 0) {
     return;
@@ -85,7 +92,7 @@ void CtranMapperRegCacheProfiler::record(
   record(type);
 }
 
-void CtranMapperRegCacheProfiler::record(CtranRegCacheEventType type) {
+void ctran::regcache::Profiler::record(ctran::regcache::EventType type) {
   if (NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT < 0) {
     return;
   }
@@ -95,10 +102,10 @@ void CtranMapperRegCacheProfiler::record(CtranRegCacheEventType type) {
     totalCountMap.at(type)++;
   }
 
-  if (type == CtranRegCacheEventType::kFreeSegEvent) {
-    currentCountMap.at(CtranRegCacheEventType::kCacheSegEvent)--;
-  } else if (type == CtranRegCacheEventType::kDeregMemEvent) {
-    currentCountMap.at(CtranRegCacheEventType::kRegMemEvent)--;
+  if (type == ctran::regcache::EventType::kFreeSegEvent) {
+    currentCountMap.at(ctran::regcache::EventType::kCacheSegEvent)--;
+  } else if (type == ctran::regcache::EventType::kDeregMemEvent) {
+    currentCountMap.at(ctran::regcache::EventType::kRegMemEvent)--;
   } else if (
       std::find(currentEvents.begin(), currentEvents.end(), type) !=
       currentEvents.end()) {
@@ -106,7 +113,7 @@ void CtranMapperRegCacheProfiler::record(CtranRegCacheEventType type) {
   }
 
   // Allow periodical snapshot report during long job running
-  if (type == CtranRegCacheEventType::kRegMemEvent &&
+  if (type == ctran::regcache::EventType::kRegMemEvent &&
       NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT > 0 &&
       (totalCountMap.at(type) % NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT ==
        0)) {
@@ -114,8 +121,8 @@ void CtranMapperRegCacheProfiler::record(CtranRegCacheEventType type) {
   }
 }
 
-void CtranMapperRegCacheProfiler::reportSnapshot(void) const {
-  const std::string prefix = "CTRAN-MAPPER RegCache Snapshot";
+void ctran::regcache::Profiler::reportSnapshot(void) const {
+  const std::string prefix = "CTRAN-REGCACHE RegCache Snapshot";
   for (const auto type : totalEvents) {
     CLOGF_SUBSYS(
         INFO,
@@ -147,44 +154,45 @@ void CtranMapperRegCacheProfiler::reportSnapshot(void) const {
   }
 }
 
-CtranMapperRegCacheSnapshot CtranMapperRegCacheProfiler::getSnapshot() const {
-  CtranMapperRegCacheSnapshot snapshot;
+ctran::regcache::Snapshot ctran::regcache::Profiler::getSnapshot() const {
+  ctran::regcache::Snapshot snapshot;
   snapshot.currentNumCache =
-      currentCountMap.at(CtranRegCacheEventType::kCacheSegEvent);
+      currentCountMap.at(ctran::regcache::EventType::kCacheSegEvent);
   snapshot.currentNumReg =
-      currentCountMap.at(CtranRegCacheEventType::kRegMemEvent);
+      currentCountMap.at(ctran::regcache::EventType::kRegMemEvent);
   snapshot.totalNumCache =
-      totalCountMap.at(CtranRegCacheEventType::kCacheSegEvent);
-  snapshot.totalNumReg = totalCountMap.at(CtranRegCacheEventType::kRegMemEvent);
+      totalCountMap.at(ctran::regcache::EventType::kCacheSegEvent);
+  snapshot.totalNumReg =
+      totalCountMap.at(ctran::regcache::EventType::kRegMemEvent);
   snapshot.totalNumDereg =
-      totalCountMap.at(CtranRegCacheEventType::kDeregMemEvent);
+      totalCountMap.at(ctran::regcache::EventType::kDeregMemEvent);
   snapshot.totalNumDynamicReg =
-      totalCountMap.at(CtranRegCacheEventType::kDynamicRegMemEvent);
+      totalCountMap.at(ctran::regcache::EventType::kDynamicRegMemEvent);
   snapshot.totalNumAsyncReg =
-      totalCountMap.at(CtranRegCacheEventType::kAsyncRegMemEvent);
-  snapshot.regMemLatency = latencyMap.at(CtranRegCacheEventType::kRegMemEvent) /
+      totalCountMap.at(ctran::regcache::EventType::kAsyncRegMemEvent);
+  snapshot.regMemLatency =
+      latencyMap.at(ctran::regcache::EventType::kRegMemEvent) /
       snapshot.totalNumReg;
   snapshot.deregMemLatency =
-      latencyMap.at(CtranRegCacheEventType::kDeregMemEvent) /
+      latencyMap.at(ctran::regcache::EventType::kDeregMemEvent) /
       snapshot.totalNumDereg;
   return snapshot;
 }
 
-void CtranMapperRegCache::init() {
+void ctran::RegCache::init() {
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
       !asyncRegThread_.joinable()) {
     int cudaDev;
     FB_CUDACHECKTHROW_EX_NOCOMM(cudaGetDevice(&cudaDev));
-    asyncRegThread_ =
-        std::thread{&CtranMapperRegCache::asyncRegThreadFn, this, cudaDev};
+    asyncRegThread_ = std::thread{&RegCache::asyncRegThreadFn, this, cudaDev};
   }
 }
 
-commResult_t CtranMapperRegCache::destroy() {
+commResult_t ctran::RegCache::destroy() {
   {
     // Warn if user missed any buffer registration.
     // Skip deregistration to avoid unexpected error at destruction time for
-    // now. We need revisit after sets CtranMapperRegCache's dependency to
+    // now. We need revisit after sets RegCache's dependency to
     // CtranIbSingleton, otherwise ib singleton may be released before
     // deregisteration here.
     auto [segmentsAvl, regElemsMaps] =
@@ -213,8 +221,8 @@ commResult_t CtranMapperRegCache::destroy() {
     }
 
     for (auto avlHdl : segmentsAvl->getAllElems()) {
-      auto seg =
-          reinterpret_cast<CtranMapperSegment*>(segmentsAvl->lookup(avlHdl));
+      auto seg = reinterpret_cast<ctran::regcache::Segment*>(
+          segmentsAvl->lookup(avlHdl));
       CLOGF_TRACE(
           ALLOC,
           "Remaining avlHdl {} range {} ncclManaged {} in segmentsAvl",
@@ -243,7 +251,7 @@ commResult_t CtranMapperRegCache::destroy() {
   return commSuccess;
 }
 
-void CtranMapperRegCache::asyncRegThreadFn(int cudaDev) {
+void ctran::RegCache::asyncRegThreadFn(int cudaDev) {
   folly::setThreadName("CTranAsyncReg");
   commNamedThreadStart("CTranAsyncReg");
 
@@ -277,7 +285,7 @@ void CtranMapperRegCache::asyncRegThreadFn(int cudaDev) {
         cmd.cudaDev);
 
     bool didRegister = false;
-    CtranMapperRegElem* regHdl = nullptr;
+    ctran::regcache::RegElem* regHdl = nullptr;
 
     // Expected behavior:
     // - If didRegister is true, meaning the buffer is registered by the
@@ -303,14 +311,14 @@ void CtranMapperRegCache::asyncRegThreadFn(int cudaDev) {
         &regHdl));
 
     if (didRegister) {
-      profiler.wlock()->record(CtranRegCacheEventType::kAsyncRegMemEvent);
+      profiler.wlock()->record(ctran::regcache::EventType::kAsyncRegMemEvent);
     }
 
     // NOTE: regHdl may already be released by concurrent deregMem from main
     // thread; unsafe to read its content
     CLOGF_TRACE(
         ALLOC,
-        "CTRAN-MAPPER: async registered buf {} len {} didRegister {} regHdl {}",
+        "CTRAN-REGCACHE: async registered buf {} len {} didRegister {} regHdl {}",
         cmd.buf,
         cmd.len,
         didRegister,
@@ -325,7 +333,7 @@ void CtranMapperRegCache::asyncRegThreadFn(int cudaDev) {
   return;
 }
 
-commResult_t CtranMapperRegCache::asyncRegRange(
+commResult_t ctran::RegCache::asyncRegRange(
     const void* buf,
     const size_t len,
     const int cudaDev,
@@ -354,7 +362,7 @@ commResult_t CtranMapperRegCache::asyncRegRange(
   return commSuccess;
 }
 
-void CtranMapperRegCache::waitAsyncRegComplete() {
+void ctran::RegCache::waitAsyncRegComplete() {
   while (true) {
     auto locked = asyncRegQueue_.lock();
     if (locked->empty()) {
@@ -363,10 +371,10 @@ void CtranMapperRegCache::waitAsyncRegComplete() {
   }
 }
 
-CtranMapperRegElem* CtranMapperRegCache::searchRegElem(
+ctran::regcache::RegElem* ctran::RegCache::searchRegElem(
     const void* ptr,
     const size_t len) {
-  CtranMapperRegElem* regHdl = nullptr;
+  ctran::regcache::RegElem* regHdl = nullptr;
 
   auto regElemsMaps = regElemsMaps_.rlock();
   auto& regHdlToElemMap = regElemsMaps->regHdlToElemMap;
@@ -394,21 +402,21 @@ CtranMapperRegElem* CtranMapperRegCache::searchRegElem(
   return regHdl;
 }
 
-bool CtranMapperRegCache::isRegistered(const void* ptr, const size_t len) {
+bool ctran::RegCache::isRegistered(const void* ptr, const size_t len) {
   // Find range in regElemsMaps
   auto regHdl = searchRegElem(ptr, len);
   return regHdl != nullptr;
 }
 
-std::vector<void*> CtranMapperRegCache::getSegments() const {
+std::vector<void*> ctran::RegCache::getSegments() const {
   return segmentsAvl_.rlock()->getAllElems();
 }
 
-commResult_t CtranMapperSegmentRange::pinRange(
+commResult_t ctran::regcache::SegmentRange::pinRange(
     const void* ptr,
     const int cudaDev,
     size_t len,
-    std::vector<CtranMapperSegmentRange>& segRangs) {
+    std::vector<ctran::regcache::SegmentRange>& segRangs) {
   DevMemType memType{DevMemType::kCumem};
   FB_COMMCHECK(getDevMemType(ptr, cudaDev, memType));
 
@@ -447,13 +455,13 @@ commResult_t CtranMapperSegmentRange::pinRange(
   return commSuccess;
 }
 
-commResult_t CtranMapperRegCache::cacheSegment(
+commResult_t ctran::RegCache::cacheSegment(
     const void* ptr,
     const size_t len,
     const int cudaDev,
     const bool ncclManaged,
     uint64_t commHash,
-    CtranMapperSegment** segment,
+    ctran::regcache::Segment** segment,
     void** segHdl) {
   SetCudaDevRAII setCudaDev(cudaDev);
   {
@@ -464,8 +472,8 @@ commResult_t CtranMapperRegCache::cacheSegment(
     void* avlHdl = nullptr;
     avlHdl = segmentsAvl->search(ptr, len);
     if (avlHdl) {
-      auto foundSeg =
-          reinterpret_cast<CtranMapperSegment*>(segmentsAvl->lookup(avlHdl));
+      auto foundSeg = reinterpret_cast<ctran::regcache::Segment*>(
+          segmentsAvl->lookup(avlHdl));
       {
         auto segState = foundSeg->stateMnger.wlock();
         segState->refCount++;
@@ -476,8 +484,9 @@ commResult_t CtranMapperRegCache::cacheSegment(
     }
 
     // Otherwise, load the segment range and create a new cache entry for it
-    std::vector<CtranMapperSegmentRange> ranges;
-    FB_COMMCHECK(CtranMapperSegmentRange::pinRange(ptr, cudaDev, len, ranges));
+    std::vector<ctran::regcache::SegmentRange> ranges;
+    FB_COMMCHECK(
+        ctran::regcache::SegmentRange::pinRange(ptr, cudaDev, len, ranges));
     FB_CHECKABORT(
         ranges.size() == 1,
         "Expected only one range for a user cached segment ptr {} len {}, but got {} ranges",
@@ -487,7 +496,7 @@ commResult_t CtranMapperRegCache::cacheSegment(
 
     // FIXME: cleanup AVL tree to be able to host unique_ptr
     const auto& range = ranges.at(0);
-    auto newSeg = new CtranMapperSegment(range, cudaDev, ncclManaged);
+    auto newSeg = new ctran::regcache::Segment(range, cudaDev, ncclManaged);
     avlHdl = segmentsAvl->insert(range.buf, range.len, newSeg);
     newSeg->avlHdl_ = avlHdl;
     *segment = newSeg;
@@ -508,11 +517,11 @@ commResult_t CtranMapperRegCache::cacheSegment(
         segmentsAvl->size());
   }
 
-  profiler.wlock()->record(CtranRegCacheEventType::kCacheSegEvent);
+  profiler.wlock()->record(ctran::regcache::EventType::kCacheSegEvent);
   return commSuccess;
 }
 
-commResult_t CtranMapperRegCache::regRange(
+commResult_t ctran::RegCache::regRange(
     const void* ptr,
     const size_t len,
     const int cudaDev,
@@ -520,7 +529,7 @@ commResult_t CtranMapperRegCache::regRange(
     const struct CommLogData& logMetaData,
     const std::vector<bool>& backends,
     bool& didRegister,
-    CtranMapperRegElem** regHdl,
+    ctran::regcache::RegElem** regHdl,
     bool ncclManaged) {
   auto dur = CtranMapperTimer();
   SetCudaDevRAII setCudaDev(cudaDev);
@@ -557,10 +566,11 @@ commResult_t CtranMapperRegCache::regRange(
 
     // - SLOW PATH: if the range is not yet registered, check if all
     // underlying segment ranges are cached. If found, let's register it
-    std::vector<CtranMapperSegmentRange> ranges;
-    FB_COMMCHECK(CtranMapperSegmentRange::pinRange(ptr, cudaDev, len, ranges));
+    std::vector<ctran::regcache::SegmentRange> ranges;
+    FB_COMMCHECK(
+        ctran::regcache::SegmentRange::pinRange(ptr, cudaDev, len, ranges));
 
-    std::vector<CtranMapperSegment*> segments(ranges.size(), nullptr);
+    std::vector<ctran::regcache::Segment*> segments(ranges.size(), nullptr);
     bool foundAll = true;
 
     // - SLOW PATH: find the cached segments corresponding to each range.
@@ -570,7 +580,7 @@ commResult_t CtranMapperRegCache::regRange(
       if (!avlHdl) {
         CLOGF(
             WARN,
-            "CTRAN-MAPPER:[pbase {} range {}] associated with [ptr {} len {}] is not pre-registered by user",
+            "CTRAN-REGCACHE:[pbase {} range {}] associated with [ptr {} len {}] is not pre-registered by user",
             (void*)segRange.buf,
             segRange.len,
             (void*)ptr,
@@ -578,8 +588,8 @@ commResult_t CtranMapperRegCache::regRange(
         foundAll = false;
         break;
       }
-      segments[i] =
-          reinterpret_cast<CtranMapperSegment*>(segmentsAvl->lookup(avlHdl));
+      segments[i] = reinterpret_cast<ctran::regcache::Segment*>(
+          segmentsAvl->lookup(avlHdl));
       lenToReg += segments.at(i)->range.len;
     }
 
@@ -588,7 +598,7 @@ commResult_t CtranMapperRegCache::regRange(
       // range.
       ptrToReg = const_cast<void*>(segments.at(0)->range.buf);
       numSegmentsToReg = segments.size();
-      auto newRegElem = std::make_unique<CtranMapperRegElem>(
+      auto newRegElem = std::make_unique<ctran::regcache::RegElem>(
           ptrToReg, lenToReg, cudaDev, segments, ncclManaged);
 
       // Backend registration
@@ -636,11 +646,11 @@ commResult_t CtranMapperRegCache::regRange(
           .count(),
       true /* isRegMemEvent */);
 
-  profiler.wlock()->record(CtranRegCacheEventType::kRegMemEvent, dur);
+  profiler.wlock()->record(ctran::regcache::EventType::kRegMemEvent, dur);
   return commSuccess;
 }
 
-bool CtranMapperSegment::askFree() {
+bool ctran::regcache::Segment::askFree() {
   auto stat = stateMnger.wlock();
   stat->refCount--;
   FB_CHECKABORT(
@@ -653,16 +663,16 @@ bool CtranMapperSegment::askFree() {
   return stat->refCount == 0;
 }
 
-CtranMapperSegment* CtranMapperRegCache::getSegment(void* segHdl) {
-  return reinterpret_cast<CtranMapperSegment*>(
+ctran::regcache::Segment* ctran::RegCache::getSegment(void* segHdl) {
+  return reinterpret_cast<ctran::regcache::Segment*>(
       segmentsAvl_.rlock()->lookup(segHdl));
 }
 
-std::vector<CtranMapperRegElem*> CtranMapperRegCache::getRegElems(
+std::vector<ctran::regcache::RegElem*> ctran::RegCache::getRegElems(
     const void* segHdl) const {
-  std::vector<CtranMapperRegElem*> regElems;
+  std::vector<ctran::regcache::RegElem*> regElems;
 
-  const auto segment = reinterpret_cast<CtranMapperSegment*>(
+  const auto segment = reinterpret_cast<ctran::regcache::Segment*>(
       segmentsAvl_.rlock()->lookup(const_cast<void*>(segHdl)));
   if (segment) {
     // Find all associated regElems of the segment
@@ -678,12 +688,12 @@ std::vector<CtranMapperRegElem*> CtranMapperRegCache::getRegElems(
   return regElems;
 }
 
-commResult_t CtranMapperRegCache::freeSegment(
+commResult_t ctran::RegCache::freeSegment(
     void* segHdl,
     bool& freed,
     bool& ncclManaged,
-    std::vector<std::unique_ptr<CtranMapperRegElem>>& regElems) {
-  CtranMapperSegment* segment = nullptr;
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>>& regElems) {
+  ctran::regcache::Segment* segment = nullptr;
   {
     // Global lock:
     // Lock both segmentsAvl and regElemsMaps since we may need remove segment
@@ -698,8 +708,8 @@ commResult_t CtranMapperRegCache::freeSegment(
     auto& regHdlToElemMap = regElemsMaps->regHdlToElemMap;
 
     // MIN_TODO: check if segHdl is valid in lookup
-    segment =
-        reinterpret_cast<CtranMapperSegment*>(segmentsAvl->lookup(segHdl));
+    segment = reinterpret_cast<ctran::regcache::Segment*>(
+        segmentsAvl->lookup(segHdl));
 
     // Invalid segment handle, likely double free
     if (!segment) {
@@ -765,28 +775,29 @@ commResult_t CtranMapperRegCache::freeSegment(
   // Free segment here, in case regElem accesses it during deregisteration
   delete segment;
 
-  profiler.wlock()->record(CtranRegCacheEventType::kFreeSegEvent);
+  profiler.wlock()->record(ctran::regcache::EventType::kFreeSegEvent);
   return commSuccess;
 }
 
-commResult_t CtranMapperRegCache::deregElem(CtranMapperRegElem* regElem) {
+commResult_t ctran::RegCache::deregElem(ctran::regcache::RegElem* regElem) {
   auto dur = CtranMapperTimer();
   FB_COMMCHECK(regElem->doDeregister());
-  profiler.wlock()->record(CtranRegCacheEventType::kDeregMemEvent, dur);
+  profiler.wlock()->record(ctran::regcache::EventType::kDeregMemEvent, dur);
   return commSuccess;
 }
 
-commResult_t CtranMapperRegCache::regDynamic(
+commResult_t ctran::RegCache::regDynamic(
     const void* ptr,
     const size_t len,
     int cudaDev,
     const std::vector<bool>& backends,
-    CtranMapperRegElem** regElem) {
+    ctran::regcache::RegElem** regElem) {
   auto dur = CtranMapperTimer();
   SetCudaDevRAII setCudaDev(cudaDev);
 
-  std::vector<CtranMapperSegmentRange> ranges;
-  FB_COMMCHECK(CtranMapperSegmentRange::pinRange(ptr, cudaDev, len, ranges));
+  std::vector<ctran::regcache::SegmentRange> ranges;
+  FB_COMMCHECK(
+      ctran::regcache::SegmentRange::pinRange(ptr, cudaDev, len, ranges));
   FB_CHECKABORT(
       ranges.size() > 0, "No range found for ptr {} len {}", ptr, len);
 
@@ -796,7 +807,7 @@ commResult_t CtranMapperRegCache::regDynamic(
   for (const auto& range : ranges) {
     lenToReg += range.len;
   }
-  auto newRegElem_ = std::make_unique<CtranMapperRegElem>(
+  auto newRegElem_ = std::make_unique<ctran::regcache::RegElem>(
       ranges.at(0).buf,
       lenToReg,
       cudaDev,
@@ -815,15 +826,15 @@ commResult_t CtranMapperRegCache::regDynamic(
 
   {
     auto profilerLk = profiler.wlock();
-    profilerLk->record(CtranRegCacheEventType::kDynamicRegMemEvent);
-    profilerLk->record(CtranRegCacheEventType::kRegMemEvent, dur);
+    profilerLk->record(ctran::regcache::EventType::kDynamicRegMemEvent);
+    profilerLk->record(ctran::regcache::EventType::kRegMemEvent, dur);
   }
 
   return commSuccess;
 }
 
-commResult_t CtranMapperRegCache::deregDynamic(CtranMapperRegElem* regHdl) {
-  std::unique_ptr<CtranMapperRegElem> regElem = nullptr;
+commResult_t ctran::RegCache::deregDynamic(ctran::regcache::RegElem* regHdl) {
+  std::unique_ptr<ctran::regcache::RegElem> regElem = nullptr;
   // Global lock to update regElemsMaps_.
   // Unlock before deregistration, avoid long holding time of the lock.
   {
@@ -847,7 +858,8 @@ commResult_t CtranMapperRegCache::deregDynamic(CtranMapperRegElem* regHdl) {
   return commSuccess;
 }
 
-commResult_t CtranMapperRegElem::doRegister(const std::vector<bool>& backends) {
+commResult_t ctran::regcache::RegElem::doRegister(
+    const std::vector<bool>& backends) {
   auto stat = stateMnger.wlock();
 
   // Register to backends
@@ -863,10 +875,10 @@ commResult_t CtranMapperRegElem::doRegister(const std::vector<bool>& backends) {
       // the buffer, avoiding any premature deallocation issues.
       FB_COMMCHECK(
           CtranNvl::regMem(buf, len, cudaDev_, &nvlRegElem, ncclManaged_));
-    } catch (const std::bad_alloc& e) {
+    } catch ([[maybe_unused]] const std::bad_alloc& e) {
       CLOGF(
           WARN,
-          "CTRAN-MAPPER: NVL backend not enabled. Skip NVL registration for buf {} len {}",
+          "CTRAN-REGCACHE: NVL backend not enabled. Skip NVL registration for buf {} len {}",
           (void*)buf,
           len);
     }
@@ -876,10 +888,10 @@ commResult_t CtranMapperRegElem::doRegister(const std::vector<bool>& backends) {
   if (backends[CommBackend::IB]) {
     try {
       FB_COMMCHECK(CtranIb::regMem(buf, len, cudaDev_, &ibRegElem));
-    } catch (const std::bad_alloc& e) {
+    } catch ([[maybe_unused]] const std::bad_alloc& e) {
       CLOGF(
           WARN,
-          "CTRAN-MAPPER: IB backend not enabled. Skip IB registration for buf {} len {}",
+          "CTRAN-REGCACHE: IB backend not enabled. Skip IB registration for buf {} len {}",
           (void*)buf,
           len);
     }
@@ -891,22 +903,22 @@ commResult_t CtranMapperRegElem::doRegister(const std::vector<bool>& backends) {
         ctran::CtranTcpDm::regMem((void*)buf, len, cudaDev_, &tcpRegElem));
   }
 
-  stat->state = CtranMapperRegElemState::REGISTERED;
+  stat->state = ctran::regcache::RegElemState::REGISTERED;
   CLOGF_SUBSYS(
       INFO,
       ALLOC,
-      "CTRAN-MAPPER: registered RegElem {} [{}] ",
+      "CTRAN-REGCACHE: registered RegElem {} [{}] ",
       (void*)this,
       toString(stat->state).c_str());
 
   return commSuccess;
 }
 
-commResult_t CtranMapperRegElem::doDeregister() {
+commResult_t ctran::regcache::RegElem::doDeregister() {
   auto stat = stateMnger.wlock();
 
   FB_CHECKABORT(
-      stat->state == CtranMapperRegElemState::REGISTERED,
+      stat->state == ctran::regcache::RegElemState::REGISTERED,
       "Unexpected state {} in deregistration of RegElem {} [{}]",
       stat->state,
       (void*)this,
@@ -926,11 +938,11 @@ commResult_t CtranMapperRegElem::doDeregister() {
     tcpRegElem = nullptr;
   }
 
-  stat->state = CtranMapperRegElemState::DEREGISTERED;
+  stat->state = ctran::regcache::RegElemState::DEREGISTERED;
   CLOGF_SUBSYS(
       INFO,
       ALLOC,
-      "CTRAN-MAPPER: deregistered RegElem {} [{}] ",
+      "CTRAN-REGCACHE: deregistered RegElem {} [{}] ",
       (void*)this,
       toString(stat->state).c_str());
 
