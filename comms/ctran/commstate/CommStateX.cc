@@ -256,6 +256,7 @@ void CommStateX::setRankStatesTopologies(
 
     RankState state;
     state.rank = rankTopology.rank;
+    state.pid = rankTopology.pid;
     state.host = host;
     state.rtsw = rtsw;
     state.su = su;
@@ -477,6 +478,12 @@ int CommStateX::gRank(int rank) const {
 
   CHECK_VALID_RANK(rank, commRanksToWorldRanks_.size());
   return commRanksToWorldRanks_.at(rank);
+}
+
+std::string CommStateX::gPid(int rank) const {
+  CHECK_TOPO_AND_SET_RANK(rank, rank_, rankStates_);
+  return rankStates_.at(rank).host + ":" +
+      std::to_string(rankStates_.at(rank).pid);
 }
 
 std::string CommStateX::dc(int rank) const {

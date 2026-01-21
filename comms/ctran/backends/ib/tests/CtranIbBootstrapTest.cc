@@ -310,6 +310,70 @@ TEST_P(CtranIbBootstrapParameterizedTest, BootstrapStartDefaultServer) {
   getAndValidateListenAddr(ctranIb.get());
 }
 
+// Test that NCCL_SOCKET_IFNAME with multiple interfaces (comma-separated)
+// throws an exception.
+TEST_F(CtranIbBootstrapCommonTest, MultipleInterfacesInSocketIfnameThrows) {
+  std::string originalIfname = NCCL_SOCKET_IFNAME;
+  SCOPE_EXIT {
+    NCCL_SOCKET_IFNAME = originalIfname;
+  };
+
+  NCCL_SOCKET_IFNAME = "beth0,beth1,beth2"; // > 1 interface (comma-separated)
+  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+  EXPECT_THROW(
+      {
+        auto ctranIb = createCtranIb(
+            /*rank=*/0,
+            CtranIb::BootstrapMode::kDefaultServer,
+            abortCtrl,
+            std::nullopt);
+      },
+      ::ctran::utils::Exception);
+}
+
+// Test that NCCL_SOCKET_IFNAME with a single interface works correctly
+TEST_F(CtranIbBootstrapCommonTest, SingleInterfaceInSocketIfnameSucceeds) {
+  std::string originalIfname = NCCL_SOCKET_IFNAME;
+  SCOPE_EXIT {
+    NCCL_SOCKET_IFNAME = originalIfname;
+  };
+
+  NCCL_SOCKET_IFNAME = "lo"; // Single interface (no comma)
+  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+
+  // Should not throw; single interface is valid
+  auto ctranIb = createCtranIb(
+      /*rank=*/0, CtranIb::BootstrapMode::kDefaultServer, abortCtrl);
+  getAndValidateListenAddr(ctranIb.get());
+}
+
+// Test that empty NCCL_SOCKET_IFNAME does not trigger the multi-interface error
+// (it should fail later with "No socket interfaces found" instead)
+TEST_F(
+    CtranIbBootstrapCommonTest,
+    EmptySocketIfnameDoesNotTriggerMultiIfError) {
+  std::string originalIfname = NCCL_SOCKET_IFNAME;
+  SCOPE_EXIT {
+    NCCL_SOCKET_IFNAME = originalIfname;
+  };
+
+  NCCL_SOCKET_IFNAME = "";
+  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/true);
+
+  // Empty string does not contain a comma, so the multi-interface check passes.
+  try {
+    auto ctranIb = createCtranIb(
+        /*rank=*/0, CtranIb::BootstrapMode::kDefaultServer, abortCtrl);
+    getAndValidateListenAddr(ctranIb.get()); // Creation succeeded
+  } catch (const ::ctran::utils::Exception& e) {
+    // If it throws, verify it's NOT the multi-interface error
+    std::string errorMsg = e.what();
+    EXPECT_EQ(
+        errorMsg.find("should specify only one interface"), std::string::npos)
+        << "Empty NCCL_SOCKET_IFNAME should not trigger multi-interface error";
+  }
+}
+
 // Test bootstrapStart with specified server address
 TEST_P(CtranIbBootstrapParameterizedTest, BootstrapStartSpecifiedServer) {
   SocketServerAddr serverAddr = getSocketServerAddress();
