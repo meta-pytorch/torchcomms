@@ -15,6 +15,23 @@ namespace ncclx::comms_monitor {
 
 namespace {
 struct CommsMonitorSingletonTag {};
+
+std::vector<int> getVectorRingFromArray(int nRanks, int* ring) {
+  std::vector<int> ringVec;
+  ringVec.reserve(nRanks);
+  for (int i = 0; i < nRanks; i++) {
+    ringVec.push_back(ring[i]);
+  }
+  return ringVec;
+}
+
+std::array<int, NCCL_MAX_TREE_ARITY> getTreeChildArray(int* treeDown) {
+  std::array<int, NCCL_MAX_TREE_ARITY> childNodes{};
+  for (int i = 0; i < NCCL_MAX_TREE_ARITY; i++) {
+    childNodes[i] = treeDown[i];
+  }
+  return childNodes;
+}
 } // namespace
 
 folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
@@ -35,10 +52,34 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
   return NcclCommMonitorInfo{
       .logMetaData = comm->logMetaData,
       .commState = ncclx::CommStateX{*comm->ctranComm_->statex_},
+      .topoInfo = NcclTopoInfo::fromNcclComm(comm),
       .collTrace = comm->collTrace,
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
       .newCollTrace = comm->newCollTrace};
+}
+
+NcclTopoInfo NcclTopoInfo::fromNcclComm(ncclComm_t comm) {
+  NcclTopoInfo topoInfo;
+  // TODO: currently we only support
+  topoInfo.nChannels = comm->nChannels;
+  topoInfo.rings.reserve(topoInfo.nChannels);
+  topoInfo.trees.reserve(topoInfo.nChannels);
+  for (int i = 0; i < topoInfo.nChannels; i++) {
+    auto& channel = comm->channels[i];
+    if (comm->lazySetupChannels && comm->nChannels != comm->nChannelsReady) {
+      topoInfo.rings.emplace_back(getVectorRingFromArray(
+          comm->nRanks, comm->rings.value().data() + i * comm->nRanks));
+    } else {
+      topoInfo.rings.emplace_back(
+          getVectorRingFromArray(comm->nRanks, channel.ring.userRanks));
+    }
+    topoInfo.trees.emplace_back(
+        NcclTreeNodeInfo{
+            .parentNode = channel.tree.up,
+            .childrenNodes = getTreeChildArray(channel.tree.down)});
+  }
+  return topoInfo;
 }
 
 bool CommsMonitor::deregisterCommImpl(ncclComm_t comm) {
