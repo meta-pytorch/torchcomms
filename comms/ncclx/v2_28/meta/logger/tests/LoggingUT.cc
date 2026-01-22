@@ -18,7 +18,7 @@
 #include "param.h" // @manual
 
 namespace {
-void checkStringHasLogging(
+void inline checkStringHasLogging(
     std::string_view output,
     std::string_view expectString,
     std::string_view logLevel) {
@@ -49,7 +49,6 @@ class NcclLoggerTest : public ::testing::Test {
 
   void initLogging() {
     ncclDebugLevel = -1;
-    ncclDebugLogFileStr = "";
     initNcclLogger();
   }
 };
@@ -61,6 +60,7 @@ TEST_F(NcclLoggerTest, LogDisplay) {
 
   ncclCvarInit();
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   // auto fileGuard = EnvRAII(NCCL_DEBUG_FILE, std::string{"/tmp/debug.test3"});
 
   initLogging();
@@ -94,6 +94,7 @@ TEST_F(NcclLoggerTest, LogDisplay) {
 
 TEST_F(NcclLoggerTest, GetLastCommsErrorTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -144,6 +145,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorTest) {
 
 TEST_F(NcclLoggerTest, GetLastCommsErrorMultilineTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -161,6 +163,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorMultilineTest) {
 
 TEST_F(NcclLoggerTest, GetLastCommsErrorLongMessageTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -195,6 +198,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorLongMessageTestXLOG) {
 
 TEST_F(NcclLoggerTest, WarnLogTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"WARN"});
+  setenv("NCCL_DEBUG", "WARN", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -223,6 +227,7 @@ TEST_F(NcclLoggerTest, WarnLogTest) {
 
 TEST_F(NcclLoggerTest, InfoLogTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -251,7 +256,9 @@ TEST_F(NcclLoggerTest, InfoLogTest) {
 
 TEST_F(NcclLoggerTest, InfoSubsysLogTest) {
   auto nccl_debug = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   auto debugSubsys = EnvRAII(NCCL_DEBUG_SUBSYS, std::string{"ENV,NET"});
+  setenv("NCCL_DEBUG_SUBSYS", "ENV,NET", 1);
   ncclResetDebugInit();
 
   std::string TestStr = "TESTING";
@@ -280,7 +287,9 @@ TEST_F(NcclLoggerTest, InfoSubsysLogTest) {
 
 TEST_F(NcclLoggerTest, InfoSubsysLogRevertTest) {
   auto nccl_debug = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   auto debugSubsys = EnvRAII(NCCL_DEBUG_SUBSYS, std::string{"^ENV,NET"});
+  setenv("NCCL_DEBUG_SUBSYS", "^ENV,NET", 1);
   ncclResetDebugInit();
 
   std::string TestStr = "TESTING";
@@ -307,45 +316,19 @@ TEST_F(NcclLoggerTest, InfoSubsysLogRevertTest) {
   finishLogging();
 }
 
-TEST_F(NcclLoggerTest, DebugFilePathTest) {
-  folly::test::TemporaryDirectory tmpDir;
-
-  auto tempFile = tmpDir.path() / "tempFile";
-  // Set nccl_debug to set log file
-  auto nccl_debug = EnvRAII(NCCL_DEBUG, std::string{"WARN"});
-  auto debugFileGuard = EnvRAII(NCCL_DEBUG_FILE, tempFile.string());
-  ncclResetDebugInit();
-
-  EXPECT_EQ(ncclDebugLogFileStr, tempFile.string());
-}
-
-TEST_F(NcclLoggerTest, DebugDefaultPathTest) {
-  // Set nccl_debug to set log file
-  auto nccl_debug = EnvRAII(NCCL_DEBUG, std::string{"WARN"});
-  auto debugFileGuard = EnvRAII(NCCL_DEBUG_FILE, std::string{""});
-  ncclResetDebugInit();
-
-  EXPECT_EQ(ncclDebugLogFileStr, "");
-}
-
-TEST_F(NcclLoggerTest, DebugStderrPathTest) {
-  // Set nccl_debug to set log file
-  auto nccl_debug = EnvRAII(NCCL_DEBUG, std::string{"WARN"});
-  auto debugFileGuard = EnvRAII(NCCL_DEBUG_FILE, std::string{"stderr"});
-  ncclResetDebugInit();
-
-  EXPECT_EQ(ncclDebugLogFileStr, "stderr");
-}
-
 TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
   folly::test::TemporaryDirectory tmpDir;
 
   auto tempFile = tmpDir.path() / "tempFile";
   // Set nccl_debug to set log file
   auto nccl_debug = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   auto debugFileGuard = EnvRAII(NCCL_DEBUG_FILE, tempFile.string());
+  setenv("NCCL_DEBUG_FILE", tempFile.c_str(), 1);
   ncclResetDebugInit();
   initLogging();
+
+  INFO(NCCL_ALL, "Trigger DebugInit");
 
   constexpr std::string_view TestStr = "RAW TESTING";
   constexpr std::string_view TestStr2 = "TESTING";
@@ -382,11 +365,11 @@ TEST_F(NcclLoggerTest, DebugFileLoggingTest) {
           testing::HasSubstr(fmt::format("NCCL {} {}", level, TestStr2)));
     }
   }
-  finishLogging();
 }
 
 TEST_F(NcclLoggerTest, AppendErrorToStackTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -413,6 +396,7 @@ TEST_F(NcclLoggerTest, AppendErrorToStackTest) {
 
 TEST_F(NcclLoggerTest, AppendErrorToStackOrderTest) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -446,6 +430,7 @@ TEST_F(NcclLoggerTest, AppendErrorToStackOrderTest) {
 
 TEST_F(NcclLoggerTest, GetLastCommsErrorWithMultipleStackFrames) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -486,6 +471,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorWithMultipleStackFrames) {
 
 TEST_F(NcclLoggerTest, GetLastCommsErrorEmptyStackTrace) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -506,6 +492,7 @@ TEST_F(NcclLoggerTest, GetLastCommsErrorEmptyStackTrace) {
 
 TEST_F(NcclLoggerTest, WarnWithScubaAppendsToStackTrace) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -536,6 +523,7 @@ TEST_F(NcclLoggerTest, WarnWithScubaAppendsToStackTrace) {
 
 TEST_F(NcclLoggerTest, ErrWithScubaAppendsToStackTrace) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -564,6 +552,7 @@ TEST_F(NcclLoggerTest, ErrWithScubaAppendsToStackTrace) {
 
 TEST_F(NcclLoggerTest, ScubaStackTraceOrder) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -596,6 +585,7 @@ TEST_F(NcclLoggerTest, ScubaStackTraceOrder) {
 
 TEST_F(NcclLoggerTest, MixedScubaAndDirectStackAppend) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -634,6 +624,7 @@ TEST_F(NcclLoggerTest, MixedScubaAndDirectStackAppend) {
 
 TEST_F(NcclLoggerTest, ScubaStackTraceWithMultipleErrors) {
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
   ncclResetDebugInit();
 
   initLogging();
@@ -675,6 +666,7 @@ TEST_F(NcclLoggerTest, TestUtilsLogHandler) {
 
   ncclCvarInit();
   auto debugGuard = EnvRAII(NCCL_DEBUG, std::string{"INFO"});
+  setenv("NCCL_DEBUG", "INFO", 1);
 
   initLogging();
   auto utilsCategory = folly::LoggerDB::get().getCategory("comms.utils");

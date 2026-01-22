@@ -1,8 +1,17 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#include <hip/hip_bfloat16.h>
+#include <hip/hip_fp16.h>
+#include <hip/hip_runtime.h>
+using bf16 = hip_bfloat16;
+#else
 #include <cuda.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+using bf16 = __nv_bfloat16;
+using bf162 = __nv_bfloat162;
+#endif
 #include "comms/common/IpcGpuBarrier.cuh"
 
 namespace meta::comms {
