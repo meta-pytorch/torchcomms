@@ -137,15 +137,14 @@ if lib is not None:
         # Get buffer shape, dtype, and device from the window object
         # These are registered as constant methods -- dynamo can trace through them
         return torch.empty(
-            window.get_shape(),
-            dtype=window.get_dtype(),
-            device=window.get_device(),
+            window.shape,
+            dtype=window.dtype,
+            device=window.device,
         )
 
     # Collective Registrations
     from torch._library.opaque_object import MemberType, register_opaque_type
 
-    from torchcomms.functional.async_tensor import _maybe_wrap_tensor
     from torchcomms.functional.param_parsing import ParamKind, ParamSpec
 
     # Register TorchComm as opaque type with constant methods
@@ -166,9 +165,9 @@ if lib is not None:
         typ="reference",
         members={
             "get_size": MemberType.USE_REAL,
-            "get_dtype": MemberType.USE_REAL,
-            "get_shape": MemberType.USE_REAL,
-            "get_device": MemberType.USE_REAL,
+            "dtype": MemberType.USE_REAL,
+            "shape": MemberType.USE_REAL,
+            "device": MemberType.USE_REAL,
         },
     )
 
