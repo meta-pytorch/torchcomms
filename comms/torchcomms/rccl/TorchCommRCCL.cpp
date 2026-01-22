@@ -362,7 +362,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::send(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("send");
 
   RCCL_CHECK(
       rccl_api_,
@@ -402,7 +402,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::recv(
       stream, getOperationTimeout(options.timeout, options_.timeout), {});
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("recv");
 
   RCCL_CHECK(
       rccl_api_,
@@ -470,7 +470,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::batch_op_issue(
       input_tensors);
 
   // Record start event before NCCL operations
-  work->recordStart();
+  work->recordStart("batch_op_issue");
 
   // Start NCCL group for batched operations
   RCCL_CHECK(
@@ -545,7 +545,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::broadcast(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("broadcast");
 
   RCCL_CHECK(
       rccl_api_,
@@ -585,7 +585,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_reduce(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("all_reduce");
 
   auto dataType = getNcclDataType(tensor);
   RCCL_CHECK(
@@ -628,7 +628,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("reduce");
 
   auto dataType = getNcclDataType(tensor);
   RCCL_CHECK(
@@ -685,7 +685,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather(
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 
-  work->recordStart();
+  work->recordStart("all_gather");
 
   // Use multiple broadcast operations for all_gather
   RCCL_CHECK(
@@ -750,7 +750,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather_single(
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {input});
 
-  work->recordStart();
+  work->recordStart("all_gather_single");
 
   RCCL_CHECK(
       rccl_api_,
@@ -805,7 +805,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter(
       getOperationTimeout(options.timeout, options_.timeout),
       input_list);
 
-  work->recordStart();
+  work->recordStart("reduce_scatter");
 
   // Use multiple reduce operations for reduce_scatter
   RCCL_CHECK(
@@ -897,7 +897,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter_single(
       stream, getOperationTimeout(options.timeout, options_.timeout), {input});
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("reduce_scatter_single");
 
   auto dataType = getNcclDataType(input);
   RCCL_CHECK(
@@ -950,7 +950,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_to_all_single(
       stream, getOperationTimeout(options.timeout, options_.timeout), {input});
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("all_to_all_single");
 
   size_t chunk_size = input.numel() / comm_size_;
 
@@ -1023,7 +1023,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_to_all_v_single(
       stream, getOperationTimeout(options.timeout, options_.timeout), {input});
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("all_to_all_v_single");
 
   // Convert split sizes to arrays and calculate displacements
   std::vector<size_t> sendcounts(comm_size_);
@@ -1109,7 +1109,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_to_all(
       input_tensor_list);
 
   // Record start event before NCCL operations
-  work->recordStart();
+  work->recordStart("all_to_all");
 
   RCCL_CHECK(
       rccl_api_, nccl_comm_, rccl_api_->groupStart(), "NCCL GroupStart failed");
@@ -1166,7 +1166,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::barrier(
       stream, getOperationTimeout(options.timeout, options_.timeout), {});
 
   // Record start event before NCCL operation
-  work->recordStart();
+  work->recordStart("barrier");
 
   // Use pre-allocated CUDA buffer for barrier
   RCCL_CHECK(
@@ -1231,7 +1231,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::scatter(
       input_tensors);
 
   // Record start event before NCCL operations
-  work->recordStart();
+  work->recordStart("scatter");
 
   // Implement scatter using point-to-point operations
   if (rank_ == root) {
@@ -1337,7 +1337,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::gather(
       {input_tensor});
 
   // Record start event before NCCL operations
-  work->recordStart();
+  work->recordStart("gather");
 
   if (rank_ == root) {
     // Root receives from all ranks (except itself)

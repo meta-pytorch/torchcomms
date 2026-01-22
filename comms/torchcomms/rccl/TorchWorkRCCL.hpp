@@ -5,8 +5,10 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <string_view>
 
 #include <ATen/ATen.h>
+#include <ATen/record_function.h>
 #include <hip_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <vector>
 #include "comms/torchcomms/TorchWork.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
@@ -53,12 +55,14 @@ class TorchWorkRCCL : public TorchWork {
   }
 
  protected:
-  void recordStart();
+  void recordStart(std::string_view coll_name);
   void recordEnd();
 
   friend class TorchCommRCCL;
 
  private:
+  void recordFunctionStart(std::string_view coll_name);
+
   std::vector<at::Tensor> inputTensors_;
   at::Tensor inputTensor_;
 
@@ -70,6 +74,8 @@ class TorchWorkRCCL : public TorchWork {
   std::chrono::milliseconds timeout_ms_;
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
+
+  std::optional<at::RecordFunction> recordFunction_;
 };
 
 } // namespace comms
