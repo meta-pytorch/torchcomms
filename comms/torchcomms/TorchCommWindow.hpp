@@ -56,6 +56,21 @@ class TorchCommWindow {
 
   virtual std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) = 0;
 
+  // Get the registered buffer's dtype (for torch.compile meta kernel)
+  at::ScalarType getDtype() const {
+    return buf_dtype_;
+  }
+
+  // Get the registered buffer's shape (for torch.compile meta kernel)
+  std::vector<int64_t> getShape() const {
+    return buf_shape_;
+  }
+
+  // Get the registered buffer's device (for torch.compile meta kernel)
+  c10::Device getDevice() const {
+    return buf_device_;
+  }
+
   size_t get_size() const {
     return win_size_;
   }
