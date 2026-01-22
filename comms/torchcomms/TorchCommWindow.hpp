@@ -37,6 +37,10 @@ class TorchCommWindow {
   virtual void tensor_register(const at::Tensor& tensor) = 0;
   virtual void tensor_deregister() = 0;
 
+  // Creates a new window with the same backend/comm configuration.
+  // If a tensor is registered, the clone will have a cloned tensor registered.
+  virtual std::shared_ptr<TorchCommWindow> clone() = 0;
+
   // APIs exposed to users
   virtual c10::intrusive_ptr<TorchWork> put(
       const at::Tensor& tensor,
@@ -58,8 +62,12 @@ class TorchCommWindow {
     return win_size_;
   }
 
+  // Returns the registered tensor buffer, if any.
+  std::optional<at::Tensor> get_tensor() const {
+    return buf_tensor_;
+  }
+
  protected:
-  void* base_ptr_{};
   // device_: The device where the window is allocated.
   //  The device where the window is allocated may differ from the device used
   //  by the communicator. For example, the window could be allocated on the CPU

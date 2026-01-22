@@ -101,6 +101,15 @@ void TorchCommWindowNCCLX::tensor_deregister() {
   torch_comm_->barrier(false);
 }
 
+std::shared_ptr<TorchCommWindow> TorchCommWindowNCCLX::clone() {
+  auto new_window =
+      std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, torch_comm_);
+  if (buf_tensor_.has_value()) {
+    new_window->tensor_register(buf_tensor_->clone());
+  }
+  return new_window;
+}
+
 c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
     const at::Tensor& tensor,
     int dstRank,

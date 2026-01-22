@@ -53,6 +53,10 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)peerRank;
     return nullptr;
   }
+
+  std::shared_ptr<TorchCommWindow> clone() override {
+    return std::make_shared<DummyTorchCommWindow>();
+  }
 };
 } // namespace
 

@@ -42,6 +42,20 @@ PYBIND11_MODULE(_comms, m) {
           "Create default ReduceOp",
           py::arg("opType"),
           py::call_guard<py::gil_scoped_release>())
+      .def("__copy__", [](const ReduceOp& self) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const ReduceOp& self, py::dict memo) {
+            auto self_obj = py::cast(self);
+            auto self_id =
+                py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
+            if (memo.contains(self_id)) {
+              return memo[self_id].cast<ReduceOp>();
+            }
+            auto copy = self;
+            memo[self_id] = py::cast(copy);
+            return copy;
+          })
       .def_property_readonly(
           "type", &ReduceOp::type, "Get the type of the operation")
       .def_static(
@@ -160,6 +174,33 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
   py::class_<TorchCommWindow, std::shared_ptr<TorchCommWindow>>(
       m, "TorchCommWindow")
       .def(
+          "__copy__",
+          [](const std::shared_ptr<TorchCommWindow>& self) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const std::shared_ptr<TorchCommWindow>& self, py::dict memo) {
+            auto self_obj = py::cast(self);
+            auto self_id =
+                py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
+            if (memo.contains(self_id)) {
+              return memo[self_id].cast<std::shared_ptr<TorchCommWindow>>();
+            }
+
+            auto new_window = self->clone();
+
+            auto original_tensor = self->get_tensor();
+            auto cloned_tensor = new_window->get_tensor();
+            if (original_tensor.has_value() && cloned_tensor.has_value()) {
+              auto original_tensor_obj = py::cast(original_tensor.value());
+              memo[py::cast(
+                  reinterpret_cast<uintptr_t>(original_tensor_obj.ptr()))] =
+                  py::cast(cloned_tensor.value());
+            }
+
+            memo[self_id] = py::cast(new_window);
+            return new_window;
+          })
+      .def(
           "tensor_register",
           [](TorchCommWindow& self, const at::Tensor& tensor) {
             self.tensor_register(tensor);
@@ -213,6 +254,18 @@ Returns:
 
       )",
           py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_tensor",
+          [](const TorchCommWindow& self) -> std::optional<at::Tensor> {
+            return self.get_tensor();
+          },
+          R"(
+Get the registered tensor buffer, if any.
+
+Returns:
+    Optional[torch.Tensor]: The registered tensor, or None if no tensor is registered.
+
+      )")
       .def(
           "put",
           [](TorchCommWindow& self,
@@ -580,6 +633,24 @@ Args:
 
   // Bind TorchComm class
   py::class_<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
+      // NOTE: copy/deepcopy return the same object (not a clone).
+      // Actually cloning the underlying communicator would be extremely
+      // expensive (requires collective operations to create new comm groups).
+      .def(
+          "__copy__",
+          [](const std::shared_ptr<TorchComm>& self) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const std::shared_ptr<TorchComm>& self, py::dict memo) {
+            auto self_obj = py::cast(self);
+            auto self_id =
+                py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
+            if (memo.contains(self_id)) {
+              return memo[self_id].cast<std::shared_ptr<TorchComm>>();
+            }
+            memo[self_id] = py::cast(self);
+            return self;
+          })
       .def(
           "finalize",
           &TorchComm::finalize,
