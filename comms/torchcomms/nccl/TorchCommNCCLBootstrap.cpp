@@ -78,7 +78,7 @@ TorchCommNCCLBootstrap::TorchCommNCCLBootstrap(
 
 TorchCommNCCLBootstrap::~TorchCommNCCLBootstrap() {
   if (barrier_buffer_ != nullptr) {
-    CUDA_CHECK(
+    CUDA_CHECK_IGNORE(
         cuda_api_,
         cuda_api_->free(barrier_buffer_),
         "Failed to free barrier buffer");

@@ -79,7 +79,7 @@ TorchCommRCCLBootstrap::TorchCommRCCLBootstrap(
 
 TorchCommRCCLBootstrap::~TorchCommRCCLBootstrap() {
   if (barrier_buffer_ != nullptr) {
-    HIP_CHECK(
+    HIP_CHECK_IGNORE(
         hip_api_,
         hip_api_->free(barrier_buffer_),
         "Failed to free barrier buffer");
