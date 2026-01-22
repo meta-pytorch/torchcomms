@@ -161,6 +161,13 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
   // Bind TorchCommWindow class
   py::class_<TorchCommWindow, std::shared_ptr<TorchCommWindow>>(
       m, "TorchCommWindow")
+      // NOTE: copy/deepcopy do NOT clone the underlying object.
+      // actually cloning the underlying window would be extremely expensive
+      // (requires re-registering memory, synchronization, etc.).
+      //
+      // we add these to make cloning graph modules work, and this should be
+      // safe to do so in this manner but be weary if your intentions are to
+      // actually clone the object.
       .def(
           "__copy__",
           [](const std::shared_ptr<TorchCommWindow>& self) { return self; })
@@ -631,6 +638,13 @@ Args:
 
   // Bind TorchComm class
   py::class_<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
+      // NOTE: copy/deepcopy do NOT clone the underlying object.
+      // actually cloning the underlying window would be extremely expensive
+      // (requires re-registering memory, synchronization, etc.).
+      //
+      // we add these to make cloning graph modules work, and this should be
+      // safe to do so in this manner but be weary if your intentions are to
+      // actually clone the object.
       .def(
           "__copy__",
           [](const std::shared_ptr<TorchComm>& self) { return self; })

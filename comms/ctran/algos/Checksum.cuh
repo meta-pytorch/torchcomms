@@ -22,7 +22,7 @@ __device__ __forceinline__ uint32_t getAlignmentRoundUp(const void* p) {
 __device__ __forceinline__ uint32_t warpReduceXor(uint32_t val) {
   for (int offset = warpSize / 2; offset > 0; offset /= 2) {
 #if defined(__HIP_PLATFORM_AMD__)
-    val ^= __shfl_xor_sync(0xffffffffffffffff, val, offset);
+    val ^= __shfl_xor(val, offset);
 #else
     val ^= __shfl_xor_sync(0xffffffff, val, offset);
 #endif
