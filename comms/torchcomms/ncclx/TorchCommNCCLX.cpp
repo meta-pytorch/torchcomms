@@ -22,6 +22,17 @@ namespace torch {
 namespace comms {
 
 namespace {
+// Hint key prefix and names for NCCLX backend configuration
+constexpr std::string_view kHintPrefix = "torchcomm::ncclx::";
+constexpr std::string_view kHintHighPriorityStream =
+    "torchcomm::ncclx::high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize =
+    "torchcomm::ncclx::max_event_pool_size";
+constexpr std::string_view kHintGarbageCollectIntervalMs =
+    "torchcomm::ncclx::garbage_collect_interval_ms";
+constexpr std::string_view kHintEnableCudaGraphSupport =
+    "torchcomm::ncclx::enable_cuda_graph_support";
+
 // Helper function to validate that metadata tensors are int64_t (torch.int64)
 void validateInt64Dtype(const at::Tensor& tensor, const std::string& name) {
   if (tensor.scalar_type() != at::kLong) {
@@ -135,8 +146,8 @@ void TorchCommNCCLX::init(
 
   // Read hints and store them
   for (auto const& [key, val] : options_.hints) {
-    if (key.starts_with("torchcomm::ncclx::")) {
-      if (key == "torchcomm::ncclx::high_priority_stream") {
+    if (key.starts_with(kHintPrefix)) {
+      if (key == kHintHighPriorityStream) {
         high_priority_stream_ = string_to_bool(val);
       } else {
         throw std::runtime_error("Unrecognized hint " + key);
@@ -179,20 +190,19 @@ void TorchCommNCCLX::init(
       cuda_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  if (options_.hints.contains("torchcomm::ncclx::max_event_pool_size")) {
+  if (options_.hints.contains(std::string(kHintMaxEventPoolSize))) {
     configs_.max_event_pool_size_ =
-        std::stoull(options_.hints.at("torchcomm::ncclx::max_event_pool_size"));
+        std::stoull(options_.hints.at(std::string(kHintMaxEventPoolSize)));
   }
 
-  if (options_.hints.contains(
-          "torchcomm::ncclx::garbage_collect_interval_ms")) {
+  if (options_.hints.contains(std::string(kHintGarbageCollectIntervalMs))) {
     configs_.garbage_collect_interval_ms_ = std::stoull(
-        options_.hints.at("torchcomm::ncclx::garbage_collect_interval_ms"));
+        options_.hints.at(std::string(kHintGarbageCollectIntervalMs)));
   }
 
-  if (options_.hints.contains("torchcomm::ncclx::enable_cuda_graph_support")) {
+  if (options_.hints.contains(std::string(kHintEnableCudaGraphSupport))) {
     configs_.enable_cuda_graph_support_ = string_to_bool(
-        options_.hints.at("torchcomm::ncclx::enable_cuda_graph_support"));
+        options_.hints.at(std::string(kHintEnableCudaGraphSupport)));
   }
 
   // Give up our internal reference to the store object here.  The caller
