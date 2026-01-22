@@ -2,10 +2,21 @@
 
 # pyre-unsafe
 import ctypes
+import logging
 import os
+from contextlib import contextmanager
 from importlib.metadata import entry_points
+from typing import Generator, Optional
+
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
+
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
+    logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 
 def _load_libtorchcomms() -> None:
@@ -20,15 +31,7 @@ def _load_libtorchcomms() -> None:
 
 _load_libtorchcomms()
 from torchcomms._comms import *  # noqa: F401, F403
-import torchcomms.coalescing as coalescing  # noqa F401
 import torchcomms.objcol as objcol  # noqa: F401, F403
-
-if os.environ.get("TORCHCOMMS_PATCH_FOR_COMPILE", "").lower() in ("1", "true"):
-    # Import collectives first to ensure all operations are registered
-    # This must happen before patch_torchcomm() so that window operations
-    # and other collectives are registered and can be patched
-    from torchcomms.functional import collectives  # noqa: F401
-
 
 # The documentation uses __all__ to determine what is documented and in what
 # order.
@@ -49,7 +52,7 @@ __all__ = [  # noqa: F405
 for name in __all__:
     try:
         globals()[name].__module__ = "torchcomms"
-    except KeyError:  # ignore non-c++ bindings
+    except KeyError: # ignore non-c++ bindings
         pass
 
 
