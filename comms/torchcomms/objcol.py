@@ -33,7 +33,7 @@ class _Serialization:
 
 
 @functools.lru_cache(maxsize=None)
-def get_serialization() -> _Serialization:
+def _get_serialization() -> _Serialization:
     """Returns a cached serialization object with serialize and deserialize methods."""
     return _Serialization()
 
@@ -43,7 +43,7 @@ def _object_to_tensor(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     with _WaitCounter("pytorch.wait_counter.torchcomms._object_to_tensor").guard():
         f = io.BytesIO()
-        serialization = get_serialization()
+        serialization = _get_serialization()
         serialization.serialize(f, obj)
         byte_storage = torch.ByteStorage._from_buffer(f.getvalue())  # type: ignore[attr-defined]
         # Do not replace `torch.ByteTensor` or `torch.LongTensor` with torch.tensor and specifying dtype.
@@ -60,7 +60,7 @@ def _tensor_to_object(
     with _WaitCounter("pytorch.wait_counter.torchcomms._tensor_to_object").guard():
         tensor = tensor.cpu()
         buf = tensor.numpy().tobytes()[:tensor_size]
-        serialization = get_serialization()
+        serialization = _get_serialization()
         return serialization.deserialize(io.BytesIO(buf), weights_only=weights_only)
 
 
