@@ -73,6 +73,8 @@ TEST_F(AllToAllvSingleTest, AllTests) {
               output_sizes.push_back(recv_size);
             }
             break;
+          default:
+            TORCH_INTERNAL_ASSERT(false, "Unexpected SizePattern enum value");
         }
 
         // Create a descriptive test name for better test output
