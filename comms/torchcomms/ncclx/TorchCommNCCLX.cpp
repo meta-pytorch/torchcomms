@@ -1889,9 +1889,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 }
 
 // Window & One-sided Operations
-std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window() {
+std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
+    const std::optional<at::Tensor>& tensor) {
   auto win =
       std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, shared_from_this());
+  if (tensor.has_value()) {
+    win->tensor_register(tensor.value());
+  }
   return win;
 }
 
