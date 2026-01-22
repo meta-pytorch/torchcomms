@@ -74,15 +74,13 @@ void TorchCommRCCL::init(
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
-    auto bootstrap = new TorchCommRCCLBootstrap(
+    auto bootstrap = std::make_unique<TorchCommRCCLBootstrap>(
         options_.store, device_, rccl_api_, hip_api_, options_.timeout);
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
       nccl_comm_ = bootstrap->createNcclComm(name);
     }
-
-    delete bootstrap;
   }
 
   // Set HIP device and verify it's accessible
