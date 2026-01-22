@@ -277,7 +277,7 @@ c10::intrusive_ptr<TorchWorkRCCL> TorchCommRCCL::createWork(
     const std::vector<at::Tensor>& inputTensors) {
   // Only create the work object without enqueuing it
   auto work = c10::make_intrusive<TorchWorkRCCL>(
-      shared_from_this(), stream, timeout, inputTensors, tracing_);
+      shared_from_this(), stream, timeout, inputTensors);
   return work;
 }
 
