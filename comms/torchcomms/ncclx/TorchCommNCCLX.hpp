@@ -53,7 +53,7 @@ class NCCLException : public std::exception {
       ncclComm_t comm);
 
   const char* what() const noexcept override;
-  ncclResult_t getResult() const;
+  ncclResult_t getResult() const noexcept;
 
  private:
   std::string message_;

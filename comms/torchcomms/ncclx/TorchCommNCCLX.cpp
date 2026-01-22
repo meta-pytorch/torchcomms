@@ -41,7 +41,7 @@ void validateIntDtype(const at::Tensor& tensor, const std::string& name) {
 
 } // namespace
 
-ncclResult_t NCCLException::getResult() const {
+ncclResult_t NCCLException::getResult() const noexcept {
   return result_;
 }
 
