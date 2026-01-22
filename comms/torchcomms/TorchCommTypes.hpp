@@ -54,6 +54,10 @@ class ReduceOp {
   static const ReduceOp BXOR;
   static const ReduceOp AVG;
 
+  // Copy/move constructors are allowed for creating new ReduceOp instances,
+  // but assignment operators are deleted to prevent accidental modification
+  // of existing ReduceOp objects (particularly the static const instances).
+  // This ensures ReduceOp objects remain immutable after construction.
   ReduceOp(const ReduceOp& other) = default;
   ReduceOp& operator=(const ReduceOp& other) = delete;
 
