@@ -127,10 +127,15 @@ void preReduce(at::Tensor& tensor, const ReduceOp& r) {
   }
 }
 
-void postReduce(at::Tensor& tensor, const ReduceOp& r) {
+void postReduce(at::Tensor& tensor, const ReduceOp& r, int comm_size) {
   // Gloo doesn't support AVG so we use SUM + division.
   if (r.type() == ReduceOp::RedOpType::AVG) {
-    tensor /= static_cast<float>(tensor.numel());
+    // For integer types, use truncated division to avoid float cast errors
+    if (at::isIntegralType(tensor.scalar_type(), /*includeBool=*/false)) {
+      tensor.div_(comm_size, "trunc");
+    } else {
+      tensor /= comm_size;
+    }
   }
 }
 
@@ -592,6 +597,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
        opCPU,
        options = options,
        context = context_,
+       size = comm_size_,
        tag = nextTag()]() mutable {
         gloo::AllreduceOptions opts(context);
         const auto& scalarType = tensorCPU.scalar_type();
@@ -604,7 +610,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
 
         preReduce(tensorCPU, opCPU);
         gloo::allreduce(opts);
-        postReduce(tensorCPU, opCPU);
+        postReduce(tensorCPU, opCPU, size);
 
         if (tensorCPU.device() != tensor.device()) {
           // This will block the CPU thread so we don't need to synchronize the
@@ -637,6 +643,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
        opCPU,
        options = options,
        context = context_,
+       size = comm_size_,
        tag = nextTag()]() mutable {
         gloo::ReduceOptions opts(context);
         const auto& scalarType = tensorCPU.scalar_type();
@@ -650,7 +657,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
 
         preReduce(tensorCPU, opCPU);
         gloo::reduce(opts);
-        postReduce(tensorCPU, opCPU);
+        postReduce(tensorCPU, opCPU, size);
 
         if (tensorCPU.device() != tensor.device()) {
           // This will block the CPU thread so we don't need to synchronize the
@@ -874,6 +881,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
        opCPU,
        options = options,
        rank = rank_,
+       size = comm_size_,
        context = context_,
        tag = nextTag()]() mutable {
         // For reduce_scatter_single, we can simulate it by:
@@ -894,7 +902,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
 
         preReduce(inputCPU, opCPU);
         gloo::allreduce(opts);
-        postReduce(inputCPU, opCPU);
+        postReduce(inputCPU, opCPU, size);
 
         // Extract this rank's portion from the reduced result
         auto chunkSize = output.numel();
