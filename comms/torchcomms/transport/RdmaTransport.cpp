@@ -2,6 +2,8 @@
 
 #include "RdmaTransport.h"
 
+#include <folly/synchronization/CallOnce.h>
+
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
@@ -13,9 +15,10 @@ constexpr std::chrono::microseconds kProgressInterval{0};
 constexpr int kDummyRank = 0;
 constexpr int kDummyDevice = 0;
 
-std::once_flag initOnceFlag;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+folly::once_flag initOnceFlag;
 void initEnvironment() {
-  std::call_once(initOnceFlag, [] {
+  folly::call_once(initOnceFlag, [] {
     ncclCvarInit();
     ctran::logging::initCtranLogging();
     ctran::utils::commCudaLibraryInit();
@@ -84,10 +87,12 @@ RdmaTransport::RdmaTransport(int cudaDev, folly::EventBase* evb)
 RdmaTransport::~RdmaTransport() {}
 
 namespace {
-std::once_flag queryRdmaSupportOnceFlag;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
+folly::once_flag queryRdmaSupportOnceFlag;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 bool rdmaSupport = false;
 bool queryRdmaSupport() {
-  std::call_once(queryRdmaSupportOnceFlag, [] {
+  folly::call_once(queryRdmaSupportOnceFlag, [] {
     XLOG(INFO) << "Querying RdmaTransport support";
     try {
       auto ib = std::make_unique<CtranIb>(
@@ -138,7 +143,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
   CHECK_THROW(evb_, std::runtime_error);
   CHECK_THROW(localBuffer.size() <= remoteBuffer.len, std::runtime_error);
 
-  CHECK(cudaDev_ == localBuffer->getDevice());
+  CHECK_EQ(cudaDev_, localBuffer->getDevice());
 
   auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
   auto work = std::make_unique<Work>();
@@ -163,6 +168,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
   pendingWorks->emplace_back(std::move(work));
   evb_->runInEventBaseThread([this]() { progress(); });
 
+  // NOLINTNEXTLINE(clang-diagnostic-nrvo)
   return sf;
 }
 
@@ -188,7 +194,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
   CHECK_THROW(connected(), std::runtime_error);
   CHECK_THROW(evb_, std::runtime_error);
 
-  CHECK(cudaDev_ == localBuffer->getDevice());
+  CHECK_EQ(cudaDev_, localBuffer->getDevice());
 
   auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
   auto work = std::make_unique<Work>();
@@ -212,6 +218,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
   pendingWorks->emplace_back(std::move(work));
   evb_->runInEventBaseThread([this]() { progress(); });
 
+  // NOLINTNEXTLINE(clang-diagnostic-nrvo)
   return sf;
 }
 
