@@ -21,7 +21,7 @@ class ReduceScatterTest(unittest.TestCase):
     # Class variables for test parameters
     counts = [0, 4, 1024, 1024 * 1024]
     dtypes = [torch.float, torch.int, torch.int8]
-    ops = [ReduceOp.SUM, ReduceOp.MAX]
+    ops = [ReduceOp.SUM, ReduceOp.MAX, ReduceOp.AVG]
     num_replays = 4
 
     def get_wrapper(self):
@@ -236,6 +236,9 @@ class ReduceScatterTest(unittest.TestCase):
         if op == ReduceOp.SUM:
             return self.num_ranks * (self.rank + 1)
         elif op == ReduceOp.MAX:
+            return self.rank + 1
+        elif op == ReduceOp.AVG:
+            # Avg: (num_ranks * (rank+1)) / num_ranks = rank+1
             return self.rank + 1
         else:
             raise RuntimeError("Unsupported reduce operation")

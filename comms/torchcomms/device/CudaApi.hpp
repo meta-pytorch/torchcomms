@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
+#include <glog/logging.h>
 
 namespace torch {
 namespace comms {
@@ -16,6 +17,17 @@ namespace comms {
          << __FILE__ << ":" << __LINE__;                                  \
       throw std::runtime_error(ss.str());                                 \
     }                                                                     \
+  } while (0)
+
+// Ignore variant for use in destructors - logs errors instead of throwing
+#define CUDA_CHECK_IGNORE(cuda_api, call, err_str)                         \
+  do {                                                                     \
+    cudaError_t status = call;                                             \
+    if (status != cudaSuccess) {                                           \
+      LOG(ERROR) << "[TC] " << err_str << ": "                             \
+                 << cuda_api->getErrorString(status) << " at " << __FILE__ \
+                 << ":" << __LINE__;                                       \
+    }                                                                      \
   } while (0)
 
 /**
@@ -115,10 +127,9 @@ class DefaultCudaApi : public CudaApi {
   cudaError_t getDeviceCount(int* count) override;
 
   // Stream management
-  virtual cudaError_t getStreamPriorityRange(
-      int* leastPriority,
-      int* greatestPriority) override;
-  virtual cudaError_t streamCreateWithPriority(
+  cudaError_t getStreamPriorityRange(int* leastPriority, int* greatestPriority)
+      override;
+  cudaError_t streamCreateWithPriority(
       cudaStream_t* pStream,
       unsigned int flags,
       int priority) override;

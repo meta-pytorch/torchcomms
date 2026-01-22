@@ -2,10 +2,53 @@
 
 #pragma once
 
+#include <exception>
+#include <string>
+
+#include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
 
 namespace torch {
 namespace comms {
+
+// Forward declaration for NCCLXException
+class NcclxApi;
+
+// Custom exception class for better error handling
+class NCCLXException : public std::exception {
+ public:
+  NCCLXException(
+      NcclxApi& api,
+      const std::string& message,
+      ncclResult_t result,
+      ncclComm_t comm);
+
+  const char* what() const noexcept override;
+  [[nodiscard]] ncclResult_t getResult() const noexcept;
+
+ private:
+  std::string message_;
+  ncclResult_t result_;
+};
+
+#define NCCLX_CHECK(nccl_api, nccl_comm, call, err_str)            \
+  do {                                                             \
+    ncclResult_t status = call;                                    \
+    if (status != ncclSuccess) {                                   \
+      throw NCCLXException(*nccl_api, err_str, status, nccl_comm); \
+    }                                                              \
+  } while (0)
+
+// Ignore variant for use in destructors - logs errors instead of throwing
+#define NCCLX_CHECK_IGNORE(nccl_api, call, err_str)                        \
+  do {                                                                     \
+    ncclResult_t status = call;                                            \
+    if (status != ncclSuccess) {                                           \
+      LOG(ERROR) << "[TC] " << err_str << ": "                             \
+                 << nccl_api->getErrorString(status) << " at " << __FILE__ \
+                 << ":" << __LINE__;                                       \
+    }                                                                      \
+  } while (0)
 
 using NcclxWindow = ncclWindow_t;
 using NcclxWindowAccessType = ncclWinAccessType;

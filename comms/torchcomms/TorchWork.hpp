@@ -6,9 +6,18 @@
 #include <functional>
 #include <future>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
+/**
+ * TorchWork - Base class representing asynchronous work.
+ *
+ * Thread Safety:
+ * TorchWork is NOT thread-safe. All methods (status(), isCompleted(), wait())
+ * must be called from a single thread. Concurrent calls from multiple threads
+ * are not supported.
+ *
+ * Work objects should not be destroyed while wait() is in progress.
+ */
 class TorchWork : public c10::intrusive_ptr_target {
  public:
   // Status of a work object
@@ -92,5 +101,4 @@ class TorchWorkThread : public TorchWork {
   std::future<void> future_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
