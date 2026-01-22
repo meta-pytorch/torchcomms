@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include <ATen/cuda/CUDAContext.h>
+#include <fmt/core.h>
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/StoreManager.hpp"
@@ -91,7 +92,7 @@ TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->setDevice(device_.index()),
-      "Failed to set device to " + std::to_string(device_.index()));
+      fmt::format("Failed to set device to {}", device_.index()));
 
   // Allocate CUDA memory for a single float32 value used in barrier operations
   CUDA_CHECK(
@@ -111,7 +112,7 @@ TorchCommNCCLXBootstrap::~TorchCommNCCLXBootstrap() noexcept {
 }
 
 std::string TorchCommNCCLXBootstrap::getNCCLXStoreKey() {
-  std::string key = getNCCLXStoreKeyPrefix() + std::to_string(counter_);
+  std::string key = fmt::format("{}{}", getNCCLXStoreKeyPrefix(), counter_);
   counter_++;
   return key;
 }

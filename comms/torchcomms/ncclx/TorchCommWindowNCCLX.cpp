@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
+#include <fmt/core.h>
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
@@ -193,9 +194,10 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::wait_signal(
 void TorchCommWindowNCCLX::checkRequestSizeAndThrow(size_t input_size) const {
   if (input_size > win_size_) {
     throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: Requested size (" +
-        std::to_string(input_size) + " bytes) exceeds the window size (" +
-        std::to_string(win_size_) + " bytes)");
+        fmt::format(
+            "[TorchCommWindowNCCLX]: Requested size ({} bytes) exceeds the window size ({} bytes)",
+            input_size,
+            win_size_));
   }
 }
 
@@ -207,10 +209,10 @@ void TorchCommWindowNCCLX::checkDeviceAndThrow(const at::Tensor& tensor) const {
     auto data_device_idx = tensor.device().index();
     if (comm_device_.index() != data_device_idx) {
       throw std::runtime_error(
-          "[TorchCommWindowNCCLX]: Device mismatch: torchcomm is on device idx: " +
-          std::to_string(comm_device_.index()) +
-          ", operated tensor on device idx: " +
-          std::to_string(data_device_idx));
+          fmt::format(
+              "[TorchCommWindowNCCLX]: Device mismatch: torchcomm is on device idx: {}, operated tensor on device idx: {}",
+              comm_device_.index(),
+              data_device_idx));
     }
   }
 }

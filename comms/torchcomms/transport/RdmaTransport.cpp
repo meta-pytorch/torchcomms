@@ -5,6 +5,7 @@
 #include <folly/synchronization/CallOnce.h>
 #include <stdexcept>
 
+#include <fmt/core.h>
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
@@ -34,9 +35,10 @@ RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev)
     : buf_(buf), len_(len), cudaDev_(cudaDev) {
   if (len < kMinRdmaMemorySize) {
     throw std::invalid_argument(
-        "RdmaMemory: Minimum memory block to be registered must be >= " +
-        std::to_string(kMinRdmaMemorySize) + " bytes, got " +
-        std::to_string(len) + " bytes");
+        fmt::format(
+            "RdmaMemory: Minimum memory block to be registered must be >= {} bytes, got {} bytes",
+            kMinRdmaMemorySize,
+            len));
   }
   initEnvironment();
   FB_COMMCHECKTHROW(CtranIb::regMem(buf_, len_, cudaDev_, &regHdl_));
