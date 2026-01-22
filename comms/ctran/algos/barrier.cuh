@@ -2,8 +2,15 @@
 
 #pragma once
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#include <hip/hip_bfloat16.h>
+#include <hip/hip_fp16.h>
+#include <hip/hip_runtime.h>
+#else
 #include <cuda.h>
 #include <cuda_bf16.h>
+#include <cuda_fp16.h>
+#endif
 #include "comms/ctran/algos/DevCommon.cuh"
 
 /*
