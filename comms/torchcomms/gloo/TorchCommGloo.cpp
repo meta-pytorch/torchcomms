@@ -79,7 +79,7 @@ inline T* getDataPointer(const at::Tensor& tensor) {
 namespace {
 void ensureTensorContiguous(const at::Tensor& tensor) {
   if (!tensor.is_contiguous()) {
-    throw std::runtime_error("Tensor must be contiguous for NCCL operations");
+    throw std::runtime_error("Tensor must be contiguous for Gloo operations");
   }
 }
 
