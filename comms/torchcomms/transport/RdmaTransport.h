@@ -185,7 +185,7 @@ struct RdmaRemoteBuffer {
  *   4. Use APIs for memory registration and data transfer
  *
  * folly::EventBase is used to drive the underlying RDMA operations. User
- * should have a dedicated EventBase for for transport operations and can
+ * should have a dedicated EventBase for transport operations and can
  * be shared across all transport instances. When requests are pending, this
  * will likely keep EventBase thread pretty busy to minimize latency.
  *
@@ -196,7 +196,7 @@ struct RdmaRemoteBuffer {
  * Future APIs that can be supported as per use-case. Given this framework
  * adding new APIs should be relatively straightforward.
  * - Send - RDMA Send (needs matching Recv on other end)
- * - Recv - RDMA Receive (needs mactching Send on other end)
+ * - Recv - RDMA Receive (needs matching Send on other end)
  * - Read - RDMA Read from a remote memory
  * - waitForRead - Wait for a remote read operation
  * - <Atomic APIs>
