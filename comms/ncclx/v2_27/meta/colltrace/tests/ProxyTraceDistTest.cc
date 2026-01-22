@@ -350,7 +350,8 @@ TEST_F(ProxyTraceTest, TestRecordNoDropByEnv) {
   EXPECT_THAT(comm->proxyState->trace, ::testing::NotNull());
 
   const int count = 1048500;
-  const int nColl = std::max(NCCL_PROXYTRACE_RECORD_MAX_DEFAULT, 100) * 5;
+  const int nColl =
+      std::max(NCCL_PROXYTRACE_RECORD_MAX_DEFAULTCVARVALUE, 100) * 5;
 
   runAllReduce(count, nColl, comm);
   CUDACHECK_TEST(cudaStreamSynchronize(stream));
@@ -368,7 +369,7 @@ TEST_F(ProxyTraceTest, TestRecordDropExceedLimit) {
   auto traceGuard = EnvRAII(NCCL_PROXYTRACE, {"trace"});
   auto recordGuard = EnvRAII(
       NCCL_PROXYTRACE_RECORD_MAX,
-      std::max(NCCL_PROXYTRACE_RECORD_MAX_DEFAULT, 100));
+      std::max(NCCL_PROXYTRACE_RECORD_MAX_DEFAULTCVARVALUE, 100));
 
   NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
   if (!checkTestRequirement(comm)) {
