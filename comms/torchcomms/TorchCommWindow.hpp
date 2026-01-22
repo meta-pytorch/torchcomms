@@ -11,14 +11,14 @@ namespace comms {
 // Forward declaration
 class TorchWork;
 
-using TorchCommlWinAccessType = enum {
+using TorchCommWinAccessType = enum {
   WIN_ACCESS_TYPE_UNIFIED = 0,
   WIN_ACCESS_TYPE_SEPARATE = 1,
 };
 
 class TorchCommWindowAttr {
  public:
-  TorchCommlWinAccessType accessType;
+  TorchCommWinAccessType accessType;
 };
 
 class TorchCommWindow {

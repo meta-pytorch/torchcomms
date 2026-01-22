@@ -65,7 +65,7 @@ TorchCommNCCLX::~TorchCommNCCLX() {
                         << " was not finalized before destruction";
   }
 
-  // We need to dteach the memory hook in case finalize is not called,
+  // We need to detach the memory hook in case finalize is not called,
   // so that we don't encounter a memory corruption.
   detachMemoryHook();
 }
@@ -840,7 +840,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
   nccl_api_->groupStart();
 
   for (int i = 0; i < comm_size_; ++i) {
-    // assign inpu/output tensors to support vector all_gather (all_gather_v)
+    // assign input/output tensors to support vector all_gather (all_gather_v)
     // where unevenly sized inputs are gathered among participating ranks
     auto& output = tensor_list[i];
     auto& input = (i == rank_) ? tensor : output;
@@ -1380,7 +1380,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       output_tensor_list);
 
   // Convert vector of tensors to a CPU tensor holding pointers, which will be
-  // hold by torchComm.
+  // held by torchComm.
   at::Tensor output_tensor_ptrs = at::zeros(
       {static_cast<int64_t>(output_tensor_list.size())},
       at::TensorOptions().dtype(at::kLong).device(at::kCPU));
@@ -1885,7 +1885,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
   return work;
 }
 
-// Window & One-sidede Operations
+// Window & One-sided Operations
 std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window() {
   auto win =
       std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, shared_from_this());
