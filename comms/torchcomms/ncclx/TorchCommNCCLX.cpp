@@ -77,6 +77,11 @@ void TorchCommNCCLX::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
+  // Debug assertion: device should be CUDA
+  TORCH_INTERNAL_ASSERT(
+      device.is_cuda() || device.index() == -1,
+      "TorchCommNCCLX requires a CUDA device or unspecified device index");
+
   // Initialize private members
   device_ = device;
   name_ = name;
@@ -226,6 +231,11 @@ void TorchCommNCCLX::init(
 }
 
 void TorchCommNCCLX::finalize() {
+  // Debug assertion: nccl_comm_ should not be null if we were initialized
+  TORCH_INTERNAL_ASSERT(
+      init_state_ != InitializationState::INITIALIZED || nccl_comm_ != nullptr,
+      "nccl_comm_ is null but state indicates we are initialized");
+
   if (init_state_ == InitializationState::UNINITIALIZED) {
     throw std::runtime_error("TorchCommNCCLX not initialized");
   } else if (init_state_ == InitializationState::FINALIZED) {
@@ -2009,6 +2019,11 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
     const std::string& split_name,
     const CommOptions& options) {
   checkAndAbortIfTimedOutOrError();
+
+  // Debug assertion: comm_size_ should be positive after initialization
+  TORCH_INTERNAL_ASSERT(
+      comm_size_ > 0,
+      "comm_size_ should be positive; was split called on an uninitialized comm?");
 
   // Validate that all ranks are valid
   for (int rank : ranks) {
