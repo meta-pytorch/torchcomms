@@ -3,6 +3,7 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -1443,12 +1444,22 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
 
   // Convert vector of tensors to a CPU tensor holding pointers, which will be
   // held by torchComm.
+  //
+  // Note: PyTorch does not provide tensors of void* or uintptr_t, so we
+  // workaround it by using tensors of int64_t, which should work on almost
+  // every platform that we care about. We use memcpy for type punning instead
+  // of reinterpret_cast to avoid undefined behavior due to strict aliasing
+  // rules.
+  static_assert(
+      sizeof(void*) == sizeof(int64_t),
+      "void* and int64_t must have the same size for pointer storage");
   at::Tensor output_tensor_ptrs = at::zeros(
       {static_cast<int64_t>(output_tensor_list.size())},
       at::TensorOptions().dtype(at::kLong).device(at::kCPU));
+  int64_t* ptr_storage = output_tensor_ptrs.data_ptr<int64_t>();
   for (size_t i = 0; i < output_tensor_list.size(); ++i) {
-    reinterpret_cast<void**>(output_tensor_ptrs.data_ptr<int64_t>())[i] =
-        output_tensor_list[i].data_ptr();
+    void* data_ptr = output_tensor_list[i].data_ptr();
+    std::memcpy(&ptr_storage[i], &data_ptr, sizeof(void*));
   }
 
   cudaStream_t stream = getOperationStream(async_op);
