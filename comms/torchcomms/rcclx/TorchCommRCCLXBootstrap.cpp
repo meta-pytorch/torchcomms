@@ -40,7 +40,7 @@ TorchCommRCCLXBootstrap::TorchCommRCCLXBootstrap(
   const char* uniqueid_xchg_env =
       std::getenv("TORCHCOMM_RCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD");
   if (uniqueid_xchg_env == nullptr) {
-    TC_LOG(INFO)
+    TC_LOG(INFO, nullptr)
         << "TORCHCOMM_RCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD not set, "
         << "defaulting to " << kUniqueidXchgMethodDefault;
     uniqueid_xchg_method_ = kUniqueidXchgMethodDefault;
@@ -61,8 +61,8 @@ TorchCommRCCLXBootstrap::TorchCommRCCLXBootstrap(
         "Failed to get CUDA device count");
 
     device_ = c10::Device(c10::kHIP, rank_ % device_count);
-    TC_LOG(INFO) << "User did not provide device ID; using device Hip:"
-                 << device_.index();
+    TC_LOG(INFO, nullptr) << "User did not provide device ID; using device Hip:"
+                          << device_.index();
   }
 
   HIP_CHECK(
@@ -180,8 +180,8 @@ void TorchCommRCCLXBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
         nccl_comm,
         stream);
     if (result != ncclSuccess) {
-      TC_LOG(ERROR) << "RCCLX AllReduce failed: "
-                    << rcclx_api_->getErrorString(result);
+      TC_LOG(ERROR, nullptr)
+          << "RCCLX AllReduce failed: " << rcclx_api_->getErrorString(result);
     }
 
     HIP_CHECK(

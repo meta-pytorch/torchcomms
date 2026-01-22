@@ -14,7 +14,6 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/gloo/TorchWorkGloo.hpp"
 
 namespace torch {
@@ -197,9 +196,8 @@ class TorchCommGloo : public TorchCommBackend,
     UNINITIALIZED,
     INITIALIZED,
     FINALIZED,
-  } init_state_{0};
+  } init_state_{InitializationState::UNINITIALIZED};
 
-  std::shared_ptr<TorchCommTracing> tracing_;
   std::string name_;
 
   c10::intrusive_ptr<c10d::Store> store_;

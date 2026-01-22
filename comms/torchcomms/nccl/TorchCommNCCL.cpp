@@ -2,21 +2,24 @@
 
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
 
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 #include <cstdlib>
 #include <stdexcept>
 #include <string>
+
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <nccl.h> // @manual
+#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
+
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCLBootstrap.hpp"
-#include "nccl.h" // @manual
 
 namespace torch {
 namespace comms {
 
-ncclResult_t NCCLException::getResult() const {
+ncclResult_t NCCLException::getResult() const noexcept {
   return result_;
 }
 
@@ -34,10 +37,10 @@ TorchCommNCCL::TorchCommNCCL(const ncclComm_t nccl_comm)
 
 TorchCommNCCL::~TorchCommNCCL() {
   if (init_state_ == InitializationState::INITIALIZED) {
-    TC_LOG(ERROR) << "TorchCommNCCL was not finalized before destruction";
+    TC_LOG(ERROR, this) << "TorchCommNCCL was not finalized before destruction";
   }
 
-  // We need to dteach the memory hook in case finalize is not called,
+  // We need to detach the memory hook in case finalize is not called,
   // so that we don't encounter a memory corruption.
   detachMemoryHook();
 }
@@ -46,6 +49,11 @@ void TorchCommNCCL::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
+  // Debug assertion: device should be CUDA
+  TORCH_INTERNAL_ASSERT(
+      device.is_cuda() || device.index() == -1,
+      "TorchCommNCCL requires a CUDA device or unspecified device index");
+
   // Initialize private members
   device_ = device;
   name_ = name;
@@ -70,15 +78,13 @@ void TorchCommNCCL::init(
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
-    auto bootstrap = new TorchCommNCCLBootstrap(
+    auto bootstrap = std::make_unique<TorchCommNCCLBootstrap>(
         options_.store, device_, nccl_api_, cuda_api_, options_.timeout);
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
       nccl_comm_ = bootstrap->createNcclComm(name, options);
     }
-
-    delete bootstrap;
   }
 
   // Set CUDA device and verify it's accessible
@@ -167,18 +173,17 @@ void TorchCommNCCL::init(
   ncclResult_t ncclErr;
   ncclErr = nccl_api_->commUserRank(nccl_comm_, &rank_);
   if (ncclErr != ncclSuccess) {
-    throw std::runtime_error("NCCL User Rank failed");
+    throw NCCLException(*nccl_api_, "NCCL User Rank failed", ncclErr);
   }
 
   tryTorchCommLoggingInit("torchcomm");
 
   ncclErr = nccl_api_->commCount(nccl_comm_, &comm_size_);
   if (ncclErr != ncclSuccess) {
-    throw std::runtime_error("NCCL Count failed");
+    throw NCCLException(*nccl_api_, "NCCL Count failed", ncclErr);
   }
 
-  tracing_ = std::make_shared<TorchCommTracing>(name, comm_size_, rank_);
-  tracing_->recordEvent("init");
+  TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommNCCL::timeoutWatchdog, this);
@@ -188,6 +193,11 @@ void TorchCommNCCL::init(
 }
 
 void TorchCommNCCL::finalize() {
+  // Debug assertion: nccl_comm_ should not be null if we were initialized
+  TORCH_INTERNAL_ASSERT(
+      init_state_ != InitializationState::INITIALIZED || nccl_comm_ != nullptr,
+      "nccl_comm_ is null but state indicates we are initialized");
+
   if (init_state_ == InitializationState::UNINITIALIZED) {
     throw std::runtime_error("TorchCommNCCL not initialized");
   } else if (init_state_ == InitializationState::FINALIZED) {
@@ -243,7 +253,7 @@ void TorchCommNCCL::finalize() {
     }
   }
 
-  // Free barrier buffer. TODO: handle errors on cuda free and stream destroy
+  // Free barrier buffer (errors handled by CUDA_CHECK)
   if (barrier_buffer_) {
     CUDA_CHECK(
         cuda_api_,
@@ -271,7 +281,8 @@ void TorchCommNCCL::finalize() {
   }
 
   // Destroy NCCL communicator
-  // TODO: should probably not call this after calling abort.
+  // Note: If abortNcclComm() was called, nccl_comm_ is already nullptr and this
+  // is skipped. We must not call commDestroy after commAbort per NCCL docs.
   if (nccl_comm_) {
     detachMemoryHook();
     // Deregister comm from the CachingAllocator
@@ -287,7 +298,7 @@ void TorchCommNCCL::abortNcclComm() {
     nccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
-    TC_LOG(ERROR) << "Aborting process due to timeout";
+    TC_LOG(ERROR, this) << "Aborting process due to timeout";
     abort();
   }
 }
@@ -342,7 +353,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::send(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("send", dst, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "send", dst, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -381,7 +393,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::recv(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("recv", src, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "recv", src, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -441,8 +454,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::batch_op_issue(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "batch_op_issue", rank_, input_tensors, output_tensors);
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "batch_op_issue",
+      rank_,
+      input_tensors,
+      output_tensors);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -517,7 +535,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::broadcast(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("broadcast", root, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "broadcast", root, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
 
@@ -557,7 +576,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("all_reduce", rank_, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -599,7 +619,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("reduce", root, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce", root, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -656,8 +677,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_gather", rank_, tensor_list, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -666,10 +687,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather(
   work->recordStart();
 
   // Use multiple broadcast operations for all_gather
-  nccl_api_->groupStart();
+  ncclResult_t result = nccl_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
-    nccl_api_->broadcast(
+    ncclResult_t opResult = nccl_api_->broadcast(
         tensor.data_ptr(),
         tensor_list[i].data_ptr(),
         tensor.numel(),
@@ -677,9 +701,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather(
         i,
         nccl_comm_,
         stream);
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Broadcast failed in all_gather", opResult);
+    }
   }
 
-  nccl_api_->groupEnd();
+  result = nccl_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+  }
 
   work->recordEnd();
 
@@ -712,8 +743,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather_single(
         "Output tensor size must be input_size * comm_size for all_gather_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_gather_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -765,8 +796,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "reduce_scatter", rank_, input_list, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -777,13 +808,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
   work->recordStart();
 
   // Use multiple reduce operations for reduce_scatter
-  nccl_api_->groupStart();
+  ncclResult_t result = nccl_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
     const auto dataType = getNcclDataType(input_list[i]);
+    ncclResult_t opResult;
     if (i == rank_) {
       // This rank receives the reduced result
-      nccl_api_->reduce(
+      opResult = nccl_api_->reduce(
           input_list[i].data_ptr(),
           output.data_ptr(),
           output.numel(),
@@ -794,7 +829,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
           stream);
     } else {
       // Other ranks contribute to the reduction
-      nccl_api_->reduce(
+      opResult = nccl_api_->reduce(
           input_list[i].data_ptr(),
           nullptr, // Non-root ranks don't receive
           input_list[i].numel(),
@@ -804,9 +839,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
           nccl_comm_,
           stream);
     }
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Reduce failed in reduce_scatter", opResult);
+    }
   }
 
-  nccl_api_->groupEnd();
+  result = nccl_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+  }
 
   work->recordEnd();
 
@@ -841,8 +883,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter_single(
         "Input tensor size must be output_size * comm_size for reduce_scatter_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "reduce_scatter_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -894,8 +936,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_single(
         "Tensor size must be divisible by comm_size for all_to_all_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_to_all_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -922,19 +964,33 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_single(
   size_t offset = chunk_size * wordSize(data_type);
   char* sptr = static_cast<char*>(input.data_ptr());
   char* rptr = static_cast<char*>(output.data_ptr());
-  nccl_api_->groupStart();
+  ncclResult_t result = nccl_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
     // Send to rank i
-    nccl_api_->send(
+    ncclResult_t opResult = nccl_api_->send(
         sptr + i * offset, chunk_size, data_type, i, nccl_comm_, stream);
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Send failed in all_to_all_single", opResult);
+    }
 
     // Receive from rank i
-    nccl_api_->recv(
+    opResult = nccl_api_->recv(
         rptr + i * offset, chunk_size, data_type, i, nccl_comm_, stream);
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Recv failed in all_to_all_single", opResult);
+    }
   }
 
-  nccl_api_->groupEnd();
+  result = nccl_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+  }
 #endif
 
   // Record end event after NCCL operation
@@ -969,8 +1025,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_v_single(
         "output_split_sizes length must equal comm_size for all_to_all_v_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_to_all_v_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -1010,26 +1066,40 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_v_single(
   char* sptr = static_cast<char*>(input.data_ptr());
   char* rptr = static_cast<char*>(output.data_ptr());
 
-  nccl_api_->groupStart();
+  ncclResult_t result = nccl_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
-    nccl_api_->send(
+    ncclResult_t opResult = nccl_api_->send(
         sptr + senddispls[i] * type_size,
         sendcounts[i],
         data_type,
         i,
         nccl_comm_,
         stream);
-    nccl_api_->recv(
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Send failed in all_to_all_v_single", opResult);
+    }
+    opResult = nccl_api_->recv(
         rptr + recvdispls[i] * type_size,
         recvcounts[i],
         data_type,
         i,
         nccl_comm_,
         stream);
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Recv failed in all_to_all_v_single", opResult);
+    }
   }
 
-  nccl_api_->groupEnd();
+  result = nccl_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+  }
 
   // Record end event after NCCL operation
   work->recordEnd();
@@ -1059,8 +1129,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all(
     ensureTensorContiguous(output_tensor_list[i]);
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_to_all", rank_, input_tensor_list, output_tensor_list);
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "all_to_all",
+      rank_,
+      input_tensor_list,
+      output_tensor_list);
 
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -1071,29 +1146,43 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all(
   // Record start event before NCCL operations
   work->recordStart();
 
-  nccl_api_->groupStart();
+  ncclResult_t result = nccl_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
     // Send to rank i
-    nccl_api_->send(
+    ncclResult_t opResult = nccl_api_->send(
         input_tensor_list[i].data_ptr(),
         input_tensor_list[i].numel(),
         getNcclDataType(input_tensor_list[i]),
         i,
         nccl_comm_,
         stream);
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Send failed in all_to_all", opResult);
+    }
 
     // Receive from rank i
-    nccl_api_->recv(
+    opResult = nccl_api_->recv(
         output_tensor_list[i].data_ptr(),
         output_tensor_list[i].numel(),
         getNcclDataType(output_tensor_list[i]),
         i,
         nccl_comm_,
         stream);
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Recv failed in all_to_all", opResult);
+    }
   }
 
-  nccl_api_->groupEnd();
+  result = nccl_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+  }
 
   // Record end event after NCCL operations
   work->recordEnd();
@@ -1110,7 +1199,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::barrier(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
-  tracing_->recordEvent("barrier");
+  TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
   cudaStream_t stream = getOperationStream(async_op);
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {});
@@ -1167,8 +1256,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::scatter(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "scatter", root, input_tensor_list, {output_tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "scatter", root, input_tensor_list, {output_tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
   std::vector<at::Tensor> input_tensors;
@@ -1186,19 +1275,29 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::scatter(
   // Implement scatter using point-to-point operations
   if (rank_ == root) {
     // Root sends to all ranks (except itself)
-    nccl_api_->groupStart();
+    ncclResult_t result = nccl_api_->groupStart();
+    if (result != ncclSuccess) {
+      throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+    }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
-        nccl_api_->send(
+        ncclResult_t opResult = nccl_api_->send(
             input_tensor_list[i].data_ptr(),
             input_tensor_list[i].numel(),
             getNcclDataType(input_tensor_list[i]),
             i,
             nccl_comm_,
             stream);
+        if (opResult != ncclSuccess) {
+          throw NCCLException(
+              *nccl_api_, "NCCL Send failed in scatter", opResult);
+        }
       }
     }
-    nccl_api_->groupEnd();
+    result = nccl_api_->groupEnd();
+    if (result != ncclSuccess) {
+      throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+    }
 
     // Root copies its own data using cudaMemcpyAsync
     CUDA_CHECK(
@@ -1213,13 +1312,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::scatter(
         "memcpyAsync failed");
   } else {
     // Non-root ranks receive from root
-    nccl_api_->recv(
+    ncclResult_t result = nccl_api_->recv(
         output_tensor.data_ptr(),
         output_tensor.numel(),
         getNcclDataType(output_tensor),
         root,
         nccl_comm_,
         stream);
+    if (result != ncclSuccess) {
+      throw NCCLException(*nccl_api_, "NCCL Recv failed in scatter", result);
+    }
   }
 
   // Record end event after NCCL operations
@@ -1257,8 +1359,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::gather(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "gather", root, {input_tensor}, output_tensor_list);
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "gather", root, {input_tensor}, output_tensor_list);
 
   cudaStream_t stream = getOperationStream(async_op);
   std::vector<at::Tensor> output_tensors;
@@ -1275,19 +1377,29 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::gather(
 
   if (rank_ == root) {
     // Root receives from all ranks (except itself)
-    nccl_api_->groupStart();
+    ncclResult_t result = nccl_api_->groupStart();
+    if (result != ncclSuccess) {
+      throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+    }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
-        nccl_api_->recv(
+        ncclResult_t opResult = nccl_api_->recv(
             output_tensor_list[i].data_ptr(),
             output_tensor_list[i].numel(),
             getNcclDataType(output_tensor_list[i]),
             i,
             nccl_comm_,
             stream);
+        if (opResult != ncclSuccess) {
+          throw NCCLException(
+              *nccl_api_, "NCCL Recv failed in gather", opResult);
+        }
       }
     }
-    nccl_api_->groupEnd();
+    result = nccl_api_->groupEnd();
+    if (result != ncclSuccess) {
+      throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+    }
 
     // Root copies its own data using cudaMemcpyAsync
     CUDA_CHECK(
@@ -1301,13 +1413,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::gather(
         "memcpyAsync failed");
   } else {
     // Non-root ranks send to root
-    nccl_api_->send(
+    ncclResult_t result = nccl_api_->send(
         input_tensor.data_ptr(),
         input_tensor.numel(),
         getNcclDataType(input_tensor),
         root,
         nccl_comm_,
         stream);
+    if (result != ncclSuccess) {
+      throw NCCLException(*nccl_api_, "NCCL Send failed in gather", result);
+    }
   }
 
   // Record end event after NCCL operations
@@ -1325,6 +1440,12 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
     const CommOptions& options) {
   // Validate the ranks list
   checkAndAbortIfTimedOutOrError();
+
+  // Debug assertion: comm_size_ should be positive after initialization
+  TORCH_INTERNAL_ASSERT(
+      comm_size_ > 0,
+      "comm_size_ should be positive; was split called on an uninitialized comm?");
+
   std::unordered_set<int> rank_seen;
   for (int rank : ranks) {
     if (rank < 0 || rank >= comm_size_) {
@@ -1375,11 +1496,11 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
   // Populate NCCL config from user-provided hints
   populateNcclConfigFromHints(config, options, name);
 
-  // TODO: nccl says that this is not supposed to be called if any operation
-  // is outstanding on the comm. We should check for that.
-  // TODO: what happens if one rank fails but the others succeed, need to
-  // handle the error case.
-  // TODO: is this sharing any resources with the original comm?
+  // Note: NCCL documentation states that commSplit should not be called while
+  // operations are outstanding on the parent communicator. Callers are
+  // responsible for ensuring all operations complete before calling split().
+  // Error handling for partial failures (some ranks succeed, others fail) is
+  // left to NCCL's internal mechanisms.
   ncclResult_t result =
       nccl_api_->commSplit(nccl_comm_, color, new_rank, &new_comm, &config);
   if (result != ncclSuccess) {
@@ -1401,7 +1522,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
 void TorchCommNCCL::register_address(
     const TorchCommNCCL::AddressWithLen& addr) {
   // We got a register after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
@@ -1412,16 +1533,15 @@ void TorchCommNCCL::register_address(
   ncclResult_t result =
       nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle);
   if (result != ncclSuccess) {
-    throw std::runtime_error(
-        "Failed to register memory with NCCL: " +
-        std::string(ncclGetErrorString(result)));
+    throw NCCLException(
+        *nccl_api_, "Failed to register memory with NCCL", result);
   }
   memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
 }
 
 void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
   // We got a deregister after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
@@ -1435,9 +1555,8 @@ void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
   void* handle = it->second.regHandle;
   ncclResult_t result = nccl_api_->commDeregister(nccl_comm_, handle);
   if (result != ncclSuccess) {
-    throw std::runtime_error(
-        "Failed to deregister memory with NCCL: " +
-        std::string(nccl_api_->getErrorString(result)));
+    throw NCCLException(
+        *nccl_api_, "Failed to deregister memory with NCCL", result);
   }
 
   memoryRegistrationHandles_.erase(it);
