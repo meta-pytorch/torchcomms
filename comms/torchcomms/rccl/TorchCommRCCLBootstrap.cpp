@@ -40,7 +40,7 @@ TorchCommRCCLBootstrap::TorchCommRCCLBootstrap(
   const char* uniqueid_xchg_env =
       std::getenv("TORCHCOMM_RCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD");
   if (uniqueid_xchg_env == nullptr) {
-    TC_LOG(INFO)
+    TC_LOG(INFO, nullptr)
         << "TORCHCOMM_RCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD not set, "
         << "defaulting to " << kUniqueidXchgMethodDefault;
     uniqueid_xchg_method_ = kUniqueidXchgMethodDefault;
@@ -61,8 +61,8 @@ TorchCommRCCLBootstrap::TorchCommRCCLBootstrap(
         "Failed to get CUDA device count");
 
     device_ = c10::Device(c10::kHIP, rank_ % device_count);
-    TC_LOG(INFO) << "User did not provide device ID; using device Hip:"
-                 << device_.index();
+    TC_LOG(INFO, nullptr) << "User did not provide device ID; using device Hip:"
+                          << device_.index();
   }
 
   HIP_CHECK(
@@ -180,8 +180,8 @@ void TorchCommRCCLBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
         nccl_comm,
         stream);
     if (result != ncclSuccess) {
-      TC_LOG(ERROR) << "NCCL AllReduce failed: "
-                    << rccl_api_->getErrorString(result);
+      TC_LOG(ERROR, nullptr)
+          << "NCCL AllReduce failed: " << rccl_api_->getErrorString(result);
     }
 
     HIP_CHECK(
@@ -202,8 +202,9 @@ ncclComm_t TorchCommRCCLBootstrap::createNcclComm(const std::string& name) {
   // TODO: get the local rank
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
 #ifdef NCCL_COMM_DESCRIPTION
-  // NCCL will free this pointer after the communicator is destroyed.
-  config.commDesc = strdup(name.c_str());
+  // The string only needs to be valid for the duration of the
+  // commInitRankConfig call, so we use .c_str() directly.
+  config.commDesc = name.c_str();
 #endif
   ncclResult_t ncclErr = rccl_api_->commInitRankConfig(
       &nccl_comm, comm_size_, uniqueId, rank_, &config);

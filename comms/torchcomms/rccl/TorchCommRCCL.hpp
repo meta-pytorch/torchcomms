@@ -19,7 +19,6 @@
 #include "comms/torchcomms/TorchComm.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include "comms/torchcomms/TorchCommBackend.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include "comms/torchcomms/TorchCommBatch.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rccl/HipApi.hpp" // @manual
 #include "comms/torchcomms/rccl/RcclApi.hpp" // @manual
 #include "comms/torchcomms/rccl/TorchWorkRCCL.hpp" // @manual
@@ -32,10 +31,14 @@ constexpr size_t kMaxEventPoolSize = 1000;
 // Custom exception class for better error handling
 class RCCLException : public std::exception {
  public:
-  RCCLException(RcclApi& api, const std::string& message, ncclResult_t result);
+  RCCLException(
+      RcclApi& api,
+      const std::string& message,
+      ncclResult_t result,
+      ncclComm_t comm);
 
   const char* what() const noexcept override;
-  ncclResult_t getResult() const;
+  [[nodiscard]] ncclResult_t getResult() const;
 
  private:
   std::string message_;
@@ -202,7 +205,7 @@ class TorchCommRCCL : public TorchCommBackend,
 
  protected:
   // Event management for friend classes
-  hipEvent_t getEvent();
+  [[nodiscard]] hipEvent_t getEvent();
   void returnEvent(hipEvent_t event);
   void abortRcclComm();
 
@@ -341,7 +344,6 @@ class TorchCommRCCL : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  std::shared_ptr<TorchCommTracing> tracing_;
   bool high_priority_stream_{false};
   std::string name_;
 };

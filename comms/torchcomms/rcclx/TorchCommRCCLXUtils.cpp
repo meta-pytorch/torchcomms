@@ -197,7 +197,7 @@ void TorchCommRCCLX::garbageCollectWorkQueues() {
 // The timeout thread cannot make NCCL calls.  The only CUDA call it can make
 // it hipEventQuery (done inside checkStatus).
 void TorchCommRCCLX::timeoutWatchdog() noexcept {
-  TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
   hipStreamCaptureMode mode = hipStreamCaptureModeThreadLocal;
   HIP_CHECK(
@@ -229,15 +229,15 @@ void TorchCommRCCLX::timeoutWatchdog() noexcept {
       // communicator as it is not safe to call NCCL operations from
       // multiple threads at the same time.
       if (comm_state_ == CommState::TIMEOUT) {
-        TC_LOG(ERROR) << "Aborting process due to timeout";
+        TC_LOG(ERROR, this) << "Aborting process due to timeout";
       } else if (comm_state_ == CommState::ERROR) {
-        TC_LOG(ERROR) << "Aborting process due to error";
+        TC_LOG(ERROR, this) << "Aborting process due to error";
       }
       abort();
     }
   }
 
-  TC_LOG(INFO) << "Timeout thread exiting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread exiting for rank: " << rank_;
 }
 
 void TorchCommRCCLX::checkInitialized() const {
@@ -265,7 +265,8 @@ void TorchCommRCCLX::checkAndAbortIfTimedOutOrError() {
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
     rcclx_api_->commGetAsyncError(nccl_comm_, &asyncErr);
-    RCCLXException RCCLXException(*rcclx_api_, "NCCL Async Error", asyncErr);
+    RCCLXException RCCLXException(
+        *rcclx_api_, "NCCL Async Error", asyncErr, nccl_comm_);
     abortRcclxComm();
     throw RCCLXException;
   }
