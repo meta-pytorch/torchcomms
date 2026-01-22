@@ -33,9 +33,9 @@ TorchCommRCCLXBootstrap::TorchCommRCCLXBootstrap(
       rcclx_api_(rcclx_api),
       hip_api_(hip_api) {
   // Query rank and size using the utility function
-  auto ranksize = query_ranksize();
-  rank_ = ranksize.first;
-  comm_size_ = ranksize.second;
+  auto [rank, comm_size] = query_ranksize();
+  rank_ = rank;
+  comm_size_ = comm_size;
 
   const char* uniqueid_xchg_env =
       std::getenv("TORCHCOMM_RCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD");
