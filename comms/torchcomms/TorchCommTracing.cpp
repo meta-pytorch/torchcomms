@@ -23,8 +23,8 @@ void TorchCommTracing::recordEvent(const std::string& collective_name) {
       at::kByte, // dType
       std::vector<int64_t>(), // inSplitSizes
       std::vector<int64_t>(), // outSplitSizes
-      -1, // TODO: fix global rank start
-      -1, // TODO: fix global rank stride
+      -1, // globalRankStart: not tracked in TorchComm (unused by consumers)
+      -1, // globalRankStride: not tracked in TorchComm (unused by consumers)
       comm_size_); // worldSize
 }
 
@@ -85,11 +85,17 @@ void TorchCommTracing::recordEventWithInputOutput(
       data_type, // dType
       input_split_sizes, // inSplitSizes
       output_split_sizes, // outSplitSizes
-      -1, // TODO: fix global rank start
-      -1, // TODO: fix global rank stride
+      -1, // globalRankStart: not tracked in TorchComm (unused by consumers)
+      -1, // globalRankStride: not tracked in TorchComm (unused by consumers)
       comm_size_); // worldSize
 }
 
+// Creates a ParamCommsDebugInfo object containing metadata about a collective
+// operation for integration with PyTorch's debugging and profiling
+// infrastructure. The debug info includes communicator details, operation name,
+// tensor sizes, data types, and split sizes for variable-length collectives.
+// This information is used by PyTorch's PARAM_COMMS tracing to track and
+// analyze distributed communication patterns.
 std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
     const std::string& comm_name,
     int comm_size,
@@ -125,8 +131,8 @@ std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
       data_type,
       input_split_sizes,
       output_split_sizes,
-      -1, // TODO: fix global rank start
-      -1, // TODO: fix global rank stride
+      -1, // globalRankStart: not tracked in TorchComm (unused by consumers)
+      -1, // globalRankStride: not tracked in TorchComm (unused by consumers)
       comm_size);
 }
 
@@ -167,8 +173,8 @@ void TorchCommTracingGuard::initializeTracingCommon(
         collective_name,
         in_split_sizes,
         out_split_sizes,
-        -1, // Global rank start isn't set in TorchComms.
-        -1, // Global rank stride isn't set in TorchComms.
+        -1, // globalRankStart: not tracked in TorchComm (unused by consumers)
+        -1, // globalRankStride: not tracked in TorchComm (unused by consumers)
         comm_size};
     c10::ArrayRef<const c10::IValue> paramInputs(paramList);
     record_function_guard_->before(
