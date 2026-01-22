@@ -35,7 +35,8 @@ jobs:
         # Build wheel
         pip install build
         python -m build --wheel --no-isolation
-        cp dist/*.whl artifacts/
+        mv dist/*.whl artifacts/
+        rm -rf dist/
 
   build_and_run_cpp_tests:
     strategy:
