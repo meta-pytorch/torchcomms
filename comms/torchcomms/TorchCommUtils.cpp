@@ -106,14 +106,14 @@ std::pair<int, int> query_ranksize() {
   int rank;
   int comm_size;
 
-  // Using do-while(0) to allow early exit via break when rank/size are
-  // found, avoiding deeply nested if-else chains.
-  do {
+  // Lambda to query rank and size from environment variables, returning true if
+  // both values were found
+  auto tryQueryRankSize = [&]() -> bool {
     // Read from TORCHCOMM_RANK and TORCHCOMM_SIZE environment variables
     rank = env_to_value<int>("TORCHCOMM_RANK", -1);
     comm_size = env_to_value<int>("TORCHCOMM_SIZE", -1);
     if (rank != -1 && comm_size != -1) {
-      break;
+      return true;
     }
 
     // See if we are in an MPI environment
@@ -123,14 +123,14 @@ std::pair<int, int> query_ranksize() {
       rank = env_to_value<int>("OMPI_COMM_WORLD_RANK", -1);
       comm_size = env_to_value<int>("OMPI_COMM_WORLD_SIZE", -1);
       if (rank != -1 && comm_size != -1) {
-        break;
+        return true;
       }
 
       // See if we are in an MPICH environment
       rank = env_to_value<int>("PMI_RANK", -1);
       comm_size = env_to_value<int>("PMI_SIZE", -1);
       if (rank != -1 && comm_size != -1) {
-        break;
+        return true;
       }
     }
 
@@ -140,10 +140,14 @@ std::pair<int, int> query_ranksize() {
       rank = env_to_value<int>("RANK", -1);
       comm_size = env_to_value<int>("WORLD_SIZE", -1);
       if (rank != -1 && comm_size != -1) {
-        break;
+        return true;
       }
     }
-  } while (0);
+
+    return false;
+  };
+
+  tryQueryRankSize();
 
   if (rank == -1 || comm_size == -1) {
     throw std::runtime_error(
