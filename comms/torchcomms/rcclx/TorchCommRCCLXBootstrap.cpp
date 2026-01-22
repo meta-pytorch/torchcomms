@@ -122,6 +122,7 @@ ncclUniqueId TorchCommRCCLXBootstrap::exchangeUniqueIdStore() {
     store_->set(key, vec);
   } else {
     // Other ranks read the broadcast ID
+    store_->wait({key}, timeout_);
     auto vec = store_->get(key);
     if (vec.size() != sizeof(ncclUniqueId)) {
       throw std::runtime_error("Invalid NCCL unique ID size");
