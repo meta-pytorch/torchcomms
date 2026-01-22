@@ -21,7 +21,7 @@ from typing import Any, TYPE_CHECKING
 import torch
 from torch._dynamo.variables.base import VariableTracker
 from torch._dynamo.variables.constant import ConstantVariable
-
+from torch._dynamo.variables.lists import ListVariable
 
 if TYPE_CHECKING:
     from torch._dynamo.symbolic_convert import InstructionTranslator
@@ -148,7 +148,6 @@ class TorchCommMethodVariable(VariableTracker):
         # Directly call the torch op - no tracing through patched method
         from torch._dynamo.variables import TensorVariable
         from torch._dynamo.variables.builder import wrap_fx_proxy
-        from torch._dynamo.variables.lists import ListVariable
         from torch._dynamo.variables.script_object import TorchScriptObjectVariable
 
         op_name = self.op_info["op_name"]
