@@ -230,7 +230,7 @@ void populateNcclConfigFromHints(
       TC_LOG(INFO, nullptr)
           << "[comm=" << name << "] Setting config.maxCTAs=" << config.maxCTAs;
     } else if (key == "netName") {
-      config.netName = strdup(val.c_str());
+      config.netName = val.c_str();
       TC_LOG(INFO, nullptr)
           << "[comm=" << name << "] Setting config.netName=" << config.netName;
     } else if (key == "splitShare" || key == "split_share") {
@@ -244,7 +244,7 @@ void populateNcclConfigFromHints(
           << "[comm=" << name
           << "] Setting config.trafficClass=" << config.trafficClass;
     } else if (key == "commName") {
-      config.commName = strdup(val.c_str());
+      config.commName = val.c_str();
       TC_LOG(INFO, nullptr) << "[comm=" << name
                             << "] Setting config.commName=" << config.commName;
     } else if (key == "collnetEnable" || key == "collnet_enable") {
@@ -267,7 +267,7 @@ void populateNcclConfigFromHints(
       TC_LOG(INFO, nullptr) << "[comm=" << name
                             << "] Setting config.nvlsCTAs=" << config.nvlsCTAs;
     } else if (key == "ncclAllGatherAlgo") {
-      config.ncclAllGatherAlgo = strdup(val.c_str());
+      config.ncclAllGatherAlgo = val.c_str();
       TC_LOG(INFO, nullptr)
           << "[comm=" << name
           << "] Setting config.ncclAllGatherAlgo=" << config.ncclAllGatherAlgo;
@@ -317,7 +317,7 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   // TODO: use scalable init
   // TODO: get the local rank
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.commDesc = strdup(name.c_str());
+  config.commDesc = name.c_str();
   createStore(name);
 
   // Populate NCCL config from user-provided hints

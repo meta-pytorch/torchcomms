@@ -202,8 +202,9 @@ ncclComm_t TorchCommRCCLXBootstrap::createNcclComm(const std::string& name) {
   // TODO: get the local rank
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
 #ifdef NCCL_COMM_DESCRIPTION
-  // NCCL will free this pointer after the communicator is destroyed.
-  config.commDesc = strdup(name.c_str());
+  // The string only needs to be valid for the duration of the
+  // commInitRankConfig call, so we use .c_str() directly.
+  config.commDesc = name.c_str();
 #endif
   ncclResult_t ncclErr = rcclx_api_->commInitRankConfig(
       &nccl_comm, comm_size_, uniqueId, rank_, &config);

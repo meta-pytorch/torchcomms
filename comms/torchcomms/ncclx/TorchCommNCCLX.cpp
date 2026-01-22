@@ -2067,7 +2067,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   std::string commDesc = name_ + "::split::" + std::to_string(color) + "_" +
       split_name + "_" + std::to_string(split_counter_++);
-  config.commDesc = strdup(commDesc.c_str());
+  config.commDesc = commDesc.c_str();
 
   // Set splitGroupRanks and splitGroupSize hints automatically based on ranks
   // parameter
