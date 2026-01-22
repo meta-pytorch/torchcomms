@@ -231,10 +231,10 @@ Returns:
       )",
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "get_buf_dtype",
+          "get_dtype",
           [](TorchCommWindow& self) {
             return py::reinterpret_steal<py::object>(
-                THPDtype_New(self.getBufDtype(), "torch"));
+                THPDtype_New(self.getDtype(), "torch"));
           },
           R"(Get the dtype of the registered buffer tensor.
 
@@ -246,8 +246,8 @@ Note:
     the output tensor dtype for map_remote_tensor() operations.
           )")
       .def(
-          "get_buf_shape",
-          [](TorchCommWindow& self) { return self.getBufShape(); },
+          "get_shape",
+          [](TorchCommWindow& self) { return self.getShape(); },
           R"(Get the shape of the registered buffer tensor.
 
 Returns:
@@ -259,8 +259,8 @@ Note:
           )",
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "get_buf_device",
-          [](TorchCommWindow& self) { return self.getBufDevice(); },
+          "get_device",
+          [](TorchCommWindow& self) { return self.getDevice(); },
           R"(Get the device of the registered buffer tensor.
 
 Returns:
