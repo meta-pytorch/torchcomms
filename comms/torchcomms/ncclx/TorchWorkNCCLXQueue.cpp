@@ -50,6 +50,10 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollectLocked() {
   return last_status;
 }
 
+// Thread-safety: This method is called from the timeout watchdog thread while
+// the main thread may be enqueuing work via enqueueWork(). The
+// work_queues_mutex_ ensures proper synchronization - both garbageCollect() and
+// enqueueWork() acquire the mutex before accessing stream_work_queues_.
 TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollect() {
   std::lock_guard<std::mutex> lock(work_queues_mutex_);
   return garbageCollectLocked();

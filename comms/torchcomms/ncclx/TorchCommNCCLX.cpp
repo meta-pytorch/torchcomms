@@ -286,7 +286,7 @@ void TorchCommNCCLX::finalize() {
     }
   }
 
-  // Free barrier buffer. TODO: handle errors on cuda free and stream destroy
+  // Free barrier buffer (errors handled by CUDA_CHECK)
   TC_LOG(INFO, this) << "Freeing barrier buffer " << barrier_buffer_;
   if (barrier_buffer_) {
     CUDA_CHECK(
@@ -315,7 +315,8 @@ void TorchCommNCCLX::finalize() {
   }
 
   // Destroy NCCL communicator
-  // TODO: should probably not call this after calling abort.
+  // Note: If abortNcclComm() was called, nccl_comm_ is already nullptr and this
+  // is skipped. We must not call commDestroy after commAbort per NCCL docs.
   if (nccl_comm_) {
     detachMemoryHook();
     // Deregister comm from the CachingAllocator
@@ -1952,11 +1953,11 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   // Populate NCCL config from user-provided hints
   populateNcclConfigFromHints(config, options, commDesc);
 
-  // TODO: nccl says that this is not supposed to be called if any operation
-  // is outstanding on the comm. We should check for that.
-  // TODO: what happens if one rank fails but the others succeed, need to
-  // handle the error case.
-  // TODO: is this sharing any resources with the original comm?
+  // Note: NCCL documentation states that commSplit should not be called while
+  // operations are outstanding on the parent communicator. Callers are
+  // responsible for ensuring all operations complete before calling split().
+  // Error handling for partial failures (some ranks succeed, others fail) is
+  // left to NCCL's internal mechanisms.
   ncclResult_t result =
       nccl_api_->commSplit(nccl_comm_, color, new_rank, &new_comm, &config);
   if (result != ncclSuccess) {

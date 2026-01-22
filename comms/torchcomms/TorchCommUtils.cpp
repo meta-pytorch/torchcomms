@@ -106,6 +106,8 @@ std::pair<int, int> query_ranksize() {
   int rank;
   int comm_size;
 
+  // Using do-while(0) to allow early exit via break when rank/size are
+  // found, avoiding deeply nested if-else chains.
   do {
     // Read from TORCHCOMM_RANK and TORCHCOMM_SIZE environment variables
     rank = env_to_value<int>("TORCHCOMM_RANK", -1);
