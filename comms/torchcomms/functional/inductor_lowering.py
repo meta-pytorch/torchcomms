@@ -103,7 +103,7 @@ try:
                 mutable_indices.append(i + 1)
 
         def _inplace_lowering(*args):
-            logger.info(f"Lowering inplace {base_op_name}_")
+            logger.debug(f"Lowering inplace {base_op_name}_")
 
             # Get the mutable tensors from args
             mutable_tensors = []
@@ -180,7 +180,7 @@ try:
             return
 
         def _functional_lowering(*args):
-            logger.info(f"Lowering functional {base_op_name} with {len(args)} args")
+            logger.debug(f"Lowering functional {base_op_name} with {len(args)} args")
 
             # Use FallbackKernel with the functional op
             # The functional op returns new tensors, so it's not mutable
@@ -230,7 +230,7 @@ try:
         def _wait_tensors_functional_lowering(*args):
             import torch.utils._pytree as pytree
 
-            logger.info(
+            logger.debug(
                 f"Lowering functional torchcomms.torchcomm_wait_tensors with {len(args)} args"
             )
 
@@ -270,7 +270,7 @@ try:
                 ),
             )
 
-            logger.info(f"  - Created FallbackKernel result: {type(result)}")
+            logger.debug(f"  - Created FallbackKernel result: {type(result)}")
             return result
 
         register_lowering(torch.ops.torchcomms.torchcomm_wait_tensors.default)(
@@ -290,7 +290,7 @@ try:
             else:
                 inputs = list(args)
 
-            logger.info(
+            logger.debug(
                 f"Lowering inplace torchcomms.torchcomm_wait_tensors_ with {len(inputs)} tensors"
             )
 
