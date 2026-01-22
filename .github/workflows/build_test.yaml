@@ -44,7 +44,7 @@ jobs:
         python -m build --wheel --no-isolation
 
         mkdir -p "${RUNNER_ARTIFACT_DIR}"
-        mv dist/*.whl "${RUNNER_ARTIFACT_DIR}/"
+        cp dist/*.whl "${RUNNER_ARTIFACT_DIR}/"
 
   build_and_run_cpp_tests:
     strategy:
