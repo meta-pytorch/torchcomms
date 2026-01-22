@@ -176,9 +176,9 @@ if lib is not None:
         # Get buffer shape, dtype, and device from the window object
         # These are registered as constant methods -- dynamo can trace through them
         return torch.empty(
-            window.get_buf_shape(),
-            dtype=window.get_buf_dtype(),
-            device=window.get_buf_device(),
+            window.get_shape(),
+            dtype=window.get_dtype(),
+            device=window.get_device(),
         )
 
     # Collective Registrations
@@ -205,9 +205,9 @@ if lib is not None:
         typ="reference",
         members={
             "get_size": MemberType.USE_REAL,
-            "get_buf_dtype": MemberType.USE_REAL,
-            "get_buf_shape": MemberType.USE_REAL,
-            "get_buf_device": MemberType.USE_REAL,
+            "get_dtype": MemberType.USE_REAL,
+            "get_shape": MemberType.USE_REAL,
+            "get_device": MemberType.USE_REAL,
         },
     )
 
