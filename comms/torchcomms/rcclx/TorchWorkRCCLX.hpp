@@ -5,6 +5,7 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <string_view>
 
 #include <ATen/ATen.h>
 #include <hip_runtime.h> // @manual=third-party//cuda:cuda-lazy
@@ -51,13 +52,13 @@ class TorchWorkRCCLX : public TorchWork {
   WorkStatus checkStatus();
 
  protected:
-  void recordStart(const std::string& coll_name);
+  void recordStart(std::string_view coll_name);
   void recordEnd();
 
   friend class TorchCommRCCLX;
 
  private:
-  void recordFunctionStart(const std::string& coll_name);
+  void recordFunctionStart(std::string_view coll_name);
   std::chrono::milliseconds getTimeout() {
     return timeout_ms_;
   }

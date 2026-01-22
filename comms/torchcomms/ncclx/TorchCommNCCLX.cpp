@@ -7,6 +7,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -35,22 +36,24 @@ constexpr std::string_view kHintEnableCudaGraphSupport =
     "torchcomm::ncclx::enable_cuda_graph_support";
 
 // Helper function to validate that metadata tensors are int64_t (torch.int64)
-void validateInt64Dtype(const at::Tensor& tensor, const std::string& name) {
+void validateInt64Dtype(const at::Tensor& tensor, std::string_view name) {
   if (tensor.scalar_type() != at::kLong) {
     throw std::runtime_error(
-        "Tensor '" + name +
-        "' must be of type int64 (torch.int64), but has type " +
-        c10::toString(tensor.scalar_type()));
+        fmt::format(
+            "Tensor '{}' must be of type int64 (torch.int64), but has type {}",
+            name,
+            c10::toString(tensor.scalar_type())));
   }
 }
 
 // Helper function to validate that metadata tensors are int (torch.int)
-void validateIntDtype(const at::Tensor& tensor, const std::string& name) {
+void validateIntDtype(const at::Tensor& tensor, std::string_view name) {
   if (tensor.scalar_type() != at::kInt) {
     throw std::runtime_error(
-        "Tensor '" + name +
-        "' must be of type int (torch.int32 or torch.int), but has type " +
-        c10::toString(tensor.scalar_type()));
+        fmt::format(
+            "Tensor '{}' must be of type int (torch.int32 or torch.int), but has type {}",
+            name,
+            c10::toString(tensor.scalar_type())));
   }
 }
 
