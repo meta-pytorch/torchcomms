@@ -41,7 +41,7 @@ TorchCommRCCL::~TorchCommRCCL() {
     TC_LOG(ERROR) << "TorchCommRCCL was not finalized before destruction";
   }
 
-  // We need to dteach the memory hook in case finalize is not called,
+  // We need to detach the memory hook in case finalize is not called,
   // so that we don't encounter a memory corruption.
   detachMemoryHook();
 }
@@ -74,15 +74,13 @@ void TorchCommRCCL::init(
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
-    auto bootstrap = new TorchCommRCCLBootstrap(
+    auto bootstrap = std::make_unique<TorchCommRCCLBootstrap>(
         options_.store, device_, rccl_api_, hip_api_, options_.timeout);
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
       nccl_comm_ = bootstrap->createNcclComm(name);
     }
-
-    delete bootstrap;
   }
 
   // Set HIP device and verify it's accessible
@@ -602,10 +600,6 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce(
   tracing_->recordEventWithInputOutput("reduce", root, {tensor}, {tensor});
 
   hipStream_t stream = getOperationStream(async_op);
-  std::vector<at::Tensor> output_tensors;
-  if (rank_ == root) {
-    output_tensors.push_back(tensor);
-  }
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 
@@ -1352,7 +1346,7 @@ std::shared_ptr<TorchCommBackend> TorchCommRCCL::split(
     }
     // Set color to the lowest rank in the group and calculate new rank
     color = *std::min_element(ranks.begin(), ranks.end());
-    new_rank = std::distance(ranks.begin(), it);
+    new_rank = static_cast<int>(std::distance(ranks.begin(), it));
   }
 
   // Create a new NCCL communicator
