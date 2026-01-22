@@ -104,7 +104,7 @@ TEST_F(CtranExTest, InitializedWithInvalidPort) {
         globalRank, localRank, hostInfo, defaultBackends_, defaultDesc_);
   } catch (const std::bad_alloc& e) {
     GTEST_SKIP() << "CTRAN-IB: IB backend not enabled. Skip test";
-  } catch (const std::runtime_error& e) {
+  } catch (const ctran::utils::Exception& e) {
     EXPECT_THAT(e.what(), ::testing::HasSubstr("Invalid port number -1"));
     ASSERT_EQ(ctranEx, nullptr);
     return;
@@ -126,7 +126,7 @@ TEST_F(CtranExTest, InitializedWithInvalidIPv6) {
         globalRank, localRank, hostInfo, defaultBackends_, defaultDesc_);
   } catch (const std::bad_alloc& e) {
     GTEST_SKIP() << "CTRAN-IB: IB backend not enabled. Skip test";
-  } catch (const std::runtime_error& e) {
+  } catch (const ctran::utils::Exception& e) {
     // FIXME: we don't have the proper error message when user gives an invalid
     // ipv6. Thus, skip checking error message for now. We need adjust the error
     // reporting first.
