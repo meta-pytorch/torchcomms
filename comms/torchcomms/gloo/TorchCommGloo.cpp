@@ -421,6 +421,9 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::send(
   // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
 
+  // Note on tensor lifetime: tensorCPU is captured by value in the lambda.
+  // Since at::Tensor uses reference counting, this ensures the storage remains
+  // alive until the async work completes.
   return createWork(
       [tensorCPU, dst, options, context = context_, tag = nextTag()]() {
         const auto& scalarType = tensorCPU.scalar_type();
@@ -460,6 +463,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
   // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
 
+  // Note on tensor lifetime: Both 'tensor' and 'tensorCPU' are captured by
+  // value in the lambda below. Since at::Tensor uses reference counting
+  // (intrusive_ptr to TensorImpl), capturing by value increments the refcount
+  // and ensures the underlying storage remains alive until the async work
+  // completes. This is the intended and correct pattern for async operations.
   return createWork(
       [tensor,
        tensorCPU,
@@ -1389,6 +1397,10 @@ void TorchCommGloo::checkInitialized() {
   }
 }
 
+// Intentionally empty: Gloo's collectives are synchronous, so there is no
+// mechanism to time out or abort a collective that is already in progress.
+// Unlike NCCL/NCCLX which have asynchronous collectives that can be aborted,
+// Gloo blocks until completion.
 void TorchCommGloo::checkAndAbortIfTimedOutOrError() {}
 
 namespace {

@@ -19,6 +19,17 @@ namespace comms {
 
 inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
 
+/**
+ * TorchCommBackend - Abstract base class for communication backends.
+ *
+ * Thread Safety:
+ * TorchCommBackend implementations are NOT thread-safe. All operations
+ * (collectives, point-to-point, split, finalize, etc.) must be serialized
+ * by the caller.
+ *
+ * Internal threads (e.g., timeout watchdog) are properly synchronized with
+ * the main thread using mutexes and condition variables.
+ */
 class TorchCommBackend {
  public:
   virtual ~TorchCommBackend() = default;

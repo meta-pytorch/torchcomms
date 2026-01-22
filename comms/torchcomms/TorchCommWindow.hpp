@@ -32,6 +32,8 @@ class TorchCommWindow {
   TorchCommWindow(TorchCommWindow&&) = delete;
   TorchCommWindow& operator=(TorchCommWindow&&) = delete;
 
+  // tensor_register and tensor_deregister are collective operations - all
+  // ranks must call them together.
   virtual void tensor_register(const at::Tensor& tensor) = 0;
   virtual void tensor_deregister() = 0;
 
