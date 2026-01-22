@@ -288,6 +288,9 @@ void ReduceScatterSingleTest::verifyResults(
   } else if (op == torch::comms::ReduceOp::MAX) {
     // Max: rank+1
     expected_value = rank_ + 1;
+  } else if (op == torch::comms::ReduceOp::AVG) {
+    // Avg: (num_ranks * (rank+1)) / num_ranks = rank+1
+    expected_value = rank_ + 1;
   }
 
   // Use verifyTensorEquality with integer expected value

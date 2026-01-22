@@ -25,7 +25,8 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(at::kFloat, at::kInt, at::kChar),
         ::testing::Values(
             torch::comms::ReduceOp::SUM,
-            torch::comms::ReduceOp::MAX)),
+            torch::comms::ReduceOp::MAX,
+            torch::comms::ReduceOp::AVG)),
     [](const ::testing::TestParamInfo<
         std::tuple<int, at::ScalarType, torch::comms::ReduceOp>>& info) {
       int count = std::get<0>(info.param);

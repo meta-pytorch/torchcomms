@@ -7,6 +7,7 @@ collective operations for distributed training and inference.
 ## Table of Contents
 
 - [Installation](#installation)
+  - [Version Requirements](#version-requirements)
 - [API Overview](#api-overview)
 - [Detailed API Reference](#detailed-api-reference)
   - [Constructor and Initialization](#constructor-and-initialization)
@@ -28,6 +29,22 @@ Python as:
 ```python
 import torchcomms
 ```
+
+### Version Requirements
+
+The nccl and ncclx backends require specific library versions for full
+functionality:
+
+| Feature | Minimum Version |
+|---------|---------------------|
+| NCCLX backend | NCCLX 2.25.0 |
+| Memory registration (commRegister/commDeregister) | NCCL 2.19.0 |
+| Named communicators | NCCL 2.27.0 |
+| Sparse reduce | NCCL 2.28.0 |
+
+**Note**: Features that require a newer version than what is installed will
+throw a runtime error when called. The NCCLX backend requires NCCLX 2.25.0 or
+later and will fail to compile with older versions.
 
 ## API Overview
 

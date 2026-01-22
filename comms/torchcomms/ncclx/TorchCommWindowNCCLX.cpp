@@ -259,10 +259,10 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX::get_attr(
   auto attr = std::make_shared<TorchCommWindowAttr>();
   switch (nccl_attr->accessType) {
     case ncclWinAccessUnified:
-      attr->accessType = TorchCommlWinAccessType::WIN_ACCESS_TYPE_UNIFIED;
+      attr->accessType = TorchCommWinAccessType::WIN_ACCESS_TYPE_UNIFIED;
       break;
     case ncclWinAccessSeparate:
-      attr->accessType = TorchCommlWinAccessType::WIN_ACCESS_TYPE_SEPARATE;
+      attr->accessType = TorchCommWinAccessType::WIN_ACCESS_TYPE_SEPARATE;
       break;
     default:
       throw std::runtime_error("Unsupported NCCL window access type");
