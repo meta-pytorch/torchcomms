@@ -59,7 +59,7 @@ __all__ = [  # noqa: F405
 for name in __all__:
     try:
         globals()[name].__module__ = "torchcomms"
-    except KeyError: # ignore non-c++ bindings
+    except KeyError:  # ignore non-c++ bindings
         pass
 
 

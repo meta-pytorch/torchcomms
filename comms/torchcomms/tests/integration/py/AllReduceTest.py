@@ -21,7 +21,7 @@ class AllReduceTest(unittest.TestCase):
     # Class variables for test parameters
     counts = [0, 4, 1024, 1024 * 1024]
     dtypes = [torch.float, torch.int, torch.int8]
-    ops = [ReduceOp.SUM, ReduceOp.MAX]
+    ops = [ReduceOp.SUM, ReduceOp.MAX, ReduceOp.AVG]
     num_replays = 4
 
     def get_test_cases(self):
@@ -242,6 +242,9 @@ class AllReduceTest(unittest.TestCase):
         elif op.type == RedOpType.MAX:
             # Max: highest rank value (num_ranks)
             return self.num_ranks
+        elif op.type == RedOpType.AVG:
+            # Avg: average of all ranks
+            return (self.num_ranks * (self.num_ranks + 1) / 2) / self.num_ranks
         elif op.type == RedOpType.PREMUL_SUM:
             # PremulSum: sum of all ranks multiplied by 2.0
             return self.num_ranks * (self.num_ranks + 1)
