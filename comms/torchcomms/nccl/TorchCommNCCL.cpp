@@ -37,7 +37,7 @@ TorchCommNCCL::~TorchCommNCCL() {
     TC_LOG(ERROR) << "TorchCommNCCL was not finalized before destruction";
   }
 
-  // We need to dteach the memory hook in case finalize is not called,
+  // We need to detach the memory hook in case finalize is not called,
   // so that we don't encounter a memory corruption.
   detachMemoryHook();
 }

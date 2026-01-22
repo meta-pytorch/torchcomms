@@ -148,7 +148,7 @@ class TorchCommBackend {
   virtual const CommOptions& getOptions() const = 0;
 
   virtual const at::Device& getDevice() const = 0;
-  // Window & One-sidede Operations, not required for all backends, so we added
+  // Window & One-sided Operations, not required for all backends, so we added
   // default implementation here
   virtual std::shared_ptr<TorchCommWindow> new_window() {
     throw std::logic_error(
