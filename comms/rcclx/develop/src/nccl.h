@@ -11,6 +11,11 @@
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 
+#ifdef __cplusplus
+#include <string>
+#include <unordered_map>
+#endif
+
 #define NCCL_MAJOR 2
 #define NCCL_MINOR 27
 #define NCCL_PATCH 7
