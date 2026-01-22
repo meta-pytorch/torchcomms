@@ -11,11 +11,26 @@
 namespace comms::pipes::collectives {
 
 /**
+ * ShardingMode - Selects how warps are distributed across peer operations
+ *
+ * VERTICAL: All warps work on one peer at a time using round-robin tournament
+ *           scheduling. Sequential across peers, maximum warps per operation.
+ *           Best for: Large messages, imbalanced workloads.
+ *
+ * HORIZONTAL: Warps are partitioned across all peers simultaneously.
+ *             Parallel across peers, fewer warps per operation.
+ *             Best for: Small messages, balanced workloads, lower latency.
+ */
+enum class ShardingMode {
+  VERTICAL,
+  HORIZONTAL,
+};
+
+/**
  * Dispatch for all-to-all chunk transfer
  *
- * Handles communication with all peers in a single kernel launch using
- * round-robin tournament scheduling for deadlock-free operation with maximum
- * SM utilization. Each peer communication uses send_multiple/recv_multiple.
+ * Handles communication with all peers in a single kernel launch.
+ * Each peer communication uses send_multiple/recv_multiple.
  *
  * OUTPUT PARAMETERS:
  * @param recvbuffs DeviceSpan of receive buffer pointers [n_ranks]
@@ -37,6 +52,7 @@ namespace comms::pipes::collectives {
  * @param stream CUDA stream for kernel execution
  * @param num_blocks Number of thread blocks to launch (default: 4)
  * @param num_threads Number of threads per block (default: 256)
+ * @param mode ShardingMode for warp distribution (default: HORIZONTAL)
  */
 void dispatch(
     // Outputs
@@ -51,6 +67,7 @@ void dispatch(
     DeviceSpan<const std::size_t> input_chunk_indices_count_per_rank,
     cudaStream_t stream,
     int num_blocks = 4,
-    int num_threads = 256);
+    int num_threads = 256,
+    ShardingMode mode = ShardingMode::HORIZONTAL);
 
 } // namespace comms::pipes::collectives
