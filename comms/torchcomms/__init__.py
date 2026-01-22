@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-# pyre-unsafe
+# pyre-strict
 import ctypes
 import os
 from importlib.metadata import entry_points
@@ -38,8 +38,8 @@ __all__ = [  # noqa: F405
 ]
 
 for name in __all__:
-    type = globals()[name]
-    type.__module__ = "torchcomms"
+    cls = globals()[name]
+    cls.__module__ = "torchcomms"
 
 
 def _load_backend(backend: str) -> None:

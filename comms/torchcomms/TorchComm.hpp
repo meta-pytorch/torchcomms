@@ -91,6 +91,15 @@ constexpr std::string_view toString(OpName name) {
   return "unknown";
 }
 
+/**
+ * TorchComm - Main communication abstraction for TorchComms.
+ *
+ * Thread Safety:
+ * TorchComm is NOT thread-safe. Users must not call TorchComm operations
+ * from multiple threads simultaneously. All operations (collectives,
+ * point-to-point, memory registration, finalize, etc.) must be serialized
+ * by the caller.
+ */
 class TorchComm : public std::enable_shared_from_this<TorchComm> {
  public:
   ~TorchComm() = default;

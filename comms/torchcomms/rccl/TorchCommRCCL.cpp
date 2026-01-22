@@ -41,7 +41,7 @@ TorchCommRCCL::~TorchCommRCCL() {
     TC_LOG(ERROR) << "TorchCommRCCL was not finalized before destruction";
   }
 
-  // We need to dteach the memory hook in case finalize is not called,
+  // We need to detach the memory hook in case finalize is not called,
   // so that we don't encounter a memory corruption.
   detachMemoryHook();
 }
@@ -74,15 +74,13 @@ void TorchCommRCCL::init(
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
-    auto bootstrap = new TorchCommRCCLBootstrap(
+    auto bootstrap = std::make_unique<TorchCommRCCLBootstrap>(
         options_.store, device_, rccl_api_, hip_api_, options_.timeout);
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
       nccl_comm_ = bootstrap->createNcclComm(name);
     }
-
-    delete bootstrap;
   }
 
   // Set HIP device and verify it's accessible
@@ -1390,7 +1388,7 @@ std::string_view TorchCommRCCL::getCommName() const {
 void TorchCommRCCL::register_address(
     const TorchCommRCCL::AddressWithLen& addr) {
   // We got a register after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
@@ -1411,7 +1409,7 @@ void TorchCommRCCL::register_address(
 
 void TorchCommRCCL::deregister_address(const TorchCommRCCL::Address& addr) {
   // We got a deregister after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 

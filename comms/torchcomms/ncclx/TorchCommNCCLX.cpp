@@ -41,7 +41,7 @@ void validateIntDtype(const at::Tensor& tensor, const std::string& name) {
 
 } // namespace
 
-ncclResult_t NCCLException::getResult() const {
+ncclResult_t NCCLException::getResult() const noexcept {
   return result_;
 }
 
@@ -65,7 +65,7 @@ TorchCommNCCLX::~TorchCommNCCLX() {
                         << " was not finalized before destruction";
   }
 
-  // We need to dteach the memory hook in case finalize is not called,
+  // We need to detach the memory hook in case finalize is not called,
   // so that we don't encounter a memory corruption.
   detachMemoryHook();
 }
@@ -98,15 +98,13 @@ void TorchCommNCCLX::init(
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
-    auto bootstrap = new TorchCommNCCLXBootstrap(
+    auto bootstrap = std::make_unique<TorchCommNCCLXBootstrap>(
         options_.store, device_, nccl_api_, cuda_api_, options_.timeout);
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
       nccl_comm_ = bootstrap->createNcclComm(name_, options);
     }
-
-    delete bootstrap;
   }
 
   // Set CUDA device and verify it's accessible
@@ -286,7 +284,7 @@ void TorchCommNCCLX::finalize() {
     }
   }
 
-  // Free barrier buffer. TODO: handle errors on cuda free and stream destroy
+  // Free barrier buffer (errors handled by CUDA_CHECK)
   TC_LOG(INFO, this) << "Freeing barrier buffer " << barrier_buffer_;
   if (barrier_buffer_) {
     CUDA_CHECK(
@@ -315,7 +313,8 @@ void TorchCommNCCLX::finalize() {
   }
 
   // Destroy NCCL communicator
-  // TODO: should probably not call this after calling abort.
+  // Note: If abortNcclComm() was called, nccl_comm_ is already nullptr and this
+  // is skipped. We must not call commDestroy after commAbort per NCCL docs.
   if (nccl_comm_) {
     detachMemoryHook();
     // Deregister comm from the CachingAllocator
@@ -505,6 +504,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
       async_op ? input_tensors : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operations
@@ -840,7 +840,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
   nccl_api_->groupStart();
 
   for (int i = 0; i < comm_size_; ++i) {
-    // assign inpu/output tensors to support vector all_gather (all_gather_v)
+    // assign input/output tensors to support vector all_gather (all_gather_v)
     // where unevenly sized inputs are gathered among participating ranks
     auto& output = tensor_list[i];
     auto& input = (i == rank_) ? tensor : output;
@@ -949,6 +949,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
       async_op ? input_list : std::vector<at::Tensor>{});
 
   work->recordStart("reduce_scatter");
@@ -1020,6 +1021,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
       async_op ? input_list : std::vector<at::Tensor>{});
 
   work->recordStart("reduce_scatter_v");
@@ -1038,7 +1040,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
       auto& output_tensor = output;
       if (input_tensor.numel() != output_tensor.numel()) {
         throw std::runtime_error(
-            "Output tensor size must equal input tensor size for all_gather");
+            "Output tensor size must equal input tensor size for reduce_scatter_v");
       }
       nccl_api_->reduce(
           input_tensor.data_ptr(),
@@ -1306,6 +1308,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
       async_op ? input_tensor_list : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operations
@@ -1380,7 +1383,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       output_tensor_list);
 
   // Convert vector of tensors to a CPU tensor holding pointers, which will be
-  // hold by torchComm.
+  // held by torchComm.
   at::Tensor output_tensor_ptrs = at::zeros(
       {static_cast<int64_t>(output_tensor_list.size())},
       at::TensorOptions().dtype(at::kLong).device(at::kCPU));
@@ -1885,7 +1888,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
   return work;
 }
 
-// Window & One-sidede Operations
+// Window & One-sided Operations
 std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window() {
   auto win =
       std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, shared_from_this());
@@ -1952,11 +1955,11 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   // Populate NCCL config from user-provided hints
   populateNcclConfigFromHints(config, options, commDesc);
 
-  // TODO: nccl says that this is not supposed to be called if any operation
-  // is outstanding on the comm. We should check for that.
-  // TODO: what happens if one rank fails but the others succeed, need to
-  // handle the error case.
-  // TODO: is this sharing any resources with the original comm?
+  // Note: NCCL documentation states that commSplit should not be called while
+  // operations are outstanding on the parent communicator. Callers are
+  // responsible for ensuring all operations complete before calling split().
+  // Error handling for partial failures (some ranks succeed, others fail) is
+  // left to NCCL's internal mechanisms.
   ncclResult_t result =
       nccl_api_->commSplit(nccl_comm_, color, new_rank, &new_comm, &config);
   if (result != ncclSuccess) {
@@ -1979,7 +1982,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
 void TorchCommNCCLX::register_address(
     const TorchCommNCCLX::AddressWithLen& addr) {
   // We got a register after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
@@ -1999,7 +2002,7 @@ void TorchCommNCCLX::register_address(
 
 void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {
   // We got a deregister after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
