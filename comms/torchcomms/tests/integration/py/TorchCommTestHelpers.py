@@ -203,16 +203,20 @@ class TorchCommTestWrapper:
 
     NEXT_COMM_ID = 0
 
-    def get_device(self, backend, rank):
-        if device := os.environ.get("TEST_DEVICE"):
-            return torch.device(device)
+    def get_device(self, backend, rank) -> torch.device:
+        if device_str := os.environ.get("TEST_DEVICE"):
+            return torch.device(device_str)
 
-        # Check for CUDA availability and abort if not available
-        if not torch.cuda.is_available():
-            return torch.device("cpu")
-
-        device_id = rank % torch.cuda.device_count()
-        return torch.device(f"cuda:{device_id}")
+        if torch.accelerator.is_available():
+            device_count = torch.accelerator.device_count()
+            if device_count > 0:
+                device_id = rank % device_count
+                accelerator = torch.accelerator.current_accelerator()
+                assert accelerator is not None
+                device_type = accelerator.type
+                return torch.device(f"{device_type}:{device_id}")
+        # Fallback to CPU if an accelerator is not found or device_count is 0
+        return torch.device("cpu")
 
     def get_hints_from_env(self):
         hints = {}

@@ -120,8 +120,6 @@ TEST(CtranMapperUT, EnableBackendThroughCVARsWithTCPandIB) {
   std::optional<std::exception> ex;
   try {
     ctran::createDummyCtranComm();
-  } catch (const std::runtime_error& e) {
-    ex = e;
   } catch (const ctran::utils::Exception& e) {
     ex = e;
   }
