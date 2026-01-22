@@ -122,6 +122,7 @@ TEST_F(TorchCommNCCLXTest, InitializationRank0GetUniqueId) {
 
   // Expect rank 0 to get unique ID and store it
   ncclUniqueId expected_id{};
+  // NOLINTNEXTLINE(facebook-hte-BadMemset)
   memset(&expected_id, 0x42, sizeof(expected_id)); // Fill with test pattern
 
   EXPECT_CALL(*nccl_mock_, getUniqueId(_))
@@ -168,6 +169,7 @@ TEST_F(TorchCommNCCLXTest, InitializationNonRank0ReadUniqueId) {
 
   // Pre-populate store with unique ID (as if rank 0 already stored it)
   ncclUniqueId expected_id{};
+  // NOLINTNEXTLINE(facebook-hte-BadMemset)
   memset(&expected_id, 0x42, sizeof(expected_id)); // Fill with test pattern
   std::vector<uint8_t> id_vec(sizeof(ncclUniqueId));
   memcpy(id_vec.data(), &expected_id, sizeof(expected_id));

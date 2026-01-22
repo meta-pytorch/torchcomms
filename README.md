@@ -21,6 +21,7 @@ torchcomms requires the following software and hardware:
 - Python 3.10 or higher
 - PyTorch 2.8 or higher
 - CUDA-capable GPU (for NCCL/NCCLX or RCCL backends)
+- Intel XPU (for XCCL backend)
 
 ## Installation
 
@@ -136,6 +137,25 @@ rocminfo | grep -m1 gfx
 ```
 
 
+##### XCCL Backend
+
+Source Intel oneAPI environment (update path to your oneAPI installation)
+```bash
+export INTEL_ONEAPI=/path/to/intel/oneapi  # e.g., /opt/intel/oneapi or ~/intel/oneapi
+source $INTEL_ONEAPI/compiler/latest/env/vars.sh
+source $INTEL_ONEAPI/ccl/latest/env/vars.sh
+```
+
+Enable XCCL backend and install
+```bash
+export USE_XCCL=ON
+export USE_NCCL=OFF
+export USE_NCCLX=OFF
+export USE_TRANSPORT=OFF
+pip install --no-build-isolation -v .
+```
+
+
 #### Install torchcomms:
 
 Set backend env vars before installing. For RCCLX-only:
@@ -168,6 +188,7 @@ export USE_NCCLX=ON   # Default: ON
 export USE_GLOO=ON    # Default: ON
 export USE_RCCL=OFF   # Default: OFF
 export USE_RCCLX=OFF  # Default: OFF
+export USE_XCCL=OFF   # Default: OFF
 ```
 
 Then run:

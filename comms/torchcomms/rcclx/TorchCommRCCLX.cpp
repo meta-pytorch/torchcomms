@@ -41,7 +41,7 @@ TorchCommRCCLX::~TorchCommRCCLX() {
     TC_LOG(ERROR) << "TorchCommRCCLX was not finalized before destruction";
   }
 
-  // We need to dteach the memory hook in case finalize is not called,
+  // We need to detach the memory hook in case finalize is not called,
   // so that we don't encounter a memory corruption.
   detachMemoryHook();
 }
@@ -74,15 +74,13 @@ void TorchCommRCCLX::init(
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
-    auto bootstrap = new TorchCommRCCLXBootstrap(
+    auto bootstrap = std::make_unique<TorchCommRCCLXBootstrap>(
         options_.store, device_, rcclx_api_, hip_api_, options_.timeout);
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
       nccl_comm_ = bootstrap->createNcclComm(name);
     }
-
-    delete bootstrap;
   }
 
   // Set HIP device and verify it's accessible
@@ -610,10 +608,6 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce(
       name_, comm_size_, "reduce", rank_, {tensor}, {tensor});
 
   hipStream_t stream = getOperationStream(async_op);
-  std::vector<at::Tensor> output_tensors;
-  if (rank_ == root) {
-    output_tensors.push_back(tensor);
-  }
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 

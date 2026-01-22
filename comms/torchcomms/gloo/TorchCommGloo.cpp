@@ -79,7 +79,7 @@ inline T* getDataPointer(const at::Tensor& tensor) {
 namespace {
 void ensureTensorContiguous(const at::Tensor& tensor) {
   if (!tensor.is_contiguous()) {
-    throw std::runtime_error("Tensor must be contiguous for NCCL operations");
+    throw std::runtime_error("Tensor must be contiguous for Gloo operations");
   }
 }
 
@@ -127,10 +127,15 @@ void preReduce(at::Tensor& tensor, const ReduceOp& r) {
   }
 }
 
-void postReduce(at::Tensor& tensor, const ReduceOp& r) {
+void postReduce(at::Tensor& tensor, const ReduceOp& r, int comm_size) {
   // Gloo doesn't support AVG so we use SUM + division.
   if (r.type() == ReduceOp::RedOpType::AVG) {
-    tensor /= static_cast<float>(tensor.numel());
+    // For integer types, use truncated division to avoid float cast errors
+    if (at::isIntegralType(tensor.scalar_type(), /*includeBool=*/false)) {
+      tensor.div_(comm_size, "trunc");
+    } else {
+      tensor /= comm_size;
+    }
   }
 }
 
@@ -421,6 +426,9 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::send(
   // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
 
+  // Note on tensor lifetime: tensorCPU is captured by value in the lambda.
+  // Since at::Tensor uses reference counting, this ensures the storage remains
+  // alive until the async work completes.
   return createWork(
       [tensorCPU, dst, options, context = context_, tag = nextTag()]() {
         const auto& scalarType = tensorCPU.scalar_type();
@@ -460,11 +468,16 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
   // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
 
+  // Note on tensor lifetime: Both 'tensor' and 'tensorCPU' are captured by
+  // value in the lambda below. Since at::Tensor uses reference counting
+  // (intrusive_ptr to TensorImpl), capturing by value increments the refcount
+  // and ensures the underlying storage remains alive until the async work
+  // completes. This is the intended and correct pattern for async operations.
   return createWork(
       [tensor,
        tensorCPU,
        src,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         const auto& scalarType = tensorCPU.scalar_type();
@@ -541,7 +554,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::broadcast(
       [tensor,
        tensorCPU,
        root,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::BroadcastOptions opts(context);
@@ -582,8 +595,9 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
       [tensor,
        tensorCPU,
        opCPU,
-       options,
+       options = options,
        context = context_,
+       size = comm_size_,
        tag = nextTag()]() mutable {
         gloo::AllreduceOptions opts(context);
         const auto& scalarType = tensorCPU.scalar_type();
@@ -596,7 +610,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
 
         preReduce(tensorCPU, opCPU);
         gloo::allreduce(opts);
-        postReduce(tensorCPU, opCPU);
+        postReduce(tensorCPU, opCPU, size);
 
         if (tensorCPU.device() != tensor.device()) {
           // This will block the CPU thread so we don't need to synchronize the
@@ -623,12 +637,13 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
   auto opCPU = convertReduceOpToCPU(op);
 
   return createWork(
-      [tensor,
+      [tensor = tensor,
        tensorCPU,
        root,
        opCPU,
-       options,
+       options = options,
        context = context_,
+       size = comm_size_,
        tag = nextTag()]() mutable {
         gloo::ReduceOptions opts(context);
         const auto& scalarType = tensorCPU.scalar_type();
@@ -642,7 +657,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
 
         preReduce(tensorCPU, opCPU);
         gloo::reduce(opts);
-        postReduce(tensorCPU, opCPU);
+        postReduce(tensorCPU, opCPU, size);
 
         if (tensorCPU.device() != tensor.device()) {
           // This will block the CPU thread so we don't need to synchronize the
@@ -688,11 +703,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
   }
 
   return createWork(
-      [tensor,
-       tensor_list,
+      [tensor = tensor,
+       tensor_list = tensor_list,
        tensorCPU,
        tensorListCPU,
-       options,
+       options = options,
        size = comm_size_,
        context = context_,
        tag = nextTag()]() mutable {
@@ -761,11 +776,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_single(
   auto outputCPU = output.to(at::kCPU);
 
   return createWork(
-      [input,
+      [input = input,
        output,
        inputCPU,
        outputCPU,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::AllgatherOptions opts(context);
@@ -860,12 +875,13 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
   auto opCPU = convertReduceOpToCPU(op);
 
   return createWork(
-      [input,
+      [input = input,
        output,
        inputCPU,
        opCPU,
-       options,
+       options = options,
        rank = rank_,
+       size = comm_size_,
        context = context_,
        tag = nextTag()]() mutable {
         // For reduce_scatter_single, we can simulate it by:
@@ -886,7 +902,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
 
         preReduce(inputCPU, opCPU);
         gloo::allreduce(opts);
-        postReduce(inputCPU, opCPU);
+        postReduce(inputCPU, opCPU, size);
 
         // Extract this rank's portion from the reduced result
         auto chunkSize = output.numel();
@@ -925,11 +941,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_single(
   auto outputCPU = output.to(at::kCPU);
 
   return createWork(
-      [input,
+      [input = input,
        output,
        inputCPU,
        outputCPU,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::AlltoallOptions opts(context);
@@ -1002,13 +1018,13 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
   auto outputCPU = output.to(at::kCPU);
 
   return createWork(
-      [input,
+      [input = input,
        output,
        inputCPU,
        outputCPU,
-       input_split_sizes,
-       output_split_sizes,
-       options,
+       input_split_sizes = input_split_sizes,
+       output_split_sizes = output_split_sizes,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::AlltoallvOptions opts(context);
@@ -1106,12 +1122,12 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all(
   }
 
   return createWork(
-      [output_tensor_list,
+      [output_tensor_list = output_tensor_list,
        inputConcatCPU,
        outputConcatCPU,
        tensorSize,
        comm_size = comm_size_,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::AlltoallOptions opts(context);
@@ -1202,7 +1218,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::scatter(
        outputCPU,
        inputListCPU,
        root,
-       options,
+       options = options,
        rank = rank_,
        context = context_,
        tag = nextTag()]() mutable {
@@ -1280,13 +1296,13 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::gather(
   }
 
   return createWork(
-      [input_tensor,
-       output_tensor_list,
+      [input_tensor = input_tensor,
+       output_tensor_list = output_tensor_list,
        inputCPU,
        outputConcatCPU,
        outputListCPU,
        root,
-       options,
+       options = options,
        rank = rank_,
        size = comm_size_,
        context = context_,
@@ -1389,6 +1405,10 @@ void TorchCommGloo::checkInitialized() {
   }
 }
 
+// Intentionally empty: Gloo's collectives are synchronous, so there is no
+// mechanism to time out or abort a collective that is already in progress.
+// Unlike NCCL/NCCLX which have asynchronous collectives that can be aborted,
+// Gloo blocks until completion.
 void TorchCommGloo::checkAndAbortIfTimedOutOrError() {}
 
 namespace {
