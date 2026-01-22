@@ -123,13 +123,13 @@ class TorchWork:
     def is_completed(self) -> bool: ...
     def wait(self) -> None: ...
 
-class TorchCommlWinAccessType(Enum):
+class TorchCommWinAccessType(Enum):
     WIN_ACCESS_TYPE_UNIFIED = auto()
     WIN_ACCESS_TYPE_SEPARATE = auto()
 
 class TorchCommWindowAttr:
     def __init__(self) -> None: ...
-    access_type: TorchCommlWinAccessType
+    access_type: TorchCommWinAccessType
 
 class TorchCommWindow:
     @property

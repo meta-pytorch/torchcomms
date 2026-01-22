@@ -153,14 +153,14 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
           )",
           py::call_guard<py::gil_scoped_release>());
 
-  py::enum_<TorchCommlWinAccessType>(
-      m, "TorchCommlWinAccessType", "Window attribute.")
+  py::enum_<TorchCommWinAccessType>(
+      m, "TorchCommWinAccessType", "Window attribute.")
       .value(
           "WIN_ACCESS_TYPE_UNIFIED",
-          TorchCommlWinAccessType::WIN_ACCESS_TYPE_UNIFIED)
+          TorchCommWinAccessType::WIN_ACCESS_TYPE_UNIFIED)
       .value(
           "WIN_ACCESS_TYPE_SEPARATE",
-          TorchCommlWinAccessType::WIN_ACCESS_TYPE_SEPARATE);
+          TorchCommWinAccessType::WIN_ACCESS_TYPE_SEPARATE);
 
   py::class_<TorchCommWindowAttr, std::shared_ptr<TorchCommWindowAttr>>(
       m, "TorchCommWindowAttr", "Window attributes.")

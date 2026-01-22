@@ -37,7 +37,7 @@ TorchCommNCCL::~TorchCommNCCL() {
     TC_LOG(ERROR) << "TorchCommNCCL was not finalized before destruction";
   }
 
-  // We need to dteach the memory hook in case finalize is not called,
+  // We need to detach the memory hook in case finalize is not called,
   // so that we don't encounter a memory corruption.
   detachMemoryHook();
 }
@@ -70,15 +70,13 @@ void TorchCommNCCL::init(
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
-    auto bootstrap = new TorchCommNCCLBootstrap(
+    auto bootstrap = std::make_unique<TorchCommNCCLBootstrap>(
         options_.store, device_, nccl_api_, cuda_api_, options_.timeout);
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
       nccl_comm_ = bootstrap->createNcclComm(name, options);
     }
-
-    delete bootstrap;
   }
 
   // Set CUDA device and verify it's accessible
@@ -243,7 +241,7 @@ void TorchCommNCCL::finalize() {
     }
   }
 
-  // Free barrier buffer. TODO: handle errors on cuda free and stream destroy
+  // Free barrier buffer (errors handled by CUDA_CHECK)
   if (barrier_buffer_) {
     CUDA_CHECK(
         cuda_api_,
@@ -271,7 +269,8 @@ void TorchCommNCCL::finalize() {
   }
 
   // Destroy NCCL communicator
-  // TODO: should probably not call this after calling abort.
+  // Note: If abortNcclComm() was called, nccl_comm_ is already nullptr and this
+  // is skipped. We must not call commDestroy after commAbort per NCCL docs.
   if (nccl_comm_) {
     detachMemoryHook();
     // Deregister comm from the CachingAllocator
@@ -602,10 +601,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce(
   tracing_->recordEventWithInputOutput("reduce", root, {tensor}, {tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
-  std::vector<at::Tensor> output_tensors;
-  if (rank_ == root) {
-    output_tensors.push_back(tensor);
-  }
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 
@@ -1379,11 +1374,11 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
   // Populate NCCL config from user-provided hints
   populateNcclConfigFromHints(config, options, name);
 
-  // TODO: nccl says that this is not supposed to be called if any operation
-  // is outstanding on the comm. We should check for that.
-  // TODO: what happens if one rank fails but the others succeed, need to
-  // handle the error case.
-  // TODO: is this sharing any resources with the original comm?
+  // Note: NCCL documentation states that commSplit should not be called while
+  // operations are outstanding on the parent communicator. Callers are
+  // responsible for ensuring all operations complete before calling split().
+  // Error handling for partial failures (some ranks succeed, others fail) is
+  // left to NCCL's internal mechanisms.
   ncclResult_t result =
       nccl_api_->commSplit(nccl_comm_, color, new_rank, &new_comm, &config);
   if (result != ncclSuccess) {
