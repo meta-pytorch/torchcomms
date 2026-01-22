@@ -46,10 +46,14 @@ PYBIND11_MODULE(_comms, m) {
       .def(
           "__deepcopy__",
           [](const ReduceOp& self, py::dict memo) {
-            auto copy = self;
             auto self_obj = py::cast(self);
-            memo[py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()))] =
-                py::cast(copy);
+            auto self_id =
+                py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
+            if (memo.contains(self_id)) {
+              return memo[self_id].cast<ReduceOp>();
+            }
+            auto copy = self;
+            memo[self_id] = py::cast(copy);
             return copy;
           })
       .def_property_readonly(
@@ -175,10 +179,15 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
       .def(
           "__deepcopy__",
           [](const std::shared_ptr<TorchCommWindow>& self, py::dict memo) {
+            auto self_obj = py::cast(self);
+            auto self_id =
+                py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
+            if (memo.contains(self_id)) {
+              return memo[self_id].cast<std::shared_ptr<TorchCommWindow>>();
+            }
+
             auto new_window = self->clone();
 
-            // Add cloned tensor to memo if one was registered
-            // Python's deepcopy uses id(obj) as memo keys
             auto original_tensor = self->get_tensor();
             auto cloned_tensor = new_window->get_tensor();
             if (original_tensor.has_value() && cloned_tensor.has_value()) {
@@ -188,10 +197,7 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
                   py::cast(cloned_tensor.value());
             }
 
-            // Add new window to memo (key is id of original object)
-            auto self_obj = py::cast(self);
-            memo[py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()))] =
-                py::cast(new_window);
+            memo[self_id] = py::cast(new_window);
             return new_window;
           })
       .def(
@@ -260,13 +266,13 @@ Returns:
     Optional[torch.Tensor]: The registered tensor, or None if no tensor is registered.
 
       )")
-      .def(
-          "get_dtype",
+      .def_property_readonly(
+          "dtype",
           [](TorchCommWindow& self) {
             return py::reinterpret_steal<py::object>(
                 THPDtype_New(self.getDtype(), "torch"));
           },
-          R"(Get the dtype of the registered buffer tensor.
+          R"(The dtype of the registered buffer tensor.
 
 Returns:
     torch.dtype: The dtype of the registered buffer, e.g. torch.float32.
@@ -275,23 +281,22 @@ Note:
     This is primarily used by torch.compile's meta kernel to determine
     the output tensor dtype for map_remote_tensor() operations.
           )")
-      .def(
-          "get_shape",
+      .def_property_readonly(
+          "shape",
           [](TorchCommWindow& self) { return self.getShape(); },
-          R"(Get the shape of the registered buffer tensor.
+          R"(The shape of the registered buffer tensor.
 
 Returns:
     list[int]: The shape of the registered buffer as a list of dimensions.
 
 Note:
     This is primarily used by torch.compile's meta kernel to determine
-    the output tensor shape for get_temap_remote_tensornsor() operations.
-          )",
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "get_device",
+    the output tensor shape for map_remote_tensor() operations.
+          )")
+      .def_property_readonly(
+          "device",
           [](TorchCommWindow& self) { return self.getDevice(); },
-          R"(Get the device of the registered buffer tensor.
+          R"(The device of the registered buffer tensor.
 
 Returns:
     torch.device: The device of the registered buffer.
@@ -299,8 +304,7 @@ Returns:
 Note:
     This is primarily used by torch.compile's meta kernel to determine
     the output tensor device for map_remote_tensor() operations.
-          )",
-          py::call_guard<py::gil_scoped_release>())
+          )")
       .def(
           "put",
           [](TorchCommWindow& self,
@@ -677,10 +681,13 @@ Args:
       .def(
           "__deepcopy__",
           [](const std::shared_ptr<TorchComm>& self, py::dict memo) {
-            // Python's deepcopy uses id(obj) as memo keys
             auto self_obj = py::cast(self);
-            memo[py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()))] =
-                py::cast(self);
+            auto self_id =
+                py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
+            if (memo.contains(self_id)) {
+              return memo[self_id].cast<std::shared_ptr<TorchComm>>();
+            }
+            memo[self_id] = py::cast(self);
             return self;
           })
       .def(
