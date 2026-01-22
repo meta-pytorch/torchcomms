@@ -196,7 +196,7 @@ class TorchCommGloo : public TorchCommBackend,
     UNINITIALIZED,
     INITIALIZED,
     FINALIZED,
-  } init_state_{0};
+  } init_state_{InitializationState::UNINITIALIZED};
 
   std::string name_;
 
