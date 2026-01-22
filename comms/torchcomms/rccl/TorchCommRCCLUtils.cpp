@@ -265,7 +265,8 @@ void TorchCommRCCL::checkAndAbortIfTimedOutOrError() {
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
     rccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
-    RCCLException RCCLException(*rccl_api_, "NCCL Async Error", asyncErr);
+    RCCLException RCCLException(
+        *rccl_api_, "NCCL Async Error", asyncErr, nccl_comm_);
     abortRcclComm();
     throw RCCLException;
   }

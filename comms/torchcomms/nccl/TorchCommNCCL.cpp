@@ -173,14 +173,15 @@ void TorchCommNCCL::init(
   ncclResult_t ncclErr;
   ncclErr = nccl_api_->commUserRank(nccl_comm_, &rank_);
   if (ncclErr != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL User Rank failed", ncclErr);
+    throw NCCLException(
+        *nccl_api_, "NCCL User Rank failed", ncclErr, nccl_comm_);
   }
 
   tryTorchCommLoggingInit("torchcomm");
 
   ncclErr = nccl_api_->commCount(nccl_comm_, &comm_size_);
   if (ncclErr != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Count failed", ncclErr);
+    throw NCCLException(*nccl_api_, "NCCL Count failed", ncclErr, nccl_comm_);
   }
 
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
@@ -237,7 +238,8 @@ void TorchCommNCCL::finalize() {
     comm_state_ = CommState::ERROR;
     ncclResult_t asyncErr;
     nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
-    NCCLException ncclException(*nccl_api_, "NCCL Async Error", asyncErr);
+    NCCLException ncclException(
+        *nccl_api_, "NCCL Async Error", asyncErr, nccl_comm_);
     abortNcclComm();
     throw ncclException;
   }
@@ -309,7 +311,8 @@ int TorchCommNCCL::getRank() const {
   int rank;
   ncclResult_t ncclErr = nccl_api_->commUserRank(nccl_comm_, &rank);
   if (ncclErr != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL User Rank failed", ncclErr);
+    throw NCCLException(
+        *nccl_api_, "NCCL User Rank failed", ncclErr, nccl_comm_);
   }
   return rank;
 }
@@ -320,7 +323,7 @@ int TorchCommNCCL::getSize() const {
   int comm_size;
   ncclResult_t ncclErr = nccl_api_->commCount(nccl_comm_, &comm_size);
   if (ncclErr != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Count failed", ncclErr);
+    throw NCCLException(*nccl_api_, "NCCL Count failed", ncclErr, nccl_comm_);
   }
   return comm_size;
 }
@@ -372,7 +375,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::send(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Send failed", result);
+    throw NCCLException(*nccl_api_, "NCCL Send failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -412,7 +415,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::recv(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Recv failed", result);
+    throw NCCLException(*nccl_api_, "NCCL Recv failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -474,7 +477,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::batch_op_issue(
   // Start NCCL group for batched operations
   ncclResult_t result = nccl_api_->groupStart();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
   }
 
   // Issue each operation individually
@@ -491,7 +495,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::batch_op_issue(
       if (result != ncclSuccess) {
         nccl_api_->groupEnd(); // Clean up group on error
         throw NCCLException(
-            *nccl_api_, "NCCL Send failed in batch operation", result);
+            *nccl_api_,
+            "NCCL Send failed in batch operation",
+            result,
+            nccl_comm_);
       }
     } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
       result = nccl_api_->recv(
@@ -505,7 +512,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::batch_op_issue(
       if (result != ncclSuccess) {
         nccl_api_->groupEnd(); // Clean up group on error
         throw NCCLException(
-            *nccl_api_, "NCCL Recv failed in batch operation", result);
+            *nccl_api_,
+            "NCCL Recv failed in batch operation",
+            result,
+            nccl_comm_);
       }
     }
   }
@@ -513,7 +523,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::batch_op_issue(
   // End NCCL group
   result = nccl_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operations
@@ -555,7 +565,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::broadcast(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Broadcast failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL Broadcast failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -597,7 +608,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_reduce(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL AllReduce failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL AllReduce failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -641,7 +653,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Reduce failed", result);
+    throw NCCLException(*nccl_api_, "NCCL Reduce failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -689,7 +701,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather(
   // Use multiple broadcast operations for all_gather
   ncclResult_t result = nccl_api_->groupStart();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
   }
 
   for (int i = 0; i < comm_size_; ++i) {
@@ -703,13 +716,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather(
         stream);
     if (opResult != ncclSuccess) {
       throw NCCLException(
-          *nccl_api_, "NCCL Broadcast failed in all_gather", opResult);
+          *nccl_api_,
+          "NCCL Broadcast failed in all_gather",
+          opResult,
+          nccl_comm_);
     }
   }
 
   result = nccl_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
   }
 
   work->recordEnd();
@@ -761,7 +777,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_gather_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL AllGather failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL AllGather failed", result, nccl_comm_);
   }
 
   work->recordEnd();
@@ -810,7 +827,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
   // Use multiple reduce operations for reduce_scatter
   ncclResult_t result = nccl_api_->groupStart();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
   }
 
   for (int i = 0; i < comm_size_; ++i) {
@@ -841,13 +859,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter(
     }
     if (opResult != ncclSuccess) {
       throw NCCLException(
-          *nccl_api_, "NCCL Reduce failed in reduce_scatter", opResult);
+          *nccl_api_,
+          "NCCL Reduce failed in reduce_scatter",
+          opResult,
+          nccl_comm_);
     }
   }
 
   result = nccl_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
   }
 
   work->recordEnd();
@@ -904,7 +925,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::reduce_scatter_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL ReduceScatter failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL ReduceScatter failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -958,7 +980,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_single(
       nccl_comm_,
       stream);
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL AllToAll failed", result);
+    throw NCCLException(*nccl_api_, "NCCL AllToAll failed", result, nccl_comm_);
   }
 #else
   size_t offset = chunk_size * wordSize(data_type);
@@ -966,7 +988,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_single(
   char* rptr = static_cast<char*>(output.data_ptr());
   ncclResult_t result = nccl_api_->groupStart();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
   }
 
   for (int i = 0; i < comm_size_; ++i) {
@@ -975,7 +998,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_single(
         sptr + i * offset, chunk_size, data_type, i, nccl_comm_, stream);
     if (opResult != ncclSuccess) {
       throw NCCLException(
-          *nccl_api_, "NCCL Send failed in all_to_all_single", opResult);
+          *nccl_api_,
+          "NCCL Send failed in all_to_all_single",
+          opResult,
+          nccl_comm_);
     }
 
     // Receive from rank i
@@ -983,13 +1009,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_single(
         rptr + i * offset, chunk_size, data_type, i, nccl_comm_, stream);
     if (opResult != ncclSuccess) {
       throw NCCLException(
-          *nccl_api_, "NCCL Recv failed in all_to_all_single", opResult);
+          *nccl_api_,
+          "NCCL Recv failed in all_to_all_single",
+          opResult,
+          nccl_comm_);
     }
   }
 
   result = nccl_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
   }
 #endif
 
@@ -1068,7 +1097,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_v_single(
 
   ncclResult_t result = nccl_api_->groupStart();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
   }
 
   for (int i = 0; i < comm_size_; ++i) {
@@ -1081,7 +1111,10 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_v_single(
         stream);
     if (opResult != ncclSuccess) {
       throw NCCLException(
-          *nccl_api_, "NCCL Send failed in all_to_all_v_single", opResult);
+          *nccl_api_,
+          "NCCL Send failed in all_to_all_v_single",
+          opResult,
+          nccl_comm_);
     }
     opResult = nccl_api_->recv(
         rptr + recvdispls[i] * type_size,
@@ -1092,13 +1125,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_v_single(
         stream);
     if (opResult != ncclSuccess) {
       throw NCCLException(
-          *nccl_api_, "NCCL Recv failed in all_to_all_v_single", opResult);
+          *nccl_api_,
+          "NCCL Recv failed in all_to_all_v_single",
+          opResult,
+          nccl_comm_);
     }
   }
 
   result = nccl_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1148,7 +1184,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all(
 
   ncclResult_t result = nccl_api_->groupStart();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
   }
 
   for (int i = 0; i < comm_size_; ++i) {
@@ -1162,7 +1199,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all(
         stream);
     if (opResult != ncclSuccess) {
       throw NCCLException(
-          *nccl_api_, "NCCL Send failed in all_to_all", opResult);
+          *nccl_api_, "NCCL Send failed in all_to_all", opResult, nccl_comm_);
     }
 
     // Receive from rank i
@@ -1175,13 +1212,13 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all(
         stream);
     if (opResult != ncclSuccess) {
       throw NCCLException(
-          *nccl_api_, "NCCL Recv failed in all_to_all", opResult);
+          *nccl_api_, "NCCL Recv failed in all_to_all", opResult, nccl_comm_);
     }
   }
 
   result = nccl_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operations
@@ -1218,7 +1255,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::barrier(
       stream);
 
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL Barrier failed", result);
+    throw NCCLException(*nccl_api_, "NCCL Barrier failed", result, nccl_comm_);
   }
 
   // Record end event after NCCL operation
@@ -1277,7 +1314,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::scatter(
     // Root sends to all ranks (except itself)
     ncclResult_t result = nccl_api_->groupStart();
     if (result != ncclSuccess) {
-      throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+      throw NCCLException(
+          *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
     }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
@@ -1290,13 +1328,14 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::scatter(
             stream);
         if (opResult != ncclSuccess) {
           throw NCCLException(
-              *nccl_api_, "NCCL Send failed in scatter", opResult);
+              *nccl_api_, "NCCL Send failed in scatter", opResult, nccl_comm_);
         }
       }
     }
     result = nccl_api_->groupEnd();
     if (result != ncclSuccess) {
-      throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+      throw NCCLException(
+          *nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
     }
 
     // Root copies its own data using cudaMemcpyAsync
@@ -1320,7 +1359,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::scatter(
         nccl_comm_,
         stream);
     if (result != ncclSuccess) {
-      throw NCCLException(*nccl_api_, "NCCL Recv failed in scatter", result);
+      throw NCCLException(
+          *nccl_api_, "NCCL Recv failed in scatter", result, nccl_comm_);
     }
   }
 
@@ -1379,7 +1419,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::gather(
     // Root receives from all ranks (except itself)
     ncclResult_t result = nccl_api_->groupStart();
     if (result != ncclSuccess) {
-      throw NCCLException(*nccl_api_, "NCCL GroupStart failed", result);
+      throw NCCLException(
+          *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
     }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
@@ -1392,13 +1433,14 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::gather(
             stream);
         if (opResult != ncclSuccess) {
           throw NCCLException(
-              *nccl_api_, "NCCL Recv failed in gather", opResult);
+              *nccl_api_, "NCCL Recv failed in gather", opResult, nccl_comm_);
         }
       }
     }
     result = nccl_api_->groupEnd();
     if (result != ncclSuccess) {
-      throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result);
+      throw NCCLException(
+          *nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
     }
 
     // Root copies its own data using cudaMemcpyAsync
@@ -1421,7 +1463,8 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::gather(
         nccl_comm_,
         stream);
     if (result != ncclSuccess) {
-      throw NCCLException(*nccl_api_, "NCCL Send failed in gather", result);
+      throw NCCLException(
+          *nccl_api_, "NCCL Send failed in gather", result, nccl_comm_);
     }
   }
 
@@ -1504,7 +1547,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
   ncclResult_t result =
       nccl_api_->commSplit(nccl_comm_, color, new_rank, &new_comm, &config);
   if (result != ncclSuccess) {
-    throw NCCLException(*nccl_api_, "NCCL split failed", result);
+    throw NCCLException(*nccl_api_, "NCCL split failed", result, nccl_comm_);
   }
   if (new_rank == -1) {
     return nullptr; // Rank is not in the group, return nullptr
@@ -1534,7 +1577,7 @@ void TorchCommNCCL::register_address(
       nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle);
   if (result != ncclSuccess) {
     throw NCCLException(
-        *nccl_api_, "Failed to register memory with NCCL", result);
+        *nccl_api_, "Failed to register memory with NCCL", result, nccl_comm_);
   }
   memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
 }
@@ -1556,7 +1599,10 @@ void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
   ncclResult_t result = nccl_api_->commDeregister(nccl_comm_, handle);
   if (result != ncclSuccess) {
     throw NCCLException(
-        *nccl_api_, "Failed to deregister memory with NCCL", result);
+        *nccl_api_,
+        "Failed to deregister memory with NCCL",
+        result,
+        nccl_comm_);
   }
 
   memoryRegistrationHandles_.erase(it);
@@ -1565,8 +1611,11 @@ void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
 NCCLException::NCCLException(
     NcclApi& nccl_api,
     const std::string& message,
-    ncclResult_t result)
-    : message_(message + ": " + nccl_api.getErrorString(result)),
+    ncclResult_t result,
+    ncclComm_t comm)
+    : message_(
+          message + ": " + nccl_api.getErrorString(result) +
+          " \nNCCL Last Error: " + nccl_api.getLastError(comm)),
       result_(result) {}
 
 const char* NCCLException::what() const noexcept {
