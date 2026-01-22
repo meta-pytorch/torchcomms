@@ -15,6 +15,7 @@ constexpr std::chrono::microseconds kProgressInterval{0};
 constexpr int kDummyRank = 0;
 constexpr int kDummyDevice = 0;
 
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 folly::once_flag initOnceFlag;
 void initEnvironment() {
   folly::call_once(initOnceFlag, [] {
@@ -86,7 +87,9 @@ RdmaTransport::RdmaTransport(int cudaDev, folly::EventBase* evb)
 RdmaTransport::~RdmaTransport() {}
 
 namespace {
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 folly::once_flag queryRdmaSupportOnceFlag;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 bool rdmaSupport = false;
 bool queryRdmaSupport() {
   folly::call_once(queryRdmaSupportOnceFlag, [] {
@@ -165,6 +168,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
   pendingWorks->emplace_back(std::move(work));
   evb_->runInEventBaseThread([this]() { progress(); });
 
+  // NOLINTNEXTLINE(clang-diagnostic-nrvo)
   return sf;
 }
 
@@ -214,6 +218,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
   pendingWorks->emplace_back(std::move(work));
   evb_->runInEventBaseThread([this]() { progress(); });
 
+  // NOLINTNEXTLINE(clang-diagnostic-nrvo)
   return sf;
 }
 

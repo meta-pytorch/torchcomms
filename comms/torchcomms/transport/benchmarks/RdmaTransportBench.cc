@@ -14,6 +14,7 @@
 #include "comms/testinfra/BenchUtils.h"
 #include "comms/torchcomms/transport/RdmaTransport.h"
 
+// NOLINTNEXTLINE(google-build-using-namespace)
 using namespace torch::comms;
 
 //------------------------------------------------------------------------------
@@ -41,6 +42,7 @@ static void RdmaMemory_Register_Deregister(uint32_t iters, size_t bufferSize) {
   }
 
   BENCHMARK_SUSPEND {
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check,facebook-hte-NullableDereference)
     cudaFree(buffer);
   }
 }
@@ -117,7 +119,9 @@ static void RdmaTransport_run_benchmark(
         folly::UserMetric(bufferSize, folly::UserMetric::Type::METRIC);
     sendMemory.reset();
     recvMemory.reset();
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaFree(sendBuffer);
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaFree(recvBuffer);
     sender.reset();
     receiver.reset();
@@ -197,6 +201,7 @@ int main(int argc, char** argv) {
   folly::runBenchmarks();
 
   // Cleanup
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
   cudaDeviceReset();
 
   return 0;
