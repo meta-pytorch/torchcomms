@@ -3,6 +3,7 @@
 #include "RdmaTransport.h"
 
 #include <folly/synchronization/CallOnce.h>
+#include <stdexcept>
 
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Checks.h"
@@ -15,6 +16,7 @@ constexpr std::chrono::microseconds kProgressInterval{0};
 constexpr int kDummyRank = 0;
 constexpr int kDummyDevice = 0;
 
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 folly::once_flag initOnceFlag;
 void initEnvironment() {
   folly::call_once(initOnceFlag, [] {
@@ -30,6 +32,12 @@ namespace torch::comms {
 
 RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev)
     : buf_(buf), len_(len), cudaDev_(cudaDev) {
+  if (len < kMinRdmaMemorySize) {
+    throw std::invalid_argument(
+        "RdmaMemory: Minimum memory block to be registered must be >= " +
+        std::to_string(kMinRdmaMemorySize) + " bytes, got " +
+        std::to_string(len) + " bytes");
+  }
   initEnvironment();
   FB_COMMCHECKTHROW(CtranIb::regMem(buf_, len_, cudaDev_, &regHdl_));
   remoteKey_ = CtranIb::getRemoteAccessKey(regHdl_).toString();
@@ -86,7 +94,9 @@ RdmaTransport::RdmaTransport(int cudaDev, folly::EventBase* evb)
 RdmaTransport::~RdmaTransport() {}
 
 namespace {
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 folly::once_flag queryRdmaSupportOnceFlag;
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 bool rdmaSupport = false;
 bool queryRdmaSupport() {
   folly::call_once(queryRdmaSupportOnceFlag, [] {
@@ -165,6 +175,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
   pendingWorks->emplace_back(std::move(work));
   evb_->runInEventBaseThread([this]() { progress(); });
 
+  // NOLINTNEXTLINE(clang-diagnostic-nrvo)
   return sf;
 }
 
@@ -214,6 +225,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
   pendingWorks->emplace_back(std::move(work));
   evb_->runInEventBaseThread([this]() { progress(); });
 
+  // NOLINTNEXTLINE(clang-diagnostic-nrvo)
   return sf;
 }
 

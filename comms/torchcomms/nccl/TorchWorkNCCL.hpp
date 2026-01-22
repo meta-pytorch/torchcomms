@@ -12,7 +12,6 @@
 
 #include <ATen/ATen.h>
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
 namespace torch {
@@ -33,14 +32,12 @@ class TorchWorkNCCL : public TorchWork {
       std::shared_ptr<TorchCommNCCL> comm,
       cudaStream_t stream,
       std::chrono::milliseconds timeout_ms,
-      const std::vector<at::Tensor>& inputTensors,
-      std::shared_ptr<TorchCommTracing> tracing);
+      const std::vector<at::Tensor>& inputTensors);
   TorchWorkNCCL(
       std::shared_ptr<TorchCommNCCL> comm,
       cudaStream_t stream,
       std::chrono::milliseconds timeout_ms,
-      const at::Tensor& inputTensor,
-      std::shared_ptr<TorchCommTracing> tracing);
+      const at::Tensor& inputTensor);
   ~TorchWorkNCCL() override;
 
   // Delete copy and move operations
@@ -77,7 +74,6 @@ class TorchWorkNCCL : public TorchWork {
   std::chrono::milliseconds timeout_ms_;
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
-  std::shared_ptr<TorchCommTracing> tracing_;
 };
 
 class TorchWorkNCCLQueue {

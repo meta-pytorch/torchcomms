@@ -19,7 +19,6 @@
 #include "comms/torchcomms/TorchComm.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include "comms/torchcomms/TorchCommBackend.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include "comms/torchcomms/TorchCommBatch.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rccl/HipApi.hpp" // @manual
 #include "comms/torchcomms/rccl/RcclApi.hpp" // @manual
 #include "comms/torchcomms/rccl/TorchWorkRCCL.hpp" // @manual
@@ -341,7 +340,6 @@ class TorchCommRCCL : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  std::shared_ptr<TorchCommTracing> tracing_;
   bool high_priority_stream_{false};
   std::string name_;
 };

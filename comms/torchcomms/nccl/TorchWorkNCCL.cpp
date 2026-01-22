@@ -3,6 +3,7 @@
 #include "comms/torchcomms/nccl/TorchWorkNCCL.hpp"
 #include <ATen/cuda/CUDAContext.h>
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
 
 namespace torch {
@@ -12,13 +13,11 @@ TorchWorkNCCL::TorchWorkNCCL(
     std::shared_ptr<TorchCommNCCL> comm,
     cudaStream_t stream,
     std::chrono::milliseconds timeout_ms,
-    const std::vector<at::Tensor>& inputTensors,
-    std::shared_ptr<TorchCommTracing> tracing)
+    const std::vector<at::Tensor>& inputTensors)
     : inputTensors_(inputTensors),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      tracing_(std::move(tracing)) {
+      timeout_ms_(timeout_ms) {
   // If not in graph capture mode, create the events for start and end
   // recording
   start_event_ = comm_->getEvent();
@@ -31,13 +30,11 @@ TorchWorkNCCL::TorchWorkNCCL(
     std::shared_ptr<TorchCommNCCL> comm,
     cudaStream_t stream,
     std::chrono::milliseconds timeout_ms,
-    const at::Tensor& inputTensor,
-    std::shared_ptr<TorchCommTracing> tracing)
+    const at::Tensor& inputTensor)
     : inputTensor_(inputTensor),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      tracing_(std::move(tracing)) {
+      timeout_ms_(timeout_ms) {
   // If not in graph capture mode, create the events for start and end
   // recording
   start_event_ = comm_->getEvent();
@@ -87,9 +84,10 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCL::checkStatus() {
       setStatus(WorkStatus::INPROGRESS);
     } else if (start_status != cudaErrorNotReady) {
       // Some other error occurred with the start event
-      TC_LOG(ERROR) << "CUDA error during start event query: "
-                    << comm_->getCudaApi()->getErrorString(start_status) << " ("
-                    << start_status << ")";
+      TC_LOG(ERROR, comm_.get())
+          << "CUDA error during start event query: "
+          << comm_->getCudaApi()->getErrorString(start_status) << " ("
+          << start_status << ")";
       setStatus(WorkStatus::ERROR);
     }
   }
@@ -120,9 +118,10 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCL::checkStatus() {
     }
   } else {
     // Some other error occurred with the end event
-    TC_LOG(ERROR) << "CUDA error during end event query: "
-                  << comm_->getCudaApi()->getErrorString(end_status) << " ("
-                  << end_status << ")";
+    TC_LOG(ERROR, comm_.get())
+        << "CUDA error during end event query: "
+        << comm_->getCudaApi()->getErrorString(end_status) << " (" << end_status
+        << ")";
     setStatus(WorkStatus::ERROR);
   }
   return status();
@@ -136,7 +135,11 @@ void TorchWorkNCCL::wait() {
     return;
   }
 
-  tracing_->recordEvent("wait");
+  TorchCommTracingGuard tracingGuard(
+      std::string(comm_->getCommName()),
+      comm_->getSize(),
+      "wait",
+      comm_->getRank());
 
   // Get the current stream using the device from the comm object
   cudaStream_t current_stream =
