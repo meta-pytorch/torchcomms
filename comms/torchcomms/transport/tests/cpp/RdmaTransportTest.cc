@@ -13,6 +13,7 @@
 #include "comms/torchcomms/transport/RdmaTransport.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+// NOLINTNEXTLINE(google-build-using-namespace)
 using namespace torch::comms;
 
 class RdmaTransportTest : public ::testing::Test {
@@ -40,6 +41,7 @@ class RdmaTransportTest : public ::testing::Test {
 
   void TearDown() override {
     // Reset CUDA device
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaDeviceReset();
   }
 
@@ -179,6 +181,7 @@ class RdmaTransportTest : public ::testing::Test {
     EXPECT_TRUE(transport->connected());
 
     // Wait for connection to be established
+    // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
 
     if (isServer) {
@@ -274,6 +277,7 @@ class RdmaMemoryTest : public ::testing::Test {
     if (buffer_) {
       EXPECT_EQ(cudaFree(buffer_), cudaSuccess);
     }
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
     cudaDeviceReset();
   }
 
