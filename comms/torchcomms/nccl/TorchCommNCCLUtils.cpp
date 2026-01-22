@@ -103,7 +103,10 @@ TorchCommNCCL::RedOpRAII::RedOpRAII(
 
 TorchCommNCCL::RedOpRAII::~RedOpRAII() {
   if (comm_) {
-    nccl_api_->redOpDestroy(ncclRedOp_, comm_);
+    NCCL_CHECK_IGNORE(
+        nccl_api_,
+        nccl_api_->redOpDestroy(ncclRedOp_, comm_),
+        "NCCL redOpDestroy failed");
   }
 }
 
@@ -194,10 +197,10 @@ void TorchCommNCCL::checkWorkQueue() {
 // The timeout thread cannot make NCCL calls.  The only CUDA call it can make
 // it cudaEventQuery.
 void TorchCommNCCL::timeoutWatchdog() noexcept {
-  TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
   cudaStreamCaptureMode mode = cudaStreamCaptureModeThreadLocal;
-  CUDA_CHECK(
+  CUDA_CHECK_IGNORE(
       cuda_api_,
       cuda_api_->threadExchangeStreamCaptureMode(&mode),
       "Failed to swap capture mode for timeout thread");
@@ -217,6 +220,9 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
     }
 
     // Check work objects for completion or timeout
+    // Thread-safety: checkWorkQueue() calls garbageCollect() which acquires
+    // work_queues_mutex_ before accessing the work queue, ensuring safe
+    // concurrent access with the main thread's enqueueWork() calls.
     checkWorkQueue();
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {
@@ -224,17 +230,18 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
       // communicator as it is not safe to call NCCL operations from
       // multiple threads at the same time.
       if (comm_state_ == CommState::TIMEOUT) {
-        TC_LOG(ERROR) << "Aborting process due to timeout on rank " << rank_
-                      << " - timeout watchdog detected operation timeout";
+        TC_LOG(ERROR, this)
+            << "Aborting process due to timeout on rank " << rank_
+            << " - timeout watchdog detected operation timeout";
       } else if (comm_state_ == CommState::ERROR) {
-        TC_LOG(ERROR) << "Aborting process due to error on rank " << rank_
-                      << " - timeout watchdog detected operation error. ";
+        TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
+                            << " - timeout watchdog detected operation error. ";
       }
       abort();
     }
   }
 
-  TC_LOG(INFO) << "Timeout thread exiting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread exiting for rank: " << rank_;
 }
 
 void TorchCommNCCL::checkInitialized() const {
@@ -255,7 +262,7 @@ void TorchCommNCCL::checkAndAbortIfTimedOutOrError() {
   if (comm_state_ == CommState::TIMEOUT) {
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR) << "Aborting process due to timeout";
+      TC_LOG(ERROR, this) << "Aborting process due to timeout";
       abort();
     } else {
       throw std::runtime_error("NCCL operation timed out");
@@ -263,11 +270,12 @@ void TorchCommNCCL::checkAndAbortIfTimedOutOrError() {
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
     nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
-    NCCLException ncclException(*nccl_api_, "NCCL Async Error", asyncErr);
+    NCCLException ncclException(
+        *nccl_api_, "NCCL Async Error", asyncErr, nccl_comm_);
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR) << "Aborting process due to error: "
-                    << ncclException.what();
+      TC_LOG(ERROR, this) << "Aborting process due to error: "
+                          << ncclException.what();
       abort();
     } else {
       throw ncclException;
@@ -297,7 +305,7 @@ c10::intrusive_ptr<TorchWorkNCCL> TorchCommNCCL::createWork(
     const std::vector<at::Tensor>& inputTensors) {
   // Only create the work object without enqueuing it
   auto work = c10::make_intrusive<TorchWorkNCCL>(
-      shared_from_this(), stream, timeout, inputTensors, tracing_);
+      shared_from_this(), stream, timeout, inputTensors);
   return work;
 }
 

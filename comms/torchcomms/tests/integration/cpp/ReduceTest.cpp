@@ -180,6 +180,8 @@ int ReduceTest::calculateExpectedResult(const torch::comms::ReduceOp& op) {
     return num_ranks_ * (num_ranks_ + 1) / 2;
   } else if (op == torch::comms::ReduceOp::MAX) {
     return num_ranks_;
+  } else if (op == torch::comms::ReduceOp::AVG) {
+    return (num_ranks_ + 1) / 2;
   } else {
     throw std::runtime_error("Unsupported reduce operation");
   }

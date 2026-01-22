@@ -105,7 +105,10 @@ TorchCommRCCL::RedOpRAII::RedOpRAII(
 
 TorchCommRCCL::RedOpRAII::~RedOpRAII() {
   if (comm_) {
-    rccl_api_->redOpDestroy(ncclRedOp_, comm_);
+    RCCL_CHECK_IGNORE(
+        rccl_api_,
+        rccl_api_->redOpDestroy(ncclRedOp_, comm_),
+        "RCCL redOpDestroy failed");
   }
 }
 
@@ -197,10 +200,10 @@ void TorchCommRCCL::garbageCollectWorkQueues() {
 // The timeout thread cannot make NCCL calls.  The only CUDA call it can make
 // it hipEventQuery (done inside checkStatus).
 void TorchCommRCCL::timeoutWatchdog() noexcept {
-  TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
   hipStreamCaptureMode mode = hipStreamCaptureModeThreadLocal;
-  HIP_CHECK(
+  HIP_CHECK_IGNORE(
       hip_api_,
       hip_api_->threadExchangeStreamCaptureMode(&mode),
       "Failed to swap capture mode for timeout thread");
@@ -229,15 +232,15 @@ void TorchCommRCCL::timeoutWatchdog() noexcept {
       // communicator as it is not safe to call NCCL operations from
       // multiple threads at the same time.
       if (comm_state_ == CommState::TIMEOUT) {
-        TC_LOG(ERROR) << "Aborting process due to timeout";
+        TC_LOG(ERROR, this) << "Aborting process due to timeout";
       } else if (comm_state_ == CommState::ERROR) {
-        TC_LOG(ERROR) << "Aborting process due to error";
+        TC_LOG(ERROR, this) << "Aborting process due to error";
       }
       abort();
     }
   }
 
-  TC_LOG(INFO) << "Timeout thread exiting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread exiting for rank: " << rank_;
 }
 
 void TorchCommRCCL::checkInitialized() const {
@@ -265,7 +268,8 @@ void TorchCommRCCL::checkAndAbortIfTimedOutOrError() {
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
     rccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
-    RCCLException RCCLException(*rccl_api_, "NCCL Async Error", asyncErr);
+    RCCLException RCCLException(
+        *rccl_api_, "NCCL Async Error", asyncErr, nccl_comm_);
     abortRcclComm();
     throw RCCLException;
   }
@@ -277,7 +281,7 @@ c10::intrusive_ptr<TorchWorkRCCL> TorchCommRCCL::createWork(
     const std::vector<at::Tensor>& inputTensors) {
   // Only create the work object without enqueuing it
   auto work = c10::make_intrusive<TorchWorkRCCL>(
-      shared_from_this(), stream, timeout, inputTensors, tracing_);
+      shared_from_this(), stream, timeout, inputTensors);
   return work;
 }
 

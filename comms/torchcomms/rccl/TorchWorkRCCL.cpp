@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/rccl/TorchWorkRCCL.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
+#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rccl/TorchCommRCCL.hpp"
 
 namespace torch {
@@ -11,13 +12,11 @@ TorchWorkRCCL::TorchWorkRCCL(
     std::shared_ptr<TorchCommRCCL> comm,
     hipStream_t stream,
     std::chrono::milliseconds timeout_ms,
-    const std::vector<at::Tensor>& inputTensors,
-    std::shared_ptr<TorchCommTracing> tracing)
+    const std::vector<at::Tensor>& inputTensors)
     : inputTensors_(inputTensors),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      tracing_(std::move(tracing)) {
+      timeout_ms_(timeout_ms) {
   start_event_ = comm_->getEvent();
   end_event_ = comm_->getEvent();
 
@@ -28,13 +27,11 @@ TorchWorkRCCL::TorchWorkRCCL(
     std::shared_ptr<TorchCommRCCL> comm,
     hipStream_t stream,
     std::chrono::milliseconds timeout_ms,
-    const at::Tensor& inputTensor,
-    std::shared_ptr<TorchCommTracing> tracing)
+    const at::Tensor& inputTensor)
     : inputTensor_(inputTensor),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      tracing_(std::move(tracing)) {
+      timeout_ms_(timeout_ms) {
   start_event_ = comm_->getEvent();
   end_event_ = comm_->getEvent();
 
@@ -66,7 +63,34 @@ TorchWorkRCCL::~TorchWorkRCCL() {
   comm_->returnEvent(end_event_);
 }
 
-void TorchWorkRCCL::recordStart() {
+void TorchWorkRCCL::recordFunctionStart(std::string_view coll_name) {
+  recordFunction_.emplace(at::RecordScope::USER_SCOPE);
+  if (!recordFunction_->isActive()) {
+    return;
+  }
+
+  // Passing input tensor to recordFunction allows for shape information in
+  // profiling output.
+  if (!inputTensors_.empty()) {
+    std::vector<c10::IValue> inputs;
+    inputs.reserve(inputTensors_.size());
+    for (const auto& tensor : inputTensors_) {
+      inputs.emplace_back(tensor);
+    }
+    recordFunction_->before(
+        coll_name,
+        c10::ArrayRef<const c10::IValue>(inputs.data(), inputs.size()));
+  } else if (inputTensor_.defined()) {
+    recordFunction_->before(
+        coll_name, c10::ArrayRef<const c10::IValue>(inputTensor_));
+  } else {
+    recordFunction_->before(coll_name, c10::ArrayRef<const c10::IValue>{});
+  }
+}
+
+void TorchWorkRCCL::recordStart(std::string_view coll_name) {
+  recordFunctionStart(coll_name);
+
   HIP_CHECK(
       comm_->getHipApi(),
       comm_->getHipApi()->eventRecord(start_event_, stream_),
@@ -78,6 +102,10 @@ void TorchWorkRCCL::recordEnd() {
       comm_->getHipApi(),
       comm_->getHipApi()->eventRecord(end_event_, stream_),
       "Failed to record end event");
+
+  if (recordFunction_ && recordFunction_->isActive()) {
+    recordFunction_->end();
+  }
 }
 
 TorchWorkRCCL::WorkStatus TorchWorkRCCL::checkStatus() {
@@ -141,7 +169,11 @@ void TorchWorkRCCL::wait() {
     return;
   }
 
-  tracing_->recordEvent("wait");
+  TorchCommTracingGuard tracingGuard(
+      std::string(comm_->getCommName()),
+      comm_->getSize(),
+      "wait",
+      comm_->getRank());
 
   // Get the current stream using the device from the comm object
   hipStream_t current_stream =

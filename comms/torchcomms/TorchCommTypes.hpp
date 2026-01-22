@@ -8,8 +8,7 @@
 #include <chrono>
 #include <variant>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchComm;
@@ -54,6 +53,10 @@ class ReduceOp {
   static const ReduceOp BXOR;
   static const ReduceOp AVG;
 
+  // Copy/move constructors are allowed for creating new ReduceOp instances,
+  // but assignment operators are deleted to prevent accidental modification
+  // of existing ReduceOp objects (particularly the static const instances).
+  // This ensures ReduceOp objects remain immutable after construction.
   ReduceOp(const ReduceOp& other) = default;
   ReduceOp& operator=(const ReduceOp& other) = delete;
 
@@ -87,5 +90,4 @@ class ReduceOp {
 constexpr std::chrono::milliseconds kDefaultTimeout = std::chrono::seconds(600);
 constexpr std::chrono::milliseconds kNoTimeout = std::chrono::milliseconds(0);
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

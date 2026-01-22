@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/rcclx/TorchCommRCCLXBootstrap.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
+#include <fmt/core.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "rccl.h" // @manual
 
@@ -33,14 +34,14 @@ TorchCommRCCLXBootstrap::TorchCommRCCLXBootstrap(
       rcclx_api_(rcclx_api),
       hip_api_(hip_api) {
   // Query rank and size using the utility function
-  auto ranksize = query_ranksize();
-  rank_ = ranksize.first;
-  comm_size_ = ranksize.second;
+  auto [rank, comm_size] = query_ranksize();
+  rank_ = rank;
+  comm_size_ = comm_size;
 
   const char* uniqueid_xchg_env =
       std::getenv("TORCHCOMM_RCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD");
   if (uniqueid_xchg_env == nullptr) {
-    TC_LOG(INFO)
+    TC_LOG(INFO, nullptr)
         << "TORCHCOMM_RCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD not set, "
         << "defaulting to " << kUniqueidXchgMethodDefault;
     uniqueid_xchg_method_ = kUniqueidXchgMethodDefault;
@@ -61,14 +62,14 @@ TorchCommRCCLXBootstrap::TorchCommRCCLXBootstrap(
         "Failed to get CUDA device count");
 
     device_ = c10::Device(c10::kHIP, rank_ % device_count);
-    TC_LOG(INFO) << "User did not provide device ID; using device Hip:"
-                 << device_.index();
+    TC_LOG(INFO, nullptr) << "User did not provide device ID; using device Hip:"
+                          << device_.index();
   }
 
   HIP_CHECK(
       hip_api_,
       hip_api_->setDevice(device_.index()),
-      "Failed to set device to " + std::to_string(device_.index()));
+      fmt::format("Failed to set device to {}", device_.index()));
 
   // Allocate CUDA memory for a single float32 value used in barrier operations
   HIP_CHECK(
@@ -77,9 +78,9 @@ TorchCommRCCLXBootstrap::TorchCommRCCLXBootstrap(
       "Failed to allocate barrier buffer");
 }
 
-TorchCommRCCLXBootstrap::~TorchCommRCCLXBootstrap() {
+TorchCommRCCLXBootstrap::~TorchCommRCCLXBootstrap() noexcept {
   if (barrier_buffer_ != nullptr) {
-    HIP_CHECK(
+    HIP_CHECK_IGNORE(
         hip_api_,
         hip_api_->free(barrier_buffer_),
         "Failed to free barrier buffer");
@@ -88,7 +89,7 @@ TorchCommRCCLXBootstrap::~TorchCommRCCLXBootstrap() {
 }
 
 std::string TorchCommRCCLXBootstrap::getRCCLXStoreKey() {
-  std::string key = getRCCLXStoreKeyPrefix() + std::to_string(counter_);
+  std::string key = fmt::format("{}{}", getRCCLXStoreKeyPrefix(), counter_);
   counter_++;
   return key;
 }
@@ -121,6 +122,7 @@ ncclUniqueId TorchCommRCCLXBootstrap::exchangeUniqueIdStore() {
     store_->set(key, vec);
   } else {
     // Other ranks read the broadcast ID
+    store_->wait({key}, timeout_);
     auto vec = store_->get(key);
     if (vec.size() != sizeof(ncclUniqueId)) {
       throw std::runtime_error("Invalid NCCL unique ID size");
@@ -180,8 +182,8 @@ void TorchCommRCCLXBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
         nccl_comm,
         stream);
     if (result != ncclSuccess) {
-      TC_LOG(ERROR) << "RCCLX AllReduce failed: "
-                    << rcclx_api_->getErrorString(result);
+      TC_LOG(ERROR, nullptr)
+          << "RCCLX AllReduce failed: " << rcclx_api_->getErrorString(result);
     }
 
     HIP_CHECK(
@@ -202,8 +204,9 @@ ncclComm_t TorchCommRCCLXBootstrap::createNcclComm(const std::string& name) {
   // TODO: get the local rank
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
 #ifdef NCCL_COMM_DESCRIPTION
-  // NCCL will free this pointer after the communicator is destroyed.
-  config.commDesc = strdup(name.c_str());
+  // The string only needs to be valid for the duration of the
+  // commInitRankConfig call, so we use .c_str() directly.
+  config.commDesc = name.c_str();
 #endif
   ncclResult_t ncclErr = rcclx_api_->commInitRankConfig(
       &nccl_comm, comm_size_, uniqueId, rank_, &config);

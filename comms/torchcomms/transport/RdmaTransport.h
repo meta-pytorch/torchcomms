@@ -18,6 +18,9 @@ class CtranIb;
 
 namespace torch::comms {
 
+// Minimum size required for RDMA memory registration
+constexpr size_t kMinRdmaMemorySize = 4097;
+
 /*
  * RDMA Transport needs access to the memory buffer in order to transmit or
  * receive. To do you, user need to register the memory. This class provides
@@ -27,7 +30,8 @@ namespace torch::comms {
  * to an instance of a transport. And user can use any sub-range of this
  * registered memory for I/O APIs on RdmaTransport.
  *
- * Gotcha - Minimum memory block to be registered must be > 4097 bytes.
+ * Gotcha - Minimum memory block to be registered must be >= kMinRdmaMemorySize
+ * bytes.
  */
 class RdmaMemory : folly::MoveOnly {
  public:
@@ -87,7 +91,7 @@ class RdmaMemory : folly::MoveOnly {
   RdmaMemory(const void* buf, size_t len, int cudaDev);
   RdmaMemory(RdmaMemory&& other) noexcept;
   RdmaMemory& operator=(RdmaMemory&& other) = delete;
-  ~RdmaMemory();
+  ~RdmaMemory() noexcept;
 
   View createView() const {
     return View(*this, 0, len_);
@@ -185,7 +189,7 @@ struct RdmaRemoteBuffer {
  *   4. Use APIs for memory registration and data transfer
  *
  * folly::EventBase is used to drive the underlying RDMA operations. User
- * should have a dedicated EventBase for for transport operations and can
+ * should have a dedicated EventBase for transport operations and can
  * be shared across all transport instances. When requests are pending, this
  * will likely keep EventBase thread pretty busy to minimize latency.
  *
@@ -196,7 +200,7 @@ struct RdmaRemoteBuffer {
  * Future APIs that can be supported as per use-case. Given this framework
  * adding new APIs should be relatively straightforward.
  * - Send - RDMA Send (needs matching Recv on other end)
- * - Recv - RDMA Receive (needs mactching Send on other end)
+ * - Recv - RDMA Receive (needs matching Send on other end)
  * - Read - RDMA Read from a remote memory
  * - waitForRead - Wait for a remote read operation
  * - <Atomic APIs>

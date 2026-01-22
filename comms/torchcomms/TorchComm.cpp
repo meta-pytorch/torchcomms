@@ -26,11 +26,11 @@ void TorchComm::finalize() {
   impl_->finalize();
 }
 
-int TorchComm::getRank() {
+int TorchComm::getRank() const {
   return impl_->getRank();
 }
 
-int TorchComm::getSize() {
+int TorchComm::getSize() const {
   return impl_->getSize();
 }
 

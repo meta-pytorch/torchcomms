@@ -15,8 +15,7 @@
 #include <memory>
 #include <string>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declarations
 class TorchWork;
@@ -91,13 +90,22 @@ constexpr std::string_view toString(OpName name) {
   return "unknown";
 }
 
+/**
+ * TorchComm - Main communication abstraction for TorchComms.
+ *
+ * Thread Safety:
+ * TorchComm is NOT thread-safe. Users must not call TorchComm operations
+ * from multiple threads simultaneously. All operations (collectives,
+ * point-to-point, memory registration, finalize, etc.) must be serialized
+ * by the caller.
+ */
 class TorchComm : public std::enable_shared_from_this<TorchComm> {
  public:
   ~TorchComm() = default;
 
   void finalize();
-  int getRank();
-  int getSize();
+  int getRank() const;
+  int getSize() const;
   std::string_view getCommName() const;
 
   // Point-to-Point Operations
@@ -300,5 +308,4 @@ std::shared_ptr<TorchComm> new_comm(
 // Note: Allocator is created once per backend and reused across all instances
 std::shared_ptr<c10::Allocator> get_mem_allocator(const std::string& backend);
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

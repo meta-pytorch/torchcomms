@@ -129,7 +129,7 @@ class TorchCommDummy : public TorchCommBackend {
       bool async_op,
       const GatherOptions& options = {}) override;
 
-  // Window & One-sidede Operations
+  // Window & One-sided Operations
   std::shared_ptr<TorchCommWindow> new_window() override;
 
   // Communicator Management
