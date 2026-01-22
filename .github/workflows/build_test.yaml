@@ -7,7 +7,67 @@ on:
   pull_request:
 
 jobs:
-  build_test:
+  build_pip_wheel:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.8"
+            torch-version: "stable"
+          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.8"
+            torch-version: "nightly"
+
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 60
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      upload-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}
+      script: |
+        set -ex
+        source .github/scripts/setup_env.sh --with-cmake --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
+
+        # Build wheel
+        pip install build
+        python -m build --wheel --no-isolation
+        cp dist/*.whl artifacts/
+
+  build_and_run_cpp_tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.8"
+            torch-version: "stable"
+          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.8"
+            torch-version: "nightly"
+
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 30
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      script: |
+        set -ex
+        source .github/scripts/setup_env.sh --with-cmake --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
+
+        # Build and run C++ tests
+        cmake -B build_tests -G Ninja -DBUILD_TESTS=ON
+        cmake --build build_tests
+        ctest --test-dir build_tests --output-on-failure
+
+  run_py_tests:
+    needs: build_pip_wheel
     strategy:
       fail-fast: false
       matrix:
@@ -27,40 +87,16 @@ jobs:
       runner: ${{ matrix.runs-on }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      download-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}
       script: |
         set -ex
+        source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
 
-        # install build tools to system
-        dnf config-manager --set-enabled powertools
-        dnf install -y almalinux-release-devel
-        dnf install -y ninja-build cmake
+        # Install from pre-built wheel (skip build step)
+        pip install artifacts/*.whl pytest numpy psutil parameterized
 
-        # Remove old cmake/ninja
-        rm -f "/opt/conda/bin/ninja" || true
-        rm -f "/opt/conda/bin/cmake" || true
-        rm -f "/usr/local/bin/cmake" || true
-
-        # use faster libmamba solver
-        conda config --set solver libmamba
-
-        conda create -n venv python=3.12 -y
-        conda activate venv
-        python -m pip install --upgrade pip
-
-        # Nuke conda libstd++ to avoid conflicts with system toolset
-        rm -f "$CONDA_PREFIX/lib/libstdc"* || true
-
-        # Optionally install torch nightly, pulls latest CUDA from pip otherwise
-        if [ "${{ matrix.torch-version }}" = "nightly" ]; then
-          pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/cu128
-        fi
-
-        pip install -r requirements.txt
-
-        # Build pybindings
-        pip install --no-build-isolation -v '.[dev]'
         python -c "import torchcomms; import torchcomms._transport"
 
-        # Run tests
+        # Run Python tests
         comms/torchcomms/scripts/run_tests_integration_py.sh
         pytest -v comms/torchcomms/tests/unit/py
