@@ -6,6 +6,10 @@ on:
       - main
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   build_pip_wheel:
     strategy:
@@ -22,6 +26,9 @@ jobs:
             torch-version: "nightly"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    permissions:
+      id-token: write
+      contents: read
     with:
       timeout: 60
       runner: ${{ matrix.runs-on }}
@@ -35,8 +42,9 @@ jobs:
         # Build wheel
         pip install build
         python -m build --wheel --no-isolation
-        mv dist/*.whl artifacts/
-        rm -rf dist/
+
+        mkdir -p "${RUNNER_ARTIFACT_DIR}"
+        mv dist/*.whl "${RUNNER_ARTIFACT_DIR}/"
 
   build_and_run_cpp_tests:
     strategy:
@@ -53,8 +61,11 @@ jobs:
             torch-version: "nightly"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    permissions:
+      id-token: write
+      contents: read
     with:
-      timeout: 30
+      timeout: 60
       runner: ${{ matrix.runs-on }}
       gpu-arch-type: ${{ matrix.gpu-arch-type }}
       gpu-arch-version: ${{ matrix.gpu-arch-version }}
@@ -83,6 +94,9 @@ jobs:
             torch-version: "nightly"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    permissions:
+      id-token: write
+      contents: read
     with:
       timeout: 120
       runner: ${{ matrix.runs-on }}
@@ -94,7 +108,7 @@ jobs:
         source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
 
         # Install from pre-built wheel (skip build step)
-        pip install artifacts/*.whl pytest numpy psutil parameterized
+        pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized
 
         python -c "import torchcomms; import torchcomms._transport"
 
