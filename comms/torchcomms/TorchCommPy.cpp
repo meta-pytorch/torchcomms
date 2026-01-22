@@ -266,6 +266,45 @@ Returns:
     Optional[torch.Tensor]: The registered tensor, or None if no tensor is registered.
 
       )")
+      .def_property_readonly(
+          "dtype",
+          [](TorchCommWindow& self) {
+            return py::reinterpret_steal<py::object>(
+                THPDtype_New(self.getDtype(), "torch"));
+          },
+          R"(The dtype of the registered buffer tensor.
+
+Returns:
+    torch.dtype: The dtype of the registered buffer, e.g. torch.float32.
+
+Note:
+    This is primarily used by torch.compile's meta kernel to determine
+    the output tensor dtype for map_remote_tensor() operations.
+          )")
+      .def_property_readonly(
+          "shape",
+          [](TorchCommWindow& self) { return self.getShape(); },
+          R"(The shape of the registered buffer tensor.
+
+Returns:
+    list[int]: The shape of the registered buffer as a list of dimensions.
+
+Note:
+    This is primarily used by torch.compile's meta kernel to determine
+    the output tensor shape for map_remote_tensor() operations.
+          )")
+      .def_property_readonly(
+          "device",
+          [](TorchCommWindow& self) { return self.getDevice(); },
+          R"(The device of the registered buffer tensor.
+
+Returns:
+    torch.device: The device of the registered buffer.
+
+Note:
+    This is primarily used by torch.compile's meta kernel to determine
+    the output tensor device for map_remote_tensor() operations.
+          )")
       .def(
           "put",
           [](TorchCommWindow& self,
