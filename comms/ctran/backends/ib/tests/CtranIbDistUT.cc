@@ -2136,7 +2136,7 @@ TEST_F(CtranIbTest, InvalidBeTopology) {
     ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
   } catch (const std::bad_alloc& e) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
-  } catch (const std::runtime_error& e) {
+  } catch (const ctran::utils::Exception& e) {
     EXPECT_THAT(
         e.what(), testing::HasSubstr("COMM internal failure: internal error"));
     ASSERT_EQ(ctranIb, nullptr);

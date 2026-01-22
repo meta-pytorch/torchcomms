@@ -180,6 +180,8 @@ void TorchCommRCCL::garbageCollectWorkQueues() {
           // Continue to the next element in the queue
           continue;
         }
+        default:
+          TORCH_INTERNAL_ASSERT(false, "Unexpected WorkStatus enum value");
       }
     }
 
