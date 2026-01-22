@@ -16,6 +16,9 @@
 namespace torch {
 namespace comms {
 
+// Default port for TCPStore-based unique ID exchange. This port is chosen
+// to match PyTorch's default TCPStore port (29500) for compatibility.
+// Users can override this via environment variables or configuration.
 constexpr uint16_t kTCPStorePort = 29500;
 
 class TorchCommNCCLBootstrap {
