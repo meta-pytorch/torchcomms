@@ -217,6 +217,9 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
     }
 
     // Check work objects for completion or timeout
+    // Thread-safety: checkWorkQueue() calls garbageCollect() which acquires
+    // work_queues_mutex_ before accessing the work queue, ensuring safe
+    // concurrent access with the main thread's enqueueWork() calls.
     checkWorkQueue();
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {

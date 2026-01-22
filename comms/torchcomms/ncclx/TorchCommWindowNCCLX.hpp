@@ -27,8 +27,9 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // objects sharing the underlying collective work events.
   TorchCommWindowNCCLX(const TorchCommWindowNCCLX& other) = delete;
   TorchCommWindowNCCLX& operator=(const TorchCommWindowNCCLX& other) = delete;
-  // Delete the move assignment operator to prevent accidentally stomping over
-  // events if the work is in progress.
+  // Delete the move constructor and assignment operator to prevent accidentally
+  // stomping over events if the work is in progress.
+  TorchCommWindowNCCLX(TorchCommWindowNCCLX&& other) noexcept = delete;
   TorchCommWindowNCCLX& operator=(TorchCommWindowNCCLX&& other) noexcept =
       delete;
 

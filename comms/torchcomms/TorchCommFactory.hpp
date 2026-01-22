@@ -42,7 +42,6 @@ class TorchCommFactory {
   std::shared_ptr<TorchCommBackend> create_generic_backend(
       const std::string& backend);
 
- private:
   std::mutex mutex_;
   std::unordered_map<
       std::string,

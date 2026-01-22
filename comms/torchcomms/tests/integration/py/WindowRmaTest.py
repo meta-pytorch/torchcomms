@@ -8,7 +8,7 @@ import unittest
 
 import torch
 import torchcomms
-from torchcomms import TorchCommlWinAccessType
+from torchcomms import TorchCommWinAccessType
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
     TorchCommTestWrapper,
@@ -136,13 +136,13 @@ class WindowRmaTest(unittest.TestCase):
             next_rank = (self.rank + 1) % self.num_ranks
             win_attr = win.get_attr(next_rank)
             assert (
-                win_attr.access_type == TorchCommlWinAccessType.WIN_ACCESS_TYPE_UNIFIED
+                win_attr.access_type == TorchCommWinAccessType.WIN_ACCESS_TYPE_UNIFIED
             )
         else:
             next_rank = (self.rank + 8) % self.num_ranks
             win_attr = win.get_attr(next_rank)
             assert (
-                win_attr.access_type == TorchCommlWinAccessType.WIN_ACCESS_TYPE_SEPARATE
+                win_attr.access_type == TorchCommWinAccessType.WIN_ACCESS_TYPE_SEPARATE
             )
 
         # Cleanup
@@ -176,7 +176,7 @@ class WindowRmaTest(unittest.TestCase):
         # Test remote access (only for unified memory)
         remote_rank = (self.rank + 1) % self.num_ranks
         win_attr = win.get_attr(remote_rank)
-        if win_attr.access_type == TorchCommlWinAccessType.WIN_ACCESS_TYPE_UNIFIED:
+        if win_attr.access_type == TorchCommWinAccessType.WIN_ACCESS_TYPE_UNIFIED:
             remote_tensor = win.map_remote_tensor(remote_rank)
             self.assertEqual(remote_tensor.dtype, dtype)
             self.assertEqual(remote_tensor.shape, win_buf.shape)
