@@ -1,6 +1,23 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # pyre-strict
 
+"""
+TorchComm DeviceMesh integration module.
+
+This module provides integration between TorchComm and PyTorch's DeviceMesh
+abstraction. It allows creating DeviceMesh instances backed by TorchComm
+communicators, enabling seamless use of TorchComm with PyTorch's distributed
+tensor parallelism APIs.
+
+Status: This module is under active development. The core functionality
+(init_device_mesh and _flatten_with_comm) is stable, but the API may evolve
+as PyTorch's DeviceMesh API changes.
+
+Key functions:
+- init_device_mesh: Initialize a DeviceMesh from TorchComm instances
+- _flatten_with_comm: Flatten a DeviceMesh dimension with a custom TorchComm
+"""
+
 import math
 from typing import Any, cast, Optional
 
@@ -44,7 +61,7 @@ def _create_torchcomm_process_group(
     group_name = GroupName(group_name)
 
     wrapper = _BackendWrapper(comm)  # noqa: F405
-    backend_type = dist.ProcessGroup.BackendType.CUSTOM  # noqa: F841
+    backend_type = dist.ProcessGroup.BackendType.CUSTOM
     backend_config = dist.BackendConfig(dist.Backend(backend_str))
 
     # Create process group
@@ -187,9 +204,9 @@ def _flatten_with_comm(
         global_ranks_mapping=global_ranks_mapping,
     )
 
-    # We had a refactor recently that changed the way we create a DeviceMesh
-    # We need to create a new DeviceMesh with the new API.
-    # TODO: Clean up this code once torchcomm releases.
+    # Compatibility layer for DeviceMesh API changes. The new API uses _rank_map
+    # while the older API requires passing mesh tensor directly. This conditional
+    # can be removed once all supported PyTorch versions include _rank_map support.
     if hasattr(mesh, "_rank_map"):
         flattened_device_mesh = dist.DeviceMesh(
             device_type=comm.get_device(),

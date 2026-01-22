@@ -8,6 +8,10 @@ namespace comms {
 
 namespace {
 
+// Extract the scaling factor from NCCL's PREMUL_SUM operation supplement.
+// NCCLPreMulSumSupplement stores either a tensor or double scaling factor
+// that is applied before summation. The reinterpret_cast is safe because
+// PREMUL_SUM operations always have a NCCLPreMulSumSupplement attached.
 PreMulSumFactorT getPreMulSumFactor(const c10d::ReduceOp& op) {
   const auto* preMulSupplement =
       reinterpret_cast<c10d::NCCLPreMulSumSupplement*>(op.supplement_.get());
@@ -58,10 +62,17 @@ bool WorkWrapper::isCompleted() {
   return work_->isCompleted();
 }
 bool WorkWrapper::isSuccess() const {
-  // TODO: implement error states
+  // Note: Error state tracking is not implemented. This method returns
+  // isCompleted() as a simplification. The underlying TorchWork does not
+  // expose separate success/error states, so we assume completion implies
+  // success. Callers that need error detection should use try/catch around
+  // wait() instead.
   return work_->isCompleted();
 }
 std::exception_ptr WorkWrapper::exception() const {
+  // Note: Exception capture is not implemented. The underlying TorchWork
+  // interface does not provide a mechanism to retrieve exceptions after
+  // completion. Errors are raised during wait() calls instead.
   return nullptr;
 }
 bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
@@ -72,7 +83,10 @@ bool WorkWrapper::wait(std::chrono::milliseconds timeout) {
   return true;
 }
 void WorkWrapper::synchronize() {
-  // TODO: this should only wait on stream
+  // Note: Ideally this should only synchronize on the CUDA stream without
+  // blocking the CPU thread. However, the current TorchWork interface does
+  // not expose stream-only synchronization, so we fall back to a full wait()
+  // which blocks until the operation completes.
   return work_->wait();
 }
 std::vector<at::Tensor> WorkWrapper::result() {
@@ -93,8 +107,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
   }
-  return c10::make_intrusive<WorkWrapper>(
-      backend_->broadcast(tensors.at(0), opts.rootRank, opts.asyncOp, bopts));
+  return c10::make_intrusive<WorkWrapper>(backend_->broadcast(
+      tensors.at(0), static_cast<int>(opts.rootRank), opts.asyncOp, bopts));
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce(
@@ -134,7 +148,7 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce(
   }
   return c10::make_intrusive<WorkWrapper>(backend_->reduce(
       tensors.at(0),
-      opts.rootRank,
+      static_cast<int>(opts.rootRank),
       toReduceOp(opts.reduceOp),
       opts.asyncOp,
       bopts));
@@ -219,7 +233,10 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::gather(
     bopts.timeout = opts.timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->gather(
-      outputTensors.at(0), inputTensors.at(0), opts.rootRank, opts.asyncOp));
+      outputTensors.at(0),
+      inputTensors.at(0),
+      static_cast<int>(opts.rootRank),
+      opts.asyncOp));
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::scatter(
@@ -240,7 +257,10 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::scatter(
     inputTensors.emplace_back();
   }
   return c10::make_intrusive<WorkWrapper>(backend_->scatter(
-      outputTensors.at(0), inputTensors.at(0), opts.rootRank, opts.asyncOp));
+      outputTensors.at(0),
+      inputTensors.at(0),
+      static_cast<int>(opts.rootRank),
+      opts.asyncOp));
 }
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter(
