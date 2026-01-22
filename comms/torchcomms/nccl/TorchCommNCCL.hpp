@@ -36,7 +36,7 @@ class NCCLException : public std::exception {
   NCCLException(NcclApi& api, const std::string& message, ncclResult_t result);
 
   const char* what() const noexcept override;
-  ncclResult_t getResult() const;
+  ncclResult_t getResult() const noexcept;
 
  private:
   std::string message_;
