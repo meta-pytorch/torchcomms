@@ -1,8 +1,18 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
+#if defined(__HIP_PLATFORM_AMD__) || defined(__HIP_PLATFORM_HCC__)
+#include <hip/hip_bfloat16.h>
+#include <hip/hip_fp16.h>
+#include <hip/hip_runtime.h>
+using bf16 = hip_bfloat16;
+#else
 #include <cuda.h>
+#include <cuda_bf16.h>
+#include <cuda_fp16.h>
 #include <cuda_runtime.h>
+using bf16 = __nv_bfloat16;
+#endif
 #include <stdexcept>
 #include "comms/utils/commSpecs.h"
 
@@ -46,7 +56,7 @@ namespace comms {
           break;                                                  \
         }                                                         \
         case commBfloat16: {                                      \
-          func<__nv_bfloat16>(__VA_ARGS__);                       \
+          func<bf16>(__VA_ARGS__);                                \
           break;                                                  \
         }                                                         \
         default: {                                                \

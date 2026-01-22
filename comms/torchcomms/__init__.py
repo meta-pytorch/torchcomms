@@ -3,7 +3,10 @@
 # pyre-unsafe
 import ctypes
 import os
+from contextlib import contextmanager
 from importlib.metadata import entry_points
+from typing import Generator, Optional
+
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
 
@@ -91,7 +94,7 @@ class CoalescingManager:
                 "CoalescingManager.wait() has already been called. "
                 "Each coalescing block can only be waited on once."
             )
-        
+
         self._waited = True
 
         if self.work is not None:

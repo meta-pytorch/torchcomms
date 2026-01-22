@@ -3,37 +3,36 @@
 #include <comms/torchcomms/TorchComm.hpp>
 #include <comms/torchcomms/TorchCommFactory.hpp>
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <cstdlib>
 
 namespace torch {
 namespace comms {
 
+namespace {
+// Backend name must match the exported symbol in the dummy backend library
+constexpr const char* kBackendName = "dummy_test";
+constexpr const char* kBackendEnvKey = "TORCHCOMMS_BACKEND_LIB_PATH_DUMMY_TEST";
+} // namespace
+
 class TorchCommBackendFactoryTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    backend_name_ = "dummy_test";
-    std::cout << "setting backend name to " << backend_name_ << std::endl;
-    dummy_backend_lib_path_ = std::getenv("DUMMY_TEST_BACKEND_LIB_PATH");
-    dummy_backend_env_key_ = "TORCHCOMMS_BACKEND_LIB_PATH_" + backend_name_;
-    std::transform(
-        dummy_backend_env_key_.begin(),
-        dummy_backend_env_key_.end(),
-        dummy_backend_env_key_.begin(),
-        [](unsigned char c) { return std::toupper(c); });
-
-    // Set the environment variable that the factory will look for
-    std::cout << "Setting env var: " << dummy_backend_env_key_ << " to "
-              << dummy_backend_lib_path_ << std::endl;
-    setenv(dummy_backend_env_key_.c_str(), dummy_backend_lib_path_.c_str(), 1);
+    const char* lib_path = std::getenv("DUMMY_TEST_BACKEND_LIB_PATH");
+    ASSERT_NE(lib_path, nullptr) << "DUMMY_TEST_BACKEND_LIB_PATH not set";
+    setenv(kBackendEnvKey, lib_path, 1);
   }
 
   void TearDown() override {
-    // Clean up environment variable
-    unsetenv(dummy_backend_env_key_.c_str());
+    unsetenv(kBackendEnvKey);
   }
-  std::string backend_name_;
-  std::string dummy_backend_lib_path_;
-  std::string dummy_backend_env_key_;
+
+  // Helper to get a unique backend name for error tests (avoids cache)
+  static std::string getUniqueBackendName() {
+    const auto* test_info =
+        ::testing::UnitTest::GetInstance()->current_test_info();
+    return std::string("test_") + test_info->name();
+  }
 };
 
 TEST_F(TorchCommBackendFactoryTest, CreateGenericBackend) {
@@ -42,7 +41,7 @@ TEST_F(TorchCommBackendFactoryTest, CreateGenericBackend) {
 
   // Test creating generic backend (which loads the dummy backend)
   auto backend = TorchCommFactory::get().create_backend(
-      backend_name_, device, "my_comm", options);
+      kBackendName, device, "my_comm", options);
   ASSERT_NE(backend, nullptr);
 
   // Test basic functionality
@@ -57,7 +56,7 @@ TEST_F(TorchCommBackendFactoryTest, GenericBackendFunctionality) {
   CommOptions options;
 
   auto backend = TorchCommFactory::get().create_backend(
-      backend_name_, device, "my_comm", options);
+      kBackendName, device, "my_comm", options);
   ASSERT_NE(backend, nullptr);
 
   // Test point-to-point operations
@@ -91,7 +90,7 @@ TEST_F(TorchCommBackendFactoryTest, GenericBackendSplit) {
   CommOptions options;
 
   auto backend = TorchCommFactory::get().create_backend(
-      backend_name_, device, "my_comm", options);
+      kBackendName, device, "my_comm", options);
   ASSERT_NE(backend, nullptr);
 
   ASSERT_EQ(backend->getBackendName(), "dummy");
@@ -118,8 +117,8 @@ TEST_F(TorchCommBackendFactoryTest, UnsupportedBackend) {
 }
 
 TEST_F(TorchCommBackendFactoryTest, MissingEnvironmentVariable) {
-  // Remove the environment variable
-  unsetenv(dummy_backend_env_key_.c_str());
+  // Use a unique backend name to avoid hitting the cache from other tests
+  std::string unique_backend = getUniqueBackendName();
 
   at::Device device(at::kCPU);
   CommOptions options;
@@ -127,13 +126,19 @@ TEST_F(TorchCommBackendFactoryTest, MissingEnvironmentVariable) {
   // Test that missing environment variable throws error
   EXPECT_THROW(
       TorchCommFactory::get().create_backend(
-          backend_name_, device, "my_comm", options),
+          unique_backend, device, "my_comm", options),
       std::runtime_error);
 }
 
 TEST_F(TorchCommBackendFactoryTest, InvalidLibraryPath) {
-  // Set invalid library path
-  setenv(dummy_backend_env_key_.c_str(), "/invalid/path/libnonexistent.so", 1);
+  // Use a unique backend name to avoid hitting the cache from other tests
+  std::string unique_backend = getUniqueBackendName();
+  std::string env_key = "TORCHCOMMS_BACKEND_LIB_PATH_" + unique_backend;
+  std::transform(
+      env_key.begin(), env_key.end(), env_key.begin(), [](unsigned char c) {
+        return std::toupper(c);
+      });
+  setenv(env_key.c_str(), "/invalid/path/libnonexistent.so", 1);
 
   at::Device device(at::kCPU);
   CommOptions options;
@@ -141,21 +146,23 @@ TEST_F(TorchCommBackendFactoryTest, InvalidLibraryPath) {
   // Test that invalid library path throws error
   EXPECT_THROW(
       TorchCommFactory::get().create_backend(
-          backend_name_, device, "my_comm", options),
+          unique_backend, device, "my_comm", options),
       std::runtime_error);
+
+  unsetenv(env_key.c_str());
 }
 
 TEST_F(TorchCommBackendFactoryTest, NewCommIntegration) {
   // Test the init_comm function with the factory
   at::Device device(at::kCPU);
   CommOptions options;
-  auto torchcomm = new_comm(backend_name_, device, "my_comm", options);
+  auto torchcomm = new_comm(kBackendName, device, "my_comm", options);
   ASSERT_NE(torchcomm, nullptr);
 
   // Test torchcomm functionality
   EXPECT_EQ(torchcomm->getRank(), 0);
   EXPECT_EQ(torchcomm->getSize(), 1);
-  EXPECT_EQ(torchcomm->getBackend(), backend_name_);
+  EXPECT_EQ(torchcomm->getBackend(), kBackendName);
   EXPECT_EQ(torchcomm->getDevice().type(), at::kCPU);
 
   // Test operations through torchcomm
