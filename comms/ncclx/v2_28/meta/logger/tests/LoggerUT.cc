@@ -95,7 +95,6 @@ class NcclLoggerTest : public ::testing::Test, public ScubaLoggerTestMixin {
           return new DataTableAllTables(createAllMockTables(mockPassthru));
         });
     ncclDebugLevel = -1;
-    ncclDebugLogFileStr = "";
     initNcclLogger();
   }
 
