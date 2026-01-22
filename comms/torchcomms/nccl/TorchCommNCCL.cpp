@@ -37,7 +37,7 @@ TorchCommNCCL::TorchCommNCCL(const ncclComm_t nccl_comm)
 
 TorchCommNCCL::~TorchCommNCCL() {
   if (init_state_ == InitializationState::INITIALIZED) {
-    TC_LOG(ERROR) << "TorchCommNCCL was not finalized before destruction";
+    TC_LOG(ERROR, this) << "TorchCommNCCL was not finalized before destruction";
   }
 
   // We need to detach the memory hook in case finalize is not called,
@@ -298,7 +298,7 @@ void TorchCommNCCL::abortNcclComm() {
     nccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
-    TC_LOG(ERROR) << "Aborting process due to timeout";
+    TC_LOG(ERROR, this) << "Aborting process due to timeout";
     abort();
   }
 }
