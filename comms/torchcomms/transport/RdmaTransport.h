@@ -86,6 +86,7 @@ class RdmaMemory : folly::MoveOnly {
 
   RdmaMemory(const void* buf, size_t len, int cudaDev);
   RdmaMemory(RdmaMemory&& other) noexcept;
+  RdmaMemory& operator=(RdmaMemory&& other) = delete;
   ~RdmaMemory();
 
   View createView() const {
@@ -184,7 +185,7 @@ struct RdmaRemoteBuffer {
  *   4. Use APIs for memory registration and data transfer
  *
  * folly::EventBase is used to drive the underlying RDMA operations. User
- * should have a dedicated EventBase for for transport operations and can
+ * should have a dedicated EventBase for transport operations and can
  * be shared across all transport instances. When requests are pending, this
  * will likely keep EventBase thread pretty busy to minimize latency.
  *
@@ -195,7 +196,7 @@ struct RdmaRemoteBuffer {
  * Future APIs that can be supported as per use-case. Given this framework
  * adding new APIs should be relatively straightforward.
  * - Send - RDMA Send (needs matching Recv on other end)
- * - Recv - RDMA Receive (needs mactching Send on other end)
+ * - Recv - RDMA Receive (needs matching Send on other end)
  * - Read - RDMA Read from a remote memory
  * - waitForRead - Wait for a remote read operation
  * - <Atomic APIs>
@@ -208,9 +209,15 @@ class __attribute__((visibility("default"))) RdmaTransport {
    *           the NIC associated with specified cudaDevice.
    * evb - EventLoop to drive the RDMA operations.
    */
-  RdmaTransport(int cudaDev, folly::EventBase* evb = nullptr);
+  explicit RdmaTransport(int cudaDev, folly::EventBase* evb = nullptr);
 
   ~RdmaTransport();
+
+  // Non-copyable and non-movable
+  RdmaTransport(const RdmaTransport&) = delete;
+  RdmaTransport& operator=(const RdmaTransport&) = delete;
+  RdmaTransport(RdmaTransport&&) = delete;
+  RdmaTransport& operator=(RdmaTransport&&) = delete;
 
   /* Query whether RDMA is supported on the platform.
    * If not, it is likely that the platform does not have backend NIC or no
