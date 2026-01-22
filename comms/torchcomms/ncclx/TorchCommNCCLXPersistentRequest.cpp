@@ -13,7 +13,7 @@ TorchCommNCCLXPersistentRequest::TorchCommNCCLXPersistentRequest(
     std::optional<cudaStream_t> stream)
     : comm_(std::move(comm)), hdl_(hdl), stream_(stream) {}
 
-TorchCommNCCLXPersistentRequest::~TorchCommNCCLXPersistentRequest() {
+TorchCommNCCLXPersistentRequest::~TorchCommNCCLXPersistentRequest() noexcept {
   // TorchComm should have aborted process if commAbort is called (see
   // TorchCommNCCLX::abortNcclComm).
   auto nccl_api = comm_->getNcclApi();

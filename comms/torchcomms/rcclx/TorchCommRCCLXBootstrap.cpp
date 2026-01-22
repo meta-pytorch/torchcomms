@@ -77,7 +77,7 @@ TorchCommRCCLXBootstrap::TorchCommRCCLXBootstrap(
       "Failed to allocate barrier buffer");
 }
 
-TorchCommRCCLXBootstrap::~TorchCommRCCLXBootstrap() {
+TorchCommRCCLXBootstrap::~TorchCommRCCLXBootstrap() noexcept {
   if (barrier_buffer_ != nullptr) {
     HIP_CHECK_IGNORE(
         hip_api_,

@@ -53,7 +53,7 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
   other.remoteKey_.clear();
 }
 
-RdmaMemory::~RdmaMemory() {
+RdmaMemory::~RdmaMemory() noexcept {
   if (remoteKey_.size() > 0 && regHdl_) {
     FB_COMMCHECKIGNORE(CtranIb::deregMem(regHdl_));
   }
