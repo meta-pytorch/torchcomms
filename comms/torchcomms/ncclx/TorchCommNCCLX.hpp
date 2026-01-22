@@ -29,21 +29,31 @@
 namespace torch {
 namespace comms {
 
+// Maximum number of CUDA events to keep in the event pool. Events are recycled
+// to avoid repeated cudaEventCreate/cudaEventDestroy calls. 1000 events should
+// be sufficient for most workloads while keeping memory overhead reasonable.
 constexpr size_t kDefaultMaxEventPoolSize = 1000;
+
+// Interval in milliseconds between garbage collection cycles for completed
+// work items. 100ms provides a good balance between timely cleanup and CPU
+// overhead from frequent GC runs.
 constexpr size_t kDefaultGarbageCollectIntervalMs = 100;
+
+// Whether to enable CUDA graph support by default. When enabled, work objects
+// are tracked during graph capture to ensure proper lifetime management.
 constexpr bool kDefaultEnableCudaGraphSupport = true;
 
 // Custom exception class for better error handling
-class NCCLException : public std::exception {
+class NCCLXException : public std::exception {
  public:
-  NCCLException(
+  NCCLXException(
       NcclxApi& api,
       const std::string& message,
       ncclResult_t result,
       ncclComm_t comm);
 
   const char* what() const noexcept override;
-  ncclResult_t getResult() const;
+  ncclResult_t getResult() const noexcept;
 
  private:
   std::string message_;
@@ -221,7 +231,7 @@ class TorchCommNCCLX : public TorchCommBackend,
       bool async_op,
       const GatherOptions& options = {}) override;
 
-  // Window & One-sidede Operations
+  // Window & One-sided Operations
   std::shared_ptr<TorchCommWindow> new_window() override;
 
   // Communicator Management

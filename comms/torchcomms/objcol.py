@@ -81,7 +81,7 @@ def all_gather_object(
         comm: The comm to work on.
         object_list (list[object]): Output list. It should be correctly sized as the
             size of the comm for this collective and will contain the output.
-        obj (object): Pickable Python object to be broadcast from current process.
+        obj (object): Picklable Python object to be broadcast from current process.
         timeout: (timedelta, optional): Timeout for collective operations. If
             ``None``, will use the default timeout for the backend.
         weights_only (bool, optional): If ``True``, only safe objects such as
@@ -188,7 +188,7 @@ def gather_object(
             should be correctly sized as the size of the comm for this
             collective and will contain the output. Must be ``None`` on non-root
             ranks. (default is ``None``)
-        root (int, optional): Destination rank on ``comm``.  Invalid to specify both ``root`` and ``root``
+        root (int): Destination rank on ``comm``.
         timeout: (timedelta, optional): Timeout for collective operations. If
             ``None``, will use the default timeout for the backend.
         weights_only (bool, optional): If ``True``, only safe objects such as
@@ -235,8 +235,8 @@ def gather_object(
         >>> objcol.gather_object(
         ...     comm,
         ...     gather_objects[comm.get_rank()],
-        ...     output,
-        ...     root=0
+        ...     root=0,
+        ...     object_gather_list=output,
         ... )
         >>> # On rank 0
         >>> output
@@ -482,7 +482,7 @@ def broadcast_object_list(
 
     Similar to :func:`broadcast`, but Python objects can be passed in.
     Note that all objects in ``object_list`` must be picklable in order to be
-    broadcasted.
+    broadcast.
 
     Args:
         comm: The comm to work on.

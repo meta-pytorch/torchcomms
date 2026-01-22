@@ -15,7 +15,7 @@ TorchWorkGloo::TorchWorkGloo() {
 }
 
 TorchWorkGloo::~TorchWorkGloo() {
-  TC_LOG(INFO) << "TorchWorkGloo destroyed";
+  TC_LOG(INFO, nullptr) << "TorchWorkGloo destroyed";
 }
 
 void TorchWorkGloo::wait() {
