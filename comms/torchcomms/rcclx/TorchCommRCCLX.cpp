@@ -610,10 +610,6 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce(
       name_, comm_size_, "reduce", rank_, {tensor}, {tensor});
 
   hipStream_t stream = getOperationStream(async_op);
-  std::vector<at::Tensor> output_tensors;
-  if (rank_ == root) {
-    output_tensors.push_back(tensor);
-  }
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
 

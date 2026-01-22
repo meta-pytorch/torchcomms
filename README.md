@@ -21,6 +21,7 @@ torchcomms requires the following software and hardware:
 - Python 3.10 or higher
 - PyTorch 2.8 or higher
 - CUDA-capable GPU (for NCCL/NCCLX or RCCL backends)
+- Intel XPU (for XCCL backend)
 
 ## Installation
 
@@ -118,8 +119,54 @@ export RCCLX_LIB=${BUILD_DIR}/lib
 ./build_rcclx.sh
 ```
 
+TIP: Default builds both gfx942 and gfx950 and can take 1hr+. Narrow to your GPU:
+
+MI300X/MI325X (gfx942):
+```bash
+./build_rcclx.sh --amdgpu_targets gfx942
+```
+
+MI350X/MI355X (gfx950):
+```bash
+./build_rcclx.sh --amdgpu_targets gfx950
+```
+
+Detect your arch if unsure:
+```bash
+rocminfo | grep -m1 gfx
+```
+
+
+##### XCCL Backend
+
+Source Intel oneAPI environment (update path to your oneAPI installation)
+```bash
+export INTEL_ONEAPI=/path/to/intel/oneapi  # e.g., /opt/intel/oneapi or ~/intel/oneapi
+source $INTEL_ONEAPI/compiler/latest/env/vars.sh
+source $INTEL_ONEAPI/ccl/latest/env/vars.sh
+```
+
+Enable XCCL backend and install
+```bash
+export USE_XCCL=ON
+export USE_NCCL=OFF
+export USE_NCCLX=OFF
+export USE_TRANSPORT=OFF
+pip install --no-build-isolation -v .
+```
+
 
 #### Install torchcomms:
+
+Set backend env vars before installing. For RCCLX-only:
+```bash
+export USE_NCCL=OFF
+export USE_NCCLX=OFF
+export USE_GLOO=OFF
+export USE_RCCL=OFF
+export USE_RCCLX=ON
+```
+(See Build Configuration below for defaults and other mixes.)
 
 ```bash
 # Install PyTorch (if not already installed)
@@ -141,6 +188,7 @@ export USE_NCCLX=ON   # Default: ON
 export USE_GLOO=ON    # Default: ON
 export USE_RCCL=OFF   # Default: OFF
 export USE_RCCLX=OFF  # Default: OFF
+export USE_XCCL=OFF   # Default: OFF
 ```
 
 Then run:

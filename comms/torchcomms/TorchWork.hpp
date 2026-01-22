@@ -42,10 +42,33 @@ class TorchWork : public c10::intrusive_ptr_target {
  protected:
   void setStatus(WorkStatus status) {
     status_ = status;
+
+    if (status == WorkStatus::COMPLETED || status == WorkStatus::ERROR ||
+        status == WorkStatus::TIMEDOUT) {
+      runCallback();
+    }
+  }
+
+  friend class TorchComm;
+
+  void setCallback(std::function<void()> callback) {
+    callback_ = std::move(callback);
+  }
+
+  void runCallback() {
+    if (callback_) {
+      std::call_once(callback_once_, [this]() {
+        callback_();
+        callback_ = nullptr;
+      });
+    }
   }
 
  private:
   std::atomic<WorkStatus> status_{WorkStatus::NOT_STARTED};
+
+  std::once_flag callback_once_;
+  std::function<void()> callback_;
 };
 
 class TorchWorkCompleted : public TorchWork {
@@ -59,7 +82,7 @@ class TorchWorkCompleted : public TorchWork {
 
 class TorchWorkThread : public TorchWork {
  public:
-  TorchWorkThread(std::function<void()> fn);
+  explicit TorchWorkThread(std::function<void()> fn);
   ~TorchWorkThread() override = default;
 
   // Override virtual functions from TorchWork

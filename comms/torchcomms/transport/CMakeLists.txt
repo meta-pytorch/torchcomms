@@ -4,7 +4,13 @@ file(GLOB TORCHCOMMS_TRANSPORT_SOURCES
     "comms/torchcomms/transport/*.cpp"
 )
 
-find_package(CUDA REQUIRED)
+find_package(CUDA)
+if(NOT CUDA_FOUND)
+    message(
+        FATAL_ERROR
+        "Transport build requires CUDA. \
+Install the CUDA toolkit or rerun with USE_TRANSPORT=OFF.")
+endif()
 
 if(NOT DEFINED ENV{NVCC_GENCODE})
     set(ENV{NVCC_GENCODE} "-gencode=arch=compute_90,code=sm_90")
