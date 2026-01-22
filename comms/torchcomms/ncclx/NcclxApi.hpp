@@ -2,10 +2,41 @@
 
 #pragma once
 
+#include <exception>
+#include <string>
+
 #include <nccl.h> // @manual=//comms/ncclx:nccl
 
 namespace torch {
 namespace comms {
+
+// Forward declaration for NCCLXException
+class NcclxApi;
+
+// Custom exception class for better error handling
+class NCCLXException : public std::exception {
+ public:
+  NCCLXException(
+      NcclxApi& api,
+      const std::string& message,
+      ncclResult_t result,
+      ncclComm_t comm);
+
+  const char* what() const noexcept override;
+  [[nodiscard]] ncclResult_t getResult() const noexcept;
+
+ private:
+  std::string message_;
+  ncclResult_t result_;
+};
+
+#define NCCLX_CHECK(nccl_api, nccl_comm, call, err_str)            \
+  do {                                                             \
+    ncclResult_t status = call;                                    \
+    if (status != ncclSuccess) {                                   \
+      throw NCCLXException(*nccl_api, err_str, status, nccl_comm); \
+    }                                                              \
+  } while (0)
 
 using NcclxWindow = ncclWindow_t;
 using NcclxWindowAccessType = ncclWinAccessType;

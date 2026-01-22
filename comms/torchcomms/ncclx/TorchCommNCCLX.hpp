@@ -43,23 +43,6 @@ constexpr size_t kDefaultGarbageCollectIntervalMs = 100;
 // are tracked during graph capture to ensure proper lifetime management.
 constexpr bool kDefaultEnableCudaGraphSupport = true;
 
-// Custom exception class for better error handling
-class NCCLXException : public std::exception {
- public:
-  NCCLXException(
-      NcclxApi& api,
-      const std::string& message,
-      ncclResult_t result,
-      ncclComm_t comm);
-
-  const char* what() const noexcept override;
-  [[nodiscard]] ncclResult_t getResult() const noexcept;
-
- private:
-  std::string message_;
-  ncclResult_t result_;
-};
-
 class TorchCommNCCLX : public TorchCommBackend,
                        public std::enable_shared_from_this<TorchCommNCCLX> {
  public:
