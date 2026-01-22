@@ -1040,7 +1040,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
       auto& output_tensor = output;
       if (input_tensor.numel() != output_tensor.numel()) {
         throw std::runtime_error(
-            "Output tensor size must equal input tensor size for all_gather");
+            "Output tensor size must equal input tensor size for reduce_scatter_v");
       }
       nccl_api_->reduce(
           input_tensor.data_ptr(),
