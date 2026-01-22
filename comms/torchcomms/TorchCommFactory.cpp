@@ -2,15 +2,23 @@
 
 #include "comms/torchcomms/TorchCommFactory.hpp"
 
-#include <comms/torchcomms/TorchCommLogging.hpp>
 #include <dlfcn.h>
+
 #include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/TorchCommLogging.hpp"
 
 namespace torch {
 namespace comms {
 
 namespace {
 
+// BackendLib manages the lifecycle of dynamically loaded backend libraries.
+// The library is loaded in the constructor via dlopen() and unloaded in the
+// destructor via dlclose(). Move semantics transfer ownership of the library
+// handle, while copy operations are explicitly deleted to prevent dangling
+// references. After loading, setLoader() must be called to initialize the
+// DynamicLoaderInterface which provides the new_comm/destroy_comm functions
+// for creating backend instances.
 class BackendLib {
  public:
   explicit BackendLib(const char* path) {

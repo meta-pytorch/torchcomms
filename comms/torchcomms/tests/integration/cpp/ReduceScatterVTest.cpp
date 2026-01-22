@@ -89,6 +89,8 @@ int ReduceScatterVTest::calculateExpectedResult(
     return num_ranks_ * (rank_ + 1);
   } else if (op == torch::comms::ReduceOp::MAX) {
     return rank_ + 1;
+  } else if (op == torch::comms::ReduceOp::AVG) {
+    return rank_ + 1;
   } else {
     throw std::runtime_error("Unsupported reduce operation");
   }

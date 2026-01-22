@@ -20,7 +20,6 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/device/CudaApi.hpp"
 #include "comms/torchcomms/nccl/NcclApi.hpp"
 #include "comms/torchcomms/nccl/TorchWorkNCCL.hpp"
@@ -36,7 +35,7 @@ class NCCLException : public std::exception {
   NCCLException(NcclApi& api, const std::string& message, ncclResult_t result);
 
   const char* what() const noexcept override;
-  ncclResult_t getResult() const;
+  ncclResult_t getResult() const noexcept;
 
  private:
   std::string message_;
@@ -348,7 +347,6 @@ class TorchCommNCCL : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  std::shared_ptr<TorchCommTracing> tracing_;
   bool high_priority_stream_{false};
   std::string name_;
 
