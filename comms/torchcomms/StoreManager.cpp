@@ -53,6 +53,8 @@ c10::intrusive_ptr<c10d::Store> StoreManager::getStore(
   std::string prefix =
       fmt::format("torchcomm(backend={},name={})", backendName, commName);
 
+  // Prevent prefix reuse to avoid key collisions in the underlying store.
+  // Each communicator should have a unique namespace.
   if (storeNames_.contains(prefix)) {
     throw std::runtime_error("Store prefix has been reused for: " + prefix);
   }

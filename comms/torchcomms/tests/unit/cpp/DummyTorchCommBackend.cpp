@@ -1,3 +1,5 @@
+// Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #include <comms/torchcomms/TorchCommBackend.hpp> // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include <comms/torchcomms/TorchCommDummy.hpp> // @manual=//comms/torchcomms:torchcomms-headers-cpp
 
