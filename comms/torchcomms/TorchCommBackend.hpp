@@ -20,6 +20,17 @@ namespace comms {
 
 inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
 
+/**
+ * TorchCommBackend - Abstract base class for communication backends.
+ *
+ * Thread Safety:
+ * TorchCommBackend implementations are NOT thread-safe. All operations
+ * (collectives, point-to-point, split, finalize, etc.) must be serialized
+ * by the caller.
+ *
+ * Internal threads (e.g., timeout watchdog) are properly synchronized with
+ * the main thread using mutexes and condition variables.
+ */
 class TorchCommBackend : public CollectiveCoalescer {
  public:
   virtual ~TorchCommBackend() = default;
@@ -155,13 +166,12 @@ class TorchCommBackend : public CollectiveCoalescer {
   virtual const CommOptions& getOptions() const = 0;
 
   virtual const at::Device& getDevice() const = 0;
-  // Window & One-sidede Operations, not required for all backends, so we added
+  // Window & One-sided Operations, not required for all backends, so we added
   // default implementation here
   virtual std::shared_ptr<TorchCommWindow> new_window() {
     throw std::logic_error(
         "[TorchCommBackend]: new_window not implemented for communicator:" +
         std::string(getCommName()));
-    return nullptr;
   }
 };
 
