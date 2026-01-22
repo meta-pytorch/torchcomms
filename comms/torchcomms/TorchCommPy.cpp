@@ -43,7 +43,15 @@ PYBIND11_MODULE(_comms, m) {
           py::arg("opType"),
           py::call_guard<py::gil_scoped_release>())
       .def("__copy__", [](const ReduceOp& self) { return self; })
-      .def("__deepcopy__", [](const ReduceOp& self, py::dict) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const ReduceOp& self, py::dict memo) {
+            auto copy = self;
+            auto self_obj = py::cast(self);
+            memo[py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()))] =
+                py::cast(copy);
+            return copy;
+          })
       .def_property_readonly(
           "type", &ReduceOp::type, "Get the type of the operation")
       .def_static(
@@ -161,20 +169,30 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
   // Bind TorchCommWindow class
   py::class_<TorchCommWindow, std::shared_ptr<TorchCommWindow>>(
       m, "TorchCommWindow")
-      // NOTE: copy/deepcopy do NOT clone the underlying object.
-      // actually cloning the underlying window would be extremely expensive
-      // (requires re-registering memory, synchronization, etc.).
-      //
-      // we add these to make cloning graph modules work, and this should be
-      // safe to do so in this manner but be weary if your intentions are to
-      // actually clone the object.
       .def(
           "__copy__",
           [](const std::shared_ptr<TorchCommWindow>& self) { return self; })
       .def(
           "__deepcopy__",
-          [](const std::shared_ptr<TorchCommWindow>& self, py::dict) {
-            return self;
+          [](const std::shared_ptr<TorchCommWindow>& self, py::dict memo) {
+            auto new_window = self->clone();
+
+            // Add cloned tensor to memo if one was registered
+            // Python's deepcopy uses id(obj) as memo keys
+            auto original_tensor = self->get_tensor();
+            auto cloned_tensor = new_window->get_tensor();
+            if (original_tensor.has_value() && cloned_tensor.has_value()) {
+              auto original_tensor_obj = py::cast(original_tensor.value());
+              memo[py::cast(
+                  reinterpret_cast<uintptr_t>(original_tensor_obj.ptr()))] =
+                  py::cast(cloned_tensor.value());
+            }
+
+            // Add new window to memo (key is id of original object)
+            auto self_obj = py::cast(self);
+            memo[py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()))] =
+                py::cast(new_window);
+            return new_window;
           })
       .def(
           "tensor_register",
@@ -230,6 +248,18 @@ Returns:
 
       )",
           py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_tensor",
+          [](const TorchCommWindow& self) -> std::optional<at::Tensor> {
+            return self.get_tensor();
+          },
+          R"(
+Get the registered tensor buffer, if any.
+
+Returns:
+    Optional[torch.Tensor]: The registered tensor, or None if no tensor is registered.
+
+      )")
       .def(
           "put",
           [](TorchCommWindow& self,
@@ -597,19 +627,21 @@ Args:
 
   // Bind TorchComm class
   py::class_<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
-      // NOTE: copy/deepcopy do NOT clone the underlying object.
-      // actually cloning the underlying window would be extremely expensive
-      // (requires re-registering memory, synchronization, etc.).
-      //
-      // we add these to make cloning graph modules work, and this should be
-      // safe to do so in this manner but be weary if your intentions are to
-      // actually clone the object.
+      // NOTE: copy/deepcopy return the same object (not a clone).
+      // Actually cloning the underlying communicator would be extremely
+      // expensive (requires collective operations to create new comm groups).
       .def(
           "__copy__",
           [](const std::shared_ptr<TorchComm>& self) { return self; })
       .def(
           "__deepcopy__",
-          [](const std::shared_ptr<TorchComm>& self, py::dict) { return self; })
+          [](const std::shared_ptr<TorchComm>& self, py::dict memo) {
+            // Python's deepcopy uses id(obj) as memo keys
+            auto self_obj = py::cast(self);
+            memo[py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()))] =
+                py::cast(self);
+            return self;
+          })
       .def(
           "finalize",
           &TorchComm::finalize,
