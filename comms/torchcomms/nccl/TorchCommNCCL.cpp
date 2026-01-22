@@ -70,15 +70,13 @@ void TorchCommNCCL::init(
   }
 
   if (device_.index() == -1 || nccl_comm_ == nullptr) {
-    auto bootstrap = new TorchCommNCCLBootstrap(
+    auto bootstrap = std::make_unique<TorchCommNCCLBootstrap>(
         options_.store, device_, nccl_api_, cuda_api_, options_.timeout);
     device_ = bootstrap->getDevice();
 
     if (nccl_comm_ == nullptr) {
       nccl_comm_ = bootstrap->createNcclComm(name, options);
     }
-
-    delete bootstrap;
   }
 
   // Set CUDA device and verify it's accessible
