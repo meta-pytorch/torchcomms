@@ -97,7 +97,7 @@ class TestWindowCopy(unittest.TestCase):
             self.window = self.torchcomm.new_window()
         except RuntimeError:
             self.skipTest(
-                f"Unable to create window using backend {os.getenv("TEST_BACKEND")}."
+                f"Unable to create window using backend {os.getenv('TEST_BACKEND')}."
             )
 
     def tearDown(self):
