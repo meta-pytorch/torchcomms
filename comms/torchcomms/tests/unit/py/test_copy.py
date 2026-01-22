@@ -7,6 +7,7 @@ import os
 import unittest
 
 import torch
+from torchcomms import new_comm
 from torchcomms._comms import ReduceOp
 from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
 
@@ -42,23 +43,17 @@ class TestReduceOpCopy(unittest.TestCase):
 
 
 class TestCommCopy(unittest.TestCase):
-    """Tests for TorchComm copy/deepcopy."""
-
-    def get_wrapper(self):
-        return TorchCommTestWrapper()
+    """Tests for TorchComm copy/deepcopy using the dummy backend."""
 
     def setUp(self):
         """Set up test environment before each test."""
-        self.wrapper = self.get_wrapper()
-        self.torchcomm = self.wrapper.get_torchcomm()
-        self.rank = self.torchcomm.get_rank()
-        self.num_ranks = self.torchcomm.get_size()
-        self.device = self.torchcomm.get_device()
+        self.torchcomm = new_comm("dummy", torch.device("cpu"), name="test_copy_comm")
 
     def tearDown(self):
         """Clean up after each test."""
+        if self.torchcomm:
+            self.torchcomm.finalize()
         self.torchcomm = None
-        self.wrapper = None
 
     def test_comm_copy(self):
         """Test that TorchComm copy returns the same object."""
@@ -82,9 +77,6 @@ class TestCommCopy(unittest.TestCase):
         self.assertIs(result, sentinel)
 
 
-@unittest.skipIf(
-    os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only window tests"
-)
 class TestWindowCopy(unittest.TestCase):
     """Tests for TorchCommWindow copy/deepcopy.
 
@@ -96,11 +88,17 @@ class TestWindowCopy(unittest.TestCase):
 
     def setUp(self):
         """Set up test environment before each test."""
-        self.wrapper = self.get_wrapper()
-        self.torchcomm = self.wrapper.get_torchcomm()
-        self.rank = self.torchcomm.get_rank()
-        self.num_ranks = self.torchcomm.get_size()
-        self.device = self.torchcomm.get_device()
+        try:
+            self.wrapper = self.get_wrapper()
+            self.torchcomm = self.wrapper.get_torchcomm()
+            self.rank = self.torchcomm.get_rank()
+            self.num_ranks = self.torchcomm.get_size()
+            self.device = self.torchcomm.get_device()
+            self.window = self.torchcomm.new_window()
+        except RuntimeError:
+            self.skipTest(
+                f"Unable to create window using backend {os.getenv("TEST_BACKEND")}."
+            )
 
     def tearDown(self):
         """Clean up after each test."""
@@ -109,33 +107,29 @@ class TestWindowCopy(unittest.TestCase):
 
     def test_window_copy(self):
         """Test that TorchCommWindow copy returns the same object."""
-        window = self.torchcomm.new_window()
-        window_copy = copy.copy(window)
+        window_copy = copy.copy(self.window)
 
-        self.assertIs(window, window_copy)
+        self.assertIs(self.window, window_copy)
 
     def test_window_deepcopy(self):
         """Test that TorchCommWindow deepcopy creates a new window."""
-        window = self.torchcomm.new_window()
         memo = {}
-        window_copy = copy.deepcopy(window, memo)
+        window_copy = copy.deepcopy(self.window, memo)
 
-        self.assertIsNot(window, window_copy)
-        self.assertIn(id(window), memo)
+        self.assertIsNot(self.window, window_copy)
+        self.assertIn(id(self.window), memo)
 
     def test_window_deepcopy_with_tensor(self):
         """Test that TorchCommWindow deepcopy clones the registered tensor."""
-        window = self.torchcomm.new_window()
-
         device = self.torchcomm.get_device()
         tensor = torch.zeros(10, dtype=torch.float32, device=device)
-        window.tensor_register(tensor)
+        self.window.tensor_register(tensor)
 
         memo = {}
-        window_copy = copy.deepcopy(window, memo)
+        window_copy = copy.deepcopy(self.window, memo)
 
-        self.assertIsNot(window, window_copy)
-        self.assertIn(id(window), memo)
+        self.assertIsNot(self.window, window_copy)
+        self.assertIn(id(self.window), memo)
 
         cloned_tensor = window_copy.get_tensor()
         self.assertIsNotNone(cloned_tensor)
@@ -146,17 +140,15 @@ class TestWindowCopy(unittest.TestCase):
         tensor[0] = 42.0
         self.assertNotEqual(tensor[0].item(), cloned_tensor[0].item())
 
-        window.tensor_deregister()
+        self.window.tensor_deregister()
         window_copy.tensor_deregister()
 
     def test_window_deepcopy_memo_first(self):
         """Test that TorchCommWindow deepcopy returns memoized object if present."""
-        window = self.torchcomm.new_window()
-
         sentinel = object()
-        memo = {id(window): sentinel}
+        memo = {id(self.window): sentinel}
 
-        result = copy.deepcopy(window, memo)
+        result = copy.deepcopy(self.window, memo)
         self.assertIs(result, sentinel)
 
 
