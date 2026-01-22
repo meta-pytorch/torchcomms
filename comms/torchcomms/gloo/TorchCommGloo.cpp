@@ -472,7 +472,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
       [tensor,
        tensorCPU,
        src,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         const auto& scalarType = tensorCPU.scalar_type();
@@ -549,7 +549,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::broadcast(
       [tensor,
        tensorCPU,
        root,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::BroadcastOptions opts(context);
@@ -590,7 +590,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
       [tensor,
        tensorCPU,
        opCPU,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::AllreduceOptions opts(context);
@@ -631,11 +631,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
   auto opCPU = convertReduceOpToCPU(op);
 
   return createWork(
-      [tensor,
+      [tensor = tensor,
        tensorCPU,
        root,
        opCPU,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::ReduceOptions opts(context);
@@ -696,11 +696,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
   }
 
   return createWork(
-      [tensor,
-       tensor_list,
+      [tensor = tensor,
+       tensor_list = tensor_list,
        tensorCPU,
        tensorListCPU,
-       options,
+       options = options,
        size = comm_size_,
        context = context_,
        tag = nextTag()]() mutable {
@@ -769,11 +769,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_single(
   auto outputCPU = output.to(at::kCPU);
 
   return createWork(
-      [input,
+      [input = input,
        output,
        inputCPU,
        outputCPU,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::AllgatherOptions opts(context);
@@ -868,11 +868,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
   auto opCPU = convertReduceOpToCPU(op);
 
   return createWork(
-      [input,
+      [input = input,
        output,
        inputCPU,
        opCPU,
-       options,
+       options = options,
        rank = rank_,
        context = context_,
        tag = nextTag()]() mutable {
@@ -933,11 +933,11 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_single(
   auto outputCPU = output.to(at::kCPU);
 
   return createWork(
-      [input,
+      [input = input,
        output,
        inputCPU,
        outputCPU,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::AlltoallOptions opts(context);
@@ -1010,13 +1010,13 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
   auto outputCPU = output.to(at::kCPU);
 
   return createWork(
-      [input,
+      [input = input,
        output,
        inputCPU,
        outputCPU,
-       input_split_sizes,
-       output_split_sizes,
-       options,
+       input_split_sizes = input_split_sizes,
+       output_split_sizes = output_split_sizes,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::AlltoallvOptions opts(context);
@@ -1114,12 +1114,12 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all(
   }
 
   return createWork(
-      [output_tensor_list,
+      [output_tensor_list = output_tensor_list,
        inputConcatCPU,
        outputConcatCPU,
        tensorSize,
        comm_size = comm_size_,
-       options,
+       options = options,
        context = context_,
        tag = nextTag()]() mutable {
         gloo::AlltoallOptions opts(context);
@@ -1210,7 +1210,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::scatter(
        outputCPU,
        inputListCPU,
        root,
-       options,
+       options = options,
        rank = rank_,
        context = context_,
        tag = nextTag()]() mutable {
@@ -1288,13 +1288,13 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::gather(
   }
 
   return createWork(
-      [input_tensor,
-       output_tensor_list,
+      [input_tensor = input_tensor,
+       output_tensor_list = output_tensor_list,
        inputCPU,
        outputConcatCPU,
        outputListCPU,
        root,
-       options,
+       options = options,
        rank = rank_,
        size = comm_size_,
        context = context_,
