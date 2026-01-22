@@ -504,6 +504,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
       async_op ? input_tensors : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operations
@@ -948,6 +949,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
       async_op ? input_list : std::vector<at::Tensor>{});
 
   work->recordStart("reduce_scatter");
@@ -1019,6 +1021,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
       async_op ? input_list : std::vector<at::Tensor>{});
 
   work->recordStart("reduce_scatter_v");
@@ -1305,6 +1308,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
       async_op ? input_tensor_list : std::vector<at::Tensor>{});
 
   // Record start event before NCCL operations
