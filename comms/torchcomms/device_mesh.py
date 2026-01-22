@@ -1,15 +1,12 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# pyre-unsafe
+# pyre-strict
 
 import math
 from typing import Any, cast, Optional
 
 import torch
-
 import torch.distributed as dist
 from torch.distributed.device_mesh import _mesh_resources
-
-from torch.distributed.distributed_c10d import GroupName
 from torchcomms._comms import _BackendWrapper, _get_store, new_comm, TorchComm
 
 try:
@@ -166,80 +163,6 @@ def init_device_mesh(
         _rank=global_rank,
     )
     device_mesh._dim_group_names = group_names
-
-    return device_mesh
-
-
-def init_native_device_mesh(
-    mesh_dim_comms: tuple[TorchComm, ...],
-    mesh_dim_names: tuple[str, ...],
-    backend: str = "torchcomms",
-) -> dist.DeviceMesh:
-    """
-    Initializes a `DeviceMesh` directly from TorchComm instances, bypassing ProcessGroup.
-
-    This creates a DeviceMesh that stores TorchComm objects under a backend identifier,
-    without wrapping them in ProcessGroups or registering with the distributed runtime.
-    Use `mesh.get_comm(backend, mesh_dim)` to retrieve the comm for a mesh dimension.
-
-    The torchcomms backend is automatically registered with funcol, so standard
-    functional collective calls like `funcol.all_reduce(tensor, "sum", (mesh, dim))`
-    will automatically dispatch to torchcomms.
-
-    Args:
-        mesh_dim_comms: Tuple of TorchComm instances, one per mesh dimension.
-        mesh_dim_names: Tuple of names for each mesh dimension.
-        backend: Backend identifier string (default: "torchcomms").
-
-    Returns:
-        A DeviceMesh with comm objects stored under the backend identifier.
-
-    Example:
-        >>> mesh = init_native_device_mesh(
-        ...     mesh_dim_comms=(dp_comm, tp_comm),
-        ...     mesh_dim_names=("dp", "tp"),
-        ... )
-        >>> # Direct access
-        >>> comm = mesh.get_comm("torchcomms", "tp")
-        >>> # Or use funcol (auto-dispatches to torchcomms)
-        >>> funcol.all_reduce(tensor, "sum", (mesh, 1))
-    """
-    if len(mesh_dim_comms) != len(mesh_dim_names):
-        raise ValueError(
-            f"mesh_dim_comms length ({len(mesh_dim_comms)}) must match "
-            f"mesh_dim_names length ({len(mesh_dim_names)})"
-        )
-
-    device = mesh_dim_comms[0].get_device()
-    mesh_shape = tuple(comm.get_size() for comm in mesh_dim_comms)
-    world_size = math.prod(mesh_shape)
-
-    mesh_tensor = torch.arange(world_size, dtype=torch.int, device="cpu").view(
-        mesh_shape
-    )
-
-    local_ranks = [comm.get_rank() for comm in mesh_dim_comms]
-    global_rank = cast(int, mesh_tensor[tuple(local_ranks)].item())
-
-    device_mesh = dist.DeviceMesh(
-        device_type=device.type,
-        mesh=mesh_tensor,
-        mesh_dim_names=mesh_dim_names,
-        _init_backend=False,
-        _rank=global_rank,
-    )
-
-    # Register comm objects under backend identifier using the native method
-    dim_comms = {name: comm for name, comm in zip(mesh_dim_names, mesh_dim_comms)}
-    device_mesh.register_comm_backend(backend, dim_comms)  # pyre-ignore[6]
-    device_mesh._dim_group_names = list(mesh_dim_names)
-
-    # Register torchcomms with the functional collectives backend (if not already registered)
-    from torchcomms.functional.functional_backend import (
-        register_torchcomms_funcols_impl,
-    )
-
-    register_torchcomms_funcols_impl()
 
     return device_mesh
 
