@@ -11,14 +11,14 @@ namespace comms {
 // Forward declaration
 class TorchWork;
 
-typedef enum {
+using TorchCommWinAccessType = enum {
   WIN_ACCESS_TYPE_UNIFIED = 0,
   WIN_ACCESS_TYPE_SEPARATE = 1,
-} TorchCommlWinAccessType;
+};
 
 class TorchCommWindowAttr {
  public:
-  TorchCommlWinAccessType accessType;
+  TorchCommWinAccessType accessType;
 };
 
 class TorchCommWindow {
@@ -32,6 +32,8 @@ class TorchCommWindow {
   TorchCommWindow(TorchCommWindow&&) = delete;
   TorchCommWindow& operator=(TorchCommWindow&&) = delete;
 
+  // tensor_register and tensor_deregister are collective operations - all
+  // ranks must call them together.
   virtual void tensor_register(const at::Tensor& tensor) = 0;
   virtual void tensor_deregister() = 0;
 
