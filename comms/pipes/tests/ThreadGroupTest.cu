@@ -6,42 +6,44 @@
 
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/tests/Checks.h"
+#include "comms/pipes/tests/ThreadGroupTest.cuh"
 
 namespace comms::pipes::test {
 
 using namespace comms::pipes;
 
+// =============================================================================
+// Contiguous Locality Tests
+// =============================================================================
+
+template <SyncScope Scope>
 __global__ void testContiguousLocalityKernel(
     uint32_t* groupIds,
     uint32_t numItems,
     uint32_t* errorCount) {
-  auto warp = make_warp_group();
+  auto group = make_thread_group(Scope);
 
-  // Each warp writes its group_id to its assigned work items
-  warp.for_each_item_contiguous(numItems, [&](uint32_t item_id) {
+  group.for_each_item_contiguous(numItems, [&](uint32_t item_id) {
     if (item_id >= numItems) {
       atomicAdd(errorCount, 1);
       return;
     }
 
-    groupIds[item_id] = warp.group_id;
+    groupIds[item_id] = group.group_id;
   });
 
   __syncthreads();
 
-  // Leader of first warp verifies the contiguous pattern on GPU
-  // (CPU will also verify this for thoroughness)
-  if (warp.is_global_leader()) {
+  if (group.is_global_leader()) {
     uint32_t items_per_group =
-        (numItems + warp.total_groups - 1) / warp.total_groups;
+        (numItems + group.total_groups - 1) / group.total_groups;
 
-    for (uint32_t group_id = 0; group_id < warp.total_groups; group_id++) {
+    for (uint32_t group_id = 0; group_id < group.total_groups; group_id++) {
       uint32_t start_item = group_id * items_per_group;
       uint32_t end_item = (start_item + items_per_group < numItems)
           ? start_item + items_per_group
           : numItems;
 
-      // Verify all items in [start, end) belong to this group
       for (uint32_t item_id = start_item; item_id < end_item; item_id++) {
         if (groupIds[item_id] != group_id) {
           atomicAdd(errorCount, 1);
@@ -56,9 +58,15 @@ void testContiguousLocality(
     uint32_t numItems,
     uint32_t* errorCount_d,
     int numBlocks,
-    int blockSize) {
-  testContiguousLocalityKernel<<<numBlocks, blockSize>>>(
-      groupIds_d, numItems, errorCount_d);
+    int blockSize,
+    SyncScope scope) {
+  if (scope == SyncScope::WARP) {
+    testContiguousLocalityKernel<SyncScope::WARP>
+        <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
+  } else {
+    testContiguousLocalityKernel<SyncScope::TILE>
+        <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
+  }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -74,12 +82,10 @@ __global__ void testBlockGroupKernel(
     uint32_t* errorCount) {
   auto block = make_block_group();
 
-  // Record group properties for verification
   if (threadIdx.x == 0) {
     groupSizes[blockIdx.x] = block.group_size;
   }
 
-  // Each block writes its group_id to its assigned work items
   block.for_each_item_contiguous(numItems, [&](uint32_t item_id) {
     if (item_id >= numItems) {
       atomicAdd(errorCount, 1);
@@ -108,27 +114,26 @@ void testBlockGroup(
 // Partition Tests
 // =============================================================================
 
+template <SyncScope Scope>
 __global__ void testPartitionKernel(
     uint32_t* partitionIds,
     uint32_t* subgroupIds,
     uint32_t* subgroupTotalGroups,
     uint32_t numPartitions,
     uint32_t* errorCount) {
-  auto warp = make_warp_group();
+  auto group = make_thread_group(Scope);
 
-  auto [partition_id, subgroup] = warp.partition(numPartitions);
+  auto [partition_id, subgroup] = group.partition(numPartitions);
 
-  // Bounds check
   if (partition_id >= numPartitions) {
     atomicAdd(errorCount, 1);
     return;
   }
 
-  // Record results for CPU verification (one write per warp)
-  if (warp.is_leader()) {
-    partitionIds[warp.group_id] = partition_id;
-    subgroupIds[warp.group_id] = subgroup.group_id;
-    subgroupTotalGroups[warp.group_id] = subgroup.total_groups;
+  if (group.is_leader()) {
+    partitionIds[group.group_id] = partition_id;
+    subgroupIds[group.group_id] = subgroup.group_id;
+    subgroupTotalGroups[group.group_id] = subgroup.total_groups;
   }
 }
 
@@ -139,13 +144,23 @@ void testPartition(
     uint32_t numPartitions,
     uint32_t* errorCount_d,
     int numBlocks,
-    int blockSize) {
-  testPartitionKernel<<<numBlocks, blockSize>>>(
-      partitionIds_d,
-      subgroupIds_d,
-      subgroupTotalGroups_d,
-      numPartitions,
-      errorCount_d);
+    int blockSize,
+    SyncScope scope) {
+  if (scope == SyncScope::WARP) {
+    testPartitionKernel<SyncScope::WARP><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        numPartitions,
+        errorCount_d);
+  } else {
+    testPartitionKernel<SyncScope::TILE><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        numPartitions,
+        errorCount_d);
+  }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -153,32 +168,31 @@ void testPartition(
 // Subgroup Properties Verification Tests
 // =============================================================================
 
+template <SyncScope Scope>
 __global__ void testPartitionSubgroupPropertiesKernel(
     uint32_t* threadIdsInGroup,
     uint32_t* groupSizes,
     uint32_t* scopes,
     uint32_t numPartitions,
     uint32_t* errorCount) {
-  auto warp = make_warp_group();
+  auto group = make_thread_group(Scope);
 
-  auto [partition_id, subgroup] = warp.partition(numPartitions);
+  auto [partition_id, subgroup] = group.partition(numPartitions);
 
-  // Verify preserved properties match original warp
-  if (subgroup.thread_id_in_group != warp.thread_id_in_group) {
+  if (subgroup.thread_id_in_group != group.thread_id_in_group) {
     atomicAdd(errorCount, 1);
   }
-  if (subgroup.group_size != warp.group_size) {
+  if (subgroup.group_size != group.group_size) {
     atomicAdd(errorCount, 1);
   }
-  if (subgroup.scope != warp.scope) {
+  if (subgroup.scope != group.scope) {
     atomicAdd(errorCount, 1);
   }
 
-  // Record for CPU verification (one write per warp)
-  if (warp.is_leader()) {
-    threadIdsInGroup[warp.group_id] = subgroup.thread_id_in_group;
-    groupSizes[warp.group_id] = subgroup.group_size;
-    scopes[warp.group_id] = static_cast<uint32_t>(subgroup.scope);
+  if (group.is_leader()) {
+    threadIdsInGroup[group.group_id] = subgroup.thread_id_in_group;
+    groupSizes[group.group_id] = subgroup.group_size;
+    scopes[group.group_id] = static_cast<uint32_t>(subgroup.scope);
   }
 }
 
@@ -189,9 +203,25 @@ void testPartitionSubgroupProperties(
     uint32_t numPartitions,
     uint32_t* errorCount_d,
     int numBlocks,
-    int blockSize) {
-  testPartitionSubgroupPropertiesKernel<<<numBlocks, blockSize>>>(
-      threadIdsInGroup_d, groupSizes_d, scopes_d, numPartitions, errorCount_d);
+    int blockSize,
+    SyncScope scope) {
+  if (scope == SyncScope::WARP) {
+    testPartitionSubgroupPropertiesKernel<SyncScope::WARP>
+        <<<numBlocks, blockSize>>>(
+            threadIdsInGroup_d,
+            groupSizes_d,
+            scopes_d,
+            numPartitions,
+            errorCount_d);
+  } else {
+    testPartitionSubgroupPropertiesKernel<SyncScope::TILE>
+        <<<numBlocks, blockSize>>>(
+            threadIdsInGroup_d,
+            groupSizes_d,
+            scopes_d,
+            numPartitions,
+            errorCount_d);
+  }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -199,27 +229,26 @@ void testPartitionSubgroupProperties(
 // Partition Interleaved Tests
 // =============================================================================
 
+template <SyncScope Scope>
 __global__ void testPartitionInterleavedKernel(
     uint32_t* partitionIds,
     uint32_t* subgroupIds,
     uint32_t* subgroupTotalGroups,
     uint32_t numPartitions,
     uint32_t* errorCount) {
-  auto warp = make_warp_group();
+  auto group = make_thread_group(Scope);
 
-  auto [partition_id, subgroup] = warp.partition_interleaved(numPartitions);
+  auto [partition_id, subgroup] = group.partition_interleaved(numPartitions);
 
-  // Bounds check
   if (partition_id >= numPartitions) {
     atomicAdd(errorCount, 1);
     return;
   }
 
-  // Record results for CPU verification (one write per warp)
-  if (warp.is_leader()) {
-    partitionIds[warp.group_id] = partition_id;
-    subgroupIds[warp.group_id] = subgroup.group_id;
-    subgroupTotalGroups[warp.group_id] = subgroup.total_groups;
+  if (group.is_leader()) {
+    partitionIds[group.group_id] = partition_id;
+    subgroupIds[group.group_id] = subgroup.group_id;
+    subgroupTotalGroups[group.group_id] = subgroup.total_groups;
   }
 }
 
@@ -230,13 +259,23 @@ void testPartitionInterleaved(
     uint32_t numPartitions,
     uint32_t* errorCount_d,
     int numBlocks,
-    int blockSize) {
-  testPartitionInterleavedKernel<<<numBlocks, blockSize>>>(
-      partitionIds_d,
-      subgroupIds_d,
-      subgroupTotalGroups_d,
-      numPartitions,
-      errorCount_d);
+    int blockSize,
+    SyncScope scope) {
+  if (scope == SyncScope::WARP) {
+    testPartitionInterleavedKernel<SyncScope::WARP><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        numPartitions,
+        errorCount_d);
+  } else {
+    testPartitionInterleavedKernel<SyncScope::TILE><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        numPartitions,
+        errorCount_d);
+  }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -244,6 +283,7 @@ void testPartitionInterleaved(
 // Weighted Partition Tests
 // =============================================================================
 
+template <SyncScope Scope>
 __global__ void testWeightedPartitionKernel(
     uint32_t* partitionIds,
     uint32_t* subgroupIds,
@@ -251,22 +291,20 @@ __global__ void testWeightedPartitionKernel(
     const uint32_t* weights,
     uint32_t numPartitions,
     uint32_t* errorCount) {
-  auto warp = make_warp_group();
+  auto group = make_thread_group(Scope);
 
   auto [partition_id, subgroup] =
-      warp.partition(make_device_span(weights, numPartitions));
+      group.partition(make_device_span(weights, numPartitions));
 
-  // Bounds check
   if (partition_id >= numPartitions) {
     atomicAdd(errorCount, 1);
     return;
   }
 
-  // Record results for CPU verification (one write per warp)
-  if (warp.is_leader()) {
-    partitionIds[warp.group_id] = partition_id;
-    subgroupIds[warp.group_id] = subgroup.group_id;
-    subgroupTotalGroups[warp.group_id] = subgroup.total_groups;
+  if (group.is_leader()) {
+    partitionIds[group.group_id] = partition_id;
+    subgroupIds[group.group_id] = subgroup.group_id;
+    subgroupTotalGroups[group.group_id] = subgroup.total_groups;
   }
 }
 
@@ -278,14 +316,25 @@ void testWeightedPartition(
     uint32_t numPartitions,
     uint32_t* errorCount_d,
     int numBlocks,
-    int blockSize) {
-  testWeightedPartitionKernel<<<numBlocks, blockSize>>>(
-      partitionIds_d,
-      subgroupIds_d,
-      subgroupTotalGroups_d,
-      weights_d,
-      numPartitions,
-      errorCount_d);
+    int blockSize,
+    SyncScope scope) {
+  if (scope == SyncScope::WARP) {
+    testWeightedPartitionKernel<SyncScope::WARP><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        weights_d,
+        numPartitions,
+        errorCount_d);
+  } else {
+    testWeightedPartitionKernel<SyncScope::TILE><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        weights_d,
+        numPartitions,
+        errorCount_d);
+  }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

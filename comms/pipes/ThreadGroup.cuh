@@ -510,4 +510,27 @@ __device__ inline ThreadGroup make_block_group() {
 #endif
 }
 
+/**
+ * make_thread_group - Create a ThreadGroup based on the specified SyncScope
+ *
+ * Convenience function that dispatches to the appropriate factory function
+ * based on the scope parameter:
+ *   - SyncScope::WARP → make_warp_group()
+ *   - SyncScope::TILE → make_block_group()
+ *
+ * @param scope The synchronization scope determining the group type
+ * @return ThreadGroup configured for the specified scope
+ */
+__device__ inline ThreadGroup make_thread_group(SyncScope scope) {
+#ifdef __CUDA_ARCH__
+  switch (scope) {
+    case SyncScope::WARP:
+      return make_warp_group();
+    case SyncScope::TILE:
+      return make_block_group();
+  }
+#endif
+  return ThreadGroup{};
+}
+
 } // namespace comms::pipes
