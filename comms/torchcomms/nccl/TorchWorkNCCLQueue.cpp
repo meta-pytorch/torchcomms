@@ -92,7 +92,7 @@ void TorchWorkNCCLQueue::enqueueWork(
     cudaStream_t stream) {
   // Add work to stream's queue after events have been recorded
   std::lock_guard<std::mutex> lock(work_queues_mutex_);
-  stream_work_queues_[stream].push(work);
+  stream_work_queues_[stream].push(std::move(work));
 }
 
 } // namespace comms

@@ -16,7 +16,7 @@
 namespace torch {
 namespace comms {
 
-ncclResult_t NCCLException::getResult() const {
+ncclResult_t NCCLException::getResult() const noexcept {
   return result_;
 }
 
@@ -1374,7 +1374,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
 void TorchCommNCCL::register_address(
     const TorchCommNCCL::AddressWithLen& addr) {
   // We got a register after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
@@ -1394,7 +1394,7 @@ void TorchCommNCCL::register_address(
 
 void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
   // We got a deregister after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
