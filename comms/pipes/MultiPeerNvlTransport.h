@@ -31,6 +31,11 @@ struct MultiPeerNvlTransportConfig {
   // Higher = better latency hiding but more memory.
   // Typical: 2-4 for most workloads.
   std::size_t pipelineDepth{0};
+
+  // Number of signal slots per peer for signal/wait communication.
+  // Larger = more signal available for parallelism.
+  // Typical: 1-num of block for most workloads.
+  std::size_t signalCount{1};
 };
 
 /**
@@ -135,16 +140,19 @@ class MultiPeerNvlTransport {
   // data buffer: staging buffer for send/recv data
   // state buffer: buffer for signaling
   std::unique_ptr<meta::comms::DeviceBuffer> dataBuffer_d_;
-  std::unique_ptr<meta::comms::DeviceBuffer> stateBuffer_d_;
+  std::unique_ptr<meta::comms::DeviceBuffer> chunkStateBuffer_d_;
+  std::unique_ptr<meta::comms::DeviceBuffer> signalBuffer_d_;
 
   // TODO: refactor IpcMemHandler to handle multiple ipcHandles exchange and
   // merge into one IpcMemHandler
   std::unique_ptr<meta::comms::IpcMemHandler> dataBufferHandler_;
-  std::unique_ptr<meta::comms::IpcMemHandler> stateBufferHandler_;
+  std::unique_ptr<meta::comms::IpcMemHandler> chunkStateBufferHandler_;
+  std::unique_ptr<meta::comms::IpcMemHandler> signalBufferHandler_;
 
   // Per-peer buffer sizes for offset calculation
   std::size_t perPeerDataBufferSize_{0};
-  std::size_t perPeerStateBufferSize_{0};
+  std::size_t perPeerChunkStateBufferSize_{0};
+  std::size_t perPeerSignalBufferSize_{0};
 };
 
 } // namespace comms::pipes
