@@ -1,5 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <optional>
+
 #include <folly/io/async/EventBase.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 #include <pybind11/chrono.h>
@@ -84,7 +86,8 @@ PYBIND11_MODULE(_transport, m) {
       .def("size", &RdmaMemory::View::size);
 
   py::class_<RdmaMemory::MutableView, std::shared_ptr<RdmaMemory::MutableView>>(
-      m, "RdmaMemoryMutableView");
+      m, "RdmaMemoryMutableView")
+      .def("size", &RdmaMemory::MutableView::size);
 
   py::class_<RdmaMemory, std::shared_ptr<RdmaMemory>>(m, "RdmaMemory")
       .def(py::init([](const at::Tensor& tensor) {
@@ -98,14 +101,26 @@ PYBIND11_MODULE(_transport, m) {
       }))
       .def(
           "to_view",
-          [](RdmaMemory& self) {
-            return self.createView(size_t(0), self.length());
-          })
+          [](RdmaMemory& self,
+             std::optional<size_t> offset,
+             std::optional<size_t> length) {
+            size_t off = offset.value_or(0);
+            size_t len = length.value_or(self.length() - off);
+            return self.createView(off, len);
+          },
+          py::arg("offset") = py::none(),
+          py::arg("length") = py::none())
       .def(
           "to_mutable_view",
-          [](RdmaMemory& self) {
-            return self.createMutableView(size_t(0), self.length());
-          })
+          [](RdmaMemory& self,
+             std::optional<size_t> offset,
+             std::optional<size_t> length) {
+            size_t off = offset.value_or(0);
+            size_t len = length.value_or(self.length() - off);
+            return self.createMutableView(off, len);
+          },
+          py::arg("offset") = py::none(),
+          py::arg("length") = py::none())
       .def("to_remote_buffer", [](RdmaMemory& self) {
         return RdmaRemoteBuffer{
             const_cast<void*>(self.data()), self.length(), self.remoteKey()};
