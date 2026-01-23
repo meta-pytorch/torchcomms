@@ -67,7 +67,7 @@ void testContiguousLocality(
     testContiguousLocalityKernel<SyncScope::WARPGROUP>
         <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
   } else {
-    testContiguousLocalityKernel<SyncScope::TILE>
+    testContiguousLocalityKernel<SyncScope::BLOCK>
         <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
   }
   PIPES_KERNEL_LAUNCH_CHECK();
@@ -164,7 +164,7 @@ void testPartition(
         numPartitions,
         errorCount_d);
   } else {
-    testPartitionKernel<SyncScope::TILE><<<numBlocks, blockSize>>>(
+    testPartitionKernel<SyncScope::BLOCK><<<numBlocks, blockSize>>>(
         partitionIds_d,
         subgroupIds_d,
         subgroupTotalGroups_d,
@@ -232,7 +232,7 @@ void testPartitionSubgroupProperties(
             numPartitions,
             errorCount_d);
   } else {
-    testPartitionSubgroupPropertiesKernel<SyncScope::TILE>
+    testPartitionSubgroupPropertiesKernel<SyncScope::BLOCK>
         <<<numBlocks, blockSize>>>(
             threadIdsInGroup_d,
             groupSizes_d,
@@ -295,7 +295,7 @@ void testPartitionInterleaved(
             numPartitions,
             errorCount_d);
   } else {
-    testPartitionInterleavedKernel<SyncScope::TILE><<<numBlocks, blockSize>>>(
+    testPartitionInterleavedKernel<SyncScope::BLOCK><<<numBlocks, blockSize>>>(
         partitionIds_d,
         subgroupIds_d,
         subgroupTotalGroups_d,
@@ -361,7 +361,7 @@ void testWeightedPartition(
         numPartitions,
         errorCount_d);
   } else {
-    testWeightedPartitionKernel<SyncScope::TILE><<<numBlocks, blockSize>>>(
+    testWeightedPartitionKernel<SyncScope::BLOCK><<<numBlocks, blockSize>>>(
         partitionIds_d,
         subgroupIds_d,
         subgroupTotalGroups_d,
