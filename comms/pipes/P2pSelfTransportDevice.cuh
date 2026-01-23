@@ -63,7 +63,7 @@ class P2pSelfTransportDevice {
   }
 
   /**
-   * write - Direct local memory copy using vectorized operations
+   * put - Direct local memory copy using vectorized operations
    *
    * Performs a high-performance vectorized copy from src_d to dst_d using
    * memcpy_vectorized. The work is distributed across ALL thread groups
@@ -81,11 +81,8 @@ class P2pSelfTransportDevice {
    * @param src_d Source pointer (device memory)
    * @param nbytes Number of bytes to write
    */
-  __device__ __forceinline__ void write(
-      ThreadGroup& group,
-      char* dst_d,
-      const char* src_d,
-      std::size_t nbytes) {
+  __device__ __forceinline__ void
+  put(ThreadGroup& group, char* dst_d, const char* src_d, std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
     // Early return for no-op cases (check before overlap to handle dst == src)
     if (nbytes == 0 || dst_d == src_d) {

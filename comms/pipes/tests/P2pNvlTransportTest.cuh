@@ -106,9 +106,9 @@ void testWeightedRecvSend(
     uint32_t sendWeight,
     GroupType groupType = GroupType::WARP);
 
-// Test write() - one-sided direct memory write to peer GPU and signal peer
+// Test put() - one-sided direct memory write to peer GPU and signal peer
 // Unlike send()/recv(), put() writes directly to dst_d without staging buffers
-void testWriteWithSignal(
+void testPutWithSignal(
     P2pNvlTransportDevice p2p,
     char* dst_d, // Destination on peer GPU (must be NVLink-accessible)
     const char* src_d, // Source on local GPU
