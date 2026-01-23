@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/FabricMemHandler.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 
@@ -89,7 +90,7 @@ class MultiPeerNvlTransport {
   MultiPeerNvlTransport(
       int myRank,
       int nRanks,
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig);
 
   /**
@@ -160,7 +161,7 @@ class MultiPeerNvlTransport {
  private:
   const int myRank_{-1};
   const int nRanks_{-1};
-  std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap_;
+  std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   const MultiPeerNvlTransportConfig config_;
 
   // GpuMemHandler-based memory for data and state buffers

@@ -2,11 +2,11 @@
 
 #pragma once
 
-#include "comms/ctran/interfaces/IBootstrap.h"
+#include "comms/common/bootstrap/IBootstrap.h"
 
 namespace ctran::testing {
 
-class IntraProcessBootstrap : public ctran::bootstrap::IBootstrap {
+class IntraProcessBootstrap : public meta::comms::IBootstrap {
  public:
   struct State {
     State() {

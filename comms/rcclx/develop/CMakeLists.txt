@@ -956,7 +956,7 @@ set(CTRAN_FILES
   comms/ctran/bootstrap/ISocket.h
   comms/ctran/bootstrap/Socket.h
 
-  comms/ctran/interfaces/IBootstrap.h
+  comms/common/bootstrap/IBootstrap.h
   comms/ctran/interfaces/ICtran.h
   comms/ctran/mapper/CtranMapper.cc
   comms/ctran/mapper/CtranMapper.h
@@ -1106,7 +1106,7 @@ set(COMMON_FILES
   comms/common/IpcGpuBarrier.cuh
   comms/common/IpcMemHandler.cc
   comms/common/IpcMemHandler.h
-  comms/ctran/interfaces/IBootstrap.h
+  comms/common/bootstrap/IBootstrap.h
   comms/utils/checks.h
 
   comms/utils/colltrace/CollMetadata.h
