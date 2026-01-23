@@ -73,9 +73,11 @@ try:
 
             inplaceable_ops[functional_op.default] = InplaceableOp(
                 inplace_op.default,
-                tuple(mutable_tensor_indices)
-                if len(mutable_tensor_indices) > 1
-                else mutable_tensor_indices[0],
+                (
+                    tuple(mutable_tensor_indices)
+                    if len(mutable_tensor_indices) > 1
+                    else mutable_tensor_indices[0]
+                ),
             )
             logger.info(
                 f"Registered reinplace: {base_op_name} -> {base_op_name}_ "
