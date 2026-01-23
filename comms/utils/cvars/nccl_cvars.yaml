@@ -1427,6 +1427,14 @@ cvars:
      staging buffer / minimum chunk size). The size of per-peer ChunkState buffer
      is CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS * sizeof(ChunkState)=128*128=16KB
 
+ - name        : NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH
+   type        : size_t
+   default     : 2
+   description : |-
+     Pipeline depth for NVL P2P copy-based kernel. This value controls the
+     number of pipeline stages used for data transfer operations between
+     NVLink peers.
+
  - name        : NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE
    type        : uint64_t
    default     : 33554432
@@ -1896,13 +1904,14 @@ cvars:
  - name        : NCCL_SENDRECV_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctzcopy, ctstaged
+   choices     : orig, ctran, ctzcopy, ctstaged, ctp2p
    description : |-
      The algorithm to use for sendrecv communication
      orig - Copy-based communication
      ctran - Ctran-based communication auto-select
      ctzcopy - Ctran-based zero-copy kernel for NVL
      ctstaged - Ctran-based staged-copy kernel for NVL
+     ctp2p - Experimental algo: Ctran-based point-to-point kernel for NVL
 
  - name        : NCCL_ALLGATHER_P_ALGO
    type        : enum
