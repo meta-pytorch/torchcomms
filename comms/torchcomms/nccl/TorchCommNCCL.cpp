@@ -16,7 +16,7 @@
 namespace torch {
 namespace comms {
 
-ncclResult_t NCCLException::getResult() const {
+ncclResult_t NCCLException::getResult() const noexcept {
   return result_;
 }
 
