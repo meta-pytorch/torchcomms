@@ -9,11 +9,11 @@ namespace comms::pipes {
 MultiPeerNvlTransport::MultiPeerNvlTransport(
     int myRank,
     int nRanks,
-    std::shared_ptr<meta::comms::MpiBootstrap> mpiBootstrap,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig)
     : myRank_(myRank),
       nRanks_(nRanks),
-      mpiBootstrap_(mpiBootstrap),
+      bootstrap_(std::move(bootstrap)),
       config_(multiPeerNvlTransportConfig) {
   // Calculate per-peer buffer sizes with pipelining
   perPeerDataBufferSize_ = config_.pipelineDepth * config_.dataBufferSize;
@@ -24,26 +24,23 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   const std::size_t numChunksPerPeer = config_.pipelineDepth * numChunksPerStep;
   perPeerStateBufferSize_ = numChunksPerPeer * sizeof(ChunkState);
 
-  // Allocate buffers for (nRanks - 1) peers
+  // Allocate buffers for (nRanks - 1) peers using GpuMemHandler
   const std::size_t totalDataBufferSize =
       perPeerDataBufferSize_ * (nRanks_ - 1);
   const std::size_t totalStateBufferSize =
       perPeerStateBufferSize_ * (nRanks_ - 1);
 
-  dataBuffer_d_ =
-      std::make_unique<meta::comms::DeviceBuffer>(totalDataBufferSize);
-  dataBufferHandler_ = std::make_unique<meta::comms::IpcMemHandler>(
-      mpiBootstrap_, myRank, nRanks_);
-  dataBufferHandler_->addSelfDeviceMemPtr(dataBuffer_d_->get());
+  // Create memory handlers with automatic mode detection
+  // Will use fabric handles on H100+/CUDA12.3+, otherwise cudaIpc
+  dataBufferHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_, myRank_, nRanks_, totalDataBufferSize);
 
-  stateBuffer_d_ =
-      std::make_unique<meta::comms::DeviceBuffer>(totalStateBufferSize);
-  stateBufferHandler_ = std::make_unique<meta::comms::IpcMemHandler>(
-      mpiBootstrap_, myRank, nRanks_);
-  stateBufferHandler_->addSelfDeviceMemPtr(stateBuffer_d_->get());
+  stateBufferHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_, myRank_, nRanks_, totalStateBufferSize);
 
   // Initialize state buffer to READY_TO_SEND for all pipeline slots
-  auto statePtr = static_cast<ChunkState*>(stateBuffer_d_->get());
+  auto statePtr =
+      static_cast<ChunkState*>(stateBufferHandler_->getLocalDeviceMemPtr());
   const std::size_t totalNumChunksAllPeers = numChunksPerPeer * (nRanks_ - 1);
   std::vector<ChunkState> initStates(totalNumChunksAllPeers);
   auto cudaErr = cudaMemcpy(
@@ -52,7 +49,7 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     throw std::runtime_error(
         "cudaMemcpy failed in state buffer initialization");
   }
-};
+}
 
 void MultiPeerNvlTransport::exchange() {
   dataBufferHandler_->exchangeMemPtrs();
@@ -105,8 +102,10 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
   const auto numChunksPerPeer =
       static_cast<uint32_t>(config_.pipelineDepth * numChunksPerStep);
 
-  auto* localDataPtr = static_cast<char*>(dataBuffer_d_->get());
-  auto* localStatePtr = static_cast<char*>(stateBuffer_d_->get());
+  auto* localDataPtr =
+      static_cast<char*>(dataBufferHandler_->getLocalDeviceMemPtr());
+  auto* localStatePtr =
+      static_cast<char*>(stateBufferHandler_->getLocalDeviceMemPtr());
 
   LocalState localState{
       .dataBuffer = localDataPtr + localDataBufferOffset,

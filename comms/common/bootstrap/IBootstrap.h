@@ -6,7 +6,7 @@
 
 #include <folly/futures/Future.h>
 
-namespace ctran::bootstrap {
+namespace meta::comms {
 
 /*
  * Abstract class for all bootstrap operations. This is used
@@ -77,4 +77,4 @@ class IBootstrap {
   recv(void* buf, int len, int peer, int tag) = 0;
 };
 
-} // namespace ctran::bootstrap
+} // namespace meta::comms

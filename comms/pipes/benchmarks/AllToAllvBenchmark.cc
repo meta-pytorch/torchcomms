@@ -115,7 +115,9 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
-    CUDA_CHECK_VOID(cudaSetDevice(globalRank));
+    // Use localRank for cudaSetDevice since each node has its own set of GPUs
+    // globalRank would fail on multi-node setups where rank > num_gpus_per_node
+    CUDA_CHECK_VOID(cudaSetDevice(localRank));
 
     // Initialize NCCL with default channel settings
     NCCL_CHECK_VOID(
