@@ -63,6 +63,9 @@ void testContiguousLocality(
   if (scope == SyncScope::WARP) {
     testContiguousLocalityKernel<SyncScope::WARP>
         <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
+  } else if (scope == SyncScope::WARPGROUP) {
+    testContiguousLocalityKernel<SyncScope::WARPGROUP>
+        <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
   } else {
     testContiguousLocalityKernel<SyncScope::TILE>
         <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
@@ -153,6 +156,13 @@ void testPartition(
         subgroupTotalGroups_d,
         numPartitions,
         errorCount_d);
+  } else if (scope == SyncScope::WARPGROUP) {
+    testPartitionKernel<SyncScope::WARPGROUP><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        numPartitions,
+        errorCount_d);
   } else {
     testPartitionKernel<SyncScope::TILE><<<numBlocks, blockSize>>>(
         partitionIds_d,
@@ -207,6 +217,14 @@ void testPartitionSubgroupProperties(
     SyncScope scope) {
   if (scope == SyncScope::WARP) {
     testPartitionSubgroupPropertiesKernel<SyncScope::WARP>
+        <<<numBlocks, blockSize>>>(
+            threadIdsInGroup_d,
+            groupSizes_d,
+            scopes_d,
+            numPartitions,
+            errorCount_d);
+  } else if (scope == SyncScope::WARPGROUP) {
+    testPartitionSubgroupPropertiesKernel<SyncScope::WARPGROUP>
         <<<numBlocks, blockSize>>>(
             threadIdsInGroup_d,
             groupSizes_d,
@@ -268,6 +286,14 @@ void testPartitionInterleaved(
         subgroupTotalGroups_d,
         numPartitions,
         errorCount_d);
+  } else if (scope == SyncScope::WARPGROUP) {
+    testPartitionInterleavedKernel<SyncScope::WARPGROUP>
+        <<<numBlocks, blockSize>>>(
+            partitionIds_d,
+            subgroupIds_d,
+            subgroupTotalGroups_d,
+            numPartitions,
+            errorCount_d);
   } else {
     testPartitionInterleavedKernel<SyncScope::TILE><<<numBlocks, blockSize>>>(
         partitionIds_d,
@@ -326,6 +352,14 @@ void testWeightedPartition(
         weights_d,
         numPartitions,
         errorCount_d);
+  } else if (scope == SyncScope::WARPGROUP) {
+    testWeightedPartitionKernel<SyncScope::WARPGROUP><<<numBlocks, blockSize>>>(
+        partitionIds_d,
+        subgroupIds_d,
+        subgroupTotalGroups_d,
+        weights_d,
+        numPartitions,
+        errorCount_d);
   } else {
     testWeightedPartitionKernel<SyncScope::TILE><<<numBlocks, blockSize>>>(
         partitionIds_d,
@@ -335,6 +369,95 @@ void testWeightedPartition(
         numPartitions,
         errorCount_d);
   }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// Warpgroup Tests (4 warps = 128 threads per group)
+// =============================================================================
+
+__global__ void testWarpgroupGroupKernel(
+    uint32_t* groupIds,
+    uint32_t* threadIdsInGroup,
+    uint32_t* groupSizes,
+    uint32_t numItems,
+    uint32_t* errorCount) {
+  auto warpgroup = make_warpgroup_group();
+
+  // Record group properties for verification (one write per warpgroup)
+  if (warpgroup.is_leader()) {
+    groupSizes[warpgroup.group_id] = warpgroup.group_size;
+  }
+
+  // Each warpgroup writes its group_id to its assigned work items
+  warpgroup.for_each_item_contiguous(numItems, [&](uint32_t item_id) {
+    if (item_id >= numItems) {
+      atomicAdd(errorCount, 1);
+      return;
+    }
+
+    groupIds[item_id] = warpgroup.group_id;
+    threadIdsInGroup[item_id] = warpgroup.thread_id_in_group;
+  });
+}
+
+void testWarpgroupGroup(
+    uint32_t* groupIds_d,
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t numItems,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testWarpgroupGroupKernel<<<numBlocks, blockSize>>>(
+      groupIds_d, threadIdsInGroup_d, groupSizes_d, numItems, errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// Test warpgroup synchronization using named barriers
+// This test verifies that all 128 threads in a warpgroup synchronize correctly.
+// Each thread writes a value, then after sync, verifies all threads wrote.
+__global__ void testWarpgroupSyncKernel(
+    uint32_t* syncResults,
+    uint32_t* errorCount) {
+  __shared__ uint32_t sharedData[2048]; // Support up to 2048 threads per block
+
+  auto warpgroup = make_warpgroup_group();
+
+  uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
+      threadIdx.z * blockDim.x * blockDim.y;
+
+  // Phase 1: Each thread writes its thread ID to shared memory
+  sharedData[tid] = tid + 1; // +1 so we can distinguish from zero-initialized
+
+  // Synchronize within warpgroup using named barrier
+  warpgroup.sync();
+
+  // Phase 2: Each thread verifies all threads in its warpgroup wrote their
+  // values
+  constexpr uint32_t kWarpgroupSize = 128;
+  uint32_t warpgroupStart = (tid / kWarpgroupSize) * kWarpgroupSize;
+
+  for (uint32_t i = 0; i < kWarpgroupSize; i++) {
+    uint32_t expectedTid = warpgroupStart + i;
+    if (sharedData[expectedTid] != expectedTid + 1) {
+      atomicAdd(errorCount, 1);
+    }
+  }
+
+  // Record success (one write per warpgroup)
+  if (warpgroup.is_leader()) {
+    syncResults[warpgroup.group_id] = 1;
+  }
+}
+
+void testWarpgroupSync(
+    uint32_t* syncResults_d,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testWarpgroupSyncKernel<<<numBlocks, blockSize>>>(
+      syncResults_d, errorCount_d);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
