@@ -1388,7 +1388,7 @@ std::string_view TorchCommRCCL::getCommName() const {
 void TorchCommRCCL::register_address(
     const TorchCommRCCL::AddressWithLen& addr) {
   // We got a register after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
@@ -1409,7 +1409,7 @@ void TorchCommRCCL::register_address(
 
 void TorchCommRCCL::deregister_address(const TorchCommRCCL::Address& addr) {
   // We got a deregister after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
