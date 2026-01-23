@@ -1,3 +1,6 @@
+# Adapted from pytorch/pytorch:
+# https://github.com/pytorch/pytorch/blob/main/tools/linter/adapters/black_linter.py
+#
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
@@ -17,7 +20,6 @@ import subprocess
 import sys
 import time
 from enum import Enum
-from pathlib import Path
 from typing import NamedTuple
 
 

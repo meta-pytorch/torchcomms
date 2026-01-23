@@ -66,6 +66,7 @@ jobs:
         run: |
           set -eux
 
+          pip install uv
           lintrunner init
       - name: Lint
         shell: bash -l {0}
