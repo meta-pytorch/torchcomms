@@ -82,6 +82,7 @@ def register_collective(
 # Track functional ops created for autograd (for effectful registration)
 _FUNCTIONAL_OP_NAMES: list[str] = []
 
+
 def _generate_lib_ops(lib: Any) -> None:
     """Generate torch.library op definitions for all registered collectives.
 
@@ -670,6 +671,7 @@ def _register_lowerings() -> None:
             logger.info(f"Registered lowering for {op_name}")
         except AttributeError as e:
             logger.warning(f"Failed to register lowering for {op_name}: {e}")
+
 
 _EFFECTFUL_HANDLES: list = []  # Store handles to prevent GC
 
