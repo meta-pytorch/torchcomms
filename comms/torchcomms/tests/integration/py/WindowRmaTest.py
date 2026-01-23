@@ -36,8 +36,19 @@ class WindowRmaTest(unittest.TestCase):
         self.torchcomm = None
         self.wrapper = None
 
-    def _window_put_test(self, count, dtype, async_op, async_signal):
-        """Test window put operation."""
+    def _window_put_test(
+        self, count, dtype, async_op, async_signal, use_tensor_in_new_window=False
+    ):
+        """Test window put operation.
+
+        Args:
+            count: Number of elements in the tensor.
+            dtype: Data type of the tensor.
+            async_op: Whether to use async put operation.
+            async_signal: Whether to use async signal operation.
+            use_tensor_in_new_window: If True, pass tensor directly to new_window()
+                instead of calling tensor_register() separately.
+        """
         put_stream = torch.cuda.Stream()
         wait_stream = torch.cuda.Stream()
 
@@ -59,8 +70,13 @@ class WindowRmaTest(unittest.TestCase):
 
         self.torchcomm.barrier(False)
 
-        win = self.torchcomm.new_window()
-        win.tensor_register(win_buf)
+        if use_tensor_in_new_window:
+            # New API: pass tensor directly to new_window()
+            win = self.torchcomm.new_window(win_buf)
+        else:
+            # Legacy API: create window then register tensor separately
+            win = self.torchcomm.new_window()
+            win.tensor_register(win_buf)
         self.torchcomm.barrier(False)
 
         dst_rank = (self.rank + 1) % self.num_ranks
@@ -236,6 +252,34 @@ class WindowRmaTest(unittest.TestCase):
         for dtype in dtypes_to_test:
             print("Running _map_remote_tensor_device_agnostic_test")
             self._map_remote_tensor_device_agnostic_test(count, dtype)
+
+    @unittest.skipIf(
+        os.getenv("RUN_RMA_TEST", "").lower() not in ("1", "true"),
+        "RMA tests require NCCLX backend with CTran enabled (RUN_RMA_TEST=true)",
+    )
+    def test_new_window_with_tensor(self):
+        """Test that new_window() accepts an optional tensor argument.
+
+        This tests the new API where tensor can be passed directly to new_window()
+        instead of calling tensor_register() separately.
+        """
+        counts = [4, 1024]
+        dtypes = [torch.float, torch.int]
+
+        for count, dtype in itertools.product(counts, dtypes):
+            test_name = (
+                f"Count_{count}_{get_dtype_name(dtype)}_with_tensor_in_new_window"
+            )
+            print(f"Running _window_put_test with tensor in new_window: {test_name}")
+
+            # Test with use_tensor_in_new_window=True
+            self._window_put_test(
+                count,
+                dtype,
+                async_op=False,
+                async_signal=False,
+                use_tensor_in_new_window=True,
+            )
 
 
 if __name__ == "__main__":

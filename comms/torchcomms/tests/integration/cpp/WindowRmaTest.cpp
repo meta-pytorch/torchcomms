@@ -125,6 +125,72 @@ void WindowRmaTest::testWindowPutBasic(
   mem_pool.reset();
 }
 
+// Test function for new_window with optional tensor argument
+void WindowRmaTest::testWindowPutWithTensorInNewWindow(
+    int count,
+    at::ScalarType dtype) {
+  SCOPED_TRACE(
+      ::testing::Message()
+      << "Testing Window Put with tensor in new_window, count=" << count
+      << " and dtype=" << getDtypeName(dtype));
+
+  // Create separate streams for put and wait operations
+  auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  // Create tensor with different values based on rank
+  at::Tensor input_tensor = createWindowRmaTensor(rank_, count, dtype);
+
+  // Get global allocator for the backend and create MemPool for RDMA-compatible
+  // memory
+  auto cuda_allocator =
+      torch::comms::get_mem_allocator(torchcomm_->getBackend());
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          cuda_allocator));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  // Allocate tensor from pool
+  at::Tensor tensor;
+  auto options = at::TensorOptions().dtype(dtype).device(device_type_);
+  tensor = at::ones({count * num_ranks_}, options);
+
+  // End pool context immediately after allocation (Python: context exits here)
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  // Collective call to create window with tensor in new_window (new API)
+  torchcomm_->barrier(false);
+  auto win = torchcomm_->new_window(tensor); // New API: pass tensor directly
+  torchcomm_->barrier(false);
+
+  auto dst_rank = (rank_ + 1) % num_ranks_;
+  auto src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+
+  // Perform multiple put operations to test repeated usage
+  const int num_iterations = 10;
+  for (int iteration = 0; iteration < num_iterations; ++iteration) {
+    performWindowPutIteration(
+        win,
+        input_tensor,
+        dst_rank,
+        src_rank,
+        count,
+        false, // async_op
+        false, // async_signal
+        put_stream,
+        wait_stream);
+  }
+
+  // Cleanup sequence
+  put_stream.synchronize();
+  wait_stream.synchronize();
+  win->tensor_deregister();
+  win.reset();
+  mem_pool.reset();
+}
+
 // Helper function to create tensor for window RMA
 at::Tensor WindowRmaTest::createWindowRmaTensor(
     int value,
@@ -233,6 +299,23 @@ INSTANTIATE_TEST_SUITE_P(
       return "Count_" + std::to_string(count) + "_" + getDtypeName(dtype) +
           "_" + async_op + "_" + async_signal;
     });
+
+// Test for new_window with optional tensor argument
+TEST_F(WindowRmaTest, WindowPutWithTensorInNewWindow) {
+  if (checkIfSkip()) {
+    GTEST_SKIP() << "Skipping RMA tests (RUN_RMA_TEST not set)";
+  }
+
+  // Test with a subset of counts and dtypes
+  std::vector<int> counts = {4, 1024};
+  std::vector<at::ScalarType> dtypes = {at::kFloat, at::kInt};
+
+  for (int count : counts) {
+    for (at::ScalarType dtype : dtypes) {
+      testWindowPutWithTensorInNewWindow(count, dtype);
+    }
+  }
+}
 
 // This main function is provided by gtest
 int main(int argc, char** argv) {
