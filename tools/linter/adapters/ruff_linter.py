@@ -4,6 +4,10 @@
 #   "ruff==0.9.4",
 # ]
 # ///
+#
+# Derived from PyTorch's ruff_linter.py:
+# https://github.com/pytorch/pytorch/blob/main/tools/linter/adapters/ruff_linter.py
+#
 """
 Ruff formatter adapter for lintrunner.
 """

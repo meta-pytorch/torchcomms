@@ -9,6 +9,10 @@
 #   "pyflakes==3.4.0",
 # ]
 # ///
+#
+# Derived from PyTorch's flake8_linter.py:
+# https://github.com/pytorch/pytorch/blob/main/tools/linter/adapters/flake8_linter.py
+#
 """
 Flake8 linter adapter for lintrunner.
 """
