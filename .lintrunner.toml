@@ -37,3 +37,38 @@ init_command = [
     '--dry-run={{DRYRUN}}',
 ]
 is_formatter = false
+
+[[linter]]
+code = 'FLAKE8'
+include_patterns = [
+    "comms/torchcomms/**/*.py",
+]
+exclude_patterns = [
+    "**/*.pyi",
+]
+command = [
+    'uv',
+    'run',
+    '--script',
+    'tools/linter/adapters/flake8_linter.py',
+    '--',
+    '@{{PATHSFILE}}'
+]
+
+[[linter]]
+code = 'BLACK'
+include_patterns = [
+    "comms/torchcomms/**/*.py",
+]
+exclude_patterns = [
+    "**/*.pyi",
+]
+command = [
+    'uv',
+    'run',
+    '--script',
+    'tools/linter/adapters/black_linter.py',
+    '--',
+    '@{{PATHSFILE}}'
+]
+is_formatter = true

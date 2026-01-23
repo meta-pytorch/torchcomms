@@ -283,9 +283,9 @@ def gather_object(
     if my_comm_rank != root:
         return
 
-    assert object_gather_list is not None, (
-        "Must provide object_gather_list on root rank"
-    )
+    assert (
+        object_gather_list is not None
+    ), "Must provide object_gather_list on root rank"
     for i, tensor in enumerate(output_tensors):
         tensor = tensor.type(torch.uint8)
         tensor_size = object_size_list[i]

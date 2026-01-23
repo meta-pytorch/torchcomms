@@ -144,14 +144,14 @@ def verify_tensor_equality(
     output_cpu = output.cpu()
 
     # Check that tensors have the same shape
-    assert output_cpu.size() == expected_tensor.size(), (
-        f"Tensor shapes don't match for {description}"
-    )
+    assert (
+        output_cpu.size() == expected_tensor.size()
+    ), f"Tensor shapes don't match for {description}"
 
     # Check that tensors have the same dtype
-    assert output_cpu.dtype == expected_tensor.dtype, (
-        f"Tensor dtypes don't match for {description}"
-    )
+    assert (
+        output_cpu.dtype == expected_tensor.dtype
+    ), f"Tensor dtypes don't match for {description}"
 
     # Different verification based on dtype
     if output_cpu.dtype == torch.float:
