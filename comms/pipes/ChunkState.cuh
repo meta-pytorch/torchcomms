@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
 
@@ -213,8 +214,6 @@ static_assert(
     alignof(ChunkState) == 128,
     "ChunkState must be 128-byte aligned");
 
-} // namespace comms::pipes
-
 // =============================================================================
 // Thread-Group-Safe ChunkState Implementation
 // =============================================================================
@@ -222,10 +221,6 @@ static_assert(
 // These implementations require ThreadGroup to be fully defined, so they
 // are placed after the namespace closes and ThreadGroup.cuh is included.
 // This avoids a circular dependency (ThreadGroup doesn't need ChunkState).
-
-#include "comms/pipes/ThreadGroup.cuh"
-
-namespace comms::pipes {
 
 __device__ __forceinline__ void ChunkState::waitReadyToSend(
     ThreadGroup& group) const {
