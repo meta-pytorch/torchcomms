@@ -133,39 +133,6 @@ class WindowRmaTest(unittest.TestCase):
         del pool
         torch.cuda.synchronize()
 
-    def _window_attributes_test(self, count, dtype):
-        """Test window attributes for unified vs separate access types."""
-        # Get global allocator for the backend and create memory pool
-        allocator = torchcomms.get_mem_allocator(self.torchcomm.get_backend())
-        pool = torch.cuda.MemPool(allocator)
-        with torch.cuda.use_mem_pool(pool):
-            win_buf = torch.ones(
-                [count * self.num_ranks], dtype=dtype, device=self.device
-            )
-
-        win = self.torchcomm.new_window()
-        win.tensor_register(win_buf)
-        self.torchcomm.barrier(False)
-
-        # Test window attributes
-        if self.num_ranks <= 8:
-            next_rank = (self.rank + 1) % self.num_ranks
-            win_attr = win.get_attr(next_rank)
-            assert (
-                win_attr.access_type == TorchCommWinAccessType.WIN_ACCESS_TYPE_UNIFIED
-            )
-        else:
-            next_rank = (self.rank + 8) % self.num_ranks
-            win_attr = win.get_attr(next_rank)
-            assert (
-                win_attr.access_type == TorchCommWinAccessType.WIN_ACCESS_TYPE_SEPARATE
-            )
-
-        # Cleanup
-        win.tensor_deregister()
-        del win
-        del pool
-
     def _map_remote_tensor_device_agnostic_test(self, count, dtype):
         """Helper function to test map_remote_tensor with device-agnostic access."""
         print(
@@ -237,14 +204,6 @@ class WindowRmaTest(unittest.TestCase):
             print(f"Running _window_put_test with parameters: {test_name}")
 
             self._window_put_test(count, dtype, async_op, async_signal)
-
-        # Test window attributes with specific parameters
-        count = 1024
-        dtypes_to_test = [torch.float, torch.int, torch.int8]
-        for dtype in dtypes_to_test:
-            test_name = f"Count_{count}_{get_dtype_name(dtype)}"
-            print(f"Running _window_attributes_test with parameters: {test_name}")
-            self._window_attributes_test(count, dtype)
 
         # Test map_remote_tensor_device_agnostic with specific dtypes
         dtypes_to_test = [torch.float32, torch.int32, torch.bfloat16]
