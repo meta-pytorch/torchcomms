@@ -76,7 +76,7 @@ jobs:
         # Build and run C++ tests
         cmake -B build_tests -G Ninja -DBUILD_TESTS=ON
         cmake --build build_tests
-        ctest --test-dir build_tests --output-on-failure
+        cd build_tests && ctest --output-on-failure
 
   run_py_tests:
     needs: build_pip_wheel
