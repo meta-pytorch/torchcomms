@@ -9,8 +9,8 @@ __global__ void p2pSyncKernel(
     ChunkState* chunkStates,
     bool isSender,
     int nSteps,
-    bool useBlockGroups) {
-  auto group = useBlockGroups ? make_block_group() : make_warp_group();
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
   auto groupIdx = group.group_id;
 
   ChunkState* myChunkState = &chunkStates[groupIdx];
