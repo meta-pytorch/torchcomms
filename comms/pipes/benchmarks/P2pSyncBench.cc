@@ -45,10 +45,23 @@ static void p2pSyncBench(
 
   // Calculate number of ChunkStates needed based on group type
   // For block groups: 1 ChunkState per block
+  // For warpgroup groups: 2 ChunkStates per block (256 threads / 128 threads
+  // per warpgroup)
   // For warp groups: 8 ChunkStates per block (256 threads / 32 threads per
   // warp)
-  int numChunkStates =
-      (groupScope == SyncScope::TILE) ? nBlocks : nBlocks * (nThreads / 32);
+  int numChunkStates;
+  switch (groupScope) {
+    case SyncScope::TILE:
+      numChunkStates = nBlocks;
+      break;
+    case SyncScope::WARPGROUP:
+      numChunkStates = nBlocks * (nThreads / 128); // 4 warps per warpgroup
+      break;
+    case SyncScope::WARP:
+    default:
+      numChunkStates = nBlocks * (nThreads / 32);
+      break;
+  }
 
   // Allocate ChunkState array on receiver device
   CHECK_EQ(cudaSetDevice(receiverCudaDev), cudaSuccess);
@@ -174,6 +187,9 @@ static void p2pSyncBench(
 
 // P2P Sync benchmarks - warp groups
 REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::WARP, warp);
+
+// P2P Sync benchmarks - warpgroup groups
+REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::WARPGROUP, warpgroup);
 
 // P2P Sync benchmarks - block groups
 REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::TILE, block);
