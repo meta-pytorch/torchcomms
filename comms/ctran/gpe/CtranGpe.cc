@@ -333,6 +333,8 @@ static std::unordered_map<KernelConfig::KernelType, std::string>
         {KernelConfig::KernelType::SEND, "SEND"},
         {KernelConfig::KernelType::RECV, "RECV"},
         {KernelConfig::KernelType::SENDRECV_NOTIFY, "SENDRECV_NOTIFY"},
+        {KernelConfig::KernelType::SENDRECV_STAGED, "SENDRECV_STAGED"},
+        {KernelConfig::KernelType::SENDRECV_P2P, "SENDRECV_P2P"},
         {KernelConfig::KernelType::SEND_NOTIFY, "SEND_NOTIFY"},
         {KernelConfig::KernelType::RECV_NOTIFY, "RECV_NOTIFY"},
         {KernelConfig::KernelType::BROADCAST, "BROADCAST"},
