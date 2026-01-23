@@ -11,6 +11,3 @@ line-length = 88
 
 [tool.ruff.format]
 # Match internal fbcode settings
-
-[tool.ruff.lint.isort]
-known-first-party = ["torchcomms", "torch"]

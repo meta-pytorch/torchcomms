@@ -3,12 +3,11 @@
 # dependencies = [
 #   "ufmt==2.8.0",
 #   "usort==1.1.0",
-#   "black==24.4.2",
-#   "ruff-api==0.1.0",
+#   "ruff-api==0.2.1",
 # ]
 # ///
 #
-# ufmt adapter for lintrunner - combines ruff isort (import sorting) + ruff (formatting)
+# ufmt adapter for lintrunner - combines usort (import sorting) + ruff (formatting)
 # to match internal fbcode pyfmt behavior.
 #
 """
