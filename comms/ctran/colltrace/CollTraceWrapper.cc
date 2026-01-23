@@ -344,6 +344,7 @@ CollectiveMetadata getCollectiveMetadata(
     case KernelConfig::KernelType::RECV_UNPACK:
     case KernelConfig::KernelType::SENDRECV_UNPACK:
     case KernelConfig::KernelType::SENDRECV_STAGED:
+    case KernelConfig::KernelType::SENDRECV_P2P:
       XLOG_FIRST_N(ERR, 3, "P2P kernel types being handled by collective path");
       break;
   }
