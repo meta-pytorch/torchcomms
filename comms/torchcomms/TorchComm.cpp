@@ -462,12 +462,13 @@ c10::intrusive_ptr<TorchWork> TorchComm::endCoalescing() {
   return impl_->endCoalescing();
 }
 
-std::shared_ptr<TorchCommWindow> TorchComm::new_window() {
+std::shared_ptr<TorchCommWindow> TorchComm::new_window(
+    const std::optional<at::Tensor>& tensor) {
   preHook(
       PreHookArgs{
           .name = OpName::new_window,
       });
-  auto window = impl_->new_window();
+  auto window = impl_->new_window(tensor);
   postHook(
       PostHookArgs{
           .name = OpName::new_window,
