@@ -657,7 +657,7 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
       .numThreads = 128,
       .pipelineDepth = 4,
       .chunkSize = 128 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .name = "64MB_Block",
   });
 
@@ -669,7 +669,7 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
       .numThreads = 128,
       .pipelineDepth = 4,
       .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .name = "256MB_Block",
   });
 
@@ -681,7 +681,7 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
       .numThreads = 128,
       .pipelineDepth = 4,
       .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .name = "1GB_Block",
   });
 
@@ -758,7 +758,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .name = "Bidir_64MB",
   });
 
@@ -769,7 +769,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .name = "Bidir_128MB",
   });
 
@@ -781,7 +781,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .name = "Bidir_256MB",
   });
 
@@ -792,7 +792,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .name = "Bidir_512MB",
   });
 
@@ -804,7 +804,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .name = "Bidir_1GB",
   });
 
@@ -898,7 +898,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 1024 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .spreadClusterLaunch = true,
       .name = "NCCL_32M_16B_Block",
   });
@@ -911,7 +911,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 1024 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .spreadClusterLaunch = true,
       .name = "NCCL_64M_16B_Block",
   });
@@ -924,7 +924,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 1024 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .spreadClusterLaunch = true,
       .name = "NCCL_128M_16B_Block",
   });
@@ -937,7 +937,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 1024 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .spreadClusterLaunch = true,
       .name = "NCCL_256M_16B_Block",
   });
@@ -950,7 +950,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .spreadClusterLaunch = true,
       .name = "NCCL_512M_32B_Block",
   });
@@ -963,7 +963,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::TILE,
+      .groupScope = SyncScope::BLOCK,
       .spreadClusterLaunch = true,
       .name = "NCCL_1G_32B_Block",
   });

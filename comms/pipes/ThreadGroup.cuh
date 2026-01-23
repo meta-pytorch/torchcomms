@@ -21,7 +21,7 @@ namespace comms::pipes {
  * Available scopes:
  * - WARP: 32 threads per group (finest granularity, uses __syncwarp)
  * - WARPGROUP: 128 threads per group (4 warps, uses named barriers)
- * - TILE: All threads in a block form one group (uses __syncthreads)
+ * - BLOCK: All threads in a block form one group (uses __syncthreads)
  *
  * Usage example:
  *   __global__ void myKernel(SyncScope scope) {
@@ -29,7 +29,7 @@ namespace comms::pipes {
  *     // ...
  *   }
  */
-enum class SyncScope { WARP, WARPGROUP, TILE };
+enum class SyncScope { WARP, WARPGROUP, BLOCK };
 
 /**
  * ThreadGroup - Abstraction for cooperative thread group operations
@@ -78,7 +78,7 @@ struct ThreadGroup {
   // ================
 
   // scope - Synchronization scope for sync() calls
-  // WARP: uses __syncwarp() (fast). TILE: uses __syncthreads() (block-wide).
+  // WARP: uses __syncwarp() (fast). BLOCK: uses __syncthreads() (block-wide).
   SyncScope scope;
 
   __device__ inline void sync() {
@@ -102,7 +102,7 @@ struct ThreadGroup {
                      : "r"(barrierId), "r"(kWarpgroupSize));
         break;
       }
-      case SyncScope::TILE:
+      case SyncScope::BLOCK:
         __syncthreads();
         break;
     }
@@ -537,7 +537,7 @@ __device__ inline ThreadGroup make_block_group() {
       .group_size = blockDim.x,
       .group_id = blockIdx.x,
       .total_groups = gridDim.x,
-      .scope = SyncScope::TILE};
+      .scope = SyncScope::BLOCK};
 #else
   return ThreadGroup{};
 #endif
@@ -622,7 +622,7 @@ __device__ inline ThreadGroup make_thread_group(SyncScope scope) {
       return make_warp_group();
     case SyncScope::WARPGROUP:
       return make_warpgroup_group();
-    case SyncScope::TILE:
+    case SyncScope::BLOCK:
       return make_block_group();
     default:
       // Should never reach here, but return warp group as default

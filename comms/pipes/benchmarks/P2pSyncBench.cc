@@ -51,7 +51,7 @@ static void p2pSyncBench(
   // warp)
   int numChunkStates;
   switch (groupScope) {
-    case SyncScope::TILE:
+    case SyncScope::BLOCK:
       numChunkStates = nBlocks;
       break;
     case SyncScope::WARPGROUP:
@@ -192,7 +192,7 @@ REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::WARP, warp);
 REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::WARPGROUP, warpgroup);
 
 // P2P Sync benchmarks - block groups
-REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::TILE, block);
+REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::BLOCK, block);
 
 } // namespace comms::pipes::benchmark
 

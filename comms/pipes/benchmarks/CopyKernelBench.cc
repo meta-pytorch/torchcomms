@@ -71,7 +71,7 @@ static void p2pCopyKernel(
 
   size_t nGroups;
   switch (groupScope) {
-    case SyncScope::TILE:
+    case SyncScope::BLOCK:
       nGroups = nBlocks;
       break;
     case SyncScope::WARPGROUP:
@@ -141,7 +141,7 @@ static void d2dCopyKernel(
 
   size_t nGroups;
   switch (groupScope) {
-    case SyncScope::TILE:
+    case SyncScope::BLOCK:
       nGroups = nBlocks;
       break;
     case SyncScope::WARPGROUP:
@@ -200,10 +200,10 @@ REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::WARPGROUP, warpgroup);
 REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::WARPGROUP, warpgroup);
 
 // D2D (same device) benchmarks - block groups
-REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::TILE, block);
+REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::BLOCK, block);
 
 // P2P (cross device) benchmarks - block groups
-REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::TILE, block);
+REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::BLOCK, block);
 
 } // namespace comms::pipes::benchmark
 
