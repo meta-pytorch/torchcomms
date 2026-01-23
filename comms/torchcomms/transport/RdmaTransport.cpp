@@ -2,7 +2,9 @@
 
 #include "RdmaTransport.h"
 
+#include <fmt/format.h>
 #include <folly/synchronization/CallOnce.h>
+#include <stdexcept>
 
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Checks.h"
@@ -31,6 +33,13 @@ namespace torch::comms {
 
 RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev)
     : buf_(buf), len_(len), cudaDev_(cudaDev) {
+  if (len < kMinRdmaMemorySize) {
+    throw std::invalid_argument(
+        fmt::format(
+            "RdmaMemory: Minimum memory block to be registered must be >= {} bytes, got {} bytes",
+            kMinRdmaMemorySize,
+            len));
+  }
   initEnvironment();
   FB_COMMCHECKTHROW(CtranIb::regMem(buf_, len_, cudaDev_, &regHdl_));
   remoteKey_ = CtranIb::getRemoteAccessKey(regHdl_).toString();

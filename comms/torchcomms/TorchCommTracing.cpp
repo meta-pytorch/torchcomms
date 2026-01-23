@@ -2,10 +2,11 @@
 
 #include "comms/torchcomms/TorchCommTracing.hpp"
 
+#include <string>
+
 #include <ATen/core/ivalue.h>
 #include <ATen/record_function.h>
 #include <torch/csrc/distributed/c10d/ParamCommsUtils.hpp> // @manual=//caffe2:torch-cpp-cpu
-#include <string>
 
 namespace torch {
 namespace comms {

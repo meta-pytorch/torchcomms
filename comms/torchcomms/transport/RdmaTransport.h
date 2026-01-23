@@ -18,6 +18,9 @@ class CtranIb;
 
 namespace torch::comms {
 
+// Minimum size required for RDMA memory registration
+constexpr size_t kMinRdmaMemorySize = 4097;
+
 /*
  * RDMA Transport needs access to the memory buffer in order to transmit or
  * receive. To do you, user need to register the memory. This class provides
@@ -27,7 +30,8 @@ namespace torch::comms {
  * to an instance of a transport. And user can use any sub-range of this
  * registered memory for I/O APIs on RdmaTransport.
  *
- * Gotcha - Minimum memory block to be registered must be > 4097 bytes.
+ * Gotcha - Minimum memory block to be registered must be >= kMinRdmaMemorySize
+ * bytes.
  */
 class RdmaMemory : folly::MoveOnly {
  public:

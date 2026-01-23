@@ -2,18 +2,20 @@
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 #include <cstdlib>
 #include <set>
 #include <stdexcept>
 #include <string>
+
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <nccl.h> // @manual
+#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
+
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
-#include "nccl.h" // @manual
 
 namespace torch {
 namespace comms {
@@ -529,7 +531,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
           stream);
 
       if (result != ncclSuccess) {
-        nccl_api_->groupEnd(); // Clean up group on error
         throw NCCLException(
             *nccl_api_,
             "NCCL Send failed in batch operation",
@@ -546,7 +547,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
           stream);
 
       if (result != ncclSuccess) {
-        nccl_api_->groupEnd(); // Clean up group on error
         throw NCCLException(
             *nccl_api_,
             "NCCL Recv failed in batch operation",
@@ -837,7 +837,11 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
   work->recordStart("all_gather_v");
 
   // Use multiple broadcast operations for all_gather
-  nccl_api_->groupStart();
+  ncclResult_t result = nccl_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
     // assign input/output tensors to support vector all_gather (all_gather_v)
@@ -848,7 +852,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
       throw std::runtime_error(
           "Output tensor size must equal input tensor size for all_gather_v");
     }
-    nccl_api_->broadcast(
+    ncclResult_t opResult = nccl_api_->broadcast(
         input.data_ptr(),
         output.data_ptr(),
         input.numel(),
@@ -856,9 +860,19 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
         i,
         nccl_comm_,
         stream);
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_,
+          "NCCL Broadcast failed in all_gather",
+          opResult,
+          nccl_comm_);
+    }
   }
 
-  nccl_api_->groupEnd();
+  result = nccl_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
+  }
 
   work->recordEnd();
 
@@ -955,13 +969,18 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
   work->recordStart("reduce_scatter");
 
   // Use multiple reduce operations for reduce_scatter
-  nccl_api_->groupStart();
+  ncclResult_t result = nccl_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
     const auto dataType = getNcclDataType(input_list[i]);
+    ncclResult_t opResult;
     if (i == rank_) {
       // This rank receives the reduced result
-      nccl_api_->reduce(
+      opResult = nccl_api_->reduce(
           input_list[i].data_ptr(),
           output.data_ptr(),
           output.numel(),
@@ -972,7 +991,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
           stream);
     } else {
       // Other ranks contribute to the reduction
-      nccl_api_->reduce(
+      opResult = nccl_api_->reduce(
           input_list[i].data_ptr(),
           nullptr, // Non-root ranks don't receive
           input_list[i].numel(),
@@ -982,9 +1001,19 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
           nccl_comm_,
           stream);
     }
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_,
+          "NCCL Reduce failed in reduce_scatter",
+          opResult,
+          nccl_comm_);
+    }
   }
 
-  nccl_api_->groupEnd();
+  result = nccl_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
+  }
 
   work->recordEnd();
 
@@ -1027,10 +1056,15 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
   work->recordStart("reduce_scatter_v");
 
   // Use multiple reduce operations for reduce_scatter
-  nccl_api_->groupStart();
+  ncclResult_t result = nccl_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
     const auto dataType = getNcclDataType(input_list[i]);
+    ncclResult_t opResult;
     if (i == rank_) {
       // This rank receives the reduced result
       // assign input/output tensor to support vector reduce_scatter
@@ -1042,7 +1076,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
         throw std::runtime_error(
             "Output tensor size must equal input tensor size for reduce_scatter_v");
       }
-      nccl_api_->reduce(
+      opResult = nccl_api_->reduce(
           input_tensor.data_ptr(),
           output_tensor.data_ptr(),
           output_tensor.numel(),
@@ -1053,7 +1087,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
           stream);
     } else {
       // Other ranks contribute to the reduction
-      nccl_api_->reduce(
+      opResult = nccl_api_->reduce(
           input_list[i].data_ptr(),
           nullptr, // Non-root ranks don't receive
           input_list[i].numel(),
@@ -1063,9 +1097,19 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
           nccl_comm_,
           stream);
     }
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_,
+          "NCCL Reduce failed in reduce_scatter_v",
+          opResult,
+          nccl_comm_);
+    }
   }
 
-  nccl_api_->groupEnd();
+  result = nccl_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
+  }
 
   work->recordEnd();
 
@@ -1314,29 +1358,44 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
   // Record start event before NCCL operations
   work->recordStart("all_to_all");
 
-  nccl_api_->groupStart();
+  ncclResult_t result = nccl_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw NCCLException(
+        *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
     // Send to rank i
-    nccl_api_->send(
+    ncclResult_t opResult = nccl_api_->send(
         input_tensor_list[i].data_ptr(),
         input_tensor_list[i].numel(),
         getNcclDataType(input_tensor_list[i]),
         i,
         nccl_comm_,
         stream);
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Send failed in all_to_all", opResult, nccl_comm_);
+    }
 
     // Receive from rank i
-    nccl_api_->recv(
+    opResult = nccl_api_->recv(
         output_tensor_list[i].data_ptr(),
         output_tensor_list[i].numel(),
         getNcclDataType(output_tensor_list[i]),
         i,
         nccl_comm_,
         stream);
+    if (opResult != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Recv failed in all_to_all", opResult, nccl_comm_);
+    }
   }
 
-  nccl_api_->groupEnd();
+  result = nccl_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw NCCLException(*nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
+  }
 
   // Record end event after NCCL operations
   work->recordEnd();
@@ -1752,19 +1811,31 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::scatter(
   // Implement scatter using point-to-point operations
   if (rank_ == root) {
     // Root sends to all ranks (except itself)
-    nccl_api_->groupStart();
+    ncclResult_t result = nccl_api_->groupStart();
+    if (result != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
+    }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
-        nccl_api_->send(
+        ncclResult_t opResult = nccl_api_->send(
             input_tensor_list[i].data_ptr(),
             input_tensor_list[i].numel(),
             getNcclDataType(input_tensor_list[i]),
             i,
             nccl_comm_,
             stream);
+        if (opResult != ncclSuccess) {
+          throw NCCLException(
+              *nccl_api_, "NCCL Send failed in scatter", opResult, nccl_comm_);
+        }
       }
     }
-    nccl_api_->groupEnd();
+    result = nccl_api_->groupEnd();
+    if (result != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
+    }
 
     // Root copies its own data using cudaMemcpyAsync
     CUDA_CHECK(
@@ -1779,13 +1850,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::scatter(
         "memcpyAsync failed");
   } else {
     // Non-root ranks receive from root
-    nccl_api_->recv(
+    ncclResult_t result = nccl_api_->recv(
         output_tensor.data_ptr(),
         output_tensor.numel(),
         getNcclDataType(output_tensor),
         root,
         nccl_comm_,
         stream);
+    if (result != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Recv failed in scatter", result, nccl_comm_);
+    }
   }
 
   // Record end event after NCCL operations
@@ -1844,19 +1919,31 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
 
   if (rank_ == root) {
     // Root receives from all ranks (except itself)
-    nccl_api_->groupStart();
+    ncclResult_t result = nccl_api_->groupStart();
+    if (result != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL GroupStart failed", result, nccl_comm_);
+    }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
-        nccl_api_->recv(
+        ncclResult_t opResult = nccl_api_->recv(
             output_tensor_list[i].data_ptr(),
             output_tensor_list[i].numel(),
             getNcclDataType(output_tensor_list[i]),
             i,
             nccl_comm_,
             stream);
+        if (opResult != ncclSuccess) {
+          throw NCCLException(
+              *nccl_api_, "NCCL Recv failed in gather", opResult, nccl_comm_);
+        }
       }
     }
-    nccl_api_->groupEnd();
+    result = nccl_api_->groupEnd();
+    if (result != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL GroupEnd failed", result, nccl_comm_);
+    }
 
     // Root copies its own data using cudaMemcpyAsync
     CUDA_CHECK(
@@ -1870,13 +1957,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
         "memcpyAsync failed");
   } else {
     // Non-root ranks send to root
-    nccl_api_->send(
+    ncclResult_t result = nccl_api_->send(
         input_tensor.data_ptr(),
         input_tensor.numel(),
         getNcclDataType(input_tensor),
         root,
         nccl_comm_,
         stream);
+    if (result != ncclSuccess) {
+      throw NCCLException(
+          *nccl_api_, "NCCL Send failed in gather", result, nccl_comm_);
+    }
   }
 
   // Record end event after NCCL operations

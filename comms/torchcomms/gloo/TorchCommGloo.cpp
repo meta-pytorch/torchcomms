@@ -5,8 +5,6 @@
 #include <set>
 #include <string>
 
-#include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual
-
 #include <gloo/algorithm.h>
 #include <gloo/allgather.h>
 #include <gloo/allreduce.h>
@@ -24,6 +22,7 @@
 #include <gloo/transport/device.h>
 #include <gloo/transport/tcp/device.h>
 #include <gloo/transport/unbound_buffer.h>
+#include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual
 
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
