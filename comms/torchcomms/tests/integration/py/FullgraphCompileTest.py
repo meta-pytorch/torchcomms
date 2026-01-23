@@ -66,7 +66,7 @@ class FullgraphCompileTest(unittest.TestCase):
             """Read and log inductor output_code from the code cache."""
             import torch._inductor.codecache as codecache
 
-            logger.info(f"\n{'='*80}\nINDUCTOR OUTPUT CODE\n{'='*80}")
+            logger.info(f"\n{'=' * 80}\nINDUCTOR OUTPUT CODE\n{'=' * 80}")
 
             # Get the cache directory and find the most recent output_code file
             try:
@@ -94,11 +94,13 @@ class FullgraphCompileTest(unittest.TestCase):
             except Exception as e:
                 logger.warning(f"Could not access inductor cache: {e}")
 
-            logger.info(f"{'='*80}\n")
+            logger.info(f"{'=' * 80}\n")
 
         def graph_capture_backend(gm, example_inputs):
             """Custom backend that captures the graph before passing to inductor."""
-            logger.info(f"\n{'='*80}\nDYNAMO CAPTURED GRAPH for {test_name}\n{'='*80}")
+            logger.info(
+                f"\n{'=' * 80}\nDYNAMO CAPTURED GRAPH for {test_name}\n{'=' * 80}"
+            )
             logger.info("\nGraph code:")
             logger.info(gm.code)
             logger.info(f"\nGraph has {len(list(gm.graph.nodes))} nodes")
@@ -123,7 +125,7 @@ class FullgraphCompileTest(unittest.TestCase):
                 for op in custom_ops:
                     logger.info(f"  - {op.target}")
 
-            logger.info(f"{'='*80}\n")
+            logger.info(f"{'=' * 80}\n")
 
             logger.info("Calling compile_fx (inductor default)...")
             logger.info(
@@ -138,7 +140,7 @@ class FullgraphCompileTest(unittest.TestCase):
                     """Log the graph after AOT/functionalization, then call default compiler."""
                     # Log fx_graph_readable
                     logger.info(
-                        f"\n{'='*80}\nFX GRAPH READABLE for {test_name}\n{'='*80}"
+                        f"\n{'=' * 80}\nFX GRAPH READABLE for {test_name}\n{'=' * 80}"
                     )
                     try:
                         # print_readable() returns a string representation
@@ -148,7 +150,7 @@ class FullgraphCompileTest(unittest.TestCase):
                         logger.info(f"Could not get readable graph: {e}")
                         # Fallback to code
                         logger.info(gm.code)
-                    logger.info(f"{'='*80}\n")
+                    logger.info(f"{'=' * 80}\n")
 
                     # Call the default inductor compiler
                     result = compile_fx_inner(gm, example_inputs, **kwargs)
@@ -2111,8 +2113,7 @@ class FullgraphCompileTest(unittest.TestCase):
             self.assertEqual(len(result), 1)
             self.assertTrue(
                 result[0].numel() == 0,
-                f"Non-dst rank {self.rank} should have an empty result, "
-                f"got {result}",
+                f"Non-dst rank {self.rank} should have an empty result, got {result}",
             )
 
         logger.info(f"Gather compile test passed for rank {self.rank}")

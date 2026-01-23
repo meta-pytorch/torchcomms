@@ -3,6 +3,10 @@
 #pragma once
 
 #include <c10/util/intrusive_ptr.h>
+#include <chrono>
+#include <string>
+#include <vector>
+
 #include <gloo/rendezvous/store.h>
 #include <torch/csrc/Export.h> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
