@@ -3,6 +3,7 @@
 #pragma once
 
 #include "comms/pipes/ChunkState.cuh"
+#include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes::benchmark {
 
@@ -16,12 +17,12 @@ namespace comms::pipes::benchmark {
  * @param chunkStates Array of ChunkState objects (one per block/group)
  * @param isSender True for sender kernel, false for receiver
  * @param nSteps Number of sync steps to perform
- * @param useBlockGroups If true, use block groups; otherwise use warp groups
+ * @param groupScope Thread group scope (WARP, WARPGROUP, or TILE)
  */
 __global__ void p2pSyncKernel(
     ChunkState* chunkStates,
     bool isSender,
     int nSteps,
-    bool useBlockGroups);
+    SyncScope groupScope);
 
 } // namespace comms::pipes::benchmark

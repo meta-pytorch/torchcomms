@@ -36,6 +36,8 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   void tensor_register(const at::Tensor& tensor) override;
   void tensor_deregister() override;
 
+  std::shared_ptr<TorchCommWindow> clone() override;
+
   c10::intrusive_ptr<TorchWork> put(
       const at::Tensor& tensor,
       int dstRank,

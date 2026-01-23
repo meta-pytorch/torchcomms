@@ -49,6 +49,10 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCLQueue::garbageCollectLocked() {
   return last_status;
 }
 
+// Thread-safety: This method is called from the timeout watchdog thread while
+// the main thread may be enqueuing work via enqueueWork(). The
+// work_queues_mutex_ ensures proper synchronization - both garbageCollect() and
+// enqueueWork() acquire the mutex before accessing stream_work_queues_.
 TorchWorkNCCL::WorkStatus TorchWorkNCCLQueue::garbageCollect() {
   std::lock_guard<std::mutex> lock(work_queues_mutex_);
   return garbageCollectLocked();
@@ -88,7 +92,7 @@ void TorchWorkNCCLQueue::enqueueWork(
     cudaStream_t stream) {
   // Add work to stream's queue after events have been recorded
   std::lock_guard<std::mutex> lock(work_queues_mutex_);
-  stream_work_queues_[stream].push(work);
+  stream_work_queues_[stream].push(std::move(work));
 }
 
 } // namespace comms

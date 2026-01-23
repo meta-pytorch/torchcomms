@@ -13,6 +13,7 @@ option(USE_RCCL "Whether to build RCCL or not" OFF)
 option(USE_RCCLX "Whether to build RCCLX or not" OFF)
 option(USE_XCCL "Whether to build XCCL or not" OFF)
 option(USE_TRANSPORT "Whether to build TRANSPORT or not" ON)
+option(BUILD_TESTS "Whether to build tests or not" OFF)
 message(STATUS "  USE_NCCL : ${USE_NCCL}")
 message(STATUS "  USE_NCCLX : ${USE_NCCLX}")
 message(STATUS "  USE_GLOO  : ${USE_GLOO}")
@@ -20,6 +21,7 @@ message(STATUS "  USE_RCCL  : ${USE_RCCL}")
 message(STATUS "  USE_RCCLX  : ${USE_RCCLX}")
 message(STATUS "  USE_XCCL  : ${USE_XCCL}")
 message(STATUS "  USE_TRANSPORT  : ${USE_TRANSPORT}")
+message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 
 if(NOT DEFINED ENV{TORCH_CUDA_ARCH_LIST})
     set(TORCH_CUDA_ARCH_LIST "9.0")
@@ -30,6 +32,21 @@ message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
 
 # Find Python and PyTorch
 find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
+
+# Auto-detect PyTorch cmake path from installed torch package
+if(NOT DEFINED CMAKE_PREFIX_PATH OR NOT CMAKE_PREFIX_PATH MATCHES "torch")
+    execute_process(
+        COMMAND ${Python3_EXECUTABLE} -c "import torch; print(torch.utils.cmake_prefix_path)"
+        OUTPUT_VARIABLE TORCH_CMAKE_PREFIX_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET
+    )
+    if(TORCH_CMAKE_PREFIX_PATH)
+        list(APPEND CMAKE_PREFIX_PATH ${TORCH_CMAKE_PREFIX_PATH})
+        message(STATUS "Auto-detected Torch cmake path: ${TORCH_CMAKE_PREFIX_PATH}")
+    endif()
+endif()
+
 find_package(Torch REQUIRED)
 
 
@@ -54,7 +71,7 @@ else()
   set(CONDA_PREFIX "${ROOT}/build/conda")
   set(ENV{CONDA_PREFIX} "${CONDA_PREFIX}")
 endif()
-set(CONDA_LIB "${CONDA_PREFIX}/${LIB_SUFFIX}")
+set(CONDA_LIB "${CONDA_PREFIX}/lib")
 set(CONDA_INCLUDE "${CONDA_PREFIX}/include")
 set(TORCH_PYTHON_LIB "${TORCH_INSTALL_PREFIX}/lib/libtorch_python.so")
 
@@ -139,3 +156,9 @@ install(TARGETS torchcomms
 install(TARGETS torchcomms_comms
     LIBRARY DESTINATION .
 )
+
+# Build tests
+if (BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(comms/torchcomms/tests/unit/cpp)
+endif()

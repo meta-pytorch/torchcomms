@@ -42,6 +42,20 @@ PYBIND11_MODULE(_comms, m) {
           "Create default ReduceOp",
           py::arg("opType"),
           py::call_guard<py::gil_scoped_release>())
+      .def("__copy__", [](const ReduceOp& self) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const ReduceOp& self, py::dict memo) {
+            auto self_obj = py::cast(self);
+            auto self_id =
+                py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
+            if (memo.contains(self_id)) {
+              return memo[self_id].cast<ReduceOp>();
+            }
+            auto copy = self;
+            memo[self_id] = py::cast(copy);
+            return copy;
+          })
       .def_property_readonly(
           "type", &ReduceOp::type, "Get the type of the operation")
       .def_static(
@@ -139,14 +153,14 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
           )",
           py::call_guard<py::gil_scoped_release>());
 
-  py::enum_<TorchCommlWinAccessType>(
-      m, "TorchCommlWinAccessType", "Window attribute.")
+  py::enum_<TorchCommWinAccessType>(
+      m, "TorchCommWinAccessType", "Window attribute.")
       .value(
           "WIN_ACCESS_TYPE_UNIFIED",
-          TorchCommlWinAccessType::WIN_ACCESS_TYPE_UNIFIED)
+          TorchCommWinAccessType::WIN_ACCESS_TYPE_UNIFIED)
       .value(
           "WIN_ACCESS_TYPE_SEPARATE",
-          TorchCommlWinAccessType::WIN_ACCESS_TYPE_SEPARATE);
+          TorchCommWinAccessType::WIN_ACCESS_TYPE_SEPARATE);
 
   py::class_<TorchCommWindowAttr, std::shared_ptr<TorchCommWindowAttr>>(
       m, "TorchCommWindowAttr", "Window attributes.")
@@ -159,6 +173,33 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
   // Bind TorchCommWindow class
   py::class_<TorchCommWindow, std::shared_ptr<TorchCommWindow>>(
       m, "TorchCommWindow")
+      .def(
+          "__copy__",
+          [](const std::shared_ptr<TorchCommWindow>& self) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const std::shared_ptr<TorchCommWindow>& self, py::dict memo) {
+            auto self_obj = py::cast(self);
+            auto self_id =
+                py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
+            if (memo.contains(self_id)) {
+              return memo[self_id].cast<std::shared_ptr<TorchCommWindow>>();
+            }
+
+            auto new_window = self->clone();
+
+            auto original_tensor = self->get_tensor();
+            auto cloned_tensor = new_window->get_tensor();
+            if (original_tensor.has_value() && cloned_tensor.has_value()) {
+              auto original_tensor_obj = py::cast(original_tensor.value());
+              memo[py::cast(
+                  reinterpret_cast<uintptr_t>(original_tensor_obj.ptr()))] =
+                  py::cast(cloned_tensor.value());
+            }
+
+            memo[self_id] = py::cast(new_window);
+            return new_window;
+          })
       .def(
           "tensor_register",
           [](TorchCommWindow& self, const at::Tensor& tensor) {
@@ -213,6 +254,57 @@ Returns:
 
       )",
           py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_tensor",
+          [](const TorchCommWindow& self) -> std::optional<at::Tensor> {
+            return self.get_tensor();
+          },
+          R"(
+Get the registered tensor buffer, if any.
+
+Returns:
+    Optional[torch.Tensor]: The registered tensor, or None if no tensor is registered.
+
+      )")
+      .def_property_readonly(
+          "dtype",
+          [](TorchCommWindow& self) {
+            return py::reinterpret_steal<py::object>(
+                THPDtype_New(self.getDtype(), "torch"));
+          },
+          R"(The dtype of the registered buffer tensor.
+
+Returns:
+    torch.dtype: The dtype of the registered buffer, e.g. torch.float32.
+
+Note:
+    This is primarily used by torch.compile's meta kernel to determine
+    the output tensor dtype for map_remote_tensor() operations.
+          )")
+      .def_property_readonly(
+          "shape",
+          [](TorchCommWindow& self) { return self.getShape(); },
+          R"(The shape of the registered buffer tensor.
+
+Returns:
+    list[int]: The shape of the registered buffer as a list of dimensions.
+
+Note:
+    This is primarily used by torch.compile's meta kernel to determine
+    the output tensor shape for map_remote_tensor() operations.
+          )")
+      .def_property_readonly(
+          "device",
+          [](TorchCommWindow& self) { return self.getDevice(); },
+          R"(The device of the registered buffer tensor.
+
+Returns:
+    torch.device: The device of the registered buffer.
+
+Note:
+    This is primarily used by torch.compile's meta kernel to determine
+    the output tensor device for map_remote_tensor() operations.
+          )")
       .def(
           "put",
           [](TorchCommWindow& self,
@@ -580,6 +672,24 @@ Args:
 
   // Bind TorchComm class
   py::class_<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
+      // NOTE: copy/deepcopy return the same object (not a clone).
+      // Actually cloning the underlying communicator would be extremely
+      // expensive (requires collective operations to create new comm groups).
+      .def(
+          "__copy__",
+          [](const std::shared_ptr<TorchComm>& self) { return self; })
+      .def(
+          "__deepcopy__",
+          [](const std::shared_ptr<TorchComm>& self, py::dict memo) {
+            auto self_obj = py::cast(self);
+            auto self_id =
+                py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
+            if (memo.contains(self_id)) {
+              return memo[self_id].cast<std::shared_ptr<TorchComm>>();
+            }
+            memo[self_id] = py::cast(self);
+            return self;
+          })
       .def(
           "finalize",
           &TorchComm::finalize,
@@ -1248,15 +1358,27 @@ Args:
       // window operations
       .def(
           "new_window",
-          [](TorchComm& self) { return self.new_window(); },
+          [](TorchComm& self, std::optional<at::Tensor> tensor) {
+            return self.new_window(tensor);
+          },
           R"(
 Create a new window object for Remote Memory Access (RMA) operations.
 
 Windows enable one-sided communication where data can be written directly
 to a remote rank's buffer without receiver-side participation.
 
+Args:
+    tensor (torch.Tensor, optional): Contiguous tensor to register with the
+        window. Must be allocated via ``comm.mem_allocator`` using cuMem APIs.
+        If provided, the tensor will be registered immediately during window
+        creation. If not provided, use ``tensor_register()`` later.
+
+Raises:
+    RuntimeError: If tensor is provided and a buffer is already registered
+        (double registration is not allowed).
+
 Returns:
-    TorchCommWindow: Unregistered window object.
+    TorchCommWindow: Window object, registered if tensor was provided.
 
 Note:
     Requires ``ncclx`` backend.
@@ -1265,7 +1387,11 @@ Example:
 
 .. code-block:: python
 
-    # Create window and register buffer (must use mem_allocator)
+    # Option 1: Create window with tensor registration in one step
+    buffer = comm.mem_allocator.allocate(size, dtype, device)
+    window = comm.new_window(buffer)
+
+    # Option 2: Create window and register buffer separately
     buffer = comm.mem_allocator.allocate(size, dtype, device)
     window = comm.new_window()
     window.tensor_register(buffer)
@@ -1282,6 +1408,7 @@ Example:
     window.tensor_deregister()
 
       )",
+          py::arg("tensor") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
 
       // Communicator Management

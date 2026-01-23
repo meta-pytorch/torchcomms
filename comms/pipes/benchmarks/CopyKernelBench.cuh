@@ -17,6 +17,6 @@ __global__ void copyKernel(
     const char* src,
     std::size_t nBytes,
     int nRuns,
-    bool useBlockGroups);
+    SyncScope groupScope);
 
 } // namespace comms::pipes::benchmark

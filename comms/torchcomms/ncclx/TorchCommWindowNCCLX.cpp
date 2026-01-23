@@ -101,6 +101,15 @@ void TorchCommWindowNCCLX::tensor_deregister() {
   torch_comm_->barrier(false);
 }
 
+std::shared_ptr<TorchCommWindow> TorchCommWindowNCCLX::clone() {
+  auto new_window =
+      std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, torch_comm_);
+  if (buf_tensor_.has_value()) {
+    new_window->tensor_register(buf_tensor_->clone());
+  }
+  return new_window;
+}
+
 c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX::put(
     const at::Tensor& tensor,
     int dstRank,
@@ -250,10 +259,10 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX::get_attr(
   auto attr = std::make_shared<TorchCommWindowAttr>();
   switch (nccl_attr->accessType) {
     case ncclWinAccessUnified:
-      attr->accessType = TorchCommlWinAccessType::WIN_ACCESS_TYPE_UNIFIED;
+      attr->accessType = TorchCommWinAccessType::WIN_ACCESS_TYPE_UNIFIED;
       break;
     case ncclWinAccessSeparate:
-      attr->accessType = TorchCommlWinAccessType::WIN_ACCESS_TYPE_SEPARATE;
+      attr->accessType = TorchCommWinAccessType::WIN_ACCESS_TYPE_SEPARATE;
       break;
     default:
       throw std::runtime_error("Unsupported NCCL window access type");

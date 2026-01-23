@@ -11,14 +11,14 @@ namespace comms {
 // Forward declaration
 class TorchWork;
 
-using TorchCommlWinAccessType = enum {
+using TorchCommWinAccessType = enum {
   WIN_ACCESS_TYPE_UNIFIED = 0,
   WIN_ACCESS_TYPE_SEPARATE = 1,
 };
 
 class TorchCommWindowAttr {
  public:
-  TorchCommlWinAccessType accessType;
+  TorchCommWinAccessType accessType;
 };
 
 class TorchCommWindow {
@@ -32,8 +32,14 @@ class TorchCommWindow {
   TorchCommWindow(TorchCommWindow&&) = delete;
   TorchCommWindow& operator=(TorchCommWindow&&) = delete;
 
+  // tensor_register and tensor_deregister are collective operations - all
+  // ranks must call them together.
   virtual void tensor_register(const at::Tensor& tensor) = 0;
   virtual void tensor_deregister() = 0;
+
+  // Creates a new window with the same backend/comm configuration.
+  // If a tensor is registered, the clone will have a cloned tensor registered.
+  virtual std::shared_ptr<TorchCommWindow> clone() = 0;
 
   // APIs exposed to users
   virtual c10::intrusive_ptr<TorchWork> put(
@@ -52,12 +58,31 @@ class TorchCommWindow {
 
   virtual std::shared_ptr<TorchCommWindowAttr> get_attr(int peerRank) = 0;
 
+  // Get the registered buffer's dtype (for torch.compile meta kernel)
+  at::ScalarType getDtype() const {
+    return buf_dtype_;
+  }
+
+  // Get the registered buffer's shape (for torch.compile meta kernel)
+  std::vector<int64_t> getShape() const {
+    return buf_shape_;
+  }
+
+  // Get the registered buffer's device (for torch.compile meta kernel)
+  c10::Device getDevice() const {
+    return buf_device_;
+  }
+
   size_t get_size() const {
     return win_size_;
   }
 
+  // Returns the registered tensor buffer, if any.
+  std::optional<at::Tensor> get_tensor() const {
+    return buf_tensor_;
+  }
+
  protected:
-  void* base_ptr_{};
   // device_: The device where the window is allocated.
   //  The device where the window is allocated may differ from the device used
   //  by the communicator. For example, the window could be allocated on the CPU

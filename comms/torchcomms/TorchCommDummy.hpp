@@ -129,8 +129,9 @@ class TorchCommDummy : public TorchCommBackend {
       bool async_op,
       const GatherOptions& options = {}) override;
 
-  // Window & One-sidede Operations
-  std::shared_ptr<TorchCommWindow> new_window() override;
+  // Window & One-sided Operations
+  std::shared_ptr<TorchCommWindow> new_window(
+      const std::optional<at::Tensor>& tensor = std::nullopt) override;
 
   // Communicator Management
   std::shared_ptr<TorchCommBackend> split(

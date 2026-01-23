@@ -53,6 +53,10 @@ class DummyTorchCommWindow : public TorchCommWindow {
     (void)peerRank;
     return nullptr;
   }
+
+  std::shared_ptr<TorchCommWindow> clone() override {
+    return std::make_shared<DummyTorchCommWindow>();
+  }
 };
 } // namespace
 
@@ -238,8 +242,12 @@ c10::intrusive_ptr<TorchWork> TorchCommDummy::gather(
   return c10::make_intrusive<TorchWorkCompleted>();
 }
 
-std::shared_ptr<TorchCommWindow> TorchCommDummy::new_window() {
+std::shared_ptr<TorchCommWindow> TorchCommDummy::new_window(
+    const std::optional<at::Tensor>& tensor) {
   auto win = std::make_shared<DummyTorchCommWindow>();
+  if (tensor.has_value()) {
+    win->tensor_register(tensor.value());
+  }
   return win;
 }
 
