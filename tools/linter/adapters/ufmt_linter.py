@@ -1,31 +1,28 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#   "ruff==0.9.4",
+#   "ufmt==2.8.0",
+#   "usort==1.1.0",
+#   "black==24.4.2",
+#   "ruff-api==0.1.0",
 # ]
 # ///
 #
-# Derived from PyTorch's ruff_linter.py:
-# https://github.com/pytorch/pytorch/blob/main/tools/linter/adapters/ruff_linter.py
+# ufmt adapter for lintrunner - combines ruff isort (import sorting) + ruff (formatting)
+# to match internal fbcode pyfmt behavior.
 #
 """
-Ruff formatter adapter for lintrunner.
+ufmt formatter adapter for lintrunner.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import logging
-import os
-import subprocess
 import sys
-import time
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
-
-
-IS_WINDOWS: bool = os.name == "nt"
 
 
 class LintSeverity(str, Enum):
@@ -47,40 +44,20 @@ class LintMessage(NamedTuple):
     description: str | None
 
 
-def as_posix(name: str) -> str:
-    return name.replace("\\", "/") if IS_WINDOWS else name
-
-
-def run_command(
-    args: list[str],
-    stdin_input: str | None = None,
-) -> subprocess.CompletedProcess[str]:
-    logging.debug("$ %s", " ".join(args))
-    start_time = time.monotonic()
-    try:
-        return subprocess.run(
-            args,
-            input=stdin_input,
-            capture_output=True,
-            check=False,
-            encoding="utf-8",
-        )
-    finally:
-        end_time = time.monotonic()
-        logging.debug("took %dms", (end_time - start_time) * 1000)
-
-
 def check_file(filename: str) -> list[LintMessage]:
+    from ufmt import Result, ufmt_file
+
+    path = Path(filename).resolve()
+
     try:
-        with open(filename, encoding="utf-8") as f:
-            original = f.read()
+        original = path.read_text(encoding="utf-8")
     except Exception as err:
         return [
             LintMessage(
                 path=filename,
                 line=None,
                 char=None,
-                code="RUFF",
+                code="UFMT",
                 severity=LintSeverity.ERROR,
                 name="read-failed",
                 original=None,
@@ -90,41 +67,30 @@ def check_file(filename: str) -> list[LintMessage]:
         ]
 
     try:
-        proc = run_command(
-            [sys.executable, "-mruff", "format", "--stdin-filename", filename, "-"],
-            stdin_input=original,
+        # Run ufmt (ruff isort + ruff format) with dry_run to not modify file
+        # return_content=True to get formatted content
+        result: Result = ufmt_file(
+            path,
+            dry_run=True,
+            return_content=True,
         )
-    except OSError as err:
+        if result.error:
+            raise result.error
+        replacement = result.after.decode("utf-8") if result.after else original
+    except Exception as err:
         return [
             LintMessage(
                 path=filename,
                 line=None,
                 char=None,
-                code="RUFF",
-                severity=LintSeverity.ERROR,
-                name="command-failed",
-                original=None,
-                replacement=None,
-                description=f"Failed to run ruff format: {err}",
-            )
-        ]
-
-    if proc.returncode != 0:
-        return [
-            LintMessage(
-                path=filename,
-                line=None,
-                char=None,
-                code="RUFF",
+                code="UFMT",
                 severity=LintSeverity.ERROR,
                 name="format-error",
                 original=None,
                 replacement=None,
-                description=f"Ruff failed with exit code {proc.returncode}: {proc.stderr.strip()}",
+                description=f"ufmt failed: {err}",
             )
         ]
-
-    replacement = proc.stdout
 
     if original == replacement:
         return []
@@ -134,7 +100,7 @@ def check_file(filename: str) -> list[LintMessage]:
             path=filename,
             line=1,
             char=1,
-            code="RUFF",
+            code="UFMT",
             severity=LintSeverity.WARNING,
             name="format",
             original=original,
@@ -146,7 +112,7 @@ def check_file(filename: str) -> list[LintMessage]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Ruff formatter wrapper for lintrunner.",
+        description="ufmt (usort + formatter) wrapper for lintrunner.",
         fromfile_prefix_chars="@",
     )
     parser.add_argument(
@@ -163,7 +129,7 @@ def main() -> None:
 
     logging.basicConfig(
         format="<%(threadName)s:%(levelname)s> %(message)s",
-        level=logging.NOTSET if args.verbose else logging.DEBUG,
+        level=logging.DEBUG if args.verbose else logging.WARNING,
         stream=sys.stderr,
     )
 

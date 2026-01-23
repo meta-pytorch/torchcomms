@@ -6,11 +6,13 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
+#include "comms/pipes/ThreadGroup.cuh"
+
 namespace comms::pipes::test {
 
 // Kernel: testContiguousLocalityKernel
 // Tests that for_each_item_contiguous assigns CONTIGUOUS blocks of work items
-// to each warp. Each warp writes its group_id to all work items it processes.
+// to each group. Each group writes its group_id to all work items it processes.
 // The CPU then verifies that work items [start, end) all have the same
 // group_id, confirming contiguous-based assignment.
 void testContiguousLocality(
@@ -18,7 +20,8 @@ void testContiguousLocality(
     uint32_t numItems,
     uint32_t* errorCount_d,
     int numBlocks,
-    int blockSize);
+    int blockSize,
+    SyncScope scope);
 
 // Tests make_block_group() - where all threads in a block form one group
 // Verifies:
@@ -47,7 +50,8 @@ void testPartition(
     uint32_t numPartitions,
     uint32_t* errorCount_d,
     int numBlocks,
-    int blockSize);
+    int blockSize,
+    SyncScope scope);
 
 // Tests that subgroup preserves thread_id_in_group, group_size, and scope
 // from the original group
@@ -58,7 +62,8 @@ void testPartitionSubgroupProperties(
     uint32_t numPartitions,
     uint32_t* errorCount_d,
     int numBlocks,
-    int blockSize);
+    int blockSize,
+    SyncScope scope);
 
 // Tests partition(cuda::std::span<const uint32_t>) - weighted partition
 // Verifies proportional assignment based on weights
@@ -70,7 +75,8 @@ void testWeightedPartition(
     uint32_t numPartitions,
     uint32_t* errorCount_d,
     int numBlocks,
-    int blockSize);
+    int blockSize,
+    SyncScope scope);
 
 // Tests partition_interleaved(num_partitions) - round-robin partition
 // Verifies:
@@ -82,6 +88,38 @@ void testPartitionInterleaved(
     uint32_t* subgroupIds_d,
     uint32_t* subgroupTotalGroups_d,
     uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize,
+    SyncScope scope);
+
+// =============================================================================
+// Warpgroup Tests (4 warps = 128 threads per group)
+// =============================================================================
+
+// Tests make_warpgroup_group() - where 4 warps (128 threads) form one group
+// Verifies:
+// - group_size == 128 (4 * warpSize)
+// - thread_id_in_group == tid % 128 (linear thread ID within warpgroup)
+// - group_id is computed correctly across all warpgroups
+// - total_groups == (threads_per_block / 128) * num_blocks
+// - Work items are distributed contiguously across warpgroups
+void testWarpgroupGroup(
+    uint32_t* groupIds_d,
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* groupSizes_d,
+    uint32_t numItems,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+// Tests warpgroup synchronization using named barriers
+// Verifies:
+// - All 128 threads in a warpgroup synchronize correctly
+// - sync() uses bar.sync PTX instruction with correct barrier ID
+// - Multiple warpgroups can synchronize independently within a block
+void testWarpgroupSync(
+    uint32_t* syncResults_d,
     uint32_t* errorCount_d,
     int numBlocks,
     int blockSize);
