@@ -29,6 +29,8 @@ std::unordered_map<KernelConfig::KernelType, void*> kernelFns = {
      reinterpret_cast<void*>(ncclKernelSendRecv</*UNPACK=*/true>)},
     {KernelConfig::KernelType::SENDRECV_STAGED,
      reinterpret_cast<void*>(ncclKernelSendRecvStaged)},
+    {KernelConfig::KernelType::SENDRECV_P2P,
+     reinterpret_cast<void*>(ncclKernelSendRecvP2p)},
 };
 
 static const auto myAlgo = NCCL_SENDRECV_ALGO::ctran;
