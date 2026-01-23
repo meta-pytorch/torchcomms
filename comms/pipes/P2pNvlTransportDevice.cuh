@@ -8,6 +8,7 @@
 #include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
+#include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -20,11 +21,11 @@ namespace comms::pipes {
  * - Receiver reads from LocalState (own local buffers)
  *
  * This means LocalState buffers are the DESTINATION for incoming data.
- * Uses DeviceSpan for safe, bounds-checked access to chunk states.
  */
 struct LocalState {
   char* dataBuffer;
   DeviceSpan<ChunkState> stateBuffer;
+  DeviceSpan<SignalState> signalBuffer;
 };
 
 /**
@@ -35,11 +36,11 @@ struct LocalState {
  * - This allows receiver to read from local memory (faster)
  *
  * These pointers are obtained via IPC and point to peer's LocalState buffers.
- * Uses DeviceSpan for safe, bounds-checked access to chunk states.
  */
 struct RemoteState {
   char* dataBuffer;
   DeviceSpan<ChunkState> stateBuffer;
+  DeviceSpan<SignalState> signalBuffer;
 };
 
 /**
@@ -790,6 +791,54 @@ class P2pNvlTransportDevice {
 #ifdef __CUDA_ARCH__
     __trap(); // Abort kernel if write is called on P2pNvlTransportDevice
 #endif
+  }
+
+  /**
+   * signal_threadgroup - Signal peer GPU via NVLink
+   *
+   * Sends a signal to the peer's Signal object at the specified index.
+   * Only the group leader performs the signal after synchronizing all threads.
+   *
+   * MEMORY SEMANTICS:
+   * - Uses release semantics: all prior memory operations from all threads
+   *   in the group are guaranteed to be visible to the peer after the signal.
+   * - Uses .sys scope for cross-GPU NVLink coherence.
+   *
+   * @param group ThreadGroup for cooperative processing (leader signals)
+   * @param signal_id Index into the signalBuffer array
+   * @param op SIGNAL_SET to store value, SIGNAL_ADD to atomically add value
+   * @param value The value to set or add to peer's signal counter
+   */
+  __device__ __forceinline__ void signal_threadgroup(
+      ThreadGroup& group,
+      uint64_t signal_id,
+      SignalOp op,
+      uint64_t value) {
+    remoteState_.signalBuffer[signal_id].signal(group, op, value);
+  }
+
+  /**
+   * wait_signal_until_threadgroup - Wait for signal from peer GPU
+   *
+   * Waits until the local Signal object at the specified index satisfies
+   * the given condition. All threads in the group poll the signal.
+   *
+   * MEMORY SEMANTICS:
+   * - Uses acquire semantics: all subsequent memory operations are guaranteed
+   *   to see the peer's writes that occurred before their signal.
+   * - Uses .sys scope for cross-GPU NVLink coherence.
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param signal_id Index into the signalBuffer array
+   * @param op The comparison operation (CMP_EQ, CMP_GE, etc.)
+   * @param value The value to compare against
+   */
+  __device__ __forceinline__ void wait_signal_until_threadgroup(
+      ThreadGroup& group,
+      uint64_t signal_id,
+      CmpOp op,
+      uint64_t value) {
+    localState_.signalBuffer[signal_id].wait_until(group, op, value);
   }
 
  private:

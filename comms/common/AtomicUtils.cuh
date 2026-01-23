@@ -89,7 +89,8 @@ __device__ __forceinline__ uintptr_t cvta_to_global(T* ptr) {
 // Volatile Loads (bypass L1 cache)
 // =============================================================================
 
-__device__ __forceinline__ uint64_t ld_volatile_global(volatile uint64_t* ptr) {
+__device__ __forceinline__ uint64_t
+ld_volatile_global(const volatile uint64_t* ptr) {
 #if defined(__HIP_PLATFORM_AMD__)
   uint64_t v = *ptr;
   return v;
@@ -103,7 +104,8 @@ __device__ __forceinline__ uint64_t ld_volatile_global(volatile uint64_t* ptr) {
 #endif
 }
 
-__device__ __forceinline__ uint32_t ld_volatile_global(volatile uint32_t* ptr) {
+__device__ __forceinline__ uint32_t
+ld_volatile_global(const volatile uint32_t* ptr) {
 #if defined(__HIP_PLATFORM_AMD__)
   uint32_t v = *ptr;
   return v;
@@ -117,7 +119,8 @@ __device__ __forceinline__ uint32_t ld_volatile_global(volatile uint32_t* ptr) {
 #endif
 }
 
-__device__ __forceinline__ int32_t ld_volatile_global(volatile int32_t* ptr) {
+__device__ __forceinline__ int32_t
+ld_volatile_global(const volatile int32_t* ptr) {
 #if defined(__HIP_PLATFORM_AMD__)
   int32_t v = *ptr;
   return v;
@@ -181,7 +184,7 @@ __device__ __forceinline__ void st_volatile_global(
 // Used with explicit fences for ordering. More efficient than volatile on
 // modern GPUs but requires SM 7.0+.
 
-__device__ __forceinline__ uint64_t ld_relaxed_sys_global(uint64_t* ptr) {
+__device__ __forceinline__ uint64_t ld_relaxed_sys_global(const uint64_t* ptr) {
 #if defined(__HIP_PLATFORM_AMD__)
   uint64_t v = __atomic_load_n(ptr, __ATOMIC_RELAXED);
   return v;
@@ -202,7 +205,7 @@ __device__ __forceinline__ uint64_t ld_relaxed_sys_global(uint64_t* ptr) {
 #endif
 }
 
-__device__ __forceinline__ int32_t ld_relaxed_sys_global(int32_t* ptr) {
+__device__ __forceinline__ int32_t ld_relaxed_sys_global(const int32_t* ptr) {
 #if defined(__HIP_PLATFORM_AMD__)
   int32_t v = __atomic_load_n(ptr, __ATOMIC_RELAXED);
   return v;
@@ -272,7 +275,7 @@ __device__ __forceinline__ void st_relaxed_sys_global(
 // - Reader: ld_acquire_sys_global(ptr)       -- subsequent reads see prior
 // writes
 
-__device__ __forceinline__ uint64_t ld_acquire_sys_global(uint64_t* ptr) {
+__device__ __forceinline__ uint64_t ld_acquire_sys_global(const uint64_t* ptr) {
 #if defined(__HIP_PLATFORM_AMD__)
   uint64_t v = __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
   return v;
@@ -293,7 +296,7 @@ __device__ __forceinline__ uint64_t ld_acquire_sys_global(uint64_t* ptr) {
 #endif
 }
 
-__device__ __forceinline__ int32_t ld_acquire_sys_global(int32_t* ptr) {
+__device__ __forceinline__ int32_t ld_acquire_sys_global(const int32_t* ptr) {
 #if defined(__HIP_PLATFORM_AMD__)
   int32_t v = __atomic_load_n(ptr, __ATOMIC_ACQUIRE);
   return v;
@@ -378,6 +381,19 @@ __device__ __forceinline__ void st_release_sys_global(
  *   while (gdr_mapped_flag != expected) { spin; }
  *   // After seeing flag, data is guaranteed visible due to fence+relaxed store
  */
+
+__device__ __forceinline__ void threadfence() {
+#if defined(__CUDA_ARCH__) || defined(__HIP_ARCH__)
+  __threadfence();
+#endif
+}
+
+__device__ __forceinline__ void threadfence_system() {
+#if defined(__CUDA_ARCH__) || defined(__HIP_ARCH__)
+  __threadfence_system();
+#endif
+}
+
 __device__ __forceinline__ void fence_acq_rel_sys() {
 #if defined(__HIP_PLATFORM_AMD__)
 #ifdef __HIP_ARCH__
@@ -456,6 +472,66 @@ store128_volatile_global(volatile uint64_t* ptr, uint64_t v0, uint64_t v1) {
                :
                : "l"(v0), "l"(v1), "l"(ptr)
                : "memory");
+#endif
+}
+
+// =============================================================================
+// Atomic Operation
+// =============================================================================
+
+__device__ __forceinline__ uint64_t
+atomic_fetch_add_relaxed_sys_global(uint64_t* ptr, uint64_t val) {
+#ifdef __CUDA_ARCH__
+  uint64_t old_val;
+  asm volatile("atom.relaxed.sys.add.u64.global %0, [%1], %2;"
+               : "=l"(old_val)
+               : "l"(ptr), "l"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED);
+#endif
+}
+
+__device__ __forceinline__ uint64_t
+atomic_fetch_add_relaxed_gpu_global(uint64_t* ptr, uint64_t val) {
+#ifdef __CUDA_ARCH__
+  uint64_t old_val;
+  asm volatile("atom.relaxed.gpu.add.u64.global %0, [%1], %2;"
+               : "=l"(old_val)
+               : "l"(ptr), "l"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED);
+#endif
+}
+
+__device__ __forceinline__ uint64_t
+atomic_fetch_add_release_sys_global(uint64_t* ptr, uint64_t val) {
+#ifdef __CUDA_ARCH__
+  uint64_t old_val;
+  asm volatile("atom.release.sys.add.u64.global %0, [%1], %2;"
+               : "=l"(old_val)
+               : "l"(ptr), "l"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_RELEASE);
+#endif
+}
+
+__device__ __forceinline__ uint64_t
+atomic_fetch_add_release_gpu_global(uint64_t* ptr, uint64_t val) {
+#ifdef __CUDA_ARCH__
+  uint64_t old_val;
+  asm volatile("atom.release.gpu.add.u64.global %0, [%1], %2;"
+               : "=l"(old_val)
+               : "l"(ptr), "l"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_RELEASE);
 #endif
 }
 
