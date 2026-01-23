@@ -49,8 +49,9 @@ class CtranAlgo {
   commResult_t initKernelResources();
   // Get device state
   CtranAlgoDeviceState* getDevState();
-  // Get Nvl P2P transport (returns by value for kernel argument passing)
-  comms::pipes::P2pNvlTransportDevice getP2pNvlTransport(int peer);
+  // Get base pointer to pre-allocated P2pNvlTransportDevice array
+  // Array is indexed by peer local rank
+  comms::pipes::P2pNvlTransportDevice* getNvlTransportsBase();
 
   // accessing allGatherAlgo
   void setAllGatherAlgo(enum NCCL_ALLGATHER_ALGO algo);
@@ -175,10 +176,10 @@ class CtranAlgo {
   std::unordered_map<enum CollType, CtranIbConfig> collToVcConfigMap_;
   std::unique_ptr<ctran::algos::allreduce::AllReduceResourceImpl>
       allReduceDirectResource{nullptr};
-  // Map from peer local rank to P2pNvlTransportDevice (stored by value)
-  // getP2pNvlTransport returns a copy that can be passed to kernel arguments
-  std::unordered_map<int, comms::pipes::P2pNvlTransportDevice>
-      peerToNvlTransport_;
+  // Pre-allocated array of P2pNvlTransportDevice objects for all peers
+  // Allocated with cudaMalloc for device accessibility
+  // Indexed by peer local rank, slot for self (localRank) is unused
+  comms::pipes::P2pNvlTransportDevice* nvlTransports_{nullptr};
 };
 
 class CtranAlgo::SharedResource {

@@ -68,6 +68,10 @@ commResult_t setupP2pKernelConfig(
     }
   }
 
+  // Set base pointer to pre-allocated transport array
+  // Kernel will use peerLocalRank to index into this array
+  kernArgs.nvlTransportsBase = comm->ctran_->algo->getNvlTransportsBase();
+
   size_t sendIdx = 0;
   size_t recvIdx = 0;
   for (auto op : nvlOps) {
@@ -78,8 +82,6 @@ commResult_t setupP2pKernelConfig(
       sendOp.peerLocalRank = statex->localRank(op->send.peerRank);
       size_t nGroups = getNumGroups(sendOp.nbytes);
       sendOp.nGroups = nGroups;
-      sendOp.nvlTransport =
-          comm->ctran_->algo->getP2pNvlTransport(sendOp.peerLocalRank);
 
       if (kernArgs.useList) {
         FB_CUDACHECK(cudaMemcpy(
@@ -99,8 +101,6 @@ commResult_t setupP2pKernelConfig(
       recvOp.peerLocalRank = statex->localRank(op->recv.peerRank);
       size_t nGroups = getNumGroups(recvOp.nbytes);
       recvOp.nGroups = nGroups;
-      recvOp.nvlTransport =
-          comm->ctran_->algo->getP2pNvlTransport(recvOp.peerLocalRank);
 
       if (kernArgs.useList) {
         FB_CUDACHECK(cudaMemcpy(

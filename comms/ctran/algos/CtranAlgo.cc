@@ -130,8 +130,15 @@ CtranAlgo::~CtranAlgo() {
     FB_COMMCHECKIGNORE(this->allReduceDirectResource->destroy());
   }
 
-  // Free managed memory for P2pNvlTransportDevice objects
-  peerToNvlTransport_.clear();
+  // Free device memory for pre-allocated P2pNvlTransportDevice array.
+  // Note: No destructor calls needed since objects were constructed on CPU
+  // and copied to device memory. The CPU objects were already destructed
+  // when they went out of scope after cudaMemcpy.
+  if (nvlTransports_) {
+    FB_COMMCHECKIGNORE(
+        ctran::utils::commCudaFree(nvlTransports_, &this->comm_->logMetaData_));
+    nvlTransports_ = nullptr;
+  }
 
   // Dot not throw exception in destructor to avoid early termination in stack
   // unwind. See discussion in
@@ -143,52 +150,14 @@ CtranAlgoDeviceState* CtranAlgo::getDevState() {
   return this->devState_d_;
 }
 
-comms::pipes::P2pNvlTransportDevice CtranAlgo::getP2pNvlTransport(int peer) {
+comms::pipes::P2pNvlTransportDevice* CtranAlgo::getNvlTransportsBase() {
   if (!isResInitialized_) {
     CLOGF(
         ERR,
-        "CTRAN-ALGO: getP2pNvlTransport() called before initKernelResources() is called. ");
-    return comms::pipes::P2pNvlTransportDevice();
+        "CTRAN-ALGO: getNvlTransportsBase() called before initKernelResources() is called. ");
+    return nullptr;
   }
-  // peer is localRank, self sends/recvs don't need P2pNvlTransport
-  if (peer == comm_->statex_->localRank()) {
-    CLOGF(
-        ERR,
-        "CTRAN-ALGO: peer is self, self sends/recvs don't need getP2pNvlTransport()");
-    return comms::pipes::P2pNvlTransportDevice();
-  }
-  auto it = peerToNvlTransport_.find(peer);
-  if (it == peerToNvlTransport_.end()) {
-    comms::pipes::P2pNvlTransportOptions options{
-        .dataBufferSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE /
-            NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
-        .chunkSize = 1024 * 512, // TODO: tune this
-        .pipelineDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH};
-
-    comms::pipes::LocalState localState{
-        .dataBuffer = static_cast<char*>(devState_.localStagingBufsMap[peer]),
-        .stateBuffer = DeviceSpan<ChunkState>(
-            static_cast<ChunkState*>(devState_.localChunkStatesMap[peer]),
-            CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
-
-    comms::pipes::RemoteState remoteState{
-        .dataBuffer = static_cast<char*>(devState_.remoteStagingBufsMap[peer]),
-        .stateBuffer = DeviceSpan<ChunkState>(
-            static_cast<ChunkState*>(devState_.remoteChunkStatesMap[peer]),
-            CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
-
-    // Store by value in the map
-    peerToNvlTransport_.emplace(
-        peer,
-        comms::pipes::P2pNvlTransportDevice(
-            comm_->statex_->localRank(),
-            peer,
-            options,
-            localState,
-            remoteState));
-    it = peerToNvlTransport_.find(peer);
-  }
-  return it->second;
+  return nvlTransports_;
 }
 
 static const std::string kCtranAlgoInitResources{
@@ -371,6 +340,48 @@ commResult_t CtranAlgo::initKernelResources() {
       &devState_,
       sizeof(CtranAlgoDeviceState),
       cudaMemcpyHostToDevice));
+
+  // Pre-allocate P2pNvlTransportDevice array for all peers in device memory.
+  FB_COMMCHECK(
+      ctran::utils::commCudaMalloc(
+          &nvlTransports_,
+          nLocalRanks,
+          &this->comm_->logMetaData_,
+          "initKernelResources-nvlTransports"));
+
+  comms::pipes::P2pNvlTransportOptions options{
+      .dataBufferSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE /
+          NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
+      .chunkSize = 1024 * 512, // TODO: tune this
+      .pipelineDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH};
+
+  for (int peer = 0; peer < nLocalRanks; peer++) {
+    // Skip self - slot remains default-constructed (unused)
+    if (peer == localRank) {
+      continue;
+    }
+
+    comms::pipes::LocalState localState{
+        .dataBuffer = static_cast<char*>(devState_.localStagingBufsMap[peer]),
+        .stateBuffer = DeviceSpan<ChunkState>(
+            static_cast<ChunkState*>(devState_.localChunkStatesMap[peer]),
+            CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
+
+    comms::pipes::RemoteState remoteState{
+        .dataBuffer = static_cast<char*>(devState_.remoteStagingBufsMap[peer]),
+        .stateBuffer = DeviceSpan<ChunkState>(
+            static_cast<ChunkState*>(devState_.remoteChunkStatesMap[peer]),
+            CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
+
+    // Construct the object on CPU and copy to device memory
+    comms::pipes::P2pNvlTransportDevice transport(
+        localRank, peer, options, localState, remoteState);
+    FB_CUDACHECK(cudaMemcpy(
+        &nvlTransports_[peer],
+        &transport,
+        sizeof(comms::pipes::P2pNvlTransportDevice),
+        cudaMemcpyHostToDevice));
+  }
 
   this->isResInitialized_ = true;
 
