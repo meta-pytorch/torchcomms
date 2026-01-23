@@ -26,7 +26,7 @@ static void p2pCopyKernel(
     uint32_t iters,
     size_t nBytes,
     int nBlocks,
-    bool useBlockGroups,
+    SyncScope groupScope,
     folly::UserCounters& counters) {
   const int nRunsPerIter = 50;
 
@@ -54,7 +54,7 @@ static void p2pCopyKernel(
         (void*)&srcPtr,
         (void*)&nBytes,
         (void*)&nRunsPerIter,
-        (void*)&useBlockGroups};
+        (void*)&groupScope};
     dim3 grid{static_cast<unsigned int>(nBlocks), 1, 1};
     dim3 blocks{nThreads, 1, 1};
     CHECK_EQ(
@@ -69,7 +69,8 @@ static void p2pCopyKernel(
   float avgTimeUs = (totalTimeMs / iters / nRunsPerIter) * 1000.0f;
   float busBwGBps = (nBytes / 1e9f) / (avgTimeUs / 1e6f);
 
-  size_t nGroups = useBlockGroups ? nBlocks : nBlocks * (nThreads / 32);
+  size_t nGroups =
+      (groupScope == SyncScope::TILE) ? nBlocks : nBlocks * (nThreads / 32);
   size_t chunkSize = nBytes / nGroups / 1024;
 
   counters["deviceTimeUs"] =
@@ -89,7 +90,7 @@ static void d2dCopyKernel(
     uint32_t iters,
     size_t nBytes,
     int nBlocks,
-    bool useBlockGroups,
+    SyncScope groupScope,
     folly::UserCounters& counters) {
   const int nRunsPerIter = 50;
 
@@ -112,7 +113,7 @@ static void d2dCopyKernel(
         (void*)&srcPtr,
         (void*)&nBytes,
         (void*)&nRunsPerIter,
-        (void*)&useBlockGroups};
+        (void*)&groupScope};
     dim3 grid{static_cast<unsigned int>(nBlocks), 1, 1};
     dim3 blocks{nThreads, 1, 1};
     CHECK_EQ(
@@ -127,7 +128,8 @@ static void d2dCopyKernel(
   float avgTimeUs = (totalTimeMs / iters / nRunsPerIter) * 1000.0f;
   float busBwGBps = (nBytes / 1e9f) / (avgTimeUs / 1e6f);
 
-  size_t nGroups = useBlockGroups ? nBlocks : nBlocks * (nThreads / 32);
+  size_t nGroups =
+      (groupScope == SyncScope::TILE) ? nBlocks : nBlocks * (nThreads / 32);
   size_t chunkSize = nBytes / nGroups / 1024;
 
   counters["deviceTimeUs"] =
@@ -144,36 +146,36 @@ static void d2dCopyKernel(
 // Benchmark Registration Helper Macros
 //------------------------------------------------------------------------------
 
-#define REGISTER_COPY_BENCH_FOR_SIZE(func, sizeMB, useBlockGroups, suffix)    \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                                             \
-      func, sizeMB##MB_2b_##suffix, sizeMB * 1024 * 1024, 2, useBlockGroups); \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                                             \
-      func, sizeMB##MB_4b_##suffix, sizeMB * 1024 * 1024, 4, useBlockGroups); \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                                             \
-      func, sizeMB##MB_8b_##suffix, sizeMB * 1024 * 1024, 8, useBlockGroups); \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                                             \
-      func, sizeMB##MB_16b_##suffix, sizeMB * 1024 * 1024, 16, useBlockGroups)
+#define REGISTER_COPY_BENCH_FOR_SIZE(func, sizeMB, groupScope, suffix)    \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
+      func, sizeMB##MB_2b_##suffix, sizeMB * 1024 * 1024, 2, groupScope); \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
+      func, sizeMB##MB_4b_##suffix, sizeMB * 1024 * 1024, 4, groupScope); \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
+      func, sizeMB##MB_8b_##suffix, sizeMB * 1024 * 1024, 8, groupScope); \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
+      func, sizeMB##MB_16b_##suffix, sizeMB * 1024 * 1024, 16, groupScope)
 
-#define REGISTER_COPY_BENCH_ALL_SIZES(func, useBlockGroups, suffix) \
-  REGISTER_COPY_BENCH_FOR_SIZE(func, 2, useBlockGroups, suffix);    \
-  REGISTER_COPY_BENCH_FOR_SIZE(func, 4, useBlockGroups, suffix);    \
-  REGISTER_COPY_BENCH_FOR_SIZE(func, 8, useBlockGroups, suffix)
+#define REGISTER_COPY_BENCH_ALL_SIZES(func, groupScope, suffix) \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 2, groupScope, suffix);    \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 4, groupScope, suffix);    \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 8, groupScope, suffix)
 
 //------------------------------------------------------------------------------
 // Benchmark Registration
 //------------------------------------------------------------------------------
 
 // D2D (same device) benchmarks - warp groups
-REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, false, warp);
+REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::WARP, warp);
 
 // P2P (cross device) benchmarks - warp groups
-REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, false, warp);
+REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::WARP, warp);
 
 // D2D (same device) benchmarks - block groups
-REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, true, block);
+REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::TILE, block);
 
 // P2P (cross device) benchmarks - block groups
-REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, true, block);
+REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::TILE, block);
 
 } // namespace comms::pipes::benchmark
 

@@ -13,6 +13,7 @@
 #include "comms/utils/CudaRAII.h"
 
 using comms::pipes::ChunkState;
+using comms::pipes::SyncScope;
 using meta::comms::DeviceBuffer;
 
 namespace comms::pipes::benchmark {
@@ -34,7 +35,7 @@ namespace comms::pipes::benchmark {
 static void p2pSyncBench(
     uint32_t iters,
     int nBlocks,
-    bool useBlockGroups,
+    SyncScope groupScope,
     folly::UserCounters& counters) {
   const int nSteps = 100;
   const int nThreads = 256;
@@ -46,7 +47,8 @@ static void p2pSyncBench(
   // For block groups: 1 ChunkState per block
   // For warp groups: 8 ChunkStates per block (256 threads / 32 threads per
   // warp)
-  int numChunkStates = useBlockGroups ? nBlocks : nBlocks * (nThreads / 32);
+  int numChunkStates =
+      (groupScope == SyncScope::TILE) ? nBlocks : nBlocks * (nThreads / 32);
 
   // Allocate ChunkState array on receiver device
   CHECK_EQ(cudaSetDevice(receiverCudaDev), cudaSuccess);
@@ -95,7 +97,7 @@ static void p2pSyncBench(
           (void*)&chunkStates,
           (void*)&isSender,
           (void*)&nSteps,
-          (void*)&useBlockGroups};
+          (void*)&groupScope};
       dim3 grid{static_cast<unsigned int>(nBlocks), 1, 1};
       dim3 blocks{static_cast<unsigned int>(nThreads), 1, 1};
       CHECK_EQ(
@@ -117,7 +119,7 @@ static void p2pSyncBench(
           (void*)&chunkStates,
           (void*)&isSender,
           (void*)&nSteps,
-          (void*)&useBlockGroups};
+          (void*)&groupScope};
       dim3 grid{static_cast<unsigned int>(nBlocks), 1, 1};
       dim3 blocks{static_cast<unsigned int>(nThreads), 1, 1};
       CHECK_EQ(
@@ -154,27 +156,27 @@ static void p2pSyncBench(
 // Benchmark Registration Helper Macros
 //------------------------------------------------------------------------------
 
-#define REGISTER_P2P_SYNC_BENCH(nBlocks, useBlockGroups, suffix) \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                                \
-      p2pSyncBench, nBlocks##b_##suffix, nBlocks, useBlockGroups)
+#define REGISTER_P2P_SYNC_BENCH(nBlocks, groupScope, suffix) \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                            \
+      p2pSyncBench, nBlocks##b_##suffix, nBlocks, groupScope)
 
-#define REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(useBlockGroups, suffix) \
-  REGISTER_P2P_SYNC_BENCH(1, useBlockGroups, suffix);              \
-  REGISTER_P2P_SYNC_BENCH(2, useBlockGroups, suffix);              \
-  REGISTER_P2P_SYNC_BENCH(4, useBlockGroups, suffix);              \
-  REGISTER_P2P_SYNC_BENCH(8, useBlockGroups, suffix);              \
-  REGISTER_P2P_SYNC_BENCH(16, useBlockGroups, suffix);             \
-  REGISTER_P2P_SYNC_BENCH(32, useBlockGroups, suffix)
+#define REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(groupScope, suffix) \
+  REGISTER_P2P_SYNC_BENCH(1, groupScope, suffix);              \
+  REGISTER_P2P_SYNC_BENCH(2, groupScope, suffix);              \
+  REGISTER_P2P_SYNC_BENCH(4, groupScope, suffix);              \
+  REGISTER_P2P_SYNC_BENCH(8, groupScope, suffix);              \
+  REGISTER_P2P_SYNC_BENCH(16, groupScope, suffix);             \
+  REGISTER_P2P_SYNC_BENCH(32, groupScope, suffix)
 
 //------------------------------------------------------------------------------
 // Benchmark Registration
 //------------------------------------------------------------------------------
 
 // P2P Sync benchmarks - warp groups
-REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(false, warp);
+REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::WARP, warp);
 
 // P2P Sync benchmarks - block groups
-REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(true, block);
+REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::TILE, block);
 
 } // namespace comms::pipes::benchmark
 
