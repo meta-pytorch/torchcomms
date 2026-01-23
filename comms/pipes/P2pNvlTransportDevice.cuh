@@ -241,6 +241,7 @@ class P2pNvlTransportDevice {
   // Chunk index used for metadata exchange in send_one/recv_one
   static constexpr std::size_t kMetadataChunkIndex = 0;
 
+  __host__ __device__ P2pNvlTransportDevice() = default;
   __host__ __device__ P2pNvlTransportDevice(
       int myRank,
       int peerRank,
@@ -792,9 +793,9 @@ class P2pNvlTransportDevice {
   }
 
  private:
-  const int myRank_{-1};
-  const int peerRank_{-1};
-  const P2pNvlTransportOptions options_;
+  int myRank_;
+  int peerRank_;
+  P2pNvlTransportOptions options_;
   LocalState localState_;
   RemoteState remoteState_;
 };
