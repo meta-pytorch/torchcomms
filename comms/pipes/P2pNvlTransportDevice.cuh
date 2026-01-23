@@ -777,20 +777,70 @@ class P2pNvlTransportDevice {
   }
 
   /**
-   * write - Not implemented for P2pNvlTransportDevice
+   * write - Direct local memory copy using vectorized operations
    *
-   * P2pNvlTransportDevice is designed for remote P2P transfers over NVLink.
-   * For local memory copies, use P2pSelfTransportDevice instead.
-   * Calling this method will trap and abort the kernel.
+   * Performs a high-performance vectorized copy from src_d to dst_d using
+   * memcpy_vectorized. The work is distributed across ALL thread groups
+   * using for_each_item_contiguous, so each group processes only its portion
+   * of the data.
+   *
+   * The chunk size is computed dynamically as (nbytes / total_groups) to
+   * ensure good parallelism, with a minimum of 16 bytes per chunk for
+   * vectorized access efficiency.
+   *
+   * NOTE: only support no overlap copy for now
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param dst_d Destination pointer (device memory)
+   * @param src_d Source pointer (device memory)
+   * @param nbytes Number of bytes to write
+   *
+   * @return Number of bytes written by the current thread group
    */
-  __device__ __forceinline__ void write(
+  __device__ __forceinline__ std::size_t write(
       ThreadGroup& group,
       char* dst_d,
       const char* src_d,
       std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
-    __trap(); // Abort kernel if write is called on P2pNvlTransportDevice
+    // Early return for no-op cases
+    if (nbytes == 0) {
+      return;
+    }
+
+    // Compute chunk size: aim for nbytes / total_groups per chunk,
+    // aligned to 16 bytes (uint4 size) for efficient vectorized access
+    constexpr std::size_t kAlignment = 16;
+    const std::size_t targetChunkSize = nbytes / group.total_groups;
+    // Round up to nearest 16-byte boundary, minimum 16 bytes
+    const std::size_t chunkSize =
+        ((targetChunkSize + kAlignment - 1) / kAlignment) * kAlignment;
+    // Ensure minimum chunk size
+    const std::size_t alignedChunkSize = chunkSize > 0 ? chunkSize : kAlignment;
+
+    const std::size_t numChunks =
+        (nbytes + alignedChunkSize - 1) / alignedChunkSize;
+
+    // Distribute chunks across all groups using for_each_item_contiguous
+    // Each group processes its assigned contiguous range of chunks
+    std::size_t chunkBytes = 0;
+    group.for_each_item_contiguous(numChunks, [&](uint32_t chunkIdx) {
+      const std::size_t chunkOffset = chunkIdx * alignedChunkSize;
+      chunkBytes += (chunkOffset + alignedChunkSize <= nbytes)
+          ? alignedChunkSize
+          : nbytes - chunkOffset;
+
+      if (chunkBytes > 0) {
+        memcpy_vectorized(
+            dst_d + chunkOffset, // dst_base
+            src_d + chunkOffset, // src_base
+            chunkBytes, // chunk_bytes
+            group);
+      }
+    });
+    return chunkBytes;
 #endif
+    return 0;
   }
 
   /**
