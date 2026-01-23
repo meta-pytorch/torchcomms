@@ -4,7 +4,6 @@
 
 #include <ATen/hip/HIPContext.h> // @manual
 #include <ATen/hip/impl/HIPCachingAllocatorMasqueradingAsCUDA.h> // @manual
-#include <folly/synchronization/CallOnce.h>
 #include <memory>
 #include <mutex>
 #include "comms/torchcomms/rccl/TorchCommRCCL.hpp"
@@ -74,7 +73,7 @@ class CachingAllocatorHook {
   }
 
   inline static std::unique_ptr<CachingAllocatorHookImpl> instance_ = nullptr;
-  inline static folly::once_flag init_flag_;
+  inline static std::once_flag init_flag_;
 };
 
 // Global function to be registered as a hook
