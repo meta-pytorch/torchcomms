@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/ctran/algos/SendRecv/SendRecvImpl.h"
 #include "comms/ctran/algos/SendRecv/SendRecvCEImpl.h"
+#include "comms/ctran/algos/SendRecv/SendRecvP2pImpl.h"
 #include "comms/ctran/algos/SendRecv/SendRecvStagedCopyImpl.h"
 namespace {
 
@@ -52,6 +53,9 @@ KernelConfig::KernelType getKernelType(
   if (algo == NCCL_SENDRECV_ALGO::ctstaged) {
     kernelType = KernelConfig::KernelType::SENDRECV_STAGED;
     return kernelType;
+  } else if (algo == NCCL_SENDRECV_ALGO::ctp2p) {
+    kernelType = KernelConfig::KernelType::SENDRECV_P2P;
+    return kernelType;
   }
   // TODO: send/recv/sendrecv kernels should be combined into one kernel just
   // like SENDRECV_STAGED
@@ -93,7 +97,8 @@ commResult_t setupGpeOp(
 
   // If kernel is copy-engine or copy-based, GPE deals with IB ops only.
   if (NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE ||
-      algo == NCCL_SENDRECV_ALGO::ctstaged) {
+      algo == NCCL_SENDRECV_ALGO::ctstaged ||
+      algo == NCCL_SENDRECV_ALGO::ctp2p) {
     // next, deal with IB ops
     if (!ibOps.empty()) {
       gpeOpGroup.reserve(ibOps.size());
@@ -122,6 +127,8 @@ commResult_t setupKernelConfig(
   config.args.devState_d = comm->ctran_->algo->getDevState();
   if (config.type == KernelConfig::KernelType::SENDRECV_STAGED) {
     return setupStagedCopyKernelConfig(comm, nvlOps, config, kernArgs);
+  } else if (config.type == KernelConfig::KernelType::SENDRECV_P2P) {
+    return setupP2pKernelConfig(comm, nvlOps, config, kernArgs);
   }
   auto putNotifyList = CommonList<KernelElem>();
   auto waitNotifyList = CommonList<KernelElem>();
