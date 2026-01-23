@@ -1685,13 +1685,13 @@ INSTANTIATE_TEST_SUITE_P(
     asymmetricGroupParamName);
 
 // =============================================================================
-// P2pNvlTransportDevice::write() Tests
+// P2pNvlTransportDevice::put() Tests
 // =============================================================================
-// Tests for the one-sided write() API that writes directly to peer memory
+// Tests for the one-sided put() API that writes directly to peer memory
 // via NVLink without using staging buffers.
 
 // Helper to run a write() test with verification
-void runWriteTest(
+void runPutTest(
     int globalRank,
     P2pNvlTransportDevice& p2p,
     char* localSrc,
@@ -1711,7 +1711,7 @@ void runWriteTest(
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     // Write data to peer's buffer
-    test::testWriteWithSignal(
+    test::testPutWithSignal(
         p2p, remoteDst, localSrc, signal_id, nbytes, numBlocks, blockSize);
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -1752,7 +1752,7 @@ void runWriteTest(
 }
 
 // Basic write() test with aligned pointers
-TEST_F(P2pNvlTransportTestFixture, WriteBasic) {
+TEST_F(P2pNvlTransportTestFixture, PutBasic) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -1772,21 +1772,20 @@ TEST_F(P2pNvlTransportTestFixture, WriteBasic) {
   char* localSrc = p2p.getLocalState().dataBuffer;
   char* remoteDst = p2p.getRemoteState().dataBuffer;
 
-  runWriteTest(
-      globalRank, p2p, localSrc, remoteDst, nbytes, 4, 128, "WriteBasic");
+  runPutTest(globalRank, p2p, localSrc, remoteDst, nbytes, 4, 128, "PutBasic");
 
-  XLOGF(INFO, "Rank {}: WriteBasic test completed", globalRank);
+  XLOGF(INFO, "Rank {}: PutBasic test completed", globalRank);
 }
 
 // Parameterized test for write() with various transfer sizes
-struct WriteTransferSizeParams {
+struct PutTransferSizeParams {
   size_t nbytes;
   std::string name;
 };
 
-class WriteTransferSizeTestFixture
+class PutTransferSizeTestFixture
     : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<WriteTransferSizeParams> {
+      public ::testing::WithParamInterface<PutTransferSizeParams> {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
@@ -1794,7 +1793,7 @@ class WriteTransferSizeTestFixture
   }
 };
 
-TEST_P(WriteTransferSizeTestFixture, Write) {
+TEST_P(PutTransferSizeTestFixture, Put) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -1819,61 +1818,59 @@ TEST_P(WriteTransferSizeTestFixture, Write) {
   char* localSrc = p2p.getLocalState().dataBuffer;
   char* remoteDst = p2p.getRemoteState().dataBuffer;
 
-  runWriteTest(
+  runPutTest(
       globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
 
   XLOGF(
       INFO,
-      "Rank {}: Write transfer size test '{}' completed",
+      "Rank {}: Put transfer size test '{}' completed",
       globalRank,
       params.name);
 }
 
-std::string writeTransferSizeParamName(
-    const ::testing::TestParamInfo<WriteTransferSizeParams>& info) {
+std::string putTransferSizeParamName(
+    const ::testing::TestParamInfo<PutTransferSizeParams>& info) {
   return info.param.name;
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    WriteTransferSizeVariations,
-    WriteTransferSizeTestFixture,
+    PutTransferSizeVariations,
+    PutTransferSizeTestFixture,
     ::testing::Values(
         // Small sizes (smaller than vector size of 16 bytes)
-        WriteTransferSizeParams{.nbytes = 1, .name = "Write_1Byte"},
-        WriteTransferSizeParams{.nbytes = 7, .name = "Write_7Bytes"},
-        WriteTransferSizeParams{.nbytes = 15, .name = "Write_15Bytes"},
+        PutTransferSizeParams{.nbytes = 1, .name = "Put_1Byte"},
+        PutTransferSizeParams{.nbytes = 7, .name = "Put_7Bytes"},
+        PutTransferSizeParams{.nbytes = 15, .name = "Put_15Bytes"},
         // Around vector size boundary
-        WriteTransferSizeParams{.nbytes = 16, .name = "Write_16Bytes"},
-        WriteTransferSizeParams{.nbytes = 17, .name = "Write_17Bytes"},
-        WriteTransferSizeParams{.nbytes = 31, .name = "Write_31Bytes"},
-        WriteTransferSizeParams{.nbytes = 32, .name = "Write_32Bytes"},
+        PutTransferSizeParams{.nbytes = 16, .name = "Put_16Bytes"},
+        PutTransferSizeParams{.nbytes = 17, .name = "Put_17Bytes"},
+        PutTransferSizeParams{.nbytes = 31, .name = "Put_31Bytes"},
+        PutTransferSizeParams{.nbytes = 32, .name = "Put_32Bytes"},
         // Non-aligned sizes
-        WriteTransferSizeParams{.nbytes = 100, .name = "Write_100Bytes"},
-        WriteTransferSizeParams{.nbytes = 1000, .name = "Write_1000Bytes"},
-        WriteTransferSizeParams{.nbytes = 4097, .name = "Write_4097Bytes"},
+        PutTransferSizeParams{.nbytes = 100, .name = "Put_100Bytes"},
+        PutTransferSizeParams{.nbytes = 1000, .name = "Put_1000Bytes"},
+        PutTransferSizeParams{.nbytes = 4097, .name = "Put_4097Bytes"},
         // Aligned sizes
-        WriteTransferSizeParams{.nbytes = 1024, .name = "Write_1KB"},
-        WriteTransferSizeParams{.nbytes = 64 * 1024, .name = "Write_64KB"},
-        WriteTransferSizeParams{.nbytes = 256 * 1024, .name = "Write_256KB"},
-        WriteTransferSizeParams{.nbytes = 1024 * 1024, .name = "Write_1MB"},
+        PutTransferSizeParams{.nbytes = 1024, .name = "Put_1KB"},
+        PutTransferSizeParams{.nbytes = 64 * 1024, .name = "Put_64KB"},
+        PutTransferSizeParams{.nbytes = 256 * 1024, .name = "Put_256KB"},
+        PutTransferSizeParams{.nbytes = 1024 * 1024, .name = "Put_1MB"},
         // Large sizes
-        WriteTransferSizeParams{.nbytes = 4 * 1024 * 1024, .name = "Write_4MB"},
-        WriteTransferSizeParams{
-            .nbytes = 16 * 1024 * 1024,
-            .name = "Write_16MB"}),
-    writeTransferSizeParamName);
+        PutTransferSizeParams{.nbytes = 4 * 1024 * 1024, .name = "Put_4MB"},
+        PutTransferSizeParams{.nbytes = 16 * 1024 * 1024, .name = "Put_16MB"}),
+    putTransferSizeParamName);
 
 // Parameterized test for write() with unaligned pointers
-struct WriteUnalignedParams {
+struct PutUnalignedParams {
   size_t srcOffset; // Offset from 16-byte alignment for source
   size_t dstOffset; // Offset from 16-byte alignment for destination
   size_t nbytes;
   std::string name;
 };
 
-class WriteUnalignedTestFixture
+class PutUnalignedTestFixture
     : public MpiBaseTestFixture,
-      public ::testing::WithParamInterface<WriteUnalignedParams> {
+      public ::testing::WithParamInterface<PutUnalignedParams> {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
@@ -1881,7 +1878,7 @@ class WriteUnalignedTestFixture
   }
 };
 
-TEST_P(WriteUnalignedTestFixture, Write) {
+TEST_P(PutUnalignedTestFixture, Put) {
   if (numRanks != 2) {
     XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -1919,95 +1916,95 @@ TEST_P(WriteUnalignedTestFixture, Write) {
     remoteDst += params.srcOffset;
   }
 
-  runWriteTest(
+  runPutTest(
       globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
 
   XLOGF(
       INFO,
-      "Rank {}: Write unaligned test '{}' completed",
+      "Rank {}: Put unaligned test '{}' completed",
       globalRank,
       params.name);
 }
 
-std::string writeUnalignedParamName(
-    const ::testing::TestParamInfo<WriteUnalignedParams>& info) {
+std::string putUnalignedParamName(
+    const ::testing::TestParamInfo<PutUnalignedParams>& info) {
   return info.param.name;
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    WriteUnalignedVariations,
-    WriteUnalignedTestFixture,
+    PutUnalignedVariations,
+    PutUnalignedTestFixture,
     ::testing::Values(
         // Same misalignment (can use vectorized copy after aligning)
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 1,
             .dstOffset = 1,
             .nbytes = 1024,
             .name = "SameMisalign_1"},
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 7,
             .dstOffset = 7,
             .nbytes = 1024,
             .name = "SameMisalign_7"},
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 8,
             .dstOffset = 8,
             .nbytes = 1024,
             .name = "SameMisalign_8"},
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 13,
             .dstOffset = 13,
             .nbytes = 1024,
             .name = "SameMisalign_13"},
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 15,
             .dstOffset = 15,
             .nbytes = 1024,
             .name = "SameMisalign_15"},
         // Different misalignment (fallback to byte-by-byte)
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 1,
             .dstOffset = 3,
             .nbytes = 1024,
             .name = "DiffMisalign_1_3"},
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 0,
             .dstOffset = 7,
             .nbytes = 1024,
             .name = "DiffMisalign_0_7"},
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 5,
             .dstOffset = 0,
             .nbytes = 1024,
             .name = "DiffMisalign_5_0"},
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 4,
             .dstOffset = 8,
             .nbytes = 1024,
             .name = "DiffMisalign_4_8"},
         // Larger transfers with misalignment
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 3,
             .dstOffset = 3,
             .nbytes = 64 * 1024,
             .name = "SameMisalign_3_64KB"},
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 5,
             .dstOffset = 11,
             .nbytes = 64 * 1024,
             .name = "DiffMisalign_5_11_64KB"},
         // Small transfers with misalignment
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 7,
             .dstOffset = 7,
             .nbytes = 100,
             .name = "SameMisalign_7_100Bytes"},
-        WriteUnalignedParams{
+        PutUnalignedParams{
             .srcOffset = 1,
             .dstOffset = 9,
             .nbytes = 100,
             .name = "DiffMisalign_1_9_100Bytes"}),
-    writeUnalignedParamName);
+    putUnalignedParamName);
 
 } // namespace comms::pipes::tests
 

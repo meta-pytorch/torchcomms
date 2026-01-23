@@ -245,7 +245,7 @@ void testWeightedRecvSend(
 // write() test kernel and wrapper
 // =============================================================================
 
-__global__ void testWriteWithSignalKernel(
+__global__ void testPutWithSignalKernel(
     P2pNvlTransportDevice p2p,
     char* dst_d,
     const char* src_d,
@@ -253,11 +253,11 @@ __global__ void testWriteWithSignalKernel(
     size_t nbytes,
     GroupType groupType) {
   auto group = make_group(groupType);
-  auto writtenBytes = p2p.write(group, dst_d, src_d, nbytes);
+  auto writtenBytes = p2p.put(group, dst_d, src_d, nbytes);
   p2p.signal_threadgroup(group, signal_id, SignalOp::SIGNAL_ADD, writtenBytes);
 }
 
-void testWriteWithSignal(
+void testPutWithSignal(
     P2pNvlTransportDevice p2p,
     char* dst_d,
     const char* src_d,
@@ -266,7 +266,7 @@ void testWriteWithSignal(
     int numBlocks,
     int blockSize,
     GroupType groupType) {
-  testWriteWithSignalKernel<<<numBlocks, blockSize>>>(
+  testPutWithSignalKernel<<<numBlocks, blockSize>>>(
       p2p, dst_d, src_d, signal_id, nbytes, groupType);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
