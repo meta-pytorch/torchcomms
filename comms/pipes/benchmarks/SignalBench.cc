@@ -60,17 +60,18 @@ static void signalBench(
   // For block groups: 1 Signal per block
   // For warp groups: 8 Signals per block (256 threads / 32 threads per warp)
   int numSignals = useBlockGroups ? nBlocks : nBlocks * (nThreads / 32);
+  std::size_t signalBufferSize = getSignalBufferSize(numSignals);
 
   CHECK_EQ(cudaSetDevice(gpu0), cudaSuccess);
   CudaBenchBase bench0;
   // Allocate Signal array on receiver device
-  DeviceBuffer signalBuffer0(numSignals * sizeof(SignalState));
+  DeviceBuffer signalBuffer0(signalBufferSize);
   SignalState* signal0 = static_cast<SignalState*>(signalBuffer0.get());
 
   CHECK_EQ(cudaSetDevice(gpu1), cudaSuccess);
   CudaBenchBase bench1;
   // Allocate Signal array on receiver device
-  DeviceBuffer signalBuffer1(numSignals * sizeof(SignalState));
+  DeviceBuffer signalBuffer1(signalBufferSize);
   SignalState* signal1 = static_cast<SignalState*>(signalBuffer1.get());
 
   // Initialize Signals to 0
@@ -81,22 +82,12 @@ static void signalBench(
     // Reset Signals to 0
     CHECK_EQ(cudaSetDevice(gpu0), cudaSuccess);
     CHECK_EQ(
-        cudaMemcpyAsync(
-            signal0,
-            initSignals.data(),
-            numSignals * sizeof(SignalState),
-            cudaMemcpyHostToDevice,
-            bench0.stream),
+        cudaMemsetAsync(signal0, 0, signalBufferSize, bench0.stream),
         cudaSuccess);
 
     CHECK_EQ(cudaSetDevice(gpu1), cudaSuccess);
     CHECK_EQ(
-        cudaMemcpyAsync(
-            signal1,
-            initSignals.data(),
-            numSignals * sizeof(SignalState),
-            cudaMemcpyHostToDevice,
-            bench1.stream),
+        cudaMemsetAsync(signal1, 0, signalBufferSize, bench1.stream),
         cudaSuccess);
 
     // Sync both streams before starting

@@ -23,7 +23,7 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       (config_.dataBufferSize + config_.chunkSize - 1) / config_.chunkSize;
   const std::size_t numChunksPerPeer = config_.pipelineDepth * numChunksPerStep;
   perPeerChunkStateBufferSize_ = numChunksPerPeer * sizeof(ChunkState);
-  perPeerSignalBufferSize_ = config_.signalCount * sizeof(SignalState);
+  perPeerSignalBufferSize_ = getSignalBufferSize(config_.signalCount);
 
   // Allocate buffers for (nRanks - 1) peers
   const std::size_t totalDataBufferSize =
