@@ -42,9 +42,8 @@ is_formatter = false
 code = 'FLAKE8'
 include_patterns = [
     "comms/torchcomms/**/*.py",
-]
-exclude_patterns = [
-    "**/*.pyi",
+    "comms/torchcomms/**/*.pyi",
+    "tools/**/*.py",
 ]
 command = [
     'uv',
@@ -59,9 +58,8 @@ command = [
 code = 'UFMT'
 include_patterns = [
     "comms/torchcomms/**/*.py",
-]
-exclude_patterns = [
-    "**/*.pyi",
+    "comms/torchcomms/**/*.pyi",
+    "tools/**/*.py",
 ]
 command = [
     'uv',

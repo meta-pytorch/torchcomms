@@ -13,6 +13,7 @@
 """
 ufmt formatter adapter for lintrunner.
 """
+
 from __future__ import annotations
 
 import argparse
