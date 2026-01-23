@@ -440,7 +440,6 @@ def _create_op_wrapper_with_defaults(
         is_async = parsed.get_value("async_op") or False
 
         if has_mutable_inputs:
-
             # For async ops, return a FakeWork object that tracks the result tensors
             if is_async:
                 return FakeWork(result)

@@ -3,8 +3,8 @@
 #pragma once
 
 #include "comms/common/IpcMemHandler.h"
+#include "comms/ctran/interfaces/IBootstrap.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
-#include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/utils/CudaRAII.h"
 
 namespace comms::pipes {
@@ -71,7 +71,7 @@ class MultiPeerNvlTransport {
    *
    * @param myRank This rank's ID in the communicator (0 to nRanks-1)
    * @param nRanks Total number of ranks in the communicator
-   * @param mpiBootstrap Communicator for collective IPC handle exchange
+   * @param bootstrap Bootstrap interface for collective IPC handle exchange
    * @param multiPeerNvlTransportConfig Buffer configuration (must match across
    * all ranks)
    *
@@ -80,7 +80,7 @@ class MultiPeerNvlTransport {
   MultiPeerNvlTransport(
       int myRank,
       int nRanks,
-      std::shared_ptr<meta::comms::MpiBootstrap> mpiBootstrap,
+      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
       const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig);
 
   /**
@@ -89,8 +89,8 @@ class MultiPeerNvlTransport {
    * COLLECTIVE OPERATION: All ranks MUST call this before using
    * getP2pTransportDevice().
    *
-   * Performs collective IPC handle exchange using the mpiBootstrap
-   * communicator:
+   * Performs collective IPC handle exchange using the bootstrap
+   * interface:
    * 1. Each rank shares its local buffer's IPC handle with all other ranks
    * 2. Each rank receives IPC handles from all other ranks
    * 3. Implicit barrier ensures all ranks complete before returning
@@ -128,8 +128,7 @@ class MultiPeerNvlTransport {
  private:
   const int myRank_{-1};
   const int nRanks_{-1};
-  // TODO: make it ctran::bootstrap::IBootstrap when integrating with Ctran
-  std::shared_ptr<meta::comms::MpiBootstrap> mpiBootstrap_;
+  std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap_;
   const MultiPeerNvlTransportConfig config_;
 
   // data buffer: staging buffer for send/recv data
