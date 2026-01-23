@@ -9,11 +9,13 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
 #include "comms/pipes/ChunkState.cuh"
+#include "comms/pipes/P2pNvlTransportDevice.cuh"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
 using comms::pipes::ChunkState;
+using comms::pipes::DeviceSpan;
 
 CtranAlgo::CtranAlgo(CtranComm* comm, ICtran* ctran)
     : comm_(comm), ctran_(ctran) {
@@ -128,6 +130,9 @@ CtranAlgo::~CtranAlgo() {
     FB_COMMCHECKIGNORE(this->allReduceDirectResource->destroy());
   }
 
+  // Free managed memory for P2pNvlTransportDevice objects
+  peerToNvlTransport_.clear();
+
   // Dot not throw exception in destructor to avoid early termination in stack
   // unwind. See discussion in
   // https://stackoverflow.com/questions/130117/if-you-shouldnt-throw-exceptions-in-a-destructor-how-do-you-handle-errors-in-i
@@ -136,6 +141,54 @@ CtranAlgo::~CtranAlgo() {
 CtranAlgoDeviceState* CtranAlgo::getDevState() {
   FB_CHECKABORT(this->devState_d_ != nullptr, "CTRAN-ALGO: devState not ready");
   return this->devState_d_;
+}
+
+comms::pipes::P2pNvlTransportDevice CtranAlgo::getP2pNvlTransport(int peer) {
+  if (!isResInitialized_) {
+    CLOGF(
+        ERR,
+        "CTRAN-ALGO: getP2pNvlTransport() called before initKernelResources() is called. ");
+    return comms::pipes::P2pNvlTransportDevice();
+  }
+  // peer is localRank, self sends/recvs don't need P2pNvlTransport
+  if (peer == comm_->statex_->localRank()) {
+    CLOGF(
+        ERR,
+        "CTRAN-ALGO: peer is self, self sends/recvs don't need getP2pNvlTransport()");
+    return comms::pipes::P2pNvlTransportDevice();
+  }
+  auto it = peerToNvlTransport_.find(peer);
+  if (it == peerToNvlTransport_.end()) {
+    comms::pipes::P2pNvlTransportOptions options{
+        .dataBufferSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE /
+            NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH,
+        .chunkSize = 1024 * 512, // TODO: tune this
+        .pipelineDepth = NCCL_CTRAN_P2P_NVL_COPY_PIPELINE_DEPTH};
+
+    comms::pipes::LocalState localState{
+        .dataBuffer = static_cast<char*>(devState_.localStagingBufsMap[peer]),
+        .stateBuffer = DeviceSpan<ChunkState>(
+            static_cast<ChunkState*>(devState_.localChunkStatesMap[peer]),
+            CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
+
+    comms::pipes::RemoteState remoteState{
+        .dataBuffer = static_cast<char*>(devState_.remoteStagingBufsMap[peer]),
+        .stateBuffer = DeviceSpan<ChunkState>(
+            static_cast<ChunkState*>(devState_.remoteChunkStatesMap[peer]),
+            CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
+
+    // Store by value in the map
+    peerToNvlTransport_.emplace(
+        peer,
+        comms::pipes::P2pNvlTransportDevice(
+            comm_->statex_->localRank(),
+            peer,
+            options,
+            localState,
+            remoteState));
+    it = peerToNvlTransport_.find(peer);
+  }
+  return it->second;
 }
 
 static const std::string kCtranAlgoInitResources{
@@ -166,7 +219,6 @@ partitionDevShm(void* mappedDevShmPtr, int nLocalRanks, int pos) {
 
 commResult_t CtranAlgo::initKernelResources() {
   const auto statex = comm_->statex_.get();
-  CtranAlgoDeviceState tmpDevState;
   int nLocalRanks = statex->nLocalRanks();
   int localRank = statex->localRank();
   int rank = statex->rank();
@@ -186,7 +238,7 @@ commResult_t CtranAlgo::initKernelResources() {
   NcclScubaEvent scubaEvent(kCtranAlgoInitResources, &comm_->logMetaData_);
   scubaEvent.startAndRecord();
 
-  memset(&tmpDevState, 0, sizeof(CtranAlgoDeviceState));
+  memset(&devState_, 0, sizeof(CtranAlgoDeviceState));
 
   // Initialize inter-process shared device buffer
   if (!this->sharedRes_) {
@@ -227,26 +279,25 @@ commResult_t CtranAlgo::initKernelResources() {
       statex->commHash());
 
   // Copy basic comm info to device state for collective kernel to use
-  statex->setupDev(tmpDevState.statex);
+  statex->setupDev(devState_.statex);
 
-  tmpDevState.bufSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
-  tmpDevState.bcastBufSize = NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE;
-  tmpDevState.enableTraceLog = NCCL_CTRAN_ENABLE_DEV_TRACE_LOG;
-  tmpDevState.enableCancellableWaits = comm_->abortEnabled();
+  devState_.bufSize = NCCL_CTRAN_P2P_NVL_SHARED_DEVBUF_SIZE;
+  devState_.bcastBufSize = NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE;
+  devState_.enableTraceLog = NCCL_CTRAN_ENABLE_DEV_TRACE_LOG;
+  devState_.enableCancellableWaits = comm_->abortEnabled();
 
   // Setup pointers to bufstates and shared buffer of each peers' shared region
   // See description of bufState and buf memory locations in SharedResource.
   if (this->sharedRes_) {
-    auto& remoteSyncsMap = tmpDevState.remoteSyncsMap;
-    auto& localSyncsMap = tmpDevState.localSyncsMap;
-    auto& remoteStagingBufsMap = tmpDevState.remoteStagingBufsMap;
-    auto& localStagingBufsMap = tmpDevState.localStagingBufsMap;
-    auto& remoteChunkStatesMap = tmpDevState.remoteChunkStatesMap;
-    auto& localChunkStatesMap = tmpDevState.localChunkStatesMap;
-    auto& peerBcastBufsMap = tmpDevState.peerBcastBufsMap;
-    auto& peerAllToAllvDynamicBufsMap = tmpDevState.peerAllToAllvDynamicBufsMap;
-    auto& alltoallvDynamicSendbuffsMap =
-        tmpDevState.alltoallvDynamicSendbuffsMap;
+    auto& remoteSyncsMap = devState_.remoteSyncsMap;
+    auto& localSyncsMap = devState_.localSyncsMap;
+    auto& remoteStagingBufsMap = devState_.remoteStagingBufsMap;
+    auto& localStagingBufsMap = devState_.localStagingBufsMap;
+    auto& remoteChunkStatesMap = devState_.remoteChunkStatesMap;
+    auto& localChunkStatesMap = devState_.localChunkStatesMap;
+    auto& peerBcastBufsMap = devState_.peerBcastBufsMap;
+    auto& peerAllToAllvDynamicBufsMap = devState_.peerAllToAllvDynamicBufsMap;
+    auto& alltoallvDynamicSendbuffsMap = devState_.alltoallvDynamicSendbuffsMap;
 
     for (int i = 0; i < nLocalRanks; i++) {
       if (i == localRank) {
@@ -282,12 +333,12 @@ commResult_t CtranAlgo::initKernelResources() {
           "CTRAN-ALGO: allocated local peerBcastBufsMap[{}] = {}, size {}",
           i,
           (void*)peerBcastBufsMap[i],
-          tmpDevState.bcastBufSize);
+          devState_.bcastBufSize);
 
       // Next chunk is for alltoallvDynamic
       peerAllToAllvDynamicBufsMap[i] = reinterpret_cast<void*>(
           reinterpret_cast<uintptr_t>(peerBcastBufsMap[i]) +
-          tmpDevState.bcastBufSize);
+          devState_.bcastBufSize);
     }
     // FIXME: need better management on shm resources. Like how we managed the
     // tmpbuf.
@@ -317,7 +368,7 @@ commResult_t CtranAlgo::initKernelResources() {
           "initKernelResources"));
   FB_CUDACHECK(cudaMemcpy(
       this->devState_d_,
-      &tmpDevState,
+      &devState_,
       sizeof(CtranAlgoDeviceState),
       cudaMemcpyHostToDevice));
 

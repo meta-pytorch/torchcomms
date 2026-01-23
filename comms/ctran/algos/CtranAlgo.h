@@ -14,6 +14,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/utils/CtranIpc.h"
+#include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/utils/logger/Logger.h"
 
 #define LOCAL_RANK_TO_DEV_REGION_POS(localRank, ownerLocalRank) \
@@ -48,6 +49,8 @@ class CtranAlgo {
   commResult_t initKernelResources();
   // Get device state
   CtranAlgoDeviceState* getDevState();
+  // Get Nvl P2P transport (returns by value for kernel argument passing)
+  comms::pipes::P2pNvlTransportDevice getP2pNvlTransport(int peer);
 
   // accessing allGatherAlgo
   void setAllGatherAlgo(enum NCCL_ALLGATHER_ALGO algo);
@@ -143,6 +146,7 @@ class CtranAlgo {
   // Reference to the ctran object that owns this algo.
   ICtran* ctran_{nullptr};
 
+  CtranAlgoDeviceState devState_;
   // Device buffer to store all states of
   // shared device buffers and comm info, accessed by kernels.
   CtranAlgoDeviceState* devState_d_{nullptr};
@@ -171,6 +175,10 @@ class CtranAlgo {
   std::unordered_map<enum CollType, CtranIbConfig> collToVcConfigMap_;
   std::unique_ptr<ctran::algos::allreduce::AllReduceResourceImpl>
       allReduceDirectResource{nullptr};
+  // Map from peer local rank to P2pNvlTransportDevice (stored by value)
+  // getP2pNvlTransport returns a copy that can be passed to kernel arguments
+  std::unordered_map<int, comms::pipes::P2pNvlTransportDevice>
+      peerToNvlTransport_;
 };
 
 class CtranAlgo::SharedResource {
