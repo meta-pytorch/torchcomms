@@ -1,14 +1,11 @@
-# Adapted from pytorch/pytorch:
-# https://github.com/pytorch/pytorch/blob/main/tools/linter/adapters/black_linter.py
-#
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#   "black==25.1.0",
+#   "ruff==0.9.4",
 # ]
 # ///
 """
-Black linter adapter for lintrunner.
+Ruff formatter adapter for lintrunner.
 """
 from __future__ import annotations
 
@@ -20,6 +17,7 @@ import subprocess
 import sys
 import time
 from enum import Enum
+from pathlib import Path
 from typing import NamedTuple
 
 
@@ -51,12 +49,14 @@ def as_posix(name: str) -> str:
 
 def run_command(
     args: list[str],
+    stdin_input: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     logging.debug("$ %s", " ".join(args))
     start_time = time.monotonic()
     try:
         return subprocess.run(
             args,
+            input=stdin_input,
             capture_output=True,
             check=False,
             encoding="utf-8",
@@ -76,7 +76,7 @@ def check_file(filename: str) -> list[LintMessage]:
                 path=filename,
                 line=None,
                 char=None,
-                code="BLACK",
+                code="RUFF",
                 severity=LintSeverity.ERROR,
                 name="read-failed",
                 original=None,
@@ -87,15 +87,8 @@ def check_file(filename: str) -> list[LintMessage]:
 
     try:
         proc = run_command(
-            [sys.executable, "-mblack", "--quiet", "-"],
-        )
-        # Feed the file content to black via stdin
-        proc = subprocess.run(
-            [sys.executable, "-mblack", "--quiet", "-"],
-            input=original,
-            capture_output=True,
-            encoding="utf-8",
-            check=False,
+            [sys.executable, "-mruff", "format", "--stdin-filename", filename, "-"],
+            stdin_input=original,
         )
     except OSError as err:
         return [
@@ -103,42 +96,27 @@ def check_file(filename: str) -> list[LintMessage]:
                 path=filename,
                 line=None,
                 char=None,
-                code="BLACK",
+                code="RUFF",
                 severity=LintSeverity.ERROR,
                 name="command-failed",
                 original=None,
                 replacement=None,
-                description=f"Failed to run black: {err}",
+                description=f"Failed to run ruff format: {err}",
             )
         ]
 
     if proc.returncode != 0:
-        if "Cannot parse" in proc.stderr or "cannot parse" in proc.stderr:
-            return [
-                LintMessage(
-                    path=filename,
-                    line=None,
-                    char=None,
-                    code="BLACK",
-                    severity=LintSeverity.ERROR,
-                    name="parse-error",
-                    original=None,
-                    replacement=None,
-                    description=proc.stderr.strip(),
-                )
-            ]
-        # Other errors
         return [
             LintMessage(
                 path=filename,
                 line=None,
                 char=None,
-                code="BLACK",
+                code="RUFF",
                 severity=LintSeverity.ERROR,
                 name="format-error",
                 original=None,
                 replacement=None,
-                description=f"Black failed with exit code {proc.returncode}: {proc.stderr.strip()}",
+                description=f"Ruff failed with exit code {proc.returncode}: {proc.stderr.strip()}",
             )
         ]
 
@@ -152,7 +130,7 @@ def check_file(filename: str) -> list[LintMessage]:
             path=filename,
             line=1,
             char=1,
-            code="BLACK",
+            code="RUFF",
             severity=LintSeverity.WARNING,
             name="format",
             original=original,
@@ -164,7 +142,7 @@ def check_file(filename: str) -> list[LintMessage]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Black formatter wrapper for lintrunner.",
+        description="Ruff formatter wrapper for lintrunner.",
         fromfile_prefix_chars="@",
     )
     parser.add_argument(

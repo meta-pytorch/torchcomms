@@ -56,7 +56,7 @@ command = [
 ]
 
 [[linter]]
-code = 'BLACK'
+code = 'RUFF'
 include_patterns = [
     "comms/torchcomms/**/*.py",
 ]
@@ -67,7 +67,7 @@ command = [
     'uv',
     'run',
     '--script',
-    'tools/linter/adapters/black_linter.py',
+    'tools/linter/adapters/ruff_linter.py',
     '--',
     '@{{PATHSFILE}}'
 ]

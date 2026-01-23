@@ -1,6 +1,3 @@
-# Adapted from pytorch/pytorch:
-# https://github.com/pytorch/pytorch/blob/main/tools/linter/adapters/flake8_linter.py
-#
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
