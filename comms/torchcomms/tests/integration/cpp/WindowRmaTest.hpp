@@ -22,6 +22,9 @@ class WindowRmaTest : public ::testing::TestWithParam<
       bool async_op,
       bool async_signal);
 
+  // Test function for new_window with optional tensor argument
+  void testWindowPutWithTensorInNewWindow(int count, at::ScalarType dtype);
+
   bool checkIfSkip();
 
  protected:
