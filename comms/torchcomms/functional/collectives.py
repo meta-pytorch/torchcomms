@@ -445,9 +445,9 @@ if lib is not None:
         else:
             grad_input_list = []
 
-        assert (
-            len(grad_outputs) > 0
-        ), "gather outputs cannot be empty if you want to run backward!"
+        assert len(grad_outputs) > 0, (
+            "gather outputs cannot be empty if you want to run backward!"
+        )
 
         # Create output tensor for scatter
         grad_input = torch.empty(
