@@ -9,17 +9,12 @@ __device__ inline unsigned int getGlobalThreadId() {
   return blockIdx.x * blockDim.x + threadIdx.x;
 }
 
-// Helper to get the appropriate thread group
-__device__ inline ThreadGroup getThreadGroup(bool useBlockGroups) {
-  return useBlockGroups ? make_block_group() : make_warp_group();
-}
-
 __global__ void p2pSend(
     P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
-    bool useBlockGroups) {
-  auto group = getThreadGroup(useBlockGroups);
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
   p2p.send(group, srcBuff, nBytes);
 }
 
@@ -27,8 +22,8 @@ __global__ void p2pRecv(
     P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
-    bool useBlockGroups) {
-  auto group = getThreadGroup(useBlockGroups);
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
   p2p.recv(group, dstBuff, nBytes);
 }
 
@@ -37,8 +32,8 @@ __global__ void p2pSendTimed(
     void* srcBuff,
     std::size_t nBytes,
     TimingStats* stats,
-    bool useBlockGroups) {
-  auto group = getThreadGroup(useBlockGroups);
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
   unsigned int globalThreadId = getGlobalThreadId();
 
   // Only first thread globally records start time
@@ -61,8 +56,8 @@ __global__ void p2pRecvTimed(
     void* dstBuff,
     std::size_t nBytes,
     TimingStats* stats,
-    bool useBlockGroups) {
-  auto group = getThreadGroup(useBlockGroups);
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
   unsigned int globalThreadId = getGlobalThreadId();
 
   // Only first thread globally records start time
@@ -85,8 +80,8 @@ __global__ void p2pBidirectional(
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
-    bool useBlockGroups) {
-  auto group = getThreadGroup(useBlockGroups);
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
 
   // Partition groups into 2: half for send, half for recv
   auto [partition_id, subgroup] = group.partition_interleaved(2);
