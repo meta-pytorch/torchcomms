@@ -13,20 +13,24 @@
 __device__ __forceinline__ void sendImpl(
     ctran::sendrecv::SendRecvOp* sends,
     size_t numSends,
+    comms::pipes::P2pNvlTransportDevice* nvlTransportsBase,
     comms::pipes::ThreadGroup& group) {
   for (auto i = 0; i < numSends; i++) {
     const auto nbytes = sends[i].nbytes;
-    sends[i].nvlTransport.send(group, sends[i].buff, nbytes);
+    const auto peerLocalRank = sends[i].peerLocalRank;
+    nvlTransportsBase[peerLocalRank].send(group, sends[i].buff, nbytes);
   }
 }
 
 __device__ __forceinline__ void recvImpl(
     ctran::sendrecv::SendRecvOp* recvs,
     size_t numRecvs,
+    comms::pipes::P2pNvlTransportDevice* nvlTransportsBase,
     comms::pipes::ThreadGroup& group) {
   for (auto i = 0; i < numRecvs; i++) {
     const auto nbytes = recvs[i].nbytes;
-    recvs[i].nvlTransport.recv(group, recvs[i].buff, nbytes);
+    const auto peerLocalRank = recvs[i].peerLocalRank;
+    nvlTransportsBase[peerLocalRank].recv(group, recvs[i].buff, nbytes);
   }
 }
 
@@ -61,9 +65,9 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecvP2p(
       args.useList ? args.recvsList : args.recvs;
 
   if (partition_id == 0) {
-    sendImpl(sends, args.numSends, subgroup);
+    sendImpl(sends, args.numSends, args.nvlTransportsBase, subgroup);
   } else {
-    recvImpl(recvs, args.numRecvs, subgroup);
+    recvImpl(recvs, args.numRecvs, args.nvlTransportsBase, subgroup);
   }
 
   if (flag && gtIdx == 0) {
