@@ -14,6 +14,9 @@ using meta::comms::DeviceBuffer;
 
 namespace comms::pipes {
 
+// Warpgroup size constant (4 warps = 128 threads)
+constexpr uint32_t kWarpgroupSize = 4 * comms::device::kWarpSize;
+
 class ThreadGroupTestFixture : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -109,6 +112,9 @@ TEST_P(ThreadGroupContiguousTest, ForEachItemContiguousLocality) {
   if (params.scope == SyncScope::WARP) {
     const uint32_t warpsPerBlock = blockSize / comms::device::kWarpSize;
     totalGroups = numBlocks * warpsPerBlock;
+  } else if (params.scope == SyncScope::WARPGROUP) {
+    const uint32_t warpgroupsPerBlock = blockSize / kWarpgroupSize;
+    totalGroups = numBlocks * warpgroupsPerBlock;
   } else {
     totalGroups = numBlocks;
   }
@@ -168,7 +174,19 @@ INSTANTIATE_TEST_SUITE_P(
             .numItems = 1000,
             .scope = SyncScope::TILE,
             .description = "TILE: uneven distribution (1000 items, 8 blocks)",
-            .testName = "Tile_UnevenCase"}),
+            .testName = "Tile_UnevenCase"},
+        ContiguousTestParams{
+            .numItems = 1024,
+            .scope = SyncScope::WARPGROUP,
+            .description =
+                "WARPGROUP: even distribution (1024 items, 16 warpgroups)",
+            .testName = "Warpgroup_EvenCase"},
+        ContiguousTestParams{
+            .numItems = 1000,
+            .scope = SyncScope::WARPGROUP,
+            .description =
+                "WARPGROUP: uneven distribution (1000 items, 16 warpgroups)",
+            .testName = "Warpgroup_UnevenCase"}),
     [](const ::testing::TestParamInfo<ContiguousTestParams>& info) {
       return info.param.testName;
     });
@@ -277,6 +295,8 @@ TEST_P(ThreadGroupPartitionTest, PartitionEven) {
   if (params.scope == SyncScope::WARP) {
     totalGroups =
         params.numBlocks * (params.blockSize / comms::device::kWarpSize);
+  } else if (params.scope == SyncScope::WARPGROUP) {
+    totalGroups = params.numBlocks * (params.blockSize / kWarpgroupSize);
   } else {
     totalGroups = params.numBlocks;
   }
@@ -475,7 +495,38 @@ INSTANTIATE_TEST_SUITE_P(
             .numBlocks = 12,
             .blockSize = 256,
             .scope = SyncScope::TILE,
-            .testName = "Tile_FivePartitions_Uneven"}),
+            .testName = "Tile_FivePartitions_Uneven"},
+        // WARPGROUP (4 warps = 128 threads) tests
+        PartitionTestParams{
+            .numPartitions = 2,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_TwoPartitions_Even"},
+        PartitionTestParams{
+            .numPartitions = 3,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_ThreePartitions_Uneven"},
+        PartitionTestParams{
+            .numPartitions = 1,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_SinglePartition"},
+        PartitionTestParams{
+            .numPartitions = 16,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_OneWarpgroupPerPartition"},
+        PartitionTestParams{
+            .numPartitions = 4,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_FourPartitions_Even"}),
     [](const ::testing::TestParamInfo<PartitionTestParams>& info) {
       return info.param.testName;
     });
@@ -507,6 +558,8 @@ TEST_P(ThreadGroupPartitionInterleavedTest, PartitionInterleaved) {
   if (params.scope == SyncScope::WARP) {
     totalGroups =
         params.numBlocks * (params.blockSize / comms::device::kWarpSize);
+  } else if (params.scope == SyncScope::WARPGROUP) {
+    totalGroups = params.numBlocks * (params.blockSize / kWarpgroupSize);
   } else {
     totalGroups = params.numBlocks;
   }
@@ -692,7 +745,44 @@ INSTANTIATE_TEST_SUITE_P(
             .numBlocks = 4,
             .blockSize = 256,
             .scope = SyncScope::TILE,
-            .testName = "Tile_SmallConfig_TwoPartitions"}),
+            .testName = "Tile_SmallConfig_TwoPartitions"},
+        // WARPGROUP (4 warps = 128 threads) tests
+        PartitionTestParams{
+            .numPartitions = 2,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_TwoPartitions_Even"},
+        PartitionTestParams{
+            .numPartitions = 3,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_ThreePartitions_Uneven"},
+        PartitionTestParams{
+            .numPartitions = 1,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_SinglePartition"},
+        PartitionTestParams{
+            .numPartitions = 16,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_OneWarpgroupPerPartition"},
+        PartitionTestParams{
+            .numPartitions = 4,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_FourPartitions_Even"},
+        PartitionTestParams{
+            .numPartitions = 2,
+            .numBlocks = 1,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_SmallConfig_TwoPartitions"}),
     [](const ::testing::TestParamInfo<PartitionTestParams>& info) {
       return info.param.testName;
     });
@@ -722,6 +812,9 @@ TEST_P(ThreadGroupSubgroupPropertiesTest, SubgroupPropertiesPreserved) {
     totalGroups =
         params.numBlocks * (params.blockSize / comms::device::kWarpSize);
     expectedGroupSize = comms::device::kWarpSize;
+  } else if (params.scope == SyncScope::WARPGROUP) {
+    totalGroups = params.numBlocks * (params.blockSize / kWarpgroupSize);
+    expectedGroupSize = kWarpgroupSize;
   } else {
     totalGroups = params.numBlocks;
     expectedGroupSize = params.blockSize;
@@ -798,7 +891,19 @@ INSTANTIATE_TEST_SUITE_P(
             .blockSize = 256,
             .numPartitions = 4,
             .scope = SyncScope::TILE,
-            .testName = "Tile_FourPartitions"}),
+            .testName = "Tile_FourPartitions"},
+        SubgroupPropertiesTestParams{
+            .numBlocks = 4,
+            .blockSize = 256,
+            .numPartitions = 2,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_TwoPartitions"},
+        SubgroupPropertiesTestParams{
+            .numBlocks = 8,
+            .blockSize = 256,
+            .numPartitions = 4,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_FourPartitions"}),
     [](const ::testing::TestParamInfo<SubgroupPropertiesTestParams>& info) {
       return info.param.testName;
     });
@@ -877,6 +982,8 @@ TEST_P(ThreadGroupWeightedPartitionTest, WeightedPartition) {
   if (params.scope == SyncScope::WARP) {
     totalGroups =
         params.numBlocks * (params.blockSize / comms::device::kWarpSize);
+  } else if (params.scope == SyncScope::WARPGROUP) {
+    totalGroups = params.numBlocks * (params.blockSize / kWarpgroupSize);
   } else {
     totalGroups = params.numBlocks;
   }
@@ -1165,8 +1272,317 @@ INSTANTIATE_TEST_SUITE_P(
             .numBlocks = 8,
             .blockSize = 256,
             .scope = SyncScope::TILE,
-            .testName = "Tile_ZeroWeight_First"}),
+            .testName = "Tile_ZeroWeight_First"},
+        // WARPGROUP (4 warps = 128 threads) tests
+        WeightedPartitionTestParams{
+            .weights = {1, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_EvenSplit_2way"},
+        WeightedPartitionTestParams{
+            .weights = {3, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_Weighted_3_1"},
+        WeightedPartitionTestParams{
+            .weights = {1, 1, 1},
+            .numBlocks = 6,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_EvenSplit_3way"},
+        WeightedPartitionTestParams{
+            .weights = {2, 1, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_Weighted_2_1_1"},
+        WeightedPartitionTestParams{
+            .weights = {1},
+            .numBlocks = 4,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_SinglePartition"},
+        WeightedPartitionTestParams{
+            .weights = {1, 1, 1, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_FourWaySplit"},
+        WeightedPartitionTestParams{
+            .weights = {3, 0, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::WARPGROUP,
+            .testName = "Warpgroup_ZeroWeight_Middle"}),
     [](const ::testing::TestParamInfo<WeightedPartitionTestParams>& info) {
+      return info.param.testName;
+    });
+
+// =============================================================================
+// Warpgroup Tests (4 warps = 128 threads per group)
+// =============================================================================
+
+// Test: make_warpgroup_group creates correct ThreadGroup
+// Verifies:
+// - group_id is computed correctly across all warpgroups
+// - group_size == 128 (4 * warpSize)
+// - thread_id_in_group == tid % 128
+// - total_groups == (threads_per_block / 128) * num_blocks
+// - Work items are distributed contiguously across warpgroup groups
+TEST_F(ThreadGroupTestFixture, WarpgroupGroupContiguousLocality) {
+  const uint32_t numItems = 1024;
+  const int numBlocks = 4;
+  const int blockSize = 512; // Must be multiple of 128 (warpgroup size)
+
+  const uint32_t warpgroupsPerBlock = blockSize / kWarpgroupSize;
+  const uint32_t totalWarpgroups = numBlocks * warpgroupsPerBlock;
+
+  DeviceBuffer groupIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer threadIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer groupSizesBuffer(totalWarpgroups * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto groupIds_d = static_cast<uint32_t*>(groupIdsBuffer.get());
+  auto threadIds_d = static_cast<uint32_t*>(threadIdsBuffer.get());
+  auto groupSizes_d = static_cast<uint32_t*>(groupSizesBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(cudaMemset(groupIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(threadIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(
+      cudaMemset(groupSizes_d, 0, totalWarpgroups * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  test::testWarpgroupGroup(
+      groupIds_d,
+      threadIds_d,
+      groupSizes_d,
+      numItems,
+      errorCount_d,
+      numBlocks,
+      blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify no kernel errors
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0) << "Warpgroup group should not have any errors";
+
+  // Verify group sizes (all warpgroups should have size 128)
+  std::vector<uint32_t> groupSizes_h(totalWarpgroups);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupSizes_h.data(),
+      groupSizes_d,
+      totalWarpgroups * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  for (uint32_t i = 0; i < totalWarpgroups; i++) {
+    EXPECT_EQ(groupSizes_h[i], kWarpgroupSize)
+        << "Warpgroup " << i << " should have group_size == " << kWarpgroupSize;
+  }
+
+  // Verify contiguous distribution of work items
+  std::vector<uint32_t> groupIds_h(numItems);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupIds_h.data(),
+      groupIds_d,
+      numItems * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  const uint32_t itemsPerGroup =
+      (numItems + totalWarpgroups - 1) / totalWarpgroups;
+
+  for (uint32_t group_id = 0; group_id < totalWarpgroups; group_id++) {
+    uint32_t start_item = group_id * itemsPerGroup;
+    uint32_t end_item = std::min(start_item + itemsPerGroup, numItems);
+
+    // Skip groups that have no items assigned
+    if (start_item >= numItems) {
+      break;
+    }
+
+    for (uint32_t item_id = start_item; item_id < end_item; item_id++) {
+      EXPECT_EQ(groupIds_h[item_id], group_id)
+          << "Work item " << item_id << " should be assigned to warpgroup "
+          << group_id;
+    }
+  }
+}
+
+// Test: Warpgroup synchronization correctness
+// Verifies:
+// - All 128 threads in a warpgroup synchronize correctly via named barriers
+// - Multiple warpgroups can synchronize independently within a block
+// - sync() uses PTX bar.sync instruction correctly
+TEST_F(ThreadGroupTestFixture, WarpgroupSync) {
+  const int numBlocks = 2;
+  const int blockSize = 512; // 4 warpgroups per block
+
+  const uint32_t warpgroupsPerBlock = blockSize / kWarpgroupSize;
+  const uint32_t totalWarpgroups = numBlocks * warpgroupsPerBlock;
+
+  DeviceBuffer syncResultsBuffer(totalWarpgroups * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto syncResults_d = static_cast<uint32_t*>(syncResultsBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(
+      cudaMemset(syncResults_d, 0, totalWarpgroups * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  test::testWarpgroupSync(syncResults_d, errorCount_d, numBlocks, blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify no synchronization errors
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0)
+      << "Warpgroup sync should synchronize all 128 threads correctly";
+
+  // Verify all warpgroups completed successfully
+  std::vector<uint32_t> syncResults_h(totalWarpgroups);
+  CUDACHECK_TEST(cudaMemcpy(
+      syncResults_h.data(),
+      syncResults_d,
+      totalWarpgroups * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  for (uint32_t i = 0; i < totalWarpgroups; i++) {
+    EXPECT_EQ(syncResults_h[i], 1U)
+        << "Warpgroup " << i << " should have completed synchronization";
+  }
+}
+
+// Parameterized test for warpgroup with different block sizes
+struct WarpgroupTestParams {
+  int numBlocks;
+  int blockSize;
+  uint32_t numItems;
+  std::string testName;
+};
+
+class ThreadGroupWarpgroupTest
+    : public ThreadGroupTestFixture,
+      public ::testing::WithParamInterface<WarpgroupTestParams> {};
+
+TEST_P(ThreadGroupWarpgroupTest, WarpgroupContiguousDistribution) {
+  const auto& params = GetParam();
+  const uint32_t warpgroupsPerBlock = params.blockSize / kWarpgroupSize;
+  const uint32_t totalWarpgroups = params.numBlocks * warpgroupsPerBlock;
+  const uint32_t numItems = params.numItems;
+
+  DeviceBuffer groupIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer threadIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer groupSizesBuffer(totalWarpgroups * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto groupIds_d = static_cast<uint32_t*>(groupIdsBuffer.get());
+  auto threadIds_d = static_cast<uint32_t*>(threadIdsBuffer.get());
+  auto groupSizes_d = static_cast<uint32_t*>(groupSizesBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(cudaMemset(groupIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(threadIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(
+      cudaMemset(groupSizes_d, 0, totalWarpgroups * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  test::testWarpgroupGroup(
+      groupIds_d,
+      threadIds_d,
+      groupSizes_d,
+      numItems,
+      errorCount_d,
+      params.numBlocks,
+      params.blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify no errors
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0);
+
+  // Verify all group sizes are 128
+  std::vector<uint32_t> groupSizes_h(totalWarpgroups);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupSizes_h.data(),
+      groupSizes_d,
+      totalWarpgroups * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  for (uint32_t i = 0; i < totalWarpgroups; i++) {
+    EXPECT_EQ(groupSizes_h[i], kWarpgroupSize)
+        << "Warpgroup " << i << " should have group_size == " << kWarpgroupSize;
+  }
+
+  // Verify contiguous work distribution
+  std::vector<uint32_t> groupIds_h(numItems);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupIds_h.data(),
+      groupIds_d,
+      numItems * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  const uint32_t itemsPerGroup =
+      (numItems + totalWarpgroups - 1) / totalWarpgroups;
+
+  for (uint32_t group_id = 0; group_id < totalWarpgroups; group_id++) {
+    uint32_t start_item = group_id * itemsPerGroup;
+    uint32_t end_item = std::min(start_item + itemsPerGroup, numItems);
+
+    if (start_item >= numItems) {
+      break;
+    }
+
+    for (uint32_t item_id = start_item; item_id < end_item; item_id++) {
+      EXPECT_EQ(groupIds_h[item_id], group_id)
+          << "Work item " << item_id << " should be assigned to warpgroup "
+          << group_id;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    WarpgroupConfigs,
+    ThreadGroupWarpgroupTest,
+    ::testing::Values(
+        // Single warpgroup per block
+        WarpgroupTestParams{
+            .numBlocks = 4,
+            .blockSize = 128,
+            .numItems = 512,
+            .testName = "SingleWarpgroupPerBlock"},
+        // Multiple warpgroups per block (4 warpgroups)
+        WarpgroupTestParams{
+            .numBlocks = 2,
+            .blockSize = 512,
+            .numItems = 1024,
+            .testName = "FourWarpgroupsPerBlock"},
+        // Large configuration (16 warpgroups total)
+        WarpgroupTestParams{
+            .numBlocks = 8,
+            .blockSize = 256,
+            .numItems = 2048,
+            .testName = "SixteenWarpgroupsTotal"},
+        // Uneven item distribution
+        WarpgroupTestParams{
+            .numBlocks = 4,
+            .blockSize = 256,
+            .numItems = 1000,
+            .testName = "UnevenItemDistribution"},
+        // Maximum warpgroups per block (16 = 2048/128, hardware limit)
+        WarpgroupTestParams{
+            .numBlocks = 1,
+            .blockSize = 1024,
+            .numItems = 1024,
+            .testName = "EightWarpgroupsPerBlock"}),
+    [](const ::testing::TestParamInfo<WarpgroupTestParams>& info) {
       return info.param.testName;
     });
 
