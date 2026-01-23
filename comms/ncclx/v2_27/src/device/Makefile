@@ -113,6 +113,7 @@ SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAllvDedup/ExecImpl.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Broadcast/Broadcast.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecv.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecvStagedCopy.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecvP2p.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Barrier.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/Checksum.cu
 SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/PutSignal.cu
