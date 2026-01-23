@@ -6,6 +6,7 @@
 
 #include "comms/pipes/AllToAllv.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes::benchmark {
 
@@ -25,19 +26,19 @@ struct TimingStats {
 // Benchmark kernels with configurable parallelism
 // =============================================================================
 
-// Send kernel - useBlockGroups selects warp vs block level parallelism
+// Send kernel - groupScope selects warp vs block level parallelism
 __global__ void p2pSend(
     P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
-    bool useBlockGroups = false);
+    SyncScope groupScope = SyncScope::WARP);
 
 // Recv kernel
 __global__ void p2pRecv(
     P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
-    bool useBlockGroups = false);
+    SyncScope groupScope = SyncScope::WARP);
 
 // Timed versions that export GPU-side clock64() timing stats
 __global__ void p2pSendTimed(
@@ -45,14 +46,14 @@ __global__ void p2pSendTimed(
     void* srcBuff,
     std::size_t nBytes,
     TimingStats* stats,
-    bool useBlockGroups = false);
+    SyncScope groupScope = SyncScope::WARP);
 
 __global__ void p2pRecvTimed(
     P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
     TimingStats* stats,
-    bool useBlockGroups = false);
+    SyncScope groupScope = SyncScope::WARP);
 
 // Bidirectional kernel - half groups send, half groups receive
 __global__ void p2pBidirectional(
@@ -60,7 +61,7 @@ __global__ void p2pBidirectional(
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
-    bool useBlockGroups = false);
+    SyncScope groupScope = SyncScope::WARP);
 
 /**
  * AllToAllv benchmark kernel.

@@ -464,9 +464,9 @@ class CollectiveParamSchema:
         mutable_params = [p for p in input_params if p.mutable]
         needs_async_dummy_return = has_async_op and len(mutable_params) == 0
 
-        assert not (
-            len(output_params) > 0 and has_async_op
-        ), "Async ops cannot have outputs at the moment. Please pass the output as a mutable input instead, or remove the 'async_op' argument from the spec."
+        assert not (len(output_params) > 0 and has_async_op), (
+            "Async ops cannot have outputs at the moment. Please pass the output as a mutable input instead, or remove the 'async_op' argument from the spec."
+        )
 
         return CollectiveParamSchema(
             object_param=object_param,

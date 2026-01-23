@@ -197,7 +197,7 @@ class TorchCommGloo : public TorchCommBackend,
     UNINITIALIZED,
     INITIALIZED,
     FINALIZED,
-  } init_state_{0};
+  } init_state_{InitializationState::UNINITIALIZED};
 
   std::shared_ptr<TorchCommTracing> tracing_;
   std::string name_;
