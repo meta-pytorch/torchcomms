@@ -69,8 +69,19 @@ static void p2pCopyKernel(
   float avgTimeUs = (totalTimeMs / iters / nRunsPerIter) * 1000.0f;
   float busBwGBps = (nBytes / 1e9f) / (avgTimeUs / 1e6f);
 
-  size_t nGroups =
-      (groupScope == SyncScope::TILE) ? nBlocks : nBlocks * (nThreads / 32);
+  size_t nGroups;
+  switch (groupScope) {
+    case SyncScope::TILE:
+      nGroups = nBlocks;
+      break;
+    case SyncScope::WARPGROUP:
+      nGroups = nBlocks * (nThreads / 128); // 4 warps per warpgroup
+      break;
+    case SyncScope::WARP:
+    default:
+      nGroups = nBlocks * (nThreads / 32);
+      break;
+  }
   size_t chunkSize = nBytes / nGroups / 1024;
 
   counters["deviceTimeUs"] =
@@ -128,8 +139,19 @@ static void d2dCopyKernel(
   float avgTimeUs = (totalTimeMs / iters / nRunsPerIter) * 1000.0f;
   float busBwGBps = (nBytes / 1e9f) / (avgTimeUs / 1e6f);
 
-  size_t nGroups =
-      (groupScope == SyncScope::TILE) ? nBlocks : nBlocks * (nThreads / 32);
+  size_t nGroups;
+  switch (groupScope) {
+    case SyncScope::TILE:
+      nGroups = nBlocks;
+      break;
+    case SyncScope::WARPGROUP:
+      nGroups = nBlocks * (nThreads / 128); // 4 warps per warpgroup
+      break;
+    case SyncScope::WARP:
+    default:
+      nGroups = nBlocks * (nThreads / 32);
+      break;
+  }
   size_t chunkSize = nBytes / nGroups / 1024;
 
   counters["deviceTimeUs"] =
@@ -170,6 +192,12 @@ REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::WARP, warp);
 
 // P2P (cross device) benchmarks - warp groups
 REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::WARP, warp);
+
+// D2D (same device) benchmarks - warpgroup groups
+REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::WARPGROUP, warpgroup);
+
+// P2P (cross device) benchmarks - warpgroup groups
+REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::WARPGROUP, warpgroup);
 
 // D2D (same device) benchmarks - block groups
 REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::TILE, block);
