@@ -11,7 +11,7 @@
 
 namespace comms::pipes {
 
-enum class SyncScope { WARP, TILE };
+enum class SyncScope { WARP, WARPGROUP, TILE };
 
 /**
  * ThreadGroup - Abstraction for cooperative thread group operations
@@ -69,6 +69,21 @@ struct ThreadGroup {
       case SyncScope::WARP:
         __syncwarp();
         break;
+      case SyncScope::WARPGROUP: {
+        // Warpgroup = 4 warps = 128 threads
+        // Uses named barriers for synchronization within a warpgroup
+        constexpr uint32_t kWarpgroupSize =
+            4 * comms::device::kWarpSize; // 128 threads
+        uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
+            threadIdx.z * blockDim.x * blockDim.y;
+        uint32_t barrierId = tid / kWarpgroupSize;
+        // Hardware supports max 16 named barriers per block
+        // This limits block size to 16 * 128 = 2048 threads
+        asm volatile("bar.sync %0, %1;"
+                     :
+                     : "r"(barrierId), "r"(kWarpgroupSize));
+        break;
+      }
       case SyncScope::TILE:
         __syncthreads();
         break;
@@ -511,11 +526,64 @@ __device__ inline ThreadGroup make_block_group() {
 }
 
 /**
+ * make_warpgroup_group - Create a ThreadGroup where 4 warps (128 threads)
+ *                        work together as a single warpgroup
+ *
+ * Use case: For Hopper GPU tensor core operations (wgmma instructions) that
+ * operate at warpgroup granularity, or when you need synchronization
+ * granularity between a single warp and the entire block.
+ *
+ * REQUIREMENTS:
+ * - Block size must be a multiple of 128 (warpgroup size)
+ * - Maximum 16 warpgroups per block (hardware named barrier limit)
+ *
+ * Example with 4 blocks × 512 threads:
+ *   - total_groups = 16 (4 warpgroups per block × 4 blocks)
+ *   - group_size = 128
+ *   - Each warpgroup can execute wgmma instructions or other
+ *     warpgroup-level operations
+ *
+ * HOPPER GPU BENEFITS:
+ * - Enables efficient tensor core utilization through wgmma instructions
+ * - Allows asynchronous warpgroup-level matrix multiply-accumulate
+ * - Better synchronization granularity for producer-consumer patterns
+ */
+// TODO: Add support for configurable warpgroup size, 4/8/16.. warps as a
+// warpgroup.
+__device__ inline ThreadGroup make_warpgroup_group() {
+#ifdef __CUDA_ARCH__
+  constexpr uint32_t kWarpgroupSize =
+      4 * comms::device::kWarpSize; // 128 threads
+  uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
+  uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
+      threadIdx.z * blockDim.x * blockDim.y;
+
+  uint32_t warpgroups_per_block = threads_per_block / kWarpgroupSize;
+  uint32_t warpgroup_id_in_block = tid / kWarpgroupSize;
+  uint32_t global_warpgroup_id =
+      blockIdx.x * warpgroups_per_block + warpgroup_id_in_block;
+  uint32_t total_warpgroups = gridDim.x * warpgroups_per_block;
+
+  uint32_t thread_id_in_warpgroup = tid % kWarpgroupSize;
+
+  return ThreadGroup{
+      .thread_id_in_group = thread_id_in_warpgroup,
+      .group_size = kWarpgroupSize,
+      .group_id = global_warpgroup_id,
+      .total_groups = total_warpgroups,
+      .scope = SyncScope::WARPGROUP};
+#else
+  return ThreadGroup{};
+#endif
+}
+
+/**
  * make_thread_group - Create a ThreadGroup based on the specified SyncScope
  *
  * Convenience function that dispatches to the appropriate factory function
  * based on the scope parameter:
  *   - SyncScope::WARP → make_warp_group()
+ *   - SyncScope::WARPGROUP → make_warpgroup_group()
  *   - SyncScope::TILE → make_block_group()
  *
  * @param scope The synchronization scope determining the group type
@@ -526,11 +594,12 @@ __device__ inline ThreadGroup make_thread_group(SyncScope scope) {
   switch (scope) {
     case SyncScope::WARP:
       return make_warp_group();
+    case SyncScope::WARPGROUP:
+      return make_warpgroup_group();
     case SyncScope::TILE:
       return make_block_group();
   }
 #endif
   return ThreadGroup{};
 }
-
 } // namespace comms::pipes
