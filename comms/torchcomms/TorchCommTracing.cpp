@@ -67,9 +67,13 @@ void TorchCommTracing::recordEventWithInputOutput(
     output_total_numel += output_tensor_list[r].numel();
   }
 
-  auto data_type = input_tensor_list.size() > 0
-      ? input_tensor_list.front().scalar_type()
-      : output_tensor_list.front().scalar_type();
+  // If both input and output tensor lists are empty, use a default data type.
+  auto data_type = at::kByte;
+  if (input_tensor_list.size() > 0) {
+    data_type = input_tensor_list.front().scalar_type();
+  } else if (output_tensor_list.size() > 0) {
+    data_type = output_tensor_list.front().scalar_type();
+  }
 
   RECORD_PARAM_COMMS_DATA(
       std::make_tuple(0, false), // sequence number tuple
