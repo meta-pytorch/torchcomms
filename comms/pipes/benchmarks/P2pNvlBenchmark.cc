@@ -87,13 +87,13 @@ constexpr int kBenchmarkIters = 30;
 
 // Test configuration struct
 struct BenchmarkConfig {
-  std::size_t nBytes;
-  std::size_t stagedBufferSize;
-  int numBlocks;
-  int numThreads;
+  std::size_t nBytes = 0;
+  std::size_t stagedBufferSize = 0;
+  int numBlocks = 0;
+  int numThreads = 0;
   std::size_t pipelineDepth = 4;
   std::size_t chunkSize = 512 * 1024; // 512KB default
-  bool useBlockGroups = false; // Use block-level groups instead of warp-level
+  SyncScope groupScope = SyncScope::WARP; // Thread group scope for parallelism
   bool spreadClusterLaunch = false; // Use spread cluster kernel launch
   std::string name;
 };
@@ -230,9 +230,9 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
 
     std::size_t nBytes = config.nBytes;
     bool isSend = (globalRank == 0);
-    bool useBlockGroups = config.useBlockGroups;
+    SyncScope groupScope = config.groupScope;
     void* devicePtr = (isSend ? sendBuff.get() : recvBuff.get());
-    void* args[] = {&p2p, &devicePtr, &nBytes, &useBlockGroups};
+    void* args[] = {&p2p, &devicePtr, &nBytes, &groupScope};
     void* kernelFunc = isSend ? (void*)comms::pipes::benchmark::p2pSend
                               : (void*)comms::pipes::benchmark::p2pRecv;
     cudaStream_t stream = isSend ? sendStream : recvStream;
@@ -454,8 +454,8 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     std::size_t nBytes = config.nBytes;
     void* sendPtr = sendBuff.get();
     void* recvPtr = recvBuff.get();
-    bool useBlockGroups = config.useBlockGroups;
-    void* args[] = {&p2p, &sendPtr, &recvPtr, &nBytes, &useBlockGroups};
+    SyncScope groupScope = config.groupScope;
+    void* args[] = {&p2p, &sendPtr, &recvPtr, &nBytes, &groupScope};
     void* kernelFunc = (void*)comms::pipes::benchmark::p2pBidirectional;
 
     // Warmup - no reset needed, recv() signals -1 after each transfer
@@ -657,7 +657,7 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
       .numThreads = 128,
       .pipelineDepth = 4,
       .chunkSize = 128 * 1024,
-      .useBlockGroups = true,
+      .groupScope = SyncScope::TILE,
       .name = "64MB_Block",
   });
 
@@ -669,7 +669,7 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
       .numThreads = 128,
       .pipelineDepth = 4,
       .chunkSize = 512 * 1024,
-      .useBlockGroups = true,
+      .groupScope = SyncScope::TILE,
       .name = "256MB_Block",
   });
 
@@ -681,7 +681,7 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
       .numThreads = 128,
       .pipelineDepth = 4,
       .chunkSize = 512 * 1024,
-      .useBlockGroups = true,
+      .groupScope = SyncScope::TILE,
       .name = "1GB_Block",
   });
 
@@ -753,47 +753,59 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
   // 64MB: 512 warps, 256 chunks (128KB each)
   configs.push_back({
       .nBytes = 64 * 1024 * 1024,
-      .stagedBufferSize = 32 * 1024 * 1024,
-      .numBlocks = 128,
-      .numThreads = 128,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
       .pipelineDepth = 2,
-      .chunkSize = 128 * 1024,
+      .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::TILE,
       .name = "Bidir_64MB",
+  });
+
+  configs.push_back({
+      .nBytes = 128 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::TILE,
+      .name = "Bidir_128MB",
   });
 
   // 256MB: 512 warps, 256 chunks (256KB each)
   configs.push_back({
       .nBytes = 256 * 1024 * 1024,
-      .stagedBufferSize = 64 * 1024 * 1024,
-      .numBlocks = 128,
-      .numThreads = 128,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
       .pipelineDepth = 2,
-      .chunkSize = 256 * 1024,
+      .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::TILE,
       .name = "Bidir_256MB",
+  });
+
+  configs.push_back({
+      .nBytes = 512 * 1024 * 1024,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
+      .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::TILE,
+      .name = "Bidir_512MB",
   });
 
   // 1GB with 256MB staging
   configs.push_back({
       .nBytes = 1024 * 1024 * 1024,
-      .stagedBufferSize = 256 * 1024 * 1024,
-      .numBlocks = 256,
-      .numThreads = 128,
-      .pipelineDepth = 4,
+      .stagedBufferSize = 8 * 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
+      .groupScope = SyncScope::TILE,
       .name = "Bidir_1GB",
-  });
-
-  // === BLOCK-BASED BIDIRECTIONAL ===
-  // 1GB with block groups (256 groups vs 1024 warps)
-  configs.push_back({
-      .nBytes = 1024 * 1024 * 1024,
-      .stagedBufferSize = 256 * 1024 * 1024,
-      .numBlocks = 256,
-      .numThreads = 128,
-      .pipelineDepth = 4,
-      .chunkSize = 512 * 1024,
-      .useBlockGroups = true,
-      .name = "Bidir_1GB_Block",
   });
 
   // === NCCL-LIKE WARP-BASED CONFIGURATIONS ===
@@ -806,7 +818,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 32 * 1024,
-      .useBlockGroups = false,
+      .groupScope = SyncScope::WARP,
       .spreadClusterLaunch = true,
       .name = "NCCL_32M_16B_Warp",
   });
@@ -819,7 +831,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 32 * 1024,
-      .useBlockGroups = false,
+      .groupScope = SyncScope::WARP,
       .spreadClusterLaunch = true,
       .name = "NCCL_64M_16B_Warp",
   });
@@ -832,7 +844,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 32 * 1024,
-      .useBlockGroups = false,
+      .groupScope = SyncScope::WARP,
       .spreadClusterLaunch = true,
       .name = "NCCL_128M_16B_Warp",
   });
@@ -845,7 +857,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 32 * 1024,
-      .useBlockGroups = false,
+      .groupScope = SyncScope::WARP,
       .spreadClusterLaunch = true,
       .name = "NCCL_256M_16B_Warp",
   });
@@ -858,7 +870,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 16 * 1024,
-      .useBlockGroups = false,
+      .groupScope = SyncScope::WARP,
       .spreadClusterLaunch = true,
       .name = "NCCL_512M_32B_Warp",
   });
@@ -871,7 +883,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 16 * 1024,
-      .useBlockGroups = false,
+      .groupScope = SyncScope::WARP,
       .spreadClusterLaunch = true,
       .name = "NCCL_1G_32B_Warp",
   });
@@ -886,7 +898,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 1024 * 1024,
-      .useBlockGroups = true,
+      .groupScope = SyncScope::TILE,
       .spreadClusterLaunch = true,
       .name = "NCCL_32M_16B_Block",
   });
@@ -899,7 +911,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 1024 * 1024,
-      .useBlockGroups = true,
+      .groupScope = SyncScope::TILE,
       .spreadClusterLaunch = true,
       .name = "NCCL_64M_16B_Block",
   });
@@ -912,7 +924,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 1024 * 1024,
-      .useBlockGroups = true,
+      .groupScope = SyncScope::TILE,
       .spreadClusterLaunch = true,
       .name = "NCCL_128M_16B_Block",
   });
@@ -925,7 +937,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 1024 * 1024,
-      .useBlockGroups = true,
+      .groupScope = SyncScope::TILE,
       .spreadClusterLaunch = true,
       .name = "NCCL_256M_16B_Block",
   });
@@ -938,7 +950,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
-      .useBlockGroups = true,
+      .groupScope = SyncScope::TILE,
       .spreadClusterLaunch = true,
       .name = "NCCL_512M_32B_Block",
   });
@@ -951,7 +963,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .numThreads = 512,
       .pipelineDepth = 2,
       .chunkSize = 512 * 1024,
-      .useBlockGroups = true,
+      .groupScope = SyncScope::TILE,
       .spreadClusterLaunch = true,
       .name = "NCCL_1G_32B_Block",
   });
