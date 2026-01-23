@@ -11,6 +11,24 @@
 
 namespace comms::pipes {
 
+/**
+ * SyncScope - Defines the synchronization and grouping scope for ThreadGroup
+ *
+ * This enum is used both for:
+ * 1. Internal synchronization (sync() method behavior)
+ * 2. Selecting which factory function to use when creating ThreadGroups
+ *
+ * Available scopes:
+ * - WARP: 32 threads per group (finest granularity, uses __syncwarp)
+ * - WARPGROUP: 128 threads per group (4 warps, uses named barriers)
+ * - TILE: All threads in a block form one group (uses __syncthreads)
+ *
+ * Usage example:
+ *   __global__ void myKernel(SyncScope scope) {
+ *     auto group = make_thread_group(scope);
+ *     // ...
+ *   }
+ */
 enum class SyncScope { WARP, WARPGROUP, TILE };
 
 /**
@@ -578,7 +596,7 @@ __device__ inline ThreadGroup make_warpgroup_group() {
 }
 
 /**
- * make_thread_group - Create a ThreadGroup based on the specified SyncScope
+ * make_thread_group - Create a ThreadGroup based on the specified scope
  *
  * Convenience function that dispatches to the appropriate factory function
  * based on the scope parameter:
@@ -586,8 +604,16 @@ __device__ inline ThreadGroup make_warpgroup_group() {
  *   - SyncScope::WARPGROUP → make_warpgroup_group()
  *   - SyncScope::TILE → make_block_group()
  *
- * @param scope The synchronization scope determining the group type
+ * @param scope The desired thread grouping strategy
  * @return ThreadGroup configured for the specified scope
+ *
+ * Example:
+ *   __global__ void myKernel(SyncScope scope) {
+ *     auto group = make_thread_group(scope);
+ *     group.for_each_item_contiguous(numItems, [&](uint32_t item_id) {
+ *       // Process item
+ *     });
+ *   }
  */
 __device__ inline ThreadGroup make_thread_group(SyncScope scope) {
 #ifdef __CUDA_ARCH__
@@ -598,8 +624,13 @@ __device__ inline ThreadGroup make_thread_group(SyncScope scope) {
       return make_warpgroup_group();
     case SyncScope::TILE:
       return make_block_group();
+    default:
+      // Should never reach here, but return warp group as default
+      return make_warp_group();
   }
-#endif
+#else
   return ThreadGroup{};
+#endif
 }
+
 } // namespace comms::pipes
