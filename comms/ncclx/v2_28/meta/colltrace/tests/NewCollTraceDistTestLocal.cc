@@ -2,7 +2,6 @@
 
 #include <stdlib.h>
 #include <cstddef>
-#include <iostream>
 
 #include <folly/ScopeGuard.h>
 #include <folly/Synchronized.h>
@@ -77,8 +76,8 @@ class CollTraceTestLocal : public NcclxBaseTest {
   cudaStream_t stream{nullptr};
 };
 
-TEST_F(CollTraceTestLocal, winSignalAllToAll) {
-  const int kNumElements = 16;
+TEST_F(CollTraceTestLocal, winSignal) {
+  const int kNumIters = 16;
 
   NcclCommRAII comm{this->globalRank, this->numRanks, this->localRank};
 
@@ -92,28 +91,29 @@ TEST_F(CollTraceTestLocal, winSignalAllToAll) {
       cudaStreamCreateWithFlags(&wait_stream, cudaStreamNonBlocking));
 
   meta::comms::Hints hints;
-  hints.set(
-      "window_signal_bufsize", std::to_string(kNumElements * statex->nRanks()));
-  ::ctran::CtranWin* win = nullptr;
+  ctran::CtranWin* win = nullptr;
   int* winBase = nullptr;
-  // Allocate the window with data buffer size of 0 since this test only uses
-  // the signal buffer for inter-rank signaling
-  auto res = ctranWinAllocate(
-      0, comm->ctranComm_.get(), (void**)&winBase, &win, hints);
+
+  // allocte sizeof(int) * statex->nRanks() Bytes buffer size
+  size_t sizeBytes = sizeof(int) * statex->nRanks();
+
+  auto res = commSuccess;
+  hints.set("window_buffer_location", "cpu");
+  res = ctranWinAllocate(
+      sizeBytes, comm->ctranComm_.get(), (void**)&winBase, &win, hints);
   ASSERT_EQ(res, commSuccess);
   ASSERT_NE(winBase, nullptr);
+
   uint64_t* signalBase = win->winSignalPtr;
   ASSERT_NE(signalBase, nullptr);
 
-  // initialize with 1000UL, a random number
-  assignChunkValue(signalBase, kNumElements * statex->nRanks(), 1000UL, 0UL);
   // barrier to ensure all peers have finished value assignment
   this->barrier();
 
   const auto myrank = statex->rank();
   const auto numRanks = statex->nRanks();
 
-  for (auto iter = 0; iter < kNumElements; iter++) {
+  for (auto iter = 0; iter < kNumIters; iter++) {
     // In iterations, each rank signals the continuous memory region of other
     // ranks, with its rank id as the signal value
     for (auto peerRank = 0; peerRank < numRanks; peerRank++) {
@@ -121,20 +121,28 @@ TEST_F(CollTraceTestLocal, winSignalAllToAll) {
         continue;
       }
       COMMCHECK_TEST(ctranSignal(peerRank, win, sig_stream));
-      COMMCHECK_TEST(ctranWaitSignal((uint64_t)peerRank, win, wait_stream));
+    }
+    for (auto peerRank = 0; peerRank < numRanks; peerRank++) {
+      if (peerRank == myrank) {
+        continue;
+      }
+      COMMCHECK_TEST(ctranWaitSignal(peerRank, win, wait_stream));
     }
   }
 
-  CUDACHECK_TEST(cudaStreamSynchronize(wait_stream));
+  // barrier to ensure all peers have finished signal, and check values
+  CUDACHECK_TEST(cudaStreamSynchronize(sig_stream));
+  this->barrier();
+
   int errs = 0;
   for (auto peerRank = 0; peerRank < numRanks; peerRank++) {
     if (peerRank == myrank) {
       continue;
     }
     errs += checkChunkValue(
-        signalBase + kNumElements * peerRank,
-        kNumElements,
-        (uint64_t)peerRank,
+        signalBase + peerRank,
+        1,
+        (uint64_t)kNumIters,
         0UL,
         this->globalRank,
         wait_stream);
