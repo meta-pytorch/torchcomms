@@ -19,6 +19,8 @@ inline const std::string algoValToStr(enum NCCL_SENDRECV_ALGO val) {
       return "ctzcopy";
     case NCCL_SENDRECV_ALGO::ctstaged:
       return "ctstaged";
+    case NCCL_SENDRECV_ALGO::ctp2p:
+      return "ctp2p";
   }
 }
 
