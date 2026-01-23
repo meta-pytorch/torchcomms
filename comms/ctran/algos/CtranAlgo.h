@@ -14,6 +14,7 @@
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/utils/CtranIpc.h"
+#include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/utils/logger/Logger.h"
 
 #define LOCAL_RANK_TO_DEV_REGION_POS(localRank, ownerLocalRank) \
@@ -48,6 +49,9 @@ class CtranAlgo {
   commResult_t initKernelResources();
   // Get device state
   CtranAlgoDeviceState* getDevState();
+  // Get base pointer to pre-allocated P2pNvlTransportDevice array
+  // Array is indexed by peer local rank
+  comms::pipes::P2pNvlTransportDevice* getNvlTransportsBase();
 
   // accessing allGatherAlgo
   void setAllGatherAlgo(enum NCCL_ALLGATHER_ALGO algo);
@@ -143,6 +147,7 @@ class CtranAlgo {
   // Reference to the ctran object that owns this algo.
   ICtran* ctran_{nullptr};
 
+  CtranAlgoDeviceState devState_;
   // Device buffer to store all states of
   // shared device buffers and comm info, accessed by kernels.
   CtranAlgoDeviceState* devState_d_{nullptr};
@@ -171,6 +176,10 @@ class CtranAlgo {
   std::unordered_map<enum CollType, CtranIbConfig> collToVcConfigMap_;
   std::unique_ptr<ctran::algos::allreduce::AllReduceResourceImpl>
       allReduceDirectResource{nullptr};
+  // Pre-allocated array of P2pNvlTransportDevice objects for all peers
+  // Allocated with cudaMalloc for device accessibility
+  // Indexed by peer local rank, slot for self (localRank) is unused
+  comms::pipes::P2pNvlTransportDevice* nvlTransports_{nullptr};
 };
 
 class CtranAlgo::SharedResource {
