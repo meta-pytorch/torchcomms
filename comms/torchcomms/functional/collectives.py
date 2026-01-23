@@ -9,7 +9,6 @@ import torch
 
 # Import TorchComm, TorchCommWindow, and BatchSendRecv
 from torchcomms._comms import BatchSendRecv, ReduceOp, TorchComm, TorchCommWindow
-
 from torchcomms.functional.registry import finalize_registration, register_collective
 
 
@@ -183,7 +182,6 @@ if lib is not None:
 
     # Collective Registrations
     from torch._library.opaque_object import MemberType, register_opaque_type
-
     from torchcomms.functional.param_parsing import ParamKind, ParamSpec
 
     # Register TorchComm as opaque type with constant methods
@@ -391,9 +389,9 @@ if lib is not None:
         else:
             grad_input_list = []
 
-        assert len(grad_outputs) > 0, (
-            "gather outputs cannot be empty if you want to run backward!"
-        )
+        assert (
+            len(grad_outputs) > 0
+        ), "gather outputs cannot be empty if you want to run backward!"
 
         # Create output tensor for scatter
         grad_input = torch.empty(
