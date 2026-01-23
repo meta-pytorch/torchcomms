@@ -9,8 +9,8 @@ __global__ void copyKernel(
     const char* src,
     std::size_t nBytes,
     int nRuns,
-    bool useBlockGroups) {
-  auto group = useBlockGroups ? make_block_group() : make_warp_group();
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
 
   const std::size_t bytes_per_group =
       (nBytes + group.total_groups - 1) / group.total_groups;

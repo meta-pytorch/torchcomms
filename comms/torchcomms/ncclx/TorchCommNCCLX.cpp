@@ -41,7 +41,7 @@ void validateIntDtype(const at::Tensor& tensor, const std::string& name) {
 
 } // namespace
 
-ncclResult_t NCCLException::getResult() const {
+ncclResult_t NCCLException::getResult() const noexcept {
   return result_;
 }
 
@@ -1868,9 +1868,13 @@ TorchCommNCCLX::CoalescingContext::~CoalescingContext() {
 }
 
 // Window & One-sided Operations
-std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window() {
+std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
+    const std::optional<at::Tensor>& tensor) {
   auto win =
       std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, shared_from_this());
+  if (tensor.has_value()) {
+    win->tensor_register(tensor.value());
+  }
   return win;
 }
 
@@ -1961,7 +1965,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
 void TorchCommNCCLX::register_address(
     const TorchCommNCCLX::AddressWithLen& addr) {
   // We got a register after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
@@ -1981,7 +1985,7 @@ void TorchCommNCCLX::register_address(
 
 void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {
   // We got a deregister after we got rid of the comm. Is this a fatal error?
-  if (!nccl_comm_) {
+  if (nccl_comm_ == nullptr) {
     return;
   }
 
