@@ -39,7 +39,7 @@ class RCCLXException : public std::exception {
       ncclComm_t comm);
 
   const char* what() const noexcept override;
-  ncclResult_t getResult() const;
+  [[nodiscard]] ncclResult_t getResult() const;
 
  private:
   std::string message_;
@@ -206,7 +206,7 @@ class TorchCommRCCLX : public TorchCommBackend,
 
  protected:
   // Event management for friend classes
-  hipEvent_t getEvent();
+  [[nodiscard]] hipEvent_t getEvent();
   void returnEvent(hipEvent_t event);
   void abortRcclxComm();
 
