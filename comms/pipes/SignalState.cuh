@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include "comms/common/AtomicUtils.cuh"
+#include "comms/common/BitOps.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -48,7 +49,6 @@ enum class CmpOp {
  */
 struct alignas(128) SignalState {
   uint64_t signal_;
-  char padding_[128 - sizeof(uint64_t)]{};
 
   __host__ __device__ SignalState() : signal_(0) {}
 
@@ -168,5 +168,9 @@ struct alignas(128) SignalState {
 };
 
 static_assert(alignof(SignalState) == 128, "Signal must be 128-byte aligned");
+
+__host__ __device__ __forceinline__ std::size_t getSignalBufferSize(int count) {
+  return bitops::alignUp(count * sizeof(SignalState), 128);
+}
 
 } // namespace comms::pipes
