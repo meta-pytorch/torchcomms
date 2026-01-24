@@ -1050,6 +1050,24 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCL::all_to_all_v_single(
         "output_split_sizes length must equal comm_size for all_to_all_v_single");
   }
 
+  // Validate that split sizes sum does not exceed tensor dimensions
+  uint64_t input_total = 0;
+  uint64_t output_total = 0;
+  for (int i = 0; i < comm_size_; ++i) {
+    input_total += input_split_sizes[i];
+    output_total += output_split_sizes[i];
+  }
+
+  if (input_total > static_cast<uint64_t>(input.size(0))) {
+    throw std::runtime_error(
+        "Sum of input_split_sizes exceeds input tensor size for all_to_all_v_single");
+  }
+
+  if (output_total > static_cast<uint64_t>(output.size(0))) {
+    throw std::runtime_error(
+        "Sum of output_split_sizes exceeds output tensor size for all_to_all_v_single");
+  }
+
   TorchCommTracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
