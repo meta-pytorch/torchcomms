@@ -2,11 +2,13 @@
 
 #include "comms/torchcomms/rcclx/TorchCommRCCLX.hpp"
 
-#include <ATen/hip/HIPContext.h> // @manual=//caffe2:ATen-custom-hip
 #include <cstdlib>
 #include <set>
 #include <stdexcept>
 #include <string>
+
+#include <ATen/hip/HIPContext.h> // @manual=//caffe2:ATen-custom-hip
+
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/rcclx/TorchCommRCCLXBootstrap.hpp"

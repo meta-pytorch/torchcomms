@@ -2,18 +2,20 @@
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
-#include <ATen/cuda/CUDAContext.h>
-#include <c10/cuda/CUDAGuard.h>
-#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 #include <cstdlib>
 #include <set>
 #include <stdexcept>
 #include <string>
+
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <nccl.h> // @manual
+#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
+
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
-#include "nccl.h" // @manual
 
 namespace torch {
 namespace comms {
