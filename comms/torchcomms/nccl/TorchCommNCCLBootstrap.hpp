@@ -28,7 +28,7 @@ class TorchCommNCCLBootstrap {
       std::shared_ptr<NcclApi> nccl_api,
       std::shared_ptr<CudaApi> cuda_api,
       std::chrono::milliseconds timeout);
-  ~TorchCommNCCLBootstrap();
+  ~TorchCommNCCLBootstrap() noexcept;
 
   // Delete copy and move operations
   TorchCommNCCLBootstrap(const TorchCommNCCLBootstrap&) = delete;

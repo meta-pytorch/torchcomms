@@ -87,7 +87,7 @@ class RdmaMemory : folly::MoveOnly {
   RdmaMemory(const void* buf, size_t len, int cudaDev);
   RdmaMemory(RdmaMemory&& other) noexcept;
   RdmaMemory& operator=(RdmaMemory&& other) = delete;
-  ~RdmaMemory();
+  ~RdmaMemory() noexcept;
 
   View createView() const {
     return View(*this, 0, len_);
