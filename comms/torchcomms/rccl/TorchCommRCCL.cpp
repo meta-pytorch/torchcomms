@@ -41,7 +41,7 @@ TorchCommRCCL::TorchCommRCCL(
 
 TorchCommRCCL::~TorchCommRCCL() {
   if (init_state_ == InitializationState::INITIALIZED) {
-    TC_LOG(ERROR) << "TorchCommRCCL was not finalized before destruction";
+    TC_LOG(ERROR, this) << "TorchCommRCCL was not finalized before destruction";
   }
 
   // We need to detach the memory hook in case finalize is not called,
