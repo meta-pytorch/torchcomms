@@ -44,9 +44,9 @@ constexpr size_t kDefaultGarbageCollectIntervalMs = 100;
 constexpr bool kDefaultEnableCudaGraphSupport = true;
 
 // Custom exception class for better error handling
-class NCCLException : public std::exception {
+class NCCLXException : public std::exception {
  public:
-  NCCLException(
+  NCCLXException(
       NcclxApi& api,
       const std::string& message,
       ncclResult_t result,
