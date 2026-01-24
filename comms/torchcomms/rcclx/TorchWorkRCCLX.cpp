@@ -22,22 +22,6 @@ TorchWorkRCCLX::TorchWorkRCCLX(
   // Events will be recorded around the actual RCCLX operations
 }
 
-TorchWorkRCCLX::TorchWorkRCCLX(TorchWorkRCCLX&& other) noexcept
-    : inputTensors_(std::move(other.inputTensors_)),
-      comm_(std::move(other.comm_)),
-      start_event_(other.start_event_),
-      end_event_(other.end_event_),
-      stream_(other.stream_),
-      timeout_ms_(other.timeout_ms_),
-      start_completed_time_(std::move(other.start_completed_time_)) {
-  // Transfer ownership of resources and reset the source object
-  other.start_event_ = nullptr;
-  other.end_event_ = nullptr;
-  other.stream_ = nullptr;
-  other.timeout_ms_ = std::chrono::milliseconds(0);
-  other.start_completed_time_.reset();
-}
-
 TorchWorkRCCLX::TorchWorkRCCLX(
     std::shared_ptr<TorchCommRCCLX> comm,
     hipStream_t stream,
