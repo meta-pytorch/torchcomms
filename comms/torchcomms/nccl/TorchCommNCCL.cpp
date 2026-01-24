@@ -8,6 +8,7 @@
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <fmt/core.h>
 #include <nccl.h> // @manual
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 
@@ -99,23 +100,22 @@ void TorchCommNCCL::init(
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->setDevice(device_.index()),
-      "Failed to set CUDA device to " + std::to_string(device_.index()));
+      fmt::format("Failed to set CUDA device to {}", device_.index()));
 
   // Verify device properties and memory availability
   cudaDeviceProp device_prop = {};
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->getDeviceProperties(&device_prop, device_.index()),
-      "Failed to get device properties for device " +
-          std::to_string(device_.index()));
+      fmt::format(
+          "Failed to get device properties for device {}", device_.index()));
 
   // Check available memory
   size_t free_memory, total_memory;
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->memGetInfo(&free_memory, &total_memory),
-      "Failed to get memory info for device " +
-          std::to_string(device_.index()));
+      fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
   for (auto const& [key, val] : options_.hints) {
@@ -146,16 +146,17 @@ void TorchCommNCCL::init(
       cuda_api_,
       cuda_api_->streamCreateWithPriority(
           &internal_stream_, cudaStreamNonBlocking, stream_priority),
-      "Failed to create internal CUDA stream on device " +
-          std::to_string(device_.index()));
+      fmt::format(
+          "Failed to create internal CUDA stream on device {}",
+          device_.index()));
 
   // Create dependency event for stream synchronization
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->eventCreateWithFlags(
           &dependency_event_, cudaEventDisableTiming),
-      "Failed to create dependency event on device " +
-          std::to_string(device_.index()));
+      fmt::format(
+          "Failed to create dependency event on device {}", device_.index()));
 
   // Allocate CUDA buffer for barrier operations
   CUDA_CHECK(
@@ -1477,12 +1478,14 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
   for (int rank : ranks) {
     if (rank < 0 || rank >= comm_size_) {
       throw std::runtime_error(
-          "Invalid rank " + std::to_string(rank) +
-          " in ranks. Valid ranks are 0 to " + std::to_string(comm_size_ - 1));
+          fmt::format(
+              "Invalid rank {} in ranks. Valid ranks are 0 to {}",
+              rank,
+              comm_size_ - 1));
     }
     if (rank_seen.find(rank) != rank_seen.end()) {
       throw std::runtime_error(
-          "Rank " + std::to_string(rank) + " appears multiple times in ranks");
+          fmt::format("Rank {} appears multiple times in ranks", rank));
     }
     rank_seen.insert(rank);
   }
@@ -1505,8 +1508,9 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
     if (it == ranks.end()) {
       // Current rank is not in the non-empty list - this is an error
       throw std::runtime_error(
-          "Current rank " + std::to_string(rank_) +
-          " is not included in the provided ranks list");
+          fmt::format(
+              "Current rank {} is not included in the provided ranks list",
+              rank_));
     }
     // Set color to the lowest rank in the group and calculate new rank
     color = *std::min_element(ranks.begin(), ranks.end());

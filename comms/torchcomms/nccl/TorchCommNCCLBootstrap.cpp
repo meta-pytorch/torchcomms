@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/nccl/TorchCommNCCLBootstrap.hpp"
 #include <ATen/cuda/CUDAContext.h>
+#include <fmt/core.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
@@ -67,7 +68,7 @@ TorchCommNCCLBootstrap::TorchCommNCCLBootstrap(
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->setDevice(device_.index()),
-      "Failed to set device to " + std::to_string(device_.index()));
+      fmt::format("Failed to set device to {}", device_.index()));
 
   // Allocate CUDA memory for a single float32 value used in barrier operations
   CUDA_CHECK(
@@ -87,7 +88,7 @@ TorchCommNCCLBootstrap::~TorchCommNCCLBootstrap() noexcept {
 }
 
 std::string TorchCommNCCLBootstrap::getNCCLStoreKey() {
-  std::string key = getNCCLStoreKeyPrefix() + std::to_string(counter_);
+  std::string key = fmt::format("{}{}", getNCCLStoreKeyPrefix(), counter_);
   counter_++;
   return key;
 }
