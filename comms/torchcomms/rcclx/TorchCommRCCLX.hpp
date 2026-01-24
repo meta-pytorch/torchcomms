@@ -46,6 +46,14 @@ class RCCLXException : public std::exception {
   ncclResult_t result_;
 };
 
+#define RCCLX_CHECK(rcclx_api, nccl_comm, call, err_str)            \
+  do {                                                              \
+    ncclResult_t status = call;                                     \
+    if (status != ncclSuccess) {                                    \
+      throw RCCLXException(*rcclx_api, err_str, status, nccl_comm); \
+    }                                                               \
+  } while (0)
+
 class TorchCommRCCLX : public TorchCommBackend,
                        public std::enable_shared_from_this<TorchCommRCCLX> {
  public:
