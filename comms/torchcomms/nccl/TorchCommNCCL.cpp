@@ -1485,7 +1485,7 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
   ncclComm_t new_comm;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
-  config.commName = strdup(name.c_str());
+  config.commName = name.c_str();
 #endif
 
   // Populate NCCL config from user-provided hints
