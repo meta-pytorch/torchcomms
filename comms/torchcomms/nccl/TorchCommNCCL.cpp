@@ -19,6 +19,15 @@
 namespace torch {
 namespace comms {
 
+namespace {
+// Hint key prefix and names for NCCL backend configuration
+constexpr std::string_view kHintPrefix = "torchcomm::nccl::";
+constexpr std::string_view kHintHighPriorityStream =
+    "torchcomm::nccl::high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize =
+    "torchcomm::nccl::max_event_pool_size";
+} // namespace
+
 ncclResult_t NCCLException::getResult() const noexcept {
   return result_;
 }
@@ -110,8 +119,8 @@ void TorchCommNCCL::init(
 
   // Read hints and store them
   for (auto const& [key, val] : options_.hints) {
-    if (key.starts_with("torchcomm::nccl::")) {
-      if (key == "torchcomm::nccl::high_priority_stream") {
+    if (key.starts_with(kHintPrefix)) {
+      if (key == kHintHighPriorityStream) {
         high_priority_stream_ = string_to_bool(val);
       } else {
         throw std::runtime_error("Unrecognized hint " + key);
@@ -154,9 +163,9 @@ void TorchCommNCCL::init(
       cuda_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  if (options_.hints.contains("torchcomm::nccl::max_event_pool_size")) {
+  if (options_.hints.contains(std::string(kHintMaxEventPoolSize))) {
     max_event_pool_size_ =
-        std::stoull(options_.hints.at("torchcomm::nccl::max_event_pool_size"));
+        std::stoull(options_.hints.at(std::string(kHintMaxEventPoolSize)));
   } else {
     max_event_pool_size_ = kDefaultMaxEventPoolSize;
   }
