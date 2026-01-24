@@ -14,15 +14,8 @@ void cachingAllocatorHookFn(
 }
 
 CachingAllocatorHookImpl& CachingAllocatorHook::getInstance() {
-  // Create a static instance of the class based on the first call.
-  // This allows threads to override the device type if needed.
-  if (!instance_) {
-    static std::mutex init_mutex;
-    std::lock_guard<std::mutex> lock(init_mutex);
-    if (!instance_) {
-      createInstance();
-    }
-  }
+  // Use std::call_once for thread-safe singleton initialization
+  std::call_once(init_flag_, createInstance);
   return *instance_;
 }
 

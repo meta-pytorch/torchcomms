@@ -1,6 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-# pyre-unsafe
+# pyre-strict
 import ctypes
 import os
 from importlib.metadata import entry_points

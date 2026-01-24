@@ -73,6 +73,7 @@ class CachingAllocatorHook {
   }
 
   inline static std::unique_ptr<CachingAllocatorHookImpl> instance_ = nullptr;
+  inline static std::once_flag init_flag_;
 };
 
 // Global function to be registered as a hook

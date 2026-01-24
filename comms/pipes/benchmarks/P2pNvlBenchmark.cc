@@ -7,6 +7,7 @@
 #include "comms/common/CudaWrap.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/benchmarks/BenchmarkKernel.cuh"
+#include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -116,7 +117,9 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
-    cudaSetDevice(globalRank);
+    // Use localRank for cudaSetDevice since each node has its own set of GPUs
+    // globalRank would fail on multi-node setups where rank > num_gpus_per_node
+    CUDA_CHECK_VOID(cudaSetDevice(localRank));
 
     // Initialize NCCL
     NCCL_CHECK_VOID(

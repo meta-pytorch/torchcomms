@@ -9,11 +9,11 @@ namespace comms::pipes {
 MultiPeerNvlTransport::MultiPeerNvlTransport(
     int myRank,
     int nRanks,
-    std::shared_ptr<meta::comms::MpiBootstrap> mpiBootstrap,
+    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
     const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig)
     : myRank_(myRank),
       nRanks_(nRanks),
-      mpiBootstrap_(mpiBootstrap),
+      bootstrap_(std::move(bootstrap)),
       config_(multiPeerNvlTransportConfig) {
   // Calculate per-peer buffer sizes with pipelining
   perPeerDataBufferSize_ = config_.pipelineDepth * config_.dataBufferSize;
@@ -32,14 +32,14 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
 
   dataBuffer_d_ =
       std::make_unique<meta::comms::DeviceBuffer>(totalDataBufferSize);
-  dataBufferHandler_ = std::make_unique<meta::comms::IpcMemHandler>(
-      mpiBootstrap_, myRank, nRanks_);
+  dataBufferHandler_ =
+      std::make_unique<meta::comms::IpcMemHandler>(bootstrap_, myRank, nRanks_);
   dataBufferHandler_->addSelfDeviceMemPtr(dataBuffer_d_->get());
 
   stateBuffer_d_ =
       std::make_unique<meta::comms::DeviceBuffer>(totalStateBufferSize);
-  stateBufferHandler_ = std::make_unique<meta::comms::IpcMemHandler>(
-      mpiBootstrap_, myRank, nRanks_);
+  stateBufferHandler_ =
+      std::make_unique<meta::comms::IpcMemHandler>(bootstrap_, myRank, nRanks_);
   stateBufferHandler_->addSelfDeviceMemPtr(stateBuffer_d_->get());
 
   // Initialize state buffer to READY_TO_SEND for all pipeline slots
