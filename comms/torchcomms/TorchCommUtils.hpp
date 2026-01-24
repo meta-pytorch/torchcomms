@@ -4,8 +4,7 @@
 
 #include <string>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 bool string_to_bool(const std::string& str);
 
@@ -16,5 +15,4 @@ T env_to_value(const std::string& env_key, const T& default_value);
 // Query rank and size based on TORCHCOMM_BOOTSTRAP_RANKSIZE_QUERY_METHOD
 std::pair<int, int> query_ranksize();
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
