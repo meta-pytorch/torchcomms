@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/rccl/TorchWorkRCCL.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
+#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rccl/TorchCommRCCL.hpp"
 
 namespace torch {
@@ -11,13 +12,11 @@ TorchWorkRCCL::TorchWorkRCCL(
     std::shared_ptr<TorchCommRCCL> comm,
     hipStream_t stream,
     std::chrono::milliseconds timeout_ms,
-    const std::vector<at::Tensor>& inputTensors,
-    std::shared_ptr<TorchCommTracing> tracing)
+    const std::vector<at::Tensor>& inputTensors)
     : inputTensors_(inputTensors),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      tracing_(std::move(tracing)) {
+      timeout_ms_(timeout_ms) {
   start_event_ = comm_->getEvent();
   end_event_ = comm_->getEvent();
 
@@ -28,13 +27,11 @@ TorchWorkRCCL::TorchWorkRCCL(
     std::shared_ptr<TorchCommRCCL> comm,
     hipStream_t stream,
     std::chrono::milliseconds timeout_ms,
-    const at::Tensor& inputTensor,
-    std::shared_ptr<TorchCommTracing> tracing)
+    const at::Tensor& inputTensor)
     : inputTensor_(inputTensor),
       comm_(std::move(comm)),
       stream_(stream),
-      timeout_ms_(timeout_ms),
-      tracing_(std::move(tracing)) {
+      timeout_ms_(timeout_ms) {
   start_event_ = comm_->getEvent();
   end_event_ = comm_->getEvent();
 
@@ -141,7 +138,11 @@ void TorchWorkRCCL::wait() {
     return;
   }
 
-  tracing_->recordEvent("wait");
+  TorchCommTracingGuard tracingGuard(
+      std::string(comm_->getCommName()),
+      comm_->getSize(),
+      "wait",
+      comm_->getRank());
 
   // Get the current stream using the device from the comm object
   hipStream_t current_stream =
