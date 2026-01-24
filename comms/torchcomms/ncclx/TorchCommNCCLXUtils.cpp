@@ -117,7 +117,10 @@ TorchCommNCCLX::RedOpRAII::RedOpRAII(
 
 TorchCommNCCLX::RedOpRAII::~RedOpRAII() {
   if (comm_) {
-    nccl_api_->redOpDestroy(ncclRedOp_, comm_);
+    NCCLX_CHECK_IGNORE(
+        nccl_api_,
+        nccl_api_->redOpDestroy(ncclRedOp_, comm_),
+        "NCCLX redOpDestroy failed");
   }
 }
 
@@ -180,7 +183,7 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
   TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
   cudaStreamCaptureMode mode = cudaStreamCaptureModeThreadLocal;
-  CUDA_CHECK(
+  CUDA_CHECK_IGNORE(
       cuda_api_,
       cuda_api_->threadExchangeStreamCaptureMode(&mode),
       "Failed to swap capture mode for timeout thread");
