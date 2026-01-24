@@ -38,9 +38,7 @@ class TorchWorkRCCL : public TorchWork {
   // Delete the move assignment operator to prevent accidentally stomping over
   // events if the work is in progress.
   TorchWorkRCCL& operator=(TorchWorkRCCL&& other) noexcept = delete;
-
-  // Move constructor
-  TorchWorkRCCL(TorchWorkRCCL&& other) noexcept;
+  TorchWorkRCCL(TorchWorkRCCL&&) = delete;
 
   // Override virtual functions from TorchWork
   void wait() override;
