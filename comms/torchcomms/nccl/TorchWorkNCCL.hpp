@@ -8,9 +8,11 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <string_view>
 #include <unordered_map>
 
 #include <ATen/ATen.h>
+#include <ATen/record_function.h>
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include "comms/torchcomms/TorchWork.hpp"
 
@@ -50,7 +52,7 @@ class TorchWorkNCCL : public TorchWork {
   void wait() override;
 
  protected:
-  void recordStart();
+  void recordStart(std::string_view coll_name);
   void recordEnd();
 
   friend class TorchCommNCCL;
@@ -59,6 +61,8 @@ class TorchWorkNCCL : public TorchWork {
  private:
   // Check the status of the work object
   WorkStatus checkStatus();
+
+  void recordFunctionStart(std::string_view coll_name);
 
   std::chrono::milliseconds getTimeout() const {
     return timeout_ms_;
@@ -74,6 +78,8 @@ class TorchWorkNCCL : public TorchWork {
   std::chrono::milliseconds timeout_ms_;
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
+
+  std::optional<at::RecordFunction> recordFunction_;
 };
 
 class TorchWorkNCCLQueue {
