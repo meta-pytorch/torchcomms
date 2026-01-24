@@ -10,6 +10,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/window/WinHintUtils.h"
+#include "comms/utils/checks.h"
 #include "comms/utils/commSpecs.h"
 
 using namespace ctran;
