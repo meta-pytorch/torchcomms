@@ -266,16 +266,36 @@ class TorchCommRCCLX : public TorchCommBackend,
     RedOpRAII() = delete;
     RedOpRAII(const RedOpRAII&) = delete;
     RedOpRAII& operator=(const RedOpRAII&) = delete;
-    RedOpRAII(RedOpRAII&& tmp) = delete;
-    RedOpRAII& operator=(RedOpRAII&&) = delete;
+
+    RedOpRAII(RedOpRAII&& other) noexcept
+        : ncclRedOp_(other.ncclRedOp_),
+          comm_(other.comm_),
+          rcclx_api_(std::move(other.rcclx_api_)) {
+      other.comm_ = nullptr; // Prevent destructor from destroying the op
+    }
+
+    RedOpRAII& operator=(RedOpRAII&& other) noexcept {
+      if (this != &other) {
+        // Destroy current op if we own one
+        if (comm_ && rcclx_api_) {
+          rcclx_api_->redOpDestroy(ncclRedOp_, comm_);
+        }
+        ncclRedOp_ = other.ncclRedOp_;
+        comm_ = other.comm_;
+        rcclx_api_ = std::move(other.rcclx_api_);
+        other.comm_ = nullptr; // Prevent destructor from destroying the op
+      }
+      return *this;
+    }
+
     ~RedOpRAII();
 
     operator ncclRedOp_t() const {
       return ncclRedOp_;
     }
 
-    ncclRedOp_t ncclRedOp_;
-    ncclComm_t comm_;
+    ncclRedOp_t ncclRedOp_{ncclMaxRedOp};
+    ncclComm_t comm_{nullptr};
     std::shared_ptr<RcclxApi> rcclx_api_;
   };
 
@@ -291,7 +311,14 @@ class TorchCommRCCLX : public TorchCommBackend,
 
     RegistrationHandle(const RegistrationHandle&) = delete;
     RegistrationHandle& operator=(const RegistrationHandle&) = delete;
-    RegistrationHandle& operator=(RegistrationHandle&&) = delete;
+
+    RegistrationHandle& operator=(RegistrationHandle&& other) noexcept {
+      if (this != &other) {
+        regHandle = other.regHandle;
+        other.regHandle = nullptr;
+      }
+      return *this;
+    }
 
     ~RegistrationHandle() = default;
   };
