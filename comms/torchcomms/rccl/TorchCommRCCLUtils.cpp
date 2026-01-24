@@ -105,7 +105,10 @@ TorchCommRCCL::RedOpRAII::RedOpRAII(
 
 TorchCommRCCL::RedOpRAII::~RedOpRAII() {
   if (comm_) {
-    rccl_api_->redOpDestroy(ncclRedOp_, comm_);
+    RCCL_CHECK_IGNORE(
+        rccl_api_,
+        rccl_api_->redOpDestroy(ncclRedOp_, comm_),
+        "RCCL redOpDestroy failed");
   }
 }
 
@@ -200,7 +203,7 @@ void TorchCommRCCL::timeoutWatchdog() noexcept {
   TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
   hipStreamCaptureMode mode = hipStreamCaptureModeThreadLocal;
-  HIP_CHECK(
+  HIP_CHECK_IGNORE(
       hip_api_,
       hip_api_->threadExchangeStreamCaptureMode(&mode),
       "Failed to swap capture mode for timeout thread");

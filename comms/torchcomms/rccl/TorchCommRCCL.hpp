@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <ATen/ATen.h>
+#include <glog/logging.h>
 #include <hip/hip_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
@@ -51,6 +52,17 @@ class RCCLException : public std::exception {
     if (status != ncclSuccess) {                                  \
       throw RCCLException(*rccl_api, err_str, status, nccl_comm); \
     }                                                             \
+  } while (0)
+
+// Ignore variant for use in destructors - logs errors instead of throwing
+#define RCCL_CHECK_IGNORE(rccl_api, call, err_str)                         \
+  do {                                                                     \
+    ncclResult_t status = call;                                            \
+    if (status != ncclSuccess) {                                           \
+      LOG(ERROR) << "[TC] " << err_str << ": "                             \
+                 << rccl_api->getErrorString(status) << " at " << __FILE__ \
+                 << ":" << __LINE__;                                       \
+    }                                                                      \
   } while (0)
 
 class TorchCommRCCL : public TorchCommBackend,

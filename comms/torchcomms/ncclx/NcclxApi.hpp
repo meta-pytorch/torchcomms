@@ -5,6 +5,7 @@
 #include <exception>
 #include <string>
 
+#include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
 
 namespace torch {
@@ -36,6 +37,17 @@ class NCCLXException : public std::exception {
     if (status != ncclSuccess) {                                   \
       throw NCCLXException(*nccl_api, err_str, status, nccl_comm); \
     }                                                              \
+  } while (0)
+
+// Ignore variant for use in destructors - logs errors instead of throwing
+#define NCCLX_CHECK_IGNORE(nccl_api, call, err_str)                        \
+  do {                                                                     \
+    ncclResult_t status = call;                                            \
+    if (status != ncclSuccess) {                                           \
+      LOG(ERROR) << "[TC] " << err_str << ": "                             \
+                 << nccl_api->getErrorString(status) << " at " << __FILE__ \
+                 << ":" << __LINE__;                                       \
+    }                                                                      \
   } while (0)
 
 using NcclxWindow = ncclWindow_t;

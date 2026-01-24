@@ -15,6 +15,7 @@
 
 #include <ATen/ATen.h>
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
+#include <glog/logging.h>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
 #include "comms/torchcomms/TorchComm.hpp"
@@ -52,6 +53,17 @@ class NCCLException : public std::exception {
     if (status != ncclSuccess) {                                  \
       throw NCCLException(*nccl_api, err_str, status, nccl_comm); \
     }                                                             \
+  } while (0)
+
+// Ignore variant for use in destructors - logs errors instead of throwing
+#define NCCL_CHECK_IGNORE(nccl_api, call, err_str)                         \
+  do {                                                                     \
+    ncclResult_t status = call;                                            \
+    if (status != ncclSuccess) {                                           \
+      LOG(ERROR) << "[TC] " << err_str << ": "                             \
+                 << nccl_api->getErrorString(status) << " at " << __FILE__ \
+                 << ":" << __LINE__;                                       \
+    }                                                                      \
   } while (0)
 
 class TorchCommNCCL : public TorchCommBackend,
