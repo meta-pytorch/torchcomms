@@ -11,6 +11,16 @@ const char* DefaultRcclxApi::getErrorString(ncclResult_t result) {
   return ncclGetErrorString(result);
 }
 
+std::string DefaultRcclxApi::getLastError(ncclComm_t comm) {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 18, 0)
+  const char* lastError = ncclGetLastError(comm);
+  return lastError ? std::string(lastError) : std::string();
+#else
+  (void)comm; // Suppress unused parameter warning
+  return std::string();
+#endif
+}
+
 ncclResult_t DefaultRcclxApi::getUniqueId(ncclUniqueId* uniqueId) {
   return ncclGetUniqueId(uniqueId);
 }
