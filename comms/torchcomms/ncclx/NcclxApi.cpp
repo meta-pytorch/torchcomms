@@ -11,6 +11,26 @@
 namespace torch {
 namespace comms {
 
+// NCCLXException implementation
+
+NCCLXException::NCCLXException(
+    NcclxApi& nccl_api,
+    const std::string& message,
+    ncclResult_t result,
+    ncclComm_t comm)
+    : message_(
+          message + ": " + nccl_api.getErrorString(result) +
+          " \nNCCL Last Error: " + nccl_api.getLastError(comm)),
+      result_(result) {}
+
+const char* NCCLXException::what() const noexcept {
+  return message_.c_str();
+}
+
+ncclResult_t NCCLXException::getResult() const noexcept {
+  return result_;
+}
+
 // DefaultNcclxApi implementation
 
 const char* DefaultNcclxApi::getErrorString(ncclResult_t result) {

@@ -46,6 +46,14 @@ class NCCLException : public std::exception {
   ncclResult_t result_;
 };
 
+#define NCCL_CHECK(nccl_api, nccl_comm, call, err_str)            \
+  do {                                                            \
+    ncclResult_t status = call;                                   \
+    if (status != ncclSuccess) {                                  \
+      throw NCCLException(*nccl_api, err_str, status, nccl_comm); \
+    }                                                             \
+  } while (0)
+
 class TorchCommNCCL : public TorchCommBackend,
                       public std::enable_shared_from_this<TorchCommNCCL> {
  public:
