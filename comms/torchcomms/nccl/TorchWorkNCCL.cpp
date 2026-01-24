@@ -84,9 +84,10 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCL::checkStatus() {
       setStatus(WorkStatus::INPROGRESS);
     } else if (start_status != cudaErrorNotReady) {
       // Some other error occurred with the start event
-      TC_LOG(ERROR) << "CUDA error during start event query: "
-                    << comm_->getCudaApi()->getErrorString(start_status) << " ("
-                    << start_status << ")";
+      TC_LOG(ERROR, comm_.get())
+          << "CUDA error during start event query: "
+          << comm_->getCudaApi()->getErrorString(start_status) << " ("
+          << start_status << ")";
       setStatus(WorkStatus::ERROR);
     }
   }
@@ -117,9 +118,10 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCL::checkStatus() {
     }
   } else {
     // Some other error occurred with the end event
-    TC_LOG(ERROR) << "CUDA error during end event query: "
-                  << comm_->getCudaApi()->getErrorString(end_status) << " ("
-                  << end_status << ")";
+    TC_LOG(ERROR, comm_.get())
+        << "CUDA error during end event query: "
+        << comm_->getCudaApi()->getErrorString(end_status) << " (" << end_status
+        << ")";
     setStatus(WorkStatus::ERROR);
   }
   return status();
