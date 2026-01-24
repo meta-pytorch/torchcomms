@@ -13,8 +13,7 @@
 #include "comms/torchcomms/nccl/NcclApi.hpp"
 #include "nccl.h" // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Default port for TCPStore-based unique ID exchange. This port is chosen
 // to match PyTorch's default TCPStore port (29500) for compatibility.
@@ -83,5 +82,4 @@ void populateNcclConfigFromHints(
     const CommOptions& options,
     const std::string& name);
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

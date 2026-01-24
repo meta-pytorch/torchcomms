@@ -8,8 +8,7 @@
 #include <ATen/ATen.h>
 #include <torch/csrc/distributed/c10d/ParamCommsUtils.hpp> // @manual=//caffe2:torch-cpp-cpu
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // TODO: remove once other backends were migrated to TorchCommTracingGuard.
 class TorchCommTracing {
@@ -80,5 +79,4 @@ class TorchCommTracingGuard {
   inline static int sequence_number_ = 0;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
