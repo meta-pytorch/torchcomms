@@ -163,9 +163,10 @@ void TorchCommNCCL::init(
       cuda_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  if (options_.hints.contains(std::string(kHintMaxEventPoolSize))) {
+  const auto kHintMaxEventPoolSizeKey = std::string(kHintMaxEventPoolSize);
+  if (options_.hints.contains(kHintMaxEventPoolSizeKey)) {
     max_event_pool_size_ =
-        std::stoull(options_.hints.at(std::string(kHintMaxEventPoolSize)));
+        std::stoull(options_.hints.at(kHintMaxEventPoolSizeKey));
   } else {
     max_event_pool_size_ = kDefaultMaxEventPoolSize;
   }
