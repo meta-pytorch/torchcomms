@@ -17,6 +17,15 @@
 namespace torch {
 namespace comms {
 
+namespace {
+// Hint key prefix and names for RCCLX backend configuration
+constexpr std::string_view kHintPrefix = "torchcomm::rcclx::";
+constexpr std::string_view kHintHighPriorityStream =
+    "torchcomm::rcclx::high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize =
+    "torchcomm::rcclx::max_event_pool_size";
+} // namespace
+
 ncclResult_t RCCLXException::getResult() const {
   return result_;
 }
@@ -112,8 +121,8 @@ void TorchCommRCCLX::init(
   for (const auto& hint : options_.hints) {
     const std::string& key = hint.first;
     const std::string& val = hint.second;
-    if (key.substr(0, 17) == "torchcomm::rcclx::") {
-      if (key == "torchcomm::rcclx::high_priority_stream") {
+    if (key.starts_with(kHintPrefix)) {
+      if (key == kHintHighPriorityStream) {
         high_priority_stream_ = string_to_bool(val);
       } else {
         throw std::runtime_error("Unrecognized hint " + key);
@@ -158,10 +167,10 @@ void TorchCommRCCLX::init(
       hip_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  if (options_.hints.find("torchcomm::rcclx::max_event_pool_size") !=
+  if (options_.hints.find(std::string(kHintMaxEventPoolSize)) !=
       options_.hints.end()) {
     max_event_pool_size_ =
-        std::stoull(options_.hints.at("torchcomm::rcclx::max_event_pool_size"));
+        std::stoull(options_.hints.at(std::string(kHintMaxEventPoolSize)));
   } else {
     max_event_pool_size_ = kMaxEventPoolSize;
   }
