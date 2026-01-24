@@ -194,7 +194,7 @@ void TorchCommNCCL::checkWorkQueue() {
 // The timeout thread cannot make NCCL calls.  The only CUDA call it can make
 // it cudaEventQuery.
 void TorchCommNCCL::timeoutWatchdog() noexcept {
-  TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
   cudaStreamCaptureMode mode = cudaStreamCaptureModeThreadLocal;
   CUDA_CHECK(
@@ -227,17 +227,18 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
       // communicator as it is not safe to call NCCL operations from
       // multiple threads at the same time.
       if (comm_state_ == CommState::TIMEOUT) {
-        TC_LOG(ERROR) << "Aborting process due to timeout on rank " << rank_
-                      << " - timeout watchdog detected operation timeout";
+        TC_LOG(ERROR, this)
+            << "Aborting process due to timeout on rank " << rank_
+            << " - timeout watchdog detected operation timeout";
       } else if (comm_state_ == CommState::ERROR) {
-        TC_LOG(ERROR) << "Aborting process due to error on rank " << rank_
-                      << " - timeout watchdog detected operation error. ";
+        TC_LOG(ERROR, this) << "Aborting process due to error on rank " << rank_
+                            << " - timeout watchdog detected operation error. ";
       }
       abort();
     }
   }
 
-  TC_LOG(INFO) << "Timeout thread exiting for rank: " << rank_;
+  TC_LOG(INFO, this) << "Timeout thread exiting for rank: " << rank_;
 }
 
 void TorchCommNCCL::checkInitialized() const {
@@ -258,7 +259,7 @@ void TorchCommNCCL::checkAndAbortIfTimedOutOrError() {
   if (comm_state_ == CommState::TIMEOUT) {
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR) << "Aborting process due to timeout";
+      TC_LOG(ERROR, this) << "Aborting process due to timeout";
       abort();
     } else {
       throw std::runtime_error("NCCL operation timed out");
@@ -269,8 +270,8 @@ void TorchCommNCCL::checkAndAbortIfTimedOutOrError() {
     NCCLException ncclException(*nccl_api_, "NCCL Async Error", asyncErr);
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {
-      TC_LOG(ERROR) << "Aborting process due to error: "
-                    << ncclException.what();
+      TC_LOG(ERROR, this) << "Aborting process due to error: "
+                          << ncclException.what();
       abort();
     } else {
       throw ncclException;

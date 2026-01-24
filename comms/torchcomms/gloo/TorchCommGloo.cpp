@@ -307,7 +307,7 @@ void TorchCommGloo::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
-  TC_LOG(INFO) << "Initializing TorchCommGloo for device: " << device;
+  TC_LOG(INFO, this) << "Initializing TorchCommGloo for device: " << device;
   // Initialize private members
   device_ = device;
   name_ = name;
@@ -364,7 +364,7 @@ void TorchCommGloo::init(
 
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
-  TC_LOG(INFO) << "TorchCommGloo initialized for rank: " << rank_;
+  TC_LOG(INFO, this) << "TorchCommGloo initialized for rank: " << rank_;
 }
 
 void TorchCommGloo::finalize() {
