@@ -179,14 +179,16 @@ void TorchCommRCCLX::init(
   ncclResult_t ncclErr;
   ncclErr = rcclx_api_->commUserRank(nccl_comm_, &rank_);
   if (ncclErr != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX User Rank failed", ncclErr);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX User Rank failed", ncclErr, nccl_comm_);
   }
 
   tryTorchCommLoggingInit("torchcomm");
 
   ncclErr = rcclx_api_->commCount(nccl_comm_, &comm_size_);
   if (ncclErr != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX Count failed", ncclErr);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX Count failed", ncclErr, nccl_comm_);
   }
 
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
@@ -235,7 +237,8 @@ void TorchCommRCCLX::finalize() {
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
     rcclx_api_->commGetAsyncError(nccl_comm_, &asyncErr);
-    RCCLXException RCCLXException(*rcclx_api_, "RCCLX Async Error", asyncErr);
+    RCCLXException RCCLXException(
+        *rcclx_api_, "RCCLX Async Error", asyncErr, nccl_comm_);
     abortRcclxComm();
     throw RCCLXException;
   }
@@ -306,7 +309,8 @@ int TorchCommRCCLX::getRank() const {
   int rank;
   ncclResult_t ncclErr = rcclx_api_->commUserRank(nccl_comm_, &rank);
   if (ncclErr != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX User Rank failed", ncclErr);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX User Rank failed", ncclErr, nccl_comm_);
   }
   return rank;
 }
@@ -317,7 +321,8 @@ int TorchCommRCCLX::getSize() const {
   int comm_size;
   ncclResult_t ncclErr = rcclx_api_->commCount(nccl_comm_, &comm_size);
   if (ncclErr != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX Count failed", ncclErr);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX Count failed", ncclErr, nccl_comm_);
   }
   return comm_size;
 }
@@ -361,7 +366,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::send(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX Send failed", result);
+    throw RCCLXException(*rcclx_api_, "RCCLX Send failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operation
@@ -401,7 +406,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::recv(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX Recv failed", result);
+    throw RCCLXException(*rcclx_api_, "RCCLX Recv failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operation
@@ -463,7 +468,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::batch_op_issue(
   // Start RCCLX group for batched operations
   ncclResult_t result = rcclx_api_->groupStart();
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX GroupStart failed", result, nccl_comm_);
   }
 
   // Issue each operation individually
@@ -479,7 +485,10 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::batch_op_issue(
 
       if (result != ncclSuccess) {
         throw RCCLXException(
-            *rcclx_api_, "RCCLX Send failed in batch operation", result);
+            *rcclx_api_,
+            "RCCLX Send failed in batch operation",
+            result,
+            nccl_comm_);
       }
     } else if (op.type == BatchSendRecv::P2POp::OpType::RECV) {
       result = rcclx_api_->recv(
@@ -492,7 +501,10 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::batch_op_issue(
 
       if (result != ncclSuccess) {
         throw RCCLXException(
-            *rcclx_api_, "RCCLX Recv failed in batch operation", result);
+            *rcclx_api_,
+            "RCCLX Recv failed in batch operation",
+            result,
+            nccl_comm_);
       }
     }
   }
@@ -500,7 +512,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::batch_op_issue(
   // End RCCLX group
   result = rcclx_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX GroupEnd failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operations
@@ -542,7 +555,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::broadcast(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX Broadcast failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX Broadcast failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operation
@@ -583,7 +597,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_reduce(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX AllReduce failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX AllReduce failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operation
@@ -627,7 +642,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX Reduce failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX Reduce failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operation
@@ -675,7 +691,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather(
   // Use multiple broadcast operations for all_gather
   ncclResult_t result = rcclx_api_->groupStart();
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX GroupStart failed", result, nccl_comm_);
   }
 
   for (int i = 0; i < comm_size_; ++i) {
@@ -689,13 +706,17 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather(
         stream);
     if (opResult != ncclSuccess) {
       throw RCCLXException(
-          *rcclx_api_, "RCCLX Broadcast failed in all_gather", opResult);
+          *rcclx_api_,
+          "RCCLX Broadcast failed in all_gather",
+          opResult,
+          nccl_comm_);
     }
   }
 
   result = rcclx_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX GroupEnd failed", result, nccl_comm_);
   }
 
   work->recordEnd();
@@ -751,7 +772,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX AllGather failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX AllGather failed", result, nccl_comm_);
   }
 
   work->recordEnd();
@@ -800,7 +822,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter(
   // Use multiple reduce operations for reduce_scatter
   ncclResult_t result = rcclx_api_->groupStart();
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX GroupStart failed", result, nccl_comm_);
   }
 
   for (int i = 0; i < comm_size_; ++i) {
@@ -818,7 +841,10 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter(
           stream);
       if (opResult != ncclSuccess) {
         throw RCCLXException(
-            *rcclx_api_, "RCCLX Reduce failed in reduce_scatter", opResult);
+            *rcclx_api_,
+            "RCCLX Reduce failed in reduce_scatter",
+            opResult,
+            nccl_comm_);
       }
     } else {
       // Other ranks contribute to the reduction
@@ -834,14 +860,18 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter(
           stream);
       if (opResult != ncclSuccess) {
         throw RCCLXException(
-            *rcclx_api_, "RCCLX Reduce failed in reduce_scatter", opResult);
+            *rcclx_api_,
+            "RCCLX Reduce failed in reduce_scatter",
+            opResult,
+            nccl_comm_);
       }
     }
   }
 
   result = rcclx_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX GroupEnd failed", result, nccl_comm_);
   }
 
   work->recordEnd();
@@ -904,7 +934,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX ReduceScatter failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX ReduceScatter failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operation
@@ -957,7 +988,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX AllToAll failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX AllToAll failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operation
@@ -1057,7 +1089,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all_v_single(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX AllToAllv failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX AllToAllv failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operation
@@ -1107,7 +1140,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all(
 
   ncclResult_t result = rcclx_api_->groupStart();
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX GroupStart failed", result, nccl_comm_);
   }
 
   for (int i = 0; i < comm_size_; ++i) {
@@ -1121,7 +1155,10 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all(
         stream);
     if (sendResult != ncclSuccess) {
       throw RCCLXException(
-          *rcclx_api_, "RCCLX Send failed in all_to_all", sendResult);
+          *rcclx_api_,
+          "RCCLX Send failed in all_to_all",
+          sendResult,
+          nccl_comm_);
     }
 
     // Receive from rank i
@@ -1134,13 +1171,17 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all(
         stream);
     if (recvResult != ncclSuccess) {
       throw RCCLXException(
-          *rcclx_api_, "RCCLX Recv failed in all_to_all", recvResult);
+          *rcclx_api_,
+          "RCCLX Recv failed in all_to_all",
+          recvResult,
+          nccl_comm_);
     }
   }
 
   result = rcclx_api_->groupEnd();
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX GroupEnd failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operations
@@ -1177,7 +1218,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::barrier(
       stream);
 
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX Barrier failed", result);
+    throw RCCLXException(
+        *rcclx_api_, "RCCLX Barrier failed", result, nccl_comm_);
   }
 
   // Record end event after RCCLX operation
@@ -1236,7 +1278,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::scatter(
     // Root sends to all ranks (except itself)
     ncclResult_t result = rcclx_api_->groupStart();
     if (result != ncclSuccess) {
-      throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+      throw RCCLXException(
+          *rcclx_api_, "RCCLX GroupStart failed", result, nccl_comm_);
     }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
@@ -1249,13 +1292,17 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::scatter(
             stream);
         if (sendResult != ncclSuccess) {
           throw RCCLXException(
-              *rcclx_api_, "RCCLX Send failed in scatter", sendResult);
+              *rcclx_api_,
+              "RCCLX Send failed in scatter",
+              sendResult,
+              nccl_comm_);
         }
       }
     }
     result = rcclx_api_->groupEnd();
     if (result != ncclSuccess) {
-      throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+      throw RCCLXException(
+          *rcclx_api_, "RCCLX GroupEnd failed", result, nccl_comm_);
     }
 
     // Root copies its own data using hipMemcpyAsync
@@ -1280,7 +1327,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::scatter(
         stream);
     if (recvResult != ncclSuccess) {
       throw RCCLXException(
-          *rcclx_api_, "RCCLX Recv failed in scatter", recvResult);
+          *rcclx_api_, "RCCLX Recv failed in scatter", recvResult, nccl_comm_);
     }
   }
 
@@ -1339,7 +1386,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::gather(
     // Root receives from all ranks (except itself)
     ncclResult_t result = rcclx_api_->groupStart();
     if (result != ncclSuccess) {
-      throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+      throw RCCLXException(
+          *rcclx_api_, "RCCLX GroupStart failed", result, nccl_comm_);
     }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
@@ -1352,13 +1400,17 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::gather(
             stream);
         if (recvResult != ncclSuccess) {
           throw RCCLXException(
-              *rcclx_api_, "RCCLX Recv failed in gather", recvResult);
+              *rcclx_api_,
+              "RCCLX Recv failed in gather",
+              recvResult,
+              nccl_comm_);
         }
       }
     }
     result = rcclx_api_->groupEnd();
     if (result != ncclSuccess) {
-      throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+      throw RCCLXException(
+          *rcclx_api_, "RCCLX GroupEnd failed", result, nccl_comm_);
     }
 
     // Root copies its own data using hipMemcpyAsync
@@ -1382,7 +1434,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::gather(
         stream);
     if (sendResult != ncclSuccess) {
       throw RCCLXException(
-          *rcclx_api_, "RCCLX Send failed in gather", sendResult);
+          *rcclx_api_, "RCCLX Send failed in gather", sendResult, nccl_comm_);
     }
   }
 
@@ -1451,7 +1503,7 @@ std::shared_ptr<TorchCommBackend> TorchCommRCCLX::split(
   ncclResult_t result =
       rcclx_api_->commSplit(nccl_comm_, color, new_rank, &new_comm, &config);
   if (result != ncclSuccess) {
-    throw RCCLXException(*rcclx_api_, "RCCLX split failed", result);
+    throw RCCLXException(*rcclx_api_, "RCCLX split failed", result, nccl_comm_);
   }
 
   if (new_rank == -1) {
@@ -1491,7 +1543,10 @@ void TorchCommRCCLX::register_address(
       rcclx_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle);
   if (result != ncclSuccess) {
     throw RCCLXException(
-        *rcclx_api_, "Failed to register memory with RCCLX", result);
+        *rcclx_api_,
+        "Failed to register memory with RCCLX",
+        result,
+        nccl_comm_);
   }
   memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
 }
@@ -1513,7 +1568,10 @@ void TorchCommRCCLX::deregister_address(const TorchCommRCCLX::Address& addr) {
   ncclResult_t result = rcclx_api_->commDeregister(nccl_comm_, handle);
   if (result != ncclSuccess) {
     throw RCCLXException(
-        *rcclx_api_, "Failed to deregister memory with RCCLX", result);
+        *rcclx_api_,
+        "Failed to deregister memory with RCCLX",
+        result,
+        nccl_comm_);
   }
 
   memoryRegistrationHandles_.erase(it);
@@ -1522,8 +1580,11 @@ void TorchCommRCCLX::deregister_address(const TorchCommRCCLX::Address& addr) {
 RCCLXException::RCCLXException(
     RcclxApi& rcclx_api,
     const std::string& message,
-    ncclResult_t result)
-    : message_(message + ": " + rcclx_api.getErrorString(result)),
+    ncclResult_t result,
+    ncclComm_t comm)
+    : message_(
+          message + ": " + rcclx_api.getErrorString(result) +
+          " \nRCCLX Last Error: " + rcclx_api.getLastError(comm)),
       result_(result) {}
 
 const char* RCCLXException::what() const noexcept {

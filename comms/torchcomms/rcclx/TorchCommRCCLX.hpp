@@ -35,7 +35,8 @@ class RCCLXException : public std::exception {
   RCCLXException(
       RcclxApi& api,
       const std::string& message,
-      ncclResult_t result);
+      ncclResult_t result,
+      ncclComm_t comm);
 
   const char* what() const noexcept override;
   ncclResult_t getResult() const;

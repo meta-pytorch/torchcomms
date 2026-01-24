@@ -31,7 +31,11 @@ constexpr size_t kMaxEventPoolSize = 1000;
 // Custom exception class for better error handling
 class RCCLException : public std::exception {
  public:
-  RCCLException(RcclApi& api, const std::string& message, ncclResult_t result);
+  RCCLException(
+      RcclApi& api,
+      const std::string& message,
+      ncclResult_t result,
+      ncclComm_t comm);
 
   const char* what() const noexcept override;
   ncclResult_t getResult() const;
