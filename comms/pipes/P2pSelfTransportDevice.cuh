@@ -93,9 +93,7 @@ class P2pSelfTransportDevice {
     }
 
     // Check for buffer overlap - only support non-overlapping buffers
-    if (!(src_d + nbytes <= dst_d || dst_d + nbytes <= src_d)) {
-      __trap(); // Abort kernel if buffers overlap
-    }
+    assert_buffer_non_overlap(dst_d, src_d, nbytes);
 
     // Compute chunk size: aim for nbytes / total_groups per chunk,
     // aligned to 16 bytes (uint4 size) for efficient vectorized access
