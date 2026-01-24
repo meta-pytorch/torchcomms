@@ -104,8 +104,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   ~TorchComm() = default;
 
   void finalize();
-  int getRank();
-  int getSize();
+  int getRank() const;
+  int getSize() const;
   std::string_view getCommName() const;
 
   // Point-to-Point Operations
