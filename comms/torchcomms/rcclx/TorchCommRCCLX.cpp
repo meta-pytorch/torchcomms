@@ -477,7 +477,6 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::batch_op_issue(
           stream);
 
       if (result != ncclSuccess) {
-        rcclx_api_->groupEnd(); // Clean up group on error
         throw RCCLXException(
             *rcclx_api_, "RCCLX Send failed in batch operation", result);
       }
@@ -491,7 +490,6 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::batch_op_issue(
           stream);
 
       if (result != ncclSuccess) {
-        rcclx_api_->groupEnd(); // Clean up group on error
         throw RCCLXException(
             *rcclx_api_, "RCCLX Recv failed in batch operation", result);
       }
@@ -674,10 +672,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather(
   work->recordStart("all_gather");
 
   // Use multiple broadcast operations for all_gather
-  rcclx_api_->groupStart();
+  ncclResult_t result = rcclx_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
-    rcclx_api_->broadcast(
+    ncclResult_t opResult = rcclx_api_->broadcast(
         tensor.data_ptr(),
         tensor_list[i].data_ptr(),
         tensor.numel(),
@@ -685,9 +686,16 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather(
         i,
         nccl_comm_,
         stream);
+    if (opResult != ncclSuccess) {
+      throw RCCLXException(
+          *rcclx_api_, "RCCLX Broadcast failed in all_gather", opResult);
+    }
   }
 
-  rcclx_api_->groupEnd();
+  result = rcclx_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+  }
 
   work->recordEnd();
 
@@ -789,13 +797,16 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter(
   work->recordStart("reduce_scatter");
 
   // Use multiple reduce operations for reduce_scatter
-  rcclx_api_->groupStart();
+  ncclResult_t result = rcclx_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
     if (i == rank_) {
       // This rank receives the reduced result
       auto dataType = getNcclDataType(input_list[i]);
-      rcclx_api_->reduce(
+      ncclResult_t opResult = rcclx_api_->reduce(
           input_list[i].data_ptr(),
           output.data_ptr(),
           output.numel(),
@@ -804,10 +815,14 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter(
           i,
           nccl_comm_,
           stream);
+      if (opResult != ncclSuccess) {
+        throw RCCLXException(
+            *rcclx_api_, "RCCLX Reduce failed in reduce_scatter", opResult);
+      }
     } else {
       // Other ranks contribute to the reduction
       auto dataType = getNcclDataType(input_list[i]);
-      rcclx_api_->reduce(
+      ncclResult_t opResult = rcclx_api_->reduce(
           input_list[i].data_ptr(),
           nullptr, // Non-root ranks don't receive
           input_list[i].numel(),
@@ -816,10 +831,17 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter(
           i,
           nccl_comm_,
           stream);
+      if (opResult != ncclSuccess) {
+        throw RCCLXException(
+            *rcclx_api_, "RCCLX Reduce failed in reduce_scatter", opResult);
+      }
     }
   }
 
-  rcclx_api_->groupEnd();
+  result = rcclx_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+  }
 
   work->recordEnd();
 
@@ -1082,29 +1104,43 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all(
   // Record start event before RCCLX operations
   work->recordStart("all_to_all");
 
-  rcclx_api_->groupStart();
+  ncclResult_t result = rcclx_api_->groupStart();
+  if (result != ncclSuccess) {
+    throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+  }
 
   for (int i = 0; i < comm_size_; ++i) {
     // Send to rank i
-    rcclx_api_->send(
+    ncclResult_t sendResult = rcclx_api_->send(
         input_tensor_list[i].data_ptr(),
         input_tensor_list[i].numel(),
         getNcclDataType(input_tensor_list[i]),
         i,
         nccl_comm_,
         stream);
+    if (sendResult != ncclSuccess) {
+      throw RCCLXException(
+          *rcclx_api_, "RCCLX Send failed in all_to_all", sendResult);
+    }
 
     // Receive from rank i
-    rcclx_api_->recv(
+    ncclResult_t recvResult = rcclx_api_->recv(
         output_tensor_list[i].data_ptr(),
         output_tensor_list[i].numel(),
         getNcclDataType(output_tensor_list[i]),
         i,
         nccl_comm_,
         stream);
+    if (recvResult != ncclSuccess) {
+      throw RCCLXException(
+          *rcclx_api_, "RCCLX Recv failed in all_to_all", recvResult);
+    }
   }
 
-  rcclx_api_->groupEnd();
+  result = rcclx_api_->groupEnd();
+  if (result != ncclSuccess) {
+    throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+  }
 
   // Record end event after RCCLX operations
   work->recordEnd();
@@ -1197,19 +1233,29 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::scatter(
   // Implement scatter using point-to-point operations
   if (rank_ == root) {
     // Root sends to all ranks (except itself)
-    rcclx_api_->groupStart();
+    ncclResult_t result = rcclx_api_->groupStart();
+    if (result != ncclSuccess) {
+      throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+    }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
-        rcclx_api_->send(
+        ncclResult_t sendResult = rcclx_api_->send(
             input_tensor_list[i].data_ptr(),
             input_tensor_list[i].numel(),
             getNcclDataType(input_tensor_list[i]),
             i,
             nccl_comm_,
             stream);
+        if (sendResult != ncclSuccess) {
+          throw RCCLXException(
+              *rcclx_api_, "RCCLX Send failed in scatter", sendResult);
+        }
       }
     }
-    rcclx_api_->groupEnd();
+    result = rcclx_api_->groupEnd();
+    if (result != ncclSuccess) {
+      throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+    }
 
     // Root copies its own data using hipMemcpyAsync
     HIP_CHECK(
@@ -1224,13 +1270,17 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::scatter(
         "memcpyAsync failed");
   } else {
     // Non-root ranks receive from root
-    rcclx_api_->recv(
+    ncclResult_t recvResult = rcclx_api_->recv(
         output_tensor.data_ptr(),
         output_tensor.numel(),
         getNcclDataType(output_tensor),
         root,
         nccl_comm_,
         stream);
+    if (recvResult != ncclSuccess) {
+      throw RCCLXException(
+          *rcclx_api_, "RCCLX Recv failed in scatter", recvResult);
+    }
   }
 
   // Record end event after RCCLX operations
@@ -1286,19 +1336,29 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::gather(
 
   if (rank_ == root) {
     // Root receives from all ranks (except itself)
-    rcclx_api_->groupStart();
+    ncclResult_t result = rcclx_api_->groupStart();
+    if (result != ncclSuccess) {
+      throw RCCLXException(*rcclx_api_, "RCCLX GroupStart failed", result);
+    }
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
-        rcclx_api_->recv(
+        ncclResult_t recvResult = rcclx_api_->recv(
             output_tensor_list[i].data_ptr(),
             output_tensor_list[i].numel(),
             getNcclDataType(output_tensor_list[i]),
             i,
             nccl_comm_,
             stream);
+        if (recvResult != ncclSuccess) {
+          throw RCCLXException(
+              *rcclx_api_, "RCCLX Recv failed in gather", recvResult);
+        }
       }
     }
-    rcclx_api_->groupEnd();
+    result = rcclx_api_->groupEnd();
+    if (result != ncclSuccess) {
+      throw RCCLXException(*rcclx_api_, "RCCLX GroupEnd failed", result);
+    }
 
     // Root copies its own data using hipMemcpyAsync
     HIP_CHECK(
@@ -1312,13 +1372,17 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::gather(
         "memcpyAsync failed");
   } else {
     // Non-root ranks send to root
-    rcclx_api_->send(
+    ncclResult_t sendResult = rcclx_api_->send(
         input_tensor.data_ptr(),
         input_tensor.numel(),
         getNcclDataType(input_tensor),
         root,
         nccl_comm_,
         stream);
+    if (sendResult != ncclSuccess) {
+      throw RCCLXException(
+          *rcclx_api_, "RCCLX Send failed in gather", sendResult);
+    }
   }
 
   // Record end event after RCCLX operations
