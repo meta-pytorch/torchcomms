@@ -8,6 +8,7 @@
 #include <string>
 
 #include <ATen/hip/HIPContext.h> // @manual=//caffe2:ATen-custom-hip
+#include <fmt/core.h>
 
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
@@ -99,23 +100,22 @@ void TorchCommRCCL::init(
   HIP_CHECK(
       hip_api_,
       hip_api_->setDevice(device_.index()),
-      "Failed to set CUDA device to " + std::to_string(device_.index()));
+      fmt::format("Failed to set CUDA device to {}", device_.index()));
 
   // Verify device properties and memory availability
   hipDeviceProp_t device_prop = {};
   HIP_CHECK(
       hip_api_,
       hip_api_->getDeviceProperties(&device_prop, device_.index()),
-      "Failed to get device properties for device " +
-          std::to_string(device_.index()));
+      fmt::format(
+          "Failed to get device properties for device {}", device_.index()));
 
   // Check available memory
   size_t free_memory, total_memory;
   HIP_CHECK(
       hip_api_,
       hip_api_->memGetInfo(&free_memory, &total_memory),
-      "Failed to get memory info for device " +
-          std::to_string(device_.index()));
+      fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
   for (const auto& hint : options_.hints) {
@@ -151,15 +151,16 @@ void TorchCommRCCL::init(
       hip_api_,
       hip_api_->streamCreateWithPriority(
           &internal_stream_, hipStreamNonBlocking, stream_priority),
-      "Failed to create internal CUDA stream on device " +
-          std::to_string(device_.index()));
+      fmt::format(
+          "Failed to create internal CUDA stream on device {}",
+          device_.index()));
 
   // Create dependency event for stream synchronization
   HIP_CHECK(
       hip_api_,
       hip_api_->eventCreate(&dependency_event_),
-      "Failed to create dependency event on device " +
-          std::to_string(device_.index()));
+      fmt::format(
+          "Failed to create dependency event on device {}", device_.index()));
 
   // Allocate CUDA buffer for barrier operations
   HIP_CHECK(
@@ -1407,8 +1408,10 @@ std::shared_ptr<TorchCommBackend> TorchCommRCCL::split(
   for (int rank : ranks) {
     if (rank < 0 || rank >= comm_size_) {
       throw std::runtime_error(
-          "Invalid rank " + std::to_string(rank) +
-          " in ranks. Valid ranks are 0 to " + std::to_string(comm_size_ - 1));
+          fmt::format(
+              "Invalid rank {} in ranks. Valid ranks are 0 to {}",
+              rank,
+              comm_size_ - 1));
     }
   }
 
@@ -1433,8 +1436,9 @@ std::shared_ptr<TorchCommBackend> TorchCommRCCL::split(
     if (it == ranks.end()) {
       // Current rank is not in the non-empty list - this is an error
       throw std::runtime_error(
-          "Current rank " + std::to_string(rank_) +
-          " is not included in the provided ranks list");
+          fmt::format(
+              "Current rank {} is not included in the provided ranks list",
+              rank_));
     }
     // Set color to the lowest rank in the group and calculate new rank
     color = *std::min_element(ranks.begin(), ranks.end());

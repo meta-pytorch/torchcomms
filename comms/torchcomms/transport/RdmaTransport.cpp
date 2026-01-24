@@ -4,6 +4,7 @@
 
 #include <folly/synchronization/CallOnce.h>
 
+#include <fmt/core.h>
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"

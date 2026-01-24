@@ -5,6 +5,7 @@
 #include <set>
 #include <string>
 
+#include <fmt/core.h>
 #include <gloo/algorithm.h>
 #include <gloo/allgather.h>
 #include <gloo/allreduce.h>
@@ -1367,8 +1368,10 @@ std::shared_ptr<TorchCommBackend> TorchCommGloo::split(
   for (int rank : ranks) {
     if (rank < 0 || rank >= comm_size_) {
       throw std::runtime_error(
-          "Invalid rank " + std::to_string(rank) +
-          " in ranks. Valid ranks are 0 to " + std::to_string(comm_size_ - 1));
+          fmt::format(
+              "Invalid rank {} in ranks. Valid ranks are 0 to {}",
+              rank,
+              comm_size_ - 1));
     }
   }
 
@@ -1388,8 +1391,9 @@ std::shared_ptr<TorchCommBackend> TorchCommGloo::split(
   if (it == ranks.end()) {
     // Current rank is not in the non-empty list - this is an error
     throw std::runtime_error(
-        "Current rank " + std::to_string(rank_) +
-        " is not included in the provided ranks list");
+        fmt::format(
+            "Current rank {} is not included in the provided ranks list",
+            rank_));
   }
 
   auto new_torchcomm = std::make_shared<TorchCommGloo>();

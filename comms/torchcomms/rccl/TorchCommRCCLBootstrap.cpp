@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/rccl/TorchCommRCCLBootstrap.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
+#include <fmt/core.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "rccl.h" // @manual
 
@@ -68,7 +69,7 @@ TorchCommRCCLBootstrap::TorchCommRCCLBootstrap(
   HIP_CHECK(
       hip_api_,
       hip_api_->setDevice(device_.index()),
-      "Failed to set device to " + std::to_string(device_.index()));
+      fmt::format("Failed to set device to {}", device_.index()));
 
   // Allocate CUDA memory for a single float32 value used in barrier operations
   HIP_CHECK(
@@ -88,7 +89,7 @@ TorchCommRCCLBootstrap::~TorchCommRCCLBootstrap() noexcept {
 }
 
 std::string TorchCommRCCLBootstrap::getRCCLStoreKey() {
-  std::string key = getRCCLStoreKeyPrefix() + std::to_string(counter_);
+  std::string key = fmt::format("{}{}", getRCCLStoreKeyPrefix(), counter_);
   counter_++;
   return key;
 }
