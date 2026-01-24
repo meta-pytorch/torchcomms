@@ -76,7 +76,7 @@ TorchCommNCCLBootstrap::TorchCommNCCLBootstrap(
       "Failed to allocate barrier buffer");
 }
 
-TorchCommNCCLBootstrap::~TorchCommNCCLBootstrap() {
+TorchCommNCCLBootstrap::~TorchCommNCCLBootstrap() noexcept {
   if (barrier_buffer_ != nullptr) {
     CUDA_CHECK_IGNORE(
         cuda_api_,
