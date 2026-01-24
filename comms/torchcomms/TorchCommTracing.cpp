@@ -3,6 +3,7 @@
 #include "comms/torchcomms/TorchCommTracing.hpp"
 
 #include <string>
+#include <string_view>
 
 #include <ATen/core/ivalue.h>
 #include <ATen/record_function.h>
@@ -11,14 +12,14 @@
 namespace torch {
 namespace comms {
 
-void TorchCommTracing::recordEvent(const std::string& collective_name) {
+void TorchCommTracing::recordEvent(std::string_view collective_name) {
   RECORD_PARAM_COMMS(
       std::make_tuple(0, false), // sequence number tuple
       std::make_tuple(
           name_,
           ""), // PG name/description tuple
       rank_,
-      collective_name.c_str(),
+      std::string(collective_name).c_str(),
       0, // inNelems
       0, // outNelems
       at::kByte, // dType
@@ -30,7 +31,7 @@ void TorchCommTracing::recordEvent(const std::string& collective_name) {
 }
 
 void TorchCommTracing::recordEventWithInputOutput(
-    const std::string& collective_name,
+    std::string_view collective_name,
     int rank,
     const std::vector<at::Tensor>& input_tensor_list,
     const std::vector<at::Tensor>& output_tensor_list) {
@@ -53,7 +54,7 @@ void TorchCommTracing::recordEventWithInputOutput(
 }
 
 void TorchCommTracing::recordEventWithInputOutput(
-    const std::string& collective_name,
+    std::string_view collective_name,
     int collective_rank,
     const std::vector<at::Tensor>& input_tensor_list,
     const std::vector<at::Tensor>& output_tensor_list,
@@ -84,7 +85,7 @@ void TorchCommTracing::recordEventWithInputOutput(
       input_tensor_list, // inputTensors
       output_tensor_list, // outputTensors
       collective_rank,
-      collective_name.c_str(), // collective name
+      std::string(collective_name).c_str(), // collective name
       input_total_numel, // inNelems
       output_total_numel, // outNelems
       data_type, // dType
@@ -102,9 +103,9 @@ void TorchCommTracing::recordEventWithInputOutput(
 // This information is used by PyTorch's PARAM_COMMS tracing to track and
 // analyze distributed communication patterns.
 std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
-    const std::string& comm_name,
+    std::string_view comm_name,
     int comm_size,
-    const std::string& collective_name,
+    std::string_view collective_name,
     int collective_rank,
     const std::vector<at::Tensor>& input_tensor_list,
     const std::vector<at::Tensor>& output_tensor_list,
@@ -128,9 +129,9 @@ std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
   }
 
   return std::make_shared<torch::ParamCommsDebugInfo>(
-      std::make_tuple(comm_name, ""),
+      std::make_tuple(std::string(comm_name), std::string("")),
       collective_rank,
-      collective_name.c_str(),
+      std::string(collective_name).c_str(),
       input_total_numel,
       output_total_numel,
       data_type,
@@ -142,9 +143,9 @@ std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
 }
 
 void TorchCommTracingGuard::initializeTracingCommon(
-    const std::string& comm_name,
+    std::string_view comm_name,
     int comm_size,
-    const std::string& collective_name,
+    std::string_view collective_name,
     int collective_rank,
     const std::vector<at::Tensor>& input_tensor_list,
     const std::vector<at::Tensor>& output_tensor_list) {
@@ -173,9 +174,9 @@ void TorchCommTracingGuard::initializeTracingCommon(
     std::initializer_list<const c10::IValue> paramList = {
         c10::IValue(input_tensor_list),
         std::make_tuple(++sequence_number_, false),
-        std::make_tuple(comm_name, ""),
+        std::make_tuple(std::string(comm_name), std::string("")),
         collective_rank,
-        collective_name,
+        std::string(collective_name),
         in_split_sizes,
         out_split_sizes,
         -1, // globalRankStart: not tracked in TorchComm (unused by consumers)
@@ -194,9 +195,9 @@ void TorchCommTracingGuard::initializeTracingCommon(
 }
 
 TorchCommTracingGuard::TorchCommTracingGuard(
-    const std::string& comm_name,
+    std::string_view comm_name,
     int comm_size,
-    const std::string& collective_name,
+    std::string_view collective_name,
     int collective_rank,
     const at::Tensor& input_tensor,
     const at::Tensor& output_tensor) {
@@ -214,9 +215,9 @@ TorchCommTracingGuard::TorchCommTracingGuard(
 }
 
 TorchCommTracingGuard::TorchCommTracingGuard(
-    const std::string& comm_name,
+    std::string_view comm_name,
     int comm_size,
-    const std::string& collective_name,
+    std::string_view collective_name,
     int collective_rank,
     const std::vector<at::Tensor>& input_tensor_list,
     const std::vector<at::Tensor>& output_tensor_list) {
