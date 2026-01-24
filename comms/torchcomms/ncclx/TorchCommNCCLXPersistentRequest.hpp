@@ -17,7 +17,7 @@ class TorchCommNCCLXPersistentRequest : public torch::CustomClassHolder {
       std::shared_ptr<TorchCommNCCLX> comm,
       void* hdl,
       std::optional<cudaStream_t> stream);
-  ~TorchCommNCCLXPersistentRequest();
+  ~TorchCommNCCLXPersistentRequest() noexcept;
 
   // Delete copy and move operations
   TorchCommNCCLXPersistentRequest(const TorchCommNCCLXPersistentRequest&) =
