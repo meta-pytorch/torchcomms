@@ -11,6 +11,7 @@
 
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rccl/TorchCommRCCLBootstrap.hpp"
 #include "rccl.h" // @manual
 
@@ -188,8 +189,7 @@ void TorchCommRCCL::init(
     throw std::runtime_error("NCCL Count failed");
   }
 
-  tracing_ = std::make_shared<TorchCommTracing>(name, comm_size_, rank_);
-  tracing_->recordEvent("init");
+  TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommRCCL::timeoutWatchdog, this);
@@ -342,7 +342,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::send(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("send", dst, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "send", dst, tensor, tensor);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -381,7 +382,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::recv(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("recv", src, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "recv", src, tensor, tensor);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -441,8 +443,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::batch_op_issue(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "batch_op_issue", rank_, input_tensors, output_tensors);
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "batch_op_issue",
+      rank_,
+      input_tensors,
+      output_tensors);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -515,7 +522,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::broadcast(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("broadcast", root, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "broadcast", root, tensor, tensor);
 
   hipStream_t stream = getOperationStream(async_op);
 
@@ -555,7 +563,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("all_reduce", rank_, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -597,7 +606,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("reduce", root, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce", root, tensor, tensor);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -654,8 +664,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_gather", rank_, tensor_list, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -720,8 +730,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather_single(
         "Output tensor size must be input_size * comm_size for all_gather_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_gather_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_single", rank_, input, output);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -773,8 +783,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "reduce_scatter", rank_, input_list, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -864,8 +874,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter_single(
         "Input tensor size must be output_size * comm_size for reduce_scatter_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "reduce_scatter_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -917,8 +927,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_to_all_single(
         "Tensor size must be divisible by comm_size for all_to_all_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_to_all_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -990,8 +1000,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_to_all_v_single(
         "Sum of output_split_sizes must equal output tensor size for all_to_all_v_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_to_all_v_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -1069,8 +1079,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_to_all(
     ensureTensorContiguous(output_tensor_list[i]);
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_to_all", rank_, input_tensor_list, output_tensor_list);
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "all_to_all",
+      rank_,
+      input_tensor_list,
+      output_tensor_list);
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -1134,7 +1149,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::barrier(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
-  tracing_->recordEvent("barrier");
+  TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {});
@@ -1191,8 +1206,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::scatter(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "scatter", root, input_tensor_list, {output_tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "scatter", root, input_tensor_list, {output_tensor});
 
   hipStream_t stream = getOperationStream(async_op);
   std::vector<at::Tensor> input_tensors;
@@ -1295,8 +1310,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::gather(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "gather", root, {input_tensor}, output_tensor_list);
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "gather", root, {input_tensor}, output_tensor_list);
 
   hipStream_t stream = getOperationStream(async_op);
   std::vector<at::Tensor> output_tensors;

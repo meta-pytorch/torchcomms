@@ -9,7 +9,6 @@
 #include <ATen/ATen.h>
 #include <hip_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <vector>
-#include "comms/torchcomms/TorchCommTracing.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include "comms/torchcomms/TorchWork.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 
 namespace torch {
@@ -24,14 +23,12 @@ class TorchWorkRCCL : public TorchWork {
       std::shared_ptr<TorchCommRCCL> comm,
       hipStream_t stream,
       std::chrono::milliseconds timeout_ms,
-      const std::vector<at::Tensor>& inputTensors,
-      std::shared_ptr<TorchCommTracing> tracing);
+      const std::vector<at::Tensor>& inputTensors);
   TorchWorkRCCL(
       std::shared_ptr<TorchCommRCCL> comm,
       hipStream_t stream,
       std::chrono::milliseconds timeout_ms,
-      const at::Tensor& inputTensor,
-      std::shared_ptr<TorchCommTracing> tracing);
+      const at::Tensor& inputTensor);
   ~TorchWorkRCCL() override;
 
   // We delete the copy constructor and assignment operator to prevent 2 work
@@ -73,7 +70,6 @@ class TorchWorkRCCL : public TorchWork {
   std::chrono::milliseconds timeout_ms_;
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
-  std::shared_ptr<TorchCommTracing> tracing_;
 };
 
 } // namespace comms
