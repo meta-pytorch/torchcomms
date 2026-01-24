@@ -15,8 +15,20 @@
 namespace torch {
 namespace comms {
 
+namespace {
+// Helper function to trim leading and trailing whitespace from a string
+std::string trim_whitespace(const std::string& str) {
+  auto start = str.find_first_not_of(" \t\n\r\f\v");
+  if (start == std::string::npos) {
+    return "";
+  }
+  auto end = str.find_last_not_of(" \t\n\r\f\v");
+  return str.substr(start, end - start + 1);
+}
+} // namespace
+
 bool string_to_bool(const std::string& str) {
-  std::string lowercase_str = str;
+  std::string lowercase_str = trim_whitespace(str);
   std::transform(
       lowercase_str.begin(),
       lowercase_str.end(),
@@ -44,7 +56,12 @@ T env_to_value(const std::string& env_key, const T& default_value) {
     return default_value; // Environment variable not set, return default
   }
 
-  std::string value(env_value);
+  std::string value = trim_whitespace(std::string(env_value));
+
+  // If the trimmed value is empty, return the default
+  if (value.empty()) {
+    return default_value;
+  }
 
   if constexpr (std::is_same_v<T, bool>) {
     return string_to_bool(value);
