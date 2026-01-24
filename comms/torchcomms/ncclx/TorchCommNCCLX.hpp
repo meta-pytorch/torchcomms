@@ -53,7 +53,7 @@ class NCCLXException : public std::exception {
       ncclComm_t comm);
 
   const char* what() const noexcept override;
-  ncclResult_t getResult() const noexcept;
+  [[nodiscard]] ncclResult_t getResult() const noexcept;
 
  private:
   std::string message_;
@@ -277,7 +277,7 @@ class TorchCommNCCLX : public TorchCommBackend,
 
  protected:
   // Event management for friend classes
-  cudaEvent_t getEvent();
+  [[nodiscard]] cudaEvent_t getEvent();
   void returnEvent(cudaEvent_t event);
   void abortNcclComm();
 
