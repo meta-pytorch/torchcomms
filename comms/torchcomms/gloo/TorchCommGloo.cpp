@@ -322,9 +322,9 @@ void TorchCommGloo::init(
   init_state_ = InitializationState::INITIALIZED;
 
   if (rank_ == -1 || comm_size_ == -1) {
-    auto ranksize = query_ranksize();
-    rank_ = ranksize.first;
-    comm_size_ = ranksize.second;
+    auto [rank, comm_size] = query_ranksize();
+    rank_ = rank;
+    comm_size_ = comm_size;
   }
 
   ::gloo::transport::tcp::attr attr;
