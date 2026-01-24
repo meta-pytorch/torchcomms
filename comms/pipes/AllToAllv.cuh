@@ -124,7 +124,7 @@ __device__ __forceinline__ void allToAllv(
 
     auto& transport = transports_per_rank[my_rank_id];
     assert(transport.type == TransportType::SELF);
-    transport.self.write(group, dst, src, send_info.nbytes);
+    transport.self.put(group, dst, src, send_info.nbytes);
     return;
   }
 
@@ -157,7 +157,7 @@ __device__ __forceinline__ void allToAllv(
     }
 #endif
 
-    transport.self.write(group_per_rank, dst, src, send_info.nbytes);
+    transport.self.put(group_per_rank, dst, src, send_info.nbytes);
     return;
   }
 
