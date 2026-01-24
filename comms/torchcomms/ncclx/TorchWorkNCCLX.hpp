@@ -8,6 +8,7 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <string_view>
 #include <unordered_map>
 
 #include <ATen/ATen.h>
@@ -61,7 +62,7 @@ class TorchWorkNCCLX : public TorchWork {
   }
 
  protected:
-  void recordStart(const std::string& coll_name);
+  void recordStart(std::string_view coll_name);
   void recordEnd();
 
   friend class TorchCommNCCLX;
@@ -73,7 +74,7 @@ class TorchWorkNCCLX : public TorchWork {
   // Check the status of the work object
   WorkStatus checkStatus();
 
-  void recordFunctionStart(const std::string& coll_name);
+  void recordFunctionStart(std::string_view coll_name);
 
   std::chrono::milliseconds getTimeout() {
     return timeout_ms_;

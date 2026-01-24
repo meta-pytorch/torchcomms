@@ -47,7 +47,7 @@ TorchWorkRCCLX::~TorchWorkRCCLX() {
   comm_->returnEvent(end_event_);
 }
 
-void TorchWorkRCCLX::recordFunctionStart(const std::string& coll_name) {
+void TorchWorkRCCLX::recordFunctionStart(std::string_view coll_name) {
   recordFunction_.emplace(at::RecordScope::USER_SCOPE);
   if (!recordFunction_->isActive()) {
     return;
@@ -72,7 +72,7 @@ void TorchWorkRCCLX::recordFunctionStart(const std::string& coll_name) {
   }
 }
 
-void TorchWorkRCCLX::recordStart(const std::string& coll_name) {
+void TorchWorkRCCLX::recordStart(std::string_view coll_name) {
   recordFunctionStart(coll_name);
   HIP_CHECK(
       comm_->getHipApi(),

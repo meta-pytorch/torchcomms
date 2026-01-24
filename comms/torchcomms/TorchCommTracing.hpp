@@ -3,6 +3,7 @@
 #pragma once
 
 #include <ATen/core/ivalue.h>
+#include <string_view>
 #include <vector>
 
 #include <ATen/ATen.h>
@@ -16,14 +17,14 @@ class TorchCommTracing {
   TorchCommTracing(std::string name, int comm_size, int rank)
       : name_(std::move(name)), comm_size_(comm_size), rank_(rank) {}
 
-  void recordEvent(const std::string& collective_name);
+  void recordEvent(std::string_view collective_name);
   void recordEventWithInputOutput(
-      const std::string& collective_name,
+      std::string_view collective_name,
       int collective_rank,
       const std::vector<at::Tensor>& input_tensor_list,
       const std::vector<at::Tensor>& output_tensor_list);
   void recordEventWithInputOutput(
-      const std::string& collective_name,
+      std::string_view collective_name,
       int collective_rank,
       const std::vector<at::Tensor>& input_tensor_list,
       const std::vector<at::Tensor>& output_tensor_list,
@@ -39,33 +40,33 @@ class TorchCommTracing {
 class TorchCommTracingGuard {
  public:
   TorchCommTracingGuard(
-      const std::string& comm_name,
+      std::string_view comm_name,
       int comm_size,
-      const std::string& collective_name,
+      std::string_view collective_name,
       int collective_rank,
       const std::vector<at::Tensor>& input_tensor_list = {},
       const std::vector<at::Tensor>& output_tensor_list = {});
 
   TorchCommTracingGuard(
-      const std::string& comm_name,
+      std::string_view comm_name,
       int comm_size,
-      const std::string& collective_name,
+      std::string_view collective_name,
       int collective_rank,
       const at::Tensor& input_tensor,
       const at::Tensor& output_tensor);
 
   void initializeTracingCommon(
-      const std::string& comm_name,
+      std::string_view comm_name,
       int comm_size,
-      const std::string& collective_name,
+      std::string_view collective_name,
       int collective_rank,
       const std::vector<at::Tensor>& input_tensor_list,
       const std::vector<at::Tensor>& output_tensor_list);
 
   std::shared_ptr<torch::ParamCommsDebugInfo> getDebugInfo(
-      const std::string& comm_name,
+      std::string_view comm_name,
       int comm_size,
-      const std::string& collective_name,
+      std::string_view collective_name,
       int collective_rank,
       const std::vector<at::Tensor>& input_tensor_list,
       const std::vector<at::Tensor>& output_tensor_list,
