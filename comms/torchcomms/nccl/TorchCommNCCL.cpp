@@ -168,14 +168,14 @@ void TorchCommNCCL::init(
   ncclResult_t ncclErr;
   ncclErr = nccl_api_->commUserRank(nccl_comm_, &rank_);
   if (ncclErr != ncclSuccess) {
-    throw std::runtime_error("NCCL User Rank failed");
+    throw NCCLException(*nccl_api_, "NCCL User Rank failed", ncclErr);
   }
 
   tryTorchCommLoggingInit("torchcomm");
 
   ncclErr = nccl_api_->commCount(nccl_comm_, &comm_size_);
   if (ncclErr != ncclSuccess) {
-    throw std::runtime_error("NCCL Count failed");
+    throw NCCLException(*nccl_api_, "NCCL Count failed", ncclErr);
   }
 
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
@@ -1515,9 +1515,8 @@ void TorchCommNCCL::register_address(
   ncclResult_t result =
       nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle);
   if (result != ncclSuccess) {
-    throw std::runtime_error(
-        "Failed to register memory with NCCL: " +
-        std::string(ncclGetErrorString(result)));
+    throw NCCLException(
+        *nccl_api_, "Failed to register memory with NCCL", result);
   }
   memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
 }
@@ -1538,9 +1537,8 @@ void TorchCommNCCL::deregister_address(const TorchCommNCCL::Address& addr) {
   void* handle = it->second.regHandle;
   ncclResult_t result = nccl_api_->commDeregister(nccl_comm_, handle);
   if (result != ncclSuccess) {
-    throw std::runtime_error(
-        "Failed to deregister memory with NCCL: " +
-        std::string(nccl_api_->getErrorString(result)));
+    throw NCCLException(
+        *nccl_api_, "Failed to deregister memory with NCCL", result);
   }
 
   memoryRegistrationHandles_.erase(it);
