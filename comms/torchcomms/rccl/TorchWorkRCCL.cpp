@@ -46,7 +46,34 @@ TorchWorkRCCL::~TorchWorkRCCL() {
   comm_->returnEvent(end_event_);
 }
 
-void TorchWorkRCCL::recordStart() {
+void TorchWorkRCCL::recordFunctionStart(std::string_view coll_name) {
+  recordFunction_.emplace(at::RecordScope::USER_SCOPE);
+  if (!recordFunction_->isActive()) {
+    return;
+  }
+
+  // Passing input tensor to recordFunction allows for shape information in
+  // profiling output.
+  if (!inputTensors_.empty()) {
+    std::vector<c10::IValue> inputs;
+    inputs.reserve(inputTensors_.size());
+    for (const auto& tensor : inputTensors_) {
+      inputs.emplace_back(tensor);
+    }
+    recordFunction_->before(
+        coll_name,
+        c10::ArrayRef<const c10::IValue>(inputs.data(), inputs.size()));
+  } else if (inputTensor_.defined()) {
+    recordFunction_->before(
+        coll_name, c10::ArrayRef<const c10::IValue>(inputTensor_));
+  } else {
+    recordFunction_->before(coll_name, c10::ArrayRef<const c10::IValue>{});
+  }
+}
+
+void TorchWorkRCCL::recordStart(std::string_view coll_name) {
+  recordFunctionStart(coll_name);
+
   HIP_CHECK(
       comm_->getHipApi(),
       comm_->getHipApi()->eventRecord(start_event_, stream_),
@@ -58,6 +85,10 @@ void TorchWorkRCCL::recordEnd() {
       comm_->getHipApi(),
       comm_->getHipApi()->eventRecord(end_event_, stream_),
       "Failed to record end event");
+
+  if (recordFunction_ && recordFunction_->isActive()) {
+    recordFunction_->end();
+  }
 }
 
 TorchWorkRCCL::WorkStatus TorchWorkRCCL::checkStatus() {
