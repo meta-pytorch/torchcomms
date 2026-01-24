@@ -11,7 +11,9 @@
 class AllGatherTest
     : public ::testing::TestWithParam<std::tuple<int, at::ScalarType>> {
  public:
-  AllGatherTest() : AllGatherTest(c10::DeviceType::CUDA) {}
+  AllGatherTest()
+      : AllGatherTest(
+            isRunningOnCPU() ? c10::DeviceType::CPU : c10::DeviceType::CUDA) {}
   explicit AllGatherTest(c10::DeviceType device_type)
       : rank_(0), num_ranks_(0), device_type_(device_type) {}
 
