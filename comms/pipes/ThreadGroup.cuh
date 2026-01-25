@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cooperative_groups.h>
 #include <cuda_runtime.h>
 #include <cstdint>
 
@@ -22,6 +23,8 @@ namespace comms::pipes {
  * - WARP: 32 threads per group (finest granularity, uses __syncwarp)
  * - WARPGROUP: 128 threads per group (4 warps, uses named barriers)
  * - BLOCK: All threads in a block form one group (uses __syncthreads)
+ * - CLUSTER: All threads in a cluster form one group (uses cluster
+ * barriers)
  *
  * Usage example:
  *   __global__ void myKernel(SyncScope scope) {
@@ -29,7 +32,7 @@ namespace comms::pipes {
  *     // ...
  *   }
  */
-enum class SyncScope { WARP, WARPGROUP, BLOCK };
+enum class SyncScope { WARP, WARPGROUP, BLOCK, CLUSTER };
 
 /**
  * ThreadGroup - Abstraction for cooperative thread group operations
@@ -79,6 +82,7 @@ struct ThreadGroup {
 
   // scope - Synchronization scope for sync() calls
   // WARP: uses __syncwarp() (fast). BLOCK: uses __syncthreads() (block-wide).
+  // CLUSTER: uses cluster.sync().
   SyncScope scope;
 
   __device__ inline void sync() {
@@ -105,6 +109,18 @@ struct ThreadGroup {
       case SyncScope::BLOCK:
         __syncthreads();
         break;
+      case SyncScope::CLUSTER:
+#if __CUDA_ARCH__ >= 900
+      {
+        cooperative_groups::cluster_group cluster =
+            cooperative_groups::this_cluster();
+        cluster.sync();
+      }
+#else
+        // Fallback to block sync for older architectures
+        __syncthreads();
+#endif
+      break;
     }
 #endif
   }
@@ -519,6 +535,77 @@ __device__ inline ThreadGroup make_warp_group() {
 }
 
 /**
+ * make_cluster_group - Create a ThreadGroup where all threads in a
+ *                      cluster work together as a single group
+ *
+ * Use case: For Hopper GPU cluster-based operations where multiple blocks
+ * in a cluster need to synchronize and cooperate on work items.
+ *
+ * REQUIREMENTS:
+ * - Requires SM90 (Hopper) or later architecture
+ * - Kernel must be launched with cluster support (cudaLaunchConfig)
+ * - Cluster size is determined at kernel launch time
+ *
+ * Example with 4 clusters × 2 blocks/cluster × 256 threads:
+ *   - total_groups = 4 (one per cluster)
+ *   - group_size = 512 (2 blocks × 256 threads per cluster)
+ *   - Each cluster processes work items cooperatively
+ *
+ * HOPPER GPU BENEFITS:
+ * - Enables efficient distributed shared memory access across cluster
+ * - Allows barrier synchronization across multiple blocks
+ * - Better locality for inter-block communication patterns
+ *
+ * HARDWARE SPECS (H100):
+ * - ~16 SMs per GPC, 8 GPCs total -> 132 SMs
+ * - Maximum cluster size: 16 blocks (limited by GPC)
+ *
+ * NOTE: On architectures before SM90, falls back to single-block behavior
+ * where cluster_size is effectively 1.
+ */
+__device__ inline ThreadGroup make_cluster_group() {
+#ifdef __CUDA_ARCH__
+#if __CUDA_ARCH__ >= 900
+  // Get cluster grid dimensions using PTX instructions
+  uint32_t num_clusters_x, cluster_rank;
+  asm volatile("mov.u32 %0, %%nclusterid.x;" : "=r"(num_clusters_x));
+  asm volatile("mov.u32 %0, %%clusterid.x;" : "=r"(cluster_rank));
+
+  uint32_t cluster_size;
+  asm volatile("mov.u32 %0, %%cluster_nctaid.x;" : "=r"(cluster_size));
+
+  uint32_t block_rank_in_cluster;
+  asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(block_rank_in_cluster));
+
+  uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
+  uint32_t threads_per_cluster = cluster_size * threads_per_block;
+
+  uint32_t tid_in_block = threadIdx.x + threadIdx.y * blockDim.x +
+      threadIdx.z * blockDim.x * blockDim.y;
+  uint32_t thread_id_in_cluster =
+      block_rank_in_cluster * threads_per_block + tid_in_block;
+
+  return ThreadGroup{
+      .thread_id_in_group = thread_id_in_cluster,
+      .group_size = threads_per_cluster,
+      .group_id = cluster_rank,
+      .total_groups = num_clusters_x,
+      .scope = SyncScope::CLUSTER};
+#else
+  // Fallback for non-Hopper: treat each block as its own cluster
+  return ThreadGroup{
+      .thread_id_in_group = threadIdx.x,
+      .group_size = blockDim.x,
+      .group_id = blockIdx.x,
+      .total_groups = gridDim.x,
+      .scope = SyncScope::CLUSTER};
+#endif
+#else
+  return ThreadGroup{};
+#endif
+}
+
+/**
  * make_block_group - Create a ThreadGroup where all threads in a block
  *                    work together as a single group
  *
@@ -624,6 +711,8 @@ __device__ inline ThreadGroup make_thread_group(SyncScope scope) {
       return make_warpgroup_group();
     case SyncScope::BLOCK:
       return make_block_group();
+    case SyncScope::CLUSTER:
+      return make_cluster_group();
     default:
       // Should never reach here, but return warp group as default
       return make_warp_group();

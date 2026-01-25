@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "comms/common/CudaWrap.h"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/tests/ThreadGroupTest.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -116,6 +117,7 @@ TEST_P(ThreadGroupContiguousTest, ForEachItemContiguousLocality) {
     const uint32_t warpgroupsPerBlock = blockSize / kWarpgroupSize;
     totalGroups = numBlocks * warpgroupsPerBlock;
   } else {
+    // BLOCK and CLUSTER both use numBlocks as totalGroups
     totalGroups = numBlocks;
   }
   const uint32_t itemsPerGroup = (numItems + totalGroups - 1) / totalGroups;
@@ -186,7 +188,18 @@ INSTANTIATE_TEST_SUITE_P(
             .scope = SyncScope::WARPGROUP,
             .description =
                 "WARPGROUP: uneven distribution (1000 items, 16 warpgroups)",
-            .testName = "Warpgroup_UnevenCase"}),
+            .testName = "Warpgroup_UnevenCase"},
+        ContiguousTestParams{
+            .numItems = 1024,
+            .scope = SyncScope::CLUSTER,
+            .description = "CLUSTER: even distribution (1024 items, 8 blocks)",
+            .testName = "Cluster_EvenCase"},
+        ContiguousTestParams{
+            .numItems = 1000,
+            .scope = SyncScope::CLUSTER,
+            .description =
+                "CLUSTER: uneven distribution (1000 items, 8 blocks)",
+            .testName = "Cluster_UnevenCase"}),
     [](const ::testing::TestParamInfo<ContiguousTestParams>& info) {
       return info.param.testName;
     });
@@ -526,7 +539,38 @@ INSTANTIATE_TEST_SUITE_P(
             .numBlocks = 8,
             .blockSize = 256,
             .scope = SyncScope::WARPGROUP,
-            .testName = "Warpgroup_FourPartitions_Even"}),
+            .testName = "Warpgroup_FourPartitions_Even"},
+        // CLUSTER group tests (uses block count, same as BLOCK)
+        PartitionTestParams{
+            .numPartitions = 2,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_TwoPartitions_Even"},
+        PartitionTestParams{
+            .numPartitions = 3,
+            .numBlocks = 9,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_ThreePartitions_Even"},
+        PartitionTestParams{
+            .numPartitions = 1,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_SinglePartition"},
+        PartitionTestParams{
+            .numPartitions = 8,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_OneBlockPerPartition"},
+        PartitionTestParams{
+            .numPartitions = 4,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_FourPartitions_Even"}),
     [](const ::testing::TestParamInfo<PartitionTestParams>& info) {
       return info.param.testName;
     });
@@ -782,7 +826,44 @@ INSTANTIATE_TEST_SUITE_P(
             .numBlocks = 1,
             .blockSize = 256,
             .scope = SyncScope::WARPGROUP,
-            .testName = "Warpgroup_SmallConfig_TwoPartitions"}),
+            .testName = "Warpgroup_SmallConfig_TwoPartitions"},
+        // CLUSTER group tests (uses block count, same as BLOCK)
+        PartitionTestParams{
+            .numPartitions = 2,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_TwoPartitions_Even"},
+        PartitionTestParams{
+            .numPartitions = 3,
+            .numBlocks = 9,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_ThreePartitions_Even"},
+        PartitionTestParams{
+            .numPartitions = 1,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_SinglePartition"},
+        PartitionTestParams{
+            .numPartitions = 8,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_OneBlockPerPartition"},
+        PartitionTestParams{
+            .numPartitions = 4,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_FourPartitions_Even"},
+        PartitionTestParams{
+            .numPartitions = 2,
+            .numBlocks = 4,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_SmallConfig_TwoPartitions"}),
     [](const ::testing::TestParamInfo<PartitionTestParams>& info) {
       return info.param.testName;
     });
@@ -903,7 +984,19 @@ INSTANTIATE_TEST_SUITE_P(
             .blockSize = 256,
             .numPartitions = 4,
             .scope = SyncScope::WARPGROUP,
-            .testName = "Warpgroup_FourPartitions"}),
+            .testName = "Warpgroup_FourPartitions"},
+        SubgroupPropertiesTestParams{
+            .numBlocks = 4,
+            .blockSize = 256,
+            .numPartitions = 2,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_TwoPartitions"},
+        SubgroupPropertiesTestParams{
+            .numBlocks = 8,
+            .blockSize = 256,
+            .numPartitions = 4,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_FourPartitions"}),
     [](const ::testing::TestParamInfo<SubgroupPropertiesTestParams>& info) {
       return info.param.testName;
     });
@@ -1315,7 +1408,50 @@ INSTANTIATE_TEST_SUITE_P(
             .numBlocks = 8,
             .blockSize = 256,
             .scope = SyncScope::WARPGROUP,
-            .testName = "Warpgroup_ZeroWeight_Middle"}),
+            .testName = "Warpgroup_ZeroWeight_Middle"},
+        // CLUSTER group tests (uses block count, same as BLOCK)
+        WeightedPartitionTestParams{
+            .weights = {1, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_EvenSplit_2way"},
+        WeightedPartitionTestParams{
+            .weights = {3, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_Weighted_3_1"},
+        WeightedPartitionTestParams{
+            .weights = {1, 1, 1},
+            .numBlocks = 6,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_EvenSplit_3way"},
+        WeightedPartitionTestParams{
+            .weights = {2, 1, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_Weighted_2_1_1"},
+        WeightedPartitionTestParams{
+            .weights = {1},
+            .numBlocks = 4,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_SinglePartition"},
+        WeightedPartitionTestParams{
+            .weights = {1, 1, 1, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_FourWaySplit"},
+        WeightedPartitionTestParams{
+            .weights = {3, 0, 1},
+            .numBlocks = 8,
+            .blockSize = 256,
+            .scope = SyncScope::CLUSTER,
+            .testName = "Cluster_ZeroWeight_Middle"}),
     [](const ::testing::TestParamInfo<WeightedPartitionTestParams>& info) {
       return info.param.testName;
     });
@@ -1583,6 +1719,322 @@ INSTANTIATE_TEST_SUITE_P(
             .numItems = 1024,
             .testName = "EightWarpgroupsPerBlock"}),
     [](const ::testing::TestParamInfo<WarpgroupTestParams>& info) {
+      return info.param.testName;
+    });
+
+// =============================================================================
+// Block Cluster Tests (Hopper SM90+ cluster synchronization)
+// =============================================================================
+
+// Helper function to check if the GPU supports cluster launches (SM90+)
+bool supportsClusterLaunch() {
+  int device;
+  cudaGetDevice(&device);
+  cudaDeviceProp prop;
+  cudaGetDeviceProperties(&prop, device);
+  // Cluster launches require compute capability 9.0 or higher (Hopper)
+  return prop.major >= 9;
+}
+
+// Test: make_cluster_group creates correct ThreadGroup
+// Verifies:
+// - group_id == cluster_rank (which cluster this block belongs to)
+// - group_size == cluster_size * threads_per_block
+// - thread_id_in_group is correctly computed across the cluster
+// - total_groups == number of clusters
+// - Work items are distributed contiguously across cluster groups
+//
+// NOTE: This test requires SM90+ architecture. On older GPUs, it falls back
+// to single-block cluster behavior (each block is its own cluster).
+TEST_F(ThreadGroupTestFixture, ClusterGroupContiguousLocality) {
+  if (!supportsClusterLaunch()) {
+    GTEST_SKIP() << "Skipping block cluster test: GPU does not support cluster "
+                    "launches (requires SM90+)";
+  }
+
+  uint32_t numItems = 2048;
+  const int numBlocks = 8;
+  const int blockSize = 256;
+  const int clusterSize = 2; // 2 blocks per cluster
+
+  const uint32_t totalClusters = numBlocks / clusterSize;
+  const uint32_t threadsPerCluster = clusterSize * blockSize;
+
+  DeviceBuffer groupIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer threadIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer groupSizesBuffer(totalClusters * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto groupIds_d = static_cast<uint32_t*>(groupIdsBuffer.get());
+  auto threadIds_d = static_cast<uint32_t*>(threadIdsBuffer.get());
+  auto groupSizes_d = static_cast<uint32_t*>(groupSizesBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(cudaMemset(groupIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(threadIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(groupSizes_d, 0, totalClusters * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  // Launch kernel using comms::common::launchKernel for clustered launch
+  void* args[] = {
+      &groupIds_d, &threadIds_d, &groupSizes_d, &numItems, &errorCount_d};
+  CUDACHECK_TEST(
+      comms::common::launchKernel(
+          (void*)test::testBlockClusterGroupKernel,
+          dim3(numBlocks, 1, 1),
+          dim3(blockSize, 1, 1),
+          args,
+          0,
+          dim3(clusterSize, 1, 1)));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify no kernel errors
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0)
+      << "Block cluster group should not have any errors";
+
+  // Verify group sizes (all clusters should have size = clusterSize *
+  // blockSize)
+  std::vector<uint32_t> groupSizes_h(totalClusters);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupSizes_h.data(),
+      groupSizes_d,
+      totalClusters * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  for (uint32_t i = 0; i < totalClusters; i++) {
+    EXPECT_EQ(groupSizes_h[i], threadsPerCluster)
+        << "Cluster " << i
+        << " should have group_size == " << threadsPerCluster;
+  }
+
+  // Verify contiguous distribution of work items
+  std::vector<uint32_t> groupIds_h(numItems);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupIds_h.data(),
+      groupIds_d,
+      numItems * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  const uint32_t itemsPerGroup = (numItems + totalClusters - 1) / totalClusters;
+
+  for (uint32_t group_id = 0; group_id < totalClusters; group_id++) {
+    uint32_t start_item = group_id * itemsPerGroup;
+    uint32_t end_item = std::min(start_item + itemsPerGroup, numItems);
+
+    for (uint32_t item_id = start_item; item_id < end_item; item_id++) {
+      EXPECT_EQ(groupIds_h[item_id], group_id)
+          << "Work item " << item_id << " should be assigned to cluster group "
+          << group_id;
+    }
+  }
+}
+
+// Test: Block cluster synchronization correctness
+// Verifies:
+// - All threads in a cluster synchronize correctly via barrier.cluster
+// - Multiple clusters can synchronize independently
+// - sync() uses barrier.cluster.arrive/wait instructions correctly
+TEST_F(ThreadGroupTestFixture, ClusterSync) {
+  if (!supportsClusterLaunch()) {
+    GTEST_SKIP() << "Skipping block cluster sync test: GPU does not support "
+                    "cluster launches (requires SM90+)";
+  }
+
+  const int numBlocks = 8;
+  const int blockSize = 256;
+  const int clusterSize = 2; // 2 blocks per cluster
+
+  const uint32_t totalClusters = numBlocks / clusterSize;
+
+  DeviceBuffer syncResultsBuffer(totalClusters * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto syncResults_d = static_cast<uint32_t*>(syncResultsBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(
+      cudaMemset(syncResults_d, 0, totalClusters * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  // Launch kernel using comms::common::launchKernel for clustered launch
+  void* args[] = {&syncResults_d, &errorCount_d};
+  CUDACHECK_TEST(
+      comms::common::launchKernel(
+          (void*)test::testBlockClusterSyncKernel,
+          dim3(numBlocks, 1, 1),
+          dim3(blockSize, 1, 1),
+          args,
+          0,
+          dim3(clusterSize, 1, 1)));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify no synchronization errors
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0)
+      << "Block cluster sync should synchronize all threads correctly";
+
+  // Verify all clusters completed successfully
+  std::vector<uint32_t> syncResults_h(totalClusters);
+  CUDACHECK_TEST(cudaMemcpy(
+      syncResults_h.data(),
+      syncResults_d,
+      totalClusters * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  for (uint32_t i = 0; i < totalClusters; i++) {
+    EXPECT_EQ(syncResults_h[i], 1U)
+        << "Cluster " << i << " should have completed synchronization";
+  }
+}
+
+// Parameterized test for cluster with different configurations
+struct ClusterTestParams {
+  int numBlocks;
+  int blockSize;
+  int clusterSize;
+  uint32_t numItems;
+  std::string testName;
+};
+
+class ThreadGroupClusterTest
+    : public ThreadGroupTestFixture,
+      public ::testing::WithParamInterface<ClusterTestParams> {};
+
+TEST_P(ThreadGroupClusterTest, ClusterContiguousDistribution) {
+  if (!supportsClusterLaunch()) {
+    GTEST_SKIP() << "Skipping block cluster test: GPU does not support cluster "
+                    "launches (requires SM90+)";
+  }
+
+  const auto& params = GetParam();
+
+  // Ensure numBlocks is divisible by clusterSize
+  ASSERT_EQ(params.numBlocks % params.clusterSize, 0)
+      << "numBlocks must be divisible by clusterSize";
+
+  const uint32_t totalClusters = params.numBlocks / params.clusterSize;
+  const uint32_t threadsPerCluster = params.clusterSize * params.blockSize;
+  uint32_t numItems = params.numItems;
+
+  DeviceBuffer groupIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer threadIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer groupSizesBuffer(totalClusters * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto groupIds_d = static_cast<uint32_t*>(groupIdsBuffer.get());
+  auto threadIds_d = static_cast<uint32_t*>(threadIdsBuffer.get());
+  auto groupSizes_d = static_cast<uint32_t*>(groupSizesBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(cudaMemset(groupIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(threadIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(groupSizes_d, 0, totalClusters * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  // Launch kernel using comms::common::launchKernel for clustered launch
+  void* args[] = {
+      &groupIds_d, &threadIds_d, &groupSizes_d, &numItems, &errorCount_d};
+  CUDACHECK_TEST(
+      comms::common::launchKernel(
+          (void*)test::testBlockClusterGroupKernel,
+          dim3(params.numBlocks, 1, 1),
+          dim3(params.blockSize, 1, 1),
+          args,
+          0,
+          dim3(params.clusterSize, 1, 1)));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify no errors
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0);
+
+  // Verify all group sizes
+  std::vector<uint32_t> groupSizes_h(totalClusters);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupSizes_h.data(),
+      groupSizes_d,
+      totalClusters * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  for (uint32_t i = 0; i < totalClusters; i++) {
+    EXPECT_EQ(groupSizes_h[i], threadsPerCluster)
+        << "Cluster " << i
+        << " should have group_size == " << threadsPerCluster;
+  }
+
+  // Verify contiguous work distribution
+  std::vector<uint32_t> groupIds_h(numItems);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupIds_h.data(),
+      groupIds_d,
+      numItems * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  const uint32_t itemsPerGroup = (numItems + totalClusters - 1) / totalClusters;
+
+  for (uint32_t group_id = 0; group_id < totalClusters; group_id++) {
+    uint32_t start_item = group_id * itemsPerGroup;
+    uint32_t end_item = std::min(start_item + itemsPerGroup, numItems);
+
+    if (start_item >= numItems) {
+      break;
+    }
+
+    for (uint32_t item_id = start_item; item_id < end_item; item_id++) {
+      EXPECT_EQ(groupIds_h[item_id], group_id)
+          << "Work item " << item_id << " should be assigned to cluster "
+          << group_id;
+    }
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ClusterConfigs,
+    ThreadGroupClusterTest,
+    ::testing::Values(
+        // 2 blocks per cluster
+        ClusterTestParams{
+            .numBlocks = 8,
+            .blockSize = 256,
+            .clusterSize = 2,
+            .numItems = 2048,
+            .testName = "TwoBlocksPerCluster"},
+        // 4 blocks per cluster
+        ClusterTestParams{
+            .numBlocks = 8,
+            .blockSize = 128,
+            .clusterSize = 4,
+            .numItems = 1024,
+            .testName = "FourBlocksPerCluster"},
+        // Single block per cluster (degenerates to block-level grouping)
+        ClusterTestParams{
+            .numBlocks = 4,
+            .blockSize = 256,
+            .clusterSize = 1,
+            .numItems = 1024,
+            .testName = "SingleBlockPerCluster"},
+        // Uneven item distribution
+        ClusterTestParams{
+            .numBlocks = 6,
+            .blockSize = 256,
+            .clusterSize = 2,
+            .numItems = 1000,
+            .testName = "UnevenItemDistribution"},
+        // Large cluster (8 blocks)
+        ClusterTestParams{
+            .numBlocks = 16,
+            .blockSize = 128,
+            .clusterSize = 8,
+            .numItems = 4096,
+            .testName = "EightBlocksPerCluster"}),
+    [](const ::testing::TestParamInfo<ClusterTestParams>& info) {
       return info.param.testName;
     });
 
