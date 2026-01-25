@@ -889,9 +889,9 @@ class P2pNvlTransportDevice {
   }
 
  private:
-  int myRank_;
-  int peerRank_;
-  P2pNvlTransportOptions options_;
+  const int myRank_{-1};
+  const int peerRank_{-1};
+  const P2pNvlTransportOptions options_;
   LocalState localState_;
   RemoteState remoteState_;
 };
