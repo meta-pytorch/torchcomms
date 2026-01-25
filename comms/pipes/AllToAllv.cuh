@@ -124,15 +124,21 @@ __device__ __forceinline__ void allToAllv(
 
     auto& transport = transports_per_rank[my_rank_id];
     assert(transport.type == TransportType::SELF);
-    transport.self.write(group, dst, src, send_info.nbytes);
+    transport.self.put(group, dst, src, send_info.nbytes);
     return;
   }
 
-  // 1. partition into per rank groups using partition
-  auto [peer_rank_id, group_per_rank] = group.partition(nranks);
+  // 1. First partition by SEND/RECV using interleaved partitioning
+  // partition_id: 0 = send, 1 = recv
+  auto [partition_id, send_recv_group] = group.partition_interleaved(2);
+
+  // 2. Then partition by PEERS using interleaved partitioning
+  // Spreads blocks for same peer across SM space for better load balancing
+  auto [peer_rank_id, group_per_peer] =
+      send_recv_group.partition_interleaved(nranks);
 
   if (peer_rank_id == my_rank_id) {
-    // Self partition
+    // Self partition - both send and recv groups participate in copying
     auto& transport = transports_per_rank[my_rank_id];
     assert(transport.type == TransportType::SELF);
 
@@ -144,12 +150,12 @@ __device__ __forceinline__ void allToAllv(
     char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
 
 #ifdef DEBUG_ALLTOALLV
-    if (group_per_rank.is_global_leader()) {
+    if (group_per_peer.is_global_leader()) {
       printPerPeerOperation(
           my_rank_id,
           peer_rank_id,
-          peer_rank_id, // partition_id same as peer_rank_id for self
-          group_per_rank.total_groups,
+          partition_id,
+          group_per_peer.total_groups,
           send_info.offset,
           recv_info.offset,
           send_info.nbytes,
@@ -157,16 +163,13 @@ __device__ __forceinline__ void allToAllv(
     }
 #endif
 
-    transport.self.write(group_per_rank, dst, src, send_info.nbytes);
+    transport.self.put(group_per_peer, dst, src, send_info.nbytes);
     return;
   }
 
   // Peer communication
-  // Partition into send/recv groups based on send/recv workload
   const auto& send_info = send_chunk_infos[peer_rank_id];
   const auto& recv_info = recv_chunk_infos[peer_rank_id];
-
-  auto [partition_id, send_recv_group] = group_per_rank.partition(2);
 
   // Extract to local pointer to avoid aliasing: compiler can't prove that
   // operations on transport won't modify transports_per_rank.data_, forcing
@@ -176,12 +179,12 @@ __device__ __forceinline__ void allToAllv(
   assert(transport.type == TransportType::P2P_NVL);
 
 #ifdef DEBUG_ALLTOALLV
-  if (send_recv_group.is_global_leader()) {
+  if (group_per_peer.is_global_leader()) {
     printPerPeerOperation(
         my_rank_id,
         peer_rank_id,
         partition_id,
-        send_recv_group.total_groups,
+        group_per_peer.total_groups,
         send_info.offset,
         recv_info.offset,
         send_info.nbytes,
@@ -189,16 +192,16 @@ __device__ __forceinline__ void allToAllv(
   }
 #endif
 
-  // Perform peer send/recv
+  // Perform peer send/recv based on partition_id from first partition
   bool is_send = (partition_id == 0);
   if (is_send) {
     transport.p2p_nvl.send(
-        send_recv_group,
+        group_per_peer,
         static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
         send_info.nbytes);
   } else {
     transport.p2p_nvl.recv(
-        send_recv_group,
+        group_per_peer,
         static_cast<char*>(recvbuff_d) + recv_info.offset,
         recv_info.nbytes);
   }

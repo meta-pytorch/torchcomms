@@ -117,7 +117,10 @@ TorchCommNCCLX::RedOpRAII::RedOpRAII(
 
 TorchCommNCCLX::RedOpRAII::~RedOpRAII() {
   if (comm_) {
-    nccl_api_->redOpDestroy(ncclRedOp_, comm_);
+    NCCLX_CHECK_IGNORE(
+        nccl_api_,
+        nccl_api_->redOpDestroy(ncclRedOp_, comm_),
+        "NCCLX redOpDestroy failed");
   }
 }
 
@@ -180,7 +183,7 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
   TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
   cudaStreamCaptureMode mode = cudaStreamCaptureModeThreadLocal;
-  CUDA_CHECK(
+  CUDA_CHECK_IGNORE(
       cuda_api_,
       cuda_api_->threadExchangeStreamCaptureMode(&mode),
       "Failed to swap capture mode for timeout thread");
@@ -252,7 +255,7 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
     nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
-    NCCLException ncclException(
+    NCCLXException ncclException(
         *nccl_api_, "NCCL Async Error", asyncErr, nccl_comm_);
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {

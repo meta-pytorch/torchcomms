@@ -22,6 +22,8 @@ else()
     )
 endif()
 
+set(FMT_INCLUDE "${ROOT}/third-party/fmt/include")
+
 add_library(torchcomms_comms_nccl MODULE
     ${TORCHCOMMS_NCCL_SOURCES}
     ${TORCHCOMMS_CUDA_API_SOURCE}
@@ -35,6 +37,7 @@ set_target_properties(torchcomms_comms_nccl PROPERTIES
 target_include_directories(torchcomms_comms_nccl PRIVATE
     ${ROOT}
     ${NCCL_INCLUDE}
+    ${FMT_INCLUDE}
     ${CONDA_INCLUDE}
     ${Python3_INCLUDE_DIRS}
 )
@@ -48,10 +51,12 @@ target_link_libraries(torchcomms_comms_nccl PRIVATE
 if(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms_comms_nccl PRIVATE
         ${NCCL_SHARED_LIB}
+        "-lfmt"
     )
 else()
     target_link_libraries(torchcomms_comms_nccl PRIVATE
         ${NCCL_STATIC_LIB}
+        "-l:libfmt.a"
     )
 endif()
 
