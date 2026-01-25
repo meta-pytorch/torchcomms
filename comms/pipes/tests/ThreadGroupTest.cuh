@@ -124,4 +124,24 @@ void testWarpgroupSync(
     int numBlocks,
     int blockSize);
 
+// =============================================================================
+// Cluster Tests (Hopper SM90+ cluster synchronization)
+// =============================================================================
+
+// Kernel for testing make_cluster_group()
+// All blocks in a cluster form one group
+__global__ void testBlockClusterGroupKernel(
+    uint32_t* groupIds,
+    uint32_t* threadIdsInGroup,
+    uint32_t* groupSizes,
+    uint32_t numItems,
+    uint32_t* errorCount);
+
+// Test cluster synchronization using barrier.cluster.arrive/wait
+// Each thread writes to shared memory, then after cluster sync,
+// verifies all threads in the cluster wrote their values.
+__global__ void testBlockClusterSyncKernel(
+    uint32_t* syncResults,
+    uint32_t* errorCount);
+
 } // namespace comms::pipes::test
