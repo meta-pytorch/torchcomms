@@ -6,6 +6,7 @@
 #include <folly/init/Init.h>
 #include <glog/logging.h>
 
+#include "comms/common/CudaWrap.h"
 #include "comms/pipes/benchmarks/CopyKernelBench.cuh"
 #include "comms/testinfra/BenchUtils.h"
 #include "comms/testinfra/CudaBenchBase.h"
@@ -27,7 +28,8 @@ static void p2pCopyKernel(
     size_t nBytes,
     int nBlocks,
     SyncScope groupScope,
-    folly::UserCounters& counters) {
+    folly::UserCounters& counters,
+    int clusterSize = 1) {
   const int nRunsPerIter = 50;
 
   const int senderCudaDev = 0;
@@ -57,9 +59,19 @@ static void p2pCopyKernel(
         (void*)&groupScope};
     dim3 grid{static_cast<unsigned int>(nBlocks), 1, 1};
     dim3 blocks{nThreads, 1, 1};
+
+    std::optional<dim3> clusterDimOpt =
+        (groupScope == SyncScope::CLUSTER && clusterSize > 1)
+        ? std::optional{dim3(clusterSize, 1, 1)}
+        : std::nullopt;
     CHECK_EQ(
-        cudaLaunchKernel(
-            (const void*)copyKernel, grid, blocks, kernArgs, 0, bench.stream),
+        comms::common::launchKernel(
+            (void*)copyKernel,
+            grid,
+            blocks,
+            kernArgs,
+            bench.stream,
+            clusterDimOpt),
         cudaSuccess);
 
     bench.stopTiming();
@@ -76,6 +88,9 @@ static void p2pCopyKernel(
       break;
     case SyncScope::WARPGROUP:
       nGroups = nBlocks * (nThreads / 128); // 4 warps per warpgroup
+      break;
+    case SyncScope::CLUSTER:
+      nGroups = nBlocks / clusterSize; // blocks per cluster
       break;
     case SyncScope::WARP:
     default:
@@ -102,7 +117,8 @@ static void d2dCopyKernel(
     size_t nBytes,
     int nBlocks,
     SyncScope groupScope,
-    folly::UserCounters& counters) {
+    folly::UserCounters& counters,
+    int clusterSize = 1) {
   const int nRunsPerIter = 50;
 
   CHECK_EQ(cudaSetDevice(0), cudaSuccess);
@@ -127,9 +143,19 @@ static void d2dCopyKernel(
         (void*)&groupScope};
     dim3 grid{static_cast<unsigned int>(nBlocks), 1, 1};
     dim3 blocks{nThreads, 1, 1};
+
+    std::optional<dim3> clusterDimOpt =
+        (groupScope == SyncScope::CLUSTER && clusterSize > 1)
+        ? std::optional{dim3(clusterSize, 1, 1)}
+        : std::nullopt;
     CHECK_EQ(
-        cudaLaunchKernel(
-            (const void*)copyKernel, grid, blocks, kernArgs, 0, bench.stream),
+        comms::common::launchKernel(
+            (void*)copyKernel,
+            grid,
+            blocks,
+            kernArgs,
+            bench.stream,
+            clusterDimOpt),
         cudaSuccess);
 
     bench.stopTiming();
@@ -146,6 +172,9 @@ static void d2dCopyKernel(
       break;
     case SyncScope::WARPGROUP:
       nGroups = nBlocks * (nThreads / 128); // 4 warps per warpgroup
+      break;
+    case SyncScope::CLUSTER:
+      nGroups = nBlocks / clusterSize; // blocks per cluster
       break;
     case SyncScope::WARP:
     default:
@@ -170,8 +199,6 @@ static void d2dCopyKernel(
 
 #define REGISTER_COPY_BENCH_FOR_SIZE(func, sizeMB, groupScope, suffix)    \
   BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
-      func, sizeMB##MB_2b_##suffix, sizeMB * 1024 * 1024, 2, groupScope); \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
       func, sizeMB##MB_4b_##suffix, sizeMB * 1024 * 1024, 4, groupScope); \
   BENCHMARK_MULTI_PARAM_COUNTERS(                                         \
       func, sizeMB##MB_8b_##suffix, sizeMB * 1024 * 1024, 8, groupScope); \
@@ -182,6 +209,55 @@ static void d2dCopyKernel(
   REGISTER_COPY_BENCH_FOR_SIZE(func, 2, groupScope, suffix);    \
   REGISTER_COPY_BENCH_FOR_SIZE(func, 4, groupScope, suffix);    \
   REGISTER_COPY_BENCH_FOR_SIZE(func, 8, groupScope, suffix)
+
+//------------------------------------------------------------------------------
+// Cluster Benchmark Wrapper Functions
+// (wrapper functions with hardcoded clusterSize since the macro doesn't
+// support extra parameters)
+//------------------------------------------------------------------------------
+
+static void p2pCopyKernelCluster(
+    uint32_t iters,
+    size_t nBytes,
+    int nBlocks,
+    folly::UserCounters& counters) {
+  p2pCopyKernel(
+      iters,
+      nBytes,
+      nBlocks,
+      SyncScope::CLUSTER,
+      counters,
+      comms::common::kDefaultClusterSize);
+}
+
+static void d2dCopyKernelCluster(
+    uint32_t iters,
+    size_t nBytes,
+    int nBlocks,
+    folly::UserCounters& counters) {
+  d2dCopyKernel(
+      iters,
+      nBytes,
+      nBlocks,
+      SyncScope::CLUSTER,
+      counters,
+      comms::common::kDefaultClusterSize);
+}
+
+// Cluster benchmarks - nBlocks must be divisible by clusterSize, so we use 4,
+// 8, 16 blocks
+#define REGISTER_COPY_BENCH_FOR_SIZE_CLUSTER(func, sizeMB, suffix) \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                  \
+      func, sizeMB##MB_4b_##suffix, sizeMB * 1024 * 1024, 4);      \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                  \
+      func, sizeMB##MB_8b_##suffix, sizeMB * 1024 * 1024, 8);      \
+  BENCHMARK_MULTI_PARAM_COUNTERS(                                  \
+      func, sizeMB##MB_16b_##suffix, sizeMB * 1024 * 1024, 16)
+
+#define REGISTER_COPY_BENCH_ALL_SIZES_CLUSTER(func, suffix) \
+  REGISTER_COPY_BENCH_FOR_SIZE_CLUSTER(func, 2, suffix);    \
+  REGISTER_COPY_BENCH_FOR_SIZE_CLUSTER(func, 4, suffix);    \
+  REGISTER_COPY_BENCH_FOR_SIZE_CLUSTER(func, 8, suffix)
 
 //------------------------------------------------------------------------------
 // Benchmark Registration
@@ -204,6 +280,12 @@ REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::BLOCK, block);
 
 // P2P (cross device) benchmarks - block groups
 REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::BLOCK, block);
+
+// D2D (same device) benchmarks - cluster groups (2 blocks per cluster)
+REGISTER_COPY_BENCH_ALL_SIZES_CLUSTER(d2dCopyKernelCluster, cluster);
+
+// P2P (cross device) benchmarks - cluster groups (2 blocks per cluster)
+REGISTER_COPY_BENCH_ALL_SIZES_CLUSTER(p2pCopyKernelCluster, cluster);
 
 } // namespace comms::pipes::benchmark
 
