@@ -94,17 +94,17 @@ void testPartitionInterleaved(
     SyncScope scope);
 
 // =============================================================================
-// Warpgroup Tests (4 warps = 128 threads per group)
+// Multiwarp Tests (4 warps = 128 threads per group)
 // =============================================================================
 
-// Tests make_warpgroup_group() - where 4 warps (128 threads) form one group
+// Tests make_multiwarp_group() - where 4 warps (128 threads) form one group
 // Verifies:
 // - group_size == 128 (4 * warpSize)
-// - thread_id_in_group == tid % 128 (linear thread ID within warpgroup)
-// - group_id is computed correctly across all warpgroups
+// - thread_id_in_group == tid % 128 (linear thread ID within multiwarp)
+// - group_id is computed correctly across all multiwarps
 // - total_groups == (threads_per_block / 128) * num_blocks
-// - Work items are distributed contiguously across warpgroups
-void testWarpgroupGroup(
+// - Work items are distributed contiguously across multiwarps
+void testMultiwarpGroup(
     uint32_t* groupIds_d,
     uint32_t* threadIdsInGroup_d,
     uint32_t* groupSizes_d,
@@ -113,12 +113,12 @@ void testWarpgroupGroup(
     int numBlocks,
     int blockSize);
 
-// Tests warpgroup synchronization using named barriers
+// Tests multiwarp synchronization using named barriers
 // Verifies:
-// - All 128 threads in a warpgroup synchronize correctly
+// - All 128 threads in a multiwarp synchronize correctly
 // - sync() uses bar.sync PTX instruction with correct barrier ID
-// - Multiple warpgroups can synchronize independently within a block
-void testWarpgroupSync(
+// - Multiple multiwarps can synchronize independently within a block
+void testMultiwarpSync(
     uint32_t* syncResults_d,
     uint32_t* errorCount_d,
     int numBlocks,

@@ -63,8 +63,8 @@ void testContiguousLocality(
   if (scope == SyncScope::WARP) {
     testContiguousLocalityKernel<SyncScope::WARP>
         <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
-  } else if (scope == SyncScope::WARPGROUP) {
-    testContiguousLocalityKernel<SyncScope::WARPGROUP>
+  } else if (scope == SyncScope::MULTIWARP) {
+    testContiguousLocalityKernel<SyncScope::MULTIWARP>
         <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
   } else if (scope == SyncScope::BLOCK) {
     testContiguousLocalityKernel<SyncScope::BLOCK>
@@ -159,8 +159,8 @@ void testPartition(
         subgroupTotalGroups_d,
         numPartitions,
         errorCount_d);
-  } else if (scope == SyncScope::WARPGROUP) {
-    testPartitionKernel<SyncScope::WARPGROUP><<<numBlocks, blockSize>>>(
+  } else if (scope == SyncScope::MULTIWARP) {
+    testPartitionKernel<SyncScope::MULTIWARP><<<numBlocks, blockSize>>>(
         partitionIds_d,
         subgroupIds_d,
         subgroupTotalGroups_d,
@@ -233,8 +233,8 @@ void testPartitionSubgroupProperties(
             scopes_d,
             numPartitions,
             errorCount_d);
-  } else if (scope == SyncScope::WARPGROUP) {
-    testPartitionSubgroupPropertiesKernel<SyncScope::WARPGROUP>
+  } else if (scope == SyncScope::MULTIWARP) {
+    testPartitionSubgroupPropertiesKernel<SyncScope::MULTIWARP>
         <<<numBlocks, blockSize>>>(
             threadIdsInGroup_d,
             groupSizes_d,
@@ -304,8 +304,8 @@ void testPartitionInterleaved(
         subgroupTotalGroups_d,
         numPartitions,
         errorCount_d);
-  } else if (scope == SyncScope::WARPGROUP) {
-    testPartitionInterleavedKernel<SyncScope::WARPGROUP>
+  } else if (scope == SyncScope::MULTIWARP) {
+    testPartitionInterleavedKernel<SyncScope::MULTIWARP>
         <<<numBlocks, blockSize>>>(
             partitionIds_d,
             subgroupIds_d,
@@ -378,8 +378,8 @@ void testWeightedPartition(
         weights_d,
         numPartitions,
         errorCount_d);
-  } else if (scope == SyncScope::WARPGROUP) {
-    testWeightedPartitionKernel<SyncScope::WARPGROUP><<<numBlocks, blockSize>>>(
+  } else if (scope == SyncScope::MULTIWARP) {
+    testWeightedPartitionKernel<SyncScope::MULTIWARP><<<numBlocks, blockSize>>>(
         partitionIds_d,
         subgroupIds_d,
         subgroupTotalGroups_d,
@@ -407,35 +407,35 @@ void testWeightedPartition(
 }
 
 // =============================================================================
-// Warpgroup Tests (4 warps = 128 threads per group)
+// Multiwarp Tests (4 warps = 128 threads per group)
 // =============================================================================
 
-__global__ void testWarpgroupGroupKernel(
+__global__ void testMultiwarpGroupKernel(
     uint32_t* groupIds,
     uint32_t* threadIdsInGroup,
     uint32_t* groupSizes,
     uint32_t numItems,
     uint32_t* errorCount) {
-  auto warpgroup = make_warpgroup_group();
+  auto multiwarp = make_multiwarp_group();
 
-  // Record group properties for verification (one write per warpgroup)
-  if (warpgroup.is_leader()) {
-    groupSizes[warpgroup.group_id] = warpgroup.group_size;
+  // Record group properties for verification (one write per multiwarp)
+  if (multiwarp.is_leader()) {
+    groupSizes[multiwarp.group_id] = multiwarp.group_size;
   }
 
-  // Each warpgroup writes its group_id to its assigned work items
-  warpgroup.for_each_item_contiguous(numItems, [&](uint32_t item_id) {
+  // Each multiwarp writes its group_id to its assigned work items
+  multiwarp.for_each_item_contiguous(numItems, [&](uint32_t item_id) {
     if (item_id >= numItems) {
       atomicAdd(errorCount, 1);
       return;
     }
 
-    groupIds[item_id] = warpgroup.group_id;
-    threadIdsInGroup[item_id] = warpgroup.thread_id_in_group;
+    groupIds[item_id] = multiwarp.group_id;
+    threadIdsInGroup[item_id] = multiwarp.thread_id_in_group;
   });
 }
 
-void testWarpgroupGroup(
+void testMultiwarpGroup(
     uint32_t* groupIds_d,
     uint32_t* threadIdsInGroup_d,
     uint32_t* groupSizes_d,
@@ -443,20 +443,20 @@ void testWarpgroupGroup(
     uint32_t* errorCount_d,
     int numBlocks,
     int blockSize) {
-  testWarpgroupGroupKernel<<<numBlocks, blockSize>>>(
+  testMultiwarpGroupKernel<<<numBlocks, blockSize>>>(
       groupIds_d, threadIdsInGroup_d, groupSizes_d, numItems, errorCount_d);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
-// Test warpgroup synchronization using named barriers
-// This test verifies that all 128 threads in a warpgroup synchronize correctly.
+// Test multiwarp synchronization using named barriers
+// This test verifies that all 128 threads in a multiwarp synchronize correctly.
 // Each thread writes a value, then after sync, verifies all threads wrote.
-__global__ void testWarpgroupSyncKernel(
+__global__ void testMultiwarpSyncKernel(
     uint32_t* syncResults,
     uint32_t* errorCount) {
   __shared__ uint32_t sharedData[2048]; // Support up to 2048 threads per block
 
-  auto warpgroup = make_warpgroup_group();
+  auto multiwarp = make_multiwarp_group();
 
   uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
       threadIdx.z * blockDim.x * blockDim.y;
@@ -464,33 +464,33 @@ __global__ void testWarpgroupSyncKernel(
   // Phase 1: Each thread writes its thread ID to shared memory
   sharedData[tid] = tid + 1; // +1 so we can distinguish from zero-initialized
 
-  // Synchronize within warpgroup using named barrier
-  warpgroup.sync();
+  // Synchronize within multiwarp using named barrier
+  multiwarp.sync();
 
-  // Phase 2: Each thread verifies all threads in its warpgroup wrote their
+  // Phase 2: Each thread verifies all threads in its multiwarp wrote their
   // values
-  constexpr uint32_t kWarpgroupSize = 128;
-  uint32_t warpgroupStart = (tid / kWarpgroupSize) * kWarpgroupSize;
+  constexpr uint32_t kMultiwarpSize = 128;
+  uint32_t multiwarpStart = (tid / kMultiwarpSize) * kMultiwarpSize;
 
-  for (uint32_t i = 0; i < kWarpgroupSize; i++) {
-    uint32_t expectedTid = warpgroupStart + i;
+  for (uint32_t i = 0; i < kMultiwarpSize; i++) {
+    uint32_t expectedTid = multiwarpStart + i;
     if (sharedData[expectedTid] != expectedTid + 1) {
       atomicAdd(errorCount, 1);
     }
   }
 
-  // Record success (one write per warpgroup)
-  if (warpgroup.is_leader()) {
-    syncResults[warpgroup.group_id] = 1;
+  // Record success (one write per multiwarp)
+  if (multiwarp.is_leader()) {
+    syncResults[multiwarp.group_id] = 1;
   }
 }
 
-void testWarpgroupSync(
+void testMultiwarpSync(
     uint32_t* syncResults_d,
     uint32_t* errorCount_d,
     int numBlocks,
     int blockSize) {
-  testWarpgroupSyncKernel<<<numBlocks, blockSize>>>(
+  testMultiwarpSyncKernel<<<numBlocks, blockSize>>>(
       syncResults_d, errorCount_d);
   PIPES_KERNEL_LAUNCH_CHECK();
 }

@@ -86,8 +86,8 @@ static void p2pCopyKernel(
     case SyncScope::BLOCK:
       nGroups = nBlocks;
       break;
-    case SyncScope::WARPGROUP:
-      nGroups = nBlocks * (nThreads / 128); // 4 warps per warpgroup
+    case SyncScope::MULTIWARP:
+      nGroups = nBlocks * (nThreads / 128); // 4 warps per multiwarp
       break;
     case SyncScope::CLUSTER:
       nGroups = nBlocks / clusterSize; // blocks per cluster
@@ -170,8 +170,8 @@ static void d2dCopyKernel(
     case SyncScope::BLOCK:
       nGroups = nBlocks;
       break;
-    case SyncScope::WARPGROUP:
-      nGroups = nBlocks * (nThreads / 128); // 4 warps per warpgroup
+    case SyncScope::MULTIWARP:
+      nGroups = nBlocks * (nThreads / 128); // 4 warps per multiwarp
       break;
     case SyncScope::CLUSTER:
       nGroups = nBlocks / clusterSize; // blocks per cluster
@@ -269,11 +269,11 @@ REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::WARP, warp);
 // P2P (cross device) benchmarks - warp groups
 REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::WARP, warp);
 
-// D2D (same device) benchmarks - warpgroup groups
-REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::WARPGROUP, warpgroup);
+// D2D (same device) benchmarks - multiwarp groups
+REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::MULTIWARP, multiwarp);
 
-// P2P (cross device) benchmarks - warpgroup groups
-REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::WARPGROUP, warpgroup);
+// P2P (cross device) benchmarks - multiwarp groups
+REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel, SyncScope::MULTIWARP, multiwarp);
 
 // D2D (same device) benchmarks - block groups
 REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel, SyncScope::BLOCK, block);

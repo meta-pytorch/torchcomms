@@ -47,8 +47,8 @@ static void p2pSyncBench(
 
   // Calculate number of ChunkStates needed based on group type
   // For block groups: 1 ChunkState per block
-  // For warpgroup groups: 2 ChunkStates per block (256 threads / 128 threads
-  // per warpgroup)
+  // For multiwarp groups: 2 ChunkStates per block (256 threads / 128 threads
+  // per multiwarp)
   // For warp groups: 8 ChunkStates per block (256 threads / 32 threads per
   // warp)
   // For cluster groups: 1 ChunkState per cluster
@@ -57,8 +57,8 @@ static void p2pSyncBench(
     case SyncScope::BLOCK:
       numChunkStates = nBlocks;
       break;
-    case SyncScope::WARPGROUP:
-      numChunkStates = nBlocks * (nThreads / 128); // 4 warps per warpgroup
+    case SyncScope::MULTIWARP:
+      numChunkStates = nBlocks * (nThreads / 128); // 4 warps per multiwarp
       break;
     case SyncScope::CLUSTER:
       numChunkStates = nBlocks / clusterSize; // 1 per cluster
@@ -231,8 +231,8 @@ static void p2pSyncBenchCluster(
 // P2P Sync benchmarks - warp groups
 REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::WARP, warp);
 
-// P2P Sync benchmarks - warpgroup groups
-REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::WARPGROUP, warpgroup);
+// P2P Sync benchmarks - multiwarp groups
+REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::MULTIWARP, multiwarp);
 
 // P2P Sync benchmarks - block groups
 REGISTER_P2P_SYNC_BENCH_ALL_GROUPS(SyncScope::BLOCK, block);
