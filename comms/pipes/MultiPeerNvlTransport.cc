@@ -25,7 +25,7 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   perPeerChunkStateBufferSize_ = numChunksPerPeer * sizeof(ChunkState);
   perPeerSignalBufferSize_ = getSignalBufferSize(config_.signalCount);
 
-  // Allocate buffers for (nRanks - 1) peers
+  // Allocate buffers for (nRanks - 1) peers using GpuMemHandler
   const std::size_t totalDataBufferSize =
       perPeerDataBufferSize_ * (nRanks_ - 1);
   const std::size_t totalChunkStateBufferSize =
@@ -33,30 +33,27 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   const std::size_t totalSignalBufferSize =
       perPeerSignalBufferSize_ * (nRanks_ - 1);
 
-  dataBuffer_d_ =
-      std::make_unique<meta::comms::DeviceBuffer>(totalDataBufferSize);
-  dataBufferHandler_ =
-      std::make_unique<meta::comms::IpcMemHandler>(bootstrap_, myRank, nRanks_);
-  dataBufferHandler_->addSelfDeviceMemPtr(dataBuffer_d_->get());
+  // Detect memory sharing mode once and use for both handlers
+  // This avoids redundant mode detection (fabric check is cached but this is
+  // cleaner)
+  const auto memSharingMode = GpuMemHandler::detectBestMode();
 
-  chunkStateBuffer_d_ =
-      std::make_unique<meta::comms::DeviceBuffer>(totalChunkStateBufferSize);
-  chunkStateBufferHandler_ =
-      std::make_unique<meta::comms::IpcMemHandler>(bootstrap_, myRank, nRanks_);
-  chunkStateBufferHandler_->addSelfDeviceMemPtr(chunkStateBuffer_d_->get());
+  signalBufferHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_, myRank_, nRanks_, totalSignalBufferSize, memSharingMode);
 
-  signalBuffer_d_ =
-      std::make_unique<meta::comms::DeviceBuffer>(totalSignalBufferSize);
-  signalBufferHandler_ =
-      std::make_unique<meta::comms::IpcMemHandler>(bootstrap_, myRank, nRanks_);
-  signalBufferHandler_->addSelfDeviceMemPtr(signalBuffer_d_->get());
+  dataBufferHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode);
+
+  stateBufferHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_, myRank_, nRanks_, totalChunkStateBufferSize, memSharingMode);
 
   // Initialize state buffer to READY_TO_SEND for all pipeline slots
-  auto chunkStatePtr = static_cast<ChunkState*>(chunkStateBuffer_d_->get());
+  auto statePtr =
+      static_cast<ChunkState*>(stateBufferHandler_->getLocalDeviceMemPtr());
   const std::size_t totalNumChunksAllPeers = numChunksPerPeer * (nRanks_ - 1);
   std::vector<ChunkState> initStates(totalNumChunksAllPeers);
   auto cudaErr = cudaMemcpy(
-      chunkStatePtr,
+      statePtr,
       initStates.data(),
       totalChunkStateBufferSize,
       cudaMemcpyDefault);
@@ -66,7 +63,8 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   }
 
   // Initialize signal state buffer to 0 for all ranks
-  auto signalPtr = static_cast<SignalState*>(signalBuffer_d_->get());
+  auto signalPtr =
+      static_cast<SignalState*>(signalBufferHandler_->getLocalDeviceMemPtr());
   std::vector<SignalState> signalInitStates(
       config_.signalCount * (nRanks_ - 1));
   cudaErr = cudaMemcpy(
@@ -82,7 +80,7 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
 
 void MultiPeerNvlTransport::exchange() {
   dataBufferHandler_->exchangeMemPtrs();
-  chunkStateBufferHandler_->exchangeMemPtrs();
+  stateBufferHandler_->exchangeMemPtrs();
   signalBufferHandler_->exchangeMemPtrs();
 }
 
@@ -136,15 +134,18 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
   const auto numChunksPerPeer =
       static_cast<uint32_t>(config_.pipelineDepth * numChunksPerStep);
 
-  auto* localDataPtr = static_cast<char*>(dataBuffer_d_->get());
-  auto* localChunkStatePtr = static_cast<char*>(chunkStateBuffer_d_->get());
-  auto* localSignalPtr = static_cast<SignalState*>(signalBuffer_d_->get());
+  auto* localSignalPtr =
+      static_cast<char*>(signalBufferHandler_->getLocalDeviceMemPtr());
+  auto* localDataPtr =
+      static_cast<char*>(dataBufferHandler_->getLocalDeviceMemPtr());
+  auto* localStatePtr =
+      static_cast<char*>(stateBufferHandler_->getLocalDeviceMemPtr());
 
   LocalState localState{
       .dataBuffer = localDataPtr + localDataBufferOffset,
       .stateBuffer = DeviceSpan<ChunkState>(
           reinterpret_cast<ChunkState*>(
-              localChunkStatePtr + localChunkStateBufferOffset),
+              localStatePtr + localChunkStateBufferOffset),
           numChunksPerPeer),
       .signalBuffer = DeviceSpan<SignalState>(
           reinterpret_cast<SignalState*>(
@@ -154,10 +155,10 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
 
   auto* remoteDataPtr =
       static_cast<char*>(dataBufferHandler_->getPeerDeviceMemPtr(peerRank));
-  auto* remoteChunkStatePtr = static_cast<char*>(
-      chunkStateBufferHandler_->getPeerDeviceMemPtr(peerRank));
-  auto* remoteSignalPtr = static_cast<SignalState*>(
-      signalBufferHandler_->getPeerDeviceMemPtr(peerRank));
+  auto* remoteChunkStatePtr =
+      static_cast<char*>(stateBufferHandler_->getPeerDeviceMemPtr(peerRank));
+  auto* remoteSignalPtr =
+      static_cast<char*>(signalBufferHandler_->getPeerDeviceMemPtr(peerRank));
 
   RemoteState remoteState{
       .dataBuffer = remoteDataPtr + remoteDataBufferOffset,
