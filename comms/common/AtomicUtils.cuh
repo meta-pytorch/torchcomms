@@ -535,4 +535,60 @@ atomic_fetch_add_release_gpu_global(uint64_t* ptr, uint64_t val) {
 #endif
 }
 
+__device__ __forceinline__ uint32_t
+atomic_fetch_add_relaxed_sys_global(uint32_t* ptr, uint32_t val) {
+#ifdef __CUDA_ARCH__
+  uint32_t old_val;
+  asm volatile("atom.relaxed.sys.add.u32.global %0, [%1], %2;"
+               : "=r"(old_val)
+               : "l"(ptr), "r"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED);
+#endif
+}
+
+__device__ __forceinline__ uint32_t
+atomic_fetch_add_relaxed_gpu_global(uint32_t* ptr, uint32_t val) {
+#ifdef __CUDA_ARCH__
+  uint32_t old_val;
+  asm volatile("atom.relaxed.gpu.add.u32.global %0, [%1], %2;"
+               : "=r"(old_val)
+               : "l"(ptr), "r"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_RELAXED);
+#endif
+}
+
+__device__ __forceinline__ uint32_t
+atomic_fetch_add_release_sys_global(uint32_t* ptr, uint32_t val) {
+#ifdef __CUDA_ARCH__
+  uint32_t old_val;
+  asm volatile("atom.release.sys.add.u32.global %0, [%1], %2;"
+               : "=r"(old_val)
+               : "l"(ptr), "r"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_RELEASE);
+#endif
+}
+
+__device__ __forceinline__ uint32_t
+atomic_fetch_add_release_gpu_global(uint32_t* ptr, uint32_t val) {
+#ifdef __CUDA_ARCH__
+  uint32_t old_val;
+  asm volatile("atom.release.gpu.add.u32.global %0, [%1], %2;"
+               : "=r"(old_val)
+               : "l"(ptr), "r"(val)
+               : "memory");
+  return old_val;
+#else
+  return __atomic_fetch_add(ptr, val, __ATOMIC_RELEASE);
+#endif
+}
+
 } // namespace comms::device
