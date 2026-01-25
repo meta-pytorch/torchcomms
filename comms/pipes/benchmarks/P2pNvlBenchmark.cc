@@ -106,6 +106,8 @@ struct BenchmarkResult {
   std::size_t stagingBufferSize{};
   std::size_t pipelineDepth{};
   std::size_t chunkSize{};
+  int numBlocks{};
+  int numThreads{};
   float ncclBandwidth{};
   float p2pBandwidth{};
   float ncclTime{};
@@ -282,25 +284,27 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
 
     std::stringstream ss;
     ss << "\n";
-    ss << "====================================================================================================\n";
-    ss << "                         NCCL vs P2P NVLink Benchmark Results\n";
-    ss << "====================================================================================================\n";
+    ss << "==============================================================================================================================\n";
+    ss << "                              NCCL vs P2P NVLink Benchmark Results\n";
+    ss << "==============================================================================================================================\n";
     ss << std::left << std::setw(18) << "Test Name" << std::right
        << std::setw(10) << "Msg Size" << std::right << std::setw(12)
        << "Staging" << std::right << std::setw(5) << "PD" << std::right
-       << std::setw(8) << "Chunk" << std::right << std::setw(11) << "NCCL BW"
-       << std::right << std::setw(11) << "P2P BW" << std::right << std::setw(9)
-       << "Speedup" << std::right << std::setw(11) << "NCCL Lat" << std::right
-       << std::setw(11) << "P2P Lat" << std::right << std::setw(11)
-       << "Lat Reduc\n";
+       << std::setw(8) << "Chunk" << std::right << std::setw(7) << "Blocks"
+       << std::right << std::setw(8) << "Threads" << std::right << std::setw(11)
+       << "NCCL BW" << std::right << std::setw(11) << "P2P BW" << std::right
+       << std::setw(9) << "Speedup" << std::right << std::setw(11) << "NCCL Lat"
+       << std::right << std::setw(11) << "P2P Lat" << std::right
+       << std::setw(11) << "Lat Reduc\n";
     ss << std::left << std::setw(18) << "" << std::right << std::setw(10) << ""
        << std::right << std::setw(12) << "" << std::right << std::setw(5) << ""
+       << std::right << std::setw(8) << "" << std::right << std::setw(7) << ""
        << std::right << std::setw(8) << "" << std::right << std::setw(11)
        << "(GB/s)" << std::right << std::setw(11) << "(GB/s)" << std::right
        << std::setw(9) << "P2P/NCCL" << std::right << std::setw(11) << "(us)"
        << std::right << std::setw(11) << "(us)" << std::right << std::setw(11)
        << "(us)\n";
-    ss << "----------------------------------------------------------------------------------------------------\n";
+    ss << "------------------------------------------------------------------------------------------------------------------------------\n";
 
     for (const auto& r : results) {
       std::string msgSize = formatSize(r.messageSize);
@@ -312,22 +316,24 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
          << std::setw(10) << msgSize << std::right << std::setw(12)
          << stagingSize << std::right << std::setw(5) << r.pipelineDepth
          << std::right << std::setw(8) << chunkSizeStr << std::right
+         << std::setw(7) << r.numBlocks << std::right << std::setw(8)
+         << r.numThreads << std::right << std::setw(11) << std::fixed
+         << std::setprecision(2) << r.ncclBandwidth << std::right
          << std::setw(11) << std::fixed << std::setprecision(2)
-         << r.ncclBandwidth << std::right << std::setw(11) << std::fixed
-         << std::setprecision(2) << r.p2pBandwidth << std::right << std::setw(8)
-         << std::fixed << std::setprecision(2) << r.p2pSpeedup << "x"
+         << r.p2pBandwidth << std::right << std::setw(8) << std::fixed
+         << std::setprecision(2) << r.p2pSpeedup << "x" << std::right
+         << std::setw(11) << std::fixed << std::setprecision(1) << r.ncclTime
          << std::right << std::setw(11) << std::fixed << std::setprecision(1)
-         << r.ncclTime << std::right << std::setw(11) << std::fixed
-         << std::setprecision(1) << r.p2pTime << std::right << std::setw(11)
-         << std::fixed << std::setprecision(1) << latencyReduction << "\n";
+         << r.p2pTime << std::right << std::setw(11) << std::fixed
+         << std::setprecision(1) << latencyReduction << "\n";
     }
-    ss << "====================================================================================================\n";
-    ss << "PD = Pipeline Depth, Chunk = Chunk Size\n";
+    ss << "==============================================================================================================================\n";
+    ss << "PD = Pipeline Depth, Chunk = Chunk Size, Blocks/Threads = P2P kernel launch config\n";
     ss << "BW (Bandwidth) = Data transferred / time, in GB/s\n";
     ss << "Lat (Latency) = Average transfer time per iteration, in microseconds\n";
     ss << "Lat Reduc = NCCL latency - P2P latency (positive = P2P faster)\n";
     ss << "Speedup = P2P Bandwidth / NCCL Bandwidth\n";
-    ss << "====================================================================================================\n\n";
+    ss << "==============================================================================================================================\n\n";
 
     XLOG(INFO) << ss.str();
   }
@@ -751,6 +757,8 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
     result.stagingBufferSize = config.stagedBufferSize;
     result.pipelineDepth = config.pipelineDepth;
     result.chunkSize = config.chunkSize;
+    result.numBlocks = config.numBlocks;
+    result.numThreads = config.numThreads;
 
     // Run NCCL benchmark
     result.ncclBandwidth = runNcclBenchmark(config, result.ncclTime);
@@ -851,165 +859,69 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .name = "Bidir_1GB",
   });
 
-  // === NCCL-LIKE WARP-BASED CONFIGURATIONS ===
+  // === NCCL-LIKE CONFIGURATIONS ===
+  // Helper function to add NCCL-like configs with consistent parameters
+  // NCCL uses 16 blocks for < 512M messages, 32 blocks for >= 512M messages
+  constexpr int kNcclBlocksSmall = 16; // For messages < 512MB
+  constexpr int kNcclBlocksLarge = 32; // For messages >= 512MB
+  constexpr int kNcclThreads = 512;
+  constexpr std::size_t kNcclStagedBufferSize = 8 * 1024 * 1024; // 8MB
+  constexpr std::size_t kChunkSize = 512 * 1024; // 512KB
+  constexpr std::size_t kLargeMessageThreshold = 512 * 1024 * 1024; // 512MB
 
-  // 32MB with 16 blocks, warp-based (chunkSize = 32KB)
-  configs.push_back({
-      .nBytes = 32 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 16,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 32 * 1024,
-      .groupScope = SyncScope::WARP,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_32M_16B_Warp",
-  });
+  // Helper function for adding NCCL-like config with auto-computed numBlocks
+  // Uses 16 blocks for < 512M, 32 blocks for >= 512M (like NCCL)
+  auto addNcclConfig = [&configs,
+                        kNcclBlocksSmall,
+                        kNcclBlocksLarge,
+                        kNcclThreads,
+                        kNcclStagedBufferSize,
+                        kChunkSize,
+                        kLargeMessageThreshold](
+                           std::size_t sizeBytes,
+                           const std::string& sizeName,
+                           SyncScope scope,
+                           const std::string& scopeName) {
+    int numBlks = (sizeBytes >= kLargeMessageThreshold) ? kNcclBlocksLarge
+                                                        : kNcclBlocksSmall;
+    configs.push_back({
+        .nBytes = sizeBytes,
+        .stagedBufferSize = kNcclStagedBufferSize,
+        .numBlocks = numBlks,
+        .numThreads = kNcclThreads,
+        .pipelineDepth = 2,
+        .chunkSize = kChunkSize,
+        .groupScope = scope,
+        .spreadClusterLaunch = true,
+        .name = "NCCL_" + sizeName + "_" + scopeName,
+    });
+  };
 
-  // 64MB with 16 blocks, warp-based (chunkSize = 32KB)
-  configs.push_back({
-      .nBytes = 64 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 16,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 32 * 1024,
-      .groupScope = SyncScope::WARP,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_64M_16B_Warp",
-  });
+  // === BLOCK-BASED CONFIGURATIONS ===
+  addNcclConfig(128 * 1024, "128K", SyncScope::BLOCK, "Block");
+  addNcclConfig(256 * 1024, "256K", SyncScope::BLOCK, "Block");
+  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::BLOCK, "Block");
+  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::BLOCK, "Block");
+  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::BLOCK, "Block");
+  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::BLOCK, "Block");
+  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::BLOCK, "Block");
+  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::BLOCK, "Block");
+  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::BLOCK, "Block");
+  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::BLOCK, "Block");
+  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::BLOCK, "Block");
 
-  // 128MB with 16 blocks, warp-based (chunkSize = 32KB)
-  configs.push_back({
-      .nBytes = 128 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 16,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 32 * 1024,
-      .groupScope = SyncScope::WARP,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_128M_16B_Warp",
-  });
-
-  // 256MB with 16 blocks, warp-based (chunkSize = 32KB)
-  configs.push_back({
-      .nBytes = 256 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 16,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 32 * 1024,
-      .groupScope = SyncScope::WARP,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_256M_16B_Warp",
-  });
-
-  // 512MB with 32 blocks, warp-based (chunkSize = 16KB)
-  configs.push_back({
-      .nBytes = 512 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 16 * 1024,
-      .groupScope = SyncScope::WARP,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_512M_32B_Warp",
-  });
-
-  // 1GB with 32 blocks, warp-based (chunkSize = 16KB)
-  configs.push_back({
-      .nBytes = 1024 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 16 * 1024,
-      .groupScope = SyncScope::WARP,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_1G_32B_Warp",
-  });
-
-  // === NCCL-LIKE BLOCK-BASED CONFIGURATIONS ===
-
-  // 32MB with 16 blocks, block-based (chunkSize = 1MB)
-  configs.push_back({
-      .nBytes = 32 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 16,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 1024 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_32M_16B_Block",
-  });
-
-  // 64MB with 16 blocks, block-based (chunkSize = 1MB)
-  configs.push_back({
-      .nBytes = 64 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 16,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 1024 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_64M_16B_Block",
-  });
-
-  // 128MB with 16 blocks, block-based (chunkSize = 1MB)
-  configs.push_back({
-      .nBytes = 128 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 16,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 1024 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_128M_16B_Block",
-  });
-
-  // 256MB with 16 blocks, block-based (chunkSize = 1MB)
-  configs.push_back({
-      .nBytes = 256 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 16,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 1024 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_256M_16B_Block",
-  });
-
-  // 512MB with 32 blocks, block-based (chunkSize = 512KB)
-  configs.push_back({
-      .nBytes = 512 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_512M_32B_Block",
-  });
-
-  // 1GB with 32 blocks, block-based (chunkSize = 512KB)
-  configs.push_back({
-      .nBytes = 1024 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .spreadClusterLaunch = true,
-      .name = "NCCL_1G_32B_Block",
-  });
+  // === CLUSTER-BASED CONFIGURATIONS ===
+  addNcclConfig(128 * 1024, "128K", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(256 * 1024, "256K", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::CLUSTER, "Cluster");
+  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::CLUSTER, "Cluster");
 
   std::vector<BenchmarkResult> results;
 
@@ -1034,6 +946,8 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
     result.stagingBufferSize = config.stagedBufferSize;
     result.pipelineDepth = config.pipelineDepth;
     result.chunkSize = config.chunkSize;
+    result.numBlocks = config.numBlocks;
+    result.numThreads = config.numThreads;
 
     // Run NCCL bidirectional benchmark
     result.ncclBandwidth =
@@ -1055,25 +969,27 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
   if (globalRank == 0) {
     std::stringstream ss;
     ss << "\n";
-    ss << "====================================================================================================\n";
-    ss << "                    NCCL vs P2P NVLink BIDIRECTIONAL Benchmark Results\n";
-    ss << "====================================================================================================\n";
+    ss << "==============================================================================================================================\n";
+    ss << "                         NCCL vs P2P NVLink BIDIRECTIONAL Benchmark Results\n";
+    ss << "==============================================================================================================================\n";
     ss << std::left << std::setw(18) << "Test Name" << std::right
        << std::setw(10) << "Msg Size" << std::right << std::setw(12)
        << "Staging" << std::right << std::setw(5) << "PD" << std::right
-       << std::setw(8) << "Chunk" << std::right << std::setw(11) << "NCCL BW"
-       << std::right << std::setw(11) << "P2P BW" << std::right << std::setw(9)
-       << "Speedup" << std::right << std::setw(11) << "NCCL Lat" << std::right
-       << std::setw(11) << "P2P Lat" << std::right << std::setw(11)
-       << "Lat Reduc\n";
+       << std::setw(8) << "Chunk" << std::right << std::setw(7) << "Blocks"
+       << std::right << std::setw(8) << "Threads" << std::right << std::setw(11)
+       << "NCCL BW" << std::right << std::setw(11) << "P2P BW" << std::right
+       << std::setw(9) << "Speedup" << std::right << std::setw(11) << "NCCL Lat"
+       << std::right << std::setw(11) << "P2P Lat" << std::right
+       << std::setw(11) << "Lat Reduc\n";
     ss << std::left << std::setw(18) << "" << std::right << std::setw(10) << ""
        << std::right << std::setw(12) << "" << std::right << std::setw(5) << ""
+       << std::right << std::setw(8) << "" << std::right << std::setw(7) << ""
        << std::right << std::setw(8) << "" << std::right << std::setw(11)
        << "(GB/s)" << std::right << std::setw(11) << "(GB/s)" << std::right
        << std::setw(9) << "P2P/NCCL" << std::right << std::setw(11) << "(us)"
        << std::right << std::setw(11) << "(us)" << std::right << std::setw(11)
        << "(us)\n";
-    ss << "----------------------------------------------------------------------------------------------------\n";
+    ss << "------------------------------------------------------------------------------------------------------------------------------\n";
 
     for (const auto& r : results) {
       std::string msgSize = formatSize(r.messageSize);
@@ -1085,19 +1001,21 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
          << std::setw(10) << msgSize << std::right << std::setw(12)
          << stagingSize << std::right << std::setw(5) << r.pipelineDepth
          << std::right << std::setw(8) << chunkSizeStr << std::right
+         << std::setw(7) << r.numBlocks << std::right << std::setw(8)
+         << r.numThreads << std::right << std::setw(11) << std::fixed
+         << std::setprecision(2) << r.ncclBandwidth << std::right
          << std::setw(11) << std::fixed << std::setprecision(2)
-         << r.ncclBandwidth << std::right << std::setw(11) << std::fixed
-         << std::setprecision(2) << r.p2pBandwidth << std::right << std::setw(8)
-         << std::fixed << std::setprecision(2) << r.p2pSpeedup << "x"
+         << r.p2pBandwidth << std::right << std::setw(8) << std::fixed
+         << std::setprecision(2) << r.p2pSpeedup << "x" << std::right
+         << std::setw(11) << std::fixed << std::setprecision(1) << r.ncclTime
          << std::right << std::setw(11) << std::fixed << std::setprecision(1)
-         << r.ncclTime << std::right << std::setw(11) << std::fixed
-         << std::setprecision(1) << r.p2pTime << std::right << std::setw(11)
-         << std::fixed << std::setprecision(1) << latencyReduction << "\n";
+         << r.p2pTime << std::right << std::setw(11) << std::fixed
+         << std::setprecision(1) << latencyReduction << "\n";
     }
-    ss << "====================================================================================================\n";
+    ss << "==============================================================================================================================\n";
     ss << "Bidirectional: Both ranks send AND receive simultaneously\n";
     ss << "BW = Algorithm bandwidth (2 x message size / time)\n";
-    ss << "====================================================================================================\n\n";
+    ss << "==============================================================================================================================\n\n";
 
     XLOG(INFO) << ss.str();
   }
