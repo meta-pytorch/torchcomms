@@ -5,7 +5,7 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <memory>
 #include "comms/torchcomms/TorchCommWindow.hpp"
-#include "comms/torchcomms/device/CudaApi.hpp"
+#include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 

@@ -1,4 +1,4 @@
-#include "comms/torchcomms/device/XpuApi.hpp"
+#include "comms/torchcomms/device/xpu/XpuApi.hpp"
 #include <ATen/xpu/XPUContext.h>
 #include <c10/xpu/XPUFunctions.h>
 #include <c10/xpu/XPUStream.h>
