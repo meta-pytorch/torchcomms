@@ -8,12 +8,12 @@
 #include "comms/torchcomms/TorchCommBackend.hpp"
 
 inline std::string getCommNamePrefix(torch::comms::TorchCommBackend* comm) {
-  return comm ? "[name=" + std::string(comm->getCommName()) + "]" : "";
+  return comm ? fmt::format("[name={}]", comm->getCommName()) : "";
 }
 
 inline std::string getRankPrefix(torch::comms::TorchCommBackend* comm) {
   try {
-    return comm ? "[rank=" + std::to_string(comm->getRank()) + "]" : "";
+    return comm ? fmt::format("[rank={}]", comm->getRank()) : "";
   } catch (...) {
     return "";
   }

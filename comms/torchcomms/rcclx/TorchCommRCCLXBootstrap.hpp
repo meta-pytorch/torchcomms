@@ -25,7 +25,7 @@ class TorchCommRCCLXBootstrap {
       std::shared_ptr<RcclxApi> rcclx_api,
       std::shared_ptr<HipApi> hip_api,
       std::chrono::milliseconds timeout);
-  ~TorchCommRCCLXBootstrap();
+  ~TorchCommRCCLXBootstrap() noexcept;
 
   // Delete copy and move operations
   TorchCommRCCLXBootstrap(const TorchCommRCCLXBootstrap&) = delete;

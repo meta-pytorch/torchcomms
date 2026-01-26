@@ -26,8 +26,6 @@ namespace torch::comms {
  * The memory is directly registered to the IB-Device and not specific
  * to an instance of a transport. And user can use any sub-range of this
  * registered memory for I/O APIs on RdmaTransport.
- *
- * Gotcha - Minimum memory block to be registered must be > 4097 bytes.
  */
 class RdmaMemory : folly::MoveOnly {
  public:
@@ -87,7 +85,7 @@ class RdmaMemory : folly::MoveOnly {
   RdmaMemory(const void* buf, size_t len, int cudaDev);
   RdmaMemory(RdmaMemory&& other) noexcept;
   RdmaMemory& operator=(RdmaMemory&& other) = delete;
-  ~RdmaMemory();
+  ~RdmaMemory() noexcept;
 
   View createView() const {
     return View(*this, 0, len_);

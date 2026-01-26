@@ -171,6 +171,7 @@ class RcclMock : public RcclApi {
   MOCK_METHOD(ncclResult_t, groupStart, (), (override));
   MOCK_METHOD(ncclResult_t, groupEnd, (), (override));
   MOCK_METHOD(const char*, getErrorString, (ncclResult_t result), (override));
+  MOCK_METHOD(std::string, getLastError, (ncclComm_t comm), (override));
   MOCK_METHOD(
       ncclResult_t,
       redOpCreatePreMulSum,
