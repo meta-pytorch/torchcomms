@@ -31,7 +31,7 @@ namespace comms::pipes {
  *
  * Example:
  *   SelfTransportDevice transport;
- *   transport.write(group, dst_d, src_d, nbytes);
+ *   transport.put(group, dst_d, src_d, nbytes);
  */
 class P2pSelfTransportDevice {
  public:
@@ -79,7 +79,7 @@ class P2pSelfTransportDevice {
    * @param group ThreadGroup for cooperative processing
    * @param dst_d Destination pointer (device memory)
    * @param src_d Source pointer (device memory)
-   * @param nbytes Number of bytes to write
+   * @param nbytes Number of bytes to copy
    */
   __device__ __forceinline__ void
   put(ThreadGroup& group, char* dst_d, const char* src_d, std::size_t nbytes) {
