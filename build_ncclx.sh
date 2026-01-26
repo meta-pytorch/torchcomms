@@ -178,9 +178,11 @@ function build_third_party {
         zstd
         conda-forge::zlib
         conda-forge::libopenssl-static
-        conda-forge::folly
         fmt
       )
+      if [[ -n "${NCCL_FEEDSTOCK_BUILD}" ]]; then
+          DEPS+=(conda-forge::folly)
+      fi
       conda install "${DEPS[@]}" --yes
     fi
   fi
