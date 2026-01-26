@@ -805,7 +805,7 @@ class P2pNvlTransportDevice {
 #ifdef __CUDA_ARCH__
     // Early return for no-op cases
     if (nbytes == 0) {
-      return;
+      return 0;
     }
 
     // Compute chunk size: aim for nbytes / total_groups per chunk,
