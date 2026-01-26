@@ -3,8 +3,7 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchComm::TorchComm(
     const std::string& backend_name,
@@ -578,5 +577,4 @@ void TorchComm::postHook(PostHookArgs&& args) {
   }
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

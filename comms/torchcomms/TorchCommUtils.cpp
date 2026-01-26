@@ -13,8 +13,7 @@
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/TorchCommLogging.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 // Helper function to trim leading and trailing whitespace from a string
@@ -176,5 +175,4 @@ std::pair<int, int> query_ranksize() {
   return std::make_pair(rank, comm_size);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -17,8 +17,7 @@
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCLBootstrap.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 // Hint key prefix and names for NCCL backend configuration
@@ -1606,8 +1605,7 @@ const char* NCCLException::what() const noexcept {
   return message_.c_str();
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
 
 namespace {
 class NCCLRegistration {

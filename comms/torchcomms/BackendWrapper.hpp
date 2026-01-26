@@ -9,8 +9,7 @@
 #include "comms/torchcomms/TorchCommTypes.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 class WorkWrapper : public c10d::Work {
  public:
@@ -137,5 +136,4 @@ class BackendWrapper : public c10d::Backend {
   c10::intrusive_ptr<Options> options_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

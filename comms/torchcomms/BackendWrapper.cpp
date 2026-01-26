@@ -3,8 +3,7 @@
 #include "comms/torchcomms/BackendWrapper.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 
@@ -409,5 +408,4 @@ c10::intrusive_ptr<c10d::Backend> BackendWrapper::split(
   return c10::make_intrusive<BackendWrapper>(new_comm);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -25,8 +25,7 @@
 #include "comms/torchcomms/nccl/NcclApi.hpp"
 #include "comms/torchcomms/nccl/TorchWorkNCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 constexpr size_t kDefaultMaxEventPoolSize = 1000;
 
@@ -425,5 +424,4 @@ class TorchCommNCCL : public TorchCommBackend,
   friend class TorchWorkNCCLQueueCommTest;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
