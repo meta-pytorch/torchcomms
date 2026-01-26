@@ -1,7 +1,6 @@
 #include "comms/torchcomms/xccl/TorchWorkXCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::garbageCollect(
     bool isMainThread) {
@@ -94,5 +93,4 @@ void TorchWorkXCCLQueue::enqueueWork(
   stream_work_queues_[stream].push(work);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

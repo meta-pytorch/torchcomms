@@ -3,8 +3,7 @@
 #include "comms/torchcomms/TorchCommOptions.hpp"
 #include "comms/torchcomms/TorchCommUtils.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 CommOptions::CommOptions() {
   // Check environment variables for options
@@ -28,5 +27,4 @@ bool CommOptions::operator==(const CommOptions& other) const {
       timeout == other.timeout && hints == other.hints);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -6,8 +6,7 @@
 #include <stdexcept>
 #include "comms/torchcomms/TorchCommLogging.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 xpu_result_t DefaultXpuApi::setDevice(int device) {
   try {
@@ -327,5 +326,4 @@ const char* DefaultXpuApi::getErrorString(xpu_result_t error) {
   }
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
