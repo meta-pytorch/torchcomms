@@ -4,6 +4,7 @@
 #include <memory>
 
 #include "comm.h"
+#include "device.h"
 
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
@@ -13,9 +14,23 @@
 
 namespace ncclx::comms_monitor {
 
+struct NcclTreeNodeInfo {
+  int parentNode;
+  std::array<int, NCCL_MAX_TREE_ARITY> childrenNodes;
+};
+
+struct NcclTopoInfo {
+  uint64_t nChannels{0};
+  std::vector<std::vector<int>> rings;
+  // Neighbor ranks for current rank in each tree.
+  std::vector<NcclTreeNodeInfo> trees;
+  static NcclTopoInfo fromNcclComm(ncclComm_t comm);
+};
+
 struct NcclCommMonitorInfo {
   CommLogData logMetaData;
   ncclx::CommStateX commState;
+  NcclTopoInfo topoInfo;
   // This one will be deprecated soon.
   std::shared_ptr<CollTrace> collTrace;
   std::shared_ptr<colltrace::MapperTrace> mapperTrace;
