@@ -11,7 +11,7 @@
 #include <ATen/ATen.h>
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
-#include "comms/torchcomms/device/XpuApi.hpp"
+#include "comms/torchcomms/device/xpu/XpuApi.hpp"
 
 namespace torch {
 namespace comms {

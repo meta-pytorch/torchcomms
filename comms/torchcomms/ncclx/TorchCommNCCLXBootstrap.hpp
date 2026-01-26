@@ -10,7 +10,7 @@
 
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommOptions.hpp"
-#include "comms/torchcomms/device/CudaApi.hpp"
+#include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 #include "nccl.h" // @manual=//comms/ncclx:nccl
 
