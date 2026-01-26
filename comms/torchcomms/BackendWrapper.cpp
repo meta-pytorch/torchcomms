@@ -9,11 +9,18 @@ namespace {
 
 // Extract the scaling factor from NCCL's PREMUL_SUM operation supplement.
 // NCCLPreMulSumSupplement stores either a tensor or double scaling factor
-// that is applied before summation. The reinterpret_cast is safe because
-// PREMUL_SUM operations always have a NCCLPreMulSumSupplement attached.
+// that is applied before summation.
 PreMulSumFactorT getPreMulSumFactor(const c10d::ReduceOp& op) {
-  const auto* preMulSupplement =
-      reinterpret_cast<c10d::NCCLPreMulSumSupplement*>(op.supplement_.get());
+  TORCH_CHECK(
+      op.supplement_ != nullptr,
+      "PREMUL_SUM operation requires a supplement, but none was provided");
+
+  auto* preMulSupplement =
+      dynamic_cast<c10d::NCCLPreMulSumSupplement*>(op.supplement_.get());
+  TORCH_CHECK(
+      preMulSupplement != nullptr,
+      "PREMUL_SUM operation supplement must be of type NCCLPreMulSumSupplement");
+
   if (preMulSupplement->tensor_factor.defined()) {
     return preMulSupplement->tensor_factor;
   }
