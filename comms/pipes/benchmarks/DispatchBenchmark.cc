@@ -18,6 +18,7 @@
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
 #include "comms/pipes/Transport.cuh"
 #include "comms/pipes/collectives/dispatch.h"
+#include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
