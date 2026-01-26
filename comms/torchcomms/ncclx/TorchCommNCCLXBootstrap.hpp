@@ -14,8 +14,7 @@
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 #include "nccl.h" // @manual=//comms/ncclx:nccl
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 constexpr uint16_t kTCPStorePort = 29500;
 
@@ -80,5 +79,4 @@ void populateNcclConfigFromHints(
     const CommOptions& options,
     const std::string& name);
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

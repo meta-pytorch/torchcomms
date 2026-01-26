@@ -8,8 +8,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp"
 #include "rccl.h" // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 
@@ -369,5 +368,4 @@ void TorchCommRCCLX::detachMemoryHook() {
   CachingAllocatorHook::getInstance().deregisterComm(this);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

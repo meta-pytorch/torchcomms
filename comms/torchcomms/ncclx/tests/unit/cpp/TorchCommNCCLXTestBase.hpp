@@ -18,9 +18,7 @@
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CudaMock.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/NcclxMock.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 using ::testing::_;
 using ::testing::DoAll;
@@ -121,6 +119,4 @@ class TorchCommNCCLXTest : public ::testing::Test {
   CachingAllocatorHookMock* mock_hook_{};
 };
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

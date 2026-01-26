@@ -26,8 +26,7 @@
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Maximum number of CUDA events to keep in the event pool. Events are recycled
 // to avoid repeated cudaEventCreate/cudaEventDestroy calls. 1000 events should
@@ -473,5 +472,4 @@ class TorchCommNCCLX : public TorchCommBackend,
   friend class TorchWorkNCCLXQueueCommTest;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

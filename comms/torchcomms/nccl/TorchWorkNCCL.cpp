@@ -6,8 +6,7 @@
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkNCCL::TorchWorkNCCL(
     std::shared_ptr<TorchCommNCCL> comm,
@@ -184,5 +183,4 @@ void TorchWorkNCCL::wait() {
       comm_->getCudaApi()->streamWaitEvent(current_stream, end_event_, 0),
       "Failed to make stream wait for event");
 }
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

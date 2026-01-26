@@ -16,8 +16,7 @@
 #include "comms/torchcomms/rccl/TorchCommRCCLBootstrap.hpp"
 #include "rccl.h" // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 // Hint key prefix and names for RCCL backend configuration
@@ -1538,8 +1537,7 @@ const char* RCCLException::what() const noexcept {
   return message_.c_str();
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
 
 namespace {
 class RCCLRegistration {

@@ -4,8 +4,7 @@
 #include <ATen/hip/HIPContext.h> // @manual
 #include "comms/torchcomms/rcclx/TorchCommRCCLX.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkRCCLX::TorchWorkRCCLX(
     std::shared_ptr<TorchCommRCCLX> comm,
@@ -167,5 +166,4 @@ void TorchWorkRCCLX::wait() {
       comm_->getHipApi()->streamWaitEvent(current_stream, end_event_, 0),
       "Failed to make stream wait for event");
 }
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

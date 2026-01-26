@@ -7,9 +7,7 @@
 
 #include "comms/torchcomms/rcclx/HipApi.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 class HipMock : public HipApi {
  public:
@@ -81,6 +79,4 @@ class HipMock : public HipApi {
   void setupDefaultBehaviors();
 };
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

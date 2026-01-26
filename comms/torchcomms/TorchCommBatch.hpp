@@ -7,8 +7,7 @@
 #include <c10/util/intrusive_ptr.h>
 #include "comms/torchcomms/TorchCommOptions.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchComm;
@@ -50,5 +49,4 @@ class BatchSendRecv {
   TorchComm* parent_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
