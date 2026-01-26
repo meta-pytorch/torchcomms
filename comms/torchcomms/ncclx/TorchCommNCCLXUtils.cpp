@@ -41,7 +41,7 @@ ncclDataType_t getNcclDataTypeInternal(const at::ScalarType scalar_type) {
     case at::ScalarType::UInt64:
       return ncclUint64;
     default:
-      throw std::runtime_error("Unsupported scaler data type for NCCLX");
+      throw std::runtime_error("Unsupported scalar data type for NCCLX");
   }
 }
 
