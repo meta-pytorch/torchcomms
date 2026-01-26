@@ -222,7 +222,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
     return backend_;
   }
 
-  std::shared_ptr<TorchCommBackend> unsafeGetBackend() {
+  std::shared_ptr<TorchCommBackend> unsafeGetBackend() const {
     return impl_;
   }
 
