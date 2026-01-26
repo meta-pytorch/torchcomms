@@ -26,8 +26,8 @@ c10::intrusive_ptr<c10d::Store> createRoot(
       master_port_env != nullptr, "MASTER_PORT env is not set");
   int port{std::stoi(master_port_env)};
 
-  auto ranksize = query_ranksize();
-  int rank = ranksize.first;
+  auto [rank, comm_size] = query_ranksize();
+  (void)comm_size; // unused
 
   c10d::TCPStoreOptions opts;
   opts.port = port;
