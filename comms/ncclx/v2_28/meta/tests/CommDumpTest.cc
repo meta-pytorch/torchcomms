@@ -189,6 +189,25 @@ TEST_F(CommDumpTest, SingleComm) {
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
+  EXPECT_EQ(dump.count("commsTopoInfo"), 1);
+  if (dump.count("commsTopoInfo")) {
+    EXPECT_NO_THROW(folly::parseJson(dump["commsTopoInfo"]));
+    auto topoInfoObj = folly::parseJson(dump["commsTopoInfo"]);
+    EXPECT_TRUE(topoInfoObj.count("nChannels"));
+    EXPECT_TRUE(topoInfoObj.count("rings"));
+    EXPECT_TRUE(topoInfoObj.count("treeInfos"));
+    // Verify nChannels is non-negative
+    EXPECT_GE(topoInfoObj["nChannels"].asInt(), 0);
+    // Verify rings is an array
+    EXPECT_TRUE(topoInfoObj["rings"].isArray());
+    // Verify treeInfos is an array
+    EXPECT_TRUE(topoInfoObj["treeInfos"].isArray());
+    // Both rings and treeInfos should have same size as nChannels
+    EXPECT_EQ(topoInfoObj["rings"].size(), topoInfoObj["nChannels"].asInt());
+    EXPECT_EQ(
+        topoInfoObj["treeInfos"].size(), topoInfoObj["nChannels"].asInt());
+  }
+
   if (comm->rank == 1 && VERBOSE) {
     for (auto& it : dump) {
       printf("%s: %s\n", it.first.c_str(), it.second.c_str());
@@ -201,6 +220,7 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto collRecordGuard =
       EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1); // -1 for no max records
+  auto newColltraceGuard = EnvRAII(NCCL_COLLTRACE_USE_NEW_COLLTRACE, false);
 
   auto res = ncclSuccess;
   std::unordered_map<std::string, std::string> dump;
@@ -212,9 +232,13 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
         << "Skip test because this comm does not have enough ranks to properly test send recv.";
   }
 
+  // Create a new communicator after env guards are set so collTrace_ is
+  // initialized
+  NcclCommRAII testComm{this->globalRank, this->numRanks, this->localRank};
+
   // commHash is intentially stored as hex string for readability
   std::stringstream commHashSs;
-  commHashSs << std::hex << comm->commHash;
+  commHashSs << std::hex << testComm->commHash;
   std::string commHashStr = commHashSs.str();
 
   this->prepareSendRecv(count);
@@ -222,8 +246,10 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
   int recvPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
   for (int i = 0; i < nColl; i++) {
     NCCLCHECK_TEST(ncclGroupStart());
-    NCCLCHECK_TEST(ncclSend(sendBuf, count, ncclInt, sendPeer, comm, stream));
-    NCCLCHECK_TEST(ncclRecv(recvBuf, count, ncclInt, recvPeer, comm, stream));
+    NCCLCHECK_TEST(
+        ncclSend(sendBuf, count, ncclInt, sendPeer, testComm, stream));
+    NCCLCHECK_TEST(
+        ncclRecv(recvBuf, count, ncclInt, recvPeer, testComm, stream));
     NCCLCHECK_TEST(ncclGroupEnd());
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
@@ -233,7 +259,7 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
   // completion
   sleep(3);
 
-  res = ncclCommDump(this->comm, dump);
+  res = ncclCommDump(testComm, dump);
 
   ASSERT_EQ(res, ncclSuccess);
 
@@ -294,7 +320,7 @@ TEST_F(CommDumpTest, DumpAfterSendRecv) {
     EXPECT_EQ(ptActiveOpsObjs.size(), 0);
   }
 
-  if (comm->rank == 0 && VERBOSE) {
+  if (testComm->rank == 0 && VERBOSE) {
     for (auto& it : dump) {
       printf("%s: %s\n", it.first.c_str(), it.second.c_str());
     }
@@ -416,25 +442,43 @@ TEST_F(CommDumpTest, DumpAfterColl) {
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
   auto collRecordGuard =
       EnvRAII(NCCL_COLLTRACE_RECORD_MAX, -1); // -1 for no max records
+  auto newColltraceGuard = EnvRAII(NCCL_COLLTRACE_USE_NEW_COLLTRACE, false);
 
   auto res = ncclSuccess;
   std::unordered_map<std::string, std::string> dump;
   constexpr int numColls = 10;
 
+  // Create a new communicator after env guards are set so collTrace_ is
+  // initialized
+  NcclCommRAII testComm{this->globalRank, this->numRanks, this->localRank};
+
   // commHash is intentially stored as hex string for readability
   std::stringstream commHashSs;
-  commHashSs << std::hex << comm->commHash;
+  commHashSs << std::hex << testComm->commHash;
   std::string commHashStr = commHashSs.str();
+
+  // Allocate local data buffer for this test
+  void* localDataBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&localDataBuf, sizeof(int) * this->dataCount));
+  std::vector<int> initVals(this->dataCount);
+  for (int i = 0; i < this->dataCount; i++) {
+    initVals[i] = i * this->globalRank;
+  }
+  CUDACHECK_TEST(cudaMemcpy(
+      localDataBuf,
+      initVals.data(),
+      sizeof(int) * this->dataCount,
+      cudaMemcpyHostToDevice));
 
   this->initData(this->globalRank);
   for (int i = 0; i < numColls; i++) {
     NCCLCHECK_TEST(ncclAllReduce(
-        this->dataBuf,
-        this->dataBuf,
+        localDataBuf,
+        localDataBuf,
         this->dataCount,
         ncclInt,
         ncclSum,
-        this->comm,
+        testComm,
         this->stream));
   }
   CUDACHECK_TEST(cudaStreamSynchronize(this->stream));
@@ -444,7 +488,10 @@ TEST_F(CommDumpTest, DumpAfterColl) {
   // completion
   sleep(3);
 
-  res = ncclCommDump(this->comm, dump);
+  res = ncclCommDump(testComm, dump);
+
+  // Cleanup local buffer
+  CUDACHECK_TEST(cudaFree(localDataBuf));
 
   ASSERT_EQ(res, ncclSuccess);
 
@@ -472,7 +519,7 @@ TEST_F(CommDumpTest, DumpAfterColl) {
   }
 
   // Proxy trace would be empty if nNodes == 1
-  if (dump.count("PT_pastColls") && comm->nNodes > 1) {
+  if (dump.count("PT_pastColls") && testComm->nNodes > 1) {
     auto ptPastCollsObjs = folly::parseJson(dump["PT_pastColls"]);
     EXPECT_EQ(ptPastCollsObjs.size(), numColls);
     for (int i = 0; i < numColls; i++) {
@@ -790,6 +837,7 @@ TEST_F(CommDumpTest, TestDumpAllWithTwoComms) {
   auto commsMonitorGuard = EnvRAII(NCCL_COMMSMONITOR_ENABLE, true);
   auto ctranGuard = EnvRAII(NCCL_CTRAN_ENABLE, true);
   auto traceGuard = EnvRAII(NCCL_COLLTRACE, {"trace"});
+  auto newColltraceGuard = EnvRAII(NCCL_COLLTRACE_USE_NEW_COLLTRACE, false);
 
   constexpr int count = 1048576;
   constexpr int nColl = 10;
@@ -982,6 +1030,25 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTrace) {
     XLOG(DBG1) << "Entered PT_activeOps if statement";
     auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
     EXPECT_EQ(ptActiveOpsObjs.size(), 0);
+  }
+  // Check if ncclTopoInfo field exists and is valid JSON
+  EXPECT_EQ(dump.count("commsTopoInfo"), 1);
+  if (dump.count("commsTopoInfo")) {
+    EXPECT_NO_THROW(folly::parseJson(dump["commsTopoInfo"]));
+    auto topoInfoObj = folly::parseJson(dump["commsTopoInfo"]);
+    EXPECT_TRUE(topoInfoObj.count("nChannels"));
+    EXPECT_TRUE(topoInfoObj.count("rings"));
+    EXPECT_TRUE(topoInfoObj.count("treeInfos"));
+    // Verify nChannels is non-negative
+    EXPECT_GE(topoInfoObj["nChannels"].asInt(), 0);
+    // Verify rings is an array
+    EXPECT_TRUE(topoInfoObj["rings"].isArray());
+    // Verify treeInfos is an array
+    EXPECT_TRUE(topoInfoObj["treeInfos"].isArray());
+    // Both rings and treeInfos should have same size as nChannels
+    EXPECT_EQ(topoInfoObj["rings"].size(), topoInfoObj["nChannels"].asInt());
+    EXPECT_EQ(
+        topoInfoObj["treeInfos"].size(), topoInfoObj["nChannels"].asInt());
   }
 }
 
