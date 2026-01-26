@@ -3,7 +3,7 @@
 #include <oneapi/ccl.h>
 #include <oneapi/ccl.hpp>
 
-#include "comms/torchcomms/device/XpuApi.hpp"
+#include "comms/torchcomms/device/xpu/XpuApi.hpp"
 
 namespace torch {
 namespace comms {
