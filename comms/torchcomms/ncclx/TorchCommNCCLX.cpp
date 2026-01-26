@@ -89,8 +89,7 @@ void TorchCommNCCLX::init(
     const std::string& name,
     const CommOptions& options) {
   TORCH_INTERNAL_ASSERT(
-      device.is_cuda() || device.index() == -1,
-      "TorchCommNCCLX requires a CUDA device or unspecified device index");
+      device.is_cuda(), "TorchCommNCCLX requires a CUDA device");
 
   // Initialize private members
   device_ = device;
