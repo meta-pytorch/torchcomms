@@ -4,7 +4,7 @@
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <gmock/gmock.h>
-#include "comms/torchcomms/device/CudaApi.hpp"
+#include "comms/torchcomms/device/cuda/CudaApi.hpp"
 
 namespace torch {
 namespace comms {
