@@ -1512,7 +1512,7 @@ TEST_F(TorchCommNCCLXTest, NCCLXExceptionFromFailedSendIncludesLastError) {
         } catch (const NCCLXException& e) {
           std::string what_message = e.what();
           EXPECT_TRUE(
-              what_message.find("NCCL Send failed") != std::string::npos)
+              what_message.find("NCCLX Send failed") != std::string::npos)
               << "Exception should mention the failed operation";
           EXPECT_TRUE(what_message.find(last_error_detail) != std::string::npos)
               << "Exception should include the NCCL last error detail: "
@@ -1557,7 +1557,7 @@ TEST_F(TorchCommNCCLXTest, NCCLXExceptionFromFailedAllReduceIncludesLastError) {
         } catch (const NCCLXException& e) {
           std::string what_message = e.what();
           EXPECT_TRUE(
-              what_message.find("NCCL AllReduce failed") != std::string::npos)
+              what_message.find("NCCLX AllReduce failed") != std::string::npos)
               << "Exception should mention the failed operation";
           EXPECT_TRUE(what_message.find(last_error_detail) != std::string::npos)
               << "Exception should include the NCCL last error detail: "
