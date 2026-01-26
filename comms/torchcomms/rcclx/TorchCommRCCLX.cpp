@@ -745,8 +745,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather_v(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   work->recordStart("all_gather_v");
 
@@ -955,10 +960,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter_v(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream,
-      getOperationTimeout(options.timeout, options_.timeout),
-      input_list);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input_list)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   work->recordStart("reduce_scatter_v");
 
