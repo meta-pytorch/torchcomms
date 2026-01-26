@@ -93,6 +93,7 @@ template bool env_to_value<bool>(std::string_view, const bool&);
 template int env_to_value<int>(std::string_view, const int&);
 template float env_to_value<float>(std::string_view, const float&);
 template double env_to_value<double>(std::string_view, const double&);
+template uint64_t env_to_value<uint64_t>(std::string_view, const uint64_t&);
 template std::string env_to_value<std::string>(
     std::string_view,
     const std::string&);
