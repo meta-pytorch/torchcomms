@@ -209,10 +209,9 @@ void populateNcclConfigFromHints(
     const CommOptions& options,
     const std::string& name) {
   // Iterate over the hints and set the corresponding fields in the config.  For
-  // string arguments, NCCLX uses a "const char*" instead of a std::string, so
-  // it is hard to figure out the ownership structure.  Here, we create a copy
-  // of the string and pass it to NCCLX, so that it is responsible for freeing
-  // it.
+  // string arguments, NCCLX uses a "const char*" instead of a std::string.  The
+  // strings only need to be valid for the duration of the
+  // ncclCommInitRankConfig call, so we use .c_str() directly.
   for (const auto& [key, val] : options.hints) {
     if (key == "blocking") {
       config.blocking = std::stoi(val);
