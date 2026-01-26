@@ -261,7 +261,12 @@ class TorchCommNCCL : public TorchCommBackend,
   c10::intrusive_ptr<TorchWorkNCCL> createWork(
       cudaStream_t stream,
       std::chrono::milliseconds timeout,
-      const std::vector<at::Tensor>& inputTensors);
+      const std::vector<at::Tensor>& inputTensors = {});
+
+  c10::intrusive_ptr<TorchWorkNCCL> createWork(
+      cudaStream_t stream,
+      std::chrono::milliseconds timeout,
+      const at::Tensor& inputTensor);
 
  private:
   // Helper that automatically cleans up premul sums.
