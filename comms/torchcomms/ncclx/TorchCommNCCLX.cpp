@@ -192,19 +192,24 @@ void TorchCommNCCLX::init(
       cuda_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  if (options_.hints.contains(std::string(kHintMaxEventPoolSize))) {
+  const auto kHintMaxEventPoolSizeKey = std::string(kHintMaxEventPoolSize);
+  if (options_.hints.contains(kHintMaxEventPoolSizeKey)) {
     configs_.max_event_pool_size_ =
-        std::stoull(options_.hints.at(std::string(kHintMaxEventPoolSize)));
+        std::stoull(options_.hints.at(kHintMaxEventPoolSizeKey));
   }
 
-  if (options_.hints.contains(std::string(kHintGarbageCollectIntervalMs))) {
-    configs_.garbage_collect_interval_ms_ = std::stoull(
-        options_.hints.at(std::string(kHintGarbageCollectIntervalMs)));
+  const auto kHintGarbageCollectIntervalMsKey =
+      std::string(kHintGarbageCollectIntervalMs);
+  if (options_.hints.contains(kHintGarbageCollectIntervalMsKey)) {
+    configs_.garbage_collect_interval_ms_ =
+        std::stoull(options_.hints.at(kHintGarbageCollectIntervalMsKey));
   }
 
-  if (options_.hints.contains(std::string(kHintEnableCudaGraphSupport))) {
-    configs_.enable_cuda_graph_support_ = string_to_bool(
-        options_.hints.at(std::string(kHintEnableCudaGraphSupport)));
+  const auto kHintEnableCudaGraphSupportKey =
+      std::string(kHintEnableCudaGraphSupport);
+  if (options_.hints.contains(kHintEnableCudaGraphSupportKey)) {
+    configs_.enable_cuda_graph_support_ =
+        string_to_bool(options_.hints.at(kHintEnableCudaGraphSupportKey));
   }
 
   // Give up our internal reference to the store object here.  The caller
