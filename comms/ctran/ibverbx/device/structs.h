@@ -44,8 +44,8 @@ struct device_qp {
   int post_send_lock{};
 
   // Track producer/consumer indices
-  uint64_t producer_idx{0}; // WQE producer index
-  uint64_t consumer_idx{0}; // CQE consumer index
+  volatile uint64_t producer_idx{0}; // WQE producer index
+  volatile uint64_t consumer_idx{0}; // CQE consumer index
 
   // pointer to CQ
   device_cq* cq{};
