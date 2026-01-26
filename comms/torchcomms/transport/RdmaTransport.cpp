@@ -9,6 +9,7 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
+#include "comms/utils/checks.h"
 
 namespace {
 

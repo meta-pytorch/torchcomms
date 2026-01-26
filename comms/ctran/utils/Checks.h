@@ -43,26 +43,6 @@
 
 #define FB_CUDACHECK(cmd) FB_CUDACHECK_RETURN(cmd, commUnhandledCudaError)
 
-// Note: when writing code for the comms/ctran directory, prefer the
-// FB_CUDACHECKTHROW_EX or FB_CUDACHECKTHROW_EX_NOCOMM macros.
-//
-// TODO(T250777174): Move this definition out of the ctran directory.
-#define FB_CUDACHECKTHROW(cmd)                                      \
-  do {                                                              \
-    cudaError_t err = cmd;                                          \
-    if (err != cudaSuccess) {                                       \
-      CLOGF(                                                        \
-          ERR,                                                      \
-          "{}:{} Cuda failure {}",                                  \
-          __FILE__,                                                 \
-          __LINE__,                                                 \
-          cudaGetErrorString(err));                                 \
-      (void)cudaGetLastError();                                     \
-      throw std::runtime_error(                                     \
-          std::string("Cuda failure: ") + cudaGetErrorString(err)); \
-    }                                                               \
-  } while (false)
-
 #define FB_CUDACHECKTHROW_EX_DIRECT(cmd, rank, commHash, desc)     \
   do {                                                             \
     cudaError_t err = cmd;                                         \
@@ -352,25 +332,6 @@
     }                             \
   } while (0)
 
-// Note: when writing Ctran code, prefer the FOLLY_EXPECTED_CHECKTHROW_EX or
-// FOLLY_EXPECTED_CHECKTHROW_EX_NOCOMM macros instead of this one.
-//
-// TODO(T251293921): Move this definition out of the `comms/ctran` directory.
-#define FOLLY_EXPECTED_CHECKTHROW(RES)                                  \
-  do {                                                                  \
-    if (RES.hasError()) {                                               \
-      CLOGF(                                                            \
-          ERR,                                                          \
-          "{}:{} -> {} ({})",                                           \
-          __FILE__,                                                     \
-          __LINE__,                                                     \
-          RES.error().errNum,                                           \
-          RES.error().errStr);                                          \
-      throw std::runtime_error(                                         \
-          std::string("COMM internal failure: ") + RES.error().errStr); \
-    }                                                                   \
-  } while (0)
-
 #define FOLLY_EXPECTED_CHECKTHROW_EX(RES, commLogData)                 \
   do {                                                                 \
     if (RES.hasError()) {                                              \
@@ -420,28 +381,6 @@
           info);                                   \
       goto label;                                  \
     }                                              \
-  } while (0)
-
-// Note: this macro should NOT be used within Ctran code.
-// Prefer FB_COMMCHECKTHROW_EX or FB_COMMCHECKTHROW_EX_NOCOMM
-// instead when writing code witin the "comms/ctran/" directory.
-//
-// TODO(T250686203): Move this macro's definition somewhere else.
-#define FB_COMMCHECKTHROW(cmd)                         \
-  do {                                                 \
-    commResult_t RES = cmd;                            \
-    if (RES != commSuccess && RES != commInProgress) { \
-      CLOGF(                                           \
-          ERR,                                         \
-          "{}:{} -> {} ({})",                          \
-          __FILE__,                                    \
-          __LINE__,                                    \
-          RES,                                         \
-          ::meta::comms::commCodeToString(RES));       \
-      throw std::runtime_error(                        \
-          std::string("COMM internal failure: ") +     \
-          ::meta::comms::commCodeToString(RES));       \
-    }                                                  \
   } while (0)
 
 #define FB_COMMCHECKTHROW_EX_DIRECT(cmd, rank, commHash, commDesc) \
@@ -537,22 +476,6 @@
       abort();                                    \
     }                                             \
   } while (0);
-
-// Note: when writing code within comms/ctran, prefer FB_CHECKTHROW_EX
-// and FB_CHECKTHROW_EX_NOCOMM to FB_CHECKTHROW.
-//
-// TODO(T250693645): Move this macro definition outside of ctran directory.
-#define FB_CHECKTHROW(statement, ...)                                          \
-  do {                                                                         \
-    if (!(statement)) {                                                        \
-      auto errorMsg =                                                          \
-          fmt::format("Check failed: {} - {}", #statement, __VA_ARGS__);       \
-      CLOGF(ERR, errorMsg);                                                    \
-      throw std::runtime_error(                                                \
-          fmt::format(                                                         \
-              "Check failed: {} - {}", #statement, fmt::format(__VA_ARGS__))); \
-    }                                                                          \
-  } while (0)
 
 #define FB_CHECKTHROW_EX_DIRECT(statement, rank, commHash, commDesc, msg) \
   do {                                                                    \
@@ -675,18 +598,6 @@
     CLOGF(ERR, ##__VA_ARGS__);                                      \
     ErrorStackTraceUtil::logErrorMessage(fmt::format(__VA_ARGS__)); \
     return error;                                                   \
-  } while (0)
-
-// Note: when writing code within the comms/ctran directory,
-// prefer the FB_ERRORTHROW_EX or FB_ERRORTHROW_EX_NOCOMM macros.
-//
-// TODO(T250696492): move this macro definition outside the ctran directory.
-#define FB_ERRORTHROW(error, ...)                \
-  do {                                           \
-    CLOGF(ERR, ##__VA_ARGS__);                   \
-    throw std::runtime_error(                    \
-        std::string("COMM internal failure: ") + \
-        ::meta::comms::commCodeToString(error)); \
   } while (0)
 
 #define FB_ERRORTHROW_EX(error, logData, ...)       \
