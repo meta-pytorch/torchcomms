@@ -284,6 +284,16 @@ c10::intrusive_ptr<TorchWorkRCCL> TorchCommRCCL::createWork(
   return work;
 }
 
+c10::intrusive_ptr<TorchWorkRCCL> TorchCommRCCL::createWork(
+    hipStream_t stream,
+    std::chrono::milliseconds timeout,
+    const at::Tensor& inputTensor) {
+  // Single-tensor overload to avoid vector allocation
+  auto work = c10::make_intrusive<TorchWorkRCCL>(
+      shared_from_this(), stream, timeout, inputTensor);
+  return work;
+}
+
 void TorchCommRCCL::enqueueWork(
     c10::intrusive_ptr<TorchWorkRCCL> work,
     hipStream_t stream) {

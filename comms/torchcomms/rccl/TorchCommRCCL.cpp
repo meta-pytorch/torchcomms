@@ -398,7 +398,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::recv(
 
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {});
+      stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("recv");
@@ -740,8 +740,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather_v(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   work->recordStart("all_gather_v");
 
@@ -944,10 +949,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter_v(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream,
-      getOperationTimeout(options.timeout, options_.timeout),
-      input_list);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input_list)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   work->recordStart("reduce_scatter_v");
 
@@ -1304,7 +1312,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::barrier(
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
   hipStream_t stream = getOperationStream(async_op);
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {});
+      stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before NCCL operation
   work->recordStart("barrier");

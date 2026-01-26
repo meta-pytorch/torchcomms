@@ -340,7 +340,11 @@ class TorchCommRCCL : public TorchCommBackend,
   c10::intrusive_ptr<TorchWorkRCCL> createWork(
       hipStream_t stream,
       std::chrono::milliseconds timeout,
-      const std::vector<at::Tensor>& inputTensors);
+      const std::vector<at::Tensor>& inputTensors = {});
+  c10::intrusive_ptr<TorchWorkRCCL> createWork(
+      hipStream_t stream,
+      std::chrono::milliseconds timeout,
+      const at::Tensor& inputTensor);
   void enqueueWork(c10::intrusive_ptr<TorchWorkRCCL> work, hipStream_t stream);
   hipStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
