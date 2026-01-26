@@ -720,11 +720,69 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather(
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather_v(
-    const std::vector<at::Tensor>& /* tensor_list */,
-    const at::Tensor& /* tensor */,
-    bool /* async_op */,
-    const AllGatherOptions& /* options */) {
-  throw std::runtime_error("all_gather_v not implemented");
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  if (tensor_list.size() != static_cast<size_t>(comm_size_)) {
+    throw std::runtime_error(
+        "tensor_list size must equal comm_size for all_gather_v");
+  }
+
+  ensureTensorContiguous(tensor);
+  for (const auto& t : tensor_list) {
+    ensureTensorContiguous(t);
+  }
+
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
+
+  hipStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+
+  work->recordStart("all_gather_v");
+
+  // Use multiple broadcast operations for all_gather_v
+  RCCL_CHECK(
+      rccl_api_, nccl_comm_, rccl_api_->groupStart(), "NCCL GroupStart failed");
+
+  for (int i = 0; i < comm_size_; ++i) {
+    // For all_gather_v, each rank broadcasts its input tensor to all others
+    auto& output = tensor_list[i];
+    auto& input = (i == rank_) ? tensor : output;
+    if (input.numel() != output.numel()) {
+      throw std::runtime_error(
+          "Output tensor size must equal input tensor size for all_gather_v");
+    }
+    ncclResult_t opResult = rccl_api_->broadcast(
+        input.data_ptr(),
+        output.data_ptr(),
+        input.numel(),
+        getNcclDataType(output),
+        i,
+        nccl_comm_,
+        stream);
+    if (opResult != ncclSuccess) {
+      throw RCCLException(
+          *rccl_api_,
+          "NCCL Broadcast failed in all_gather_v",
+          opResult,
+          nccl_comm_);
+    }
+  }
+
+  RCCL_CHECK(
+      rccl_api_, nccl_comm_, rccl_api_->groupEnd(), "NCCL GroupEnd failed");
+
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommRCCL::all_gather_single(
@@ -864,12 +922,96 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter(
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter_v(
-    at::Tensor& /* output */,
-    const std::vector<at::Tensor>& /* input_list */,
-    const ReduceOp& /* op */,
-    bool /* async_op */,
-    const ReduceScatterOptions& /* options */) {
-  throw std::runtime_error("reduce_scatter_v not implemented");
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    const ReduceOp& op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(output);
+
+  if (input_list.size() != static_cast<size_t>(comm_size_)) {
+    throw std::runtime_error(
+        "input_list size must equal comm_size for reduce_scatter_v");
+  }
+
+  for (const auto& t : input_list) {
+    ensureTensorContiguous(t);
+  }
+
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
+
+  hipStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream,
+      getOperationTimeout(options.timeout, options_.timeout),
+      input_list);
+
+  work->recordStart("reduce_scatter_v");
+
+  // Use multiple reduce operations for reduce_scatter_v
+  RCCL_CHECK(
+      rccl_api_, nccl_comm_, rccl_api_->groupStart(), "NCCL GroupStart failed");
+
+  for (int i = 0; i < comm_size_; ++i) {
+    if (i == rank_) {
+      // This rank receives the reduced result
+      auto& input_tensor = input_list[i];
+      auto& output_tensor = output;
+      if (input_tensor.numel() != output_tensor.numel()) {
+        throw std::runtime_error(
+            "Output tensor size must equal input tensor size for reduce_scatter_v");
+      }
+      auto dataType = getNcclDataType(input_tensor);
+      ncclResult_t opResult = rccl_api_->reduce(
+          input_tensor.data_ptr(),
+          output_tensor.data_ptr(),
+          output_tensor.numel(),
+          dataType,
+          getNcclReduceOp(op, nccl_comm_, dataType),
+          i,
+          nccl_comm_,
+          stream);
+      if (opResult != ncclSuccess) {
+        throw RCCLException(
+            *rccl_api_,
+            "NCCL Reduce failed in reduce_scatter_v",
+            opResult,
+            nccl_comm_);
+      }
+    } else {
+      // Other ranks contribute to the reduction
+      auto dataType = getNcclDataType(input_list[i]);
+      ncclResult_t opResult = rccl_api_->reduce(
+          input_list[i].data_ptr(),
+          nullptr, // Non-root ranks don't receive
+          input_list[i].numel(),
+          dataType,
+          getNcclReduceOp(op, nccl_comm_, dataType),
+          i,
+          nccl_comm_,
+          stream);
+      if (opResult != ncclSuccess) {
+        throw RCCLException(
+            *rccl_api_,
+            "NCCL Reduce failed in reduce_scatter_v",
+            opResult,
+            nccl_comm_);
+      }
+    }
+  }
+
+  RCCL_CHECK(
+      rccl_api_, nccl_comm_, rccl_api_->groupEnd(), "NCCL GroupEnd failed");
+
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommRCCL::reduce_scatter_single(
