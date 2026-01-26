@@ -19,9 +19,7 @@ using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::SetArgPointee;
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 constexpr std::chrono::seconds kTimeout{60};
 
@@ -322,6 +320,4 @@ TEST_F(TorchCommRCCLBootstrapTest, CleanupTCPStoreBarrierFailure) {
   EXPECT_NO_THROW(bootstrap->createNcclComm("test_comm"));
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

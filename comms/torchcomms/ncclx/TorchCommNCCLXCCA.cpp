@@ -20,8 +20,7 @@ size_t getAllocationGranularity(int device) {
 }
 } // namespace
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Global function to be registered as a hook
 void cachingAllocatorHookFn(
@@ -260,5 +259,4 @@ bool CachingAllocatorHookImpl::isMemRegisteredCalled() {
   return mem_pre_hook_registered_;
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

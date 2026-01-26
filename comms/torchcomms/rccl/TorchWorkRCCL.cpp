@@ -5,8 +5,7 @@
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rccl/TorchCommRCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkRCCL::TorchWorkRCCL(
     std::shared_ptr<TorchCommRCCL> comm,
@@ -171,5 +170,4 @@ void TorchWorkRCCL::wait() {
       comm_->getHipApi()->streamWaitEvent(current_stream, end_event_, 0),
       "Failed to make stream wait for event");
 }
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

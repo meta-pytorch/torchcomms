@@ -32,8 +32,7 @@
 #include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/gloo/GlooStore.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 template <typename T>
 inline T* getDataPointer(const at::Tensor& tensor) {
@@ -1441,5 +1440,4 @@ class GlooRegistration {
 static const GlooRegistration registration{};
 } // namespace
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

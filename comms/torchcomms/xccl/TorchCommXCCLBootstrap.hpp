@@ -11,8 +11,7 @@
 #include "comms/torchcomms/device/xpu/XpuApi.hpp"
 #include "comms/torchcomms/xccl/XcclApi.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 constexpr uint16_t kTCPStorePort = 29500;
 
@@ -78,5 +77,4 @@ void populateXcclConfigFromHints(
     const CommOptions& options,
     const std::string& name);
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

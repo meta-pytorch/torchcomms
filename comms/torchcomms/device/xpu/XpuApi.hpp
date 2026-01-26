@@ -6,8 +6,7 @@
 #include <c10/xpu/XPUStream.h>
 #include <sycl/sycl.hpp>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 using xpuStream_t = ::c10::xpu::XPUStream;
 using xpuEvent_t = ::at::xpu::XPUEvent;
@@ -202,5 +201,4 @@ class DefaultXpuApi : public XpuApi {
   const char* getErrorString(xpu_result_t error) override;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

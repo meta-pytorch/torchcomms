@@ -6,9 +6,7 @@
 #include <gmock/gmock.h>
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 /**
  * Mock implementation of CudaApi using Google Mock.
@@ -151,6 +149,4 @@ class CudaMock : public CudaApi {
   void reset();
 };
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

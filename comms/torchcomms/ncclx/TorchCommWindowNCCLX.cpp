@@ -5,8 +5,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchCommWindowNCCLX::TorchCommWindowNCCLX(
     ncclComm_t ncclComm,
@@ -272,5 +271,4 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX::get_attr(
   return attr;
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
