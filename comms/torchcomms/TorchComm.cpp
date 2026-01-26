@@ -503,7 +503,8 @@ const at::Device& TorchComm::getDevice() const {
 
 // Batch Operations
 
-BatchSendRecv::BatchSendRecv(TorchComm* parent) : parent_(parent) {}
+BatchSendRecv::BatchSendRecv(std::shared_ptr<TorchComm> parent)
+    : parent_(std::move(parent)) {}
 
 BatchSendRecv::P2POp::P2POp(OpType type, const at::Tensor& tensor, int peer) {
   this->type = type;
@@ -512,7 +513,7 @@ BatchSendRecv::P2POp::P2POp(OpType type, const at::Tensor& tensor, int peer) {
 }
 
 BatchSendRecv TorchComm::batch_op_create() {
-  return BatchSendRecv(this);
+  return BatchSendRecv(shared_from_this());
 }
 
 void BatchSendRecv::send(const at::Tensor& tensor, int dst) {
