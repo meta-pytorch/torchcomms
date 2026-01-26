@@ -27,8 +27,8 @@ namespace comms::pipes::benchmark {
  * Benchmark P2P synchronization using ChunkState
  *
  * Sender (GPU 0) and Receiver (GPU 1) alternate signaling:
- *   - Sender: waitReadyToSend() -> readyToRecv(step)
- *   - Receiver: waitReadyToRecv(step) -> readyToSend()
+ *   - Sender: wait_ready_to_send() -> ready_to_recv(step)
+ *   - Receiver: wait_ready_to_recv(step) -> ready_to_send()
  *
  * The ChunkState array is allocated on Receiver's GPU and accessed by Sender
  * via P2P peer access.
