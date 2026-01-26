@@ -756,11 +756,74 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_v(
-    const std::vector<at::Tensor>& /* tensor_list */,
-    const at::Tensor& /* tensor */,
-    bool /* async_op */,
-    const AllGatherOptions& /* options */) {
-  throw std::runtime_error("all_gather_v is not supported in GLOO backend yet");
+    const std::vector<at::Tensor>& tensor_list,
+    const at::Tensor& tensor,
+    bool async_op,
+    const AllGatherOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  if (tensor_list.size() != static_cast<size_t>(comm_size_)) {
+    throw std::runtime_error(
+        "tensor_list size must equal comm_size for all_gather_v");
+  }
+
+  ensureTensorContiguous(tensor);
+  for (const auto& t : tensor_list) {
+    ensureTensorContiguous(t);
+  }
+
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
+
+  auto tensorCPU = tensor.to(at::kCPU);
+  std::vector<at::Tensor> tensorListCPU;
+  tensorListCPU.reserve(tensor_list.size());
+  for (const auto& t : tensor_list) {
+    tensorListCPU.push_back(t.to(at::kCPU));
+  }
+
+  return createWork(
+      [tensor = tensor,
+       tensor_list = tensor_list,
+       tensorCPU,
+       tensorListCPU,
+       options = options,
+       rank = rank_,
+       size = comm_size_,
+       context = context_,
+       baseTag = nextTag()]() mutable {
+        const auto& scalarType = tensorCPU.scalar_type();
+
+        // Use multiple broadcast operations for all_gather_v
+        // Each rank broadcasts its input tensor to all others
+        for (int i = 0; i < size; ++i) {
+          gloo::BroadcastOptions opts(context);
+          opts.setRoot(i);
+          opts.setTag(baseTag + i);
+          if (options.timeout != kNoTimeout) {
+            opts.setTimeout(options.timeout);
+          }
+
+          if (i == rank) {
+            // This rank is the root - broadcast our input
+            GENERATE_ALL_TYPES(scalarType, setInput, opts, tensorCPU);
+            GENERATE_ALL_TYPES(scalarType, setOutput, opts, tensorListCPU[i]);
+          } else {
+            // Receiving from rank i
+            GENERATE_ALL_TYPES(scalarType, setOutput, opts, tensorListCPU[i]);
+          }
+
+          gloo::broadcast(opts);
+        }
+
+        // Copy results back to original device if needed
+        for (size_t i = 0; i < tensor_list.size(); ++i) {
+          if (tensorListCPU[i].device() != tensor_list[i].device()) {
+            tensor_list[i].copy_(tensorListCPU[i]);
+          }
+        }
+      },
+      async_op);
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_single(
@@ -851,13 +914,83 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter(
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_v(
-    at::Tensor& /* output */,
-    const std::vector<at::Tensor>& /* input_list */,
-    const ReduceOp& /* op */,
-    bool /* async_op */,
-    const ReduceScatterOptions& /* options */) {
-  throw std::runtime_error(
-      "reduce_scatter_v is not supported in GLOO backend yet");
+    at::Tensor& output,
+    const std::vector<at::Tensor>& input_list,
+    const ReduceOp& op,
+    bool async_op,
+    const ReduceScatterOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(output);
+
+  if (input_list.size() != static_cast<size_t>(comm_size_)) {
+    throw std::runtime_error(
+        "input_list size must equal comm_size for reduce_scatter_v");
+  }
+
+  for (const auto& t : input_list) {
+    ensureTensorContiguous(t);
+  }
+
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
+
+  std::vector<at::Tensor> inputListCPU;
+  inputListCPU.reserve(input_list.size());
+  for (const auto& t : input_list) {
+    inputListCPU.push_back(t.to(at::kCPU));
+  }
+  auto outputCPU = output.to(at::kCPU);
+  auto opCPU = convertReduceOpToCPU(op);
+
+  return createWork(
+      [output,
+       input_list = input_list,
+       inputListCPU,
+       outputCPU,
+       opCPU,
+       options = options,
+       rank = rank_,
+       size = comm_size_,
+       context = context_,
+       baseTag = nextTag()]() mutable {
+        // Use multiple reduce operations for reduce_scatter_v
+        // Each rank receives the reduced result for its corresponding position
+        for (int i = 0; i < size; ++i) {
+          auto& inputTensor = inputListCPU[i];
+          const auto& scalarType = inputTensor.scalar_type();
+
+          gloo::ReduceOptions opts(context);
+          opts.setReduceFunction(getFunction(scalarType, opCPU));
+          opts.setRoot(i);
+          opts.setTag(baseTag + i);
+          if (options.timeout != kNoTimeout) {
+            opts.setTimeout(options.timeout);
+          }
+
+          preReduce(inputTensor, opCPU);
+
+          if (i == rank) {
+            // This rank is the root - receive the reduced result
+            GENERATE_ALL_TYPES(scalarType, setOutput, opts, outputCPU);
+          } else {
+            // Non-root ranks just contribute their input
+            GENERATE_ALL_TYPES(scalarType, setOutput, opts, inputTensor);
+          }
+
+          gloo::reduce(opts);
+
+          if (i == rank) {
+            postReduce(outputCPU, opCPU, size);
+          }
+        }
+
+        // Copy result back to original device if needed
+        if (outputCPU.device() != output.device()) {
+          output.copy_(outputCPU);
+        }
+      },
+      async_op);
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
