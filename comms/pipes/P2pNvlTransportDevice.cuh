@@ -5,6 +5,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cstddef>
+#include "comms/pipes/BarrierState.cuh"
 #include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
@@ -26,6 +27,7 @@ struct LocalState {
   char* dataBuffer;
   DeviceSpan<ChunkState> stateBuffer;
   DeviceSpan<SignalState> signalBuffer;
+  DeviceSpan<BarrierState> barrierBuffer;
 };
 
 /**
@@ -41,6 +43,7 @@ struct RemoteState {
   char* dataBuffer;
   DeviceSpan<ChunkState> stateBuffer;
   DeviceSpan<SignalState> signalBuffer;
+  DeviceSpan<BarrierState> barrierBuffer;
 };
 
 /**
@@ -886,6 +889,47 @@ class P2pNvlTransportDevice {
       CmpOp op,
       uint64_t value) {
     localState_.signalBuffer[signal_id].wait_until(group, op, value);
+  }
+
+  /**
+   * barrier_sync_threadgroup - Two-sided barrier synchronization with peer GPU
+   *
+   * Performs a full barrier synchronization between this GPU and the peer GPU
+   * over NVLink. Both sides must call this function to complete the barrier.
+   *
+   * Synchronization protocol:
+   * 1. group.sync() - Ensure all local threads have completed prior work
+   * 2. Leader signals peer - Writes to peer's barrier state via NVLink
+   * 3. Leader waits for peer - Polls local barrier until peer signals
+   * 4. group.sync() - Broadcast completion to all threads in the group
+   *
+   * This provides a full memory fence: all memory operations before the barrier
+   * on both GPUs are visible to all threads after the barrier completes.
+   *
+   * @param group ThreadGroup for cooperative thread synchronization
+   * @param barrier_id Index of the barrier to use (must be < numBarriers)
+   *
+   * All threads in the group must call this function (collective operation).
+   * Both GPUs must call with the same barrier_id to synchronize.
+   */
+  __device__ __forceinline__ void barrier_sync_threadgroup(
+      ThreadGroup& group,
+      uint64_t barrier_id) {
+    // Ensure all prior memory operations are complete
+    group.sync();
+
+    // Only global leader performs barrier operations to avoid races where
+    // different threads read different counter values.
+    if (group.is_leader()) {
+      // Signal peer - write to peer's local barrier state via NVLink
+      remoteState_.barrierBuffer[barrier_id].arrive();
+
+      // Wait for peer - poll local barrier state until peer signals
+      localState_.barrierBuffer[barrier_id].wait();
+    }
+
+    // Ensure all threads wait for leader to complete barrier
+    group.sync();
   }
 
  private:

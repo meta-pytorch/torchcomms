@@ -250,13 +250,13 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
       TC_LOG(ERROR, this) << "Aborting process due to timeout";
       abort();
     } else {
-      throw std::runtime_error("NCCL operation timed out");
+      throw std::runtime_error("NCCLX operation timed out");
     }
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
     nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
     NCCLXException ncclException(
-        *nccl_api_, "NCCL Async Error", asyncErr, nccl_comm_);
+        *nccl_api_, "NCCLX Async Error", asyncErr, nccl_comm_);
     abortNcclComm();
     if (options_.abort_process_on_timeout_or_error) {
       TC_LOG(ERROR, this) << "Aborting process due to error: "

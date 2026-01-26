@@ -60,8 +60,7 @@ void TorchCommNCCL::init(
     const std::string& name,
     const CommOptions& options) {
   TORCH_INTERNAL_ASSERT(
-      device.is_cuda() || device.index() == -1,
-      "TorchCommNCCL requires a CUDA device or unspecified device index");
+      device.is_cuda(), "TorchCommNCCL requires a CUDA device");
 
   // Initialize private members
   device_ = device;
@@ -164,9 +163,10 @@ void TorchCommNCCL::init(
       cuda_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  if (options_.hints.contains(std::string(kHintMaxEventPoolSize))) {
+  const auto kHintMaxEventPoolSizeKey = std::string(kHintMaxEventPoolSize);
+  if (options_.hints.contains(kHintMaxEventPoolSizeKey)) {
     max_event_pool_size_ =
-        std::stoull(options_.hints.at(std::string(kHintMaxEventPoolSize)));
+        std::stoull(options_.hints.at(kHintMaxEventPoolSizeKey));
   } else {
     max_event_pool_size_ = kDefaultMaxEventPoolSize;
   }

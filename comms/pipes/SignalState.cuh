@@ -60,6 +60,14 @@ struct alignas(128) SignalState {
     return comms::device::ld_acquire_sys_global(&signal_);
   }
 
+  __device__ __forceinline__ void store(uint64_t value) {
+    comms::device::st_release_sys_global(&signal_, value);
+  }
+
+  __device__ __forceinline__ uint64_t atomic_fetch_add(uint64_t value) {
+    return comms::device::atomic_fetch_add_release_sys_global(&signal_, value);
+  }
+
   /**
    * signal - Modify the signal counter to notify a waiting peer
    *
@@ -73,10 +81,10 @@ struct alignas(128) SignalState {
   __device__ __forceinline__ void signal(SignalOp op, uint64_t value) {
     switch (op) {
       case SignalOp::SIGNAL_SET:
-        comms::device::st_release_sys_global(&signal_, value);
+        store(value);
         break;
       case SignalOp::SIGNAL_ADD:
-        comms::device::atomic_fetch_add_release_sys_global(&signal_, value);
+        atomic_fetch_add(value);
         break;
     }
   }
