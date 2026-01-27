@@ -128,10 +128,18 @@ bool allGatherPSupport(CtranComm* comm) {
     ctranSupport = true;
     auto mapper = comm->ctran_->mapper.get();
     const auto myRank = statex->rank();
-    // Check if all remote peers are supported by ctran
+    // Check if all remote peers are supported by ctran with a backend that
+    // supports persistent operations (NVL for local, IB for remote).
+    // SOCKET and TCPDM backends do not support the buffer export operations
+    // required by the persistent API.
     for (auto rank = 0; rank < statex->nRanks(); rank++) {
-      if (mapper->getBackend(rank) == CtranMapperBackend::UNSET &&
-          rank != myRank) {
+      if (rank == myRank) {
+        continue;
+      }
+      auto backend = mapper->getBackend(rank);
+      // Only NVL and IB backends support persistent allgather operations
+      if (backend != CtranMapperBackend::NVL &&
+          backend != CtranMapperBackend::IB) {
         ctranSupport = false;
         break;
       }
