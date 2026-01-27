@@ -16,12 +16,14 @@ __global__ void p2pSyncKernel(
   ChunkState* myChunkState = &chunkStates[groupIdx];
 
   for (int step = 1; step <= nSteps; step++) {
+    // call_index=0 since this benchmark doesn't use multi-call pattern
+    constexpr uint32_t call_index = 0;
     if (isSender) {
-      myChunkState->waitReadyToSend(group);
-      myChunkState->readyToRecv(group, step);
+      myChunkState->wait_ready_to_send(group);
+      myChunkState->ready_to_recv(group, step, call_index);
     } else {
-      myChunkState->waitReadyToRecv(group, step);
-      myChunkState->readyToSend(group);
+      myChunkState->wait_ready_to_recv(group, step, call_index);
+      myChunkState->ready_to_send(group);
     }
   }
 }
