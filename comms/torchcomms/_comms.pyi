@@ -345,6 +345,15 @@ class TorchComm:
         hints: Dict[str, str] | None = None,
         timeout: timedelta | None = None,
     ) -> TorchWork: ...
+    def start_coalescing(self) -> None:
+        """Start a coalescing block for batching collective operations."""
+        ...
+    def end_coalescing(
+        self,
+        async_op: bool = True, # isn't used outside of torch.compile op codegen
+    ) -> TorchWork:
+        """End coalescing block and execute all batched operations."""
+        ...
     def split(
         self,
         rank_groups: List[List[int]],
