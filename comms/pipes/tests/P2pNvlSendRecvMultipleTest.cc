@@ -13,6 +13,7 @@
 #include "comms/pipes/tests/P2pNvlSendRecvMultipleTest.cuh"
 
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -419,7 +420,8 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
+  auto mpi_env = std::make_unique<MPIEnvironmentBase>();
+  ::testing::AddGlobalTestEnvironment(mpi_env.get());
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
