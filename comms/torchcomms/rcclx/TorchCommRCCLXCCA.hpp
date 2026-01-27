@@ -5,14 +5,14 @@
 #include <ATen/hip/HIPContext.h> // @manual
 #ifdef HIPIFY_V2
 #include <c10/hip/HIPCachingAllocator.h> // @manual
-using c10::cuda::CUDACachingAllocator::TraceEntry;
 using c10::cuda::CUDACachingAllocator::attachAllocatorTraceTracker;
 using c10::cuda::CUDACachingAllocator::snapshot;
+using c10::cuda::CUDACachingAllocator::TraceEntry;
 #else
 #include <ATen/hip/impl/HIPCachingAllocatorMasqueradingAsCUDA.h> // @manual
-using c10::hip::HIPCachingAllocator::TraceEntry;
 using c10::hip::HIPCachingAllocator::attachAllocatorTraceTracker;
 using c10::hip::HIPCachingAllocator::snapshot;
+using c10::hip::HIPCachingAllocator::TraceEntry;
 #endif
 #include <memory>
 #include <mutex>
@@ -86,7 +86,6 @@ class CachingAllocatorHook {
 };
 
 // Global function to be registered as a hook
-void cachingAllocatorHookFn(
-    const TraceEntry& te);
+void cachingAllocatorHookFn(const TraceEntry& te);
 
 } // namespace torch::comms

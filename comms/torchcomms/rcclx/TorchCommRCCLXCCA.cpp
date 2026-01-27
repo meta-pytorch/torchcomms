@@ -6,8 +6,7 @@
 namespace torch::comms {
 
 // Global function to be registered as a hook
-void cachingAllocatorHookFn(
-    const TraceEntry& te) {
+void cachingAllocatorHookFn(const TraceEntry& te) {
   // Forward to the singleton instance
   CachingAllocatorHook::getInstance().regDeregMem(te);
 }
@@ -22,8 +21,7 @@ DefaultCachingAllocatorHookImpl::DefaultCachingAllocatorHookImpl() {
   // Setup memory registration hooks
   at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
   registerMemPreHook();
-  attachAllocatorTraceTracker(
-      &cachingAllocatorHookFn);
+  attachAllocatorTraceTracker(&cachingAllocatorHookFn);
 }
 
 void CachingAllocatorHookImpl::registerMemPreHook() {
@@ -43,13 +41,10 @@ void CachingAllocatorHookImpl::registerMemPreHook() {
   }
 }
 
-void CachingAllocatorHookImpl::regDeregMem(
-    const TraceEntry& te) {
+void CachingAllocatorHookImpl::regDeregMem(const TraceEntry& te) {
   std::lock_guard<std::mutex> lock(mutex_);
-  bool register_mem = te.action_ ==
-      TraceEntry::Action::SEGMENT_ALLOC;
-  bool unregister_mem = te.action_ ==
-      TraceEntry::Action::SEGMENT_FREE;
+  bool register_mem = te.action_ == TraceEntry::Action::SEGMENT_ALLOC;
+  bool unregister_mem = te.action_ == TraceEntry::Action::SEGMENT_FREE;
 
   if (register_mem) {
     // Memory got allocated, register it with NCCL
