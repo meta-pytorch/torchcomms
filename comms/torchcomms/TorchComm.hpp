@@ -256,8 +256,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   // These are not thread safe and must not be modified while a collective is
   // in progress.
-  RemovableHandle registerPreHook(PreHook preHook);
-  RemovableHandle registerPostHook(PostHook postHook);
+  std::unique_ptr<RemovableHandle> registerPreHook(PreHook preHook);
+  std::unique_ptr<RemovableHandle> registerPostHook(PostHook postHook);
 
   // Disable copy and move semantics
   TorchComm(const TorchComm&) = delete;
