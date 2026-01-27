@@ -3,7 +3,7 @@
 #pragma once
 
 #include <ATen/hip/HIPContext.h> // @manual
-#include <ATen/hip/impl/HIPCachingAllocatorMasqueradingAsCUDA.h> // @manual
+#include <c10/hip/HIPCachingAllocator.h> // @manual
 #include <memory>
 #include <mutex>
 #include "comms/torchcomms/rcclx/TorchCommRCCLX.hpp"
@@ -13,7 +13,7 @@ namespace torch::comms {
 class CachingAllocatorHookImpl {
  public:
   virtual ~CachingAllocatorHookImpl() = default;
-  virtual void regDeregMem(const c10::hip::HIPCachingAllocator::TraceEntry& te);
+  virtual void regDeregMem(const c10::cuda::CUDACachingAllocator::TraceEntry& te);
   virtual void registerComm(TorchCommRCCLX* comm);
   virtual void deregisterComm(TorchCommRCCLX* comm);
   virtual void registerMemPreHook();
@@ -77,6 +77,6 @@ class CachingAllocatorHook {
 
 // Global function to be registered as a hook
 void cachingAllocatorHookFn(
-    const c10::hip::HIPCachingAllocator::TraceEntry& te);
+    const c10::cuda::CUDACachingAllocator::TraceEntry& te);
 
 } // namespace torch::comms
