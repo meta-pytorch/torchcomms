@@ -483,7 +483,7 @@ TorchComm uses the following environment variables for configuration:
 - **TORCHCOMM_ABORT_ON_ERROR**: Whether to abort the process on timeout or error
   (default: "true")
 - **TORCHCOMM_TIMEOUT_SECONDS**: Default timeout in seconds for operations
-  (default: "30.0")
+  (default: "600")
 
 ## Examples
 
@@ -595,7 +595,7 @@ device = torch.device("cuda:0")
 comm = torchcomms.new_comm(
     "ncclx",
     device,
-    timeout=torch.timedelta(seconds=60.0),
+    timeout=torch.timedelta(seconds=60),
     abort_process_on_timeout_or_error=False,
     hints={
         "torchcomm::ncclx::high_priority_stream": "true",

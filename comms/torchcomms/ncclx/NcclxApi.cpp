@@ -8,8 +8,7 @@
     "NCCL version less than 2.25 is not supported. Please upgrade your NCCL installation."
 #endif
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // NCCLXException implementation
 
@@ -437,5 +436,4 @@ ncclResult_t DefaultNcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   return ncclRedOpDestroy(op, comm);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
