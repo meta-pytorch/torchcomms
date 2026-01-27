@@ -18,8 +18,7 @@
 #include "comms/torchcomms/TorchWork.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchCommNCCLX;
@@ -125,5 +124,4 @@ class TorchWorkNCCLXQueue {
   friend class TorchWorkNCCLXQueueCommTest;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
