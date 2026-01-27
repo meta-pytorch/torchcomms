@@ -27,21 +27,21 @@ struct ThreadGroup;
  *
  * STATE MACHINE:
  * ==============
- *                      readyToRecv(stepId)
+ *                      ready_to_recv(stepId)
  *    ┌───────────────┐ ─────────────────────▶ ┌───────────────┐
  *    │ READY_TO_SEND │                        │ READY_TO_RECV │
  *    │     (-1)      │ ◀───────────────────── │   (stepId)    │
- *    └───────────────┘      readyToSend()     └───────────────┘
+ *    └───────────────┘      ready_to_send()   └───────────────┘
  *
  * SENDER WORKFLOW:
- *   1. waitReadyToSend()      - Block until state == READY_TO_SEND
+ *   1. wait_ready_to_send()      - Block until state == READY_TO_SEND
  *   2. [copy data to buffer]
- *   3. readyToRecv(stepId)    - Transition to READY_TO_RECV
+ *   3. ready_to_recv(stepId)    - Transition to READY_TO_RECV
  *
  * RECEIVER WORKFLOW:
- *   1. waitReadyToRecv(stepId) - Block until state == stepId
+ *   1. wait_ready_to_recv(stepId) - Block until state == stepId
  *   2. [copy data from buffer]
- *   3. readyToSend()           - Transition to READY_TO_SEND
+ *   3. ready_to_send()           - Transition to READY_TO_SEND
  *
  * CALL INDEX FOR MULTI-CALL SAFETY:
  * ==================================
@@ -56,8 +56,8 @@ struct ThreadGroup;
  * from call N+1 before the sender has updated the metadata for call N+1.
  *
  * Solution: The call_index_ field disambiguates calls:
- * - readyToRecv(group, stepId, call_index) - writes call_index before stepId
- * - waitReadyToRecv(group, stepId, call_index) - waits for stepId, then
+ * - ready_to_recv(group, stepId, call_index) - writes call_index before stepId
+ * - wait_ready_to_recv(group, stepId, call_index) - waits for stepId, then
  *   verifies call_index matches; if not, retries until correct call arrives
  *
  * MEMORY LAYOUT:
@@ -94,107 +94,88 @@ struct alignas(128) ChunkState {
         offset(0) {}
 
   // ===========================================================================
-  // Sender Operations
+  // Core Operations (Thread-Group-Safe)
   // ===========================================================================
+  //
+  // All operations require a ThreadGroup for proper synchronization:
+  // - For signals (ready_to_recv, ready_to_send): sync before leader writes
+  // - For waits (wait_ready_to_send, wait_ready_to_recv): all threads poll for
+  //   better latency
+  //
+  // The call_index parameter disambiguates multiple calls to send_one/recv_one
+  // in the same kernel.
 
   /**
-   * waitReadyToSend - Block until buffer is available for writing
+   * wait_ready_to_send - Block until buffer is available for writing
    *
    * Spins until receiver has consumed previous data and marked buffer ready.
-   * Uses acquire semantics to ensure receiver's reads completed.
+   * All threads poll for lower latency.
+   *
+   * @param group ThreadGroup for cooperative processing
    */
-  __device__ __forceinline__ void waitReadyToSend() const {
-    while (load() != READY_TO_SEND) {
-    }
-  }
+  __device__ __forceinline__ void wait_ready_to_send(ThreadGroup& group) const;
 
   /**
-   * isReadyToSend - Non-blocking check if buffer is available
-   *
-   * @return true if buffer can be written, false otherwise
-   */
-  __device__ __forceinline__ bool isReadyToSend() const {
-    return load() == READY_TO_SEND;
-  }
-
-  /**
-   * readyToRecv - Signal that data is ready for receiver
-   *
-   * Transitions state from READY_TO_SEND to READY_TO_RECV.
-   * Uses release semantics to ensure data writes are visible to receiver.
-   *
-   * @param stepId The step identifier for this data
-   */
-  __device__ __forceinline__ void readyToRecv(std::size_t stepId) {
-    store(static_cast<int32_t>(stepId));
-  }
-
-  // ===========================================================================
-  // Receiver Operations
-  // ===========================================================================
-
-  /**
-   * waitReadyToRecv - Block until data for specific step is ready
+   * wait_ready_to_recv - Block until data for specific step is ready
    *
    * Spins until sender has written data and signaled ready.
-   * Uses acquire semantics to ensure sender's writes are visible.
+   * All threads poll for lower latency.
    *
+   * @param group ThreadGroup for cooperative processing
    * @param stepId The step identifier to wait for
+   * @param call_index Call index for multi-call disambiguation
    */
-  __device__ __forceinline__ void waitReadyToRecv(std::size_t stepId) const {
-    while (load() != static_cast<int32_t>(stepId)) {
-    }
-  }
-
-  /**
-   * isReadyToRecv - Non-blocking check if data for step is ready
-   *
-   * @param stepId The step identifier to check
-   * @return true if data is ready, false otherwise
-   */
-  __device__ __forceinline__ bool isReadyToRecv(std::size_t stepId) const {
-    return load() == static_cast<int32_t>(stepId);
-  }
-
-  /**
-   * readyToSend - Signal that buffer can be reused by sender
-   *
-   * Transitions state from READY_TO_RECV to READY_TO_SEND.
-   * Uses release semantics to ensure data reads completed before signal.
-   */
-  __device__ __forceinline__ void readyToSend() {
-    store(READY_TO_SEND);
-  }
-
-  // ===========================================================================
-  // Thread-Group-Safe Operations (preferred for multi-threaded use)
-  // ===========================================================================
-  //
-  // These overloads accept a ThreadGroup and handle synchronization correctly:
-  // - For signals (readyToRecv, readyToSend): sync before leader writes
-  // - For waits (waitReadyToSend, waitReadyToRecv): all threads poll for better
-  // latency
-  //
-  // The optional call_index parameter (default=0) disambiguates multiple calls
-  // to send_one/recv_one in the same kernel. When call_index=0, the simple
-  // stepId-only logic is used. When call_index!=0, call_index is also checked.
-  //
-  // This ensures all threads in the group see consistent state.
-
-  __device__ __forceinline__ void waitReadyToSend(ThreadGroup& group) const;
-  __device__ __forceinline__ void waitReadyToRecv(
+  __device__ __forceinline__ void wait_ready_to_recv(
       ThreadGroup& group,
       std::size_t stepId,
-      uint32_t call_index = 0) const;
+      uint32_t call_index) const;
+
+  /**
+   * ready_to_recv - Signal that data is ready for receiver
+   *
+   * Transitions state from READY_TO_SEND to READY_TO_RECV.
+   * Syncs all threads, then leader writes call_index and stepId.
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param stepId The step identifier for this data
+   * @param call_index Call index for multi-call disambiguation
+   */
   __device__ __forceinline__ void
-  readyToRecv(ThreadGroup& group, std::size_t stepId, uint32_t call_index = 0);
-  __device__ __forceinline__ void readyToSend(ThreadGroup& group);
-  __device__ __forceinline__ void writeMetaData(
+  ready_to_recv(ThreadGroup& group, std::size_t stepId, uint32_t call_index);
+
+  /**
+   * ready_to_send - Signal that buffer can be reused by sender
+   *
+   * Transitions state from READY_TO_RECV to READY_TO_SEND.
+   * Syncs all threads, then leader writes READY_TO_SEND.
+   *
+   * @param group ThreadGroup for cooperative processing
+   */
+  __device__ __forceinline__ void ready_to_send(ThreadGroup& group);
+
+  /**
+   * write_metadata - Write metadata fields (leader only)
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param nbytes_val Number of bytes in this chunk
+   * @param offset_val Offset in output buffer
+   * @param has_more_val Whether more chunks are coming
+   */
+  __device__ __forceinline__ void write_metadata(
       ThreadGroup& group,
       std::size_t nbytes_val,
       std::size_t offset_val,
       bool has_more_val);
-  __device__ __forceinline__ void readMetaData(
+
+  /**
+   * read_metadata - Read metadata fields
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param nbytes_val Output: number of bytes in this chunk
+   * @param offset_val Output: offset in output buffer
+   * @param has_more_val Output: whether more chunks are coming
+   */
+  __device__ __forceinline__ void read_metadata(
       ThreadGroup& group,
       std::size_t& nbytes_val,
       std::size_t& offset_val,
@@ -222,7 +203,7 @@ static_assert(
 // are placed after the namespace closes and ThreadGroup.cuh is included.
 // This avoids a circular dependency (ThreadGroup doesn't need ChunkState).
 
-__device__ __forceinline__ void ChunkState::waitReadyToSend(
+__device__ __forceinline__ void ChunkState::wait_ready_to_send(
     ThreadGroup& group) const {
   // All threads poll: slightly lower latency for small messages
   // (avoids sync barrier overhead after leader-only poll)
@@ -230,7 +211,7 @@ __device__ __forceinline__ void ChunkState::waitReadyToSend(
   }
 }
 
-__device__ __forceinline__ void ChunkState::waitReadyToRecv(
+__device__ __forceinline__ void ChunkState::wait_ready_to_recv(
     ThreadGroup& group,
     std::size_t stepId,
     uint32_t call_index) const {
@@ -247,7 +228,7 @@ __device__ __forceinline__ void ChunkState::waitReadyToRecv(
   }
 }
 
-__device__ __forceinline__ void ChunkState::readyToRecv(
+__device__ __forceinline__ void ChunkState::ready_to_recv(
     ThreadGroup& group,
     std::size_t stepId,
     uint32_t call_index) {
@@ -260,14 +241,14 @@ __device__ __forceinline__ void ChunkState::readyToRecv(
   }
 }
 
-__device__ __forceinline__ void ChunkState::readyToSend(ThreadGroup& group) {
+__device__ __forceinline__ void ChunkState::ready_to_send(ThreadGroup& group) {
   group.sync();
   if (group.is_leader()) {
     store(READY_TO_SEND);
   }
 }
 
-__device__ __forceinline__ void ChunkState::writeMetaData(
+__device__ __forceinline__ void ChunkState::write_metadata(
     ThreadGroup& group,
     std::size_t nbytes_val,
     std::size_t offset_val,
@@ -279,7 +260,7 @@ __device__ __forceinline__ void ChunkState::writeMetaData(
   }
 }
 
-__device__ __forceinline__ void ChunkState::readMetaData(
+__device__ __forceinline__ void ChunkState::read_metadata(
     ThreadGroup& group,
     std::size_t& nbytes_val,
     std::size_t& offset_val,
