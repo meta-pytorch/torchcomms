@@ -7,6 +7,9 @@
 #include "comms/pipes/AllToAllv.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/collectives/Broadcast.cuh"
+#include "comms/pipes/collectives/BroadcastBinomialTree.cuh"
+#include "comms/pipes/collectives/BroadcastRing.cuh"
 
 namespace comms::pipes::benchmark {
 
@@ -20,6 +23,26 @@ struct TimingStats {
   unsigned long long startCycle;
   unsigned long long endCycle;
   unsigned long long totalCycles;
+};
+
+/**
+ * BroadcastTimingStats - Detailed timing breakdown for broadcast profiling
+ *
+ * Captures fine-grained timing information for broadcast operations,
+ * allowing identification of bottlenecks in the chunked pipelined protocol.
+ *
+ * To convert cycles to microseconds:
+ *   int clockRateKHz;
+ *   cudaDeviceGetAttribute(&clockRateKHz, cudaDevAttrClockRate, deviceId);
+ *   double microseconds = (double)cycles / (double)clockRateKHz * 1000.0;
+ */
+struct BroadcastTimingStats {
+  unsigned long long waitForReadyCycles; // Time waiting for ChunkState
+  unsigned long long dataCopyCycles; // Time in memcpy_vectorized
+  unsigned long long signalCycles; // Time signaling readyToRecv/readyToSend
+  unsigned long long totalCycles; // End-to-end kernel time
+  uint32_t numChunksProcessed; // Chunks handled by this warp
+  uint32_t warpId; // Global warp ID for identification
 };
 
 // =============================================================================
@@ -80,5 +103,65 @@ __global__ void allToAllvKernel(
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos);
+
+/**
+ * Broadcast benchmark kernel.
+ * Root rank broadcasts data to all non-root ranks using flat-tree algorithm.
+ */
+__global__ void broadcastKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes);
+
+/**
+ * Broadcast benchmark kernel using binomial tree algorithm.
+ * Root rank broadcasts data to all non-root ranks using O(log N) rounds.
+ * More bandwidth-efficient than flat-tree for large messages.
+ */
+__global__ void broadcastBinomialTreeKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes);
+
+/**
+ * Adaptive broadcast kernel that selects algorithm based on message size.
+ * Uses flat-tree for small messages (< 64KB), binomial tree for larger.
+ */
+__global__ void broadcastAdaptiveKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes);
+
+/**
+ * Ring broadcast kernel using ring algorithm.
+ * Achieves near-optimal bandwidth utilization by overlapping send/recv.
+ * Best performance for large messages (>= 1MB).
+ */
+__global__ void broadcastRingKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes);
+
+/**
+ * Adaptive broadcast kernel v2 that selects between flat-tree, binomial tree,
+ * and ring algorithms based on message size.
+ * - Small messages (< 64KB): flat-tree
+ * - Medium messages (64KB - 1MB): binomial tree
+ * - Large messages (>= 1MB): ring
+ */
+__global__ void broadcastAdaptiveV2Kernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes);
 
 } // namespace comms::pipes::benchmark
