@@ -842,10 +842,14 @@ TEST_F(
       .WillOnce(Return(ncclInvalidArgument));
 
   EXPECT_CALL(*nccl_mock_, getErrorString(ncclInvalidArgument))
-      .WillOnce(Return("Invalid argument"));
+      .WillRepeatedly(Return("Invalid argument"));
 
-  // Simulate memory allocation - should throw due to registration failure
-  EXPECT_THROW(allocator.regDeregMem(alloc_entry), std::runtime_error);
+  EXPECT_CALL(*nccl_mock_, getLastError(_))
+      .WillRepeatedly(Return("Invalid argument details"));
+
+  // Simulate memory allocation - should throw NCCLXException due to
+  // registration failure
+  EXPECT_THROW(allocator.regDeregMem(alloc_entry), NCCLXException);
 
   // Try again with successful registration
   EXPECT_CALL(
@@ -865,8 +869,9 @@ TEST_F(
   EXPECT_CALL(*nccl_mock_, commDeregister(_, reinterpret_cast<void*>(0x2000)))
       .WillOnce(Return(ncclInvalidArgument));
 
-  // Simulate memory deallocation - should throw due to deregistration failure
-  EXPECT_THROW(allocator.regDeregMem(dealloc_entry), std::runtime_error);
+  // Simulate memory deallocation - should throw NCCLXException due to
+  // deregistration failure
+  EXPECT_THROW(allocator.regDeregMem(dealloc_entry), NCCLXException);
 
   // Clean up
   setupNormalDestruction(*comm);
