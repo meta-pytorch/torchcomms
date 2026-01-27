@@ -291,6 +291,9 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   void preHook(PreHookArgs&& args);
   void postHook(PostHookArgs&& args);
 
+  // Rank validation helper
+  void validateRank(int rank, const char* param_name) const;
+
  private:
   // Backend name
   std::string backend_;

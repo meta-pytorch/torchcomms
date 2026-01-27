@@ -6,8 +6,7 @@
 
 #include <rccl.h> // @manual=//comms/rccl:rccl-dev
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 /**
  * Abstract interface for RCCL API operations.
@@ -314,5 +313,4 @@ class DefaultRcclApi : public RcclApi {
   ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm) override;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -5,8 +5,7 @@
 #include <c10/core/Device.h>
 #include <comms/torchcomms/TorchCommOptions.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchWork;
@@ -99,5 +98,4 @@ class TorchCommWindow {
   std::vector<int64_t> buf_shape_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

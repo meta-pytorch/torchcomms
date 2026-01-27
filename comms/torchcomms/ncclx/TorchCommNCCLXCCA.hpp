@@ -8,8 +8,7 @@
 #include <mutex>
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 class CachingAllocatorHookImpl {
  public:
@@ -88,5 +87,4 @@ class CachingAllocatorHook {
 void cachingAllocatorHookFn(
     const c10::cuda::CUDACachingAllocator::TraceEntry& te);
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
