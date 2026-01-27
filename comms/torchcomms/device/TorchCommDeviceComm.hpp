@@ -9,27 +9,29 @@
 //   Each device window has isolated signal/counter/barrier namespace.
 //   1:1 mapping between host window and device window.
 //
-// Source Buffer Registration (NCCL GIN Backend):
-//   To enable NON-COLLECTIVE local buffer registration, we use a split-comm
-//   approach:
+// Backend Abstraction:
+//   This header is BACKEND-AGNOSTIC. It contains no backend-specific types.
+//   Backend-specific state is stored via opaque void* pointers:
+//     - TorchCommDeviceComm_::backend_state_ -> backend-specific device comm
+//     - TorchCommDeviceWindow::backend_handle_ -> backend-specific window
+//     handle
 //
-//   1. INITIALIZATION (collective, done ONCE per TorchComm):
-//      Each rank calls ncclCommSplit(main_comm, myRank, 0, &local_comm)
-//      - This is COLLECTIVE (all ranks must participate)
-//      - Each rank gets its own 1-rank communicator
-//      - The split comm SHARES ginState with parent (same ginComms[], ginCtx[])
+//   Each backend implementation (NCCLX, NVSHMEM, etc.) is responsible for:
+//     1. Defining its own backend state structures
+//     2. Populating the opaque pointers during get_device_window()
+//     3. Casting back to the correct type in device-side implementations
 //
-//   2. LOCAL BUFFER REGISTRATION (non-collective, can be called anytime):
-//      ncclCommWindowRegister(local_comm, buffer, size, ...)
-//      - This is NON-COLLECTIVE because local_comm has nranks=1
-//      - All bootstrap barriers become no-ops: if (nranks == 1) return
-//      ncclSuccess
-//      - The resulting ginWins[] are compatible with parent's windows
+// Source Buffer Registration:
+//   To enable NON-COLLECTIVE local buffer registration, backends may use
+//   different approaches:
 //
-//   Benefits:
-//     - Source buffer can be ANY GPU memory (not restricted to window region)
-//     - No coordination with other ranks required for registration
-//     - ginWins[] are valid for PUT operations through parent's DevComm
+//   NCCL GIN Backend:
+//     Uses a split-comm approach where each rank creates a 1-rank communicator
+//     via ncclCommSplit. This allows non-collective buffer registration.
+//
+//   NVSHMEM Backend:
+//     Uses symmetric heap allocation which is inherently collective, or
+//     local registration APIs if available.
 
 #pragma once
 
@@ -46,7 +48,7 @@ class TorchCommDeviceWindow;
 struct RegisteredBuffer;
 
 // Internal - not exposed to user
-class TorchCommDeviceComm_;
+struct TorchCommDeviceComm_;
 
 // =============================================================================
 // Enums
@@ -319,7 +321,8 @@ class TorchCommDeviceWindow {
   // Barrier namespace is isolated per DeviceWindow.
   __device__ int barrier(int barrier_id);
 
- private:
+  // Backend implementations populate these fields during get_device_window()
+
   // Internal device comm (hidden from user)
   // Contains backend handle, transport state, signal/counter/barrier arrays
   TorchCommDeviceComm_* comm_;
@@ -329,8 +332,10 @@ class TorchCommDeviceWindow {
   size_t size_;
   void** peer_ptrs_; // Array of peer base pointers (for NVLink)
 
-  // Backend-specific window handle (e.g., ncclWindow_t)
-  // This is the destination window - registered via main N-rank communicator
+  // Backend-specific window handle (opaque pointer)
+  // This is the destination window - the actual type depends on backend:
+  //   - NCCLX: ncclWindow_t (registered via main N-rank communicator)
+  //   - NVSHMEM: pointer to symmetric heap region info
   void* backend_handle_;
 };
 
@@ -344,14 +349,22 @@ class TorchCommDeviceWindow {
 //
 // Contains:
 //   - Rank/size metadata
-//   - Backend handle (ncclDevComm* + ncclGin_C* or nvshmem state)
-//   - Signal/counter/barrier state arrays
+//   - Backend-specific state (opaque pointer)
+//   - Signal/counter/barrier configuration
+//
+// The backend_state_ pointer holds backend-specific data:
+//   - NCCLX: Points to ncclDevComm (GIN handles, signals, counters)
+//   - NVSHMEM: Points to NVSHMEM-specific state (team, symmetric heap info)
 //
 // Created when hostWindow.get_device_window() is called.
 // One DeviceComm_ instance per DeviceWindow (1:1 mapping with isolated state).
+//
+// Note: This is a POD-like struct intentionally. Backend implementations
+// directly populate the fields during get_device_window(). All fields are
+// public to allow backend code to initialize them without friend declarations.
 
-class TorchCommDeviceComm_ {
- public:
+struct TorchCommDeviceComm_ {
+  // Accessors for device-side use
   __device__ int rank() const {
     return rank_;
   }
@@ -362,24 +375,38 @@ class TorchCommDeviceComm_ {
     return backend_type_;
   }
 
- private:
-  friend class TorchCommDeviceWindow;
+  // Get backend-specific state (opaque pointer)
+  // Backend implementations cast this to their specific type:
+  //   NCCLX:   static_cast<ncclDevComm*>(backend_state())
+  //   NVSHMEM: static_cast<NVSHMEMDeviceState*>(backend_state())
+  __device__ void* backend_state() const {
+    return backend_state_;
+  }
 
+  // Data members - public for backend initialization
   BackendType backend_type_;
   int rank_;
   int size_;
-  void* backend_handle_; // ncclDevComm* + ncclGin_C* or nvshmem state
 
-  // Signal state (for remote notification)
-  uint64_t* signals_; // Local signal inbox (written by remote peers)
+  // Backend-specific device state (opaque pointer)
+  // Points to backend-specific structures allocated on device memory.
+  // The actual type depends on backend_type_:
+  //   - NCCL_GIN: ncclDevComm* (from ncclDevCommCreate)
+  //   - NVSHMEM: NVSHMEMDeviceState* (team handles, symmetric heap info)
+  //
+  // IMPORTANT: The backend state contains all signal/counter/barrier state.
+  // We do NOT allocate separate arrays - we use the backend's native
+  // mechanisms:
+  //   - NCCL: GIN signals/counters are inside ncclDevComm (allocated via
+  //   ncclDevCommCreate)
+  //   - NVSHMEM: Uses native nvshmem_signal_* APIs with symmetric heap
+  void* backend_state_;
+
+  // Counts for user reference (how many signals/counters/barriers are
+  // available) The actual signal/counter/barrier state is managed by the
+  // backend inside backend_state_
   int signal_count_;
-
-  // Counter state (for local completion)
-  uint64_t* counters_; // Local counters (written by local HCA/NIC)
   int counter_count_;
-
-  // Barrier state
-  uint32_t* barrier_epochs_;
   int barrier_count_;
 };
 
