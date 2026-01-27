@@ -5,9 +5,7 @@
 using ::testing::_;
 using ::testing::Return;
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 void CachingAllocatorHookMock::setupDefaultBehaviors() {
   ON_CALL(*this, regDeregMem(_)).WillByDefault(Return());
@@ -29,6 +27,4 @@ bool CachingAllocatorHookMock::isCommRegistered(TorchCommRCCL* comm) {
   return registered_comms_.find(comm) != registered_comms_.end();
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

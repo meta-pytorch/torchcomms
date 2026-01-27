@@ -3,12 +3,10 @@
 #include "comms/torchcomms/rccl/TorchCommRCCLCCA.hpp"
 #include <mutex>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Global function to be registered as a hook
-void cachingAllocatorHookFn(
-    const c10::hip::HIPCachingAllocator::TraceEntry& te) {
+void cachingAllocatorHookFn(const TraceEntry& te) {
   // Forward to the singleton instance
   CachingAllocatorHook::getInstance().regDeregMem(te);
 }
@@ -23,15 +21,14 @@ DefaultCachingAllocatorHookImpl::DefaultCachingAllocatorHookImpl() {
   // Setup memory registration hooks
   at::globalContext().lazyInitDevice(c10::DeviceType::CUDA);
   registerMemPreHook();
-  c10::hip::HIPCachingAllocator::attachAllocatorTraceTracker(
-      &cachingAllocatorHookFn);
+  attachAllocatorTraceTracker(&cachingAllocatorHookFn);
 }
 
 void CachingAllocatorHookImpl::registerMemPreHook() {
   // We assume no mem pool and no comm has been created yet, we just loop up the
   // snapshot of the default pool for all devices.
-  auto snapshot = c10::hip::HIPCachingAllocator::snapshot();
-  for (const auto& segmentInfo : snapshot.segments) {
+  auto the_snapshot = snapshot();
+  for (const auto& segmentInfo : the_snapshot.segments) {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     void* addr = reinterpret_cast<void*>(segmentInfo.address);
     size_t len = segmentInfo.total_size;
@@ -44,13 +41,10 @@ void CachingAllocatorHookImpl::registerMemPreHook() {
   }
 }
 
-void CachingAllocatorHookImpl::regDeregMem(
-    const c10::hip::HIPCachingAllocator::TraceEntry& te) {
+void CachingAllocatorHookImpl::regDeregMem(const TraceEntry& te) {
   std::lock_guard<std::mutex> lock(mutex_);
-  bool register_mem = te.action_ ==
-      c10::hip::HIPCachingAllocator::TraceEntry::Action::SEGMENT_ALLOC;
-  bool unregister_mem = te.action_ ==
-      c10::hip::HIPCachingAllocator::TraceEntry::Action::SEGMENT_FREE;
+  bool register_mem = te.action_ == TraceEntry::Action::SEGMENT_ALLOC;
+  bool unregister_mem = te.action_ == TraceEntry::Action::SEGMENT_FREE;
 
   if (register_mem) {
     // Memory got allocated, register it with NCCL
@@ -143,5 +137,4 @@ bool CachingAllocatorHookImpl::isCommRegistered(TorchCommRCCL* comm) {
   return registeredComms_.find(comm) != registeredComms_.end();
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -1,8 +1,7 @@
 #include "comms/torchcomms/xccl/XcclApi.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 const char* DefaultXcclApi::getErrorString(onecclResult_t result) {
   return onecclGetErrorString(result);
@@ -218,5 +217,4 @@ onecclResult_t DefaultXcclApi::redOpDestroy(
   return onecclRedOpDestroy(op, comm);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
