@@ -6,8 +6,7 @@
 #include <functional>
 #include <future>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 /**
  * TorchWork - Base class representing asynchronous work.
@@ -102,5 +101,4 @@ class TorchWorkThread : public TorchWork {
   std::future<void> future_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
