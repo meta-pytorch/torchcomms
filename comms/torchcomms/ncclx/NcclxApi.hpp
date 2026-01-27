@@ -8,8 +8,7 @@
 #include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration for NCCLXException
 class NcclxApi;
@@ -529,5 +528,4 @@ class DefaultNcclxApi : public NcclxApi {
   ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm) override;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

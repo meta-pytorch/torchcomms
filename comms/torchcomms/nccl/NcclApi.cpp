@@ -4,8 +4,7 @@
 #include <fmt/core.h>
 #include "comms/torchcomms/TorchCommLogging.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 #if defined(IS_NCCLX)
 #error "NCCLX should not be used"
@@ -248,5 +247,4 @@ ncclResult_t DefaultNcclApi::memFree(void* buff) {
 #endif
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -9,9 +9,7 @@ using ::testing::DoAll;
 using ::testing::Return;
 using ::testing::SetArgPointee;
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 void RcclMock::setupDefaultBehaviors() {
   // Default communicator operations
@@ -78,6 +76,4 @@ void RcclMock::setupDefaultBehaviors() {
   ON_CALL(*this, getErrorString(_)).WillByDefault(Return("Success"));
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test
