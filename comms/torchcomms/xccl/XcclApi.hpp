@@ -3,10 +3,9 @@
 #include <oneapi/ccl.h>
 #include <oneapi/ccl.hpp>
 
-#include "comms/torchcomms/device/XpuApi.hpp"
+#include "comms/torchcomms/device/xpu/XpuApi.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 class XcclApi {
  public:
@@ -284,5 +283,4 @@ class DefaultXcclApi : public XcclApi {
   onecclResult_t redOpDestroy(onecclRedOp_t op, onecclComm_t comm) override;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

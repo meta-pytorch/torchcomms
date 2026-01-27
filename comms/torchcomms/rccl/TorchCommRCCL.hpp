@@ -24,8 +24,7 @@
 #include "comms/torchcomms/rccl/RcclApi.hpp" // @manual
 #include "comms/torchcomms/rccl/TorchWorkRCCL.hpp" // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 constexpr size_t kMaxEventPoolSize = 1000;
 
@@ -341,7 +340,11 @@ class TorchCommRCCL : public TorchCommBackend,
   c10::intrusive_ptr<TorchWorkRCCL> createWork(
       hipStream_t stream,
       std::chrono::milliseconds timeout,
-      const std::vector<at::Tensor>& inputTensors);
+      const std::vector<at::Tensor>& inputTensors = {});
+  c10::intrusive_ptr<TorchWorkRCCL> createWork(
+      hipStream_t stream,
+      std::chrono::milliseconds timeout,
+      const at::Tensor& inputTensor);
   void enqueueWork(c10::intrusive_ptr<TorchWorkRCCL> work, hipStream_t stream);
   hipStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
@@ -395,5 +398,4 @@ class TorchCommRCCL : public TorchCommBackend,
   std::string name_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

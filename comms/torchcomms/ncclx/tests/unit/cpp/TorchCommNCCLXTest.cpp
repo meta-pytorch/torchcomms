@@ -17,9 +17,7 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CachingAllocatorHookMock.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 // ============================================================================
 // 1. INITIALIZATION TESTS
@@ -1571,6 +1569,4 @@ TEST_F(TorchCommNCCLXTest, NCCLXExceptionFromFailedAllReduceIncludesLastError) {
   comm->finalize();
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

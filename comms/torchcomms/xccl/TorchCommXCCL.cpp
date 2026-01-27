@@ -8,8 +8,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 onecclResult_t XCCLException::getResult() const {
   return result_;
@@ -566,8 +565,7 @@ const char* XCCLException::what() const noexcept {
   return message_.c_str();
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
 
 namespace {
 class XCCLRegistration {

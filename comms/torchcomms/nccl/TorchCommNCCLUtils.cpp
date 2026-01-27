@@ -8,8 +8,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "nccl.h" // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 
@@ -309,6 +308,16 @@ c10::intrusive_ptr<TorchWorkNCCL> TorchCommNCCL::createWork(
   return work;
 }
 
+c10::intrusive_ptr<TorchWorkNCCL> TorchCommNCCL::createWork(
+    cudaStream_t stream,
+    std::chrono::milliseconds timeout,
+    const at::Tensor& inputTensor) {
+  // Single-tensor overload to avoid vector allocation
+  auto work = c10::make_intrusive<TorchWorkNCCL>(
+      shared_from_this(), stream, timeout, inputTensor);
+  return work;
+}
+
 void TorchCommNCCL::enqueueWork(
     c10::intrusive_ptr<TorchWorkNCCL> work,
     cudaStream_t stream) {
@@ -463,5 +472,4 @@ void TorchCommNCCL::detachMemoryHook() {
   CachingAllocatorHook::getInstance().deregisterComm(this);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

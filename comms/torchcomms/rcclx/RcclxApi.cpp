@@ -2,8 +2,7 @@
 
 #include "comms/torchcomms/rcclx/RcclxApi.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // DefaultRcclxApi implementation
 
@@ -297,5 +296,4 @@ ncclResult_t DefaultRcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   return ncclRedOpDestroy(op, comm);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
