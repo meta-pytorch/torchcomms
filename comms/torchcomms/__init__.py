@@ -2,7 +2,6 @@
 
 # pyre-strict
 import ctypes
-import logging
 import os
 import sys
 from contextlib import contextmanager
@@ -33,13 +32,6 @@ if torchcomms_compile_support_enabled:
         "module", (), {"OpaqueBaseMeta": OpaqueBaseMeta}
     )()
 
-logger = logging.getLogger(__name__)
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
-    logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
 
 def _load_libtorchcomms() -> None:
     libtorchcomms_path = os.path.join(os.path.dirname(__file__), "libtorchcomms.so")
@@ -53,6 +45,7 @@ def _load_libtorchcomms() -> None:
 
 _load_libtorchcomms()
 from torchcomms._comms import *  # noqa: F401, F403
+import torchcomms.coalescing as coalescing  # noqa F401
 import torchcomms.objcol as objcol  # noqa: F401, F403
 
 if os.environ.get("TORCHCOMMS_PATCH_FOR_COMPILE", "").lower() in ("1", "true"):
