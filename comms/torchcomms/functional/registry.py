@@ -900,20 +900,20 @@ def _register_lowerings() -> None:
             logger.warning(f"Failed to register lowering for {op_name}: {e}")
 
 
-def _patch_eager_autograd() -> None:
-    """Patch TorchComm methods to use functional ops when requires_grad=True or FakeTensor.
+def _patch_eager_methods() -> None:
+    """Patch TorchComm methods to dispatch to functional ops for tracing and autograd.
 
-    This enables autograd support for the native eager API (e.g., comm.all_reduce(tensor, op)).
-    When any input tensor has requires_grad=True or is a FakeTensor (during torch.compile tracing),
-    we dispatch to the functional op which has autograd registered via torch.library.register_autograd.
+    This patches the native eager API (e.g., comm.all_reduce(tensor, op)) to dispatch
+    to functional ops when:
+    - Any input tensor has requires_grad=True (for autograd support)
+    - Any input tensor is a FakeTensor or meta tensor (for torch.compile tracing)
+
+    This ensures proper behavior during tracing where meta/fake tensors should not
+    hit the real C++ collective implementations.
     """
     # Group registered collectives by target class
     class_methods: dict[type, list[tuple[str, dict]]] = {}
     for op_name, info in _REGISTERED_COLLECTIVES.items():
-        # Only patch ops that have backward_fn (autograd support)
-        if info.get("backward_fn") is None:
-            continue
-
         schema = info["param_schema"]
 
         # Only patch mutating ops (they have functional versions)
@@ -925,11 +925,12 @@ def _patch_eager_autograd() -> None:
             class_methods[target_class] = []
         class_methods[target_class].append((op_name, info))
 
-    def _create_autograd_wrapper(original_method, op_name, info):
-        """Create a wrapper that dispatches to the inplace op for autograd support.
+    def _create_dispatch_wrapper(original_method, op_name, info):
+        """Create a wrapper that dispatches to the functional op for tracing and autograd.
 
-        The inplace op has an Autograd kernel registered via make_autograd_impl,
-        so we can just call it directly and get proper gradient tracking.
+        When tensors require grad or are fake/meta tensors (during torch.compile),
+        we dispatch to the inplace op which has proper kernels registered for
+        autograd, FakeTensor, and Meta modes.
         """
         wrapper_schema = info["param_schema"]
 
@@ -978,10 +979,10 @@ def _patch_eager_autograd() -> None:
             method_name = info["name"]
             try:
                 original_method = getattr(target_class, method_name)
-                wrapper = _create_autograd_wrapper(original_method, op_name, info)
+                wrapper = _create_dispatch_wrapper(original_method, op_name, info)
                 setattr(target_class, method_name, wrapper)
                 logger.info(
-                    f"Patched {target_class.__name__}.{method_name} for eager autograd"
+                    f"Patched {target_class.__name__}.{method_name} for tracing and autograd"
                 )
             except Exception as e:
                 logger.warning(
@@ -1068,7 +1069,7 @@ def finalize_registration(lib: Any) -> None:
     # Register functional collectives backend (includes autograd generation)
     register_torchcomms_funcols_impl()
 
-    # Patch eager methods for autograd support
-    _patch_eager_autograd()
+    # Patch eager methods for tracing and autograd support
+    _patch_eager_methods()
 
     logger.info("Collective registration finalized")
