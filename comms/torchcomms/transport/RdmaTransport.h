@@ -4,6 +4,7 @@
 
 #include <deque>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include <folly/Synchronized.h>
@@ -29,16 +30,45 @@ namespace torch::comms {
  */
 class RdmaMemory : folly::MoveOnly {
  public:
+  /**
+   * Read-only view into a subset of registered RDMA memory.
+   *
+   * LIFETIME SAFETY WARNING:
+   * View holds a reference to the parent RdmaMemory object. The parent
+   * MUST remain valid (not destroyed or moved) for the entire lifetime
+   * of any View objects. Accessing a View after its parent has been
+   * destroyed results in undefined behavior.
+   *
+   * Safe usage patterns:
+   *   - Use View only within the scope where parent RdmaMemory is valid
+   *   - Do not store View objects beyond the parent's lifetime
+   *   - Do not return View from functions that return by value if the
+   *     parent is a local variable
+   *
+   * Example of UNSAFE code:
+   *   RdmaMemory::View getView() {
+   *     RdmaMemory mem(buf, len, dev);  // local variable
+   *     return mem.createView(0, len);  // DANGER: mem destroyed here!
+   *   }  // View now holds dangling reference
+   */
   class View {
    public:
     /*
      * Create a view of a subset of RdmaMemory with bounds checking.
      * Asserts that the view is within the bounds of the parent memory.
+     *
+     * @param parent The parent RdmaMemory - must outlive this View
+     * @param offset Byte offset from start of parent buffer
+     * @param length Length of the view in bytes
+     * @throws std::invalid_argument if offset + length exceeds parent bounds
      */
     View(const RdmaMemory& parent, size_t offset, size_t length)
         : parent_(parent), offset_(offset), length_(length) {
       CHECK_THROW(offset <= parent_.len_, std::invalid_argument);
-      CHECK_THROW(offset + length <= parent_.len_, std::invalid_argument);
+      // Check for overflow and bounds in a single safe comparison
+      CHECK_THROW(
+          length <= parent_.len_ && offset <= parent_.len_ - length,
+          std::invalid_argument);
     }
 
     /*
@@ -59,12 +89,26 @@ class RdmaMemory : folly::MoveOnly {
       return &parent_;
     }
 
+    /**
+     * Check if the parent memory is still valid (non-null buffer).
+     * Note: This is a best-effort check - if the parent has been destroyed,
+     * calling this method is already undefined behavior.
+     */
+    bool isParentValid() const {
+      return parent_.buf_ != nullptr && parent_.regHdl_ != nullptr;
+    }
+
    protected:
     const RdmaMemory& parent_;
     const size_t offset_;
     const size_t length_;
   };
 
+  /**
+   * Mutable view into a subset of registered RDMA memory.
+   *
+   * See View class for lifetime safety warnings - all the same caveats apply.
+   */
   class MutableView : public View {
    public:
     /*
@@ -95,7 +139,19 @@ class RdmaMemory : folly::MoveOnly {
     return View(*this, offset, length);
   }
 
+  /**
+   * Create a view from an arbitrary pointer within this registered memory.
+   *
+   * @param buf Pointer that must be within the bounds of this RdmaMemory
+   * @param length Length of the view in bytes
+   * @throws std::out_of_range if buf is not within this memory region
+   * @throws std::invalid_argument if the resulting view exceeds bounds
+   */
   View createView(const void* buf, size_t length) const {
+    if (!contains(buf, length)) {
+      throw std::out_of_range(
+          "Pointer is not within the bounds of this registered memory region");
+    }
     const size_t offset = (uintptr_t)buf - (uintptr_t)buf_;
     return View(*this, offset, length);
   }
@@ -108,7 +164,20 @@ class RdmaMemory : folly::MoveOnly {
     return MutableView(*this, offset, length);
   }
 
+  /**
+   * Create a mutable view from an arbitrary pointer within this registered
+   * memory.
+   *
+   * @param buf Pointer that must be within the bounds of this RdmaMemory
+   * @param length Length of the view in bytes
+   * @throws std::out_of_range if buf is not within this memory region
+   * @throws std::invalid_argument if the resulting view exceeds bounds
+   */
   MutableView createMutableView(const void* buf, size_t length) const {
+    if (!contains(buf, length)) {
+      throw std::out_of_range(
+          "Pointer is not within the bounds of this registered memory region");
+    }
     const size_t offset = (uintptr_t)buf - (uintptr_t)buf_;
     return MutableView(*this, offset, length);
   }
@@ -147,9 +216,11 @@ class RdmaMemory : folly::MoveOnly {
   bool contains(const void* buf, const size_t len) const;
 
  private:
+  // These members are logically const after construction, but need to be
+  // mutable for move semantics to properly invalidate moved-from objects.
   const void* buf_{nullptr};
-  const size_t len_{0};
-  const int cudaDev_{-1};
+  size_t len_{0};
+  int cudaDev_{-1};
 
   void* regHdl_{nullptr};
   std::string remoteKey_;
