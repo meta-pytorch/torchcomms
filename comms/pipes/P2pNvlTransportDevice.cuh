@@ -5,9 +5,11 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cstddef>
+#include "comms/pipes/BarrierState.cuh"
 #include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/CopyUtils.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
+#include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {
@@ -20,11 +22,12 @@ namespace comms::pipes {
  * - Receiver reads from LocalState (own local buffers)
  *
  * This means LocalState buffers are the DESTINATION for incoming data.
- * Uses DeviceSpan for safe, bounds-checked access to chunk states.
  */
 struct LocalState {
   char* dataBuffer;
   DeviceSpan<ChunkState> stateBuffer;
+  DeviceSpan<SignalState> signalBuffer;
+  DeviceSpan<BarrierState> barrierBuffer;
 };
 
 /**
@@ -35,11 +38,12 @@ struct LocalState {
  * - This allows receiver to read from local memory (faster)
  *
  * These pointers are obtained via IPC and point to peer's LocalState buffers.
- * Uses DeviceSpan for safe, bounds-checked access to chunk states.
  */
 struct RemoteState {
   char* dataBuffer;
   DeviceSpan<ChunkState> stateBuffer;
+  DeviceSpan<SignalState> signalBuffer;
+  DeviceSpan<BarrierState> barrierBuffer;
 };
 
 /**
@@ -776,26 +780,162 @@ class P2pNvlTransportDevice {
   }
 
   /**
-   * write - Not implemented for P2pNvlTransportDevice
+   * put - Direct local memory copy using vectorized operations
    *
-   * P2pNvlTransportDevice is designed for remote P2P transfers over NVLink.
-   * For local memory copies, use P2pSelfTransportDevice instead.
-   * Calling this method will trap and abort the kernel.
+   * Performs a high-performance vectorized copy from src_d to dst_d using
+   * memcpy_vectorized. The work is distributed across ALL thread groups
+   * using for_each_item_contiguous, so each group processes only its portion
+   * of the data.
+   *
+   * The chunk size is computed dynamically as (nbytes / total_groups) to
+   * ensure good parallelism, with a minimum of 16 bytes per chunk for
+   * vectorized access efficiency.
+   *
+   * NOTE: only support no overlap copy for now
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param dst_d Destination pointer (device memory)
+   * @param src_d Source pointer (device memory)
+   * @param nbytes Number of bytes to write
+   *
+   * @return Number of bytes written by the current thread group
    */
-  __device__ __forceinline__ void write(
-      ThreadGroup& group,
-      char* dst_d,
-      const char* src_d,
-      std::size_t nbytes) {
+  __device__ __forceinline__ std::size_t
+  put(ThreadGroup& group, char* dst_d, const char* src_d, std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
-    __trap(); // Abort kernel if write is called on P2pNvlTransportDevice
+    // Early return for no-op cases
+    if (nbytes == 0) {
+      return;
+    }
+
+    // Compute chunk size: aim for nbytes / total_groups per chunk,
+    // aligned to 16 bytes (uint4 size) for efficient vectorized access
+    constexpr std::size_t kAlignment = 16;
+    const std::size_t targetChunkSize = nbytes / group.total_groups;
+    // Round up to nearest 16-byte boundary, minimum 16 bytes
+    const std::size_t chunkSize =
+        ((targetChunkSize + kAlignment - 1) / kAlignment) * kAlignment;
+    // Ensure minimum chunk size
+    const std::size_t alignedChunkSize = chunkSize > 0 ? chunkSize : kAlignment;
+
+    const std::size_t numChunks =
+        (nbytes + alignedChunkSize - 1) / alignedChunkSize;
+
+    // Distribute chunks across all groups using for_each_item_contiguous
+    // Each group processes its assigned contiguous range of chunks
+    std::size_t chunkBytes = 0;
+    group.for_each_item_contiguous(numChunks, [&](uint32_t chunkIdx) {
+      const std::size_t chunkOffset = chunkIdx * alignedChunkSize;
+      chunkBytes += (chunkOffset + alignedChunkSize <= nbytes)
+          ? alignedChunkSize
+          : nbytes - chunkOffset;
+
+      if (chunkBytes > 0) {
+        memcpy_vectorized(
+            dst_d + chunkOffset, // dst_base
+            src_d + chunkOffset, // src_base
+            chunkBytes, // chunk_bytes
+            group);
+      }
+    });
+    return chunkBytes;
 #endif
+    return 0;
+  }
+
+  /**
+   * signal_threadgroup - Signal peer GPU via NVLink
+   *
+   * Sends a signal to the peer's Signal object at the specified index.
+   * Only the group leader performs the signal after synchronizing all threads.
+   *
+   * MEMORY SEMANTICS:
+   * - Uses release semantics: all prior memory operations from all threads
+   *   in the group are guaranteed to be visible to the peer after the signal.
+   * - Uses .sys scope for cross-GPU NVLink coherence.
+   *
+   * @param group ThreadGroup for cooperative processing (leader signals)
+   * @param signal_id Index into the signalBuffer array
+   * @param op SIGNAL_SET to store value, SIGNAL_ADD to atomically add value
+   * @param value The value to set or add to peer's signal counter
+   */
+  __device__ __forceinline__ void signal_threadgroup(
+      ThreadGroup& group,
+      uint64_t signal_id,
+      SignalOp op,
+      uint64_t value) {
+    remoteState_.signalBuffer[signal_id].signal(group, op, value);
+  }
+
+  /**
+   * wait_signal_until_threadgroup - Wait for signal from peer GPU
+   *
+   * Waits until the local Signal object at the specified index satisfies
+   * the given condition. All threads in the group poll the signal.
+   *
+   * MEMORY SEMANTICS:
+   * - Uses acquire semantics: all subsequent memory operations are guaranteed
+   *   to see the peer's writes that occurred before their signal.
+   * - Uses .sys scope for cross-GPU NVLink coherence.
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param signal_id Index into the signalBuffer array
+   * @param op The comparison operation (CMP_EQ, CMP_GE, etc.)
+   * @param value The value to compare against
+   */
+  __device__ __forceinline__ void wait_signal_until_threadgroup(
+      ThreadGroup& group,
+      uint64_t signal_id,
+      CmpOp op,
+      uint64_t value) {
+    localState_.signalBuffer[signal_id].wait_until(group, op, value);
+  }
+
+  /**
+   * barrier_sync_threadgroup - Two-sided barrier synchronization with peer GPU
+   *
+   * Performs a full barrier synchronization between this GPU and the peer GPU
+   * over NVLink. Both sides must call this function to complete the barrier.
+   *
+   * Synchronization protocol:
+   * 1. group.sync() - Ensure all local threads have completed prior work
+   * 2. Leader signals peer - Writes to peer's barrier state via NVLink
+   * 3. Leader waits for peer - Polls local barrier until peer signals
+   * 4. group.sync() - Broadcast completion to all threads in the group
+   *
+   * This provides a full memory fence: all memory operations before the barrier
+   * on both GPUs are visible to all threads after the barrier completes.
+   *
+   * @param group ThreadGroup for cooperative thread synchronization
+   * @param barrier_id Index of the barrier to use (must be < numBarriers)
+   *
+   * All threads in the group must call this function (collective operation).
+   * Both GPUs must call with the same barrier_id to synchronize.
+   */
+  __device__ __forceinline__ void barrier_sync_threadgroup(
+      ThreadGroup& group,
+      uint64_t barrier_id) {
+    // Ensure all prior memory operations are complete
+    group.sync();
+
+    // Only global leader performs barrier operations to avoid races where
+    // different threads read different counter values.
+    if (group.is_leader()) {
+      // Signal peer - write to peer's local barrier state via NVLink
+      remoteState_.barrierBuffer[barrier_id].arrive();
+
+      // Wait for peer - poll local barrier state until peer signals
+      localState_.barrierBuffer[barrier_id].wait();
+    }
+
+    // Ensure all threads wait for leader to complete barrier
+    group.sync();
   }
 
  private:
-  int myRank_;
-  int peerRank_;
-  P2pNvlTransportOptions options_;
+  const int myRank_{-1};
+  const int peerRank_{-1};
+  const P2pNvlTransportOptions options_;
   LocalState localState_;
   RemoteState remoteState_;
 };

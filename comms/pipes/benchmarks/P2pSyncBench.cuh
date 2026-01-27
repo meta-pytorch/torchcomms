@@ -17,7 +17,7 @@ namespace comms::pipes::benchmark {
  * @param chunkStates Array of ChunkState objects (one per block/group)
  * @param isSender True for sender kernel, false for receiver
  * @param nSteps Number of sync steps to perform
- * @param groupScope Thread group scope (WARP, WARPGROUP, or TILE)
+ * @param groupScope Thread group scope (WARP, MULTIWARP, or BLOCK)
  */
 __global__ void p2pSyncKernel(
     ChunkState* chunkStates,
