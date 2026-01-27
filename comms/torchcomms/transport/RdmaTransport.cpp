@@ -4,10 +4,12 @@
 
 #include <folly/synchronization/CallOnce.h>
 
+#include <fmt/core.h>
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
+#include "comms/utils/checks.h"
 
 namespace {
 
@@ -46,9 +48,9 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
   other.remoteKey_.clear();
 }
 
-RdmaMemory::~RdmaMemory() {
+RdmaMemory::~RdmaMemory() noexcept {
   if (remoteKey_.size() > 0 && regHdl_) {
-    FB_COMMCHECKTHROW(CtranIb::deregMem(regHdl_));
+    FB_COMMCHECKIGNORE(CtranIb::deregMem(regHdl_));
   }
 }
 
