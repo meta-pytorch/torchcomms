@@ -896,7 +896,10 @@ ncclResult_t ncclCommWindowRegister(
     struct ncclComm* comm, void* userPtr, size_t userSize,
     struct ncclWindow_vidmem** outWinDev, int winFlags
   ) {
-    if(ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
+    // NCCL_WIN_FORCE_ORIG_PATH flag bypasses CTRAN and forces NCCL orig path.
+    // This is needed for device API (GIN support) which only exists in the orig path.
+    bool forceOrigPath = (winFlags & NCCL_WIN_FORCE_ORIG_PATH) != 0;
+    if(!forceOrigPath && ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
       if (!ncclGetCuMemSysSupported()) {
         FB_ERRORRETURN(ncclInternalError, "ncclWin requires CUMEM support.");
       }
