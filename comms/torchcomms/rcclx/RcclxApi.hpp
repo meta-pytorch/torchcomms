@@ -6,8 +6,7 @@
 
 #include <rccl.h> // @manual=//comms/rcclx:rcclx-dev
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 #ifdef NCCL_RMA_SUPPORTED
 using RcclxWindow = ncclWindow_t;
@@ -393,5 +392,4 @@ class DefaultRcclxApi : public RcclxApi {
   ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm) override;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

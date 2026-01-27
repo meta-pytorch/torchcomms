@@ -3,8 +3,7 @@
 #include "comms/torchcomms/rccl/TorchCommRCCLCCA.hpp"
 #include <mutex>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Global function to be registered as a hook
 void cachingAllocatorHookFn(
@@ -143,5 +142,4 @@ bool CachingAllocatorHookImpl::isCommRegistered(TorchCommRCCL* comm) {
   return registeredComms_.find(comm) != registeredComms_.end();
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -2,8 +2,7 @@
 
 #include "comms/torchcomms/nccl/TorchCommNCCLCCA.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Global function to be registered as a hook
 void cachingAllocatorHookFn(
@@ -142,5 +141,4 @@ bool CachingAllocatorHookImpl::isCommRegistered(TorchCommNCCL* comm) {
   return registeredComms_.contains(comm);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
