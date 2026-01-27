@@ -5,8 +5,7 @@
 #include "TorchCommNCCLX.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 TorchCommNCCLXPersistentRequest::TorchCommNCCLXPersistentRequest(
     std::shared_ptr<TorchCommNCCLX> comm,
     void* hdl,
@@ -29,5 +28,4 @@ std::optional<cudaStream_t> TorchCommNCCLXPersistentRequest::getStream() const {
   return stream_;
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

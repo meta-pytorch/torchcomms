@@ -3,8 +3,7 @@
 #include "comms/torchcomms/rccl/HipApi.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // DefaultHipApi implementation
 
@@ -52,7 +51,11 @@ hipError_t DefaultHipApi::streamWaitEvent(
 
 hipStream_t DefaultHipApi::getCurrentHIPStreamMasqueradingAsCUDA(
     int device_index) {
+#ifdef HIPIFY_V2
+  return at::cuda::getCurrentCUDAStream(device_index).stream();
+#else
   return at::hip::getCurrentHIPStreamMasqueradingAsCUDA(device_index).stream();
+#endif
 }
 
 hipError_t DefaultHipApi::streamSynchronize(hipStream_t stream) {
@@ -101,5 +104,4 @@ const char* DefaultHipApi::getErrorString(hipError_t error) {
   return hipGetErrorString(error);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

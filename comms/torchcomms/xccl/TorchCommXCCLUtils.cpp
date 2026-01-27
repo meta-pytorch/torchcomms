@@ -5,8 +5,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 
@@ -326,5 +325,4 @@ void TorchCommXCCL::returnEvent(xpuEvent_t&& event) {
         xpu_api_, xpu_api_->eventDestroy(event), "Failed to destroy event");
   }
 }
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
