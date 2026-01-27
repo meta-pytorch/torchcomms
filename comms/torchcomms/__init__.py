@@ -9,7 +9,6 @@ from importlib.metadata import entry_points
 
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
-from torch._opaque_base import OpaqueBaseMeta
 
 
 # to support opaque registration for time delta.
@@ -25,6 +24,8 @@ torchcomms_compile_support_enabled: bool = os.environ.get(
 )
 
 if torchcomms_compile_support_enabled:
+    from torch._opaque_base import OpaqueBaseMeta
+
     # make the metaclass available to the pybind module
     sys.modules["torchcomms._opaque_meta"] = type(
         "module", (), {"OpaqueBaseMeta": OpaqueBaseMeta}
