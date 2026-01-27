@@ -16,8 +16,7 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include "comms/torchcomms/TorchWork.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchCommNCCL;
@@ -100,5 +99,4 @@ class TorchWorkNCCLQueue {
   std::mutex work_queues_mutex_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

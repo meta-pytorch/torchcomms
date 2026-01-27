@@ -13,8 +13,7 @@
 #include <vector>
 #include "comms/torchcomms/TorchWork.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchCommRCCL;
@@ -76,5 +75,4 @@ class TorchWorkRCCL : public TorchWork {
   std::optional<at::RecordFunction> recordFunction_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

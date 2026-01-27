@@ -1,12 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/torchcomms/device/CudaApi.hpp"
+#include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include <ATen/cuda/CUDAContext.h>
 
 #include <c10/cuda/driver_api.h>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // DefaultCudaApi implementation
 
@@ -192,5 +191,4 @@ bool deviceSupportsMulticast(int device_idx) {
 #endif
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
