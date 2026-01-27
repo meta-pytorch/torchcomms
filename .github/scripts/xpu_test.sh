@@ -2,6 +2,7 @@
 
 conda create -yn xpu_torchcomms_ci python=3.10
 source activate xpu_torchcomms_ci
+conda install conda-forge::glog=0.4.0 conda-forge::gflags conda-forge::fmt -y
 
 export CC=/usr/bin/gcc
 export CXX=/usr/bin/g++
