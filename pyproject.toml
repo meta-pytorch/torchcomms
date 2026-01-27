@@ -4,7 +4,6 @@ sorter = "usort"
 
 [tool.usort]
 first_party_detection = false
-known_first_party = ["torchcomms", "torch"]
 
 [tool.ruff]
 line-length = 88
