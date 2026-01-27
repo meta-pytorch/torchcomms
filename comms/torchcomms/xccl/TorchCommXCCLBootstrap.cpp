@@ -7,8 +7,7 @@
 #include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Initialize the static counter
 int TorchCommXCCLBootstrap::counter_ = 0;
@@ -285,5 +284,4 @@ onecclComm_t TorchCommXCCLBootstrap::createXcclComm(
   return xccl_comm;
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
