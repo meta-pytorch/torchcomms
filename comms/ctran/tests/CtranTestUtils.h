@@ -178,8 +178,13 @@ commResult_t commMemFreeDisjoint(
 void* commMemAlloc(
     size_t bufSize,
     MemAllocType memType,
-    std::vector<TestMemSegment>& segments);
-void commMemFree(void* buf, size_t bufSize, MemAllocType memType);
+    std::vector<TestMemSegment>& segments,
+    size_t numSegments = 2);
+void commMemFree(
+    void* buf,
+    size_t bufSize,
+    MemAllocType memType,
+    size_t numSegments = 2);
 
 // Bootstrap initialization type
 enum class InitEnvType { MPI, TCP_STORE, STANDALONE };
