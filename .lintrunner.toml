@@ -37,3 +37,20 @@ init_command = [
     '--dry-run={{DRYRUN}}',
 ]
 is_formatter = false
+
+[[linter]]
+code = 'UFMT'
+include_patterns = [
+    "comms/torchcomms/**/*.py",
+    "comms/torchcomms/**/*.pyi",
+    "tools/**/*.py",
+]
+command = [
+    'uv',
+    'run',
+    '--script',
+    'tools/linter/adapters/ufmt_linter.py',
+    '--',
+    '@{{PATHSFILE}}'
+]
+is_formatter = true

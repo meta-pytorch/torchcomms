@@ -44,8 +44,13 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
       cudaDev_(other.cudaDev_),
       regHdl_(other.regHdl_),
       remoteKey_(std::move(other.remoteKey_)) {
+  // Properly invalidate the moved-from object to prevent double-free
+  // and ensure the object is in a valid but unspecified state
+  other.buf_ = nullptr;
+  other.len_ = 0;
+  other.cudaDev_ = -1;
   other.regHdl_ = nullptr;
-  other.remoteKey_.clear();
+  // Note: remoteKey_ is already moved, leaving other.remoteKey_ empty
 }
 
 RdmaMemory::~RdmaMemory() noexcept {

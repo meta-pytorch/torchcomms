@@ -101,7 +101,6 @@ void TorchCommNCCLX::init(
   } else if (init_state_ == InitializationState::FINALIZED) {
     throw std::runtime_error("TorchCommNCCLX already finalized");
   }
-  init_state_ = InitializationState::INITIALIZED;
 
   // Initialize default NCCL API implementation if not already set
   if (!nccl_api_) {
@@ -240,6 +239,9 @@ void TorchCommNCCLX::init(
 
   // Register comm with CachingAllocator
   attachMemoryHook();
+
+  // Mark initialization as complete only after all steps succeed
+  init_state_ = InitializationState::INITIALIZED;
 }
 
 void TorchCommNCCLX::finalize() {
