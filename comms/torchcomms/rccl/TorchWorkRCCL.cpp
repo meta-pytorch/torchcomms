@@ -5,8 +5,7 @@
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rccl/TorchCommRCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkRCCL::TorchWorkRCCL(
     std::shared_ptr<TorchCommRCCL> comm,
@@ -125,6 +124,7 @@ TorchWorkRCCL::WorkStatus TorchWorkRCCL::checkStatus() {
 
     // Release the input tensors to keep the lifetime of the tensors short
     inputTensors_.clear();
+    inputTensor_.reset();
   } else if (end_status == hipErrorNotReady) {
     // End event has not completed yet, check for timeout
     auto current_time = std::chrono::steady_clock::now();
@@ -170,6 +170,11 @@ void TorchWorkRCCL::wait() {
       comm_->getHipApi(),
       comm_->getHipApi()->streamWaitEvent(current_stream, end_event_, 0),
       "Failed to make stream wait for event");
+
+  // Release tensor references. The HIP caching allocator manages stream
+  // semantics and will not reclaim memory until the stream operations
+  // complete.
+  inputTensors_.clear();
+  inputTensor_.reset();
 }
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -20,8 +20,7 @@
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 // Hint key prefix and names for NCCLX backend configuration
@@ -2192,5 +2191,4 @@ class NCCLXRegistration {
 static const NCCLXRegistration registration{};
 } // namespace
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
