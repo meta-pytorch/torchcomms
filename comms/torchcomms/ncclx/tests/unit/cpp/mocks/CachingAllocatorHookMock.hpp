@@ -5,9 +5,7 @@
 #include <gmock/gmock.h>
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 /**
  * Mock implementation of CachingAllocatorHookImpl using Google Mock.
@@ -50,6 +48,4 @@ class CachingAllocatorHookMock : public DefaultCachingAllocatorHookImpl {
   std::set<TorchCommNCCLX*> registered_comms_;
 };
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

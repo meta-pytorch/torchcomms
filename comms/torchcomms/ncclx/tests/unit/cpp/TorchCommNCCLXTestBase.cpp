@@ -9,9 +9,7 @@
 
 #include "TorchCommNCCLXTestBase.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 void TorchCommNCCLXTest::SetUp() {
   // Force the global instance to be created on the CPU device
@@ -208,6 +206,4 @@ TorchCommNCCLXTest::createDeallocation(uintptr_t addr) {
   );
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

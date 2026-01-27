@@ -7,8 +7,7 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 
@@ -230,5 +229,4 @@ TorchCommFactory& TorchCommFactory::get() {
   static TorchCommFactory instance;
   return instance;
 }
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

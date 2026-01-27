@@ -2,9 +2,7 @@
 
 #include "comms/torchcomms/ncclx/tests/unit/cpp/TorchCommNCCLXTestBase.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 class TorchCommWindowNCCLXTest : public TorchCommNCCLXTest {};
 
@@ -160,6 +158,4 @@ TEST_F(TorchCommWindowNCCLXTest, WindowOperationsAfterFinalizeThrowException) {
   testOperation([&]() { comm->new_window(); });
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

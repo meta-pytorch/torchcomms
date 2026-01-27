@@ -6,8 +6,7 @@
 #include <comms/torchcomms/TorchWork.hpp>
 #include <vector>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 class TorchCommDummy : public TorchCommBackend {
  public:
@@ -151,5 +150,4 @@ class TorchCommDummy : public TorchCommBackend {
   std::string name_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

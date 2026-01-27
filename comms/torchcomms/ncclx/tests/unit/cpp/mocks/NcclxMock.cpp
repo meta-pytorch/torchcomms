@@ -7,9 +7,7 @@ using ::testing::DoAll;
 using ::testing::Return;
 using ::testing::SetArgPointee;
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 void NcclxMock::setupDefaultBehaviors() {
   // Error handling - return default error strings
@@ -120,6 +118,4 @@ void NcclxMock::reset() {
   setupDefaultBehaviors();
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test
