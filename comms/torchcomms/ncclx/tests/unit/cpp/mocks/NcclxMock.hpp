@@ -6,9 +6,7 @@
 #include <nccl.h> // @manual
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 /**
  * Mock implementation of NcclxApi using Google Mock.
@@ -355,6 +353,4 @@ class NcclxMock : public NcclxApi {
   void reset();
 };
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

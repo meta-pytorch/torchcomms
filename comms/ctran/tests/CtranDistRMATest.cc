@@ -9,6 +9,7 @@
 
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/algos/RMA/WaitSignalImpl.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
@@ -253,6 +254,159 @@ TEST_P(CtranRMATestParam, winPutWait) {
         put_stream,
         true));
     COMMCHECK_TEST(ctranWaitSignal(prevPeer, win, wait_stream));
+    if (iter == 0) {
+      // Skip first iteration to avoid any warmup overhead
+      CUDACHECK_TEST(cudaEventRecord(start_event, put_stream));
+    }
+  }
+  CUDACHECK_TEST(cudaEventRecord(end_event, put_stream));
+
+  // A couple of all-reduce after RMA tests
+  // waitSignal on wait_stream should ensure all remote puts have finished
+  for (auto iter = 0; iter < kNumIters; iter++) {
+    NCCLCHECK_TEST(ncclAllReduce(
+        localBuf,
+        localBuf,
+        kNumElements,
+        ncclInt32,
+        ncclSum,
+        comm,
+        wait_stream));
+  }
+
+  size_t errs = checkChunkValue(
+      (int*)winBase + kNumElements * prevPeer,
+      kNumElements,
+      prevPeer,
+      1,
+      this->globalRank,
+      wait_stream);
+
+  CUDACHECK_TEST(cudaStreamSynchronize(put_stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(wait_stream));
+
+  size_t chunkBytes = kNumElements * sizeof(int);
+  if (chunkBytes > 0) {
+    float elapsed_time_ms = -1.0;
+    CUDACHECK_TEST(
+        cudaEventElapsedTime(&elapsed_time_ms, start_event, end_event));
+    // time captured with kNumIters - 1 iterations
+    float achieved_bw = chunkBytes / elapsed_time_ms / 1e6 * (kNumIters - 1);
+    XLOGF(
+        INFO,
+        "[%d] elapsed time %.2f ms for %zu bytes * %ld iterations (%.2f GB/s), on %s\n",
+        statex->rank(),
+        elapsed_time_ms,
+        chunkBytes,
+        kNumIters,
+        achieved_bw,
+        testMemAllocTypeToStr(bufType));
+  }
+
+  auto res = ctranWinFree(win);
+  EXPECT_EQ(res, ncclSuccess);
+
+  ASSERT_EQ(ncclCommDeregister(comm, localHdl), ncclSuccess);
+  ASSERT_EQ(ncclMemFree(localBuf), ncclSuccess);
+  freeWinBuf(userBuf, winBase, sizeBytes, bufType);
+
+  CUDACHECK_TEST(cudaEventDestroy(start_event));
+  CUDACHECK_TEST(cudaEventDestroy(end_event));
+  CUDACHECK_TEST(cudaStreamDestroy(put_stream));
+  CUDACHECK_TEST(cudaStreamDestroy(wait_stream));
+
+  EXPECT_EQ(errs, 0);
+}
+
+TEST_P(CtranRMATestParam, winWaitPut) {
+  const auto& [kNumElements, kNumIters, ctranAllReduce, bufType, userBuf] =
+      GetParam();
+  EXPECT_GE(kNumElements, 8192);
+  EXPECT_GE(kNumIters, 1);
+  if (!comm->ctranComm_->ctran_->mapper->hasBackend(
+          globalRank, CtranMapperBackend::NVL) &&
+      ctranAllReduce) {
+    GTEST_SKIP()
+        << "NVL not enabled, which is required for ctranAllReduce. Skip test";
+  }
+  if (bufType != MemAllocType::kMemCuMemAlloc &&
+      bufType != MemAllocType::kMemCudaMalloc) {
+    GTEST_SKIP() << "Only support GPU memory for winWaitPut";
+  }
+
+  // Enable ctran for all-reduce
+  auto envGuard = EnvRAII(
+      NCCL_ALLREDUCE_ALGO,
+      ctranAllReduce ? NCCL_ALLREDUCE_ALGO::ctdirect
+                     : NCCL_ALLREDUCE_ALGO::orig);
+
+  auto statex = comm->ctranComm_->statex_.get();
+  ASSERT_NE(statex, nullptr);
+  EXPECT_EQ(statex->nRanks(), this->numRanks);
+
+  cudaStream_t main_stream = 0;
+  cudaStream_t put_stream, wait_stream;
+  cudaEvent_t start_event, end_event;
+  CUDACHECK_TEST(cudaStreamCreateWithFlags(&put_stream, cudaStreamNonBlocking));
+  CUDACHECK_TEST(
+      cudaStreamCreateWithFlags(&wait_stream, cudaStreamNonBlocking));
+  CUDACHECK_TEST(cudaEventCreate(&start_event));
+  CUDACHECK_TEST(cudaEventCreate(&end_event));
+
+  size_t sizeBytes = kNumElements * sizeof(int) * statex->nRanks();
+
+  meta::comms::Hints hints;
+  CtranWin* win = nullptr;
+  void* winBase = nullptr;
+  createWin(userBuf, bufType, &winBase, &win, sizeBytes, hints);
+
+  // Always allocate localBuf from GPU mem so it can be used in ctranAllReduce
+  int* localBuf = nullptr;
+  void* localHdl = nullptr;
+  ASSERT_EQ(
+      ncclMemAlloc((void**)&localBuf, kNumElements * sizeof(int)), ncclSuccess);
+  ASSERT_EQ(
+      ncclCommRegister(comm, localBuf, kNumElements * sizeof(int), &localHdl),
+      ncclSuccess);
+
+  EXPECT_THAT(win, ::testing::NotNull());
+
+  for (int peer = 0; peer < this->numRanks; peer++) {
+    void* remoteAddr = nullptr;
+    auto res = ctranWinSharedQuery(peer, win, &remoteAddr);
+    EXPECT_EQ(res, ncclSuccess);
+    if (peer == statex->rank()) {
+      EXPECT_EQ(remoteAddr, winBase);
+    } else if (!win->nvlEnabled(peer)) {
+      EXPECT_THAT(remoteAddr, ::testing::IsNull());
+    } else {
+      EXPECT_THAT(remoteAddr, ::testing::NotNull());
+    }
+  }
+
+  assignChunkValue((int*)winBase, kNumElements * statex->nRanks(), -1, 0);
+  assignChunkValue(localBuf, kNumElements, statex->rank(), 1);
+  // Barrier to ensure all peers have finished value assignment
+  this->barrier(comm, main_stream);
+
+  int nextPeer = (this->globalRank + 1) % this->numRanks;
+  int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
+
+  for (auto iter = 0; iter < kNumIters; iter++) {
+    COMMCHECK_TEST(waitSignalSpinningKernel(
+        prevPeer,
+        win,
+        wait_stream,
+        win->updateOpCount(prevPeer, window::OpCountType::kWaitSignal)));
+    COMMCHECK_TEST(ctranPutSignal(
+        localBuf,
+        kNumElements,
+        commInt32,
+        nextPeer,
+        kNumElements * statex->rank(),
+        win,
+        put_stream,
+        true));
     if (iter == 0) {
       // Skip first iteration to avoid any warmup overhead
       CUDACHECK_TEST(cudaEventRecord(start_event, put_stream));

@@ -7,9 +7,7 @@
 
 #include "comms/torchcomms/rccl/TorchCommRCCLCCA.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 class CachingAllocatorHookMock : public CachingAllocatorHookImpl {
  public:
@@ -36,6 +34,4 @@ class CachingAllocatorHookMock : public CachingAllocatorHookImpl {
   std::unordered_set<void*> registered_comms_;
 };
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test
