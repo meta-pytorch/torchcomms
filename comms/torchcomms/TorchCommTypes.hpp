@@ -8,8 +8,7 @@
 #include <chrono>
 #include <variant>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchComm;
@@ -91,5 +90,4 @@ class ReduceOp {
 constexpr std::chrono::milliseconds kDefaultTimeout = std::chrono::seconds(600);
 constexpr std::chrono::milliseconds kNoTimeout = std::chrono::milliseconds(0);
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/nccl/TorchCommNCCLBootstrap.hpp"
 #include <ATen/cuda/CUDAContext.h>
+#include <fmt/core.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
@@ -32,9 +33,9 @@ TorchCommNCCLBootstrap::TorchCommNCCLBootstrap(
       nccl_api_(nccl_api),
       cuda_api_(cuda_api) {
   // Query rank and size using the utility function
-  auto ranksize = query_ranksize();
-  rank_ = ranksize.first;
-  comm_size_ = ranksize.second;
+  auto [rank, comm_size] = query_ranksize();
+  rank_ = rank;
+  comm_size_ = comm_size;
 
   const char* uniqueid_xchg_env =
       std::getenv("TORCHCOMM_NCCL_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD");
@@ -67,7 +68,7 @@ TorchCommNCCLBootstrap::TorchCommNCCLBootstrap(
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->setDevice(device_.index()),
-      "Failed to set device to " + std::to_string(device_.index()));
+      fmt::format("Failed to set device to {}", device_.index()));
 
   // Allocate CUDA memory for a single float32 value used in barrier operations
   CUDA_CHECK(
@@ -76,9 +77,9 @@ TorchCommNCCLBootstrap::TorchCommNCCLBootstrap(
       "Failed to allocate barrier buffer");
 }
 
-TorchCommNCCLBootstrap::~TorchCommNCCLBootstrap() {
+TorchCommNCCLBootstrap::~TorchCommNCCLBootstrap() noexcept {
   if (barrier_buffer_ != nullptr) {
-    CUDA_CHECK(
+    CUDA_CHECK_IGNORE(
         cuda_api_,
         cuda_api_->free(barrier_buffer_),
         "Failed to free barrier buffer");
@@ -87,7 +88,7 @@ TorchCommNCCLBootstrap::~TorchCommNCCLBootstrap() {
 }
 
 std::string TorchCommNCCLBootstrap::getNCCLStoreKey() {
-  std::string key = getNCCLStoreKeyPrefix() + std::to_string(counter_);
+  std::string key = fmt::format("{}{}", getNCCLStoreKeyPrefix(), counter_);
   counter_++;
   return key;
 }
@@ -196,10 +197,9 @@ void populateNcclConfigFromHints(
     const CommOptions& options,
     const std::string& name) {
   // Iterate over the hints and set the corresponding fields in the config.  For
-  // string arguments, NCCL uses a "const char*" instead of a std::string, so
-  // it is hard to figure out the ownership structure.  Here, we create a copy
-  // of the string and pass it to NCCL, so that it is responsible for freeing
-  // it.
+  // string arguments, NCCL uses a "const char*" instead of a std::string.  The
+  // strings only need to be valid for the duration of the
+  // ncclCommInitRankConfig call, so we use .c_str() directly.
 
   for (const auto& [key, val] : options.hints) {
     if (key == "blocking") {
@@ -219,7 +219,7 @@ void populateNcclConfigFromHints(
       TC_LOG(INFO) << "[comm=" << name
                    << "] Setting config.maxCTAs=" << config.maxCTAs;
     } else if (key == "netName") {
-      config.netName = strdup(val.c_str());
+      config.netName = val.c_str();
       TC_LOG(INFO) << "[comm=" << name
                    << "] Setting config.netName=" << config.netName;
     } else if (key == "splitShare" || key == "split_share") {
@@ -233,7 +233,7 @@ void populateNcclConfigFromHints(
       TC_LOG(INFO) << "[comm=" << name
                    << "] Setting config.trafficClass=" << config.trafficClass;
     } else if (key == "commName") {
-      config.commName = strdup(val.c_str());
+      config.commName = val.c_str();
       TC_LOG(INFO) << "[comm=" << name
                    << "] Setting config.commName=" << config.commName;
     } else if (key == "collnetEnable" || key == "collnet_enable") {
@@ -287,7 +287,7 @@ ncclComm_t TorchCommNCCLBootstrap::createNcclComm(
   // TODO: get the local rank
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 27, 0)
-  config.commName = strdup(name.c_str());
+  config.commName = name.c_str();
 #endif
 
   // Populate NCCL config from user-provided hints
