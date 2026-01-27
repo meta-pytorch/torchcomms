@@ -29,22 +29,6 @@ ncclResult_t ncclMemFreeWithRefCheck(void* ptr) {
   return ncclSuccess;
 }
 
-ncclResult_t ncclMemAllocDisjoint(
-    void** ptr,
-    std::vector<size_t>& disjointSegmentSizes,
-    std::vector<TestMemSegment>& segments,
-    bool setRdmaSupport) {
-  return metaCommToNccl(
-      ctran::commMemAllocDisjoint(
-          ptr, disjointSegmentSizes, segments, setRdmaSupport));
-}
-
-ncclResult_t ncclMemFreeDisjoint(
-    void* ptr,
-    std::vector<size_t>& disjointSegmentSizes) {
-  return metaCommToNccl(ctran::commMemFreeDisjoint(ptr, disjointSegmentSizes));
-}
-
 #endif // !defined(USE_ROCM)
 
 // ============================================================================
@@ -72,10 +56,9 @@ void* CtranNcclTestHelpers::prepareBuf(
     std::vector<size_t> disjointSegmentSizes(2);
     disjointSegmentSizes[0] = bufSize / 2;
     disjointSegmentSizes[1] = bufSize / 2;
-    NCCLCHECK_TEST(ncclMemAllocDisjoint(&buf, disjointSegmentSizes, segments));
+    COMMCHECK_TEST(commMemAllocDisjoint(&buf, disjointSegmentSizes, segments));
 #else
-    XLOG(FATAL)
-        << "kCuMemAllocDisjoint via ncclMemAllocDisjoint is not supported on AMD/HIP";
+    XLOG(FATAL) << "kCuMemAllocDisjoint is not supported on AMD/HIP";
 #endif
   }
   return buf;
@@ -99,10 +82,9 @@ void CtranNcclTestHelpers::releaseBuf(
     std::vector<size_t> disjointSegmentSizes(2);
     disjointSegmentSizes[0] = bufSize / 2;
     disjointSegmentSizes[1] = bufSize / 2;
-    NCCLCHECK_TEST(ncclMemFreeDisjoint(buf, disjointSegmentSizes));
+    COMMCHECK_TEST(commMemFreeDisjoint(buf, disjointSegmentSizes));
 #else
-    XLOG(FATAL)
-        << "kCuMemAllocDisjoint via ncclMemFreeDisjoint is not supported on AMD/HIP";
+    XLOG(FATAL) << "kCuMemAllocDisjoint is not supported on AMD/HIP";
 #endif
   }
 }

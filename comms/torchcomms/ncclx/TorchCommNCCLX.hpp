@@ -44,23 +44,6 @@ constexpr size_t kDefaultGarbageCollectIntervalMs = 100;
 // are tracked during graph capture to ensure proper lifetime management.
 constexpr bool kDefaultEnableCudaGraphSupport = true;
 
-// Custom exception class for better error handling
-class NCCLException : public std::exception {
- public:
-  NCCLException(
-      NcclxApi& api,
-      const std::string& message,
-      ncclResult_t result,
-      ncclComm_t comm);
-
-  const char* what() const noexcept override;
-  ncclResult_t getResult() const noexcept;
-
- private:
-  std::string message_;
-  ncclResult_t result_;
-};
-
 class TorchCommNCCLX : public TorchCommBackend,
                        public std::enable_shared_from_this<TorchCommNCCLX> {
  public:
@@ -298,7 +281,7 @@ class TorchCommNCCLX : public TorchCommBackend,
       const std::vector<at::Tensor>& tensors) override;
 
   // Event management for friend classes
-  cudaEvent_t getEvent();
+  [[nodiscard]] cudaEvent_t getEvent();
   void returnEvent(cudaEvent_t event);
   void abortNcclComm();
 
@@ -362,8 +345,28 @@ class TorchCommNCCLX : public TorchCommBackend,
     RedOpRAII() = delete;
     RedOpRAII(const RedOpRAII&) = delete;
     RedOpRAII& operator=(const RedOpRAII&) = delete;
-    RedOpRAII(RedOpRAII&& tmp) = delete;
-    RedOpRAII& operator=(RedOpRAII&&) = delete;
+
+    RedOpRAII(RedOpRAII&& other) noexcept
+        : ncclRedOp_(other.ncclRedOp_),
+          comm_(other.comm_),
+          nccl_api_(std::move(other.nccl_api_)) {
+      other.comm_ = nullptr; // Prevent destructor from destroying the op
+    }
+
+    RedOpRAII& operator=(RedOpRAII&& other) noexcept {
+      if (this != &other) {
+        // Destroy current op if we own one
+        if (comm_ && nccl_api_) {
+          nccl_api_->redOpDestroy(ncclRedOp_, comm_);
+        }
+        ncclRedOp_ = other.ncclRedOp_;
+        comm_ = other.comm_;
+        nccl_api_ = std::move(other.nccl_api_);
+        other.comm_ = nullptr; // Prevent destructor from destroying the op
+      }
+      return *this;
+    }
+
     ~RedOpRAII();
 
     operator ncclRedOp_t() const {
@@ -388,7 +391,14 @@ class TorchCommNCCLX : public TorchCommBackend,
 
     RegistrationHandle(const RegistrationHandle&) = delete;
     RegistrationHandle& operator=(const RegistrationHandle&) = delete;
-    RegistrationHandle& operator=(RegistrationHandle&&) = delete;
+
+    RegistrationHandle& operator=(RegistrationHandle&& other) noexcept {
+      if (this != &other) {
+        regHandle = other.regHandle;
+        other.regHandle = nullptr;
+      }
+      return *this;
+    }
 
     ~RegistrationHandle() = default;
   };

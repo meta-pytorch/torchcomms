@@ -7,7 +7,7 @@ import logging
 import unittest
 
 import torch
-from torchcomms import ReduceOp
+from torchcomms import ReduceOp, Timeout
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_dtype_name,
     get_op_name,
@@ -1044,7 +1044,7 @@ class FullgraphCompileTest(unittest.TestCase):
 
         # Define test hints and timeout
         test_hints = {"hint_key": "hint_value", "another_hint": "value2"}
-        test_timeout = timedelta(seconds=300)
+        test_timeout = Timeout(seconds=300)
 
         # Define function to compile that uses hints and timeout
         def my_func(tensor):

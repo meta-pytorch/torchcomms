@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cooperative_groups.h>
 #include <cuda_runtime.h>
 #include <cstdint>
 
@@ -20,8 +21,10 @@ namespace comms::pipes {
  *
  * Available scopes:
  * - WARP: 32 threads per group (finest granularity, uses __syncwarp)
- * - WARPGROUP: 128 threads per group (4 warps, uses named barriers)
+ * - MULTIWARP: 128 threads per group (4 warps, uses named barriers)
  * - BLOCK: All threads in a block form one group (uses __syncthreads)
+ * - CLUSTER: All threads in a cluster form one group (uses cluster
+ * barriers)
  *
  * Usage example:
  *   __global__ void myKernel(SyncScope scope) {
@@ -29,7 +32,7 @@ namespace comms::pipes {
  *     // ...
  *   }
  */
-enum class SyncScope { WARP, WARPGROUP, BLOCK };
+enum class SyncScope { WARP, MULTIWARP, BLOCK, CLUSTER };
 
 /**
  * ThreadGroup - Abstraction for cooperative thread group operations
@@ -79,6 +82,7 @@ struct ThreadGroup {
 
   // scope - Synchronization scope for sync() calls
   // WARP: uses __syncwarp() (fast). BLOCK: uses __syncthreads() (block-wide).
+  // CLUSTER: uses cluster.sync().
   SyncScope scope;
 
   __device__ inline void sync() {
@@ -87,24 +91,36 @@ struct ThreadGroup {
       case SyncScope::WARP:
         __syncwarp();
         break;
-      case SyncScope::WARPGROUP: {
-        // Warpgroup = 4 warps = 128 threads
-        // Uses named barriers for synchronization within a warpgroup
-        constexpr uint32_t kWarpgroupSize =
+      case SyncScope::MULTIWARP: {
+        // Multiwarp = 4 warps = 128 threads
+        // Uses named barriers for synchronization within a multiwarp
+        constexpr uint32_t kMultiwarpSize =
             4 * comms::device::kWarpSize; // 128 threads
         uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
             threadIdx.z * blockDim.x * blockDim.y;
-        uint32_t barrierId = tid / kWarpgroupSize;
+        uint32_t barrierId = tid / kMultiwarpSize;
         // Hardware supports max 16 named barriers per block
         // This limits block size to 16 * 128 = 2048 threads
         asm volatile("bar.sync %0, %1;"
                      :
-                     : "r"(barrierId), "r"(kWarpgroupSize));
+                     : "r"(barrierId), "r"(kMultiwarpSize));
         break;
       }
       case SyncScope::BLOCK:
         __syncthreads();
         break;
+      case SyncScope::CLUSTER:
+#if __CUDA_ARCH__ >= 900
+      {
+        cooperative_groups::cluster_group cluster =
+            cooperative_groups::this_cluster();
+        cluster.sync();
+      }
+#else
+        // Fallback to block sync for older architectures
+        __syncthreads();
+#endif
+      break;
     }
 #endif
   }
@@ -519,6 +535,77 @@ __device__ inline ThreadGroup make_warp_group() {
 }
 
 /**
+ * make_cluster_group - Create a ThreadGroup where all threads in a
+ *                      cluster work together as a single group
+ *
+ * Use case: For Hopper GPU cluster-based operations where multiple blocks
+ * in a cluster need to synchronize and cooperate on work items.
+ *
+ * REQUIREMENTS:
+ * - Requires SM90 (Hopper) or later architecture
+ * - Kernel must be launched with cluster support (cudaLaunchConfig)
+ * - Cluster size is determined at kernel launch time
+ *
+ * Example with 4 clusters × 2 blocks/cluster × 256 threads:
+ *   - total_groups = 4 (one per cluster)
+ *   - group_size = 512 (2 blocks × 256 threads per cluster)
+ *   - Each cluster processes work items cooperatively
+ *
+ * HOPPER GPU BENEFITS:
+ * - Enables efficient distributed shared memory access across cluster
+ * - Allows barrier synchronization across multiple blocks
+ * - Better locality for inter-block communication patterns
+ *
+ * HARDWARE SPECS (H100):
+ * - ~16 SMs per GPC, 8 GPCs total -> 132 SMs
+ * - Maximum cluster size: 16 blocks (limited by GPC)
+ *
+ * NOTE: On architectures before SM90, falls back to single-block behavior
+ * where cluster_size is effectively 1.
+ */
+__device__ inline ThreadGroup make_cluster_group() {
+#ifdef __CUDA_ARCH__
+#if __CUDA_ARCH__ >= 900
+  // Get cluster grid dimensions using PTX instructions
+  uint32_t num_clusters_x, cluster_rank;
+  asm volatile("mov.u32 %0, %%nclusterid.x;" : "=r"(num_clusters_x));
+  asm volatile("mov.u32 %0, %%clusterid.x;" : "=r"(cluster_rank));
+
+  uint32_t cluster_size;
+  asm volatile("mov.u32 %0, %%cluster_nctaid.x;" : "=r"(cluster_size));
+
+  uint32_t block_rank_in_cluster;
+  asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(block_rank_in_cluster));
+
+  uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
+  uint32_t threads_per_cluster = cluster_size * threads_per_block;
+
+  uint32_t tid_in_block = threadIdx.x + threadIdx.y * blockDim.x +
+      threadIdx.z * blockDim.x * blockDim.y;
+  uint32_t thread_id_in_cluster =
+      block_rank_in_cluster * threads_per_block + tid_in_block;
+
+  return ThreadGroup{
+      .thread_id_in_group = thread_id_in_cluster,
+      .group_size = threads_per_cluster,
+      .group_id = cluster_rank,
+      .total_groups = num_clusters_x,
+      .scope = SyncScope::CLUSTER};
+#else
+  // Fallback for non-Hopper: treat each block as its own cluster
+  return ThreadGroup{
+      .thread_id_in_group = threadIdx.x,
+      .group_size = blockDim.x,
+      .group_id = blockIdx.x,
+      .total_groups = gridDim.x,
+      .scope = SyncScope::CLUSTER};
+#endif
+#else
+  return ThreadGroup{};
+#endif
+}
+
+/**
  * make_block_group - Create a ThreadGroup where all threads in a block
  *                    work together as a single group
  *
@@ -544,52 +631,52 @@ __device__ inline ThreadGroup make_block_group() {
 }
 
 /**
- * make_warpgroup_group - Create a ThreadGroup where 4 warps (128 threads)
- *                        work together as a single warpgroup
+ * make_multiwarp_group - Create a ThreadGroup where 4 warps (128 threads)
+ *                        work together as a single multiwarp
  *
  * Use case: For Hopper GPU tensor core operations (wgmma instructions) that
- * operate at warpgroup granularity, or when you need synchronization
+ * operate at multiwarp granularity, or when you need synchronization
  * granularity between a single warp and the entire block.
  *
  * REQUIREMENTS:
- * - Block size must be a multiple of 128 (warpgroup size)
- * - Maximum 16 warpgroups per block (hardware named barrier limit)
+ * - Block size must be a multiple of 128 (multiwarp size)
+ * - Maximum 16 multiwarps per block (hardware named barrier limit)
  *
  * Example with 4 blocks × 512 threads:
- *   - total_groups = 16 (4 warpgroups per block × 4 blocks)
+ *   - total_groups = 16 (4 multiwarps per block × 4 blocks)
  *   - group_size = 128
- *   - Each warpgroup can execute wgmma instructions or other
- *     warpgroup-level operations
+ *   - Each multiwarp can execute wgmma instructions or other
+ *     multiwarp-level operations
  *
  * HOPPER GPU BENEFITS:
  * - Enables efficient tensor core utilization through wgmma instructions
- * - Allows asynchronous warpgroup-level matrix multiply-accumulate
+ * - Allows asynchronous multiwarp-level matrix multiply-accumulate
  * - Better synchronization granularity for producer-consumer patterns
  */
-// TODO: Add support for configurable warpgroup size, 4/8/16.. warps as a
-// warpgroup.
-__device__ inline ThreadGroup make_warpgroup_group() {
+// TODO: Add support for configurable multiwarp size, 4/8/16.. warps as a
+// multiwarp.
+__device__ inline ThreadGroup make_multiwarp_group() {
 #ifdef __CUDA_ARCH__
-  constexpr uint32_t kWarpgroupSize =
+  constexpr uint32_t kMultiwarpSize =
       4 * comms::device::kWarpSize; // 128 threads
   uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
   uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
       threadIdx.z * blockDim.x * blockDim.y;
 
-  uint32_t warpgroups_per_block = threads_per_block / kWarpgroupSize;
-  uint32_t warpgroup_id_in_block = tid / kWarpgroupSize;
-  uint32_t global_warpgroup_id =
-      blockIdx.x * warpgroups_per_block + warpgroup_id_in_block;
-  uint32_t total_warpgroups = gridDim.x * warpgroups_per_block;
+  uint32_t multiwarps_per_block = threads_per_block / kMultiwarpSize;
+  uint32_t multiwarp_id_in_block = tid / kMultiwarpSize;
+  uint32_t global_multiwarp_id =
+      blockIdx.x * multiwarps_per_block + multiwarp_id_in_block;
+  uint32_t total_multiwarps = gridDim.x * multiwarps_per_block;
 
-  uint32_t thread_id_in_warpgroup = tid % kWarpgroupSize;
+  uint32_t thread_id_in_multiwarp = tid % kMultiwarpSize;
 
   return ThreadGroup{
-      .thread_id_in_group = thread_id_in_warpgroup,
-      .group_size = kWarpgroupSize,
-      .group_id = global_warpgroup_id,
-      .total_groups = total_warpgroups,
-      .scope = SyncScope::WARPGROUP};
+      .thread_id_in_group = thread_id_in_multiwarp,
+      .group_size = kMultiwarpSize,
+      .group_id = global_multiwarp_id,
+      .total_groups = total_multiwarps,
+      .scope = SyncScope::MULTIWARP};
 #else
   return ThreadGroup{};
 #endif
@@ -601,8 +688,8 @@ __device__ inline ThreadGroup make_warpgroup_group() {
  * Convenience function that dispatches to the appropriate factory function
  * based on the scope parameter:
  *   - SyncScope::WARP → make_warp_group()
- *   - SyncScope::WARPGROUP → make_warpgroup_group()
- *   - SyncScope::TILE → make_block_group()
+ *   - SyncScope::MULTIWARP → make_multiwarp_group()
+ *   - SyncScope::BLOCK → make_block_group()
  *
  * @param scope The desired thread grouping strategy
  * @return ThreadGroup configured for the specified scope
@@ -620,10 +707,12 @@ __device__ inline ThreadGroup make_thread_group(SyncScope scope) {
   switch (scope) {
     case SyncScope::WARP:
       return make_warp_group();
-    case SyncScope::WARPGROUP:
-      return make_warpgroup_group();
+    case SyncScope::MULTIWARP:
+      return make_multiwarp_group();
     case SyncScope::BLOCK:
       return make_block_group();
+    case SyncScope::CLUSTER:
+      return make_cluster_group();
     default:
       // Should never reach here, but return warp group as default
       return make_warp_group();
