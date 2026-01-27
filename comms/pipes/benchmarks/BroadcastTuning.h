@@ -20,7 +20,7 @@ struct BroadcastOptimalConfig {
   std::size_t pipelineDepth;
   int numBlocks;
   int numThreads;
-  bool useBinomialTree; // true = binomial tree, false = flat tree
+  bool useRing; // true = ring algorithm, false = flat tree
 };
 
 /**
@@ -161,23 +161,29 @@ inline int getOptimalNumThreads(std::size_t messageSize) {
 }
 
 /**
- * Determine whether to use binomial tree algorithm.
+ * Determine whether to use ring algorithm.
  *
- * Selection criteria:
- * - Binomial tree is better for large messages with many ranks
- * - Flat tree is better for small messages (lower latency)
- * - Flat tree is simpler for 2-rank case
+ * Selection criteria (based on empirical profiling on 8-rank NVLink):
+ * - Ring is 1.77x faster than flat-tree at 8MB, 5.19x faster at 64MB
+ * - Flat tree is better for smaller messages (lower latency)
+ * - Ring has no benefit for 2-rank case
+ *
+ * Benchmark results for 64MB messages:
+ * - Ring: 253.36 GB/s (0.77x NCCL)
+ * - Binomial: 116.65 GB/s (0.35x NCCL)
+ * - Flat: 48.80 GB/s (0.15x NCCL)
  */
-inline bool shouldUseBinomialTree(std::size_t messageSize, int numRanks) {
-  // Threshold for switching to binomial tree (64KB)
-  // IMPORTANT: Must match kBinomialThreshold in
+inline bool shouldUseRing(std::size_t messageSize, int numRanks) {
+  // Threshold for switching to ring algorithm (8MB)
+  // Empirically determined on 8-rank NVLink configurations
+  // IMPORTANT: Must match kRingThreshold in
   // comms/pipes/collectives/BroadcastBinomialTree.cuh
-  constexpr std::size_t kBinomialThreshold = 64 * 1024;
+  constexpr std::size_t kRingThreshold = 8 * 1024 * 1024;
 
-  // Use binomial tree for:
-  // 1. Message size >= 64KB AND
-  // 2. More than 2 ranks (binomial tree has no benefit for 2 ranks)
-  return messageSize >= kBinomialThreshold && numRanks > 2;
+  // Use ring for:
+  // 1. Message size >= 8MB AND
+  // 2. More than 2 ranks (ring has no benefit for 2 ranks)
+  return messageSize >= kRingThreshold && numRanks > 2;
 }
 
 /**
@@ -197,7 +203,7 @@ inline BroadcastOptimalConfig getOptimalBroadcastConfig(
       messageSize, config.chunkSize, config.pipelineDepth);
   config.numBlocks = getOptimalNumBlocks(messageSize, numRanks);
   config.numThreads = getOptimalNumThreads(messageSize);
-  config.useBinomialTree = shouldUseBinomialTree(messageSize, numRanks);
+  config.useRing = shouldUseRing(messageSize, numRanks);
 
   return config;
 }

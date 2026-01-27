@@ -9,22 +9,11 @@
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Transport.cuh"
 #include "comms/pipes/collectives/Broadcast.cuh"
+#include "comms/pipes/collectives/BroadcastRing.cuh"
 
 namespace comms::pipes::collectives {
 
 namespace {
-
-// Chunk size for pipelined binomial tree broadcast (128KB)
-// Optimized based on empirical profiling - smaller chunks enable
-// better warp parallelism across chunks within each round
-constexpr std::size_t kBinomialChunkSize = 128 * 1024;
-
-// Memory alignment for optimal NVLink transfers (256 bytes)
-constexpr std::size_t kNVLinkAlignment = 256;
-
-// Maximum number of chunks that can be processed concurrently by warps
-// This limits memory usage for synchronization flags
-constexpr std::size_t kMaxConcurrentChunks = 256;
 
 /**
  * Debug helper to print binomial tree broadcast operation information.
@@ -48,15 +37,6 @@ __device__ __forceinline__ void printBinomialTreeOperation(
       nbytes);
 }
 
-/**
- * Align a size to the specified alignment boundary.
- */
-__device__ __forceinline__ std::size_t alignUp(
-    std::size_t size,
-    std::size_t alignment) {
-  return ((size + alignment - 1) / alignment) * alignment;
-}
-
 } // namespace
 
 /**
@@ -70,21 +50,18 @@ __device__ __forceinline__ std::size_t alignUp(
  *   2. Parallelism increases each round (2^round senders in round r)
  *   3. Total bandwidth distributed across all nodes
  *
- * Optimization: Chunk-Based Pipelining
- * =====================================
- * For large messages, the data is broken into chunks and processed in a
- * pipelined manner. This allows:
- *   - Overlapping communication across rounds for different chunks
- *   - Better utilization of available bandwidth
- *   - Warps can be partitioned to work on different chunks concurrently
+ * ROUND-MAJOR PIPELINING
+ * ======================
+ * This implementation uses round-major ordering: in each round, the entire
+ * message is transferred (not chunk-by-chunk). The transport layer handles
+ * internal chunking and pipelining, which allows:
+ *   - Maximum utilization of the transport's pipeline depth
+ *   - Concurrent chunk transfers within each round
+ *   - Minimal synchronization overhead between chunks
  *
- * The pipelining follows a "chunk-major" order:
- *   for each chunk:
- *     for each round:
- *       process chunk in this round
- *
- * This ensures that once a rank receives a chunk, it can immediately forward
- * it in the next round while the previous rank moves on to the next chunk.
+ * This is much faster than chunk-major ordering (which was used previously)
+ * because the transport's internal pipelining can work across the full message
+ * rather than being limited to small individual chunks.
  *
  * Algorithm:
  * ==========
@@ -162,69 +139,23 @@ __device__ __forceinline__ void broadcast_binomial_tree(
     num_rounds++;
   }
 
-  // Determine chunk size (aligned for optimal NVLink transfers)
-  const std::size_t chunk_size = alignUp(kBinomialChunkSize, kNVLinkAlignment);
-  const std::size_t num_chunks = (nbytes + chunk_size - 1) / chunk_size;
-
   char* buff = static_cast<char*>(buff_d);
 
-  // Chunk-major pipelining: process chunks sequentially, allowing
-  // pipelining across rounds for different chunks.
-  //
-  // NOTE: We cannot partition warps across chunks like the flat-tree does
-  // across peers, because in the binomial tree algorithm, send/recv are
-  // paired operations that require ALL warps on both sender and receiver
-  // to participate. If we partition chunks across warps, we'd have a
-  // subset of warps trying to send while another subset tries to receive
-  // a different chunk, causing a deadlock.
-  //
-  // The pipelining benefit comes from the transport layer's internal
-  // pipelining, not from warp-level parallelism across chunks.
-  for (std::size_t chunk_idx = 0; chunk_idx < num_chunks; ++chunk_idx) {
-    const std::size_t chunk_offset = chunk_idx * chunk_size;
-    const std::size_t chunk_bytes = (chunk_offset + chunk_size <= nbytes)
-        ? chunk_size
-        : (nbytes - chunk_offset);
+  // ROUND-MAJOR ordering: Transfer entire message each round.
+  // This allows the transport layer to use its full pipeline depth
+  // for maximum bandwidth utilization.
+  for (int round = 0; round < num_rounds; ++round) {
+    int distance = 1 << round; // 2^round
 
-    char* chunk_ptr = buff + chunk_offset;
+    if (virtual_rank < distance) {
+      // I have the data - check if I need to send to a peer
+      int send_to_virtual = virtual_rank + distance;
 
-    // Process each round of the binomial tree for this chunk
-    for (int round = 0; round < num_rounds; ++round) {
-      int distance = 1 << round; // 2^round
+      if (send_to_virtual < nranks) {
+        // Convert virtual rank back to actual rank
+        int send_to_actual = (send_to_virtual + root_rank_id) % nranks;
 
-      if (virtual_rank < distance) {
-        // I have the data - check if I need to send to a peer
-        int send_to_virtual = virtual_rank + distance;
-
-        if (send_to_virtual < nranks) {
-          // Convert virtual rank back to actual rank
-          int send_to_actual = (send_to_virtual + root_rank_id) % nranks;
-
-          auto& transport = transports[send_to_actual];
-          assert(transport.type == TransportType::P2P_NVL);
-
-#ifdef DEBUG_BROADCAST
-          if (group.is_leader()) {
-            printBinomialTreeOperation(
-                my_rank_id,
-                root_rank_id,
-                virtual_rank,
-                round,
-                send_to_actual,
-                true, // is_send
-                chunk_bytes);
-          }
-#endif
-
-          transport.p2p_nvl.send(group, chunk_ptr, chunk_bytes);
-        }
-        // If no peer to send to in this round, just continue to next round
-      } else if (virtual_rank < 2 * distance) {
-        // I don't have data yet - receive from peer
-        int recv_from_virtual = virtual_rank - distance;
-        int recv_from_actual = (recv_from_virtual + root_rank_id) % nranks;
-
-        auto& transport = transports[recv_from_actual];
+        auto& transport = transports[send_to_actual];
         assert(transport.type == TransportType::P2P_NVL);
 
 #ifdef DEBUG_BROADCAST
@@ -234,34 +165,65 @@ __device__ __forceinline__ void broadcast_binomial_tree(
               root_rank_id,
               virtual_rank,
               round,
-              recv_from_actual,
-              false, // is_send
-              chunk_bytes);
+              send_to_actual,
+              true, // is_send
+              nbytes);
         }
 #endif
 
-        transport.p2p_nvl.recv(group, chunk_ptr, chunk_bytes);
+        // Send entire message - transport handles internal chunking/pipelining
+        transport.p2p_nvl.send(group, buff, nbytes);
       }
-      // Ranks >= 2*distance don't participate in this round
+      // If no peer to send to in this round, just continue to next round
+    } else if (virtual_rank < 2 * distance) {
+      // I don't have data yet - receive from peer
+      int recv_from_virtual = virtual_rank - distance;
+      int recv_from_actual = (recv_from_virtual + root_rank_id) % nranks;
 
-      // Implicit synchronization: recv completes before proceeding,
-      // which acts as a barrier for that rank to have data before
-      // potentially sending in the next round.
+      auto& transport = transports[recv_from_actual];
+      assert(transport.type == TransportType::P2P_NVL);
+
+#ifdef DEBUG_BROADCAST
+      if (group.is_leader()) {
+        printBinomialTreeOperation(
+            my_rank_id,
+            root_rank_id,
+            virtual_rank,
+            round,
+            recv_from_actual,
+            false, // is_send
+            nbytes);
+      }
+#endif
+
+      // Receive entire message - transport handles internal chunking/pipelining
+      transport.p2p_nvl.recv(group, buff, nbytes);
     }
+    // Ranks >= 2*distance don't participate in this round
+
+    // Implicit synchronization: recv completes before proceeding,
+    // which acts as a barrier for that rank to have data before
+    // potentially sending in the next round.
   }
 #endif
 }
 
 /**
- * Wrapper that selects between flat-tree and binomial tree broadcast
+ * Wrapper that selects between flat-tree and ring broadcast
  * based on message size and rank count.
  *
- * Selection criteria:
- * - For small messages (< 64KB): Use flat-tree (lower latency)
- * - For large messages (>= 64KB) with many ranks: Use binomial tree
- *   (better bandwidth utilization)
+ * Selection criteria (based on empirical profiling on 8-rank NVLink):
+ * - For small/medium messages (< 8MB): Use flat-tree (lower latency)
+ * - For large messages (>= 8MB) with multiple ranks: Use ring
+ *   (1.77x faster than flat-tree at 8MB, 5.19x faster at 64MB)
  *
- * The threshold can be tuned based on profiling results.
+ * Benchmark results for 64MB messages:
+ * - Ring: 253.36 GB/s (0.77x NCCL)
+ * - Binomial: 116.65 GB/s (0.35x NCCL)
+ * - Flat: 48.80 GB/s (0.15x NCCL)
+ *
+ * The 8MB threshold was determined through benchmarking where ring starts
+ * to significantly outperform both flat-tree and binomial tree.
  */
 __device__ __forceinline__ void broadcast_adaptive(
     void* buff_d,
@@ -270,21 +232,23 @@ __device__ __forceinline__ void broadcast_adaptive(
     DeviceSpan<Transport> transports_per_rank,
     std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
-  // Threshold for switching to binomial tree (64KB)
-  // IMPORTANT: Must match kBinomialThreshold in
+  // Threshold for switching to ring algorithm (8MB)
+  // Empirically determined: ring is 1.77x faster than flat at 8MB,
+  // and becomes dominant for all larger message sizes
+  // IMPORTANT: Must match kRingThreshold in
   // comms/pipes/benchmarks/BroadcastTuning.h
-  constexpr std::size_t kBinomialThreshold = 64 * 1024;
+  constexpr std::size_t kRingThreshold = 8 * 1024 * 1024;
 
   const auto nranks = transports_per_rank.size();
 
-  // Use binomial tree for large messages with multiple ranks
-  // The benefit of binomial tree increases with message size and rank count
-  if (nbytes >= kBinomialThreshold && nranks > 2) {
-    broadcast_binomial_tree(
+  if (nbytes >= kRingThreshold && nranks > 2) {
+    // Large messages: use ring for best bandwidth
+    // Ring achieves 77% of NCCL at 64MB (253.36 GB/s)
+    broadcast_ring(
         buff_d, my_rank_id, root_rank_id, transports_per_rank, nbytes);
   } else {
-    // Fall back to flat-tree for small messages or small rank counts
-    // Import the flat-tree broadcast from Broadcast.cuh
+    // Small/medium messages or small rank count: use flat-tree
+    // Flat-tree has lower latency overhead for smaller transfers
     broadcast(buff_d, my_rank_id, root_rank_id, transports_per_rank, nbytes);
   }
 #endif

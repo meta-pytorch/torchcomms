@@ -129,7 +129,8 @@ __global__ void broadcastBinomialTreeKernel(
 
 /**
  * Adaptive broadcast kernel that selects algorithm based on message size.
- * Uses flat-tree for small messages (< 64KB), binomial tree for larger.
+ * Uses flat-tree for small messages (< 8MB), ring for larger (>= 8MB).
+ * This achieves best performance across all message sizes.
  */
 __global__ void broadcastAdaptiveKernel(
     void* buff_d,
@@ -144,20 +145,6 @@ __global__ void broadcastAdaptiveKernel(
  * Best performance for large messages (>= 1MB).
  */
 __global__ void broadcastRingKernel(
-    void* buff_d,
-    int myRank,
-    int rootRank,
-    DeviceSpan<Transport> transports,
-    std::size_t nbytes);
-
-/**
- * Adaptive broadcast kernel v2 that selects between flat-tree, binomial tree,
- * and ring algorithms based on message size.
- * - Small messages (< 64KB): flat-tree
- * - Medium messages (64KB - 1MB): binomial tree
- * - Large messages (>= 1MB): ring
- */
-__global__ void broadcastAdaptiveV2Kernel(
     void* buff_d,
     int myRank,
     int rootRank,

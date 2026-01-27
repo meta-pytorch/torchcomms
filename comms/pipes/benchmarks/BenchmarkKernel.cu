@@ -168,14 +168,4 @@ __global__ void broadcastRingKernel(
       buff_d, myRank, rootRank, transports, nbytes);
 }
 
-__global__ void broadcastAdaptiveV2Kernel(
-    void* buff_d,
-    int myRank,
-    int rootRank,
-    DeviceSpan<Transport> transports,
-    std::size_t nbytes) {
-  comms::pipes::collectives::broadcast_adaptive_v2(
-      buff_d, myRank, rootRank, transports, nbytes);
-}
-
 } // namespace comms::pipes::benchmark
