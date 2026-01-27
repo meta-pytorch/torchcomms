@@ -17,9 +17,7 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/CachingAllocatorHookMock.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 // ============================================================================
 // 1. INITIALIZATION TESTS
@@ -269,7 +267,8 @@ TEST_F(TorchCommNCCLXTest, InitializationFailsWithInvalidDeviceId) {
         comm->init(invalid_device, "test_name", default_options_),
         std::runtime_error);
 
-    comm->finalize();
+    // After a failed init, finalize should throw since we're not initialized
+    EXPECT_THROW(comm->finalize(), std::runtime_error);
   }
 }
 
@@ -1571,6 +1570,4 @@ TEST_F(TorchCommNCCLXTest, NCCLXExceptionFromFailedAllReduceIncludesLastError) {
   comm->finalize();
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

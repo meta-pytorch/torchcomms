@@ -22,8 +22,7 @@ using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::SetArgPointee;
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 struct WorkEvent {
   cudaEvent_t start_event;
@@ -66,8 +65,9 @@ class TorchWorkNCCLXQueueCommTest : public ::testing::Test {
     // Create hash store for communication
     auto store_ = c10::make_intrusive<c10d::HashStore>();
 
-    // Set up device. make it the cpu device because we're mocking cuda.
-    device_ = at::Device(at::DeviceType::CPU, 0);
+    // Set up device. Use CUDA device since TorchCommNCCLX requires it.
+    // The actual CUDA calls are mocked, so no real GPU is needed.
+    device_ = at::Device(at::DeviceType::CUDA, 0);
 
     // Set timeout to 2 seconds for tests
     default_options_ = CommOptions();
@@ -324,5 +324,4 @@ TEST_F(TorchWorkNCCLXQueueCommTest, NoLeakedObjectsAfterFinalize) {
   EXPECT_EQ(getStreamWorkQueues().size(), 0);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
