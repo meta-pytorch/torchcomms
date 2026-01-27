@@ -19,6 +19,33 @@ using namespace torch::comms;
 template <typename T, typename... TOptions>
 using intrusive_ptr_class_ = py::class_<T, c10::intrusive_ptr<T>, TOptions...>;
 
+// helper to create a pybind11 class with a custom metaclass for torch.compile
+// support if needed.
+template <typename... Types, typename... Extra>
+auto py_opaque_class(py::module_& m, const char* name, Extra&&... extra) {
+  py::object opaque_metaclass = py::none();
+  try {
+    py::module_ sys = py::module_::import("sys");
+    py::dict modules = sys.attr("modules");
+    if (modules.contains("torchcomms._opaque_meta")) {
+      opaque_metaclass =
+          modules["torchcomms._opaque_meta"].attr("OpaqueBaseMeta");
+    }
+  } catch (...) {
+    opaque_metaclass = py::none();
+  }
+
+  if (opaque_metaclass.is_none()) {
+    return py::class_<Types...>(m, name, std::forward<Extra>(extra)...);
+  } else {
+    return py::class_<Types...>(
+        m,
+        name,
+        std::forward<Extra>(extra)...,
+        py::metaclass(opaque_metaclass));
+  }
+}
+
 PYBIND11_MODULE(_comms, m) {
   m.doc() = "Python bindings for TorchComm";
 
@@ -35,8 +62,9 @@ PYBIND11_MODULE(_comms, m) {
       .value("PREMUL_SUM", ReduceOp::RedOpType::PREMUL_SUM)
       .value("AVG", ReduceOp::RedOpType::AVG);
 
-  // Bind ReduceOp class
-  py::class_<ReduceOp>(m, "ReduceOp", "Operation to perform during reduction.")
+  // Bind ReduceOp class (with custom metaclass for torch.compile support)
+  auto reduce_op_class = py_opaque_class<ReduceOp>(m, "ReduceOp");
+  reduce_op_class
       .def(
           py::init<ReduceOp::RedOpType>(),
           "Create default ReduceOp",
@@ -171,7 +199,7 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
           "Window access type");
 
   // Bind TorchCommWindow class
-  py::class_<TorchCommWindow, std::shared_ptr<TorchCommWindow>>(
+  py_opaque_class<TorchCommWindow, std::shared_ptr<TorchCommWindow>>(
       m, "TorchCommWindow")
       .def(
           "__copy__",
@@ -540,10 +568,8 @@ Args:
       .value("RECV", BatchSendRecv::P2POp::OpType::RECV);
 
   // Bind BatchSendRecv class
-  py::class_<BatchSendRecv>(
-      m,
-      "BatchSendRecv",
-      R"(
+  py_opaque_class<BatchSendRecv, std::shared_ptr<BatchSendRecv>>(
+      m, "BatchSendRecv", R"(
 BatchSendRecv allows you to run multiple send/recv operations concurrently
 unlike the standard send/recv APIs which only allow you to have one inflight at
 a time.
@@ -671,7 +697,7 @@ Args:
       "Abstract class that all torchcomms Backends implement.");
 
   // Bind TorchComm class
-  py::class_<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
+  py_opaque_class<TorchComm, std::shared_ptr<TorchComm>>(m, "TorchComm")
       // NOTE: copy/deepcopy return the same object (not a clone).
       // Actually cloning the underlying communicator would be extremely
       // expensive (requires collective operations to create new comm groups).
