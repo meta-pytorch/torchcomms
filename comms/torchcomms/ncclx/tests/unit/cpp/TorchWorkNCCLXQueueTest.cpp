@@ -22,8 +22,7 @@ using ::testing::NiceMock;
 using ::testing::Return;
 using ::testing::SetArgPointee;
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 struct WorkEvent {
   cudaEvent_t start_event;
@@ -324,5 +323,4 @@ TEST_F(TorchWorkNCCLXQueueCommTest, NoLeakedObjectsAfterFinalize) {
   EXPECT_EQ(getStreamWorkQueues().size(), 0);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

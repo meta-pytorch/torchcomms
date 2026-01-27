@@ -2,8 +2,7 @@
 
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkNCCLX::WorkStatus TorchWorkNCCLXQueue::garbageCollectLocked() {
   TorchWorkNCCLX::WorkStatus last_status =
@@ -96,5 +95,4 @@ void TorchWorkNCCLXQueue::enqueueWork(
   stream_work_queues_[stream].push(std::move(work));
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

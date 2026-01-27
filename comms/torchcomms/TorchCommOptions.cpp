@@ -3,8 +3,7 @@
 #include "comms/torchcomms/TorchCommOptions.hpp"
 #include "comms/torchcomms/TorchCommUtils.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 CommOptions::CommOptions() {
   // Check environment variables for options
@@ -13,9 +12,9 @@ CommOptions::CommOptions() {
 
   // Get timeout from environment variable - using 600s as default, which is the
   // same timeout as what ProcessGroupNCCL uses
-  timeout = std::chrono::milliseconds(
-      static_cast<int>(
-          env_to_value<float>("TORCHCOMM_TIMEOUT_SECONDS", 600.0f) * 1000));
+  uint64_t timeout_seconds =
+      env_to_value<uint64_t>("TORCHCOMM_TIMEOUT_SECONDS", 600);
+  timeout = std::chrono::seconds(timeout_seconds);
 
   // Initialize hints to empty map (don't read from environment)
   hints = std::unordered_map<std::string, std::string>();
@@ -28,5 +27,4 @@ bool CommOptions::operator==(const CommOptions& other) const {
       timeout == other.timeout && hints == other.hints);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
