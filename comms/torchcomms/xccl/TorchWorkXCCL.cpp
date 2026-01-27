@@ -48,10 +48,6 @@ void TorchWorkXCCL::recordEnd() {
       "Failed to record end event");
 }
 
-bool TorchWorkXCCL::isCompleted() {
-  return state_ == WorkStatus::COMPLETED;
-}
-
 TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
   // If already marked as completed, return COMPLETED
   if (state_ == WorkStatus::COMPLETED || state_ == WorkStatus::ERROR ||
@@ -114,7 +110,7 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
 }
 
 void TorchWorkXCCL::wait() {
-  // If already completed, return immediately
+  // If already  , return immediately
   WorkStatus local_state = state_;
   if (local_state == WorkStatus::COMPLETED ||
       local_state == WorkStatus::ERROR || local_state == WorkStatus::TIMEDOUT) {
