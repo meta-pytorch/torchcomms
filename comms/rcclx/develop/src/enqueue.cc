@@ -1999,7 +1999,11 @@ ncclResult_t ncclLaunchFinish(struct ncclComm* comm) {
     }
 
     if (capturing || planner->numStreams != 1 || ncclParamLaunchOrderImplicit()) {
-      CUDACHECK(cudaEventRecord(finishedEvent, launchStream));
+      if (!capturing){
+        // Only create the event if we're not capturing. The event recording on launchStream 
+        // creates an unjoinedfork when deviceStream waits on it during capture
+        CUDACHECK(cudaEventRecord(finishedEvent, launchStream));
+      }
       // deviceStream waits on userStream[0]
       NCCLCHECK(ncclStrongStreamAcquiredWorkStream(planner->capturingGraph, &comm->sharedRes->deviceStream, /*concurrent=*/false, &deviceStream));
 

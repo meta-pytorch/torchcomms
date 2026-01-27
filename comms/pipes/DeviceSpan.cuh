@@ -132,7 +132,7 @@ class DeviceSpan {
   using element_type = T;
   using value_type = typename std::remove_cv<T>::type;
   using size_type = uint32_t;
-  using pointer = T*;
+  using pointer = T* const;
   using const_pointer = T const* const;
   using reference = T&;
   using const_reference = const T&;
@@ -221,7 +221,7 @@ class DeviceSpan {
 
  private:
   pointer data_;
-  size_type size_;
+  size_type const size_;
 };
 
 /**

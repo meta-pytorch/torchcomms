@@ -9,7 +9,7 @@
 namespace comms::pipes::test {
 
 // Test kernel that calls SelfTransportDevice::write()
-void testSelfWrite(
+void testSelfPut(
     char* dst_d,
     const char* src_d,
     size_t nbytes,

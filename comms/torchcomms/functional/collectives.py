@@ -3,9 +3,9 @@
 
 """Functional collectives implementation for torchcomms."""
 
-from datetime import timedelta
 
 import torch
+from torchcomms import Timeout
 
 # Import TorchComm, TorchCommWindow, and BatchSendRecv
 from torchcomms._comms import BatchSendRecv, ReduceOp, TorchComm, TorchCommWindow
@@ -79,14 +79,11 @@ if lib is not None:
     def _wait_tensors_functional_eager(
         inputs: list[torch.Tensor],
     ) -> list[torch.Tensor]:
-        # Wait first, then clone to get tensors with completed data
         if inputs:
             work = _get_tensor_work(inputs[0])
             if work is not None:
                 work.wait()  # type: ignore[attr-defined]
-        # Clone AFTER wait so clones have the completed data
         return inputs
-        # return [t.clone() for t in inputs]
 
     # === FUNCTIONALIZE IMPL FOR INPLACE WAIT ===
     # Register py_functionalize_impl to swap inplace for functional
@@ -179,7 +176,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -194,7 +191,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -208,7 +205,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -220,7 +217,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -240,7 +237,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -293,7 +290,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -309,7 +306,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -327,7 +324,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -348,7 +345,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -367,7 +364,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -385,7 +382,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -402,7 +399,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -421,7 +418,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -444,7 +441,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -462,7 +459,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -486,7 +483,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -508,7 +505,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -531,34 +528,5 @@ if lib is not None:
             ParamSpec("src", ParamKind.EXTRA, int),
         ],
     )
-
-    """
-    we don't currently support async ops that don't take mutable inputs since there is no way
-    to thread the data dependencies through the work object.
-
-    e.g.,
-
-    batch.send(t0, peer0)
-    batch.recv(t1, peer1)
-
-    batch.issue()
-
-    print(t1)
-
-    ---> there is no way to ensure that batch.issue isn't reordered after the print, since it doesn't take a
-         dependency or create a new value (like window.get_tensor).
-
-    register_collective(
-        BatchSendRecv,
-        BatchSendRecv.issue,
-        param_specs=[
-            ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
-            ParamSpec(
-                "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
-            ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
-        ],
-    )
-    """
 
     finalize_registration(lib)

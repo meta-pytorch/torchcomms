@@ -4,7 +4,7 @@
 #include "nccl.h"
 
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/utils/Checks.h"
+#include "comms/utils/checks.h"
 
 #include "meta/wrapper/MetaFactory.h"
 
