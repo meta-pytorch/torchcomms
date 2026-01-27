@@ -5,8 +5,7 @@
 #include <glog/logging.h>
 #include <hip/hip_runtime.h> // @manual=third-party//rocm:amdhip64-lazy
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 #define HIP_CHECK(cuda_api, call, err_str)                                \
   do {                                                                    \
@@ -133,5 +132,4 @@ class DefaultHipApi : public HipApi {
   const char* getErrorString(hipError_t error) override;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -9,8 +9,7 @@
 #include <ATen/record_function.h>
 #include <torch/csrc/distributed/c10d/ParamCommsUtils.hpp> // @manual=//caffe2:torch-cpp-cpu
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 void TorchCommTracing::recordEvent(std::string_view collective_name) {
   RECORD_PARAM_COMMS(
@@ -234,5 +233,4 @@ TorchCommTracingGuard::TorchCommTracingGuard(
       output_tensor_list);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
