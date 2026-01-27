@@ -2,6 +2,7 @@
 # pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+import os
 import unittest
 
 import torch
@@ -11,6 +12,10 @@ from torchcomms.functional.param_parsing import (
     ParamSpec,
     ParsedArgs,
 )
+from torchcomms.tests.unit.py.test_helpers import skip_if_pytorch_version_unsupported
+
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
+skip_if_pytorch_version_unsupported()
 
 
 class TestParamSpec(unittest.TestCase):
