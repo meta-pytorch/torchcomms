@@ -3,10 +3,24 @@
 # pyre-strict
 import ctypes
 import os
+import sys
 from importlib.metadata import entry_points
 
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
+from torch._opaque_base import OpaqueBaseMeta
+
+
+torchcomms_compile_support_enabled = os.environ.get("TORCHCOMMS_PATCH_FOR_COMPILE", "").lower() in (
+    "1",
+    "true",
+)
+
+if torchcomms_compile_support_enabled:
+    # make the metaclass available to the pybind module
+    sys.modules["torchcomms._opaque_meta"] = type(
+        "module", (), {"OpaqueBaseMeta": OpaqueBaseMeta}
+    )()
 
 
 def _load_libtorchcomms() -> None:
