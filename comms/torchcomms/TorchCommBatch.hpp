@@ -5,18 +5,28 @@
 #include <ATen/ATen.h>
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
+#include <memory>
 #include "comms/torchcomms/TorchCommOptions.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchComm;
 class TorchWork;
 
+/**
+ * BatchSendRecv enables batching multiple point-to-point operations
+ * (sends and receives) into a single collective call.
+ *
+ * Lifetime Safety:
+ * This class holds a shared_ptr to the parent TorchComm to ensure the
+ * communicator remains valid for the lifetime of the batch. Users can
+ * safely destroy the original TorchComm reference after creating a batch,
+ * as long as the batch object itself remains alive until issue() completes.
+ */
 class BatchSendRecv {
  public:
-  explicit BatchSendRecv(TorchComm* parent);
+  explicit BatchSendRecv(std::shared_ptr<TorchComm> parent);
   ~BatchSendRecv() = default;
   BatchSendRecv(const BatchSendRecv&) = default;
   BatchSendRecv& operator=(const BatchSendRecv&) = default;
@@ -47,8 +57,7 @@ class BatchSendRecv {
   std::vector<P2POp> ops;
 
  private:
-  TorchComm* parent_;
+  std::shared_ptr<TorchComm> parent_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
