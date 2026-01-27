@@ -11,7 +11,9 @@ import torch  # noqa: F401
 from torch._opaque_base import OpaqueBaseMeta
 
 
-torchcomms_compile_support_enabled = os.environ.get("TORCHCOMMS_PATCH_FOR_COMPILE", "").lower() in (
+torchcomms_compile_support_enabled = os.environ.get(
+    "TORCHCOMMS_PATCH_FOR_COMPILE", ""
+).lower() in (
     "1",
     "true",
 )
