@@ -25,17 +25,19 @@ rcclx_prebuilt_artifacts/tree/
 │   ├── 6.2/librcclx-dev.a
 │   ├── 6.4/librcclx-dev.a
 │   └── 7.0/librcclx-dev.a
-└── archives/             # Historical snapshots
-    ├── 6.2/
-    │   ├── 20250107_143000_librcclx-dev.a
-    │   ├── 20250108_091500_librcclx-dev.a
+└── archives/             # Backup snapshots (created before each snapshot operation)
+    ├── backup_20250107_143000/
+    │   ├── stable/
+    │   │   ├── 6.2/librcclx-dev.a
+    │   │   ├── 6.4/librcclx-dev.a
+    │   │   └── 7.0/librcclx-dev.a
+    │   └── last_stable/
+    │       ├── 6.2/librcclx-dev.a
+    │       ├── 6.4/librcclx-dev.a
+    │       └── 7.0/librcclx-dev.a
+    ├── backup_20250108_091500/
     │   └── ...
-    ├── 6.4/
-    │   ├── 20250107_143000_librcclx-dev.a
-    │   └── ...
-    └── 7.0/
-        ├── 20250107_143000_librcclx-dev.a
-        └── ...
+    └── ...
 ```
 
 ### Repository Structure (Metadata and Headers)
@@ -55,31 +57,17 @@ snapshots/
 │   └── 7.0/
 │       ├── metadata.txt
 │       └── rccl.h
-├── last-stable/      # Previous stable snapshots (metadata + headers)
-│   ├── 6.2/
-│   │   ├── metadata.txt
-│   │   └── rccl.h
-│   ├── 6.4/
-│   │   ├── metadata.txt
-│   │   └── rccl.h
-│   └── 7.0/
-│       ├── metadata.txt
-│       └── rccl.h
-└── archives/         # Historical snapshots with timestamp-prefixed files
+└── last-stable/      # Previous stable snapshots (metadata + headers)
     ├── 6.2/
-    │   ├── 20250107_143000_metadata.txt
-    │   ├── 20250107_143000_rccl.h
-    │   ├── 20250108_091500_metadata.txt
-    │   ├── 20250108_091500_rccl.h
-    │   └── ...
+    │   ├── metadata.txt
+    │   └── rccl.h
     ├── 6.4/
-    │   ├── 20250107_143000_metadata.txt
-    │   ├── 20250107_143000_rccl.h
-    │   └── ...
+    │   ├── metadata.txt
+    │   └── rccl.h
     └── 7.0/
-        ├── 20250107_143000_metadata.txt
-        ├── 20250107_143000_rccl.h
-        └── ...
+        ├── metadata.txt
+        └── rccl.h
+```
 ```
 
 ## Automatic Checksum Management
@@ -263,27 +251,132 @@ This is particularly useful for quickly reverting to a known good state while in
 
 ### Creating a Snapshot
 
-To create a new snapshot for a specific ROCm version, use the wrapper script from the fbcode directory:
+The wrapper script `create_snapshot_wrapper.sh` provides a convenient way to build and create snapshots from the fbcode directory. It supports multiple modes and options.
+
+#### Basic Usage
 
 ```bash
 # From fbcode directory
 cd /path/to/fbsource/fbcode
 
-# For ROCm 6.2
+# Create a new snapshot for ROCm 6.4 (normal mode)
+./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 6.4
+```
+
+#### Available Options
+
+| Option | Description |
+|--------|-------------|
+| `--rocm-version <version>` | ROCm version (6.2, 6.4, or 7.0). Required for snapshot creation. |
+| `--only-stable` | Update only stable, leave last-stable unchanged. |
+| `--copy-stable` | Copy current stable to last-stable for all versions (no build). |
+| `--rocm-versions <list>` | Comma-separated ROCm versions for --copy-stable mode (default: 6.2,6.4,7.0). |
+| `--skip-backup` | Skip backup before making changes (not recommended). |
+| `--help` | Show usage information. |
+
+#### Examples
+
+```bash
+# Create a new snapshot for ROCm 6.2 (rotates stable to last-stable)
 ./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 6.2
 
-# For ROCm 6.4
+# Create a new snapshot for ROCm 6.4 (rotates stable to last-stable)
 ./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 6.4
 
-# For ROCm 7.0
+# Create a new snapshot for ROCm 7.0 (rotates stable to last-stable)
 ./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 7.0
+
+# Create a new snapshot, only updating stable (last-stable unchanged)
+./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 6.4 --only-stable
+
+# Copy stable to last-stable for all ROCm versions (no build)
+./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --copy-stable
+
+# Copy stable to last-stable for specific ROCm versions
+./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --copy-stable --rocm-versions 6.4,7.0
+
+# Skip backup (not recommended, use only if you have a recent manual backup)
+./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 6.4 --skip-backup
 ```
 
 The wrapper script will:
-1. Build the rcclx-dev library with the specified ROCm version
-2. Run the snapshot creation script to rotate archives and create metadata
-3. Upload the artifact to Manifold at `rcclx_prebuilt_artifacts/tree/stable/<rocm_version>/`
-4. Save metadata to the repo at `comms/rcclx/snapshots/stable/<rocm_version>/metadata.txt`
+1. Create a backup of all stable and last-stable artifacts before any changes
+2. Build the rcclx-dev library with the specified ROCm version (unless using --copy-stable)
+3. Run the snapshot creation script to update stable (and rotate to last-stable unless --only-stable)
+4. Upload the artifact to Manifold at `rcclx_prebuilt_artifacts/tree/stable/<rocm_version>/`
+5. Save metadata to the repo at `comms/rcclx/snapshots/stable/<rocm_version>/metadata.txt`
+6. Regenerate `comms/rcclx/stable_checksums.bzl` from all metadata files
+
+### Copying Stable to Last-Stable (--copy-stable)
+
+The `--copy-stable` option allows you to copy the current stable snapshots to last-stable for all ROCm versions without building new snapshots. This is useful when you want to:
+
+- Manually promote current stable to last-stable before making other changes
+- Create a last-stable checkpoint without rebuilding the library
+- Prepare for a rollback scenario
+
+**Using the wrapper script (recommended):**
+
+```bash
+# Copy stable to last-stable for all ROCm versions (6.2, 6.4, 7.0)
+./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --copy-stable
+
+# Copy stable to last-stable for specific ROCm versions
+./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --copy-stable --rocm-versions 6.4,7.0
+```
+
+**Using buck2 run directly:**
+
+```bash
+buck2 run fbcode//comms/rcclx/snapshots/scripts:create_snapshot -- \
+    --snapshots-root $(pwd)/comms/rcclx/snapshots \
+    --copy-stable
+
+buck2 run fbcode//comms/rcclx/snapshots/scripts:create_snapshot -- \
+    --snapshots-root $(pwd)/comms/rcclx/snapshots \
+    --copy-stable \
+    --rocm-versions 6.4,7.0
+```
+
+When using `--copy-stable`, the following operations occur:
+
+1. **Backup Checkpoint**: Creates a backup of all stable and last-stable artifacts
+2. **For each ROCm version**:
+   - **Copy Stable to Last-Stable**: Copies current stable metadata/artifacts to last-stable (overwrites existing last-stable, stable remains unchanged)
+
+### Updating Only Stable (--only-stable)
+
+The `--only-stable` option allows you to update only the stable snapshot without affecting last-stable. This is useful when you want to:
+
+- Update stable without promoting the previous stable to last-stable
+- Fix an issue in stable without changing the rollback point (last-stable)
+- Iterate on stable while keeping a known-good last-stable
+
+**Using the wrapper script (recommended):**
+
+```bash
+# Update only stable for a specific ROCm version (last-stable unchanged)
+./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 6.4 --only-stable
+```
+
+**Using buck2 run directly:**
+
+```bash
+buck2 run fbcode//comms/rcclx/snapshots/scripts:create_snapshot -- \
+    --library /path/to/librcclx-dev.a \
+    --rocm-version 6.4 \
+    --snapshots-root $(pwd)/comms/rcclx/snapshots \
+    --rcclx-repo $(pwd)/comms/rcclx \
+    --header /path/to/rccl.h \
+    --only-stable
+```
+
+When using `--only-stable`, the following operations occur:
+
+1. **Backup Checkpoint**: Creates a backup of all stable and last-stable artifacts
+2. **Skip Rotation**: The stable-to-last-stable rotation is skipped
+3. **Update Stable**: New library, metadata, and header are installed to stable
+4. **Last-Stable Unchanged**: The last-stable snapshot remains untouched
 
 ### What Happens During Snapshot Creation
 
@@ -291,13 +384,11 @@ When you run a snapshot build, the following operations occur in order:
 
 1. **Build**: The rcclx library is built with the specified ROCm version constraints
 
-2. **Archive Previous (if last-stable exists)**:
-   - **Metadata**: Moved from `last-stable/<version>/` to `archives/<version>/<timestamp>/` in repo
-   - **Artifact**: Copied from Manifold `last_stable/<version>/` to `archives/<version>/<timestamp>/` in Manifold
+2. **Backup Checkpoint**: Before making any changes, a backup of all stable and last-stable artifacts for all ROCm versions (6.2, 6.4, 7.0) is created in Manifold at `archives/backup_<timestamp>/`. This provides a recovery point if anything goes wrong.
 
 3. **Rotate Current (if stable exists)**:
-   - **Metadata**: Moved from `stable/<version>/` to `last-stable/<version>/` in repo
-   - **Artifact**: Copied from Manifold `stable/<version>/` to `last_stable/<version>/` in Manifold
+   - **Metadata**: Moved from `stable/<version>/` to `last-stable/<version>/` in repo (overwrites existing)
+   - **Artifact**: Copied from Manifold `stable/<version>/` to `last_stable/<version>/` in Manifold (overwrites existing)
 
 4. **Calculate Checksums**: SHA256 and SHA1 checksums are calculated for the newly built library
 
@@ -307,7 +398,36 @@ When you run a snapshot build, the following operations occur in order:
 
 6. **Update Checksums File**: Automatically regenerates `comms/rcclx/stable_checksums.bzl` from all metadata files
 
-The snapshot creation process is fully automated and requires no manual checksum management.
+The snapshot creation process is fully automated and requires no manual checksum management. The backup mechanism replaces the old archive rotation scheme, providing a simpler and more robust recovery option.
+
+### Backup During Snapshot Creation
+
+The create_snapshot script automatically creates a backup checkpoint before making any modifications. This backup includes:
+
+- **Stable artifacts** for all ROCm versions (6.2, 6.4, 7.0)
+- **Last-stable artifacts** for all ROCm versions (6.2, 6.4, 7.0)
+
+The backup is stored in Manifold at:
+```
+rcclx_prebuilt_artifacts/tree/archives/backup_<timestamp>/
+├── stable/
+│   ├── 6.2/librcclx-dev.a
+│   ├── 6.4/librcclx-dev.a
+│   └── 7.0/librcclx-dev.a
+└── last_stable/
+    ├── 6.2/librcclx-dev.a
+    ├── 6.4/librcclx-dev.a
+    └── 7.0/librcclx-dev.a
+```
+
+The backup name (e.g., `backup_20260127_012000`) is logged during snapshot creation. If something goes wrong, you can restore from this backup:
+
+```bash
+buck2 run fbcode//comms/rcclx/snapshots/scripts:restore_manifold_artifacts -- \
+    --backup-name backup_20260127_012000
+```
+
+To skip the backup step (not recommended), use the `--skip-backup` flag when running the create_snapshot script directly.
 
 ### Getting Checksums for BUCK File
 
@@ -395,19 +515,16 @@ This metadata allows you to trace each snapshot back to its exact source code st
 
 - **scripts/**: Contains automation scripts used by the build system
   - `create_snapshot.py`: Main script that handles snapshot creation and rotation
+  - `backup_manifold_artifacts.py`: Script to backup stable/last-stable artifacts in Manifold
+  - `restore_manifold_artifacts.py`: Script to restore artifacts from a Manifold backup
 
 - **stable/**: Contains the current stable snapshot for each ROCm version
   - This is where you should find the latest validated builds
-  - Each subdirectory contains the library archive and metadata
+  - Each subdirectory contains the metadata and header files
 
 - **last-stable/**: Contains the previous stable snapshot for each ROCm version
   - Provides a quick rollback option if issues are found with the current stable
   - Automatically populated when creating a new stable snapshot
-
-- **archives/**: Contains historical snapshots organized by ROCm version and timestamp
-  - Format: `archives/<rocm_version>/<YYYYMMDD_HHMMSS>/`
-  - Provides long-term version history
-  - Automatically populated when rotating snapshots
 
 ## Example Workflow
 
@@ -419,16 +536,98 @@ This metadata allows you to trace each snapshot back to its exact source code st
    ./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 6.4
    ```
 4. The snapshot system:
-   - Archives the old last-stable to `archives/6.4/<timestamp>/` (metadata in repo, artifact in Manifold)
+   - Creates a backup of all stable and last-stable artifacts to `archives/backup_<timestamp>/` in Manifold
    - Moves current stable to `last-stable/6.4/` (metadata in repo, artifact in Manifold)
    - Installs new build to `stable/6.4/` in Manifold
    - Creates metadata file with commit hashes in repo
 
+## Additional Scripts
+
+### Backing Up Manifold Artifacts
+
+To create a backup of all stable and last-stable artifacts within Manifold to an archives backup path:
+
+```bash
+# Backup all ROCm versions within Manifold
+buck2 run fbcode//comms/rcclx/snapshots/scripts:backup_manifold_artifacts
+
+# Backup specific ROCm versions
+buck2 run fbcode//comms/rcclx/snapshots/scripts:backup_manifold_artifacts -- \
+    --rocm-versions 6.2,6.4
+```
+
+The backup creates a timestamped directory in Manifold archives:
+```
+rcclx_prebuilt_artifacts/tree/archives/
+└── backup_20260127_012000/
+    ├── stable/
+    │   ├── 6.2/librcclx-dev.a
+    │   ├── 6.4/librcclx-dev.a
+    │   └── 7.0/librcclx-dev.a
+    └── last_stable/
+        ├── 6.2/librcclx-dev.a
+        ├── 6.4/librcclx-dev.a
+        └── 7.0/librcclx-dev.a
+```
+
+The script prints the backup path name (e.g., `backup_20260127_012000`) which you can use to restore later.
+
+### Restoring Artifacts from Backup
+
+To restore artifacts from a backup location in Manifold:
+
+```bash
+# Restore both stable and last_stable from a backup (default)
+buck2 run fbcode//comms/rcclx/snapshots/scripts:restore_manifold_artifacts -- \
+    --backup-name backup_20260127_012000
+
+# Dry run to see what would be restored
+buck2 run fbcode//comms/rcclx/snapshots/scripts:restore_manifold_artifacts -- \
+    --backup-name backup_20260127_012000 \
+    --dry-run
+
+# Restore only stable artifacts
+buck2 run fbcode//comms/rcclx/snapshots/scripts:restore_manifold_artifacts -- \
+    --backup-name backup_20260127_012000 \
+    --stages stable
+
+# Restore only last_stable artifacts
+buck2 run fbcode//comms/rcclx/snapshots/scripts:restore_manifold_artifacts -- \
+    --backup-name backup_20260127_012000 \
+    --stages last_stable
+
+# Restore specific ROCm versions
+buck2 run fbcode//comms/rcclx/snapshots/scripts:restore_manifold_artifacts -- \
+    --backup-name backup_20260127_012000 \
+    --rocm-versions 6.2,6.4
+```
+
+### Disaster Recovery Workflow
+
+If Manifold artifacts are lost or corrupted, use this workflow:
+
+1. **If you have a Manifold backup**:
+   ```bash
+   # Restore from backup
+   buck2 run fbcode//comms/rcclx/snapshots/scripts:restore_manifold_artifacts -- \
+       --backup-name backup_20260127_012000
+   ```
+
+2. **If you need to recreate from scratch**:
+   ```bash
+   # Rebuild and create new snapshots for each ROCm version
+   ./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 6.2
+   ./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 6.4
+   ./comms/rcclx/snapshots/scripts/create_snapshot_wrapper.sh --rocm-version 7.0
+   ```
+
 ## Notes
 
 - **Artifacts** (.a files) are stored in Manifold to avoid bloating the repository with large binary files
-- **Metadata** (metadata.txt) is stored in the repository for easy access and version control
+- **Metadata** (metadata.txt) and **headers** (rccl.h) are stored in the repository for easy access and version control
 - Each ROCm version maintains its own independent snapshot history
 - The snapshot system is designed to work with the existing rcclx-dev build target
-- All snapshot operations are atomic and safe (creates backups before modifications)
-- Timestamp format `YYYYMMDD_HHMMSS` ensures consistent naming across repo and Manifold archives
+- All snapshot operations create a backup checkpoint before making any modifications
+- Backups are stored in Manifold at `archives/backup_<timestamp>/` and can be used for full restoration
+- The backup mechanism replaces the old per-version archive rotation, providing simpler and more robust recovery
+- Always use `--dry-run` first when running restore operations to verify what changes will be made

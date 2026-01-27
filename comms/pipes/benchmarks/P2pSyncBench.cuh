@@ -11,8 +11,8 @@ namespace comms::pipes::benchmark {
  * p2pSyncKernel - Benchmark kernel for P2P synchronization using ChunkState
  *
  * Sender and receiver alternate signaling through ChunkState:
- *   - Sender: waitReadyToSend() -> readyToRecv(step)
- *   - Receiver: waitReadyToRecv(step) -> readyToSend()
+ *   - Sender: wait_ready_to_send() -> ready_to_recv(step)
+ *   - Receiver: wait_ready_to_recv(step) -> ready_to_send()
  *
  * @param chunkStates Array of ChunkState objects (one per block/group)
  * @param isSender True for sender kernel, false for receiver
