@@ -271,6 +271,8 @@ __device__ __forceinline__ void broadcast_adaptive(
     std::size_t nbytes) {
 #ifdef __CUDA_ARCH__
   // Threshold for switching to binomial tree (64KB)
+  // IMPORTANT: Must match kBinomialThreshold in
+  // comms/pipes/benchmarks/BroadcastTuning.h
   constexpr std::size_t kBinomialThreshold = 64 * 1024;
 
   const auto nranks = transports_per_rank.size();
