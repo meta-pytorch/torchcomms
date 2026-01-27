@@ -225,11 +225,14 @@ commResult_t commMemFreeDisjoint(
 // - segments: vector of underlying allocated segments. It can be two segments
 //             with kCuMemAllocDisjoint type, which map to a single virtual
 //             memory range. For other mem types, it should be 1 segment.
+// - numSegments: optional number of segments for kCuMemAllocDisjoint type
+//                (default: 2). Ignored for other mem types.
 // - return: pointer to the allocated virtual memory range.
 void* commMemAlloc(
     size_t bufSize,
     MemAllocType memType,
-    std::vector<TestMemSegment>& segments) {
+    std::vector<TestMemSegment>& segments,
+    size_t numSegments) {
   void* buf = nullptr;
   switch (memType) {
     case kMemCudaMalloc:
@@ -239,9 +242,9 @@ void* commMemAlloc(
     case kCuMemAllocDisjoint: {
       // Allocate disjoint segments mapping to a single virtual memory range;
       // it mimics the behavior of Pytorch CCA expandable segment mode where a
-      // single tensor may be mapped by two disjoint segments.
-      const auto segSize = getSegmentSize(bufSize, 2);
-      std::vector<size_t> disjointSegSizes(2, segSize);
+      // single tensor may be mapped by multiple disjoint segments.
+      const auto segSize = getSegmentSize(bufSize, numSegments);
+      std::vector<size_t> disjointSegSizes(numSegments, segSize);
       COMMCHECK_TEST(commMemAllocDisjoint(&buf, disjointSegSizes, segments));
       break;
     }
@@ -267,14 +270,18 @@ void* commMemAlloc(
   return buf;
 }
 
-void commMemFree(void* buf, size_t bufSize, MemAllocType memType) {
+void commMemFree(
+    void* buf,
+    size_t bufSize,
+    MemAllocType memType,
+    size_t numSegments) {
   switch (memType) {
     case kMemCudaMalloc:
       CUDACHECK_TEST(cudaFree(buf));
       break;
     case kCuMemAllocDisjoint: {
-      const auto segSize = getSegmentSize(bufSize, 2);
-      std::vector<size_t> disjointSegSizes(2, segSize);
+      const auto segSize = getSegmentSize(bufSize, numSegments);
+      std::vector<size_t> disjointSegSizes(numSegments, segSize);
       commMemFreeDisjoint(buf, disjointSegSizes);
       break;
     }
