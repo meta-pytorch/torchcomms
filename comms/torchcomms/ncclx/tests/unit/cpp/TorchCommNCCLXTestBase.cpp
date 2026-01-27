@@ -67,7 +67,7 @@ void TorchCommNCCLXTest::setupRankAndSize(int rank, int size) {
 
 void TorchCommNCCLXTest::setOptionsEnvironmentVariables(
     bool abort_on_error,
-    float timeout_secs) {
+    uint64_t timeout_secs) {
   setenv("TORCHCOMM_ABORT_ON_ERROR", abort_on_error ? "1" : "0", 1);
   setenv("TORCHCOMM_TIMEOUT_SECONDS", std::to_string(timeout_secs).c_str(), 1);
 }
