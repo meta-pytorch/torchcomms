@@ -5,8 +5,7 @@
 #include <set>
 #include <string>
 
-#include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual
-
+#include <fmt/core.h>
 #include <gloo/algorithm.h>
 #include <gloo/allgather.h>
 #include <gloo/allreduce.h>
@@ -24,10 +23,12 @@
 #include <gloo/transport/device.h>
 #include <gloo/transport/tcp/device.h>
 #include <gloo/transport/unbound_buffer.h>
+#include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual
 
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/gloo/GlooStore.hpp"
 
@@ -307,7 +308,7 @@ void TorchCommGloo::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
-  TC_LOG(INFO) << "Initializing TorchCommGloo for device: " << device;
+  TC_LOG(INFO, this) << "Initializing TorchCommGloo for device: " << device;
   // Initialize private members
   device_ = device;
   name_ = name;
@@ -322,9 +323,9 @@ void TorchCommGloo::init(
   init_state_ = InitializationState::INITIALIZED;
 
   if (rank_ == -1 || comm_size_ == -1) {
-    auto ranksize = query_ranksize();
-    rank_ = ranksize.first;
-    comm_size_ = ranksize.second;
+    auto [rank, comm_size] = query_ranksize();
+    rank_ = rank;
+    comm_size_ = comm_size;
   }
 
   ::gloo::transport::tcp::attr attr;
@@ -362,10 +363,9 @@ void TorchCommGloo::init(
   context_ = std::move(context);
   store_ = std::move(store);
 
-  tracing_ = std::make_shared<TorchCommTracing>(name, comm_size_, rank_);
-  tracing_->recordEvent("init");
+  TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
-  TC_LOG(INFO) << "TorchCommGloo initialized for rank: " << rank_;
+  TC_LOG(INFO, this) << "TorchCommGloo initialized for rank: " << rank_;
 }
 
 void TorchCommGloo::finalize() {
@@ -421,7 +421,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::send(
     throw std::runtime_error("Cannot send to self");
   }
 
-  tracing_->recordEventWithInputOutput("send", dst, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "send", dst, tensor, tensor);
 
   // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
@@ -463,7 +464,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
     throw std::runtime_error("Cannot recv from self");
   }
 
-  tracing_->recordEventWithInputOutput("recv", src, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "recv", src, tensor, tensor);
 
   // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
@@ -530,8 +532,13 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::batch_op_issue(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "batch_op_issue", rank_, input_tensors, output_tensors);
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "batch_op_issue",
+      rank_,
+      input_tensors,
+      output_tensors);
 
   throw std::runtime_error("Not implemented yet");
 }
@@ -546,7 +553,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::broadcast(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("broadcast", root, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "broadcast", root, tensor, tensor);
 
   auto tensorCPU = tensor.to(at::kCPU);
 
@@ -586,7 +594,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("all_reduce", rank_, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   auto tensorCPU = tensor.to(at::kCPU);
   auto opCPU = convertReduceOpToCPU(op);
@@ -631,7 +640,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("reduce", root, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce", root, tensor, tensor);
 
   auto tensorCPU = tensor.to(at::kCPU);
   auto opCPU = convertReduceOpToCPU(op);
@@ -692,8 +702,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_gather", rank_, tensor_list, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
 
   auto tensorCPU = tensor.to(at::kCPU);
   std::vector<at::Tensor> tensorListCPU;
@@ -769,8 +779,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_single(
         "Output tensor size must be input_size * comm_size for all_gather_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_gather_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_single", rank_, input, output);
 
   auto inputCPU = input.to(at::kCPU);
   auto outputCPU = output.to(at::kCPU);
@@ -829,8 +839,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "reduce_scatter", rank_, input_list, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
 
   // Concatenate input tensors
   auto input = at::cat(input_list, 0);
@@ -867,8 +877,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
         "Input tensor size must be output_size * comm_size for reduce_scatter_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "reduce_scatter_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   // Convert tensors to CPU (noop if already on CPU)
   auto inputCPU = input.to(at::kCPU);
@@ -933,8 +943,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_single(
         "Tensor size must be divisible by comm_size for all_to_all_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_to_all_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   // Convert tensors to CPU
   auto inputCPU = input.to(at::kCPU);
@@ -1001,18 +1011,18 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
     output_total += output_split_sizes[i];
   }
 
-  if (input_total != static_cast<uint64_t>(input.size(0))) {
+  if (input_total > static_cast<uint64_t>(input.size(0))) {
     throw std::runtime_error(
-        "Sum of input_split_sizes must equal input tensor size for all_to_all_v_single");
+        "Sum of input_split_sizes exceeds input tensor size for all_to_all_v_single");
   }
 
-  if (output_total != static_cast<uint64_t>(output.size(0))) {
+  if (output_total > static_cast<uint64_t>(output.size(0))) {
     throw std::runtime_error(
-        "Sum of output_split_sizes must equal output tensor size for all_to_all_v_single");
+        "Sum of output_split_sizes exceeds output tensor size for all_to_all_v_single");
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_to_all_v_single", rank_, {input}, {output});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   auto inputCPU = input.to(at::kCPU);
   auto outputCPU = output.to(at::kCPU);
@@ -1089,8 +1099,13 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all(
     ensureTensorContiguous(output_tensor_list[i]);
   }
 
-  tracing_->recordEventWithInputOutput(
-      "all_to_all", rank_, input_tensor_list, output_tensor_list);
+  TorchCommTracingGuard tracingGuard(
+      name_,
+      comm_size_,
+      "all_to_all",
+      rank_,
+      input_tensor_list,
+      output_tensor_list);
 
   // Get tensor size (all tensors should be same size)
   auto tensorSize = input_tensor_list.at(0).numel();
@@ -1159,7 +1174,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::barrier(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
-  tracing_->recordEvent("barrier");
+  TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
 
   return createWork(
       [options, context = context_, tag = nextTag()]() {
@@ -1199,8 +1214,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::scatter(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "scatter", root, input_tensor_list, {output_tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "scatter", root, input_tensor_list, {output_tensor});
 
   auto outputCPU = output_tensor.to(at::kCPU);
 
@@ -1275,8 +1290,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::gather(
     }
   }
 
-  tracing_->recordEventWithInputOutput(
-      "gather", root, {input_tensor}, output_tensor_list);
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "gather", root, {input_tensor}, output_tensor_list);
 
   auto inputCPU = input_tensor.to(at::kCPU);
 
@@ -1353,8 +1368,10 @@ std::shared_ptr<TorchCommBackend> TorchCommGloo::split(
   for (int rank : ranks) {
     if (rank < 0 || rank >= comm_size_) {
       throw std::runtime_error(
-          "Invalid rank " + std::to_string(rank) +
-          " in ranks. Valid ranks are 0 to " + std::to_string(comm_size_ - 1));
+          fmt::format(
+              "Invalid rank {} in ranks. Valid ranks are 0 to {}",
+              rank,
+              comm_size_ - 1));
     }
   }
 
@@ -1374,8 +1391,9 @@ std::shared_ptr<TorchCommBackend> TorchCommGloo::split(
   if (it == ranks.end()) {
     // Current rank is not in the non-empty list - this is an error
     throw std::runtime_error(
-        "Current rank " + std::to_string(rank_) +
-        " is not included in the provided ranks list");
+        fmt::format(
+            "Current rank {} is not included in the provided ranks list",
+            rank_));
   }
 
   auto new_torchcomm = std::make_shared<TorchCommGloo>();

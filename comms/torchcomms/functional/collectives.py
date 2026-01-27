@@ -4,12 +4,17 @@
 """Functional collectives implementation for torchcomms."""
 
 import threading
-from datetime import timedelta
 
 import torch
+from torchcomms import Timeout
 
 # Import TorchComm, TorchCommWindow, and BatchSendRecv
 from torchcomms._comms import BatchSendRecv, ReduceOp, TorchComm, TorchCommWindow
+from torchcomms.functional.async_tensor import (
+    _are_we_tracing,
+    _maybe_wrap_tensor,
+    _OnceWaitWork,
+)
 from torchcomms.functional.registry import finalize_registration, register_collective
 
 
@@ -129,14 +134,11 @@ if lib is not None:
     def _wait_tensors_functional_eager(
         inputs: list[torch.Tensor],
     ) -> list[torch.Tensor]:
-        # Wait first, then clone to get tensors with completed data
         if inputs:
             work = _get_tensor_work(inputs[0])
             if work is not None:
                 work.wait()  # type: ignore[attr-defined]
-        # Clone AFTER wait so clones have the completed data
         return inputs
-        # return [t.clone() for t in inputs]
 
     # === FUNCTIONALIZE IMPL FOR INPLACE WAIT ===
     # Register py_functionalize_impl to swap inplace for functional
@@ -383,82 +385,6 @@ if lib is not None:
         work = ctx.comm.all_to_all_single(grad_input, grad_output, async_op=True)
         return _maybe_wrap_tensor(grad_input, work)
 
-    def _scatter_setup_context(ctx, inputs, output):
-        """Save context for scatter backward.
-
-        For functional version:
-        - inputs: (comm, output_tensor, input_tensor_list, root, async_op, hints, timeout)
-        - output: The scattered output tensor
-        """
-        ctx.comm = inputs[0]
-        ctx.root = inputs[3]
-        ctx.group_size = inputs[0].get_size()
-
-    def _scatter_backward(ctx, grad_output):
-        """Backward for scatter.
-
-        scatter backward is gather - gradients flow from all ranks back to root.
-
-        Returns gradients for input_tensor_list (only meaningful on root rank).
-        """
-        grad_output = grad_output.contiguous()
-
-        # Create output list for gather (only root needs actual tensors)
-        rank = ctx.comm.get_rank()
-        if rank == ctx.root:
-            grad_input_list = [
-                grad_output.new_empty(grad_output.size()) for _ in range(ctx.group_size)
-            ]
-        else:
-            grad_input_list = []
-
-        work = ctx.comm.gather(grad_input_list, grad_output, ctx.root, async_op=True)
-        # Return wrapped list for root, empty list for others
-        if rank == ctx.root:
-            return [_maybe_wrap_tensor(t, work) for t in grad_input_list]
-        return grad_input_list
-
-    def _gather_setup_context(ctx, inputs, output):
-        """Save context for gather backward.
-
-        For functional version:
-        - inputs: (comm, output_tensor_list, input_tensor, root, async_op, hints, timeout)
-        - output: The gathered output tensor list
-        """
-        ctx.comm = inputs[0]
-        ctx.root = inputs[3]
-        ctx.input_shape = inputs[2].shape
-
-    def _gather_backward(ctx, grad_outputs):
-        """Backward for gather.
-
-        gather backward is scatter - gradients flow from root to all ranks.
-
-        Returns gradient for input_tensor (the only non-mutable tensor input).
-        """
-        rank = ctx.comm.get_rank()
-
-        # grad_list contains gradients for each tensor in output_tensor_list
-        # Only root has meaningful gradients
-        if rank == ctx.root:
-            grad_input_list = [g.contiguous() for g in grad_outputs]
-        else:
-            grad_input_list = []
-
-        assert len(grad_outputs) > 0, (
-            "gather outputs cannot be empty if you want to run backward!"
-        )
-
-        # Create output tensor for scatter
-        grad_input = torch.empty(
-            ctx.input_shape,
-            dtype=grad_outputs[0].dtype,
-            device=ctx.comm.get_device(),
-        )
-
-        work = ctx.comm.scatter(grad_input, grad_input_list, ctx.root, async_op=True)
-        return _maybe_wrap_tensor(grad_input, work)
-
     def _reduce_scatter_setup_context(ctx, inputs, output):
         """Save context for reduce_scatter backward.
 
@@ -468,32 +394,30 @@ if lib is not None:
         """
         ctx.comm = inputs[0]
         ctx.input_shapes = [t.shape for t in inputs[2]]
+        ctx.group_size = inputs[0].get_size()
 
     def _reduce_scatter_backward(ctx, grad_output):
         """Backward for reduce_scatter.
 
-        reduce_scatter: output_r = sum over all ranks of input_list[r]
-        For local loss on rank r: only input_list[r] on this rank contributes
-        to this rank's output, so gradient only flows to input_list[rank].
+        reduce_scatter: output[r] = sum over all ranks of input_list[r]
+        Backward is all_gather: each rank's input_list[i] contributed to output[i],
+        so we need to gather the gradient from rank i to all ranks.
 
         Returns gradients for input_list (list of tensors).
         """
         grad_output = grad_output.contiguous()
-        rank = ctx.comm.get_rank()
+        grad_input_list = [
+            torch.empty(shape, dtype=grad_output.dtype, device=grad_output.device)
+            for shape in ctx.input_shapes
+        ]
 
-        # Only the rank-th chunk gets the gradient, rest are zeros
-        grad_input_list = []
-        for i, shape in enumerate(ctx.input_shapes):
-            if i == rank:
-                grad_input_list.append(grad_output)
-            else:
-                grad_input_list.append(
-                    torch.zeros(
-                        shape, dtype=grad_output.dtype, device=grad_output.device
-                    )
-                )
+        work = ctx.comm.all_gather(grad_input_list, grad_output, async_op=True)
 
-        return grad_input_list
+        if _are_we_tracing():
+            return work.wait()
+
+        once_work = _OnceWaitWork(work)
+        return [_maybe_wrap_tensor(t, once_work) for t in grad_input_list]
 
     def _all_gather_setup_context(ctx, inputs, output):
         """Save context for all_gather backward.
@@ -504,36 +428,30 @@ if lib is not None:
         """
         ctx.comm = inputs[0]
         ctx.rank = inputs[0].get_rank()
+        ctx.input_shape = inputs[2].shape
 
     def _all_gather_backward(ctx, grad_outputs):
         """Backward for all_gather.
 
-        The input tensor from this rank appears at position rank in the output tensor_list.
-        So the gradient for the input is just the gradient at that position.
+        all_gather: tensor_list[i] on all ranks = tensor from rank i
+        Backward is reduce_scatter: each rank's input appears in tensor_list[rank]
+        on ALL ranks, so we sum gradients from all ranks via reduce_scatter.
 
         Returns gradient for tensor (the non-mutable input).
         """
-        # This rank's input was placed at output[rank], so return that gradient
-        return grad_outputs[ctx.rank]
+        grad_list = [g.contiguous() for g in grad_outputs]
 
-    def _broadcast_setup_context(ctx, inputs, output):
-        """Save context for broadcast backward.
+        grad_input = torch.empty(
+            ctx.input_shape,
+            dtype=grad_list[0].dtype,
+            device=grad_list[0].device,
+        )
 
-        For functional version:
-        - inputs: (comm, tensor, root, async_op, hints, timeout)
-        - output: The broadcasted tensor
-        """
-        pass  # No context needed for identity backward
+        work = ctx.comm.reduce_scatter(
+            grad_input, grad_list, ReduceOp.SUM, async_op=True
+        )
 
-    def _broadcast_backward(ctx, grad_output):
-        """Backward for broadcast.
-
-        For the local autograd case, broadcast is treated as identity -
-        the gradient flows through unchanged.
-
-        Returns gradient for tensor.
-        """
-        return grad_output
+        return _maybe_wrap_tensor(grad_input, work)
 
     register_collective(
         TorchComm,
@@ -545,7 +463,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
         backward_fn=_all_reduce_backward,
         setup_context_fn=_all_reduce_setup_context,
@@ -562,7 +480,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -576,10 +494,8 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
-        backward_fn=_broadcast_backward,
-        setup_context_fn=_broadcast_setup_context,
     )
 
     register_collective(
@@ -590,7 +506,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -610,7 +526,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
         backward_fn=_all_gather_backward,
         setup_context_fn=_all_gather_setup_context,
@@ -665,7 +581,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -681,7 +597,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -699,7 +615,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
         backward_fn=_all_gather_single_backward,
         setup_context_fn=_all_gather_single_setup_context,
@@ -722,7 +638,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -741,7 +657,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
         backward_fn=_reduce_scatter_single_backward,
         setup_context_fn=_reduce_scatter_single_setup_context,
@@ -761,7 +677,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -778,7 +694,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
         backward_fn=_all_to_all_single_backward,
         setup_context_fn=_all_to_all_single_setup_context,
@@ -799,7 +715,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -822,7 +738,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
     )
 
@@ -840,7 +756,7 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
         backward_fn=_reduce_scatter_backward,
         setup_context_fn=_reduce_scatter_setup_context,
@@ -866,10 +782,8 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
-        backward_fn=_scatter_backward,
-        setup_context_fn=_scatter_setup_context,
     )
 
     # gather: gather from all ranks to root
@@ -890,10 +804,8 @@ if lib is not None:
             ParamSpec(
                 "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
             ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
+            ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
-        backward_fn=_gather_backward,
-        setup_context_fn=_gather_setup_context,
     )
 
     register_collective(
@@ -930,34 +842,5 @@ if lib is not None:
             ParamSpec("src", ParamKind.EXTRA, int),
         ],
     )
-
-    """
-    we don't currently support async ops that don't take mutable inputs since there is no way
-    to thread the data dependencies through the work object.
-
-    e.g.,
-
-    batch.send(t0, peer0)
-    batch.recv(t1, peer1)
-
-    batch.issue()
-
-    print(t1)
-
-    ---> there is no way to ensure that batch.issue isn't reordered after the print, since it doesn't take a
-         dependency or create a new value (like window.get_tensor).
-
-    register_collective(
-        BatchSendRecv,
-        BatchSendRecv.issue,
-        param_specs=[
-            ParamSpec("async_op", ParamKind.EXTRA, bool, default_value=False),
-            ParamSpec(
-                "hints", ParamKind.EXTRA, dict[str, str] | None, default_value=None
-            ),
-            ParamSpec("timeout", ParamKind.EXTRA, timedelta | None, default_value=None),
-        ],
-    )
-    """
 
     finalize_registration(lib)

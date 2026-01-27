@@ -6,6 +6,7 @@
 
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Utils.h"
+#include "comms/utils/checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 #include "comms/utils/trainer/TrainerContext.h"

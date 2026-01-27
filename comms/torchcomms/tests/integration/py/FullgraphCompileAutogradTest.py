@@ -187,7 +187,6 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         x = torch.randn(4, requires_grad=True, device=self.device)
 
         b = x * 1.0
-        # this is where we break the api invariant
         b = self.torchcomm.all_reduce(b, ReduceOp.SUM, async_op=True)
         loss = b.sum()
         loss.backward()
@@ -200,12 +199,12 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
 
         b = x * 1.0
         output = [torch.zeros(4, device=self.device) for _ in range(self.num_ranks)]
-        # this is where we break the api invariant
         output = self.torchcomm.all_gather(output, b, async_op=True)
         loss = sum(t.sum() for t in output)
         loss.backward()
 
-        torch.testing.assert_close(x.grad.cpu(), torch.ones(4))
+        expected_grad = torch.ones(4) * self.num_ranks
+        torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
     def test_reduce_scatter_backward_eager(self):
         from torchcomms import ReduceOp
@@ -218,33 +217,60 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         b = x * 1.0
         input_chunks = list(b.chunk(self.num_ranks))
         output = torch.zeros(chunk_size, device=self.device)
-        # this is where we break the api invariant
         output = self.torchcomm.reduce_scatter(
             output, input_chunks, ReduceOp.SUM, async_op=True
         )
         loss = output.sum()
         loss.backward()
 
-        expected_grad = torch.zeros(chunk_size * self.num_ranks)
-        start_idx = self.rank * chunk_size
-        end_idx = start_idx + chunk_size
-        expected_grad[start_idx:end_idx] = 1.0
+        expected_grad = torch.ones(chunk_size * self.num_ranks)
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
-    def test_broadcast_backward_eager(self):
-        x = torch.randn(4, requires_grad=True, device=self.device)
-        root = 0
+    def test_all_gather_single_backward_eager(self):
+        chunk_size = 4
+        x = torch.randn(chunk_size, requires_grad=True, device=self.device)
 
         b = x * 1.0
-        # this is where we break the api invariant
-        b = self.torchcomm.broadcast(b, root, async_op=True)
-        loss = b.sum()
+        output = torch.zeros(chunk_size * self.num_ranks, device=self.device)
+        output = self.torchcomm.all_gather_single(output, b, async_op=True)
+        loss = output.sum()
         loss.backward()
 
-        if self.rank == root:
-            expected_grad = torch.ones(4)
-        else:
-            expected_grad = torch.ones(4)
+        expected_grad = torch.ones(chunk_size) * self.num_ranks
+        torch.testing.assert_close(x.grad.cpu(), expected_grad)
+
+    def test_reduce_scatter_single_backward_eager(self):
+        from torchcomms import ReduceOp
+
+        chunk_size = 4
+        x = torch.randn(
+            chunk_size * self.num_ranks, requires_grad=True, device=self.device
+        )
+
+        b = x * 1.0
+        output = torch.zeros(chunk_size, device=self.device)
+        output = self.torchcomm.reduce_scatter_single(
+            output, b, ReduceOp.SUM, async_op=True
+        )
+        loss = output.sum()
+        loss.backward()
+
+        expected_grad = torch.ones(chunk_size * self.num_ranks)
+        torch.testing.assert_close(x.grad.cpu(), expected_grad)
+
+    def test_all_to_all_single_backward_eager(self):
+        chunk_size = 4
+        x = torch.randn(
+            chunk_size * self.num_ranks, requires_grad=True, device=self.device
+        )
+
+        b = x * 1.0
+        output = torch.zeros(chunk_size * self.num_ranks, device=self.device)
+        output = self.torchcomm.all_to_all_single(output, b, async_op=True)
+        loss = output.sum()
+        loss.backward()
+
+        expected_grad = torch.ones(chunk_size * self.num_ranks)
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
     def test_all_reduce_async_backward_eager(self):
@@ -253,7 +279,6 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         x = torch.randn(4, requires_grad=True, device=self.device)
 
         b = x * 1.0
-        # this is where we break the api invariant
         b = self.torchcomm.all_reduce(b, ReduceOp.SUM, async_op=True)
         loss = b.sum()
         loss.backward()
@@ -324,30 +349,6 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         self.assertTrue(len(output) == 2)
         for t in output:
             self.assertTrue(t.requires_grad)
-
-    @unittest.skip(
-        "torch.compile with aot_autograd does not currently support double backward"
-    )
-    def test_wait_tensors_higher_order_grads_compiled(self):
-        x = torch.randn(3, requires_grad=True, device=self.device)
-
-        def fn(a):
-            b = a * a
-            waited = torch.ops.torchcomms.torchcomm_wait_tensors([b])
-            loss = waited[0].sum()
-            return loss
-
-        compiled_fn = torch.compile(fn, fullgraph=True)
-        loss = compiled_fn(x)
-
-        (grad,) = torch.autograd.grad(loss, x, create_graph=True)
-
-        self.assertTrue(grad.requires_grad)
-
-        grad_sum = grad.sum()
-        (grad2,) = torch.autograd.grad(grad_sum, x)
-
-        torch.testing.assert_close(grad2.cpu(), torch.full((3,), 2.0))
 
     def test_gradient_accumulation_compiled(self):
         x = torch.randn(3, requires_grad=True, device=self.device)
@@ -421,7 +422,8 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         loss = compiled_fn(x)
         loss.backward()
 
-        torch.testing.assert_close(x.grad.cpu(), torch.ones(4))
+        expected_grad = torch.ones(4) * self.num_ranks
+        torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
     def test_reduce_scatter_backward_compiled(self):
         from torchcomms import ReduceOp
@@ -445,10 +447,69 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         loss = compiled_fn(x)
         loss.backward()
 
-        expected_grad = torch.zeros(chunk_size * self.num_ranks)
-        start_idx = self.rank * chunk_size
-        end_idx = start_idx + chunk_size
-        expected_grad[start_idx:end_idx] = 1.0
+        expected_grad = torch.ones(chunk_size * self.num_ranks)
+        torch.testing.assert_close(x.grad.cpu(), expected_grad)
+
+    def test_all_gather_single_backward_compiled(self):
+        chunk_size = 4
+        x = torch.randn(chunk_size, requires_grad=True, device=self.device)
+
+        def fn(a):
+            b = a * 1.0
+            output = torch.zeros(chunk_size * self.num_ranks, device=self.device)
+            self.torchcomm.all_gather_single(output, b, async_op=False)
+            loss = output.sum()
+            return loss
+
+        compiled_fn = torch.compile(fn, fullgraph=True)
+        loss = compiled_fn(x)
+        loss.backward()
+
+        expected_grad = torch.ones(chunk_size) * self.num_ranks
+        torch.testing.assert_close(x.grad.cpu(), expected_grad)
+
+    def test_reduce_scatter_single_backward_compiled(self):
+        from torchcomms import ReduceOp
+
+        chunk_size = 4
+        x = torch.randn(
+            chunk_size * self.num_ranks, requires_grad=True, device=self.device
+        )
+
+        def fn(a):
+            b = a * 1.0
+            output = torch.zeros(chunk_size, device=self.device)
+            self.torchcomm.reduce_scatter_single(
+                output, b, ReduceOp.SUM, async_op=False
+            )
+            loss = output.sum()
+            return loss
+
+        compiled_fn = torch.compile(fn, fullgraph=True)
+        loss = compiled_fn(x)
+        loss.backward()
+
+        expected_grad = torch.ones(chunk_size * self.num_ranks)
+        torch.testing.assert_close(x.grad.cpu(), expected_grad)
+
+    def test_all_to_all_single_backward_compiled(self):
+        chunk_size = 4
+        x = torch.randn(
+            chunk_size * self.num_ranks, requires_grad=True, device=self.device
+        )
+
+        def fn(a):
+            b = a * 1.0
+            output = torch.zeros(chunk_size * self.num_ranks, device=self.device)
+            self.torchcomm.all_to_all_single(output, b, async_op=False)
+            loss = output.sum()
+            return loss
+
+        compiled_fn = torch.compile(fn, fullgraph=True)
+        loss = compiled_fn(x)
+        loss.backward()
+
+        expected_grad = torch.ones(chunk_size * self.num_ranks)
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
 
