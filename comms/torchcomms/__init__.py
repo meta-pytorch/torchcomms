@@ -19,7 +19,7 @@ class Timeout(timedelta, metaclass=OpaqueBaseMeta):
     pass
 
 
-torchcomms_compile_support_enabled = os.environ.get(
+torchcomms_compile_support_enabled: bool = os.environ.get(
     "TORCHCOMMS_PATCH_FOR_COMPILE", ""
 ).lower() in (
     "1",
