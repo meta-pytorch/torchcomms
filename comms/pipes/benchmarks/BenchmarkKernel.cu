@@ -92,6 +92,26 @@ __global__ void p2pBidirectional(
   }
 }
 
+__global__ void p2pSignalBenchKernel(
+    P2pNvlTransportDevice p2p,
+    int nSteps,
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
+
+  // Each group operates on its own signal slot for parallelism
+  uint64_t signal_id = group.group_id;
+
+  // Ping-pong signaling pattern:
+  // - Signal peer's signal buffer (remote write)
+  // - Wait on local signal buffer (local read)
+  // multiple times before the other reads.
+  for (int step = 1; step <= nSteps; ++step) {
+    p2p.signal_threadgroup(group, signal_id, SignalOp::SIGNAL_ADD, 1);
+    p2p.wait_signal_until_threadgroup(
+        group, signal_id, CmpOp::CMP_EQ, static_cast<uint64_t>(step));
+  }
+}
+
 __global__ void allToAllvKernel(
     void* recvbuff_d,
     const void* sendbuff_d,

@@ -15,8 +15,7 @@
 #include <memory>
 #include <vector>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 inline constexpr const char* TORCHCOMM_BACKEND_ABI_VERSION = "1.0";
 
@@ -190,5 +189,4 @@ struct DynamicLoaderInterface {
 // Factory function signature (implemented in each .so)
 using CreateDynamicLoaderFn = DynamicLoaderInterface (*)();
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
