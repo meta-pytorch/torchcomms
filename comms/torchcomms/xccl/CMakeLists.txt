@@ -23,7 +23,7 @@ message(STATUS "XCCL include path   : ${XCCL_INCLUDE}")
 message(STATUS "XCCL library        : ${XCCL_SHARED_LIB}")
 
 file(GLOB TORCHCOMMS_XCCL_SOURCES "comms/torchcomms/xccl/*.cpp")
-file(GLOB TORCHCOMMS_XPU_API_SOURCE "comms/torchcomms/device/XpuApi.cpp")
+file(GLOB TORCHCOMMS_XPU_API_SOURCE "comms/torchcomms/device/xpu/XpuApi.cpp")
 
 include(FindPackageHandleStandardArgs)
 

@@ -13,8 +13,7 @@
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
 #include "nccl.h" // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Initialize the static counter
 int TorchCommNCCLXBootstrap::counter_ = 0;
@@ -343,5 +342,4 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   return nccl_comm;
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
