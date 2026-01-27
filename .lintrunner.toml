@@ -39,22 +39,6 @@ init_command = [
 is_formatter = false
 
 [[linter]]
-code = 'FLAKE8'
-include_patterns = [
-    "comms/torchcomms/**/*.py",
-    "comms/torchcomms/**/*.pyi",
-    "tools/**/*.py",
-]
-command = [
-    'uv',
-    'run',
-    '--script',
-    'tools/linter/adapters/flake8_linter.py',
-    '--',
-    '@{{PATHSFILE}}'
-]
-
-[[linter]]
 code = 'UFMT'
 include_patterns = [
     "comms/torchcomms/**/*.py",
