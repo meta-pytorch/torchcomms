@@ -36,7 +36,7 @@ class SelfTransportDeviceTestFixture : public ::testing::Test {
 
 // Helper to run a single write test with verification
 // only support no overlaop copy for now
-void runWriteNoOverlapTest(size_t nbytes, const std::string& testName) {
+void runPutNoOverlapTest(size_t nbytes, const std::string& testName) {
   const size_t numInts = nbytes / sizeof(int);
   const int testValue = 42;
 
@@ -56,7 +56,7 @@ void runWriteNoOverlapTest(size_t nbytes, const std::string& testName) {
   // 32 warps
   const int numBlocks = 4;
   const int blockSize = 256;
-  test::testSelfWrite(
+  test::testSelfPut(
       reinterpret_cast<char*>(recv_d),
       reinterpret_cast<const char*>(send_d),
       nbytes,
@@ -87,9 +87,9 @@ class TransferSizeTestFixture
     : public SelfTransportDeviceTestFixture,
       public ::testing::WithParamInterface<TransferSizeParams> {};
 
-TEST_P(TransferSizeTestFixture, Write) {
+TEST_P(TransferSizeTestFixture, Put) {
   const auto& params = GetParam();
-  runWriteNoOverlapTest(params.nbytes, params.name);
+  runPutNoOverlapTest(params.nbytes, params.name);
 }
 
 std::string transferSizeParamName(
@@ -156,7 +156,7 @@ INSTANTIATE_TEST_SUITE_P(
     transferSizeParamName);
 
 // Test zero bytes edge case
-TEST_F(SelfTransportDeviceTestFixture, WriteZeroBytes) {
+TEST_F(SelfTransportDeviceTestFixture, PutZeroBytes) {
   const size_t nbytes = 1024;
 
   // Allocate buffers
@@ -174,7 +174,7 @@ TEST_F(SelfTransportDeviceTestFixture, WriteZeroBytes) {
   // Call write with zero bytes - should be a no-op
   const int numBlocks = 4;
   const int blockSize = 256;
-  test::testSelfWrite(
+  test::testSelfPut(
       reinterpret_cast<char*>(recv_d),
       reinterpret_cast<const char*>(send_d),
       0, // zero bytes
@@ -199,7 +199,7 @@ TEST_F(SelfTransportDeviceTestFixture, WriteZeroBytes) {
 }
 
 // Test same pointer edge case (dst == src)
-TEST_F(SelfTransportDeviceTestFixture, WriteSamePointer) {
+TEST_F(SelfTransportDeviceTestFixture, PutSamePointer) {
   const size_t nbytes = 1024;
   const int testValue = 42;
   const size_t numInts = nbytes / sizeof(int);
@@ -215,7 +215,7 @@ TEST_F(SelfTransportDeviceTestFixture, WriteSamePointer) {
   // Call write with same src and dst pointer - should be a no-op
   const int numBlocks = 4;
   const int blockSize = 256;
-  test::testSelfWrite(
+  test::testSelfPut(
       reinterpret_cast<char*>(buf_d),
       reinterpret_cast<const char*>(buf_d),
       nbytes,
@@ -244,7 +244,7 @@ TEST_F(SelfTransportDeviceTestFixture, WriteSamePointer) {
 class SmallSizeTestFixture : public SelfTransportDeviceTestFixture,
                              public ::testing::WithParamInterface<size_t> {};
 
-TEST_P(SmallSizeTestFixture, WriteSmallSize) {
+TEST_P(SmallSizeTestFixture, PutSmallSize) {
   const size_t nbytes = GetParam();
   const char testValue = 0x42;
 
@@ -264,7 +264,7 @@ TEST_P(SmallSizeTestFixture, WriteSmallSize) {
   // Launch write kernel
   const int numBlocks = 4;
   const int blockSize = 256;
-  test::testSelfWrite(recv_d, send_d, nbytes, numBlocks, blockSize);
+  test::testSelfPut(recv_d, send_d, nbytes, numBlocks, blockSize);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   // Copy back to host and verify
@@ -308,7 +308,7 @@ class ThreadConfigTestFixture
     : public SelfTransportDeviceTestFixture,
       public ::testing::WithParamInterface<ThreadConfigParams> {};
 
-TEST_P(ThreadConfigTestFixture, WriteWithDifferentConfig) {
+TEST_P(ThreadConfigTestFixture, PutWithDifferentConfig) {
   const auto& params = GetParam();
   const size_t nbytes = 256 * 1024; // 256KB - ensures multiple chunks
   const size_t numInts = nbytes / sizeof(int);
@@ -327,7 +327,7 @@ TEST_P(ThreadConfigTestFixture, WriteWithDifferentConfig) {
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   // Launch write kernel with parameterized configuration
-  test::testSelfWrite(
+  test::testSelfPut(
       reinterpret_cast<char*>(recv_d),
       reinterpret_cast<const char*>(send_d),
       nbytes,
@@ -394,7 +394,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Helper for unaligned pointer tests - uses byte-level operations instead of
 // int* because unaligned int* casts are undefined behavior
-void runUnalignedWriteTest(
+void runUnalignedPutTest(
     char* dst_d,
     char* src_d,
     size_t nbytes,
@@ -409,7 +409,7 @@ void runUnalignedWriteTest(
   // Launch write kernel
   const int numBlocks = 4;
   const int blockSize = 256;
-  test::testSelfWrite(dst_d, src_d, nbytes, numBlocks, blockSize);
+  test::testSelfPut(dst_d, src_d, nbytes, numBlocks, blockSize);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   // Copy back to host and verify byte-by-byte
@@ -432,7 +432,7 @@ class UnalignedPointerTestFixture
     : public SelfTransportDeviceTestFixture,
       public ::testing::WithParamInterface<size_t> {};
 
-TEST_P(UnalignedPointerTestFixture, WriteWithUnalignedSrcPointer) {
+TEST_P(UnalignedPointerTestFixture, PutWithUnalignedSrcPointer) {
   const size_t offset = GetParam();
   const size_t nbytes = 1024;
 
@@ -443,11 +443,11 @@ TEST_P(UnalignedPointerTestFixture, WriteWithUnalignedSrcPointer) {
   auto send_d = static_cast<char*>(sendBuffer.get());
   auto recv_d = static_cast<char*>(recvBuffer.get()) + offset;
 
-  runUnalignedWriteTest(
+  runUnalignedPutTest(
       send_d, recv_d, nbytes, "UnalignedSrc_" + std::to_string(offset));
 }
 
-TEST_P(UnalignedPointerTestFixture, WriteWithUnalignedDstPointer) {
+TEST_P(UnalignedPointerTestFixture, PutWithUnalignedDstPointer) {
   const size_t offset = GetParam();
   const size_t nbytes = 1024;
 
@@ -458,11 +458,11 @@ TEST_P(UnalignedPointerTestFixture, WriteWithUnalignedDstPointer) {
   auto send_d = static_cast<char*>(sendBuffer.get()) + offset;
   auto recv_d = static_cast<char*>(recvBuffer.get());
 
-  runUnalignedWriteTest(
+  runUnalignedPutTest(
       send_d, recv_d, nbytes, "UnalignedDst_" + std::to_string(offset));
 }
 
-TEST_P(UnalignedPointerTestFixture, WriteWithBothPointersUnaligned) {
+TEST_P(UnalignedPointerTestFixture, PutWithBothPointersUnaligned) {
   const size_t offset = GetParam();
   const size_t nbytes = 1024;
 
@@ -473,7 +473,7 @@ TEST_P(UnalignedPointerTestFixture, WriteWithBothPointersUnaligned) {
   auto send_d = static_cast<char*>(sendBuffer.get()) + offset;
   auto recv_d = static_cast<char*>(recvBuffer.get()) + offset;
 
-  runUnalignedWriteTest(
+  runUnalignedPutTest(
       send_d, recv_d, nbytes, "BothUnaligned_" + std::to_string(offset));
 }
 

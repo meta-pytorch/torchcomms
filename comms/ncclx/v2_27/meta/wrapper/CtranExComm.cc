@@ -5,7 +5,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranEx.h"
-#include "comms/ctran/utils/Checks.h"
+#include "comms/utils/checks.h"
 #include "comms/utils/logger/LogUtils.h"
 
 #include "meta/wrapper/CtranExComm.h"
