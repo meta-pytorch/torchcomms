@@ -8,9 +8,7 @@ using ::testing::DoAll;
 using ::testing::Return;
 using ::testing::SetArgPointee;
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 void CudaMock::setupDefaultBehaviors() {
   // Device management - return success by default
@@ -117,6 +115,4 @@ void CudaMock::reset() {
   setupDefaultBehaviors();
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test
