@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/nccl/NcclApi.hpp"
+#include <fmt/core.h>
 #include "comms/torchcomms/TorchCommLogging.hpp"
 
 namespace torch {
@@ -13,6 +14,16 @@ namespace comms {
 // DefaultNcclApi implementation
 const char* DefaultNcclApi::getErrorString(ncclResult_t result) {
   return ncclGetErrorString(result);
+}
+
+std::string DefaultNcclApi::getLastError(ncclComm_t comm) {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 18, 0)
+  const char* lastError = ncclGetLastError(comm);
+  return lastError ? std::string(lastError) : std::string();
+#else
+  (void)comm; // Suppress unused parameter warning
+  return std::string();
+#endif
 }
 
 ncclResult_t DefaultNcclApi::getUniqueId(ncclUniqueId* uniqueId) {
@@ -60,8 +71,9 @@ ncclResult_t DefaultNcclApi::commRegister(
   return ncclCommRegister(comm, buffer, size, handle);
 #else
   throw std::runtime_error(
-      "NCCL version " + std::to_string(NCCL_VERSION_CODE) +
-      " does not support ncclCommRegister API");
+      fmt::format(
+          "NCCL version {} does not support ncclCommRegister API",
+          NCCL_VERSION_CODE));
 #endif
 }
 
@@ -70,8 +82,9 @@ ncclResult_t DefaultNcclApi::commDeregister(ncclComm_t comm, void* handle) {
   return ncclCommDeregister(comm, handle);
 #else
   throw std::runtime_error(
-      "NCCL version " + std::to_string(NCCL_VERSION_CODE) +
-      " does not support ncclCommDeregister API");
+      fmt::format(
+          "NCCL version {} does not support ncclCommDeregister API",
+          NCCL_VERSION_CODE));
 #endif
 }
 
@@ -218,8 +231,9 @@ ncclResult_t DefaultNcclApi::memAlloc(void** buff, size_t size) {
   return ncclMemAlloc(buff, size);
 #else
   throw std::runtime_error(
-      "NCCL version " + std::to_string(NCCL_VERSION_CODE) +
-      " does not support ncclMemAlloc API");
+      fmt::format(
+          "NCCL version {} does not support ncclMemAlloc API",
+          NCCL_VERSION_CODE));
 #endif
 }
 
@@ -228,8 +242,9 @@ ncclResult_t DefaultNcclApi::memFree(void* buff) {
   return ncclMemFree(buff);
 #else
   throw std::runtime_error(
-      "NCCL version " + std::to_string(NCCL_VERSION_CODE) +
-      " does not support ncclMemFree API");
+      fmt::format(
+          "NCCL version {} does not support ncclMemFree API",
+          NCCL_VERSION_CODE));
 #endif
 }
 

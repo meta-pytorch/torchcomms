@@ -8,11 +8,12 @@
 #include <mutex>
 #include <optional>
 #include <queue>
+#include <string_view>
 #include <unordered_map>
 
 #include <ATen/ATen.h>
+#include <ATen/record_function.h>
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
 namespace torch {
@@ -33,14 +34,12 @@ class TorchWorkNCCL : public TorchWork {
       std::shared_ptr<TorchCommNCCL> comm,
       cudaStream_t stream,
       std::chrono::milliseconds timeout_ms,
-      const std::vector<at::Tensor>& inputTensors,
-      std::shared_ptr<TorchCommTracing> tracing);
+      const std::vector<at::Tensor>& inputTensors);
   TorchWorkNCCL(
       std::shared_ptr<TorchCommNCCL> comm,
       cudaStream_t stream,
       std::chrono::milliseconds timeout_ms,
-      const at::Tensor& inputTensor,
-      std::shared_ptr<TorchCommTracing> tracing);
+      const at::Tensor& inputTensor);
   ~TorchWorkNCCL() override;
 
   // Delete copy and move operations
@@ -53,7 +52,7 @@ class TorchWorkNCCL : public TorchWork {
   void wait() override;
 
  protected:
-  void recordStart();
+  void recordStart(std::string_view coll_name);
   void recordEnd();
 
   friend class TorchCommNCCL;
@@ -62,6 +61,8 @@ class TorchWorkNCCL : public TorchWork {
  private:
   // Check the status of the work object
   WorkStatus checkStatus();
+
+  void recordFunctionStart(std::string_view coll_name);
 
   std::chrono::milliseconds getTimeout() const {
     return timeout_ms_;
@@ -77,7 +78,8 @@ class TorchWorkNCCL : public TorchWork {
   std::chrono::milliseconds timeout_ms_;
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
-  std::shared_ptr<TorchCommTracing> tracing_;
+
+  std::optional<at::RecordFunction> recordFunction_;
 };
 
 class TorchWorkNCCLQueue {
