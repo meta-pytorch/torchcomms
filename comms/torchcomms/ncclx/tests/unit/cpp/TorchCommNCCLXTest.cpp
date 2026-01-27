@@ -32,10 +32,10 @@ TEST_F(TorchCommNCCLXTest, TestOptionsEnvironmentVariables) {
   EXPECT_EQ(options1.abort_process_on_timeout_or_error, false);
   EXPECT_EQ(options1.timeout, std::chrono::milliseconds(1000));
 
-  setOptionsEnvironmentVariables(true, 1.5); // true abort
+  setOptionsEnvironmentVariables(true, 2.0); // true abort
   CommOptions options2;
   EXPECT_EQ(options2.abort_process_on_timeout_or_error, true);
-  EXPECT_EQ(options2.timeout, std::chrono::milliseconds(1500));
+  EXPECT_EQ(options2.timeout, std::chrono::milliseconds(2000));
 }
 
 TEST_F(TorchCommNCCLXTest, UniqueCommDesc) {
