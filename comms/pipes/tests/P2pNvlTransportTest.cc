@@ -1685,11 +1685,334 @@ INSTANTIATE_TEST_SUITE_P(
             .name = "SenderWarp2x64_ReceiverWarp8x256"}),
     asymmetricGroupParamName);
 
+// =============================================================================
+// P2pNvlTransportDevice::put() Tests
+// =============================================================================
+// Tests for the one-sided put() API that writes directly to peer memory
+// via NVLink without using staging buffers.
+
+// Helper to run a write() test with verification
+void runPutTest(
+    int globalRank,
+    P2pNvlTransportDevice& p2p,
+    char* localSrc,
+    char* remoteDst,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    const std::string& testName) {
+  const char testValue = 0x42;
+  const uint64_t signal_id = 0;
+
+  if (globalRank == 0) {
+    // Rank 0: Initialize source buffer and call write()
+    CUDACHECK_TEST(cudaMemset(localSrc, testValue, nbytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Write data to peer's buffer
+    test::testPutWithSignal(
+        p2p, remoteDst, localSrc, signal_id, nbytes, numBlocks, blockSize);
+
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+  } else {
+    // Rank 1: Clear destination buffer and verify after write()
+    CUDACHECK_TEST(cudaMemset(localSrc, 0, nbytes));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testWait(p2p, CmpOp::CMP_GE, signal_id, nbytes, numBlocks, blockSize);
+
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    // Verify the data was written correctly
+    std::vector<char> hostBuffer(nbytes);
+    CUDACHECK_TEST(cudaMemcpy(
+        hostBuffer.data(), localSrc, nbytes, cudaMemcpyDeviceToHost));
+
+    int errorCount = 0;
+    for (size_t i = 0; i < nbytes; i++) {
+      if (hostBuffer[i] != testValue) {
+        ++errorCount;
+        if (errorCount <= 5) {
+          XLOGF(
+              ERR,
+              "{}: Mismatch at index {}: expected 0x{:02x}, got 0x{:02x}",
+              testName,
+              i,
+              static_cast<unsigned char>(testValue),
+              static_cast<unsigned char>(hostBuffer[i]));
+        }
+      }
+    }
+
+    ASSERT_EQ(errorCount, 0) << testName << " found " << errorCount
+                             << " errors out of " << nbytes << " bytes";
+  }
+}
+
+// Basic write() test with aligned pointers
+TEST_F(P2pNvlTransportTestFixture, PutBasic) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const size_t nbytes = 1024 * 1024; // 1MB
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = nbytes,
+      .chunkSize = 1,
+      .pipelineDepth = 1,
+  };
+
+  TransportTestHelper helper(globalRank, numRanks, localRank, config);
+  auto p2p = helper.getDevice();
+
+  // Get remote destination (peer's local data buffer)
+  char* localSrc = p2p.getLocalState().dataBuffer;
+  char* remoteDst = p2p.getRemoteState().dataBuffer;
+
+  runPutTest(globalRank, p2p, localSrc, remoteDst, nbytes, 4, 128, "PutBasic");
+
+  XLOGF(INFO, "Rank {}: PutBasic test completed", globalRank);
+}
+
+// Parameterized test for write() with various transfer sizes
+struct PutTransferSizeParams {
+  size_t nbytes;
+  std::string name;
+};
+
+class PutTransferSizeTestFixture
+    : public MpiBaseTestFixture,
+      public ::testing::WithParamInterface<PutTransferSizeParams> {
+ protected:
+  void SetUp() override {
+    MpiBaseTestFixture::SetUp();
+    CUDACHECK_TEST(cudaSetDevice(localRank));
+  }
+};
+
+TEST_P(PutTransferSizeTestFixture, Put) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const auto& params = GetParam();
+  XLOGF(
+      INFO,
+      "Running write transfer size test: {} (nbytes={})",
+      params.name,
+      params.nbytes);
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = params.nbytes,
+      .chunkSize = 1,
+      .pipelineDepth = 1,
+  };
+
+  TransportTestHelper helper(globalRank, numRanks, localRank, config);
+  auto p2p = helper.getDevice();
+
+  char* localSrc = p2p.getLocalState().dataBuffer;
+  char* remoteDst = p2p.getRemoteState().dataBuffer;
+
+  runPutTest(
+      globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
+
+  XLOGF(
+      INFO,
+      "Rank {}: Put transfer size test '{}' completed",
+      globalRank,
+      params.name);
+}
+
+std::string putTransferSizeParamName(
+    const ::testing::TestParamInfo<PutTransferSizeParams>& info) {
+  return info.param.name;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PutTransferSizeVariations,
+    PutTransferSizeTestFixture,
+    ::testing::Values(
+        // Small sizes (smaller than vector size of 16 bytes)
+        PutTransferSizeParams{.nbytes = 1, .name = "Put_1Byte"},
+        PutTransferSizeParams{.nbytes = 7, .name = "Put_7Bytes"},
+        PutTransferSizeParams{.nbytes = 15, .name = "Put_15Bytes"},
+        // Around vector size boundary
+        PutTransferSizeParams{.nbytes = 16, .name = "Put_16Bytes"},
+        PutTransferSizeParams{.nbytes = 17, .name = "Put_17Bytes"},
+        PutTransferSizeParams{.nbytes = 31, .name = "Put_31Bytes"},
+        PutTransferSizeParams{.nbytes = 32, .name = "Put_32Bytes"},
+        // Non-aligned sizes
+        PutTransferSizeParams{.nbytes = 100, .name = "Put_100Bytes"},
+        PutTransferSizeParams{.nbytes = 1000, .name = "Put_1000Bytes"},
+        PutTransferSizeParams{.nbytes = 4097, .name = "Put_4097Bytes"},
+        // Aligned sizes
+        PutTransferSizeParams{.nbytes = 1024, .name = "Put_1KB"},
+        PutTransferSizeParams{.nbytes = 64 * 1024, .name = "Put_64KB"},
+        PutTransferSizeParams{.nbytes = 256 * 1024, .name = "Put_256KB"},
+        PutTransferSizeParams{.nbytes = 1024 * 1024, .name = "Put_1MB"},
+        // Large sizes
+        PutTransferSizeParams{.nbytes = 4 * 1024 * 1024, .name = "Put_4MB"},
+        PutTransferSizeParams{.nbytes = 16 * 1024 * 1024, .name = "Put_16MB"}),
+    putTransferSizeParamName);
+
+// Parameterized test for write() with unaligned pointers
+struct PutUnalignedParams {
+  size_t srcOffset; // Offset from 16-byte alignment for source
+  size_t dstOffset; // Offset from 16-byte alignment for destination
+  size_t nbytes;
+  std::string name;
+};
+
+class PutUnalignedTestFixture
+    : public MpiBaseTestFixture,
+      public ::testing::WithParamInterface<PutUnalignedParams> {
+ protected:
+  void SetUp() override {
+    MpiBaseTestFixture::SetUp();
+    CUDACHECK_TEST(cudaSetDevice(localRank));
+  }
+};
+
+TEST_P(PutUnalignedTestFixture, Put) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const auto& params = GetParam();
+  XLOGF(
+      INFO,
+      "Running write unaligned test: {} (srcOffset={}, dstOffset={}, nbytes={})",
+      params.name,
+      params.srcOffset,
+      params.dstOffset,
+      params.nbytes);
+
+  // Allocate larger staging buffers to accommodate offsets
+  const size_t dataBufferSize =
+      params.nbytes + std::max(params.srcOffset, params.dstOffset);
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+  };
+
+  TransportTestHelper helper(globalRank, numRanks, localRank, config);
+  auto p2p = helper.getDevice();
+
+  // Get remote and local destination with offset applied
+  char* localSrc = p2p.getLocalState().dataBuffer;
+  char* remoteDst = p2p.getRemoteState().dataBuffer;
+  if (globalRank == 0) {
+    localSrc += params.srcOffset;
+    remoteDst += params.dstOffset;
+  } else {
+    localSrc += params.dstOffset;
+    remoteDst += params.srcOffset;
+  }
+
+  runPutTest(
+      globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
+
+  XLOGF(
+      INFO,
+      "Rank {}: Put unaligned test '{}' completed",
+      globalRank,
+      params.name);
+}
+
+std::string putUnalignedParamName(
+    const ::testing::TestParamInfo<PutUnalignedParams>& info) {
+  return info.param.name;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    PutUnalignedVariations,
+    PutUnalignedTestFixture,
+    ::testing::Values(
+        // Same misalignment (can use vectorized copy after aligning)
+        PutUnalignedParams{
+            .srcOffset = 1,
+            .dstOffset = 1,
+            .nbytes = 1024,
+            .name = "SameMisalign_1"},
+        PutUnalignedParams{
+            .srcOffset = 7,
+            .dstOffset = 7,
+            .nbytes = 1024,
+            .name = "SameMisalign_7"},
+        PutUnalignedParams{
+            .srcOffset = 8,
+            .dstOffset = 8,
+            .nbytes = 1024,
+            .name = "SameMisalign_8"},
+        PutUnalignedParams{
+            .srcOffset = 13,
+            .dstOffset = 13,
+            .nbytes = 1024,
+            .name = "SameMisalign_13"},
+        PutUnalignedParams{
+            .srcOffset = 15,
+            .dstOffset = 15,
+            .nbytes = 1024,
+            .name = "SameMisalign_15"},
+        // Different misalignment (fallback to byte-by-byte)
+        PutUnalignedParams{
+            .srcOffset = 1,
+            .dstOffset = 3,
+            .nbytes = 1024,
+            .name = "DiffMisalign_1_3"},
+        PutUnalignedParams{
+            .srcOffset = 0,
+            .dstOffset = 7,
+            .nbytes = 1024,
+            .name = "DiffMisalign_0_7"},
+        PutUnalignedParams{
+            .srcOffset = 5,
+            .dstOffset = 0,
+            .nbytes = 1024,
+            .name = "DiffMisalign_5_0"},
+        PutUnalignedParams{
+            .srcOffset = 4,
+            .dstOffset = 8,
+            .nbytes = 1024,
+            .name = "DiffMisalign_4_8"},
+        // Larger transfers with misalignment
+        PutUnalignedParams{
+            .srcOffset = 3,
+            .dstOffset = 3,
+            .nbytes = 64 * 1024,
+            .name = "SameMisalign_3_64KB"},
+        PutUnalignedParams{
+            .srcOffset = 5,
+            .dstOffset = 11,
+            .nbytes = 64 * 1024,
+            .name = "DiffMisalign_5_11_64KB"},
+        // Small transfers with misalignment
+        PutUnalignedParams{
+            .srcOffset = 7,
+            .dstOffset = 7,
+            .nbytes = 100,
+            .name = "SameMisalign_7_100Bytes"},
+        PutUnalignedParams{
+            .srcOffset = 1,
+            .dstOffset = 9,
+            .nbytes = 100,
+            .name = "DiffMisalign_1_9_100Bytes"}),
+    putUnalignedParamName);
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
+  auto mpi_env = std::make_unique<MPIEnvironmentBase>();
+  ::testing::AddGlobalTestEnvironment(mpi_env.get());
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

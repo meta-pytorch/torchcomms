@@ -27,9 +27,9 @@ constexpr int kWarmupIters = 5;
 //------------------------------------------------------------------------------
 
 /**
- * Benchmark P2pSelfTransportDevice::write() for local memory copies
+ * Benchmark P2pSelfTransportDevice::put() for local memory copies
  */
-static void selfTransportWrite(
+static void selfTransportPut(
     uint32_t iters,
     size_t nBytes,
     int nBlocks,
@@ -55,7 +55,7 @@ static void selfTransportWrite(
   for (int w = 0; w < kWarmupIters; ++w) {
     CHECK_EQ(
         cudaLaunchKernel(
-            (const void*)selfTransportWriteKernel,
+            (const void*)selfTransportPutKernel,
             grid,
             blocks,
             kernArgs,
@@ -70,7 +70,7 @@ static void selfTransportWrite(
   for (uint32_t i = 0; i < iters; ++i) {
     CHECK_EQ(
         cudaLaunchKernel(
-            (const void*)selfTransportWriteKernel,
+            (const void*)selfTransportPutKernel,
             grid,
             blocks,
             kernArgs,
@@ -147,128 +147,128 @@ static void cudaMemcpyBaseline(
 
 // Self transport benchmarks - 8MB with different block counts
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_8MB_2blocks,
     8 * 1024 * 1024,
     2);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_8MB_4blocks,
     8 * 1024 * 1024,
     4);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_8MB_8blocks,
     8 * 1024 * 1024,
     8);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_8MB_16blocks,
     8 * 1024 * 1024,
     16);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_8MB_32blocks,
     8 * 1024 * 1024,
     32);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_8MB_64blocks,
     8 * 1024 * 1024,
     64);
 
 // Self transport benchmarks - 64MB with different block counts
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_64MB_2blocks,
     64 * 1024 * 1024,
     2);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_64MB_4blocks,
     64 * 1024 * 1024,
     4);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_64MB_8blocks,
     64 * 1024 * 1024,
     8);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_64MB_16blocks,
     64 * 1024 * 1024,
     16);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_64MB_32blocks,
     64 * 1024 * 1024,
     32);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_64MB_64blocks,
     64 * 1024 * 1024,
     64);
 
 // Self transport benchmarks - 256MB with different block counts
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_256MB_2blocks,
     256 * 1024 * 1024,
     2);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_256MB_4blocks,
     256 * 1024 * 1024,
     4);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_256MB_8blocks,
     256 * 1024 * 1024,
     8);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_256MB_16blocks,
     256 * 1024 * 1024,
     16);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_256MB_32blocks,
     256 * 1024 * 1024,
     32);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_256MB_64blocks,
     256 * 1024 * 1024,
     64);
 
 // Self transport benchmarks - 512MB with different block counts
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_512MB_2blocks,
     512 * 1024 * 1024,
     2);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_512MB_4blocks,
     512 * 1024 * 1024,
     4);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_512MB_8blocks,
     512 * 1024 * 1024,
     8);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_512MB_16blocks,
     512 * 1024 * 1024,
     16);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_512MB_32blocks,
     512 * 1024 * 1024,
     32);
 BENCHMARK_MULTI_PARAM_COUNTERS(
-    selfTransportWrite,
+    selfTransportPut,
     size_512MB_64blocks,
     512 * 1024 * 1024,
     64);

@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <nccl.h> // @manual=fbsource//third-party/nccl:nccl
 
 namespace torch {
@@ -17,6 +19,7 @@ class NcclApi {
 
   // Error handling
   virtual const char* getErrorString(ncclResult_t result) = 0;
+  virtual std::string getLastError(ncclComm_t comm) = 0;
 
   // Unique ID generation
   virtual ncclResult_t getUniqueId(ncclUniqueId* uniqueId) = 0;
@@ -157,6 +160,7 @@ class DefaultNcclApi : public NcclApi {
 
   // Error handling
   const char* getErrorString(ncclResult_t result) override;
+  std::string getLastError(ncclComm_t comm) override;
 
   // Unique ID generation
   ncclResult_t getUniqueId(ncclUniqueId* uniqueId) override;
