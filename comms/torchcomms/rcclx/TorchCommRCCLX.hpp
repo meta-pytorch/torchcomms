@@ -13,6 +13,7 @@
 #include <vector>
 
 #include <ATen/ATen.h>
+#include <glog/logging.h>
 #include <hip/hip_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
@@ -35,15 +36,35 @@ class RCCLXException : public std::exception {
   RCCLXException(
       RcclxApi& api,
       const std::string& message,
-      ncclResult_t result);
+      ncclResult_t result,
+      ncclComm_t comm);
 
   const char* what() const noexcept override;
-  ncclResult_t getResult() const;
+  [[nodiscard]] ncclResult_t getResult() const;
 
  private:
   std::string message_;
   ncclResult_t result_;
 };
+
+#define RCCLX_CHECK(rcclx_api, nccl_comm, call, err_str)            \
+  do {                                                              \
+    ncclResult_t status = call;                                     \
+    if (status != ncclSuccess) {                                    \
+      throw RCCLXException(*rcclx_api, err_str, status, nccl_comm); \
+    }                                                               \
+  } while (0)
+
+// Ignore variant for use in destructors - logs errors instead of throwing
+#define RCCLX_CHECK_IGNORE(rcclx_api, call, err_str)                        \
+  do {                                                                      \
+    ncclResult_t status = call;                                             \
+    if (status != ncclSuccess) {                                            \
+      LOG(ERROR) << "[TC] " << err_str << ": "                              \
+                 << rcclx_api->getErrorString(status) << " at " << __FILE__ \
+                 << ":" << __LINE__;                                        \
+    }                                                                       \
+  } while (0)
 
 class TorchCommRCCLX : public TorchCommBackend,
                        public std::enable_shared_from_this<TorchCommRCCLX> {
@@ -205,7 +226,7 @@ class TorchCommRCCLX : public TorchCommBackend,
 
  protected:
   // Event management for friend classes
-  hipEvent_t getEvent();
+  [[nodiscard]] hipEvent_t getEvent();
   void returnEvent(hipEvent_t event);
   void abortRcclxComm();
 
@@ -245,16 +266,36 @@ class TorchCommRCCLX : public TorchCommBackend,
     RedOpRAII() = delete;
     RedOpRAII(const RedOpRAII&) = delete;
     RedOpRAII& operator=(const RedOpRAII&) = delete;
-    RedOpRAII(RedOpRAII&& tmp) = delete;
-    RedOpRAII& operator=(RedOpRAII&&) = delete;
+
+    RedOpRAII(RedOpRAII&& other) noexcept
+        : ncclRedOp_(other.ncclRedOp_),
+          comm_(other.comm_),
+          rcclx_api_(std::move(other.rcclx_api_)) {
+      other.comm_ = nullptr; // Prevent destructor from destroying the op
+    }
+
+    RedOpRAII& operator=(RedOpRAII&& other) noexcept {
+      if (this != &other) {
+        // Destroy current op if we own one
+        if (comm_ && rcclx_api_) {
+          rcclx_api_->redOpDestroy(ncclRedOp_, comm_);
+        }
+        ncclRedOp_ = other.ncclRedOp_;
+        comm_ = other.comm_;
+        rcclx_api_ = std::move(other.rcclx_api_);
+        other.comm_ = nullptr; // Prevent destructor from destroying the op
+      }
+      return *this;
+    }
+
     ~RedOpRAII();
 
     operator ncclRedOp_t() const {
       return ncclRedOp_;
     }
 
-    ncclRedOp_t ncclRedOp_;
-    ncclComm_t comm_;
+    ncclRedOp_t ncclRedOp_{ncclMaxRedOp};
+    ncclComm_t comm_{nullptr};
     std::shared_ptr<RcclxApi> rcclx_api_;
   };
 
@@ -270,7 +311,14 @@ class TorchCommRCCLX : public TorchCommBackend,
 
     RegistrationHandle(const RegistrationHandle&) = delete;
     RegistrationHandle& operator=(const RegistrationHandle&) = delete;
-    RegistrationHandle& operator=(RegistrationHandle&&) = delete;
+
+    RegistrationHandle& operator=(RegistrationHandle&& other) noexcept {
+      if (this != &other) {
+        regHandle = other.regHandle;
+        other.regHandle = nullptr;
+      }
+      return *this;
+    }
 
     ~RegistrationHandle() = default;
   };

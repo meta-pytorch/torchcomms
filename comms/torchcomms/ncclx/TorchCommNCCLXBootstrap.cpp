@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include <ATen/cuda/CUDAContext.h>
+#include <fmt/core.h>
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/StoreManager.hpp"
@@ -50,9 +51,9 @@ TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
       nccl_api_(nccl_api),
       cuda_api_(cuda_api) {
   // Query rank and size using the utility function
-  auto ranksize = query_ranksize();
-  rank_ = ranksize.first;
-  comm_size_ = ranksize.second;
+  auto [rank, comm_size] = query_ranksize();
+  rank_ = rank;
+  comm_size_ = comm_size;
 
   const char* uniqueid_xchg_env =
       std::getenv("TORCHCOMM_NCCLX_BOOTSTRAP_UNIQUEID_EXCHANGE_METHOD");
@@ -91,7 +92,7 @@ TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
   CUDA_CHECK(
       cuda_api_,
       cuda_api_->setDevice(device_.index()),
-      "Failed to set device to " + std::to_string(device_.index()));
+      fmt::format("Failed to set device to {}", device_.index()));
 
   // Allocate CUDA memory for a single float32 value used in barrier operations
   CUDA_CHECK(
@@ -100,9 +101,9 @@ TorchCommNCCLXBootstrap::TorchCommNCCLXBootstrap(
       "Failed to allocate barrier buffer");
 }
 
-TorchCommNCCLXBootstrap::~TorchCommNCCLXBootstrap() {
+TorchCommNCCLXBootstrap::~TorchCommNCCLXBootstrap() noexcept {
   if (barrier_buffer_ != nullptr) {
-    CUDA_CHECK(
+    CUDA_CHECK_IGNORE(
         cuda_api_,
         cuda_api_->free(barrier_buffer_),
         "Failed to free barrier buffer");
@@ -111,7 +112,7 @@ TorchCommNCCLXBootstrap::~TorchCommNCCLXBootstrap() {
 }
 
 std::string TorchCommNCCLXBootstrap::getNCCLXStoreKey() {
-  std::string key = getNCCLXStoreKeyPrefix() + std::to_string(counter_);
+  std::string key = fmt::format("{}{}", getNCCLXStoreKeyPrefix(), counter_);
   counter_++;
   return key;
 }
@@ -208,10 +209,9 @@ void populateNcclConfigFromHints(
     const CommOptions& options,
     const std::string& name) {
   // Iterate over the hints and set the corresponding fields in the config.  For
-  // string arguments, NCCLX uses a "const char*" instead of a std::string, so
-  // it is hard to figure out the ownership structure.  Here, we create a copy
-  // of the string and pass it to NCCLX, so that it is responsible for freeing
-  // it.
+  // string arguments, NCCLX uses a "const char*" instead of a std::string.  The
+  // strings only need to be valid for the duration of the
+  // ncclCommInitRankConfig call, so we use .c_str() directly.
   for (const auto& [key, val] : options.hints) {
     if (key == "blocking") {
       config.blocking = std::stoi(val);
@@ -231,7 +231,7 @@ void populateNcclConfigFromHints(
       TC_LOG(INFO, nullptr)
           << "[comm=" << name << "] Setting config.maxCTAs=" << config.maxCTAs;
     } else if (key == "netName") {
-      config.netName = strdup(val.c_str());
+      config.netName = val.c_str();
       TC_LOG(INFO, nullptr)
           << "[comm=" << name << "] Setting config.netName=" << config.netName;
     } else if (key == "splitShare" || key == "split_share") {
@@ -245,7 +245,7 @@ void populateNcclConfigFromHints(
           << "[comm=" << name
           << "] Setting config.trafficClass=" << config.trafficClass;
     } else if (key == "commName") {
-      config.commName = strdup(val.c_str());
+      config.commName = val.c_str();
       TC_LOG(INFO, nullptr) << "[comm=" << name
                             << "] Setting config.commName=" << config.commName;
     } else if (key == "collnetEnable" || key == "collnet_enable") {
@@ -268,7 +268,7 @@ void populateNcclConfigFromHints(
       TC_LOG(INFO, nullptr) << "[comm=" << name
                             << "] Setting config.nvlsCTAs=" << config.nvlsCTAs;
     } else if (key == "ncclAllGatherAlgo") {
-      config.ncclAllGatherAlgo = strdup(val.c_str());
+      config.ncclAllGatherAlgo = val.c_str();
       TC_LOG(INFO, nullptr)
           << "[comm=" << name
           << "] Setting config.ncclAllGatherAlgo=" << config.ncclAllGatherAlgo;
@@ -318,7 +318,7 @@ ncclComm_t TorchCommNCCLXBootstrap::createNcclComm(
   // TODO: use scalable init
   // TODO: get the local rank
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.commDesc = strdup(name.c_str());
+  config.commDesc = name.c_str();
   createStore(name);
 
   // Populate NCCL config from user-provided hints
