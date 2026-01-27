@@ -61,6 +61,7 @@ jobs:
         shell: bash
         run: |
           timeout 30 xpu-smi discovery || true
+          xpu-smi topology -m
 
       - name: Runner health check GPU count
         if: always()
@@ -152,26 +153,11 @@ jobs:
           # jenkins user does not have write permission to mounted workspace; work-around by copying within container to jenkins home
           docker exec -t "${container_name}" sh -c "bash ${TEST_COMMAND}"
 
-      - name: Collect backtraces from coredumps (if any)
-        if: always()
-        run: |
-          # shellcheck disable=SC2156
-          find . -iname "core.[1-9]*" -exec docker exec "${CONTAINER_NAME}" sh -c "gdb python {} -ex 'bt' -ex 'q'" \;
-
       - name: Stop container before exit
         if: always()
         run: |
           # Workaround for multiple runners on same IDC node
           docker stop "${{ env.CONTAINER_NAME }}"
-
-      - name: Store Core dumps on GitHub
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        if: failure()
-        with:
-          name: coredumps-${{ matrix.config }}-${{ matrix.shard }}-${{ matrix.num_shards }}-${{ matrix.runner }}
-          retention-days: 14
-          if-no-files-found: ignore
-          path: ./**/core.[1-9]*
 
       - name: Teardown XPU
         if: always()
