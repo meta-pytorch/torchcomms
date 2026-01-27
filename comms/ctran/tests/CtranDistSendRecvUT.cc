@@ -7,6 +7,7 @@
 #include <nccl.h>
 #include <stdlib.h>
 
+#include "CtranTestUtils.h"
 #include "CtranUtUtils.h"
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
@@ -85,6 +86,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
    * @param memType Type of memory allocation to use
    * @param oneToOne If true, only test send/recv between rank 0 and the last
    * rank. If false, rank 0 sends to all other ranks.
+   * @param numSegments Number of segments for kCuMemAllocDisjoint (default: 2)
    */
   void runTest(
       size_t offset,
@@ -92,7 +94,8 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
       int numMaxQp,
       int nIter,
       MemAllocType memType,
-      bool oneToOne = false) {
+      bool oneToOne = false,
+      size_t numSegments = 2) {
     const commDataType_t dt = commInt;
 
     // Setup NCCL_CTRAN_IB_MAX_QPS before comm creation so that internal QP
@@ -128,7 +131,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     const int oneRecvRank = numRanks - 1;
     const bool isReceiver = (oneToOne && globalRank == oneRecvRank) ||
         (!oneToOne && globalRank != sendRank);
-    void* base = prepareBuf(bufSize, memType, segments);
+    void* base = prepareBuf(bufSize, memType, segments, numSegments);
     cudaStream_t stream = 0;
     CUDACHECK_TEST(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
@@ -263,7 +266,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
       EXPECT_EQ(coll["algoName"].asString(), expAlgoName);
     }
 
-    releaseBuf(base, bufSize, memType);
+    releaseBuf(base, bufSize, memType, numSegments);
     CUDACHECK_TEST(cudaStreamDestroy(stream));
   }
 };
@@ -488,6 +491,205 @@ INSTANTIATE_TEST_SUITE_P(
           std::to_string(std::get<1>(info.param)) + "int_" +
           testMemAllocTypeToStr(std::get<2>(info.param));
     });
+
+// Test case for NVL zero-copy path with 3+ segments to expose
+// CTRAN_IPC_INLINE_SEGMENTS limitation. This test demonstrates the bug where
+// Ctran NVL zero-copy path fails when memory is backed by 3+ physical memory
+// allocations (expandable segments). The current implementation is limited to 2
+// segments due to fixed-size CtranIpcDesc.segments array.
+//
+// Expected behavior with current code: FAIL with error:
+// "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory
+// allocations."
+//
+// After fix: Test should PASS
+TEST_F(CtranTestFixture, DISABLED_sendRecvCopyEngineMultiSegment) {
+  // Use kCuMemAllocDisjoint with 3 segments to trigger the bug
+  const MemAllocType memType = kCuMemAllocDisjoint;
+  constexpr size_t numSegments = 3;
+  const size_t offset = 0;
+  // Use 6MB buffer = 3 x 2MB segments to ensure 3 physical allocations
+  const ssize_t count = 6 * 1024 * 1024 / sizeof(int); // 6MB in int elements
+  const int numMaxQp = 1;
+
+  EnvRAII env1(NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE, true);
+  NcclCommRAII comm(globalRank, numRanks, localRank);
+  ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
+
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skip test";
+  }
+
+  if (!comm->dmaBufSupport || !NCCL_CTRAN_IB_DMABUF_ENABLE) {
+    GTEST_SKIP() << "dmabuf is not supported, skip multi-segment disjoint test";
+  }
+
+  regCache->init();
+
+  // This test currently exposes a bug - the runTest will fail with:
+  // "CTRAN ERROR CTRAN-IPC: tried to export CtranIpcMem backed by too many
+  // physical memory allocations."
+  runTest(
+      offset,
+      count,
+      numMaxQp,
+      1 /* nIter */,
+      memType,
+      false /* oneToOne */,
+      numSegments);
+
+  COMMCHECK_TEST(regCache->destroy());
+}
+
+// Reproduces NVL cache staleness bug with PyTorch-like expandable segments.
+// This test simulates the scenario where:
+// 1. A buffer is allocated with reserved VA larger than initially mapped
+// 2. The receiver caches the initial (smaller) mapping
+// 3. The sender expands the buffer in-place (NO deregistration)
+// 4. The receiver's cache returns stale mapping, causing illegal memory access
+//
+// BUG: The NVL IPC cache uses (peer, base) as key. When PyTorch's expandable
+// segments grow a buffer in-place (same base, larger range, NO deregistration),
+// the cache returns stale mappings.
+TEST_F(CtranTestFixture, NvlCacheExpandableSegmentStaleness) {
+  if (localSize < 2) {
+    GTEST_SKIP() << "Need at least 2 local ranks for NVL cache test";
+  }
+
+  // Enable NVL copy engine for this test
+  EnvRAII env1(NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE, true);
+  NcclCommRAII comm(globalRank, numRanks, localRank);
+  ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
+  ASSERT_NE(nullptr, comm->ctranComm_->ctran_);
+
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skip test";
+  }
+
+  // Check NVL backend is available for local peer
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  CtranMapperBackend backend =
+      comm->ctranComm_->ctran_->mapper->getBackend(peerRank);
+  if (backend != CtranMapperBackend::NVL) {
+    GTEST_SKIP() << "NVL backend not available for peer " << peerRank;
+  }
+
+  regCache->init();
+
+  const size_t segmentSize = 2 * 1024 * 1024; // 2MB aligned segment
+  const size_t reservedSize = 8 * 1024 * 1024; // 8MB reserved VA
+  const commDataType_t dt = commInt;
+  const int sendRank = 0;
+  const int recvRank = 1;
+  const bool isSender = (globalRank == sendRank);
+  const bool isReceiver = (globalRank == recvRank);
+
+  ctran::ExpandableTestBuffer expBuf;
+  cudaStream_t stream = 0;
+  CUDACHECK_TEST(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+
+  // Step 1: Allocate expandable buffer with 1 segment (2MB) in 8MB reserved VA
+  ASSERT_EQ(
+      ctran::commMemAllocExpandable(&expBuf, reservedSize, segmentSize, true),
+      commSuccess);
+
+  int* buf = reinterpret_cast<int*>(expBuf.base);
+  size_t initialCount = segmentSize / sizeof(int);
+
+  // Register initial segment
+  void* hdl1 = nullptr;
+  NCCLCHECK_TEST(ncclCommRegister(
+      comm, expBuf.segments[0].ptr, expBuf.segments[0].size, &hdl1));
+
+  // Step 2: First transfer with initial size - receiver caches 2MB mapping
+  printf(
+      "Rank %d: First transfer with initial size %zu bytes\n",
+      globalRank,
+      expBuf.mappedSize);
+
+  commGroupDepth++;
+  if (isSender) {
+    std::vector<int> sendVals(initialCount);
+    std::iota(sendVals.begin(), sendVals.end(), 100);
+    CUDACHECK_TEST(cudaMemcpy(
+        buf, sendVals.data(), initialCount * sizeof(int), cudaMemcpyDefault));
+    EXPECT_EQ(
+        ctranSend(
+            buf, initialCount, dt, recvRank, comm->ctranComm_.get(), stream),
+        commSuccess);
+  } else if (isReceiver) {
+    CUDACHECK_TEST(cudaMemset(buf, 0, expBuf.mappedSize));
+    EXPECT_EQ(
+        ctranRecv(
+            buf, initialCount, dt, sendRank, comm->ctranComm_.get(), stream),
+        commSuccess);
+  }
+  commGroupDepth--;
+  EXPECT_EQ(ctranGroupEndHook(), commSuccess);
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Verify first transfer
+  if (isReceiver) {
+    EXPECT_EQ(checkChunkValue(buf, initialCount, 100, 1, globalRank), 0);
+  }
+
+  // Step 3: EXPAND to 4MB - NO deregistration!
+  // This simulates PyTorch's expandable segments growing in-place
+  printf(
+      "Rank %d: Expanding buffer from %zu to %zu bytes (NO deregistration!)\n",
+      globalRank,
+      expBuf.mappedSize,
+      2 * segmentSize);
+
+  ASSERT_EQ(ctran::commMemExpandBuffer(&expBuf, 2 * segmentSize), commSuccess);
+
+  size_t expandedCount = expBuf.mappedSize / sizeof(int);
+
+  // Register new segment (but old segment handle still exists!)
+  void* hdl2 = nullptr;
+  NCCLCHECK_TEST(ncclCommRegister(
+      comm, expBuf.segments[1].ptr, expBuf.segments[1].size, &hdl2));
+
+  // Step 4: Second transfer with expanded size (4MB)
+  // BUG: Receiver cache returns stale 2MB mapping, causing illegal access
+  printf(
+      "Rank %d: Second transfer with expanded size %zu bytes\n",
+      globalRank,
+      expBuf.mappedSize);
+
+  commGroupDepth++;
+  if (isSender) {
+    std::vector<int> sendVals(expandedCount);
+    std::iota(sendVals.begin(), sendVals.end(), 200);
+    CUDACHECK_TEST(cudaMemcpy(
+        buf, sendVals.data(), expandedCount * sizeof(int), cudaMemcpyDefault));
+    EXPECT_EQ(
+        ctranSend(
+            buf, expandedCount, dt, recvRank, comm->ctranComm_.get(), stream),
+        commSuccess);
+  } else if (isReceiver) {
+    CUDACHECK_TEST(cudaMemset(buf, 0, expBuf.mappedSize));
+    EXPECT_EQ(
+        ctranRecv(
+            buf, expandedCount, dt, sendRank, comm->ctranComm_.get(), stream),
+        commSuccess);
+  }
+  commGroupDepth--;
+  EXPECT_EQ(ctranGroupEndHook(), commSuccess);
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Verify second transfer - this will fail if cache returned stale mapping
+  if (isReceiver) {
+    EXPECT_EQ(checkChunkValue(buf, expandedCount, 200, 1, globalRank), 0);
+  }
+
+  // Cleanup
+  NCCLCHECK_TEST(ncclCommDeregister(comm, hdl1));
+  NCCLCHECK_TEST(ncclCommDeregister(comm, hdl2));
+  ASSERT_EQ(ctran::commMemFreeExpandable(&expBuf), commSuccess);
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+  COMMCHECK_TEST(regCache->destroy());
+}
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

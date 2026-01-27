@@ -22,9 +22,23 @@ commResult_t CtranNvl::Impl::importRemReg(
   auto peerIt = this->remRegMap.find(peer);
   if (peerIt != this->remRegMap.end()) {
     auto baseIt = peerIt->second.find(base);
-    if (peerIt->second.find(base) != peerIt->second.end()) {
-      *mappedBase = baseIt->second->ipcRemMem.getBase();
-      return commSuccess;
+    if (baseIt != peerIt->second.end()) {
+      // Check if cached range matches the new ipcDesc range
+      if (baseIt->second->ipcRemMem.getRange() == ipcDesc.range) {
+        *mappedBase = baseIt->second->ipcRemMem.getBase();
+        return commSuccess;
+      }
+      // Range mismatch - invalidate stale cache entry
+      // This can happen when PyTorch's expandable segments grow a buffer
+      // in-place (same base, larger range, NO deregistration)
+      CLOGF(
+          WARN,
+          "CTRAN-NVL: cache range mismatch for peer {} base {}, cached {} vs new {}, invalidating stale entry",
+          peer,
+          reinterpret_cast<void*>(base),
+          baseIt->second->ipcRemMem.getRange(),
+          ipcDesc.range);
+      peerIt->second.erase(baseIt);
     }
   }
 
