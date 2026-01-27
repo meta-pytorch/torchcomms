@@ -2,6 +2,8 @@
 
 #pragma once
 
+#include <string>
+
 #include <rccl.h> // @manual=//comms/rcclx:rcclx-dev
 
 namespace torch {
@@ -26,6 +28,7 @@ class RcclxApi {
 
   // Error handling
   virtual const char* getErrorString(ncclResult_t result) = 0;
+  virtual std::string getLastError(ncclComm_t comm) = 0;
 
   // Unique ID generation
   virtual ncclResult_t getUniqueId(ncclUniqueId* uniqueId) = 0;
@@ -212,6 +215,7 @@ class DefaultRcclxApi : public RcclxApi {
 
   // Error handling
   const char* getErrorString(ncclResult_t result) override;
+  std::string getLastError(ncclComm_t comm) override;
 
   // Unique ID generation
   ncclResult_t getUniqueId(ncclUniqueId* uniqueId) override;

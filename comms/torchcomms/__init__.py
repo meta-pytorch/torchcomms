@@ -3,10 +3,32 @@
 # pyre-strict
 import ctypes
 import os
+import sys
+from datetime import timedelta
 from importlib.metadata import entry_points
 
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
+from torch._opaque_base import OpaqueBaseMeta
+
+
+# to support opaque registration for time delta.
+class Timeout(timedelta, metaclass=OpaqueBaseMeta):
+    pass
+
+
+torchcomms_compile_support_enabled = os.environ.get(
+    "TORCHCOMMS_PATCH_FOR_COMPILE", ""
+).lower() in (
+    "1",
+    "true",
+)
+
+if torchcomms_compile_support_enabled:
+    # make the metaclass available to the pybind module
+    sys.modules["torchcomms._opaque_meta"] = type(
+        "module", (), {"OpaqueBaseMeta": OpaqueBaseMeta}
+    )()
 
 
 def _load_libtorchcomms() -> None:
@@ -37,6 +59,7 @@ __all__ = [  # noqa: F405
     "TorchComm",
     "ReduceOp",
     "TorchWork",
+    "Timeout",
     "BatchP2POptions",
     "BatchSendRecv",
     "P2POp",
