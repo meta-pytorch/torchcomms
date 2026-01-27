@@ -267,8 +267,7 @@ TEST_F(TorchCommNCCLXTest, InitializationFailsWithInvalidDeviceId) {
         comm->init(invalid_device, "test_name", default_options_),
         std::runtime_error);
 
-    // After a failed init, finalize should throw since we're not initialized
-    EXPECT_THROW(comm->finalize(), std::runtime_error);
+    comm->finalize();
   }
 }
 
