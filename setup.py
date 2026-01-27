@@ -67,6 +67,21 @@ def get_version() -> str:
     return version
 
 
+def detect_hipify_v2():
+    try:
+        from packaging.version import Version
+        from torch.utils.hipify import __version__
+
+        if Version(__version__) >= Version("2.0.0"):
+            return True
+    except Exception as e:
+        print(
+            "failed to detect pytorch hipify version, defaulting to version 1.0.0 behavior"
+        )
+        print(e)
+    return False
+
+
 class CMakeExtension(Extension):
     def __init__(self, name):
         # don't invoke the original build_ext for this special extension
@@ -90,7 +105,10 @@ class build_ext(build_ext_orig):
         build_temp.mkdir(parents=True, exist_ok=True)
         extdir = pathlib.Path(self.get_ext_fullpath(ext.name))
 
-        pybind11_build_flags = _get_pybind11_abi_build_flags()
+        build_flags = []
+        build_flags += _get_pybind11_abi_build_flags()
+        if detect_hipify_v2():
+            build_flags += ["-DHIPIFY_V2"]
 
         cfg = os.environ.get("CMAKE_BUILD_TYPE", "RelWithDebInfo")
         print(f"- Building with {cfg} configuration")
@@ -102,7 +120,7 @@ class build_ext(build_ext_orig):
             f"-DCMAKE_INSTALL_PREFIX={extdir.parent.absolute()}",
             f"-DCMAKE_INSTALL_DIR={extdir.parent.absolute()}",
             f"-DCMAKE_PREFIX_PATH={TORCH_ROOT}",
-            f"-DCMAKE_CXX_FLAGS={shlex.quote(' '.join(pybind11_build_flags))}",
+            f"-DCMAKE_CXX_FLAGS={shlex.quote(' '.join(build_flags))}",
             f"-DPython3_EXECUTABLE={sys.executable}",
             f"-DLIB_SUFFIX={os.environ.get('LIB_SUFFIX', 'lib')}",
             f"-DUSE_NCCL={flag_str(USE_NCCL)}",
