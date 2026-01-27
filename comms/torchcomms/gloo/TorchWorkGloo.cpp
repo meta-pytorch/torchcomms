@@ -7,8 +7,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/gloo/TorchCommGloo.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkGloo::TorchWorkGloo() {
   setStatus(WorkStatus::COMPLETED);
@@ -22,5 +21,4 @@ void TorchWorkGloo::wait() {
   return;
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -6,9 +6,7 @@ using ::testing::_;
 using ::testing::DoAll;
 using ::testing::Return;
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 void CachingAllocatorHookMock::setupDefaultBehaviors() {
   // Set up default behavior for registerComm
@@ -45,6 +43,4 @@ bool CachingAllocatorHookMock::isCommRegistered(TorchCommNCCLX* comm) {
   return registered_comms_.find(comm) != registered_comms_.end();
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test

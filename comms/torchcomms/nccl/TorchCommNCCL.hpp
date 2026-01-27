@@ -22,12 +22,11 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
-#include "comms/torchcomms/device/CudaApi.hpp"
+#include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/nccl/NcclApi.hpp"
 #include "comms/torchcomms/nccl/TorchWorkNCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 constexpr size_t kDefaultMaxEventPoolSize = 1000;
 
@@ -283,7 +282,12 @@ class TorchCommNCCL : public TorchCommBackend,
   c10::intrusive_ptr<TorchWorkNCCL> createWork(
       cudaStream_t stream,
       std::chrono::milliseconds timeout,
-      const std::vector<at::Tensor>& inputTensors);
+      const std::vector<at::Tensor>& inputTensors = {});
+
+  c10::intrusive_ptr<TorchWorkNCCL> createWork(
+      cudaStream_t stream,
+      std::chrono::milliseconds timeout,
+      const at::Tensor& inputTensor);
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -447,5 +451,4 @@ class TorchCommNCCL : public TorchCommBackend,
   friend class TorchWorkNCCLQueueCommTest;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
