@@ -3,8 +3,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkXCCL::TorchWorkXCCL(
     std::shared_ptr<TorchCommXCCL> comm,
@@ -136,5 +135,4 @@ void TorchWorkXCCL::wait() {
       comm_->getXpuApi()->streamWaitEvent(current_stream, end_event_, 0),
       "Failed to make stream wait for event");
 }
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

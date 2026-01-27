@@ -11,10 +11,9 @@
 #include <ATen/ATen.h>
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
-#include "comms/torchcomms/device/XpuApi.hpp"
+#include "comms/torchcomms/device/xpu/XpuApi.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchCommXCCL;
@@ -95,5 +94,4 @@ class TorchWorkXCCLQueue {
   std::recursive_mutex work_queues_mutex_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

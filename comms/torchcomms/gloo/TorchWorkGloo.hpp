@@ -6,8 +6,7 @@
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchCommGloo;
@@ -31,5 +30,4 @@ class TorchWorkGloo : public TorchWork {
   friend class TorchWorkGlooQueue;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

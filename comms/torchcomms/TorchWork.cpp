@@ -2,8 +2,7 @@
 
 #include "comms/torchcomms/TorchWork.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkCompleted::TorchWorkCompleted() {
   setStatus(WorkStatus::COMPLETED);
@@ -32,5 +31,4 @@ void TorchWorkThread::wait() {
   future_.get();
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
