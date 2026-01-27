@@ -13,8 +13,7 @@
 #include "comms/torchcomms/TorchCommTracing.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include "comms/torchcomms/TorchWork.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declaration
 class TorchCommRCCLX;
@@ -77,5 +76,4 @@ class TorchWorkRCCLX : public TorchWork {
   std::optional<at::RecordFunction> recordFunction_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

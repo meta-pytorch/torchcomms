@@ -3,8 +3,7 @@
 #include "comms/torchcomms/rccl/HipApi.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // DefaultHipApi implementation
 
@@ -101,5 +100,4 @@ const char* DefaultHipApi::getErrorString(hipError_t error) {
   return hipGetErrorString(error);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

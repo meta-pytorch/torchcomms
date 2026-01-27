@@ -11,8 +11,7 @@
 #include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/rccl/TorchCommRCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Initialize the static counter
 int TorchCommRCCLBootstrap::counter_ = 0;
@@ -221,5 +220,4 @@ ncclComm_t TorchCommRCCLBootstrap::createNcclComm(const std::string& name) {
   return nccl_comm;
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
