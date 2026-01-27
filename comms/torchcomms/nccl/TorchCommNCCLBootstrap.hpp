@@ -9,7 +9,7 @@
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
 #include "comms/torchcomms/TorchCommOptions.hpp"
-#include "comms/torchcomms/device/CudaApi.hpp"
+#include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/nccl/NcclApi.hpp"
 #include "nccl.h" // @manual
 

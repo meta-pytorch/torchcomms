@@ -14,9 +14,7 @@ using ::testing::Return;
 using ::testing::SaveArg;
 using ::testing::SetArgPointee;
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 TEST(TorchCommOptionsTest, EnvToValueImplBool) {
   const std::set<std::string> truthy_values = {"1", "true", "yes", "y"};
@@ -76,6 +74,4 @@ TEST(TorchCommOptionsTest, StringToBool) {
   EXPECT_THROW(torch::comms::string_to_bool("falsey"), std::runtime_error);
 }
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test
