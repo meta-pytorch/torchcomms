@@ -5,7 +5,7 @@
 
 namespace comms::pipes::benchmark {
 
-__global__ void selfTransportWriteKernel(
+__global__ void selfTransportPutKernel(
     char* dst,
     const char* src,
     std::size_t nBytes,
@@ -14,7 +14,7 @@ __global__ void selfTransportWriteKernel(
   auto group = make_warp_group();
 
   for (int run = 0; run < nRuns; ++run) {
-    transport.write(group, dst, src, nBytes);
+    transport.put(group, dst, src, nBytes);
   }
 }
 

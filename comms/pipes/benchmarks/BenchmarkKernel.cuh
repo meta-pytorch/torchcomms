@@ -63,6 +63,12 @@ __global__ void p2pBidirectional(
     std::size_t nBytes,
     SyncScope groupScope = SyncScope::WARP);
 
+// Signal benchmark kernel - ping-pong signaling between two peers
+__global__ void p2pSignalBenchKernel(
+    P2pNvlTransportDevice p2p,
+    int nSteps,
+    SyncScope groupScope = SyncScope::WARP);
+
 /**
  * AllToAllv benchmark kernel.
  * All ranks participate in all-to-all communication with variable chunk sizes.

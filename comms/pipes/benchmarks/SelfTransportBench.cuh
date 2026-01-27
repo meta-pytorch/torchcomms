@@ -10,7 +10,7 @@ namespace comms::pipes::benchmark {
 /**
  * Kernel that uses P2pSelfTransportDevice to copy data
  */
-__global__ void selfTransportWriteKernel(
+__global__ void selfTransportPutKernel(
     char* dst,
     const char* src,
     std::size_t nBytes,

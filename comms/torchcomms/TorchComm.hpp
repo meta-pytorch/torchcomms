@@ -15,8 +15,7 @@
 #include <memory>
 #include <string>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 // Forward declarations
 class TorchWork;
@@ -105,8 +104,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   ~TorchComm() = default;
 
   void finalize();
-  int getRank();
-  int getSize();
+  int getRank() const;
+  int getSize() const;
   std::string_view getCommName() const;
 
   // Point-to-Point Operations
@@ -228,7 +227,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
     return backend_;
   }
 
-  std::shared_ptr<TorchCommBackend> unsafeGetBackend() {
+  std::shared_ptr<TorchCommBackend> unsafeGetBackend() const {
     return impl_;
   }
 
@@ -315,5 +314,4 @@ std::shared_ptr<TorchComm> new_comm(
 // Note: Allocator is created once per backend and reused across all instances
 std::shared_ptr<c10::Allocator> get_mem_allocator(const std::string& backend);
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -268,7 +268,7 @@ class RdmaMemoryTest : public ::testing::Test {
     EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
 
     // Allocate test buffer
-    bufferSize_ = 8192; // > 4097 bytes as required
+    bufferSize_ = 8192;
     EXPECT_EQ(cudaMalloc(&buffer_, bufferSize_), cudaSuccess);
     EXPECT_NE(buffer_, nullptr);
   }
@@ -484,6 +484,178 @@ TEST_F(RdmaTransportTest, ServerClientDataTransferWrite) {
   bool success = std::move(communicationFuture).get();
   EXPECT_TRUE(success);
 }
+
+// Parameterized test fixture for testing various buffer sizes
+class RdmaTransportBufferSizeTest
+    : public RdmaTransportTest,
+      public ::testing::WithParamInterface<size_t> {
+ protected:
+  // Common thread function for parameterized write tests
+  void runRdmaTransportThreadWriteWithSize(
+      bool isServer,
+      size_t bufferSize,
+      ThreadSyncObjects& syncObjects) {
+    const int cudaDev = isServer ? 0 : 1;
+    // Set CUDA device
+    EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+    // Create RdmaTransport instance
+    auto transport = std::make_unique<torch::comms::RdmaTransport>(
+        cudaDev, evbThread_->getEventBase());
+
+    // Bind and get URL
+    std::string myUrl = transport->bind();
+    EXPECT_FALSE(myUrl.empty());
+    syncObjects.myUrlPromise.setValue(myUrl);
+
+    // Wait for peer's URL
+    std::string peerUrl = std::move(syncObjects.peerUrlFuture).get();
+    EXPECT_FALSE(peerUrl.empty());
+
+    // Connect to peer
+    commResult_t connectResult = transport->connect(peerUrl);
+    EXPECT_EQ(connectResult, commSuccess);
+    EXPECT_TRUE(transport->connected());
+
+    // Allocate and register memory buffer
+    void* buffer = nullptr;
+    EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+    void* testData;
+    EXPECT_EQ(cudaMallocHost(&testData, bufferSize), cudaSuccess);
+
+    torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+
+    if (isServer) {
+      // Server: Initialize buffer with test data
+      memset(testData, 0xCD, bufferSize);
+      EXPECT_EQ(
+          cudaMemcpy(buffer, testData, bufferSize, cudaMemcpyHostToDevice),
+          cudaSuccess);
+
+      // Wait for client's memory information
+      auto clientMemInfo = std::move(syncObjects.memoryInfoFuture).get();
+
+      // Perform iput to transfer data to client's buffer
+      auto putFuture = transport->write(
+          rdmaMemory.createView(buffer, bufferSize),
+          clientMemInfo,
+          true // notify
+      );
+      EXPECT_EQ(commSuccess, std::move(putFuture).get());
+
+      syncObjects.communicationResult.setValue(true);
+
+    } else {
+      // Client: Initialize buffer with different data
+      memset(testData, 0x00, bufferSize);
+      EXPECT_EQ(
+          cudaMemcpy(buffer, testData, bufferSize, cudaMemcpyHostToDevice),
+          cudaSuccess);
+
+      // Export client's buffer information to server
+      RdmaRemoteBuffer myMemInfo{
+          .ptr = buffer,
+          .len = bufferSize,
+          .accessKey = rdmaMemory.remoteKey()};
+      syncObjects.memoryInfoPromise.setValue(myMemInfo);
+
+      // Wait for incoming put transfer from server
+      auto waitFuture = transport->waitForWrite();
+      EXPECT_EQ(commSuccess, std::move(waitFuture).get());
+
+      // Verify data was transferred correctly
+      std::vector<uint8_t> receivedData(bufferSize);
+      EXPECT_EQ(
+          cudaMemcpy(
+              receivedData.data(), buffer, bufferSize, cudaMemcpyDeviceToHost),
+          cudaSuccess);
+
+      // Check that received data matches sent data
+      bool dataValid = true;
+      for (size_t i = 0; i < bufferSize; ++i) {
+        if (receivedData[i] != 0xCD) {
+          dataValid = false;
+          break;
+        }
+      }
+      EXPECT_TRUE(dataValid)
+          << "Data verification failed for buffer size " << bufferSize;
+    }
+
+    // Cleanup
+    EXPECT_EQ(cudaFreeHost(testData), cudaSuccess);
+    EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+  }
+
+  std::unique_ptr<folly::ScopedEventBaseThread> evbThread_;
+
+  void SetUp() override {
+    RdmaTransportTest::SetUp();
+    evbThread_ = std::make_unique<folly::ScopedEventBaseThread>();
+  }
+};
+
+TEST_P(RdmaTransportBufferSizeTest, WriteWithVariousBufferSizes) {
+  size_t bufferSize = GetParam();
+
+  // Promise/future pairs for exchanging URLs between threads
+  auto [urlPromise0, urlFuture0] = folly::makePromiseContract<std::string>();
+  auto [urlPromise1, urlFuture1] = folly::makePromiseContract<std::string>();
+  auto [memoryInfoPromise, memoryInfoFuture] =
+      folly::makePromiseContract<RdmaRemoteBuffer>();
+  auto [communicationResult, communicationFuture] =
+      folly::makePromiseContract<bool>();
+
+  // Setup synchronization objects for server (CUDA device 0)
+  ThreadSyncObjects serverSyncObjects{
+      std::move(urlPromise0),
+      std::move(urlFuture1),
+      folly::Promise<RdmaRemoteBuffer>(), // server doesn't export memory
+      std::move(memoryInfoFuture),
+      std::move(communicationResult)};
+
+  // Setup synchronization objects for client (CUDA device 1)
+  ThreadSyncObjects clientSyncObjects{
+      std::move(urlPromise1),
+      std::move(urlFuture0),
+      std::move(memoryInfoPromise),
+      folly::SemiFuture<RdmaRemoteBuffer>::makeEmpty(),
+      folly::Promise<bool>()};
+
+  // Launch both threads using the parameterized function
+  std::thread serverThread([&]() {
+    runRdmaTransportThreadWriteWithSize(true, bufferSize, serverSyncObjects);
+  });
+  std::thread clientThread([&]() {
+    runRdmaTransportThreadWriteWithSize(false, bufferSize, clientSyncObjects);
+  });
+
+  // Wait for both threads to complete
+  serverThread.join();
+  clientThread.join();
+
+  // Verify the communication was successful
+  bool success = std::move(communicationFuture).get();
+  EXPECT_TRUE(success);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    BufferSizes,
+    RdmaTransportBufferSizeTest,
+    ::testing::Values(
+        64, // Well below 4097
+        512, // Below 4097
+        1024, // Below 4097
+        4096, // Just below 4097
+        4097, // Exactly at the old limit
+        4098, // Just above 4097
+        8192, // Standard test size
+        65536, // Large buffer
+        1048576 // 1MB buffer
+        ),
+    [](const ::testing::TestParamInfo<size_t>& info) {
+      return "BufferSize_" + std::to_string(info.param);
+    });
 
 TEST_F(RdmaTransportTest, ServerClientDataTransferRead) {
   // Promise/future pairs for exchanging URLs between threads

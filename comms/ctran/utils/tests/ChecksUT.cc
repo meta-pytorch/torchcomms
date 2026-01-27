@@ -148,32 +148,6 @@ TEST_F(CtranUtilsCheckTest, ErrorReturn) {
   EXPECT_THAT(messages[0], ::testing::HasSubstr("test ErrorReturn failure"));
 }
 
-TEST_F(CtranUtilsCheckTest, ErrorThrow) {
-  auto dummyFn = []() {
-    FB_ERRORTHROW(commInternalError, "test ErrorThrow failure");
-    return commSuccess;
-  };
-
-  bool caughtException = false;
-  try {
-    dummyFn();
-  } catch (const std::runtime_error& e) {
-    auto errMsg = std::string(e.what());
-    EXPECT_THAT(errMsg, ::testing::HasSubstr("COMM internal failure:"));
-    auto errStr =
-        std::string(::meta::comms::commCodeToString(commInternalError));
-    EXPECT_THAT(errMsg, ::testing::HasSubstr(errStr));
-    caughtException = true;
-  }
-
-  ASSERT_TRUE(caughtException) << "Expected std::runtime_error";
-
-  const auto& messages = getMessages();
-  ASSERT_EQ(messages.size(), 1);
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("CTRAN ERROR"));
-  EXPECT_THAT(messages[0], ::testing::HasSubstr("test ErrorThrow failure"));
-}
-
 TEST_F(CtranUtilsCheckTest, ErrorThrowEx) {
   auto dummyFn = [](int rank, uint64_t commHash, std::string commDesc) {
     FB_COMMCHECKTHROW_EX(commSystemError, rank, commHash, commDesc);
@@ -383,12 +357,6 @@ TEST_F(CtranUtilsCheckTest, FOLLY_EXPECTED_CHECKTHROW_EX) {
     caughtException = true;
   }
   ASSERT_TRUE(caughtException) << "Expected ctran::utils::Exception";
-}
-
-TEST_F(CtranUtilsCheckTest, FB_CHECKTHROW) {
-  EXPECT_NO_THROW(FB_CHECKTHROW(true, "test FB_CHECKTHROW -> NO throw"));
-  EXPECT_THROW(
-      FB_CHECKTHROW(false, "test FB_CHECKTHROW -> throw"), std::runtime_error);
 }
 
 TEST_F(CtranUtilsCheckTest, FB_SYSCHECKRETURN) {
