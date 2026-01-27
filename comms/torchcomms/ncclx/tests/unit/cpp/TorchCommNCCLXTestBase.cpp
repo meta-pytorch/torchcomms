@@ -22,8 +22,9 @@ void TorchCommNCCLXTest::SetUp() {
   // Create hash store for communication
   store_ = c10::make_intrusive<c10d::HashStore>();
 
-  // Set up device. make it the cpu device because we're mocking cuda.
-  device_ = at::Device(at::DeviceType::CPU, 0);
+  // Set up device. Use CUDA device since TorchCommNCCLX requires it.
+  // The actual CUDA calls are mocked, so no real GPU is needed.
+  device_ = at::Device(at::DeviceType::CUDA, 0);
 
   // Set timeout to 2 seconds for tests
   default_options_ = CommOptions();

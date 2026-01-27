@@ -420,10 +420,25 @@ commResult_t ctran::regcache::SegmentRange::pinRange(
   DevMemType memType{DevMemType::kCumem};
   FB_COMMCHECK(getDevMemType(ptr, cudaDev, memType));
 
+  CLOGF_SUBSYS(
+      INFO,
+      ALLOC,
+      "CTRAN-MAPPER pinRange: input ptr={} len={} cudaDev={} fbMemType={}",
+      ptr,
+      len,
+      cudaDev,
+      (int)memType);
+
   // Host unregistered memory or host pinned or cudaMalloc-ed buffer, return
   // entire range as a single segment
   if (memType != DevMemType::kCumem) {
     segRangs.emplace_back(ptr, len, memType);
+    CLOGF_SUBSYS(
+        INFO,
+        ALLOC,
+        "CTRAN-MAPPER pinRange: non-cumem single segment ptr={} len={}",
+        ptr,
+        len);
     return commSuccess;
   }
 
@@ -435,20 +450,43 @@ commResult_t ctran::regcache::SegmentRange::pinRange(
   FB_CUCHECK(cuMemGetAddressRange(&curPbase, &curRange, ptr_));
   segRangs.emplace_back(
       reinterpret_cast<const void*>(curPbase), curRange, memType);
+  CLOGF_SUBSYS(
+      INFO,
+      ALLOC,
+      "CTRAN-MAPPER pinRange: discovered segment[0] pbase={:#x} range={}",
+      (uintptr_t)curPbase,
+      curRange);
 
   // - Continue search the remaining ranges until reached the end of the buffer
   size_t cur_offset = (size_t)ctran::utils::subDevicePtr(
       ctran::utils::addDevicePtr(curPbase, curRange), (void*)ptr_);
+  int segmentIdx = 0;
   while (cur_offset < len) {
     CUdeviceptr curPtr_ = ctran::utils::addDevicePtr(ptr_, cur_offset);
     FB_CUCHECK(
         cuMemGetAddressRange(&curPbase, &curRange, (CUdeviceptr)curPtr_));
     segRangs.emplace_back(
         reinterpret_cast<const void*>(curPbase), curRange, memType);
+    CLOGF_SUBSYS(
+        INFO,
+        ALLOC,
+        "CTRAN-MAPPER pinRange: discovered segment[{}] pbase={:#x} range={} (offset={})",
+        segmentIdx,
+        (uintptr_t)curPbase,
+        curRange,
+        cur_offset);
 
     cur_offset = (size_t)ctran::utils::subDevicePtr(
         ctran::utils::addDevicePtr(curPbase, curRange), (void*)ptr_);
+    segmentIdx++;
   }
+
+  CLOGF_SUBSYS(
+      INFO,
+      ALLOC,
+      "CTRAN-MAPPER pinRange: total {} segments discovered for input len={}",
+      segRangs.size(),
+      len);
 
   // MIN_TODO: check properties
 
