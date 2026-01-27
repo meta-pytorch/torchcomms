@@ -25,8 +25,7 @@
 #include "comms/torchcomms/rcclx/RcclxApi.hpp" // @manual
 #include "comms/torchcomms/rcclx/TorchWorkRCCLX.hpp" // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 constexpr size_t kMaxEventPoolSize = 1000;
 
@@ -405,5 +404,4 @@ class TorchCommRCCLX : public TorchCommBackend,
   std::string name_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

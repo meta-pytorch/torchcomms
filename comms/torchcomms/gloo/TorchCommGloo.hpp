@@ -16,8 +16,7 @@
 #include "comms/torchcomms/TorchCommBatch.hpp"
 #include "comms/torchcomms/gloo/TorchWorkGloo.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 class TorchCommGloo : public TorchCommBackend,
                       public std::enable_shared_from_this<TorchCommGloo> {
@@ -206,5 +205,4 @@ class TorchCommGloo : public TorchCommBackend,
   uint32_t collectiveCounter_{0};
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

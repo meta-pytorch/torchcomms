@@ -7,9 +7,7 @@
 
 #include "comms/torchcomms/rccl/RcclApi.hpp"
 
-namespace torch {
-namespace comms {
-namespace test {
+namespace torch::comms::test {
 
 class RcclMock : public RcclApi {
  public:
@@ -191,6 +189,4 @@ class RcclMock : public RcclApi {
   void setupDefaultBehaviors();
 };
 
-} // namespace test
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms::test
