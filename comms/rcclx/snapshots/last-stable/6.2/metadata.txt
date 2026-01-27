@@ -1,0 +1,10 @@
+Snapshot created: 2025-11-10 18:05:42 UTC
+ROCm version: 6.2
+
+Checksums:
+  sha1: 7ed8414653e151b128358510b197479282370dca
+  sha256: d20d911c72f1295cc8782b023118647660d6e814610b5a102a59fa9eee7f50ad
+
+Commit Hashes:
+  fbsource: 3a4e8509bb074e214b0c61eb5c80a91c371404be
+  rcclx: 3a4e8509bb074e214b0c61eb5c80a91c371404be
