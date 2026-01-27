@@ -5,8 +5,7 @@
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <glog/logging.h>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 #define CUDA_CHECK(cuda_api, call, err_str)                               \
   do {                                                                    \
@@ -194,5 +193,4 @@ class DefaultCudaApi : public CudaApi {
 
 bool deviceSupportsMulticast(int device_idx);
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

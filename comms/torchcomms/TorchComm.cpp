@@ -3,8 +3,7 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchComm::TorchComm(
     const std::string& backend_name,
@@ -38,12 +37,24 @@ std::string_view TorchComm::getCommName() const {
   return impl_->getCommName();
 }
 
+void TorchComm::validateRank(int rank, const char* param_name) const {
+  TORCH_CHECK(
+      rank >= 0 && rank < getSize(),
+      param_name,
+      " must be in range [0, ",
+      getSize(),
+      "), but got ",
+      rank);
+}
+
 // Point-to-Point Operations
 c10::intrusive_ptr<TorchWork> TorchComm::send(
     const at::Tensor& tensor,
     int dst,
     bool async_op,
     const SendOptions& options) {
+  validateRank(dst, "dst");
+
   preHook(
       PreHookArgs{
           .name = OpName::send,
@@ -68,6 +79,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::recv(
     int src,
     bool async_op,
     const RecvOptions& options) {
+  validateRank(src, "src");
+
   preHook(
       PreHookArgs{
           .name = OpName::recv,
@@ -93,6 +106,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::broadcast(
     int root,
     bool async_op,
     const BroadcastOptions& options) {
+  validateRank(root, "root");
+
   preHook(
       PreHookArgs{
           .name = OpName::broadcast,
@@ -141,6 +156,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::reduce(
     const ReduceOp& op,
     bool async_op,
     const ReduceOptions& options) {
+  validateRank(root, "root");
+
   preHook(
       PreHookArgs{
           .name = OpName::reduce,
@@ -408,6 +425,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::scatter(
     int root,
     bool async_op,
     const ScatterOptions& options) {
+  validateRank(root, "root");
+
   preHook(
       PreHookArgs{
           .name = OpName::scatter,
@@ -434,6 +453,8 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather(
     int root,
     bool async_op,
     const GatherOptions& options) {
+  validateRank(root, "root");
+
   preHook(
       PreHookArgs{
           .name = OpName::gather,
@@ -512,7 +533,8 @@ const at::Device& TorchComm::getDevice() const {
 
 // Batch Operations
 
-BatchSendRecv::BatchSendRecv(TorchComm* parent) : parent_(parent) {}
+BatchSendRecv::BatchSendRecv(std::shared_ptr<TorchComm> parent)
+    : parent_(std::move(parent)) {}
 
 BatchSendRecv::P2POp::P2POp(OpType type, const at::Tensor& tensor, int peer) {
   this->type = type;
@@ -521,7 +543,7 @@ BatchSendRecv::P2POp::P2POp(OpType type, const at::Tensor& tensor, int peer) {
 }
 
 BatchSendRecv TorchComm::batch_op_create() {
-  return BatchSendRecv(this);
+  return BatchSendRecv(shared_from_this());
 }
 
 void BatchSendRecv::send(const at::Tensor& tensor, int dst) {
@@ -586,5 +608,4 @@ void TorchComm::postHook(PostHookArgs&& args) {
   }
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
