@@ -5,6 +5,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 
 #include <torch/csrc/distributed/c10d/FileStore.hpp> // @manual
@@ -15,8 +16,20 @@
 namespace torch {
 namespace comms {
 
-bool string_to_bool(const std::string& str) {
-  std::string lowercase_str = str;
+namespace {
+// Helper function to trim leading and trailing whitespace from a string
+std::string trim_whitespace(std::string_view str) {
+  auto start = str.find_first_not_of(" \t\n\r\f\v");
+  if (start == std::string_view::npos) {
+    return "";
+  }
+  auto end = str.find_last_not_of(" \t\n\r\f\v");
+  return std::string(str.substr(start, end - start + 1));
+}
+} // namespace
+
+bool string_to_bool(std::string_view str) {
+  std::string lowercase_str = trim_whitespace(str);
   std::transform(
       lowercase_str.begin(),
       lowercase_str.end(),
@@ -31,20 +44,25 @@ bool string_to_bool(const std::string& str) {
        lowercase_str == "no" || lowercase_str == "n");
 
   if (!is_true && !is_false) {
-    throw std::runtime_error("Invalid value for string " + str);
+    throw std::runtime_error("Invalid value for string " + std::string(str));
   } else {
     return is_true;
   }
 }
 
 template <typename T>
-T env_to_value(const std::string& env_key, const T& default_value) {
-  const char* env_value = std::getenv(env_key.c_str());
+T env_to_value(std::string_view env_key, const T& default_value) {
+  const char* env_value = std::getenv(std::string(env_key).c_str());
   if (!env_value) {
     return default_value; // Environment variable not set, return default
   }
 
-  std::string value(env_value);
+  std::string value = trim_whitespace(std::string(env_value));
+
+  // If the trimmed value is empty, return the default
+  if (value.empty()) {
+    return default_value;
+  }
 
   if constexpr (std::is_same_v<T, bool>) {
     return string_to_bool(value);
@@ -65,18 +83,19 @@ T env_to_value(const std::string& env_key, const T& default_value) {
       return result;
     } catch (const std::exception&) {
       throw std::runtime_error(
-          "Invalid value for environment variable " + env_key + ": " + value);
+          "Invalid value for environment variable " + std::string(env_key) +
+          ": " + value);
     }
   }
 }
 
 // Explicit instantiations for common types
-template bool env_to_value<bool>(const std::string&, const bool&);
-template int env_to_value<int>(const std::string&, const int&);
-template float env_to_value<float>(const std::string&, const float&);
-template double env_to_value<double>(const std::string&, const double&);
+template bool env_to_value<bool>(std::string_view, const bool&);
+template int env_to_value<int>(std::string_view, const int&);
+template float env_to_value<float>(std::string_view, const float&);
+template double env_to_value<double>(std::string_view, const double&);
 template std::string env_to_value<std::string>(
-    const std::string&,
+    std::string_view,
     const std::string&);
 
 std::pair<int, int> query_ranksize() {
@@ -106,14 +125,14 @@ std::pair<int, int> query_ranksize() {
   int rank;
   int comm_size;
 
-  // Using do-while(0) to allow early exit via break when rank/size are
-  // found, avoiding deeply nested if-else chains.
-  do {
+  // Lambda to query rank and size from environment variables, returning true if
+  // both values were found
+  auto tryQueryRankSize = [&]() -> bool {
     // Read from TORCHCOMM_RANK and TORCHCOMM_SIZE environment variables
     rank = env_to_value<int>("TORCHCOMM_RANK", -1);
     comm_size = env_to_value<int>("TORCHCOMM_SIZE", -1);
     if (rank != -1 && comm_size != -1) {
-      break;
+      return true;
     }
 
     // See if we are in an MPI environment
@@ -123,14 +142,14 @@ std::pair<int, int> query_ranksize() {
       rank = env_to_value<int>("OMPI_COMM_WORLD_RANK", -1);
       comm_size = env_to_value<int>("OMPI_COMM_WORLD_SIZE", -1);
       if (rank != -1 && comm_size != -1) {
-        break;
+        return true;
       }
 
       // See if we are in an MPICH environment
       rank = env_to_value<int>("PMI_RANK", -1);
       comm_size = env_to_value<int>("PMI_SIZE", -1);
       if (rank != -1 && comm_size != -1) {
-        break;
+        return true;
       }
     }
 
@@ -140,12 +159,14 @@ std::pair<int, int> query_ranksize() {
       rank = env_to_value<int>("RANK", -1);
       comm_size = env_to_value<int>("WORLD_SIZE", -1);
       if (rank != -1 && comm_size != -1) {
-        break;
+        return true;
       }
     }
-  } while (0);
 
-  if (rank == -1 || comm_size == -1) {
+    return false;
+  };
+
+  if (!tryQueryRankSize()) {
     throw std::runtime_error(
         "Unable to determine rank and size from environment variables. "
         "Please set TORCHCOMM_RANK and TORCHCOMM_SIZE, or ensure you are "

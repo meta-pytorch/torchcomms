@@ -4,7 +4,6 @@
 
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDACachingAllocator.h>
-#include <folly/synchronization/CallOnce.h>
 #include <memory>
 #include <mutex>
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
@@ -82,7 +81,7 @@ class CachingAllocatorHook {
   }
 
   inline static std::unique_ptr<CachingAllocatorHookImpl> instance_ = nullptr;
-  inline static folly::once_flag init_flag_;
+  inline static std::once_flag init_flag_;
 };
 
 // Global function to be registered as a hook

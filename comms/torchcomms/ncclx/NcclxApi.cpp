@@ -11,6 +11,26 @@
 namespace torch {
 namespace comms {
 
+// NCCLXException implementation
+
+NCCLXException::NCCLXException(
+    NcclxApi& nccl_api,
+    const std::string& message,
+    ncclResult_t result,
+    ncclComm_t comm)
+    : message_(
+          message + ": " + nccl_api.getErrorString(result) +
+          " \nNCCL Last Error: " + nccl_api.getLastError(comm)),
+      result_(result) {}
+
+const char* NCCLXException::what() const noexcept {
+  return message_.c_str();
+}
+
+ncclResult_t NCCLXException::getResult() const noexcept {
+  return result_;
+}
+
 // DefaultNcclxApi implementation
 
 const char* DefaultNcclxApi::getErrorString(ncclResult_t result) {
@@ -226,7 +246,7 @@ ncclResult_t DefaultNcclxApi::alltoallvDynamicDispatch(
       stream);
 #else
   throw std::logic_error(
-      "NCCL alltoallvDynamicDispatch is not supported in this build");
+      "NCCLX alltoallvDynamicDispatch is not supported in this build");
 #endif
 }
 
@@ -265,7 +285,7 @@ ncclResult_t DefaultNcclxApi::alltoallvDynamicCombine(
       stream);
 #else
   throw std::logic_error(
-      "NCCL alltoallvDynamicCombine is not supported in this build");
+      "NCCLX alltoallvDynamicCombine is not supported in this build");
 #endif
 }
 
@@ -292,7 +312,7 @@ ncclResult_t DefaultNcclxApi::alltoallvDedupInit(
       request);
 #else
   throw std::logic_error(
-      "NCCL alltoallvDedupInit is not supported in this build");
+      "NCCLX alltoallvDedupInit is not supported in this build");
 #endif
 }
 
@@ -309,7 +329,7 @@ ncclResult_t DefaultNcclxApi::alltoallvDedupExec(
       sendBuff, sendIdx, fwdIdx, recvIdx, recvBuff, recvBlockIds, request);
 #else
   throw std::logic_error(
-      "NCCL allToAllvDedupExec is not supported in this build");
+      "NCCLX allToAllvDedupExec is not supported in this build");
 #endif
 }
 
@@ -322,7 +342,7 @@ ncclResult_t DefaultNcclxApi::alltoallvDedupCombine(
     void* /* request */) {
   // placeholder for now; will add support after landed NCCLX side
   throw std::logic_error(
-      "NCCL allToAllvDedupCombine is not supported in this build");
+      "NCCLX allToAllvDedupCombine is not supported in this build");
 }
 
 ncclResult_t DefaultNcclxApi::pFree(void* request) {
