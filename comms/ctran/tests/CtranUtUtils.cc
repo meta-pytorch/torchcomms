@@ -87,17 +87,19 @@ void CtranDistBaseTest::TearDown() {
 void* CtranBaseTest::prepareBuf(
     size_t bufSize,
     MemAllocType memType,
-    std::vector<TestMemSegment>& segments) {
+    std::vector<TestMemSegment>& segments,
+    size_t numSegments) {
   // Delegate to CtranNcclTestHelpers for all memory types
-  return ncclHelpers.prepareBuf(bufSize, memType, segments);
+  return ncclHelpers.prepareBuf(bufSize, memType, segments, numSegments);
 }
 
 void CtranBaseTest::releaseBuf(
     void* buf,
     size_t bufSize,
-    MemAllocType memType) {
+    MemAllocType memType,
+    size_t numSegments) {
   // Delegate to CtranNcclTestHelpers for all memory types
-  ncclHelpers.releaseBuf(buf, bufSize, memType);
+  ncclHelpers.releaseBuf(buf, bufSize, memType, numSegments);
 }
 
 void CtranBaseTest::allocDevArg(const size_t nbytes, void*& ptr) {
