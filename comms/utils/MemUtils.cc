@@ -2,6 +2,7 @@
 #include "comms/utils/MemUtils.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
+#include "comms/utils/CudaChecks.h"
 #include "comms/utils/checks.h"
 
 namespace comms::utils::cumem {
@@ -32,7 +33,9 @@ bool isBackedByMultipleCuMemAllocations(
   CUdeviceptr curPbase = 0;
   CUdeviceptr ptr_ = reinterpret_cast<CUdeviceptr>(const_cast<void*>(ptr));
 
-  FB_CUCHECKTHROW(cuMemGetAddressRange(&curPbase, &curRange, ptr_));
+  FB_CUCHECKTHROW(
+      ::comms::utils::cuda::cuMemGetAddressRangeDynamic(
+          &curPbase, &curRange, ptr_));
   const size_t remaining_in_first_alloc = (size_t)ctran::utils::subDevicePtr(
       ctran::utils::addDevicePtr(curPbase, curRange), (void*)ptr_);
   if (len <= remaining_in_first_alloc) {
