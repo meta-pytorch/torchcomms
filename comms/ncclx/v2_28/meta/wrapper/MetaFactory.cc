@@ -5,8 +5,8 @@
 #include "comm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllPHintUtils.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvDynamicHintUtils.h"
-#include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/window/WinHintUtils.h"
+#include "comms/utils/checks.h"
 #include "comms/utils/commSpecs.h"
 #include "meta/wrapper/MetaFactory.h"
 

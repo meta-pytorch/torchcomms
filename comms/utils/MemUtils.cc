@@ -1,8 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/utils/MemUtils.h"
-#include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/DevMemType.h"
+#include "comms/utils/checks.h"
 
 namespace comms::utils::cumem {
 
