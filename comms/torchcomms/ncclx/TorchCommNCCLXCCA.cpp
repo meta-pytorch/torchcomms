@@ -31,8 +31,8 @@ void cachingAllocatorHookFn(
 }
 
 CachingAllocatorHookImpl& CachingAllocatorHook::getInstance() {
-  // Use folly::call_once for thread-safe singleton initialization
-  folly::call_once(init_flag_, createInstance);
+  // Use std::call_once for thread-safe singleton initialization
+  std::call_once(init_flag_, createInstance);
   return *instance_;
 }
 

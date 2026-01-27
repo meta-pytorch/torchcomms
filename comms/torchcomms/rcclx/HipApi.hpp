@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <glog/logging.h>
 #include <hip/hip_runtime.h> // @manual=third-party//rocm:amdhip64-lazy
 
 namespace torch {
@@ -15,6 +16,17 @@ namespace comms {
       ss << err_str << ": " << cuda_api->getErrorString(status) << " at " \
          << __FILE__ << ":" << __LINE__;                                  \
       throw std::runtime_error(ss.str());                                 \
+    }                                                                     \
+  } while (0)
+
+// Ignore variant for use in destructors - logs errors instead of throwing
+#define HIP_CHECK_IGNORE(hip_api, call, err_str)                          \
+  do {                                                                    \
+    hipError_t status = call;                                             \
+    if (status != hipSuccess) {                                           \
+      LOG(ERROR) << "[TC] " << err_str << ": "                            \
+                 << hip_api->getErrorString(status) << " at " << __FILE__ \
+                 << ":" << __LINE__;                                      \
     }                                                                     \
   } while (0)
 
