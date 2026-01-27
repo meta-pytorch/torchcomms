@@ -5,6 +5,7 @@
 #include <chrono>
 #include <memory>
 #include <optional>
+#include <string_view>
 
 #include <ATen/ATen.h>
 #include <hip_runtime.h> // @manual=third-party//cuda:cuda-lazy
@@ -40,9 +41,7 @@ class TorchWorkRCCLX : public TorchWork {
   // Delete the move assignment operator to prevent accidentally stomping over
   // events if the work is in progress.
   TorchWorkRCCLX& operator=(TorchWorkRCCLX&& other) noexcept = delete;
-
-  // Move constructor
-  TorchWorkRCCLX(TorchWorkRCCLX&& other) noexcept;
+  TorchWorkRCCLX(TorchWorkRCCLX&&) = delete;
 
   // Override virtual functions from TorchWork
   void wait() override;
@@ -51,13 +50,13 @@ class TorchWorkRCCLX : public TorchWork {
   WorkStatus checkStatus();
 
  protected:
-  void recordStart(const std::string& coll_name);
+  void recordStart(std::string_view coll_name);
   void recordEnd();
 
   friend class TorchCommRCCLX;
 
  private:
-  void recordFunctionStart(const std::string& coll_name);
+  void recordFunctionStart(std::string_view coll_name);
   std::chrono::milliseconds getTimeout() {
     return timeout_ms_;
   }

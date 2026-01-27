@@ -85,7 +85,7 @@ folly::SemiFuture<commResult_t> waitForWrite();
 RdmaMemory(const void* buf, size_t len, int cudaDev);
 ```
 - `buf`: Pointer to CUDA memory buffer
-- `len`: Size of buffer in bytes (must be > 4097 bytes)
+- `len`: Size of buffer in bytes
 - `cudaDev`: CUDA device ID
 
 #### Methods
@@ -167,7 +167,7 @@ void* gpuBuffer = nullptr;
 size_t bufferSize = 1024 * 1024; // 1MB
 cudaMalloc(&gpuBuffer, bufferSize);
 
-// Register memory for RDMA (requires > 4097 bytes)
+// Register memory for RDMA
 RdmaMemory rdmaMemory(gpuBuffer, bufferSize, cudaDevice);
 
 // Get remote access information
@@ -334,7 +334,7 @@ buck run @//mode/opt //comms/torchcomms/transport/benchmarks:rdma_transport_benc
 
 1. **Memory Reuse**: Register large buffers once, use views for transfers
 2. **Batch Operations**: Group multiple small transfers into batches
-4. **Buffer Sizes**: Use buffers > 4097 bytes for registration requirements
+4. **Buffer Sizes**: Use appropriately sized buffers for your transfer needs
 5. **Event Base Sharing**: Share EventBase across multiple transports when possible
 
 ### Benchmark Results
@@ -372,8 +372,8 @@ BM_RdmaTransport_Write/268435456/real_time         5552 us          142 us      
 - **Fallback**: Use `RdmaTransport::supported()` to detect and fallback to alternative transport
 
 #### "Failed to register memory"
-- **Cause**: Buffer too small (< 4097 bytes) or memory permissions
-- **Solution**: Ensure buffer size > 4097 bytes and proper CUDA context
+- **Cause**: Memory permissions or invalid buffer
+- **Solution**: Ensure proper CUDA context and valid memory allocation
 
 #### Performance Issues
 - **Cause**: Small transfers, frequent registration, or CPU bottlenecks
