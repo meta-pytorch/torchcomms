@@ -8,8 +8,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "nccl.h" // @manual
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 
@@ -42,7 +41,7 @@ ncclDataType_t getNcclDataTypeInternal(const at::ScalarType scalar_type) {
     case at::ScalarType::UInt64:
       return ncclUint64;
     default:
-      throw std::runtime_error("Unsupported scaler data type for NCCLX");
+      throw std::runtime_error("Unsupported scalar data type for NCCLX");
   }
 }
 
@@ -464,5 +463,4 @@ void TorchCommNCCLX::detachMemoryHook() {
   CachingAllocatorHook::getInstance().deregisterComm(this);
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -6,8 +6,7 @@
 
 #include <nccl.h> // @manual=fbsource//third-party/nccl:nccl
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 /**
  * Abstract interface for NCCL API operations.
  * This allows for dependency injection and testing by providing
@@ -293,5 +292,4 @@ class DefaultNcclApi : public NcclApi {
   ncclResult_t memFree(void* buff) override;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -6,8 +6,7 @@
 #include <algorithm>
 #include <cstdlib>
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 namespace {
 // Backend name must match the exported symbol in the dummy backend library
@@ -173,5 +172,4 @@ TEST_F(TorchCommBackendFactoryTest, NewCommIntegration) {
   EXPECT_TRUE(work->isCompleted());
 }
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

@@ -7,8 +7,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkNCCLX::TorchWorkNCCLX(
     std::shared_ptr<TorchCommNCCLX> comm,
@@ -188,5 +187,4 @@ void TorchWorkNCCLX::wait() {
   inputTensors_.clear();
   inputTensor_.reset();
 }
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms

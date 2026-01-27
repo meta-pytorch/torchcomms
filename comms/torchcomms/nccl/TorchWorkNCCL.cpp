@@ -6,8 +6,7 @@
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 TorchWorkNCCL::TorchWorkNCCL(
     std::shared_ptr<TorchCommNCCL> comm,
@@ -135,6 +134,7 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCL::checkStatus() {
 
     // Release the input tensors to keep the lifetime of the tensors short
     inputTensors_.clear();
+    inputTensor_.reset();
   } else if (end_status == cudaErrorNotReady) {
     // End event has not completed yet, check for timeout
     auto current_time = std::chrono::steady_clock::now();
@@ -183,6 +183,11 @@ void TorchWorkNCCL::wait() {
       comm_->getCudaApi(),
       comm_->getCudaApi()->streamWaitEvent(current_stream, end_event_, 0),
       "Failed to make stream wait for event");
+
+  // Release tensor references. The CUDA caching allocator manages stream
+  // semantics and will not reclaim memory until the stream operations
+  // complete.
+  inputTensors_.clear();
+  inputTensor_.reset();
 }
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
