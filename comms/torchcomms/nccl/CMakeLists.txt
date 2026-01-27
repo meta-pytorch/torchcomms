@@ -1,7 +1,7 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Extension: torchcomms._comms_nccl
 file(GLOB TORCHCOMMS_NCCL_SOURCES "comms/torchcomms/nccl/*.cpp")
-file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/CudaApi.cpp")
+file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/cuda/CudaApi.cpp")
 find_package(CUDA)
 
 if(USE_SYSTEM_LIBS)

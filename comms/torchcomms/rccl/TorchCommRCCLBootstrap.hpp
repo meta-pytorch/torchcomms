@@ -12,8 +12,7 @@
 #include "comms/torchcomms/rccl/RcclApi.hpp" // @manual
 #include "rccl.h" // @manual=//comms/rccl:rccl-dev
 
-namespace torch {
-namespace comms {
+namespace torch::comms {
 
 constexpr uint16_t kTCPStorePort = 29500;
 
@@ -71,5 +70,4 @@ class TorchCommRCCLBootstrap {
   std::string uniqueid_xchg_method_;
 };
 
-} // namespace comms
-} // namespace torch
+} // namespace torch::comms
