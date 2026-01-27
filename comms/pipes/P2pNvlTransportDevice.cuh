@@ -187,7 +187,7 @@ struct P2pNvlTransportOptions {
  *        └───────┬───────┘
  *                │
  *                │ send() waits for READY_TO_SEND, copies data,
- *                │ signals readyToRecv(stepId)
+ *                │ signals ready_to_recv(stepId)
  *                ▼
  *        ┌───────────────┐
  *    ┌─▶ │ READY_TO_RECV │
@@ -195,7 +195,7 @@ struct P2pNvlTransportOptions {
  *    │   └───────┬───────┘
  *    │           │
  *    │           │ recv() waits for READY_TO_RECV, copies data,
- *    │           │ signals readyToSend()
+ *    │           │ signals ready_to_send()
  *    │           ▼
  *    │   ┌───────────────┐
  *    │   │ READY_TO_SEND │
@@ -203,7 +203,7 @@ struct P2pNvlTransportOptions {
  *    │   └───────┬───────┘
  *    │           │
  *    │           │ send() waits for READY_TO_SEND, copies data,
- *    │           │ signals readyToRecv(stepId)
+ *    │           │ signals ready_to_recv(stepId)
  *    │           │
  *    └───────────┘
  *
@@ -359,7 +359,7 @@ class P2pNvlTransportDevice {
 
         ChunkState& chunkState = sendStates[stateOffset + chunkIdx];
 
-        chunkState.waitReadyToSend(group);
+        chunkState.wait_ready_to_send(group);
 
         memcpy_vectorized(
             sendBuffer + dataBufferOffset + chunkOffset,
@@ -367,7 +367,7 @@ class P2pNvlTransportDevice {
             chunkBytes,
             group);
 
-        chunkState.readyToRecv(group, stepId, call_index);
+        chunkState.ready_to_recv(group, stepId, call_index);
       });
     }
 #endif
@@ -460,7 +460,7 @@ class P2pNvlTransportDevice {
 
         ChunkState& chunkState = recvStates[stateOffset + chunkIdx];
 
-        chunkState.waitReadyToRecv(group, stepId, call_index);
+        chunkState.wait_ready_to_recv(group, stepId, call_index);
 
         memcpy_vectorized(
             dst + stepOffset + chunkOffset,
@@ -468,7 +468,7 @@ class P2pNvlTransportDevice {
             chunkBytes,
             group);
 
-        chunkState.readyToSend(group);
+        chunkState.ready_to_send(group);
       });
     }
 #endif
@@ -481,7 +481,7 @@ class P2pNvlTransportDevice {
    * Thread-group 0 writes metadata (nbytes, offset, has_more) to the
    * receiver's first ChunkState before the data transfer begins.
    * The metadata is communicated through ChunkState fields and becomes
-   * visible to the receiver when readyToRecv is signaled (via release-store).
+   * visible to the receiver when ready_to_recv is signaled (via release-store).
    *
    * INPUTS:
    * @param group ThreadGroup for cooperative processing (all threads
@@ -506,19 +506,19 @@ class P2pNvlTransportDevice {
     ChunkState* const sendStates = remoteState_.stateBuffer.data();
 
     // same as send(), wait for previous recv_one() to complete
-    sendStates[kMetadataChunkIndex].waitReadyToSend(group);
+    sendStates[kMetadataChunkIndex].wait_ready_to_send(group);
 
     // Thread-group 0 writes metadata to receiver's chunk kMetadataChunkIndex
     // This happens before send() starts, so receiver can read it
     if (group.group_id == 0) {
-      sendStates[kMetadataChunkIndex].writeMetaData(
+      sendStates[kMetadataChunkIndex].write_metadata(
           group, nbytes, offset_in_output, has_more);
     }
 
     // empty data transfer, just do the signaling
     if (nbytes == 0) {
       if (group.group_id == 0) {
-        sendStates[kMetadataChunkIndex].readyToRecv(
+        sendStates[kMetadataChunkIndex].ready_to_recv(
             group, kMetadataChunkIndex, call_index);
       }
       return;
@@ -568,16 +568,16 @@ class P2pNvlTransportDevice {
 #ifdef __CUDA_ARCH__
     ChunkState* const recvStates = localState_.stateBuffer.data();
 
-    // ALL thread-groups wait for chunk kMetadataChunkIndex's readyToRecv to get
-    // metadata Step kMetadataChunkIndex is used for the metadata exchange
-    recvStates[kMetadataChunkIndex].waitReadyToRecv(
+    // ALL thread-groups wait for chunk kMetadataChunkIndex's ready_to_recv to
+    // get metadata Step kMetadataChunkIndex is used for the metadata exchange
+    recvStates[kMetadataChunkIndex].wait_ready_to_recv(
         group, kMetadataChunkIndex, call_index);
 
     // ALL threads read metadata from chunk kMetadataChunkIndex
     // (all threads need nbytes_val to call recv())
     std::size_t nbytes_val, offset_val;
     bool has_more_val;
-    recvStates[kMetadataChunkIndex].readMetaData(
+    recvStates[kMetadataChunkIndex].read_metadata(
         group, nbytes_val, offset_val, has_more_val);
 
     // Calculate destination pointer using offset
@@ -595,14 +595,14 @@ class P2pNvlTransportDevice {
     // empty data transfer, just do the signaling
     if (nbytes_val == 0) {
       if (group.group_id == 0) {
-        recvStates[kMetadataChunkIndex].readyToSend(group);
+        recvStates[kMetadataChunkIndex].ready_to_send(group);
       }
       return;
     }
 
     // Now call regular recv() to receive the data
     // recv() will handle all the pipelining and synchronization
-    // and will signal readyToSend() for ChunkState[kMetadataChunkIndex] after
+    // and will signal ready_to_send() for ChunkState[kMetadataChunkIndex] after
     // completion
     recv(group, dst, nbytes_val, call_index);
 #endif
@@ -805,7 +805,7 @@ class P2pNvlTransportDevice {
 #ifdef __CUDA_ARCH__
     // Early return for no-op cases
     if (nbytes == 0) {
-      return;
+      return 0;
     }
 
     // Compute chunk size: aim for nbytes / total_groups per chunk,
