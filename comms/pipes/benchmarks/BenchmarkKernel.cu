@@ -128,4 +128,54 @@ __global__ void allToAllvKernel(
       recv_chunk_infos);
 }
 
+__global__ void broadcastKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
+__global__ void broadcastBinomialTreeKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast_binomial_tree(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
+__global__ void broadcastAdaptiveKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast_adaptive(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
+__global__ void broadcastRingKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast_ring(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
+__global__ void broadcastAdaptiveV2Kernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast_adaptive_v2(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
 } // namespace comms::pipes::benchmark
