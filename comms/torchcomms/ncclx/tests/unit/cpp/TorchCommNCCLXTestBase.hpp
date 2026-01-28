@@ -53,7 +53,9 @@ class TorchCommNCCLXTest : public ::testing::Test {
 
   void setupRankAndSize(int rank, int size);
 
-  void setOptionsEnvironmentVariables(bool abort_on_error, float timeout_secs);
+  void setOptionsEnvironmentVariables(
+      bool abort_on_error,
+      uint64_t timeout_secs);
 
   class TestTorchCommNCCLX : public TorchCommNCCLX {
    public:
