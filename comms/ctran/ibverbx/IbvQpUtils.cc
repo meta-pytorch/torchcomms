@@ -2,17 +2,15 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 
-#include "comms/ctran/backends/ib/CtranIbQpUtils.h"
+#include "comms/ctran/ibverbx/IbvQpUtils.h"
 
-namespace ctran::ib {
-folly::Expected<ibverbx::IbvQp, ibverbx::Error> ctranIbQpCreate(
-    const ibverbx::IbvPd* ibvPd,
-    ibverbx::ibv_cq* cq) {
-  ibverbx::ibv_qp_init_attr initAttr;
-  memset(&initAttr, 0, sizeof(ibverbx::ibv_qp_init_attr));
+namespace ibverbx {
+folly::Expected<IbvQp, Error> createRcQp(const IbvPd* ibvPd, ibv_cq* cq) {
+  ibv_qp_init_attr initAttr;
+  memset(&initAttr, 0, sizeof(ibv_qp_init_attr));
   initAttr.send_cq = cq;
   initAttr.recv_cq = cq;
-  initAttr.qp_type = ibverbx::IBV_QPT_RC;
+  initAttr.qp_type = IBV_QPT_RC;
   initAttr.sq_sig_all = 0;
   initAttr.cap.max_send_wr = MAX_SEND_WR;
   initAttr.cap.max_recv_wr = MAX_CONTROL_MSGS;
@@ -26,34 +24,31 @@ folly::Expected<ibverbx::IbvQp, ibverbx::Error> ctranIbQpCreate(
   return ibvPd->createQp(&initAttr);
 }
 
-folly::Expected<folly::Unit, ibverbx::Error>
-ctranIbQpInit(ibverbx::IbvQp& ibvQp, int port, int qp_access_flags) {
-  ibverbx::ibv_qp_attr qpAttr;
-  memset(&qpAttr, 0, sizeof(ibverbx::ibv_qp_attr));
-  qpAttr.qp_state = ibverbx::IBV_QPS_INIT;
+folly::Expected<folly::Unit, Error>
+initQp(IbvQp& ibvQp, int port, int qp_access_flags) {
+  ibv_qp_attr qpAttr;
+  memset(&qpAttr, 0, sizeof(ibv_qp_attr));
+  qpAttr.qp_state = IBV_QPS_INIT;
   qpAttr.pkey_index = NCCL_IB_PKEY;
   qpAttr.port_num = port;
   qpAttr.qp_access_flags = qp_access_flags;
   return ibvQp.modifyQp(
       &qpAttr,
-      ibverbx::IBV_QP_STATE | ibverbx::IBV_QP_PKEY_INDEX |
-          ibverbx::IBV_QP_PORT | ibverbx::IBV_QP_ACCESS_FLAGS);
+      IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
 }
 
-folly::Expected<folly::Unit, ibverbx::Error> ctranIbQpRTR(
-    const CtranIbRemoteQpInfo& remoteQpInfo,
-    ibverbx::IbvQp& ibvQp,
-    uint8_t trafficClass) {
-  ibverbx::ibv_qp_attr qpAttr;
+folly::Expected<folly::Unit, Error>
+rtrQp(const RemoteQpInfo& remoteQpInfo, IbvQp& ibvQp, uint8_t trafficClass) {
+  ibv_qp_attr qpAttr;
 
-  memset(&qpAttr, 0, sizeof(ibverbx::ibv_qp_attr));
-  qpAttr.qp_state = ibverbx::IBV_QPS_RTR;
+  memset(&qpAttr, 0, sizeof(ibv_qp_attr));
+  qpAttr.qp_state = IBV_QPS_RTR;
   qpAttr.path_mtu = remoteQpInfo.mtu;
   qpAttr.rq_psn = 0;
   qpAttr.max_dest_rd_atomic = 1;
   qpAttr.min_rnr_timer = 12;
 
-  if (remoteQpInfo.linkLayer == ibverbx::IBV_LINK_LAYER_ETHERNET) {
+  if (remoteQpInfo.linkLayer == IBV_LINK_LAYER_ETHERNET) {
     qpAttr.ah_attr.is_global = 1;
     qpAttr.ah_attr.grh.dgid.global.subnet_prefix = remoteQpInfo.u.eth.spn;
     qpAttr.ah_attr.grh.dgid.global.interface_id = remoteQpInfo.u.eth.iid;
@@ -73,16 +68,14 @@ folly::Expected<folly::Unit, ibverbx::Error> ctranIbQpRTR(
 
   return ibvQp.modifyQp(
       &qpAttr,
-      ibverbx::IBV_QP_STATE | ibverbx::IBV_QP_AV | ibverbx::IBV_QP_PATH_MTU |
-          ibverbx::IBV_QP_DEST_QPN | ibverbx::IBV_QP_RQ_PSN |
-          ibverbx::IBV_QP_MAX_DEST_RD_ATOMIC | ibverbx::IBV_QP_MIN_RNR_TIMER);
+      IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
+          IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
 }
 
-folly::Expected<folly::Unit, ibverbx::Error> ctranIbQpRTS(
-    ibverbx::IbvQp& ibvQp) {
-  ibverbx::ibv_qp_attr qpAttr;
-  memset(&qpAttr, 0, sizeof(ibverbx::ibv_qp_attr));
-  qpAttr.qp_state = ibverbx::IBV_QPS_RTS;
+folly::Expected<folly::Unit, Error> rtsQp(IbvQp& ibvQp) {
+  ibv_qp_attr qpAttr;
+  memset(&qpAttr, 0, sizeof(ibv_qp_attr));
+  qpAttr.qp_state = IBV_QPS_RTS;
   qpAttr.timeout = NCCL_IB_TIMEOUT;
   qpAttr.retry_cnt = NCCL_IB_RETRY_CNT;
   qpAttr.rnr_retry = 7;
@@ -91,8 +84,7 @@ folly::Expected<folly::Unit, ibverbx::Error> ctranIbQpRTS(
 
   return ibvQp.modifyQp(
       &qpAttr,
-      ibverbx::IBV_QP_STATE | ibverbx::IBV_QP_TIMEOUT |
-          ibverbx::IBV_QP_RETRY_CNT | ibverbx::IBV_QP_RNR_RETRY |
-          ibverbx::IBV_QP_SQ_PSN | ibverbx::IBV_QP_MAX_QP_RD_ATOMIC);
+      IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
+          IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
 }
-} // namespace ctran::ib
+} // namespace ibverbx
