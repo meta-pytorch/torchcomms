@@ -46,6 +46,8 @@ jobs:
         mkdir -p "${RUNNER_ARTIFACT_DIR}"
         cp dist/*.whl "${RUNNER_ARTIFACT_DIR}/"
 
+        python -c "import torch; print(torch.__version__)" > "${RUNNER_ARTIFACT_DIR}/torch_version.txt"
+
   build_and_run_cpp_tests:
     strategy:
       fail-fast: false
@@ -105,7 +107,8 @@ jobs:
       download-artifact: build-artifacts-${{ matrix.torch-version }}-${{ matrix.gpu-arch-type }}-${{ matrix.gpu-arch-version }}
       script: |
         set -ex
-        source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" "${{ matrix.torch-version }}"
+        TORCH_VERSION=$(cat "${RUNNER_ARTIFACT_DIR}/torch_version.txt")
+        source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" --torch-version "$TORCH_VERSION" "${{ matrix.torch-version }}"
 
         # Install from pre-built wheel (skip build step)
         pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized
