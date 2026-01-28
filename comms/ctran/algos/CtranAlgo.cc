@@ -407,7 +407,7 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
           (nLocalRanks - 1) +
       NCCL_CTRAN_BCAST_NVL_SHARED_DEVBUF_SIZE;
 
-  // Allocate extra buffer for AllToAllvDynamic count/indeciesblock/indices
+  // Allocate extra buffer for AllToAllvDynamic count/indices block/indices
   // (spaced used in aforementioned order) exchange.
   // FIXME: this much size is only needed for noncontig kernel.
   // Can add ifdef to reduce size for contig kernel, which only need 1 size_t
@@ -483,8 +483,7 @@ CtranAlgo::SharedResource::SharedResource(CtranComm* comm) {
   // Exchange IPC handle with all local ranks
   // Note allGatherIntraNode can support allgather from all ranks in the same
   // nvl Domain even if they are cross node. TODO: maybe rename
-  // allGatherIntraNode or create a new wrapper name to better reflect
-  // this.tivegiinlkcghcehhtngelkjjcbunhdk
+  // allGatherIntraNode or create a new wrapper name to better reflect this.
   auto resFuture = comm_->bootstrap_->allGatherIntraNode(
       ipcDescs.data(),
       sizeof(ctran::utils::CtranIpcDesc),
@@ -724,7 +723,7 @@ commResult_t CtranAlgo::exchangePeerTmpbuf(int peer) {
 commResult_t CtranAlgo::exchangeInterNodeTmpbuf() {
   /* if tmpbuffs are already exchanged, we don't need to do anything */
   /* if we only have one node, we don't need to exchange tmpbuf handlers
-     as GPU threads do not need tmpbuf handler to exchange infomation */
+     as GPU threads do not need tmpbuf handler to exchange information */
   if (!this->remoteTmpbuffs.empty() || comm_->statex_->nNodes() <= 1) {
     return commSuccess;
   }

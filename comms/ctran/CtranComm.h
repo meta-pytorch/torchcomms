@@ -91,8 +91,8 @@ class CtranComm {
 
   // Finalize any outstanding communication associated with the CtranComm
   // instance. Any resource release would be handled in later call to
-  // destroy() at desctruction time. It should be NOT be called in abort path,
-  // to avoid unexpected hang due to absense of remote ranks.
+  // destroy() at destruction time. It should be NOT be called in abort path,
+  // to avoid unexpected hang due to absence of remote ranks.
   commResult_t finalize();
 
   inline Exception getAsyncException() const {
@@ -177,7 +177,7 @@ class CtranComm {
   std::unique_ptr<ncclx::CommStateX> statex_;
 
  private:
-  // TODO: define proper constructor to make CtranComm be independable of
+  // TODO: define proper constructor to make CtranComm be independent of
   // ncclComm.
   // While doing refactoring we always create CtranComm from ncclComm and it
   // is the only valid way to initialize CtranComm. Therefore we make
