@@ -18,10 +18,10 @@ cp "$FBCODE_DIR"/comms/github/CMakeLists.txt .
 cp "$FBCODE_DIR"/comms/github/version.txt .
 pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/rocm6.4
 export BUILD_RCCL_ONLY=1
-export BUILD_DIR=${PWD}/comms/rcclx/develop/build/release/build
+export BUILDDIR=${PWD}/build/rcclx
 export ROCM_HOME=/opt/rocm
-export RCCLX_INCLUDE=${BUILD_DIR}/include/rccl
-export RCCLX_LIB=${BUILD_DIR}/lib
+export RCCLX_INCLUDE=${BUILDDIR}/include/rccl
+export RCCLX_LIB=${BUILDDIR}/lib
 
 ./build_rcclx.sh
 pip install numpy
