@@ -247,6 +247,16 @@ inline commResult_t ctran::utils::CtranIpcMem::tryLoadCuMem(
     const void* ptr,
     std::size_t len,
     bool& supported) {
+  // Handle type decision in ctran:
+  // - getCuMemAllocHandleType(): Queries system-supported handle types. Used
+  // when
+  //   allocating ctran internal buffers (ALLOC mode). Always includes POSIX.
+  // - getCuMemExportHandleType(): Determines the export handle type based on
+  // CVAR
+  //   enable flag (NCCL_CTRAN_NVL_FABRIC_ENABLE) and the allocation's handle
+  //   type. Used in LOAD mode to validate that user-provided memory can be
+  //   exported.
+
   // temp linear loop through physical allocations, could be faster to get from
   // pytorch level
   size_t cur_offset = 0;
@@ -266,23 +276,44 @@ inline commResult_t ctran::utils::CtranIpcMem::tryLoadCuMem(
     CUmemAllocationProp prop;
     FB_CUCHECK(
         cuMemGetAllocationPropertiesFromHandle(&prop, allocHandles_.back()));
-    // cuMemHandleType_ is set to requestedHandleTypes during registration in
-    // load Mode.
+
+    // Set cuMemHandleType_ from first segment's allocation properties
     if (cuMemHandleType_ == CU_MEM_HANDLE_TYPE_NONE) {
       cuMemHandleType_ = ctran::utils::getCuMemHandleTypeFromProp(prop);
     }
-    if (prop.allocFlags.gpuDirectRDMACapable != 1 ||
-        ctran::utils::getCuMemHandleTypeFromProp(prop) != cuMemHandleType_) {
+
+    // Validate allocation is supported for IPC export. Reject if:
+    // 1. NONE handle type (no shareable handle)
+    // 2. ctran-incompatible type (e.g., FABRIC-only when FABRIC disabled)
+    // 3. no gpuDirectRDMACapable
+    // 4. mixed handle types across segments
+    CUmemAllocationHandleType segmentHandleType =
+        ctran::utils::getCuMemHandleTypeFromProp(prop);
+    CUmemAllocationHandleType supportedExportType =
+        getCuMemExportHandleType(cuMemHandleType_);
+    bool isUnsupportedType = (cuMemHandleType_ == CU_MEM_HANDLE_TYPE_NONE) ||
+        ((cuMemHandleType_ & supportedExportType) == 0) ||
+        (prop.allocFlags.gpuDirectRDMACapable != 1) ||
+        (segmentHandleType != cuMemHandleType_);
+
+    if (isUnsupportedType) {
       CLOGF(
           ERR,
-          "CTRAN-IPC: [pbase {:x} range {}] associated with [ptr {} len {}] does not have required property: "
-          "gpuDirectRDMACapable = {}, requestedHandleTypes = {}",
+          "CTRAN-IPC: [pbase {:x} range {}] associated with [ptr {} len {}] "
+          "has unsupported allocation properties for IPC export: "
+          "handleType = {} ({}), supportedExportType = {} ({}), gpuDirectRDMACapable = {}, "
+          "segmentHandleType = {} ({})",
           cur_pbase,
           cur_range,
           (void*)ptr,
           len,
+          cuMemHandleTypeStr(cuMemHandleType_),
+          static_cast<int>(cuMemHandleType_),
+          cuMemHandleTypeStr(supportedExportType),
+          static_cast<int>(supportedExportType),
           prop.allocFlags.gpuDirectRDMACapable,
-          ctran::utils::getCuMemHandleTypeFromProp(prop));
+          cuMemHandleTypeStr(segmentHandleType),
+          static_cast<int>(segmentHandleType));
       return commInvalidUsage;
     }
 

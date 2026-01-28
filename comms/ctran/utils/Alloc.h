@@ -4,6 +4,9 @@
 
 #include <cuda.h>
 #include <folly/ScopeGuard.h>
+#include <folly/String.h>
+#include <string>
+#include <vector>
 
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
@@ -13,6 +16,28 @@
 #include "comms/utils/logger/alloc.h"
 
 namespace ctran::utils {
+
+inline std::string cuMemHandleTypeStr(CUmemAllocationHandleType handleType) {
+#if defined(__HIP_PLATFORM_AMD__)
+  // cuMemHandleTypeStr should not be called for AMD
+  return "UNKNOWN";
+#else
+  if (handleType == CU_MEM_HANDLE_TYPE_NONE) {
+    return "NONE";
+  }
+  std::vector<std::string> types;
+  if (handleType & CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR) {
+    types.push_back("POSIX_FD");
+  }
+  if (handleType & CU_MEM_HANDLE_TYPE_FABRIC) {
+    types.push_back("FABRIC");
+  }
+  if (types.empty()) {
+    return "UNKNOWN";
+  }
+  return folly::join("|", types);
+#endif
+}
 
 CUmemAllocationHandleType getCuMemAllocHandleType();
 
