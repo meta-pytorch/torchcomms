@@ -250,7 +250,8 @@ class NcclxApi {
       void* baseptr,
       const size_t size,
       ncclComm_t comm,
-      NcclxWindow* winPtr) = 0;
+      NcclxWindow* winPtr,
+      int winFlags = NCCL_WIN_DEFAULT) = 0;
   virtual ncclResult_t commWindowDeregister(
       ncclComm_t comm,
       NcclxWindow win) = 0;
@@ -485,7 +486,8 @@ class DefaultNcclxApi : public NcclxApi {
       void* baseptr,
       const size_t size,
       ncclComm_t comm,
-      NcclxWindow* winPtr) override;
+      NcclxWindow* winPtr,
+      int winFlags = NCCL_WIN_DEFAULT) override;
   ncclResult_t commWindowDeregister(ncclComm_t comm, NcclxWindow win) override;
   ncclResult_t winPut(
       const void* originBuff,
