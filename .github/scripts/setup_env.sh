@@ -1,15 +1,17 @@
 #!/bin/bash
 # Common environment setup for CI jobs
-# Usage: source setup_env.sh [--with-cmake] [--cuda-version <version>] <torch-version>
+# Usage: source setup_env.sh [--with-cmake] [--cuda-version <version>] [--torch-version <version>] <torch-channel>
 #   --with-cmake: Install cmake and ninja-build
 #   --cuda-version: CUDA version (e.g., "12.8") - required for nightly builds
-#   torch-version: "stable" or "nightly"
+#   --torch-version: Exact torch version to install (e.g., "2.6.0.dev20250101")
+#   torch-channel: "stable" or "nightly"
 
 set -ex
 
 INSTALL_CMAKE=false
-TORCH_VERSION=""
+TORCH_CHANNEL=""
 CUDA_VERSION=""
+TORCH_VERSION=""
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -22,15 +24,19 @@ while [[ $# -gt 0 ]]; do
       CUDA_VERSION="$2"
       shift 2
       ;;
+    --torch-version)
+      TORCH_VERSION="$2"
+      shift 2
+      ;;
     *)
-      TORCH_VERSION="$1"
+      TORCH_CHANNEL="$1"
       shift
       ;;
   esac
 done
 
-if [ -z "$TORCH_VERSION" ]; then
-  echo "Error: torch-version argument required (stable or nightly)"
+if [ -z "$TORCH_CHANNEL" ]; then
+  echo "Error: torch-channel argument required (stable or nightly)"
   exit 1
 fi
 
@@ -56,14 +62,23 @@ python -m pip install --upgrade pip
 rm -f "$CONDA_PREFIX/lib/libstdc"* || true
 
 # Install torch (nightly or stable via requirements.txt)
-if [ "$TORCH_VERSION" = "nightly" ]; then
+if [ "$TORCH_CHANNEL" = "nightly" ]; then
   if [ -z "$CUDA_VERSION" ]; then
     echo "Error: --cuda-version required for nightly builds"
     exit 1
   fi
   # Convert CUDA version (e.g., "12.8") to PyTorch format (e.g., "cu128")
   CUDA_TAG="cu$(echo "$CUDA_VERSION" | tr -d '.')"
-  pip install --pre torch torchvision torchaudio --index-url "https://download.pytorch.org/whl/nightly/${CUDA_TAG}"
+  INDEX_URL="https://download.pytorch.org/whl/nightly/${CUDA_TAG}"
+  if [ -n "$TORCH_VERSION" ]; then
+    pip install --pre torch=="${TORCH_VERSION}" --index-url "$INDEX_URL"
+  else
+    pip install --pre torch torchvision torchaudio --index-url "$INDEX_URL"
+  fi
+else
+  if [ -n "$TORCH_VERSION" ]; then
+    pip install torch=="${TORCH_VERSION}"
+  fi
 fi
 
 pip install -r requirements.txt
