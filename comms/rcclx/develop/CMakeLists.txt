@@ -710,7 +710,7 @@ set(SRC_FILES
 )
 
 # Run this command to get META_FILES:
-# find comms/rcclx/develop/meta -type f ! -path "*/tests/*" ! -path "*/lib/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sed 's|^comms/rcclx/develop/\(build/release/hipify/\)\?||' | sort
+# find comms/rcclx/develop/meta -type f ! -path "*/scuba/*" ! -path "*/testinfra/*" ! -path "*/tests/*" ! -path "*/lib/*" ! -path "*/lpcoll/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" \) | sed 's|^comms/rcclx/develop/\(build/release/hipify/\)\?||' | sort
 set(RCCLX_FILES
   meta/algorithms/AlgoInit.h
   meta/algorithms/AlgoUtils.h
@@ -720,8 +720,12 @@ set(RCCLX_FILES
   meta/colltrace/CollTraceFunc.cc
   meta/colltrace/CollTraceFunc.h
   meta/colltrace/CollTrace.h
+  meta/ctran/AllToAllvDynamic.cc
   meta/ctran/BaselineBootstrap.cc
   meta/ctran/BaselineBootstrap.h
+  meta/ctran/Hints.cc
+  meta/ctran/MetaFactory.cc
+  meta/ctran/MetaFactory.h
 )
 
 # Run this command to get RCCLX_LIB_FILES:
@@ -734,6 +738,8 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta/lib/EventQueue.h
   comms/rcclx/develop/meta/lib/ProxyTrace.cc
   comms/rcclx/develop/meta/lib/ProxyTrace.h
+# comms/rcclx/develop/meta/lib/RcclxScubaEvent.cc
+# comms/rcclx/develop/meta/lib/RcclxScubaEvent.h
 # comms/rcclx/develop/meta/lib/ScubaLogger.cc
 # comms/rcclx/develop/meta/lib/ScubaLogger.h
   comms/rcclx/develop/meta//lpcoll/low_precision_allgather.cc
@@ -751,10 +757,6 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta//lpcoll/low_precision_utility.h
   comms/rcclx/develop/meta//lpcoll/p2p_allgather.cc
   comms/rcclx/develop/meta//lpcoll/p2p_allgather.h
-  comms/rcclx/develop/meta/ctran/MetaFactory.cc
-  comms/rcclx/develop/meta/ctran/MetaFactory.h
-  comms/rcclx/develop/meta/ctran/AllToAllvDynamic.cc
-  comms/rcclx/develop/meta/ctran/Hints.cc
 )
 
 set(CTRAN_FILES
