@@ -559,20 +559,22 @@ std::shared_ptr<c10::Allocator> get_mem_allocator(const std::string& backend) {
   return TorchCommFactory::get().get_allocator(backend);
 }
 
-RemovableHandle TorchComm::registerPreHook(TorchComm::PreHook preHook) {
+std::unique_ptr<RemovableHandle> TorchComm::registerPreHook(
+    TorchComm::PreHook preHook) {
   auto hookId = nextHookId_++;
   preHooks_.emplace(hookId, std::move(preHook));
-  return RemovableHandle([self = weak_from_this(), hookId]() {
+  return RemovableHandle::create([self = weak_from_this(), hookId]() {
     if (auto selfPtr = self.lock()) {
       selfPtr->preHooks_.erase(hookId);
     }
   });
 }
 
-RemovableHandle TorchComm::registerPostHook(TorchComm::PostHook postHook) {
+std::unique_ptr<RemovableHandle> TorchComm::registerPostHook(
+    TorchComm::PostHook postHook) {
   auto hookId = nextHookId_++;
   postHooks_.emplace(hookId, std::move(postHook));
-  return RemovableHandle([self = weak_from_this(), hookId]() {
+  return RemovableHandle::create([self = weak_from_this(), hookId]() {
     if (auto selfPtr = self.lock()) {
       selfPtr->postHooks_.erase(hookId);
     }
