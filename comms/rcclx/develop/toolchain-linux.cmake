@@ -1,9 +1,9 @@
 
 if (DEFINED ENV{ROCM_PATH})
-  set(rocm_bin "$ENV{ROCM_PATH}/bin")
+  set(rocm_bin "$ENV{ROCM_PATH}/lib/llvm/bin")
 else()
   set(ROCM_PATH "/opt/rocm" CACHE PATH "Path to the ROCm installation.")
-  set(rocm_bin "/opt/rocm/bin")
+  set(rocm_bin "/opt/rocm/lib/llvm/bin")
 endif()
 
 if (NOT DEFINED ENV{CXX})
