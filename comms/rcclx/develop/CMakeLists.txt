@@ -1367,6 +1367,46 @@ if (GENERATE_SYM_KERNELS)
   endif()
 endif()
 
+# Generate ctran kernel instantiation files
+#==================================================================================================
+# These files instantiate the kernel templates defined in .cuh files for each data type.
+# Without these, the kernel symbols would be undefined at link time.
+set(CTRAN_GEN_DIR "${HIPIFY_DIR}/ctran_gensrc")
+message(STATUS "Generating ctran kernel instantiation files in ${CTRAN_GEN_DIR}")
+
+execute_process(
+    COMMAND ${Python3_EXECUTABLE} ${FBCODE_DIR}/comms/ctran/algos/genctran.py ${CTRAN_GEN_DIR}
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    RESULT_VARIABLE gen_ctran_result
+    ERROR_VARIABLE gen_ctran_error
+)
+if (gen_ctran_result)
+  message(SEND_ERROR "Error: ${gen_ctran_error}")
+  message(FATAL_ERROR "${FBCODE_DIR}/comms/ctran/algos/genctran.py failed")
+endif()
+
+# Find and hipify the generated ctran kernel files
+file(GLOB CTRAN_GENERATED_CU_FILES "${CTRAN_GEN_DIR}/*.cu")
+message(STATUS "Found ${CMAKE_LISTS_LENGTH} ctran generated kernel files")
+list(LENGTH CTRAN_GENERATED_CU_FILES CTRAN_GEN_COUNT)
+message(STATUS "Found ${CTRAN_GEN_COUNT} ctran generated kernel files")
+
+foreach(GEN_CU_FILE ${CTRAN_GENERATED_CU_FILES})
+  get_filename_component(GEN_CU_FILENAME ${GEN_CU_FILE} NAME)
+  # Convert .cu to .cu.cpp for HIP compilation
+  string(REPLACE ".cu" ".cu.cpp" HIP_GEN_FILENAME ${GEN_CU_FILENAME})
+  set(HIP_GEN_FILE "${CTRAN_GEN_DIR}/${HIP_GEN_FILENAME}")
+
+  # Create a custom command to hipify the generated file
+  add_custom_command(
+    OUTPUT ${HIP_GEN_FILE}
+    COMMAND ${hipify-perl_executable} -quiet-warnings ${GEN_CU_FILE} -o ${HIP_GEN_FILE}
+    DEPENDS ${GEN_CU_FILE}
+    COMMENT "Hipifying generated ctran kernel: ${GEN_CU_FILENAME} -> ${HIP_GEN_FILENAME}"
+  )
+  list(APPEND HIP_SOURCES ${HIP_GEN_FILE})
+endforeach()
+
 # Find the generated files in the output directory
 file(GLOB_RECURSE GENERATED_FILES "${GEN_DIR}/*")
 
