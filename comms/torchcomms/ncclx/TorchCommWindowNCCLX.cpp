@@ -27,11 +27,41 @@ TorchCommWindowNCCLX::~TorchCommWindowNCCLX() noexcept {
   // async collective design. No synchronization needed here - proper work
   // management ensures safety.
 
-  // Clean up device window if allocated
+  // Clean up device window and device comm memory
   if (device_window_ != nullptr) {
-    // TODO: Free device memory for device_window_
-    // cuda_api_->cudaFree(device_window_);
+    auto cuda_result = cuda_api_->free(device_window_);
+    if (cuda_result != cudaSuccess) {
+      TC_LOG(ERROR) << "Failed to free device window memory";
+    }
     device_window_ = nullptr;
+  }
+
+  if (device_comm_ != nullptr) {
+    auto cuda_result = cuda_api_->free(device_comm_);
+    if (cuda_result != cudaSuccess) {
+      TC_LOG(ERROR) << "Failed to free device comm memory";
+    }
+    device_comm_ = nullptr;
+  }
+
+  // Clean up device-side ncclDevComm (backend_state_)
+  // Note: GIN signals/counters inside ncclDevComm are freed by
+  // ncclDevCommDestroy below
+  if (nccl_dev_comm_device_ != nullptr) {
+    auto cuda_result = cuda_api_->free(nccl_dev_comm_device_);
+    if (cuda_result != cudaSuccess) {
+      TC_LOG(ERROR) << "Failed to free device ncclDevComm memory";
+    }
+    nccl_dev_comm_device_ = nullptr;
+  }
+
+  // Destroy NCCL device communicator (frees GIN signals/counters)
+  if (nccl_dev_comm_initialized_) {
+    auto result = nccl_api_->devCommDestroy(nccl_comm_, &nccl_dev_comm_);
+    if (result != ncclSuccess) {
+      TC_LOG(ERROR) << "Failed to destroy NCCL device communicator";
+    }
+    nccl_dev_comm_initialized_ = false;
   }
 
   // Deregister all local buffers
@@ -462,6 +492,7 @@ device::TorchCommDeviceWindow* TorchCommWindowNCCLX::get_device_window(
 
   // Use default counts based on communicator size if not specified
   int comm_size = torch_comm_->getSize();
+  int comm_rank = torch_comm_->getRank();
   if (signal_count < 0) {
     signal_count = comm_size;
   }
@@ -469,20 +500,172 @@ device::TorchCommDeviceWindow* TorchCommWindowNCCLX::get_device_window(
     counter_count = comm_size;
   }
 
-  // TODO: Implement device window allocation
-  // This requires:
-  // 1. Allocating device memory for TorchCommDeviceWindow structure
-  // 2. Allocating device memory for signals, counters, barriers
-  // 3. Setting up the device comm state with GIN handles
-  // 4. Copying the structure to device memory
-  //
-  // For now, throw an error indicating this is not yet implemented.
-  throw std::runtime_error(
-      "[TorchCommWindowNCCLX][get_device_window]: Device window creation not yet implemented. ");
+  // 1. Set up device comm requirements with GIN enabled
+  ncclDevCommRequirements reqs = {};
+  reqs.resourceRequirementsList = nullptr;
+  reqs.teamRequirementsList = nullptr;
+  reqs.lsaMultimem = false;
+  reqs.barrierCount = barrier_count;
+  reqs.lsaBarrierCount = 0;
+  reqs.railGinBarrierCount = barrier_count;
+  reqs.lsaLLA2ABlockCount = 0;
+  reqs.lsaLLA2ASlotCount = 0;
+  reqs.ginForceEnable = true; // Force GIN even on single-node
+  reqs.ginContextCount = 1; // Hint for number of GIN contexts
+  reqs.ginSignalCount = signal_count;
+  reqs.ginCounterCount = counter_count;
 
-  // Placeholder for future implementation:
-  // device_window_ = allocateDeviceWindow(signal_count, counter_count,
-  // barrier_count); return device_window_;
+  // 2. Create NCCL device communicator with GIN state
+  // Note: This populates ncclDevComm with ginTypes[], ginHandles[], signals,
+  // etc.
+  ncclDevComm nccl_dev_comm = {};
+  auto result = nccl_api_->devCommCreate(nccl_comm_, &reqs, &nccl_dev_comm);
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX][get_device_window]: Failed to create NCCL device "
+        "communicator. Error: " +
+        std::string(nccl_api_->getErrorString(result)));
+  }
+
+  // Store the device comm for later cleanup
+  nccl_dev_comm_ = nccl_dev_comm;
+  nccl_dev_comm_initialized_ = true;
+
+  // 3. Allocate device memory for ncclDevComm (backend-specific state)
+  // This will be pointed to by TorchCommDeviceComm_::backend_state_
+  ncclDevComm* nccl_dev_comm_dev = nullptr;
+  cudaError_t cuda_result = cuda_api_->malloc(
+      reinterpret_cast<void**>(&nccl_dev_comm_dev), sizeof(ncclDevComm));
+  if (cuda_result != cudaSuccess) {
+    // Clean up ncclDevComm before throwing
+    nccl_api_->devCommDestroy(nccl_comm_, &nccl_dev_comm);
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX][get_device_window]: Failed to allocate device "
+        "memory for ncclDevComm.");
+  }
+
+  // Copy ncclDevComm to device memory
+  cuda_result = cudaMemcpy(
+      nccl_dev_comm_dev,
+      &nccl_dev_comm,
+      sizeof(ncclDevComm),
+      cudaMemcpyHostToDevice);
+  if (cuda_result != cudaSuccess) {
+    cuda_api_->free(nccl_dev_comm_dev);
+    // Clean up ncclDevComm before throwing
+    nccl_api_->devCommDestroy(nccl_comm_, &nccl_dev_comm);
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX][get_device_window]: Failed to copy ncclDevComm "
+        "to device memory.");
+  }
+
+  // Store for cleanup
+  nccl_dev_comm_device_ = nccl_dev_comm_dev;
+
+  // 4. Allocate device memory for TorchCommDeviceComm_ structure
+  // NOTE: We do NOT allocate separate signal/counter/barrier arrays.
+  // The ncclDevComm created above already contains GIN signals/counters
+  // (allocated based on ncclDevCommRequirements). We use those directly.
+  device::TorchCommDeviceComm_ device_comm_host = {};
+  device_comm_host.backend_type_ = device::BackendType::NCCL_GIN;
+  device_comm_host.rank_ = comm_rank;
+  device_comm_host.size_ = comm_size;
+  // Point to device-side ncclDevComm (contains GIN signals/counters)
+  device_comm_host.backend_state_ = static_cast<void*>(nccl_dev_comm_dev);
+  // Store counts for user reference (actual state is inside ncclDevComm)
+  device_comm_host.signal_count_ = signal_count;
+  device_comm_host.counter_count_ = counter_count;
+  device_comm_host.barrier_count_ = barrier_count;
+
+  // Allocate device memory for device comm structure
+  device::TorchCommDeviceComm_* device_comm_dev = nullptr;
+  cuda_result = cuda_api_->malloc(
+      reinterpret_cast<void**>(&device_comm_dev),
+      sizeof(device::TorchCommDeviceComm_));
+  if (cuda_result != cudaSuccess) {
+    cuda_api_->free(nccl_dev_comm_dev);
+    // Clean up ncclDevComm before throwing
+    nccl_api_->devCommDestroy(nccl_comm_, &nccl_dev_comm);
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX][get_device_window]: Failed to allocate device "
+        "memory for device comm.");
+  }
+
+  // Copy device comm to device memory (sync)
+  cuda_result = cudaMemcpy(
+      device_comm_dev,
+      &device_comm_host,
+      sizeof(device::TorchCommDeviceComm_),
+      cudaMemcpyHostToDevice);
+  if (cuda_result != cudaSuccess) {
+    cuda_api_->free(device_comm_dev);
+    cuda_api_->free(nccl_dev_comm_dev);
+    // Clean up ncclDevComm before throwing
+    nccl_api_->devCommDestroy(nccl_comm_, &nccl_dev_comm);
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX][get_device_window]: Failed to copy device comm "
+        "to device memory.");
+  }
+
+  // 5. Allocate device memory for TorchCommDeviceWindow structure
+  device::TorchCommDeviceWindow device_window_host = {};
+
+  // Set window properties
+  // Note: We use the nccl_orig_win_ which was registered with
+  // NCCL_WIN_FORCE_ORIG_PATH and has GIN support
+  device_window_host.comm_ = device_comm_dev;
+  device_window_host.local_base_ =
+      buf_tensor_.has_value() ? buf_tensor_->data_ptr() : nullptr;
+  device_window_host.size_ = win_size_;
+  device_window_host.backend_handle_ = static_cast<void*>(nccl_orig_win_);
+
+  // Note: peer_ptrs_ would need to be populated by querying each peer's
+  // window address. For now, set to nullptr - device code should use
+  // ncclGetPeerPointer() or similar NCCL functions instead.
+  device_window_host.peer_ptrs_ = nullptr;
+
+  // Allocate device memory for device window structure
+  device::TorchCommDeviceWindow* device_window_dev = nullptr;
+  cuda_result = cuda_api_->malloc(
+      reinterpret_cast<void**>(&device_window_dev),
+      sizeof(device::TorchCommDeviceWindow));
+  if (cuda_result != cudaSuccess) {
+    cuda_api_->free(device_comm_dev);
+    cuda_api_->free(nccl_dev_comm_dev);
+    // Clean up ncclDevComm before throwing
+    nccl_api_->devCommDestroy(nccl_comm_, &nccl_dev_comm);
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX][get_device_window]: Failed to allocate device "
+        "memory for device window.");
+  }
+
+  // Copy device window to device memory (sync)
+  cuda_result = cudaMemcpy(
+      device_window_dev,
+      &device_window_host,
+      sizeof(device::TorchCommDeviceWindow),
+      cudaMemcpyHostToDevice);
+  if (cuda_result != cudaSuccess) {
+    cuda_api_->free(device_window_dev);
+    cuda_api_->free(device_comm_dev);
+    cuda_api_->free(nccl_dev_comm_dev);
+    // Clean up ncclDevComm before throwing
+    nccl_api_->devCommDestroy(nccl_comm_, &nccl_dev_comm);
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX][get_device_window]: Failed to copy device "
+        "window to device memory.");
+  }
+
+  // Store references for cleanup
+  device_window_ = device_window_dev;
+  device_comm_ = device_comm_dev;
+
+  TC_LOG(INFO) << "Device window created: rank=" << comm_rank
+               << ", size=" << comm_size << ", signals=" << signal_count
+               << ", counters=" << counter_count
+               << ", barriers=" << barrier_count;
+
+  return device_window_;
 }
 
 std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX::get_attr(
