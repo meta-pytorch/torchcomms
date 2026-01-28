@@ -26,16 +26,16 @@ namespace torch::comms::test {
 TEST_F(TorchCommNCCLXTest, TestOptionsEnvironmentVariables) {
   setupCCAExpectations(0, 0, 1);
 
-  setOptionsEnvironmentVariables(false, 1.0); // false abort
+  setOptionsEnvironmentVariables(false, 1); // false abort, 1 second
 
   CommOptions options1;
   EXPECT_EQ(options1.abort_process_on_timeout_or_error, false);
   EXPECT_EQ(options1.timeout, std::chrono::milliseconds(1000));
 
-  setOptionsEnvironmentVariables(true, 1.5); // true abort
+  setOptionsEnvironmentVariables(true, 2); // true abort, 2 seconds
   CommOptions options2;
   EXPECT_EQ(options2.abort_process_on_timeout_or_error, true);
-  EXPECT_EQ(options2.timeout, std::chrono::milliseconds(1500));
+  EXPECT_EQ(options2.timeout, std::chrono::milliseconds(2000));
 }
 
 TEST_F(TorchCommNCCLXTest, UniqueCommDesc) {
@@ -842,10 +842,14 @@ TEST_F(
       .WillOnce(Return(ncclInvalidArgument));
 
   EXPECT_CALL(*nccl_mock_, getErrorString(ncclInvalidArgument))
-      .WillOnce(Return("Invalid argument"));
+      .WillRepeatedly(Return("Invalid argument"));
 
-  // Simulate memory allocation - should throw due to registration failure
-  EXPECT_THROW(allocator.regDeregMem(alloc_entry), std::runtime_error);
+  EXPECT_CALL(*nccl_mock_, getLastError(_))
+      .WillRepeatedly(Return("Invalid argument details"));
+
+  // Simulate memory allocation - should throw NCCLXException due to
+  // registration failure
+  EXPECT_THROW(allocator.regDeregMem(alloc_entry), NCCLXException);
 
   // Try again with successful registration
   EXPECT_CALL(
@@ -865,8 +869,9 @@ TEST_F(
   EXPECT_CALL(*nccl_mock_, commDeregister(_, reinterpret_cast<void*>(0x2000)))
       .WillOnce(Return(ncclInvalidArgument));
 
-  // Simulate memory deallocation - should throw due to deregistration failure
-  EXPECT_THROW(allocator.regDeregMem(dealloc_entry), std::runtime_error);
+  // Simulate memory deallocation - should throw NCCLXException due to
+  // deregistration failure
+  EXPECT_THROW(allocator.regDeregMem(dealloc_entry), NCCLXException);
 
   // Clean up
   setupNormalDestruction(*comm);
