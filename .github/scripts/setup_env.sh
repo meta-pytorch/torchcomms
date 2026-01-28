@@ -61,21 +61,29 @@ python -m pip install --upgrade pip
 # Nuke conda libstd++ to avoid conflicts with system toolset
 rm -f "$CONDA_PREFIX/lib/libstdc"* || true
 
-# Install torch (nightly or stable via requirements.txt)
-if [ "$TORCH_CHANNEL" = "nightly" ]; then
-  if [ -z "$CUDA_VERSION" ]; then
-    echo "Error: --cuda-version required for nightly builds"
-    exit 1
-  fi
+# Install torch (nightly or stable)
+if [ -n "$CUDA_VERSION" ]; then
   # Convert CUDA version (e.g., "12.8") to PyTorch format (e.g., "cu128")
   CUDA_TAG="cu$(echo "$CUDA_VERSION" | tr -d '.')"
-  INDEX_URL="https://download.pytorch.org/whl/nightly/${CUDA_TAG}"
-  if [ -n "$TORCH_VERSION" ]; then
-    pip install --pre torch=="${TORCH_VERSION}" --index-url "$INDEX_URL"
+
+  if [ "$TORCH_CHANNEL" = "nightly" ]; then
+    INDEX_URL="https://download.pytorch.org/whl/nightly/${CUDA_TAG}"
+    if [ -n "$TORCH_VERSION" ]; then
+      pip install --pre torch=="${TORCH_VERSION}" --index-url "$INDEX_URL"
+    else
+      pip install --pre torch torchvision torchaudio --index-url "$INDEX_URL"
+    fi
   else
-    pip install --pre torch torchvision torchaudio --index-url "$INDEX_URL"
+    # Stable with CUDA - use PyTorch wheel index
+    INDEX_URL="https://download.pytorch.org/whl/${CUDA_TAG}"
+    if [ -n "$TORCH_VERSION" ]; then
+      pip install torch=="${TORCH_VERSION}" --index-url "$INDEX_URL"
+    else
+      pip install torch torchvision torchaudio --index-url "$INDEX_URL"
+    fi
   fi
 else
+  # No CUDA version - install from PyPI (stable only)
   if [ -n "$TORCH_VERSION" ]; then
     pip install torch=="${TORCH_VERSION}"
   fi
