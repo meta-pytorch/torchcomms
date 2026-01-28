@@ -504,8 +504,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
 // Batch P2P Operations
 c10::intrusive_ptr<TorchWork> TorchCommGloo::batch_op_issue(
     const std::vector<BatchSendRecv::P2POp>& ops,
-    bool /*async_op*/,
-    const BatchP2POptions& /*options*/) {
+    bool async_op,
+    const BatchP2POptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
@@ -539,7 +539,113 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::batch_op_issue(
       input_tensors,
       output_tensors);
 
-  throw std::runtime_error("Not implemented yet");
+  // Prepare CPU copies of tensors and track recv operations for copy-back
+  struct OpInfo {
+    BatchSendRecv::P2POp::OpType type;
+    at::Tensor original_tensor; // Original tensor (for copy-back)
+    at::Tensor cpu_tensor; // CPU tensor for Gloo
+    int peer;
+  };
+  std::vector<OpInfo> op_infos;
+  op_infos.reserve(ops.size());
+
+  for (const auto& op : ops) {
+    OpInfo info;
+    info.type = op.type;
+    info.peer = op.peer;
+    info.original_tensor = op.tensor;
+    info.cpu_tensor = op.tensor.to(at::kCPU);
+    op_infos.push_back(std::move(info));
+  }
+
+  // Get a tag for all operations in this batch
+  uint64_t base_tag = nextTag();
+  auto context = context_;
+  auto timeout = options.timeout;
+  int my_rank = rank_;
+
+  return createWork(
+      [op_infos = std::move(op_infos),
+       context,
+       base_tag,
+       timeout,
+       my_rank]() mutable {
+        // Create unbound buffers for all operations
+        std::vector<std::unique_ptr<gloo::transport::UnboundBuffer>>
+            send_buffers;
+        std::vector<std::unique_ptr<gloo::transport::UnboundBuffer>>
+            recv_buffers;
+
+        // Track counts per peer for unique tags when multiple ops to same peer
+        std::unordered_map<int, int>
+            send_counts; // send_counts[peer] = count of sends
+        std::unordered_map<int, int>
+            recv_counts; // recv_counts[source] = count of recvs
+
+        // Start all operations without waiting
+        for (size_t i = 0; i < op_infos.size(); ++i) {
+          auto& info = op_infos[i];
+          // For tag matching:
+          // - SEND to peer P: tag = sender_rank * 1000 + send_index_to_peer
+          // - RECV from peer P: tag = source_rank * 1000 +
+          // recv_index_from_source This ensures send[i] from A to B matches
+          // recv[i] at B from A
+          uint64_t tag;
+          if (info.type == BatchSendRecv::P2POp::OpType::SEND) {
+            tag = base_tag + static_cast<uint64_t>(my_rank) * 1000 +
+                static_cast<uint64_t>(send_counts[info.peer]++);
+          } else {
+            tag = base_tag + static_cast<uint64_t>(info.peer) * 1000 +
+                static_cast<uint64_t>(recv_counts[info.peer]++);
+          }
+
+          if (info.type == BatchSendRecv::P2POp::OpType::SEND) {
+            auto* ptr = info.cpu_tensor.data_ptr();
+            auto size =
+                info.cpu_tensor.numel() * info.cpu_tensor.element_size();
+            auto buffer = context->createUnboundBuffer(
+                const_cast<void*>(ptr), static_cast<size_t>(size));
+            buffer->send(info.peer, tag);
+            send_buffers.push_back(std::move(buffer));
+          } else {
+            auto* ptr = info.cpu_tensor.data_ptr();
+            auto size =
+                info.cpu_tensor.numel() * info.cpu_tensor.element_size();
+            auto buffer =
+                context->createUnboundBuffer(ptr, static_cast<size_t>(size));
+            buffer->recv(info.peer, tag);
+            recv_buffers.push_back(std::move(buffer));
+          }
+        }
+
+        // Wait for all send operations to complete
+        for (auto& buffer : send_buffers) {
+          if (timeout == kNoTimeout) {
+            buffer->waitSend();
+          } else {
+            buffer->waitSend(timeout);
+          }
+        }
+
+        // Wait for all recv operations to complete
+        for (auto& buffer : recv_buffers) {
+          if (timeout == kNoTimeout) {
+            buffer->waitRecv();
+          } else {
+            buffer->waitRecv(timeout);
+          }
+        }
+
+        // Copy recv results back to original tensors if needed
+        for (const auto& info : op_infos) {
+          if (info.type == BatchSendRecv::P2POp::OpType::RECV) {
+            if (info.cpu_tensor.device() != info.original_tensor.device()) {
+              info.original_tensor.copy_(info.cpu_tensor);
+            }
+          }
+        }
+      },
+      async_op);
 }
 
 // Collective Operations
