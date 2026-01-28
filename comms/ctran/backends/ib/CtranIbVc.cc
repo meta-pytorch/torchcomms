@@ -8,8 +8,8 @@
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
-#include "comms/ctran/backends/ib/CtranIbQpUtils.h"
 #include "comms/ctran/backends/ib/CtranIbVc.h"
+#include "comms/ctran/ibverbx/IbvQpUtils.h"
 #include "comms/ctran/utils/Checks.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -17,7 +17,7 @@
 
 #define CTRAN_HARDCODED_MAX_QPS (128)
 
-using namespace ctran::ib;
+using namespace ibverbx;
 using namespace ctran::ibvwrap;
 
 // Business card describing the local IB connection info.
@@ -378,23 +378,23 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
     // on the first device
     if (device == 0) {
       auto ibvControlQpCreateResult =
-          ctranIbQpCreate(devices_[device].ibvPd, devices_[device].ibvCq->cq());
+          createRcQp(devices_[device].ibvPd, devices_[device].ibvCq->cq());
       FOLLY_EXPECTED_CHECK(ibvControlQpCreateResult);
       ibvControlQp_ = std::move(*ibvControlQpCreateResult);
       auto ibvNotifyQpCreateResult =
-          ctranIbQpCreate(devices_[device].ibvPd, devices_[device].ibvCq->cq());
+          createRcQp(devices_[device].ibvPd, devices_[device].ibvCq->cq());
       FOLLY_EXPECTED_CHECK(ibvNotifyQpCreateResult);
       ibvNotifyQp_ = std::move(*ibvNotifyQpCreateResult);
       auto ibvAtomicQpCreateResult =
-          ctranIbQpCreate(devices_[device].ibvPd, devices_[device].ibvCq->cq());
+          createRcQp(devices_[device].ibvPd, devices_[device].ibvCq->cq());
       FOLLY_EXPECTED_CHECK(ibvAtomicQpCreateResult);
       ibvAtomicQp_ = std::move(*ibvAtomicQpCreateResult);
 
       FOLLY_EXPECTED_CHECK(
-          ctranIbQpInit(*ibvControlQp_, devices_[device].port, qpAccessFlags));
+          initQp(*ibvControlQp_, devices_[device].port, qpAccessFlags));
       FOLLY_EXPECTED_CHECK(
-          ctranIbQpInit(*ibvNotifyQp_, devices_[device].port, qpAccessFlags));
-      FOLLY_EXPECTED_CHECK(ctranIbQpInit(
+          initQp(*ibvNotifyQp_, devices_[device].port, qpAccessFlags));
+      FOLLY_EXPECTED_CHECK(initQp(
           *ibvAtomicQp_,
           devices_[device].port,
           qpAccessFlags | ibverbx::IBV_ACCESS_REMOTE_ATOMIC));
@@ -402,10 +402,10 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
     // maxNumQps_ is always a multiple of NCCL_CTRAN_IB_DEVICES_PER_RANK
     for (int i = 0; i < maxNumQps_ / NCCL_CTRAN_IB_DEVICES_PER_RANK; i++) {
       auto maybeQp =
-          ctranIbQpCreate(devices_[device].ibvPd, devices_[device].ibvCq->cq());
+          createRcQp(devices_[device].ibvPd, devices_[device].ibvCq->cq());
       FOLLY_EXPECTED_CHECK(maybeQp);
       FOLLY_EXPECTED_CHECK(
-          ctranIbQpInit(*maybeQp, devices_[device].port, qpAccessFlags));
+          initQp(*maybeQp, devices_[device].port, qpAccessFlags));
       ibvDataQps_.emplace_back(std::move(*maybeQp));
     }
 
@@ -462,7 +462,7 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
   }
 
   /* set QP to RTR state for control and notify QP first*/
-  CtranIbRemoteQpInfo remoteQpInfo = {
+  RemoteQpInfo remoteQpInfo = {
       .mtu = remoteBusCardStruct->mtu,
       .port = remoteBusCardStruct->ports[0],
       .linkLayer = linkLayer_,
@@ -477,13 +477,13 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
 
   remoteQpInfo.qpn = remoteBusCardStruct->controlQpn;
   FOLLY_EXPECTED_CHECK(
-      ctranIbQpRTR(remoteQpInfo, *ibvControlQp_, NCCL_CTRAN_IB_CTRL_TC));
+      rtrQp(remoteQpInfo, *ibvControlQp_, NCCL_CTRAN_IB_CTRL_TC));
   remoteQpInfo.qpn = remoteBusCardStruct->notifQpn;
   FOLLY_EXPECTED_CHECK(
-      ctranIbQpRTR(remoteQpInfo, *ibvNotifyQp_, NCCL_CTRAN_IB_CTRL_TC));
+      rtrQp(remoteQpInfo, *ibvNotifyQp_, NCCL_CTRAN_IB_CTRL_TC));
   remoteQpInfo.qpn = remoteBusCardStruct->atomicQpn;
   FOLLY_EXPECTED_CHECK(
-      ctranIbQpRTR(remoteQpInfo, *ibvAtomicQp_, NCCL_CTRAN_IB_CTRL_TC));
+      rtrQp(remoteQpInfo, *ibvAtomicQp_, NCCL_CTRAN_IB_CTRL_TC));
   /* Then, set QP to RTR state for data QPs*/
   for (int i = 0; i < maxNumQps_; i++) {
     remoteQpInfo.qpn = remoteBusCardStruct->dataQpn[i];
@@ -499,16 +499,15 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
     // Only use NCCL_CTRAN_IB_CTRL_TC for the control QP; switch back to
     // NCCL_IB_TC for data QPs
 
-    FOLLY_EXPECTED_CHECK(
-        ctranIbQpRTR(remoteQpInfo, ibvDataQps_[i], pgTrafficClass_));
+    FOLLY_EXPECTED_CHECK(rtrQp(remoteQpInfo, ibvDataQps_[i], pgTrafficClass_));
   }
 
   /* set QP to RTS state */
-  FOLLY_EXPECTED_CHECK(ctranIbQpRTS(*ibvControlQp_));
-  FOLLY_EXPECTED_CHECK(ctranIbQpRTS(*ibvNotifyQp_));
-  FOLLY_EXPECTED_CHECK(ctranIbQpRTS(*ibvAtomicQp_));
+  FOLLY_EXPECTED_CHECK(rtsQp(*ibvControlQp_));
+  FOLLY_EXPECTED_CHECK(rtsQp(*ibvNotifyQp_));
+  FOLLY_EXPECTED_CHECK(rtsQp(*ibvAtomicQp_));
   for (int i = 0; i < maxNumQps_; i++) {
-    FOLLY_EXPECTED_CHECK(ctranIbQpRTS(ibvDataQps_[i]));
+    FOLLY_EXPECTED_CHECK(rtsQp(ibvDataQps_[i]));
   }
 
   /* post control WQEs */
