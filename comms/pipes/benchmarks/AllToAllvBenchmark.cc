@@ -223,31 +223,16 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
         .pipelineDepth = config.pipelineDepth,
     };
 
-    // Create transport with MPI bootstrap and exchange IPC handles
+    // Create transport and exchange IPC handles
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultiPeerNvlTransport transport(globalRank, nranks, bootstrap, nvlConfig);
     transport.exchange();
 
-    // Create transport array: self for my rank, P2P for others
-    P2pSelfTransportDevice selfTransport;
-    std::vector<Transport> h_transports;
-    h_transports.reserve(nranks);
-
-    for (int rank = 0; rank < nranks; rank++) {
-      if (rank == globalRank) {
-        h_transports.emplace_back(selfTransport);
-      } else {
-        h_transports.emplace_back(transport.getP2pTransportDevice(rank));
-      }
-    }
-
-    // Copy transports to device
-    DeviceBuffer d_transports(sizeof(Transport) * nranks);
-    CUDA_CHECK(cudaMemcpy(
-        d_transports.get(),
-        h_transports.data(),
-        sizeof(Transport) * nranks,
-        cudaMemcpyHostToDevice));
+    // Get preallocated transport array from MultiPeerNvlTransport
+    // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
+    // peers)
+    DeviceSpan<Transport> transports_span(
+        transport.getTransportsArray(), nranks);
 
     // Create chunk info arrays (equal size for all peers)
     std::vector<ChunkInfo> h_send_chunks, h_recv_chunks;
@@ -270,8 +255,6 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
         cudaMemcpyHostToDevice));
 
     // Create device spans
-    DeviceSpan<Transport> transports_span(
-        static_cast<Transport*>(d_transports.get()), nranks);
     DeviceSpan<ChunkInfo> send_chunk_infos(
         static_cast<ChunkInfo*>(d_send_chunks.get()), nranks);
     DeviceSpan<ChunkInfo> recv_chunk_infos(

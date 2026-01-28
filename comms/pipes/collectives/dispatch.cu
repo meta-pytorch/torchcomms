@@ -65,12 +65,12 @@ __device__ __forceinline__ void handleSelfCopy(
       chunk_offset += input_chunk_sizes_d[j];
     }
 
-    selfTransport.self.write(
+    selfTransport.self.put(
         group, dst_base + chunk_offset, src_base + chunk_offset, chunk_size);
   }
 
   // Write output chunk sizes for self (copy all chunk sizes)
-  selfTransport.self.write(
+  selfTransport.self.put(
       group,
       reinterpret_cast<char*>(self_output_sizes),
       reinterpret_cast<const char*>(input_chunk_sizes_d),

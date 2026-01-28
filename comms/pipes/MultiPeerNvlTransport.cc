@@ -2,9 +2,26 @@
 
 #include "comms/pipes/MultiPeerNvlTransport.h"
 
+#include <cuda_runtime.h>
 #include <vector>
 
+#include "comms/pipes/P2pSelfTransportDevice.cuh"
+#include "comms/pipes/Transport.cuh"
+
 namespace comms::pipes {
+
+namespace {
+// Helper macro for CUDA error checking
+#define CUDACHECK(cmd)                                                   \
+  do {                                                                   \
+    cudaError_t e = cmd;                                                 \
+    if (e != cudaSuccess) {                                              \
+      throw std::runtime_error(                                          \
+          std::string("CUDA error: ") + cudaGetErrorString(e) + " at " + \
+          __FILE__ + ":" + std::to_string(__LINE__));                    \
+    }                                                                    \
+  } while (0)
+} // namespace
 
 MultiPeerNvlTransport::MultiPeerNvlTransport(
     int myRank,
@@ -76,15 +93,65 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     throw std::runtime_error(
         "cudaMemcpy failed in signal state buffer initialization");
   }
+
+  // Preallocate Transport array on device memory
+  // We allocate nRanks_ slots including self
+  // The array is populated in exchange() after peer buffer pointers are
+  // available (self transport is also populated there for consistency)
+  CUDACHECK(cudaMalloc(&transports_d_, nRanks_ * sizeof(Transport)));
 };
+
+MultiPeerNvlTransport::~MultiPeerNvlTransport() {
+  if (transports_d_ != nullptr) {
+    cudaFree(transports_d_);
+    transports_d_ = nullptr;
+  }
+}
 
 void MultiPeerNvlTransport::exchange() {
   dataBufferHandler_->exchangeMemPtrs();
   stateBufferHandler_->exchangeMemPtrs();
   signalBufferHandler_->exchangeMemPtrs();
+
+  // Build and copy Transport for each rank to the preallocated device array
+  // - For myRank_: construct P2pSelfTransportDevice
+  // - For peers: construct P2pNvlTransportDevice using
+  // buildP2pTransportDevice()
+  for (int rank = 0; rank < nRanks_; ++rank) {
+    if (rank == myRank_) {
+      // Self transport for local copies
+      // Use brace initialization to avoid most vexing parse
+      P2pSelfTransportDevice selfDevice{};
+      Transport hostTransport{selfDevice};
+      CUDACHECK(cudaMemcpy(
+          &transports_d_[rank],
+          &hostTransport,
+          sizeof(Transport),
+          cudaMemcpyHostToDevice));
+    } else {
+      // P2P NVL transport for peer communication
+      Transport hostTransport{buildP2pTransportDevice(rank)};
+      CUDACHECK(cudaMemcpy(
+          &transports_d_[rank],
+          &hostTransport,
+          sizeof(Transport),
+          cudaMemcpyHostToDevice));
+    }
+  }
 }
 
-P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
+P2pNvlTransportDevice* MultiPeerNvlTransport::getP2pTransportDevice(
+    int peerRank) {
+  // Return pointer to the P2pNvlTransportDevice within the Transport union
+  // Note: Caller must ensure peerRank != myRank_
+  return &transports_d_[peerRank].p2p_nvl;
+}
+
+Transport* MultiPeerNvlTransport::getTransportsArray() {
+  return transports_d_;
+}
+
+P2pNvlTransportDevice MultiPeerNvlTransport::buildP2pTransportDevice(
     int peerRank) {
   // Buffer Layout Example (4 ranks, buffer size X per peer):
   //

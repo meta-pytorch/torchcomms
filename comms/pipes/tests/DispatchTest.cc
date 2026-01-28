@@ -8,10 +8,13 @@
 #include <numeric>
 #include <vector>
 
+#include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/MultiPeerNvlTransport.h"
+#include "comms/pipes/Transport.cuh"
 #include "comms/pipes/tests/DispatchTestKernels.cuh"
 #include "comms/pipes/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -41,7 +44,8 @@ struct DispatchTestConfig {
 
 // Helper struct to hold device buffers for dispatch
 struct DispatchDeviceBuffers {
-  std::unique_ptr<DeviceBuffer> transportsDevice;
+  Transport* transportsPtr{nullptr};
+  int transportsCount{0};
   std::unique_ptr<DeviceBuffer> sendBuffer;
   std::vector<std::unique_ptr<DeviceBuffer>> recvBuffers;
   std::unique_ptr<DeviceBuffer> recvBufferPtrsDevice;
@@ -52,6 +56,10 @@ struct DispatchDeviceBuffers {
   std::vector<void*> recvBufferPtrsHost;
   std::vector<uint8_t> sendData;
   size_t totalBufferSize;
+
+  DeviceSpan<Transport> getTransportsSpan() const {
+    return DeviceSpan<Transport>(transportsPtr, transportsCount);
+  }
 };
 
 // Helper to create uniform chunk sizes
@@ -103,35 +111,14 @@ class DispatchTestFixture : public MpiBaseTestFixture {
   }
 
   // Setup transport array on device
+  // Use preallocated Transport array from MultiPeerNvlTransport
+  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
+  // peers)
   void setupTransports(
       MultiPeerNvlTransport& transport,
       DispatchDeviceBuffers& buffers) {
-    std::size_t transportsSize = numRanks * sizeof(Transport);
-    std::vector<char> transportsHostBuffer(transportsSize);
-
-    for (int rank = 0; rank < numRanks; rank++) {
-      Transport* slot = reinterpret_cast<Transport*>(
-          transportsHostBuffer.data() + rank * sizeof(Transport));
-      if (rank == globalRank) {
-        new (slot) Transport(P2pSelfTransportDevice());
-      } else {
-        new (slot) Transport(transport.getP2pTransportDevice(rank));
-      }
-    }
-
-    buffers.transportsDevice = std::make_unique<DeviceBuffer>(transportsSize);
-    CUDACHECK_TEST(cudaMemcpy(
-        buffers.transportsDevice->get(),
-        transportsHostBuffer.data(),
-        transportsSize,
-        cudaMemcpyHostToDevice));
-
-    // Destroy host Transport objects
-    for (int rank = 0; rank < numRanks; rank++) {
-      Transport* slot = reinterpret_cast<Transport*>(
-          transportsHostBuffer.data() + rank * sizeof(Transport));
-      slot->~Transport();
-    }
+    buffers.transportsPtr = transport.getTransportsArray();
+    buffers.transportsCount = numRanks;
   }
 
   // Setup send buffer with pattern data
@@ -252,8 +239,7 @@ class DispatchTestFixture : public MpiBaseTestFixture {
             static_cast<size_t*>(buffers.outputChunkSizesPerRankDevice->get()),
             numRanks * numChunks),
         // Inputs
-        DeviceSpan<Transport>(
-            static_cast<Transport*>(buffers.transportsDevice->get()), numRanks),
+        buffers.getTransportsSpan(),
         globalRank,
         buffers.sendBuffer->get(),
         DeviceSpan<const size_t>(

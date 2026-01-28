@@ -71,7 +71,8 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   transport.exchange();
   XLOGF(INFO, "Rank {} created transport and exchanged IPC", globalRank);
 
-  auto p2p = transport.getP2pTransportDevice(peerRank);
+  // Get host-side copy to access buffer pointers from host
+  auto p2p = transport.buildP2pTransportDevice(peerRank);
 
   auto localAddr =
       static_cast<int*>(static_cast<void*>(p2p.getLocalState().dataBuffer));
@@ -148,7 +149,7 @@ void verifyReceivedData(
 // Helper to run a single send/recv iteration with verification
 void runSendRecvIteration(
     int globalRank,
-    P2pNvlTransportDevice& p2p,
+    P2pNvlTransportDevice* p2p,
     int* src_d,
     int* dst_d,
     size_t nbytes,
@@ -215,10 +216,24 @@ class TransportTestHelper {
                 config)) {
     CUDACHECK_TEST(cudaSetDevice(localRank));
     transport_->exchange();
+
+    // Build a host copy of P2pNvlTransportDevice for tests that need
+    // to access buffer pointers from the host side (e.g., for cudaMemset)
+    // Use unique_ptr because P2pNvlTransportDevice has const members and
+    // cannot be copy-assigned
+    p2pHost_ = std::make_unique<P2pNvlTransportDevice>(
+        transport_->buildP2pTransportDevice(peerRank_));
   }
 
-  P2pNvlTransportDevice getDevice() {
+  // Returns pointer to preallocated P2pNvlTransportDevice on device
+  // This pointer is managed by MultiPeerNvlTransport
+  P2pNvlTransportDevice* getDevicePtr() {
     return transport_->getP2pTransportDevice(peerRank_);
+  }
+
+  // Returns reference to host copy (for accessing state pointers from host)
+  P2pNvlTransportDevice& getHostDevice() {
+    return *p2pHost_;
   }
 
   int peerRank() const {
@@ -235,6 +250,7 @@ class TransportTestHelper {
   int peerRank_;
   std::shared_ptr<meta::comms::MpiBootstrap> bootstrap_;
   std::unique_ptr<MultiPeerNvlTransport> transport_;
+  std::unique_ptr<P2pNvlTransportDevice> p2pHost_;
 };
 
 // =============================================================================
@@ -248,7 +264,7 @@ void runBasicSendRecvTest(
     int blockSize,
     int nIter = 1,
     test::GroupType groupType = test::GroupType::WARP) {
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   DeviceBuffer srcBuffer(nbytes);
   DeviceBuffer dstBuffer(nbytes);
@@ -515,7 +531,7 @@ TEST_F(P2pNvlTransportTestFixture, BidirectionalSendRecv) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   const size_t numInts = nbytes / sizeof(int);
 
@@ -640,7 +656,7 @@ TEST_F(P2pNvlTransportTestFixture, SendRecvZeroBytes) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   // Allocate small buffers for the zero-byte transfer test
   const size_t bufferSize = 64;
@@ -713,7 +729,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiSendInKernel) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   DeviceBuffer srcBuffer(totalBytes);
   DeviceBuffer dstBuffer(totalBytes);
@@ -793,7 +809,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiRecvInKernel) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   DeviceBuffer srcBuffer(totalBytes);
   DeviceBuffer dstBuffer(totalBytes);
@@ -869,7 +885,7 @@ TEST_F(P2pNvlTransportTestFixture, SimultaneousSendRecvInKernel) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   const size_t numInts = nbytes / sizeof(int);
 
@@ -971,7 +987,7 @@ TEST_P(WeightedPartitionTestFixture, SendRecv) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   const size_t numInts = nbytes / sizeof(int);
 
@@ -1578,7 +1594,7 @@ TEST_P(AsymmetricGroupTestFixture, SendRecv) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   const size_t numInts = nbytes / sizeof(int);
 
@@ -1694,7 +1710,7 @@ INSTANTIATE_TEST_SUITE_P(
 // Helper to run a write() test with verification
 void runPutTest(
     int globalRank,
-    P2pNvlTransportDevice& p2p,
+    P2pNvlTransportDevice* p2p,
     char* localSrc,
     char* remoteDst,
     size_t nbytes,
@@ -1767,11 +1783,12 @@ TEST_F(P2pNvlTransportTestFixture, PutBasic) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
+  auto& p2pHost = helper.getHostDevice();
 
   // Get remote destination (peer's local data buffer)
-  char* localSrc = p2p.getLocalState().dataBuffer;
-  char* remoteDst = p2p.getRemoteState().dataBuffer;
+  char* localSrc = p2pHost.getLocalState().dataBuffer;
+  char* remoteDst = p2pHost.getRemoteState().dataBuffer;
 
   runPutTest(globalRank, p2p, localSrc, remoteDst, nbytes, 4, 128, "PutBasic");
 
@@ -1814,10 +1831,11 @@ TEST_P(PutTransferSizeTestFixture, Put) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
+  auto& p2pHost = helper.getHostDevice();
 
-  char* localSrc = p2p.getLocalState().dataBuffer;
-  char* remoteDst = p2p.getRemoteState().dataBuffer;
+  char* localSrc = p2pHost.getLocalState().dataBuffer;
+  char* remoteDst = p2pHost.getRemoteState().dataBuffer;
 
   runPutTest(
       globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
@@ -1904,11 +1922,12 @@ TEST_P(PutUnalignedTestFixture, Put) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
+  auto& p2pHost = helper.getHostDevice();
 
   // Get remote and local destination with offset applied
-  char* localSrc = p2p.getLocalState().dataBuffer;
-  char* remoteDst = p2p.getRemoteState().dataBuffer;
+  char* localSrc = p2pHost.getLocalState().dataBuffer;
+  char* remoteDst = p2pHost.getRemoteState().dataBuffer;
   if (globalRank == 0) {
     localSrc += params.srcOffset;
     remoteDst += params.dstOffset;
