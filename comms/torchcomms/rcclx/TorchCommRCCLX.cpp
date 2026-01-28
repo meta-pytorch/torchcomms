@@ -357,8 +357,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::send(
       name_, comm_size_, "send", dst, tensor, tensor);
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before RCCLX operation
   work->recordStart("send");
@@ -466,7 +471,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::batch_op_issue(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_tensors);
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
+      async_op ? input_tensors : std::vector<at::Tensor>{});
 
   // Record start event before RCCL operations
   work->recordStart("batch_op_issue");
@@ -543,8 +549,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::broadcast(
 
   hipStream_t stream = getOperationStream(async_op);
 
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before RCCLX operation
   work->recordStart("broadcast");
@@ -582,8 +593,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_reduce(
   TorchCommTracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, {tensor}, {tensor});
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), tensor);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before RCCLX operation
   work->recordStart("all_reduce");
@@ -625,8 +641,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce(
       name_, comm_size_, "reduce", rank_, {tensor}, {tensor});
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before RCCLX operation
   work->recordStart("reduce");
@@ -683,8 +704,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather(
       name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
 
   hipStream_t stream = getOperationStream(async_op);
+
+  // Pass both input tensor and temp_tensor to createWork for refcounting
+  // when async_op is true
   auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
+      stream,
+      getOperationTimeout(options.timeout, options_.timeout),
+      async_op ? std::vector<at::Tensor>{tensor} : std::vector<at::Tensor>{});
 
   work->recordStart("all_gather");
 
@@ -817,8 +843,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather_single(
       name_, comm_size_, "all_gather_single", rank_, {input}, {output});
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   work->recordStart("all_gather_single");
 
@@ -873,7 +904,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_list);
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
+      async_op ? input_list : std::vector<at::Tensor>{});
 
   work->recordStart("reduce_scatter");
 
@@ -1056,8 +1088,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::reduce_scatter_single(
       name_, comm_size_, "reduce_scatter_single", rank_, {input}, {output});
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before RCCLX operation
   work->recordStart("reduce_scatter_single");
@@ -1109,8 +1146,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all_single(
       name_, comm_size_, "all_to_all_single", rank_, {input}, {output});
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before RCCLX operation
   work->recordStart("all_to_all_single");
@@ -1182,8 +1224,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all_v_single(
       name_, comm_size_, "all_to_all_v_single", rank_, {input}, {output});
 
   hipStream_t stream = getOperationStream(async_op);
-  auto work = createWork(
-      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before RCCLX operation
   work->recordStart("all_to_all_v_single");
@@ -1269,7 +1316,8 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_to_all(
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
-      input_tensor_list);
+      // NOLINTNEXTLINE(facebook-conditional-operator-argument-copy)
+      async_op ? input_tensor_list : std::vector<at::Tensor>{});
 
   // Record start event before RCCLX operations
   work->recordStart("all_to_all");
@@ -1394,7 +1442,7 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::scatter(
 
   hipStream_t stream = getOperationStream(async_op);
   std::vector<at::Tensor> input_tensors;
-  if (rank_ == root) {
+  if (async_op && rank_ == root) {
     input_tensors = input_tensor_list;
   }
   auto work = createWork(
@@ -1506,10 +1554,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::gather(
   if (rank_ == root) {
     output_tensors = output_tensor_list;
   }
-  auto work = createWork(
-      stream,
-      getOperationTimeout(options.timeout, options_.timeout),
-      {input_tensor});
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input_tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
 
   // Record start event before RCCLX operations
   work->recordStart("gather");
@@ -1626,7 +1677,6 @@ std::shared_ptr<TorchCommBackend> TorchCommRCCLX::split(
     new_rank = static_cast<int>(std::distance(ranks.begin(), it));
   }
 
-  // Create a new RCCLX communicator
   ncclComm_t new_comm;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
 
