@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
+#include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl_device_api
 #include <memory>
 #include <vector>
 #include "comms/torchcomms/TorchCommWindow.hpp"
@@ -144,8 +145,19 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // Registered via the NCCL orig path (not CTRAN).
   NcclxWindow nccl_orig_win_{nullptr};
 
+  // NCCL device communicator (contains GIN state)
+  ncclDevComm nccl_dev_comm_{};
+  bool nccl_dev_comm_initialized_{false};
+
   // Device window handle (allocated on GPU, valid for device-side operations)
   device::TorchCommDeviceWindow* device_window_{nullptr};
+
+  // Device comm handle (allocated on GPU)
+  device::TorchCommDeviceComm_* device_comm_{nullptr};
+
+  // Device-side ncclDevComm pointer (backend_state_ points here)
+  // Contains GIN signals/counters allocated via ncclDevCommCreate
+  ncclDevComm* nccl_dev_comm_device_{nullptr};
 
   // Registered local buffers for device-side put operations
   std::vector<device::RegisteredBuffer> registered_local_buffers_;
