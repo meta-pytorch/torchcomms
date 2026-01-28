@@ -19,6 +19,7 @@
 #include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/profiler/Profiler.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
@@ -857,6 +858,8 @@ class CtranMapper {
 
   CtranSocket* ctranSockPtr();
 
+  ctran::IpcRegCache* ipcRegCachePtr();
+
   // number of iput requests made for each backend
   std::vector<int> iPutCount;
   std::vector<int> iGetCount;
@@ -1082,7 +1085,9 @@ class CtranMapper {
     }
 
     if (backend == CtranMapperBackend::NVL) {
-      FB_COMMCHECK(CtranNvl::exportMem(buf, regElem->nvlRegElem, msg));
+      msg.setType(ControlMsgType::NVL_EXPORT_MEM);
+      FB_COMMCHECK(
+          ipcRegCache_->exportMem(buf, regElem->nvlRegElem, msg.nvlDesc));
 
       // Record the exported remote rank to notify at deregistration
       exportRegCache_.wlock()->record(regElem, rank);
@@ -1121,7 +1126,7 @@ class CtranMapper {
         remKey->backend = CtranMapperBackend::IB;
         FB_COMMCHECK(CtranIb::importMem(buf, &(remKey->ibKey), msg));
         break;
-      case ControlMsgType::NVL_EXPORT_MEM:
+      case ControlMsgType::NVL_EXPORT_MEM: {
         if (!this->ctranNvl) {
           CLOGF(
               ERR,
@@ -1130,9 +1135,11 @@ class CtranMapper {
           return commInternalError;
         }
         remKey->backend = CtranMapperBackend::NVL;
-        FB_COMMCHECK(
-            this->ctranNvl->importMem(buf, &(remKey->nvlKey), rank, msg));
+        const std::string peerId = comm->statex_->gPid(rank);
+        FB_COMMCHECK(ipcRegCache_->importMem(
+            peerId, msg.nvlDesc, buf, &(remKey->nvlKey)));
         break;
+      }
       default:
         CLOGF(
             ERR,
@@ -1911,6 +1918,14 @@ class CtranMapper {
 
   commResult_t remReleaseMem(ctran::regcache::RegElem* regElem);
 
+  // Callback function to handle incoming NVL_RELEASE_MEM ctrl msg
+  // Input arguments:
+  //   - rank: the rank sent the ctrl msg
+  //   - msgPtr: the pointer to the received ctrl msg
+  //   - ctx: the context of the ctrl msg; it is the CtranMapper object passed
+  //          in at cb registration
+  static commResult_t releaseMemCb(int rank, void* msgPtr, void* ctx);
+
   bool atDestruction{false};
 
   std::unique_ptr<class CtranIb> ctranIb{nullptr};
@@ -1918,6 +1933,7 @@ class CtranMapper {
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
   std::unique_ptr<class CtranCtrlManager> ctrlMgr{nullptr};
+  std::unique_ptr<class ctran::IpcRegCache> ipcRegCache_{nullptr};
 
   // holds enabled backends when the mapper is created.
   // A unified struct for holding all available backends.
