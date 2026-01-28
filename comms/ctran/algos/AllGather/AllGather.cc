@@ -33,6 +33,10 @@ bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo) {
     case NCCL_ALLGATHER_ALGO::ctran:
       supported = true;
       break;
+    case NCCL_ALLGATHER_ALGO::ctwindow:
+      // ctwindow requires a window parameter; use ctranAllGatherWindow directly
+      supported = false;
+      break;
     case NCCL_ALLGATHER_ALGO::orig: // invalid query
       supported = false;
       break;
@@ -78,6 +82,10 @@ commResult_t ctranAllGather(
     case NCCL_ALLGATHER_ALGO::ctrd:
       return ctranAllGatherRd(
           sendbuff, recvbuff, sendcount, datatype, comm, stream);
+
+    case NCCL_ALLGATHER_ALGO::ctwindow:
+      // ctwindow requires a window parameter; use ctranAllGatherWindow directly
+      // Fall through to ctdirect
     case NCCL_ALLGATHER_ALGO::ctdirect:
     default:
       return ctranAllGatherDirect(

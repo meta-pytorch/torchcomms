@@ -166,6 +166,18 @@ CollectiveMetadata getCollectiveMetadata(
           .count = allGatherArgs.count,
       };
     }
+    case KernelConfig::KernelType::ALLGATHERWINDOW: {
+      auto allGatherArgs = kernelConfig.args.collective.allgather;
+      return CollectiveMetadata{
+          .opName = "AllGatherWindow",
+          .algoName = kernelConfig.algoName,
+          .opCount = opCount,
+          .sendbuff = reinterpret_cast<uintptr_t>(allGatherArgs.sendbuff),
+          .recvbuff = reinterpret_cast<uintptr_t>(allGatherArgs.recvbuff),
+          .dataType = allGatherArgs.datatype,
+          .count = allGatherArgs.count,
+      };
+    }
     case KernelConfig::KernelType::ALLGATHERP: {
       // TODO: Need to get overall allgatherp information separately
       return CollectiveMetadata{
