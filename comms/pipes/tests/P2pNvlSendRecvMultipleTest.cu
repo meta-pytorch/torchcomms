@@ -10,26 +10,26 @@ namespace comms::pipes::test {
 // testSendMultipleKernel: Tests send_multiple (multiple chunks with varying
 // sizes)
 __global__ void testSendMultipleKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     const void* src_d,
     DeviceSpan<const size_t> chunk_sizes,
     DeviceSpan<const size_t> chunk_indices) {
   auto group = make_warp_group();
-  p2p.send_multiple(group, src_d, chunk_sizes, chunk_indices);
+  p2p->send_multiple(group, src_d, chunk_sizes, chunk_indices);
 }
 
 // testRecvMultipleKernel: Tests recv_multiple (multiple chunks with varying
 // sizes)
 __global__ void testRecvMultipleKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_d,
     DeviceSpan<size_t> chunk_sizes) {
   auto group = make_warp_group();
-  p2p.recv_multiple(group, dst_d, chunk_sizes);
+  p2p->recv_multiple(group, dst_d, chunk_sizes);
 }
 
 void testSendMultiple(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     const void* src_d,
     const size_t* chunk_sizes_d,
     size_t chunk_sizes_count,
@@ -45,7 +45,7 @@ void testSendMultiple(
 }
 
 void testRecvMultiple(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_d,
     size_t* chunk_sizes_d,
     size_t chunk_sizes_count,

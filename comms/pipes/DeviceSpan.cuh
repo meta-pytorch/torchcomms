@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <cuda_runtime.h>
+
 #include <cassert>
 #include <cstdint>
 
