@@ -277,7 +277,10 @@ fail:
 
 NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
 ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags) {
-  if(ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
+  // NCCL_WIN_FORCE_ORIG_PATH flag bypasses CTRAN and forces NCCL orig path.
+  // This is needed for device API (GIN support) which only exists in the orig path.
+  bool forceOrigPath = (winFlags & NCCL_WIN_FORCE_ORIG_PATH) != 0;
+  if(!forceOrigPath && ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
     if (!ncclGetCuMemSysSupported()) {
       FB_ERRORRETURN(ncclInternalError, "ncclCommWindowRegister requires CUMEM support.");
     }

@@ -7,6 +7,7 @@
 
 #include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
+#include <nccl_device/core.h> // @manual=//comms/ncclx:nccl
 
 namespace torch::comms {
 
@@ -250,7 +251,8 @@ class NcclxApi {
       void* baseptr,
       const size_t size,
       ncclComm_t comm,
-      NcclxWindow* winPtr) = 0;
+      NcclxWindow* winPtr,
+      int winFlags = NCCL_WIN_DEFAULT) = 0;
   virtual ncclResult_t commWindowDeregister(
       ncclComm_t comm,
       NcclxWindow win) = 0;
@@ -273,6 +275,15 @@ class NcclxApi {
 
   virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
   virtual ncclResult_t memFree(void* buff) = 0;
+
+  // Device communicator operations (for device API / GIN support)
+  virtual ncclResult_t devCommCreate(
+      ncclComm_t comm,
+      const ncclDevCommRequirements_t* reqs,
+      ncclDevComm_t* outDevComm) = 0;
+  virtual ncclResult_t devCommDestroy(
+      ncclComm_t comm,
+      const ncclDevComm_t* devComm) = 0;
 
   // Group operations
   virtual ncclResult_t groupStart() = 0;
@@ -485,7 +496,8 @@ class DefaultNcclxApi : public NcclxApi {
       void* baseptr,
       const size_t size,
       ncclComm_t comm,
-      NcclxWindow* winPtr) override;
+      NcclxWindow* winPtr,
+      int winFlags = NCCL_WIN_DEFAULT) override;
   ncclResult_t commWindowDeregister(ncclComm_t comm, NcclxWindow win) override;
   ncclResult_t winPut(
       const void* originBuff,
@@ -511,6 +523,14 @@ class DefaultNcclxApi : public NcclxApi {
 
   ncclResult_t memAlloc(void** buff, size_t size) override;
   ncclResult_t memFree(void* buff) override;
+
+  // Device communicator operations (for device API / GIN support)
+  ncclResult_t devCommCreate(
+      ncclComm_t comm,
+      const ncclDevCommRequirements_t* reqs,
+      ncclDevComm_t* outDevComm) override;
+  ncclResult_t devCommDestroy(ncclComm_t comm, const ncclDevComm_t* devComm)
+      override;
 
   // Group operations
   ncclResult_t groupStart() override;
