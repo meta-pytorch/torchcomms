@@ -64,6 +64,13 @@ inline commResult_t nvlCeBcast(
   // Copy data to other local ranks, each rank starts with the next rank as peer
   // and shift by 1 to avoid all-to-one incast traffic
   for (auto r = 1; r < nLocalRanks; r++) {
+    cudaStream_t stream_;
+    if (r > 1) {
+      cudaStreamCreate(&stream_);
+    } else {
+      stream_ = stream;
+    }
+
     const auto localPeer = (localRank + r) % nLocalRanks;
     const auto peer = statex->localRankToRank(localPeer);
 
@@ -80,7 +87,7 @@ inline commResult_t nvlCeBcast(
           pArgs.remoteRecvBuffs[peer],
           recvOffset,
           sendSize);
-      FB_COMMCHECK(mapper->icopy(recvPtr, sendBuff, sendSize, stream));
+      FB_COMMCHECK(mapper->icopy(recvPtr, sendBuff, sendSize, stream_));
     }
   }
   return commSuccess;
