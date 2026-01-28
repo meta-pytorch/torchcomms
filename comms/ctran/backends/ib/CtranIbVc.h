@@ -9,9 +9,9 @@
 #include <vector>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
-#include "comms/ctran/backends/ib/CtranIbQpUtils.h"
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
 #include "comms/ctran/backends/ib/IbvWrap.h"
+#include "comms/ctran/ibverbx/IbvQpUtils.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
@@ -1164,7 +1164,7 @@ class CtranIbVirtualConn {
   }
 
   inline commResult_t tryPostImmNotifyMsg() {
-    if (outstandingNotifies_.size() >= ::ctran::ib::MAX_SEND_WR ||
+    if (outstandingNotifies_.size() >= ::ibverbx::MAX_SEND_WR ||
         pendingNotifies_.size() == 0) {
       return commSuccess;
     }
