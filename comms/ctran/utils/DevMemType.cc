@@ -52,7 +52,8 @@ getDevMemType(const void* addr, const int cudaDev, DevMemType& memType) {
     in ROCm to determine whether the memory is cudaMalloc-ed.
   */
 
-#if defined(USE_ROCM)
+#if defined(USE_ROCM) || defined(__HIP_PLATFORM_AMD__) || \
+    defined(__HIP_PLATFORM_HCC__)
   CUmemAccessDesc accessDesc = {};
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = cudaDev;
@@ -62,6 +63,10 @@ getDevMemType(const void* addr, const int cudaDev, DevMemType& memType) {
       FB_CUPFN(cuMemGetAccess)(&flags, &accessDesc.location, (CUdeviceptr)addr);
 
   if (ret == CUDA_ERROR_INVALID_VALUE) {
+    // On ROCm, cuMemGetAccess returns CUDA_ERROR_INVALID_VALUE for cudaMalloc
+    // memory. This may also leave a benign error in the HIP runtime error
+    // queue. Clear it to prevent propagation to user code.
+    (void)cudaGetLastError();
     memType = DevMemType::kCudaMalloc;
     return commSuccess;
   } else if (ret != CUDA_SUCCESS) {

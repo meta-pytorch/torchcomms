@@ -245,9 +245,13 @@ void TorchCommNCCLX::init(
 }
 
 void TorchCommNCCLX::finalize() {
+  // If initialized and in normal state, nccl_comm_ must be valid.
+  // However, if comm was aborted (ERROR or TIMEOUT state), nccl_comm_ will be
+  // null.
   TORCH_INTERNAL_ASSERT(
-      init_state_ != InitializationState::INITIALIZED || nccl_comm_ != nullptr,
-      "nccl_comm_ is null but state indicates we are initialized");
+      init_state_ != InitializationState::INITIALIZED ||
+          comm_state_ != CommState::NORMAL || nccl_comm_ != nullptr,
+      "nccl_comm_ is null but state indicates we are initialized and not aborted");
 
   if (init_state_ == InitializationState::UNINITIALIZED) {
     throw std::runtime_error("TorchCommNCCLX not initialized");
