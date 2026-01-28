@@ -65,6 +65,15 @@ commResult_t ctranGroupEndHook(
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
 bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo);
+
+// Global pointer-based memory registration (does not require a comm).
+// "Global" because registration is stored in a global RegCache, not per-comm.
+commResult_t ctranGlobalRegisterWithPtr(void* buff, size_t size, int cudaDev);
+
+// Global pointer-based memory deregistration (does not require a comm).
+// Uses pinRange to discover all physical segments and frees each.
+commResult_t ctranGlobalDeregisterWithPtr(void* buff, size_t size, int cudaDev);
+
 commResult_t ctranAllGather(
     const void* sendbuff,
     void* recvbuff,
