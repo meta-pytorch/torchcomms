@@ -15,5 +15,6 @@
     "scripts",
     "comms"
   ],
-  "strict": false
+  "strict": false,
+  "version": "0.0.101749035478"
 }
