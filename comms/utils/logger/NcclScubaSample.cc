@@ -2,85 +2,27 @@
 
 #include "comms/utils/logger/NcclScubaSample.h"
 
-#include <sstream>
-
-#include <folly/debugging/symbolizer/Symbolizer.h>
-#include <folly/json/json.h>
-
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
 
-// Format uses these keys:
-// fbcode/rfe/scubadata/ScubaDataSample.cpp
 NcclScubaSample::NcclScubaSample(std::string type, ScubaLogType logType)
-    : logType_(logType), sample_(folly::dynamic::object()) {
-  sample_["int"] = folly::dynamic::object;
-  sample_["normal"] = folly::dynamic::object;
-  sample_["normvector"] = folly::dynamic::object;
-  sample_["tags"] = folly::dynamic::object;
-  sample_["double"] = folly::dynamic::object;
-  sample_["normal"]["type"] = std::move(type);
-}
+    : CommsScubaSample(std::move(type)), logType_(logType) {}
 
 NcclScubaSample::ScubaLogType NcclScubaSample::getLogType() {
   return logType_;
 }
 
-void NcclScubaSample::addNormal(const std::string& key, std::string value) {
-  sample_["normal"][key] = std::move(value);
-}
-
-void NcclScubaSample::addInt(const std::string& key, int64_t value) {
-  sample_["int"][key] = value;
-}
-
-void NcclScubaSample::addDouble(const std::string& key, double value) {
-  sample_["double"][key] = value;
-}
-
-void NcclScubaSample::addNormVector(
-    const std::string& key,
-    std::vector<std::string> value) {
-  sample_["normvector"][key] =
-      folly::dynamic::array(value.begin(), value.end());
-}
-
 void NcclScubaSample::addTagSet(
     const std::string& key,
     const std::set<std::string>& value) {
-  sample_["tags"][key] = folly::dynamic::array(value.begin(), value.end());
+  CommsScubaSample::addTagSet(key, value);
 }
 
-std::string NcclScubaSample::toJson() const {
-  return folly::toJson(sample_);
+bool NcclScubaSample::shouldCaptureStackTrace() const {
+  return NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED;
 }
 
 void NcclScubaSample::setExceptionInfo(const std::exception& ex) {
   setError(folly::exceptionStr(ex).toStdString());
-}
-
-void NcclScubaSample::setError(const std::string& error) {
-  // Get stack trace
-  if (NCCL_SCUBA_STACK_TRACE_ON_ERROR_ENABLED) {
-    std::stringstream ss;
-    ss << folly::symbolizer::getStackTraceStr();
-    std::vector<std::string> stackTraceMangled;
-    // @lint-ignore CLANGTIDY
-    folly::split('\n', ss.str(), stackTraceMangled);
-    for (auto& line : stackTraceMangled) {
-      auto demangledLine = folly::demangle(line.c_str()).toStdString();
-      line.swap(demangledLine);
-    }
-    this->stackTrace = stackTraceMangled;
-    addNormVector("stack_trace", std::move(stackTraceMangled));
-  }
-
-  // Set attributes locally
-  this->hasException = true;
-  this->exceptionMessage = error;
-
-  // Add attributes to underlying sample
-  addInt("exception_set", 1);
-  addNormal("exception_message", error);
 }
 
 void NcclScubaSample::setData(std::string data) {
