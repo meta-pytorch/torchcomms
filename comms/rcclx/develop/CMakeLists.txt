@@ -43,6 +43,12 @@ option(TRACE                                   "Enable additional tracing"      
 option(FAULT_INJECTION                         "Enable fault injection"                        ON)
 option(DISABLE_CHEAP_THREADFENCE               "Compile-time killswitch for simpler fence"     OFF)
 
+# Third-party dependency paths
+#==================================================================================================
+# These can be set via -D flags or will default to environment variables
+set(CONDA_INCLUDE_DIR "$ENV{CONDA_INCLUDE_DIR}" CACHE PATH "Path to conda include directory")
+set(CONDA_LIB_DIR "$ENV{CONDA_LIB_DIR}" CACHE PATH "Path to conda lib directory")
+
 # Default GPU architectures to build
 #==================================================================================================
 set(DEFAULT_GPUS
@@ -822,6 +828,9 @@ set(CTRAN_FILES
   comms/ctran/algos/AllToAll/AllToAllvDynamicSplit.cc
   comms/ctran/algos/AllToAll/AllToallvDynamicSplitNonContig.cc
   comms/ctran/algos/AllToAll/AllToAllvImpl.h
+  comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.cc
+  comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.h
+  comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllvImpl.h
   comms/ctran/algos/AllToAll/Types.h
   comms/ctran/algos/AllToAllvDedup/AlgoImpl.cc
   comms/ctran/algos/AllToAllvDedup/AlgoImpl.h
@@ -898,12 +907,16 @@ set(CTRAN_FILES
   comms/ctran/algos/RMA/PutSignal.cc
   comms/ctran/algos/RMA/PutSignal.cu
   comms/ctran/algos/RMA/Types.h
+  comms/ctran/algos/RMA/WaitSignalImpl.h
   comms/ctran/algos/SendRecv/SendRecv.cc
   comms/ctran/algos/SendRecv/SendRecvCEImpl.cc
   comms/ctran/algos/SendRecv/SendRecvCEImpl.h
   comms/ctran/algos/SendRecv/SendRecv.cu
   comms/ctran/algos/SendRecv/SendRecvImpl.cc
   comms/ctran/algos/SendRecv/SendRecvImpl.h
+  comms/ctran/algos/SendRecv/SendRecvP2p.cu
+  comms/ctran/algos/SendRecv/SendRecvP2pImpl.cc
+  comms/ctran/algos/SendRecv/SendRecvP2pImpl.h
   comms/ctran/algos/SendRecv/SendRecvStagedCopy.cu
   comms/ctran/algos/SendRecv/SendRecvStagedCopyImpl.cc
   comms/ctran/algos/SendRecv/SendRecvStagedCopyImpl.h
@@ -938,6 +951,11 @@ set(CTRAN_FILES
   comms/ctran/backends/socket/CtranSocketBase.h
   comms/ctran/backends/socket/CtranSocket.cc
   comms/ctran/backends/socket/CtranSocket.h
+# comms/ctran/backends/tcpdevmem/CtranTcpDmBase.h
+# comms/ctran/backends/tcpdevmem/CtranTcpDm.cc
+# comms/ctran/backends/tcpdevmem/CtranTcpDm.h
+# comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.cc
+# comms/ctran/backends/tcpdevmem/CtranTcpDmSingleton.h
   comms/ctran/bootstrap/AbortableSocket.cc
   comms/ctran/bootstrap/AbortableSocket.h
   comms/ctran/bootstrap/AsyncSocket.cc
@@ -1009,10 +1027,9 @@ set(CTRAN_FILES
   comms/ctran/mapper/CtranMapper.h
   comms/ctran/mapper/CtranMapperImpl.cc
   comms/ctran/mapper/CtranMapperImpl.h
-  comms/ctran/mapper/CtranMapperRegMem.cc
-  comms/ctran/mapper/CtranMapperRegMem.h
   comms/ctran/mapper/CtranMapperRequest.cc
   comms/ctran/mapper/CtranMapperTypes.h
+  comms/ctran/mapper/fb/IcompressionManager.h
   comms/ctran/memory/memCacheAllocator.cc
   comms/ctran/memory/memCacheAllocator.h
   comms/ctran/memory/SlabAllocator.cc
@@ -1029,6 +1046,8 @@ set(CTRAN_FILES
   comms/ctran/profiler/Profiler.h
   comms/ctran/profiler/QueuePairProfilerModule.cc
   comms/ctran/profiler/QueuePairProfilerModule.h
+  comms/ctran/regcache/RegCache.cc
+  comms/ctran/regcache/RegCache.h
   comms/ctran/utils/Abort.cc
   comms/ctran/utils/Abort.h
   comms/ctran/utils/Alloc.cc
@@ -1083,7 +1102,7 @@ set(CTRAN_FILES
 
 # TODO: Add back comms/common/ files
 # Run this command to get COMMON_FILES:
-# find comms/utils/ comms/common comms/pipes -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
+# find comms/utils/ comms/common -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
 set(COMMON_FILES
   comms/common/algorithms/AlgoFactory.cu
   comms/common/algorithms/AlgoFactory.cuh
@@ -1111,20 +1130,31 @@ set(COMMON_FILES
   comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h
   comms/common/algorithms/reduce_scatter/reduce_scatter_dda.cuh
   comms/common/AtomicUtils.cuh
+  comms/common/BitOps.cuh
+  comms/common/CudaWrap.h
   comms/common/DeviceConstants.cuh
   comms/common/IpcGpuBarrier.cu
   comms/common/IpcGpuBarrier.cuh
   comms/common/IpcMemHandler.cc
   comms/common/IpcMemHandler.h
-# comms/pipes/AllToAllv.cuh
+  comms/pipes/AllToAllv.cuh
+  comms/pipes/BarrierState.cuh
   comms/pipes/ChunkState.cuh
-# comms/pipes/CopyUtils.cuh
+  # comms/pipes/collectives/dispatch.cu
+  # comms/pipes/collectives/dispatch.cuh
+  # comms/pipes/collectives/dispatch.h
+  comms/pipes/CopyUtils.cuh
   comms/pipes/DeviceSpan.cuh
-# comms/pipes/MultiPeerNvlTransport.cc
-# comms/pipes/MultiPeerNvlTransport.h
-# comms/pipes/P2pNvlTransportDevice.cuh
-# comms/pipes/P2pSelfTransportDevice.cuh
+  comms/pipes/GpuMemHandler.cc
+  comms/pipes/GpuMemHandler.h
+  comms/pipes/MultiPeerNvlTransport.cc
+  comms/pipes/MultiPeerNvlTransport.h
+  comms/pipes/P2pNvlTransportDevice.cuh
+  comms/pipes/P2pSelfTransportDevice.cuh
+  comms/pipes/SignalState.cuh
   comms/pipes/ThreadGroup.cuh
+  comms/pipes/Transport.cuh
+  comms/pipes/tests/Checks.h # manual
   comms/utils/checks.h
   comms/utils/colltrace/CollMetadata.h
   comms/utils/colltrace/CollMetadataImpl.cc
@@ -1892,28 +1922,31 @@ endif()
 
 # Set path where CMake will look for header files
 target_include_directories(rccl PRIVATE
-  $ENV{CONDA_PREFIX}/include
+  ${CONDA_INCLUDE_DIR}
 )
 
-# Set path where CMake will look for assembly files
-link_directories($ENV{CONDA_PREFIX}/lib)
+# Set path where CMake will look for library files
+link_directories(${CONDA_LIB_DIR})
 
-# Linker group flags for Thrift Service
+target_link_libraries(rccl PRIVATE
+  ${CONDA_LIB_DIR}/libcomms_tracing_service.a
+)
+
 set(thrift_group_list
-  $ENV{CONDA_PREFIX}/lib/libasync.a
-  $ENV{CONDA_PREFIX}/lib/libconcurrency.a
-  $ENV{CONDA_PREFIX}/lib/libthrift-core.a
-  $ENV{CONDA_PREFIX}/lib/libthriftanyrep.a
-  $ENV{CONDA_PREFIX}/lib/libthriftcpp2.a
-  $ENV{CONDA_PREFIX}/lib/libthriftmetadata.a
-  $ENV{CONDA_PREFIX}/lib/libthriftprotocol.a
-  $ENV{CONDA_PREFIX}/lib/libthrifttype.a
-  $ENV{CONDA_PREFIX}/lib/libthrifttyperep.a
-  $ENV{CONDA_PREFIX}/lib/librpcmetadata.a
-  $ENV{CONDA_PREFIX}/lib/libruntime.a
-  $ENV{CONDA_PREFIX}/lib/libserverdbginfo.a
-  $ENV{CONDA_PREFIX}/lib/libtransport.a
-  $ENV{CONDA_PREFIX}/lib/libcommon.a
+  ${CONDA_LIB_DIR}/libasync.a
+  ${CONDA_LIB_DIR}/libconcurrency.a
+  ${CONDA_LIB_DIR}/libthrift-core.a
+  ${CONDA_LIB_DIR}/libthriftanyrep.a
+  ${CONDA_LIB_DIR}/libthriftcpp2.a
+  ${CONDA_LIB_DIR}/libthriftmetadata.a
+  ${CONDA_LIB_DIR}/libthriftprotocol.a
+  ${CONDA_LIB_DIR}/libthrifttype.a
+  ${CONDA_LIB_DIR}/libthrifttyperep.a
+  ${CONDA_LIB_DIR}/librpcmetadata.a
+  ${CONDA_LIB_DIR}/libruntime.a
+  ${CONDA_LIB_DIR}/libserverdbginfo.a
+  ${CONDA_LIB_DIR}/libtransport.a
+  ${CONDA_LIB_DIR}/libcommon.a
 )
 target_link_libraries(rccl PRIVATE
   "$<LINK_GROUP:RESCAN,${thrift_group_list}>"
@@ -1921,34 +1954,34 @@ target_link_libraries(rccl PRIVATE
 
 # Other thrift service linker flags
 target_link_libraries(rccl PRIVATE
-  $ENV{CONDA_PREFIX}/lib/libwangle.a
-  $ENV{CONDA_PREFIX}/lib/libfizz.a
-  $ENV{CONDA_PREFIX}/lib/libcrypto.a
-  $ENV{CONDA_PREFIX}/lib/libssl.a
-  $ENV{CONDA_PREFIX}/lib/libxxhash.a
+  ${CONDA_LIB_DIR}/libwangle.a
+  ${CONDA_LIB_DIR}/libfizz.a
+  ${CONDA_LIB_DIR}/libxxhash.a
 )
 
 # Folly linker flags
+# To get this list, activate conda environment with folly installed, then run:
+# export PKG_CONFIG_PATH="${CONDA_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH}" && pkg-config --libs --static libfolly
 target_link_libraries(rccl PRIVATE
-  $ENV{CONDA_PREFIX}/lib/libfolly.a
-  $ENV{CONDA_PREFIX}/lib/libdouble-conversion.a
-  $ENV{CONDA_PREFIX}/lib/libglog.a
-  $ENV{CONDA_PREFIX}/lib/libevent.a
-  $ENV{CONDA_PREFIX}/lib/libz.a
-  $ENV{CONDA_PREFIX}/lib/libssl.a
-  $ENV{CONDA_PREFIX}/lib/libcrypto.a
-  $ENV{CONDA_PREFIX}/lib/libbz2.a
-  $ENV{CONDA_PREFIX}/lib/libzstd.a
-  $ENV{CONDA_PREFIX}/lib/libsodium.a
+  ${CONDA_LIB_DIR}/libfolly.a
+  ${CONDA_LIB_DIR}/libdouble-conversion.a
+  ${CONDA_LIB_DIR}/libglog.a
+  ${CONDA_LIB_DIR}/libevent.a
+  ${CONDA_LIB_DIR}/libz.a
+  ${CONDA_LIB_DIR}/libssl.a
+  ${CONDA_LIB_DIR}/libcrypto.a
+  ${CONDA_LIB_DIR}/libzstd.a
+  ${CONDA_LIB_DIR}/libsodium.a
 )
 
 # Other linker flags
 target_link_libraries(rccl PRIVATE
-  $ENV{CONDA_PREFIX}/lib/libglog.a
-  $ENV{CONDA_PREFIX}/lib/libgflags.a
-  $ENV{CONDA_PREFIX}/lib/libboost_context.a
-  $ENV{CONDA_PREFIX}/lib/libfmt.a
-
+  ${CONDA_LIB_DIR}/libglog.a
+  ${CONDA_LIB_DIR}/libgflags.a
+  ${CONDA_LIB_DIR}/libboost_context.a
+  ${CONDA_LIB_DIR}/libfmt.a
+  ${CONDA_LIB_DIR}/libssl.a
+  ${CONDA_LIB_DIR}/libcrypto.a
 )
 
 if(ENABLE_MSCCLPP)
