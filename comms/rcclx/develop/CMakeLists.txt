@@ -1714,6 +1714,8 @@ target_compile_options(rccl PRIVATE -Werror=deprecated-copy-with-user-provided-c
 target_compile_options(rccl PRIVATE -Wno-format-nonliteral)
 target_compile_options(rccl PRIVATE -Wno-unused-function)
 target_compile_options(rccl PRIVATE -fgpu-rdc)
+# Enable SSE4.2 for folly F14 CRC intrinsics (host code only) to match libfolly.a build
+target_compile_options(rccl PRIVATE -Xarch_host -msse4.2)
 
 ## Set RCCL compile and linker options for unit tests and code coverage
 if(ENABLE_CODE_COVERAGE)

@@ -213,7 +213,8 @@ function build_third_party {
     build_fb_oss_library "https://github.com/fastfloat/fast_float.git" "v8.0.2" fast_float "-DFASTFLOAT_INSTALL=ON"
     build_fb_oss_library "https://github.com/libevent/libevent.git" "release-2.1.12-stable" event
     build_fb_oss_library "https://github.com/google/double-conversion.git" "v3.3.1" double-conversion
-    build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly "-DUSE_STATIC_DEPS_ON_UNIX=ON"
+    # Enable SSE4.2 for F14 CRC intrinsics to avoid link errors with F14LinkCheck
+    build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly "-DUSE_STATIC_DEPS_ON_UNIX=ON -DCMAKE_CXX_FLAGS=-msse4.2"
   else
     DEPS=(
       boost
@@ -232,7 +233,8 @@ function build_third_party {
       glog==0.4.0
     )
     conda install "${DEPS[@]}" --yes || true
-    build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly
+    # Enable SSE4.2 for F14 CRC intrinsics to avoid link errors with F14LinkCheck
+    build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly "-DCMAKE_CXX_FLAGS=-msse4.2"
   fi
   build_fb_oss_library "https://github.com/facebookincubator/fizz.git" "$third_party_tag" fizz "-DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF"
   build_fb_oss_library "https://github.com/facebook/mvfst" "$third_party_tag" quic
