@@ -11,6 +11,7 @@
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/Timeout.cuh"
 
 namespace comms::pipes {
 
@@ -314,7 +315,8 @@ class P2pNvlTransportDevice {
       ThreadGroup& group,
       void* srcbuff,
       std::size_t nbytes,
-      uint32_t call_index = 0) {
+      uint32_t call_index = 0,
+      const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
     char* src = reinterpret_cast<char*>(srcbuff);
 
@@ -359,7 +361,7 @@ class P2pNvlTransportDevice {
 
         ChunkState& chunkState = sendStates[stateOffset + chunkIdx];
 
-        chunkState.wait_ready_to_send(group);
+        chunkState.wait_ready_to_send(group, timeout);
 
         memcpy_vectorized(
             sendBuffer + dataBufferOffset + chunkOffset,
@@ -416,7 +418,8 @@ class P2pNvlTransportDevice {
       ThreadGroup& group,
       void* dstbuff,
       std::size_t nbytes,
-      uint32_t call_index = 0) {
+      uint32_t call_index = 0,
+      const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
     char* dst = reinterpret_cast<char*>(dstbuff);
 
@@ -460,7 +463,7 @@ class P2pNvlTransportDevice {
 
         ChunkState& chunkState = recvStates[stateOffset + chunkIdx];
 
-        chunkState.wait_ready_to_recv(group, stepId, call_index);
+        chunkState.wait_ready_to_recv(group, stepId, call_index, timeout);
 
         memcpy_vectorized(
             dst + stepOffset + chunkOffset,
@@ -501,12 +504,13 @@ class P2pNvlTransportDevice {
       std::size_t nbytes,
       uint32_t call_index = 0,
       std::size_t offset_in_output = 0,
-      bool has_more = false) {
+      bool has_more = false,
+      const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
     ChunkState* const sendStates = remoteState_.stateBuffer.data();
 
     // same as send(), wait for previous recv_one() to complete
-    sendStates[kMetadataChunkIndex].wait_ready_to_send(group);
+    sendStates[kMetadataChunkIndex].wait_ready_to_send(group, timeout);
 
     // Thread-group 0 writes metadata to receiver's chunk kMetadataChunkIndex
     // This happens before send() starts, so receiver can read it
@@ -526,7 +530,7 @@ class P2pNvlTransportDevice {
 
     // Now call regular send() to transfer the data
     // send() will handle all the pipelining and synchronization
-    send(group, const_cast<void*>(src), nbytes, call_index);
+    send(group, const_cast<void*>(src), nbytes, call_index, timeout);
 #endif
   }
 
@@ -564,14 +568,15 @@ class P2pNvlTransportDevice {
       std::size_t* nbytes,
       uint32_t call_index = 0,
       std::size_t* offset_in_output = nullptr,
-      bool* has_more = nullptr) {
+      bool* has_more = nullptr,
+      const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
     ChunkState* const recvStates = localState_.stateBuffer.data();
 
     // ALL thread-groups wait for chunk kMetadataChunkIndex's ready_to_recv to
     // get metadata Step kMetadataChunkIndex is used for the metadata exchange
     recvStates[kMetadataChunkIndex].wait_ready_to_recv(
-        group, kMetadataChunkIndex, call_index);
+        group, kMetadataChunkIndex, call_index, timeout);
 
     // ALL threads read metadata from chunk kMetadataChunkIndex
     // (all threads need nbytes_val to call recv())
@@ -604,7 +609,7 @@ class P2pNvlTransportDevice {
     // recv() will handle all the pipelining and synchronization
     // and will signal ready_to_send() for ChunkState[kMetadataChunkIndex] after
     // completion
-    recv(group, dst, nbytes_val, call_index);
+    recv(group, dst, nbytes_val, call_index, timeout);
 #endif
   }
 
@@ -637,7 +642,8 @@ class P2pNvlTransportDevice {
       ThreadGroup& group,
       const void* srcbuff_d,
       DeviceSpan<const std::size_t> chunk_sizes,
-      DeviceSpan<const std::size_t> chunk_indices) {
+      DeviceSpan<const std::size_t> chunk_indices,
+      const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
     // Extract raw pointers before loops to avoid aliasing issues
     // (see DeviceSpan.cuh "Lambda Capture and Aliasing" note)
@@ -651,7 +657,8 @@ class P2pNvlTransportDevice {
         group,
         const_cast<void*>(reinterpret_cast<const void*>(chunk_sizes_ptr)),
         chunk_sizes_count * sizeof(std::size_t),
-        0);
+        0,
+        timeout);
 
     // Phase 2: Send each data chunk with metadata
     // Special case: If chunk_indices is empty, send has_more=false signal
@@ -663,7 +670,8 @@ class P2pNvlTransportDevice {
           0, // nbytes = 0
           1, // callIndex = 1
           0, // offset = 0
-          false); // has_more = false (no more chunks)
+          false, // has_more = false (no more chunks)
+          timeout);
       return;
     }
 
@@ -694,7 +702,8 @@ class P2pNvlTransportDevice {
           chunk_size,
           static_cast<uint32_t>(i + 1), // callIndex increments for each call
           cumulative_offset, // offset in output buffer
-          has_more);
+          has_more,
+          timeout);
     }
 #endif
   }
@@ -729,7 +738,8 @@ class P2pNvlTransportDevice {
   __device__ void recv_multiple(
       ThreadGroup& group,
       void* recvbuff,
-      DeviceSpan<std::size_t> chunk_sizes) {
+      DeviceSpan<std::size_t> chunk_sizes,
+      const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
     // Extract raw pointer before use (see DeviceSpan.cuh "Lambda Capture and
     // Aliasing" note)
@@ -742,7 +752,8 @@ class P2pNvlTransportDevice {
         group,
         reinterpret_cast<void*>(chunk_sizes_ptr),
         chunk_sizes_count * sizeof(std::size_t),
-        call_index);
+        call_index,
+        timeout);
 
     // Phase 2: Receive chunks until has_more=false
     char* dst_base = reinterpret_cast<char*>(recvbuff);
@@ -753,7 +764,14 @@ class P2pNvlTransportDevice {
 
     // Receive first chunk
     call_index++;
-    recv_one(group, dst_base, &nbytes_val, call_index, &offset_val, &has_more);
+    recv_one(
+        group,
+        dst_base,
+        &nbytes_val,
+        call_index,
+        &offset_val,
+        &has_more,
+        timeout);
 
     // If nbytes=0 and has_more=false, this is the empty signal (no chunks)
     if (nbytes_val == 0 && !has_more) {
@@ -764,7 +782,13 @@ class P2pNvlTransportDevice {
     while (has_more) {
       call_index++;
       recv_one(
-          group, dst_base, &nbytes_val, call_index, &offset_val, &has_more);
+          group,
+          dst_base,
+          &nbytes_val,
+          call_index,
+          &offset_val,
+          &has_more,
+          timeout);
     }
 #endif
   }
@@ -887,8 +911,9 @@ class P2pNvlTransportDevice {
       ThreadGroup& group,
       uint64_t signal_id,
       CmpOp op,
-      uint64_t value) {
-    localState_.signalBuffer[signal_id].wait_until(group, op, value);
+      uint64_t value,
+      const Timeout& timeout = Timeout()) {
+    localState_.signalBuffer[signal_id].wait_until(group, op, value, timeout);
   }
 
   /**
@@ -914,7 +939,8 @@ class P2pNvlTransportDevice {
    */
   __device__ __forceinline__ void barrier_sync_threadgroup(
       ThreadGroup& group,
-      uint64_t barrier_id) {
+      uint64_t barrier_id,
+      const Timeout& timeout = Timeout()) {
     // Ensure all prior memory operations are complete
     group.sync();
 
@@ -925,7 +951,7 @@ class P2pNvlTransportDevice {
       remoteState_.barrierBuffer[barrier_id].arrive();
 
       // Wait for peer - poll local barrier state until peer signals
-      localState_.barrierBuffer[barrier_id].wait();
+      localState_.barrierBuffer[barrier_id].wait(timeout);
     }
 
     // Ensure all threads wait for leader to complete barrier

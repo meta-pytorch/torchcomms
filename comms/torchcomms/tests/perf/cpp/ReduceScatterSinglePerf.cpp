@@ -27,9 +27,9 @@ void runReduceScatterSinglePerf(
       num_elements = 1;
     }
     auto input = createTensor(
-        num_elements * num_ranks, rank, c10::DeviceType::CUDA, params.dtype);
-    auto output =
-        createTensor(num_elements, rank, c10::DeviceType::CUDA, params.dtype);
+        num_elements * num_ranks, rank, comm->getDevice().type(), params.dtype);
+    auto output = createTensor(
+        num_elements, rank, comm->getDevice().type(), params.dtype);
 
     // Warmup
     for (int i = 0; i < params.warmup_iterations; i++) {

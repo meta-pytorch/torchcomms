@@ -9,8 +9,8 @@
 #include "comms/ctran/backends/CtranAux.h"
 #include "comms/ctran/backends/CtranCtrl.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
-#include "comms/ctran/backends/nvl/CtranNvlBase.h"
 #include "comms/ctran/backends/socket/CtranSocketBase.h"
+#include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/utils/commSpecs.h"
 
 #ifdef CTRAN_DISABLE_TCPDM
@@ -51,7 +51,7 @@ struct fmt::formatter<CtranMapperBackend> : fmt::formatter<const char*> {
 struct CtranMapperRemoteAccessKey {
   CtranMapperBackend backend{CtranMapperBackend::UNSET};
   struct CtranIbRemoteAccessKey ibKey;
-  struct CtranNvlRemoteAccessKey nvlKey;
+  struct ctran::regcache::IpcRemHandle nvlKey;
 
   std::string toString() const;
 };
