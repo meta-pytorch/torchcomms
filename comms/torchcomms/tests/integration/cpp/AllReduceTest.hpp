@@ -12,7 +12,9 @@ class AllReduceTest
     : public ::testing::TestWithParam<
           std::tuple<int, at::ScalarType, torch::comms::ReduceOp>> {
  public:
-  AllReduceTest() : AllReduceTest(c10::DeviceType::CUDA) {}
+  AllReduceTest()
+      : AllReduceTest(
+            isRunningOnCPU() ? c10::DeviceType::CPU : c10::DeviceType::CUDA) {}
   explicit AllReduceTest(c10::DeviceType device_type)
       : rank_(0), num_ranks_(0), device_type_(device_type) {}
 
