@@ -3,9 +3,11 @@
 #pragma once
 
 #include <folly/Expected.h>
+#include "comms/ctran/ibverbx/IbvAh.h"
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/IbvMr.h"
 #include "comms/ctran/ibverbx/IbvQp.h"
+#include "comms/ctran/ibverbx/IbvSrq.h"
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
@@ -55,6 +57,21 @@ class IbvPd {
       int maxMsgSize = kIbMaxMsgSizeByte,
       LoadBalancingScheme loadBalancingScheme =
           LoadBalancingScheme::SPRAY) const;
+
+  // Create a Shared Receive Queue (SRQ)
+  // Used for DC transport to receive messages on DCT
+  folly::Expected<IbvSrq, Error> createSrq(
+      ibv_srq_init_attr* srqInitAttr) const;
+
+  // Create an Address Handle (AH)
+  // Used for DC transport to route messages to remote DCTs
+  folly::Expected<IbvAh, Error> createAh(ibv_ah_attr* ahAttr) const;
+
+  // Create a DC QP (DCI or DCT) using mlx5dv_create_qp
+  // This is for Dynamically Connected transport
+  folly::Expected<IbvQp, Error> createDcQp(
+      ibv_qp_init_attr_ex* initAttrEx,
+      mlx5dv_qp_init_attr* mlx5InitAttr) const;
 
  private:
   friend class IbvDevice;

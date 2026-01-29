@@ -21,6 +21,12 @@ void destroyStore(
     c10::intrusive_ptr<c10d::Store>&& store,
     const std::shared_ptr<torch::comms::TorchComm>& torchcomm);
 
+// Check if running on CPU (for skipping CUDA-specific tests)
+inline bool isRunningOnCPU() {
+  const char* test_device_env = std::getenv("TEST_DEVICE");
+  return test_device_env && std::string(test_device_env) == "cpu";
+}
+
 // Convert a tensor to a string representation with nested brackets for each
 // dimension. Supports any N-dimensional tensor.
 // All aten datatypes are supported.
@@ -61,8 +67,11 @@ class TorchCommTestWrapper {
   }
 
   virtual c10::Device getDevice() {
-    // We don't need to pass the exact device index here.  TorchComm will figure
-    // out based on our local rank
+    if (isRunningOnCPU()) {
+      return c10::Device(c10::DeviceType::CPU);
+    }
+    // For CUDA backends, TorchComm will figure out the device index based on
+    // local rank
     return c10::Device(c10::DeviceType::CUDA);
   }
 

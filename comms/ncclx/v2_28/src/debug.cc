@@ -313,7 +313,7 @@ static void ncclDebugInit() {
   __atomic_store_n(&ncclDebugLevel, tempNcclDebugLevel, __ATOMIC_RELEASE);
 }
 
-void ncclMetaDebugLogWithScuba(ncclDebugLogLevel level, unsigned long flags, const char *file, const char *func, int line, const char *fmt, ...) {
+void ncclMetaDebugLogWithScuba(ncclDebugLogLevel level, unsigned long flags, const char *filefunc, int line, const char *fmt, ...) {
   char buffer[256];
   va_list vargs;
   va_start(vargs, fmt);
@@ -321,14 +321,14 @@ void ncclMetaDebugLogWithScuba(ncclDebugLogLevel level, unsigned long flags, con
   va_end(vargs);
   ::meta::comms::logger::appendErrorToStack(std::string{buffer});
   ErrorStackTraceUtil::logErrorMessage(std::string{buffer});
-  ncclDebugLog(level, flags, file, func, line, "%s", buffer);
+  ncclDebugLog(level, flags, filefunc, line, "%s", buffer);
 }
 
 /* Common logging function used by the INFO, WARN and TRACE macros
  * Also exported to the dynamically loadable Net transport modules so
  * they can share the debugging mechanisms and output files
  */
-void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file, const char *func, int line, const char *fmt, ...) {
+void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *filefunc, int line, const char *fmt, ...) {
   int gotLevel = __atomic_load_n(&ncclDebugLevel, __ATOMIC_ACQUIRE);
 
   if (ncclDebugNoWarn != 0 && (level == NCCL_LOG_WARN || level == NCCL_LOG_ERROR)) { level = NCCL_LOG_INFO; flags = ncclDebugNoWarn; }
@@ -386,9 +386,9 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file
   folly::LogStreamProcessor(
     XLOG_GET_CATEGORY(),
     logLevel,
-    file,
+    filefunc,
     line,
-    func,
+    "",
     folly::LogStreamProcessor::AppendType::APPEND)
         .stream()
     << logStr;
