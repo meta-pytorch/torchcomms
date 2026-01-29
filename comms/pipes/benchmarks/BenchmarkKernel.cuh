@@ -31,14 +31,16 @@ __global__ void p2pSend(
     P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
-    SyncScope groupScope = SyncScope::WARP);
+    SyncScope groupScope = SyncScope::WARP,
+    Timeout timeout = Timeout());
 
 // Recv kernel
 __global__ void p2pRecv(
     P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
-    SyncScope groupScope = SyncScope::WARP);
+    SyncScope groupScope = SyncScope::WARP,
+    Timeout timeout = Timeout());
 
 // Timed versions that export GPU-side clock64() timing stats
 __global__ void p2pSendTimed(
@@ -61,7 +63,8 @@ __global__ void p2pBidirectional(
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
-    SyncScope groupScope = SyncScope::WARP);
+    SyncScope groupScope = SyncScope::WARP,
+    Timeout timeout = Timeout());
 
 // Signal benchmark kernel - ping-pong signaling between two peers
 __global__ void p2pSignalBenchKernel(
