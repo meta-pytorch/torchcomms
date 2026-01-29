@@ -73,6 +73,10 @@ CtranMapper::CtranMapper(CtranComm* comm) {
       statex->rank(),
       statex->nRanks()};
 
+  // Initialize IpcRegCache instance for this mapper
+  this->ipcRegCache_ = std::make_unique<ctran::IpcRegCache>();
+  this->ipcRegCache_->init(statex->cudaDev(), &this->logMetaData_);
+
   this->comm = comm;
   auto backendsToEnable = getToEnableBackends(comm->config_.backends);
 
@@ -138,7 +142,8 @@ CtranMapper::CtranMapper(CtranComm* comm) {
     if (this->ctranIb || this->ctranSock || this->ctranTcpDm) {
       try {
         this->ctranNvl = std::make_unique<class CtranNvl>(comm);
-        this->ctranNvl->regCtrlCb(this->ctrlMgr);
+        this->ctrlMgr->regCb(
+            ControlMsgType::NVL_RELEASE_MEM, releaseMemCb, this /* ctx */);
       } catch ([[maybe_unused]] const std::bad_alloc& e) {
         enableBackends_[CtranMapperBackend::NVL] = false;
         // FIXME: give more specific exception + error message
@@ -386,6 +391,9 @@ CtranMapper::~CtranMapper() {
   // Mark again for sure
   setAtDestruction();
 
+  // ipcRegCache_ will be destroyed automatically with all its cached
+  // registrations when this mapper is destroyed
+
   this->reportProfiling(true);
 
   // Release any pending CB_CTRL requests;
@@ -458,6 +466,20 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
     }
   }
 
+  return commSuccess;
+}
+
+commResult_t CtranMapper::releaseMemCb(int rank, void* msgPtr, void* ctx) {
+  auto mapper = reinterpret_cast<CtranMapper*>(ctx);
+  auto msg = reinterpret_cast<ControlMsg*>(msgPtr);
+  auto& deregMsg = msg->nvlRls;
+  CLOGF_TRACE(
+      COLL,
+      "CTRAN-MAPPER: Handle received CB ctrlmsg from rank {}: {}",
+      rank,
+      msg->toString());
+  FB_COMMCHECK(mapper->ipcRegCache_->releaseRemReg(
+      mapper->comm->statex_->gPid(rank), deregMsg.base));
   return commSuccess;
 }
 
@@ -603,12 +625,14 @@ commResult_t CtranMapper::deregDynamic(void* regHdl) {
 
 commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {
   switch (rkey->backend) {
-    case CtranMapperBackend::NVL:
+    case CtranMapperBackend::NVL: {
       FB_CHECKABORT(
           ctranNvl != nullptr,
           "Unexpected rkey with NVL backend but ctranNvl is not initialized");
-      FB_COMMCHECK(ctranNvl->releaseMem(&rkey->nvlKey));
+      FB_COMMCHECK(ipcRegCache_->releaseRemReg(
+          rkey->nvlKey.peerId, rkey->nvlKey.basePtr));
       break;
+    }
     default:
       // no-op for other backends
       break;
@@ -806,6 +830,10 @@ CtranIb* CtranMapper::ctranIbPtr() {
 
 CtranSocket* CtranMapper::ctranSockPtr() {
   return ctranSock.get();
+}
+
+ctran::IpcRegCache* CtranMapper::ipcRegCachePtr() {
+  return ipcRegCache_.get();
 }
 
 commResult_t CtranMapper::intraAllGatherCtrl(
