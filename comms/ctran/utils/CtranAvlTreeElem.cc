@@ -307,7 +307,7 @@ CtranAvlTree::TreeElem* CtranAvlTree::TreeElem::remove(
     }
   }
 
-  // FIXEME: Tree may be unbalanced after removal, we need rebalance it
+  // FIXME: Tree may be unbalanced after removal, we need rebalance it
   // But we don't have a good way to do it unless balance all recursively
   // which can be expensive. Skip it for now to avoid heavy removal
   // overhead
