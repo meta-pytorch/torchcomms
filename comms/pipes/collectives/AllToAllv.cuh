@@ -7,7 +7,7 @@
 #include <cstdio>
 
 #include "comms/pipes/DeviceSpan.cuh"
-#include "comms/pipes/TimeoutUtils.cuh"
+#include "comms/pipes/Timeout.cuh"
 #include "comms/pipes/Transport.cuh"
 
 namespace comms::pipes {
@@ -112,9 +112,6 @@ __device__ __forceinline__ void all_to_allv(
     // all arguments below will eventually come from communicator
 ) {
 #ifdef __CUDA_ARCH__
-  // Start the timeout timer - must be called once before any wait operations
-  timeout.start();
-
   auto group = make_warp_group();
   const auto nranks = transports_per_rank.size();
   assert(nranks == send_chunk_infos.size());
