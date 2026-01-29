@@ -2112,39 +2112,33 @@ void TorchCommNCCLX::register_address(
     return;
   }
 
-  if (memoryRegistrationHandles_.contains(addr.addr)) {
-    throw std::runtime_error("Memory already registered with NCCLX");
+  // Global pointer-based registration for all memory allocations.
+  ncclResult_t result =
+      nccl_api_->globalRegisterWithPtr(addr.addr, addr.len, device_.index());
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "Failed to register memory with NCCL. "
+        "Memory registration requires ctran to be enabled "
+        "(see NCCL_CTRAN_REGISTER). Error: " +
+        std::string(ncclGetErrorString(result)));
   }
-  void* handle = nullptr;
-  NCCLX_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle),
-      "Failed to register memory with NCCLX");
-  memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
 }
 
-void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {
+void TorchCommNCCLX::deregister_address(
+    const TorchCommNCCLX::AddressWithLen& addr) {
   // We got a deregister after we got rid of the comm. Is this a fatal error?
   if (nccl_comm_ == nullptr) {
     return;
   }
 
-  auto it = memoryRegistrationHandles_.find(addr.addr);
-  if (it == memoryRegistrationHandles_.end()) {
-    // it's possible that the memory was registered for a different comm,
-    // however failed registration for this comm.
-    return;
+  // Global pointer-based deregistration for all memory allocations.
+  ncclResult_t result =
+      nccl_api_->globalDeregisterWithPtr(addr.addr, addr.len, device_.index());
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "Failed to deregister memory with NCCL: " +
+        std::string(nccl_api_->getErrorString(result)));
   }
-
-  void* handle = it->second.regHandle;
-  NCCLX_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->commDeregister(nccl_comm_, handle),
-      "Failed to deregister memory with NCCLX");
-
-  memoryRegistrationHandles_.erase(it);
 }
 
 namespace {
