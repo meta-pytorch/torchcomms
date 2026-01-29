@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/LogInit.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -117,4 +118,35 @@ commResult_t ctranFinalize(CtranComm* comm) {
     return comm->finalize();
   }
   return commSuccess;
+}
+
+commResult_t ctranGlobalRegisterWithPtr(void* buff, size_t size, int cudaDev) {
+  if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::none) {
+    // ctran registration is disabled, no-op
+    return commSuccess;
+  }
+
+  auto regCache = ctran::RegCache::getInstance();
+  if (!regCache) {
+    CLOGF(ERR, "ctranGlobalRegisterWithPtr: RegCache not available");
+    return commInternalError;
+  }
+
+  return regCache->globalRegister(buff, size, cudaDev);
+}
+
+commResult_t
+ctranGlobalDeregisterWithPtr(void* buff, size_t size, int cudaDev) {
+  if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::none) {
+    // ctran registration is disabled, no-op
+    return commSuccess;
+  }
+
+  auto regCache = ctran::RegCache::getInstance();
+  if (!regCache) {
+    CLOGF(ERR, "ctranGlobalDeregisterWithPtr: RegCache not available");
+    return commInternalError;
+  }
+
+  return regCache->globalDeregister(buff, size, cudaDev);
 }

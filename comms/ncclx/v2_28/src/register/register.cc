@@ -14,6 +14,7 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "comms/ctran/Ctran.h"
 
 // conflict with ctran, disable for now.
 NCCL_PARAM(LocalRegister, "LOCAL_REGISTER", 0);
@@ -249,5 +250,65 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
 
 ncclResult_t ncclCommGraphDeregister(const ncclComm_t comm, struct ncclReg *handle) {
   NCCLCHECK(commDeregister(comm, true, handle));
+  return ncclSuccess;
+}
+
+NCCL_API(ncclResult_t, ncclGlobalRegisterWithPtr, void* buff, size_t size, int cudaDev);
+ncclResult_t ncclGlobalRegisterWithPtr(void* buff, size_t size, int cudaDev) {
+  auto timerBegin = std::chrono::steady_clock::now();
+
+  // Call through ctran layer for proper layering: NCCL API -> Ctran -> RegCache
+  NCCLCHECK(metaCommToNccl(ctranGlobalRegisterWithPtr(buff, size, cudaDev)));
+
+  INFO(
+      NCCL_ALLOC,
+      "GLOBAL_REGISTER_WITH_PTR: registered buffer %p len %ld cudaDev %d",
+      buff,
+      size,
+      cudaDev);
+  if (NCCL_COMM_REGISTER_LOG_ENABLE) {
+    CommLogData emptyLogData{};
+    logMemoryEvent(
+        emptyLogData,
+        "",
+        "ncclGlobalRegisterWithPtr",
+        reinterpret_cast<uintptr_t>(buff),
+        size,
+        0,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - timerBegin)
+            .count(),
+        true /* isRegMemEvent */);
+  }
+  return ncclSuccess;
+}
+
+NCCL_API(ncclResult_t, ncclGlobalDeregisterWithPtr, void* buff, size_t size, int cudaDev);
+ncclResult_t ncclGlobalDeregisterWithPtr(void* buff, size_t size, int cudaDev) {
+  auto timerBegin = std::chrono::steady_clock::now();
+
+  // Call through ctran layer for proper layering: NCCL API -> Ctran -> RegCache
+  NCCLCHECK(metaCommToNccl(ctranGlobalDeregisterWithPtr(buff, size, cudaDev)));
+
+  INFO(
+      NCCL_ALLOC,
+      "GLOBAL_DEREGISTER_WITH_PTR: deregistered buffer %p len %ld cudaDev %d",
+      buff,
+      size,
+      cudaDev);
+  if (NCCL_COMM_REGISTER_LOG_ENABLE) {
+    CommLogData emptyLogData{};
+    logMemoryEvent(
+        emptyLogData,
+        "",
+        "ncclGlobalDeregisterWithPtr",
+        reinterpret_cast<uintptr_t>(buff),
+        size,
+        0,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - timerBegin)
+            .count(),
+        true /* isRegMemEvent */);
+  }
   return ncclSuccess;
 }
