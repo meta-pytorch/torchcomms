@@ -60,13 +60,22 @@ class CtranNcclTestHelpers : public CtranTestHelpers {
   // - kMemCudaMalloc: Uses cudaMalloc
   // - kMemNcclMemAlloc: Uses ncclMemAlloc
   // - kCuMemAllocDisjoint: Uses commMemAllocDisjoint directly
+  // For kCuMemAllocDisjoint, numSegments specifies how many disjoint physical
+  // segments to allocate (default: 2).
   static void* prepareBuf(
       size_t bufSize,
       MemAllocType memType,
-      std::vector<TestMemSegment>& segments);
+      std::vector<TestMemSegment>& segments,
+      size_t numSegments = 2);
 
   // Release buffer allocated by prepareBuf.
-  static void releaseBuf(void* buf, size_t bufSize, MemAllocType memType);
+  // For kCuMemAllocDisjoint, numSegments must match the value used in
+  // prepareBuf.
+  static void releaseBuf(
+      void* buf,
+      size_t bufSize,
+      MemAllocType memType,
+      size_t numSegments = 2);
 };
 
 } // namespace ctran
