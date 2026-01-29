@@ -14,6 +14,7 @@
 #include "comms/utils/CudaRAII.h"
 
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <vector>
 
@@ -244,7 +245,7 @@ TEST_F(P2pSignalBenchmarkFixture, SignalBenchmark) {
        << " signal+wait/launch\n";
     ss << "================================================================\n\n";
 
-    XLOG(INFO) << ss.str();
+    std::cout << ss.str();
   }
 }
 

@@ -14,6 +14,7 @@
 #include "comms/utils/CudaRAII.h"
 
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <vector>
 
@@ -192,7 +193,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
       const BenchmarkConfig& config,
       float& timeUs) {
     XLOGF(
-        INFO,
+        DBG1,
         "Rank {}: Starting NCCL bidirectional benchmark: {}",
         globalRank,
         config.name);
@@ -209,7 +210,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
     CudaEvent start, stop;
 
     // Warmup
-    XLOGF(INFO, "Rank {}: NCCL bidi warmup starting", globalRank);
+    XLOGF(DBG1, "Rank {}: NCCL bidi warmup starting", globalRank);
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     for (int i = 0; i < kWarmupIters; i++) {
       NCCL_CHECK(ncclGroupStart());
@@ -230,7 +231,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
       NCCL_CHECK(ncclGroupEnd());
       CUDA_CHECK(cudaStreamSynchronize(stream_));
     }
-    XLOGF(INFO, "Rank {}: NCCL bidi warmup complete", globalRank);
+    XLOGF(DBG1, "Rank {}: NCCL bidi warmup complete", globalRank);
 
     // Benchmark - measure time across all iterations
     // No barrier between iterations - rely on NCCL's internal synchronization
@@ -276,7 +277,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
       const BenchmarkConfig& config,
       float& timeUs) {
     XLOGF(
-        INFO,
+        DBG1,
         "Rank {}: Starting P2P NVL bidirectional benchmark: {}",
         globalRank,
         config.name);
@@ -402,7 +403,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
     ss << "Speedup = P2P Bandwidth / NCCL Bandwidth\n";
     ss << "==============================================================================================================================\n\n";
 
-    XLOG(INFO) << ss.str();
+    std::cout << ss.str();
   }
 
   ncclComm_t ncclComm_{};
@@ -631,7 +632,8 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
     results.push_back(result);
   }
 
-  printResultsTable(results, "NCCL vs P2P NVLink Benchmark Results");
+  printResultsTable(
+      results, "NCCL vs P2P NVLink UNIDIRECTIONAL Benchmark Results");
 }
 
 TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
@@ -871,7 +873,7 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
     ss << "BW = Algorithm bandwidth (2 x message size / time)\n";
     ss << "==============================================================================================================================\n\n";
 
-    XLOG(INFO) << ss.str();
+    std::cout << ss.str();
   }
 }
 
