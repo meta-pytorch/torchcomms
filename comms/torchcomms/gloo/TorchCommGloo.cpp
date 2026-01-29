@@ -1077,7 +1077,8 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_v(
           preReduce(inputTensor, opCPU);
 
           if (i == rank) {
-            // This rank is the root - receive the reduced result
+            // This rank is the root - copy input to output then reduce
+            outputCPU.copy_(inputTensor);
             GENERATE_ALL_TYPES(scalarType, setOutput, opts, outputCPU);
           } else {
             // Non-root ranks just contribute their input

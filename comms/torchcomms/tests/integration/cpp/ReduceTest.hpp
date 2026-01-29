@@ -65,7 +65,7 @@ class ReduceTest
 
   // Helper function declarations with parameters
   virtual at::Tensor createInputTensor(int count, at::ScalarType dtype);
-  int calculateExpectedResult(const torch::comms::ReduceOp& op);
+  double calculateExpectedResult(const torch::comms::ReduceOp& op);
   void verifyResults(
       const at::Tensor& output,
       const torch::comms::ReduceOp& op,
