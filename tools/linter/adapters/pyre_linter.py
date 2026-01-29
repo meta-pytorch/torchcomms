@@ -1,12 +1,100 @@
 import argparse
+import contextlib
 import json
 import logging
+import os
+import re
+import site
 import subprocess
 import sys
 from enum import Enum
-from typing import List, NamedTuple, Optional, Set, TypedDict
+from typing import Iterator, List, NamedTuple, Optional, Set, TypedDict
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+
+def _get_packages_from_requirements() -> List[str]:
+    """Parse package names from requirements.txt."""
+    packages = []
+    requirements_path = "requirements.txt"
+    if not os.path.exists(requirements_path):
+        return packages
+
+    with open(requirements_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            match = re.match(r"^([a-zA-Z0-9_-]+)", line)
+            if match:
+                packages.append(match.group(1))
+    return packages
+
+
+@contextlib.contextmanager
+def _temporary_package_symlinks(
+    packages: Optional[List[str]] = None,
+) -> Iterator[None]:
+    """Context manager that creates temporary symlinks for editable installs.
+
+    Pyre doesn't understand editable installs that use import finders (like pytorch
+    dev installs). This creates symlinks in site-packages so pyre can find them,
+    then removes them when done.
+    """
+    if packages is None:
+        packages = _get_packages_from_requirements()
+
+    site_packages = site.getsitepackages()
+    if not site_packages:
+        yield
+        return
+
+    site_pkg_dir = site_packages[0]
+    created_symlinks: List[str] = []
+
+    try:
+        for package_name in packages:
+            site_pkg_path = os.path.join(site_pkg_dir, package_name)
+
+            if os.path.exists(site_pkg_path) and not os.path.islink(site_pkg_path):
+                continue
+
+            try:
+                package = __import__(package_name)
+                if not hasattr(package, "__file__") or not package.__file__:
+                    continue
+
+                pkg_dir = os.path.dirname(package.__file__)
+
+                if not pkg_dir.startswith(site_pkg_dir):
+                    if os.path.islink(site_pkg_path):
+                        current_target = os.readlink(site_pkg_path)
+                        if current_target == pkg_dir:
+                            continue
+                        os.remove(site_pkg_path)
+
+                    try:
+                        os.symlink(pkg_dir, site_pkg_path)
+                        created_symlinks.append(site_pkg_path)
+                        logger.debug(
+                            f"Created symlink for {package_name}: "
+                            f"{site_pkg_path} -> {pkg_dir}"
+                        )
+                    except OSError as e:
+                        logger.warning(
+                            f"Failed to create symlink for {package_name}: {e}"
+                        )
+            except ImportError:
+                pass
+
+        yield
+    finally:
+        for symlink_path in created_symlinks:
+            try:
+                os.remove(symlink_path)
+                logger.debug(f"Removed symlink: {symlink_path}")
+            except OSError as e:
+                logger.warning(f"Failed to remove symlink {symlink_path}: {e}")
 
 
 class LintSeverity(str, Enum):
@@ -41,11 +129,12 @@ class PyreResult(TypedDict):
 
 
 def run_pyre() -> List[PyreResult]:
-    proc = subprocess.run(
-        ["pyre", "--output=json", "incremental"],
-        capture_output=True,
-    )
-    return json.loads(proc.stdout)
+    with _temporary_package_symlinks():
+        cmd = ["pyre", "--output", "json", "check"]
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.stdout:
+            return json.loads(proc.stdout)
+    return []
 
 
 def check_pyre(
@@ -54,19 +143,30 @@ def check_pyre(
     try:
         results = run_pyre()
 
+        normalized_filenames = set()
+        for f in filenames:
+            normalized_filenames.add(f)
+            normalized_filenames.add(os.path.basename(f))
+            if os.path.isabs(f):
+                try:
+                    normalized_filenames.add(os.path.relpath(f))
+                except ValueError:
+                    pass
+
         return [
             LintMessage(
                 path=result["path"],
                 line=result["line"],
                 char=result["column"],
-                code="pyre",
-                severity=LintSeverity.WARNING,
+                code="PYRE",
+                severity=LintSeverity.ERROR,
                 name=result["name"],
                 description=result["description"],
                 original=None,
                 replacement=None,
             )
             for result in results
+            if result["path"] in normalized_filenames
         ]
     except Exception as err:
         return [
@@ -74,8 +174,8 @@ def check_pyre(
                 path=None,
                 line=None,
                 char=None,
-                code="pyre",
-                severity=LintSeverity.ADVICE,
+                code="PYRE",
+                severity=LintSeverity.ERROR,
                 name="command-failed",
                 original=None,
                 replacement=None,
