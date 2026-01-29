@@ -14,7 +14,9 @@ __global__ void testAllToAllvKernel(
     int nranks,
     DeviceSpan<Transport> transports,
     DeviceSpan<ChunkInfo> send_chunk_infos,
-    DeviceSpan<ChunkInfo> recv_chunk_infos) {
+    DeviceSpan<ChunkInfo> recv_chunk_infos,
+    Timeout timeout) {
+  timeout.start();
   // Call all_to_allv - it will perform actual data transfers
   all_to_allv(
       recvbuff_d,
@@ -22,7 +24,8 @@ __global__ void testAllToAllvKernel(
       my_rank_id,
       transports,
       send_chunk_infos,
-      recv_chunk_infos);
+      recv_chunk_infos,
+      timeout);
 }
 
 void testAllToAllv(
@@ -35,6 +38,7 @@ void testAllToAllv(
     DeviceSpan<ChunkInfo> recv_chunk_infos,
     int numBlocks,
     int blockSize) {
+  Timeout timeout; // Default no timeout
   testAllToAllvKernel<<<numBlocks, blockSize>>>(
       recvbuff_d,
       sendbuff_d,
@@ -42,7 +46,8 @@ void testAllToAllv(
       nranks,
       transports,
       send_chunk_infos,
-      recv_chunk_infos);
+      recv_chunk_infos,
+      timeout);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
