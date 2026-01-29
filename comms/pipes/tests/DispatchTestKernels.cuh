@@ -7,12 +7,12 @@
 
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Transport.cuh"
-#include "comms/pipes/collectives/dispatch.h"
+#include "comms/pipes/collectives/Dispatchv.h"
 
 namespace comms::pipes::test {
 
 // Re-export ShardingMode for test code
-using collectives::ShardingMode;
+using comms::pipes::ShardingMode;
 
 // Wrapper to call dispatch from test code
 // This ensures proper CUDA compilation for types used in the test

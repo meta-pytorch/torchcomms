@@ -8,7 +8,7 @@
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Transport.cuh"
 
-namespace comms::pipes::collectives {
+namespace comms::pipes {
 
 /**
  * Dispatch kernel for all-to-all chunk transfer
@@ -45,4 +45,4 @@ __global__ void dispatchKernel(
     DeviceSpan<const std::size_t> input_chunk_indices_count_per_rank,
     DeviceSpan<std::size_t> output_chunk_sizes_per_rank);
 
-} // namespace comms::pipes::collectives
+} // namespace comms::pipes

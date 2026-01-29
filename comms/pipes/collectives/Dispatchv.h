@@ -8,7 +8,7 @@
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Transport.cuh"
 
-namespace comms::pipes::collectives {
+namespace comms::pipes {
 
 /**
  * ShardingMode - Selects how warps are distributed across peer operations
@@ -54,7 +54,7 @@ enum class ShardingMode {
  * @param num_threads Number of threads per block (default: 256)
  * @param mode ShardingMode for warp distribution (default: HORIZONTAL)
  */
-void dispatch(
+void dispatchv(
     // Outputs
     DeviceSpan<void* const> recvbuffs,
     DeviceSpan<std::size_t> output_chunk_sizes_per_rank,
@@ -70,4 +70,4 @@ void dispatch(
     int num_threads = 256,
     ShardingMode mode = ShardingMode::HORIZONTAL);
 
-} // namespace comms::pipes::collectives
+} // namespace comms::pipes
