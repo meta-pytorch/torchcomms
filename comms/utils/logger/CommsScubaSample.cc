@@ -9,8 +9,6 @@
 
 namespace comms {
 
-CommsScubaSample::~CommsScubaSample() = default;
-
 CommsScubaSample::CommsScubaSample(std::string type)
     : sample_(folly::dynamic::object()) {
   sample_["int"] = folly::dynamic::object;
