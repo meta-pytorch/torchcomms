@@ -6,7 +6,7 @@
 
 namespace comms::pipes::test {
 
-// Kernel that calls allToAllv
+// Kernel that calls all_to_allv
 __global__ void testAllToAllvKernel(
     void* recvbuff_d,
     const void* sendbuff_d,
@@ -15,8 +15,8 @@ __global__ void testAllToAllvKernel(
     DeviceSpan<Transport> transports,
     DeviceSpan<ChunkInfo> send_chunk_infos,
     DeviceSpan<ChunkInfo> recv_chunk_infos) {
-  // Call allToAllv - it will perform actual data transfers
-  allToAllv(
+  // Call all_to_allv - it will perform actual data transfers
+  all_to_allv(
       recvbuff_d,
       sendbuff_d,
       my_rank_id,

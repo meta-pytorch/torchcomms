@@ -5,9 +5,9 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 
-#include "comms/pipes/AllToAllv.cuh"
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
+#include "comms/pipes/collectives/AllToAllv.cuh"
 #include "comms/pipes/tests/AllToAllvTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -83,7 +83,7 @@ class AllToAllvEqualSizeTest
     : public AllToAllvTestFixture,
       public ::testing::WithParamInterface<AllToAllvTestParams> {};
 
-// Test allToAllv with actual data transfer and verification
+// Test all_to_allv with actual data transfer and verification
 TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   const auto& params = GetParam();
   const size_t numIntsPerRank = params.numIntsPerRank;
@@ -202,7 +202,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   // Barrier to ensure all ranks are ready
   MPI_Barrier(MPI_COMM_WORLD);
 
-  // Debug: Print send and recv buffers before allToAllv
+  // Debug: Print send and recv buffers before all_to_allv
   printDeviceBuffer(
       "Send buffer BEFORE",
       sendBuffer.get(),
@@ -216,9 +216,9 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
       numRanks,
       numIntsPerRank);
 
-  XLOGF(DBG1, "Rank {}: calling allToAllv", globalRank);
+  XLOGF(DBG1, "Rank {}: calling all_to_allv", globalRank);
 
-  // Call allToAllv with actual data transfer
+  // Call all_to_allv with actual data transfer
   test::testAllToAllv(
       recvBuffer.get(),
       sendBuffer.get(),
@@ -232,7 +232,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
 
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
-  // Debug: Print recv buffer after allToAllv
+  // Debug: Print recv buffer after all_to_allv
   printDeviceBuffer(
       "Recv buffer AFTER",
       recvBuffer.get(),
@@ -328,7 +328,7 @@ class AllToAllvUnequalSizeTest
     : public AllToAllvTestFixture,
       public ::testing::WithParamInterface<AllToAllvUnequalSizeParams> {};
 
-// Test allToAllv with variable chunk sizes per peer
+// Test all_to_allv with variable chunk sizes per peer
 // Sizes are symmetric: rank i→j size == rank j→i size
 TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   const auto& params = GetParam();
@@ -476,9 +476,9 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   // Barrier to ensure all ranks are ready
   MPI_Barrier(MPI_COMM_WORLD);
 
-  XLOGF(DBG1, "Rank {}: calling allToAllv with variable sizes", globalRank);
+  XLOGF(DBG1, "Rank {}: calling all_to_allv with variable sizes", globalRank);
 
-  // Call allToAllv with variable sizes
+  // Call all_to_allv with variable sizes
   test::testAllToAllv(
       recvBuffer.get(),
       sendBuffer.get(),
