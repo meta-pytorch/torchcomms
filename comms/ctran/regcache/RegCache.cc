@@ -180,6 +180,36 @@ ctran::regcache::Snapshot ctran::regcache::Profiler::getSnapshot() const {
 }
 
 void ctran::RegCache::init() {
+  // Initialize global backends from environment variable.
+  // The NCCL_CTRAN_BACKENDS cvar is already parsed at cvar initialization time.
+  // This allows registration to work without requiring a communicator.
+  globalBackends_.resize(CommBackend::NUM_BACKENDS, false);
+  for (const auto& backend : NCCL_CTRAN_BACKENDS) {
+    switch (backend) {
+      case NCCL_CTRAN_BACKENDS::ib:
+        globalBackends_[CommBackend::IB] = true;
+        break;
+      case NCCL_CTRAN_BACKENDS::nvl:
+        globalBackends_[CommBackend::NVL] = true;
+        break;
+      case NCCL_CTRAN_BACKENDS::socket:
+        globalBackends_[CommBackend::SOCKET] = true;
+        break;
+      case NCCL_CTRAN_BACKENDS::tcpdm:
+        globalBackends_[CommBackend::TCPDM] = true;
+        break;
+    }
+  }
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-REGCACHE: Global backends initialized from NCCL_CTRAN_BACKENDS: "
+      "IB={} NVL={} SOCKET={} TCPDM={}",
+      globalBackends_[CommBackend::IB],
+      globalBackends_[CommBackend::NVL],
+      globalBackends_[CommBackend::SOCKET],
+      globalBackends_[CommBackend::TCPDM]);
+
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
       !asyncRegThread_.joinable()) {
     int cudaDev;
@@ -246,6 +276,98 @@ commResult_t ctran::RegCache::destroy() {
   // Report snapshot at destroy if enabled
   if (NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT >= 0) {
     profiler.rlock()->reportSnapshot();
+  }
+
+  return commSuccess;
+}
+
+commResult_t
+ctran::RegCache::globalRegister(const void* buf, size_t len, int cudaDev) {
+  if (buf == nullptr || len == 0) {
+    return commSuccess;
+  }
+
+  // Cache the segments first
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  FB_COMMCHECK(cacheSegment(
+      buf,
+      len,
+      cudaDev,
+      false /* ncclManaged */,
+      0 /* commHash - not used for global registration */,
+      segments,
+      segHdls));
+
+  // Register if in eager mode (async mode will defer to async thread)
+  if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::eager) {
+    bool didRegister = false;
+    ctran::regcache::RegElem* regHdl = nullptr;
+    CommLogData emptyLogData{};
+    FB_COMMCHECK(regRange(
+        buf,
+        len,
+        cudaDev,
+        "globalRegister",
+        emptyLogData,
+        globalBackends_,
+        didRegister,
+        &regHdl,
+        false /* ncclManaged */));
+  }
+
+  return commSuccess;
+}
+
+commResult_t
+ctran::RegCache::globalDeregister(const void* buf, size_t len, int cudaDev) {
+  if (buf == nullptr || len == 0) {
+    return commSuccess;
+  }
+
+  auto timerBegin = std::chrono::steady_clock::now();
+
+  // Use lookupSegmentsForBuffer to discover all cached segments and regElems
+  std::vector<void*> segHdls;
+  std::vector<ctran::regcache::RegElem*> regElems;
+  FB_COMMCHECK(lookupSegmentsForBuffer(buf, len, cudaDev, segHdls, regElems));
+
+  // TODO: Call remReleaseMem on regElems before freeing segments.
+  // Right now, this requires a mapper instance to send control messages to
+  // remote ranks. See CtranMapper::deregMem for the pattern:
+  //   epochLock();
+  //   for (auto& regElem : regElems) {
+  //     FB_COMMCHECK(remReleaseMem(regElem));
+  //   }
+  //   epochUnlock();
+
+  // Free each segment
+  size_t totalSegmentsFreed = 0;
+  for (auto segHdl : segHdls) {
+    bool freed = false;
+    bool ncclManaged = false;
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElemsFreed;
+    FB_COMMCHECK(freeSegment(segHdl, freed, ncclManaged, regElemsFreed));
+
+    if (freed) {
+      totalSegmentsFreed += regElemsFreed.size();
+    }
+  }
+
+  // Log a single memory event for the entire deregistration
+  if (totalSegmentsFreed > 0) {
+    CommLogData emptyLogData{};
+    logMemoryEvent(
+        emptyLogData,
+        "",
+        "globalDeregister",
+        reinterpret_cast<uintptr_t>(buf),
+        len,
+        totalSegmentsFreed,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - timerBegin)
+            .count(),
+        true /* isRegMemEvent */);
   }
 
   return commSuccess;
@@ -412,6 +534,40 @@ std::vector<void*> ctran::RegCache::getSegments() const {
   return segmentsAvl_.rlock()->getAllElems();
 }
 
+commResult_t ctran::RegCache::lookupSegmentsForBuffer(
+    const void* buf,
+    size_t len,
+    int cudaDev,
+    std::vector<void*>& segHdls,
+    std::vector<ctran::regcache::RegElem*>& regElems) {
+  if (buf == nullptr || len == 0) {
+    return commSuccess;
+  }
+
+  SetCudaDevRAII setCudaDev(cudaDev);
+
+  // Discover all physical segments underlying this buffer via pinRange
+  std::vector<ctran::regcache::SegmentRange> segRanges;
+  FB_COMMCHECK(
+      ctran::regcache::SegmentRange::pinRange(buf, cudaDev, len, segRanges));
+
+  // Look up each segment and collect handles and regElems
+  auto segmentsAvl = segmentsAvl_.rlock();
+  for (const auto& range : segRanges) {
+    void* segHdl = segmentsAvl->search(const_cast<void*>(range.buf), range.len);
+    if (segHdl != nullptr) {
+      segHdls.push_back(segHdl);
+      // Get all regElems associated with this segment
+      auto segRegElems = getRegElems(segHdl);
+      for (auto* regElem : segRegElems) {
+        regElems.push_back(regElem);
+      }
+    }
+  }
+
+  return commSuccess;
+}
+
 commResult_t ctran::regcache::SegmentRange::pinRange(
     const void* ptr,
     const int cudaDev,
@@ -499,63 +655,84 @@ commResult_t ctran::RegCache::cacheSegment(
     const int cudaDev,
     const bool ncclManaged,
     uint64_t commHash,
-    ctran::regcache::Segment** segment,
-    void** segHdl) {
+    std::vector<ctran::regcache::Segment*>& segments,
+    std::vector<void*>& segHdls) {
   SetCudaDevRAII setCudaDev(cudaDev);
+  bool newSegmentCreated = false;
+
+  // Discover all physical segments underlying this buffer via pinRange
+  std::vector<ctran::regcache::SegmentRange> ranges;
+  FB_COMMCHECK(
+      ctran::regcache::SegmentRange::pinRange(ptr, cudaDev, len, ranges));
+
+  CLOGF_SUBSYS(
+      INFO,
+      ALLOC,
+      "CTRAN-MAPPER cacheSegment: ptr={} len={} discovered {} physical segments",
+      ptr,
+      len,
+      ranges.size());
+
   {
     auto segmentsAvl = segmentsAvl_.wlock();
 
-    // If the segment is already registered, increase its refcount and return
-    // the segment
-    void* avlHdl = nullptr;
-    avlHdl = segmentsAvl->search(ptr, len);
-    if (avlHdl) {
-      auto foundSeg = reinterpret_cast<ctran::regcache::Segment*>(
-          segmentsAvl->lookup(avlHdl));
-      {
-        auto segState = foundSeg->stateMnger.wlock();
-        segState->refCount++;
-        *segHdl = foundSeg->avlHdl_;
+    // Cache each segment range
+    for (size_t i = 0; i < ranges.size(); i++) {
+      const auto& range = ranges.at(i);
+      void* avlHdl = nullptr;
+
+      // Check if this segment is already cached
+      avlHdl = segmentsAvl->search(range.buf, range.len);
+      if (avlHdl) {
+        // Segment already cached, increase refcount
+        auto foundSeg = reinterpret_cast<ctran::regcache::Segment*>(
+            segmentsAvl->lookup(avlHdl));
+        int64_t curRefCount;
+        {
+          auto segState = foundSeg->stateMnger.wlock();
+          segState->refCount++;
+          curRefCount = segState->refCount;
+        }
+        segments.push_back(foundSeg);
+        segHdls.push_back(foundSeg->avlHdl_);
+
+        CLOGF_TRACE(
+            ALLOC,
+            "CTRAN-MAPPER cacheSegment: segment[{}] already cached ptr={} len={} refCount={}",
+            i,
+            range.buf,
+            range.len,
+            curRefCount);
+      } else {
+        // Create new cache entry for this segment
+        auto newSeg = new ctran::regcache::Segment(range, cudaDev, ncclManaged);
+        avlHdl = segmentsAvl->insert(range.buf, range.len, newSeg);
+        newSeg->avlHdl_ = avlHdl;
+        segments.push_back(newSeg);
+        segHdls.push_back(avlHdl);
+        newSegmentCreated = true;
+
+        const auto type = newSeg->getType();
+        CLOGF_TRACE(
+            ALLOC,
+            "CTRAN-MAPPER cacheSegment: segment[{}] cached type={} ({}) segHdl={} ptr={} len={} ncclManaged={} cudaDev={}, cache size={}",
+            i,
+            (int)type,
+            devMemTypeStr(type),
+            (void*)avlHdl,
+            range.buf,
+            range.len,
+            ncclManaged,
+            cudaDev,
+            segmentsAvl->size());
       }
-      *segment = foundSeg;
-      return commSuccess;
     }
-
-    // Otherwise, load the segment range and create a new cache entry for it
-    std::vector<ctran::regcache::SegmentRange> ranges;
-    FB_COMMCHECK(
-        ctran::regcache::SegmentRange::pinRange(ptr, cudaDev, len, ranges));
-    FB_CHECKABORT(
-        ranges.size() == 1,
-        "Expected only one range for a user cached segment ptr {} len {}, but got {} ranges",
-        ptr,
-        len,
-        ranges.size());
-
-    // FIXME: cleanup AVL tree to be able to host unique_ptr
-    const auto& range = ranges.at(0);
-    auto newSeg = new ctran::regcache::Segment(range, cudaDev, ncclManaged);
-    avlHdl = segmentsAvl->insert(range.buf, range.len, newSeg);
-    newSeg->avlHdl_ = avlHdl;
-    *segment = newSeg;
-    *segHdl = avlHdl;
-
-    auto type = newSeg->getType();
-    CLOGF_TRACE(
-        ALLOC,
-        "Cached segment {} type {} ({}) segHdl {} ptr {} len {} ncclManaged {} cudaDev {}, cache size {}",
-        (void*)newSeg,
-        (int)type,
-        devMemTypeStr(type),
-        (void*)avlHdl,
-        range.buf,
-        range.len,
-        ncclManaged,
-        cudaDev,
-        segmentsAvl->size());
   }
 
-  profiler.wlock()->record(ctran::regcache::EventType::kCacheSegEvent);
+  // Only record a cache event when at least one new segment was created
+  if (newSegmentCreated) {
+    profiler.wlock()->record(ctran::regcache::EventType::kCacheSegEvent);
+  }
   return commSuccess;
 }
 
