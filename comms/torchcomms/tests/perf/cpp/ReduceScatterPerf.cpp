@@ -26,15 +26,15 @@ void runReduceScatterPerf(
     if (num_elements == 0) {
       num_elements = 1;
     }
-    auto output =
-        createTensor(num_elements, rank, c10::DeviceType::CUDA, params.dtype);
+    auto output = createTensor(
+        num_elements, rank, comm->getDevice().type(), params.dtype);
 
     // Create input tensor list
     std::vector<at::Tensor> input_list;
     input_list.reserve(num_ranks);
     for (int i = 0; i < num_ranks; i++) {
       input_list.push_back(createTensor(
-          num_elements, rank, c10::DeviceType::CUDA, params.dtype));
+          num_elements, rank, comm->getDevice().type(), params.dtype));
     }
 
     // Warmup

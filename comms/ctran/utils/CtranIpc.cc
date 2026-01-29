@@ -87,10 +87,13 @@ static inline CUmemAllocationHandleType getCuMemExportHandleType(
 }
 
 commResult_t ctran::utils::CtranIpcMem::ipcExport(CtranIpcDesc& ipcDesc) {
+  // FIXME: we need either fallback to IB or support numSegments > 2 case via
+  // variable length control msg
   if (allocHandles_.size() > CTRAN_IPC_INLINE_SEGMENTS) {
     CLOGF(
         ERR,
-        "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory allocations.");
+        "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory allocations. [{}]",
+        this->toString());
     return commInternalError;
   }
 
