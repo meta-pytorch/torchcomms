@@ -6,7 +6,7 @@
 
 namespace comms::pipes::test {
 
-// Kernel that calls allToAllv
+// Kernel that calls all_to_allv
 __global__ void testAllToAllvKernel(
     void* recvbuff_d,
     const void* sendbuff_d,
@@ -14,15 +14,18 @@ __global__ void testAllToAllvKernel(
     int nranks,
     DeviceSpan<Transport> transports,
     DeviceSpan<ChunkInfo> send_chunk_infos,
-    DeviceSpan<ChunkInfo> recv_chunk_infos) {
-  // Call allToAllv - it will perform actual data transfers
-  allToAllv(
+    DeviceSpan<ChunkInfo> recv_chunk_infos,
+    Timeout timeout) {
+  timeout.start();
+  // Call all_to_allv - it will perform actual data transfers
+  all_to_allv(
       recvbuff_d,
       sendbuff_d,
       my_rank_id,
       transports,
       send_chunk_infos,
-      recv_chunk_infos);
+      recv_chunk_infos,
+      timeout);
 }
 
 void testAllToAllv(
@@ -35,6 +38,7 @@ void testAllToAllv(
     DeviceSpan<ChunkInfo> recv_chunk_infos,
     int numBlocks,
     int blockSize) {
+  Timeout timeout; // Default no timeout
   testAllToAllvKernel<<<numBlocks, blockSize>>>(
       recvbuff_d,
       sendbuff_d,
@@ -42,7 +46,8 @@ void testAllToAllv(
       nranks,
       transports,
       send_chunk_infos,
-      recv_chunk_infos);
+      recv_chunk_infos,
+      timeout);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
