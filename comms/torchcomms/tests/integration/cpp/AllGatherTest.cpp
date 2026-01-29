@@ -133,6 +133,10 @@ void AllGatherTest::testAllGatherInputDeleted(int count, at::ScalarType dtype) {
 
 // CUDA Graph test function for all_gather
 void AllGatherTest::testGraphAllGather(int count, at::ScalarType dtype) {
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message() << "Testing CUDA Graph all_gather with count="
                            << count << " and dtype=" << getDtypeName(dtype));
@@ -182,6 +186,10 @@ void AllGatherTest::testGraphAllGather(int count, at::ScalarType dtype) {
 void AllGatherTest::testGraphAllGatherInputDeleted(
     int count,
     at::ScalarType dtype) {
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing CUDA Graph all_gather with input deleted after graph creation with count="

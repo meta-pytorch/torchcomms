@@ -17,8 +17,31 @@ class ReduceScatterVTest
       : rank_(0), num_ranks_(0), device_type_(device_type) {}
 
   // Test function declarations with parameters
-
   void testSyncReduceScatterV(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void testSyncReduceScatterVNoWork(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void testAsyncReduceScatterV(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void testAsyncReduceScatterVEarlyReset(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void testReduceScatterVInputDeleted(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void testGraphReduceScatterV(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void testGraphReduceScatterVInputDeleted(
       int count,
       at::ScalarType dtype,
       const torch::comms::ReduceOp& op);
@@ -39,8 +62,9 @@ class ReduceScatterVTest
   static constexpr int num_replays = 4;
 
   // Helper function declarations with parameters
+  std::vector<int> getCounts(int count);
   virtual std::vector<at::Tensor> createInputTensors(
-      std::vector<int> counts,
+      const std::vector<int>& counts,
       at::ScalarType dtype);
   virtual at::Tensor createOutputTensor(int count, at::ScalarType dtype);
   int calculateExpectedResult(const torch::comms::ReduceOp& op);

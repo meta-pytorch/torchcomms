@@ -41,6 +41,13 @@ class ReduceScatterVTest(unittest.TestCase):
         self.torchcomm = None
         self.wrapper = None
 
+    def _get_counts(self, count):
+        """Get per-rank counts for reduce_scatter_v (variable sizes)."""
+        counts = [count] * self.num_ranks
+        for i in range(self.num_ranks):
+            counts[i] = counts[i] + i
+        return counts
+
     def _sync_reduce_scatter_v(self, count, dtype, op):
         """Test synchronous reduce_scatter_v with work object."""
         print(
@@ -48,9 +55,7 @@ class ReduceScatterVTest(unittest.TestCase):
         )
 
         # Create input and output tensors
-        counts = [count] * self.num_ranks
-        for i in range(self.num_ranks):
-            counts[i] = counts[i] + i
+        counts = self._get_counts(count)
         input_tensors = self._create_input_tensors(counts, dtype)
         output_tensor = self._create_output_tensor(counts[self.rank], dtype)
 
@@ -60,6 +65,163 @@ class ReduceScatterVTest(unittest.TestCase):
 
         # Verify the results
         self._verify_results(output_tensor, op)
+
+    def _sync_reduce_scatter_v_no_work(self, count, dtype, op):
+        """Test synchronous reduce_scatter_v without work object."""
+        print(
+            f"Testing sync reduce_scatter_v without work object with count={count}, dtype={get_dtype_name(dtype)}, and op={get_op_name(op)}"
+        )
+
+        # Create input and output tensors
+        counts = self._get_counts(count)
+        input_tensors = self._create_input_tensors(counts, dtype)
+        output_tensor = self._create_output_tensor(counts[self.rank], dtype)
+
+        # Call reduce_scatter_v without keeping the work object
+        self.torchcomm.reduce_scatter_v(output_tensor, input_tensors, op, False)
+
+        # Verify the results
+        self._verify_results(output_tensor, op)
+
+    def _async_reduce_scatter_v(self, count, dtype, op):
+        """Test asynchronous reduce_scatter_v with wait."""
+        print(
+            f"Testing async reduce_scatter_v with count={count}, dtype={get_dtype_name(dtype)}, and op={get_op_name(op)}"
+        )
+
+        # Create input and output tensors
+        counts = self._get_counts(count)
+        input_tensors = self._create_input_tensors(counts, dtype)
+        output_tensor = self._create_output_tensor(counts[self.rank], dtype)
+
+        # Call reduce_scatter_v
+        work = self.torchcomm.reduce_scatter_v(output_tensor, input_tensors, op, True)
+
+        # Wait for the reduce_scatter_v to complete
+        work.wait()
+
+        # Verify the results
+        self._verify_results(output_tensor, op)
+
+    def _async_reduce_scatter_v_early_reset(self, count, dtype, op):
+        """Test asynchronous reduce_scatter_v with early reset."""
+        print(
+            f"Testing async reduce_scatter_v with early reset with count={count}, dtype={get_dtype_name(dtype)}, and op={get_op_name(op)}"
+        )
+
+        # Create input and output tensors
+        counts = self._get_counts(count)
+        input_tensors = self._create_input_tensors(counts, dtype)
+        output_tensor = self._create_output_tensor(counts[self.rank], dtype)
+
+        # Call reduce_scatter_v
+        work = self.torchcomm.reduce_scatter_v(output_tensor, input_tensors, op, True)
+
+        # Wait for the work to complete before resetting
+        work.wait()
+
+        # Reset the work object
+        work = None
+
+        # Verify the results
+        self._verify_results(output_tensor, op)
+
+    def _reduce_scatter_v_input_deleted(self, count, dtype, op):
+        """Test asynchronous reduce_scatter_v with input deleted after enqueue."""
+        print(
+            f"Testing async reduce_scatter_v with input deleted after enqueue with count={count}, dtype={get_dtype_name(dtype)}, and op={get_op_name(op)}"
+        )
+
+        # Create input and output tensors
+        counts = self._get_counts(count)
+        output_tensor = self._create_output_tensor(counts[self.rank], dtype)
+
+        # Create input tensors and enqueue operation
+        input_tensors = self._create_input_tensors(counts, dtype)
+
+        # Call reduce_scatter_v with async_op = False
+        self.torchcomm.reduce_scatter_v(output_tensor, input_tensors, op, False)
+
+        # Delete the input tensors to simulate them going out of scope
+        del input_tensors
+
+        # Verify the results
+        self._verify_results(output_tensor, op)
+
+    def _graph_reduce_scatter_v(self, count, dtype, op):
+        """Test CUDA Graph reduce_scatter_v."""
+        print(
+            f"Testing CUDA Graph reduce_scatter_v with count={count}, dtype={get_dtype_name(dtype)}, and op={get_op_name(op)}"
+        )
+
+        # Create a non-default CUDA stream (required for CUDA graph capture)
+        stream = torch.cuda.Stream()
+
+        # Set the stream as current for graph capture
+        with torch.cuda.stream(stream):
+            # Create input and output tensors AFTER setting non-default stream but BEFORE graph capture
+            counts = self._get_counts(count)
+            input_tensors = self._create_input_tensors(counts, dtype)
+            output_tensor = self._create_output_tensor(counts[self.rank], dtype)
+            original_output_tensor = output_tensor.clone()
+
+            # Create PyTorch CUDA graph
+            graph = torch.cuda.CUDAGraph()
+
+            # Capture the reduce_scatter_v operation in the graph
+            with torch.cuda.graph(graph):
+                # Call reduce_scatter_v without keeping the work object
+                self.torchcomm.reduce_scatter_v(output_tensor, input_tensors, op, False)
+
+            # Replay the captured graph multiple times
+            for _ in range(self.num_replays):
+                # Reset output buffer before graph replay
+                output_tensor.copy_(original_output_tensor)
+
+                graph.replay()
+
+                # Verify the results after each replay
+                self._verify_results(output_tensor, op)
+
+    def _graph_reduce_scatter_v_input_deleted(self, count, dtype, op):
+        """Test CUDA Graph reduce_scatter_v with input deleted after graph creation."""
+        print(
+            f"Testing CUDA Graph reduce_scatter_v with input deleted after graph creation with count={count}, dtype={get_dtype_name(dtype)}, and op={get_op_name(op)}"
+        )
+
+        # Create a non-default CUDA stream (required for CUDA graph capture)
+        stream = torch.cuda.Stream()
+
+        # Set the stream as current for graph capture
+        with torch.cuda.stream(stream):
+            # Create output tensor that persists throughout the test
+            counts = self._get_counts(count)
+            output_tensor = self._create_output_tensor(counts[self.rank], dtype)
+            original_output_tensor = output_tensor.clone()
+
+            # Create PyTorch CUDA graph
+            graph = torch.cuda.CUDAGraph()
+
+            # Create input tensors in a limited scope
+            input_tensors = self._create_input_tensors(counts, dtype)
+
+            # Capture the reduce_scatter_v operation in the graph
+            with torch.cuda.graph(graph):
+                # Call reduce_scatter_v without keeping the work object
+                self.torchcomm.reduce_scatter_v(output_tensor, input_tensors, op, False)
+
+            # Input tensors go out of scope here and get deleted
+            del input_tensors
+
+        # Replay the captured graph multiple times even though input is deleted
+        for _ in range(self.num_replays):
+            # Reset output buffer before graph replay
+            output_tensor.copy_(original_output_tensor)
+
+            graph.replay()
+
+            # Verify the results after each replay
+            self._verify_results(output_tensor, op)
 
     def _create_input_tensors(self, count, dtype):
         """Create input tensors with rank-specific values."""
@@ -116,15 +278,55 @@ class ReduceScatterVTest(unittest.TestCase):
                 f"Tensors not equal for {description}",
             )
 
-    @unittest.skipIf(
-        os.getenv("TEST_BACKEND") != "ncclx",
-        "Skipping reduce_scatter_v test for non-NCCLX backend",
-    )
     def test_sync_reduce_scatter_v(self):
         """Test synchronous reduce_scatter_v with work object."""
         for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._sync_reduce_scatter_v(count, dtype, op)
+
+    def test_sync_reduce_scatter_v_no_work(self):
+        """Test synchronous reduce_scatter_v without work object."""
+        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+            with self.subTest(count=count, dtype=dtype, op=op):
+                self._sync_reduce_scatter_v_no_work(count, dtype, op)
+
+    def test_async_reduce_scatter_v(self):
+        """Test asynchronous reduce_scatter_v with wait."""
+        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+            with self.subTest(count=count, dtype=dtype, op=op):
+                self._async_reduce_scatter_v(count, dtype, op)
+
+    def test_async_reduce_scatter_v_early_reset(self):
+        """Test asynchronous reduce_scatter_v with early reset."""
+        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+            with self.subTest(count=count, dtype=dtype, op=op):
+                self._async_reduce_scatter_v_early_reset(count, dtype, op)
+
+    def test_reduce_scatter_v_input_deleted(self):
+        """Test asynchronous reduce_scatter_v with input deleted after enqueue."""
+        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+            with self.subTest(count=count, dtype=dtype, op=op):
+                self._reduce_scatter_v_input_deleted(count, dtype, op)
+
+    @unittest.skipIf(
+        os.getenv("TEST_BACKEND") != "ncclx",
+        "Skipping NCCLX-only ReduceScatterV tests",
+    )
+    def test_graph_reduce_scatter_v(self):
+        """Test CUDA Graph reduce_scatter_v."""
+        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+            with self.subTest(count=count, dtype=dtype, op=op):
+                self._graph_reduce_scatter_v(count, dtype, op)
+
+    @unittest.skipIf(
+        os.getenv("TEST_BACKEND") != "ncclx",
+        "Skipping NCCLX-only ReduceScatterV tests",
+    )
+    def test_graph_reduce_scatter_v_input_deleted(self):
+        """Test CUDA Graph reduce_scatter_v with input deleted after graph creation."""
+        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+            with self.subTest(count=count, dtype=dtype, op=op):
+                self._graph_reduce_scatter_v_input_deleted(count, dtype, op)
 
 
 if __name__ == "__main__":
