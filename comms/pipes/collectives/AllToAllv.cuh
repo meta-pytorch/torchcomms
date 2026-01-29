@@ -7,6 +7,7 @@
 #include <cstdio>
 
 #include "comms/pipes/DeviceSpan.cuh"
+#include "comms/pipes/TimeoutUtils.cuh"
 #include "comms/pipes/Transport.cuh"
 
 namespace comms::pipes {
@@ -106,10 +107,14 @@ __device__ __forceinline__ void all_to_allv(
     int my_rank_id,
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
-    DeviceSpan<ChunkInfo> recv_chunk_infos
+    DeviceSpan<ChunkInfo> recv_chunk_infos,
+    Timeout timeout
     // all arguments below will eventually come from communicator
 ) {
 #ifdef __CUDA_ARCH__
+  // Start the timeout timer - must be called once before any wait operations
+  timeout.start();
+
   auto group = make_warp_group();
   const auto nranks = transports_per_rank.size();
   assert(nranks == send_chunk_infos.size());
@@ -198,12 +203,16 @@ __device__ __forceinline__ void all_to_allv(
     transport.p2p_nvl.send(
         group_per_peer,
         static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
-        send_info.nbytes);
+        send_info.nbytes,
+        0, // call_index
+        timeout);
   } else {
     transport.p2p_nvl.recv(
         group_per_peer,
         static_cast<char*>(recvbuff_d) + recv_info.offset,
-        recv_info.nbytes);
+        recv_info.nbytes,
+        0, // call_index
+        timeout);
   }
 
 #endif

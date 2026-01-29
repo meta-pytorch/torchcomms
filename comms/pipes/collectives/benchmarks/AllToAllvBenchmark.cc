@@ -285,13 +285,17 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     void* recvBuff_d = recvBuffer.get();
     void* sendBuff_d = sendBuffer.get();
 
+    // Create timeout (default = no timeout)
+    Timeout timeout;
+
     void* args[] = {
         &recvBuff_d,
         &sendBuff_d,
         &globalRank,
         &transports_span,
         &send_chunk_infos,
-        &recv_chunk_infos};
+        &recv_chunk_infos,
+        &timeout};
 
     CudaEvent start, stop;
     const int nIter = 100;
