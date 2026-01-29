@@ -8,6 +8,7 @@
 #include <cstdint>
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/Timeout.cuh"
 
 namespace comms::pipes {
 
@@ -112,8 +113,11 @@ struct alignas(128) ChunkState {
    * All threads poll for lower latency.
    *
    * @param group ThreadGroup for cooperative processing
+   * @param timeout Timeout config (default: no timeout)
    */
-  __device__ __forceinline__ void wait_ready_to_send(ThreadGroup& group) const;
+  __device__ __forceinline__ void wait_ready_to_send(
+      ThreadGroup& group,
+      const Timeout& timeout = Timeout()) const;
 
   /**
    * wait_ready_to_recv - Block until data for specific step is ready
@@ -124,11 +128,13 @@ struct alignas(128) ChunkState {
    * @param group ThreadGroup for cooperative processing
    * @param stepId The step identifier to wait for
    * @param call_index Call index for multi-call disambiguation
+   * @param timeout Timeout config (default: no timeout)
    */
   __device__ __forceinline__ void wait_ready_to_recv(
       ThreadGroup& group,
       std::size_t stepId,
-      uint32_t call_index) const;
+      uint32_t call_index,
+      const Timeout& timeout = Timeout()) const;
 
   /**
    * ready_to_recv - Signal that data is ready for receiver
@@ -204,17 +210,24 @@ static_assert(
 // This avoids a circular dependency (ThreadGroup doesn't need ChunkState).
 
 __device__ __forceinline__ void ChunkState::wait_ready_to_send(
-    ThreadGroup& group) const {
+    ThreadGroup& group,
+    const Timeout& timeout) const {
   // All threads poll: slightly lower latency for small messages
   // (avoids sync barrier overhead after leader-only poll)
   while (load() != READY_TO_SEND) {
+    TIMEOUT_TRAP_IF_EXPIRED(
+        timeout,
+        group,
+        "ChunkState::wait_ready_to_send waiting for READY_TO_SEND (current=%d)",
+        load());
   }
 }
 
 __device__ __forceinline__ void ChunkState::wait_ready_to_recv(
     ThreadGroup& group,
     std::size_t stepId,
-    uint32_t call_index) const {
+    uint32_t call_index,
+    const Timeout& timeout) const {
   // All threads poll for better latency.
   // Wait for stepId match AND call_index match.
   // If call_index doesn't match, this is a stale signal from a previous call,
@@ -225,6 +238,15 @@ __device__ __forceinline__ void ChunkState::wait_ready_to_recv(
         call_index_ == call_index) {
       return;
     }
+    TIMEOUT_TRAP_IF_EXPIRED(
+        timeout,
+        group,
+        "ChunkState::wait_ready_to_recv waiting for stepId=%zu, call_index=%u "
+        "(current=%d, current_call_index=%u)",
+        stepId,
+        call_index,
+        current_value,
+        call_index_);
   }
 }
 
