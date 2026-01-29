@@ -18,6 +18,7 @@ void ScatterTest::SetUp() {
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
+  device_type_ = wrapper_->getDevice().type();
 }
 
 void ScatterTest::TearDown() {
@@ -170,6 +171,11 @@ void ScatterTest::testScatterInputDeleted(int count, at::ScalarType dtype) {
 
 // CUDA Graph test function for scatter
 void ScatterTest::testGraphScatter(int count, at::ScalarType dtype) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message() << "Testing CUDA Graph scatter with count=" << count
                            << " and dtype=" << getDtypeName(dtype));
@@ -222,6 +228,11 @@ void ScatterTest::testGraphScatter(int count, at::ScalarType dtype) {
 void ScatterTest::testGraphScatterInputDeleted(
     int count,
     at::ScalarType dtype) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing CUDA Graph scatter with input deleted after graph creation with count="

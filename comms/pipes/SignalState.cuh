@@ -6,6 +6,7 @@
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/common/BitOps.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/Timeout.cuh"
 
 namespace comms::pipes {
 
@@ -22,6 +23,26 @@ enum class CmpOp {
   CMP_LE,
   CMP_NE,
 };
+
+// Helper to get string representation of CmpOp for error messages
+__device__ inline const char* cmpOpToString(CmpOp op) {
+  switch (op) {
+    case CmpOp::CMP_EQ:
+      return "==";
+    case CmpOp::CMP_GT:
+      return ">";
+    case CmpOp::CMP_LT:
+      return "<";
+    case CmpOp::CMP_GE:
+      return ">=";
+    case CmpOp::CMP_LE:
+      return "<=";
+    case CmpOp::CMP_NE:
+      return "!=";
+    default:
+      return "?";
+  }
+}
 
 /**
  * SignalState - Synchronization primitive for P2P NVLink signaling operations
@@ -89,6 +110,25 @@ struct alignas(128) SignalState {
     }
   }
 
+ private:
+  /**
+   * checkTimeoutAndTrap - Helper to check timeout and trap with error message
+   *
+   * Used internally by wait_until to avoid code duplication.
+   */
+  __device__ __forceinline__ void checkTimeoutAndTrap(
+      const Timeout& timeout,
+      CmpOp op,
+      uint64_t expected) const {
+    TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+        timeout,
+        "SignalState::wait_until waiting for signal %s %llu (current=%llu)",
+        cmpOpToString(op),
+        static_cast<unsigned long long>(expected),
+        static_cast<unsigned long long>(load()));
+  }
+
+ public:
   /**
    * wait_until - Wait until the signal counter satisfies a condition
    *
@@ -100,31 +140,39 @@ struct alignas(128) SignalState {
    *
    * @param op The comparison operation (CMP_EQ, CMP_GT, CMP_LT, CMP_GE, etc.)
    * @param expected The expected value to compare against
+   * @param timeout Timeout config (default: no timeout)
    */
-  __device__ __forceinline__ void wait_until(CmpOp op, uint64_t expected) {
+  __device__ __forceinline__ void
+  wait_until(CmpOp op, uint64_t expected, const Timeout& timeout = Timeout()) {
     switch (op) {
       case CmpOp::CMP_EQ:
         while (load() != expected) {
+          checkTimeoutAndTrap(timeout, op, expected);
         }
         break;
       case CmpOp::CMP_GT:
         while (load() <= expected) {
+          checkTimeoutAndTrap(timeout, op, expected);
         }
         break;
       case CmpOp::CMP_LT:
         while (load() >= expected) {
+          checkTimeoutAndTrap(timeout, op, expected);
         }
         break;
       case CmpOp::CMP_GE:
         while (load() < expected) {
+          checkTimeoutAndTrap(timeout, op, expected);
         }
         break;
       case CmpOp::CMP_LE:
         while (load() > expected) {
+          checkTimeoutAndTrap(timeout, op, expected);
         }
         break;
       case CmpOp::CMP_NE:
         while (load() == expected) {
+          checkTimeoutAndTrap(timeout, op, expected);
         }
         break;
     }
@@ -168,10 +216,14 @@ struct alignas(128) SignalState {
    * @param group ThreadGroup for cooperative processing
    * @param op The comparison operation (CMP_EQ, CMP_GE, etc.)
    * @param expected The expected value to compare against
+   * @param timeout Timeout config (default: no timeout)
    */
-  __device__ __forceinline__ void
-  wait_until(ThreadGroup& group, CmpOp op, uint64_t expected) {
-    wait_until(op, expected);
+  __device__ __forceinline__ void wait_until(
+      ThreadGroup& group,
+      CmpOp op,
+      uint64_t expected,
+      const Timeout& timeout = Timeout()) {
+    wait_until(op, expected, timeout);
   }
 };
 
