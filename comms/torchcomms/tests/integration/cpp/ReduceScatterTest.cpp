@@ -18,6 +18,7 @@ void ReduceScatterTest::SetUp() {
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
+  device_type_ = wrapper_->getDevice().type();
 }
 
 void ReduceScatterTest::TearDown() {
@@ -212,6 +213,11 @@ void ReduceScatterTest::testGraphReduceScatter(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message() << "Testing CUDA Graph reduce_scatter with count="
                            << count << " and dtype=" << getDtypeName(dtype)
@@ -258,6 +264,11 @@ void ReduceScatterTest::testGraphReduceScatterInputDeleted(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing CUDA Graph reduce_scatter with input deleted after graph creation with count="

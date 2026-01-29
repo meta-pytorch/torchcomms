@@ -71,7 +71,8 @@ commResult_t commMemAllocDisjoint(
     std::vector<size_t>& disjointSegmentSizes,
     std::vector<TestMemSegment>& segments,
     bool setRdmaSupport,
-    std::optional<CUmemAllocationHandleType> handleType) {
+    std::optional<CUmemAllocationHandleType> handleType,
+    size_t reservedVASize) {
   commResult_t ret = commSuccess;
 
   size_t numSegments = disjointSegmentSizes.size();
@@ -119,12 +120,23 @@ commResult_t commMemAllocDisjoint(
   FB_CUCHECK(cuMemGetAllocationGranularity(
       &memGran, &memprop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
 
-  vaSize = 0;
+  // Calculate mapped size (sum of aligned segment sizes)
+  size_t mappedSize = 0;
   std::vector<size_t> alignedSizes(numSegments);
   for (int i = 0; i < numSegments; i++) {
     alignedSizes[i] = disjointSegmentSizes[i];
     ALIGN_SIZE(alignedSizes[i], memGran);
-    vaSize += alignedSizes[i];
+    mappedSize += alignedSizes[i];
+  }
+
+  // Use reservedVASize if specified, otherwise use mappedSize
+  vaSize = (reservedVASize > 0) ? reservedVASize : mappedSize;
+  ALIGN_SIZE(vaSize, memGran);
+
+  if (vaSize < mappedSize) {
+    LOG(ERROR) << "reservedVASize " << reservedVASize
+               << " is smaller than mapped size " << mappedSize;
+    return ErrorStackTraceUtil::log(commInvalidArgument);
   }
 
   for (int i = 0; i < numSegments; i++) {
@@ -149,18 +161,19 @@ commResult_t commMemAllocDisjoint(
 
     curPtr = ctran::utils::addDevicePtr(curPtr, alignedSizes[i]);
   }
-  // Now allow RW access to the newly mapped memory.
+  // Now allow RW access to the mapped memory only (not the entire reserved VA).
   accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
   accessDesc.location.id = currentDev;
   accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
-  FB_CUCHECK(cuMemSetAccess((CUdeviceptr)*ptr, vaSize, &accessDesc, 1));
+  FB_CUCHECK(cuMemSetAccess((CUdeviceptr)*ptr, mappedSize, &accessDesc, 1));
 
   return ret;
 }
 
 commResult_t commMemFreeDisjoint(
     void* ptr,
-    std::vector<size_t>& disjointSegmentSizes) {
+    std::vector<size_t>& disjointSegmentSizes,
+    size_t reservedVASize) {
   commResult_t ret = commSuccess;
   int saveDevice;
   CUmemGenericAllocationHandle handle;
@@ -192,14 +205,18 @@ commResult_t commMemFreeDisjoint(
   FB_CUCHECK(cuMemGetAllocationGranularity(
       &memGran, &memprop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
 
-  size_t vaSize = 0;
+  size_t mappedSize = 0;
   size_t numSegments = disjointSegmentSizes.size();
   std::vector<size_t> alignedSizes(numSegments);
   for (int i = 0; i < numSegments; i++) {
     alignedSizes[i] = disjointSegmentSizes[i];
     ALIGN_SIZE(alignedSizes[i], memGran);
-    vaSize += alignedSizes[i];
+    mappedSize += alignedSizes[i];
   }
+
+  // Use reservedVASize if specified, otherwise use mappedSize
+  size_t vaSize = (reservedVASize > 0) ? reservedVASize : mappedSize;
+  ALIGN_SIZE(vaSize, memGran);
 
   CUdeviceptr curPtr = (CUdeviceptr)ptr;
   for (int i = 0; i < alignedSizes.size(); i++) {
@@ -219,17 +236,144 @@ commResult_t commMemFreeDisjoint(
   return ret;
 }
 
+commResult_t commMemAllocExpandable(
+    ExpandableTestBuffer* buf,
+    size_t reservedSize,
+    size_t initialMappedSize,
+    bool setRdmaSupport) {
+  buf->reservedSize = reservedSize;
+
+  // Create initial segment sizes vector
+  std::vector<size_t> initialSegments = {initialMappedSize};
+
+  // Call commMemAllocDisjoint with larger reservedVASize
+  FB_COMMCHECK(commMemAllocDisjoint(
+      &buf->base,
+      initialSegments,
+      buf->segments,
+      setRdmaSupport,
+      CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+      reservedSize));
+
+  buf->mappedSize = buf->segments[0].size;
+  buf->segmentSize = buf->mappedSize;
+
+  CUDACHECK_TEST(cudaGetDevice(&buf->cudaDev));
+  CUdevice currentDev;
+  FB_CUCHECK(cuDeviceGet(&currentDev, buf->cudaDev));
+
+  buf->memprop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  buf->memprop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  buf->memprop.location.id = currentDev;
+  buf->memprop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR;
+  if (setRdmaSupport &&
+      ctran::utils::gpuDirectRdmaWithCudaVmmSupported(
+          currentDev, buf->cudaDev)) {
+    buf->memprop.allocFlags.gpuDirectRDMACapable = 1;
+  }
+
+  buf->accessDesc.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
+  buf->accessDesc.location.id = currentDev;
+  buf->accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+
+  // Store initial handle via cuMemRetainAllocationHandle
+  CUmemGenericAllocationHandle initialHandle;
+  FB_CUCHECK(cuMemRetainAllocationHandle(&initialHandle, buf->base));
+  buf->handles.push_back(initialHandle);
+
+  return commSuccess;
+}
+
+commResult_t commMemExpandBuffer(
+    ExpandableTestBuffer* buf,
+    size_t newMappedSize) {
+  if (newMappedSize <= buf->mappedSize) {
+    LOG(ERROR) << "newMappedSize " << newMappedSize
+               << " must be greater than current mappedSize "
+               << buf->mappedSize;
+    return commInvalidArgument;
+  }
+  if (newMappedSize > buf->reservedSize) {
+    LOG(ERROR) << "newMappedSize " << newMappedSize << " exceeds reservedSize "
+               << buf->reservedSize;
+    return commInvalidArgument;
+  }
+
+  // Calculate number of new segments needed
+  size_t additionalSize = newMappedSize - buf->mappedSize;
+  size_t numNewSegments =
+      (additionalSize + buf->segmentSize - 1) / buf->segmentSize;
+
+  CUdeviceptr curPtr =
+      ctran::utils::addDevicePtr((CUdeviceptr)buf->base, buf->mappedSize);
+
+  for (size_t i = 0; i < numNewSegments; i++) {
+    CUmemGenericAllocationHandle handle;
+    FB_CUCHECK(cuMemCreate(&handle, buf->segmentSize, &buf->memprop, 0));
+    FB_CUCHECK(cuMemMap(curPtr, buf->segmentSize, 0, handle, 0));
+
+    buf->handles.push_back(handle);
+    buf->segments.emplace_back(
+        reinterpret_cast<void*>(curPtr), buf->segmentSize);
+
+    LOG(INFO) << "commMemExpandBuffer maps new segment ptr "
+              << reinterpret_cast<void*>(curPtr) << " size "
+              << buf->segmentSize;
+
+    curPtr = ctran::utils::addDevicePtr(curPtr, buf->segmentSize);
+  }
+
+  // Set access for new region
+  size_t newRegionSize = numNewSegments * buf->segmentSize;
+  FB_CUCHECK(cuMemSetAccess(
+      ctran::utils::addDevicePtr((CUdeviceptr)buf->base, buf->mappedSize),
+      newRegionSize,
+      &buf->accessDesc,
+      1));
+
+  buf->mappedSize += newRegionSize;
+
+  return commSuccess;
+}
+
+commResult_t commMemFreeExpandable(ExpandableTestBuffer* buf) {
+  if (buf->base == nullptr) {
+    return commSuccess;
+  }
+
+  // Unmap and release all segments
+  CUdeviceptr curPtr = (CUdeviceptr)buf->base;
+  for (size_t i = 0; i < buf->segments.size(); i++) {
+    FB_CUCHECK(cuMemUnmap(curPtr, buf->segments[i].size));
+    curPtr = ctran::utils::addDevicePtr(curPtr, buf->segments[i].size);
+  }
+
+  // Release all handles
+  for (auto& handle : buf->handles) {
+    FB_CUCHECK(cuMemRelease(handle));
+  }
+
+  // Free the reserved VA
+  FB_CUCHECK(cuMemAddressFree((CUdeviceptr)buf->base, buf->reservedSize));
+
+  *buf = ExpandableTestBuffer{};
+  return commSuccess;
+}
+
 // Wrapper for memory allocation in tests with different memory types
 // - bufSize: size of the buffer to allocate
 // - memType: memory type to allocate
 // - segments: vector of underlying allocated segments. It can be two segments
 //             with kCuMemAllocDisjoint type, which map to a single virtual
 //             memory range. For other mem types, it should be 1 segment.
+// - numSegments: optional number of segments for kCuMemAllocDisjoint type
+//                (default: 2). Ignored for other mem types.
 // - return: pointer to the allocated virtual memory range.
 void* commMemAlloc(
     size_t bufSize,
     MemAllocType memType,
-    std::vector<TestMemSegment>& segments) {
+    std::vector<TestMemSegment>& segments,
+    size_t numSegments) {
   void* buf = nullptr;
   switch (memType) {
     case kMemCudaMalloc:
@@ -239,9 +383,9 @@ void* commMemAlloc(
     case kCuMemAllocDisjoint: {
       // Allocate disjoint segments mapping to a single virtual memory range;
       // it mimics the behavior of Pytorch CCA expandable segment mode where a
-      // single tensor may be mapped by two disjoint segments.
-      const auto segSize = getSegmentSize(bufSize, 2);
-      std::vector<size_t> disjointSegSizes(2, segSize);
+      // single tensor may be mapped by multiple disjoint segments.
+      const auto segSize = getSegmentSize(bufSize, numSegments);
+      std::vector<size_t> disjointSegSizes(numSegments, segSize);
       COMMCHECK_TEST(commMemAllocDisjoint(&buf, disjointSegSizes, segments));
       break;
     }
@@ -267,14 +411,18 @@ void* commMemAlloc(
   return buf;
 }
 
-void commMemFree(void* buf, size_t bufSize, MemAllocType memType) {
+void commMemFree(
+    void* buf,
+    size_t bufSize,
+    MemAllocType memType,
+    size_t numSegments) {
   switch (memType) {
     case kMemCudaMalloc:
       CUDACHECK_TEST(cudaFree(buf));
       break;
     case kCuMemAllocDisjoint: {
-      const auto segSize = getSegmentSize(bufSize, 2);
-      std::vector<size_t> disjointSegSizes(2, segSize);
+      const auto segSize = getSegmentSize(bufSize, numSegments);
+      std::vector<size_t> disjointSegSizes(numSegments, segSize);
       commMemFreeDisjoint(buf, disjointSegSizes);
       break;
     }
