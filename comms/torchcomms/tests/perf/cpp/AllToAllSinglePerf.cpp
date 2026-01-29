@@ -28,10 +28,10 @@ void runAllToAllSinglePerf(
     }
     // Total elements = num_elements * num_ranks (equal split to/from each rank)
     int64_t total_elements = num_elements * num_ranks;
-    auto input =
-        createTensor(total_elements, rank, c10::DeviceType::CUDA, params.dtype);
-    auto output =
-        createTensor(total_elements, rank, c10::DeviceType::CUDA, params.dtype);
+    auto input = createTensor(
+        total_elements, rank, comm->getDevice().type(), params.dtype);
+    auto output = createTensor(
+        total_elements, rank, comm->getDevice().type(), params.dtype);
 
     // Warmup
     for (int i = 0; i < params.warmup_iterations; i++) {

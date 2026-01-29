@@ -6,13 +6,13 @@ import os
 import unittest
 
 import torch
+from test_helpers import skip_if_pytorch_version_unsupported  # pyre-ignore[21]
 from torchcomms.functional.param_parsing import (
     CollectiveParamSchema,
     ParamKind,
     ParamSpec,
     ParsedArgs,
 )
-from torchcomms.tests.unit.py.test_helpers import skip_if_pytorch_version_unsupported
 
 os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 skip_if_pytorch_version_unsupported()

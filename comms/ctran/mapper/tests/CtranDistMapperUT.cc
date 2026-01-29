@@ -611,7 +611,7 @@ TEST_F(CtranDistMapperTest, intraBarrierWithCtrl) {
 
       ASSERT_EQ(mapper->intraBarrier(), commSuccess);
 
-      // Blocking barrier must ensure all preceeding send/recv ctrls have
+      // Blocking barrier must ensure all preceding send/recv ctrls have
       // finished, thus test once only
       for (auto& req_ : requests) {
         bool complete = false;
@@ -766,11 +766,11 @@ TEST_F(CtranDistMapperTest, CtrlMsgWithRawPayload) {
 
 class CtranDistMapperBufExportParam : public CtranDistMapperTest,
                                       public ::testing::WithParamInterface<
-                                          // managed
-                                          std::tuple<bool>> {};
+                                          // managed, skipRemRelease
+                                          std::tuple<bool, bool>> {};
 
 TEST_P(CtranDistMapperBufExportParam, BufExportCtrl) {
-  auto [managed] = GetParam();
+  auto [managed, skipRemRelease] = GetParam();
 
   auto mapper = comm_->ctran_->mapper.get();
   const auto& statex = comm_->statex_.get();
@@ -818,11 +818,13 @@ TEST_P(CtranDistMapperBufExportParam, BufExportCtrl) {
     if (remoteAccessKeys.backend == CtranMapperBackend::IB) {
       ASSERT_NE(remoteAccessKeys.ibKey.rkeys[0], 0);
     } else if (remoteAccessKeys.backend == CtranMapperBackend::NVL) {
-      ASSERT_EQ(remoteAccessKeys.nvlKey.peerRank, recvPeer);
+      ASSERT_EQ(remoteAccessKeys.nvlKey.peerId, statex->gPid(recvPeer));
       ASSERT_NE(remoteAccessKeys.nvlKey.basePtr, nullptr);
     }
 
-    ASSERT_EQ(mapper->deregRemReg(&remoteAccessKeys), commSuccess);
+    if (skipRemRelease) {
+      ASSERT_EQ(mapper->deregRemReg(&remoteAccessKeys), commSuccess);
+    }
   }
 
   // Finally sync if sendPeer side has finished all importing before local
@@ -837,7 +839,21 @@ TEST_P(CtranDistMapperBufExportParam, BufExportCtrl) {
     COMMCHECK_TEST(mapper->waitRequest(rReq));
   }
 
-  COMMCHECK_TEST(mapper->deregMem(segHandle, true /* skipRemRelease */));
+  COMMCHECK_TEST(mapper->deregMem(segHandle, skipRemRelease));
+  if (!skipRemRelease) {
+    // necessary sync ctrl-msg to progress the runCb for NVL_RELEASE_MEM
+    CtranMapperEpochRAII epochRAII(mapper);
+    CtranMapperRequest *sReq = nullptr, *rReq = nullptr;
+    COMMCHECK_TEST(mapper->isendCtrl(sendPeer, &sReq));
+    COMMCHECK_TEST(mapper->irecvCtrl(recvPeer, &rReq));
+    COMMCHECK_TEST(mapper->waitRequest(sReq));
+    COMMCHECK_TEST(mapper->waitRequest(rReq));
+    if (remoteAccessKeys.backend == CtranMapperBackend::NVL) {
+      assert(
+          mapper->ipcRegCachePtr()->getNumRemReg(
+              remoteAccessKeys.nvlKey.peerId) == 0);
+    }
+  }
   NCCLCHECK_TEST(ncclMemFree(buf));
 }
 
@@ -859,14 +875,23 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     CtranDistMapperTest,
     CtranDistMapperBufExportParam,
-    ::testing::Values(true, false),
+    ::testing::Combine(
+        ::testing::Values(true, false), // managed
+        ::testing::Values(true, false)), // skipRemRelease
     [&](const testing::TestParamInfo<CtranDistMapperBufExportParam::ParamType>&
             info) {
+      std::string name;
       if (std::get<0>(info.param)) {
-        return "managed";
+        name = "managed";
       } else {
-        return "unmanaged";
+        name = "unmanaged";
       }
+      if (std::get<1>(info.param)) {
+        name += "_skipRemRelease";
+      } else {
+        name += "_waitRemRelease";
+      }
+      return name;
     });
 
 INSTANTIATE_TEST_SUITE_P(

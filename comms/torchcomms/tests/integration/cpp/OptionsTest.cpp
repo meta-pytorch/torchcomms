@@ -1,9 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include <c10/cuda/CUDAStream.h> // @manual=//caffe2:ATen-cpu
 #include <gtest/gtest.h>
 #include <torch/csrc/autograd/profiler_kineto.h>
-#include <filesystem>
 #include <vector>
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchCommOptions.hpp"
@@ -27,7 +25,7 @@ const std::unordered_map<std::string, std::string> kDefaultHintsMap = {
  */
 class OptionsTest : public ::testing::Test {
  public:
-  OptionsTest() : rank_(0), num_ranks_(0), device_index_(0) {}
+  OptionsTest() : rank_(0), num_ranks_(0) {}
 
   // Helper function declarations with parameters
   at::Tensor createInputTensor(int count, at::ScalarType dtype);
@@ -38,9 +36,9 @@ class OptionsTest : public ::testing::Test {
     torchcomm_ = wrapper_->getTorchComm();
     rank_ = torchcomm_->getRank();
     num_ranks_ = torchcomm_->getSize();
-    device_index_ = rank_ % at::cuda::device_count();
 
-    auto options = at::TensorOptions().dtype(kTensorDtype).device(at::kCUDA);
+    auto options =
+        at::TensorOptions().dtype(kTensorDtype).device(wrapper_->getDevice());
 
     // Prepare multiple tensors for all the operations to be tested.
     send_tensor_ = at::ones(kTensorCount, options) * float(rank_ + 1);
@@ -78,7 +76,6 @@ class OptionsTest : public ::testing::Test {
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;
   int rank_;
   int num_ranks_;
-  int device_index_;
 
   // Test tensors and variables
   at::Tensor send_tensor_;
@@ -94,7 +91,8 @@ class OptionsTest : public ::testing::Test {
 };
 
 at::Tensor OptionsTest::createInputTensor(int count, at::ScalarType dtype) {
-  auto options = at::TensorOptions().dtype(dtype).device(at::kCUDA);
+  auto device = wrapper_->getDevice();
+  auto options = at::TensorOptions().dtype(dtype).device(device);
   at::Tensor input;
   if (dtype == at::kFloat) {
     input = at::ones({count}, options) * static_cast<float>(rank_ + 1);

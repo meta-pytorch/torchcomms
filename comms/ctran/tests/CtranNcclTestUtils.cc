@@ -39,7 +39,8 @@ ncclResult_t ncclMemFreeWithRefCheck(void* ptr) {
 void* CtranNcclTestHelpers::prepareBuf(
     size_t bufSize,
     MemAllocType memType,
-    std::vector<TestMemSegment>& segments) {
+    std::vector<TestMemSegment>& segments,
+    size_t numSegments) {
   void* buf = nullptr;
   if (memType == kMemCudaMalloc) {
     CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
@@ -53,9 +54,8 @@ void* CtranNcclTestHelpers::prepareBuf(
 #endif
   } else {
 #if !defined(USE_ROCM)
-    std::vector<size_t> disjointSegmentSizes(2);
-    disjointSegmentSizes[0] = bufSize / 2;
-    disjointSegmentSizes[1] = bufSize / 2;
+    std::vector<size_t> disjointSegmentSizes(
+        numSegments, bufSize / numSegments);
     COMMCHECK_TEST(commMemAllocDisjoint(&buf, disjointSegmentSizes, segments));
 #else
     XLOG(FATAL) << "kCuMemAllocDisjoint is not supported on AMD/HIP";
@@ -68,7 +68,8 @@ void* CtranNcclTestHelpers::prepareBuf(
 void CtranNcclTestHelpers::releaseBuf(
     void* buf,
     size_t bufSize,
-    MemAllocType memType) {
+    MemAllocType memType,
+    size_t numSegments) {
   if (memType == kMemCudaMalloc) {
     CUDACHECK_TEST(cudaFree(buf));
   } else if (memType == kMemNcclMemAlloc) {
@@ -79,9 +80,8 @@ void CtranNcclTestHelpers::releaseBuf(
 #endif
   } else {
 #if !defined(USE_ROCM)
-    std::vector<size_t> disjointSegmentSizes(2);
-    disjointSegmentSizes[0] = bufSize / 2;
-    disjointSegmentSizes[1] = bufSize / 2;
+    std::vector<size_t> disjointSegmentSizes(
+        numSegments, bufSize / numSegments);
     COMMCHECK_TEST(commMemFreeDisjoint(buf, disjointSegmentSizes));
 #else
     XLOG(FATAL) << "kCuMemAllocDisjoint is not supported on AMD/HIP";
