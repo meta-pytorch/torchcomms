@@ -146,8 +146,8 @@ void TorchCommWindowNCCLX::tensor_register(const at::Tensor& tensor) {
       << "[TorchCommWindowNCCLX]: NCCLX window registration failed.";
 
   // 2. Initialize local communicator for non-collective local buffer
-  // registration This is COLLECTIVE - all ranks must call tensor_register
-  // together
+  // registration. This is COLLECTIVE - all ranks must call tensor_register
+  // together.
   initLocalComm();
 
   // 3. Register NCCL orig window for device API (GIN support)
@@ -167,14 +167,29 @@ void TorchCommWindowNCCLX::tensor_deregister() {
   // before anyone deregisters (prevents use-after-free)
   torch_comm_->barrier(false);
 
+  // Deregister CTRAN window first (host API)
+  // Important: Deregister in the same order as registration to avoid
+  // CTRAN memory tracking issues
   if (win_ == nullptr) {
     throw std::runtime_error(
         "[TorchCommWindowNCCLX]: Double deregistration error: win_ == nullptr");
   }
-  CHECK_EQ(nccl_api_->commWindowDeregister(nccl_comm_, win_), ncclSuccess)
-      << "NCCLX window deregister failed";
+  auto ctran_result = nccl_api_->commWindowDeregister(nccl_comm_, win_);
+  if (ctran_result != ncclSuccess) {
+    TC_LOG(ERROR) << "NCCLX CTRAN window deregister failed";
+  }
   win_ = nullptr;
   win_size_ = 0;
+
+  // Deregister NCCL orig window (device API)
+  if (nccl_orig_win_ != nullptr) {
+    auto result = nccl_api_->commWindowDeregister(nccl_comm_, nccl_orig_win_);
+    if (result != ncclSuccess) {
+      TC_LOG(ERROR) << "NCCLX orig window deregister failed";
+    }
+    nccl_orig_win_ = nullptr;
+  }
+
   buf_tensor_.reset(); // Release the tensor reference
 
   // Barrier to ensure all ranks completed deregistration before cleanup
@@ -413,6 +428,11 @@ device::RegisteredBuffer TorchCommWindowNCCLX::register_local_buffer(
 
   // Register buffer with local_comm_ (NON-COLLECTIVE because local_comm_ has
   // nranks=1) All bootstrap barriers become no-ops when nranks == 1.
+  //
+  // NOTE: This registration currently cannot be used for GIN device-side put
+  // operations because windows registered with local_comm_ are in a separate
+  // window table from the parent comm's ncclDevComm. See TODO in DeviceApiTest
+  // for details on this limitation and future fix options.
   NcclxWindow local_win = nullptr;
   auto result =
       nccl_api_->commWindowRegister(ptr, size, local_comm_, &local_win);

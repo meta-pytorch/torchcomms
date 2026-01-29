@@ -103,6 +103,15 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
       int counter_count = -1,
       int barrier_count = 1);
 
+  // Get the NCCL orig window handle for device-side operations.
+  // This is useful when using the same window buffer as both source and
+  // destination in device-side put operations.
+  //
+  // @return The ncclWindow_t handle for the NCCL orig path window
+  void* get_nccl_orig_window() const {
+    return static_cast<void*>(nccl_orig_win_);
+  }
+
  protected:
   friend class TorchCommNCCLX;
 
