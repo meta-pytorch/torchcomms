@@ -68,7 +68,12 @@ void TorchCommNCCLXTest::setOptionsEnvironmentVariables(
     bool abort_on_error,
     uint64_t timeout_secs) {
   setenv("TORCHCOMM_ABORT_ON_ERROR", abort_on_error ? "1" : "0", 1);
-  setenv("TORCHCOMM_TIMEOUT_SECONDS", std::to_string(timeout_secs).c_str(), 1);
+  // Convert float to integer seconds for the environment variable
+  // TORCHCOMM_TIMEOUT_SECONDS expects an integer, not a float
+  setenv(
+      "TORCHCOMM_TIMEOUT_SECONDS",
+      std::to_string(static_cast<int>(timeout_secs)).c_str(),
+      1);
 }
 
 void TorchCommNCCLXTest::setupEventsForWork(
