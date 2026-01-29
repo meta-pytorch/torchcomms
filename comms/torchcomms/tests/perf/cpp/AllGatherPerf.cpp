@@ -25,15 +25,15 @@ void runAllGatherPerf(
     if (num_elements == 0) {
       num_elements = 1;
     }
-    auto input =
-        createTensor(num_elements, rank, c10::DeviceType::CUDA, params.dtype);
+    auto input = createTensor(
+        num_elements, rank, comm->getDevice().type(), params.dtype);
 
     // Create output tensor list
     std::vector<at::Tensor> output_list;
     output_list.reserve(num_ranks);
     for (int i = 0; i < num_ranks; i++) {
       output_list.push_back(createTensor(
-          num_elements, rank, c10::DeviceType::CUDA, params.dtype));
+          num_elements, rank, comm->getDevice().type(), params.dtype));
     }
 
     // Warmup

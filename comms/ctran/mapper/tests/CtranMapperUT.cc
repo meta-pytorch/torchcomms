@@ -1173,7 +1173,7 @@ TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
     rkey1.ibKey.rkeys[i] = 291 + i;
   }
   rkey1.ibKey.nKeys = CTRAN_MAX_IB_DEVICES_PER_RANK;
-  rkey1.nvlKey.peerRank = 1;
+  rkey1.nvlKey.peerId = "host1:1234";
   rkey1.nvlKey.basePtr = (void*)0x4567890;
   EXPECT_EQ(rkey1.toString(), "backend=IB, ibKey=[291, 292]");
 
@@ -1181,7 +1181,7 @@ TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
   rkey2.backend = CtranMapperBackend::NVL;
   EXPECT_EQ(
       rkey2.toString(),
-      "backend=NVL, nvlKey=[peerRank: 1, basePtr: 0x4567890]");
+      "backend=NVL, nvlKey=[peerId: host1:1234, basePtr: 0x4567890]");
 
   CtranMapperRemoteAccessKey rkey3 = rkey1;
   rkey3.backend = CtranMapperBackend::UNSET;

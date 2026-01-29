@@ -13,18 +13,22 @@ __global__ void p2pSend(
     P2pNvlTransportDevice p2p,
     void* srcBuff,
     std::size_t nBytes,
-    SyncScope groupScope) {
+    SyncScope groupScope,
+    Timeout timeout) {
+  timeout.start();
   auto group = make_thread_group(groupScope);
-  p2p.send(group, srcBuff, nBytes);
+  p2p.send(group, srcBuff, nBytes, 0, timeout);
 }
 
 __global__ void p2pRecv(
     P2pNvlTransportDevice p2p,
     void* dstBuff,
     std::size_t nBytes,
-    SyncScope groupScope) {
+    SyncScope groupScope,
+    Timeout timeout) {
+  timeout.start();
   auto group = make_thread_group(groupScope);
-  p2p.recv(group, dstBuff, nBytes);
+  p2p.recv(group, dstBuff, nBytes, 0, timeout);
 }
 
 __global__ void p2pSendTimed(
@@ -80,15 +84,17 @@ __global__ void p2pBidirectional(
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
-    SyncScope groupScope) {
+    SyncScope groupScope,
+    Timeout timeout) {
+  timeout.start();
   auto group = make_thread_group(groupScope);
 
   // Partition groups into 2: half for send, half for recv
   auto [partition_id, subgroup] = group.partition_interleaved(2);
   if (partition_id == 0) {
-    p2p.send(subgroup, sendBuff, nBytes);
+    p2p.send(subgroup, sendBuff, nBytes, 0, timeout);
   } else {
-    p2p.recv(subgroup, recvBuff, nBytes);
+    p2p.recv(subgroup, recvBuff, nBytes, 0, timeout);
   }
 }
 

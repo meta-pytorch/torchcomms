@@ -16,6 +16,7 @@ void AllGatherSingleTest::SetUp() {
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
+  device_type_ = wrapper_->getDevice().type();
 }
 
 void AllGatherSingleTest::TearDown() {
@@ -117,6 +118,10 @@ void AllGatherSingleTest::testAsyncAllGatherSingleEarlyReset(
 void AllGatherSingleTest::testAllGatherSingleInputDeleted(
     int count,
     at::ScalarType dtype) {
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing async all_gather_single with input deleted after enqueue with count="
@@ -143,6 +148,10 @@ void AllGatherSingleTest::testAllGatherSingleInputDeleted(
 void AllGatherSingleTest::testGraphAllGatherSingle(
     int count,
     at::ScalarType dtype) {
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message() << "Testing CUDA Graph all_gather_single with count="
                            << count << " and dtype=" << getDtypeName(dtype));
@@ -186,6 +195,10 @@ void AllGatherSingleTest::testGraphAllGatherSingle(
 void AllGatherSingleTest::testGraphAllGatherSingleInputDeleted(
     int count,
     at::ScalarType dtype) {
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing CUDA Graph all_gather_single with input deleted after graph creation with count="

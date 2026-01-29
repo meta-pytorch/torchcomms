@@ -85,6 +85,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
    * @param memType Type of memory allocation to use
    * @param oneToOne If true, only test send/recv between rank 0 and the last
    * rank. If false, rank 0 sends to all other ranks.
+   * @param numSegments Number of segments for kCuMemAllocDisjoint (default: 2)
    */
   void runTest(
       size_t offset,
@@ -92,7 +93,8 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
       int numMaxQp,
       int nIter,
       MemAllocType memType,
-      bool oneToOne = false) {
+      bool oneToOne = false,
+      size_t numSegments = 2) {
     const commDataType_t dt = commInt;
 
     // Setup NCCL_CTRAN_IB_MAX_QPS before comm creation so that internal QP
@@ -128,7 +130,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
     const int oneRecvRank = numRanks - 1;
     const bool isReceiver = (oneToOne && globalRank == oneRecvRank) ||
         (!oneToOne && globalRank != sendRank);
-    void* base = prepareBuf(bufSize, memType, segments);
+    void* base = prepareBuf(bufSize, memType, segments, numSegments);
     cudaStream_t stream = 0;
     CUDACHECK_TEST(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
 
@@ -263,7 +265,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
       EXPECT_EQ(coll["algoName"].asString(), expAlgoName);
     }
 
-    releaseBuf(base, bufSize, memType);
+    releaseBuf(base, bufSize, memType, numSegments);
     CUDACHECK_TEST(cudaStreamDestroy(stream));
   }
 };
@@ -488,6 +490,55 @@ INSTANTIATE_TEST_SUITE_P(
           std::to_string(std::get<1>(info.param)) + "int_" +
           testMemAllocTypeToStr(std::get<2>(info.param));
     });
+
+// Test case for NVL zero-copy path with 3+ segments to expose
+// CTRAN_IPC_INLINE_SEGMENTS limitation. This test demonstrates the bug where
+// Ctran NVL zero-copy path fails when memory is backed by 3+ physical memory
+// allocations (expandable segments). The current implementation is limited to 2
+// segments due to fixed-size CtranIpcDesc.segments array.
+//
+// Expected behavior with current code: FAIL with error:
+// "CTRAN-IPC: tried to export CtranIpcMem backed by too many physical memory
+// allocations."
+//
+// After fix: Test should PASS
+TEST_F(CtranTestFixture, DISABLED_sendRecvCopyEngineMultiSegment) {
+  // Use kCuMemAllocDisjoint with 3 segments to trigger the bug
+  const MemAllocType memType = kCuMemAllocDisjoint;
+  constexpr size_t numSegments = 3;
+  const size_t offset = 0;
+  // Use 6MB buffer = 3 x 2MB segments to ensure 3 physical allocations
+  const ssize_t count = 6 * 1024 * 1024 / sizeof(int); // 6MB in int elements
+  const int numMaxQp = 1;
+
+  EnvRAII env1(NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE, true);
+  NcclCommRAII comm(globalRank, numRanks, localRank);
+  ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
+
+  if (ncclIsCuMemSupported() == false) {
+    GTEST_SKIP() << "CuMem not supported, skip test";
+  }
+
+  if (!comm->dmaBufSupport || !NCCL_CTRAN_IB_DMABUF_ENABLE) {
+    GTEST_SKIP() << "dmabuf is not supported, skip multi-segment disjoint test";
+  }
+
+  regCache->init();
+
+  // This test currently exposes a bug - the runTest will fail with:
+  // "CTRAN ERROR CTRAN-IPC: tried to export CtranIpcMem backed by too many
+  // physical memory allocations."
+  runTest(
+      offset,
+      count,
+      numMaxQp,
+      1 /* nIter */,
+      memType,
+      false /* oneToOne */,
+      numSegments);
+
+  COMMCHECK_TEST(regCache->destroy());
+}
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

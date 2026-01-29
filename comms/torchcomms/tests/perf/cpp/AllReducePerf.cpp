@@ -25,8 +25,8 @@ void runAllReducePerf(
     if (num_elements == 0) {
       num_elements = 1;
     }
-    auto tensor =
-        createTensor(num_elements, rank, c10::DeviceType::CUDA, params.dtype);
+    auto tensor = createTensor(
+        num_elements, rank, comm->getDevice().type(), params.dtype);
 
     // Warmup
     for (int i = 0; i < params.warmup_iterations; i++) {

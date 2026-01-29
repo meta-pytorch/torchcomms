@@ -269,6 +269,84 @@ struct ibv_mr* linked_mlx5dv_reg_dmabuf_mr(
       access,
       mlx5_access));
 }
+
+struct ibv_qp* linked_mlx5dv_create_qp(
+    struct ibv_context* context,
+    struct ibv_qp_init_attr_ex* qp_attr,
+    struct mlx5dv_qp_init_attr* mlx5_qp_attr) {
+  return reinterpret_cast<struct ibv_qp*>(mlx5dv_create_qp(
+      reinterpret_cast<::ibv_context*>(context),
+      reinterpret_cast<::ibv_qp_init_attr_ex*>(qp_attr),
+      reinterpret_cast<::mlx5dv_qp_init_attr*>(mlx5_qp_attr)));
+}
+
+struct mlx5dv_qp_ex* linked_mlx5dv_qp_ex_from_ibv_qp_ex(struct ibv_qp_ex* qp) {
+  return reinterpret_cast<struct mlx5dv_qp_ex*>(
+      mlx5dv_qp_ex_from_ibv_qp_ex(reinterpret_cast<::ibv_qp_ex*>(qp)));
+}
+
+struct ibv_srq* linked_create_srq(
+    struct ibv_pd* pd,
+    struct ibv_srq_init_attr* srq_init_attr) {
+  return reinterpret_cast<struct ibv_srq*>(ibv_create_srq(
+      reinterpret_cast<::ibv_pd*>(pd),
+      reinterpret_cast<::ibv_srq_init_attr*>(srq_init_attr)));
+}
+
+struct ibv_srq* linked_create_srq_ex(
+    struct ibv_context* context,
+    struct ibv_srq_init_attr_ex* srq_init_attr_ex) {
+  return reinterpret_cast<struct ibv_srq*>(ibv_create_srq_ex(
+      reinterpret_cast<::ibv_context*>(context),
+      reinterpret_cast<::ibv_srq_init_attr_ex*>(srq_init_attr_ex)));
+}
+
+int linked_modify_srq(
+    struct ibv_srq* srq,
+    struct ibv_srq_attr* srq_attr,
+    int srq_attr_mask) {
+  return ibv_modify_srq(
+      reinterpret_cast<::ibv_srq*>(srq),
+      reinterpret_cast<::ibv_srq_attr*>(srq_attr),
+      srq_attr_mask);
+}
+
+int linked_query_srq(struct ibv_srq* srq, struct ibv_srq_attr* srq_attr) {
+  return ibv_query_srq(
+      reinterpret_cast<::ibv_srq*>(srq),
+      reinterpret_cast<::ibv_srq_attr*>(srq_attr));
+}
+
+int linked_destroy_srq(struct ibv_srq* srq) {
+  return ibv_destroy_srq(reinterpret_cast<::ibv_srq*>(srq));
+}
+
+int linked_post_srq_recv(
+    struct ibv_srq* srq,
+    struct ibv_recv_wr* recv_wr,
+    struct ibv_recv_wr** bad_recv_wr) {
+  return ibv_post_srq_recv(
+      reinterpret_cast<::ibv_srq*>(srq),
+      reinterpret_cast<::ibv_recv_wr*>(recv_wr),
+      reinterpret_cast<::ibv_recv_wr**>(bad_recv_wr));
+}
+
+struct ibv_ah* linked_create_ah(struct ibv_pd* pd, struct ibv_ah_attr* attr) {
+  return reinterpret_cast<struct ibv_ah*>(ibv_create_ah(
+      reinterpret_cast<::ibv_pd*>(pd), reinterpret_cast<::ibv_ah_attr*>(attr)));
+}
+
+int linked_destroy_ah(struct ibv_ah* ah) {
+  return ibv_destroy_ah(reinterpret_cast<::ibv_ah*>(ah));
+}
+
+struct ibv_qp* linked_create_qp_ex(
+    struct ibv_context* context,
+    struct ibv_qp_init_attr_ex* qp_init_attr_ex) {
+  return reinterpret_cast<struct ibv_qp*>(ibv_create_qp_ex(
+      reinterpret_cast<::ibv_context*>(context),
+      reinterpret_cast<::ibv_qp_init_attr_ex*>(qp_init_attr_ex)));
+}
 #endif
 
 int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
@@ -316,6 +394,25 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   symbols.mlx5dv_internal_get_data_direct_sysfs_path =
       &linked_mlx5dv_get_data_direct_sysfs_path;
   symbols.mlx5dv_internal_reg_dmabuf_mr = &linked_mlx5dv_reg_dmabuf_mr;
+  symbols.mlx5dv_internal_create_qp = &linked_mlx5dv_create_qp;
+  symbols.mlx5dv_internal_qp_ex_from_ibv_qp_ex =
+      &linked_mlx5dv_qp_ex_from_ibv_qp_ex;
+
+  // SRQ symbols
+  symbols.ibv_internal_create_srq = &linked_create_srq;
+  symbols.ibv_internal_create_srq_ex = &linked_create_srq_ex;
+  symbols.ibv_internal_modify_srq = &linked_modify_srq;
+  symbols.ibv_internal_query_srq = &linked_query_srq;
+  symbols.ibv_internal_destroy_srq = &linked_destroy_srq;
+  symbols.ibv_internal_post_srq_recv = &linked_post_srq_recv;
+
+  // AH symbols
+  symbols.ibv_internal_create_ah = &linked_create_ah;
+  symbols.ibv_internal_destroy_ah = &linked_destroy_ah;
+
+  // Extended QP symbols
+  symbols.ibv_internal_create_qp_ex = &linked_create_qp_ex;
+
   return 0;
 #else
   // Dynamic loading mode - use dlopen/dlsym
@@ -469,6 +566,24 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
       "mlx5dv_reg_dmabuf_mr",
       symbols.mlx5dv_internal_reg_dmabuf_mr,
       "MLX5_1.25");
+
+  // DC transport support
+  LOAD_MLX5DV_SYM_VERSION(
+      "mlx5dv_create_qp", symbols.mlx5dv_internal_create_qp, "MLX5_1.3");
+  LOAD_MLX5DV_SYM_VERSION(
+      "mlx5dv_qp_ex_from_ibv_qp_ex",
+      symbols.mlx5dv_internal_qp_ex_from_ibv_qp_ex,
+      "MLX5_1.6");
+
+  // SRQ support
+  LOAD_IBVERBS_SYM("ibv_create_srq", symbols.ibv_internal_create_srq);
+  LOAD_IBVERBS_SYM("ibv_modify_srq", symbols.ibv_internal_modify_srq);
+  LOAD_IBVERBS_SYM("ibv_query_srq", symbols.ibv_internal_query_srq);
+  LOAD_IBVERBS_SYM("ibv_destroy_srq", symbols.ibv_internal_destroy_srq);
+
+  // AH support
+  LOAD_IBVERBS_SYM("ibv_create_ah", symbols.ibv_internal_create_ah);
+  LOAD_IBVERBS_SYM("ibv_destroy_ah", symbols.ibv_internal_destroy_ah);
 
   // all symbols were loaded successfully, dismiss guard
   guard.dismiss();

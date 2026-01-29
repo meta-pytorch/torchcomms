@@ -16,6 +16,7 @@ void AllToAllSingleTest::SetUp() {
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
+  device_type_ = wrapper_->getDevice().type();
 }
 
 void AllToAllSingleTest::TearDown() {
@@ -143,6 +144,14 @@ void AllToAllSingleTest::testAllToAllSingleInputDeleted(
 void AllToAllSingleTest::testGraphAllToAllSingle(
     int count,
     at::ScalarType dtype) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    std::cout
+        << "Skipping CUDA Graph all_to_all_single test: not supported on CPU"
+        << std::endl;
+    return;
+  }
+
   SCOPED_TRACE(
       ::testing::Message() << "Testing CUDA Graph all_to_all_single with count="
                            << count << " and dtype=" << getDtypeName(dtype));
@@ -187,6 +196,14 @@ void AllToAllSingleTest::testGraphAllToAllSingle(
 void AllToAllSingleTest::testGraphAllToAllSingleInputDeleted(
     int count,
     at::ScalarType dtype) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    std::cout << "Skipping CUDA Graph all_to_all_single (input deleted) test: "
+                 "not supported on CPU"
+              << std::endl;
+    return;
+  }
+
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing CUDA Graph all_to_all_single with input deleted after graph creation with count="

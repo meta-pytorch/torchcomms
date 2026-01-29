@@ -144,6 +144,10 @@ void AllReduceTest::testGraphAllReduce(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message() << "Testing CUDA Graph all_reduce with count="
                            << count << " and dtype=" << getDtypeName(dtype)
@@ -189,6 +193,10 @@ void AllReduceTest::testGraphAllReduceInputDeleted(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing CUDA Graph all_reduce with input deleted after graph creation with count="
