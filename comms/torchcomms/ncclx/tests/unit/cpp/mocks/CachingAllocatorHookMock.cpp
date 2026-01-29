@@ -22,6 +22,15 @@ void CachingAllocatorHookMock::setupDefaultBehaviors() {
   // Set up default behavior for regDeregMem (no-op by default)
   ON_CALL(*this, regDeregMem(_)).WillByDefault(Return());
 
+  // Set up default behavior for registerMemPreHook - set our local flag
+  ON_CALL(*this, registerMemPreHook()).WillByDefault([this]() {
+    mem_pre_hook_registered_ = true;
+  });
+
+  // Call registerMemPreHook to simulate what DefaultCachingAllocatorHookImpl
+  // constructor does
+  registerMemPreHook();
+
   // Set up default behavior for clear
   ON_CALL(*this, clear()).WillByDefault([this]() {
     registered_comms_.clear();
@@ -35,12 +44,19 @@ void CachingAllocatorHookMock::reset() {
   // Clear the registered communicators set
   registered_comms_.clear();
 
+  // Reset the mem pre hook flag
+  mem_pre_hook_registered_ = false;
+
   // Re-setup default behaviors after reset
   setupDefaultBehaviors();
 }
 
 bool CachingAllocatorHookMock::isCommRegistered(TorchCommNCCLX* comm) {
   return registered_comms_.find(comm) != registered_comms_.end();
+}
+
+bool CachingAllocatorHookMock::isMemRegisteredCalled() {
+  return mem_pre_hook_registered_;
 }
 
 } // namespace torch::comms::test
