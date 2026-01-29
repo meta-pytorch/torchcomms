@@ -277,7 +277,10 @@ fail:
 
 NCCL_API(ncclResult_t, ncclCommWindowRegister, ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
 ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags) {
-  if(ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
+  // NCCL_WIN_FORCE_ORIG_PATH flag bypasses CTRAN and forces NCCL orig path.
+  // This is needed for device API (GIN support) which only exists in the orig path.
+  bool forceOrigPath = (winFlags & NCCL_WIN_FORCE_ORIG_PATH) != 0;
+  if(!forceOrigPath && ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
     if (!ncclGetCuMemSysSupported()) {
       FB_ERRORRETURN(ncclInternalError, "ncclCommWindowRegister requires CUMEM support.");
     }
@@ -366,28 +369,26 @@ NCCL_API(ncclResult_t, ncclCommWindowDeregister, ncclComm_t comm, ncclWindow_t w
 ncclResult_t ncclCommWindowDeregister(ncclComm_t comm, ncclWindow_t win) {
   if(ncclx::algoconf::getRmaAlgo() != NCCL_RMA_ALGO::orig && ctranInitialized(comm->ctranComm_.get())){
     ncclWin* ncclWinPtr = ncclWinMap().find(win);
-    if (!comm || !win || !ncclWinPtr || comm != ncclWinPtr->comm) {
-      FB_ERRORRETURN(
-          ncclInvalidUsage,
-          "Invalid parameter(s) to free window: comm {}, win {}",
-          (void*)comm,
-          (void*)win);
+    // If window is found in CTRAN map, deregister via CTRAN path.
+    // If not found (e.g., registered with NCCL_WIN_FORCE_ORIG_PATH), fall through
+    // to symmetric/orig path deregistration below.
+    if (ncclWinPtr != nullptr && comm == ncclWinPtr->comm) {
+      auto statex = comm->ctranComm_->statex_.get();
+      if (statex == nullptr) {
+        FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
+      }
+
+      // Remove from map first, then cleanup resources
+      ncclWinMap().erase(win);
+      auto guard = folly::makeGuard([win, ncclWinPtr] {
+        delete ncclWinPtr;
+        delete win;
+      });
+
+      NCCLCHECK(metaCommToNccl(ctran::ctranWinFree(ncclWinPtr->ctranWindow)));
+      return ncclSuccess;
     }
-
-    auto statex = comm->ctranComm_->statex_.get();
-    if (statex == nullptr) {
-      FB_ERRORRETURN(ncclInternalError, "Empty communicator statex.");
-    }
-
-    // Remove from map first, then cleanup resources
-    ncclWinMap().erase(win);
-    auto guard = folly::makeGuard([win, ncclWinPtr] {
-      delete ncclWinPtr;
-      delete win;
-    });
-
-    NCCLCHECK(metaCommToNccl(ctran::ctranWinFree(ncclWinPtr->ctranWindow)));
-    return ncclSuccess;
+    // Window not in CTRAN map - fall through to orig path deregistration
   }
   ncclResult_t ret = ncclSuccess;
   int saveDev;
