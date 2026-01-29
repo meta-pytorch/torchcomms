@@ -7,7 +7,6 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/CtranCtrl.h"
-#include "comms/ctran/backends/nvl/CtranNvlBase.h"
 #include "comms/utils/commSpecs.h"
 
 /**
@@ -21,11 +20,6 @@ class CtranNvl {
   CtranNvl(CtranComm* comm);
 
   ~CtranNvl();
-
-  // Register control message callback function if have any.
-  // Input arguments:
-  //   - ctrlMgr: the ctranCtrlManager to manage the control message
-  void regCtrlCb(std::unique_ptr<CtranCtrlManager>& ctrlMgr);
 
   // Register memory to be used for NVL operations. If registration fails
   // because memory type is not supported, commSuccess shall be returned and the
@@ -52,31 +46,6 @@ class CtranNvl {
   //                registration handle.
   static commResult_t deregMem(void* nvlRegElem);
 
-  // Import a remote memory registration
-  // Input arguments:
-  //   - rank: the remote rank
-  //   - msg: received control message including remote memory details
-  // Output arguments:
-  //   - buf: the local buffer mapped to the imported remote memory
-  //   - rkey: the remoteAccessKey (rkey) of the remote buffer
-  //   registration[]
-  commResult_t importMem(
-      void** buf,
-      struct CtranNvlRemoteAccessKey* rkey,
-      int rank,
-      const ControlMsg& msg);
-
-  // Export a local memory registration for remote rank to import.
-  // Input arguments:
-  //   - buf: the local buffer to be exported. The offset to the base of
-  //          nvlRegElem will be passed to remote rank.
-  //   - nvlRegElem: local registration of the to-be-exported buffer
-  // Output arguments:
-  //   - msg: the reference to the control message to be sent to remote rank.
-  //          Contents filled at return.
-  static commResult_t
-  exportMem(const void* buf, void* nvlRegElem, ControlMsg& msg);
-
   // Release the exported memory on remote rank.
   // Input arguments:
   //   - nvlRegElem: local registration
@@ -85,22 +54,10 @@ class CtranNvl {
   //          Contents filled at return.
   static commResult_t remReleaseMem(void* nvlRegElem, ControlMsg& msg);
 
-  // Callback (CB) function to handle incoming NVL_RELEASE_MEM CB_CTRL msg
-  // Input arguments:
-  //   - rank: the rank sent the CB_CTRL msg
-  //   - msg: the pointer to the received CB_CTRL msg
-  //   - ctx: the context of the CB_CTRL msg; it is the CtranNvl object passed
-  //          in at cb registration
-  static commResult_t releaseMemCb(int rank, void* msgPtr, void* ctx);
-
-  commResult_t releaseMem(CtranNvlRemoteAccessKey* rkey);
-
   // Return if the perr can be communicated via NVL backend
   // Input arguments:
   //   - rank: the rank of the peer in the current communicator
   bool isSupported(int rank);
-
-  size_t getNumRemMem(int rank) const;
 
  private:
   class Impl;

@@ -13,7 +13,9 @@ std::unique_ptr<TorchCommTestWrapper> ReduceTest::createWrapper() {
 }
 
 void ReduceTest::synchronizeStream() {
-  at::cuda::getCurrentCUDAStream(device_index_).synchronize();
+  if (!isRunningOnCPU()) {
+    at::cuda::getCurrentCUDAStream(device_index_).synchronize();
+  }
 }
 
 void ReduceTest::SetUp() {
@@ -21,6 +23,7 @@ void ReduceTest::SetUp() {
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
+  device_type_ = wrapper_->getDevice().type();
 }
 
 void ReduceTest::TearDown() {
@@ -175,13 +178,15 @@ at::Tensor ReduceTest::createInputTensor(int count, at::ScalarType dtype) {
 }
 
 // Helper function to calculate expected result
-int ReduceTest::calculateExpectedResult(const torch::comms::ReduceOp& op) {
+double ReduceTest::calculateExpectedResult(const torch::comms::ReduceOp& op) {
   if (op == torch::comms::ReduceOp::SUM) {
     return num_ranks_ * (num_ranks_ + 1) / 2;
   } else if (op == torch::comms::ReduceOp::MAX) {
     return num_ranks_;
   } else if (op == torch::comms::ReduceOp::AVG) {
-    return (num_ranks_ + 1) / 2;
+    // For AVG, use floating point division to get correct expected value
+    // Sum of ranks 1..n = n*(n+1)/2, divided by n gives (n+1)/2.0
+    return static_cast<double>(num_ranks_ + 1) / 2.0;
   } else {
     throw std::runtime_error("Unsupported reduce operation");
   }
@@ -198,7 +203,7 @@ void ReduceTest::verifyResults(
   }
 
   // Calculate expected result
-  int expected = calculateExpectedResult(op);
+  double expected = calculateExpectedResult(op);
 
   // Use verifyTensorEquality to compare output with expected tensor
   std::string description = "reduce with op " + getOpName(op);
@@ -210,6 +215,11 @@ void ReduceTest::testGraphReduce(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message() << "Testing CUDA Graph reduce with count=" << count
                            << " and dtype=" << getDtypeName(dtype)
@@ -256,6 +266,11 @@ void ReduceTest::testGraphReduceInputDeleted(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing CUDA Graph reduce with input deleted after graph creation with count="
