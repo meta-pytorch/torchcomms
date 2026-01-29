@@ -484,7 +484,9 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
       bool isGpuMem,
       bool interleavePut = false,
       bool interleaveFastPut = false,
-      bool fallbackPut = false) {
+      bool fallbackPut = false,
+      bool ibFastPath = true,
+      bool verifySeqNum = false) {
     if (!ctranIb) {
       try {
         ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
@@ -537,6 +539,22 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
 
     // Waits control message to be received
     waitIbReq(ctrlReq, ctranIb);
+
+    uint32_t startSndNxt = 0;
+    uint32_t startRcvNxt = 0;
+    if (verifySeqNum) {
+      if (this->globalRank == sendRank) {
+        auto vc = ctranIb->getVc(recvRank);
+        if (vc) {
+          startSndNxt = vc->getSndNxt();
+        }
+      } else if (this->globalRank == recvRank) {
+        auto vc = ctranIb->getVc(sendRank);
+        if (vc) {
+          startRcvNxt = vc->getRcvNxt();
+        }
+      }
+    }
 
     std::chrono::system_clock::time_point start =
         std::chrono::system_clock::now();
@@ -614,6 +632,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
           } else {
             putMsg.req = nullptr; // No local signal for batch operations
           }
+          putMsg.ibFastPath = ibFastPath;
 
           putBatch.push_back(putMsg);
         }
@@ -667,6 +686,23 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
         waitIbReq(*requests.back(), ctranIb);
         requests.pop_back();
       }
+
+      if (verifySeqNum) {
+        auto vc = ctranIb->getVc(recvRank);
+        if (vc) {
+          uint32_t endSndNxt = vc->getSndNxt();
+          uint32_t diff = (endSndNxt - startSndNxt) & 0xFFFFFF;
+          size_t expectedDiff = 0;
+          if (ibFastPath) {
+            expectedDiff += numBatches * batchSize;
+          }
+          if (interleaveFastPut) {
+            expectedDiff += (numBatches - 1);
+          }
+          EXPECT_EQ(diff, expectedDiff) << "Sender SeqNum mismatch";
+        }
+      }
+
       // add a barrier
       sockRecv(recvRank);
     } else if (this->globalRank == recvRank) {
@@ -681,6 +717,23 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
         COMMCHECK_TEST(ctranIb->iflush(buf, handle, &flushReq));
         COMMCHECK_TEST(waitIbReq(flushReq, ctranIb));
       }
+
+      if (verifySeqNum) {
+        auto vc = ctranIb->getVc(sendRank);
+        if (vc) {
+          uint32_t endRcvNxt = vc->getRcvNxt();
+          uint32_t diff = (endRcvNxt - startRcvNxt) & 0xFFFFFF;
+          size_t expectedDiff = 0;
+          if (ibFastPath) {
+            expectedDiff += numBatches * batchSize;
+          }
+          if (interleaveFastPut) {
+            expectedDiff += (numBatches - 1);
+          }
+          EXPECT_EQ(diff, expectedDiff) << "Receiver SeqNum mismatch";
+        }
+      }
+
       // add a barrier
       sockSend(sendRank);
     }
@@ -2974,6 +3027,50 @@ TEST_P(CtranIbTestParam, PutBatchFallback) {
       /*interleavePut*/ false,
       /*interleaveFastPut*/ false,
       /*fallbackPut=*/true);
+}
+
+// Verify that iputBatch respects ibFastPath field by checking internal VC
+// state.
+// 1. If fast path is true, the sender sends packets with RDMA_WRITE_WITH_IMM,
+// which increments sndNxt.
+// 2. If fast path is false (in spray mode), the sender sends packets with
+// RDMA_WRITE, which does not increment sndNxt. We verify the fix by checking if
+// sndNxt/rcvNxt are updated accordingly.
+TEST_F(CtranIbTest, PutBatchFastPathVerification) {
+  EnvRAII env1(NCCL_CTRAN_IB_VC_MODE, NCCL_CTRAN_IB_VC_MODE::spray);
+
+  this->printTestDesc(
+      "PutBatchFastPathVerification",
+      "Verify that iputBatch respects ibFastPath field by checking internal VC state (sndNxt). "
+      "In spray mode, fast path updates sndNxt, while slow path does not.");
+
+  // 1. Test Fast Path
+  runPutBatch(
+      /* bufCount */ 1024,
+      /* numBatches */ 1,
+      /* batchSize */ 5,
+      /* withNotify */ true,
+      /* mixedNotify */ false,
+      /* isGpuMem */ true,
+      /* interleavePut */ false,
+      /* interleaveFastPut */ false,
+      /* fallbackPut */ false,
+      /* ibFastPath */ true,
+      /* verifySeqNum */ true);
+
+  // 2. Test Slow Path (FastPath=false)
+  runPutBatch(
+      /* bufCount */ 1024,
+      /* numBatches */ 1,
+      /* batchSize */ 5,
+      /* withNotify */ true,
+      /* mixedNotify */ false,
+      /* isGpuMem */ true,
+      /* interleavePut */ false,
+      /* interleaveFastPut */ false,
+      /* fallbackPut */ false,
+      /* ibFastPath */ false,
+      /* verifySeqNum */ true);
 }
 
 INSTANTIATE_TEST_SUITE_P(

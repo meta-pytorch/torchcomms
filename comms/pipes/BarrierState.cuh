@@ -6,6 +6,7 @@
 #include "comms/common/BitOps.cuh"
 #include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/Timeout.cuh"
 
 namespace comms::pipes {
 
@@ -56,12 +57,19 @@ struct alignas(128) BarrierState {
    * - 2nd wait: expects current_counter >= 2
    * - etc.
    *
-   * Blocking: Spins until the condition is met.
+   * Blocking: Spins until the condition is met (or timeout expires).
    * Warning: Only one thread should call wait() per synchronization round.
+   *
+   * @param timeout Optional timeout (default: no timeout, infinite wait)
    */
-  __device__ __forceinline__ void wait() {
+  __device__ __forceinline__ void wait(const Timeout& timeout = Timeout()) {
     uint64_t expected = expected_counter_.atomic_fetch_add(1) + 1;
     while (current_counter_.load() < expected) {
+      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          timeout,
+          "BarrierState::wait timed out (expected=%llu, current=%llu)",
+          static_cast<unsigned long long>(expected),
+          static_cast<unsigned long long>(current_counter_.load()));
     }
   }
 
@@ -91,12 +99,15 @@ struct alignas(128) BarrierState {
    * barrier before proceeding.
    *
    * @param group ThreadGroup for cooperative synchronization
+   * @param timeout Optional timeout (default: no timeout, infinite wait)
    *
    * All threads in the group must call this function (collective operation).
    */
-  __device__ __forceinline__ void wait(ThreadGroup& group) {
+  __device__ __forceinline__ void wait(
+      ThreadGroup& group,
+      const Timeout& timeout = Timeout()) {
     if (group.is_leader()) {
-      wait();
+      wait(timeout);
     }
     group.sync();
   }
