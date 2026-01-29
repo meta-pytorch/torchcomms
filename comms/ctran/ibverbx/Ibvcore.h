@@ -494,7 +494,11 @@ enum ibv_qp_type {
    * experimental qp types.
    */
   IBV_EXP_QP_TYPE_START = 32,
-  IBV_EXP_QPT_DC_INI = IBV_EXP_QP_TYPE_START
+  IBV_EXP_QPT_DC_INI = IBV_EXP_QP_TYPE_START,
+
+  /* Driver QP type used for DC (Dynamically Connected) and other vendor
+   * extensions */
+  IBV_QPT_DRIVER = 0xff,
 };
 
 struct ibv_qp_cap {
@@ -520,7 +524,39 @@ struct ibv_qp_init_attr {
 enum ibv_qp_init_attr_mask {
   IBV_QP_INIT_ATTR_PD = 1 << 0,
   IBV_QP_INIT_ATTR_XRCD = 1 << 1,
-  IBV_QP_INIT_ATTR_RESERVED = 1 << 2
+  IBV_QP_INIT_ATTR_CREATE_FLAGS = 1 << 2,
+  IBV_QP_INIT_ATTR_MAX_TSO_HEADER = 1 << 3,
+  IBV_QP_INIT_ATTR_IND_TABLE = 1 << 4,
+  IBV_QP_INIT_ATTR_RX_HASH = 1 << 5,
+  IBV_QP_INIT_ATTR_SEND_OPS_FLAGS = 1 << 6,
+  IBV_QP_INIT_ATTR_RESERVED = 1 << 7
+};
+
+enum ibv_qp_create_send_ops_flags {
+  IBV_QP_EX_WITH_RDMA_WRITE = 1 << 0,
+  IBV_QP_EX_WITH_RDMA_WRITE_WITH_IMM = 1 << 1,
+  IBV_QP_EX_WITH_SEND = 1 << 2,
+  IBV_QP_EX_WITH_SEND_WITH_IMM = 1 << 3,
+  IBV_QP_EX_WITH_RDMA_READ = 1 << 4,
+  IBV_QP_EX_WITH_ATOMIC_CMP_AND_SWP = 1 << 5,
+  IBV_QP_EX_WITH_ATOMIC_FETCH_AND_ADD = 1 << 6,
+  IBV_QP_EX_WITH_LOCAL_INV = 1 << 7,
+  IBV_QP_EX_WITH_BIND_MW = 1 << 8,
+  IBV_QP_EX_WITH_SEND_WITH_INV = 1 << 9,
+  IBV_QP_EX_WITH_TSO = 1 << 10,
+};
+
+// Forward declaration for extended QP attributes (only used as pointer)
+struct ibv_rwq_ind_table;
+
+// Full definition of ibv_rx_hash_conf (needed as embedded struct)
+struct ibv_rx_hash_conf {
+  /* enum ibv_rx_hash_function_flags */
+  uint8_t rx_hash_function;
+  uint8_t rx_hash_key_len;
+  uint8_t* rx_hash_key;
+  /* enum ibv_rx_hash_fields */
+  uint64_t rx_hash_fields_mask;
 };
 
 struct ibv_qp_init_attr_ex {
@@ -535,6 +571,14 @@ struct ibv_qp_init_attr_ex {
   uint32_t comp_mask;
   struct ibv_pd* pd;
   struct ibv_xrcd* xrcd;
+
+  uint32_t create_flags;
+  uint16_t max_tso_header;
+  struct ibv_rwq_ind_table* rwq_ind_tbl;
+  struct ibv_rx_hash_conf rx_hash_conf; // Must be embedded struct, not pointer!
+  uint32_t source_qpn;
+  /* See enum ibv_qp_create_send_ops_flags */
+  uint64_t send_ops_flags;
 };
 
 enum ibv_qp_open_attr_mask {
@@ -1451,6 +1495,176 @@ enum {
   MLX5_OPCODE_FLOW_TBL_ACCESS = 0x2c,
   MLX5_OPCODE_MMO = 0x2F,
 };
+
+// DC (Dynamically Connected) Transport types
+
+enum mlx5dv_qp_init_attr_mask {
+  MLX5DV_QP_INIT_ATTR_MASK_QP_CREATE_FLAGS = 1 << 0,
+  MLX5DV_QP_INIT_ATTR_MASK_DC = 1 << 1,
+  MLX5DV_QP_INIT_ATTR_MASK_SEND_OPS_FLAGS = 1 << 2,
+  MLX5DV_QP_INIT_ATTR_MASK_DCI_STREAMS = 1 << 3,
+};
+
+enum mlx5dv_dc_type {
+  MLX5DV_DCTYPE_DCT = 1,
+  MLX5DV_DCTYPE_DCI,
+};
+
+struct mlx5dv_dci_streams {
+  uint8_t log_num_concurent;
+  uint8_t log_num_errored;
+};
+
+struct mlx5dv_dc_init_attr {
+  enum mlx5dv_dc_type dc_type;
+  union {
+    uint64_t dct_access_key;
+    struct mlx5dv_dci_streams dci_streams;
+  };
+};
+
+enum mlx5dv_qp_create_send_ops_flags {
+  MLX5DV_QP_EX_WITH_MR_INTERLEAVED = 1 << 0,
+  MLX5DV_QP_EX_WITH_MR_LIST = 1 << 1,
+  MLX5DV_QP_EX_WITH_MKEY_CONFIGURE = 1 << 2,
+  MLX5DV_QP_EX_WITH_RAW_WQE = 1 << 3,
+  MLX5DV_QP_EX_WITH_MEMCPY = 1 << 4,
+};
+
+struct mlx5dv_qp_init_attr {
+  uint64_t comp_mask; // Use enum mlx5dv_qp_init_attr_mask
+  uint32_t create_flags; // Use enum mlx5dv_qp_create_flags
+  struct mlx5dv_dc_init_attr dc_init_attr;
+  uint64_t send_ops_flags; // Use enum mlx5dv_qp_create_send_ops_flags
+};
+
+// mlx5dv_qp_ex for DC operations
+struct mlx5dv_qp_ex {
+  uint64_t comp_mask;
+  // Available for MLX5 DC QP type with send opcodes: rdma, atomic and send
+  void (*wr_set_dc_addr)(
+      struct mlx5dv_qp_ex* mqp,
+      struct ibv_ah* ah,
+      uint32_t remote_dctn,
+      uint64_t remote_dc_key);
+  void (*wr_mr_interleaved)(
+      struct mlx5dv_qp_ex* mqp,
+      void* mkey,
+      uint32_t access_flags,
+      uint32_t repeat_count,
+      uint16_t num_interleaved,
+      void* data);
+  void (*wr_mr_list)(
+      struct mlx5dv_qp_ex* mqp,
+      void* mkey,
+      uint32_t access_flags,
+      uint16_t num_sges,
+      struct ibv_sge* sge);
+  void (*wr_mkey_configure)(
+      struct mlx5dv_qp_ex* mqp,
+      void* mkey,
+      uint8_t num_setters,
+      void* attr);
+  void (*wr_set_mkey_access_flags)(
+      struct mlx5dv_qp_ex* mqp,
+      uint32_t access_flags);
+  void (*wr_set_mkey_layout_list)(
+      struct mlx5dv_qp_ex* mqp,
+      uint16_t num_sges,
+      const struct ibv_sge* sge);
+  void (*wr_set_mkey_layout_interleaved)(
+      struct mlx5dv_qp_ex* mqp,
+      uint32_t repeat_count,
+      uint16_t num_interleaved,
+      const void* data);
+  void (*wr_set_mkey_sig_block)(struct mlx5dv_qp_ex* mqp, const void* attr);
+  void (*wr_raw_wqe)(struct mlx5dv_qp_ex* mqp, const void* wqe);
+  void (*wr_set_dc_addr_stream)(
+      struct mlx5dv_qp_ex* mqp,
+      struct ibv_ah* ah,
+      uint32_t remote_dctn,
+      uint64_t remote_dc_key,
+      uint16_t stream_id);
+  void (*wr_memcpy)(
+      struct mlx5dv_qp_ex* mqp,
+      uint32_t dest_lkey,
+      uint64_t dest_addr,
+      uint32_t src_lkey,
+      uint64_t src_addr,
+      size_t length);
+  void (*wr_set_mkey_crypto)(struct mlx5dv_qp_ex* mqp, const void* attr);
+};
+
+// ibv_qp_ex for extended QP operations
+struct ibv_qp_ex {
+  struct ibv_qp qp_base;
+  uint64_t comp_mask;
+  uint64_t wr_id;
+  unsigned int wr_flags;
+  void (*wr_atomic_cmp_swp)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr,
+      uint64_t compare,
+      uint64_t swap);
+  void (*wr_atomic_fetch_add)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr,
+      uint64_t add);
+  void (*wr_bind_mw)(
+      struct ibv_qp_ex* qp,
+      struct ibv_mw* mw,
+      uint32_t rkey,
+      const void* bind_info);
+  void (*wr_local_inv)(struct ibv_qp_ex* qp, uint32_t invalidate_rkey);
+  void (
+      *wr_rdma_read)(struct ibv_qp_ex* qp, uint32_t rkey, uint64_t remote_addr);
+  void (*wr_rdma_write)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr);
+  void (*wr_rdma_write_imm)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr,
+      __be32 imm_data);
+  void (*wr_send)(struct ibv_qp_ex* qp);
+  void (*wr_send_imm)(struct ibv_qp_ex* qp, __be32 imm_data);
+  void (*wr_send_inv)(struct ibv_qp_ex* qp, uint32_t invalidate_rkey);
+  void (*wr_send_tso)(
+      struct ibv_qp_ex* qp,
+      void* hdr,
+      uint16_t hdr_sz,
+      uint16_t mss);
+  void (*wr_set_ud_addr)(
+      struct ibv_qp_ex* qp,
+      struct ibv_ah* ah,
+      uint32_t remote_qpn,
+      uint32_t remote_qkey);
+  void (*wr_set_xrc_srqn)(struct ibv_qp_ex* qp, uint32_t remote_srqn);
+  void (*wr_set_inline_data)(struct ibv_qp_ex* qp, void* addr, size_t length);
+  void (*wr_set_inline_data_list)(
+      struct ibv_qp_ex* qp,
+      size_t num_buf,
+      const void* buf_list);
+  void (*wr_set_sge)(
+      struct ibv_qp_ex* qp,
+      uint32_t lkey,
+      uint64_t addr,
+      uint32_t length);
+  void (*wr_set_sge_list)(
+      struct ibv_qp_ex* qp,
+      size_t num_sge,
+      const struct ibv_sge* sg_list);
+  void (*wr_start)(struct ibv_qp_ex* qp);
+  int (*wr_complete)(struct ibv_qp_ex* qp);
+  void (*wr_abort)(struct ibv_qp_ex* qp);
+};
+
+inline struct ibv_qp* ibv_qp_ex_to_qp(struct ibv_qp_ex* qp) {
+  return &qp->qp_base;
+}
 
 } // namespace ibverbx
 

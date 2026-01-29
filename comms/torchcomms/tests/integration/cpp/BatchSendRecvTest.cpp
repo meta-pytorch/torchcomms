@@ -17,6 +17,7 @@ void BatchSendRecvTest::SetUp() {
   torchcomm_ = wrapper_->getTorchComm();
   rank_ = torchcomm_->getRank();
   num_ranks_ = torchcomm_->getSize();
+  device_type_ = wrapper_->getDevice().type();
 }
 
 void BatchSendRecvTest::TearDown() {
@@ -215,6 +216,11 @@ void BatchSendRecvTest::testBatchSendRecvInputDeleted(
 void BatchSendRecvTest::testGraphBatchSendRecv(
     int count,
     at::ScalarType dtype) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message() << "Testing CUDA Graph batch SendRecv with count="
                            << count << " and dtype=" << getDtypeName(dtype));
@@ -277,6 +283,11 @@ void BatchSendRecvTest::testGraphBatchSendRecv(
 void BatchSendRecvTest::testGraphBatchSendRecvInputDeleted(
     int count,
     at::ScalarType dtype) {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(
       ::testing::Message()
       << "Testing CUDA Graph batch SendRecv with input deleted after graph creation with count="
