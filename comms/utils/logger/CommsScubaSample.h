@@ -18,7 +18,7 @@ class CommsScubaSample {
   // Only allow moves not copies (public interface)
   CommsScubaSample(CommsScubaSample&&) = default;
   CommsScubaSample& operator=(CommsScubaSample&&) = default;
-  virtual ~CommsScubaSample() = default;
+  virtual ~CommsScubaSample();
 
   // Core field setters
   void addNormal(const std::string& key, std::string value);
