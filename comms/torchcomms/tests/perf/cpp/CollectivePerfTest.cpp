@@ -247,6 +247,7 @@ int main(int argc, char** argv) {
     std::cout << "TorchComms Collective Performance Test\n"
               << "======================================\n"
               << "Backend: " << comm->getBackend() << "\n"
+              << "Device: " << comm->getDevice() << "\n"
               << "Ranks: " << num_ranks << "\n"
               << "Collective: " << collective << "\n"
               << "Mode: " << (params.async ? "async" : "sync") << "\n"
