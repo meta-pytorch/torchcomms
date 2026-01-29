@@ -158,6 +158,23 @@ struct IbvSymbols {
   struct ibv_qp* (*ibv_internal_create_qp_ex)(
       struct ibv_context* context,
       struct ibv_qp_init_attr_ex* qp_init_attr_ex) = nullptr;
+  struct ibv_qp_ex* (*ibv_internal_qp_to_qp_ex)(struct ibv_qp* qp) = nullptr;
+  void (*ibv_internal_wr_start)(struct ibv_qp_ex* qp) = nullptr;
+  void (*ibv_internal_wr_rdma_write_imm)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr,
+      __be32 imm_data) = nullptr;
+  void (*ibv_internal_wr_set_sge_list)(
+      struct ibv_qp_ex* qp,
+      size_t num_sge,
+      const struct ibv_sge* sg_list) = nullptr;
+  int (*ibv_internal_wr_complete)(struct ibv_qp_ex* qp) = nullptr;
+  void (*mlx5dv_internal_wr_set_dc_addr)(
+      struct mlx5dv_qp_ex* mqp,
+      struct ibv_ah* ah,
+      uint32_t remote_dctn,
+      uint64_t remote_dc_key) = nullptr;
 };
 
 extern IbvSymbols ibvSymbols;

@@ -347,6 +347,50 @@ struct ibv_qp* linked_create_qp_ex(
       reinterpret_cast<::ibv_context*>(context),
       reinterpret_cast<::ibv_qp_init_attr_ex*>(qp_init_attr_ex)));
 }
+
+struct ibv_qp_ex* linked_qp_to_qp_ex(struct ibv_qp* qp) {
+  return reinterpret_cast<struct ibv_qp_ex*>(
+      ibv_qp_to_qp_ex(reinterpret_cast<::ibv_qp*>(qp)));
+}
+
+void linked_wr_start(struct ibv_qp_ex* qp) {
+  ibv_wr_start(reinterpret_cast<::ibv_qp_ex*>(qp));
+}
+
+void linked_wr_rdma_write_imm(
+    struct ibv_qp_ex* qp,
+    uint32_t rkey,
+    uint64_t remote_addr,
+    __be32 imm_data) {
+  ibv_wr_rdma_write_imm(
+      reinterpret_cast<::ibv_qp_ex*>(qp), rkey, remote_addr, imm_data);
+}
+
+void linked_wr_set_sge_list(
+    struct ibv_qp_ex* qp,
+    size_t num_sge,
+    const struct ibv_sge* sg_list) {
+  ibv_wr_set_sge_list(
+      reinterpret_cast<::ibv_qp_ex*>(qp),
+      num_sge,
+      reinterpret_cast<const ::ibv_sge*>(sg_list));
+}
+
+int linked_wr_complete(struct ibv_qp_ex* qp) {
+  return ibv_wr_complete(reinterpret_cast<::ibv_qp_ex*>(qp));
+}
+
+void linked_mlx5dv_wr_set_dc_addr(
+    struct mlx5dv_qp_ex* mqp,
+    struct ibv_ah* ah,
+    uint32_t remote_dctn,
+    uint64_t remote_dc_key) {
+  mlx5dv_wr_set_dc_addr(
+      reinterpret_cast<::mlx5dv_qp_ex*>(mqp),
+      reinterpret_cast<::ibv_ah*>(ah),
+      remote_dctn,
+      remote_dc_key);
+}
 #endif
 
 int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
@@ -412,6 +456,12 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
 
   // Extended QP symbols
   symbols.ibv_internal_create_qp_ex = &linked_create_qp_ex;
+  symbols.ibv_internal_qp_to_qp_ex = &linked_qp_to_qp_ex;
+  symbols.ibv_internal_wr_start = &linked_wr_start;
+  symbols.ibv_internal_wr_rdma_write_imm = &linked_wr_rdma_write_imm;
+  symbols.ibv_internal_wr_set_sge_list = &linked_wr_set_sge_list;
+  symbols.ibv_internal_wr_complete = &linked_wr_complete;
+  symbols.mlx5dv_internal_wr_set_dc_addr = &linked_mlx5dv_wr_set_dc_addr;
 
   return 0;
 #else
