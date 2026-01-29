@@ -10,14 +10,16 @@ __global__ void all_to_allv_kernel(
     int my_rank_id,
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
-    DeviceSpan<ChunkInfo> recv_chunk_infos) {
+    DeviceSpan<ChunkInfo> recv_chunk_infos,
+    Timeout timeout) {
   all_to_allv(
       recvbuff_d,
       sendbuff_d,
       my_rank_id,
       transports_per_rank,
       send_chunk_infos,
-      recv_chunk_infos);
+      recv_chunk_infos,
+      timeout);
 }
 
 } // namespace comms::pipes::benchmark
