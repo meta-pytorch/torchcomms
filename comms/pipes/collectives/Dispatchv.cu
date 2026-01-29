@@ -1,12 +1,12 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/pipes/collectives/dispatch.cuh"
-#include "comms/pipes/collectives/dispatch.h"
+#include "comms/pipes/collectives/Dispatchv.cuh"
+#include "comms/pipes/collectives/Dispatchv.h"
 
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/tests/Checks.h"
 
-namespace comms::pipes::collectives {
+namespace comms::pipes {
 
 // Round-robin tournament pairing: compute peer for a given round.
 // Uses rotation method: fix rank 0, rotate ranks 1..n-1 counterclockwise.
@@ -65,12 +65,12 @@ __device__ __forceinline__ void handleSelfCopy(
       chunk_offset += input_chunk_sizes_d[j];
     }
 
-    selfTransport.self.write(
+    selfTransport.self.put(
         group, dst_base + chunk_offset, src_base + chunk_offset, chunk_size);
   }
 
   // Write output chunk sizes for self (copy all chunk sizes)
-  selfTransport.self.write(
+  selfTransport.self.put(
       group,
       reinterpret_cast<char*>(self_output_sizes),
       reinterpret_cast<const char*>(input_chunk_sizes_d),
@@ -292,7 +292,7 @@ __global__ void dispatchKernelHorizontal(
   }
 }
 
-void dispatch(
+void dispatchv(
     // Outputs
     DeviceSpan<void* const> recvbuffs,
     DeviceSpan<std::size_t> output_chunk_sizes_per_rank,
@@ -334,4 +334,4 @@ void dispatch(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
-} // namespace comms::pipes::collectives
+} // namespace comms::pipes

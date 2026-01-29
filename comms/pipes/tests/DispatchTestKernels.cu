@@ -2,7 +2,7 @@
 
 #include "comms/pipes/tests/DispatchTestKernels.cuh"
 
-#include "comms/pipes/collectives/dispatch.h"
+#include "comms/pipes/collectives/Dispatchv.h"
 
 namespace comms::pipes::test {
 
@@ -21,7 +21,7 @@ void testDispatch(
     int num_blocks,
     int num_threads,
     ShardingMode mode) {
-  collectives::dispatch(
+  comms::pipes::dispatchv(
       recvbuffs,
       output_chunk_sizes_per_rank,
       transports,
