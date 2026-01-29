@@ -2,8 +2,8 @@
 
 #include "comms/ctran/backends/ib/CtranIbLocalVc.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
-#include "comms/ctran/backends/ib/CtranIbQpUtils.h"
 #include "comms/ctran/backends/ib/IbvWrap.h"
+#include "comms/ctran/ibverbx/IbvQpUtils.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/logger/LogUtils.h"
 
@@ -46,7 +46,7 @@ LocalVirtualConn::LocalVirtualConn(
     FOLLY_EXPECTED_CHECKTHROW_EX(maybePortAttr, commLogData_);
     portAttr = std::move(*maybePortAttr);
 
-    CtranIbRemoteQpInfo remoteQpInfo = {
+    ibverbx::RemoteQpInfo remoteQpInfo = {
         .mtu = portAttr.active_mtu,
         .port = devices[device].port,
         .linkLayer = portAttr.link_layer,
@@ -65,12 +65,15 @@ LocalVirtualConn::LocalVirtualConn(
       remoteQpInfo.u.ib.lid = portAttr.lid;
     }
 
-    auto ibvQpCreateResult =
-        ctranIbQpCreate(devices_[device].ibvPd, devices_[device].ibvCq->cq());
+    auto ibvQpCreateResult = createRcQp(
+        devices_[device].ibvPd,
+        devices_[device].ibvCq->cq(),
+        MAX_SEND_WR,
+        MAX_RECV_WR);
     FOLLY_EXPECTED_CHECKTHROW_EX(ibvQpCreateResult, commLogData_);
     ibvQps_.emplace_back(std::move(*ibvQpCreateResult));
     FOLLY_EXPECTED_CHECKTHROW_EX(
-        ctranIbQpInit(
+        initQp(
             ibvQps_[device],
             devices_[device].port,
             ibverbx::IBV_ACCESS_LOCAL_WRITE | ibverbx::IBV_ACCESS_REMOTE_READ),
@@ -78,9 +81,9 @@ LocalVirtualConn::LocalVirtualConn(
 
     remoteQpInfo.qpn = ibvQps_[device].qp()->qp_num;
     FOLLY_EXPECTED_CHECKTHROW_EX(
-        ctranIbQpRTR(remoteQpInfo, ibvQps_[device], NCCL_IB_TC), commLogData_);
+        rtrQp(remoteQpInfo, ibvQps_[device], NCCL_IB_TC), commLogData_);
 
-    FOLLY_EXPECTED_CHECKTHROW_EX(ctranIbQpRTS(ibvQps_[device]), commLogData_);
+    FOLLY_EXPECTED_CHECKTHROW_EX(rtsQp(ibvQps_[device]), commLogData_);
 
     CLOGF_SUBSYS(
         INFO,
