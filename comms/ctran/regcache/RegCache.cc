@@ -499,63 +499,84 @@ commResult_t ctran::RegCache::cacheSegment(
     const int cudaDev,
     const bool ncclManaged,
     uint64_t commHash,
-    ctran::regcache::Segment** segment,
-    void** segHdl) {
+    std::vector<ctran::regcache::Segment*>& segments,
+    std::vector<void*>& segHdls) {
   SetCudaDevRAII setCudaDev(cudaDev);
+  bool newSegmentCreated = false;
+
+  // Discover all physical segments underlying this buffer via pinRange
+  std::vector<ctran::regcache::SegmentRange> ranges;
+  FB_COMMCHECK(
+      ctran::regcache::SegmentRange::pinRange(ptr, cudaDev, len, ranges));
+
+  CLOGF_SUBSYS(
+      INFO,
+      ALLOC,
+      "CTRAN-MAPPER cacheSegment: ptr={} len={} discovered {} physical segments",
+      ptr,
+      len,
+      ranges.size());
+
   {
     auto segmentsAvl = segmentsAvl_.wlock();
 
-    // If the segment is already registered, increase its refcount and return
-    // the segment
-    void* avlHdl = nullptr;
-    avlHdl = segmentsAvl->search(ptr, len);
-    if (avlHdl) {
-      auto foundSeg = reinterpret_cast<ctran::regcache::Segment*>(
-          segmentsAvl->lookup(avlHdl));
-      {
-        auto segState = foundSeg->stateMnger.wlock();
-        segState->refCount++;
-        *segHdl = foundSeg->avlHdl_;
+    // Cache each segment range
+    for (size_t i = 0; i < ranges.size(); i++) {
+      const auto& range = ranges.at(i);
+      void* avlHdl = nullptr;
+
+      // Check if this segment is already cached
+      avlHdl = segmentsAvl->search(range.buf, range.len);
+      if (avlHdl) {
+        // Segment already cached, increase refcount
+        auto foundSeg = reinterpret_cast<ctran::regcache::Segment*>(
+            segmentsAvl->lookup(avlHdl));
+        int64_t curRefCount;
+        {
+          auto segState = foundSeg->stateMnger.wlock();
+          segState->refCount++;
+          curRefCount = segState->refCount;
+        }
+        segments.push_back(foundSeg);
+        segHdls.push_back(foundSeg->avlHdl_);
+
+        CLOGF_TRACE(
+            ALLOC,
+            "CTRAN-MAPPER cacheSegment: segment[{}] already cached ptr={} len={} refCount={}",
+            i,
+            range.buf,
+            range.len,
+            curRefCount);
+      } else {
+        // Create new cache entry for this segment
+        auto newSeg = new ctran::regcache::Segment(range, cudaDev, ncclManaged);
+        avlHdl = segmentsAvl->insert(range.buf, range.len, newSeg);
+        newSeg->avlHdl_ = avlHdl;
+        segments.push_back(newSeg);
+        segHdls.push_back(avlHdl);
+        newSegmentCreated = true;
+
+        const auto type = newSeg->getType();
+        CLOGF_TRACE(
+            ALLOC,
+            "CTRAN-MAPPER cacheSegment: segment[{}] cached type={} ({}) segHdl={} ptr={} len={} ncclManaged={} cudaDev={}, cache size={}",
+            i,
+            (int)type,
+            devMemTypeStr(type),
+            (void*)avlHdl,
+            range.buf,
+            range.len,
+            ncclManaged,
+            cudaDev,
+            segmentsAvl->size());
       }
-      *segment = foundSeg;
-      return commSuccess;
     }
-
-    // Otherwise, load the segment range and create a new cache entry for it
-    std::vector<ctran::regcache::SegmentRange> ranges;
-    FB_COMMCHECK(
-        ctran::regcache::SegmentRange::pinRange(ptr, cudaDev, len, ranges));
-    FB_CHECKABORT(
-        ranges.size() == 1,
-        "Expected only one range for a user cached segment ptr {} len {}, but got {} ranges",
-        ptr,
-        len,
-        ranges.size());
-
-    // FIXME: cleanup AVL tree to be able to host unique_ptr
-    const auto& range = ranges.at(0);
-    auto newSeg = new ctran::regcache::Segment(range, cudaDev, ncclManaged);
-    avlHdl = segmentsAvl->insert(range.buf, range.len, newSeg);
-    newSeg->avlHdl_ = avlHdl;
-    *segment = newSeg;
-    *segHdl = avlHdl;
-
-    auto type = newSeg->getType();
-    CLOGF_TRACE(
-        ALLOC,
-        "Cached segment {} type {} ({}) segHdl {} ptr {} len {} ncclManaged {} cudaDev {}, cache size {}",
-        (void*)newSeg,
-        (int)type,
-        devMemTypeStr(type),
-        (void*)avlHdl,
-        range.buf,
-        range.len,
-        ncclManaged,
-        cudaDev,
-        segmentsAvl->size());
   }
 
-  profiler.wlock()->record(ctran::regcache::EventType::kCacheSegEvent);
+  // Only record a cache event when at least one new segment was created
+  if (newSegmentCreated) {
+    profiler.wlock()->record(ctran::regcache::EventType::kCacheSegEvent);
+  }
   return commSuccess;
 }
 
