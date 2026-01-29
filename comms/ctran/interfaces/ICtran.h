@@ -33,7 +33,15 @@ class ICtran {
 
   virtual bool isInitialized() const = 0;
 
+  // [DEPRECATED] Handle-based memory registration (baseline NCCL pattern).
+  // Returns a handle that must be passed to commDeregister.
+  // Prefer globalRegisterWithPtr for new code - it supports both single and
+  // multi-segment buffers without requiring handle management.
   virtual commResult_t commRegister(void* buff, size_t size, void** handle) = 0;
+
+  // [DEPRECATED] Handle-based memory deregistration.
+  // Prefer ctranGlobalRegisterWithPtr/ctranGlobalDeregisterWithPtr free
+  // functions for new code.
   virtual commResult_t commDeregister(void* handle) = 0;
 
   virtual void updateOpCount() = 0;
