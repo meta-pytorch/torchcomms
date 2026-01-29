@@ -12,6 +12,7 @@
 #include <unordered_map>
 
 #include "comms/ctran/backends/CtranAux.h"
+#include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/utils/CtranIpc.h"
 
 constexpr int CTRAN_MAX_IB_DEVICES_PER_RANK{2};
@@ -93,22 +94,6 @@ struct CmsgIbExportMem {
   }
 };
 
-struct CmsgNvlExportMem {
-  ctran::utils::CtranIpcDesc ipcDesc;
-  // offset since the base of ipcDesc
-  size_t offset{0};
-
-  static const std::string name;
-
-  CmsgNvlExportMem() {};
-  std::string toString() const {
-    std::stringstream ss;
-    ss << "[" << name << "] offset: 0x" << std::hex << offset << " "
-       << ipcDesc.toString();
-    return ss.str();
-  }
-};
-
 struct CmsgNvlReleaseMem {
   void* base{nullptr};
 
@@ -128,7 +113,7 @@ struct CmsgNvlReleaseMem {
 struct ControlMsg {
   int type{ControlMsgType::UNSPECIFIED};
   union {
-    struct CmsgNvlExportMem nvlExp;
+    struct ctran::regcache::IpcDesc nvlDesc;
     struct CmsgNvlReleaseMem nvlRls;
     struct CmsgIbExportMem ibExp;
   };
@@ -146,7 +131,7 @@ struct ControlMsg {
     // Initialization
     switch (type) {
       case ControlMsgType::NVL_EXPORT_MEM:
-        nvlExp = CmsgNvlExportMem{};
+        nvlDesc = ctran::regcache::IpcDesc{};
         break;
       case ControlMsgType::NVL_RELEASE_MEM:
         nvlRls = CmsgNvlReleaseMem{};
@@ -163,7 +148,7 @@ struct ControlMsg {
     std::stringstream ss;
     switch (type) {
       case ControlMsgType::NVL_EXPORT_MEM:
-        ss << nvlExp.toString();
+        ss << nvlDesc.toString();
         break;
       case ControlMsgType::NVL_RELEASE_MEM:
         ss << nvlRls.toString();

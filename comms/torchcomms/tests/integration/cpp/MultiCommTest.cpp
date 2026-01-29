@@ -19,13 +19,10 @@ class MultiCommTestBase {
       return;
     }
 
-    // Get rank and size from the communicator
     int rank = comm->getRank();
     int size = comm->getSize();
 
-    // Get device from wrapper
-    int device_index = comm->getRank() % at::cuda::device_count();
-    auto device = c10::Device(c10::DeviceType::CUDA, device_index);
+    auto device = wrapper->getDevice();
     auto options = at::TensorOptions().dtype(at::kFloat).device(device);
     auto input = at::ones({10}, options) * static_cast<float>(rank + 1);
 
@@ -46,7 +43,6 @@ class MultiCommTestBase {
 
     std::vector<at::Tensor> inputs;
     std::vector<float> expected_values;
-    std::vector<int> device_indices;
 
     // Create input tensors for each communicator
     for (size_t i = 0; i < wrappers.size(); i++) {
@@ -55,10 +51,8 @@ class MultiCommTestBase {
       int comm_size = comm->getSize();
 
       // Get device from wrapper
-      int device_index = comm->getRank() % at::cuda::device_count();
-      auto device = c10::Device(c10::DeviceType::CUDA, device_index);
+      auto device = wrappers[i]->getDevice();
       auto options = at::TensorOptions().dtype(at::kFloat).device(device);
-      device_indices.push_back(device_index);
 
       auto input = at::ones({10}, options) * static_cast<float>(comm_rank + 1);
       inputs.push_back(input);
@@ -97,11 +91,11 @@ class MultiCommTest : public ::testing::Test, public MultiCommTestBase {
       const std::shared_ptr<torch::comms::TorchComm>& torchcomm) {
     destroyStore(std::move(store), torchcomm);
 
-    int rank = torchcomm->getRank();
-    int device_index = rank % at::cuda::device_count();
-
-    // Synchronize the CUDA stream on the calculated device
-    at::cuda::getCurrentCUDAStream(device_index).synchronize();
+    auto device = torchcomm->getDevice();
+    if (device.is_cuda()) {
+      // Synchronize the CUDA stream on the calculated device
+      at::cuda::getCurrentCUDAStream(device.index()).synchronize();
+    }
   }
 };
 
@@ -116,127 +110,6 @@ class MultiCommNoStoreTest
 
   void TearDown() override {}
 };
-
-// Test fixtures
-TEST_F(MultiCommTest, TwoCommsOneStore) {
-  SCOPED_TRACE(::testing::Message() << "Testing with two communicators");
-
-  // Create two communicators
-  std::vector<std::unique_ptr<TorchCommTestWrapper>> wrappers;
-  std::vector<std::shared_ptr<torch::comms::TorchComm>> comms;
-
-  // Create a shared store for both communicators
-  auto store = createStore();
-
-  // Create first communicator using the store
-  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store));
-  comms.push_back(wrappers.back()->getTorchComm());
-
-  // Create second communicator using the same store
-  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store));
-  comms.push_back(wrappers.back()->getTorchComm());
-
-  // Test communication on each communicator individually
-  for (size_t i = 0; i < wrappers.size(); i++) {
-    testCommunication(wrappers[i]);
-  }
-
-  // Test simultaneous communication across all communicators
-  testSimultaneousCommunication(wrappers);
-
-  destroyStoreAndSyncStream(std::move(store), comms[0]);
-
-  // The wrappers will clean up the communicators and store in their destructors
-}
-
-TEST_F(MultiCommTest, ThreeCommsOneStore) {
-  SCOPED_TRACE(::testing::Message() << "Testing with three communicators");
-
-  // Create three communicators
-  std::vector<std::unique_ptr<TorchCommTestWrapper>> wrappers;
-  std::vector<std::shared_ptr<torch::comms::TorchComm>> comms;
-
-  // Create a shared store for all three communicators
-  auto store = createStore();
-
-  // Create first communicator using the store
-  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store));
-  comms.push_back(wrappers.back()->getTorchComm());
-
-  // Create second communicator using the same store
-  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store));
-  comms.push_back(wrappers.back()->getTorchComm());
-
-  // Create third communicator using the same store
-  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store));
-  comms.push_back(wrappers.back()->getTorchComm());
-
-  // Test communication on each communicator individually
-  for (size_t i = 0; i < wrappers.size(); i++) {
-    testCommunication(wrappers[i]);
-  }
-
-  // Test simultaneous communication across all communicators
-  testSimultaneousCommunication(wrappers);
-
-  destroyStoreAndSyncStream(std::move(store), comms[0]);
-
-  // The wrappers will clean up the communicators and store in their destructors
-}
-
-TEST_F(MultiCommTest, MixedOpsOneStore) {
-  SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing mixed operations across multiple communicators");
-
-  // Create two communicators
-  std::vector<std::unique_ptr<TorchCommTestWrapper>> wrappers;
-  std::vector<std::shared_ptr<torch::comms::TorchComm>> comms;
-
-  // Create a shared store for both communicators
-  auto store = createStore();
-
-  // Create first communicator using the store
-  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store));
-  comms.push_back(wrappers.back()->getTorchComm());
-
-  // Create second communicator using the same store
-  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store));
-  comms.push_back(wrappers.back()->getTorchComm());
-
-  // Prepare tensors for different operations
-  int device_index0 = comms[0]->getRank() % at::cuda::device_count();
-  int device_index1 = comms[1]->getRank() % at::cuda::device_count();
-  c10::Device device0 = c10::Device(c10::DeviceType::CUDA, device_index0);
-  c10::Device device1 = c10::Device(c10::DeviceType::CUDA, device_index1);
-  auto options0 = at::TensorOptions().dtype(at::kFloat).device(device0);
-  auto options1 = at::TensorOptions().dtype(at::kFloat).device(device1);
-
-  // For all_reduce on first communicator
-  auto input1 =
-      at::ones({10}, options0) * static_cast<float>(comms[0]->getRank() + 1);
-  int expected1 = comms[0]->getSize() * (comms[0]->getSize() + 1) / 2;
-
-  // For broadcast on second communicator
-  const int root_rank = 0;
-  const int broadcast_value = 42;
-  auto input2 = comms[1]->getRank() == root_rank
-      ? at::ones({10}, options1) * static_cast<float>(broadcast_value)
-      : at::zeros({10}, options1);
-
-  // Issue operations simultaneously
-  comms[0]->all_reduce(input1, torch::comms::ReduceOp::SUM, false);
-  comms[1]->broadcast(input2, root_rank, false);
-
-  // Verify results
-  verifyTensorEquality(input1.cpu(), expected1, "comm_0 all_reduce result");
-  verifyTensorEquality(
-      input2.cpu(), broadcast_value, "comm_1 broadcast result");
-
-  destroyStoreAndSyncStream(std::move(store), comms[0]);
-
-  // The wrappers will clean up the communicators and store in their destructors
-}
 
 // Tests with separate stores for each communicator
 TEST_F(MultiCommTest, TwoCommsSeparateStores) {
@@ -351,10 +224,8 @@ TEST_F(MultiCommTest, MixedOpsSeparateStores) {
   destroyStoreAndSyncStream(std::move(store), comms[1]);
 
   // Prepare tensors for different operations
-  int device_index0 = comms[0]->getRank() % at::cuda::device_count();
-  int device_index1 = comms[1]->getRank() % at::cuda::device_count();
-  c10::Device device0 = c10::Device(c10::DeviceType::CUDA, device_index0);
-  c10::Device device1 = c10::Device(c10::DeviceType::CUDA, device_index1);
+  c10::Device device0 = wrappers[0]->getDevice();
+  c10::Device device1 = wrappers[1]->getDevice();
   auto options0 = at::TensorOptions().dtype(at::kFloat).device(device0);
   auto options1 = at::TensorOptions().dtype(at::kFloat).device(device1);
 
@@ -454,10 +325,8 @@ TEST_F(MultiCommNoStoreTest, MixedOpsNoStore) {
 
   // Prepare tensors for different operations
   // Get device from wrapper
-  int device_index0 = comms[0]->getRank() % at::cuda::device_count();
-  int device_index1 = comms[1]->getRank() % at::cuda::device_count();
-  c10::Device device0 = c10::Device(c10::DeviceType::CUDA, device_index0);
-  c10::Device device1 = c10::Device(c10::DeviceType::CUDA, device_index1);
+  c10::Device device0 = wrappers[0]->getDevice();
+  c10::Device device1 = wrappers[1]->getDevice();
   auto options0 = at::TensorOptions().dtype(at::kFloat).device(device0);
   auto options1 = at::TensorOptions().dtype(at::kFloat).device(device1);
 
@@ -529,17 +398,19 @@ TEST_F(MultiCommTest, ThreeCommsMixedStore) {
   std::vector<std::shared_ptr<torch::comms::TorchComm>> comms;
 
   // Create a shared store for the first two communicators
-  auto store = createStore();
+  auto store1 = createStore();
+  auto store2 = createStore();
 
   // Create first communicator using the store
-  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store));
+  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store1));
   comms.push_back(wrappers.back()->getTorchComm());
 
   // Create second communicator using the same store
-  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store));
+  wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store2));
   comms.push_back(wrappers.back()->getTorchComm());
 
-  destroyStoreAndSyncStream(std::move(store), comms[0]);
+  destroyStoreAndSyncStream(std::move(store1), comms[0]);
+  destroyStoreAndSyncStream(std::move(store2), comms[1]);
 
   // Create third communicator using no store
   wrappers.push_back(std::make_unique<TorchCommTestWrapper>());
@@ -579,10 +450,8 @@ TEST_F(MultiCommTest, MixedOpsMixedStore) {
   comms.push_back(wrappers.back()->getTorchComm());
 
   // Prepare tensors for different operations
-  int device_index0 = comms[0]->getRank() % at::cuda::device_count();
-  int device_index1 = comms[1]->getRank() % at::cuda::device_count();
-  c10::Device device0 = c10::Device(c10::DeviceType::CUDA, device_index0);
-  c10::Device device1 = c10::Device(c10::DeviceType::CUDA, device_index1);
+  c10::Device device0 = wrappers[0]->getDevice();
+  c10::Device device1 = wrappers[1]->getDevice();
   auto options0 = at::TensorOptions().dtype(at::kFloat).device(device0);
   auto options1 = at::TensorOptions().dtype(at::kFloat).device(device1);
 

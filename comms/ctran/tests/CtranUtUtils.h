@@ -197,9 +197,14 @@ class CtranBaseTest {
   void* prepareBuf(
       size_t bufSize,
       MemAllocType memType,
-      std::vector<TestMemSegment>& segments);
+      std::vector<TestMemSegment>& segments,
+      size_t numSegments = 2);
 
-  void releaseBuf(void* buf, size_t bufSize, MemAllocType memType);
+  void releaseBuf(
+      void* buf,
+      size_t bufSize,
+      MemAllocType memType,
+      size_t numSegments = 2);
 
   inline size_t pageAligned(size_t nBytes) {
     return ((nBytes + pageSize_ - 1) / pageSize_) * pageSize_;
