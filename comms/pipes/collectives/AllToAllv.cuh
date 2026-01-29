@@ -13,7 +13,7 @@ namespace comms::pipes {
 
 namespace {
 /**
- * Debug helper to print allToAllv communication information.
+ * Debug helper to print all_to_allv communication information.
  * Automatically detects self-copy vs peer communication based on my_rank ==
  * peer_rank.
  */
@@ -55,7 +55,7 @@ __device__ __forceinline__ void printPerPeerOperation(
 } // namespace
 
 /**
- * Chunk metadata for allToAllv operation.
+ * Chunk metadata for all_to_allv operation.
  * Describes a contiguous chunk of data to send or receive for a specific peer.
  */
 struct ChunkInfo {
@@ -100,7 +100,7 @@ struct ChunkInfo {
  *   my_rank_id
  * - Max 8 ranks supported (stack-allocated weights)
  */
-__device__ __forceinline__ void allToAllv(
+__device__ __forceinline__ void all_to_allv(
     void* recvbuff_d,
     const void* sendbuff_d,
     int my_rank_id,
