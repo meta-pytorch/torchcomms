@@ -110,7 +110,7 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
 }
 
 void TorchWorkXCCL::wait() {
-  // If already  , return immediately
+  // If already completed, return immediately
   WorkStatus local_state = state_;
   if (local_state == WorkStatus::COMPLETED ||
       local_state == WorkStatus::ERROR || local_state == WorkStatus::TIMEDOUT) {
