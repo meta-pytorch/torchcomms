@@ -7,10 +7,6 @@
 #include "TorchCommTestHelpers.h"
 
 TEST_P(ReduceScatterVTest, SyncReduceScatterV) {
-  auto backend = std::string(getenv("TEST_BACKEND"));
-  if (backend != "ncclx") {
-    GTEST_SKIP() << "skip reduce_scatter_v test for non-NCCLX backends";
-  }
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
   torch::comms::ReduceOp op = std::get<2>(GetParam());

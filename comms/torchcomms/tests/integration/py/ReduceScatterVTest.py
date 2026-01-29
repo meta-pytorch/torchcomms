@@ -3,7 +3,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import itertools
-import os
 import unittest
 
 import torch
@@ -116,10 +115,6 @@ class ReduceScatterVTest(unittest.TestCase):
                 f"Tensors not equal for {description}",
             )
 
-    @unittest.skipIf(
-        os.getenv("TEST_BACKEND") != "ncclx",
-        "Skipping reduce_scatter_v test for non-NCCLX backend",
-    )
     def test_sync_reduce_scatter_v(self):
         """Test synchronous reduce_scatter_v with work object."""
         for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
