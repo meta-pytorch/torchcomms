@@ -164,22 +164,62 @@ inline consteval commDataType_t getCommDataType() {
   }
 }
 
+// Allocate disjoint memory segments mapped to a single VA range.
+// - reservedVASize: optional, if specified reserves larger VA than mapped
+//                   segments (enables later expansion). If 0 or unspecified,
+//                   reserves exactly sum of segment sizes.
 commResult_t commMemAllocDisjoint(
     void** ptr,
     std::vector<size_t>& disjointSegmentSizes,
     std::vector<TestMemSegment>& segments,
     bool setRdmaSupport = true,
     std::optional<CUmemAllocationHandleType> handleType =
-        CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR);
+        CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+    size_t reservedVASize = 0);
+
 commResult_t commMemFreeDisjoint(
     void* ptr,
-    std::vector<size_t>& disjointSegmentSizes);
+    std::vector<size_t>& disjointSegmentSizes,
+    size_t reservedVASize = 0);
+
+// State for expandable buffer that can grow in-place (simulates PyTorch CCA)
+struct ExpandableTestBuffer {
+  void* base{nullptr};
+  size_t reservedSize{0};
+  size_t mappedSize{0};
+  size_t segmentSize{0};
+  std::vector<CUmemGenericAllocationHandle> handles;
+  std::vector<TestMemSegment> segments;
+  CUmemAllocationProp memprop{};
+  CUmemAccessDesc accessDesc{};
+  int cudaDev{-1};
+};
+
+// Allocate expandable buffer with reserved VA larger than initially mapped
+commResult_t commMemAllocExpandable(
+    ExpandableTestBuffer* buf,
+    size_t reservedSize,
+    size_t initialMappedSize,
+    bool setRdmaSupport = true);
+
+// Expand buffer by mapping more segments into reserved VA (NO unmap/dereg)
+commResult_t commMemExpandBuffer(
+    ExpandableTestBuffer* buf,
+    size_t newMappedSize);
+
+// Free all resources
+commResult_t commMemFreeExpandable(ExpandableTestBuffer* buf);
 
 void* commMemAlloc(
     size_t bufSize,
     MemAllocType memType,
-    std::vector<TestMemSegment>& segments);
-void commMemFree(void* buf, size_t bufSize, MemAllocType memType);
+    std::vector<TestMemSegment>& segments,
+    size_t numSegments = 2);
+void commMemFree(
+    void* buf,
+    size_t bufSize,
+    MemAllocType memType,
+    size_t numSegments = 2);
 
 // Bootstrap initialization type
 enum class InitEnvType { MPI, TCP_STORE, STANDALONE };
