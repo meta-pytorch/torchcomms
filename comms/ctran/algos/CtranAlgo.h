@@ -31,7 +31,7 @@ constexpr int kExpectedCommAttrLength = 5;
 // The following two values are used to allocate tmpbuf for
 // AllToAllvDynamic.
 // TODO: if model scale become larger, need to figure out ways to reduce
-// these value to avoid allocate a large staing buffer.
+// these value to avoid allocate a large staging buffer.
 // TODO: move the following and the tmpbuff allocation logic out of CtranAlgo,
 // and create new funcs in A2AvDynamic's own logic.
 inline size_t all2allvDynamicMaxSendcounts = 0;
@@ -45,7 +45,7 @@ class CtranAlgo {
 
   ~CtranAlgo();
 
-  // intialize device state and SharedResource, if needed
+  // initialize device state and SharedResource, if needed
   commResult_t initKernelResources();
   // Get device state
   CtranAlgoDeviceState* getDevState();
