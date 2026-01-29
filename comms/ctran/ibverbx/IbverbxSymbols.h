@@ -119,7 +119,48 @@ struct IbvSymbols {
       int fd,
       int access,
       int mlx5_access) = nullptr;
+
+  /* DC (Dynamically Connected) transport support */
+  struct ibv_qp* (*mlx5dv_internal_create_qp)(
+      struct ibv_context* context,
+      struct ibv_qp_init_attr_ex* qp_attr,
+      struct mlx5dv_qp_init_attr* mlx5_qp_attr) = nullptr;
+  struct mlx5dv_qp_ex* (*mlx5dv_internal_qp_ex_from_ibv_qp_ex)(
+      struct ibv_qp_ex* qp) = nullptr;
+
+  /* SRQ support */
+  struct ibv_srq* (*ibv_internal_create_srq)(
+      struct ibv_pd* pd,
+      struct ibv_srq_init_attr* srq_init_attr) = nullptr;
+  struct ibv_srq* (*ibv_internal_create_srq_ex)(
+      struct ibv_context* context,
+      struct ibv_srq_init_attr_ex* srq_init_attr_ex) = nullptr;
+  int (*ibv_internal_modify_srq)(
+      struct ibv_srq* srq,
+      struct ibv_srq_attr* srq_attr,
+      int srq_attr_mask) = nullptr;
+  int (*ibv_internal_query_srq)(
+      struct ibv_srq* srq,
+      struct ibv_srq_attr* srq_attr) = nullptr;
+  int (*ibv_internal_destroy_srq)(struct ibv_srq* srq) = nullptr;
+  int (*ibv_internal_post_srq_recv)(
+      struct ibv_srq* srq,
+      struct ibv_recv_wr* recv_wr,
+      struct ibv_recv_wr** bad_recv_wr) = nullptr;
+
+  /* Address Handle (AH) support */
+  struct ibv_ah* (*ibv_internal_create_ah)(
+      struct ibv_pd* pd,
+      struct ibv_ah_attr* attr) = nullptr;
+  int (*ibv_internal_destroy_ah)(struct ibv_ah* ah) = nullptr;
+
+  /* Extended QP support */
+  struct ibv_qp* (*ibv_internal_create_qp_ex)(
+      struct ibv_context* context,
+      struct ibv_qp_init_attr_ex* qp_init_attr_ex) = nullptr;
 };
+
+extern IbvSymbols ibvSymbols;
 
 int buildIbvSymbols(IbvSymbols& ibvSymbols, const std::string& ibv_path = "");
 

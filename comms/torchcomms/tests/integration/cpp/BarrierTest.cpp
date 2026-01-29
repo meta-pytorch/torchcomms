@@ -71,6 +71,11 @@ void BarrierTest::testAsyncBarrierEarlyReset() {
 
 // CUDA Graph test function for barrier
 void BarrierTest::testGraphBarrier() {
+  // Skip CUDA Graph tests when running on CPU
+  if (isRunningOnCPU()) {
+    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
+  }
+
   SCOPED_TRACE(::testing::Message() << "Testing CUDA Graph barrier");
 
   // Create a non-default CUDA stream (required for CUDA graph capture)
