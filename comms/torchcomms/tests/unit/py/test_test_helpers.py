@@ -8,7 +8,7 @@ import sys
 import unittest
 from unittest.mock import patch
 
-from torchcomms.tests.unit.py.test_helpers import (
+from test_helpers import (  # pyre-ignore[21]
     can_import_torchcomms,
     skip_if_pytorch_version_unsupported,
 )
@@ -76,7 +76,7 @@ class TestSkipIfPytorchVersionUnsupported(unittest.TestCase):
     def test_skips_when_can_import_returns_false(self):
         """Test that skip_if_pytorch_version_unsupported raises SkipTest when import fails."""
         with patch(
-            "torchcomms.tests.unit.py.test_helpers.can_import_torchcomms",
+            "test_helpers.can_import_torchcomms",
             return_value=False,
         ):
             with self.assertRaises(unittest.SkipTest):
