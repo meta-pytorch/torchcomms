@@ -412,6 +412,40 @@ std::vector<void*> ctran::RegCache::getSegments() const {
   return segmentsAvl_.rlock()->getAllElems();
 }
 
+commResult_t ctran::RegCache::lookupSegmentsForBuffer(
+    const void* buf,
+    size_t len,
+    int cudaDev,
+    std::vector<void*>& segHdls,
+    std::vector<ctran::regcache::RegElem*>& regElems) {
+  if (buf == nullptr || len == 0) {
+    return commSuccess;
+  }
+
+  SetCudaDevRAII setCudaDev(cudaDev);
+
+  // Discover all physical segments underlying this buffer via pinRange
+  std::vector<ctran::regcache::SegmentRange> segRanges;
+  FB_COMMCHECK(
+      ctran::regcache::SegmentRange::pinRange(buf, cudaDev, len, segRanges));
+
+  // Look up each segment and collect handles and regElems
+  auto segmentsAvl = segmentsAvl_.rlock();
+  for (const auto& range : segRanges) {
+    void* segHdl = segmentsAvl->search(const_cast<void*>(range.buf), range.len);
+    if (segHdl != nullptr) {
+      segHdls.push_back(segHdl);
+      // Get all regElems associated with this segment
+      auto segRegElems = getRegElems(segHdl);
+      for (auto* regElem : segRegElems) {
+        regElems.push_back(regElem);
+      }
+    }
+  }
+
+  return commSuccess;
+}
+
 commResult_t ctran::regcache::SegmentRange::pinRange(
     const void* ptr,
     const int cudaDev,
