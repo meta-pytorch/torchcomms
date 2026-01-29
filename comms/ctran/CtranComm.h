@@ -26,7 +26,6 @@ struct ctranConfig {
   bool operator==(const ctranConfig& other) const {
     return (
         blocking == other.blocking && commDesc == other.commDesc &&
-        commDesc == other.commDesc &&
         ncclAllGatherAlgo == other.ncclAllGatherAlgo &&
         backends == other.backends);
   }
