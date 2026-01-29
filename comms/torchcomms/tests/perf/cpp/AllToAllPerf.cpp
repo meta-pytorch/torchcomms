@@ -33,9 +33,9 @@ void runAllToAllPerf(
     output_list.reserve(num_ranks);
     for (int i = 0; i < num_ranks; i++) {
       input_list.push_back(createTensor(
-          num_elements, rank, c10::DeviceType::CUDA, params.dtype));
+          num_elements, rank, comm->getDevice().type(), params.dtype));
       output_list.push_back(createTensor(
-          num_elements, rank, c10::DeviceType::CUDA, params.dtype));
+          num_elements, rank, comm->getDevice().type(), params.dtype));
     }
 
     // Warmup
