@@ -57,7 +57,7 @@ TEST(CtranCommTest, ctranCommConfigTest) {
   CtranComm comm(abort, config);
   EXPECT_EQ(comm.config_.backends.size(), 3);
 
-  /// Explictly create comm with false abort as first argument is unommitable
+  /// Explicitly create comm with false abort as first argument is unomittable
   CtranComm comm2(ctran::utils::createAbort(false));
   EXPECT_EQ(comm2.config_.backends.size(), 0);
 }
