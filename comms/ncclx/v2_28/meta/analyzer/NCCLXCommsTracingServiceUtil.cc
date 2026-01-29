@@ -18,11 +18,18 @@
 namespace ncclx {
 namespace {
 
-struct NCCLXCommsTracingServiceHandlerTag {};
-folly::Singleton<
-    folly::atomic_shared_ptr<apache::thrift::util::ScopedServerThread>,
-    NCCLXCommsTracingServiceHandlerTag>
-    kCommsTracingService;
+// Note: We use a Meyers singleton (local static) instead of folly::Singleton
+// because library_object_internal gets statically linked into multiple shared
+// libraries (e.g., ncclx-api.so, libtorch_cuda.so). When both DSOs are loaded,
+// folly's singleton registration happens twice, causing a "Double registration"
+// error. The Meyers singleton pattern with a local static variable is
+// guaranteed by C++11 to be initialized exactly once in a thread-safe manner.
+folly::atomic_shared_ptr<apache::thrift::util::ScopedServerThread>&
+getCommsTracingServicePtr() {
+  static folly::atomic_shared_ptr<apache::thrift::util::ScopedServerThread>
+      instance;
+  return instance;
+}
 
 bool shouldEnableCommsTracingService() {
   return NCCL_COMM_TRACING_SERVICE_ENABLE;
@@ -120,41 +127,35 @@ void NCCLXCommsTracingServiceUtil::startService() {
     return;
   }
 
-  auto servicePtr = kCommsTracingService.try_get();
-  XCHECK(servicePtr) << "Failed to get singleton";
+  auto& servicePtr = getCommsTracingServicePtr();
 
   // startService() should have been guarded by init logic already
   // to be invoked only once per process https://fburl.com/code/yeb1p8nd
   // but just in case
-  if (servicePtr->load()) {
+  if (servicePtr.load()) {
     XLOG(FATAL) << "Already started. Call stopService() before restarting.";
     return;
   }
 
   auto port = getCommsTracingServicePort();
   auto service = startAndGetService(port);
-  servicePtr->store(std::move(service));
+  servicePtr.store(std::move(service));
 }
 
 void NCCLXCommsTracingServiceUtil::stopService() {
-  auto servicePtr = kCommsTracingService.try_get();
-  XCHECK(servicePtr) << "Failed to get singleton";
-  auto service = servicePtr->load();
+  auto& servicePtr = getCommsTracingServicePtr();
+  auto service = servicePtr.load();
   if (!service) {
     XLOG(INFO) << "Service is not running";
     return;
   }
   service->stop();
-  servicePtr->store(nullptr);
+  servicePtr.store(nullptr);
 }
 
 int NCCLXCommsTracingServiceUtil::getPort() {
-  auto servicePtr = kCommsTracingService.try_get();
-  if (!servicePtr) {
-    XLOG(ERR) << "Failed to get singleton";
-    return -1;
-  }
-  auto service = servicePtr->load();
+  auto& servicePtr = getCommsTracingServicePtr();
+  auto service = servicePtr.load();
   if (!service) {
     XLOG(ERR) << "Service is not running";
     return -1;
