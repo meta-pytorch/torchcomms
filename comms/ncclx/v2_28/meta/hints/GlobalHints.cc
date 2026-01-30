@@ -3,7 +3,6 @@
 #include <string>
 #include <unordered_map>
 
-#include <folly/Singleton.h>
 #include <folly/Synchronized.h>
 #include "comms/utils/logger/LogUtils.h"
 
@@ -12,7 +11,12 @@
 
 namespace ncclx {
 
-folly::Singleton<GlobalHints> globalHintsMngrSingleton;
+// Note: We use a Meyers singleton (local static) instead of folly::Singleton
+// because library_object_internal gets statically linked into multiple shared
+// libraries (e.g., ncclx-api.so, libtorch_cuda.so). When both DSOs are loaded,
+// folly's singleton registration happens twice, causing a "Double registration"
+// error. The Meyers singleton pattern with a local static variable is
+// guaranteed by C++11 to be initialized exactly once in a thread-safe manner.
 
 GlobalHints::GlobalHints() {
   for (auto& key : kHintKeysArray) {
@@ -85,11 +89,11 @@ void GlobalHints::testOnlyReset() {
 }
 
 std::shared_ptr<GlobalHints> GlobalHints::getInstance() {
-  auto mngr = globalHintsMngrSingleton.try_get();
-  if (!mngr) {
-    throw std::runtime_error("GlobalHints singleton is not initialized");
-  }
-  return mngr;
+  // Meyers singleton: local static is guaranteed to be initialized only once
+  // in a thread-safe manner by C++11 standard.
+  static GlobalHints instance;
+  return std::shared_ptr<GlobalHints>(&instance, [](GlobalHints*) {
+  }); // No-op deleter - singleton lives forever
 }
 
 bool GlobalHints::regHintEntry(std::string key, GlobalHintEntry& entry) {
