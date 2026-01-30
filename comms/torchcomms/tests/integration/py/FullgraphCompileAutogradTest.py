@@ -2,11 +2,21 @@
 # pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+import os
 import unittest
 
 import torch
-import torchcomms  # noqa: F401
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
+
+from torchcomms.tests.unit.py.test_helpers import skip_if_pytorch_version_unsupported
+
+skip_if_pytorch_version_unsupported()
+
+import torchcomms  # noqa: E402, F401
+from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
+    TorchCommTestWrapper,
+)
 
 
 class FullgraphCompileAutogradTest(unittest.TestCase):
