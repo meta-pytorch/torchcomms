@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdio>
 
+#include "comms/pipes/DeviceCheck.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/TimeoutUtils.cuh"
 #include "comms/pipes/Transport.cuh"
@@ -117,8 +118,8 @@ __device__ __forceinline__ void all_to_allv(
 
   auto group = make_warp_group();
   const auto nranks = transports_per_rank.size();
-  assert(nranks == send_chunk_infos.size());
-  assert(nranks == recv_chunk_infos.size());
+  PIPES_DEVICE_CHECK(nranks == send_chunk_infos.size());
+  PIPES_DEVICE_CHECK(nranks == recv_chunk_infos.size());
 
   // Single rank case - just do self-copy
   if (nranks == 1) {
@@ -128,7 +129,7 @@ __device__ __forceinline__ void all_to_allv(
     char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
 
     auto& transport = transports_per_rank[my_rank_id];
-    assert(transport.type == TransportType::SELF);
+    PIPES_DEVICE_CHECK(transport.type == TransportType::SELF);
     transport.self.put(group, dst, src, send_info.nbytes);
     return;
   }
@@ -145,11 +146,11 @@ __device__ __forceinline__ void all_to_allv(
   if (peer_rank_id == my_rank_id) {
     // Self partition - both send and recv groups participate in copying
     auto& transport = transports_per_rank[my_rank_id];
-    assert(transport.type == TransportType::SELF);
+    PIPES_DEVICE_CHECK(transport.type == TransportType::SELF);
 
     const auto& send_info = send_chunk_infos[my_rank_id];
     const auto& recv_info = recv_chunk_infos[my_rank_id];
-    assert(send_info.nbytes == recv_info.nbytes);
+    PIPES_DEVICE_CHECK(send_info.nbytes == recv_info.nbytes);
 
     const char* src = static_cast<const char*>(sendbuff_d) + send_info.offset;
     char* dst = static_cast<char*>(recvbuff_d) + recv_info.offset;
@@ -181,7 +182,7 @@ __device__ __forceinline__ void all_to_allv(
   // reloads. Local variable is provably independent. See DeviceSpan.cuh:228.
   auto transports = transports_per_rank.data();
   auto& transport = transports[peer_rank_id];
-  assert(transport.type == TransportType::P2P_NVL);
+  PIPES_DEVICE_CHECK(transport.type == TransportType::P2P_NVL);
 
 #ifdef DEBUG_ALLTOALLV
   if (group_per_peer.is_global_leader()) {
