@@ -186,7 +186,7 @@ class memCacheAllocator {
   std::unordered_map<BucketType, memRegionMap_t> freeRegionMaps_;
   // map of cached regions with id/key as key for quick search
   std::unordered_map<uint64_t, std::shared_ptr<memRegion>> cachedRegionMap_;
-  bool intialized_{false};
+  bool initialized_{false};
   mutable folly::SharedMutex mutex_;
   std::unique_ptr<SlabAllocator> slabAllocator_;
 };
