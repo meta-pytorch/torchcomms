@@ -129,6 +129,14 @@ cudaError_t DefaultCudaApi::free(void* devPtr) {
   return cudaFree(devPtr);
 }
 
+cudaError_t DefaultCudaApi::memcpy(
+    void* dst,
+    const void* src,
+    size_t count,
+    cudaMemcpyKind kind) {
+  return cudaMemcpy(dst, src, count, kind);
+}
+
 cudaError_t DefaultCudaApi::memcpyAsync(
     void* dst,
     const void* src,

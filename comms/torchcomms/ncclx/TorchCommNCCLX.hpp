@@ -226,6 +226,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   // Friend access for TorchCommNCCLX
   friend class TorchWorkNCCLX;
   friend class CachingAllocatorHookImpl;
+  template <typename B>
   friend class TorchCommWindowNCCLX;
   friend class TorchCommNCCLXPersistentRequest;
 
