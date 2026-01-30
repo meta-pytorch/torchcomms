@@ -114,6 +114,7 @@ def _dynamo_register_coalesced_tensors(
                 f"total mutable_vars: {len(work.mutable_vars)}"
             )
 
+
 # Mapping from opaque type name to class, shared with registry.py
 _TYPE_NAME_TO_CLASS: dict[str, type] = {}
 
