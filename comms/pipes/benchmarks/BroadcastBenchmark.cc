@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <folly/init/Init.h>
+#include <folly/json/dynamic.h>
 #include <folly/logging/xlog.h>
 #include <gflags/gflags.h>
 #include <nccl.h>
@@ -14,13 +15,18 @@
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/benchmarks/BenchmarkKernel.cuh"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
+#include "comms/testinfra/BenchmarkOutput.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
 #include <iomanip>
+#include <memory>
 #include <sstream>
 #include <vector>
+
+#include <unistd.h>
+#include <chrono>
 
 // Command-line flag for enabling data correctness verification
 DEFINE_bool(
@@ -41,6 +47,19 @@ DEFINE_string(
     benchmark,
     "all",
     "Which benchmark(s) to run: all, optimal, tuning, algorithm (comma-separated)");
+
+// Command-line flags for benchmark output
+DEFINE_string(
+    text_output,
+    "",
+    "Path to write clean text output (tables without log prefixes)");
+
+DEFINE_string(
+    json_output,
+    "",
+    "Path to write JSON output (structured results grouped by test)");
+
+DEFINE_string(csv_output, "", "Path to write CSV output (one row per result)");
 
 namespace {
 // NVTX helper macros for profiling
@@ -137,8 +156,10 @@ struct GridConfig {
 
 /**
  * Result struct for collecting benchmark data.
+ * Inherits from BenchmarkResultBase to support structured output.
  */
-struct BroadcastBenchmarkResult {
+struct BroadcastBenchmarkResult
+    : public meta::comms::benchmark::BenchmarkResultBase {
   std::string testName;
   std::size_t messageSize{};
   int rootRank{};
@@ -150,6 +171,36 @@ struct BroadcastBenchmarkResult {
   float speedup{}; // Pipes / NCCL
   bool ncclVerified{}; // Data correctness verified for NCCL
   bool pipesVerified{}; // Data correctness verified for Pipes
+  std::string algorithm; // Algorithm name (e.g., "Flat-Tree", "Ring")
+
+  folly::dynamic toJson() const override {
+    return folly::dynamic::object("testName", testName)(
+        "messageSize", static_cast<int64_t>(messageSize))("rootRank", rootRank)(
+        "nRanks", nRanks)("algorithm", algorithm)(
+        "ncclBandwidth_GBps", ncclBandwidth)(
+        "pipesBandwidth_GBps", pipesBandwidth)("ncclLatency_us", ncclLatency)(
+        "pipesLatency_us", pipesLatency)("speedup", speedup)(
+        "ncclVerified", ncclVerified)("pipesVerified", pipesVerified);
+  }
+
+  std::string toCsvRow() const override {
+    std::stringstream ss;
+    ss << testName << "," << messageSize << "," << rootRank << "," << nRanks
+       << "," << algorithm << "," << std::fixed << std::setprecision(2)
+       << ncclBandwidth << "," << std::fixed << std::setprecision(2)
+       << pipesBandwidth << "," << std::fixed << std::setprecision(1)
+       << ncclLatency << "," << std::fixed << std::setprecision(1)
+       << pipesLatency << "," << std::fixed << std::setprecision(2) << speedup
+       << "," << (ncclVerified ? "true" : "false") << ","
+       << (pipesVerified ? "true" : "false");
+    return ss.str();
+  }
+
+  std::string csvHeader() const override {
+    return "testName,messageSize,rootRank,nRanks,algorithm,ncclBandwidth_GBps,"
+           "pipesBandwidth_GBps,ncclLatency_us,pipesLatency_us,speedup,"
+           "ncclVerified,pipesVerified";
+  }
 };
 
 /**
@@ -1312,6 +1363,36 @@ class BroadcastBenchmarkFixture : public MpiBaseTestFixture {
     return ss.str();
   }
 
+  // --------------------------------------------------------------------------
+  // Benchmark Output Helpers
+  // --------------------------------------------------------------------------
+
+  /**
+   * Create OutputConfig from command-line flags.
+   */
+  meta::comms::benchmark::OutputConfig createOutputConfig() {
+    return meta::comms::benchmark::OutputConfig{
+        .textOutputFile = FLAGS_text_output,
+        .jsonOutputFile = FLAGS_json_output,
+        .csvOutputFile = FLAGS_csv_output,
+    };
+  }
+
+  /**
+   * Get benchmark metadata for JSON output.
+   */
+  folly::dynamic getBenchmarkMetadata() {
+    char hostname[256];
+    gethostname(hostname, sizeof(hostname));
+    auto now = std::chrono::system_clock::now();
+    auto timestamp =
+        std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch())
+            .count();
+
+    return folly::dynamic::object("hostname", hostname)("numRanks", numRanks)(
+        "timestamp", timestamp);
+  }
+
   ncclComm_t ncclComm_{};
   cudaStream_t stream_{};
 };
@@ -2074,6 +2155,18 @@ TEST_F(BroadcastBenchmarkFixture, OptimalConfigs) {
 
   std::vector<BroadcastBenchmarkResult> results;
 
+  // Create output writer for structured output (rank 0 only)
+  std::unique_ptr<meta::comms::benchmark::BenchmarkOutputWriter> writer;
+  if (globalRank == 0) {
+    auto config = createOutputConfig();
+    if (config.hasAnyOutput()) {
+      writer = std::make_unique<meta::comms::benchmark::BenchmarkOutputWriter>(
+          config);
+      writer->setMetadata(getBenchmarkMetadata());
+      writer->beginTest("OptimalConfigs");
+    }
+  }
+
   // Print header
   if (globalRank == 0) {
     std::stringstream ss;
@@ -2098,6 +2191,11 @@ TEST_F(BroadcastBenchmarkFixture, OptimalConfigs) {
     ss << "------------------------------------------------------------------------"
           "----------------------------------------------------\n";
     XLOG(INFO) << ss.str();
+
+    // Write header to text output file
+    if (writer) {
+      writer->writeLine(ss.str());
+    }
   }
 
   for (const auto& config : configs) {
@@ -2134,9 +2232,15 @@ TEST_F(BroadcastBenchmarkFixture, OptimalConfigs) {
            << std::setprecision(1) << pipesLatencyUs;
         XLOG(INFO) << ss.str();
 
-        // Collect results for verification
+        // Write to text output file
+        if (writer) {
+          writer->writeLine(ss.str());
+        }
+
+        // Collect results for verification and structured output
         BroadcastBenchmarkResult result;
-        result.testName = config.name + "_" + algorithmName(algo);
+        result.testName = config.name;
+        result.algorithm = algorithmName(algo);
         result.messageSize = config.messageSize;
         result.rootRank = rootRank;
         result.nRanks = numRanks;
@@ -2148,6 +2252,11 @@ TEST_F(BroadcastBenchmarkFixture, OptimalConfigs) {
         result.ncclVerified = ncclVerified;
         result.pipesVerified = pipesVerified;
         results.push_back(result);
+
+        // Write structured result for JSON/CSV output
+        if (writer) {
+          writer->writeResult(result);
+        }
       }
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -2155,29 +2264,39 @@ TEST_F(BroadcastBenchmarkFixture, OptimalConfigs) {
 
     // Print separator between configs
     if (globalRank == 0 && &config != &configs.back()) {
-      XLOG(INFO)
-          << "------------------------------------------------------------------------"
-             "----------------------------------------------------";
+      std::string separator =
+          "------------------------------------------------------------------------"
+          "----------------------------------------------------";
+      XLOG(INFO) << separator;
+      if (writer) {
+        writer->writeLine(separator);
+      }
     }
   }
 
   if (globalRank == 0) {
-    XLOG(INFO)
-        << "========================================================================"
-           "====================================================";
+    std::string footer =
+        "========================================================================"
+        "====================================================";
+    XLOG(INFO) << footer;
     XLOG(INFO) << "Speedup > 1.0x indicates Pipes is faster than NCCL";
-    XLOG(INFO)
-        << "========================================================================"
-           "====================================================\n";
+    XLOG(INFO) << footer << "\n";
+
+    if (writer) {
+      writer->writeLine(footer);
+      writer->writeLine("Speedup > 1.0x indicates Pipes is faster than NCCL");
+      writer->writeLine(footer);
+      writer->finalize();
+    }
   }
 
   // Assert verification results if enabled
   if (FLAGS_verify_correctness) {
     for (const auto& r : results) {
-      EXPECT_TRUE(r.ncclVerified)
-          << "NCCL verification failed for " << r.testName;
-      EXPECT_TRUE(r.pipesVerified)
-          << "Pipes verification failed for " << r.testName;
+      EXPECT_TRUE(r.ncclVerified) << "NCCL verification failed for "
+                                  << r.testName << " " << r.algorithm;
+      EXPECT_TRUE(r.pipesVerified) << "Pipes verification failed for "
+                                   << r.testName << " " << r.algorithm;
     }
   }
 }
