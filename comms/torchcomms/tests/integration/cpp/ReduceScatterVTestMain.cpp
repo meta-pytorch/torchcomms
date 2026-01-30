@@ -13,6 +13,48 @@ TEST_P(ReduceScatterVTest, SyncReduceScatterV) {
   testSyncReduceScatterV(count, dtype, op);
 }
 
+TEST_P(ReduceScatterVTest, SyncReduceScatterVNoWork) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  torch::comms::ReduceOp op = std::get<2>(GetParam());
+  testSyncReduceScatterVNoWork(count, dtype, op);
+}
+
+TEST_P(ReduceScatterVTest, AsyncReduceScatterV) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  torch::comms::ReduceOp op = std::get<2>(GetParam());
+  testAsyncReduceScatterV(count, dtype, op);
+}
+
+TEST_P(ReduceScatterVTest, AsyncReduceScatterVEarlyReset) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  torch::comms::ReduceOp op = std::get<2>(GetParam());
+  testAsyncReduceScatterVEarlyReset(count, dtype, op);
+}
+
+TEST_P(ReduceScatterVTest, ReduceScatterVInputDeleted) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  torch::comms::ReduceOp op = std::get<2>(GetParam());
+  testReduceScatterVInputDeleted(count, dtype, op);
+}
+
+TEST_P(ReduceScatterVTest, GraphReduceScatterV) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  torch::comms::ReduceOp op = std::get<2>(GetParam());
+  testGraphReduceScatterV(count, dtype, op);
+}
+
+TEST_P(ReduceScatterVTest, GraphReduceScatterVInputDeleted) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  torch::comms::ReduceOp op = std::get<2>(GetParam());
+  testGraphReduceScatterVInputDeleted(count, dtype, op);
+}
+
 INSTANTIATE_TEST_SUITE_P(
     ReduceScatterVTestParams,
     ReduceScatterVTest,

@@ -7,13 +7,14 @@
 #include <cstdio>
 
 #include "comms/pipes/DeviceSpan.cuh"
+#include "comms/pipes/TimeoutUtils.cuh"
 #include "comms/pipes/Transport.cuh"
 
 namespace comms::pipes {
 
 namespace {
 /**
- * Debug helper to print allToAllv communication information.
+ * Debug helper to print all_to_allv communication information.
  * Automatically detects self-copy vs peer communication based on my_rank ==
  * peer_rank.
  */
@@ -55,7 +56,7 @@ __device__ __forceinline__ void printPerPeerOperation(
 } // namespace
 
 /**
- * Chunk metadata for allToAllv operation.
+ * Chunk metadata for all_to_allv operation.
  * Describes a contiguous chunk of data to send or receive for a specific peer.
  */
 struct ChunkInfo {
@@ -100,16 +101,20 @@ struct ChunkInfo {
  *   my_rank_id
  * - Max 8 ranks supported (stack-allocated weights)
  */
-__device__ __forceinline__ void allToAllv(
+__device__ __forceinline__ void all_to_allv(
     void* recvbuff_d,
     const void* sendbuff_d,
     int my_rank_id,
     DeviceSpan<Transport> transports_per_rank,
     DeviceSpan<ChunkInfo> send_chunk_infos,
-    DeviceSpan<ChunkInfo> recv_chunk_infos
+    DeviceSpan<ChunkInfo> recv_chunk_infos,
+    Timeout timeout
     // all arguments below will eventually come from communicator
 ) {
 #ifdef __CUDA_ARCH__
+  // Start the timeout timer - must be called once before any wait operations
+  timeout.start();
+
   auto group = make_warp_group();
   const auto nranks = transports_per_rank.size();
   assert(nranks == send_chunk_infos.size());
@@ -198,12 +203,16 @@ __device__ __forceinline__ void allToAllv(
     transport.p2p_nvl.send(
         group_per_peer,
         static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
-        send_info.nbytes);
+        send_info.nbytes,
+        0, // call_index
+        timeout);
   } else {
     transport.p2p_nvl.recv(
         group_per_peer,
         static_cast<char*>(recvbuff_d) + recv_info.offset,
-        recv_info.nbytes);
+        recv_info.nbytes,
+        0, // call_index
+        timeout);
   }
 
 #endif
