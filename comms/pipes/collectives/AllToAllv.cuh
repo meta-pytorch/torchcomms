@@ -8,7 +8,7 @@
 
 #include "comms/pipes/DeviceCheck.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
-#include "comms/pipes/TimeoutUtils.cuh"
+#include "comms/pipes/TimeoutUtils.h"
 #include "comms/pipes/Transport.cuh"
 
 namespace comms::pipes {
