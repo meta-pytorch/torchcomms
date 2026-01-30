@@ -29,6 +29,10 @@ if torchcomms_compile_support_enabled:
     # to support opaque registration for time delta.
     class Timeout(timedelta, metaclass=OpaqueBaseMeta):
         pass
+else:
+    # When compile support is disabled, define Timeout without the metaclass
+    class Timeout(timedelta):
+        pass
 
 
 def _load_libtorchcomms() -> None:
