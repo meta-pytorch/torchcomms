@@ -170,6 +170,16 @@ class TorchCommBackend {
   // Fault Tolerance API
 
   /**
+   * Check if this backend supports dynamic regime for fault tolerance.
+   * Override this method in backends that support dynamic regime.
+   *
+   * @return True if the backend supports dynamic regime, false otherwise.
+   */
+  virtual bool supportsDynamicRegime() const {
+    return false;
+  }
+
+  /**
    * Get the initialization handle for this backend.
    * In dynamic regime, this URL encodes information required by the backend
    * to complete the initialization process via reconfigure().

@@ -122,6 +122,10 @@ PYBIND11_MODULE(_comms, m) {
           &CommOptions::store,
           "Store for communication between processes")
       .def_readwrite(
+          "init_dynamic_regime",
+          &CommOptions::init_dynamic_regime,
+          "If true, creates the communicator in dynamic regime for fault tolerance")
+      .def_readwrite(
           "hints",
           &CommOptions::hints,
           "Dictionary of string hints for backend-specific options");
@@ -694,6 +698,7 @@ Args:
          std::optional<std::chrono::milliseconds> timeout,
          std::optional<bool> high_priority_stream,
          std::optional<c10::intrusive_ptr<c10d::Store>> store,
+         bool init_dynamic_regime,
          std::optional<std::unordered_map<std::string, std::string>> hints) {
         py::module_ torchcomms = py::module_::import("torchcomms");
         torchcomms.attr("_load_backend")(backend);
@@ -718,6 +723,7 @@ Args:
           if (hints) {
             opts.hints = *hints;
           }
+          opts.init_dynamic_regime = init_dynamic_regime;
 
           return new_comm(backend, device, name, opts);
         }
@@ -746,6 +752,9 @@ Args:
   timeout (timedelta): Timeout for initialization.
   high_priority_stream (bool): Whether to use high priority stream.
   store (torch.distributed.Store): Store used to initialize the communicator between processes.
+  init_dynamic_regime (bool): If True, creates the communicator in dynamic regime
+      for fault tolerance. In dynamic regime, the communicator is not initialized
+      until reconfigure() is called. Default is False (static regime).
   hints (dict): Dictionary of string hints for backend-specific options.
       )",
       py::arg("backend"),
@@ -755,6 +764,7 @@ Args:
       py::arg("timeout") = std::nullopt,
       py::arg("high_priority_stream") = std::nullopt,
       py::arg("store") = nullptr,
+      py::arg("init_dynamic_regime") = false,
       py::arg("hints") = std::nullopt);
 
   py::class_<TorchCommBackend, std::shared_ptr<TorchCommBackend>>(
@@ -891,8 +901,7 @@ Raises:
     RuntimeError: If not implemented by the backend.
 
 Example:
-    >>> hints = {"initDynamicRegime": "true"}
-    >>> comm = torchcomms.new_comm("mccl", device, "my_comm", hints=hints)
+    >>> comm = torchcomms.new_comm("mccl", device, "my_comm", init_dynamic_regime=True)
     >>> my_handle = comm.get_init_handle()
     >>> # Exchange handles with all ranks via store/coordinator
     >>> all_handles = collect_handles_from_all_ranks(my_handle)

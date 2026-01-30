@@ -104,6 +104,29 @@ class ReconfigureTest(unittest.TestCase):
         self.assertIn("reconfigure not implemented", str(context.exception))
         print(f"[Rank {self.rank}] Expected RuntimeError raised: {context.exception}")
 
+    def test_init_dynamic_regime_unsupported_backend(self):
+        """Test init_dynamic_regime=True raises RuntimeError for unsupported backends."""
+        if self._is_supported_backend():
+            self.skipTest(
+                f"Backend {self.backend} supports dynamic regime, skipping negative test"
+            )
+
+        import torchcomms
+
+        # Backend doesn't support dynamic regime - should raise RuntimeError
+        with self.assertRaises(RuntimeError) as context:
+            torchcomms.new_comm(
+                self.backend,
+                self.device,
+                "test_dynamic_unsupported",
+                init_dynamic_regime=True,
+            )
+
+        print(
+            f"[Rank {self.rank}] Expected RuntimeError for init_dynamic_regime=True: "
+            f"{context.exception}"
+        )
+
     def test_reconfigure_basic(self):
         """Test basic reconfigure with ordered handles (list)."""
         if not self._is_supported_backend():
@@ -112,9 +135,8 @@ class ReconfigureTest(unittest.TestCase):
         import torchcomms
 
         # Create communicator in dynamic regime
-        hints = {"initDynamicRegime": "true"}
         comm = torchcomms.new_comm(
-            "mccl", self.device, "reconfigure_basic", hints=hints
+            "mccl", self.device, "reconfigure_basic", init_dynamic_regime=True
         )
 
         # Get init handle and exchange with all ranks
@@ -162,9 +184,8 @@ class ReconfigureTest(unittest.TestCase):
         import torchcomms
 
         # Create communicator in dynamic regime
-        hints = {"initDynamicRegime": "true"}
         comm = torchcomms.new_comm(
-            "mccl", self.device, "reconfigure_unordered", hints=hints
+            "mccl", self.device, "reconfigure_unordered", init_dynamic_regime=True
         )
 
         # Get init handle and exchange with all ranks
@@ -211,9 +232,8 @@ class ReconfigureTest(unittest.TestCase):
         import torchcomms
 
         # Create communicator in dynamic regime
-        hints = {"initDynamicRegime": "true"}
         comm = torchcomms.new_comm(
-            "mccl", self.device, "reconfigure_collective", hints=hints
+            "mccl", self.device, "reconfigure_collective", init_dynamic_regime=True
         )
 
         # Get init handle and exchange with all ranks

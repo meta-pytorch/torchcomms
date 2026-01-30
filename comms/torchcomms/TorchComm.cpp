@@ -17,6 +17,7 @@ std::shared_ptr<TorchComm> new_comm(
     const CommOptions& options) {
   auto backend_impl = TorchCommFactory::get().create_backend(
       backend_name, device, name, options);
+
   return std::shared_ptr<TorchComm>(
       new TorchComm(backend_name, std::move(backend_impl)));
 }
