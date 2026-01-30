@@ -1049,6 +1049,9 @@ def finalize_registration(lib: Any) -> None:
         _patch_dynamo_for_opaque_methods,
         register_with_dynamo,
     )
+    from torchcomms.functional.functional_backend import (
+        register_torchcomms_funcols_impl,
+    )
     from torchcomms.functional.inductor_lowering import register_torchcomms_lowerings
 
     logger.info(
@@ -1062,6 +1065,9 @@ def finalize_registration(lib: Any) -> None:
     )
     register_torchcomms_lowerings()
     register_with_dynamo()
+
+    # Register functional collectives backend (includes autograd generation)
+    register_torchcomms_funcols_impl()
 
     # Patch eager methods for tracing and autograd support
     _patch_eager_methods()
