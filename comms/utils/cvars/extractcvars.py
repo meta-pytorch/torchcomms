@@ -9,7 +9,7 @@ import pathlib
 import subprocess
 from io import StringIO
 
-import ruamel.yaml as yaml
+import yaml
 
 # Maps from environment variables to CVAR names.
 # These are used to populate the C++ CVAR mappings.
@@ -771,7 +771,7 @@ def main():
 
     print(f"Parsing NCCL env variables from {config_file}")
     with open(config_file, "r") as f:
-        data = yaml.YAML().load(f.read())
+        data = yaml.safe_load(f)
     if data["cvars"] is None:
         data["cvars"] = []
 
