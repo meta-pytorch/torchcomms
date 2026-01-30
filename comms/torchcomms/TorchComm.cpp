@@ -495,6 +495,11 @@ InitHandle TorchComm::getInitHandle() const {
   return impl_->getInitHandle();
 }
 
+c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
+    const ReconfigureOptions& opts) {
+  return impl_->reconfigure(opts);
+}
+
 // Communicator Management
 std::shared_ptr<TorchComm> TorchComm::split(
     const std::vector<int>& ranks,
