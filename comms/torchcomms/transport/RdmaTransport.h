@@ -336,6 +336,34 @@ class __attribute__((visibility("default"))) RdmaTransport {
       RdmaMemory::MutableView& localBuffer,
       const RdmaRemoteBuffer& remoteBuffer);
 
+  /*
+   * Abort the transport and cancel all pending requests.
+   * Callsite should call it to cleanup pending semi futures when failure
+   * occurs. Otherwise, callsite coroutine waiting on these semi futures may
+   * hang. CtranIB internal resource will be automatically freed at destructor.
+   */
+  void abort();
+
+  /*
+   * Mock type for testing RDMA transport error scenarios
+   */
+  enum class MockType {
+    None, // No mock, normal operation
+    Timeout, // Works never complete (simulates hung operations)
+    Failure, // Works complete immediately with commInternalError
+  };
+
+  /*
+   * Inject software mock for testing. Any write/read while mock is enabled
+   * will behave according to the mock type:
+   * - Timeout: works never complete
+   * - Failure: works complete immediately with commInternalError
+   * - None: reset to disable mock
+   * The control is per RdmaTransport instance, and the state is shared with
+   * all threads accessing to the instance.
+   */
+  void setMockForTest(MockType mockType);
+
  private:
   /*
    * Drive the IB progress loop and drive completion of pending requests.
@@ -349,6 +377,8 @@ class __attribute__((visibility("default"))) RdmaTransport {
   struct Work;
   folly::Synchronized<std::deque<std::unique_ptr<Work>>> pendingWorks_;
   std::unique_ptr<folly::AsyncTimeout> progressTimeout_;
+  // Mock type for testing; updated by setMockForTest
+  std::atomic<MockType> mockType_{MockType::None};
 };
 
 } // namespace torch::comms

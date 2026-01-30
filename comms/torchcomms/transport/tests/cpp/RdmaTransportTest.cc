@@ -704,3 +704,143 @@ TEST_F(RdmaTransportTest, ServerClientDataTransferRead) {
   bool success = std::move(communicationFuture).get();
   EXPECT_TRUE(success);
 }
+
+// Test that MockType::Failure causes write operations to fail immediately
+TEST_F(RdmaTransportTest, MockTypeFailure) {
+  const size_t bufferSize = 1024;
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  // Create own event base for this test
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+
+  // Create and bind transport
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  std::string myUrl = transport->bind();
+  EXPECT_FALSE(myUrl.empty());
+
+  // Allocate and register memory buffer
+  void* buffer = nullptr;
+  EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+  torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+
+  // Enable failure mock
+  transport->setMockForTest(torch::comms::RdmaTransport::MockType::Failure);
+
+  // Create a fake remote buffer for testing (won't actually be used due to
+  // mock)
+  torch::comms::RdmaRemoteBuffer remoteBuffer{
+      .ptr = buffer, .len = bufferSize, .accessKey = rdmaMemory.remoteKey()};
+
+  // Write should fail with mock enabled
+  auto writeFuture = transport->write(
+      rdmaMemory.createView(buffer, bufferSize), remoteBuffer, false);
+
+  // Should complete with internal error
+  auto result = std::move(writeFuture).get();
+  EXPECT_EQ(result, commInternalError);
+
+  // Cleanup
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
+
+// Test that MockType::Timeout causes operations to hang and abort cancels them
+TEST_F(RdmaTransportTest, MockTypeTimeoutWithAbort) {
+  const size_t bufferSize = 1024;
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  // Create own event base for this test
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+
+  // Create and bind transport
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  std::string myUrl = transport->bind();
+  EXPECT_FALSE(myUrl.empty());
+
+  // Allocate and register memory buffer
+  void* buffer = nullptr;
+  EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+  torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+
+  // Enable timeout mock - operations will never complete
+  transport->setMockForTest(torch::comms::RdmaTransport::MockType::Timeout);
+
+  // Create a fake remote buffer for testing
+  torch::comms::RdmaRemoteBuffer remoteBuffer{
+      .ptr = buffer, .len = bufferSize, .accessKey = rdmaMemory.remoteKey()};
+
+  // Start a write - it will not complete due to timeout mock
+  auto writeFuture = transport->write(
+      rdmaMemory.createView(buffer, bufferSize), remoteBuffer, false);
+
+  // Verify future is not yet ready (timeout mock prevents completion)
+  EXPECT_FALSE(writeFuture.isReady());
+
+  // Abort should cancel the pending work
+  transport->abort();
+
+  // Now the future should be ready with error
+  EXPECT_TRUE(writeFuture.isReady());
+  auto result = std::move(writeFuture).get();
+  EXPECT_EQ(result, commInternalError);
+
+  // Cleanup
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
+
+// Test that abort() cancels multiple pending operations
+TEST_F(RdmaTransportTest, AbortCancelsMultiplePendingWorks) {
+  const size_t bufferSize = 1024;
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  // Create own event base for this test
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+
+  // Create and bind transport
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  std::string myUrl = transport->bind();
+  EXPECT_FALSE(myUrl.empty());
+
+  // Allocate and register memory buffer
+  void* buffer = nullptr;
+  EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+  torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+
+  // Enable timeout mock to prevent completion
+  transport->setMockForTest(torch::comms::RdmaTransport::MockType::Timeout);
+
+  // Create a fake remote buffer
+  torch::comms::RdmaRemoteBuffer remoteBuffer{
+      .ptr = buffer, .len = bufferSize, .accessKey = rdmaMemory.remoteKey()};
+
+  // Queue multiple pending writes
+  std::vector<folly::SemiFuture<commResult_t>> futures;
+  for (int i = 0; i < 5; ++i) {
+    auto writeFuture = transport->write(
+        rdmaMemory.createView(buffer, bufferSize), remoteBuffer, false);
+    futures.push_back(std::move(writeFuture));
+  }
+
+  // Verify none are ready
+  for (const auto& future : futures) {
+    EXPECT_FALSE(future.isReady());
+  }
+
+  // Abort all pending works
+  transport->abort();
+
+  // All should now be completed with error
+  for (auto& future : futures) {
+    EXPECT_TRUE(future.isReady());
+    auto result = std::move(future).get();
+    EXPECT_EQ(result, commInternalError);
+  }
+
+  // Cleanup
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
