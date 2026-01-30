@@ -36,7 +36,7 @@ std::shared_ptr<memCacheAllocator> memCacheAllocator::getInstance() {
 
 commResult_t memCacheAllocator::init() {
   std::unique_lock lock(mutex_);
-  if (!intialized_) {
+  if (!initialized_) {
     slabAllocator_ = std::make_unique<SlabAllocator>();
     freeRegionMaps_[BucketType::DEFAULT] = memRegionMap_t();
     freeRegionMaps_[BucketType::NVL] = memRegionMap_t();
@@ -60,11 +60,11 @@ commResult_t memCacheAllocator::init() {
           ctran::utils::toFormattableHandle(poolHandle_));
       poolRemainSize_ = newSlabSize;
     }
-    intialized_ = true;
+    initialized_ = true;
     CLOGF_SUBSYS(
         INFO,
         INIT,
-        "Initialized NCCLX intenal buffer pool, size {}",
+        "Initialized NCCLX internal buffer pool, size {}",
         NCCL_MEM_POOL_SIZE);
   }
 
@@ -73,8 +73,8 @@ commResult_t memCacheAllocator::init() {
 
 commResult_t memCacheAllocator::reset() {
   std::unique_lock lock(mutex_);
-  if (intialized_) {
-    CLOGF_SUBSYS(INFO, INIT, "Reset NCCLX intenal buffer pool");
+  if (initialized_) {
+    CLOGF_SUBSYS(INFO, INIT, "Reset NCCLX internal buffer pool");
     printSnapshot();
 
     auto nOccupiedRegions = countOccupiedRegions();
@@ -90,7 +90,7 @@ commResult_t memCacheAllocator::reset() {
     cachedRegionMap_.clear();
     slabAllocator_.reset();
 
-    intialized_ = false;
+    initialized_ = false;
   }
 
   return commSuccess;
