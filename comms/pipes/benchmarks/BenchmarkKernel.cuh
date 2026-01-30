@@ -6,6 +6,10 @@
 
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/TimeoutUtils.h"
+
+#include "comms/pipes/collectives/AllToAllv.cuh"
+#include "comms/pipes/collectives/BroadcastFlat.cuh"
 
 namespace comms::pipes::benchmark {
 
@@ -71,4 +75,40 @@ __global__ void p2pSignalBenchKernel(
     int nSteps,
     SyncScope groupScope = SyncScope::WARP);
 
+/**
+ * AllToAllv benchmark kernel.
+ * All ranks participate in all-to-all communication with variable chunk sizes.
+ */
+__global__ void allToAllvKernel(
+    void* recvbuff_d,
+    const void* sendbuff_d,
+    int my_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    DeviceSpan<ChunkInfo> send_chunk_infos,
+    DeviceSpan<ChunkInfo> recv_chunk_infos,
+    Timeout timeout);
+
+/**
+ * Broadcast benchmark kernel using flat-tree algorithm.
+ *
+ * The root rank broadcasts data to all non-root ranks in a single step.
+ * Each non-root rank receives the complete data directly from root.
+ *
+ * @param buff_d     Device buffer for both send (root) and receive (non-root).
+ *                   Must have at least nbytes allocated.
+ * @param myRank     This rank's ID in the communicator (0 to numRanks-1).
+ * @param rootRank   The rank that originates the broadcast data.
+ * @param transports Array of Transport handles for peer communication.
+ *                   Index i corresponds to peer rank i.
+ * @param nbytes     Number of bytes to broadcast from root to all peers.
+ *
+ * Thread/block configuration: Recommended minimum 8 blocks x 256 threads
+ * for good overlap of computation and communication.
+ */
+__global__ void broadcastFlatKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes);
 } // namespace comms::pipes::benchmark
