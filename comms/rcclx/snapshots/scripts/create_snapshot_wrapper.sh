@@ -215,13 +215,16 @@ else
     echo "Proceeding with snapshot creation..."
     echo ""
 
-    # Determine ROCm constraint
+    # Determine ROCm constraint and platform config
+    PLATFORM_CONFIG=""
     case $ROCM_VERSION in
         6.2)
             ROCM_CONSTRAINT="ovr_config//third-party/rocm/constraints:6.2.1"
+            PLATFORM_CONFIG="-c fbcode.rocm_arch=mi300"
             ;;
         6.4)
             ROCM_CONSTRAINT="ovr_config//third-party/rocm/constraints:6.4.2"
+            PLATFORM_CONFIG="-c fbcode.rocm_arch=mi300"
             ;;
         7.0)
             ROCM_CONSTRAINT="ovr_config//third-party/rocm/constraints:7.0"
@@ -235,6 +238,9 @@ else
 
     echo "Creating snapshot for ROCm $ROCM_VERSION..."
     echo "Building rcclx-dev library..."
+    if [[ -n "$PLATFORM_CONFIG" ]]; then
+        echo "Using platform configuration: $PLATFORM_CONFIG (mi300x/gfx942)"
+    fi
     echo "Note: First-time builds will take 20-30 minutes as we build from source without cache"
 
     # Build the rcclx-dev library
@@ -242,10 +248,10 @@ else
     # Use --local-only to force local execution, preventing use of remote execution
     # which could otherwise provide prebuilt artifacts. This ensures we always do a
     # fresh local build when creating snapshots.
-    buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m "$ROCM_CONSTRAINT" --no-remote-cache --local-only fbcode//comms/rcclx:rcclx-dev
+    buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m "$ROCM_CONSTRAINT" $PLATFORM_CONFIG --no-remote-cache --local-only fbcode//comms/rcclx:rcclx-dev
 
     # Get the library path from buck2 (relative to fbsource root)
-    LIBRARY_PATH_RELATIVE=$(buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m "$ROCM_CONSTRAINT" fbcode//comms/rcclx:rcclx-dev --show-output | grep -oP 'fbcode//comms/rcclx:rcclx-dev\s+\K.*')
+    LIBRARY_PATH_RELATIVE=$(buck2 build @fbcode//mode/opt-amd-gpu -m rcclx_dev -m "$ROCM_CONSTRAINT" $PLATFORM_CONFIG fbcode//comms/rcclx:rcclx-dev --show-output | grep -oP 'fbcode//comms/rcclx:rcclx-dev\s+\K.*')
 
     # Convert to absolute path (buck-out is at fbsource level, we're in fbcode)
     LIBRARY_PATH="../$LIBRARY_PATH_RELATIVE"
