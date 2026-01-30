@@ -656,6 +656,53 @@ static void showVersion() {
   }
 }
 
+static constexpr std::string_view kDeviceRackSerial = "DEVICE_RACK_SERIAL"; /* key in topology file */
+static ncclResult_t ncclxGetDeviceRackSerial(ncclComm* comm, int* rackSerial) {
+  if (comm == nullptr) {
+    WARN("Invalid state or comm pointer");
+    return ncclInvalidArgument;
+  }
+
+  std::ifstream file(NCCL_TOPO_FILE_PATH);
+  if (!file.is_open()) {
+    WARN("Failed to open topology file: %s", NCCL_TOPO_FILE_PATH.c_str());
+    return ncclSystemError;
+  }
+
+  std::string rackSerialStr;
+  std::string line;
+  bool found = false;
+
+  while (std::getline(file, line)) {
+    size_t pos = line.find('=');
+    if (pos == std::string::npos) {
+      continue;
+    }
+
+    std::string key = line.substr(0, pos);
+    std::string value = line.substr(pos + 1);
+
+    if (key == kDeviceRackSerial) {
+      if (!value.empty()) {
+        rackSerialStr = std::move(value);
+        found = true;
+        break;
+      }
+    }
+  }
+
+  if (!found) {
+    INFO(NCCL_INIT, "No rack serial found in topology file");
+  }
+
+  auto maybeRackSerial = folly::tryTo<int>(rackSerialStr);
+  CHECK(maybeRackSerial.hasValue());
+  *rackSerial = maybeRackSerial.value();
+
+  file.close();
+  return ncclSuccess;
+}
+
 NCCL_PARAM(MNNVLUUID, "MNNVL_UUID", -1);
 NCCL_PARAM(MNNVLCliqueId, "MNNVL_CLIQUE_ID", -1);
 
@@ -704,7 +751,15 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
       }
       memcpy(&uuid0, info->fabricInfo.clusterUuid, sizeof(uuid0));
       memcpy(&uuid1, info->fabricInfo.clusterUuid + sizeof(uuid0), sizeof(uuid1));
-      if (ncclParamMNNVLCliqueId() == -2) {
+      if (NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE && NCCL_MNNVL_CLIQUE_SIZE <= 0) {
+        WARN("NCCL_MNNVL_CLIQUE_SIZE must be set to a positive integer when NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE is set");
+        return ncclInvalidArgument;
+      }
+      if (NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE && NCCL_MNNVL_CLIQUE_SIZE > 0) {
+        int cliqueId = -1;
+        ncclx::assignMnnvlCliqueIdBasedOnCliqueSize(&cliqueId);
+        info->fabricInfo.cliqueId = cliqueId;
+      } else if (ncclParamMNNVLCliqueId() == -2) {
         nvmlPlatformInfo_t platformInfo = { 0 };
         NCCLCHECK(ncclNvmlDeviceGetPlatformInfo(nvmlDev, &platformInfo));
         INFO(NCCL_INIT, "MNNVL rack serial %s slot %d tray %d hostId %d peerType %d moduleId %d",
@@ -712,11 +767,16 @@ static ncclResult_t fillInfo(struct ncclComm* comm, struct ncclPeerInfo* info, u
              platformInfo.hostId, platformInfo.peerType, platformInfo.moduleId);
         // Use a hash of the Rack serial number to partition the NVLD clique
         info->fabricInfo.cliqueId = getHash(platformInfo.chassisSerialNumber, sizeof(platformInfo.chassisSerialNumber));
-      } else if (ncclParamMNNVLCliqueId() != -1) info->fabricInfo.cliqueId = ncclParamMNNVLCliqueId();
+      } else if (ncclParamMNNVLCliqueId() != -1) {
+        info->fabricInfo.cliqueId = ncclParamMNNVLCliqueId();
+      }
       INFO(NCCL_INIT, "MNNVL busId 0x%lx fabric UUID %lx.%lx cliqueId 0x%x state %d healthMask 0x%x",
            info->busId,
            uuid0, uuid1,
            info->fabricInfo.cliqueId, info->fabricInfo.state, info->fabricInfo.healthMask);
+      if(NCCL_MNNVL_TRUNK_DISABLE) {
+        NCCLCHECK(ncclxGetDeviceRackSerial(comm, &info->rackSerial));
+      }
     }
   }
 
