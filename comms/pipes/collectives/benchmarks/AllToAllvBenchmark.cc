@@ -6,8 +6,8 @@
 
 #include "comms/common/CudaWrap.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
-#include "comms/pipes/benchmarks/BenchmarkKernel.cuh"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
+#include "comms/pipes/collectives/benchmarks/CollectiveBenchmark.cuh"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
@@ -285,13 +285,17 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     void* recvBuff_d = recvBuffer.get();
     void* sendBuff_d = sendBuffer.get();
 
+    // Create timeout (default = no timeout)
+    Timeout timeout;
+
     void* args[] = {
         &recvBuff_d,
         &sendBuff_d,
         &globalRank,
         &transports_span,
         &send_chunk_infos,
-        &recv_chunk_infos};
+        &recv_chunk_infos,
+        &timeout};
 
     CudaEvent start, stop;
     const int nIter = 100;
@@ -309,7 +313,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     for (int i = 0; i < nIterWarmup; i++) {
       CUDA_CHECK(
           comms::common::launchKernel(
-              (void*)allToAllvKernel,
+              (void*)all_to_allv_kernel,
               gridDim,
               blockDim,
               args,
@@ -324,7 +328,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     for (int i = 0; i < nIter; i++) {
       CUDA_CHECK(
           comms::common::launchKernel(
-              (void*)allToAllvKernel,
+              (void*)all_to_allv_kernel,
               gridDim,
               blockDim,
               args,
