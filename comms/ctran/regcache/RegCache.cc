@@ -5,7 +5,7 @@
 #include <folly/system/ThreadName.h>
 
 #include "comms/ctran/backends/ib/CtranIb.h"
-#include "comms/ctran/backends/nvl/CtranNvl.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
 #ifdef CTRAN_DISABLE_TCPDM
 #include "comms/ctran/backends/mock/CtranTcpDmMock.h"
 #else
@@ -906,17 +906,18 @@ commResult_t ctran::regcache::RegElem::doRegister(
       backends[CommBackend::TCPDM] == false) {
     // Register to NVL backend if it is device accessible memory
     // TODO: add support for managed and host pinned memory
-    FB_CHECKABORT(nvlRegElem == nullptr, "nvlRegElem is already registered");
+    FB_CHECKABORT(ipcRegElem == nullptr, "ipcRegElem is already registered");
     try {
       // Note: shouldSupportCudaMalloc is safely enabled by ncclManaged.
       // The callsite will guarantee that all ranks will perform safe-release of
       // the buffer, avoiding any premature deallocation issues.
       FB_COMMCHECK(
-          CtranNvl::regMem(buf, len, cudaDev_, &nvlRegElem, ncclManaged_));
+          ctran::IpcRegCache::regMem(
+              buf, len, cudaDev_, &ipcRegElem, ncclManaged_));
     } catch ([[maybe_unused]] const std::bad_alloc& e) {
       CLOGF(
           WARN,
-          "CTRAN-REGCACHE: NVL backend not enabled. Skip NVL registration for buf {} len {}",
+          "CTRAN-REGCACHE: NVL backend not enabled. Skip IPC registration for buf {} len {}",
           (void*)buf,
           len);
     }
@@ -963,9 +964,9 @@ commResult_t ctran::regcache::RegElem::doDeregister() {
       toString(stat->state).c_str());
 
   // Deregister from backends
-  if (nvlRegElem) {
-    FB_COMMCHECK(CtranNvl::deregMem(nvlRegElem));
-    nvlRegElem = nullptr;
+  if (ipcRegElem) {
+    ctran::IpcRegCache::deregMem(ipcRegElem);
+    ipcRegElem = nullptr;
   }
   if (ibRegElem) {
     FB_COMMCHECK(CtranIb::deregMem(ibRegElem));

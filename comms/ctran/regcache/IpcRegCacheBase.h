@@ -12,13 +12,23 @@ namespace ctran {
 namespace regcache {
 
 struct IpcDesc {
-  ctran::utils::CtranIpcDesc ipcDesc;
-  // offset since the base of ipcDesc
+  ctran::utils::CtranIpcDesc desc;
+  // offset since the base of desc
   size_t offset{0};
 
   std::string toString() const {
     return fmt::format(
-        "[NVL_IPC_DESC] offset: 0x{:x} {}", offset, ipcDesc.toString());
+        "[IPC_MEM_DESC] offset: 0x{:x} {}", offset, desc.toString());
+  }
+};
+
+struct IpcRelease {
+  void* base{nullptr};
+
+  std::string toString() const {
+    std::stringstream ss;
+    ss << "[IPC_RELEASE_MEM] base: " << base;
+    return ss.str();
   }
 };
 
