@@ -4,7 +4,6 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/pipes/AllToAllv.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
@@ -71,17 +70,5 @@ __global__ void p2pSignalBenchKernel(
     P2pNvlTransportDevice p2p,
     int nSteps,
     SyncScope groupScope = SyncScope::WARP);
-
-/**
- * AllToAllv benchmark kernel.
- * All ranks participate in all-to-all communication with variable chunk sizes.
- */
-__global__ void allToAllvKernel(
-    void* recvbuff_d,
-    const void* sendbuff_d,
-    int my_rank_id,
-    DeviceSpan<Transport> transports_per_rank,
-    DeviceSpan<ChunkInfo> send_chunk_infos,
-    DeviceSpan<ChunkInfo> recv_chunk_infos);
 
 } // namespace comms::pipes::benchmark
