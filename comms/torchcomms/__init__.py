@@ -69,5 +69,7 @@ def _load_backend(backend: str) -> None:
         raise ModuleNotFoundError(
             f"failed to find backend {backend}, is it registered via entry_points.txt?"
         )
-    (wheel,) = found
+    # Use the first matching entry point - there should only be one, but
+    # duplicates can occur if multiple packages register the same backend
+    wheel = next(iter(found))
     wheel.load()
