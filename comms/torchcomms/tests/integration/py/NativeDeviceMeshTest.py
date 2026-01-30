@@ -41,13 +41,13 @@ class NativeDeviceMeshTest(unittest.TestCase):
         logger = logging.getLogger(__name__)
 
         def logging_backend(gm, example_inputs):
-            logger.warning(f"\n{'='*60}\nFX Graph for {test_name}:\n{'='*60}")
+            logger.warning(f"\n{'=' * 60}\nFX Graph for {test_name}:\n{'=' * 60}")
             logger.warning(gm.graph)
-            logger.warning(f"\n{'='*60}\nGraph Code:\n{'='*60}")
+            logger.warning(f"\n{'=' * 60}\nGraph Code:\n{'=' * 60}")
             logger.warning(gm.code)
-            print(f"\n{'='*60}\nFX Graph for {test_name}:\n{'='*60}")
+            print(f"\n{'=' * 60}\nFX Graph for {test_name}:\n{'=' * 60}")
             print(gm.graph)
-            print(f"\n{'='*60}\nGraph Code:\n{'='*60}")
+            print(f"\n{'=' * 60}\nGraph Code:\n{'=' * 60}")
             print(gm.code)
             # Pass to inductor for actual compilation
             return compile_fx.compile_fx(gm, example_inputs)
@@ -61,17 +61,17 @@ class NativeDeviceMeshTest(unittest.TestCase):
 
         @make_boxed_compiler
         def fw_compiler(gm, example_inputs):
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Forward Graph for {test_name}:")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             print(gm.code)
             return gm
 
         @make_boxed_compiler
         def bw_compiler(gm, example_inputs):
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"Backward Graph for {test_name}:")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             print(gm.code)
             return gm
 
