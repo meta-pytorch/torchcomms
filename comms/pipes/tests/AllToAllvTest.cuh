@@ -5,11 +5,11 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 
-#include "comms/pipes/AllToAllv.cuh"
+#include "comms/pipes/collectives/AllToAllv.cuh"
 
 namespace comms::pipes::test {
 
-// Test allToAllv with transports
+// Test all_to_allv with transports
 void testAllToAllv(
     void* recvbuff_d,
     const void* sendbuff_d,
