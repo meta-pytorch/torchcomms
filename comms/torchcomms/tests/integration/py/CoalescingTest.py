@@ -22,7 +22,6 @@ class CoalescingTest(unittest.TestCase):
     def get_wrapper(self):
         return TorchCommTestWrapper()
 
-
     def setUp(self):
         """Set up test environment before each test."""
 
@@ -226,7 +225,6 @@ class CoalescingTest(unittest.TestCase):
         finally:
             # Clean up
             self.torchcomm.end_coalescing()
-
 
     def test_coalescing_manager_double_wait_raises(self):
         """Test that calling wait() twice on a CoalescingManager raises an error."""

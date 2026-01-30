@@ -14,11 +14,6 @@ from typing import Generator, Optional
 import torch  # noqa: F401
 
 
-# to support opaque registration for time delta.
-class Timeout(timedelta, metaclass=OpaqueBaseMeta):
-    pass
-
-
 torchcomms_compile_support_enabled: bool = os.environ.get(
     "TORCHCOMMS_PATCH_FOR_COMPILE", ""
 ).lower() in (
@@ -33,6 +28,11 @@ if torchcomms_compile_support_enabled:
     sys.modules["torchcomms._opaque_meta"] = type(
         "module", (), {"OpaqueBaseMeta": OpaqueBaseMeta}
     )()
+
+    # to support opaque registration for time delta.
+    class Timeout(timedelta, metaclass=OpaqueBaseMeta):
+        pass
+
 
 logger = logging.getLogger(__name__)
 if not logger.handlers:
