@@ -1033,7 +1033,6 @@ class FullgraphCompileTest(unittest.TestCase):
 
     def _test_fullgraph_compile_with_hints_timeout(self):
         """Test torch.compile with fullgraph=True for all_reduce with hints and timeout."""
-        from datetime import timedelta
 
         # Reset dynamo to clear any cached graphs
         import torch._dynamo
