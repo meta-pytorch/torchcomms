@@ -144,7 +144,7 @@ TEST_F(BroadcastTestFixture, SingleRankBroadcastIsNoop) {
 }
 
 // Broadcast algorithm types for parameterized algorithm testing
-enum class BroadcastAlgorithm { FlatTree, BinomialTree, Ring };
+enum class BroadcastAlgorithm { FlatTree, BinomialTree, Ring, Adaptive };
 
 // Test parameters for parameterized Broadcast tests
 struct BroadcastTestParams {
@@ -181,10 +181,19 @@ TEST_P(BroadcastParamTest, DataTransfer) {
   const int rootRank =
       params.rootRank < 0 ? numRanks / 2 : params.rootRank % numRanks;
 
-  const char* algorithmName = params.algorithm == BroadcastAlgorithm::FlatTree
-      ? "FlatTree"
-      : (params.algorithm == BroadcastAlgorithm::BinomialTree ? "BinomialTree"
-                                                              : "Ring");
+  const char* algorithmName = [&]() {
+    switch (params.algorithm) {
+      case BroadcastAlgorithm::FlatTree:
+        return "FlatTree";
+      case BroadcastAlgorithm::BinomialTree:
+        return "BinomialTree";
+      case BroadcastAlgorithm::Ring:
+        return "Ring";
+      case BroadcastAlgorithm::Adaptive:
+        return "Adaptive";
+    }
+    return "Unknown";
+  }();
 
   XLOGF(
       DBG1,
@@ -263,6 +272,16 @@ TEST_P(BroadcastParamTest, DataTransfer) {
         break;
       case BroadcastAlgorithm::Ring:
         test::testBroadcastRing(
+            nullptr,
+            globalRank,
+            rootRank,
+            transports_span,
+            0,
+            numBlocks,
+            blockSize);
+        break;
+      case BroadcastAlgorithm::Adaptive:
+        test::testBroadcastAdaptive(
             nullptr,
             globalRank,
             rootRank,
@@ -350,6 +369,16 @@ TEST_P(BroadcastParamTest, DataTransfer) {
           numBlocks,
           blockSize);
       break;
+    case BroadcastAlgorithm::Adaptive:
+      test::testBroadcastAdaptive(
+          buffer.get(),
+          globalRank,
+          rootRank,
+          transports_span,
+          numBytes,
+          numBlocks,
+          blockSize);
+      break;
     default:
       GTEST_SKIP() << "Broadcast algorithm " << algorithmName
                    << " not implemented yet";
@@ -375,7 +404,7 @@ TEST_P(BroadcastParamTest, DataTransfer) {
   CUDACHECK_TEST(cudaMemcpy(
       h_result.data(), buffer.get(), numBytes, cudaMemcpyDeviceToHost));
 
-  // Direct comparison - Google Test provides detailed diff on failure
+  // Direct comparison
   XLOGF(DBG1, "Rank {}: verification completed", globalRank);
   EXPECT_EQ(h_result, h_expected)
       << "Rank " << globalRank << " verification failed using "
@@ -622,6 +651,81 @@ INSTANTIATE_TEST_SUITE_P(
             .rootRank = 7,
             .algorithm = BroadcastAlgorithm::Ring,
             .testName = "ring_2MB_last_root"}),
+    [](const ::testing::TestParamInfo<BroadcastTestParams>& info) {
+      return info.param.testName;
+    });
+
+// Adaptive algorithm tests
+// Tests the adaptive algorithm that automatically selects between flat-tree
+// and ring based on message size (threshold: 4MB)
+// - Messages < 4MB: uses flat-tree (lower latency)
+// - Messages >= 4MB with nranks > 2: uses ring (better bandwidth)
+INSTANTIATE_TEST_SUITE_P(
+    AdaptiveConfigs,
+    BroadcastParamTest,
+    ::testing::Values(
+        // Small message (1KB) - should use flat-tree
+        BroadcastTestParams{
+            .numBlocks = 4,
+            .blockSize = 256,
+            .numBytes = 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::Adaptive,
+            .testName = "adaptive_1KB_root0"},
+
+        // Medium message (256KB) - should use flat-tree
+        BroadcastTestParams{
+            .numBlocks = 8,
+            .blockSize = 512,
+            .numBytes = 256 * 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::Adaptive,
+            .testName = "adaptive_256KB_root0"},
+
+        // Below threshold (2MB) - should use flat-tree
+        BroadcastTestParams{
+            .numBlocks = 8,
+            .blockSize = 512,
+            .numBytes = 2 * 1024 * 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::Adaptive,
+            .testName = "adaptive_2MB_root0"},
+
+        // At threshold (4MB) - should use ring
+        BroadcastTestParams{
+            .numBlocks = 16,
+            .blockSize = 512,
+            .numBytes = 4 * 1024 * 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::Adaptive,
+            .testName = "adaptive_4MB_root0"},
+
+        // Above threshold (8MB) - should use ring
+        BroadcastTestParams{
+            .numBlocks = 16,
+            .blockSize = 512,
+            .numBytes = 8 * 1024 * 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::Adaptive,
+            .testName = "adaptive_8MB_root0"},
+
+        // Large message with middle root - should use ring
+        BroadcastTestParams{
+            .numBlocks = 16,
+            .blockSize = 512,
+            .numBytes = 4 * 1024 * 1024,
+            .rootRank = -1,
+            .algorithm = BroadcastAlgorithm::Adaptive,
+            .testName = "adaptive_4MB_middle_root"},
+
+        // Large message with last rank as root
+        BroadcastTestParams{
+            .numBlocks = 16,
+            .blockSize = 512,
+            .numBytes = 4 * 1024 * 1024,
+            .rootRank = 7,
+            .algorithm = BroadcastAlgorithm::Adaptive,
+            .testName = "adaptive_4MB_last_root"}),
     [](const ::testing::TestParamInfo<BroadcastTestParams>& info) {
       return info.param.testName;
     });
