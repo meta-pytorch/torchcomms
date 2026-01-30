@@ -4,11 +4,19 @@
 
 import itertools
 import logging
+import os
 import unittest
 
 import torch
-from torchcomms import ReduceOp, Timeout
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
+
+from torchcomms.tests.unit.py.test_helpers import skip_if_pytorch_version_unsupported
+
+skip_if_pytorch_version_unsupported()
+
+from torchcomms import ReduceOp, Timeout  # noqa: E402
+from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
     get_dtype_name,
     get_op_name,
     TorchCommTestWrapper,
