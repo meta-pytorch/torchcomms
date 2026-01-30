@@ -72,7 +72,7 @@ def _check_node_in_output_path(gm, target_node) -> bool:
     # Build reverse dependency map: node -> nodes that use it
     users = {}
     for node in gm.graph.nodes:
-        if hasattr(node, 'args'):
+        if hasattr(node, "args"):
             for arg in node.args:
                 if isinstance(arg, torch.fx.Node):
                     if arg.name not in users:
@@ -186,7 +186,7 @@ class TestWaitProxyPropagation(unittest.TestCase):
             wait_in_path,
             f"wait_tensors output should be in return path. "
             f"Wait nodes: {[n.name for n in wait_nodes]}, "
-            f"Output sources: {_get_graph_output_sources(gm)}"
+            f"Output sources: {_get_graph_output_sources(gm)}",
         )
 
         # Cleanup
@@ -210,7 +210,9 @@ class TestWaitProxyPropagation(unittest.TestCase):
 
         # Create output list for all_gather
         tensor = torch.ones(4, dtype=torch.float, device=device) * (comm.get_rank() + 1)
-        output_list = [torch.zeros(4, dtype=torch.float, device=device) for _ in range(num_ranks)]
+        output_list = [
+            torch.zeros(4, dtype=torch.float, device=device) for _ in range(num_ranks)
+        ]
 
         # Define function that takes comm as argument (not closure)
         def my_func(comm_arg, output, inp):
@@ -244,7 +246,7 @@ class TestWaitProxyPropagation(unittest.TestCase):
             wait_in_path,
             f"wait_tensors output should be in return path for list. "
             f"Wait nodes: {[n.name for n in wait_nodes]}, "
-            f"Output sources: {_get_graph_output_sources(gm)}"
+            f"Output sources: {_get_graph_output_sources(gm)}",
         )
 
         # Cleanup
@@ -304,6 +306,7 @@ class TestWaitProxyPropagation(unittest.TestCase):
 
             def forward(self, t):
                 import torch.distributed._functional_collectives as funcol
+
                 result = funcol.all_gather_tensor(t, gather_dim=0, group=(self.mesh, 0))
                 return result
 
@@ -354,8 +357,7 @@ class TestWaitProxyPropagation(unittest.TestCase):
         for wait_node in wait_nodes:
             has_users = len(wait_node.users) > 0
             self.assertTrue(
-                has_users,
-                f"wait_tensors node {wait_node.name} should have users"
+                has_users, f"wait_tensors node {wait_node.name} should have users"
             )
 
         # Cleanup
