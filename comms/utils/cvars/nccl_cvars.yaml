@@ -1926,7 +1926,7 @@ cvars:
  - name        : NCCL_ALLGATHER_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks
+   choices     : orig, ctran, ctdirect, ctring, ctrd, ctbrucks, ctwindow
    description : |-
      The algorithm to use for Allgather communication
      orig - Copy-based ring algorithm
@@ -1934,6 +1934,7 @@ cvars:
      ctdirect - Ctran-based direct point-to-point algorithm
      ctring - Ctran-based ring algorithm
      ctrd - Ctran-based recursive doubling algorithm
+     ctwindow - Ctran-based window RMA put+signal algorithm
 
  - name        : NCCL_REDUCESCATTER_ALGO
    type        : enum

@@ -439,6 +439,15 @@ bool collTraceRecordCtranKernelInfo(
       coll.count = broadcastArgs.count;
       break;
     }
+    case KernelConfig::KernelType::ALLGATHERWINDOW: {
+      coll.opName = "AllGatherWindow";
+      auto allGatherArgs = kernelConfig.args.collective.allgather;
+      coll.sendbuff = allGatherArgs.sendbuff;
+      coll.recvbuff = allGatherArgs.recvbuff;
+      coll.dataType = metaCommToNccl(allGatherArgs.datatype);
+      coll.count = allGatherArgs.count;
+      break;
+    }
   }
   return true;
 }
@@ -580,6 +589,9 @@ bool collTraceRecordCtranCollective(
       break;
     case OpElem::SIGNAL:
       coll.opName = "Signal";
+      break;
+    case OpElem::ALLGATHERWINDOW:
+      coll.opName = "AllGatherWindow";
       break;
     case OpElem::GET:
       coll.opName = "Get";

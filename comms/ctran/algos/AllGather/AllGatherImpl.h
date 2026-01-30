@@ -6,6 +6,10 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+namespace ctran {
+struct CtranWin;
+} // namespace ctran
+
 commResult_t ctranAllGatherPDirect(CtranPersistentRequest* req);
 
 commResult_t ctranAllGatherDirect(
@@ -40,6 +44,16 @@ commResult_t ctranAllGatherBrucksFF(
     CtranComm* comm,
     cudaStream_t stream);
 
+// Window-based AllGather using RMA put+signal operations.
+// The window's data buffer (win->winDataPtr) serves as the recv buffer.
+// Window layout: [rank0_data | rank1_data | ... | rankN-1_data]
+commResult_t ctranAllGatherWindow(
+    const void* sendbuff,
+    size_t sendcount,
+    commDataType_t datatype,
+    ctran::CtranWin* win,
+    cudaStream_t stream);
+
 static inline const std::string allGatherAlgoName(
     enum NCCL_ALLGATHER_ALGO algo) {
   switch (algo) {
@@ -51,6 +65,8 @@ static inline const std::string allGatherAlgoName(
       return "CtranAllGatherRing";
     case NCCL_ALLGATHER_ALGO::ctbrucks:
       return "CtranBrucksFF";
+    case NCCL_ALLGATHER_ALGO::ctwindow:
+      return "CtranAllGatherWindow";
     case NCCL_ALLGATHER_ALGO::ctran:
       return "CtranAuto";
     case NCCL_ALLGATHER_ALGO::orig:
