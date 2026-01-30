@@ -3,7 +3,6 @@
 
 """Functional collectives implementation for torchcomms."""
 
-
 import torch
 from torchcomms import Timeout
 
