@@ -48,9 +48,9 @@ def _load_libtorchcomms() -> None:
 
 
 _load_libtorchcomms()
-from torchcomms._comms import *  # noqa: F401, F403
+from torchcomms._comms import *  # noqa: E402, F401, F403
 import torchcomms.coalescing as coalescing  # noqa F401
-import torchcomms.objcol as objcol  # noqa: F401, F403
+import torchcomms.objcol as objcol  # noqa: E402, F401, F403
 
 if os.environ.get("TORCHCOMMS_PATCH_FOR_COMPILE", "").lower() in ("1", "true"):
     # Import collectives first to ensure all operations are registered
