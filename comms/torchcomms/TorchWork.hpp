@@ -42,6 +42,20 @@ class TorchWork : public c10::intrusive_ptr_target {
   // Pure virtual functions that derived classes must implement
   virtual void wait() = 0;
 
+  // Fault Tolerance API
+
+  /**
+   * Block the CPU thread until the work is completed.
+   * Unlike wait(), which blocks only the current CUDA stream, this method
+   * blocks the CPU thread itself until the operation completes.
+   *
+   * @throws std::runtime_error if not implemented by the backend.
+   */
+  virtual void waitBlocking() {
+    throw std::runtime_error(
+        "[TorchWork]: waitBlocking not implemented for this work type");
+  }
+
   // Disable copy and move semantics
   TorchWork(const TorchWork&) = delete;
   TorchWork& operator=(const TorchWork&) = delete;
