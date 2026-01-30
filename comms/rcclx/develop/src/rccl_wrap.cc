@@ -497,7 +497,7 @@ int parseFirmwareVersion() {
   int version = -1;
   try {
     version = parseFirmwareVersionImpl();
-  } catch (const std::exception& ex) {
+  } catch (const std::exception&) {
   }
   return version;
 }
