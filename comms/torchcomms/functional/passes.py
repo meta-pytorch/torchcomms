@@ -43,7 +43,7 @@ def reinplacement_pass(
     )
 
     if fake_mode is not None:
-        with V.set_fake_mode(fake_mode):
+        with V.set_fake_mode(fake_mode):  # type: ignore[arg-type]
             reinplace_inplaceable_ops(fake_tensor_updater, gm.graph)
             fake_tensor_updater.incremental_update()
     else:
