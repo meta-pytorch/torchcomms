@@ -147,7 +147,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
 
   // Helper function to run P2P NVL benchmark - returns bandwidth
   float runP2pNvlBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
+      comms::pipes::P2pNvlTransportDevice* p2p,
       const BenchmarkConfig& config,
       float& timeUs) {
     XLOGF(DBG1, "=== Running P2P NVL benchmark: {} ===", config.name);
@@ -379,7 +379,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
   // Helper function to run P2P NVL bidirectional benchmark - returns algorithm
   // BW
   float runP2pNvlBidirectionalBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
+      comms::pipes::P2pNvlTransportDevice* p2p,
       const BenchmarkConfig& config,
       float& timeUs) {
     XLOGF(
@@ -452,7 +452,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
   // Helper function to run P2P signal benchmark - returns latency
   // in microseconds
   float runSignalBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
+      comms::pipes::P2pNvlTransportDevice* p2p,
       const BenchmarkConfig& config,
       int nSteps = 1000) {
     XLOGF(DBG1, "=== Running Signal benchmark: {} ===", config.name);
@@ -704,7 +704,10 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
         globalRank, numRanks, bootstrap, p2pConfig);
     transport.exchange();
 
-    auto p2p = transport.getP2pTransportDevice(peerRank);
+    // Get preallocated P2pNvlTransportDevice pointer on device
+    // (preallocation is done in MultiPeerNvlTransport::exchange())
+    comms::pipes::P2pNvlTransportDevice* p2p =
+        transport.getP2pTransportDevice(peerRank);
 
     BenchmarkResult result;
     result.testName = config.name;
@@ -720,6 +723,8 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
 
     // Run P2P NVL benchmark
     result.p2pBandwidth = runP2pNvlBenchmark(p2p, config, result.p2pTime);
+
+    // Device memory is managed by MultiPeerNvlTransport
 
     // Calculate speedup
     result.p2pSpeedup = (result.ncclBandwidth > 0)
@@ -907,7 +912,10 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
         globalRank, numRanks, bootstrap, p2pConfig);
     transport.exchange();
 
-    auto p2p = transport.getP2pTransportDevice(peerRank);
+    // Get preallocated P2pNvlTransportDevice pointer on device
+    // (preallocation is done in MultiPeerNvlTransport::exchange())
+    comms::pipes::P2pNvlTransportDevice* p2p =
+        transport.getP2pTransportDevice(peerRank);
 
     BenchmarkResult result;
     result.testName = config.name;
@@ -925,6 +933,8 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
     // Run P2P NVL bidirectional benchmark
     result.p2pBandwidth =
         runP2pNvlBidirectionalBenchmark(p2p, config, result.p2pTime);
+
+    // Device memory is managed by MultiPeerNvlTransport
 
     // Calculate speedup
     result.p2pSpeedup = (result.ncclBandwidth > 0)
@@ -1076,8 +1086,13 @@ TEST_F(P2pNvlBenchmarkFixture, SignalBenchmark) {
         globalRank, numRanks, bootstrap, p2pConfig);
     transport.exchange();
 
-    auto p2p = transport.getP2pTransportDevice(peerRank);
+    // Get preallocated P2pNvlTransportDevice pointer on device
+    comms::pipes::P2pNvlTransportDevice* p2p =
+        transport.getP2pTransportDevice(peerRank);
+
     runSignalBenchmark(p2p, warmupConfig, nSteps); // Discard result
+
+    // Device memory is managed by MultiPeerNvlTransport
   }
 
   std::vector<BenchmarkResult> results;
@@ -1103,11 +1118,16 @@ TEST_F(P2pNvlBenchmarkFixture, SignalBenchmark) {
         globalRank, numRanks, bootstrap, p2pConfig);
     transport.exchange();
 
-    auto p2p = transport.getP2pTransportDevice(peerRank);
+    // Get preallocated P2pNvlTransportDevice pointer on device
+    comms::pipes::P2pNvlTransportDevice* p2p =
+        transport.getP2pTransportDevice(peerRank);
 
     BenchmarkResult result;
     result.testName = config.name;
     result.p2pTime = runSignalBenchmark(p2p, config, nSteps);
+
+    // Device memory is managed by MultiPeerNvlTransport
+
     results.push_back(result);
   }
 

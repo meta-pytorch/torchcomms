@@ -8,18 +8,18 @@ namespace comms::pipes::test {
 
 // testSendOneKernel: Tests send_one (single chunk with metadata)
 __global__ void testSendOneKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     const void* src_d,
     size_t nbytes,
     size_t offset_in_output,
     bool has_more) {
   auto group = make_warp_group();
-  p2p.send_one(group, src_d, nbytes, 0, offset_in_output, has_more);
+  p2p->send_one(group, src_d, nbytes, 0, offset_in_output, has_more);
 }
 
 // testRecvOneKernel: Tests recv_one (single chunk with metadata)
 __global__ void testRecvOneKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_base_d,
     size_t* nbytes_d,
     size_t* offset_d,
@@ -31,7 +31,7 @@ __global__ void testRecvOneKernel(
   size_t offset = 0;
   bool has_more = false;
 
-  p2p.recv_one(group, dst_base_d, &nbytes, 0, &offset, &has_more);
+  p2p->recv_one(group, dst_base_d, &nbytes, 0, &offset, &has_more);
 
   // Write results to device memory for verification
   // Only one thread needs to write
@@ -43,7 +43,7 @@ __global__ void testRecvOneKernel(
 }
 
 void testSendOne(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     const void* src_d,
     size_t nbytes,
     size_t offset_in_output,
@@ -56,7 +56,7 @@ void testSendOne(
 }
 
 void testRecvOne(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_base_d,
     size_t* nbytes_d,
     size_t* offset_d,
@@ -71,7 +71,7 @@ void testRecvOne(
 // testSendOneMultipleTimesKernel: Tests send_one called multiple times in one
 // kernel
 __global__ void testSendOneMultipleTimesKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     const void* const* src_d_array,
     const size_t* nbytes_array,
     const size_t* offset_array,
@@ -80,7 +80,7 @@ __global__ void testSendOneMultipleTimesKernel(
   auto group = make_warp_group();
 
   for (size_t i = 0; i < num_calls; i++) {
-    p2p.send_one(
+    p2p->send_one(
         group,
         src_d_array[i],
         nbytes_array[i],
@@ -93,7 +93,7 @@ __global__ void testSendOneMultipleTimesKernel(
 // testRecvOneMultipleTimesKernel: Tests recv_one called multiple times in one
 // kernel
 __global__ void testRecvOneMultipleTimesKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_base_d,
     size_t* nbytes_array_d,
     size_t* offset_array_d,
@@ -106,7 +106,7 @@ __global__ void testRecvOneMultipleTimesKernel(
     size_t offset = 0;
     bool has_more = false;
 
-    p2p.recv_one(
+    p2p->recv_one(
         group,
         dst_base_d,
         &nbytes,
@@ -124,7 +124,7 @@ __global__ void testRecvOneMultipleTimesKernel(
 }
 
 void testSendOneMultipleTimes(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     const void* const* src_d_array,
     const size_t* nbytes_array,
     const size_t* offset_array,
@@ -138,7 +138,7 @@ void testSendOneMultipleTimes(
 }
 
 void testRecvOneMultipleTimes(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_base_d,
     size_t* nbytes_array_d,
     size_t* offset_array_d,
