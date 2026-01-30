@@ -4,6 +4,7 @@
 import ctypes
 import os
 import sys
+from datetime import timedelta
 from importlib.metadata import entry_points
 
 # We need to load this upfront since libtorchcomms depend on libtorch
@@ -24,6 +25,14 @@ if torchcomms_compile_support_enabled:
     sys.modules["torchcomms._opaque_meta"] = type(
         "module", (), {"OpaqueBaseMeta": OpaqueBaseMeta}
     )()
+
+    # to support opaque registration for time delta.
+    class Timeout(timedelta, metaclass=OpaqueBaseMeta):
+        pass
+else:
+    # When compile support is disabled, define Timeout without the metaclass
+    class Timeout(timedelta):
+        pass
 
 
 def _load_libtorchcomms() -> None:
@@ -47,6 +56,7 @@ __all__ = [  # noqa: F405
     "TorchComm",
     "ReduceOp",
     "TorchWork",
+    "Timeout",
     "BatchP2POptions",
     "BatchSendRecv",
     "P2POp",
