@@ -239,7 +239,7 @@ class TestParsedArgs(unittest.TestCase):
         self.assertEqual(values[2], True)
 
 
-class DummyClass:
+class DummyClass(metaclass=torch._opaque_base.OpaqueBaseMeta):
     """Dummy class for testing opaque type registration."""
 
     pass
