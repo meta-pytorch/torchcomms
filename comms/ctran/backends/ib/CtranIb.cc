@@ -1355,7 +1355,7 @@ commResult_t CtranIb::updateVcState(
     // transferred to vcStateMaps
     // TODO: for now we apply a hot fix to address segfault caused by race from
     // concurrent threads updating pendingVcs_. We need to revisit why we
-    // need pendingVcs_? To add explaination to it or remove
+    // need pendingVcs_? To add explanation to it or remove
     std::lock_guard<std::mutex> lock(cqMutex);
     pendingVcs_.erase(peerRank);
   }
