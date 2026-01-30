@@ -9,6 +9,7 @@
 #include "comms/pipes/TimeoutUtils.h"
 
 #include "comms/pipes/collectives/AllToAllv.cuh"
+#include "comms/pipes/collectives/BroadcastBinomialTree.cuh"
 #include "comms/pipes/collectives/BroadcastFlat.cuh"
 
 namespace comms::pipes::benchmark {
@@ -106,6 +107,18 @@ __global__ void allToAllvKernel(
  * for good overlap of computation and communication.
  */
 __global__ void broadcastFlatKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes);
+
+/**
+ * Broadcast benchmark kernel using binomial tree algorithm.
+ * Root rank broadcasts data to all non-root ranks using O(log N) rounds.
+ * More bandwidth-efficient than flat-tree for large messages.
+ */
+__global__ void broadcastBinomialTreeKernel(
     void* buff_d,
     int myRank,
     int rootRank,
