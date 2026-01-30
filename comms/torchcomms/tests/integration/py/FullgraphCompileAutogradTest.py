@@ -9,7 +9,7 @@ import torch
 
 os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 
-from torchcomms.tests.unit.py.test_helpers import skip_if_pytorch_version_unsupported
+from torchcomms.tests.helpers.py.test_helpers import skip_if_pytorch_version_unsupported
 
 skip_if_pytorch_version_unsupported()
 
