@@ -11,6 +11,7 @@
 #include "comms/pipes/collectives/AllToAllv.cuh"
 #include "comms/pipes/collectives/BroadcastBinomialTree.cuh"
 #include "comms/pipes/collectives/BroadcastFlat.cuh"
+#include "comms/pipes/collectives/BroadcastRing.cuh"
 
 namespace comms::pipes::benchmark {
 
@@ -119,6 +120,18 @@ __global__ void broadcastFlatKernel(
  * More bandwidth-efficient than flat-tree for large messages.
  */
 __global__ void broadcastBinomialTreeKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes);
+
+/**
+ * Ring broadcast kernel using ring algorithm.
+ * Achieves near-optimal bandwidth utilization by overlapping send/recv.
+ * Best performance for large messages (>= 1MB).
+ */
+__global__ void broadcastRingKernel(
     void* buff_d,
     int myRank,
     int rootRank,
