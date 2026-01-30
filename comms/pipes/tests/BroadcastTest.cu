@@ -3,6 +3,7 @@
 #include "comms/pipes/tests/BroadcastTest.cuh"
 
 #include "comms/common/CudaWrap.h"
+#include "comms/pipes/collectives/BroadcastAdaptive.cuh"
 #include "comms/pipes/collectives/BroadcastBinomialTree.cuh"
 #include "comms/pipes/collectives/BroadcastFlat.cuh"
 #include "comms/pipes/collectives/BroadcastRing.cuh"
@@ -111,6 +112,43 @@ void testBroadcastRing(
   PIPES_CUDA_CHECK(
       comms::common::launchKernel(
           (void*)testBroadcastRingKernel,
+          dim3(numBlocks, 1, 1),
+          dim3(blockSize, 1, 1),
+          args,
+          stream,
+          clusterDim));
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+/**
+ * Device kernel that invokes the adaptive broadcast collective.
+ * Minimal wrapper - all logic is in BroadcastAdaptive.cuh.
+ */
+__global__ void testBroadcastAdaptiveKernel(
+    void* buff_d,
+    int my_rank_id,
+    int root_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    std::size_t nbytes) {
+  broadcast_adaptive(
+      buff_d, my_rank_id, root_rank_id, transports_per_rank, nbytes);
+}
+
+void testBroadcastAdaptive(
+    void* buff_d,
+    int my_rank_id,
+    int root_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    std::optional<dim3> clusterDim,
+    cudaStream_t stream) {
+  void* args[] = {
+      &buff_d, &my_rank_id, &root_rank_id, &transports_per_rank, &nbytes};
+  PIPES_CUDA_CHECK(
+      comms::common::launchKernel(
+          (void*)testBroadcastAdaptiveKernel,
           dim3(numBlocks, 1, 1),
           dim3(blockSize, 1, 1),
           args,
