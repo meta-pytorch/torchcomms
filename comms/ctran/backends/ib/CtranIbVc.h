@@ -196,7 +196,7 @@ class CtranIbVirtualConn {
   ~CtranIbVirtualConn();
 
   // The data channel may be temporarily unavailable due to run out of local
-  // send queue WQE. VC has already interally scheduled an implicit signal to
+  // send queue WQE. VC has already internally scheduled an implicit signal to
   // flush out queued WQEs and is waiting for the CQE completion.
   // Caller needs to call this function before posting a put. If it returns
   // false, progress needs to be made to poll CQE completion.
