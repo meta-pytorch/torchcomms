@@ -122,6 +122,10 @@ PYBIND11_MODULE(_comms, m) {
           &CommOptions::store,
           "Store for communication between processes")
       .def_readwrite(
+          "init_dynamic_regime",
+          &CommOptions::init_dynamic_regime,
+          "If true, creates the communicator in dynamic regime for fault tolerance")
+      .def_readwrite(
           "hints",
           &CommOptions::hints,
           "Dictionary of string hints for backend-specific options");
@@ -131,6 +135,57 @@ PYBIND11_MODULE(_comms, m) {
       .def(py::init<>(), "Create default BatchP2POptions")
       .def_readwrite("hints", &BatchP2POptions::hints, "Hints dictionary")
       .def_readwrite("timeout", &BatchP2POptions::timeout, "Timeout");
+
+  // ReconfigureOptions for Fault Tolerance API
+  py::class_<ReconfigureOptions>(
+      m,
+      "ReconfigureOptions",
+      R"(
+Options for the reconfigure() fault tolerance API.
+
+The reconfigure call initializes the communicator with a user-provided set
+of peers. After a successful reconfigure call, the communicator is fully
+initialized and collective operations are permitted.
+      )")
+      .def(py::init<>(), "Create default ReconfigureOptions")
+      .def(
+          py::init(
+              [](int64_t uuid,
+                 std::variant<
+                     std::unordered_set<InitHandle>,
+                     std::vector<InitHandle>> handles,
+                 std::optional<std::chrono::milliseconds> timeout,
+                 std::optional<std::unordered_map<std::string, std::string>>
+                     hints) {
+                ReconfigureOptions opts;
+                opts.uuid = uuid;
+                opts.handles = std::move(handles);
+                opts.timeout = timeout;
+                if (hints) {
+                  opts.hints = *hints;
+                }
+                return opts;
+              }),
+          py::arg("uuid"),
+          py::arg("handles"),
+          py::arg("timeout") = std::nullopt,
+          py::arg("hints") = std::nullopt)
+      .def_readwrite(
+          "uuid",
+          &ReconfigureOptions::uuid,
+          "Uniquely identifies this instance of the communicator")
+      .def_readwrite(
+          "handles",
+          &ReconfigureOptions::handles,
+          "Init handles of ranks that will participate in this communicator")
+      .def_readwrite(
+          "timeout",
+          &ReconfigureOptions::timeout,
+          "How long to allow reconfiguration to take before failing")
+      .def_readwrite(
+          "hints",
+          &ReconfigureOptions::hints,
+          "Additional configuration key-value pairs");
 
   // Bind TorchWork class
   intrusive_ptr_class_<TorchWork>(
@@ -178,6 +233,21 @@ Example usage:
 Block the current stream until the work is completed.
 
 See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more details.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "wait_blocking",
+          &TorchWork::waitBlocking,
+          R"(
+Block the CPU thread until the work is completed.
+
+Unlike wait(), which blocks only the current CUDA stream, this method
+blocks the CPU thread itself until the operation completes. This is useful
+for fault tolerance scenarios where you need to ensure an operation has
+completed before proceeding.
+
+Raises:
+    RuntimeError: If not implemented by the backend.
           )",
           py::call_guard<py::gil_scoped_release>());
 
@@ -628,6 +698,7 @@ Args:
          std::optional<std::chrono::milliseconds> timeout,
          std::optional<bool> high_priority_stream,
          std::optional<c10::intrusive_ptr<c10d::Store>> store,
+         bool init_dynamic_regime,
          std::optional<std::unordered_map<std::string, std::string>> hints) {
         py::module_ torchcomms = py::module_::import("torchcomms");
         torchcomms.attr("_load_backend")(backend);
@@ -652,6 +723,7 @@ Args:
           if (hints) {
             opts.hints = *hints;
           }
+          opts.init_dynamic_regime = init_dynamic_regime;
 
           return new_comm(backend, device, name, opts);
         }
@@ -680,6 +752,9 @@ Args:
   timeout (timedelta): Timeout for initialization.
   high_priority_stream (bool): Whether to use high priority stream.
   store (torch.distributed.Store): Store used to initialize the communicator between processes.
+  init_dynamic_regime (bool): If True, creates the communicator in dynamic regime
+      for fault tolerance. In dynamic regime, the communicator is not initialized
+      until reconfigure() is called. Default is False (static regime).
   hints (dict): Dictionary of string hints for backend-specific options.
       )",
       py::arg("backend"),
@@ -689,6 +764,7 @@ Args:
       py::arg("timeout") = std::nullopt,
       py::arg("high_priority_stream") = std::nullopt,
       py::arg("store") = nullptr,
+      py::arg("init_dynamic_regime") = false,
       py::arg("hints") = std::nullopt);
 
   py::class_<TorchCommBackend, std::shared_ptr<TorchCommBackend>>(
@@ -762,6 +838,86 @@ development. Direct backend access provides no backwards compatibility
 guarantees. Users depending on unsafe_get_backend should expect their code to
 break as interfaces change.
           )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_init_handle",
+          &TorchComm::getInitHandle,
+          R"(
+Get the initialization handle for this communicator.
+
+In dynamic regime, this handle encodes information required by the backend
+to complete the initialization process via reconfigure().
+
+Returns:
+    An InitHandle string.
+
+Raises:
+    RuntimeError: If not implemented by the backend.
+          )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "reconfigure",
+          [](TorchComm& self,
+             int64_t uuid,
+             std::variant<
+                 std::unordered_set<InitHandle>,
+                 std::vector<InitHandle>> handles,
+             std::optional<std::chrono::milliseconds> timeout,
+             std::optional<std::unordered_map<std::string, std::string>>
+                 hints) {
+            ReconfigureOptions opts;
+            opts.uuid = uuid;
+            opts.handles = std::move(handles);
+            opts.timeout = timeout;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            return self.reconfigure(opts);
+          },
+          R"(
+Reconfigure the communicator with a new set of peers.
+
+In dynamic regime, this method initializes the communicator with the
+provided set of peers. After a successful reconfigure call, the
+communicator is fully initialized and collective operations are permitted.
+
+Args:
+    uuid: Uniquely identifies this instance of the communicator. The uuid
+        must not have been used previously on this communicator.
+    handles: The init handles of all ranks that will participate in this
+        communicator. Can be either a list or set:
+        - list[str]: Guarantees that assigned ranks correspond to position
+          of handle in the list (ordered assignment)
+        - set[str]: The backend will determine the rank assignment based on
+          internal considerations (no external rank order guaranteed)
+    timeout: How long to allow reconfiguration to take before failing.
+        If None, uses the backend's default timeout.
+    hints: Additional configuration key-value pairs, implementation-specific.
+
+Returns:
+    A TorchWork handle that can be used to wait for completion.
+
+Raises:
+    RuntimeError: If not implemented by the backend.
+
+Example:
+    >>> comm = torchcomms.new_comm("mccl", device, "my_comm", init_dynamic_regime=True)
+    >>> my_handle = comm.get_init_handle()
+    >>> # Exchange handles with all ranks via store/coordinator
+    >>> all_handles = collect_handles_from_all_ranks(my_handle)
+    >>> work = comm.reconfigure(
+    ...     uuid="0",
+    ...     handles=all_handles,
+    ...     timeout=timedelta(milliseconds=5000)
+    ... )
+    >>> work.wait_blocking()
+    >>> # Now collective operations are permitted
+    >>> comm.all_reduce(tensor, op=torchcomms.ReduceOp.SUM, async_op=False)
+          )",
+          py::arg("uuid"),
+          py::arg("handles"),
+          py::arg("timeout") = std::nullopt,
+          py::arg("hints") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
 
       // Point-to-Point Operations

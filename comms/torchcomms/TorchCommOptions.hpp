@@ -148,6 +148,12 @@ class CommOptions {
   std::chrono::milliseconds timeout{kDefaultTimeout};
   bool high_priority_stream{false};
   c10::intrusive_ptr<c10d::Store> store{nullptr};
+  /**
+   * If true, creates the communicator in dynamic regime for fault tolerance.
+   * In dynamic regime, the communicator is not initialized until reconfigure()
+   * is called. Default is false (static regime).
+   */
+  bool init_dynamic_regime{false};
   std::unordered_map<std::string, std::string> hints;
 
  public:
