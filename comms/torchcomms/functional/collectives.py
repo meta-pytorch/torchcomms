@@ -8,8 +8,12 @@ from torchcomms import Timeout
 
 # Import TorchComm, TorchCommWindow, and BatchSendRecv
 from torchcomms._comms import BatchSendRecv, ReduceOp, TorchComm, TorchCommWindow
+from torchcomms.functional.async_tensor import (
+    _are_we_tracing,
+    _maybe_wrap_tensor,
+    _OnceWaitWork,
+)
 from torchcomms.functional.registry import finalize_registration, register_collective
-
 
 # Only create library if not already registered
 try:
@@ -125,6 +129,45 @@ if lib is not None:
         _wait_tensors_functionalize_impl
     )
 
+    # === AUTOGRAD FOR WAIT_TENSORS ===
+    # Wait is just synchronization - gradients pass through unchanged.
+    def _wait_tensors_setup_context(ctx, inputs, output):
+        # No context needed - wait is identity for gradients
+        pass
+
+    def _wait_tensors_backward(ctx, *grad_outputs):
+        # Identity backward - return gradients unchanged
+        # grad_outputs contains the gradient list as passed by supports_tensorlist wrapper
+        # For wait_tensors(Tensor[] inputs), grad_outputs = ([grad1, grad2, ...],)
+        # We return it as-is since it's already the right structure
+        return grad_outputs
+
+    # Register autograd for the functional wait_tensors
+    torch.library.register_autograd(
+        "torchcomms::torchcomm_wait_tensors",
+        _wait_tensors_backward,
+        setup_context=_wait_tensors_setup_context,
+        lib=lib,
+    )
+
+    # Register autograd kernel for the inplace wait_tensors_ using make_autograd_impl
+    from torch._library import autograd as library_autograd
+
+    inplace_wait_info = library_autograd.Info(
+        _backward_fn=_wait_tensors_backward,
+        _setup_context_fn=_wait_tensors_setup_context,
+    )
+
+    inplace_wait_autograd_kernel = library_autograd.make_autograd_impl(
+        torch.ops.torchcomms.torchcomm_wait_tensors_.default, inplace_wait_info
+    )
+    lib.impl(
+        "torchcomm_wait_tensors_",
+        inplace_wait_autograd_kernel,
+        "Autograd",
+        with_keyset=True,
+    )
+
     def _get_tensor_meta(
         window: TorchCommWindow,  # actually a FakeScriptObject
         rank: int,
@@ -165,6 +208,193 @@ if lib is not None:
         },
     )
 
+    # ==========================================================================
+    # Autograd support for collectives using torch.library.register_autograd
+    # ==========================================================================
+    #
+    # Each collective can define:
+    # - setup_context_fn(ctx, inputs, output): Save what's needed for backward
+    # - backward_fn(ctx, grad_output, ...): Compute gradients
+    #
+    # For functional ops, backward_fn receives:
+    # - ctx: Context object with saved values
+    # - grad_output: Gradient of the output tensor
+    # And returns a tuple with one gradient per input (None for non-tensor inputs)
+
+    def _all_reduce_setup_context(ctx, inputs, output):
+        """Save context for all_reduce backward.
+
+        For functional version (all tensors mutable, so all included):
+        - inputs: (comm, tensor, op, async_op, hints, timeout)
+        - output: The reduced tensor
+        """
+        ctx.comm = inputs[0]
+        ctx.reduce_op = inputs[2]
+
+    def _all_reduce_backward(ctx, grad_output):
+        """Backward for all_reduce.
+
+        all_reduce is its own gradient - if y = all_reduce(x, sum),
+        then grad_x = all_reduce(grad_y, sum).
+
+        Returns only tensor gradients - the wrapper expands to full tuple.
+        """
+        # Perform all_reduce on the gradient
+        grad_input = grad_output.contiguous()
+        work = ctx.comm.all_reduce(grad_input, ctx.reduce_op, async_op=True)
+        return _maybe_wrap_tensor(grad_input, work)
+
+    def _all_gather_single_setup_context(ctx, inputs, output):
+        """Save context for all_gather_single backward.
+
+        For functional version (all input params included):
+        - inputs: (comm, output, input, async_op, hints, timeout)
+        - output: The gathered output tensor (returned from functional op)
+        """
+        ctx.comm = inputs[0]
+        ctx.group_size = inputs[0].get_size()
+
+    def _all_gather_single_backward(ctx, grad_output):
+        """Backward for all_gather_single.
+
+        all_gather backward is reduce_scatter.
+
+        Returns only input tensor gradients - the wrapper expands to full tuple.
+        Non-mutable tensor input: input -> returns grad_input
+        """
+        grad_output = grad_output.contiguous()
+
+        # Create output for reduce_scatter
+        out_size = list(grad_output.size())
+        out_size[0] //= ctx.group_size
+        grad_input = grad_output.new_empty(out_size)
+
+        work = ctx.comm.reduce_scatter_single(
+            grad_input, grad_output, ReduceOp.SUM, async_op=True
+        )
+        return _maybe_wrap_tensor(grad_input, work)
+
+    def _reduce_scatter_single_setup_context(ctx, inputs, output):
+        """Save context for reduce_scatter_single backward.
+
+        For functional version (all input params included):
+        - inputs: (comm, output, input, op, async_op, hints, timeout)
+        - output: The scattered output tensor (returned from functional op)
+        """
+        ctx.comm = inputs[0]
+        ctx.group_size = ctx.group_size = inputs[0].get_size()
+
+    def _reduce_scatter_single_backward(ctx, grad_output):
+        """Backward for reduce_scatter_single.
+
+        reduce_scatter backward is all_gather.
+
+        Returns only input tensor gradients - the wrapper expands to full tuple.
+        Non-mutable tensor input: input -> returns grad_input
+        """
+        grad_output = grad_output.contiguous()
+
+        # Create output for all_gather
+        out_size = list(grad_output.size())
+        out_size[0] *= ctx.group_size
+        grad_input = grad_output.new_empty(out_size)
+
+        work = ctx.comm.all_gather_single(grad_input, grad_output, async_op=True)
+        return _maybe_wrap_tensor(grad_input, work)
+
+    def _all_to_all_single_setup_context(ctx, inputs, output):
+        """Save context for all_to_all_single backward.
+
+        For functional version (all input params included):
+        - inputs: (comm, output, input, async_op, hints, timeout)
+        - output: The all_to_all output tensor (returned from functional op)
+        """
+        ctx.comm = inputs[0]
+
+    def _all_to_all_single_backward(ctx, grad_output):
+        """Backward for all_to_all_single.
+
+        all_to_all is its own inverse - just call all_to_all on the gradient.
+
+        Returns only input tensor gradients - the wrapper expands to full tuple.
+        Non-mutable tensor input: input -> returns grad_input
+        """
+        grad_output = grad_output.contiguous()
+
+        # Create output for all_to_all (same shape as input grad)
+        grad_input = grad_output.new_empty(grad_output.size())
+
+        work = ctx.comm.all_to_all_single(grad_input, grad_output, async_op=True)
+        return _maybe_wrap_tensor(grad_input, work)
+
+    def _reduce_scatter_setup_context(ctx, inputs, output):
+        """Save context for reduce_scatter backward.
+
+        For functional version:
+        - inputs: (comm, output, input_list, op, async_op, hints, timeout)
+        - output: The scattered output tensor
+        """
+        ctx.comm = inputs[0]
+        ctx.input_shapes = [t.shape for t in inputs[2]]
+        ctx.group_size = inputs[0].get_size()
+
+    def _reduce_scatter_backward(ctx, grad_output):
+        """Backward for reduce_scatter.
+
+        reduce_scatter: output[r] = sum over all ranks of input_list[r]
+        Backward is all_gather: each rank's input_list[i] contributed to output[i],
+        so we need to gather the gradient from rank i to all ranks.
+
+        Returns gradients for input_list (list of tensors).
+        """
+        grad_output = grad_output.contiguous()
+        grad_input_list = [
+            torch.empty(shape, dtype=grad_output.dtype, device=grad_output.device)
+            for shape in ctx.input_shapes
+        ]
+
+        work = ctx.comm.all_gather(grad_input_list, grad_output, async_op=True)
+
+        if _are_we_tracing():
+            return work.wait()
+
+        once_work = _OnceWaitWork(work)
+        return [_maybe_wrap_tensor(t, once_work) for t in grad_input_list]
+
+    def _all_gather_setup_context(ctx, inputs, output):
+        """Save context for all_gather backward.
+
+        For functional version:
+        - inputs: (comm, tensor_list, tensor, async_op, hints, timeout)
+        - output: The gathered tensor list
+        """
+        ctx.comm = inputs[0]
+        ctx.rank = inputs[0].get_rank()
+        ctx.input_shape = inputs[2].shape
+
+    def _all_gather_backward(ctx, grad_outputs):
+        """Backward for all_gather.
+
+        all_gather: tensor_list[i] on all ranks = tensor from rank i
+        Backward is reduce_scatter: each rank's input appears in tensor_list[rank]
+        on ALL ranks, so we sum gradients from all ranks via reduce_scatter.
+
+        Returns gradient for tensor (the non-mutable input).
+        """
+        grad_list = [g.contiguous() for g in grad_outputs]
+
+        grad_input = torch.empty(
+            ctx.input_shape,
+            dtype=grad_list[0].dtype,
+            device=grad_list[0].device,
+        )
+
+        work = ctx.comm.reduce_scatter(
+            grad_input, grad_list, ReduceOp.SUM, async_op=True
+        )
+
+        return _maybe_wrap_tensor(grad_input, work)
+
     register_collective(
         TorchComm,
         TorchComm.all_reduce,
@@ -177,6 +407,8 @@ if lib is not None:
             ),
             ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
+        backward_fn=_all_reduce_backward,
+        setup_context_fn=_all_reduce_setup_context,
     )
 
     register_collective(
@@ -238,6 +470,8 @@ if lib is not None:
             ),
             ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
+        backward_fn=_all_gather_backward,
+        setup_context_fn=_all_gather_setup_context,
     )
 
     register_collective(
@@ -325,6 +559,8 @@ if lib is not None:
             ),
             ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
+        backward_fn=_all_gather_single_backward,
+        setup_context_fn=_all_gather_single_setup_context,
     )
 
     # all_gather_v: variable-size all_gather
@@ -365,6 +601,8 @@ if lib is not None:
             ),
             ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
+        backward_fn=_reduce_scatter_single_backward,
+        setup_context_fn=_reduce_scatter_single_setup_context,
     )
 
     # reduce_scatter_v: variable-size reduce_scatter
@@ -400,6 +638,8 @@ if lib is not None:
             ),
             ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
+        backward_fn=_all_to_all_single_backward,
+        setup_context_fn=_all_to_all_single_setup_context,
     )
 
     # all_to_all_v_single: variable-size all-to-all with single input/output tensors
@@ -460,6 +700,8 @@ if lib is not None:
             ),
             ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
+        backward_fn=_reduce_scatter_backward,
+        setup_context_fn=_reduce_scatter_setup_context,
     )
 
     # scatter: scatter from root to all ranks
