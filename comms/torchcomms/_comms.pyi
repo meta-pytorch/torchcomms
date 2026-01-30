@@ -350,7 +350,7 @@ class TorchComm:
         ...
     def end_coalescing(
         self,
-        async_op: bool = True, # isn't used outside of torch.compile op codegen
+        async_op: bool = True,  # isn't used outside of torch.compile op codegen
     ) -> TorchWork:
         """End coalescing block and execute all batched operations."""
         ...
