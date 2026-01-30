@@ -1017,8 +1017,13 @@ private:
 
     int workSize = ncclShmem.aborted ? 0 : nelem;
 
+    // Apply postOp (e.g., division for FuncPatAvg) when writing to final output
+    // This is when sendDim < 0 (no peer send, writing to local output) and last > 0
+    // (this is the final step for these elements)
+    bool applyPostOp = (ps->sendDim < 0) && (ps->last > 0);
+
     reduceCopy<Unroll, RedOp, T, 0, 1, 2, 0, 1, 1, /*PreOpSrcs*/0>
-      (tid, nthreads, ncclShmem.redOpArgs[0],  nullptr, /*postOp=*/false,
+      (tid, nthreads, ncclShmem.redOpArgs[0],  nullptr, /*postOp=*/applyPostOp,
        nSrcs, srcs, 1, ncclShmem.groups[group].dsts, workSize);
 
     // Store conn step here inside the two barriers to make sure next reload will see the update.

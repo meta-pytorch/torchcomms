@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <comm.h>
+#include <cuda_bf16.h>
 #include <fmt/core.h>
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
@@ -57,6 +58,9 @@ class ReduceScatterTest : public NcclxBaseTest {
   // TODO: Add separate benchmark for performance testing
   template <typename T>
   void run(const ReduceScatterTestParams& param) {
+    using Traits = DataTypeTraits<T>;
+    using HostT = typename Traits::HostT;
+
     const auto algo = param.algo;
     const auto inplace = param.inplace;
     const auto registFlag = param.registFlag;
@@ -111,10 +115,11 @@ class ReduceScatterTest : public NcclxBaseTest {
       }
     }
 
-    assignChunkValue<T>(recvBuf, count, static_cast<T>(-1));
+    // Initialize send buffer: each rank's chunk r has constant value
+    // (globalRank * numRanks + r)
     for (int r = 0; r < numRanks; r++) {
-      T val = static_cast<T>(globalRank * numRanks + r);
-      assignChunkValue<T>(sendBuf + r * count, count, val);
+      HostT val = static_cast<HostT>(globalRank * numRanks + r);
+      assignChunkValue(sendBuf + r * count, count, Traits::toDevice(val));
     }
 
     if (registFlag) {
@@ -131,22 +136,24 @@ class ReduceScatterTest : public NcclxBaseTest {
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
-    // Check received chunk
-    T expectedSum = static_cast<T>(0);
+    // Calculate expected value: sum of (r * numRanks + globalRank) for all r
+    HostT expectedVal = static_cast<HostT>(0);
     for (int r = 0; r < numRanks; r++) {
-      expectedSum += static_cast<T>(r * numRanks + globalRank);
+      expectedVal += static_cast<HostT>(r * numRanks + globalRank);
     }
     if (op == ncclAvg) {
-      expectedSum = expectedSum / static_cast<T>(numRanks);
+      expectedVal = expectedVal / static_cast<HostT>(numRanks);
     }
 
-    std::optional<T> tolerance = std::nullopt;
-    if constexpr (std::is_floating_point_v<T>) {
-      tolerance = static_cast<T>(1e-5);
-    }
-
-    auto errs = checkChunkValue<T>(
-        recvBuf, count, expectedSum, T{0}, globalRank, nullptr, tolerance);
+    // Verify results using checkChunkValue with type-appropriate tolerance
+    size_t errs = checkChunkValue(
+        recvBuf,
+        count,
+        Traits::toDevice(expectedVal),
+        T{0},
+        globalRank,
+        stream,
+        Traits::tolerance());
     EXPECT_EQ(errs, 0) << "Rank " << globalRank << " checked chunk at "
                        << recvBuf << " with " << errs << " errors with inplace "
                        << inplace;
@@ -215,6 +222,42 @@ std::string GetTestParamName(
   return params.name();
 }
 
+// Parameters: inplace, count, datatype
+// Tests native PAT AVG implementation with NCCL_ALGO=reducescatter:pat_postdiv
+class ReduceScatterPatAvgTestParam
+    : public ReduceScatterTest,
+      public ::testing::WithParamInterface<
+          std::tuple<bool, size_t, ncclDataType_t>> {};
+
+TEST_P(ReduceScatterPatAvgTestParam, PatAvgTest) {
+  auto [inplace, count, datatype] = GetParam();
+
+  // Enable native PAT AVG mode using unified NCCL_ALGO syntax
+  auto algoGuard = EnvRAII(NCCL_ALGO, std::string("reducescatter:pat_postdiv"));
+  auto protoGuard = EnvRAII(NCCL_PROTO, std::string("Simple"));
+
+  ReduceScatterTestParams param{
+      .algo = NCCL_REDUCESCATTER_ALGO::orig, // Use orig algo, PAT is selected
+                                             // via NCCL_ALGO cvar
+      .inplace = inplace,
+      .registFlag = false,
+      .memType = kMemNcclMemAlloc,
+      .count = count,
+      .op = ncclAvg,
+      .datatype = datatype,
+  };
+
+  if (datatype == ncclInt) {
+    run<int>(param);
+  } else if (datatype == ncclFloat) {
+    run<float>(param);
+  } else if (datatype == ncclDouble) {
+    run<double>(param);
+  } else if (datatype == ncclBfloat16) {
+    run<__nv_bfloat16>(param);
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(
     ReduceScatterTestInstance,
     ReduceScatterTestParam,
@@ -230,6 +273,46 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(1, 8192, 33554432) // count: small, medium, large
         ),
     GetTestParamName);
+
+INSTANTIATE_TEST_SUITE_P(
+    ReduceScatterPatAvgTestInstance,
+    ReduceScatterPatAvgTestParam,
+    ::testing::Combine(
+        ::testing::Values(true, false), // inplace
+        ::testing::Values(1, 95, 8000, 33554430), // count per rank
+        ::testing::Values(
+            ncclInt,
+            ncclFloat,
+            ncclDouble,
+            ncclBfloat16)), // datatype
+    [](const testing::TestParamInfo<std::tuple<bool, size_t, ncclDataType_t>>&
+           info) {
+      auto inplace = std::get<0>(info.param);
+      auto count = std::get<1>(info.param);
+      auto datatype = std::get<2>(info.param);
+      std::string dtStr;
+      switch (datatype) {
+        case ncclInt:
+          dtStr = "Int";
+          break;
+        case ncclFloat:
+          dtStr = "Float";
+          break;
+        case ncclDouble:
+          dtStr = "Double";
+          break;
+        case ncclBfloat16:
+          dtStr = "Bfloat16";
+          break;
+        default:
+          dtStr = "Unknown";
+      }
+      return fmt::format(
+          "PatAvg_{}_{}_{}count",
+          inplace ? "Inplace" : "OutOfPlace",
+          dtStr,
+          count);
+    });
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
