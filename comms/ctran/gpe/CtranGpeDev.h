@@ -8,6 +8,7 @@
 
 #include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/AllReduce/Types.h"
+#include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoArgDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
@@ -18,7 +19,6 @@
 
 // Used for ngroups value checking only. For H100, >128 is not possible.
 #define MAX_NGROUPS (128)
-#define CTRAN_MAX_TOTAL_RANK (128)
 
 struct alignas(16) KernelElem {
   enum ElemStatus {
@@ -150,72 +150,6 @@ struct fmt::formatter<KernelElem::ElemStatus> : fmt::formatter<int> {
   }
 };
 
-struct CtranKernelAllToAllArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  size_t count;
-  commDataType_t datatype;
-};
-
-struct CtranKernelAllToAllvArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  size_t selfCount;
-  size_t selfSendDispl;
-  size_t selfRecvDispl;
-  KernelElem* sendElemsList;
-  KernelElem* recvElemsList;
-};
-
-struct CtranKernelAllToAllDedupArgs {
-  KernelElem* bcastElemList;
-  int numIbPeers;
-};
-
-struct CtranKernelAllToAllvDynamicArgs {
-  void** sendbuffsPtrTmpbufCPU{nullptr};
-  const size_t* sendcounts{nullptr};
-  size_t* sendCountsTmpbufGPU{nullptr};
-  size_t* sendCountsTmpbufCPU{nullptr};
-  size_t sendcountsLength{0};
-  size_t* recvCountsTmpbufGPU{nullptr};
-  size_t* actualRecvcounts{nullptr};
-  void* recvbuffsPtrGPU[CTRAN_MAX_TOTAL_RANK]{};
-  commDataType_t datatype{};
-  KernelElem* kElem{nullptr};
-  union {
-    struct {
-      const void* sendbuff{nullptr};
-      void** sendbuffsPtrShmDev{nullptr};
-    } split;
-    struct {
-      const void* sendbuffsPtrGPU[CTRAN_MAX_TOTAL_RANK]{};
-    } nonSplit;
-  };
-  union {
-    struct {
-      const size_t* inputChunkIndices{nullptr};
-      size_t* inputChunkIndicesTmpbufCPU{nullptr};
-      const size_t* inputChunkCountPerRank{nullptr};
-      size_t* inputChunkCountPerRankTmpbufCPU{nullptr};
-      size_t maxInputChunkCountPerRank{0};
-      size_t maxRecvcount{0};
-      size_t maxSendcount{0};
-      bool combine;
-    } nonContig;
-    struct {
-    } contig;
-  };
-
-  // Default constructor needed because unions with non-trivial member
-  // initializers have deleted default constructors
-  CtranKernelAllToAllvDynamicArgs() {
-    // Unions are initialized by their first member by default
-    // split and nonContig are already initialized above
-  }
-};
-
 struct CtranKernelPutNotifyArgs {
   bool isDirect;
   int peerLocalRank;
@@ -239,10 +173,10 @@ struct CtranKernelArgs {
     ctran::sendrecv::KernelSendArgs send;
     ctran::sendrecv::KernelRecvArgs recv;
     ctran::sendrecv::KernelSendRecvArgs sendrecv;
-    CtranKernelAllToAllArgs alltoall;
-    CtranKernelAllToAllvArgs alltoallv;
-    CtranKernelAllToAllvDynamicArgs alltoallv_dynamic;
-    CtranKernelAllToAllDedupArgs alltoall_dedup;
+    ctran::alltoall::KernelArgs alltoall;
+    ctran::alltoallv::KernelArgs alltoallv;
+    ctran::alltoallvdynamic::KernelArgs alltoallv_dynamic;
+    ctran::alltoalldedup::KernelArgs alltoall_dedup;
     ctran::broadcast::KernelArgs broadcast;
     ctran::reducescatter::KernelArgs reducescatter;
     CtranKernelPutNotifyArgs putnotify;

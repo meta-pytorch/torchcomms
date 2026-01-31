@@ -3,6 +3,7 @@
 #pragma once
 #include <stdio.h>
 #include <cstddef>
+#include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -381,7 +382,7 @@ __device__ __forceinline__ void selfCopyContig(
 template <typename T>
 __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
     int* flag,
-    CtranKernelAllToAllvDynamicArgs args,
+    ctran::alltoallvdynamic::KernelArgs args,
     ALGOTYPE algoType,
     bool combine = false) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
@@ -527,7 +528,7 @@ __device__ __forceinline__ void ncclKernelAllToAllvDynamicCommon(
 
 template <typename T>
 __device__ __forceinline__ void generateSendbuffs(
-    CtranKernelAllToAllvDynamicArgs& args,
+    ctran::alltoallvdynamic::KernelArgs& args,
     bool combine = false) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   const size_t* sendSplitLengths = (size_t*)args.sendcounts;
@@ -567,7 +568,7 @@ template <typename T>
 __global__ void ncclKernelAllToAllvDynamic(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllvDynamicArgs args) {
+    ctran::alltoallvdynamic::KernelArgs args) {
   devStateLoadToShm(devState);
 
   ncclKernelAllToAllvDynamicCommon<T>(flag, args, DYNAMIC);
@@ -577,7 +578,7 @@ template <typename T>
 __global__ void ncclKernelAllToAllvDynamicSplit(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllvDynamicArgs args) {
+    ctran::alltoallvdynamic::KernelArgs args) {
   devStateLoadToShm(devState);
 
   generateSendbuffs<T>(args);
@@ -589,7 +590,7 @@ template <typename T>
 __global__ void ncclKernelAllToAllvDynamicSplitNonContig(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllvDynamicArgs args) {
+    ctran::alltoallvdynamic::KernelArgs args) {
   devStateLoadToShm(devState);
 
   int totalSendIndicesLength = 0;
@@ -637,16 +638,16 @@ __global__ void ncclKernelAllToAllvDynamicSplitNonContig(
   template __global__ void ncclKernelAllToAllvDynamic<T>( \
       int* flag,                                          \
       CtranAlgoDeviceState* devState,                     \
-      CtranKernelAllToAllvDynamicArgs args)
+      ctran::alltoallvdynamic::KernelArgs args)
 
 #define DECL_CTRAN_ALLTOALLVDYNAMIC_SPLIT_KERN(T)              \
   template __global__ void ncclKernelAllToAllvDynamicSplit<T>( \
       int* flag,                                               \
       CtranAlgoDeviceState* devState,                          \
-      CtranKernelAllToAllvDynamicArgs args)
+      ctran::alltoallvdynamic::KernelArgs args)
 
 #define DECL_CTRAN_ALLTOALLVDYNAMIC_SPLITNONCONTIG_KERN(T)              \
   template __global__ void ncclKernelAllToAllvDynamicSplitNonContig<T>( \
       int* flag,                                                        \
       CtranAlgoDeviceState* devState,                                   \
-      CtranKernelAllToAllvDynamicArgs args)
+      ctran::alltoallvdynamic::KernelArgs args)

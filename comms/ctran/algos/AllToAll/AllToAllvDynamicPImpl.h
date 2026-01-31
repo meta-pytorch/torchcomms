@@ -3,8 +3,8 @@
 #pragma once
 
 #include <folly/synchronization/CallOnce.h>
-#include "Types.h"
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/algos/AllToAll/HostTypes.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/utils/cvars/nccl_cvars.h"
