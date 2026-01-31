@@ -92,6 +92,8 @@ class CudaApi {
   // Memory management
   virtual cudaError_t malloc(void** devPtr, size_t size) = 0;
   virtual cudaError_t free(void* devPtr) = 0;
+  virtual cudaError_t
+  memcpy(void* dst, const void* src, size_t count, cudaMemcpyKind kind) = 0;
   virtual cudaError_t memcpyAsync(
       void* dst,
       const void* src,
@@ -172,6 +174,11 @@ class DefaultCudaApi : public CudaApi {
   // Memory management
   cudaError_t malloc(void** devPtr, size_t size) override;
   cudaError_t free(void* devPtr) override;
+  cudaError_t memcpy(
+      void* dst,
+      const void* src,
+      size_t count,
+      cudaMemcpyKind kind) override;
   cudaError_t memcpyAsync(
       void* dst,
       const void* src,
