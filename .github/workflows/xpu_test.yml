@@ -31,15 +31,6 @@ jobs:
     env:
       DOCKER_IMAGE: intelgpu/ubuntu-24.04-lts2:2523.40
     steps:
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          repository: pytorch/pytorch
-          ref: nightly
-          path: pytorch
-          fetch-depth: 1
-          submodules: false
-    
       - name: Checkout Torchcomms
         uses: actions/checkout@v4
         with:
@@ -162,6 +153,6 @@ jobs:
             docker container prune -f
           fi
       
-      - name: Runner diskspace health check
-        uses: pytorch/pytorch/.github/actions/diskspace-cleanup@main
+      - name: Cleanup workspace
         if: always()
+        run: sudo rm -rf ${{ github.workspace }}/*
