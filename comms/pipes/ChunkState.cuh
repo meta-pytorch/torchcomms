@@ -107,16 +107,19 @@ struct alignas(128) ChunkState {
   // in the same kernel.
 
   /**
-   * wait_ready_to_send - Block until buffer is available for writing
+   * wait_ready_to_send - Block until buffer reaches expected value
    *
-   * Spins until receiver has consumed previous data and marked buffer ready.
-   * All threads poll for lower latency.
+   * Spins until receiver has consumed previous data and signaled with expected
+   * value. All threads poll for lower latency.
    *
    * @param group ThreadGroup for cooperative processing
+   * @param expectedValue The expected value to wait for (default:
+   * READY_TO_SEND)
    * @param timeout Timeout config (default: no timeout)
    */
   __device__ __forceinline__ void wait_ready_to_send(
       ThreadGroup& group,
+      int32_t expectedValue = READY_TO_SEND,
       const Timeout& timeout = Timeout()) const;
 
   /**
@@ -152,12 +155,15 @@ struct alignas(128) ChunkState {
   /**
    * ready_to_send - Signal that buffer can be reused by sender
    *
-   * Transitions state from READY_TO_RECV to READY_TO_SEND.
-   * Syncs all threads, then leader writes READY_TO_SEND.
+   * Transitions state to the specified value (default: READY_TO_SEND).
+   * Syncs all threads, then leader writes the value.
    *
    * @param group ThreadGroup for cooperative processing
+   * @param value The value to write (default: READY_TO_SEND)
    */
-  __device__ __forceinline__ void ready_to_send(ThreadGroup& group);
+  __device__ __forceinline__ void ready_to_send(
+      ThreadGroup& group,
+      int32_t value = READY_TO_SEND);
 
   /**
    * write_metadata - Write metadata fields (leader only)
@@ -211,14 +217,16 @@ static_assert(
 
 __device__ __forceinline__ void ChunkState::wait_ready_to_send(
     ThreadGroup& group,
+    int32_t expectedValue,
     const Timeout& timeout) const {
   // All threads poll: slightly lower latency for small messages
   // (avoids sync barrier overhead after leader-only poll)
-  while (load() != READY_TO_SEND) {
+  while (load() != expectedValue) {
     TIMEOUT_TRAP_IF_EXPIRED(
         timeout,
         group,
-        "ChunkState::wait_ready_to_send waiting for READY_TO_SEND (current=%d)",
+        "ChunkState::wait_ready_to_send waiting for %d (current=%d)",
+        expectedValue,
         load());
   }
 }
@@ -263,10 +271,12 @@ __device__ __forceinline__ void ChunkState::ready_to_recv(
   }
 }
 
-__device__ __forceinline__ void ChunkState::ready_to_send(ThreadGroup& group) {
+__device__ __forceinline__ void ChunkState::ready_to_send(
+    ThreadGroup& group,
+    int32_t value) {
   group.sync();
   if (group.is_leader()) {
-    store(READY_TO_SEND);
+    store(value);
   }
 }
 

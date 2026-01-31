@@ -36,6 +36,33 @@ struct MultiPeerNvlTransportConfig {
   // Larger = more signal available for parallelism.
   // Typical: 1-num of block for most workloads.
   std::size_t signalCount{1};
+
+  // If true, use dual chunk state buffers (one on each side) for local polling
+  // on both sender and receiver. If false (default), use single chunk state
+  // buffer on receiver side only.
+  //
+  // Single State Mode (default):
+  //   - 1 ChunkState per chunk, stored on receiver side
+  //   - Sender polls over NVLink (slower), receiver polls locally (faster)
+  //   - Lower memory usage
+  //
+  // Dual State Mode:
+  //   - 2 ChunkStates per chunk: one on receiver, one on sender
+  //   - Both sender and receiver poll locally (faster on both sides)
+  //   - Higher memory usage, better performance for high-throughput workloads
+  //
+  // ⚠️ WARNING - DUAL STATE MODE REQUIREMENTS:
+  // Dual state mode requires a GLOBAL call_index counter that:
+  //   1. MUST be monotonically increasing across ALL kernel launches using the
+  //      same P2pNvlTransportDevice instance (not just per-kernel invocation)
+  //   2. MUST be consistent between sender and receiver for the same transfer
+  //   3. Enables efficient state progression by deriving currentStep from
+  //      call_index, avoiding expensive state polling between runs
+  //
+  // Without a proper global counter, synchronization will fail or deadlock.
+  // Single state mode is more forgiving as it resets to READY_TO_SEND (-1)
+  // between runs.
+  bool useDualStateBuffer{false};
 };
 
 /**

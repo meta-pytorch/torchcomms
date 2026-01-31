@@ -13,28 +13,31 @@ __global__ void p2pSend(
     P2pNvlTransportDevice* p2p,
     void* srcBuff,
     std::size_t nBytes,
+    uint32_t call_index,
     SyncScope groupScope,
     Timeout timeout) {
   timeout.start();
   auto group = make_thread_group(groupScope);
-  p2p->send(group, srcBuff, nBytes, 0, timeout);
+  p2p->send(group, srcBuff, nBytes, call_index, timeout);
 }
 
 __global__ void p2pRecv(
     P2pNvlTransportDevice* p2p,
     void* dstBuff,
     std::size_t nBytes,
+    uint32_t call_index,
     SyncScope groupScope,
     Timeout timeout) {
   timeout.start();
   auto group = make_thread_group(groupScope);
-  p2p->recv(group, dstBuff, nBytes, 0, timeout);
+  p2p->recv(group, dstBuff, nBytes, call_index, timeout);
 }
 
 __global__ void p2pSendTimed(
     P2pNvlTransportDevice* p2p,
     void* srcBuff,
     std::size_t nBytes,
+    uint32_t call_index,
     TimingStats* stats,
     SyncScope groupScope) {
   auto group = make_thread_group(groupScope);
@@ -45,7 +48,7 @@ __global__ void p2pSendTimed(
     stats->startCycle = clock64();
   }
 
-  p2p->send(group, srcBuff, nBytes);
+  p2p->send(group, srcBuff, nBytes, call_index);
 
   // Only first thread globally records end time
   if (globalThreadId == 0) {
@@ -59,6 +62,7 @@ __global__ void p2pRecvTimed(
     P2pNvlTransportDevice* p2p,
     void* dstBuff,
     std::size_t nBytes,
+    uint32_t call_index,
     TimingStats* stats,
     SyncScope groupScope) {
   auto group = make_thread_group(groupScope);
@@ -69,7 +73,7 @@ __global__ void p2pRecvTimed(
     stats->startCycle = clock64();
   }
 
-  p2p->recv(group, dstBuff, nBytes);
+  p2p->recv(group, dstBuff, nBytes, call_index);
 
   // Only first thread globally records end time
   if (globalThreadId == 0) {
@@ -79,11 +83,14 @@ __global__ void p2pRecvTimed(
   }
 }
 
-__global__ void p2pBidirectional(
+// Need to add launch_bounds to avoid "too many resources requested for launch"
+// error
+__global__ __launch_bounds__(512, 1) void p2pBidirectional(
     P2pNvlTransportDevice* p2p,
     void* sendBuff,
     void* recvBuff,
     std::size_t nBytes,
+    uint32_t call_index,
     SyncScope groupScope,
     Timeout timeout) {
   timeout.start();
@@ -92,9 +99,9 @@ __global__ void p2pBidirectional(
   // Partition groups into 2: half for send, half for recv
   auto [partition_id, subgroup] = group.partition_interleaved(2);
   if (partition_id == 0) {
-    p2p->send(subgroup, sendBuff, nBytes, 0, timeout);
+    p2p->send(subgroup, sendBuff, nBytes, call_index, timeout);
   } else {
-    p2p->recv(subgroup, recvBuff, nBytes, 0, timeout);
+    p2p->recv(subgroup, recvBuff, nBytes, call_index, timeout);
   }
 }
 

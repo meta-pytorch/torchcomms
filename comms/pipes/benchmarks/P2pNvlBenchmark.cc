@@ -35,6 +35,7 @@ struct BenchmarkConfig {
   SyncScope groupScope = SyncScope::WARP; // Thread group scope for parallelism
   bool spreadClusterLaunch = false; // Use spread cluster kernel launch
   uint32_t timeout_ms = 0; // Timeout in milliseconds (0 = no timeout)
+  bool useDualStateBuffer = false; // Use dual state buffer mode (default false)
   std::string name;
 };
 
@@ -173,7 +174,11 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     SyncScope groupScope = config.groupScope;
     void* devicePtr = (isSend ? sendBuff.get() : recvBuff.get());
     Timeout timeout = comms::pipes::makeTimeout(config.timeout_ms, localRank);
-    void* args[] = {&p2p, &devicePtr, &nBytes, &groupScope, &timeout};
+    // Global call_index counter - must be unique across all kernel launches
+    // to prevent stale ack issues in ChunkState
+    uint32_t call_index = 0;
+    void* args[] = {
+        &p2p, &devicePtr, &nBytes, &call_index, &groupScope, &timeout};
     void* kernelFunc = isSend ? (void*)comms::pipes::benchmark::p2pSend
                               : (void*)comms::pipes::benchmark::p2pRecv;
 
@@ -191,6 +196,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
           comms::common::launchKernel(
               kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
       CUDA_CHECK(cudaDeviceSynchronize());
+      call_index++; // Increment for next iteration
     }
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
@@ -201,6 +207,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
       CUDA_CHECK(
           comms::common::launchKernel(
               kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
+      call_index++; // Increment for next iteration
     }
     CUDA_CHECK(cudaEventRecord(stop.get()));
     CUDA_CHECK(cudaDeviceSynchronize());
@@ -224,10 +231,10 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
 
     std::stringstream ss;
     ss << "\n";
-    ss << "==============================================================================================================================\n";
-    ss << "                              NCCL vs P2P NVLink Benchmark Results\n";
-    ss << "==============================================================================================================================\n";
-    ss << std::left << std::setw(18) << "Test Name" << std::right
+    ss << "========================================================================================================================================\n";
+    ss << "                                    NCCL vs P2P NVLink Benchmark Results\n";
+    ss << "========================================================================================================================================\n";
+    ss << std::left << std::setw(28) << "Test Name" << std::right
        << std::setw(10) << "Msg Size" << std::right << std::setw(12)
        << "Staging" << std::right << std::setw(5) << "PD" << std::right
        << std::setw(8) << "Chunk" << std::right << std::setw(7) << "Blocks"
@@ -236,7 +243,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
        << std::setw(9) << "Speedup" << std::right << std::setw(11) << "NCCL Lat"
        << std::right << std::setw(11) << "P2P Lat" << std::right
        << std::setw(11) << "Lat Reduc\n";
-    ss << std::left << std::setw(18) << "" << std::right << std::setw(10) << ""
+    ss << std::left << std::setw(28) << "" << std::right << std::setw(10) << ""
        << std::right << std::setw(12) << "" << std::right << std::setw(5) << ""
        << std::right << std::setw(8) << "" << std::right << std::setw(7) << ""
        << std::right << std::setw(8) << "" << std::right << std::setw(11)
@@ -244,7 +251,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
        << std::setw(9) << "P2P/NCCL" << std::right << std::setw(11) << "(us)"
        << std::right << std::setw(11) << "(us)" << std::right << std::setw(11)
        << "(us)\n";
-    ss << "------------------------------------------------------------------------------------------------------------------------------\n";
+    ss << "----------------------------------------------------------------------------------------------------------------------------------------\n";
 
     for (const auto& r : results) {
       std::string msgSize = formatSize(r.messageSize);
@@ -252,7 +259,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
       std::string chunkSizeStr = formatSize(r.chunkSize);
       float latencyReduction = r.ncclTime - r.p2pTime;
 
-      ss << std::left << std::setw(18) << r.testName << std::right
+      ss << std::left << std::setw(28) << r.testName << std::right
          << std::setw(10) << msgSize << std::right << std::setw(12)
          << stagingSize << std::right << std::setw(5) << r.pipelineDepth
          << std::right << std::setw(8) << chunkSizeStr << std::right
@@ -267,13 +274,13 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
          << r.p2pTime << std::right << std::setw(11) << std::fixed
          << std::setprecision(1) << latencyReduction << "\n";
     }
-    ss << "==============================================================================================================================\n";
+    ss << "========================================================================================================================================\n";
     ss << "PD = Pipeline Depth, Chunk = Chunk Size, Blocks/Threads = P2P kernel launch config\n";
     ss << "BW (Bandwidth) = Data transferred / time, in GB/s\n";
     ss << "Lat (Latency) = Average transfer time per iteration, in microseconds\n";
     ss << "Lat Reduc = NCCL latency - P2P latency (positive = P2P faster)\n";
     ss << "Speedup = P2P Bandwidth / NCCL Bandwidth\n";
-    ss << "==============================================================================================================================\n\n";
+    ss << "========================================================================================================================================\n\n";
 
     XLOG(INFO) << ss.str();
   }
@@ -398,6 +405,10 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     dim3 gridDim(config.numBlocks);
     dim3 blockDim(config.numThreads);
 
+    // Create explicit stream for consistent event timing
+    cudaStream_t stream;
+    CUDA_CHECK(cudaStreamCreate(&stream));
+
     CudaEvent start, stop;
 
     std::size_t nBytes = config.nBytes;
@@ -405,7 +416,11 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     void* recvPtr = recvBuff.get();
     SyncScope groupScope = config.groupScope;
     Timeout timeout = comms::pipes::makeTimeout(config.timeout_ms, localRank);
-    void* args[] = {&p2p, &sendPtr, &recvPtr, &nBytes, &groupScope, &timeout};
+    // Global call_index counter - must be unique across all kernel launches
+    // to prevent stale ack issues in ChunkState
+    uint32_t call_index = 0;
+    void* args[] = {
+        &p2p, &sendPtr, &recvPtr, &nBytes, &call_index, &groupScope, &timeout};
     void* kernelFunc = (void*)comms::pipes::benchmark::p2pBidirectional;
 
     // Warmup - no reset needed, recv() signals -1 after each transfer
@@ -420,21 +435,23 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     for (int i = 0; i < kWarmupIters; i++) {
       CUDA_CHECK(
           comms::common::launchKernel(
-              kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
-      CUDA_CHECK(cudaDeviceSynchronize());
+              kernelFunc, gridDim, blockDim, args, stream, clusterDimOpt));
+      CUDA_CHECK(cudaStreamSynchronize(stream));
+      call_index++; // Increment for next iteration
     }
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     // Benchmark - measure time across all iterations
     // No barrier between iterations - ChunkState provides synchronization
-    CUDA_CHECK(cudaEventRecord(start.get()));
+    CUDA_CHECK(cudaEventRecord(start.get(), stream));
     for (int i = 0; i < kBenchmarkIters; i++) {
       CUDA_CHECK(
           comms::common::launchKernel(
-              kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
+              kernelFunc, gridDim, blockDim, args, stream, clusterDimOpt));
+      call_index++; // Increment for next iteration
     }
-    CUDA_CHECK(cudaEventRecord(stop.get()));
-    CUDA_CHECK(cudaDeviceSynchronize());
+    CUDA_CHECK(cudaEventRecord(stop.get(), stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
 
     float totalTime_ms = 0.0f;
     CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
@@ -443,6 +460,8 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     // Bidirectional bandwidth: 2x data (send + recv) / time
     float bandwidth_GBps =
         (2.0f * config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
+
+    CUDA_CHECK(cudaStreamDestroy(stream));
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
@@ -697,6 +716,7 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
         .dataBufferSize = config.stagedBufferSize,
         .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
+        .useDualStateBuffer = config.useDualStateBuffer,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -751,73 +771,73 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
   std::vector<BenchmarkConfig> configs;
 
   // 2MB: 256 warps, 128 chunks (16KB each) - matches optimal unidirectional
-  configs.push_back({
-      .nBytes = 2 * 1024 * 1024,
-      .stagedBufferSize = 2 * 1024 * 1024,
-      .numBlocks = 64,
-      .numThreads = 128,
-      .pipelineDepth = 2,
-      .chunkSize = 16 * 1024,
-      .name = "Bidir_2MB",
-  });
+  // configs.push_back({
+  //     .nBytes = 2 * 1024 * 1024,
+  //     .stagedBufferSize = 2 * 1024 * 1024,
+  //     .numBlocks = 64,
+  //     .numThreads = 128,
+  //     .pipelineDepth = 2,
+  //     .chunkSize = 16 * 1024,
+  //     .name = "Bidir_2MB",
+  // });
 
-  // 64MB: 512 warps, 256 chunks (128KB each)
-  configs.push_back({
-      .nBytes = 64 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_64MB",
-  });
+  // // 64MB: 512 warps, 256 chunks (128KB each)
+  // configs.push_back({
+  //     .nBytes = 64 * 1024 * 1024,
+  //     .stagedBufferSize = 8 * 1024 * 1024,
+  //     .numBlocks = 32,
+  //     .numThreads = 512,
+  //     .pipelineDepth = 2,
+  //     .chunkSize = 512 * 1024,
+  //     .groupScope = SyncScope::BLOCK,
+  //     .name = "Bidir_64MB",
+  // });
 
-  configs.push_back({
-      .nBytes = 128 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_128MB",
-  });
+  // configs.push_back({
+  //     .nBytes = 128 * 1024 * 1024,
+  //     .stagedBufferSize = 8 * 1024 * 1024,
+  //     .numBlocks = 32,
+  //     .numThreads = 512,
+  //     .pipelineDepth = 2,
+  //     .chunkSize = 512 * 1024,
+  //     .groupScope = SyncScope::BLOCK,
+  //     .name = "Bidir_128MB",
+  // });
 
-  // 256MB: 512 warps, 256 chunks (256KB each)
-  configs.push_back({
-      .nBytes = 256 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_256MB",
-  });
+  // // 256MB: 512 warps, 256 chunks (256KB each)
+  // configs.push_back({
+  //     .nBytes = 256 * 1024 * 1024,
+  //     .stagedBufferSize = 8 * 1024 * 1024,
+  //     .numBlocks = 32,
+  //     .numThreads = 512,
+  //     .pipelineDepth = 2,
+  //     .chunkSize = 512 * 1024,
+  //     .groupScope = SyncScope::BLOCK,
+  //     .name = "Bidir_256MB",
+  // });
 
-  configs.push_back({
-      .nBytes = 512 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_512MB",
-  });
+  // configs.push_back({
+  //     .nBytes = 512 * 1024 * 1024,
+  //     .stagedBufferSize = 8 * 1024 * 1024,
+  //     .numBlocks = 32,
+  //     .numThreads = 512,
+  //     .pipelineDepth = 2,
+  //     .chunkSize = 512 * 1024,
+  //     .groupScope = SyncScope::BLOCK,
+  //     .name = "Bidir_512MB",
+  // });
 
-  // 1GB with 256MB staging
-  configs.push_back({
-      .nBytes = 1024 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .name = "Bidir_1GB",
-  });
+  // // 1GB with 256MB staging
+  // configs.push_back({
+  //     .nBytes = 1024 * 1024 * 1024,
+  //     .stagedBufferSize = 8 * 1024 * 1024,
+  //     .numBlocks = 32,
+  //     .numThreads = 512,
+  //     .pipelineDepth = 2,
+  //     .chunkSize = 512 * 1024,
+  //     .groupScope = SyncScope::BLOCK,
+  //     .name = "Bidir_1GB",
+  // });
 
   // 1GB with timeout (NCCL-like config with 30 second timeout)
   configs.push_back({
@@ -855,9 +875,11 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
                            std::size_t sizeBytes,
                            const std::string& sizeName,
                            SyncScope scope,
-                           const std::string& scopeName) {
+                           const std::string& scopeName,
+                           bool useDualState = false) {
     int numBlks = (sizeBytes >= kLargeMessageThreshold) ? kNcclBlocksLarge
                                                         : kNcclBlocksSmall;
+    std::string modeName = useDualState ? "_DualState" : "";
     configs.push_back({
         .nBytes = sizeBytes,
         .stagedBufferSize = kNcclStagedBufferSize,
@@ -867,35 +889,61 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
         .chunkSize = kChunkSize,
         .groupScope = scope,
         .spreadClusterLaunch = true,
-        .name = "NCCL_" + sizeName + "_" + scopeName,
+        .useDualStateBuffer = useDualState,
+        .name = "NCCL_" + sizeName + "_" + scopeName + modeName,
     });
   };
 
-  // === BLOCK-BASED CONFIGURATIONS ===
-  addNcclConfig(128 * 1024, "128K", SyncScope::BLOCK, "Block");
-  addNcclConfig(256 * 1024, "256K", SyncScope::BLOCK, "Block");
-  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::BLOCK, "Block");
-  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::BLOCK, "Block");
-  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::BLOCK, "Block");
-  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::BLOCK, "Block");
-  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::BLOCK, "Block");
-  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::BLOCK, "Block");
-  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::BLOCK, "Block");
-  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::BLOCK, "Block");
-  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::BLOCK, "Block");
+  // === BLOCK-BASED CONFIGURATIONS (single state + dual state) ===
+  addNcclConfig(128 * 1024, "128K", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(128 * 1024, "128K", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(256 * 1024, "256K", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(256 * 1024, "256K", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::BLOCK, "Block", true);
+  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::BLOCK, "Block", false);
+  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::BLOCK, "Block", true);
 
-  // === CLUSTER-BASED CONFIGURATIONS ===
-  addNcclConfig(128 * 1024, "128K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(256 * 1024, "256K", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::CLUSTER, "Cluster");
-  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::CLUSTER, "Cluster");
+  // === CLUSTER-BASED CONFIGURATIONS (single state + dual state) ===
+  addNcclConfig(128 * 1024, "128K", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(128 * 1024, "128K", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(256 * 1024, "256K", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(256 * 1024, "256K", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(1 * 1024 * 1024, "1M", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(2 * 1024 * 1024, "2M", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(8 * 1024 * 1024, "8M", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(32 * 1024 * 1024, "32M", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(64 * 1024 * 1024, "64M", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(
+      128 * 1024 * 1024, "128M", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(128 * 1024 * 1024, "128M", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(
+      256 * 1024 * 1024, "256M", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(256 * 1024 * 1024, "256M", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(
+      512 * 1024 * 1024, "512M", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(512 * 1024 * 1024, "512M", SyncScope::CLUSTER, "Cluster", true);
+  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::CLUSTER, "Cluster", false);
+  addNcclConfig(1024 * 1024 * 1024, "1G", SyncScope::CLUSTER, "Cluster", true);
 
   std::vector<BenchmarkResult> results;
 
@@ -905,6 +953,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
         .dataBufferSize = config.stagedBufferSize,
         .chunkSize = config.chunkSize,
         .pipelineDepth = config.pipelineDepth,
+        .useDualStateBuffer = config.useDualStateBuffer,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -948,10 +997,10 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
   if (globalRank == 0) {
     std::stringstream ss;
     ss << "\n";
-    ss << "==============================================================================================================================\n";
-    ss << "                         NCCL vs P2P NVLink BIDIRECTIONAL Benchmark Results\n";
-    ss << "==============================================================================================================================\n";
-    ss << std::left << std::setw(18) << "Test Name" << std::right
+    ss << "========================================================================================================================================\n";
+    ss << "                              NCCL vs P2P NVLink BIDIRECTIONAL Benchmark Results\n";
+    ss << "========================================================================================================================================\n";
+    ss << std::left << std::setw(28) << "Test Name" << std::right
        << std::setw(10) << "Msg Size" << std::right << std::setw(12)
        << "Staging" << std::right << std::setw(5) << "PD" << std::right
        << std::setw(8) << "Chunk" << std::right << std::setw(7) << "Blocks"
@@ -960,7 +1009,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
        << std::setw(9) << "Speedup" << std::right << std::setw(11) << "NCCL Lat"
        << std::right << std::setw(11) << "P2P Lat" << std::right
        << std::setw(11) << "Lat Reduc\n";
-    ss << std::left << std::setw(18) << "" << std::right << std::setw(10) << ""
+    ss << std::left << std::setw(28) << "" << std::right << std::setw(10) << ""
        << std::right << std::setw(12) << "" << std::right << std::setw(5) << ""
        << std::right << std::setw(8) << "" << std::right << std::setw(7) << ""
        << std::right << std::setw(8) << "" << std::right << std::setw(11)
@@ -968,7 +1017,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
        << std::setw(9) << "P2P/NCCL" << std::right << std::setw(11) << "(us)"
        << std::right << std::setw(11) << "(us)" << std::right << std::setw(11)
        << "(us)\n";
-    ss << "------------------------------------------------------------------------------------------------------------------------------\n";
+    ss << "----------------------------------------------------------------------------------------------------------------------------------------\n";
 
     for (const auto& r : results) {
       std::string msgSize = formatSize(r.messageSize);
@@ -976,7 +1025,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       std::string chunkSizeStr = formatSize(r.chunkSize);
       float latencyReduction = r.ncclTime - r.p2pTime;
 
-      ss << std::left << std::setw(18) << r.testName << std::right
+      ss << std::left << std::setw(28) << r.testName << std::right
          << std::setw(10) << msgSize << std::right << std::setw(12)
          << stagingSize << std::right << std::setw(5) << r.pipelineDepth
          << std::right << std::setw(8) << chunkSizeStr << std::right
@@ -991,10 +1040,10 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
          << r.p2pTime << std::right << std::setw(11) << std::fixed
          << std::setprecision(1) << latencyReduction << "\n";
     }
-    ss << "==============================================================================================================================\n";
+    ss << "========================================================================================================================================\n";
     ss << "Bidirectional: Both ranks send AND receive simultaneously\n";
     ss << "BW = Algorithm bandwidth (2 x message size / time)\n";
-    ss << "==============================================================================================================================\n\n";
+    ss << "========================================================================================================================================\n\n";
 
     XLOG(INFO) << ss.str();
   }

@@ -296,34 +296,56 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpu) {
   // Transport on GPU 0: writes to GPU 1's barrier, waits on GPU 0's barrier
   LocalState localState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   P2pNvlTransportDevice transport0(
       kGpu0, kGpu1, options, localState0, remoteState0);
 
+  // Allocate device copy of transport0
+  P2pNvlTransportDevice* transport0_d;
+  CUDACHECK_TEST(cudaMalloc(&transport0_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport0_d,
+      &transport0,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
+
   // Transport on GPU 1: writes to GPU 0's barrier, waits on GPU 1's barrier
   LocalState localState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   P2pNvlTransportDevice transport1(
       kGpu1, kGpu0, options, localState1, remoteState1);
+
+  // Allocate device copy of transport1
+  P2pNvlTransportDevice* transport1_d;
+  CUDACHECK_TEST(cudaMalloc(&transport1_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport1_d,
+      &transport1,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
 
   const int numBlocks = 1;
   const int blockSize = 32;
@@ -333,11 +355,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpu) {
   // They should synchronize with each other
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   test::testDeviceBarrierSync(
-      transport0, barrierId, numBlocks, blockSize, test::GroupType::WARP);
+      transport0_d, barrierId, numBlocks, blockSize, test::GroupType::WARP);
 
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   test::testDeviceBarrierSync(
-      transport1, barrierId, numBlocks, blockSize, test::GroupType::WARP);
+      transport1_d, barrierId, numBlocks, blockSize, test::GroupType::WARP);
 
   // Wait for both to complete
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
@@ -349,8 +371,10 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpu) {
 
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   CUDACHECK_TEST(cudaFree(barrierBuffer0));
+  CUDACHECK_TEST(cudaFree(transport0_d));
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   CUDACHECK_TEST(cudaFree(barrierBuffer1));
+  CUDACHECK_TEST(cudaFree(transport1_d));
 }
 
 TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleIds) {
@@ -378,33 +402,56 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleIds) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   P2pNvlTransportDevice transport0(
       kGpu0, kGpu1, options, localState0, remoteState0);
 
+  // Allocate device copy of transport0
+  P2pNvlTransportDevice* transport0_d;
+  CUDACHECK_TEST(cudaMalloc(&transport0_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport0_d,
+      &transport0,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
+
   LocalState localState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   P2pNvlTransportDevice transport1(
       kGpu1, kGpu0, options, localState1, remoteState1);
+
+  // Allocate device copy of transport1
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  P2pNvlTransportDevice* transport1_d;
+  CUDACHECK_TEST(cudaMalloc(&transport1_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport1_d,
+      &transport1,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
 
   const int numBlocks = 1;
   const int blockSize = 32;
@@ -424,11 +471,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleIds) {
     // Launch barrier sync on both GPUs
     CUDACHECK_TEST(cudaSetDevice(kGpu0));
     test::testDeviceBarrierSync(
-        transport0, barrierId, numBlocks, blockSize, test::GroupType::WARP);
+        transport0_d, barrierId, numBlocks, blockSize, test::GroupType::WARP);
 
     CUDACHECK_TEST(cudaSetDevice(kGpu1));
     test::testDeviceBarrierSync(
-        transport1, barrierId, numBlocks, blockSize, test::GroupType::WARP);
+        transport1_d, barrierId, numBlocks, blockSize, test::GroupType::WARP);
 
     CUDACHECK_TEST(cudaSetDevice(kGpu0));
     CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -440,8 +487,10 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleIds) {
 
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   CUDACHECK_TEST(cudaFree(barrierBuffer0));
+  CUDACHECK_TEST(cudaFree(transport0_d));
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   CUDACHECK_TEST(cudaFree(barrierBuffer1));
+  CUDACHECK_TEST(cudaFree(transport1_d));
 }
 
 TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleSyncs) {
@@ -470,33 +519,56 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleSyncs) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   P2pNvlTransportDevice transport0(
       kGpu0, kGpu1, options, localState0, remoteState0);
 
+  // Allocate device copy of transport0
+  P2pNvlTransportDevice* transport0_d;
+  CUDACHECK_TEST(cudaMalloc(&transport0_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport0_d,
+      &transport0,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
+
   LocalState localState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   P2pNvlTransportDevice transport1(
       kGpu1, kGpu0, options, localState1, remoteState1);
+
+  // Allocate device copy of transport1
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  P2pNvlTransportDevice* transport1_d;
+  CUDACHECK_TEST(cudaMalloc(&transport1_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport1_d,
+      &transport1,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
 
   const int numBlocks = 1;
   const int blockSize = 32;
@@ -505,7 +577,7 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleSyncs) {
   // Multiple syncs in the same kernel
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   test::testDeviceBarrierSyncMultiple(
-      transport0,
+      transport0_d,
       barrierId,
       numSyncs,
       numBlocks,
@@ -514,7 +586,7 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleSyncs) {
 
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   test::testDeviceBarrierSyncMultiple(
-      transport1,
+      transport1_d,
       barrierId,
       numSyncs,
       numBlocks,
@@ -530,8 +602,10 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuMultipleSyncs) {
 
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   CUDACHECK_TEST(cudaFree(barrierBuffer0));
+  CUDACHECK_TEST(cudaFree(transport0_d));
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   CUDACHECK_TEST(cudaFree(barrierBuffer1));
+  CUDACHECK_TEST(cudaFree(transport1_d));
 }
 
 TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuBlockGroups) {
@@ -559,33 +633,56 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuBlockGroups) {
 
   LocalState localState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   P2pNvlTransportDevice transport0(
       kGpu0, kGpu1, options, localState0, remoteState0);
 
+  // Allocate device copy of transport0
+  P2pNvlTransportDevice* transport0_d;
+  CUDACHECK_TEST(cudaMalloc(&transport0_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport0_d,
+      &transport0,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
+
   LocalState localState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   P2pNvlTransportDevice transport1(
       kGpu1, kGpu0, options, localState1, remoteState1);
+
+  // Allocate device copy of transport1
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  P2pNvlTransportDevice* transport1_d;
+  CUDACHECK_TEST(cudaMalloc(&transport1_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport1_d,
+      &transport1,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
 
   const int numBlocks = 1;
   const int blockSize = 256;
@@ -594,11 +691,11 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuBlockGroups) {
   // Test with block groups
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   test::testDeviceBarrierSync(
-      transport0, barrierId, numBlocks, blockSize, test::GroupType::BLOCK);
+      transport0_d, barrierId, numBlocks, blockSize, test::GroupType::BLOCK);
 
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   test::testDeviceBarrierSync(
-      transport1, barrierId, numBlocks, blockSize, test::GroupType::BLOCK);
+      transport1_d, barrierId, numBlocks, blockSize, test::GroupType::BLOCK);
 
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -609,8 +706,10 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierSyncTwoGpuBlockGroups) {
 
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   CUDACHECK_TEST(cudaFree(barrierBuffer0));
+  CUDACHECK_TEST(cudaFree(transport0_d));
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   CUDACHECK_TEST(cudaFree(barrierBuffer1));
+  CUDACHECK_TEST(cudaFree(transport1_d));
 }
 
 TEST_F(BarrierTwoGpuFixture, DeviceBarrierDataTransferVerification) {
@@ -663,34 +762,57 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierDataTransferVerification) {
   // GPU 0 will use put() to copy from dataBuffer0 to dataBuffer1 via P2P
   LocalState localState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   RemoteState remoteState0{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   P2pNvlTransportDevice transport0(
       kGpu0, kGpu1, options, localState0, remoteState0);
 
+  // Allocate device copy of transport0
+  P2pNvlTransportDevice* transport0_d;
+  CUDACHECK_TEST(cudaMalloc(&transport0_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport0_d,
+      &transport0,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
+
   // Transport on GPU 1: local=barrier1, remote=barrier0
   LocalState localState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer1, numBarriers),
   };
   RemoteState remoteState1{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .peerChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .myChunkStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(barrierBuffer0, numBarriers),
   };
   P2pNvlTransportDevice transport1(
       kGpu1, kGpu0, options, localState1, remoteState1);
+
+  // Allocate device copy of transport1
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  P2pNvlTransportDevice* transport1_d;
+  CUDACHECK_TEST(cudaMalloc(&transport1_d, sizeof(P2pNvlTransportDevice)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport1_d,
+      &transport1,
+      sizeof(P2pNvlTransportDevice),
+      cudaMemcpyHostToDevice));
 
   const int numBlocks = 4; // 4 blocks = 4 warp groups (barrier ids 0-3)
   const int blockSize = 32; // 32 threads per block = 1 warp group per block
@@ -699,7 +821,7 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierDataTransferVerification) {
   // then barrier sync
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   test::testBarrierWriteData(
-      transport0,
+      transport0_d,
       reinterpret_cast<char*>(dataBuffer1), // Remote buffer on GPU 1
       reinterpret_cast<const char*>(dataBuffer0), // Local source on GPU 0
       dataSize,
@@ -710,7 +832,7 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierDataTransferVerification) {
   // GPU 1: Barrier sync, then verify the data
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   test::testBarrierVerifyData(
-      transport1,
+      transport1_d,
       dataBuffer1, // Local buffer on GPU 1
       dataSize,
       fillValue,
@@ -738,10 +860,12 @@ TEST_F(BarrierTwoGpuFixture, DeviceBarrierDataTransferVerification) {
   CUDACHECK_TEST(cudaSetDevice(kGpu0));
   CUDACHECK_TEST(cudaFree(barrierBuffer0));
   CUDACHECK_TEST(cudaFree(dataBuffer0));
+  CUDACHECK_TEST(cudaFree(transport0_d));
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   CUDACHECK_TEST(cudaFree(barrierBuffer1));
   CUDACHECK_TEST(cudaFree(dataBuffer1));
   CUDACHECK_TEST(cudaFree(errorCount_d));
+  CUDACHECK_TEST(cudaFree(transport1_d));
 }
 
 } // namespace comms::pipes

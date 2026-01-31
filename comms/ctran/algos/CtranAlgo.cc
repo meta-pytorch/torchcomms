@@ -363,13 +363,13 @@ commResult_t CtranAlgo::initKernelResources() {
 
     comms::pipes::LocalState localState{
         .dataBuffer = static_cast<char*>(devState_.localStagingBufsMap[peer]),
-        .stateBuffer = DeviceSpan<ChunkState>(
+        .myChunkStateBuffer = DeviceSpan<ChunkState>(
             static_cast<ChunkState*>(devState_.localChunkStatesMap[peer]),
             CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
 
     comms::pipes::RemoteState remoteState{
         .dataBuffer = static_cast<char*>(devState_.remoteStagingBufsMap[peer]),
-        .stateBuffer = DeviceSpan<ChunkState>(
+        .peerChunkStateBuffer = DeviceSpan<ChunkState>(
             static_cast<ChunkState*>(devState_.remoteChunkStatesMap[peer]),
             CTRAN_P2P_NVL_DEVMEM_MAX_CHUNKS)};
 
