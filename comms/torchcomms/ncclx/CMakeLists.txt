@@ -4,6 +4,7 @@ file(GLOB TORCHCOMMS_NCCLX_SOURCES
     "comms/torchcomms/ncclx/*.cpp"
 )
 file(GLOB TORCHCOMMS_CUDA_API_SOURCE "comms/torchcomms/device/cuda/CudaApi.cpp")
+file(GLOB TORCHCOMMS_DEVICE_NCCLX_SOURCE "comms/torchcomms/device/ncclx/*.cpp")
 
 find_package(CUDA)
 
@@ -59,6 +60,7 @@ endif()
 add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_API_SOURCE}
+    ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""

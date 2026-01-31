@@ -352,8 +352,9 @@ ncclResult_t DefaultNcclxApi::commWindowRegister(
     void* baseptr,
     const size_t size,
     ncclComm_t comm,
-    NcclxWindow* winPtr) {
-  return ncclCommWindowRegister(comm, baseptr, size, winPtr, NCCL_WIN_DEFAULT);
+    NcclxWindow* winPtr,
+    int winFlags) {
+  return ncclCommWindowRegister(comm, baseptr, size, winPtr, winFlags);
 }
 
 ncclResult_t DefaultNcclxApi::commWindowDeregister(
@@ -434,6 +435,19 @@ ncclResult_t DefaultNcclxApi::redOpCreatePreMulSum(
 
 ncclResult_t DefaultNcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   return ncclRedOpDestroy(op, comm);
+}
+
+ncclResult_t DefaultNcclxApi::devCommCreate(
+    ncclComm_t comm,
+    const ncclDevCommRequirements_t* reqs,
+    ncclDevComm_t* outDevComm) {
+  return ncclDevCommCreate(comm, reqs, outDevComm);
+}
+
+ncclResult_t DefaultNcclxApi::devCommDestroy(
+    ncclComm_t comm,
+    const ncclDevComm_t* devComm) {
+  return ncclDevCommDestroy(comm, devComm);
 }
 
 } // namespace torch::comms
