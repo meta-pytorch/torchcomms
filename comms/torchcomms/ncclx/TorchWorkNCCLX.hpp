@@ -22,6 +22,11 @@ namespace torch::comms {
 
 // Forward declaration
 class TorchCommNCCLX;
+
+// TorchCommWindowNCCLX is now a template - forward declare
+// Note: The type alias TorchCommWindowNCCLXGin is defined in
+// TorchCommWindowNCCLX.hpp
+template <typename Backend>
 class TorchCommWindowNCCLX;
 
 // Forward declaration for test class
@@ -65,6 +70,7 @@ class TorchWorkNCCLX : public TorchWork {
   void recordEnd();
 
   friend class TorchCommNCCLX;
+  template <typename B>
   friend class TorchCommWindowNCCLX;
   friend class TorchWorkNCCLXQueue;
   friend class torch::comms::test::TorchCommNCCLXTest;
