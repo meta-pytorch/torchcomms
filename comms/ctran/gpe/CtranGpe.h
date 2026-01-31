@@ -12,6 +12,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/CtranExImpl.h"
+#include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
@@ -436,17 +437,17 @@ template <typename T>
 extern __global__ void ncclKernelAllGatherCtranDirect(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 __global__ void ncclKernelAllGatherCtranRing(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 __global__ void ncclKernelAllGatherCtranRecDbl(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceCtranDirect(
