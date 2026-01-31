@@ -262,7 +262,11 @@ class NcclxMock : public NcclxApi {
   MOCK_METHOD(
       ncclResult_t,
       commWindowRegister,
-      (void* baseptr, size_t size, ncclComm_t comm, NcclxWindow* win),
+      (void* baseptr,
+       const size_t size,
+       ncclComm_t comm,
+       NcclxWindow* win,
+       int winFlags),
       (override));
 
   MOCK_METHOD(
