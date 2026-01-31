@@ -4,6 +4,8 @@
 
 #include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/P2pSelfTransportDevice.cuh"
+#include "comms/pipes/Transport.cuh"
 
 namespace comms::pipes {
 
@@ -34,6 +36,33 @@ struct MultiPeerNvlTransportConfig {
   // Larger = more signal available for parallelism.
   // Typical: 1-num of block for most workloads.
   std::size_t signalCount{1};
+
+  // If true, use dual chunk state buffers (one on each side) for local polling
+  // on both sender and receiver. If false (default), use single chunk state
+  // buffer on receiver side only.
+  //
+  // Single State Mode (default):
+  //   - 1 ChunkState per chunk, stored on receiver side
+  //   - Sender polls over NVLink (slower), receiver polls locally (faster)
+  //   - Lower memory usage
+  //
+  // Dual State Mode:
+  //   - 2 ChunkStates per chunk: one on receiver, one on sender
+  //   - Both sender and receiver poll locally (faster on both sides)
+  //   - Higher memory usage, better performance for high-throughput workloads
+  //
+  // ⚠️ WARNING - DUAL STATE MODE REQUIREMENTS:
+  // Dual state mode requires a GLOBAL call_index counter that:
+  //   1. MUST be monotonically increasing across ALL kernel launches using the
+  //      same P2pNvlTransportDevice instance (not just per-kernel invocation)
+  //   2. MUST be consistent between sender and receiver for the same transfer
+  //   3. Enables efficient state progression by deriving currentStep from
+  //      call_index, avoiding expensive state polling between runs
+  //
+  // Without a proper global counter, synchronization will fail or deadlock.
+  // Single state mode is more forgiving as it resets to READY_TO_SEND (-1)
+  // between runs.
+  bool useDualStateBuffer{false};
 };
 
 /**
@@ -76,12 +105,17 @@ class MultiPeerNvlTransport {
    * Allocates local GPU buffers for multi-peer communication:
    * - Data buffer: for staging data transfers (nRanks-1 peer regions)
    * - State buffer: for chunk-level synchronization states
+   * - P2pNvlTransportDevice array: preallocated on device memory for all peers
+   *   to allow stateful tranport and reduce kernel launch latency (avoids
+   *   per-launch H2D copy)
    *
    * Memory sharing mode is automatically detected:
    * - Fabric handles (H100+, CUDA 12.3+): Enables GB200 multi-node NVLink
    * - cudaIpcMemHandle (fallback): Works on all CUDA GPUs, intra-node only
    *
    * Does NOT exchange memory handles - call exchange() after construction.
+   * The preallocated P2pNvlTransportDevice array is populated in exchange()
+   * after peer buffer pointers are available.
    *
    * @param myRank This rank's ID in the communicator (0 to nRanks-1)
    * @param nRanks Total number of ranks in the communicator
@@ -98,6 +132,19 @@ class MultiPeerNvlTransport {
       const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig);
 
   /**
+   * Destructor - Cleanup device memory
+   *
+   * Frees the preallocated P2pNvlTransportDevice array on device memory.
+   */
+  ~MultiPeerNvlTransport();
+
+  // Non-copyable and non-movable
+  MultiPeerNvlTransport(const MultiPeerNvlTransport&) = delete;
+  MultiPeerNvlTransport& operator=(const MultiPeerNvlTransport&) = delete;
+  MultiPeerNvlTransport(MultiPeerNvlTransport&&) = delete;
+  MultiPeerNvlTransport& operator=(MultiPeerNvlTransport&&) = delete;
+
+  /**
    * exchange - Exchange memory handles across all ranks
    *
    * COLLECTIVE OPERATION: All ranks MUST call this before using
@@ -106,7 +153,9 @@ class MultiPeerNvlTransport {
    * Performs collective handle exchange using the bootstrap interface:
    * 1. Each rank shares its local buffer's handle with all other ranks
    * 2. Each rank receives handles from all other ranks
-   * 3. Implicit barrier ensures all ranks complete before returning
+   * 3. Builds and copies P2pNvlTransportDevice for each peer to the
+   *    preallocated device array (allocated in constructor)
+   * 4. Implicit barrier ensures all ranks complete before returning
    *
    * The type of handle (fabric or cudaIpc) depends on the automatically
    * detected memory sharing mode.
@@ -121,8 +170,10 @@ class MultiPeerNvlTransport {
   /**
    * getP2pTransportDevice - Get device handle for P2P communication with a peer
    *
-   * Returns a device-side transport handle configured for communication with
-   * the specified peer rank. This handle can be passed to CUDA kernels.
+   * Returns a pointer to the device-side transport handle configured for
+   * communication with the specified peer rank. This handle can be passed to
+   * CUDA kernels. The P2pNvlTransportDevice is preallocated on device memory
+   * in the constructor to reduce kernel launch latency.
    *
    * PRECONDITION: exchange() must have been called by all ranks first.
    *
@@ -133,13 +184,63 @@ class MultiPeerNvlTransport {
    *
    * @param peerRank Target peer rank ID (must be in range [0, nRanks) and !=
    * myRank)
-   * @return P2pNvlTransportDevice handle for use in CUDA kernels
+   * @return Pointer to P2pNvlTransportDevice on device memory for use in CUDA
+   * kernels
    *
    * @note Thread-safe after exchange() completes
    * @note Can be called multiple times for the same or different peers
-   * @note The returned handle is copyable and can be passed to multiple kernels
+   * @note The returned pointer is valid until this MultiPeerNvlTransport is
+   * destroyed
    */
-  P2pNvlTransportDevice getP2pTransportDevice(int peerRank);
+  P2pNvlTransportDevice* getP2pTransportDevice(int peerRank);
+
+  /**
+   * getTransportsArray - Get preallocated Transport array on device memory
+   *
+   * Returns a pointer to the device-side Transport array containing all
+   * transport handles (P2pSelfTransportDevice for self, P2pNvlTransportDevice
+   * for all peers). This array can be passed directly to CUDA kernels for
+   * all-to-all communication patterns without per-launch H2D copies.
+   *
+   * PRECONDITION: exchange() must have been called by all ranks first.
+   *
+   * Array layout: [Transport for rank 0, Transport for rank 1, ..., Transport
+   * for rank nRanks-1]
+   * - transports_d_[myRank_] contains P2pSelfTransportDevice
+   * - transports_d_[peerRank] contains P2pNvlTransportDevice for peer
+   *
+   * @return Pointer to Transport array on device memory (size = nRanks)
+   *
+   * @note Thread-safe after exchange() completes
+   * @note The returned pointer is valid until this MultiPeerNvlTransport is
+   * destroyed
+   */
+  Transport* getTransportsArray();
+
+  /**
+   * getNRanks - Get total number of ranks
+   *
+   * @return Total number of ranks in the communicator
+   */
+  int getNRanks() const {
+    return nRanks_;
+  }
+
+  /**
+   * buildP2pTransportDevice - Build host-side P2pNvlTransportDevice
+   *
+   * Constructs a P2pNvlTransportDevice on the host for the specified peer.
+   *
+   * This method is used in tests to access const members and when building
+   * Transport objects on the host side.
+   *
+   * PRECONDITION: exchange() must have been called first (for external use).
+   *
+   * @param peerRank Target peer rank ID (must be in range [0, nRanks) and !=
+   * myRank)
+   * @return P2pNvlTransportDevice constructed on the host
+   */
+  P2pNvlTransportDevice buildP2pTransportDevice(int peerRank);
 
   /**
    * Check if fabric-based transport is supported (H100+, CUDA 12.3+).
@@ -178,6 +279,13 @@ class MultiPeerNvlTransport {
   std::size_t perPeerDataBufferSize_{0};
   std::size_t perPeerChunkStateBufferSize_{0};
   std::size_t perPeerSignalBufferSize_{0};
+
+  // Preallocated Transport array on device memory
+  // Indexed by rank: transports_d_[myRank_] contains P2pSelfTransportDevice,
+  // transports_d_[peerRank] contains P2pNvlTransportDevice for that peer.
+  // Allocated in constructor, populated in exchange() after peer pointers
+  // available
+  Transport* transports_d_{nullptr};
 };
 
 } // namespace comms::pipes

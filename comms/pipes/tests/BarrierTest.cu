@@ -109,26 +109,26 @@ void testReadBarrierExpectedCounter(
 // =============================================================================
 
 __global__ void testDeviceBarrierSyncKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t barrierId,
     GroupType groupType) {
   auto group = make_group(groupType);
-  p2p.barrier_sync_threadgroup(group, barrierId);
+  p2p->barrier_sync_threadgroup(group, barrierId);
 }
 
 __global__ void testDeviceBarrierSyncMultipleKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t barrierId,
     int numSyncs,
     GroupType groupType) {
   auto group = make_group(groupType);
   for (int i = 0; i < numSyncs; ++i) {
-    p2p.barrier_sync_threadgroup(group, barrierId);
+    p2p->barrier_sync_threadgroup(group, barrierId);
   }
 }
 
 void testDeviceBarrierSync(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t barrierId,
     int numBlocks,
     int blockSize,
@@ -139,7 +139,7 @@ void testDeviceBarrierSync(
 }
 
 void testDeviceBarrierSyncMultiple(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t barrierId,
     int numSyncs,
     int numBlocks,
@@ -156,7 +156,7 @@ void testDeviceBarrierSyncMultiple(
 // =============================================================================
 
 __global__ void testBarrierWriteDataKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     char* remoteDataBuffer,
     const char* localSrcBuffer,
     size_t dataSize,
@@ -167,14 +167,14 @@ __global__ void testBarrierWriteDataKernel(
   uint64_t barrierId = group.group_id;
 
   // The put() API distributes work across all thread groups automatically
-  p2p.put(group, remoteDataBuffer, localSrcBuffer, dataSize);
+  p2p->put(group, remoteDataBuffer, localSrcBuffer, dataSize);
 
   // Each thread group uses its own barrier id
-  p2p.barrier_sync_threadgroup(group, barrierId);
+  p2p->barrier_sync_threadgroup(group, barrierId);
 }
 
 __global__ void testBarrierVerifyDataKernel(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint8_t* localDataBuffer,
     size_t dataSize,
     uint8_t expectedValue,
@@ -187,7 +187,7 @@ __global__ void testBarrierVerifyDataKernel(
 
   // Barrier sync - arrive on remote, wait on local
   // This ensures writer's data is visible before we read
-  p2p.barrier_sync_threadgroup(group, barrierId);
+  p2p->barrier_sync_threadgroup(group, barrierId);
 
   // Calculate the portion of data this thread group handles
   size_t bytesPerGroup = dataSize / group.total_groups;
@@ -204,7 +204,7 @@ __global__ void testBarrierVerifyDataKernel(
 }
 
 void testBarrierWriteData(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     char* remoteDataBuffer,
     const char* localSrcBuffer,
     size_t dataSize,
@@ -217,7 +217,7 @@ void testBarrierWriteData(
 }
 
 void testBarrierVerifyData(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint8_t* localDataBuffer,
     size_t dataSize,
     uint8_t expectedValue,

@@ -20,21 +20,24 @@ using namespace meta::comms;
 
 namespace comms::pipes::tests {
 
-// Parameters for transfer size tests: (nbytes, dataBufferSize, chunkSize, name)
+// Parameters for transfer size tests: (nbytes, dataBufferSize, chunkSize, name,
+// useDualStateBuffer)
 struct TransferSizeParams {
   size_t nbytes;
   size_t dataBufferSize;
   size_t chunkSize;
+  bool useDualStateBuffer;
   std::string name;
 };
 
 // Parameters for group type tests: (groupType, numBlocks, blockSize,
-// blocksPerGroup, name)
+// blocksPerGroup, useDualStateBuffer, name)
 struct GroupTypeParams {
   test::GroupType groupType;
   int numBlocks;
   int blockSize;
   int blocksPerGroup;
+  bool useDualStateBuffer;
   std::string name;
 };
 
@@ -71,7 +74,8 @@ TEST_F(P2pNvlTransportTestFixture, IpcMemAccess) {
   transport.exchange();
   XLOGF(INFO, "Rank {} created transport and exchanged IPC", globalRank);
 
-  auto p2p = transport.getP2pTransportDevice(peerRank);
+  // Get host-side copy to access buffer pointers from host
+  auto p2p = transport.buildP2pTransportDevice(peerRank);
 
   auto localAddr =
       static_cast<int*>(static_cast<void*>(p2p.getLocalState().dataBuffer));
@@ -148,13 +152,14 @@ void verifyReceivedData(
 // Helper to run a single send/recv iteration with verification
 void runSendRecvIteration(
     int globalRank,
-    P2pNvlTransportDevice& p2p,
+    P2pNvlTransportDevice* p2p,
     int* src_d,
     int* dst_d,
     size_t nbytes,
     int numBlocks,
     int blockSize,
     int iter,
+    uint32_t call_index,
     test::GroupType groupType = test::GroupType::WARP) {
   const size_t numInts = nbytes / sizeof(int);
   const int testValue = 42 + iter;
@@ -164,7 +169,8 @@ void runSendRecvIteration(
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testSend(p2p, src_d, nbytes, numBlocks, blockSize, groupType, 1);
+    test::testSend(
+        p2p, src_d, nbytes, numBlocks, blockSize, call_index, groupType, 1);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -172,7 +178,8 @@ void runSendRecvIteration(
     CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testRecv(p2p, dst_d, nbytes, numBlocks, blockSize, groupType, 1);
+    test::testRecv(
+        p2p, dst_d, nbytes, numBlocks, blockSize, call_index, groupType, 1);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -215,10 +222,24 @@ class TransportTestHelper {
                 config)) {
     CUDACHECK_TEST(cudaSetDevice(localRank));
     transport_->exchange();
+
+    // Build a host copy of P2pNvlTransportDevice for tests that need
+    // to access buffer pointers from the host side (e.g., for cudaMemset)
+    // Use unique_ptr because P2pNvlTransportDevice has const members and
+    // cannot be copy-assigned
+    p2pHost_ = std::make_unique<P2pNvlTransportDevice>(
+        transport_->buildP2pTransportDevice(peerRank_));
   }
 
-  P2pNvlTransportDevice getDevice() {
+  // Returns pointer to preallocated P2pNvlTransportDevice on device
+  // This pointer is managed by MultiPeerNvlTransport
+  P2pNvlTransportDevice* getDevicePtr() {
     return transport_->getP2pTransportDevice(peerRank_);
+  }
+
+  // Returns reference to host copy (for accessing state pointers from host)
+  P2pNvlTransportDevice& getHostDevice() {
+    return *p2pHost_;
   }
 
   int peerRank() const {
@@ -235,6 +256,7 @@ class TransportTestHelper {
   int peerRank_;
   std::shared_ptr<meta::comms::MpiBootstrap> bootstrap_;
   std::unique_ptr<MultiPeerNvlTransport> transport_;
+  std::unique_ptr<P2pNvlTransportDevice> p2pHost_;
 };
 
 // =============================================================================
@@ -248,7 +270,7 @@ void runBasicSendRecvTest(
     int blockSize,
     int nIter = 1,
     test::GroupType groupType = test::GroupType::WARP) {
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   DeviceBuffer srcBuffer(nbytes);
   DeviceBuffer dstBuffer(nbytes);
@@ -257,6 +279,8 @@ void runBasicSendRecvTest(
   auto dst_d = static_cast<int*>(dstBuffer.get());
 
   for (int iter = 0; iter < nIter; iter++) {
+    // Each iteration uses a unique call_index
+    uint32_t call_index = static_cast<uint32_t>(iter);
     runSendRecvIteration(
         helper.globalRank(),
         p2p,
@@ -266,6 +290,7 @@ void runBasicSendRecvTest(
         numBlocks,
         blockSize,
         iter,
+        call_index,
         groupType);
   }
 }
@@ -293,16 +318,18 @@ TEST_P(TransferSizeTestFixture, SendRecv) {
   const auto& params = GetParam();
   XLOGF(
       INFO,
-      "Running transfer size test: {} (nbytes={}, bufferSize={}, chunkSize={})",
+      "Running transfer size test: {} (nbytes={}, bufferSize={}, chunkSize={}, dualState={})",
       params.name,
       params.nbytes,
       params.dataBufferSize,
-      params.chunkSize);
+      params.chunkSize,
+      params.useDualStateBuffer);
 
   MultiPeerNvlTransportConfig config{
       .dataBufferSize = params.dataBufferSize,
       .chunkSize = params.chunkSize,
       .pipelineDepth = 4,
+      .useDualStateBuffer = params.useDualStateBuffer,
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
@@ -324,74 +351,86 @@ INSTANTIATE_TEST_SUITE_P(
     TransferSizeVariations,
     TransferSizeTestFixture,
     ::testing::Values(
+        // ===== SINGLE STATE BUFFER MODE (default) =====
         // Small transfer: nbytes < chunkSize
         TransferSizeParams{
             .nbytes = 512,
             .dataBufferSize = 4096,
             .chunkSize = 1024,
-            .name = "SmallTransfer_LessThanChunk"},
+            .useDualStateBuffer = false,
+            .name = "SmallTransfer_LessThanChunk_SingleState"},
         // Single chunk: nbytes == chunkSize
         TransferSizeParams{
             .nbytes = 1024,
             .dataBufferSize = 4096,
             .chunkSize = 1024,
-            .name = "SingleChunk_ExactMatch"},
+            .useDualStateBuffer = false,
+            .name = "SingleChunk_ExactMatch_SingleState"},
         // Transfer not aligned to chunk size
         TransferSizeParams{
             .nbytes = 1000,
             .dataBufferSize = 4096,
             .chunkSize = 256,
-            .name = "UnalignedToChunk"},
+            .useDualStateBuffer = false,
+            .name = "UnalignedToChunk_SingleState"},
         // Transfer not aligned to vector size (16 bytes)
         TransferSizeParams{
             .nbytes = 1000,
             .dataBufferSize = 4096,
             .chunkSize = 256,
-            .name = "NonVectorAligned_1000bytes"},
+            .useDualStateBuffer = false,
+            .name = "NonVectorAligned_1000bytes_SingleState"},
         // Another non-vector-aligned size
         TransferSizeParams{
             .nbytes = 100,
             .dataBufferSize = 1024,
             .chunkSize = 64,
-            .name = "NonVectorAligned_100bytes"},
+            .useDualStateBuffer = false,
+            .name = "NonVectorAligned_100bytes_SingleState"},
         // Transfer exactly equals buffer size (single step)
         TransferSizeParams{
             .nbytes = 4096,
             .dataBufferSize = 4096,
             .chunkSize = 256,
-            .name = "ExactBufferSize"},
+            .useDualStateBuffer = false,
+            .name = "ExactBufferSize_SingleState"},
         // Multiple steps: transfer > buffer size
         TransferSizeParams{
             .nbytes = 16 * 1024,
             .dataBufferSize = 4096,
             .chunkSize = 256,
-            .name = "MultipleSteps_4x"},
+            .useDualStateBuffer = false,
+            .name = "MultipleSteps_4x_SingleState"},
         // Large transfer with multiple steps
         TransferSizeParams{
             .nbytes = 4 * 1024 * 1024,
             .dataBufferSize = 1024 * 1024,
             .chunkSize = 4096,
-            .name = "LargeMultiStep_4MB"},
+            .useDualStateBuffer = false,
+            .name = "LargeMultiStep_4MB_SingleState"},
         // Very large transfer (64MB with 8MB buffer = 8 steps)
         TransferSizeParams{
             .nbytes = 64 * 1024 * 1024,
             .dataBufferSize = 8 * 1024 * 1024,
             .chunkSize = 1024,
-            .name = "VeryLargeMultiStep_64MB"},
+            .useDualStateBuffer = false,
+            .name = "VeryLargeMultiStep_64MB_SingleState"},
         // Edge case: stepBytes exactly divisible by chunkSize (no partial
         // chunk) Tests that we don't process any 0-byte chunks
         TransferSizeParams{
             .nbytes = 4096,
             .dataBufferSize = 4096,
             .chunkSize = 1024,
-            .name = "ExactChunkBoundary_4Chunks"},
+            .useDualStateBuffer = false,
+            .name = "ExactChunkBoundary_4Chunks_SingleState"},
         // Edge case: last chunk has minimal bytes (1 byte remainder)
         // stepBytes=4097, chunkSize=1024 → 5 chunks, last chunk = 1 byte
         TransferSizeParams{
             .nbytes = 4097,
             .dataBufferSize = 8192,
             .chunkSize = 1024,
-            .name = "MinimalLastChunk_1Byte"},
+            .useDualStateBuffer = false,
+            .name = "MinimalLastChunk_1Byte_SingleState"},
         // Edge case: multiple steps where each step ends exactly on chunk
         // boundary 8KB transfer, 4KB buffer, 1KB chunks → 2 steps × 4 chunks
         // each
@@ -399,14 +438,60 @@ INSTANTIATE_TEST_SUITE_P(
             .nbytes = 8 * 1024,
             .dataBufferSize = 4 * 1024,
             .chunkSize = 1024,
-            .name = "MultiStep_ExactChunkBoundaries"},
+            .useDualStateBuffer = false,
+            .name = "MultiStep_ExactChunkBoundaries_SingleState"},
         // Edge case: chunkSize larger than stepBytes
         // Forces single chunk per step with partial fill
         TransferSizeParams{
             .nbytes = 2048,
             .dataBufferSize = 1024,
             .chunkSize = 2048,
-            .name = "ChunkLargerThanStep"}),
+            .useDualStateBuffer = false,
+            .name = "ChunkLargerThanStep_SingleState"},
+
+        // ===== DUAL STATE BUFFER MODE =====
+        // Small transfer: nbytes < chunkSize
+        TransferSizeParams{
+            .nbytes = 512,
+            .dataBufferSize = 4096,
+            .chunkSize = 1024,
+            .useDualStateBuffer = true,
+            .name = "SmallTransfer_LessThanChunk_DualState"},
+        // Single chunk: nbytes == chunkSize
+        TransferSizeParams{
+            .nbytes = 1024,
+            .dataBufferSize = 4096,
+            .chunkSize = 1024,
+            .useDualStateBuffer = true,
+            .name = "SingleChunk_ExactMatch_DualState"},
+        // Transfer not aligned to chunk size
+        TransferSizeParams{
+            .nbytes = 1000,
+            .dataBufferSize = 4096,
+            .chunkSize = 256,
+            .useDualStateBuffer = true,
+            .name = "UnalignedToChunk_DualState"},
+        // Multiple steps: transfer > buffer size
+        TransferSizeParams{
+            .nbytes = 16 * 1024,
+            .dataBufferSize = 4096,
+            .chunkSize = 256,
+            .useDualStateBuffer = true,
+            .name = "MultipleSteps_4x_DualState"},
+        // Large transfer with multiple steps
+        TransferSizeParams{
+            .nbytes = 4 * 1024 * 1024,
+            .dataBufferSize = 1024 * 1024,
+            .chunkSize = 4096,
+            .useDualStateBuffer = true,
+            .name = "LargeMultiStep_4MB_DualState"},
+        // Very large transfer (64MB with 8MB buffer = 8 steps)
+        TransferSizeParams{
+            .nbytes = 64 * 1024 * 1024,
+            .dataBufferSize = 8 * 1024 * 1024,
+            .chunkSize = 1024,
+            .useDualStateBuffer = true,
+            .name = "VeryLargeMultiStep_64MB_DualState"}),
     transferSizeParamName);
 
 // =============================================================================
@@ -432,10 +517,11 @@ TEST_P(GroupTypeTestFixture, SendRecv) {
   const auto& params = GetParam();
   XLOGF(
       INFO,
-      "Running group type test: {} (numBlocks={}, blockSize={})",
+      "Running group type test: {} (numBlocks={}, blockSize={}, dualState={})",
       params.name,
       params.numBlocks,
-      params.blockSize);
+      params.blockSize,
+      params.useDualStateBuffer);
 
   const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
   const size_t nbytes = 4 * 1024 * 1024; // 4MB total transfer
@@ -443,6 +529,7 @@ TEST_P(GroupTypeTestFixture, SendRecv) {
       .dataBufferSize = dataBufferSize,
       .chunkSize = 1024,
       .pipelineDepth = 4,
+      .useDualStateBuffer = params.useDualStateBuffer,
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
@@ -462,38 +549,69 @@ INSTANTIATE_TEST_SUITE_P(
     GroupTypeVariations,
     GroupTypeTestFixture,
     ::testing::Values(
+        // ===== SINGLE STATE BUFFER MODE (default) =====
         // Warp-based groups (32 threads per group)
         GroupTypeParams{
             .groupType = test::GroupType::WARP,
             .numBlocks = 4,
             .blockSize = 128,
             .blocksPerGroup = 1,
-            .name = "Warp_4Blocks_128Threads"},
+            .useDualStateBuffer = false,
+            .name = "Warp_4Blocks_128Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::WARP,
             .numBlocks = 8,
             .blockSize = 256,
             .blocksPerGroup = 1,
-            .name = "Warp_8Blocks_256Threads"},
+            .useDualStateBuffer = false,
+            .name = "Warp_8Blocks_256Threads_SingleState"},
         // Block-based groups (all threads in block form one group)
         GroupTypeParams{
             .groupType = test::GroupType::BLOCK,
             .numBlocks = 4,
             .blockSize = 128,
             .blocksPerGroup = 1,
-            .name = "Block_4Groups_128Threads"},
+            .useDualStateBuffer = false,
+            .name = "Block_4Groups_128Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::BLOCK,
             .numBlocks = 8,
             .blockSize = 256,
             .blocksPerGroup = 1,
-            .name = "Block_8Groups_256Threads"},
+            .useDualStateBuffer = false,
+            .name = "Block_8Groups_256Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::BLOCK,
             .numBlocks = 2,
             .blockSize = 512,
             .blocksPerGroup = 1,
-            .name = "Block_2Groups_512Threads"}),
+            .useDualStateBuffer = false,
+            .name = "Block_2Groups_512Threads_SingleState"},
+
+        // ===== DUAL STATE BUFFER MODE =====
+        // Warp-based groups (32 threads per group)
+        GroupTypeParams{
+            .groupType = test::GroupType::WARP,
+            .numBlocks = 4,
+            .blockSize = 128,
+            .blocksPerGroup = 1,
+            .useDualStateBuffer = true,
+            .name = "Warp_4Blocks_128Threads_DualState"},
+        GroupTypeParams{
+            .groupType = test::GroupType::WARP,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .blocksPerGroup = 1,
+            .useDualStateBuffer = true,
+            .name = "Warp_8Blocks_256Threads_DualState"},
+        // Block-based groups (all threads in block form one group)
+        GroupTypeParams{
+            .groupType = test::GroupType::BLOCK,
+            .numBlocks = 4,
+            .blockSize = 128,
+            .blocksPerGroup = 1,
+            .useDualStateBuffer = true,
+            .name = "Block_4Groups_128Threads_DualState"}),
     groupTypeParamName);
 
 // =============================================================================
@@ -515,7 +633,7 @@ TEST_F(P2pNvlTransportTestFixture, BidirectionalSendRecv) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   const size_t numInts = nbytes / sizeof(int);
 
@@ -551,20 +669,21 @@ TEST_F(P2pNvlTransportTestFixture, BidirectionalSendRecv) {
   // Rank 0 sends first, then receives
   // Rank 1 receives first, then sends
   // This tests that the state buffers are managed correctly for bidirectional
+  // Each rank uses separate call_index values for send and recv
   if (globalRank == 0) {
-    test::testSend(p2p, send_d, nbytes, numBlocks, blockSize);
+    test::testSend(p2p, send_d, nbytes, numBlocks, blockSize, 0);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testRecv(p2p, recv_d, nbytes, numBlocks, blockSize);
+    test::testRecv(p2p, recv_d, nbytes, numBlocks, blockSize, 1);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   } else {
-    test::testRecv(p2p, recv_d, nbytes, numBlocks, blockSize);
+    test::testRecv(p2p, recv_d, nbytes, numBlocks, blockSize, 0);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testSend(p2p, send_d, nbytes, numBlocks, blockSize);
+    test::testSend(p2p, send_d, nbytes, numBlocks, blockSize, 1);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   }
@@ -640,7 +759,7 @@ TEST_F(P2pNvlTransportTestFixture, SendRecvZeroBytes) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   // Allocate small buffers for the zero-byte transfer test
   const size_t bufferSize = 64;
@@ -663,12 +782,12 @@ TEST_F(P2pNvlTransportTestFixture, SendRecvZeroBytes) {
 
   if (globalRank == 0) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testSend(p2p, src_d, nbytes, numBlocks, blockSize);
+    test::testSend(p2p, src_d, nbytes, numBlocks, blockSize, 0);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   } else {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    test::testRecv(p2p, dst_d, nbytes, numBlocks, blockSize);
+    test::testRecv(p2p, dst_d, nbytes, numBlocks, blockSize, 0);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
@@ -703,7 +822,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiSendInKernel) {
 
   const size_t dataBufferSize = 512 * 1024; // 512KB staging buffer
   const size_t nbytesPerSend = 256 * 1024; // 256KB per send
-  const int numSends = 4;
+  const int numSends = 16;
   const size_t totalBytes = nbytesPerSend * numSends;
 
   MultiPeerNvlTransportConfig config{
@@ -713,7 +832,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiSendInKernel) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   DeviceBuffer srcBuffer(totalBytes);
   DeviceBuffer dstBuffer(totalBytes);
@@ -734,17 +853,21 @@ TEST_F(P2pNvlTransportTestFixture, MultiSendInKernel) {
   if (helper.globalRank() == 0) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     // Single kernel launch that does multiple sends
+    // call_index_base = 0, kernel uses indices 0 to numSends-1
     test::testMultiSend(
-        p2p, src_d, nbytesPerSend, numSends, numBlocks, blockSize);
+        p2p, src_d, nbytesPerSend, numSends, numBlocks, blockSize, 0);
     CUDACHECK_TEST(cudaDeviceSynchronize());
+    std::cout << "Rank 0: MultiSendInKernel test completed" << std::endl;
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   } else {
     CUDACHECK_TEST(cudaMemset(dst_d, 0, totalBytes));
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     // Single kernel launch that does multiple recvs
+    // call_index_base = 0, kernel uses indices 0 to numSends-1
     test::testMultiRecv(
-        p2p, dst_d, nbytesPerSend, numSends, numBlocks, blockSize);
+        p2p, dst_d, nbytesPerSend, numSends, numBlocks, blockSize, 0);
     CUDACHECK_TEST(cudaDeviceSynchronize());
+    std::cout << "Rank 1: MultiRecvKernel test completed" << std::endl;
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     // Verify each segment
@@ -793,7 +916,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiRecvInKernel) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   DeviceBuffer srcBuffer(totalBytes);
   DeviceBuffer dstBuffer(totalBytes);
@@ -814,14 +937,14 @@ TEST_F(P2pNvlTransportTestFixture, MultiRecvInKernel) {
   if (helper.globalRank() == 0) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     test::testMultiSend(
-        p2p, src_d, nbytesPerRecv, numRecvs, numBlocks, blockSize);
+        p2p, src_d, nbytesPerRecv, numRecvs, numBlocks, blockSize, 0);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   } else {
     CUDACHECK_TEST(cudaMemset(dst_d, 0, totalBytes));
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     test::testMultiRecv(
-        p2p, dst_d, nbytesPerRecv, numRecvs, numBlocks, blockSize);
+        p2p, dst_d, nbytesPerRecv, numRecvs, numBlocks, blockSize, 0);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
@@ -869,7 +992,7 @@ TEST_F(P2pNvlTransportTestFixture, SimultaneousSendRecvInKernel) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   const size_t numInts = nbytes / sizeof(int);
 
@@ -902,10 +1025,11 @@ TEST_F(P2pNvlTransportTestFixture, SimultaneousSendRecvInKernel) {
 
   // Both ranks do send+recv in a single kernel, but in opposite order
   // to avoid deadlock: rank 0 sends then recvs, rank 1 recvs then sends
+  // call_index_base = 0, each kernel uses indices 0 and 1
   if (helper.globalRank() == 0) {
-    test::testSendRecv(p2p, send_d, recv_d, nbytes, numBlocks, blockSize);
+    test::testSendRecv(p2p, send_d, recv_d, nbytes, numBlocks, blockSize, 0);
   } else {
-    test::testRecvSend(p2p, recv_d, send_d, nbytes, numBlocks, blockSize);
+    test::testRecvSend(p2p, recv_d, send_d, nbytes, numBlocks, blockSize, 0);
   }
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -971,7 +1095,7 @@ TEST_P(WeightedPartitionTestFixture, SendRecv) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   const size_t numInts = nbytes / sizeof(int);
 
@@ -1000,7 +1124,8 @@ TEST_P(WeightedPartitionTestFixture, SendRecv) {
         numBlocks,
         blockSize,
         params.sendWeight,
-        params.recvWeight);
+        params.recvWeight,
+        0);
   } else {
     test::testWeightedRecvSend(
         p2p,
@@ -1010,7 +1135,8 @@ TEST_P(WeightedPartitionTestFixture, SendRecv) {
         numBlocks,
         blockSize,
         params.sendWeight,
-        params.recvWeight);
+        params.recvWeight,
+        0);
   }
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -1578,7 +1704,7 @@ TEST_P(AsymmetricGroupTestFixture, SendRecv) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
 
   const size_t numInts = nbytes / sizeof(int);
 
@@ -1599,6 +1725,7 @@ TEST_P(AsymmetricGroupTestFixture, SendRecv) {
         nbytes,
         params.senderNumBlocks,
         params.senderBlockSize,
+        0,
         params.senderGroupType);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1612,6 +1739,7 @@ TEST_P(AsymmetricGroupTestFixture, SendRecv) {
         nbytes,
         params.receiverNumBlocks,
         params.receiverBlockSize,
+        0,
         params.receiverGroupType);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1694,7 +1822,7 @@ INSTANTIATE_TEST_SUITE_P(
 // Helper to run a write() test with verification
 void runPutTest(
     int globalRank,
-    P2pNvlTransportDevice& p2p,
+    P2pNvlTransportDevice* p2p,
     char* localSrc,
     char* remoteDst,
     size_t nbytes,
@@ -1767,11 +1895,12 @@ TEST_F(P2pNvlTransportTestFixture, PutBasic) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
+  auto& p2pHost = helper.getHostDevice();
 
   // Get remote destination (peer's local data buffer)
-  char* localSrc = p2p.getLocalState().dataBuffer;
-  char* remoteDst = p2p.getRemoteState().dataBuffer;
+  char* localSrc = p2pHost.getLocalState().dataBuffer;
+  char* remoteDst = p2pHost.getRemoteState().dataBuffer;
 
   runPutTest(globalRank, p2p, localSrc, remoteDst, nbytes, 4, 128, "PutBasic");
 
@@ -1814,10 +1943,11 @@ TEST_P(PutTransferSizeTestFixture, Put) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
+  auto& p2pHost = helper.getHostDevice();
 
-  char* localSrc = p2p.getLocalState().dataBuffer;
-  char* remoteDst = p2p.getRemoteState().dataBuffer;
+  char* localSrc = p2pHost.getLocalState().dataBuffer;
+  char* remoteDst = p2pHost.getRemoteState().dataBuffer;
 
   runPutTest(
       globalRank, p2p, localSrc, remoteDst, params.nbytes, 4, 128, params.name);
@@ -1904,11 +2034,12 @@ TEST_P(PutUnalignedTestFixture, Put) {
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
-  auto p2p = helper.getDevice();
+  auto p2p = helper.getDevicePtr();
+  auto& p2pHost = helper.getHostDevice();
 
   // Get remote and local destination with offset applied
-  char* localSrc = p2p.getLocalState().dataBuffer;
-  char* remoteDst = p2p.getRemoteState().dataBuffer;
+  char* localSrc = p2pHost.getLocalState().dataBuffer;
+  char* remoteDst = p2pHost.getRemoteState().dataBuffer;
   if (globalRank == 0) {
     localSrc += params.srcOffset;
     remoteDst += params.dstOffset;

@@ -1,10 +1,10 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
-
 #pragma once
 
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <cstddef>
+#include <cstring>
 #include "comms/pipes/BarrierState.cuh"
 #include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/CopyUtils.cuh"
@@ -23,10 +23,26 @@ namespace comms::pipes {
  * - Receiver reads from LocalState (own local buffers)
  *
  * This means LocalState buffers are the DESTINATION for incoming data.
+ *
+ * Chunk state buffers (usage depends on useDualStateBuffer option):
+ *
+ * SINGLE STATE MODE (useDualStateBuffer=false):
+ *   - Only myChunkStateBuffer is used
+ *   - myChunkStateBuffer: Chunk state for synchronization
+ *     - Sender signals data ready via NVLink write
+ *     - Receiver waits locally, then signals ready-to-send locally
+ *   - peerChunkStateBuffer: Not used (empty span)
+ *
+ * DUAL STATE MODE (useDualStateBuffer=true):
+ *   - Both buffers are used for fully local polling
+ *   - myChunkStateBuffer: My chunk state stored locally (peer writes via
+ * NVLink)
+ *   - peerChunkStateBuffer: Peer's chunk state stored locally (I poll locally)
  */
 struct LocalState {
   char* dataBuffer;
-  DeviceSpan<ChunkState> stateBuffer;
+  DeviceSpan<ChunkState> myChunkStateBuffer;
+  DeviceSpan<ChunkState> peerChunkStateBuffer;
   DeviceSpan<SignalState> signalBuffer;
   DeviceSpan<BarrierState> barrierBuffer;
 };
@@ -39,10 +55,24 @@ struct LocalState {
  * - This allows receiver to read from local memory (faster)
  *
  * These pointers are obtained via IPC and point to peer's LocalState buffers.
+ *
+ * Chunk state buffers (usage depends on useDualStateBuffer option):
+ *
+ * SINGLE STATE MODE (useDualStateBuffer=false):
+ *   - Only peerChunkStateBuffer is used (points to peer's myChunkStateBuffer)
+ *   - peerChunkStateBuffer: Peer's chunk state (I signal via NVLink, I wait via
+ *     NVLink)
+ *   - myChunkStateBuffer: Not used (empty span)
+ *
+ * DUAL STATE MODE (useDualStateBuffer=true):
+ *   - Both buffers are used for fully local polling
+ *   - peerChunkStateBuffer: Peer's chunk state (I write via NVLink to signal)
+ *   - myChunkStateBuffer: My chunk state stored on peer (peer polls locally)
  */
 struct RemoteState {
   char* dataBuffer;
-  DeviceSpan<ChunkState> stateBuffer;
+  DeviceSpan<ChunkState> peerChunkStateBuffer;
+  DeviceSpan<ChunkState> myChunkStateBuffer;
   DeviceSpan<SignalState> signalBuffer;
   DeviceSpan<BarrierState> barrierBuffer;
 };
@@ -55,13 +85,47 @@ struct RemoteState {
  * transfer)
  * - chunkSize: Size of each chunk for parallel processing
  * - pipelineDepth: Number of buffer slots for pipelining (typically 2-8)
+ * - useDualStateBuffer: If true, use dual chunk state buffers (one on each
+ *   side) for local polling on both sender and receiver. If false (default),
+ *   use single chunk state buffer on receiver side only.
  *
  * Total memory allocated = pipelineDepth × dataBufferSize
+ *
+ * STATE BUFFER MODES:
+ * ===================
+ * Single State (useDualStateBuffer=false, default):
+ *   - 1 ChunkState per chunk, stored on receiver side
+ *   - Sender polls over NVLink (slower), receiver polls locally (faster)
+ *   - Lower memory usage
+ *
+ * Dual State (useDualStateBuffer=true):
+ *   - 2 ChunkStates per chunk: one on receiver (for data ready signal),
+ *     one on sender (for receiver ack)
+ *   - Both sender and receiver poll locally (faster on both sides)
+ *   - Higher memory usage, better performance for high-throughput workloads
+ *
+ * ⚠️ WARNING - DUAL STATE MODE REQUIREMENTS:
+ * ===========================================
+ * Dual state mode requires a GLOBAL call_index counter that:
+ *   1. MUST be monotonically increasing across ALL kernel launches using the
+ *      same P2pNvlTransportDevice instance (not just per-kernel invocation)
+ *   2. MUST be consistent between sender and receiver for the same transfer
+ *   3. Enables efficient state progression by deriving currentStep from
+ *      call_index, avoiding expensive state polling between runs
+ *
+ * The call_index is used to compute: currentStep = call_index * kMaxStepsPerRun
+ * This allows the sender to immediately know the expected ack value without
+ * polling. Without a proper global counter, synchronization will fail or
+ * deadlock.
+ *
+ * Single state mode is more forgiving as it resets to READY_TO_SEND (-1)
+ * between runs and doesn't require tracking across kernel launches.
  */
 struct P2pNvlTransportOptions {
   std::size_t dataBufferSize;
   std::size_t chunkSize;
   std::size_t pipelineDepth;
+  bool useDualStateBuffer{false}; // Default to single state buffer mode
 };
 
 /**
@@ -175,38 +239,49 @@ struct P2pNvlTransportOptions {
  *   - Receiver warp can process a chunk as soon as sender warp signals it
  *   - Contiguous chunk assignment → good cache locality per warp
  *
- * STATE MACHINE (per chunk)
- * =========================
+ * STATE MACHINE (per chunk) - DUAL CHUNK STATE
+ * =============================================
  *
- * State lives in RECEIVER's local memory. Both GPUs access it:
- * - Sender accesses via NVLink (remote)
- * - Receiver accesses locally (fast)
+ * With dual chunk states, ALL waits are local (no NVLink polling):
+ * - Each GPU has two state buffers per peer:
+ *   1. myChunkStateBuffer: My state, peer writes here to signal me
+ *   2. peerChunkStateBuffer: Peer's state cached locally, I poll here
  *
- *        ┌───────────────┐
- * init → │ READY_TO_SEND │
- *        │     (-1)      │
- *        └───────┬───────┘
- *                │
- *                │ send() waits for READY_TO_SEND, copies data,
- *                │ signals ready_to_recv(stepId)
- *                ▼
- *        ┌───────────────┐
- *    ┌─▶ │ READY_TO_RECV │
- *    │   │   (stepId)    │
- *    │   └───────┬───────┘
- *    │           │
- *    │           │ recv() waits for READY_TO_RECV, copies data,
- *    │           │ signals ready_to_send()
- *    │           ▼
- *    │   ┌───────────────┐
- *    │   │ READY_TO_SEND │
- *    │   │     (-1)      │
- *    │   └───────┬───────┘
- *    │           │
- *    │           │ send() waits for READY_TO_SEND, copies data,
- *    │           │ signals ready_to_recv(stepId)
- *    │           │
- *    └───────────┘
+ * SENDER (GPU A) FLOW:
+ * ====================
+ * 1. Wait LOCAL: localState_.peerChunkStateBuffer
+ *    - If stepId < pipelineDepth: wait for READY_TO_SEND (-1)
+ *    - Otherwise: wait for (stepId - pipelineDepth) = receiver's ack
+ * 2. Copy data to remoteState_.dataBuffer (NVLink write)
+ * 3. Signal REMOTE: remoteState_.peerChunkStateBuffer = stepId
+ *    (This is peer's localState_.myChunkStateBuffer)
+ *
+ * RECEIVER (GPU B) FLOW:
+ * ======================
+ * 1. Wait LOCAL: localState_.myChunkStateBuffer for stepId
+ * 2. Copy data from localState_.dataBuffer (local read)
+ * 3. Signal REMOTE: remoteState_.myChunkStateBuffer
+ *    (This is peer's localState_.peerChunkStateBuffer)
+ *    - If last use of this slot: READY_TO_SEND (-1)
+ *    - Otherwise: stepId (ack that I've read this step)
+ *
+ * STATE TRANSITIONS (per pipeline slot):
+ * ======================================
+ *
+ * localState_.peerChunkStateBuffer (sender waits here):
+ *   init: -1 (READY_TO_SEND)
+ *   After receiver reads step N: N (ack from receiver)
+ *   After receiver's last use: -1 (reset)
+ *
+ * localState_.myChunkStateBuffer (receiver waits here):
+ *   init: -1 (no data)
+ *   After sender writes step N: N (data ready)
+ *
+ * Example with pipelineDepth=2, totalSteps=4:
+ *   Step 0 (slot 0): sender waits -1, signals 0; receiver waits 0, signals 0
+ *   Step 1 (slot 1): sender waits -1, signals 1; receiver waits 1, signals 1
+ *   Step 2 (slot 0): sender waits 0, signals 2; receiver waits 2, signals -1
+ *   Step 3 (slot 1): sender waits 1, signals 3; receiver waits 3, signals -1
  *
  * CHUNK DISTRIBUTION
  * ==================
@@ -245,9 +320,22 @@ class P2pNvlTransportDevice {
  public:
   // Chunk index used for metadata exchange in send_one/recv_one
   static constexpr std::size_t kMetadataChunkIndex = 0;
+  // Maximum number of steps per run (for encoding run_id * MAX_STEPS + stepId)
+  static constexpr uint32_t kMaxStepsPerRun = 1024;
+  // Maximum number of chunk states (pipelineDepth * chunksPerStep)
+  // Must be large enough to accommodate the largest expected configuration
+  // E.g., with 8MB buffer, 1KB chunks: 8192 chunks per step, 8 pipeline slots =
+  // 65536
+  static constexpr std::size_t kMaxChunkStates = 65536;
 
-  __host__ __device__ P2pNvlTransportDevice() = default;
-  __host__ __device__ P2pNvlTransportDevice(
+  __host__ P2pNvlTransportDevice()
+      : myRank_(-1), peerRank_(-1), options_(), localState_(), remoteState_() {
+    // Initialize chunkRecvAck_ to READY_TO_SEND (-1) using memset
+    std::memset(
+        chunkRecvAck_, ChunkState::READY_TO_SEND, sizeof(chunkRecvAck_));
+  }
+
+  __host__ P2pNvlTransportDevice(
       int myRank,
       int peerRank,
       const P2pNvlTransportOptions& options,
@@ -257,7 +345,11 @@ class P2pNvlTransportDevice {
         peerRank_(peerRank),
         options_(options),
         localState_(localState),
-        remoteState_(remoteState) {}
+        remoteState_(remoteState) {
+    // Initialize chunkRecvAck_ to READY_TO_SEND using memset
+    std::memset(
+        chunkRecvAck_, ChunkState::READY_TO_SEND, sizeof(chunkRecvAck_));
+  }
 
   __host__ __device__ ~P2pNvlTransportDevice() = default;
 
@@ -320,13 +412,27 @@ class P2pNvlTransportDevice {
 #ifdef __CUDA_ARCH__
     char* src = reinterpret_cast<char*>(srcbuff);
 
-    // REMOTE-WRITE PATTERN:
-    // Sender writes data directly to RECEIVER's local buffer via NVLink.
-    // Benefits: Receiver reads from local memory (faster read, no NVLink hop)
-    // Trade-off: Sender's copy goes over NVLink
+    // call_index must be globally unique across ALL send/recv calls, both
+    // within a kernel and across multiple kernel launches. This is because the
+    // receiver ack persists in device memory across kernel launches - a later
+    // kernel may read stale acks from previous kernels if call_index values
+    // overlap.
+    //
+    // The caller (user) is responsible for maintaining a global counter:
+    // - For a single send/recv kernel: pass 0, then 1 for next kernel, etc.
+    // - For multi-send/recv within one kernel: pass i, i+1, i+2... for each
+    // call
+    // - Across multiple kernels: continue incrementing from where you left off
+    //
+    // Example with 3 kernels, each doing 2 sends:
+    //   Kernel 1: send(..., 0), send(..., 1)
+    //   Kernel 2: send(..., 2), send(..., 3)
+    //   Kernel 3: send(..., 4), send(..., 5)
+
     char* sendBuffer = remoteState_.dataBuffer;
-    // Extract raw pointer to avoid aliasing issues (see DeviceSpan.cuh).
-    ChunkState* const sendStates = remoteState_.stateBuffer.data();
+    // Remote signal buffer: peer's myChunkStateBuffer (NVLink write)
+    ChunkState* const remotePeerStates =
+        remoteState_.peerChunkStateBuffer.data();
 
     const std::size_t totalSteps =
         (nbytes + options_.dataBufferSize - 1) / options_.dataBufferSize;
@@ -334,43 +440,166 @@ class P2pNvlTransportDevice {
     const std::size_t chunksPerStep =
         (options_.dataBufferSize + kChunkSize - 1) / kChunkSize;
 
-    for (std::size_t stepId = 0; stepId < totalSteps; ++stepId) {
-      // Calculate pipeline slot index for this step
-      const std::size_t pipelineIdx = stepId % options_.pipelineDepth;
-      const std::size_t dataBufferOffset =
-          pipelineIdx * options_.dataBufferSize;
-      const std::size_t stateOffset = pipelineIdx * chunksPerStep;
+    if (options_.useDualStateBuffer) {
+      // =====================================================================
+      // DUAL CHUNK STATE MODE
+      // =====================================================================
+      // Uses two ChunkState buffers per peer to enable local polling:
+      //   - myChunkStateBuffer: Receiver waits here (sender writes via NVLink)
+      //   - peerChunkStateBuffer: Sender waits here (receiver acks via NVLink)
+      //
+      // STATE MACHINE (per chunk):
+      //   ┌──────────────────────────────────────────────────────────────────┐
+      //   │ SENDER (this side)              RECEIVER (peer side)            │
+      //   ├──────────────────────────────────────────────────────────────────┤
+      //   │ 1. Wait LOCAL peerChunkState    1. Wait LOCAL myChunkState      │
+      //   │    for chunkRecvAck_ value         for currentStep value        │
+      //   │    (fast local poll)               (fast local poll)            │
+      //   │                                                                  │
+      //   │ 2. Copy data to peer buffer     2. Copy data from local buffer  │
+      //   │    via NVLink                      (no NVLink needed)           │
+      //   │                                                                  │
+      //   │ 3. Update chunkRecvAck_ to      3. Ack sender via NVLink write  │
+      //   │    currentStep (local)             to sender's peerChunkState   │
+      //   │                                    with currentStep value       │
+      //   │ 4. Signal peer via NVLink                                       │
+      //   │    write to myChunkState                                        │
+      //   └──────────────────────────────────────────────────────────────────┘
+      //
+      // KEY INSIGHT: Both sender and receiver poll LOCAL memory, avoiding
+      // expensive NVLink round-trips for busy-wait synchronization.
+      // =====================================================================
+      ChunkState* const localPeerStates =
+          localState_.peerChunkStateBuffer.data();
 
-      const std::size_t stepOffset = stepId * options_.dataBufferSize;
-      const std::size_t stepBytes =
-          (stepOffset + options_.dataBufferSize <= nbytes)
-          ? options_.dataBufferSize
-          : nbytes - stepOffset;
-      const std::size_t numChunksThisStep =
-          (stepBytes + kChunkSize - 1) / kChunkSize;
+      for (std::size_t stepId = 0; stepId < totalSteps; ++stepId) {
+        const std::size_t pipelineIdx = stepId % options_.pipelineDepth;
+        const std::size_t dataBufferOffset =
+            pipelineIdx * options_.dataBufferSize;
+        const std::size_t stateOffset = pipelineIdx * chunksPerStep;
 
-      group.for_each_item_contiguous(numChunksThisStep, [&](uint32_t chunkIdx) {
-        const std::size_t chunkOffset = chunkIdx * kChunkSize;
-        const std::size_t chunkBytes = (chunkOffset + kChunkSize <= stepBytes)
-            ? kChunkSize
-            : stepBytes - chunkOffset;
+        const std::size_t stepOffset = stepId * options_.dataBufferSize;
+        const std::size_t stepBytes =
+            (stepOffset + options_.dataBufferSize <= nbytes)
+            ? options_.dataBufferSize
+            : nbytes - stepOffset;
+        const std::size_t numChunksThisStep =
+            (stepBytes + kChunkSize - 1) / kChunkSize;
 
-        if (chunkBytes == 0) {
-          return;
-        }
+        // Encode currentStep using call_index to ensure global uniqueness
+        const int32_t currentStep = static_cast<int32_t>(
+            call_index * kMaxStepsPerRun + static_cast<uint32_t>(stepId));
 
-        ChunkState& chunkState = sendStates[stateOffset + chunkIdx];
+        group.for_each_item_contiguous(
+            numChunksThisStep, [&](uint32_t chunkIdx) {
+              const std::size_t chunkOffset = chunkIdx * kChunkSize;
+              const std::size_t chunkBytes =
+                  (chunkOffset + kChunkSize <= stepBytes)
+                  ? kChunkSize
+                  : stepBytes - chunkOffset;
 
-        chunkState.wait_ready_to_send(group, timeout);
+              if (chunkBytes == 0) {
+                return;
+              }
 
-        memcpy_vectorized(
-            sendBuffer + dataBufferOffset + chunkOffset,
-            src + stepOffset + chunkOffset,
-            chunkBytes,
-            group);
+              const std::size_t chunkStateIdx = stateOffset + chunkIdx;
 
-        chunkState.ready_to_recv(group, stepId, call_index);
-      });
+              // Wait on LOCAL peerChunkStateBuffer for receiver's ack
+              // (fast local poll - no NVLink latency)
+              ChunkState& senderWaitChunk = localPeerStates[chunkStateIdx];
+              const int32_t waitValue = chunkRecvAck_[chunkStateIdx];
+
+              senderWaitChunk.wait_ready_to_send(group, waitValue, timeout);
+
+              // Copy data to peer's buffer via NVLink
+              memcpy_vectorized(
+                  sendBuffer + dataBufferOffset + chunkOffset,
+                  src + stepOffset + chunkOffset,
+                  chunkBytes,
+                  group);
+
+              // Update local chunkRecvAck_ to currentStep BEFORE signaling.
+              // This ensures we wait for the correct ack value in next
+              // iteration.
+              if (group.is_leader()) {
+                chunkRecvAck_[chunkStateIdx] = currentStep;
+              }
+
+              // Signal peer's myChunkStateBuffer via NVLink write
+              ChunkState& peerDataReadyChunk = remotePeerStates[chunkStateIdx];
+              peerDataReadyChunk.ready_to_recv(group, currentStep, call_index);
+            });
+      }
+    } else {
+      // =====================================================================
+      // SINGLE CHUNK STATE MODE (Original Design)
+      // =====================================================================
+      // Uses one ChunkState buffer per peer (simpler but more NVLink latency):
+      //   - peerChunkStateBuffer: Both wait and signal happen here via NVLink
+      //
+      // STATE MACHINE (per chunk):
+      //   ┌──────────────────────────────────────────────────────────────────┐
+      //   │ SENDER (this side)              RECEIVER (peer side)            │
+      //   ├──────────────────────────────────────────────────────────────────┤
+      //   │ 1. Wait REMOTE peerChunkState   1. Wait LOCAL myChunkState      │
+      //   │    for READY_TO_SEND (-1)          for stepId value             │
+      //   │    (NVLink round-trip)             (fast local poll)            │
+      //   │                                                                  │
+      //   │ 2. Copy data to peer buffer     2. Copy data from local buffer  │
+      //   │    via NVLink                      (no NVLink needed)           │
+      //   │                                                                  │
+      //   │ 3. Signal peer via NVLink       3. Signal LOCAL myChunkState    │
+      //   │    write with stepId               with READY_TO_SEND (-1)      │
+      //   └──────────────────────────────────────────────────────────────────┘
+      //
+      // TRADE-OFF: Simpler (no call_index tracking needed) but sender's
+      // busy-wait polls remote memory via NVLink, adding latency.
+      // =====================================================================
+
+      for (std::size_t stepId = 0; stepId < totalSteps; ++stepId) {
+        const std::size_t pipelineIdx = stepId % options_.pipelineDepth;
+        const std::size_t dataBufferOffset =
+            pipelineIdx * options_.dataBufferSize;
+        const std::size_t stateOffset = pipelineIdx * chunksPerStep;
+
+        const std::size_t stepOffset = stepId * options_.dataBufferSize;
+        const std::size_t stepBytes =
+            (stepOffset + options_.dataBufferSize <= nbytes)
+            ? options_.dataBufferSize
+            : nbytes - stepOffset;
+        const std::size_t numChunksThisStep =
+            (stepBytes + kChunkSize - 1) / kChunkSize;
+
+        group.for_each_item_contiguous(
+            numChunksThisStep, [&](uint32_t chunkIdx) {
+              const std::size_t chunkOffset = chunkIdx * kChunkSize;
+              const std::size_t chunkBytes =
+                  (chunkOffset + kChunkSize <= stepBytes)
+                  ? kChunkSize
+                  : stepBytes - chunkOffset;
+
+              if (chunkBytes == 0) {
+                return;
+              }
+
+              const std::size_t chunkStateIdx = stateOffset + chunkIdx;
+
+              // Wait on REMOTE peerChunkStateBuffer via NVLink (slower)
+              ChunkState& peerChunk = remotePeerStates[chunkStateIdx];
+              peerChunk.wait_ready_to_send(
+                  group, ChunkState::READY_TO_SEND, timeout);
+
+              // Copy data to peer's buffer via NVLink
+              memcpy_vectorized(
+                  sendBuffer + dataBufferOffset + chunkOffset,
+                  src + stepOffset + chunkOffset,
+                  chunkBytes,
+                  group);
+
+              // Signal peer's myChunkStateBuffer via NVLink write
+              peerChunk.ready_to_recv(group, stepId, call_index);
+            });
+      }
     }
 #endif
   }
@@ -423,12 +652,13 @@ class P2pNvlTransportDevice {
 #ifdef __CUDA_ARCH__
     char* dst = reinterpret_cast<char*>(dstbuff);
 
-    // REMOTE-WRITE PATTERN:
-    // Receiver reads from LOCAL buffer (sender wrote here via NVLink).
-    // Benefits: Local memory read is faster than reading over NVLink
+    // See send() for detailed documentation on call_index requirements.
+    // IMPORTANT: The same call_index must be passed to matching send/recv
+    // pairs.
+
     char* recvBuffer = localState_.dataBuffer;
-    // Extract raw pointer to avoid aliasing issues (see DeviceSpan.cuh).
-    ChunkState* const recvStates = localState_.stateBuffer.data();
+    // Local wait buffer: my state (sender writes here via NVLink)
+    ChunkState* const localMyStates = localState_.myChunkStateBuffer.data();
 
     const std::size_t totalSteps =
         (nbytes + options_.dataBufferSize - 1) / options_.dataBufferSize;
@@ -436,43 +666,125 @@ class P2pNvlTransportDevice {
     const std::size_t chunksPerStep =
         (options_.dataBufferSize + kChunkSize - 1) / kChunkSize;
 
-    for (std::size_t stepId = 0; stepId < totalSteps; stepId++) {
-      // Calculate pipeline slot index for this step
-      const std::size_t pipelineIdx = stepId % options_.pipelineDepth;
-      const std::size_t dataBufferOffset =
-          pipelineIdx * options_.dataBufferSize;
-      const std::size_t stateOffset = pipelineIdx * chunksPerStep;
+    if (options_.useDualStateBuffer) {
+      // =====================================================================
+      // DUAL CHUNK STATE MODE
+      // =====================================================================
+      // See send() for detailed state machine documentation.
+      //
+      // Receiver side:
+      // 1. Wait LOCAL myChunkStateBuffer for sender's signal (currentStep)
+      // 2. Copy data from local buffer (sender wrote via NVLink)
+      // 3. Ack sender via NVLink write to sender's peerChunkStateBuffer
+      // =====================================================================
+      ChunkState* const remoteMyStates = remoteState_.myChunkStateBuffer.data();
 
-      const std::size_t stepOffset = stepId * options_.dataBufferSize;
-      const std::size_t stepBytes =
-          (stepOffset + options_.dataBufferSize <= nbytes)
-          ? options_.dataBufferSize
-          : nbytes - stepOffset;
-      const std::size_t numChunksThisStep =
-          (stepBytes + kChunkSize - 1) / kChunkSize;
+      for (std::size_t stepId = 0; stepId < totalSteps; stepId++) {
+        const std::size_t pipelineIdx = stepId % options_.pipelineDepth;
+        const std::size_t dataBufferOffset =
+            pipelineIdx * options_.dataBufferSize;
+        const std::size_t stateOffset = pipelineIdx * chunksPerStep;
 
-      group.for_each_item_contiguous(numChunksThisStep, [&](uint32_t chunkIdx) {
-        const std::size_t chunkOffset = chunkIdx * kChunkSize;
-        const std::size_t chunkBytes = (chunkOffset + kChunkSize <= stepBytes)
-            ? kChunkSize
-            : stepBytes - chunkOffset;
+        const std::size_t stepOffset = stepId * options_.dataBufferSize;
+        const std::size_t stepBytes =
+            (stepOffset + options_.dataBufferSize <= nbytes)
+            ? options_.dataBufferSize
+            : nbytes - stepOffset;
+        const std::size_t numChunksThisStep =
+            (stepBytes + kChunkSize - 1) / kChunkSize;
 
-        if (chunkBytes == 0) {
-          return;
-        }
+        // Encode currentStep using call_index (must match sender's encoding)
+        const int32_t currentStep = static_cast<int32_t>(
+            call_index * kMaxStepsPerRun + static_cast<uint32_t>(stepId));
 
-        ChunkState& chunkState = recvStates[stateOffset + chunkIdx];
+        group.for_each_item_contiguous(
+            numChunksThisStep, [&](uint32_t chunkIdx) {
+              const std::size_t chunkOffset = chunkIdx * kChunkSize;
+              const std::size_t chunkBytes =
+                  (chunkOffset + kChunkSize <= stepBytes)
+                  ? kChunkSize
+                  : stepBytes - chunkOffset;
 
-        chunkState.wait_ready_to_recv(group, stepId, call_index, timeout);
+              if (chunkBytes == 0) {
+                return;
+              }
 
-        memcpy_vectorized(
-            dst + stepOffset + chunkOffset,
-            recvBuffer + dataBufferOffset + chunkOffset,
-            chunkBytes,
-            group);
+              const std::size_t chunkStateIdx = stateOffset + chunkIdx;
 
-        chunkState.ready_to_send(group);
-      });
+              // Wait on LOCAL myChunkStateBuffer for sender's signal
+              // (fast local poll - no NVLink latency)
+              ChunkState& receiverWaitChunk = localMyStates[chunkStateIdx];
+              receiverWaitChunk.wait_ready_to_recv(
+                  group, currentStep, call_index, timeout);
+
+              // Copy data from local buffer
+              memcpy_vectorized(
+                  dst + stepOffset + chunkOffset,
+                  recvBuffer + dataBufferOffset + chunkOffset,
+                  chunkBytes,
+                  group);
+
+              // Ack sender via NVLink write to sender's peerChunkStateBuffer
+              // Write currentStep so sender knows we received this step
+              ChunkState& peerAckChunk = remoteMyStates[chunkStateIdx];
+              peerAckChunk.ready_to_send(group, currentStep);
+            });
+      }
+    } else {
+      // =====================================================================
+      // SINGLE CHUNK STATE MODE (Original Design)
+      // =====================================================================
+      // See send() for detailed state machine documentation.
+      //
+      // Receiver side:
+      // 1. Wait LOCAL myChunkStateBuffer for sender's signal (stepId)
+      // 2. Copy data from local buffer (sender wrote via NVLink)
+      // 3. Signal LOCAL myChunkStateBuffer with READY_TO_SEND (-1)
+      // =====================================================================
+
+      for (std::size_t stepId = 0; stepId < totalSteps; stepId++) {
+        const std::size_t pipelineIdx = stepId % options_.pipelineDepth;
+        const std::size_t dataBufferOffset =
+            pipelineIdx * options_.dataBufferSize;
+        const std::size_t stateOffset = pipelineIdx * chunksPerStep;
+
+        const std::size_t stepOffset = stepId * options_.dataBufferSize;
+        const std::size_t stepBytes =
+            (stepOffset + options_.dataBufferSize <= nbytes)
+            ? options_.dataBufferSize
+            : nbytes - stepOffset;
+        const std::size_t numChunksThisStep =
+            (stepBytes + kChunkSize - 1) / kChunkSize;
+
+        group.for_each_item_contiguous(
+            numChunksThisStep, [&](uint32_t chunkIdx) {
+              const std::size_t chunkOffset = chunkIdx * kChunkSize;
+              const std::size_t chunkBytes =
+                  (chunkOffset + kChunkSize <= stepBytes)
+                  ? kChunkSize
+                  : stepBytes - chunkOffset;
+
+              if (chunkBytes == 0) {
+                return;
+              }
+
+              const std::size_t chunkStateIdx = stateOffset + chunkIdx;
+
+              // Wait on LOCAL myChunkStateBuffer for sender's signal (stepId)
+              ChunkState& localChunk = localMyStates[chunkStateIdx];
+              localChunk.wait_ready_to_recv(group, stepId, call_index, timeout);
+
+              // Copy data from local buffer
+              memcpy_vectorized(
+                  dst + stepOffset + chunkOffset,
+                  recvBuffer + dataBufferOffset + chunkOffset,
+                  chunkBytes,
+                  group);
+
+              // Signal LOCAL myChunkStateBuffer with READY_TO_SEND
+              localChunk.ready_to_send(group);
+            });
+      }
     }
 #endif
   }
@@ -507,10 +819,11 @@ class P2pNvlTransportDevice {
       bool has_more = false,
       const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
-    ChunkState* const sendStates = remoteState_.stateBuffer.data();
+    ChunkState* const sendStates = remoteState_.peerChunkStateBuffer.data();
 
     // same as send(), wait for previous recv_one() to complete
-    sendStates[kMetadataChunkIndex].wait_ready_to_send(group, timeout);
+    sendStates[kMetadataChunkIndex].wait_ready_to_send(
+        group, ChunkState::READY_TO_SEND, timeout);
 
     // Thread-group 0 writes metadata to receiver's chunk kMetadataChunkIndex
     // This happens before send() starts, so receiver can read it
@@ -571,7 +884,7 @@ class P2pNvlTransportDevice {
       bool* has_more = nullptr,
       const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
-    ChunkState* const recvStates = localState_.stateBuffer.data();
+    ChunkState* const recvStates = localState_.myChunkStateBuffer.data();
 
     // ALL thread-groups wait for chunk kMetadataChunkIndex's ready_to_recv to
     // get metadata Step kMetadataChunkIndex is used for the metadata exchange
@@ -964,6 +1277,26 @@ class P2pNvlTransportDevice {
   const P2pNvlTransportOptions options_;
   LocalState localState_;
   RemoteState remoteState_;
+
+  // =========================================================================
+  // chunkRecvAck_ - Local tracking array for dual-state mode
+  // =========================================================================
+  // In dual-state mode, the sender needs to know what ack value to wait for
+  // from the receiver. This array tracks the expected ack value for each chunk.
+  //
+  // LIFECYCLE:
+  // 1. Initialized to -1 (ChunkState::READY_TO_SEND equivalent for first call)
+  // 2. After each send, updated to currentStep (call_index * kMaxStepsPerRun +
+  // stepId)
+  // 3. Next send waits for peerChunkStateBuffer[i] == chunkRecvAck_[i]
+  //
+  // PERSISTENCE: Since P2pNvlTransportDevice is passed by pointer to kernels,
+  // this array persists across kernel launches. This is critical for the
+  // dual-state protocol to work correctly across multiple kernel invocations.
+  //
+  // NOTE: Only used when options_.useDualStateBuffer is true.
+  // =========================================================================
+  int32_t chunkRecvAck_[kMaxChunkStates];
 };
 
 } // namespace comms::pipes

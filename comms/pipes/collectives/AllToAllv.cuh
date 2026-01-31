@@ -7,7 +7,7 @@
 #include <cstdio>
 
 #include "comms/pipes/DeviceSpan.cuh"
-#include "comms/pipes/TimeoutUtils.cuh"
+#include "comms/pipes/Timeout.cuh"
 #include "comms/pipes/Transport.cuh"
 
 namespace comms::pipes {

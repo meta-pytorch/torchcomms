@@ -14,7 +14,7 @@ using comms::pipes::P2pNvlTransportDevice;
 
 // Test send_one: sends a single chunk with metadata
 void testSendOne(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     const void* src_d,
     size_t nbytes,
     size_t offset_in_output,
@@ -24,7 +24,7 @@ void testSendOne(
 
 // Test recv_one: receives a single chunk with metadata
 void testRecvOne(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_base_d,
     size_t* nbytes_d,
     size_t* offset_d,
@@ -34,7 +34,7 @@ void testRecvOne(
 
 // Test send_one called multiple times in one kernel
 void testSendOneMultipleTimes(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     const void* const* src_d_array,
     const size_t* nbytes_array,
     const size_t* offset_array,
@@ -45,7 +45,7 @@ void testSendOneMultipleTimes(
 
 // Test recv_one called multiple times in one kernel
 void testRecvOneMultipleTimes(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_base_d,
     size_t* nbytes_array_d,
     size_t* offset_array_d,
