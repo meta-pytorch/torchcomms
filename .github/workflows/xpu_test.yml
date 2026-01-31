@@ -29,17 +29,8 @@ jobs:
     timeout-minutes: 120
     runs-on: linux.idc.xpu.dist
     env:
-      DOCKER_IMAGE: ghcr.io/pytorch/ci-image:pytorch-linux-noble-xpu-n-py3
+      DOCKER_IMAGE: intelgpu/ubuntu-24.04-lts2:2523.40
     steps:
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          repository: pytorch/pytorch
-          ref: nightly
-          path: pytorch
-          fetch-depth: 1
-          submodules: false
-    
       - name: Checkout Torchcomms
         uses: actions/checkout@v4
         with:
@@ -93,20 +84,14 @@ jobs:
           echo "GPU_FLAG=--device=/dev/mem --device=/dev/dri --group-add video --group-add $render_gid" >> "${GITHUB_ENV}"
 
       - name: Get docker image
-        id: get-docker-image
-        working-directory: pytorch
         run: |
-          DOCKER_BUILD_DIR=".ci/docker"
-          DOCKER_IMAGE_TAG=$(git rev-parse HEAD:"${DOCKER_BUILD_DIR}")
-          DOCKER_IMAGE_NAME=${{ env.DOCKER_IMAGE }}-${DOCKER_IMAGE_TAG}
-          echo "docker-image=${DOCKER_IMAGE_NAME}" >> "${GITHUB_OUTPUT}"
-          docker pull "${DOCKER_IMAGE_NAME}"
+          docker pull "${{ env.DOCKER_IMAGE }}"
 
       - name: Test
         id: test
         env:
           TEST_COMMAND: torchcomms/.github/scripts/xpu_test.sh
-          DOCKER_IMAGE: ${{ steps.get-docker-image.outputs.docker-image }}
+          DOCKER_IMAGE: ${{ env.DOCKER_IMAGE }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_WORKFLOW: ${{ github.workflow }}
@@ -142,7 +127,6 @@ jobs:
             --shm-size="8g" \
             --tty \
             --detach \
-            --user jenkins \
             --privileged \
             -v "${GITHUB_WORKSPACE}:/var/lib/jenkins/workspace" \
             -w /var/lib/jenkins/workspace \
@@ -150,7 +134,6 @@ jobs:
           )
           # save container name for later step
           echo "CONTAINER_NAME=${container_name}" >> "$GITHUB_ENV"
-          # jenkins user does not have write permission to mounted workspace; work-around by copying within container to jenkins home
           docker exec -t "${container_name}" sh -c "bash ${TEST_COMMAND}"
 
       - name: Stop container before exit
@@ -170,6 +153,6 @@ jobs:
             docker container prune -f
           fi
       
-      - name: Runner diskspace health check
-        uses: pytorch/pytorch/.github/actions/diskspace-cleanup@main
+      - name: Cleanup workspace
         if: always()
+        run: sudo rm -rf ${{ github.workspace }}/*
