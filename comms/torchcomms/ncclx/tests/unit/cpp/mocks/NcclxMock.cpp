@@ -80,7 +80,7 @@ void NcclxMock::setupDefaultBehaviors() {
       .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, pFree(_)).WillByDefault(Return(ncclSuccess));
 
-  ON_CALL(*this, commWindowRegister(_, _, _, _))
+  ON_CALL(*this, commWindowRegister(_, _, _, _, _))
       .WillByDefault(DoAll(
           SetArgPointee<3>(reinterpret_cast<NcclxWindow>(0x5000)),
           Return(ncclSuccess)));
@@ -108,6 +108,12 @@ void NcclxMock::setupDefaultBehaviors() {
   ON_CALL(*this, redOpCreatePreMulSum(_, _, _, _, _))
       .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, redOpDestroy(_, _)).WillByDefault(Return(ncclSuccess));
+
+  // Device communicator operations (for device API / GIN support)
+  ON_CALL(*this, devCommCreate(_, _, _))
+      .WillByDefault(
+          DoAll(SetArgPointee<2>(ncclDevComm{}), Return(ncclSuccess)));
+  ON_CALL(*this, devCommDestroy(_, _)).WillByDefault(Return(ncclSuccess));
 }
 
 void NcclxMock::reset() {
