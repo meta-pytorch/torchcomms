@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "comms/ctran/algos/AllGather/Types.h"
+#include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoArgDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
@@ -149,31 +150,6 @@ struct fmt::formatter<KernelElem::ElemStatus> : fmt::formatter<int> {
   }
 };
 
-#define ALLREDUCE_MAX_KERNEL_ELEMS (8)
-struct CtranKernelAllReduceArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  commRedOp_t redOp;
-  size_t count;
-  size_t nSteps;
-  void* tmpbuff;
-  size_t tmpbuffSize;
-  // IPC imported ptr to each of the local peers' tmpRecvBuff
-  void* intraNodeRemoteTmpRecvBuffs[CTRAN_MAX_NVL_PEERS];
-  // IPC imported ptr to each of the local peers' RecvBuff
-  void* intraNodeRemoteRecvBuffs[CTRAN_MAX_NVL_PEERS];
-  KernelElem* kernelElems[ALLREDUCE_MAX_KERNEL_ELEMS];
-};
-enum class AllReduceKernElemRole {
-  kIntraReduceScatter,
-  kInterReduceScatter,
-  kIntraAllGather,
-  kRemIntraReduce,
-  kRemIntraBcast,
-  kRemInterReduce
-};
-
 struct CtranKernelAllToAllArgs {
   const void* sendbuff;
   void* recvbuff;
@@ -259,7 +235,7 @@ struct CtranKernelArgs {
   CtranAlgoDeviceState* devState_d{nullptr};
   union {
     ctran::allgather::KernelArgs allgather;
-    CtranKernelAllReduceArgs allreduce;
+    ctran::allreduce::KernelArgs allreduce;
     ctran::sendrecv::KernelSendArgs send;
     ctran::sendrecv::KernelRecvArgs recv;
     ctran::sendrecv::KernelSendRecvArgs sendrecv;

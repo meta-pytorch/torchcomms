@@ -3,6 +3,7 @@
 #ifndef ALLREDUCE_DIRECT_H_INCLUDED
 #define ALLREDUCE_DIRECT_H_INCLUDED
 
+#include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -72,7 +73,7 @@ template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceCtranDirect(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllReduceArgs args) {
+    ctran::allreduce::KernelArgs args) {
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
@@ -95,13 +96,13 @@ __global__ void ncclKernelAllReduceCtranDirect(
     reduceOnPost<T, RedOp>(
         devState,
         args.kernelElems[static_cast<int>(
-            AllReduceKernElemRole::kIntraReduceScatter)]);
+            ctran::allreduce::KernElemRole::kIntraReduceScatter)]);
 
     /* Step 2: Inter-node Reduce-scatter */
     // Each step handles different portion, thus apply post-sum-avg here
     ctranKernMultiStridedReduce<T, RedOp, true /* complete */, false /*free*/>(
         args.kernelElems[static_cast<int>(
-            AllReduceKernElemRole::kInterReduceScatter)],
+            ctran::allreduce::KernElemRole::kInterReduceScatter)],
         true,
         c);
 
@@ -113,27 +114,27 @@ __global__ void ncclKernelAllReduceCtranDirect(
     bcastOnPost<T>(
         devState,
         args.kernelElems[static_cast<int>(
-            AllReduceKernElemRole::kIntraAllGather)]);
+            ctran::allreduce::KernElemRole::kIntraAllGather)]);
   }
 
   // Optional steps for remCount
   KernelElem* kRemIntraReduce = args.kernelElems[static_cast<int>(
-      AllReduceKernElemRole::kRemIntraReduce)];
+      ctran::allreduce::KernElemRole::kRemIntraReduce)];
   if (kRemIntraReduce) {
     /* Step 5: Intra-node reduce(root=0) */
     reduceOnPost<T, RedOp>(devState, kRemIntraReduce);
   }
 
   /* Step 6: Intra-node Bcast */
-  KernelElem* kRemIntraBcast =
-      args.kernelElems[static_cast<int>(AllReduceKernElemRole::kRemIntraBcast)];
+  KernelElem* kRemIntraBcast = args.kernelElems[static_cast<int>(
+      ctran::allreduce::KernElemRole::kRemIntraBcast)];
   if (kRemIntraBcast) {
     bcastOnPost<T>(devState, kRemIntraBcast);
   }
 
   /* Step 7: Inter-node Allreduce */
   KernelElem* kRemInterReduce = args.kernelElems[static_cast<int>(
-      AllReduceKernElemRole::kRemInterReduce)];
+      ctran::allreduce::KernElemRole::kRemInterReduce)];
   if (kRemInterReduce) {
     // Last step to handle remCount segment, thus apply post-sum-avg here
     ctranKernMultiStridedReduce<T, RedOp, true /* complete */, false /*free*/>(
@@ -150,6 +151,6 @@ __global__ void ncclKernelAllReduceCtranDirect(
   template __global__ void ncclKernelAllReduceCtranDirect<T, RedOp>( \
       int* flag,                                                     \
       CtranAlgoDeviceState* devState,                                \
-      CtranKernelAllReduceArgs args);
+      ctran::allreduce::KernelArgs args);
 
 #endif
