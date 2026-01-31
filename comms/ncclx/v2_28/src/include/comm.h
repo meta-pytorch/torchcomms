@@ -25,6 +25,7 @@
 #include <optional>
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/ctran/memory/SlabAllocator.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
@@ -726,6 +727,7 @@ struct ncclComm {
   struct CommLogData logMetaData;
   std::shared_ptr<CollTrace> collTrace;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
+  std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats;
   std::shared_ptr<ctran::bootstrap::IBootstrap> ctranBootstrap;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
   std::vector<std::string> connSetupBufKeys;

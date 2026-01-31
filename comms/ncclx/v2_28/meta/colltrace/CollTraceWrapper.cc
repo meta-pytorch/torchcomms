@@ -2,8 +2,11 @@
 
 #include "meta/colltrace/CollTraceWrapper.h"
 
+#include <algorithm>
+
 #include "comms/utils/RankUtils.h"
 #include "comms/utils/checks.h"
+#include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
 #include "comms/utils/colltrace/CollTrace.h"
 #include "comms/utils/colltrace/CudaWaitEvent.h"
@@ -279,12 +282,46 @@ getEmptyKernelTaskMetadata(
 } // namespace
 
 ncclResult_t newCollTraceInit(ncclComm* comm) {
-  if (NCCL_COLLTRACE.empty() || !NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
+  // TODO: this can be removed once new colltrace is fully rolled out
+  if (!NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
     XLOGF(
         INFO,
-        "Skipping CollTrace init. NCCL_COLLTRACE: {}, NCCL_COLLTRACE_USE_NEW_COLLTRACE: {}",
-        folly::join(", ", NCCL_COLLTRACE),
-        NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+        "Skipping new CollTrace init, NCCL_COLLTRACE_USE_NEW_COLLTRACE is disabled");
+    return ncclSuccess;
+  }
+
+  // Parse NCCL_COLLTRACE configuration flags
+  bool algoStatEnabled = false;
+  bool verboseEnabled = false;
+  bool traceEnabled = false;
+  for (const auto& mode : NCCL_COLLTRACE) {
+    if (mode == "algostat") {
+      algoStatEnabled = true;
+    } else if (mode == "verbose") {
+      verboseEnabled = true;
+    } else if (mode == "trace") {
+      traceEnabled = true;
+    }
+  }
+
+  XLOGF(
+      INFO,
+      "CollTrace init - NCCL_COLLTRACE: [algostat: {}, verbose: {}, trace: {}], NCCL_COLLTRACE_USE_NEW_COLLTRACE: {}",
+      algoStatEnabled,
+      verboseEnabled,
+      traceEnabled,
+      NCCL_COLLTRACE_USE_NEW_COLLTRACE);
+
+  // Initialize standalone AlgoStats if algostat mode enabled
+  // This is independent of which colltrace implementation is used
+  if (algoStatEnabled) {
+    comm->algoStats = std::make_unique<meta::comms::colltrace::AlgoStats>(
+        comm->logMetaData.commHash, comm->logMetaData.commDesc);
+  }
+
+  // Check if full colltrace is needed (verbose or trace modes)
+  // algostat alone does not require full colltrace infrastructure
+  if ((!verboseEnabled && !traceEnabled)) {
     return ncclSuccess;
   }
 

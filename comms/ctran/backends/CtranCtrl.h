@@ -94,27 +94,14 @@ struct CmsgIbExportMem {
   }
 };
 
-struct CmsgNvlReleaseMem {
-  void* base{nullptr};
-
-  static const std::string name;
-
-  CmsgNvlReleaseMem() {};
-  std::string toString() const {
-    std::stringstream ss;
-    ss << "[" << name << "] base: " << base;
-    return ss.str();
-  }
-};
-
 /**
  * Packet structure of control message transferred by underlying backend.
  */
 struct ControlMsg {
   int type{ControlMsgType::UNSPECIFIED};
   union {
-    struct ctran::regcache::IpcDesc nvlDesc;
-    struct CmsgNvlReleaseMem nvlRls;
+    struct ctran::regcache::IpcDesc ipcDesc;
+    struct ctran::regcache::IpcRelease ipcRls;
     struct CmsgIbExportMem ibExp;
   };
 
@@ -131,10 +118,10 @@ struct ControlMsg {
     // Initialization
     switch (type) {
       case ControlMsgType::NVL_EXPORT_MEM:
-        nvlDesc = ctran::regcache::IpcDesc{};
+        ipcDesc = ctran::regcache::IpcDesc{};
         break;
       case ControlMsgType::NVL_RELEASE_MEM:
-        nvlRls = CmsgNvlReleaseMem{};
+        ipcRls = ctran::regcache::IpcRelease{};
         break;
       case ControlMsgType::IB_EXPORT_MEM:
         ibExp = CmsgIbExportMem{};
@@ -148,10 +135,10 @@ struct ControlMsg {
     std::stringstream ss;
     switch (type) {
       case ControlMsgType::NVL_EXPORT_MEM:
-        ss << nvlDesc.toString();
+        ss << ipcDesc.toString();
         break;
       case ControlMsgType::NVL_RELEASE_MEM:
-        ss << nvlRls.toString();
+        ss << ipcRls.toString();
         break;
       case ControlMsgType::IB_EXPORT_MEM:
         ss << ibExp.toString();

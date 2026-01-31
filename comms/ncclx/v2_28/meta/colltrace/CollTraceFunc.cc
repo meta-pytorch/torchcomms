@@ -885,6 +885,14 @@ using meta::comms::colltrace::ICollTraceHandle;
 std::shared_ptr<ICollTraceHandle> collTraceBaselineGetHandle(
     ncclKernelPlan* plan,
     cudaStream_t stream) {
+  // Record to standalone AlgoStats (independent of colltrace implementation)
+  if (plan->comm->algoStats) {
+    auto collOpt = parseCollInfoFromNcclKernelPlan(*plan, stream);
+    if (collOpt.has_value()) {
+      plan->comm->algoStats->record(collOpt->opName, collOpt->algoName);
+    }
+  }
+
   if (!NCCL_COLLTRACE.empty() && NCCL_COLLTRACE_USE_NEW_COLLTRACE) {
     return meta::comms::ncclx::getHandleFromNcclKernelPlan(*plan, stream);
   }

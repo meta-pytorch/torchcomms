@@ -12,6 +12,7 @@
 #include "channel.h"
 #include "transport.h"
 #include "device.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 // Pre-compute GPU->NIC, GPU->GPU and NIC->GPU paths
 
@@ -366,6 +367,20 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
 
   // Compute the PCI distance and compare with the p2pLevel.
   if (path->type <= p2pLevel) *p2p = 1;
+
+  // Check if multi-NVLink P2P is disabled and handle rack serial matching
+  if (NCCL_MNNVL_TRUNK_DISABLE && mnnvl) {
+    INFO(NCCL_GRAPH, "NCCL_MNNVL_TRUNK_DISABLE enabled");
+
+    // Only check rack serials if comm and rackSerials are available
+    if (comm->peerInfo[rank1].rackSerial && comm->peerInfo[rank2].rackSerial) {
+      *p2p = (comm->peerInfo[rank1].rackSerial == comm->peerInfo[rank2].rackSerial);
+      INFO(NCCL_GRAPH, "P2P is set to %d based on rack serial match/unmatch rank1: %d rank2: %d rackSerial1: %d rackSerial2: %d", *p2p, rank1, rank2, comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
+
+    } else {
+      WARN("No rack serial information available, skipping rack serial check");
+    }
+  }
 
   // NCCL_IGNORE_DISABLED_P2P=2 is used by unit tests that don't want to
   // validate against NVML at all since they are pretending to be on other hw.
@@ -971,7 +986,7 @@ ncclResult_t ncclTopoGetGpuMaxPath(struct ncclTopoSystem* system, int type, int*
     if (paths == NULL) continue;
     for (int j=0; j<system->nodes[type].count; j++) {
       if (type == GPU && i == j) continue;
-      maxPath = std::max(maxPath, paths[j].type);
+      maxPath = std::min(std::max(maxPath, paths[j].type), PATH_NET);
     }
   }
   *max = maxPath;
