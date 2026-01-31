@@ -10,13 +10,14 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
+#include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 template <typename T, commRedOp_t RedOp>
 __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterRHD(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelReduceScatterArgs args) {
+    ctran::reducescatter::KernelArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
@@ -46,6 +47,6 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterRHD(
       ncclKernelReduceScatterRHD<T, RedOp>(           \
           int* flag,                                  \
           CtranAlgoDeviceState* devState,             \
-          CtranKernelReduceScatterArgs args)
+          ctran::reducescatter::KernelArgs args)
 
 #endif

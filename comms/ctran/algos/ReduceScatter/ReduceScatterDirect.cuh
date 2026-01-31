@@ -10,12 +10,13 @@
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
+#include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 template <typename T>
 __device__ void prepareRedArg(
     KernelElem* elemH,
-    CtranKernelReduceScatterArgs& args,
+    ctran::reducescatter::KernelArgs& args,
     CtranAlgoDevReduceArg& redArg) {
   // const value for single node ReduceScatter
   redArg.dsts[0] = reinterpret_cast<void*>(args.recvbuff);
@@ -38,7 +39,7 @@ __device__ void prepareRedArg(
 
 template <typename T>
 __device__ void prepareRedArg(
-    CtranKernelReduceScatterArgs& args,
+    ctran::reducescatter::KernelArgs& args,
     CtranAlgoDevReduceArg& redArg) {
   const auto localRank = statex->localRank();
   const auto nLocalRanks = statex->nLocalRanks();
@@ -65,7 +66,8 @@ __device__ void prepareRedArg(
 }
 
 template <typename T, commRedOp_t RedOp>
-__device__ void reduceScatterDirectStaged(CtranKernelReduceScatterArgs& args) {
+__device__ void reduceScatterDirectStaged(
+    ctran::reducescatter::KernelArgs& args) {
   const auto localRank = statex->localRank();
   const auto nRanks = statex->nRanks();
 
@@ -95,7 +97,7 @@ __device__ void reduceScatterDirectStaged(CtranKernelReduceScatterArgs& args) {
 }
 
 template <typename T, commRedOp_t RedOp>
-__device__ void reduceScatterDirect(CtranKernelReduceScatterArgs& args) {
+__device__ void reduceScatterDirect(ctran::reducescatter::KernelArgs& args) {
   // intra-node reduce from all localRanks
   if (args.intraReduce != nullptr) {
     const auto groupIdx = blockIdx.x;
@@ -128,7 +130,7 @@ template <typename T, commRedOp_t RedOp>
 __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterDirect(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelReduceScatterArgs args) {
+    ctran::reducescatter::KernelArgs args) {
   // TODO(T243528798): remove this preload of devstate by splitting h2d/d2h
   // channels.
   shmDevState.enableCancellableWaits = devState->enableCancellableWaits;
@@ -156,6 +158,6 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelReduceScatterDirect(
       ncclKernelReduceScatterDirect<T, RedOp>(        \
           int* flag,                                  \
           CtranAlgoDeviceState* devState,             \
-          CtranKernelReduceScatterArgs args)
+          ctran::reducescatter::KernelArgs args)
 
 #endif
