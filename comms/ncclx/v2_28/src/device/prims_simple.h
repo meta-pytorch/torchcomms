@@ -1017,8 +1017,11 @@ private:
 
     int workSize = ncclShmem.aborted ? 0 : nelem;
 
+    // [META:PAT_AVG] Apply postOp (division for AVG) on final write to output buffer
+    const int applyPostOp = ps->isFinalWrite;
+
     reduceCopy<Unroll, RedOp, T, 0, 1, 2, 0, 1, 1, /*PreOpSrcs*/0>
-      (tid, nthreads, ncclShmem.redOpArgs[0],  nullptr, /*postOp=*/false,
+      (tid, nthreads, ncclShmem.redOpArgs[0],  nullptr, /*postOp=*/applyPostOp,
        nSrcs, srcs, 1, ncclShmem.groups[group].dsts, workSize);
 
     // Store conn step here inside the two barriers to make sure next reload will see the update.
