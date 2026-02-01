@@ -6,20 +6,19 @@
 #include <fmt/format.h>
 #include <stdint.h>
 
+#include "comms/ctran/algos/AllGather/Types.h"
+#include "comms/ctran/algos/AllReduce/Types.h"
+#include "comms/ctran/algos/AllToAll/Types.h"
+#include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoArgDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/ReduceScatter/Types.h"
+#include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/utils/commSpecs.h"
 
-#ifdef CTRAN_DISABLE_TCPDM
-#include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
-#else
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel.h"
-#endif
-
 // Used for ngroups value checking only. For H100, >128 is not possible.
 #define MAX_NGROUPS (128)
-#define CTRAN_MAX_TOTAL_RANK (128)
 
 struct alignas(16) KernelElem {
   enum ElemStatus {
@@ -151,151 +150,6 @@ struct fmt::formatter<KernelElem::ElemStatus> : fmt::formatter<int> {
   }
 };
 
-struct CtranKernelAllGatherArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  size_t count;
-  KernelElem* bcastElem;
-};
-
-#define ALLREDUCE_MAX_KERNEL_ELEMS (8)
-struct CtranKernelAllReduceArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  commRedOp_t redOp;
-  size_t count;
-  size_t nSteps;
-  void* tmpbuff;
-  size_t tmpbuffSize;
-  // IPC imported ptr to each of the local peers' tmpRecvBuff
-  void* intraNodeRemoteTmpRecvBuffs[CTRAN_MAX_NVL_PEERS];
-  // IPC imported ptr to each of the local peers' RecvBuff
-  void* intraNodeRemoteRecvBuffs[CTRAN_MAX_NVL_PEERS];
-  KernelElem* kernelElems[ALLREDUCE_MAX_KERNEL_ELEMS];
-};
-enum class AllReduceKernElemRole {
-  kIntraReduceScatter,
-  kInterReduceScatter,
-  kIntraAllGather,
-  kRemIntraReduce,
-  kRemIntraBcast,
-  kRemInterReduce
-};
-
-struct CtranKernelSendArgs {
-  // List of send p2p elements each will be transferred via NVL copy
-  KernelElem* putNotifyList;
-  // used for checksum
-  const void* sendbuff;
-  commDataType_t datatype;
-  size_t count;
-};
-
-struct CtranKernelRecvArgs {
-  KernelElem* waitNotifyList;
-  // used for checksum
-  const void* recvbuff;
-  commDataType_t datatype;
-  size_t count;
-  SQueues unpack; // TCP Device Memory
-};
-
-struct CtranKernelSendRecvArgs {
-  KernelElem* putNotifyList;
-  KernelElem* waitNotifyList;
-  SQueues unpack; // TCP Device Memory
-};
-
-struct CtranKernelAllToAllArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  size_t count;
-  commDataType_t datatype;
-};
-
-struct CtranKernelAllToAllvArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  size_t selfCount;
-  size_t selfSendDispl;
-  size_t selfRecvDispl;
-  KernelElem* sendElemsList;
-  KernelElem* recvElemsList;
-};
-
-struct CtranKernelAllToAllDedupArgs {
-  KernelElem* bcastElemList;
-  int numIbPeers;
-};
-
-struct CtranKernelAllToAllvDynamicArgs {
-  void** sendbuffsPtrTmpbufCPU{nullptr};
-  const size_t* sendcounts{nullptr};
-  size_t* sendCountsTmpbufGPU{nullptr};
-  size_t* sendCountsTmpbufCPU{nullptr};
-  size_t sendcountsLength{0};
-  size_t* recvCountsTmpbufGPU{nullptr};
-  size_t* actualRecvcounts{nullptr};
-  void* recvbuffsPtrGPU[CTRAN_MAX_TOTAL_RANK]{};
-  commDataType_t datatype{};
-  KernelElem* kElem{nullptr};
-  union {
-    struct {
-      const void* sendbuff{nullptr};
-      void** sendbuffsPtrShmDev{nullptr};
-    } split;
-    struct {
-      const void* sendbuffsPtrGPU[CTRAN_MAX_TOTAL_RANK]{};
-    } nonSplit;
-  };
-  union {
-    struct {
-      const size_t* inputChunkIndices{nullptr};
-      size_t* inputChunkIndicesTmpbufCPU{nullptr};
-      const size_t* inputChunkCountPerRank{nullptr};
-      size_t* inputChunkCountPerRankTmpbufCPU{nullptr};
-      size_t maxInputChunkCountPerRank{0};
-      size_t maxRecvcount{0};
-      size_t maxSendcount{0};
-      bool combine;
-    } nonContig;
-    struct {
-    } contig;
-  };
-
-  // Default constructor needed because unions with non-trivial member
-  // initializers have deleted default constructors
-  CtranKernelAllToAllvDynamicArgs() {
-    // Unions are initialized by their first member by default
-    // split and nonContig are already initialized above
-  }
-};
-
-struct CtranKernelBroadcastArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  size_t count;
-  KernelElem* putNotifyList;
-  KernelElem* waitNotifyList;
-  SQueues unpack; // TCP Device Memory
-};
-
-struct CtranKernelReduceScatterArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  size_t recvcount;
-  bool stageCopy;
-  KernelElem* intraReduce;
-  // Reuse single interReduce for number of interNode reduce steps
-  int nStepsInterReduce;
-  KernelElem* interReduce;
-};
-
 struct CtranKernelPutNotifyArgs {
   bool isDirect;
   int peerLocalRank;
@@ -314,17 +168,17 @@ struct CtranKernelGetArgs {
 struct CtranKernelArgs {
   CtranAlgoDeviceState* devState_d{nullptr};
   union {
-    CtranKernelAllGatherArgs allgather;
-    CtranKernelAllReduceArgs allreduce;
-    CtranKernelSendArgs send;
-    CtranKernelRecvArgs recv;
-    CtranKernelSendRecvArgs sendrecv;
-    CtranKernelAllToAllArgs alltoall;
-    CtranKernelAllToAllvArgs alltoallv;
-    CtranKernelAllToAllvDynamicArgs alltoallv_dynamic;
-    CtranKernelAllToAllDedupArgs alltoall_dedup;
-    CtranKernelBroadcastArgs broadcast;
-    CtranKernelReduceScatterArgs reducescatter;
+    ctran::allgather::KernelArgs allgather;
+    ctran::allreduce::KernelArgs allreduce;
+    ctran::sendrecv::KernelSendArgs send;
+    ctran::sendrecv::KernelRecvArgs recv;
+    ctran::sendrecv::KernelSendRecvArgs sendrecv;
+    ctran::alltoall::KernelArgs alltoall;
+    ctran::alltoallv::KernelArgs alltoallv;
+    ctran::alltoallvdynamic::KernelArgs alltoallv_dynamic;
+    ctran::alltoalldedup::KernelArgs alltoall_dedup;
+    ctran::broadcast::KernelArgs broadcast;
+    ctran::reducescatter::KernelArgs reducescatter;
     CtranKernelPutNotifyArgs putnotify;
     CtranKernelWaitNotifyArgs waitnotify;
     CtranKernelGetArgs get;

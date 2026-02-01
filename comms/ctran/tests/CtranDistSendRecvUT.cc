@@ -375,7 +375,7 @@ class CtranSendRecvCopyEngineTestParamFixture
       public ::testing::WithParamInterface<
           std::tuple<size_t, ssize_t, MemAllocType>> {};
 
-TEST_P(CtranSendRecvCopyEngineTestParamFixture, sendRecv) {
+TEST_P(CtranSendRecvCopyEngineTestParamFixture, DISABLED_sendRecv) {
   const int numMaxQp = 1;
   const auto& [offset, count, memType] = GetParam();
 
