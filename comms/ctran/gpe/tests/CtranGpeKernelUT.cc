@@ -6,6 +6,7 @@
 #include <cuda_runtime.h>
 
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/common/GpeKernel.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
@@ -107,7 +108,7 @@ void CtranGpeKernelTestBase::runTest(void* kernelFn) {
       KernelConfig(kernelType, stream_, "dummyAlgo", dummyOpCount);
   kernelConfig.numBlocks = kNumBlocks;
   kernelConfig.args.devState_d = devState_d_;
-  CtranKernelAllGatherArgs dummyArgs;
+  ctran::allgather::KernelArgs dummyArgs;
   kernelConfig.algoArgs = &dummyArgs;
 
   res =
