@@ -7,6 +7,7 @@
 #include <stdint.h>
 
 #include "comms/ctran/algos/AllGather/Types.h"
+#include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoArgDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
@@ -238,16 +239,6 @@ struct CtranKernelAllToAllvDynamicArgs {
   }
 };
 
-struct CtranKernelBroadcastArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  size_t count;
-  KernelElem* putNotifyList;
-  KernelElem* waitNotifyList;
-  SQueues unpack; // TCP Device Memory
-};
-
 struct CtranKernelReduceScatterArgs {
   const void* sendbuff;
   void* recvbuff;
@@ -287,7 +278,7 @@ struct CtranKernelArgs {
     CtranKernelAllToAllvArgs alltoallv;
     CtranKernelAllToAllvDynamicArgs alltoallv_dynamic;
     CtranKernelAllToAllDedupArgs alltoall_dedup;
-    CtranKernelBroadcastArgs broadcast;
+    ctran::broadcast::KernelArgs broadcast;
     CtranKernelReduceScatterArgs reducescatter;
     CtranKernelPutNotifyArgs putnotify;
     CtranKernelWaitNotifyArgs waitnotify;
