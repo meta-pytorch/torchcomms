@@ -26,6 +26,7 @@
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/collectives/PatAvgAlgoHelper.h"  // [META:PAT_AVG]
 #include "meta/colltrace/CollTraceFunc.h"
 #include "meta/colltrace/ProxyTraceFunc.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
@@ -429,6 +430,7 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
         aggBeg->nMaxChannels = agg.nMaxChannels;
         aggBeg->nWarps = agg.nWarps;
         aggBeg->devFuncId = agg.devFuncId;
+        aggBeg->opDev = agg.opDev;  // [META:PAT_AVG] Copy opDev (includes scalarArg for AVG)
         aggBeg->isCollnet = isCollnet;
         aggBeg->isNvls = isNvls;
         ncclIntruQueueEnqueue(&collBins[isCollnet][isNvls], aggBeg);
@@ -1828,9 +1830,10 @@ static ncclResult_t updateCollCostTable(
     if (a == NCCL_ALGO_COLLNET_CHAIN && comm->maxLocalRanks > NCCL_MAX_DIRECT_ARITY+1) continue;
     if ((a == NCCL_ALGO_NVLS || a == NCCL_ALGO_NVLS_TREE) && (!nvlsSupport || (info->func != ncclFuncAllReduce && comm->localRanks > NCCL_MAX_NVLS_ARITY))) continue;
     if (a == NCCL_ALGO_NVLS && collNetSupport != 1 && comm->nNodes > 1) continue;
-    /* Tree reduceScatter doesn't support scaling yet */
+    /* [META:PAT_AVG] PAT reduceScatter doesn't support PreMulSum scaling.
+     * SumPostDiv (AVG) is supported natively when NCCL_REDUCESCATTER_PAT_AVG_ENABLE=1. */
     if (a == NCCL_ALGO_PAT && info->func == ncclFuncReduceScatter
-        && (info->opDev.op == ncclDevPreMulSum || info->opDev.op == ncclDevSumPostDiv)) continue;
+        && ncclx::shouldSkipPatForReduceOp(info->opDev.op)) continue;  // [META:PAT_AVG]
     for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
       NCCLCHECK(ncclTopoGetAlgoTime(comm, info->func, a, p, nBytes, numPipeOps, &table[a][p]));
       // Relegate fp8 reduction trees of sufficient depth that they incur precision loss
@@ -1868,6 +1871,7 @@ static ncclResult_t topoGetAlgoInfo(
 
   info->algorithm = algorithm;
   info->protocol = protocol;
+  ncclx::maybeEnablePatAvg(info, comm->nRanks);  // [META:PAT_AVG] Switch to ncclDevPatAvg
   float time = minTime;
 
   // Yes, we are first assigning and then testing if protocol is sane, but that's OK in this case.
