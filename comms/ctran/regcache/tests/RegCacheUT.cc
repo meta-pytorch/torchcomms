@@ -236,6 +236,117 @@ TEST_F(RegCacheTest, CacheSegmentDisjointBufferRefCount) {
   COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
 }
 
+// Test lookupSegmentsForBuffer for a single contiguous buffer
+TEST_F(RegCacheTest, LookupSegmentsForBufferSingleSegment) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  // First cache the buffer
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  EXPECT_EQ(segHdls.size(), 1);
+
+  // Look up segments for the buffer
+  std::vector<void*> foundSegHdls;
+  std::vector<ctran::regcache::RegElem*> foundRegElems;
+  EXPECT_EQ(
+      regCache->lookupSegmentsForBuffer(
+          buf, bufSize, cudaDev, foundSegHdls, foundRegElems),
+      commSuccess);
+
+  // Should find the cached segment
+  EXPECT_EQ(foundSegHdls.size(), 1);
+  EXPECT_EQ(foundSegHdls[0], segHdls[0]);
+
+  // Free the segment
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  EXPECT_EQ(
+      regCache->freeSegment(segHdls[0], freed, ncclManaged, regElems),
+      commSuccess);
+  EXPECT_TRUE(freed);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// Test lookupSegmentsForBuffer for a disjoint multi-segment buffer
+TEST_F(RegCacheTest, LookupSegmentsForBufferMultiSegment) {
+  constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB per segment
+  constexpr int numSegments = 3;
+  std::vector<size_t> segSizes(numSegments, segmentSize);
+
+  void* buf = nullptr;
+  std::vector<TestMemSegment> memSegments;
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(&buf, segSizes, memSegments, true));
+  ASSERT_NE(buf, nullptr);
+
+  size_t totalSize = segmentSize * numSegments;
+
+  // First cache the buffer
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, totalSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  EXPECT_EQ(segHdls.size(), numSegments);
+
+  // Look up segments for the buffer
+  std::vector<void*> foundSegHdls;
+  std::vector<ctran::regcache::RegElem*> foundRegElems;
+  EXPECT_EQ(
+      regCache->lookupSegmentsForBuffer(
+          buf, totalSize, cudaDev, foundSegHdls, foundRegElems),
+      commSuccess);
+
+  // Should find all cached segments
+  EXPECT_EQ(foundSegHdls.size(), numSegments);
+  for (size_t i = 0; i < numSegments; i++) {
+    EXPECT_EQ(foundSegHdls[i], segHdls[i]);
+  }
+
+  // Free all segments
+  for (auto segHdl : segHdls) {
+    bool freed = false;
+    bool ncclManaged = false;
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+    EXPECT_EQ(
+        regCache->freeSegment(segHdl, freed, ncclManaged, regElems),
+        commSuccess);
+    EXPECT_TRUE(freed);
+  }
+
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
+}
+
+// Test lookupSegmentsForBuffer returns empty when buffer is not cached
+TEST_F(RegCacheTest, LookupSegmentsForBufferNotCached) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  // Look up segments without caching first
+  std::vector<void*> foundSegHdls;
+  std::vector<ctran::regcache::RegElem*> foundRegElems;
+  EXPECT_EQ(
+      regCache->lookupSegmentsForBuffer(
+          buf, bufSize, cudaDev, foundSegHdls, foundRegElems),
+      commSuccess);
+
+  // Should not find any segments
+  EXPECT_EQ(foundSegHdls.size(), 0);
+  EXPECT_EQ(foundRegElems.size(), 0);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
