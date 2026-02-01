@@ -279,16 +279,16 @@ class RegCache {
   //               (logging purpose only, since commHash may not be 100%
   //               unique).
   // output:
-  //   - segment: the cached segment
-  //   - segHdl: the handle of the cached segment
+  //   - segments: vector of cached segments (one per physical segment chunk)
+  //   - segHdls: vector of handles for the cached segments
   commResult_t cacheSegment(
       const void* buf,
       const std::size_t len,
       const int cudaDev,
       const bool ncclManaged,
       uint64_t commHash,
-      regcache::Segment** segment,
-      void** segHdl);
+      std::vector<regcache::Segment*>& segments,
+      std::vector<void*>& segHdls);
 
   // Thread-safe functions to register a given buffer range.
   // If the buffer is already registered and cached, the pre-existing handle is
