@@ -8,15 +8,15 @@
 #include <cuda/atomic>
 #endif
 
-#include "Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevCommon.cuh"
+#include "comms/ctran/algos/RMA/Types.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
 __global__ void ncclKernelPutNotify(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelPutNotifyArgs args) {
+    ctran::rma::KernelPutNotifyArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);
@@ -47,7 +47,7 @@ __global__ void ncclKernelPutNotify(
 __global__ void ncclKernelWaitNotify(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelWaitNotifyArgs args) {
+    ctran::rma::KernelWaitNotifyArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
   if (flag && gtIdx == 0) {
     ctran::device::devLoadAbortFlags(flag, devState);

@@ -12,6 +12,7 @@
 #include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoArgDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/RMA/Types.h"
 #include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/utils/Abort.h"
@@ -150,21 +151,6 @@ struct fmt::formatter<KernelElem::ElemStatus> : fmt::formatter<int> {
   }
 };
 
-struct CtranKernelPutNotifyArgs {
-  bool isDirect;
-  int peerLocalRank;
-};
-
-struct CtranKernelWaitNotifyArgs {
-  bool isDirect;
-  int peerLocalRank;
-};
-
-struct CtranKernelGetArgs {
-  bool isDirect;
-  int peerLocalRank;
-};
-
 struct CtranKernelArgs {
   CtranAlgoDeviceState* devState_d{nullptr};
   union {
@@ -179,9 +165,9 @@ struct CtranKernelArgs {
     ctran::alltoalldedup::KernelArgs alltoall_dedup;
     ctran::broadcast::KernelArgs broadcast;
     ctran::reducescatter::KernelArgs reducescatter;
-    CtranKernelPutNotifyArgs putnotify;
-    CtranKernelWaitNotifyArgs waitnotify;
-    CtranKernelGetArgs get;
+    ctran::rma::KernelPutNotifyArgs putnotify;
+    ctran::rma::KernelWaitNotifyArgs waitnotify;
+    ctran::rma::KernelGetArgs get;
   } collective;
 
   // Default constructor needed because union has a member with non-trivial
