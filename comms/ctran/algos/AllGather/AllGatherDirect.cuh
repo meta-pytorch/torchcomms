@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <cstddef>
 #include <iostream>
+#include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -11,7 +12,7 @@
 
 __device__ inline void prepareBcastArg(
     KernelElem* elemH,
-    CtranKernelAllGatherArgs& args,
+    ctran::allgather::KernelArgs& args,
     CtranAlgoDevBcastArg& bcastArg) {
   bcastArg.src = args.sendbuff;
   bcastArg.count = args.count;
@@ -29,7 +30,7 @@ __device__ inline void prepareBcastArg(
 template <typename T>
 static __device__ __forceinline__ void bcastOnPost(
     KernelElem* elemH,
-    CtranKernelAllGatherArgs& args) {
+    ctran::allgather::KernelArgs& args) {
   bool revoked = false;
   elemWaitPostOrRevokeByGroup(elemH, blockIdx.x, &revoked);
 
@@ -48,7 +49,7 @@ template <typename T>
 __global__ void __launch_bounds__(1024, 1) ncclKernelAllGatherCtranDirect(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllGatherArgs args) {
+    ctran::allgather::KernelArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
@@ -71,4 +72,4 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelAllGatherCtranDirect(
   template __global__ void ncclKernelAllGatherCtranDirect<T>( \
       int* flag,                                              \
       CtranAlgoDeviceState* devState,                         \
-      CtranKernelAllGatherArgs args)
+      ctran::allgather::KernelArgs args)

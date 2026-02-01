@@ -6,16 +6,12 @@
 #include <fmt/format.h>
 #include <stdint.h>
 
+#include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/CtranAlgoArgDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/utils/commSpecs.h"
-
-#ifdef CTRAN_DISABLE_TCPDM
-#include "comms/ctran/backends/mock/CtranTcpDmBaseMock.h"
-#else
-#include "comms/tcp_devmem/unpack/batch_unpack_kernel.h"
-#endif
 
 // Used for ngroups value checking only. For H100, >128 is not possible.
 #define MAX_NGROUPS (128)
@@ -151,14 +147,6 @@ struct fmt::formatter<KernelElem::ElemStatus> : fmt::formatter<int> {
   }
 };
 
-struct CtranKernelAllGatherArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  size_t count;
-  KernelElem* bcastElem;
-};
-
 #define ALLREDUCE_MAX_KERNEL_ELEMS (8)
 struct CtranKernelAllReduceArgs {
   const void* sendbuff;
@@ -182,30 +170,6 @@ enum class AllReduceKernElemRole {
   kRemIntraReduce,
   kRemIntraBcast,
   kRemInterReduce
-};
-
-struct CtranKernelSendArgs {
-  // List of send p2p elements each will be transferred via NVL copy
-  KernelElem* putNotifyList;
-  // used for checksum
-  const void* sendbuff;
-  commDataType_t datatype;
-  size_t count;
-};
-
-struct CtranKernelRecvArgs {
-  KernelElem* waitNotifyList;
-  // used for checksum
-  const void* recvbuff;
-  commDataType_t datatype;
-  size_t count;
-  SQueues unpack; // TCP Device Memory
-};
-
-struct CtranKernelSendRecvArgs {
-  KernelElem* putNotifyList;
-  KernelElem* waitNotifyList;
-  SQueues unpack; // TCP Device Memory
 };
 
 struct CtranKernelAllToAllArgs {
@@ -314,11 +278,11 @@ struct CtranKernelGetArgs {
 struct CtranKernelArgs {
   CtranAlgoDeviceState* devState_d{nullptr};
   union {
-    CtranKernelAllGatherArgs allgather;
+    ctran::allgather::KernelArgs allgather;
     CtranKernelAllReduceArgs allreduce;
-    CtranKernelSendArgs send;
-    CtranKernelRecvArgs recv;
-    CtranKernelSendRecvArgs sendrecv;
+    ctran::sendrecv::KernelSendArgs send;
+    ctran::sendrecv::KernelRecvArgs recv;
+    ctran::sendrecv::KernelSendRecvArgs sendrecv;
     CtranKernelAllToAllArgs alltoall;
     CtranKernelAllToAllvArgs alltoallv;
     CtranKernelAllToAllvDynamicArgs alltoallv_dynamic;

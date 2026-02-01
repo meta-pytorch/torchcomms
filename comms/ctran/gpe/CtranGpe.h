@@ -12,6 +12,7 @@
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/CtranExImpl.h"
+#include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
@@ -436,17 +437,17 @@ template <typename T>
 extern __global__ void ncclKernelAllGatherCtranDirect(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 __global__ void ncclKernelAllGatherCtranRing(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 __global__ void ncclKernelAllGatherCtranRecDbl(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceCtranDirect(
@@ -463,34 +464,34 @@ __global__ void ncclKernelAllReduceARG(
 extern __global__ void ncclKernelSend(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendArgs args);
+    ctran::sendrecv::KernelSendArgs args);
 
 template <bool UNPACK>
 extern __global__ void ncclKernelRecv(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelRecvArgs args);
+    ctran::sendrecv::KernelRecvArgs args);
 
 template <bool UNPACK>
 extern __global__ void ncclKernelSendRecv(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendRecvArgs args);
+    ctran::sendrecv::KernelSendRecvArgs args);
 
 extern __global__ void ncclKernelSendNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendArgs args);
+    ctran::sendrecv::KernelSendArgs args);
 
 extern __global__ void ncclKernelRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelRecvArgs args);
+    ctran::sendrecv::KernelRecvArgs args);
 
 extern __global__ void ncclKernelSendRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendRecvArgs args);
+    ctran::sendrecv::KernelSendRecvArgs args);
 
 extern __global__ void ncclKernelSendRecvStaged(
     int* flag,

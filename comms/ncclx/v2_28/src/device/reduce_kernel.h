@@ -57,6 +57,7 @@ struct FuncMinMax {
 
 template<typename T> struct FuncPreMulSum;
 template<typename T> struct FuncSumPostDiv;
+template<typename T> struct FuncPatAvg;  // [META:PAT_AVG]
 
 ////////////////////////////////////////////////////////////////////////////////
 // Trait class for handling the reduction argument.
@@ -819,6 +820,10 @@ struct Apply_PostOp<FuncSumPostDiv<T>, /*EltPerPack=*/1> {
     return toPack<T>(fn.divide(fromPack<T>(a)));
   }
 };
+
+////////////////////////////////////////////////////////////////////////////////
+// [META:PAT_AVG] FuncPatAvg - Native AVG support for PAT algorithm
+#include "meta/device/FuncPatAvg.cuh"
 
 ////////////////////////////////////////////////////////////////////////////////
 // Apply_LoadMultimem
