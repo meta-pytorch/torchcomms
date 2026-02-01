@@ -16,6 +16,7 @@
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
@@ -550,18 +551,18 @@ template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelReduceScatterDirect(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelReduceScatterArgs args);
+    ctran::reducescatter::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelReduceScatterRing(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelReduceScatterArgs args);
+    ctran::reducescatter::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelReduceScatterRHD(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelReduceScatterArgs args);
+    ctran::reducescatter::KernelArgs args);
 
 #endif

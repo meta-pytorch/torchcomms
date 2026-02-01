@@ -10,6 +10,7 @@
 #include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoArgDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/ReduceScatter/Types.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/utils/commSpecs.h"
@@ -239,18 +240,6 @@ struct CtranKernelAllToAllvDynamicArgs {
   }
 };
 
-struct CtranKernelReduceScatterArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  size_t recvcount;
-  bool stageCopy;
-  KernelElem* intraReduce;
-  // Reuse single interReduce for number of interNode reduce steps
-  int nStepsInterReduce;
-  KernelElem* interReduce;
-};
-
 struct CtranKernelPutNotifyArgs {
   bool isDirect;
   int peerLocalRank;
@@ -279,7 +268,7 @@ struct CtranKernelArgs {
     CtranKernelAllToAllvDynamicArgs alltoallv_dynamic;
     CtranKernelAllToAllDedupArgs alltoall_dedup;
     ctran::broadcast::KernelArgs broadcast;
-    CtranKernelReduceScatterArgs reducescatter;
+    ctran::reducescatter::KernelArgs reducescatter;
     CtranKernelPutNotifyArgs putnotify;
     CtranKernelWaitNotifyArgs waitnotify;
     CtranKernelGetArgs get;
