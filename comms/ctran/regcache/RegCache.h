@@ -279,16 +279,16 @@ class RegCache {
   //               (logging purpose only, since commHash may not be 100%
   //               unique).
   // output:
-  //   - segment: the cached segment
-  //   - segHdl: the handle of the cached segment
+  //   - segments: vector of cached segments (one per physical segment chunk)
+  //   - segHdls: vector of handles for the cached segments
   commResult_t cacheSegment(
       const void* buf,
       const std::size_t len,
       const int cudaDev,
       const bool ncclManaged,
       uint64_t commHash,
-      regcache::Segment** segment,
-      void** segHdl);
+      std::vector<regcache::Segment*>& segments,
+      std::vector<void*>& segHdls);
 
   // Thread-safe functions to register a given buffer range.
   // If the buffer is already registered and cached, the pre-existing handle is
@@ -368,6 +368,23 @@ class RegCache {
   // Thread-safe functions to get a list of all cached segments in the global
   // cache.
   std::vector<void*> getSegments() const;
+
+  // Look up all cached segments underlying a buffer range.
+  // Uses pinRange to discover physical segments and returns their handles
+  // along with associated regElems for remote release handling.
+  // input:
+  //   - buf: the buffer to look up
+  //   - len: the length of the buffer
+  //   - cudaDev: the cuda device id
+  // output:
+  //   - segHdls: vector of segment handles (one per physical segment)
+  //   - regElems: vector of regElems associated with the segments
+  commResult_t lookupSegmentsForBuffer(
+      const void* buf,
+      size_t len,
+      int cudaDev,
+      std::vector<void*>& segHdls,
+      std::vector<regcache::RegElem*>& regElems);
 
   // Submit an async registration request to the global cache.
   // The registration will be handled by the asyncRegThread_.
