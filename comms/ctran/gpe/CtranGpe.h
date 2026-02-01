@@ -13,6 +13,7 @@
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/CtranExImpl.h"
 #include "comms/ctran/algos/AllGather/Types.h"
+#include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
@@ -455,13 +456,13 @@ template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceCtranDirect(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllReduceArgs args);
+    ctran::allreduce::KernelArgs args);
 
 template <typename T, typename RedT, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceARG(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllReduceArgs args);
+    ctran::allreduce::KernelArgs args);
 
 extern __global__ void ncclKernelSend(
     int* flag,
