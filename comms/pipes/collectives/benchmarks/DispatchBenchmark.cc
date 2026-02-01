@@ -17,11 +17,12 @@
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
 #include "comms/pipes/Transport.cuh"
-#include "comms/pipes/collectives/dispatch.h"
+#include "comms/pipes/collectives/Dispatchv.h"
+#include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
-using comms::pipes::collectives::ShardingMode;
+using comms::pipes::ShardingMode;
 using meta::comms::CudaEvent;
 using meta::comms::DeviceBuffer;
 using meta::comms::MpiBaseTestFixture;
@@ -228,7 +229,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     // Warmup
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     for (int i = 0; i < nIterWarmup; i++) {
-      collectives::dispatch(
+      comms::pipes::dispatchv(
           DeviceSpan<void* const>(
               static_cast<void* const*>(recvBufferPtrsDevice.get()), nranks),
           DeviceSpan<std::size_t>(
@@ -258,7 +259,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     std::vector<float> latencies(nIter);
     for (int i = 0; i < nIter; i++) {
       CUDA_CHECK(cudaEventRecord(start.get()));
-      collectives::dispatch(
+      comms::pipes::dispatchv(
           DeviceSpan<void* const>(
               static_cast<void* const*>(recvBufferPtrsDevice.get()), nranks),
           DeviceSpan<std::size_t>(
@@ -435,7 +436,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     // Warmup
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     for (int i = 0; i < nIterWarmup; i++) {
-      collectives::dispatch(
+      comms::pipes::dispatchv(
           DeviceSpan<void* const>(
               static_cast<void* const*>(recvBufferPtrsDevice.get()), nranks),
           DeviceSpan<std::size_t>(
@@ -464,7 +465,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     std::vector<float> latencies(nIter);
     for (int i = 0; i < nIter; i++) {
       CUDA_CHECK(cudaEventRecord(start.get()));
-      collectives::dispatch(
+      comms::pipes::dispatchv(
           DeviceSpan<void* const>(
               static_cast<void* const*>(recvBufferPtrsDevice.get()), nranks),
           DeviceSpan<std::size_t>(
