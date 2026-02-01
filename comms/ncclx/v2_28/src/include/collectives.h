@@ -401,6 +401,7 @@ static constexpr int PatUsed = 0x1,
 
 struct ncclPatStep {
   int recvDim, sendDim, recvOffset, sendOffset, stepOffset, postRecv, postSend, nelem, last, flags;
+  bool isFinalWrite = false;  // [META:PAT_AVG] True if final write for chunk, apply division for AVG
   size_t inpIx, outIx;
 };
 
@@ -536,6 +537,7 @@ public:
 
   __device__ __host__ void getNextOp(struct ncclPatStep* ps) {
     ps->last = 0;
+    ps->isFinalWrite = false;  // [META:PAT_AVG] Default: not a final write
     ps->nelem = nelem;
     ps->outIx = offset;
     ps->stepOffset = stepOffset;
@@ -643,6 +645,7 @@ public:
       ps->sendOffset = -1;
       ps->postRecv = 1;
       ps->postSend = 0;
+      ps->isFinalWrite = true;  // [META:PAT_AVG] Phase 4 is final write - apply postOp (division for AVG)
       offset += chunkCount;
     }
     a++;
