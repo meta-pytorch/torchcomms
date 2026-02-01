@@ -224,7 +224,8 @@ static inline commResult_t setupPlan(
   maxNumBlocks = std::max(maxNumBlocks, nGroups);
   FB_COMMCHECK(comm->ctran_->gpe->allocKernelElems(1, nGroups, &bcastElem));
   // Nothing need specify from host since all info are contained in
-  // CtranKernelAllGatherArgs except dsts which would need GPE thread to fill in
+  // ctran::allgather::KernelArgs except dsts which would need GPE thread to
+  // fill in
   op->allgather.bcastElem = bcastElem;
 
   config.args.collective.allgather.bcastElem = bcastElem;
