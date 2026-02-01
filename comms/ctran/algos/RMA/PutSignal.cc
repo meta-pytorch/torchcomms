@@ -3,9 +3,9 @@
 #include <cuda.h>
 #include <memory>
 
-#include "Types.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/RMA/Types.h"
 #include "comms/ctran/algos/RMA/WaitSignalImpl.h"
 #include "comms/ctran/colltrace/CollTraceWrapper.h"
 #include "comms/ctran/gpe/CtranGpe.h"
@@ -20,12 +20,12 @@ using meta::comms::colltrace::CollTraceHandleTriggerState;
 extern __global__ void ncclKernelPutNotify(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelPutNotifyArgs args);
+    ctran::rma::KernelPutNotifyArgs args);
 
 extern __global__ void ncclKernelWaitNotify(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelWaitNotifyArgs args);
+    ctran::rma::KernelWaitNotifyArgs args);
 
 extern __global__ void ncclKernelPutSignal(
     int* flag,

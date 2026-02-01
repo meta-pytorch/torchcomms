@@ -3,6 +3,7 @@
 #pragma once
 #include <stdio.h>
 #include <cstddef>
+#include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -107,7 +108,7 @@ template <typename T>
 __global__ void ncclKernelAllToAll(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllArgs args) {
+    ctran::alltoall::KernelArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
@@ -149,4 +150,6 @@ __global__ void ncclKernelAllToAll(
 
 #define DECL_CTRAN_ALLTOALL_KERN(T)               \
   template __global__ void ncclKernelAllToAll<T>( \
-      int* flag, CtranAlgoDeviceState* devState, CtranKernelAllToAllArgs args)
+      int* flag,                                  \
+      CtranAlgoDeviceState* devState,             \
+      ctran::alltoall::KernelArgs args)
