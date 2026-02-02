@@ -15,6 +15,29 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
+#include "meta/wrapper/DataTypeStrUtils.h"
+
+struct ReduceScatterTestParams {
+  enum NCCL_REDUCESCATTER_ALGO algo { NCCL_REDUCESCATTER_ALGO::orig };
+  bool inplace{false};
+  bool registFlag{false};
+  MemAllocType memType{kMemCudaMalloc};
+  size_t count{0};
+  ncclRedOp_t op{ncclSum};
+  ncclDataType_t datatype{ncclInt};
+
+  std::string name() const {
+    return fmt::format(
+        "{}_{}_{}_{}_{}count_{}_{}",
+        reduceScatterAlgoName(algo),
+        inplace ? "Inplace" : "OutOfPlace",
+        registFlag ? "Regist" : "NoRegist",
+        testMemAllocTypeToStr(memType),
+        count,
+        getRedOpStr(op),
+        getDatatypeStr(datatype));
+  }
+};
 
 class ReduceScatterTest : public NcclxBaseTest {
  public:
@@ -31,9 +54,133 @@ class ReduceScatterTest : public NcclxBaseTest {
     NcclxBaseTest::TearDown();
   }
 
+  // TODO: Add separate benchmark for performance testing
+  template <typename T>
+  void run(const ReduceScatterTestParams& param) {
+    const auto algo = param.algo;
+    const auto inplace = param.inplace;
+    const auto registFlag = param.registFlag;
+    const auto memType = param.memType;
+    const auto count = param.count;
+    const auto op = param.op;
+    const auto datatype = param.datatype;
+
+    // Validate supported reduction operations
+    if (op != ncclSum && op != ncclAvg) {
+      GTEST_SKIP() << "Only ncclSum and ncclAvg reduction ops are supported";
+    }
+
+    auto envGuard = EnvRAII(NCCL_REDUCESCATTER_ALGO, algo);
+
+    if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
+      GTEST_SKIP() << "CuMem not supported, skip test";
+    }
+
+#if !defined TEST_ENABLE_CTRAN
+    if (algo != NCCL_REDUCESCATTER_ALGO::orig) {
+      GTEST_SKIP() << "Ctran is disabled, skip test";
+    }
+#endif
+
+    if (algo != NCCL_REDUCESCATTER_ALGO::orig &&
+        !ctranReduceScatterSupport(comm->ctranComm_.get(), algo)) {
+      GTEST_SKIP() << "Ctran algorithm is not supported, skip test";
+    }
+
+    if (memType == kMemCudaMalloc && algo != NCCL_REDUCESCATTER_ALGO::orig &&
+        comm->ctranComm_->statex_->nLocalRanks() > 1) {
+      GTEST_SKIP()
+          << "Ctran does not support cudaMalloc-ed buffer with nLocalRanks > 1, skip test";
+    }
+
+    constexpr size_t elemSize = sizeof(T);
+    size_t allocSize = count * numRanks * elemSize;
+    allocSize = allocSize < 8192 ? 8192 : allocSize;
+
+    T *sendBuf = nullptr, *recvBuf = nullptr;
+    void *sendHandle = nullptr, *recvHandle = nullptr;
+
+    if (memType == kMemCudaMalloc) {
+      CUDACHECK_TEST(cudaMalloc(&sendBuf, allocSize));
+    } else {
+      NCCLCHECK_TEST(ncclMemAlloc((void**)&sendBuf, allocSize));
+    }
+
+    if (inplace) {
+      recvBuf = sendBuf + count * globalRank;
+    } else {
+      if (memType == kMemCudaMalloc) {
+        CUDACHECK_TEST(cudaMalloc(&recvBuf, allocSize));
+      } else {
+        NCCLCHECK_TEST(ncclMemAlloc((void**)&recvBuf, allocSize));
+      }
+    }
+
+    assignChunkValue<T>(recvBuf, count, static_cast<T>(-1));
+    for (int r = 0; r < numRanks; r++) {
+      T val = static_cast<T>(globalRank * numRanks + r);
+      assignChunkValue<T>(sendBuf + r * count, count, val);
+    }
+
+    if (registFlag) {
+      NCCLCHECK_TEST(ncclCommRegister(comm, sendBuf, allocSize, &sendHandle));
+      if (!inplace) {
+        NCCLCHECK_TEST(ncclCommRegister(comm, recvBuf, allocSize, &recvHandle));
+      }
+    }
+
+    // Run communication
+    auto res =
+        ncclReduceScatter(sendBuf, recvBuf, count, datatype, op, comm, stream);
+    ASSERT_EQ(res, ncclSuccess);
+
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    // Check received chunk
+    T expectedSum = static_cast<T>(0);
+    for (int r = 0; r < numRanks; r++) {
+      expectedSum += static_cast<T>(r * numRanks + globalRank);
+    }
+    if (op == ncclAvg) {
+      expectedSum = expectedSum / static_cast<T>(numRanks);
+    }
+
+    std::optional<T> tolerance = std::nullopt;
+    if constexpr (std::is_floating_point_v<T>) {
+      tolerance = static_cast<T>(1e-5);
+    }
+
+    auto errs = checkChunkValue<T>(
+        recvBuf, count, expectedSum, T{0}, globalRank, nullptr, tolerance);
+    EXPECT_EQ(errs, 0) << "Rank " << globalRank << " checked chunk at "
+                       << recvBuf << " with " << errs << " errors with inplace "
+                       << inplace;
+
+    // Deregister and free buffers
+    if (registFlag) {
+      NCCLCHECK_TEST(ncclCommDeregister(comm, sendHandle));
+      if (!inplace) {
+        NCCLCHECK_TEST(ncclCommDeregister(comm, recvHandle));
+      }
+    }
+
+    if (memType == kMemCudaMalloc) {
+      CUDACHECK_TEST(cudaFree(sendBuf));
+    } else {
+      NCCLCHECK_TEST(ncclMemFree(sendBuf));
+    }
+    if (!inplace) {
+      if (memType == kMemCudaMalloc) {
+        CUDACHECK_TEST(cudaFree(recvBuf));
+      } else {
+        NCCLCHECK_TEST(ncclMemFree(recvBuf));
+      }
+    }
+  }
+
  protected:
-  ncclComm_t comm;
-  cudaStream_t stream;
+  ncclComm_t comm{nullptr};
+  cudaStream_t stream{nullptr};
 };
 
 class ReduceScatterTestParam : public ReduceScatterTest,
@@ -42,245 +189,50 @@ class ReduceScatterTestParam : public ReduceScatterTest,
                                    bool,
                                    bool,
                                    MemAllocType,
-                                   size_t,
-                                   bool>> {};
+                                   size_t>> {};
 
 TEST_P(ReduceScatterTestParam, Test) {
-  const auto& [algo, inplace, registFlag, memType, count, reportPerf] =
-      GetParam();
-  auto envGuard = EnvRAII(NCCL_REDUCESCATTER_ALGO, algo);
+  auto [algo, inplace, registFlag, memType, count] = GetParam();
+  ReduceScatterTestParams param{
+      .algo = algo,
+      .inplace = inplace,
+      .registFlag = registFlag,
+      .memType = memType,
+      .count = count,
+      .op = ncclSum,
+      .datatype = ncclInt,
+  };
 
-  if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
-    GTEST_SKIP() << "CuMem not supported, skip test";
-  }
+  run<int>(param);
+}
 
-#if !defined TEST_ENABLE_CTRAN
-  if (algo != NCCL_REDUCESCATTER_ALGO::orig) {
-    GTEST_SKIP() << "Ctran is disabled, skip test";
-  }
-#endif
-
-  if (algo != NCCL_REDUCESCATTER_ALGO::orig &&
-      !ctranReduceScatterSupport(comm->ctranComm_.get(), algo)) {
-    GTEST_SKIP() << "Ctran algorithm is not supported, skip test";
-  }
-
-  if (memType == kMemCudaMalloc && algo != NCCL_REDUCESCATTER_ALGO::orig &&
-      comm->ctranComm_->statex_->nLocalRanks() > 1) {
-    GTEST_SKIP()
-        << "Ctran does not support cudaMalloc-ed buffer with nLocalRanks > 1, skip test";
-  }
-
-  // Create and register buffers. If inplace, we use the same buffer for send
-  // and recv.
-  int *sendBuf = nullptr, *recvBuf = nullptr;
-  void *sendHandle = nullptr, *recvHandle = nullptr;
-  size_t allocSize = (count * numRanks * sizeof(int));
-  allocSize = allocSize < 8192 ? 8192 : allocSize;
-
-  if (memType == kMemCudaMalloc) {
-    CUDACHECK_TEST(cudaMalloc(&sendBuf, allocSize));
-  } else {
-    void* buf = nullptr;
-    NCCLCHECK_TEST(ncclMemAlloc(&buf, allocSize));
-    sendBuf = reinterpret_cast<int*>(buf);
-  }
-
-  if (inplace) {
-    recvBuf = sendBuf + count * globalRank;
-  } else {
-    if (memType == kMemCudaMalloc) {
-      CUDACHECK_TEST(cudaMalloc(&recvBuf, allocSize));
-    } else {
-      void* buf = nullptr;
-      NCCLCHECK_TEST(ncclMemAlloc(&buf, allocSize));
-      recvBuf = reinterpret_cast<int*>(buf);
-    }
-  }
-
-  assignChunkValue(recvBuf, count, -1);
-  for (int r = 0; r < numRanks; r++) {
-    int val = globalRank * numRanks + r;
-    assignChunkValue(sendBuf + r * count, count, val);
-  }
-
-  if (registFlag) {
-    NCCLCHECK_TEST(ncclCommRegister(comm, sendBuf, allocSize, &sendHandle));
-    if (!inplace) {
-      NCCLCHECK_TEST(ncclCommRegister(comm, recvBuf, allocSize, &recvHandle));
-    }
-  }
-
-  // Run communication
-  auto res = ncclReduceScatter(
-      sendBuf, recvBuf, count, ncclInt, ncclSum, comm, stream);
-  ASSERT_EQ(res, ncclSuccess);
-
-  // CUDACHECK_TEST(cudaStreamSynchronize(stream));
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  // Check received chunk
-  int expectedVal = 0;
-  for (int r = 0; r < numRanks; r++) {
-    expectedVal += (r * numRanks + globalRank);
-  }
-  int errs = checkChunkValue(recvBuf, count, expectedVal);
-  EXPECT_EQ(errs, 0) << "Rank " << globalRank << " checked chunk at " << recvBuf
-                     << " with " << errs << " errors with inplace " << inplace;
-
-  if (reportPerf) {
-    constexpr int warm = 10, iters = 100;
-    for (int i = 0; i < warm; i++) {
-      NCCLCHECK_TEST(ncclReduceScatter(
-          sendBuf, recvBuf, count, ncclInt, ncclSum, comm, stream));
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-    }
-
-    auto start = std::chrono::high_resolution_clock::now();
-    for (int i = 0; i < iters; i++) {
-      NCCLCHECK_TEST(ncclReduceScatter(
-          sendBuf, recvBuf, count, ncclInt, ncclSum, comm, stream));
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-    }
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration =
-        std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-    if (globalRank == 0) {
-      printf(
-          "Rank %d, nRanks %d, algo %d, count %ld, nbytes %ld, time %ld us\n",
-          globalRank,
-          numRanks,
-          static_cast<int>(algo),
-          count,
-          count * sizeof(int),
-          duration.count() / iters);
-    }
-  }
-
-  // Deregister and free buffers
-  if (registFlag) {
-    NCCLCHECK_TEST(ncclCommDeregister(comm, sendHandle));
-    if (!inplace) {
-      NCCLCHECK_TEST(ncclCommDeregister(comm, recvHandle));
-    }
-  }
-
-  if (memType == kMemCudaMalloc) {
-    CUDACHECK_TEST(cudaFree(sendBuf));
-  } else {
-    NCCLCHECK_TEST(ncclMemFree(sendBuf));
-  }
-  if (!inplace) {
-    if (memType == kMemCudaMalloc) {
-      CUDACHECK_TEST(cudaFree(recvBuf));
-    } else {
-      NCCLCHECK_TEST(ncclMemFree(recvBuf));
-    }
-  }
+std::string GetTestParamName(
+    const testing::TestParamInfo<ReduceScatterTestParam::ParamType>& info) {
+  ReduceScatterTestParams params{
+      .algo = std::get<0>(info.param),
+      .inplace = std::get<1>(info.param),
+      .registFlag = std::get<2>(info.param),
+      .memType = std::get<3>(info.param),
+      .count = std::get<4>(info.param),
+  };
+  return params.name();
 }
 
 INSTANTIATE_TEST_SUITE_P(
     ReduceScatterTestInstance,
     ReduceScatterTestParam,
-    ::testing::Values(
-        // algo, inplace, registFlag, memType, count
-        // inplace cudaMalloc with each of algorithms
-        std::make_tuple(
+    ::testing::Combine(
+        ::testing::Values(
             NCCL_REDUCESCATTER_ALGO::orig,
-            true,
-            true,
-            kMemCudaMalloc,
-            8192,
-            false),
-        std::make_tuple(
             NCCL_REDUCESCATTER_ALGO::ctran,
-            true,
-            true,
-            kMemCudaMalloc,
-            8192,
-            false),
-        // inplace cumem
-        std::make_tuple(
-            NCCL_REDUCESCATTER_ALGO::orig,
-            true,
-            true,
-            kMemNcclMemAlloc,
-            8192,
-            false),
-        // out-place
-        std::make_tuple(
-            NCCL_REDUCESCATTER_ALGO::ctran,
-            false,
-            true,
-            kMemNcclMemAlloc,
-            33554432,
-            false),
-        std::make_tuple(
-            NCCL_REDUCESCATTER_ALGO::ctran,
-            false,
-            true,
-            kMemNcclMemAlloc,
-            8192,
-            true),
-        std::make_tuple(
-            NCCL_REDUCESCATTER_ALGO::ctran,
-            false,
-            true,
-            kMemNcclMemAlloc,
-            65536,
-            true),
-        std::make_tuple(
-            NCCL_REDUCESCATTER_ALGO::ctran,
-            false,
-            true,
-            kMemNcclMemAlloc,
-            8388608,
-            true),
-        std::make_tuple(
-            NCCL_REDUCESCATTER_ALGO::ctran,
-            false,
-            true,
-            kMemNcclMemAlloc,
-            268435456,
-            true),
-        std::make_tuple(
             NCCL_REDUCESCATTER_ALGO::ctrhd,
-            false,
-            true,
-            kMemNcclMemAlloc,
-            8192,
-            true),
-        std::make_tuple(
-            NCCL_REDUCESCATTER_ALGO::ctrhd,
-            false,
-            true,
-            kMemNcclMemAlloc,
-            1,
-            true),
-        std::make_tuple(
-            NCCL_REDUCESCATTER_ALGO::ctring,
-            false,
-            true,
-            kMemNcclMemAlloc,
-            8192,
-            true),
-        std::make_tuple(
-            NCCL_REDUCESCATTER_ALGO::ctring,
-            false,
-            true,
-            kMemNcclMemAlloc,
-            1,
-            true)),
-    [&](const testing::TestParamInfo<ReduceScatterTestParam::ParamType>& info) {
-      return fmt::format(
-          "{}_{}_{}_{}_{}count_{}",
-          reduceScatterAlgoName(std::get<0>(info.param)),
-          (std::get<1>(info.param)) ? "Inplace" : "OutOfPlace",
-          (std::get<2>(info.param)) ? "Regist" : "NoRegist",
-          testMemAllocTypeToStr(std::get<3>(info.param)),
-          std::to_string(std::get<4>(info.param)),
-          (std::get<5>(info.param)) ? "Perf" : "NoPerf");
-    });
+            NCCL_REDUCESCATTER_ALGO::ctring),
+        ::testing::Values(true, false), // inplace
+        ::testing::Values(true), // registFlag
+        ::testing::Values(kMemCudaMalloc, kMemNcclMemAlloc), // memType
+        ::testing::Values(1, 8192, 33554432) // count: small, medium, large
+        ),
+    GetTestParamName);
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
