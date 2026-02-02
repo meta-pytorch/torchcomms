@@ -2,24 +2,23 @@
 # pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-import os
 import unittest
 
 import torch
-
-os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
-
-from torchcomms.tests.helpers.py.test_helpers import skip_if_pytorch_version_unsupported
-
-skip_if_pytorch_version_unsupported()
-
-import torchcomms  # noqa: E402, F401
+from torchcomms.tests.helpers.py.test_helpers import (  # noqa: E402
+    skip_unless_pytorch_version,
+)
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
     TorchCommTestWrapper,
 )
 
 
+@skip_unless_pytorch_version(
+    "2.12", "Requires PyTorch 2.12+ with torch.compile hotfixes"
+)
 class FullgraphCompileAutogradTest(unittest.TestCase):
+    import torchcomms  # noqa: E402, F401
+
     def get_wrapper(self):
         return TorchCommTestWrapper()
 
