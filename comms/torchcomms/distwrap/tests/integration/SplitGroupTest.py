@@ -29,9 +29,10 @@ from torchcomms.distwrap.tests.integration.test_helpers import (
 class SplitGroupTest(unittest.TestCase):
     """Test class for split_group operations using distwrap."""
 
-    def setUp(self) -> None:
-        """Initialize distwrap before each test."""
-        rank, size = get_rank_and_size()
+    @classmethod
+    def setUpClass(cls) -> None:
+        """Initialize distwrap once for all tests."""
+        rank, _ = get_rank_and_size()
         device = get_device(rank)
         backend = get_backend()
 
@@ -43,8 +44,9 @@ class SplitGroupTest(unittest.TestCase):
         if device.type == "cuda":
             torch.cuda.set_device(device)
 
-    def tearDown(self) -> None:
-        """Clean up distwrap after each test."""
+    @classmethod
+    def tearDownClass(cls) -> None:
+        """Clean up distwrap after all tests."""
         if dist.is_initialized():
             dist.destroy_process_group()
 
