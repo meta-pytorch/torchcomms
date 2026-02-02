@@ -2154,6 +2154,8 @@ cvars:
      of the following features. Leave empty to disable all features.
      verbose - print every completed event as NCCL INFO log. Mostly for debug.
      trace - Just enable collective trace.
+     algostat - lightweight algorithm counting (no CUDA events/worker thread).
+                Use ncclx::colltrace::dumpAlgoStat(comm) to retrieve stats.
 
  - name        : NCCL_COLLTRACE_USE_NEW_COLLTRACE
    type        : bool
