@@ -16,6 +16,41 @@ namespace ctran {
 // multiple collective operations without re-importing the same memory.
 class IpcRegCache {
  public:
+  // Register memory to be used for NVL operations. If registration fails
+  // because memory type is not supported, commSuccess shall be returned and the
+  // ipcRegElem will be set to nullptr. Mapper is expected to still handle the
+  // case with alternative path.
+  // Input arguments:
+  //   - buf: the local buffer to be registered to network for direct RDMA
+  //   access
+  //   - len: the length of the local buffer
+  //   - cudaDev: the cuda device id of the local buffer
+  // Output arguments:
+  //   - ipcRegElem: the ipcRegElem of the local buffer that stores the
+  //                registration handle.
+  static commResult_t regMem(
+      const void* buf,
+      const size_t len,
+      const int cudaDev,
+      void** ipcRegElem,
+      bool shouldSupportCudaMalloc = false);
+
+  // Deregister memory to be used for NVL operations.
+  // Input arguments:
+  //   - ipcRegElem: the ipcRegElem of the local buffer that stores the
+  //                registration handle.
+  static void deregMem(void* ipcRegElem);
+
+  // Release the exported memory on remote rank.
+  // Input arguments:
+  //   - ipcRegElem: local registration
+  // Output arguments:
+  //   - ipcRelease: the IpcRelease struct to be populated and sent to remote
+  //                 rank.
+  static void remReleaseMem(
+      void* ipcRegElem,
+      ctran::regcache::IpcRelease& ipcRelease);
+
   IpcRegCache();
   ~IpcRegCache();
 
@@ -28,13 +63,13 @@ class IpcRegCache {
   // Requires init() to be called first to set cudaDev and logMetaData.
   // Input arguments:
   //   - peerId: Id of the peer, which should be unique per process instance
-  //   - nvlDesc: the remote memory IPC descriptor
+  //   - ipcDesc: the remote memory IPC descriptor
   // Output arguments:
   //   - buf: the local buffer mapped to the imported remote memory
   //   - remKey: the remoteAccessKey (rkey) of the remote buffer registration
   commResult_t importMem(
       const std::string& peerId,
-      const ctran::regcache::IpcDesc& nvlDesc,
+      const ctran::regcache::IpcDesc& ipcDesc,
       void** buf,
       struct ctran::regcache::IpcRemHandle* remKey);
 
@@ -43,11 +78,11 @@ class IpcRegCache {
   //   - buf: local buffer to export
   //   - ipcRegElem: local IPC registration element
   // Output arguments:
-  //   - nvlDesc: IPC descriptor to be populated and sent to remote peer
+  //   - ipcDesc: IPC descriptor to be populated and sent to remote peer
   inline commResult_t exportMem(
       const void* buf,
       void* ipcRegElem,
-      ctran::regcache::IpcDesc& nvlDesc) {
+      ctran::regcache::IpcDesc& ipcDesc) {
     if (ipcRegElem == nullptr) {
       CLOGF(ERR, "CTRAN-REGCACHE: ipcRegElem is nullptr in exportMem");
       return commInvalidArgument;
@@ -56,8 +91,8 @@ class IpcRegCache {
 
     // Fill IPC descriptor content
     auto ipcMem = reg->ipcMem.wlock();
-    FB_COMMCHECK(ipcMem->ipcExport(nvlDesc.ipcDesc));
-    nvlDesc.offset = reinterpret_cast<size_t>(buf) -
+    FB_COMMCHECK(ipcMem->ipcExport(ipcDesc.desc));
+    ipcDesc.offset = reinterpret_cast<size_t>(buf) -
         reinterpret_cast<size_t>(ipcMem->getBase());
     return commSuccess;
   }
