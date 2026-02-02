@@ -100,7 +100,7 @@ struct RegElem {
   const void* buf{nullptr};
   const std::size_t len{0};
   void* ibRegElem{nullptr};
-  void* nvlRegElem{nullptr};
+  void* ipcRegElem{nullptr};
   void* tcpRegElem{nullptr};
 
   // The state of the segment to ensure thread-safe access.
@@ -190,7 +190,7 @@ struct RegElem {
        << (state == RegElemState::REGISTERED ? "REGISTERED" : "DEREGISTERED")
        << ", isDynamic: " << isDynamic_ << ", lookupHit: " << lookupHit_;
     if (state == RegElemState::REGISTERED) {
-      ss << ", ibRegElem: " << ibRegElem << ", nvlRegElem: " << nvlRegElem
+      ss << ", ibRegElem: " << ibRegElem << ", ipcRegElem: " << ipcRegElem
          << ", tcpRegElem: " << tcpRegElem;
     }
     if (segments_.size()) {

@@ -4,7 +4,7 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/pipes/TimeoutUtils.cuh"
+#include "comms/pipes/Timeout.cuh"
 #include "comms/pipes/collectives/AllToAllv.cuh"
 
 namespace comms::pipes::benchmark {
