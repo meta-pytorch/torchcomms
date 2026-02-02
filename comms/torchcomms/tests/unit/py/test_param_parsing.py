@@ -14,12 +14,12 @@ from torchcomms.functional.param_parsing import (
     ParamSpec,
     ParsedArgs,
 )
-from torchcomms.tests.helpers.py.test_helpers import skip_unless_pytorch_version
-
-
-@skip_unless_pytorch_version(
-    "2.12", "Requires PyTorch 2.12+ with torch.compile hotfixes"
+from torchcomms.tests.helpers.py.test_helpers import (
+    skip_if_torch_compile_not_supported_or_enabled,
 )
+
+
+@skip_if_torch_compile_not_supported_or_enabled()
 class TestParamSpec(unittest.TestCase):
     def test_has_default_true(self):
         spec = ParamSpec("x", ParamKind.INPUT, "Tensor", default_value=None)
@@ -48,9 +48,7 @@ class TestParamSpec(unittest.TestCase):
         self.assertFalse(spec.is_tensor_like())
 
 
-@skip_unless_pytorch_version(
-    "2.12", "Requires PyTorch 2.12+ with torch.compile hotfixes"
-)
+@skip_if_torch_compile_not_supported_or_enabled()
 class TestParsedArgs(unittest.TestCase):
     def setUp(self):
         self.object_param = ParamSpec("self", ParamKind.CLASS_OBJECT, "MyClass")
@@ -255,9 +253,7 @@ except ImportError:
     pass  # skip test down below will catch this
 
 
-@skip_unless_pytorch_version(
-    "2.12", "Requires PyTorch 2.12+ with torch.compile hotfixes"
-)
+@skip_if_torch_compile_not_supported_or_enabled()
 class TestCollectiveParamSchema(unittest.TestCase):
     def test_from_raw_specs_basic(self):
         param_specs = [
