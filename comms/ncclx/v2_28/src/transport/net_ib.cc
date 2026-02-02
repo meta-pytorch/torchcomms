@@ -2540,7 +2540,7 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
               // For Send use the request size as WC byte_len is not reliable
               reqSize = req->send.size;
             }
-            WARN("NET/IB: Got completion from peer %s with status=%s(%d) opcode=%s(%d) reqSize=%d vendor_err=%u req_type=%s%s%s%s%s hca %s",
+            WARN_WITH_SCUBA("NET/IB: Got completion from peer %s with status=%s(%d) opcode=%s(%d) reqSize=%d vendor_err=%u req_type=%s%s%s%s%s hca %s",
                 ncclSocketToString(&addr, line), ibvWcStatusStr(wc->status), wc->status,
                 ibvWcOpcodeStr(wc->opcode), wc->opcode, reqSize, wc->vendor_err, reqTypeStr[r->type],
                 localGidStr ?  " localGid ":"", localGidString, remoteGidStr ? " remoteGids":"", remoteGidString, hcaName);
