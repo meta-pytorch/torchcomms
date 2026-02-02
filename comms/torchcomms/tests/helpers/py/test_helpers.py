@@ -11,7 +11,11 @@ def skip_unless_pytorch_version(
     reason: str = "Requires newer PyTorch",
     _current_version: str | None = None,
 ):
-    """Decorator to mark tests as expected failure if PyTorch version is below min_version.
+    """Decorator to skip tests if PyTorch version is below min_version.
+
+    When applied to a test class and the version requirement is not met,
+    replaces the class with a placeholder that has one skipped test.
+    This ensures pytest doesn't exit with code 5 (no tests collected).
 
     Usage:
         @skip_unless_pytorch_version("2.6", "Requires PyTorch 2.6+ hotfixes")
@@ -35,13 +39,14 @@ def skip_unless_pytorch_version(
         or os.environ.get("TORCHCOMMS_TEST_IGNORE_PYTORCH_VERSION_REQUIREMENT") == "1"
     )
 
-    def decorator(test_func):
+    skip_message = (
+        f"Requires PyTorch {min_version} or higher. "
+        "To override, set TORCHCOMMS_TEST_IGNORE_PYTORCH_VERSION_REQUIREMENT=1"
+    )
+
+    def decorator(test_item):
         if meets_requirement:
-            return test_func
-        return unittest.skip(
-            "Requires PyTorch "
-            + min_version
-            + " or higher. To override, set TORCHCOMMS_TEST_IGNORE_PYTORCH_VERSION_REQUIREMENT=1"
-        )
+            return test_item
+        return unittest.skip(skip_message)(test_item)
 
     return decorator

@@ -15,13 +15,16 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
     TorchCommTestWrapper,
 )
 
+try:
+    import torchcomms  # noqa: E402, F401
+except ImportError:
+    pass  # skip test down below will catch this
+
 
 @skip_unless_pytorch_version(
     "2.12", "Requires PyTorch 2.12+ with torch.compile hotfixes"
 )
 class FullgraphCompileAutogradTest(unittest.TestCase):
-    import torchcomms  # noqa: E402, F401
-
     def get_wrapper(self):
         return TorchCommTestWrapper()
 
