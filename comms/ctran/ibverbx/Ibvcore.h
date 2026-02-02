@@ -491,6 +491,7 @@ enum ibv_qp_type {
   IBV_QPT_RAW_ETH = 8,
   IBV_QPT_XRC_SEND = 9,
   IBV_QPT_XRC_RECV,
+  IBV_QPT_DRIVER = 0xff,
 
   /* Leave a gap for future qp types before starting with
    * experimental qp types.
@@ -522,7 +523,12 @@ struct ibv_qp_init_attr {
 enum ibv_qp_init_attr_mask {
   IBV_QP_INIT_ATTR_PD = 1 << 0,
   IBV_QP_INIT_ATTR_XRCD = 1 << 1,
-  IBV_QP_INIT_ATTR_RESERVED = 1 << 2
+  IBV_QP_INIT_ATTR_RESERVED = 1 << 2,
+  IBV_QP_INIT_ATTR_CREATE_FLAGS = 1 << 3,
+  IBV_QP_INIT_ATTR_MAX_TSO_HEADER = 1 << 4,
+  IBV_QP_INIT_ATTR_IND_TABLE = 1 << 5,
+  IBV_QP_INIT_ATTR_RX_HASH = 1 << 6,
+  IBV_QP_INIT_ATTR_SEND_OPS_FLAGS = 1 << 7,
 };
 
 struct ibv_qp_init_attr_ex {
@@ -537,6 +543,10 @@ struct ibv_qp_init_attr_ex {
   uint32_t comp_mask;
   struct ibv_pd* pd;
   struct ibv_xrcd* xrcd;
+  uint32_t create_flags;
+  uint16_t max_tso_header;
+  struct ibv_rwq_ind_table* rwq_ind_tbl;
+  uint64_t send_ops_flags;
 };
 
 enum ibv_qp_open_attr_mask {
@@ -635,6 +645,21 @@ enum ibv_send_flags {
   IBV_SEND_SIGNALED = 1 << 1,
   IBV_SEND_SOLICITED = 1 << 2,
   IBV_SEND_INLINE = 1 << 3
+};
+
+// Extended QP operation flags for send_ops_flags in ibv_qp_init_attr_ex
+enum ibv_qp_create_send_ops_flags {
+  IBV_QP_EX_WITH_RDMA_WRITE = 1 << 0,
+  IBV_QP_EX_WITH_RDMA_WRITE_WITH_IMM = 1 << 1,
+  IBV_QP_EX_WITH_SEND = 1 << 2,
+  IBV_QP_EX_WITH_SEND_WITH_IMM = 1 << 3,
+  IBV_QP_EX_WITH_RDMA_READ = 1 << 4,
+  IBV_QP_EX_WITH_ATOMIC_CMP_AND_SWP = 1 << 5,
+  IBV_QP_EX_WITH_ATOMIC_FETCH_AND_ADD = 1 << 6,
+  IBV_QP_EX_WITH_LOCAL_INV = 1 << 7,
+  IBV_QP_EX_WITH_BIND_MW = 1 << 8,
+  IBV_QP_EX_WITH_SEND_WITH_INV = 1 << 9,
+  IBV_QP_EX_WITH_TSO = 1 << 10,
 };
 
 struct ibv_sge {
@@ -765,6 +790,98 @@ struct ibv_ah {
   struct ibv_context* context;
   struct ibv_pd* pd;
   uint32_t handle;
+};
+
+// Forward declarations for ibv_qp_ex function pointers that we don't use
+struct ibv_mw_bind_info;
+struct ibv_data_buf;
+
+// Extended QP structure with function pointers for posting work requests.
+// This mirrors the rdma-core ibv_qp_ex struct layout.
+struct ibv_qp_ex {
+  struct ibv_qp qp_base;
+  uint64_t comp_mask;
+
+  uint64_t wr_id;
+  // bitmask from enum ibv_send_flags
+  unsigned int wr_flags;
+
+  void (*wr_atomic_cmp_swp)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr,
+      uint64_t compare,
+      uint64_t swap);
+  void (*wr_atomic_fetch_add)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr,
+      uint64_t add);
+  void (*wr_bind_mw)(
+      struct ibv_qp_ex* qp,
+      struct ibv_mw* mw,
+      uint32_t rkey,
+      const struct ibv_mw_bind_info* bind_info);
+  void (*wr_local_inv)(struct ibv_qp_ex* qp, uint32_t invalidate_rkey);
+  void (
+      *wr_rdma_read)(struct ibv_qp_ex* qp, uint32_t rkey, uint64_t remote_addr);
+  void (*wr_rdma_write)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr);
+  void (*wr_rdma_write_imm)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr,
+      __be32 imm_data);
+
+  void (*wr_send)(struct ibv_qp_ex* qp);
+  void (*wr_send_imm)(struct ibv_qp_ex* qp, __be32 imm_data);
+  void (*wr_send_inv)(struct ibv_qp_ex* qp, uint32_t invalidate_rkey);
+  void (*wr_send_tso)(
+      struct ibv_qp_ex* qp,
+      void* hdr,
+      uint16_t hdr_sz,
+      uint16_t mss);
+
+  void (*wr_set_ud_addr)(
+      struct ibv_qp_ex* qp,
+      struct ibv_ah* ah,
+      uint32_t remote_qpn,
+      uint32_t remote_qkey);
+  void (*wr_set_xrc_srqn)(struct ibv_qp_ex* qp, uint32_t remote_srqn);
+
+  void (*wr_set_inline_data)(struct ibv_qp_ex* qp, void* addr, size_t length);
+  void (*wr_set_inline_data_list)(
+      struct ibv_qp_ex* qp,
+      size_t num_buf,
+      const struct ibv_data_buf* buf_list);
+  void (*wr_set_sge)(
+      struct ibv_qp_ex* qp,
+      uint32_t lkey,
+      uint64_t addr,
+      uint32_t length);
+  void (*wr_set_sge_list)(
+      struct ibv_qp_ex* qp,
+      size_t num_sge,
+      const struct ibv_sge* sg_list);
+
+  void (*wr_start)(struct ibv_qp_ex* qp);
+  int (*wr_complete)(struct ibv_qp_ex* qp);
+  void (*wr_abort)(struct ibv_qp_ex* qp);
+
+  void (*wr_atomic_write)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr,
+      const void* atomic_wr);
+  void (*wr_flush)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr,
+      size_t len,
+      uint8_t type,
+      uint8_t level);
 };
 
 enum ibv_flow_flags {
