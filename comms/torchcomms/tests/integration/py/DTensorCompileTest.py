@@ -15,7 +15,14 @@ a graph input rather than a captured constant.
 
 import copy
 import logging
+import os
 import unittest
+
+from comms.torchcomms.tests.helpers.py.test_helpers import (
+    skip_if_torch_compile_not_supported_or_enabled,
+)
+
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 
 import torch
 import torch.nn as nn
@@ -64,6 +71,7 @@ class MLP(nn.Module):
         return x
 
 
+@skip_if_torch_compile_not_supported_or_enabled()
 class DTensorCompileTest(unittest.TestCase):
     """Test class for DTensor operations with torch.compile using torchcomms."""
 

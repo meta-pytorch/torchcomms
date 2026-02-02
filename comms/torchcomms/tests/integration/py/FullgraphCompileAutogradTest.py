@@ -9,7 +9,7 @@ os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 
 import torch
 from torchcomms.tests.helpers.py.test_helpers import (  # noqa: E402
-    skip_unless_pytorch_version,
+    skip_if_torch_compile_not_supported_or_enabled,
 )
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
     TorchCommTestWrapper,
@@ -21,9 +21,7 @@ except ImportError:
     pass  # skip test down below will catch this
 
 
-@skip_unless_pytorch_version(
-    "2.12", "Requires PyTorch 2.12+ with torch.compile hotfixes"
-)
+@skip_if_torch_compile_not_supported_or_enabled()
 class FullgraphCompileAutogradTest(unittest.TestCase):
     def get_wrapper(self):
         return TorchCommTestWrapper()
