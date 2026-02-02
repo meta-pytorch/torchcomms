@@ -4,7 +4,10 @@
 
 import itertools
 import logging
+import os
 import unittest
+
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 
 import torch
 from torchcomms import ReduceOp, Timeout  # noqa: E402
