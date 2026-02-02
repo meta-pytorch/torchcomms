@@ -48,6 +48,12 @@ class TorchWorkRCCLX : public TorchWork {
   // Check the status of the work object
   WorkStatus checkStatus();
 
+  // Test-only accessors to verify tensor storage behavior
+  // Returns true if any tensors are stored in this work object
+  bool hasTensorsStored() const {
+    return !inputTensors_.empty() || inputTensor_.defined();
+  }
+
  protected:
   void recordStart(std::string_view coll_name);
   void recordEnd();

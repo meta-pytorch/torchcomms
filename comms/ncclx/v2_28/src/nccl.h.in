@@ -883,6 +883,17 @@ ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<
 #define NCCL_HAS_COMMS_TRACING_SERVICE_PORT
 ncclResult_t ncclCommsTracingServicePort(int& port);
 
+#define NCCL_HAS_DUMP_ALGO_STAT
+namespace ncclx::colltrace {
+
+// Dump collective algorithm statistics for a communicator.
+// Output map format: collective name -> algorithm name -> call count.
+// Requires NCCL_COLLTRACE=algostat to be enabled.
+// Clears and populates the output map. Empty if algostat not enabled or comm is null.
+void dumpAlgoStat(ncclComm_t comm, std::unordered_map<std::string, std::unordered_map<std::string, int64_t>>& map);
+
+} // namespace ncclx::colltrace
+
 namespace ncclx {
 
 /*
