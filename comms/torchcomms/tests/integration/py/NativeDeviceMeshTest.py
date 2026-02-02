@@ -13,6 +13,12 @@ to torchcomms when using init_native_device_mesh.
 import os
 import unittest
 
+from comms.torchcomms.tests.helpers.py.test_helpers import (
+    skip_if_torch_compile_not_supported_or_enabled,
+)
+
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
+
 import torch
 import torch.distributed._functional_collectives as funcol
 import torchcomms
@@ -20,6 +26,7 @@ from torchcomms.device_mesh import init_native_device_mesh
 from torchcomms.functional.async_tensor import TorchCommsAsyncTensor
 
 
+@skip_if_torch_compile_not_supported_or_enabled()
 class NativeDeviceMeshTest(unittest.TestCase):
     """Test class for native DeviceMesh funcol integration."""
 
