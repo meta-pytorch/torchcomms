@@ -33,7 +33,8 @@ Json::Value ProfilerTest::readTraceFile(
 
 void ProfilerTest::sanityCheckProfilerMeta(
     const Json::Value& json_value,
-    std::map<std::string, std::vector<Json::Value>>& events) {
+    std::map<std::string, std::vector<Json::Value>>& events,
+    const std::string& pgName) {
   ASSERT_GT(json_value["traceEvents"].size(), 1u);
 
   for (const auto& event : json_value["traceEvents"]) {
@@ -51,7 +52,7 @@ void ProfilerTest::sanityCheckProfilerMeta(
     }
     events[coll_name].push_back(args);
 
-    ASSERT_EQ(args["Process Group Name"], "comms_test_name");
+    ASSERT_EQ(args["Process Group Name"], pgName);
     ASSERT_NE(args["Process Group Ranks"], "");
 
     ASSERT_GE(args["In msg nelems"], 0);

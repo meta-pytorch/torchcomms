@@ -6,11 +6,14 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <thread>
+#include <vector>
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/backends/ib/CtranIb.h"
-#include "comms/ctran/backends/nvl/CtranNvl.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
+#include "comms/ctran/tests/CtranNcclTestUtils.h"
+#include "comms/ctran/utils/Debug.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "nccl.h"
@@ -19,7 +22,6 @@ class DistRegCacheTest : public NcclxBaseTest {
  public:
   int cudaDev{0};
   std::shared_ptr<ctran::RegCache> regCache{nullptr};
-  std::unique_ptr<ctran::IpcRegCache> ipcRegCache{nullptr};
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
@@ -40,9 +42,6 @@ class DistRegCacheTest : public NcclxBaseTest {
 
     regCache = ctran::RegCache::getInstance();
     ASSERT_NE(regCache, nullptr);
-
-    ipcRegCache = std::make_unique<ctran::IpcRegCache>();
-    ipcRegCache->init(cudaDev, &comm_->logMetaData_);
   }
 
   void TearDown() override {
@@ -92,6 +91,58 @@ class DistRegCacheTestSuite
     : public DistRegCacheTest,
       public ::testing::WithParamInterface<MemAllocType> {};
 
+TEST_P(DistRegCacheTestSuite, RegMem) {
+  // Expect IpcRegCache can locally register and deregister GPU buffer without
+  // internal error
+  const auto memType = GetParam();
+
+  const size_t size = 1024;
+  constexpr int numThreads = 10;
+  std::vector<void*> bufs(numThreads, nullptr);
+  for (int i = 0; i < numThreads; i++) {
+    std::vector<TestMemSegment> segments;
+    bufs[i] = ctran::CtranNcclTestHelpers::prepareBuf(size, memType, segments);
+    ASSERT_NE(bufs[i], nullptr);
+  }
+
+  // Stress regMem by multiple threads
+  std::vector<std::thread> threads;
+  for (int i = 0; i < numThreads; i++) {
+    std::thread t(
+        [&](int tid) {
+          void* ipcRegElem = nullptr;
+          CUDACHECK_TEST(cudaSetDevice(localRank));
+
+          // Help label in NCCL logging
+          std::string threadName = "TestThread" + std::to_string(tid);
+          ctran::commSetMyThreadLoggingName(threadName.c_str());
+
+          if (memType == kMemCudaMalloc) {
+            COMMCHECK_TEST(
+                ctran::IpcRegCache::regMem(
+                    bufs[tid], size, localRank, &ipcRegElem, true));
+          } else {
+            COMMCHECK_TEST(
+                ctran::IpcRegCache::regMem(
+                    bufs[tid], size, localRank, &ipcRegElem));
+          }
+
+          ASSERT_NE(ipcRegElem, nullptr);
+          ctran::IpcRegCache::deregMem(ipcRegElem);
+        },
+        i);
+    threads.push_back(std::move(t));
+  }
+
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  for (int i = 0; i < numThreads; i++) {
+    ctran::CtranNcclTestHelpers::releaseBuf(bufs[i], size, memType);
+  }
+}
+
 TEST_P(DistRegCacheTestSuite, ExportImportMem) {
   // Test that rank 0 can export a buffer and share with rank 1 for importing
   // via control message. After importing, rank 1 confirms remote access to the
@@ -102,11 +153,13 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
 
   auto& mapper = comm_->ctran_->mapper;
   ASSERT_NE(mapper, nullptr);
+  auto* ipcRegCache = mapper->ipcRegCachePtr();
+  ASSERT_NE(mapper, nullptr);
 
   std::unique_ptr<CtranIb> ctranIb;
   try {
     ctranIb = std::make_unique<CtranIb>(comm_, nullptr);
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend failed to allocate. Skip test";
   }
 
@@ -118,16 +171,9 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
   CtranIbEpochRAII epochRAII(ctranIb.get());
   if (globalRank == 0) {
     const int peer = 1;
-    void* dataBase = nullptr;
-    if (memType == kMemCudaMalloc) {
-      CUDACHECK_TEST(cudaMalloc(&dataBase, bufSize));
-    } else {
-#if !defined(USE_ROCM)
-      NCCLCHECK_TEST(ncclMemAlloc(&dataBase, bufSize));
-#else
-      GTEST_SKIP() << "CuMem API is not supported on AMD, skip test";
-#endif
-    };
+    std::vector<TestMemSegment> segments;
+    void* dataBase =
+        ctran::CtranNcclTestHelpers::prepareBuf(bufSize, memType, segments);
     ASSERT_NE(dataBase, nullptr);
 
     void* data = reinterpret_cast<void*>(
@@ -147,36 +193,28 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
 
     ControlMsg msg(ControlMsgType::NVL_EXPORT_MEM);
     COMMCHECK_TEST(
-        ipcRegCache->exportMem(data, regHdl->nvlRegElem, msg.nvlDesc));
+        ipcRegCache->exportMem(data, regHdl->ipcRegElem, msg.ipcDesc));
     ctran::regcache::IpcRegElem* ipcRegElem =
-        reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->nvlRegElem);
+        reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
     auto ipcMem = ipcRegElem->ipcMem.rlock();
 
     EXPECT_EQ(msg.type, ControlMsgType::NVL_EXPORT_MEM);
-    EXPECT_EQ(msg.nvlDesc.ipcDesc.range, ipcMem->getRange());
-    EXPECT_EQ(msg.nvlDesc.ipcDesc.numSegments, 1);
-    EXPECT_NE(msg.nvlDesc.ipcDesc.segments[0].sharedHandle.fd, 0);
-    EXPECT_GT(msg.nvlDesc.ipcDesc.segments[0].range, 0);
-    EXPECT_EQ(msg.nvlDesc.ipcDesc.pid, getpid());
-    EXPECT_EQ(msg.nvlDesc.offset, dataOffset);
+    EXPECT_EQ(msg.ipcDesc.desc.range, ipcMem->getRange());
+    EXPECT_EQ(msg.ipcDesc.desc.numSegments, 1);
+    EXPECT_NE(msg.ipcDesc.desc.segments[0].sharedHandle.fd, 0);
+    EXPECT_GT(msg.ipcDesc.desc.segments[0].range, 0);
+    EXPECT_EQ(msg.ipcDesc.desc.pid, getpid());
+    EXPECT_EQ(msg.ipcDesc.offset, dataOffset);
     COMMCHECK_TEST(ibSendCtrl(msg, peer, ctranIb));
 
     // send release-mem msg to peer
     ctranIb->waitNotify(peer);
     ControlMsg releaseMsg(ControlMsgType::NVL_RELEASE_MEM);
-    releaseMsg.nvlRls.base = msg.nvlDesc.ipcDesc.base;
+    releaseMsg.ipcRls.base = msg.ipcDesc.desc.base;
     COMMCHECK_TEST(ibSendCtrl(releaseMsg, peer, ctranIb));
 
     COMMCHECK_TEST(mapper->deregMem(segHdl, true));
-    if (memType == kMemCudaMalloc) {
-      CUDACHECK_TEST(cudaFree(dataBase));
-    } else {
-#if !defined(USE_ROCM)
-      NCCLCHECK_TEST(ncclMemFree(dataBase));
-#else
-      GTEST_SKIP() << "CuMem API is not supported on AMD, skip test";
-#endif
-    };
+    ctran::CtranNcclTestHelpers::releaseBuf(dataBase, bufSize, memType);
 
   } else if (globalRank == 1) {
     const int peer = 0;
@@ -184,15 +222,15 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
     ControlMsg msg;
     COMMCHECK_TEST(ibRecvCtrl(msg, peer, ctranIb));
     EXPECT_EQ(msg.type, ControlMsgType::NVL_EXPORT_MEM);
-    EXPECT_GE(msg.nvlDesc.ipcDesc.range, dataRange);
+    EXPECT_GE(msg.ipcDesc.desc.range, dataRange);
 
     void* mappedData = nullptr;
     CtranMapperRemoteAccessKey remKey{};
     remKey.backend = CtranMapperBackend::NVL;
     COMMCHECK_TEST(ipcRegCache->importMem(
-        peerId, msg.nvlDesc, &mappedData, &remKey.nvlKey));
+        peerId, msg.ipcDesc, &mappedData, &remKey.nvlKey));
     EXPECT_NE(mappedData, nullptr);
-    EXPECT_EQ(remKey.nvlKey.basePtr, msg.nvlDesc.ipcDesc.base);
+    EXPECT_EQ(remKey.nvlKey.basePtr, msg.ipcDesc.desc.base);
 
     COMMCHECK_TEST(ibNotify(peer, ctranIb));
 
@@ -202,10 +240,10 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
     ControlMsg releaseMsg(ControlMsgType::NVL_RELEASE_MEM);
     COMMCHECK_TEST(ibRecvCtrl(releaseMsg, peer, ctranIb));
     EXPECT_EQ(releaseMsg.type, ControlMsgType::NVL_RELEASE_MEM);
-    EXPECT_EQ(releaseMsg.nvlRls.base, msg.nvlDesc.ipcDesc.base);
+    EXPECT_EQ(releaseMsg.ipcRls.base, msg.ipcDesc.desc.base);
 
     COMMCHECK_TEST(ipcRegCache->releaseRemReg(
-        peerId, reinterpret_cast<void*>(msg.nvlDesc.ipcDesc.base)));
+        peerId, reinterpret_cast<void*>(msg.ipcDesc.desc.base)));
 
     EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
   }
@@ -215,7 +253,7 @@ INSTANTIATE_TEST_SUITE_P(
     DistRegCacheInstance,
     DistRegCacheTestSuite,
 #if !defined(USE_ROCM)
-    ::testing::Values(kMemNcclMemAlloc, kMemCudaMalloc));
+    ::testing::Values(kMemNcclMemAlloc, kMemCudaMalloc, kCuMemAllocDisjoint));
 #else
     ::testing::Values(kMemCudaMalloc));
 #endif
