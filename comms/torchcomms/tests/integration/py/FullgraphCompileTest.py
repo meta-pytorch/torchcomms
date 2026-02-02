@@ -4,35 +4,9 @@
 
 import itertools
 import logging
-import os
-import subprocess
-import sys
 import unittest
 
 import torch
-
-os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
-
-
-# Inline version check to avoid importing torchcomms before we know it works
-def _can_import_torchcomms() -> bool:
-    code = 'import torchcomms; print("SUCCESS")'
-    try:
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            env=os.environ.copy(),
-        )
-        return result.stdout.strip() == "SUCCESS"
-    except Exception:
-        return False
-
-
-if not _can_import_torchcomms():
-    raise unittest.SkipTest("PyTorch version does not support torch.compile")
-
 from torchcomms import ReduceOp, Timeout  # noqa: E402
 from torchcomms.tests.helpers.py.test_helpers import (  # noqa: E402
     skip_unless_pytorch_version,
