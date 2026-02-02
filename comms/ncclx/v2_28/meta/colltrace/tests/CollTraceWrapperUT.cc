@@ -4,10 +4,13 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <folly/String.h>
+
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/colltrace/CollMetadata.h"
 #include "comms/utils/colltrace/CollMetadataImpl.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/colltrace/CollTraceWrapper.h"
 
 using namespace meta::comms::ncclx;
@@ -288,3 +291,66 @@ TEST_F(CollTraceWrapperUT, getMetadataFromNcclKernelPlan_CollectiveAndP2p) {
   EXPECT_EQ(dynamic["recvbuff"].asInt(), 0x2000);
   EXPECT_EQ(dynamic["count"].asInt(), 1024);
 }
+
+// Test fixture for newCollTraceInit configuration tests
+class CollTraceInitConfigTest
+    : public ::testing::Test,
+      public ::testing::WithParamInterface<std::vector<std::string>> {
+ public:
+  void SetUp() override {
+    ncclUniqueId id;
+    NCCLCHECK_TEST(ncclGetUniqueId(&id));
+    NCCLCHECK_TEST(ncclCommInitRank(&comm_, 1, id, 0));
+  }
+
+  void TearDown() override {
+    if (comm_ != nullptr) {
+      ncclCommDestroy(comm_);
+    }
+  }
+
+ protected:
+  ncclComm_t comm_{nullptr};
+};
+
+TEST_P(CollTraceInitConfigTest, ConfigCombinations) {
+  auto config = GetParam();
+
+  // Use EnvRAII for clean cvar override (always use new colltrace)
+  EnvRAII colltraceGuard(NCCL_COLLTRACE, config);
+  EnvRAII useNewGuard(NCCL_COLLTRACE_USE_NEW_COLLTRACE, true);
+
+  // Compute expected values based on config input
+  bool expectAlgoStats =
+      std::find(config.begin(), config.end(), "algostat") != config.end();
+  bool expectNewCollTrace =
+      std::any_of(config.begin(), config.end(), [](const auto& s) {
+        return s == "verbose" || s == "trace";
+      });
+
+  // Reset any existing state
+  comm_->algoStats.reset();
+  comm_->newCollTrace.reset();
+
+  auto result = newCollTraceInit(comm_);
+
+  EXPECT_EQ(result, ncclSuccess);
+  EXPECT_EQ(comm_->algoStats != nullptr, expectAlgoStats);
+  EXPECT_EQ(comm_->newCollTrace != nullptr, expectNewCollTrace);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ConfigCombinations,
+    CollTraceInitConfigTest,
+    ::testing::Values(
+        std::vector<std::string>{"algostat"},
+        std::vector<std::string>{"trace"},
+        std::vector<std::string>{"verbose"},
+        std::vector<std::string>{"algostat", "trace"},
+        std::vector<std::string>{}),
+    [](const ::testing::TestParamInfo<std::vector<std::string>>& info) {
+      if (info.param.empty()) {
+        return std::string("Empty");
+      }
+      return folly::join("_", info.param);
+    });

@@ -250,6 +250,17 @@ class TorchCommRCCLX : public TorchCommBackend,
   void register_address(const AddressWithLen& addr);
   void deregister_address(const Address& addr);
 
+ protected:
+  // Virtual to allow mocking in tests (D91705167)
+  virtual c10::intrusive_ptr<TorchWorkRCCLX> createWork(
+      hipStream_t stream,
+      std::chrono::milliseconds timeout,
+      const std::vector<at::Tensor>& inputTensors = {});
+  virtual c10::intrusive_ptr<TorchWorkRCCLX> createWork(
+      hipStream_t stream,
+      std::chrono::milliseconds timeout,
+      const at::Tensor& inputTensor);
+
  private:
   // Helper that automatically cleans up premul sums.
   struct RedOpRAII {
@@ -338,14 +349,6 @@ class TorchCommRCCLX : public TorchCommBackend,
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
   void garbageCollectWorkQueues();
-  c10::intrusive_ptr<TorchWorkRCCLX> createWork(
-      hipStream_t stream,
-      std::chrono::milliseconds timeout,
-      const std::vector<at::Tensor>& inputTensors = {});
-  c10::intrusive_ptr<TorchWorkRCCLX> createWork(
-      hipStream_t stream,
-      std::chrono::milliseconds timeout,
-      const at::Tensor& inputTensor);
 
   void enqueueWork(
       const c10::intrusive_ptr<TorchWorkRCCLX>& work,
