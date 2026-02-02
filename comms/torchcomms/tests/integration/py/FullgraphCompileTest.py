@@ -5,17 +5,38 @@
 import itertools
 import logging
 import os
+import subprocess
+import sys
 import unittest
 
 import torch
 
 os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 
-from torchcomms.tests.helpers.py.test_helpers import skip_if_pytorch_version_unsupported
 
-skip_if_pytorch_version_unsupported()
+# Inline version check to avoid importing torchcomms before we know it works
+def _can_import_torchcomms() -> bool:
+    code = 'import torchcomms; print("SUCCESS")'
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=os.environ.copy(),
+        )
+        return result.stdout.strip() == "SUCCESS"
+    except Exception:
+        return False
+
+
+if not _can_import_torchcomms():
+    raise unittest.SkipTest("PyTorch version does not support torch.compile")
 
 from torchcomms import ReduceOp, Timeout  # noqa: E402
+from torchcomms.tests.helpers.py.test_helpers import (  # noqa: E402
+    skip_unless_pytorch_version,
+)
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
     get_dtype_name,
     get_op_name,
@@ -26,6 +47,9 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
+@skip_unless_pytorch_version(
+    "2.12", "Requires PyTorch 2.12+ with torch.compile hotfixes"
+)
 class FullgraphCompileTest(unittest.TestCase):
     """Test class for torch.compile fullgraph mode with TorchComm operations."""
 

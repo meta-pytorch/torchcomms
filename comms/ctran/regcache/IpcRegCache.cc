@@ -5,6 +5,46 @@
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+commResult_t ctran::IpcRegCache::regMem(
+    const void* buf,
+    const size_t len,
+    const int cudaDev,
+    void** ipcRegElem,
+    bool shouldSupportCudaMalloc) {
+  auto reg = new ctran::regcache::IpcRegElem(buf, len, cudaDev);
+  bool supported = false;
+
+  FB_COMMCHECK(reg->tryLoad(supported, shouldSupportCudaMalloc));
+  if (supported) {
+    CLOGF_TRACE(
+        COLL, "CTRAN-REGCACHE: Registered IPC memory {}", reg->toString());
+
+    *ipcRegElem = reinterpret_cast<void*>(reg);
+  } else {
+    // Return nullptr to indicate unsupported memory type
+    delete reg;
+    *ipcRegElem = nullptr;
+  }
+
+  return commSuccess;
+}
+
+void ctran::IpcRegCache::deregMem(void* ipcRegElem) {
+  auto reg = reinterpret_cast<ctran::regcache::IpcRegElem*>(ipcRegElem);
+
+  CLOGF_TRACE(
+      COLL, "CTRAN-REGCACHE: Deregistered IPC memory {}", reg->toString());
+  // Memory handle release in ~CtranIpcMem()
+  delete reg;
+}
+
+void ctran::IpcRegCache::remReleaseMem(
+    void* ipcRegElem,
+    ctran::regcache::IpcRelease& ipcRelease) {
+  auto reg = reinterpret_cast<ctran::regcache::IpcRegElem*>(ipcRegElem);
+  ipcRelease.base = reg->ipcMem.rlock()->getBase();
+}
+
 ctran::IpcRegCache::IpcRegCache() : cudaDev_(0), logMetaData_(nullptr) {}
 
 void ctran::IpcRegCache::init(
@@ -20,24 +60,24 @@ ctran::IpcRegCache::~IpcRegCache() {
 
 commResult_t ctran::IpcRegCache::importMem(
     const std::string& peerId,
-    const ctran::regcache::IpcDesc& nvlDesc,
+    const ctran::regcache::IpcDesc& ipcDesc,
     void** buf,
     struct ctran::regcache::IpcRemHandle* remKey) {
   void* basePtr = nullptr;
-  FB_COMMCHECK(importRemMemImpl(peerId, nvlDesc.ipcDesc, &basePtr));
+  FB_COMMCHECK(importRemMemImpl(peerId, ipcDesc.desc, &basePtr));
 
   // import from baseAddr of a remote segment, return buf at offset from
   // baseAddr
-  *buf = reinterpret_cast<char*>(basePtr) + nvlDesc.offset;
+  *buf = reinterpret_cast<char*>(basePtr) + ipcDesc.offset;
   remKey->peerId = peerId;
-  remKey->basePtr = nvlDesc.ipcDesc.base;
+  remKey->basePtr = ipcDesc.desc.base;
   CLOGF_TRACE(
       COLL,
       "CTRAN-REGCACHE: Imported NVL remote mem from peer {}: buf {} (base {} offset {})",
       peerId,
       (void*)*buf,
       (void*)basePtr,
-      nvlDesc.offset);
+      ipcDesc.offset);
   return commSuccess;
 }
 
