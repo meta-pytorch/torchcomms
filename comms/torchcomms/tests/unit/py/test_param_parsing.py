@@ -244,10 +244,15 @@ class TestParsedArgs(unittest.TestCase):
         self.assertEqual(values[2], True)
 
 
-class DummyClass(metaclass=torch._opaque_base.OpaqueBaseMeta):
-    """Dummy class for testing opaque type registration."""
+try:
+    from torch._opaque_base import OpaqueBaseMeta
 
-    pass
+    class DummyClass(metaclass=OpaqueBaseMeta):
+        """Dummy class for testing opaque type registration."""
+
+        pass
+except ImportError:
+    pass  # skip test down below will catch this
 
 
 @skip_unless_pytorch_version(
