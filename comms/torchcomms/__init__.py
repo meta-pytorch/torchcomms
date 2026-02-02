@@ -9,16 +9,11 @@ from importlib.metadata import entry_points
 
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
+from torchcomms.functional import is_torch_compile_supported_and_enabled
 
+torch_compile_supported_and_enabled = is_torch_compile_supported_and_enabled()
 
-torchcomms_compile_support_enabled: bool = os.environ.get(
-    "TORCHCOMMS_PATCH_FOR_COMPILE", ""
-).lower() in (
-    "1",
-    "true",
-)
-
-if torchcomms_compile_support_enabled:
+if torch_compile_supported_and_enabled:
     from torch._opaque_base import OpaqueBaseMeta
 
     # make the metaclass available to the pybind module
@@ -46,8 +41,15 @@ def _load_libtorchcomms() -> None:
 
 
 _load_libtorchcomms()
-from torchcomms._comms import *  # noqa: F401, F403
-import torchcomms.objcol as objcol  # noqa: F401, F403
+from torchcomms._comms import *  # noqa: E402, F401, F403
+import torchcomms.objcol as objcol  # noqa: E402, F401, F403
+
+if torch_compile_supported_and_enabled:
+    # Import collectives first to ensure all operations are registered
+    # This must happen before patch_torchcomm() so that window operations
+    # and other collectives are registered and can be patched
+    from torchcomms.functional import collectives  # noqa: F401
+
 
 # The documentation uses __all__ to determine what is documented and in what
 # order.
