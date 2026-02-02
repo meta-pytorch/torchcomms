@@ -10,7 +10,6 @@ import unittest
 os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 
 import torch
-from torchcomms import ReduceOp, Timeout  # noqa: E402
 from torchcomms.tests.helpers.py.test_helpers import (  # noqa: E402
     skip_unless_pytorch_version,
 )
@@ -22,6 +21,12 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+
+
+try:
+    from torchcomms import ReduceOp, Timeout  # noqa: E402
+except ImportError:
+    pass  # skip test down below will catch this
 
 
 @skip_unless_pytorch_version(
