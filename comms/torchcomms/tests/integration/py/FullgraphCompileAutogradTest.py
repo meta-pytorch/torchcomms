@@ -2,7 +2,10 @@
 # pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+import os
 import unittest
+
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 
 import torch
 from torchcomms.tests.helpers.py.test_helpers import (  # noqa: E402
