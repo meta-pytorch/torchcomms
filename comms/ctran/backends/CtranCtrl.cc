@@ -5,7 +5,6 @@
 #include "comms/utils/logger/LogUtils.h"
 
 const std::string CmsgIbExportMem::name = "IB_EXPORT_MEM";
-const std::string CmsgNvlReleaseMem::name = "NVL_RELEASE_MEM";
 
 commResult_t CtranCtrlManager::regCb(int type, ContrlMsgCbFn fn, void* ctx) {
   if (this->hasCb(type)) {
