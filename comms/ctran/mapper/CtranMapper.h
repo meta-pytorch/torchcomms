@@ -1087,7 +1087,7 @@ class CtranMapper {
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
       FB_COMMCHECK(
-          ipcRegCache_->exportMem(buf, regElem->nvlRegElem, msg.nvlDesc));
+          ipcRegCache_->exportMem(buf, regElem->ipcRegElem, msg.ipcDesc));
 
       // Record the exported remote rank to notify at deregistration
       exportRegCache_.wlock()->record(regElem, rank);
@@ -1137,7 +1137,7 @@ class CtranMapper {
         remKey->backend = CtranMapperBackend::NVL;
         const std::string peerId = comm->statex_->gPid(rank);
         FB_COMMCHECK(ipcRegCache_->importMem(
-            peerId, msg.nvlDesc, buf, &(remKey->nvlKey)));
+            peerId, msg.ipcDesc, buf, &(remKey->nvlKey)));
         break;
       }
       default:
@@ -1154,7 +1154,7 @@ class CtranMapper {
       ctran::regcache::RegElem* regElem,
       int rank) {
     if (this->ctranNvl && this->ctranNvl->isSupported(rank) &&
-        regElem->nvlRegElem) {
+        regElem->ipcRegElem) {
       return CtranMapperBackend::NVL;
     } else if (this->ctranIb && regElem->ibRegElem) {
       return CtranMapperBackend::IB;
@@ -1985,7 +1985,7 @@ class CtranMapper {
   // instance and erase after completion.
   std::deque<std::unique_ptr<CbCtrlRequest>> postedCbCtrlReqs_;
 
-  // Record remote ranks that each nvlRegElem has exported to.
+  // Record remote ranks that each ipcRegElem has exported to.
   // - For each remote rank, the local rank will send RELEASE_MEM ctrlmsg to
   //   the remote rank at deregMem.
   // - The export cache is maintained per communicator in order to ensure a
