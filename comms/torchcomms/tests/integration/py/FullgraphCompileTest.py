@@ -7,38 +7,38 @@ import logging
 import os
 import unittest
 
+from torchcomms.functional import is_torch_compile_supported_and_enabled
+from torchcomms.tests.helpers.py.test_helpers import (
+    skip_if_torch_compile_not_supported_or_enabled,
+)
+
 os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 
 import torch
-from torchcomms.tests.helpers.py.test_helpers import (  # noqa: E402
-    skip_unless_pytorch_version,
-)
-from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
-    get_dtype_name,
-    get_op_name,
-    TorchCommTestWrapper,
-)
+
+
+if is_torch_compile_supported_and_enabled():
+    from torchcomms import ReduceOp, Timeout  # noqa: E402
+    from torchcomms.tests.integration.py.TorchCommTestHelpers import (  # noqa: E402
+        get_dtype_name,
+        get_op_name,
+        TorchCommTestWrapper,
+    )
+else:
+    ReduceOp = None
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 
-try:
-    from torchcomms import ReduceOp, Timeout  # noqa: E402
-except ImportError:
-    pass  # skip test down below will catch this
-
-
-@skip_unless_pytorch_version(
-    "2.12", "Requires PyTorch 2.12+ with torch.compile hotfixes"
-)
+@skip_if_torch_compile_not_supported_or_enabled()
 class FullgraphCompileTest(unittest.TestCase):
     """Test class for torch.compile fullgraph mode with TorchComm operations."""
 
     # Class variables for test parameters
     counts = [4, 1024]
     dtypes = [torch.float, torch.int]
-    ops = [ReduceOp.SUM, ReduceOp.MAX]
+    ops = [ReduceOp.SUM, ReduceOp.MAX] if ReduceOp is not None else []
 
     def get_wrapper(self):
         return TorchCommTestWrapper()
