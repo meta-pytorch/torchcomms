@@ -17,7 +17,10 @@ constexpr at::ScalarType kProfilerTestTensorDtype = at::kFloat;
 // RAII guard for profiler setup/teardown
 class ProfilerGuard {
  public:
-  ProfilerGuard() {
+  ProfilerGuard(
+      const std::set<torch::autograd::profiler::ActivityType>& activities = {
+          torch::autograd::profiler::ActivityType::CPU,
+          torch::autograd::profiler::ActivityType::CUDA}) {
     torch::autograd::profiler::ProfilerConfig cfg{
         torch::autograd::profiler::ProfilerState::KINETO,
         true,
@@ -25,9 +28,7 @@ class ProfilerGuard {
         false,
         false,
         false};
-    std::set<torch::autograd::profiler::ActivityType> activities{
-        torch::autograd::profiler::ActivityType::CPU,
-        torch::autograd::profiler::ActivityType::CUDA};
+
     torch::autograd::profiler::prepareProfiler(cfg, activities);
     torch::autograd::profiler::enableProfiler(cfg, activities);
   }
@@ -78,7 +79,8 @@ class ProfilerTest : public ::testing::Test {
 
   static void sanityCheckProfilerMeta(
       const Json::Value& json_value,
-      std::map<std::string, std::vector<Json::Value>>& events);
+      std::map<std::string, std::vector<Json::Value>>& events,
+      const std::string& pgName);
 
   c10::intrusive_ptr<torch::comms::TorchWork> runAllCollectiveOperations();
 

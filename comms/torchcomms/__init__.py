@@ -86,5 +86,5 @@ def _load_backend(backend: str) -> None:
         raise ModuleNotFoundError(
             f"failed to find backend {backend}, is it registered via entry_points.txt?"
         )
-    (wheel,) = found
+    wheel = next(iter(found))
     wheel.load()

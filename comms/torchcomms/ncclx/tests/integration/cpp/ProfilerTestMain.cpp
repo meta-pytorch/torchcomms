@@ -63,7 +63,7 @@ TEST_F(ProfilerNcclxTest, AllTests) {
   if (rank_ == 0) {
     Json::Value json_value = readTraceFile(trace_file);
     std::map<std::string, std::vector<Json::Value>> events;
-    sanityCheckProfilerMeta(json_value, events);
+    sanityCheckProfilerMeta(json_value, events, "comms_test_name");
 
     // Call the validation function
     validation_func_(events);
