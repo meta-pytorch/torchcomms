@@ -439,7 +439,8 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
       std::unique_ptr<CbCtrlRequest> req =
           std::make_unique<CbCtrlRequest>(peerRank, backend);
 
-      FB_COMMCHECK(CtranNvl::remReleaseMem(regElem->nvlRegElem, req->msg));
+      req->msg.setType(ControlMsgType::NVL_RELEASE_MEM);
+      ctran::IpcRegCache::remReleaseMem(regElem->ipcRegElem, req->msg.ipcRls);
       if (this->ctranIb) {
         FB_COMMCHECK(this->ctranIb->isendCtrlMsg(
             req->msg.type,
@@ -472,7 +473,7 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
 commResult_t CtranMapper::releaseMemCb(int rank, void* msgPtr, void* ctx) {
   auto mapper = reinterpret_cast<CtranMapper*>(ctx);
   auto msg = reinterpret_cast<ControlMsg*>(msgPtr);
-  auto& deregMsg = msg->nvlRls;
+  auto& deregMsg = msg->ipcRls;
   CLOGF_TRACE(
       COLL,
       "CTRAN-MAPPER: Handle received CB ctrlmsg from rank {}: {}",
