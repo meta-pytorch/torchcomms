@@ -10,6 +10,7 @@
 #include "comms/ctran/ibverbx/IbvSrq.h"
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
+#include "comms/ctran/ibverbx/Mlx5core.h"
 
 namespace ibverbx {
 
