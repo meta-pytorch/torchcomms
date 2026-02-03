@@ -463,34 +463,34 @@ __global__ void ncclKernelAllReduceARG(
 extern __global__ void ncclKernelSend(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendArgs args);
+    ctran::sendrecv::KernelSendArgs args);
 
 template <bool UNPACK>
 extern __global__ void ncclKernelRecv(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelRecvArgs args);
+    ctran::sendrecv::KernelRecvArgs args);
 
 template <bool UNPACK>
 extern __global__ void ncclKernelSendRecv(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendRecvArgs args);
+    ctran::sendrecv::KernelSendRecvArgs args);
 
 extern __global__ void ncclKernelSendNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendArgs args);
+    ctran::sendrecv::KernelSendArgs args);
 
 extern __global__ void ncclKernelRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelRecvArgs args);
+    ctran::sendrecv::KernelRecvArgs args);
 
 extern __global__ void ncclKernelSendRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendRecvArgs args);
+    ctran::sendrecv::KernelSendRecvArgs args);
 
 extern __global__ void ncclKernelSendRecvStaged(
     int* flag,
