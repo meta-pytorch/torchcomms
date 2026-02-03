@@ -1,9 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <unordered_map>
 
+#include <folly/Hash.h>
 #include <folly/SocketAddress.h>
 #include <folly/Synchronized.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
@@ -98,12 +100,13 @@ class IpcRegCache {
     FB_COMMCHECK(ipcMem->ipcExport(ipcDesc.desc));
     ipcDesc.offset = reinterpret_cast<size_t>(buf) -
         reinterpret_cast<size_t>(ipcMem->getBase());
+    ipcDesc.uid = reg->uid;
     return commSuccess;
   }
 
-  // Release a specific remote registration for a given peer and base
-  // pointer.
-  commResult_t releaseRemReg(const std::string& peerId, void* basePtr);
+  // Release a specific remote registration for a given peer.
+  commResult_t
+  releaseRemReg(const std::string& peerId, void* basePtr, uint32_t uid);
 
   // Get the number of existing remote registrations for a given peer
   size_t getNumRemReg(const std::string& peerId) const;
@@ -144,7 +147,7 @@ class IpcRegCache {
   // Internal implementation for importing and caching remote NVL memory.
   commResult_t importRemMemImpl(
       const std::string& peerId,
-      const ctran::utils::CtranIpcDesc& ipcDesc,
+      const ctran::regcache::IpcDesc& ipcDesc,
       void** mappedBase);
 
   // Initialize the AsyncSocket infrastructure for this rank.
@@ -157,14 +160,17 @@ class IpcRegCache {
   void stopAsyncSocket();
 
   // Cache of imported IPC remote registrations
-  // Key: peer name -> (remote base pointer -> ctran::regcache::IpcRemRegElem)
-  // This cache enables reuse of imported registrations across multiple
-  // collective operations without re-importing the same memory.
+  // Key: peer name -> ((remote base pointer, uid) ->
+  // ctran::regcache::IpcRemRegElem) This cache enables reuse of imported
+  // registrations across multiple collective operations without re-importing
+  // the same memory.
+  using IpcRemRegKey = std::pair<uint64_t, uint32_t>; // (base pointer, uid)
   using IpcRemRegMap = std::unordered_map<
       std::string, // peer name
       std::unordered_map<
-          uint64_t, // remote base pointer
-          std::unique_ptr<ctran::regcache::IpcRemRegElem>>>;
+          IpcRemRegKey,
+          std::unique_ptr<ctran::regcache::IpcRemRegElem>,
+          folly::Hash>>;
   folly::Synchronized<IpcRemRegMap> ipcRemRegMap_;
 
   int cudaDev_;
@@ -174,6 +180,9 @@ class IpcRegCache {
   std::unique_ptr<folly::ScopedEventBaseThread> asyncSocketEvbThread_;
   std::unique_ptr<ctran::bootstrap::AsyncServerSocket> asyncServerSocket_;
   folly::SocketAddress serverAddr_;
+
+  // Monotonically increasing unique ID counter for IPC registrations
+  static std::atomic<uint32_t> nextUniqueId_;
 };
 
 } // namespace ctran

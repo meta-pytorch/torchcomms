@@ -16,19 +16,26 @@ struct IpcDesc {
   ctran::utils::CtranIpcDesc desc;
   // offset since the base of desc
   size_t offset{0};
+  // unique ID for tracking registrations
+  uint32_t uid{0};
 
   std::string toString() const {
     return fmt::format(
-        "[IPC_MEM_DESC] offset: 0x{:x} {}", offset, desc.toString());
+        "[IPC_MEM_DESC] offset: 0x{:x} uid: {} {}",
+        offset,
+        uid,
+        desc.toString());
   }
 };
 
 struct IpcRelease {
   void* base{nullptr};
+  // unique ID for tracking registrations
+  uint32_t uid{0};
 
   std::string toString() const {
     std::stringstream ss;
-    ss << "[IPC_RELEASE_MEM] base: " << base;
+    ss << "[IPC_RELEASE_MEM] base: " << base << " uid: " << uid;
     return ss.str();
   }
 };
@@ -37,12 +44,15 @@ struct IpcRegElem {
   // User passed addr, size at ncclCommRegister
   const void* buf{nullptr};
   const size_t len{0};
+  // unique ID for tracking registrations
+  const uint32_t uid{0};
   folly::Synchronized<ctran::utils::CtranIpcMem> ipcMem;
 
  public:
-  IpcRegElem(const void* buf, const size_t len, int cudaDev)
+  IpcRegElem(const void* buf, const size_t len, int cudaDev, uint32_t uid)
       : buf(buf),
         len(len),
+        uid(uid),
         ipcMem(ctran::utils::CtranIpcMem(cudaDev, "IPC RegElem")) {};
   ~IpcRegElem() {};
 
@@ -53,7 +63,11 @@ struct IpcRegElem {
 
   std::string toString() const {
     return fmt::format(
-        "buf: {}, len: {}, ipcMem: {}", buf, len, ipcMem.rlock()->toString());
+        "buf: {}, len: {}, uid: {}, ipcMem: {}",
+        buf,
+        len,
+        uid,
+        ipcMem.rlock()->toString());
   }
 };
 
@@ -73,13 +87,15 @@ struct IpcRemRegElem {
 };
 
 struct IpcRemHandle {
-  // use peerId and basePtr on peer to lookup the imported memory handle
+  // use peerId, basePtr and uid on peer to lookup the imported memory handle
   // in local cache
   std::string peerId;
   void* basePtr;
+  uint32_t uid;
 
   std::string toString() const {
-    return fmt::format("peerId: {}, basePtr: {}", peerId, basePtr);
+    return fmt::format(
+        "peerId: {}, basePtr: {}, uid: {}", peerId, basePtr, uid);
   }
 };
 
