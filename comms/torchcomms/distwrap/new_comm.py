@@ -155,7 +155,9 @@ def new_group(
 ) -> ProcessGroup:
     if not dist.is_initialized():
         raise AssertionError("new_group called before init_process_group")
-    pg_info_assert_registered(dist.group.WORLD)
+    world_pg = dist.group.WORLD
+    assert world_pg is not None
+    pg_info_assert_registered(world_pg)
 
     if torchcomms_is_enabled():
         raise AssertionError(
@@ -313,6 +315,7 @@ def split_group(  # noqa: C901
                 parent_pg, my_group_ranks, timeout, pg_options, group_desc
             )
 
+        assert new_pg is not None
         # Register the new process group
         pg_info_create(new_pg, my_group_ranks, group_desc)
 

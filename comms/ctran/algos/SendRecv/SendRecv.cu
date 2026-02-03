@@ -18,7 +18,7 @@ __shared__ UnpackBlockState sendRecvUnpack;
 __global__ void __launch_bounds__(1024, 1) ncclKernelSend(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendArgs args) {
+    ctran::sendrecv::KernelSendArgs args) {
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
@@ -48,7 +48,7 @@ template <bool UNPACK>
 __global__ void __launch_bounds__(1024, 1) ncclKernelRecv(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelRecvArgs args) {
+    ctran::sendrecv::KernelRecvArgs args) {
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
@@ -83,7 +83,7 @@ template <bool UNPACK>
 __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecv(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendRecvArgs args) {
+    ctran::sendrecv::KernelSendRecvArgs args) {
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
 
@@ -124,7 +124,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecv(
 __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendRecvArgs args) {
+    ctran::sendrecv::KernelSendRecvArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
@@ -152,7 +152,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendRecvNotifyOnly(
 __global__ void __launch_bounds__(1024, 1) ncclKernelSendNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelSendArgs args) {
+    ctran::sendrecv::KernelSendArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
@@ -175,7 +175,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelSendNotifyOnly(
 __global__ void __launch_bounds__(1, 1) ncclKernelRecvNotifyOnly(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelRecvArgs args) {
+    ctran::sendrecv::KernelRecvArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
@@ -195,11 +195,15 @@ __global__ void __launch_bounds__(1, 1) ncclKernelRecvNotifyOnly(
   }
 }
 
-#define DECL_SENDRECV_KERN(UNPACK)                                          \
-  template __global__ void ncclKernelRecv<UNPACK>(                          \
-      int* flag, CtranAlgoDeviceState* devState, CtranKernelRecvArgs args); \
-  template __global__ void ncclKernelSendRecv<UNPACK>(                      \
-      int* flag, CtranAlgoDeviceState* devState, CtranKernelSendRecvArgs args)
+#define DECL_SENDRECV_KERN(UNPACK)                     \
+  template __global__ void ncclKernelRecv<UNPACK>(     \
+      int* flag,                                       \
+      CtranAlgoDeviceState* devState,                  \
+      ctran::sendrecv::KernelRecvArgs args);           \
+  template __global__ void ncclKernelSendRecv<UNPACK>( \
+      int* flag,                                       \
+      CtranAlgoDeviceState* devState,                  \
+      ctran::sendrecv::KernelSendRecvArgs args)
 
 DECL_SENDRECV_KERN(/*UNPACK=*/false);
 DECL_SENDRECV_KERN(/*UNPACK=*/true);
