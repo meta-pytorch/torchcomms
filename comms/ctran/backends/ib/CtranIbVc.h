@@ -9,9 +9,9 @@
 #include <vector>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/ib/CtranIbBase.h"
-#include "comms/ctran/backends/ib/CtranIbQpUtils.h"
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
 #include "comms/ctran/backends/ib/IbvWrap.h"
+#include "comms/ctran/ibverbx/IbvQpUtils.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranPerf.h"
@@ -28,6 +28,8 @@ typedef std::pair<int, int> QpUniqueId;
 // Fix-sized payload buffer for IB transport to prepare and register the
 // temporary buffers for control messages
 constexpr int MAX_PAYLOAD_SIZE{4096};
+constexpr int MAX_SEND_WR{256};
+constexpr int MAX_RECV_WR{128};
 struct CtrlPacket {
   int type{0}; // for callback check
   size_t size{0}; // size of actual data in payload
@@ -1164,7 +1166,7 @@ class CtranIbVirtualConn {
   }
 
   inline commResult_t tryPostImmNotifyMsg() {
-    if (outstandingNotifies_.size() >= ::ctran::ib::MAX_SEND_WR ||
+    if (outstandingNotifies_.size() >= MAX_SEND_WR ||
         pendingNotifies_.size() == 0) {
       return commSuccess;
     }
