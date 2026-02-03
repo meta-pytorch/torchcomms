@@ -6,6 +6,7 @@
 #include <fmt/format.h>
 #include <stdint.h>
 
+#include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/CtranAlgoArgDev.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
@@ -146,14 +147,6 @@ struct fmt::formatter<KernelElem::ElemStatus> : fmt::formatter<int> {
   }
 };
 
-struct CtranKernelAllGatherArgs {
-  const void* sendbuff;
-  void* recvbuff;
-  commDataType_t datatype;
-  size_t count;
-  KernelElem* bcastElem;
-};
-
 #define ALLREDUCE_MAX_KERNEL_ELEMS (8)
 struct CtranKernelAllReduceArgs {
   const void* sendbuff;
@@ -285,7 +278,7 @@ struct CtranKernelGetArgs {
 struct CtranKernelArgs {
   CtranAlgoDeviceState* devState_d{nullptr};
   union {
-    CtranKernelAllGatherArgs allgather;
+    ctran::allgather::KernelArgs allgather;
     CtranKernelAllReduceArgs allreduce;
     ctran::sendrecv::KernelSendArgs send;
     ctran::sendrecv::KernelRecvArgs recv;

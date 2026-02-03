@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
+#include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
 
@@ -9,7 +10,7 @@ constexpr int numKElems = 10;
 __global__ void CtranGpeTestKernel(
     int* flag,
     CtranAlgoDeviceState* devState_d,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 struct CtranKernelCustomArgs {
   const int scaleFactor;
@@ -29,17 +30,17 @@ __global__ void CtranGpeTestTerminateKernel(int* flag);
 __global__ void CtranGpeTestKElemsKernel(
     int* flag,
     CtranAlgoDeviceState* devState_d,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 __global__ void CtranGpeTestOneFlagKernel(
     int* flag,
     CtranAlgoDeviceState* devState_d,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 __global__ void CtranGpeTestPerBlockFlagKernel(
     int* flag,
     CtranAlgoDeviceState* devState_d,
-    CtranKernelAllGatherArgs args);
+    ctran::allgather::KernelArgs args);
 
 struct CtranKernelFtArgs {
   int* terminate;
