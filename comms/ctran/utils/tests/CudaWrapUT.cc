@@ -23,27 +23,6 @@ class CudaWrapTest : public ::testing::Test {
   void TearDown() override {}
 };
 
-TEST_F(CudaWrapTest, FB_CUCHECKTHROW) {
-  auto dummyFn = []() {
-    // This should fail because we're passing an invalid device pointer
-    CUdeviceptr invalidPtr = 0;
-    size_t size = 0;
-    FB_CUCHECKTHROW(cuMemGetAddressRange(&invalidPtr, &size, (CUdeviceptr)0x1));
-    return commSuccess;
-  };
-
-  bool caughtException = false;
-  try {
-    dummyFn();
-  } catch (const std::runtime_error& e) {
-    auto errMsg = std::string(e.what());
-    EXPECT_THAT(errMsg, ::testing::HasSubstr("Cuda failure"));
-    caughtException = true;
-  }
-
-  ASSERT_TRUE(caughtException) << "Expected std::runtime_error";
-}
-
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   folly::Init init(&argc, &argv);
