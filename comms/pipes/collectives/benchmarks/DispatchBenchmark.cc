@@ -585,7 +585,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
 
     for (const auto& r : results) {
       auto& latencies = latencyBySize[r.perPeerBytes];
-      std::string winner = "";
+      std::string winner;
       if (r.mode == ShardingMode::HORIZONTAL &&
           latencies.first < latencies.second) {
         winner = "<-- H";
@@ -650,7 +650,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
 
     for (const auto& r : results) {
       auto& latencies = latencyBySize[r.largeBytes];
-      std::string winner = "";
+      std::string winner;
       if (r.mode == ShardingMode::HORIZONTAL &&
           latencies.first < latencies.second) {
         winner = "<-- H";

@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include <stdio.h>
 #include <cstddef>
+#include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -18,7 +19,7 @@ template <bool UNPACK>
 __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelBroadcastArgs args) {
+    ctran::broadcast::KernelArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
@@ -57,7 +58,7 @@ __global__ void __launch_bounds__(1024, 1) ncclKernelBroadcast(
   template __global__ void ncclKernelBroadcast<UNPACK>( \
       int* flag,                                        \
       CtranAlgoDeviceState* devState,                   \
-      CtranKernelBroadcastArgs args)
+      ctran::broadcast::KernelArgs args)
 
 DECL_BROADCAST_KERN(/*UNPACK=*/false);
 DECL_BROADCAST_KERN(/*UNPACK=*/true);
