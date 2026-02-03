@@ -84,4 +84,19 @@ __global__ void p2pRecvOne(
     void* dstBuff,
     SyncScope groupScope = SyncScope::WARP);
 
+// Send multiple kernel - transfer multiple chunks with metadata
+__global__ void p2pSendMultiple(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    DeviceSpan<const std::size_t> chunkSizes,
+    DeviceSpan<const std::size_t> chunkIndices,
+    SyncScope groupScope = SyncScope::WARP);
+
+// Recv multiple kernel - receive multiple chunks with metadata
+__global__ void p2pRecvMultiple(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    DeviceSpan<std::size_t> chunkSizes,
+    SyncScope groupScope = SyncScope::WARP);
+
 } // namespace comms::pipes::benchmark
