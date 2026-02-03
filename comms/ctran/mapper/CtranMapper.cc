@@ -495,25 +495,43 @@ commResult_t CtranMapper::regMem(
   ctran::CHECK_VALID_REGCACHE(regCache);
 
   const int cudaDev = comm->statex_->cudaDev();
-  // Cache segment.
-  // regCache either returns an already cached handle or create a
+  // Cache the buffer.
+  // regMem only allows for single-segment buffers.
+  // cacheSegment either returns an already cached handle or creates a
   // new entry if the segment is not yet cached.
-  ctran::regcache::Segment* segment = nullptr;
-  void* segHdl_ = nullptr;
 
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
   FB_COMMCHECK(regCache->cacheSegment(
       buf,
       len,
       cudaDev,
       ncclManaged,
       logMetaData_.commHash,
-      &segment,
-      &segHdl_));
+      segments,
+      segHdls));
 
-  // Register the segment only if in Eager mode or forced by caller
+  FB_CHECKABORT(
+      !segments.empty(),
+      "cacheSegment returned no segments for buf {} len {}",
+      buf,
+      len);
+
+  // regMem is designed for single-segment buffers.
+  // For multi-segment buffers, use the global registration API.
+  FB_CHECKABORT(
+      segments.size() == 1,
+      "regMem expects single segment but found {} segments for buf {} len {}. "
+      "Use ncclGlobalRegisterWithPtr for multi-segment buffers (expandable memory).",
+      segments.size(),
+      buf,
+      len);
+
+  // Register the buffer only if in Eager mode or forced by caller.
   ctran::regcache::RegElem* regHdl_ = nullptr;
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::eager || forceRegist) {
     bool didRegister = false;
+    auto* segment = segments.front();
     FB_COMMCHECK(regCache->regRange(
         segment->range.buf,
         segment->range.len,
@@ -526,7 +544,7 @@ commResult_t CtranMapper::regMem(
         ncclManaged));
   }
 
-  *segHdl = segHdl_;
+  *segHdl = segHdls.front();
   if (regHdl) {
     *regHdl = regHdl_;
   }
@@ -553,8 +571,7 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
   auto timerBegin = std::chrono::steady_clock::now();
   auto regElems = regCache->getRegElems(segHdl);
   if (!skipRemRelease) {
-    // Release remote registration associated with each regElem within this
-    // communicator.
+    // Release remote registration associated with each regElem.
 
     // Acquire epoch lock for thread-safe ctrl msg exchange via backend.
     // Require the caller not call it within an existing epoch lock.
