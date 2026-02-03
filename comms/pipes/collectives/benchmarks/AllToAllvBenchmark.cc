@@ -3,10 +3,12 @@
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
 #include <nccl.h>
+#include <chrono>
 
 #include "comms/common/CudaWrap.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
+#include "comms/pipes/collectives/AllToAllv.h"
 #include "comms/pipes/collectives/benchmarks/CollectiveBenchmark.cuh"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
@@ -277,25 +279,12 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     DeviceSpan<ChunkInfo> recv_chunk_infos(
         static_cast<ChunkInfo*>(d_recv_chunks.get()), nranks);
 
-    // Prepare kernel launch parameters
-    dim3 gridDim(config.numBlocks);
-    dim3 blockDim(config.numThreads);
-
     // Get device pointers from DeviceBuffer objects
     void* recvBuff_d = recvBuffer.get();
-    void* sendBuff_d = sendBuffer.get();
+    const void* sendBuff_d = sendBuffer.get();
 
-    // Create timeout (default = no timeout)
-    Timeout timeout;
-
-    void* args[] = {
-        &recvBuff_d,
-        &sendBuff_d,
-        &globalRank,
-        &transports_span,
-        &send_chunk_infos,
-        &recv_chunk_infos,
-        &timeout};
+    // Use default timeout (0ms = no timeout)
+    std::chrono::milliseconds timeout{0};
 
     CudaEvent start, stop;
     const int nIter = 100;
@@ -311,14 +300,18 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     for (int i = 0; i < nIterWarmup; i++) {
-      CUDA_CHECK(
-          comms::common::launchKernel(
-              (void*)all_to_allv_kernel,
-              gridDim,
-              blockDim,
-              args,
-              nullptr,
-              clusterDimOpt));
+      comms::pipes::all_to_allv(
+          recvBuff_d,
+          sendBuff_d,
+          globalRank,
+          transports_span,
+          send_chunk_infos,
+          recv_chunk_infos,
+          timeout,
+          nullptr, // stream
+          config.numBlocks,
+          config.numThreads,
+          clusterDimOpt);
       CUDA_CHECK(cudaDeviceSynchronize());
     }
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -326,14 +319,18 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     // Benchmark
     CUDA_CHECK(cudaEventRecord(start.get()));
     for (int i = 0; i < nIter; i++) {
-      CUDA_CHECK(
-          comms::common::launchKernel(
-              (void*)all_to_allv_kernel,
-              gridDim,
-              blockDim,
-              args,
-              nullptr,
-              clusterDimOpt));
+      comms::pipes::all_to_allv(
+          recvBuff_d,
+          sendBuff_d,
+          globalRank,
+          transports_span,
+          send_chunk_infos,
+          recv_chunk_infos,
+          timeout,
+          nullptr, // stream
+          config.numBlocks,
+          config.numThreads,
+          clusterDimOpt);
     }
     CUDA_CHECK(cudaEventRecord(stop.get()));
     CUDA_CHECK(cudaDeviceSynchronize());

@@ -39,6 +39,10 @@ class SendRecvTest(unittest.TestCase):
         """Clean up distwrap after all tests."""
         dist.destroy_process_group()
 
+    def tearDown(self) -> None:
+        """Synchronize all ranks after each test."""
+        dist.barrier()
+
     def test_send_recv(self) -> None:
         """Test synchronous send and recv between rank 0 and rank 1."""
         rank = dist.get_rank()
