@@ -629,16 +629,11 @@ document.write(`
 
 <span class="c1"># We need to load this upfront since libtorchcomms depend on libtorch</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>  <span class="c1"># noqa: F401</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms.functional</span><span class="w"> </span><span class="kn">import</span> <span class="n">is_torch_compile_supported_and_enabled</span>
 
+<span class="n">torch_compile_supported_and_enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">is_torch_compile_supported_and_enabled</span><span class="p">()</span>
 
-<span class="n">torchcomms_compile_support_enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="n">os</span><span class="o">.</span><span class="n">environ</span><span class="o">.</span><span class="n">get</span><span class="p">(</span>
-    <span class="s2">&quot;TORCHCOMMS_PATCH_FOR_COMPILE&quot;</span><span class="p">,</span> <span class="s2">&quot;&quot;</span>
-<span class="p">)</span><span class="o">.</span><span class="n">lower</span><span class="p">()</span> <span class="ow">in</span> <span class="p">(</span>
-    <span class="s2">&quot;1&quot;</span><span class="p">,</span>
-    <span class="s2">&quot;true&quot;</span><span class="p">,</span>
-<span class="p">)</span>
-
-<span class="k">if</span> <span class="n">torchcomms_compile_support_enabled</span><span class="p">:</span>
+<span class="k">if</span> <span class="n">torch_compile_supported_and_enabled</span><span class="p">:</span>
     <span class="kn">from</span><span class="w"> </span><span class="nn">torch._opaque_base</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpaqueBaseMeta</span>
 
     <span class="c1"># make the metaclass available to the pybind module</span>
@@ -669,8 +664,15 @@ document.write(`
 
 
 <span class="n">_load_libtorchcomms</span><span class="p">()</span>
-<span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms._comms</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>  <span class="c1"># noqa: F401, F403</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">torchcomms.objcol</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">objcol</span>  <span class="c1"># noqa: F401, F403</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms._comms</span><span class="w"> </span><span class="kn">import</span> <span class="o">*</span>  <span class="c1"># noqa: E402, F401, F403</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torchcomms.objcol</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">objcol</span>  <span class="c1"># noqa: E402, F401, F403</span>
+
+<span class="k">if</span> <span class="n">torch_compile_supported_and_enabled</span><span class="p">:</span>
+    <span class="c1"># Import collectives first to ensure all operations are registered</span>
+    <span class="c1"># This must happen before patch_torchcomm() so that window operations</span>
+    <span class="c1"># and other collectives are registered and can be patched</span>
+    <span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms.functional</span><span class="w"> </span><span class="kn">import</span> <span class="n">collectives</span>  <span class="c1"># noqa: F401</span>
+
 
 <span class="c1"># The documentation uses __all__ to determine what is documented and in what</span>
 <span class="c1"># order.</span>
@@ -885,7 +887,7 @@ document.write(`
        "headline": "torchcomms",
        "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
        "url": "/_modules/torchcomms.html",
-       "articleBody": "Source code for torchcomms # Copyright (c) Meta Platforms, Inc. and affiliates. # pyre-strict import ctypes import os import sys from datetime import timedelta from importlib.metadata import entry_points # We need to load this upfront since libtorchcomms depend on libtorch import torch # noqa: F401 torchcomms_compile_support_enabled: bool = os.environ.get( \"TORCHCOMMS_PATCH_FOR_COMPILE\", \"\" ).lower() in ( \"1\", \"true\", ) if torchcomms_compile_support_enabled: from torch._opaque_base import OpaqueBaseMeta # make the metaclass available to the pybind module sys.modules[\"torchcomms._opaque_meta\"] = type( \"module\", (), {\"OpaqueBaseMeta\": OpaqueBaseMeta} )() # to support opaque registration for time delta. class Timeout(timedelta, metaclass=OpaqueBaseMeta): pass else: # When compile support is disabled, define Timeout without the metaclass [docs] class Timeout(timedelta): pass def _load_libtorchcomms() -\u003e None: libtorchcomms_path = os.path.join(os.path.dirname(__file__), \"libtorchcomms.so\") # OSS build, buck native linking links everything together so this is not needed if os.path.exists(libtorchcomms_path): # load this using RTLD_LOCAL so that we don\u0027t pollute the global namespace # We need to load this upfront since _comms and _comms_* depend on it # and won\u0027t be able to find it themselves. ctypes.CDLL(libtorchcomms_path, mode=ctypes.RTLD_LOCAL) _load_libtorchcomms() from torchcomms._comms import * # noqa: F401, F403 import torchcomms.objcol as objcol # noqa: F401, F403 # The documentation uses __all__ to determine what is documented and in what # order. __all__ = [ # noqa: F405 \"new_comm\", \"TorchComm\", \"ReduceOp\", \"TorchWork\", \"Timeout\", \"BatchP2POptions\", \"BatchSendRecv\", \"P2POp\", \"CommOptions\", \"TorchCommWindow\", ] for name in __all__: cls = globals()[name] cls.__module__ = \"torchcomms\" def _load_backend(backend: str) -\u003e None: \"\"\"Used to load backends lazily from C++ If a backend is already loaded, this function is a no-op. \"\"\" found = entry_points(group=\"torchcomms.backends\", name=backend) if not found: raise ModuleNotFoundError( f\"failed to find backend {backend}, is it registered via entry_points.txt?\" ) wheel = next(iter(found)) wheel.load()",
+       "articleBody": "Source code for torchcomms # Copyright (c) Meta Platforms, Inc. and affiliates. # pyre-strict import ctypes import os import sys from datetime import timedelta from importlib.metadata import entry_points # We need to load this upfront since libtorchcomms depend on libtorch import torch # noqa: F401 from torchcomms.functional import is_torch_compile_supported_and_enabled torch_compile_supported_and_enabled: bool = is_torch_compile_supported_and_enabled() if torch_compile_supported_and_enabled: from torch._opaque_base import OpaqueBaseMeta # make the metaclass available to the pybind module sys.modules[\"torchcomms._opaque_meta\"] = type( \"module\", (), {\"OpaqueBaseMeta\": OpaqueBaseMeta} )() # to support opaque registration for time delta. class Timeout(timedelta, metaclass=OpaqueBaseMeta): pass else: # When compile support is disabled, define Timeout without the metaclass [docs] class Timeout(timedelta): pass def _load_libtorchcomms() -\u003e None: libtorchcomms_path = os.path.join(os.path.dirname(__file__), \"libtorchcomms.so\") # OSS build, buck native linking links everything together so this is not needed if os.path.exists(libtorchcomms_path): # load this using RTLD_LOCAL so that we don\u0027t pollute the global namespace # We need to load this upfront since _comms and _comms_* depend on it # and won\u0027t be able to find it themselves. ctypes.CDLL(libtorchcomms_path, mode=ctypes.RTLD_LOCAL) _load_libtorchcomms() from torchcomms._comms import * # noqa: E402, F401, F403 import torchcomms.objcol as objcol # noqa: E402, F401, F403 if torch_compile_supported_and_enabled: # Import collectives first to ensure all operations are registered # This must happen before patch_torchcomm() so that window operations # and other collectives are registered and can be patched from torchcomms.functional import collectives # noqa: F401 # The documentation uses __all__ to determine what is documented and in what # order. __all__ = [ # noqa: F405 \"new_comm\", \"TorchComm\", \"ReduceOp\", \"TorchWork\", \"Timeout\", \"BatchP2POptions\", \"BatchSendRecv\", \"P2POp\", \"CommOptions\", \"TorchCommWindow\", ] for name in __all__: cls = globals()[name] cls.__module__ = \"torchcomms\" def _load_backend(backend: str) -\u003e None: \"\"\"Used to load backends lazily from C++ If a backend is already loaded, this function is a no-op. \"\"\" found = entry_points(group=\"torchcomms.backends\", name=backend) if not found: raise ModuleNotFoundError( f\"failed to find backend {backend}, is it registered via entry_points.txt?\" ) wheel = next(iter(found)) wheel.load()",
        "author": {
          "@type": "Organization",
          "name": "PyTorch Contributors",
