@@ -18,6 +18,7 @@
 #include <glog/logging.h>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 
+#include "comms/torchcomms/CoalescingContext.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
@@ -232,6 +233,26 @@ class TorchCommNCCL : public TorchCommBackend,
   }
 
  protected:
+  // Coalescing hooks (from CollectiveCoalescer)
+  void onCoalescingStart() override;
+  void onCoalescingEnd() override;
+  c10::intrusive_ptr<TorchWork> createCoalescedWork(
+      const std::vector<at::Tensor>& tensors) override;
+
+  // NCCL-specific CoalescingContext implementation
+  class CoalescingContext
+      : public NCCLCoalescingContextBase<TorchCommNCCL, TorchWorkNCCL> {
+   public:
+    CoalescingContext(
+        TorchCommNCCL* comm,
+        bool async_op,
+        std::chrono::milliseconds timeout,
+        std::initializer_list<std::reference_wrapper<const at::Tensor>>
+            tensors);
+    ~CoalescingContext();
+  };
+  friend class CoalescingContext;
+
   // Event management for friend classes
   [[nodiscard]] cudaEvent_t getEvent();
   void returnEvent(cudaEvent_t event);
@@ -404,6 +425,7 @@ class TorchCommNCCL : public TorchCommBackend,
 
   bool high_priority_stream_{false};
   std::string name_;
+  cudaStream_t coalesced_stream_{nullptr};
 
   // Graph capture mode work references
   // Keep references to work objects during graph capture to prevent premature
