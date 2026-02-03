@@ -14,6 +14,7 @@
 #include "comms/ctran/CtranExImpl.h"
 #include "comms/ctran/algos/AllGather/Types.h"
 #include "comms/ctran/algos/AllToAll/Types.h"
+#include "comms/ctran/algos/Broadcast/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/SendRecv/Types.h"
 #include "comms/ctran/algos/common/GpeKernelSync.h"
@@ -507,7 +508,7 @@ template <bool UNPACK>
 __global__ void ncclKernelBroadcast(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelBroadcastArgs args);
+    ctran::broadcast::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAll(
