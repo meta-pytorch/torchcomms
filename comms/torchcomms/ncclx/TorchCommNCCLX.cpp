@@ -87,9 +87,6 @@ void TorchCommNCCLX::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
-  TORCH_INTERNAL_ASSERT(
-      device.is_cuda(), "TorchCommNCCLX requires a CUDA device");
-
   // Initialize private members
   device_ = device;
   name_ = name;
@@ -101,6 +98,7 @@ void TorchCommNCCLX::init(
   } else if (init_state_ == InitializationState::FINALIZED) {
     throw std::runtime_error("TorchCommNCCLX already finalized");
   }
+  init_state_ = InitializationState::INITIALIZED;
 
   // Initialize default NCCL API implementation if not already set
   if (!nccl_api_) {
@@ -239,9 +237,6 @@ void TorchCommNCCLX::init(
 
   // Register comm with CachingAllocator
   attachMemoryHook();
-
-  // Mark initialization as complete only after all steps succeed
-  init_state_ = InitializationState::INITIALIZED;
 }
 
 void TorchCommNCCLX::finalize() {
@@ -2001,10 +1996,6 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
     const std::string& split_name,
     const CommOptions& options) {
   checkAndAbortIfTimedOutOrError();
-
-  TORCH_INTERNAL_ASSERT(
-      comm_size_ > 0,
-      "comm_size_ should be positive; was split called on an uninitialized comm?");
 
   // Validate that all ranks are valid
   for (int rank : ranks) {

@@ -91,20 +91,6 @@ namespace ctran::utils {
     }                                                                    \
   } while (false)
 
-#define FB_CUCHECKTHROW(cmd)                                                   \
-  do {                                                                         \
-    CUresult err = cmd;                                                        \
-    if (err != CUDA_SUCCESS) {                                                 \
-      const char* errStr;                                                      \
-      (void)cuGetErrorString(err, &errStr);                                    \
-      CLOGF(ERR, "Cuda failure {} '{}'", static_cast<int>(err), errStr);       \
-      ErrorStackTraceUtil::logErrorMessage(                                    \
-          "Cuda Error: " + std::string(errStr));                               \
-      throw std::runtime_error(                                                \
-          fmt::format("Cuda failure {} '{}'", static_cast<int>(err), errStr)); \
-    }                                                                          \
-  } while (false)
-
 #define FB_CUCHECKRES(res)                                     \
   do {                                                         \
     if (res != CUDA_SUCCESS) {                                 \
@@ -163,20 +149,6 @@ namespace ctran::utils {
           "Cuda Error: " + std::string(errStr));                         \
       return commUnhandledCudaError;                                     \
     }                                                                    \
-  } while (false)
-
-#define FB_CUCHECKTHROW(cmd)                                                   \
-  do {                                                                         \
-    CUresult err = ::ctran::utils::pfn_##cmd;                                  \
-    if (err != CUDA_SUCCESS) {                                                 \
-      const char* errStr;                                                      \
-      (void)::ctran::utils::pfn_cuGetErrorString(err, &errStr);                \
-      CLOGF(ERR, "Cuda failure {} '{}'", static_cast<int>(err), errStr);       \
-      ErrorStackTraceUtil::logErrorMessage(                                    \
-          "Cuda Error: " + std::string(errStr));                               \
-      throw std::runtime_error(                                                \
-          fmt::format("Cuda failure {} '{}'", static_cast<int>(err), errStr)); \
-    }                                                                          \
   } while (false)
 
 #define FB_CUCHECK_RETURN(cmd, ret)                                      \
