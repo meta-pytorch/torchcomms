@@ -32,7 +32,9 @@ def fallback_split_group_new_group(
         my_contribution = None
 
     # All-gather to get all unique split lists
-    gathered_lists: list[list[int] | None] = [None] * dist.get_world_size(parent_pg)
+    gathered_lists: list[list[int] | None] = [
+        None for _ in range(dist.get_world_size(parent_pg))
+    ]
     dist.all_gather_object(gathered_lists, my_contribution, group=parent_pg)
 
     # Filter out Nones to get unique split lists

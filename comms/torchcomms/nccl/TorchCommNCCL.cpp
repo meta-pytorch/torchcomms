@@ -58,9 +58,6 @@ void TorchCommNCCL::init(
     at::Device device,
     const std::string& name,
     const CommOptions& options) {
-  TORCH_INTERNAL_ASSERT(
-      device.is_cuda(), "TorchCommNCCL requires a CUDA device");
-
   // Initialize private members
   device_ = device;
   name_ = name;
@@ -202,10 +199,6 @@ void TorchCommNCCL::init(
 }
 
 void TorchCommNCCL::finalize() {
-  TORCH_INTERNAL_ASSERT(
-      init_state_ != InitializationState::INITIALIZED || nccl_comm_ != nullptr,
-      "nccl_comm_ is null but state indicates we are initialized");
-
   if (init_state_ == InitializationState::UNINITIALIZED) {
     throw std::runtime_error("TorchCommNCCL not initialized");
   } else if (init_state_ == InitializationState::FINALIZED) {
@@ -1665,10 +1658,6 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCL::split(
     const CommOptions& options) {
   // Validate the ranks list
   checkAndAbortIfTimedOutOrError();
-
-  TORCH_INTERNAL_ASSERT(
-      comm_size_ > 0,
-      "comm_size_ should be positive; was split called on an uninitialized comm?");
 
   std::unordered_set<int> rank_seen;
   for (int rank : ranks) {

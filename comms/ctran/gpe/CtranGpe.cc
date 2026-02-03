@@ -122,6 +122,7 @@ OpElem::OpElem(
       break;
     case SEND:
       this->send.kElem = nullptr;
+      new (&this->send.remoteAccessKey) CtranMapperRemoteAccessKey();
       break;
     case RECV:
       this->recv.kElem = nullptr;
@@ -175,6 +176,7 @@ OpElem::~OpElem() {
       if (this->send.kElem && !NCCL_CTRAN_NVL_SENDRECV_COPY_ENGINE_ENABLE) {
         this->send.kElem->free();
       }
+      this->send.remoteAccessKey.~CtranMapperRemoteAccessKey();
       break;
     case RECV:
       // when copy engine is enabled, kElem is freed by the kernels
