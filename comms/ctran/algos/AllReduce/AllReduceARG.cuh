@@ -3,6 +3,7 @@
 
 #pragma once
 #include "comms/ctran/algos/AllReduce/AllReduceARGCommonDev.h"
+#include "comms/ctran/algos/AllReduce/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -12,7 +13,7 @@
 
 template <typename T>
 __device__ void prepareBcastArg(
-    CtranKernelAllReduceArgs& args,
+    ctran::allreduce::KernelArgs& args,
     ctran::allreduce::arg::AllReduceARGContext& context,
     CtranAlgoDevBcastArg& bcastArg) {
   const auto localRank = statex->localRank();
@@ -43,7 +44,7 @@ __device__ void prepareBcastArg(
 template <typename T, typename RedT, commRedOp_t RedOp>
 __device__ __forceinline__ void reduceInLocal(
     CtranAlgoDeviceState* devState,
-    CtranKernelAllReduceArgs& args,
+    ctran::allreduce::KernelArgs& args,
     ctran::allreduce::arg::AllReduceARGContext& context) {
   bool revoked = false;
   const auto nRanks = statex->nRanks();
@@ -71,7 +72,7 @@ __device__ __forceinline__ void reduceInLocal(
 template <typename T>
 __device__ __forceinline__ void intraNodeAllGather(
     CtranAlgoDeviceState* devState,
-    CtranKernelAllReduceArgs& args,
+    ctran::allreduce::KernelArgs& args,
     ctran::allreduce::arg::AllReduceARGContext& context) {
   bool allGatherRevoke;
   KernelElem* elem = args.kernelElems[ctran::allreduce::arg::kIntraAllGather];
@@ -91,7 +92,7 @@ __device__ __forceinline__ void intraNodeAllGather(
 template <typename T>
 __device__ __forceinline__ void alltoall(
     CtranAlgoDeviceState* devState,
-    CtranKernelAllReduceArgs& args,
+    ctran::allreduce::KernelArgs& args,
     ctran::allreduce::arg::AllReduceARGContext& context) {
   KernelElem* alltoall =
       args.kernelElems[ctran::allreduce::arg::kIntraAllToAll];
@@ -142,7 +143,7 @@ template <typename T, typename RedT, commRedOp_t RedOp>
 __global__ void ncclKernelAllReduceARG(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllReduceArgs args) {
+    ctran::allreduce::KernelArgs args) {
   const auto tId = threadIdx.x;
   const auto bId = blockIdx.x;
   if (flag && tId == 0) {
@@ -221,12 +222,12 @@ __global__ void ncclKernelAllReduceARG(
   template __global__ void ncclKernelAllReduceARG<T, T, RedOp>( \
       int* flag,                                                \
       CtranAlgoDeviceState* devState,                           \
-      CtranKernelAllReduceArgs args);
+      ctran::allreduce::KernelArgs args);
 
 #define DECL_CTRAN_ALLREDUCEARG_KERN_REDT(T, RedT, RedOp)          \
   template __global__ void ncclKernelAllReduceARG<T, RedT, RedOp>( \
       int* flag,                                                   \
       CtranAlgoDeviceState* devState,                              \
-      CtranKernelAllReduceArgs args);
+      ctran::allreduce::KernelArgs args);
 
 #endif // !defined(USE_ROCM)
