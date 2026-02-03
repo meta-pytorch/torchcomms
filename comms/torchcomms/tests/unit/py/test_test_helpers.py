@@ -3,84 +3,120 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import os
-import subprocess
-import sys
 import unittest
-from unittest.mock import patch
 
-from test_helpers import (  # pyre-ignore[21]
-    can_import_torchcomms,
-    skip_if_pytorch_version_unsupported,
+from torchcomms.tests.helpers.py.test_helpers import (
+    skip_if_torch_compile_not_supported_or_enabled,
 )
 
 
-class TestCanImportTorchcomms(unittest.TestCase):
-    def test_can_import_without_compile_flag(self):
-        env_backup = os.environ.pop("TORCHCOMMS_PATCH_FOR_COMPILE", None)
-        try:
-            result = can_import_torchcomms()
-            self.assertTrue(result)
-        finally:
-            if env_backup is not None:
-                os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = env_backup
-
-    def test_can_import_with_compile_flag_on_supported_pytorch(self):
-        os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
-        try:
-            result = can_import_torchcomms()
-            self.assertIsInstance(result, bool)
-        finally:
-            del os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"]
-
-    def test_fails_when_opaque_base_import_fails(self):
-        """Test that torchcomms import fails when torch._opaque_base is unavailable."""
-        code = """
-import sys
-from unittest.mock import MagicMock
-
-# Mock torch._opaque_base so accessing OpaqueBaseMeta raises ImportError
-class FailingModule:
-    @property
-    def OpaqueBaseMeta(self):
-        raise ImportError("No module named 'torch._opaque_base'")
-
-sys.modules["torch._opaque_base"] = FailingModule()
-
-import os
-os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
-
-try:
-    import torchcomms
-    print("SUCCESS")
-except ImportError:
-    print("FAIL")
-"""
-        result = subprocess.run(
-            [sys.executable, "-c", code],
-            capture_output=True,
-            text=True,
-            timeout=10,
+class TestSkipIfTorchCompileNotSupportedOrEnabled(unittest.TestCase):
+    def setUp(self):
+        # Save original env vars
+        self._orig_patch = os.environ.get("TORCHCOMMS_PATCH_FOR_COMPILE")
+        self._orig_ignore = os.environ.get(
+            "TORCHCOMMS_COMPILE_IGNORE_PYTORCH_VERSION_REQUIREMENT"
         )
-        self.assertEqual(result.stdout.strip(), "FAIL")
+        # Enable compile mode for tests
+        os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
+        # Clear ignore flag
+        if "TORCHCOMMS_COMPILE_IGNORE_PYTORCH_VERSION_REQUIREMENT" in os.environ:
+            del os.environ["TORCHCOMMS_COMPILE_IGNORE_PYTORCH_VERSION_REQUIREMENT"]
 
+    def tearDown(self):
+        # Restore original env vars
+        if self._orig_patch is not None:
+            os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = self._orig_patch
+        elif "TORCHCOMMS_PATCH_FOR_COMPILE" in os.environ:
+            del os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"]
+        if self._orig_ignore is not None:
+            os.environ["TORCHCOMMS_COMPILE_IGNORE_PYTORCH_VERSION_REQUIREMENT"] = (
+                self._orig_ignore
+            )
+        elif "TORCHCOMMS_COMPILE_IGNORE_PYTORCH_VERSION_REQUIREMENT" in os.environ:
+            del os.environ["TORCHCOMMS_COMPILE_IGNORE_PYTORCH_VERSION_REQUIREMENT"]
 
-class TestSkipIfPytorchVersionUnsupported(unittest.TestCase):
-    def test_does_not_skip_without_compile_flag(self):
-        env_backup = os.environ.pop("TORCHCOMMS_PATCH_FOR_COMPILE", None)
-        try:
-            skip_if_pytorch_version_unsupported()
-        finally:
-            if env_backup is not None:
-                os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = env_backup
+    def test_passes_when_version_meets_requirement(self):
+        """Test that decorated function runs normally when version is sufficient."""
 
-    def test_skips_when_can_import_returns_false(self):
-        """Test that skip_if_pytorch_version_unsupported raises SkipTest when import fails."""
-        with patch(
-            "test_helpers.can_import_torchcomms",
-            return_value=False,
-        ):
-            with self.assertRaises(unittest.SkipTest):
-                skip_if_pytorch_version_unsupported()
+        @skip_if_torch_compile_not_supported_or_enabled(_current_version="2.12.0")
+        def dummy_test(self):
+            return "success"
+
+        result = dummy_test(self)
+        self.assertEqual(result, "success")
+        self.assertFalse(getattr(dummy_test, "__unittest_skip__", False))
+
+    def test_skips_when_version_below_requirement(self):
+        """Test that decorated function is skipped when version is too low."""
+
+        @skip_if_torch_compile_not_supported_or_enabled(_current_version="2.10.0")
+        def dummy_test(self):
+            pass
+
+        self.assertTrue(getattr(dummy_test, "__unittest_skip__", False))
+
+    def test_skips_when_compile_not_enabled(self):
+        """Test that decorated function is skipped when TORCHCOMMS_PATCH_FOR_COMPILE is not set."""
+        del os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"]
+
+        @skip_if_torch_compile_not_supported_or_enabled(_current_version="2.12.0")
+        def dummy_test(self):
+            pass
+
+        self.assertTrue(getattr(dummy_test, "__unittest_skip__", False))
+
+    def test_handles_version_with_cuda_suffix(self):
+        """Test that version parsing handles CUDA suffixes like 2.12.0+cu118."""
+
+        @skip_if_torch_compile_not_supported_or_enabled(_current_version="2.12.0+cu118")
+        def dummy_test(self):
+            return "success"
+
+        result = dummy_test(self)
+        self.assertEqual(result, "success")
+
+    def test_handles_dev_version(self):
+        """Test that version parsing handles dev versions like 2.12.0.dev20240101."""
+
+        @skip_if_torch_compile_not_supported_or_enabled(
+            _current_version="2.12.0.dev20240101"
+        )
+        def dummy_test(self):
+            return "success"
+
+        result = dummy_test(self)
+        self.assertEqual(result, "success")
+
+    def test_compares_minor_version_correctly(self):
+        """Test that 2.11 < 2.12."""
+
+        @skip_if_torch_compile_not_supported_or_enabled(_current_version="2.11.0")
+        def dummy_test(self):
+            pass
+
+        self.assertTrue(getattr(dummy_test, "__unittest_skip__", False))
+
+    def test_compares_major_version_correctly(self):
+        """Test that 3.0 > 2.12."""
+
+        @skip_if_torch_compile_not_supported_or_enabled(_current_version="3.0.0")
+        def dummy_test(self):
+            return "success"
+
+        result = dummy_test(self)
+        self.assertEqual(result, "success")
+
+    def test_ignore_version_requirement_env_var(self):
+        """Test that TORCHCOMMS_COMPILE_IGNORE_PYTORCH_VERSION_REQUIREMENT=1 bypasses version check."""
+        os.environ["TORCHCOMMS_COMPILE_IGNORE_PYTORCH_VERSION_REQUIREMENT"] = "1"
+
+        @skip_if_torch_compile_not_supported_or_enabled(_current_version="2.10.0")
+        def dummy_test(self):
+            return "success"
+
+        result = dummy_test(self)
+        self.assertEqual(result, "success")
 
 
 if __name__ == "__main__":

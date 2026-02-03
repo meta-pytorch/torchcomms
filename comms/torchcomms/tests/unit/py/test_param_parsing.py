@@ -5,19 +5,21 @@
 import os
 import unittest
 
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
+
 import torch
-from test_helpers import skip_if_pytorch_version_unsupported  # pyre-ignore[21]
 from torchcomms.functional.param_parsing import (
     CollectiveParamSchema,
     ParamKind,
     ParamSpec,
     ParsedArgs,
 )
+from torchcomms.tests.helpers.py.test_helpers import (
+    skip_if_torch_compile_not_supported_or_enabled,
+)
 
-os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
-skip_if_pytorch_version_unsupported()
 
-
+@skip_if_torch_compile_not_supported_or_enabled()
 class TestParamSpec(unittest.TestCase):
     def test_has_default_true(self):
         spec = ParamSpec("x", ParamKind.INPUT, "Tensor", default_value=None)
@@ -46,6 +48,7 @@ class TestParamSpec(unittest.TestCase):
         self.assertFalse(spec.is_tensor_like())
 
 
+@skip_if_torch_compile_not_supported_or_enabled()
 class TestParsedArgs(unittest.TestCase):
     def setUp(self):
         self.object_param = ParamSpec("self", ParamKind.CLASS_OBJECT, "MyClass")
@@ -239,12 +242,18 @@ class TestParsedArgs(unittest.TestCase):
         self.assertEqual(values[2], True)
 
 
-class DummyClass(metaclass=torch._opaque_base.OpaqueBaseMeta):
-    """Dummy class for testing opaque type registration."""
+try:
+    from torch._opaque_base import OpaqueBaseMeta
 
-    pass
+    class DummyClass(metaclass=OpaqueBaseMeta):
+        """Dummy class for testing opaque type registration."""
+
+        pass
+except ImportError:
+    pass  # skip test down below will catch this
 
 
+@skip_if_torch_compile_not_supported_or_enabled()
 class TestCollectiveParamSchema(unittest.TestCase):
     def test_from_raw_specs_basic(self):
         param_specs = [
