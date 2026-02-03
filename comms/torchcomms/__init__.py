@@ -2,7 +2,6 @@
 
 # pyre-strict
 import ctypes
-import logging
 import os
 import sys
 from contextlib import contextmanager
@@ -33,14 +32,6 @@ else:
         pass
 
 
-logger = logging.getLogger(__name__)
-if not logger.handlers:
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
-    logger.addHandler(handler)
-logger.setLevel(logging.INFO)
-
-
 def _load_libtorchcomms() -> None:
     libtorchcomms_path = os.path.join(os.path.dirname(__file__), "libtorchcomms.so")
     # OSS build, buck native linking links everything together so this is not needed
@@ -53,6 +44,7 @@ def _load_libtorchcomms() -> None:
 
 _load_libtorchcomms()
 from torchcomms._comms import *  # noqa: E402, F401, F403
+import torchcomms.coalescing as coalescing  # noqa F401
 import torchcomms.objcol as objcol  # noqa: E402, F401, F403
 
 if torch_compile_supported_and_enabled:
