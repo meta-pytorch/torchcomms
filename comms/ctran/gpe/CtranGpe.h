@@ -516,37 +516,37 @@ template <typename T>
 extern __global__ void ncclKernelAllToAll(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllArgs args);
+    ctran::alltoall::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAllv(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllvArgs args);
+    ctran::alltoallv::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAllvDynamic(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllvDynamicArgs args);
+    ctran::alltoallvdynamic::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAllvDynamicSplit(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllvDynamicArgs args);
+    ctran::alltoallvdynamic::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAllvDynamicSplitNonContig(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllvDynamicArgs args);
+    ctran::alltoallvdynamic::KernelArgs args);
 
 template <typename T>
 extern __global__ void ncclKernelAllToAllDedup(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllDedupArgs args);
+    ctran::alltoalldedup::KernelArgs args);
 
 template <typename T, commRedOp_t RedOp>
 __global__ void ncclKernelReduceScatterDirect(
