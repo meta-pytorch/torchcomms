@@ -1,12 +1,12 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/pipes/collectives/dispatch.cuh"
-#include "comms/pipes/collectives/dispatch.h"
+#include "comms/pipes/collectives/Dispatchv.cuh"
+#include "comms/pipes/collectives/Dispatchv.h"
 
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/tests/Checks.h"
 
-namespace comms::pipes::collectives {
+namespace comms::pipes {
 
 // Round-robin tournament pairing: compute peer for a given round.
 // Uses rotation method: fix rank 0, rotate ranks 1..n-1 counterclockwise.
@@ -292,7 +292,7 @@ __global__ void dispatchKernelHorizontal(
   }
 }
 
-void dispatch(
+void dispatchv(
     // Outputs
     DeviceSpan<void* const> recvbuffs,
     DeviceSpan<std::size_t> output_chunk_sizes_per_rank,
@@ -335,4 +335,4 @@ void dispatch(
   }
 }
 
-} // namespace comms::pipes::collectives
+} // namespace comms::pipes
