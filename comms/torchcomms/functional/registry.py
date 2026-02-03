@@ -43,6 +43,8 @@ def register_collective(
     method: Callable,
     param_specs: list[ParamSpec],
     meta_fn: Optional[Callable] = None,
+    backward_fn: Optional[Callable] = None,
+    setup_context_fn: Optional[Callable] = None,
 ):
     """Register a collective operation with torch.compile support.
 
@@ -51,6 +53,11 @@ def register_collective(
         method: The method to register as a collective op.
         param_specs: List of ParamSpec describing the op's parameters.
         meta_fn: Optional meta/abstract implementation for tracing.
+        backward_fn: Optional backward function for autograd support.
+            Signature: backward(ctx, grad_output, ...) -> tuple of gradients
+        setup_context_fn: Optional setup_context function for autograd.
+            Signature: setup_context(ctx, inputs, output) -> None
+            Called during forward to save tensors/values needed for backward.
     """
     name = method.__name__
     # Derive op prefix from class name (e.g., TorchComm -> torchcomm_)
@@ -66,6 +73,8 @@ def register_collective(
         "method": method,
         "param_schema": param_schema,
         "target_class": target_class,
+        "backward_fn": backward_fn,
+        "setup_context_fn": setup_context_fn,
     }
     _REGISTERED_COLLECTIVES[op_name] = collective_info
 
@@ -74,6 +83,7 @@ def register_collective(
         f"inputs={[p.name for p in param_schema.input_params]}, "
         f"outputs={[p.name for p in param_schema.output_params]}, "
         f"target_class={target_class.__name__}, "
+        f"has_autograd={backward_fn is not None})"
     )
 
     return method
@@ -81,6 +91,158 @@ def register_collective(
 
 # Track functional ops created for autograd (for effectful registration)
 _FUNCTIONAL_OP_NAMES: list[str] = []
+
+
+def _expand_backward_grads(
+    backward_result: Any,
+    num_outputs: int,
+    tensor_positions: list[int],
+    list_tensor_positions: dict[int, int],
+) -> list:
+    """Expand backward gradients to full gradient tuple.
+
+    Takes the result from a user's backward function (which only returns gradients
+    for input tensors) and expands it to the full tuple expected by autograd,
+    filling in None for non-tensor inputs.
+
+    Args:
+        backward_result: Result from backward_fn, can be single tensor, tuple, or list
+        num_outputs: Total number of gradient outputs needed
+        tensor_positions: List of positions for single tensor gradients (consumed in order)
+        list_tensor_positions: Dict mapping position -> list length for tensor list gradients
+
+    Returns:
+        List of gradients with None for non-tensor positions
+    """
+    # Normalize result to tuple
+    if isinstance(backward_result, list):
+        result = tuple(backward_result)
+    elif not isinstance(backward_result, tuple):
+        result = (backward_result,)
+    else:
+        result = backward_result
+
+    # Build full gradient list with Nones
+    full_grads: list = [None] * num_outputs
+
+    # Initialize list tensor positions with [None] * length
+    for pos, length in list_tensor_positions.items():
+        full_grads[pos] = [None] * length
+
+    # Fill in gradients sequentially: first single tensors, then list tensors
+    result_idx = 0
+
+    # Single tensor positions
+    for pos in tensor_positions:
+        if result_idx < len(result):
+            full_grads[pos] = result[result_idx]
+            result_idx += 1
+
+    # List tensor positions
+    for pos, length in list_tensor_positions.items():
+        for i in range(length):
+            if result_idx < len(result):
+                full_grads[pos][i] = result[result_idx]
+                result_idx += 1
+
+    return full_grads
+
+
+def _wrap_backward_fn(
+    backward_fn: Callable,
+    schema: CollectiveParamSchema,
+) -> Callable:
+    """Wrap a backward function to expand tensor-only gradients to full gradient tuple.
+
+    The user's backward function only needs to return gradients for input tensors.
+    This wrapper expands those gradients to the full tuple expected by autograd,
+    filling in None for non-tensor inputs and output buffers.
+
+    For ops with both mutable and non-mutable tensors (e.g., all_gather_single):
+      - Only non-mutable tensors are true inputs that need gradients
+      - Mutable tensors are output buffers
+
+    For ops with only mutable tensors (e.g., all_reduce):
+      - The mutable tensor is both input and output (in-place op)
+      - It needs a gradient
+
+    Args:
+        backward_fn: User's backward function that returns only input tensor gradients.
+            Expected signature: backward(ctx, *grad_outputs) -> tuple of tensor grads
+        schema: The param schema for this op
+
+    Returns:
+        Wrapped backward function that returns full gradient tuple
+    """
+    all_params = schema.all_params
+
+    # Find tensor params
+    tensor_params = [(i, p) for i, p in enumerate(all_params) if p.is_tensor_like()]
+    non_mutable_tensors = [(i, p) for i, p in tensor_params if not p.mutable]
+
+    # Determine which tensors need gradients:
+    # - If there are non-mutable tensors, only those need gradients (they are inputs)
+    # - If ALL tensors are mutable (in-place ops like all_reduce), all need gradients
+    if non_mutable_tensors:
+        input_tensor_indices = [
+            i for i, p in non_mutable_tensors if not p.is_tensor_list()
+        ]
+        # Track non-mutable tensor list params separately - they need structure preservation
+        input_tensor_list_indices = [
+            i for i, p in non_mutable_tensors if p.is_tensor_list()
+        ]
+    else:
+        input_tensor_indices = [i for i, p in tensor_params if not p.is_tensor_list()]
+        input_tensor_list_indices = [i for i, p in tensor_params if p.is_tensor_list()]
+
+    # Total number of gradient outputs needed (all_params already includes object_param)
+    total_grads = len(all_params)
+
+    # Identify list tensor params (mutable) that need structure preservation
+    # These are output buffers like output_tensor_list in gather
+    mutable_list_tensor_param_indices = [
+        i for i, p in enumerate(all_params) if p.mutable and p.is_tensor_list()
+    ]
+
+    def wrapped_backward(ctx, *grad_outputs):
+        # Call user's backward function
+        result = backward_fn(ctx, *grad_outputs)
+
+        # Build list_tensor_positions dict from grad_outputs
+        # For mutable list tensor params, get length from grad_outputs
+        list_tensor_positions: dict[int, int] = {}
+        for param_idx in mutable_list_tensor_param_indices:
+            for go in grad_outputs:
+                if isinstance(go, list):
+                    list_tensor_positions[param_idx] = len(go)
+                    break
+
+        # For non-mutable tensor list inputs, determine length from the backward result
+        # The backward function returns a list for tensor list inputs
+        if input_tensor_list_indices:
+            # If backward result is a list, it corresponds to the tensor list input
+            if isinstance(result, list):
+                for idx in input_tensor_list_indices:
+                    list_tensor_positions[idx] = len(result)
+            elif isinstance(result, tuple):
+                # Check if any element is a list (for multi-output backward)
+                for r in result:
+                    if isinstance(r, list):
+                        for idx in input_tensor_list_indices:
+                            list_tensor_positions[idx] = len(r)
+                        break
+
+        # Use shared helper to expand gradients
+        full_grads = _expand_backward_grads(
+            result,
+            total_grads,
+            input_tensor_indices,
+            list_tensor_positions,
+        )
+
+        return tuple(full_grads)
+
+    return wrapped_backward
 
 
 def _generate_lib_ops(lib: Any) -> None:
@@ -369,6 +531,34 @@ def _generate_lib_ops(lib: Any) -> None:
                 f"Registered py_functionalize_impl: {inplace_op_name} -> {functional_op_name}"
             )
 
+            # === AUTOGRAD KERNEL FOR INPLACE OP ===
+            # Use make_autograd_impl to create an autograd kernel for the inplace op.
+            # This allows eager execution with requires_grad to work correctly.
+            backward_fn = info.get("backward_fn")
+            if backward_fn is not None:
+                setup_context_fn = info.get("setup_context_fn")
+                inplace_wrapped_backward = _wrap_backward_fn(backward_fn, schema)
+
+                from torch._library import autograd as library_autograd
+
+                inplace_info = library_autograd.Info(
+                    _backward_fn=inplace_wrapped_backward,
+                    _setup_context_fn=setup_context_fn,
+                )
+
+                inplace_autograd_kernel = library_autograd.make_autograd_impl(
+                    inplace_op.default, inplace_info
+                )
+                lib.impl(
+                    inplace_op_name,
+                    inplace_autograd_kernel,
+                    "Autograd",
+                    with_keyset=True,
+                )
+                logger.info(
+                    f"Registered Autograd kernel for inplace op {inplace_op_name}"
+                )
+
         else:
             # No mutable inputs - just register the regular op
             full_signature = (
@@ -495,6 +685,43 @@ def _generate_lib_ops(lib: Any) -> None:
                 logger.info(
                     f"Registered FakeTensorMode py_impl for {base_op_name} (no tensor inputs)"
                 )
+
+        # Register autograd if backward_fn is provided
+        # For mutating ops, register autograd on the functional version (base_op_name)
+        # For non-mutating ops, register autograd on the regular op
+        backward_fn = info.get("backward_fn")
+        if backward_fn is not None:
+            setup_context_fn = info.get("setup_context_fn")
+            wrapped_backward = _wrap_backward_fn(backward_fn, schema)
+
+            if has_mutable_inputs:
+                # Register autograd on the functional version
+                try:
+                    torch.library.register_autograd(
+                        f"torchcomms::{base_op_name}",
+                        wrapped_backward,
+                        setup_context=setup_context_fn,
+                        lib=lib,
+                    )
+                    logger.info(f"Registered autograd for functional op {base_op_name}")
+                except RuntimeError as e:
+                    logger.warning(
+                        f"Failed to register autograd for {base_op_name}: {e}"
+                    )
+            else:
+                # Non-mutating op - register autograd directly
+                try:
+                    torch.library.register_autograd(
+                        f"torchcomms::{base_op_name}",
+                        wrapped_backward,
+                        setup_context=setup_context_fn,
+                        lib=lib,
+                    )
+                    logger.info(f"Registered autograd for {base_op_name}")
+                except RuntimeError as e:
+                    logger.warning(
+                        f"Failed to register autograd for {base_op_name}: {e}"
+                    )
 
         logger.info(f"Registered ops for {base_op_name}")
 
@@ -673,6 +900,96 @@ def _register_lowerings() -> None:
             logger.warning(f"Failed to register lowering for {op_name}: {e}")
 
 
+def _patch_eager_methods() -> None:
+    """Patch TorchComm methods to dispatch to functional ops for tracing and autograd.
+
+    This patches the native eager API (e.g., comm.all_reduce(tensor, op)) to dispatch
+    to functional ops when:
+    - Any input tensor has requires_grad=True (for autograd support)
+    - Any input tensor is a FakeTensor or meta tensor (for torch.compile tracing)
+
+    This ensures proper behavior during tracing where meta/fake tensors should not
+    hit the real C++ collective implementations.
+    """
+    # Group registered collectives by target class
+    class_methods: dict[type, list[tuple[str, dict]]] = {}
+    for op_name, info in _REGISTERED_COLLECTIVES.items():
+        schema = info["param_schema"]
+
+        # Only patch mutating ops (they have functional versions)
+        if len(schema.mutable_params) == 0:
+            continue
+
+        target_class = info["target_class"]
+        if target_class not in class_methods:
+            class_methods[target_class] = []
+        class_methods[target_class].append((op_name, info))
+
+    def _create_dispatch_wrapper(original_method, op_name, info):
+        """Create a wrapper that dispatches to the functional op for tracing and autograd.
+
+        When tensors require grad or are fake/meta tensors (during torch.compile),
+        we dispatch to the inplace op which has proper kernels registered for
+        autograd, FakeTensor, and Meta modes.
+        """
+        wrapper_schema = info["param_schema"]
+
+        def wrapper(self, *args, **kwargs):
+            # Parse args using schema
+            parsed = wrapper_schema.parse_method_args(self, args, kwargs)
+
+            # Check if we need autograd
+            has_requires_grad = parsed.has_requires_grad()
+            fake_mode = torch._C._get_dispatch_mode(torch._C._TorchDispatchModeKey.FAKE)
+            in_tracing_context = (
+                fake_mode is not None
+                or parsed.has_fake_or_functional_tensor()
+                or parsed.has_meta()
+            )
+
+            if not has_requires_grad and not in_tracing_context:
+                return original_method(self, *args, **kwargs)
+
+            # Use the inplace op - it has Autograd kernel registered that handles
+            # gradient tracking for all tensor types including tensor lists
+            inplace_op_name = op_name + "_"
+            result = getattr(torch.ops.torchcomms, inplace_op_name)(*parsed.to_values())
+
+            async_op = parsed.get_value("async_op") or False
+
+            # For sync ops with requires_grad, return the result tensors (which have grad_fn)
+            # This allows callers like funcol._gather to use tensors with proper autograd tracking
+            if not async_op:
+                if has_requires_grad and result is not None:
+                    return result
+                return None
+
+            # For async ops, wrap result with work handle
+            if in_tracing_context:
+                return FakeWork(result)
+            else:
+                # Eager context - wrap with registered work handle
+                return _wrap_result_with_registered_work(result)
+
+        return wrapper
+
+    # Patch each class
+    for target_class, methods in class_methods.items():
+        for op_name, info in methods:
+            method_name = info["name"]
+            try:
+                original_method = getattr(target_class, method_name)
+                wrapper = _create_dispatch_wrapper(original_method, op_name, info)
+                setattr(target_class, method_name, wrapper)
+                logger.info(
+                    f"Patched {target_class.__name__}.{method_name} for tracing and autograd"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Failed to patch {target_class.__name__}.{method_name}: {e}"
+                )
+
+
 _EFFECTFUL_HANDLES: list = []  # Store handles to prevent GC
 
 
@@ -745,5 +1062,8 @@ def finalize_registration(lib: Any) -> None:
     )
     register_torchcomms_lowerings()
     register_with_dynamo()
+
+    # Patch eager methods for tracing and autograd support
+    _patch_eager_methods()
 
     logger.info("Collective registration finalized")
