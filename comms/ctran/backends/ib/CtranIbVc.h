@@ -423,14 +423,23 @@ class CtranIbVirtualConn {
   }
 
   inline uint32_t getControlQpNum() const {
+    FB_CHECKABORT(
+        ibvControlQp_.has_value() && ibvControlQp_->qp() != nullptr,
+        "Control QP not initialized. Ensure getLocalBusCard() is called before setupVc().");
     return ibvControlQp_->qp()->qp_num;
   }
 
   inline uint32_t getNotifyQpNum() const {
+    FB_CHECKABORT(
+        ibvNotifyQp_.has_value() && ibvNotifyQp_->qp() != nullptr,
+        "Notify QP not initialized. Ensure getLocalBusCard() is called before setupVc().");
     return ibvNotifyQp_->qp()->qp_num;
   }
 
   inline uint32_t getAtomicQpNum() const {
+    FB_CHECKABORT(
+        ibvAtomicQp_.has_value() && ibvAtomicQp_->qp() != nullptr,
+        "Atomic QP not initialized. Ensure getLocalBusCard() is called before setupVc().");
     return ibvAtomicQp_->qp()->qp_num;
   }
 
@@ -448,15 +457,30 @@ class CtranIbVirtualConn {
     return qpIdx / (maxNumQps_ / NCCL_CTRAN_IB_DEVICES_PER_RANK);
   }
 
+  // Check if QPs have been initialized (via getLocalBusCard())
+  inline bool areQpsInitialized() const {
+    return ibvControlQp_.has_value() && ibvNotifyQp_.has_value() &&
+        ibvAtomicQp_.has_value() && !ibvDataQps_.empty();
+  }
+
   inline bool isNotifyQp(QpUniqueId qpId) const {
+    FB_CHECKABORT(
+        ibvNotifyQp_.has_value(),
+        "Notify QP not initialized when checking isNotifyQp");
     return ibvNotifyQp_->qp()->qp_num == qpId.first && qpId.second == 0;
   }
 
   inline bool isControlQp(QpUniqueId qpId) const {
+    FB_CHECKABORT(
+        ibvControlQp_.has_value(),
+        "Control QP not initialized when checking isControlQp");
     return ibvControlQp_->qp()->qp_num == qpId.first && qpId.second == 0;
   }
 
   inline bool isAtomicQp(QpUniqueId qpId) const {
+    FB_CHECKABORT(
+        ibvAtomicQp_.has_value(),
+        "Atomic QP not initialized when checking isAtomicQp");
     return ibvAtomicQp_->qp()->qp_num == qpId.first && qpId.second == 0;
   }
 
