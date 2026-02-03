@@ -352,8 +352,9 @@ ncclResult_t DefaultNcclxApi::commWindowRegister(
     void* baseptr,
     const size_t size,
     ncclComm_t comm,
-    NcclxWindow* winPtr) {
-  return ncclCommWindowRegister(comm, baseptr, size, winPtr, NCCL_WIN_DEFAULT);
+    NcclxWindow* winPtr,
+    int winFlags) {
+  return ncclCommWindowRegister(comm, baseptr, size, winPtr, winFlags);
 }
 
 ncclResult_t DefaultNcclxApi::commWindowDeregister(

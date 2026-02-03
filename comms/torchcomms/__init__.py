@@ -14,7 +14,7 @@ from typing import Generator, Optional
 import torch  # noqa: F401
 from torchcomms.functional import is_torch_compile_supported_and_enabled
 
-torch_compile_supported_and_enabled = is_torch_compile_supported_and_enabled()
+torch_compile_supported_and_enabled: bool = is_torch_compile_supported_and_enabled()
 
 if torch_compile_supported_and_enabled:
     from torch._opaque_base import OpaqueBaseMeta

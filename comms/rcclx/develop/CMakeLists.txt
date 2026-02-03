@@ -931,8 +931,8 @@ set(CTRAN_FILES
   comms/ctran/backends/ib/CtranIbImpl.h
   comms/ctran/backends/ib/CtranIbLocalVc.cc
   comms/ctran/backends/ib/CtranIbLocalVc.h
-  comms/ctran/backends/ib/CtranIbQpUtils.cc
-  comms/ctran/backends/ib/CtranIbQpUtils.h
+  comms/ctran/ibverbx/IbvQpUtils.cc
+  comms/ctran/ibverbx/IbvQpUtils.h
   comms/ctran/backends/ib/CtranIbRequest.cc
   comms/ctran/backends/ib/CtranIbSingleton.h
   comms/ctran/backends/ib/CtranIbVc.cc
