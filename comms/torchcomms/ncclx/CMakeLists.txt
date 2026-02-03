@@ -56,9 +56,22 @@ if(NOT EXISTS "${NCCLX_INCLUDE}")
     message(FATAL_ERROR "NCCLX include not found at ${NCCLX_INCLUDE}")
 endif()
 
+# Check if NCCL Device API headers are available (requires NCCLX 2.28+)
+# This enables the device API for GPU-initiated networking (GIN) support
+if(EXISTS "${NCCLX_INCLUDE}/nccl_device/core.h")
+    message(STATUS "NCCL Device API headers found, building with device API support")
+    set(TORCHCOMMS_HAS_NCCL_DEVICE_API ON)
+    file(GLOB TORCHCOMMS_DEVICE_NCCLX_SOURCE "comms/torchcomms/device/ncclx/*.cpp")
+else()
+    message(STATUS "NCCL Device API headers NOT found (requires NCCLX 2.28+), building without device API support")
+    set(TORCHCOMMS_HAS_NCCL_DEVICE_API OFF)
+    set(TORCHCOMMS_DEVICE_NCCLX_SOURCE "")
+endif()
+
 add_library(torchcomms_comms_ncclx MODULE
     ${TORCHCOMMS_NCCLX_SOURCES}
     ${TORCHCOMMS_CUDA_API_SOURCE}
+    ${TORCHCOMMS_DEVICE_NCCLX_SOURCE}
 )
 set_target_properties(torchcomms_comms_ncclx PROPERTIES
     PREFIX ""
@@ -74,6 +87,12 @@ target_include_directories(torchcomms_comms_ncclx PRIVATE
     ${Python3_INCLUDE_DIRS}
 )
 target_compile_features(torchcomms_comms_ncclx PRIVATE cxx_std_20)
+
+# Add device API compile definition if headers are available
+if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
+    target_compile_definitions(torchcomms_comms_ncclx PRIVATE TORCHCOMMS_HAS_NCCL_DEVICE_API=1)
+endif()
+
 target_link_directories(torchcomms_comms_ncclx PRIVATE ${CONDA_LIB})
 target_link_libraries(torchcomms_comms_ncclx PRIVATE
     ${TORCH_LIBRARIES}
