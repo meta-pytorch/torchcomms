@@ -68,6 +68,21 @@ struct RdmaTransport::Work {
   Type type{Type::Write};
   CtranIbRequest ibReq;
   folly::Promise<commResult_t> promise;
+  // Mock type for this work (captured at creation time)
+  RdmaTransport::MockType mockType{RdmaTransport::MockType::None};
+
+  const static std::string typeToString(const Type type) {
+    switch (type) {
+      case Type::Write:
+        return "Write";
+      case Type::Read:
+        return "Read";
+      case Type::WaitForWrite:
+        return "WaitForWrite";
+      default:
+        return "Unknown";
+    }
+  }
 };
 
 RdmaTransport::RdmaTransport(int cudaDev, folly::EventBase* evb)
@@ -146,29 +161,39 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
     RdmaMemory::View localBuffer,
     const RdmaRemoteBuffer& remoteBuffer,
     bool notify) {
-  CHECK_THROW(connected(), std::runtime_error);
+  auto currentMockType = mockType_.load();
+
+  // Skip connected check when mock is enabled for testing
+  if (currentMockType == MockType::None) {
+    CHECK_THROW(connected(), std::runtime_error);
+  }
   CHECK_THROW(evb_, std::runtime_error);
   CHECK_THROW(localBuffer.size() <= remoteBuffer.len, std::runtime_error);
 
   CHECK_EQ(cudaDev_, localBuffer->getDevice());
 
-  auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
   auto work = std::make_unique<Work>();
   work->type = Work::Type::Write;
+  work->mockType = currentMockType;
   auto sf = work->promise.getSemiFuture();
 
-  CtranIbEpochRAII epochRAII(ib_.get());
-  FB_COMMCHECK(ib_->iput(
-      localBuffer.data(),
-      remoteBuffer.ptr,
-      localBuffer.size(),
-      kDummyRank,
-      localBuffer->localKey(),
-      ibRemoteKey,
-      notify,
-      nullptr,
-      &work->ibReq,
-      false));
+  // Skip actual IB operations when mock is enabled
+  if (currentMockType == MockType::None) {
+    auto ibRemoteKey =
+        CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
+    CtranIbEpochRAII epochRAII(ib_.get());
+    FB_COMMCHECK(ib_->iput(
+        localBuffer.data(),
+        remoteBuffer.ptr,
+        localBuffer.size(),
+        kDummyRank,
+        localBuffer->localKey(),
+        ibRemoteKey,
+        notify,
+        nullptr,
+        &work->ibReq,
+        false));
+  }
 
   // Add work to pending list and schedule progress
   auto pendingWorks = pendingWorks_.wlock();
@@ -185,6 +210,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::waitForWrite() {
 
   auto work = std::make_unique<Work>();
   work->type = Work::Type::WaitForWrite;
+  work->mockType = mockType_.load();
   auto sf = work->promise.getSemiFuture();
 
   // Add work to pending list and schedule progress
@@ -206,6 +232,7 @@ folly::SemiFuture<commResult_t> RdmaTransport::read(
   auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
   auto work = std::make_unique<Work>();
   work->type = Work::Type::Read;
+  work->mockType = mockType_.load();
   auto sf = work->promise.getSemiFuture();
 
   CtranIbEpochRAII epochRAII(ib_.get());
@@ -240,6 +267,28 @@ void RdmaTransport::progress() {
 
   auto pendingWorks = pendingWorks_.wlock();
   for (auto it = pendingWorks->begin(); it != pendingWorks->end();) {
+    if (!hasError) {
+      auto& work = *it;
+      // Handle mock types if no real failure
+      switch (work->mockType) {
+        case MockType::Failure:
+          // Failure-mocked works complete immediately with error
+          work->promise.setValue(commInternalError);
+          it = pendingWorks->erase(it);
+          continue;
+        case MockType::Timeout:
+          // Timeout-mocked works never complete
+          ++it;
+          continue;
+        case MockType::None:
+          // Normal operation, fall through to normal handling
+          break;
+        default:
+          // Unknown mock type, treat as normal operation
+          break;
+      }
+    }
+
     if (hasError) {
       (*it)->promise.setValue(res);
       it = pendingWorks->erase(it);
@@ -271,6 +320,23 @@ void RdmaTransport::progress() {
   if (pendingWorks->size()) {
     progressTimeout_->scheduleTimeoutHighRes(kProgressInterval);
   }
+}
+
+void RdmaTransport::abort() {
+  XLOGF(
+      INFO,
+      "Abort RDMA transport, cleanup {} pending works",
+      pendingWorks_.rlock()->size());
+  auto pendingWorks = pendingWorks_.wlock();
+  for (auto it = pendingWorks->begin(); it != pendingWorks->end();) {
+    // TODO: add status for user cancel?
+    (*it)->promise.setValue(commInternalError);
+    it = pendingWorks->erase(it);
+  }
+}
+
+void RdmaTransport::setMockForTest(MockType mockType) {
+  mockType_.store(mockType);
 }
 
 } // namespace torch::comms
