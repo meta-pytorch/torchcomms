@@ -3,8 +3,10 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdlib>
 #include <memory>
+#include <thread>
 
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
@@ -14,6 +16,15 @@ class RegCacheTest : public ::testing::Test {
  public:
   int cudaDev = 0;
   std::shared_ptr<ctran::RegCache> regCache{nullptr};
+
+  // Helper struct for registered buffer management in tests
+  struct RegisteredBuffer {
+    void* buf{nullptr};
+    size_t bufSize{0};
+    std::vector<ctran::regcache::Segment*> segments;
+    std::vector<void*> segHdls;
+    ctran::regcache::RegElem* regElem{nullptr};
+  };
 
  protected:
   void SetUp() override {
@@ -31,6 +42,57 @@ class RegCacheTest : public ::testing::Test {
 
   void TearDown() override {
     EXPECT_EQ(regCache->destroy(), commSuccess);
+  }
+
+  // Helper to allocate, cache, and register a buffer in one call.
+  // Returns a RegisteredBuffer struct containing all the handles needed
+  // for testing and cleanup.
+  RegisteredBuffer allocateAndRegister(size_t bufSize) {
+    RegisteredBuffer rb;
+    rb.bufSize = bufSize;
+
+    // Allocate CUDA memory
+    CUDACHECK_TEST(cudaMalloc(&rb.buf, bufSize));
+
+    // Cache the segment
+    EXPECT_EQ(
+        regCache->cacheSegment(
+            rb.buf, bufSize, cudaDev, false, 0, rb.segments, rb.segHdls),
+        commSuccess);
+
+    // Register the buffer
+    bool didRegister = false;
+    std::vector<bool> backends(3, false);
+    backends[0] = true; // IB backend
+    EXPECT_EQ(
+        regCache->regRange(
+            rb.buf,
+            bufSize,
+            cudaDev,
+            "test",
+            CommLogData{},
+            backends,
+            didRegister,
+            &rb.regElem),
+        commSuccess);
+
+    return rb;
+  }
+
+  // Helper to free a registered buffer and its associated resources
+  void freeRegisteredBuffer(RegisteredBuffer& rb) {
+    for (auto segHdl : rb.segHdls) {
+      bool freed = false;
+      bool ncclManaged = false;
+      std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+      EXPECT_EQ(
+          regCache->freeSegment(segHdl, freed, ncclManaged, regElems),
+          commSuccess);
+    }
+    if (rb.buf) {
+      CUDACHECK_TEST(cudaFree(rb.buf));
+      rb.buf = nullptr;
+    }
   }
 };
 
@@ -345,6 +407,132 @@ TEST_F(RegCacheTest, LookupSegmentsForBufferNotCached) {
   EXPECT_EQ(foundRegElems.size(), 0);
 
   CUDACHECK_TEST(cudaFree(buf));
+}
+
+// Test RegElemGuard correctly manages inUseCount
+TEST_F(RegCacheTest, RegElemGuardIncrementsInUseCount) {
+  auto rb = allocateAndRegister(8192);
+  ASSERT_NE(rb.regElem, nullptr);
+
+  // Initially inUseCount should be 0
+  EXPECT_EQ(rb.regElem->getInUseCount(), 0);
+  EXPECT_FALSE(rb.regElem->isInUse());
+
+  // Create a guard - should increment inUseCount
+  {
+    ctran::regcache::RegElemGuard guard(rb.regElem);
+    EXPECT_EQ(rb.regElem->getInUseCount(), 1);
+    EXPECT_TRUE(rb.regElem->isInUse());
+
+    // Create another guard - should increment again
+    {
+      ctran::regcache::RegElemGuard guard2(rb.regElem);
+      EXPECT_EQ(rb.regElem->getInUseCount(), 2);
+      EXPECT_TRUE(rb.regElem->isInUse());
+    }
+    // guard2 destroyed - should decrement
+    EXPECT_EQ(rb.regElem->getInUseCount(), 1);
+    EXPECT_TRUE(rb.regElem->isInUse());
+  }
+  // guard destroyed - should decrement back to 0
+  EXPECT_EQ(rb.regElem->getInUseCount(), 0);
+  EXPECT_FALSE(rb.regElem->isInUse());
+
+  freeRegisteredBuffer(rb);
+}
+
+// Test that RegElemGuard move semantics work correctly
+TEST_F(RegCacheTest, RegElemGuardMoveSemantics) {
+  auto rb = allocateAndRegister(8192);
+  ASSERT_NE(rb.regElem, nullptr);
+
+  // Test move constructor
+  {
+    ctran::regcache::RegElemGuard guard1(rb.regElem);
+    EXPECT_EQ(rb.regElem->getInUseCount(), 1);
+
+    // Move to guard2
+    ctran::regcache::RegElemGuard guard2(std::move(guard1));
+    EXPECT_EQ(rb.regElem->getInUseCount(), 1); // Still 1, not 2
+    EXPECT_EQ(guard1.get(), nullptr); // guard1 is now empty
+    EXPECT_EQ(guard2.get(), rb.regElem);
+  }
+  EXPECT_EQ(rb.regElem->getInUseCount(), 0);
+
+  // Test move assignment
+  {
+    ctran::regcache::RegElemGuard guard1(rb.regElem);
+    ctran::regcache::RegElemGuard guard2;
+    EXPECT_EQ(rb.regElem->getInUseCount(), 1);
+
+    guard2 = std::move(guard1);
+    EXPECT_EQ(rb.regElem->getInUseCount(), 1);
+    EXPECT_EQ(guard1.get(), nullptr);
+    EXPECT_EQ(guard2.get(), rb.regElem);
+  }
+  EXPECT_EQ(rb.regElem->getInUseCount(), 0);
+
+  freeRegisteredBuffer(rb);
+}
+
+// Test demonstrating concurrent access scenario:
+// One thread holds a guard (simulating a collective using the registration)
+// while another thread attempts to check if it's safe to deregister.
+// The isInUse() check prevents deregistration while the collective is
+// active.
+TEST_F(RegCacheTest, GuardProtectsConcurrentDeregistration) {
+  auto rb = allocateAndRegister(8192);
+  ASSERT_NE(rb.regElem, nullptr);
+
+  std::atomic<bool> collectiveStarted{false};
+  std::atomic<bool> deregChecked{false};
+  std::atomic<bool> collectiveDone{false};
+  std::atomic<bool> wasInUse{false};
+
+  // Thread 1: Simulates a collective operation holding the guard
+  std::thread collectiveThread([&]() {
+    ctran::regcache::RegElemGuard guard(rb.regElem);
+
+    // Signal that collective has started (guard is held)
+    collectiveStarted.store(true);
+
+    // Wait until the deregistration thread has checked isInUse
+    while (!deregChecked.load()) {
+      std::this_thread::yield();
+    }
+
+    // Guard is still held here, collective is "in progress"
+    // When this thread exits, guard destructor decrements inUseCount
+    collectiveDone.store(true);
+  });
+
+  // Thread 2: Simulates deregistration check
+  std::thread deregThread([&]() {
+    // Wait for collective to start
+    while (!collectiveStarted.load()) {
+      std::this_thread::yield();
+    }
+
+    // Check if registration is in use - should be true because
+    // the collective thread holds the guard
+    wasInUse.store(rb.regElem->isInUse());
+
+    // Signal that we've checked
+    deregChecked.store(true);
+  });
+
+  collectiveThread.join();
+  deregThread.join();
+
+  // Verify that isInUse() returned true while the guard was held
+  EXPECT_TRUE(wasInUse.load())
+      << "isInUse() should have returned true while collective held guard";
+
+  // After both threads complete, the guard should be released
+  EXPECT_FALSE(rb.regElem->isInUse());
+  EXPECT_EQ(rb.regElem->getInUseCount(), 0);
+
+  freeRegisteredBuffer(rb);
 }
 
 int main(int argc, char* argv[]) {

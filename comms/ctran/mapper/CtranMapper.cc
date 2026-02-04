@@ -762,6 +762,25 @@ commResult_t CtranMapper::searchRegHandle(
   return commSuccess;
 }
 
+commResult_t CtranMapper::searchRegHandleGuarded(
+    const void* buf,
+    std::size_t len,
+    ctran::regcache::RegElemGuard* guard,
+    bool* dynamicRegist,
+    bool allowDynamic) {
+  // First, use the regular searchRegHandle to get the raw pointer
+  void* regHdl = nullptr;
+  FB_COMMCHECK(searchRegHandle(buf, len, &regHdl, dynamicRegist, allowDynamic));
+
+  // Wrap the registration handle in a guard to track in-use.
+  // The guard increments inUseCount on construction and decrements on
+  // destruction, ensuring the registration cannot be invalidated while in use.
+  *guard = ctran::regcache::RegElemGuard(
+      static_cast<ctran::regcache::RegElem*>(regHdl));
+
+  return commSuccess;
+}
+
 commResult_t CtranMapper::icopy(
     void* dbuf,
     const void* sbuf,
