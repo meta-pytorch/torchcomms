@@ -166,6 +166,22 @@ class TorchCommBackend {
         "[TorchCommBackend]: new_window not implemented for communicator:" +
         std::string(getCommName()));
   }
+
+  // Fault Tolerance API
+
+  /**
+   * Get the initialization handle for this backend.
+   * In dynamic regime, this URL encodes information required by the backend
+   * to complete the initialization process via reconfigure().
+   *
+   * @return An InitHandle containing the initialization URL/handle.
+   * @throws std::runtime_error if not implemented by the backend.
+   */
+  virtual InitHandle getInitHandle() const {
+    throw std::runtime_error(
+        "[TorchCommBackend]: getInitHandle not implemented for communicator:" +
+        std::string(getCommName()));
+  }
 };
 
 /**
