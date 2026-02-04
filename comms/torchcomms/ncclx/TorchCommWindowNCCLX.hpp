@@ -107,23 +107,34 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   void deregister_local_buffer(DeviceRegisteredBuffer& buf);
 
   // Get a device-side window handle for GPU-initiated operations.
-  // Returns a copy of the device window (CUDA copies kernel arguments
-  // automatically). The window is lazily created on first call and cached.
+  // Returns a pointer to the cached device window. The window is lazily
+  // created on first call and cached.
   //
   // Thread-safety: This method is NOT thread-safe. Concurrent calls from
   // multiple threads require external synchronization.
   //
-  // Lifetime: The returned DeviceWindow is a copy of the cached window.
-  // The underlying device resources are valid until this host window is
+  // Lifetime: The returned pointer is valid until this host window is
   // destroyed.
   //
-  // Usage:
-  //   auto dev_win = host_window->get_device_window();
+  // Usage (C++):
+  //   auto* dev_win = host_window->get_device_window();
   //   my_kernel<<<grid, block>>>(dev_win, ...);
-  DeviceWindow get_device_window(
+  //   // In kernel: dev_win->put(...), dev_win->signal(...), etc.
+  //
+  // Usage (Triton):
+  //   The same pointer can be passed to Triton kernels via torchcomms_put(),
+  //   torchcomms_signal(), etc. wrappers that take void* handles.
+  DeviceWindow* get_device_window(
       int signal_count = -1,
       int counter_count = -1,
       int barrier_count = 1);
+
+  // Get the host-side NCCL window handle.
+  // Useful for creating RegisteredBuffer from host code when the device
+  // window's window_ field is in device memory and not directly accessible.
+  ncclWindow_t get_nccl_window() const {
+    return nccl_orig_win_;
+  }
 #endif
 
  private:
@@ -146,7 +157,12 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   ncclComm_t local_comm_{nullptr};
   bool local_comm_initialized_{false};
   NcclxWindow nccl_orig_win_{nullptr};
-  std::unique_ptr<DeviceWindow> device_window_;
+
+  // Device window is allocated in DEVICE memory (cudaMalloc) for GPU access.
+  // The pointer can be passed to CUDA kernels and Triton.
+  // The custom deleter handles both cudaFree and ncclDevCommDestroy.
+  torchcomms::device::DeviceWindowPtr<Backend> device_window_;
+
   std::vector<DeviceRegisteredBuffer> registered_local_buffers_;
 #endif
 

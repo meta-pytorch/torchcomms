@@ -111,10 +111,9 @@ void DeviceApiTest::testDeviceWindowCreation(int count, at::ScalarType dtype) {
       dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
-  // Get device window (returns by value, following NCCL's pattern)
-  auto dev_win = win->get_device_window();
-  EXPECT_NE(dev_win.base_, nullptr)
-      << "Device window should have valid base ptr";
+  // Get device window (returns device pointer for use in CUDA/Triton kernels)
+  auto* dev_win = win->get_device_window();
+  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   // Cleanup
   base_win->tensor_deregister();
@@ -211,11 +210,10 @@ void DeviceApiTest::testDeviceWindowWithSignals(
       dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
-  // Get device window with signals (returns by value, following NCCL's pattern)
+  // Get device window with signals (returns device pointer for use in kernels)
   int signal_count = num_ranks_;
-  auto dev_win = win->get_device_window(signal_count, -1, 1);
-  EXPECT_NE(dev_win.base_, nullptr)
-      << "Device window should have valid base ptr";
+  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   // Cleanup
   base_win->tensor_deregister();
@@ -259,13 +257,11 @@ void DeviceApiTest::testDeviceWindowWithCounters(
       dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
-  // Get device window with signals and counters (returns by value, following
-  // NCCL's pattern)
+  // Get device window with signals and counters (returns device pointer)
   int signal_count = num_ranks_;
   int counter_count = num_ranks_;
-  auto dev_win = win->get_device_window(signal_count, counter_count, 1);
-  EXPECT_NE(dev_win.base_, nullptr)
-      << "Device window should have valid base ptr";
+  auto* dev_win = win->get_device_window(signal_count, counter_count, 1);
+  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   // Cleanup
   base_win->tensor_deregister();
@@ -326,11 +322,10 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
       dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
-  // Get device window with signals (returns by value, following NCCL's pattern)
+  // Get device window with signals (returns device pointer for use in kernels)
   int signal_count = num_ranks_;
-  auto dev_win = win->get_device_window(signal_count, -1, 1);
-  EXPECT_NE(dev_win.base_, nullptr)
-      << "Device window should have valid base ptr";
+  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
   // TODO: The current NCCL GIN implementation
   // and destination windows are registered with the same communicator. Windows
@@ -355,13 +350,17 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
       << "Source window should be TorchCommWindowNCCLXGin";
 
   // Get the source device window to access its nccl_orig_win_ via window_ field
-  auto src_dev_win = src_win->get_device_window(signal_count, -1, 1);
+  auto* src_dev_win = src_win->get_device_window(signal_count, -1, 1);
+  ASSERT_NE(src_dev_win, nullptr)
+      << "Source device window pointer should not be null";
 
   // Create RegisteredBuffer pointing to the source window's nccl_orig_win_
+  // Note: We need to copy window_ from device memory to access it on host.
+  // For now, we use the host-side NCCL window from the TorchCommWindow.
   torchcomms::device::RegisteredBufferNCCL src_buf;
   src_buf.base_ptr = src_tensor.data_ptr();
   src_buf.size = count * src_tensor.element_size();
-  src_buf.backend_window = src_dev_win.window_;
+  src_buf.backend_window = src_win->get_nccl_window();
   ASSERT_NE(src_buf.backend_window, nullptr)
       << "Source buffer backend_window should not be null";
 
