@@ -17,7 +17,21 @@
   #if !defined(_HIP_INCLUDE_HIP_AMD_DETAIL_HIP_BFLOAT16_H_) && !defined(_HIP_BFLOAT16_H_)
     #define _HIP_INCLUDE_HIP_AMD_DETAIL_HIP_BFLOAT16_H_
     #define _HIP_BFLOAT16_H_
+    // ROCm 7.0 hip_bf16.h has a bug where it uses warpSize as a default parameter
+    // in host-visible function declarations. warpSize is only defined in device code,
+    // so we define a placeholder here to allow the header to compile in host contexts.
+    // Also disable warp sync builtins which use device-only intrinsics like __shfl_*_sync.
+    #if !defined(__HIP_DEVICE_COMPILE__) && !defined(warpSize)
+      #define warpSize 64
+      #define HIP_DISABLE_WARP_SYNC_BUILTINS 1
+      #define RCCL_DEFINED_WARPSIZE
+    #endif
     #include <hip/hip_bf16.h>
+    #if defined(RCCL_DEFINED_WARPSIZE)
+      #undef warpSize
+      #undef HIP_DISABLE_WARP_SYNC_BUILTINS
+      #undef RCCL_DEFINED_WARPSIZE
+    #endif
     typedef __hip_bfloat16 hip_bfloat16;
   #else
     #error "RCCL is not using the correct hip_bf16.h file. Please make sure that the correct header is included!"
