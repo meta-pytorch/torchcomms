@@ -25,9 +25,9 @@ namespace torchcomms::device::test {
 
 // Launch device put kernel - performs put from src_buf to window on dst_rank
 // Uses src_offset=0 and dst_offset=rank*bytes pattern
-// Note: TorchCommDeviceWindow is passed by value (matching NCCL's pattern)
+// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
 void launchDevicePutKernel(
-    DeviceWindowNCCL win,
+    DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     size_t bytes,
     int dst_rank,
@@ -37,9 +37,9 @@ void launchDevicePutKernel(
 // Launch device put kernel with explicit offsets - performs put with custom
 // src/dst offsets This is useful when using a single window buffer for both
 // source and destination sections.
-// Note: TorchCommDeviceWindow is passed by value (matching NCCL's pattern)
+// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
 void launchDevicePutKernelWithOffsets(
-    DeviceWindowNCCL win,
+    DeviceWindowNCCL* win,
     RegisteredBufferNCCL src_buf,
     size_t src_offset,
     size_t dst_offset,
@@ -49,17 +49,17 @@ void launchDevicePutKernelWithOffsets(
     cudaStream_t stream);
 
 // Launch device wait signal kernel - waits for signal from peer
-// Note: TorchCommDeviceWindow is passed by value (matching NCCL's pattern)
+// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
 void launchDeviceWaitSignalKernel(
-    DeviceWindowNCCL win,
+    DeviceWindowNCCL* win,
     int signal_id,
     uint64_t expected_value,
     cudaStream_t stream);
 
 // Launch device reset signal kernel - resets signal to 0
-// Note: TorchCommDeviceWindow is passed by value (matching NCCL's pattern)
+// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
 void launchDeviceResetSignalKernel(
-    DeviceWindowNCCL win,
+    DeviceWindowNCCL* win,
     int signal_id,
     cudaStream_t stream);
 
