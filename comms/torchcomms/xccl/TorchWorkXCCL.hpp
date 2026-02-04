@@ -46,6 +46,9 @@ class TorchWorkXCCL : public TorchWork {
   // Override virtual functions from TorchWork
   bool isCompleted() override;
   void wait() override;
+  std::chrono::milliseconds getTimeout() const override {
+    return timeout_ms_;
+  }
 
  protected:
   void recordStart();
@@ -58,9 +61,6 @@ class TorchWorkXCCL : public TorchWork {
   // Check the status of the work object
   WorkStatus checkStatus();
 
-  std::chrono::milliseconds getTimeout() const {
-    return timeout_ms_;
-  }
   std::vector<at::Tensor> inputTensors_;
 
   std::shared_ptr<TorchCommXCCL> comm_;

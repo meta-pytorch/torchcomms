@@ -24,6 +24,7 @@ class WorkWrapper : public c10d::Work {
   std::vector<at::Tensor> result() override;
 
  private:
+  friend class BackendWrapper;
   c10::intrusive_ptr<TorchWork> work_;
 };
 
@@ -123,6 +124,15 @@ class BackendWrapper : public c10d::Backend {
   const std::string getBackendName() const override;
 
   c10::intrusive_ptr<c10d::Backend::Options> getBackendOptions() override;
+
+  // Verify that a work object has the expected timeout.
+  // Used for testing timeout propagation.
+  bool verifyWorkTimeoutForTest(
+      const c10::intrusive_ptr<c10d::Work>& work,
+      const std::chrono::milliseconds& timeout);
+
+  // Set the default timeout for this backend.
+  void setTimeout(std::chrono::milliseconds timeout) override;
 
   // Split communicator into a subgroup and return a new BackendWrapper
   c10::intrusive_ptr<Backend> split(
