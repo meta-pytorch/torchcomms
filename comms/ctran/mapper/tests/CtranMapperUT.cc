@@ -1181,7 +1181,7 @@ TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
   rkey2.backend = CtranMapperBackend::NVL;
   EXPECT_EQ(
       rkey2.toString(),
-      "backend=NVL, nvlKey=[peerId: host1:1234, basePtr: 0x4567890]");
+      "backend=NVL, nvlKey=[peerId: host1:1234, basePtr: 0x4567890, uid: 0]");
 
   CtranMapperRemoteAccessKey rkey3 = rkey1;
   rkey3.backend = CtranMapperBackend::UNSET;

@@ -8,6 +8,12 @@
 #include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
 
+// NCCL Device API headers are only available in NCCLX 2.28+
+// For conda feedstock builds with older NCCLX versions, device API is disabled
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+#include <nccl_device/core.h> // @manual=//comms/ncclx:nccl
+#endif
+
 namespace torch::comms {
 
 // Forward declaration for NCCLXException
@@ -275,6 +281,18 @@ class NcclxApi {
   virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
   virtual ncclResult_t memFree(void* buff) = 0;
 
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+  // Device communicator operations (for device API / GIN support)
+  // Requires NCCLX 2.28+ with nccl_device headers
+  virtual ncclResult_t devCommCreate(
+      ncclComm_t comm,
+      const ncclDevCommRequirements_t* reqs,
+      ncclDevComm_t* outDevComm) = 0;
+  virtual ncclResult_t devCommDestroy(
+      ncclComm_t comm,
+      const ncclDevComm_t* devComm) = 0;
+#endif
+
   // Group operations
   virtual ncclResult_t groupStart() = 0;
   virtual ncclResult_t groupEnd() = 0;
@@ -513,6 +531,17 @@ class DefaultNcclxApi : public NcclxApi {
 
   ncclResult_t memAlloc(void** buff, size_t size) override;
   ncclResult_t memFree(void* buff) override;
+
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+  // Device communicator operations (for device API / GIN support)
+  // Requires NCCLX 2.28+ with nccl_device headers
+  ncclResult_t devCommCreate(
+      ncclComm_t comm,
+      const ncclDevCommRequirements_t* reqs,
+      ncclDevComm_t* outDevComm) override;
+  ncclResult_t devCommDestroy(ncclComm_t comm, const ncclDevComm_t* devComm)
+      override;
+#endif
 
   // Group operations
   ncclResult_t groupStart() override;

@@ -433,6 +433,7 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
       busCard->u.ib.lids[device] = portAttr.lid;
     }
   }
+  CHECK_EQ(maxNumQps_, this->ibvDataQps_.size());
   /* create local business card */
   for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
     busCard->ports[device] = devices_[device].port;
@@ -441,7 +442,7 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
   busCard->notifQpn = ibvNotifyQp_->qp()->qp_num;
   busCard->atomicQpn = ibvAtomicQp_->qp()->qp_num;
   for (int i = 0; i < maxNumQps_; i++) {
-    busCard->dataQpn[i] = this->ibvDataQps_[i].qp()->qp_num;
+    busCard->dataQpn[i] = this->ibvDataQps_.at(i).qp()->qp_num;
   }
   busCard->mtu = portAttr.active_mtu;
   mtu_ = 128 * (1 << static_cast<int>(portAttr.active_mtu));
@@ -453,20 +454,35 @@ commResult_t CtranIbVirtualConn::getLocalBusCard(void* localBusCard) {
 commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
   BusCard* remoteBusCardStruct = reinterpret_cast<BusCard*>(remoteBusCard);
 
+  // Validate that QPs have been initialized via getLocalBusCard()
+  if (!areQpsInitialized()) {
+    CLOGF(
+        ERR,
+        "CTRAN-IB-VC: setupVc called before getLocalBusCard(). "
+        "QPs not initialized: controlQp={}, notifyQp={}, atomicQp={}, dataQps={}. "
+        "peerRank={}",
+        ibvControlQp_.has_value(),
+        ibvNotifyQp_.has_value(),
+        ibvAtomicQp_.has_value(),
+        ibvDataQps_.size(),
+        peerRank);
+    return commInternalError;
+  }
+
   // allocate and register control messages
   FB_COMMCHECK(prepCtrlMsgs());
   // prepare wrs used in send/recv ctrl, put, notify
   FB_COMMCHECK(prepIbvWrs());
 
-  for (int i = 0; i < maxNumQps_; i++) {
+  for (int i = 0; i < this->ibvDataQps_.size(); i++) {
     int ibDevice = getIbDevFromQpIdx(i);
     QpUniqueId qpId =
-        std::make_pair(this->ibvDataQps_[i].qp()->qp_num, ibDevice);
+        std::make_pair(this->ibvDataQps_.at(i).qp()->qp_num, ibDevice);
     if (qpNumToIdx_.find(qpId) != qpNumToIdx_.end()) {
       CLOGF(
           ERR,
           "CTRAN-IB-VC: QP {} on device {} already exists",
-          this->ibvDataQps_[i].qp()->qp_num,
+          this->ibvDataQps_.at(i).qp()->qp_num,
           ibDevice);
       return commInternalError;
     }
@@ -511,7 +527,8 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
     // Only use NCCL_CTRAN_IB_CTRL_TC for the control QP; switch back to
     // NCCL_IB_TC for data QPs
 
-    FOLLY_EXPECTED_CHECK(rtrQp(remoteQpInfo, ibvDataQps_[i], pgTrafficClass_));
+    FOLLY_EXPECTED_CHECK(
+        rtrQp(remoteQpInfo, ibvDataQps_.at(i), pgTrafficClass_));
   }
 
   /* set QP to RTS state */
@@ -519,7 +536,7 @@ commResult_t CtranIbVirtualConn::setupVc(void* remoteBusCard) {
   FOLLY_EXPECTED_CHECK(rtsQp(*ibvNotifyQp_));
   FOLLY_EXPECTED_CHECK(rtsQp(*ibvAtomicQp_));
   for (int i = 0; i < maxNumQps_; i++) {
-    FOLLY_EXPECTED_CHECK(rtsQp(ibvDataQps_[i]));
+    FOLLY_EXPECTED_CHECK(rtsQp(ibvDataQps_.at(i)));
   }
 
   /* post control WQEs */

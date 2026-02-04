@@ -247,7 +247,7 @@ static commResult_t impl(
 
     /* Step 1: Intra-node reduce-scatter */
     elem = op->allreduce.kElemStepMap.at(
-        static_cast<int>(AllReduceKernElemRole::kIntraReduceScatter));
+        static_cast<int>(ctran::allreduce::KernElemRole::kIntraReduceScatter));
     elem->localReduce.count = stepCount / nLocalRanks;
     elem->localReduce.dst = BUFOFFSET(op->allreduce.recvbuff, localOffset);
     for (int lr = 0; lr < nLocalRanks; lr++) {
@@ -309,7 +309,7 @@ static commResult_t impl(
 
     /* local reduction from tmpbuf */
     elem = op->allreduce.kElemStepMap.at(
-        static_cast<int>(AllReduceKernElemRole::kInterReduceScatter));
+        static_cast<int>(ctran::allreduce::KernElemRole::kInterReduceScatter));
     elem->stridedReduce.dst =
         BUFOFFSET(op->allreduce.recvbuff, localOffset + nodeOffset);
     elem->stridedReduce.stridedSrc = tmpBuf;
@@ -362,7 +362,7 @@ static commResult_t impl(
 
     /* Step 4: Intra-node Allgather */
     elem = op->allreduce.kElemStepMap.at(
-        static_cast<int>(AllReduceKernElemRole::kIntraAllGather));
+        static_cast<int>(ctran::allreduce::KernElemRole::kIntraAllGather));
     elem->bcast.count = stepCount / nLocalRanks;
     elem->bcast.src = BUFOFFSET(op->allreduce.recvbuff, localOffset);
     for (int lr = 0; lr < nLocalRanks; lr++) {
@@ -410,7 +410,7 @@ static commResult_t impl(
 
     /* Step 5: Intra-node reduce */
     elem = op->allreduce.kElemStepMap.at(
-        static_cast<int>(AllReduceKernElemRole::kRemIntraReduce));
+        static_cast<int>(ctran::allreduce::KernElemRole::kRemIntraReduce));
     elem->localReduce.dst = op->allreduce.recvbuff;
     for (int lr = 0; lr < nLocalRanks; lr++) {
       if (lr == localRank) {
@@ -424,7 +424,7 @@ static commResult_t impl(
 
     /* Step 6: Intra-node bcast */
     elem = op->allreduce.kElemStepMap.at(
-        static_cast<int>(AllReduceKernElemRole::kRemIntraBcast));
+        static_cast<int>(ctran::allreduce::KernElemRole::kRemIntraBcast));
     elem->bcast.src = op->allreduce.recvbuff;
     for (int lr = 0; lr < nLocalRanks; lr++) {
       if (lr == localRank) {
@@ -479,7 +479,7 @@ static commResult_t impl(
 
     /* local reduction from tmpbuf */
     elem = op->allreduce.kElemStepMap.at(
-        static_cast<int>(AllReduceKernElemRole::kRemInterReduce));
+        static_cast<int>(ctran::allreduce::KernElemRole::kRemInterReduce));
     elem->stridedReduce.dst = op->allreduce.recvbuff;
     elem->stridedReduce.stridedSrc = tmpBuf;
     elem->stridedReduce.blockCount = remCount;
@@ -612,21 +612,17 @@ commResult_t ctranAllReduceDirect(
 
   // Reset kernel elements
   config.args.collective.allreduce.kernelElems[static_cast<int>(
-      AllReduceKernElemRole::kIntraReduceScatter)] = nullptr;
+      ctran::allreduce::KernElemRole::kIntraReduceScatter)] = nullptr;
   config.args.collective.allreduce.kernelElems[static_cast<int>(
-      AllReduceKernElemRole::kInterReduceScatter)] = nullptr;
-  config.args.collective.allreduce
-      .kernelElems[static_cast<int>(AllReduceKernElemRole::kIntraAllGather)] =
-      nullptr;
-  config.args.collective.allreduce
-      .kernelElems[static_cast<int>(AllReduceKernElemRole::kRemIntraReduce)] =
-      nullptr;
-  config.args.collective.allreduce
-      .kernelElems[static_cast<int>(AllReduceKernElemRole::kRemIntraBcast)] =
-      nullptr;
-  config.args.collective.allreduce
-      .kernelElems[static_cast<int>(AllReduceKernElemRole::kRemInterReduce)] =
-      nullptr;
+      ctran::allreduce::KernElemRole::kInterReduceScatter)] = nullptr;
+  config.args.collective.allreduce.kernelElems[static_cast<int>(
+      ctran::allreduce::KernElemRole::kIntraAllGather)] = nullptr;
+  config.args.collective.allreduce.kernelElems[static_cast<int>(
+      ctran::allreduce::KernElemRole::kRemIntraReduce)] = nullptr;
+  config.args.collective.allreduce.kernelElems[static_cast<int>(
+      ctran::allreduce::KernElemRole::kRemIntraBcast)] = nullptr;
+  config.args.collective.allreduce.kernelElems[static_cast<int>(
+      ctran::allreduce::KernElemRole::kRemInterReduce)] = nullptr;
 
   FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
       (int*)&config.numBlocks,
@@ -648,9 +644,9 @@ commResult_t ctranAllReduceDirect(
         comm->ctran_->gpe->allocKernelElems(1, config.numBlocks, &elem));
     elem->localReduce.nvectors = nLocalRanks;
     config.args.collective.allreduce.kernelElems[static_cast<int>(
-        AllReduceKernElemRole::kIntraReduceScatter)] = elem;
+        ctran::allreduce::KernElemRole::kIntraReduceScatter)] = elem;
     op->allreduce.kElemStepMap[static_cast<int>(
-        AllReduceKernElemRole::kIntraReduceScatter)] = elem;
+        ctran::allreduce::KernElemRole::kIntraReduceScatter)] = elem;
 
     FB_COMMCHECK(
         comm->ctran_->gpe->allocKernelElems(1, config.numBlocks, &elem));
@@ -661,17 +657,16 @@ commResult_t ctranAllReduceDirect(
     // ensure result is visible to step-3 inter-node allgather
     elem->stridedReduce.flushMem = true;
     config.args.collective.allreduce.kernelElems[static_cast<int>(
-        AllReduceKernElemRole::kInterReduceScatter)] = elem;
+        ctran::allreduce::KernElemRole::kInterReduceScatter)] = elem;
     op->allreduce.kElemStepMap[static_cast<int>(
-        AllReduceKernElemRole::kInterReduceScatter)] = elem;
+        ctran::allreduce::KernElemRole::kInterReduceScatter)] = elem;
 
     FB_COMMCHECK(
         comm->ctran_->gpe->allocKernelElems(1, config.numBlocks, &elem));
-    config.args.collective.allreduce
-        .kernelElems[static_cast<int>(AllReduceKernElemRole::kIntraAllGather)] =
-        elem;
+    config.args.collective.allreduce.kernelElems[static_cast<int>(
+        ctran::allreduce::KernElemRole::kIntraAllGather)] = elem;
     op->allreduce.kElemStepMap[static_cast<int>(
-        AllReduceKernElemRole::kIntraAllGather)] = elem;
+        ctran::allreduce::KernElemRole::kIntraAllGather)] = elem;
   }
 
   if (remCount > 0) {
@@ -685,23 +680,20 @@ commResult_t ctranAllReduceDirect(
     elem->localReduce.nvectors = nLocalRanks;
     // Reduce with root = 0
     elem->localReduce.count = localRank ? 0 : remCount;
-    config.args.collective.allreduce
-        .kernelElems[static_cast<int>(AllReduceKernElemRole::kRemIntraReduce)] =
-        elem;
+    config.args.collective.allreduce.kernelElems[static_cast<int>(
+        ctran::allreduce::KernElemRole::kRemIntraReduce)] = elem;
     op->allreduce.kElemStepMap[static_cast<int>(
-        AllReduceKernElemRole::kRemIntraReduce)] = elem;
+        ctran::allreduce::KernElemRole::kRemIntraReduce)] = elem;
 
     /* sixth step: intra-node bcast */
     FB_COMMCHECK(
         comm->ctran_->gpe->allocKernelElems(1, config.numBlocks, &elem));
     // Bcast with root = 0
     elem->bcast.count = localRank ? 0 : remCount;
-    config.args.collective.allreduce
-        .kernelElems[static_cast<int>(AllReduceKernElemRole::kRemIntraBcast)] =
-        elem;
-    op->allreduce
-        .kElemStepMap[static_cast<int>(AllReduceKernElemRole::kRemIntraBcast)] =
-        elem;
+    config.args.collective.allreduce.kernelElems[static_cast<int>(
+        ctran::allreduce::KernElemRole::kRemIntraBcast)] = elem;
+    op->allreduce.kElemStepMap[static_cast<int>(
+        ctran::allreduce::KernElemRole::kRemIntraBcast)] = elem;
 
     /* seventh step: inter-node allreduce */
     FB_COMMCHECK(
@@ -710,11 +702,10 @@ commResult_t ctranAllReduceDirect(
     // stridedSrc
     elem->stridedReduce.inplaceBlockIdx = node;
     elem->stridedReduce.numBlocks = nNodes;
-    config.args.collective.allreduce
-        .kernelElems[static_cast<int>(AllReduceKernElemRole::kRemInterReduce)] =
-        elem;
+    config.args.collective.allreduce.kernelElems[static_cast<int>(
+        ctran::allreduce::KernElemRole::kRemInterReduce)] = elem;
     op->allreduce.kElemStepMap[static_cast<int>(
-        AllReduceKernElemRole::kRemInterReduce)] = elem;
+        ctran::allreduce::KernElemRole::kRemInterReduce)] = elem;
   }
 
   opGroup.push_back(std::move(op));

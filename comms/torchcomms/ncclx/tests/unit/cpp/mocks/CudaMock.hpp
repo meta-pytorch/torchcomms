@@ -110,6 +110,11 @@ class CudaMock : public CudaApi {
   MOCK_METHOD(cudaError_t, free, (void* devPtr), (override));
   MOCK_METHOD(
       cudaError_t,
+      memcpy,
+      (void* dst, const void* src, size_t count, cudaMemcpyKind kind),
+      (override));
+  MOCK_METHOD(
+      cudaError_t,
       memcpyAsync,
       (void* dst,
        const void* src,

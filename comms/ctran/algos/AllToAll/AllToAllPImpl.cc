@@ -1,7 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/algos/AllToAll/AllToAllPImpl.h"
-#include "Types.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/AllToAll/AllToAllImpl.h"
 #include "comms/ctran/algos/AllToAll/AllToAllvImpl.h"

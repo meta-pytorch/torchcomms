@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
+#include "comms/ctran/algos/AllToAll/Types.h"
 #include "comms/ctran/algos/CtranAlgoDev.h"
 #include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
@@ -9,7 +10,7 @@
 template <typename T>
 __device__ void prepareBcastArg(
     KernelElem* elemH,
-    CtranKernelAllToAllDedupArgs& args,
+    ctran::alltoalldedup::KernelArgs& args,
     CtranAlgoDevBcastArg& bcastArg) {
   bcastArg.src = elemH->bcast.src;
   bcastArg.count = elemH->bcast.count;
@@ -29,7 +30,7 @@ __device__ void prepareBcastArg(
 template <typename T>
 static __device__ __forceinline__ void bcastOnPost(
     KernelElem* elemH,
-    CtranKernelAllToAllDedupArgs& args,
+    ctran::alltoalldedup::KernelArgs& args,
     const int numBlocksPerBcast,
     int bcastBlockIdx) {
   bool revoked = false;
@@ -51,7 +52,7 @@ template <typename T>
 __global__ void ncclKernelAllToAllDedup(
     int* flag,
     CtranAlgoDeviceState* devState,
-    CtranKernelAllToAllDedupArgs args) {
+    ctran::alltoalldedup::KernelArgs args) {
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
@@ -84,4 +85,4 @@ __global__ void ncclKernelAllToAllDedup(
   template __global__ void ncclKernelAllToAllDedup<T>( \
       int* flag,                                       \
       CtranAlgoDeviceState* devState,                  \
-      CtranKernelAllToAllDedupArgs args)
+      ctran::alltoalldedup::KernelArgs args)

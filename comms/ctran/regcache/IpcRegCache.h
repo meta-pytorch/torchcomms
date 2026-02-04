@@ -1,10 +1,16 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <unordered_map>
 
+#include <folly/Hash.h>
+#include <folly/SocketAddress.h>
 #include <folly/Synchronized.h>
+#include <folly/io/async/ScopedEventBaseThread.h>
+
+#include "comms/ctran/bootstrap/AsyncSocket.h"
 #include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/utils/Checks.h"
 
@@ -94,12 +100,13 @@ class IpcRegCache {
     FB_COMMCHECK(ipcMem->ipcExport(ipcDesc.desc));
     ipcDesc.offset = reinterpret_cast<size_t>(buf) -
         reinterpret_cast<size_t>(ipcMem->getBase());
+    ipcDesc.uid = reg->uid;
     return commSuccess;
   }
 
-  // Release a specific remote registration for a given peer and base
-  // pointer.
-  commResult_t releaseRemReg(const std::string& peerId, void* basePtr);
+  // Release a specific remote registration for a given peer.
+  commResult_t
+  releaseRemReg(const std::string& peerId, void* basePtr, uint32_t uid);
 
   // Get the number of existing remote registrations for a given peer
   size_t getNumRemReg(const std::string& peerId) const;
@@ -108,26 +115,74 @@ class IpcRegCache {
   // Called during destruction to clean up any remaining cached registrations.
   void clearAllRemReg();
 
+  inline folly::SocketAddress getServerAddr() const {
+    return serverAddr_;
+  }
+
+  // Notify remote peers to release their imported NVL memory.
+  // Output argument:
+  //   - reqCb: IpcReqCb that the caller can track for completion.
+  //            Caller must ensure reqCb remains valid until completed.
+  commResult_t notifyRemoteIpcRelease(
+      const std::string& myId,
+      const folly::SocketAddress& peerAddr,
+      regcache::IpcRegElem* ipcRegElem,
+      regcache::IpcReqCb* reqCb);
+
+  // Notify remote peer to import our exported NVL memory.
+  // The peer will call importMem upon receiving this request.
+  // Input arguments:
+  //   - peerAddr: the address of the remote peer
+  //   - ipcDesc: the IPC descriptor to send to the peer
+  // Output argument:
+  //   - reqCb: IpcReqCb that the caller can track for completion.
+  //            Caller must ensure reqCb remains valid until completed.
+  commResult_t notifyRemoteIpcExport(
+      const std::string& myId,
+      const folly::SocketAddress& peerAddr,
+      const regcache::IpcDesc& ipcDesc,
+      regcache::IpcReqCb* reqCb);
+
  private:
   // Internal implementation for importing and caching remote NVL memory.
   commResult_t importRemMemImpl(
       const std::string& peerId,
-      const ctran::utils::CtranIpcDesc& ipcDesc,
+      const ctran::regcache::IpcDesc& ipcDesc,
       void** mappedBase);
 
+  // Initialize the AsyncSocket infrastructure for this rank.
+  // Must be called once per rank before notifyRemoteIpcRelease can be used.
+  // Input arguments:
+  //   - bindAddr: the address to bind the server socket
+  commResult_t initAsyncSocket();
+
+  // Stop the AsyncSocket infrastructure and wait for cleanup.
+  void stopAsyncSocket();
+
   // Cache of imported IPC remote registrations
-  // Key: peer name -> (remote base pointer -> ctran::regcache::IpcRemRegElem)
-  // This cache enables reuse of imported registrations across multiple
-  // collective operations without re-importing the same memory.
+  // Key: peer name -> ((remote base pointer, uid) ->
+  // ctran::regcache::IpcRemRegElem) This cache enables reuse of imported
+  // registrations across multiple collective operations without re-importing
+  // the same memory.
+  using IpcRemRegKey = std::pair<uint64_t, uint32_t>; // (base pointer, uid)
   using IpcRemRegMap = std::unordered_map<
       std::string, // peer name
       std::unordered_map<
-          uint64_t, // remote base pointer
-          std::unique_ptr<ctran::regcache::IpcRemRegElem>>>;
+          IpcRemRegKey,
+          std::unique_ptr<ctran::regcache::IpcRemRegElem>,
+          folly::Hash>>;
   folly::Synchronized<IpcRemRegMap> ipcRemRegMap_;
 
   int cudaDev_;
   const struct CommLogData* logMetaData_;
+
+  // Member variables for AsyncSocket-based remote release mechanism
+  std::unique_ptr<folly::ScopedEventBaseThread> asyncSocketEvbThread_;
+  std::unique_ptr<ctran::bootstrap::AsyncServerSocket> asyncServerSocket_;
+  folly::SocketAddress serverAddr_;
+
+  // Monotonically increasing unique ID counter for IPC registrations
+  static std::atomic<uint32_t> nextUniqueId_;
 };
 
 } // namespace ctran

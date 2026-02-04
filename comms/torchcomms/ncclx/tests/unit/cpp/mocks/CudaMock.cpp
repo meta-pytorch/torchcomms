@@ -84,6 +84,8 @@ void CudaMock::setupDefaultBehaviors() {
 
   ON_CALL(*this, free(_)).WillByDefault(Return(cudaSuccess));
 
+  ON_CALL(*this, memcpy(_, _, _, _)).WillByDefault(Return(cudaSuccess));
+
   ON_CALL(*this, memcpyAsync(_, _, _, _, _)).WillByDefault(Return(cudaSuccess));
 
   // Event management - return success by default
