@@ -52,9 +52,11 @@ void ctran::IpcRegCache::init(
     const struct CommLogData* logMetaData) {
   cudaDev_ = cudaDev;
   logMetaData_ = logMetaData;
+  initAsyncSocket();
 }
 
 ctran::IpcRegCache::~IpcRegCache() {
+  stopAsyncSocket();
   clearAllRemReg();
 }
 
@@ -186,4 +188,174 @@ size_t ctran::IpcRegCache::getNumRemReg(const std::string& peerId) const {
     return it->second.size();
   }
   return 0;
+}
+
+commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
+    const std::string& myId,
+    const folly::SocketAddress& peerAddr,
+    ctran::regcache::IpcRegElem* ipcRegElem,
+    ctran::regcache::IpcReqCb* reqCb) {
+  // Check if AsyncSocket is initialized
+  if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
+    CLOGF(
+        WARN,
+        "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote release");
+    return commInternalError;
+  }
+
+  // Initialize the request
+  reqCb->req =
+      ctran::regcache::IpcReq(ctran::regcache::IpcReqType::kRelease, myId);
+  reqCb->completed.store(false);
+  remReleaseMem(ipcRegElem, reqCb->req.release);
+
+  CLOGF_TRACE(
+      COLL,
+      "CTRAN-REGCACHE: Sending IPC_RELEASE to peerAddr {}: {}",
+      peerAddr.describe(),
+      reqCb->req.toString());
+
+  // Send the whole IpcReq via AsyncClientSocket
+  // The peer checks IpcReqType to determine which callback to invoke
+  ctran::bootstrap::AsyncClientSocket::send(
+      *asyncSocketEvbThread_->getEventBase(),
+      peerAddr,
+      &reqCb->req,
+      sizeof(ctran::regcache::IpcReq),
+      [reqCb, peerAddr](const folly::AsyncSocketException* err) {
+        if (err != nullptr) {
+          CLOGF(
+              WARN,
+              "CTRAN-REGCACHE: Failed to send IpcReq to peerAddr {}: {}",
+              peerAddr.describe(),
+              err->what());
+        }
+        // Mark as completed regardless of success/failure
+        reqCb->completed.store(true);
+      });
+
+  return commSuccess;
+}
+
+commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
+    const std::string& myId,
+    const folly::SocketAddress& peerAddr,
+    const ctran::regcache::IpcDesc& ipcDesc,
+    ctran::regcache::IpcReqCb* reqCb) {
+  // Check if AsyncSocket is initialized
+  if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
+    CLOGF(
+        WARN,
+        "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote export");
+    return commInternalError;
+  }
+
+  // Initialize the request
+  reqCb->req =
+      ctran::regcache::IpcReq(ctran::regcache::IpcReqType::kDesc, myId);
+  reqCb->completed.store(false);
+  reqCb->req.desc = ipcDesc;
+
+  CLOGF_TRACE(
+      COLL,
+      "CTRAN-REGCACHE: Sending IPC_DESC to peerAddr {}: {}",
+      peerAddr.describe(),
+      reqCb->req.toString());
+
+  // Send the whole IpcReq via AsyncClientSocket
+  // The peer checks IpcReqType and calls importMem for kDesc
+  ctran::bootstrap::AsyncClientSocket::send(
+      *asyncSocketEvbThread_->getEventBase(),
+      peerAddr,
+      &reqCb->req,
+      sizeof(ctran::regcache::IpcReq),
+      [reqCb, peerAddr](const folly::AsyncSocketException* err) {
+        if (err != nullptr) {
+          CLOGF(
+              WARN,
+              "CTRAN-REGCACHE: Failed to send IpcReq (DESC) to peerAddr {}: {}",
+              peerAddr.describe(),
+              err->what());
+        }
+        // Mark as completed regardless of success/failure
+        reqCb->completed.store(true);
+      });
+
+  return commSuccess;
+}
+
+commResult_t ctran::IpcRegCache::initAsyncSocket() {
+  // Create the event base thread for async socket operations
+  asyncSocketEvbThread_ = std::make_unique<folly::ScopedEventBaseThread>();
+
+  // Create and start the async server socket
+  asyncServerSocket_ = std::make_unique<ctran::bootstrap::AsyncServerSocket>(
+      *asyncSocketEvbThread_->getEventBase());
+
+  // Start the server with a callback that handles IPC requests
+  // The peer sends the whole IpcReq, and we check the type to dispatch
+  auto serverAddrFuture = asyncServerSocket_->start(
+      folly::SocketAddress("::1", 0),
+      sizeof(ctran::regcache::IpcReq),
+      [this](std::unique_ptr<folly::IOBuf> buf) {
+        // Extract the IpcReq from the received buffer
+        ctran::regcache::IpcReq ipcReq;
+        std::memcpy(&ipcReq, buf->data(), sizeof(ipcReq));
+
+        // Dispatch based on request type
+        switch (ipcReq.type) {
+          case ctran::regcache::IpcReqType::kRelease: {
+            // Handle release request - release the imported NVL memory
+            std::string peerId = ipcReq.getPeerId();
+
+            CLOGF_TRACE(
+                COLL,
+                "CTRAN-REGCACHE: Received IPC_RELEASE from peer {}, base {}",
+                peerId,
+                ipcReq.release.base);
+
+            FB_COMMCHECKIGNORE(releaseRemReg(peerId, ipcReq.release.base));
+            break;
+          }
+          case ctran::regcache::IpcReqType::kDesc: {
+            // Handle descriptor request - import the remote memory
+            std::string peerId = ipcReq.getPeerId();
+            void* buf = nullptr;
+            ctran::regcache::IpcRemHandle remKey;
+
+            CLOGF_TRACE(
+                COLL,
+                "CTRAN-REGCACHE: Received IPC_DESC from peer {}: {}",
+                peerId,
+                ipcReq.desc.toString());
+
+            FB_COMMCHECKIGNORE(importMem(peerId, ipcReq.desc, &buf, &remKey));
+            break;
+          }
+        }
+      });
+
+  // Get the server address
+  serverAddr_ = std::move(serverAddrFuture).get();
+
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-REGCACHE: AsyncSocket server started at {}",
+      serverAddr_.describe());
+
+  return commSuccess;
+}
+
+void ctran::IpcRegCache::stopAsyncSocket() {
+  if (asyncServerSocket_) {
+    auto fut = asyncServerSocket_->stop();
+    std::move(fut).get();
+    asyncServerSocket_.reset();
+    CLOGF_SUBSYS(INFO, INIT, "CTRAN-REGCACHE: AsyncSocket server stopped");
+  }
+
+  if (asyncSocketEvbThread_) {
+    asyncSocketEvbThread_.reset();
+  }
 }
