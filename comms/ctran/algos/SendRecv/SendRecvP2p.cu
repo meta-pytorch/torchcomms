@@ -42,6 +42,7 @@ __global__ void ncclKernelSendRecvP2p(
   const auto gtIdx = blockDim.x * blockIdx.x + threadIdx.x;
 
   if (flag && gtIdx == 0) {
+    ctran::device::devLoadAbortFlags(flag, devState);
     ctran::device::KernelStartGpe(flag);
   }
 
