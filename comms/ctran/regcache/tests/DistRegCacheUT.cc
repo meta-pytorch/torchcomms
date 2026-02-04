@@ -245,9 +245,9 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
 
     // send release-mem msg to peer
     ctranIb->waitNotify(peer);
-    ControlMsg releaseMsg(ControlMsgType::NVL_RELEASE_MEM);
-    releaseMsg.ipcRls.base = msg.ipcDesc.desc.base;
-    COMMCHECK_TEST(ibSendCtrl(releaseMsg, peer, ctranIb));
+    msg.setType(ControlMsgType::NVL_RELEASE_MEM);
+    ctran::IpcRegCache::remReleaseMem(ipcRegElem, msg.ipcRls);
+    COMMCHECK_TEST(ibSendCtrl(msg, peer, ctranIb));
 
     COMMCHECK_TEST(mapper->deregMem(segHdl, true));
     ctran::CtranNcclTestHelpers::releaseBuf(dataBase, bufSize, memType);
@@ -279,7 +279,7 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
     EXPECT_EQ(releaseMsg.ipcRls.base, msg.ipcDesc.desc.base);
 
     COMMCHECK_TEST(ipcRegCache->releaseRemReg(
-        peerId, reinterpret_cast<void*>(msg.ipcDesc.desc.base)));
+        peerId, releaseMsg.ipcRls.base, releaseMsg.ipcRls.uid));
 
     EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
   }
@@ -357,6 +357,66 @@ TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
       std::this_thread::yield();
     }
     EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+    mapper->barrier();
+  }
+}
+
+TEST_F(DistRegCacheTest, ExportMultiMem) {
+  auto& mapper = comm_->ctran_->mapper;
+  ASSERT_NE(mapper, nullptr);
+  const size_t dataCount = 100;
+  size_t dataRange = dataCount * sizeof(int);
+  // Get ipcRegCache from mapper
+  auto* ipcRegCache = mapper->ipcRegCachePtr();
+  folly::SocketAddress localServerAddr = ipcRegCache->getServerAddr();
+  std::vector<folly::SocketAddress> peerServerAddrs;
+  allGatherSocketAddress(localServerAddr, peerServerAddrs);
+
+  if (globalRank == 0) {
+    auto myId = comm_->statex_->gPid();
+    const int peer = 1;
+    void* data = nullptr;
+    CUDACHECK_TEST(cudaMalloc(&data, dataRange));
+    ASSERT_NE(data, nullptr);
+    void* segHdl;
+    ctran::regcache::RegElem* regHdl = nullptr;
+    struct ctran::regcache::IpcDesc IpcDesc;
+
+    // register and export the same GPU buffer twice
+    std::vector<ctran::regcache::IpcReqCb> reqs(2);
+    COMMCHECK_TEST(
+        mapper->regMem(data, dataRange, &segHdl, true, true, (void**)&regHdl));
+    ctran::regcache::IpcRegElem* ipcRegElem1 =
+        reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
+    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem1, IpcDesc));
+    ipcRegCache->notifyRemoteIpcExport(
+        myId, peerServerAddrs[peer], IpcDesc, &reqs[0]);
+    COMMCHECK_TEST(mapper->deregMem(segHdl, true));
+    // second register and export
+    COMMCHECK_TEST(
+        mapper->regMem(data, dataRange, &segHdl, true, true, (void**)&regHdl));
+    ctran::regcache::IpcRegElem* ipcRegElem2 =
+        reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
+    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem2, IpcDesc));
+    ipcRegCache->notifyRemoteIpcExport(
+        myId, peerServerAddrs[peer], IpcDesc, &reqs[1]);
+    for (auto it = reqs.begin(); it != reqs.end(); it++) {
+      while (it->completed.load() == false) {
+      }
+    }
+    mapper->barrier();
+    COMMCHECK_TEST(mapper->deregMem(segHdl, true));
+    CUDACHECK_TEST(cudaFree(data));
+  } else if (globalRank == 1) {
+    const int peer = 0;
+    auto peerId = comm_->statex_->gPid(peer);
+    while (ipcRegCache->getNumRemReg(peerId) != 2) {
+      std::this_thread::yield();
+    }
+    mapper->barrier();
+    ipcRegCache->clearAllRemReg();
+    EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+  } else {
     mapper->barrier();
   }
 }
