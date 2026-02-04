@@ -179,6 +179,21 @@ Block the current stream until the work is completed.
 
 See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more details.
           )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "wait_blocking",
+          &TorchWork::waitBlocking,
+          R"(
+Block the CPU thread until the work is completed.
+
+Unlike wait(), which blocks only the current CUDA stream, this method
+blocks the CPU thread itself until the operation completes. This is useful
+for fault tolerance scenarios where you need to ensure an operation has
+completed before proceeding.
+
+Raises:
+    RuntimeError: If not implemented by the backend.
+          )",
           py::call_guard<py::gil_scoped_release>());
 
   py::enum_<TorchCommWinAccessType>(
