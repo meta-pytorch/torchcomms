@@ -17,6 +17,7 @@ std::shared_ptr<TorchComm> new_comm(
     const CommOptions& options) {
   auto backend_impl = TorchCommFactory::get().create_backend(
       backend_name, device, name, options);
+
   return std::shared_ptr<TorchComm>(
       new TorchComm(backend_name, std::move(backend_impl)));
 }
@@ -488,6 +489,16 @@ std::shared_ptr<TorchCommWindow> TorchComm::new_window(
           .new_window = std::weak_ptr<TorchCommWindow>(window),
       });
   return window;
+}
+
+// Fault Tolerance API
+InitHandle TorchComm::getInitHandle() const {
+  return impl_->getInitHandle();
+}
+
+c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
+    const ReconfigureOptions& opts) {
+  return impl_->reconfigure(opts);
 }
 
 // Communicator Management
