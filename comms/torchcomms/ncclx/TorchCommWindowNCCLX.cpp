@@ -39,11 +39,21 @@ TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
   }
   registered_local_buffers_.clear();
 
-  // Cleanup device window using Backend static method
+  // Destroy ncclDevComm using the dev_comm stored in the deleter
   if (device_window_) {
-    Backend::destroy_device_window(
-        nccl_comm_, nccl_api_, std::move(device_window_));
+    auto& deleter = device_window_.get_deleter();
+    if (deleter.nccl_comm != nullptr && deleter.nccl_api != nullptr) {
+      auto nccl_result = deleter.nccl_api->devCommDestroy(
+          deleter.nccl_comm, &deleter.dev_comm);
+      if (nccl_result != ncclSuccess) {
+        TC_LOG(ERROR) << "Failed to destroy NCCL device communicator: "
+                      << deleter.nccl_api->getErrorString(nccl_result);
+      }
+    }
   }
+
+  // device_window_ unique_ptr destructor calls cudaFree via custom deleter
+  device_window_.reset();
 
   // Cleanup NCCL orig window
   if (nccl_orig_win_ != nullptr) {
@@ -388,7 +398,7 @@ void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
 }
 
 template <typename Backend>
-typename TorchCommWindowNCCLX<Backend>::DeviceWindow
+typename TorchCommWindowNCCLX<Backend>::DeviceWindow*
 TorchCommWindowNCCLX<Backend>::get_device_window(
     int signal_count,
     int counter_count,
@@ -401,9 +411,9 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
         "Call tensor_register first.");
   }
 
-  // Return existing device window if already created
+  // Return existing device window pointer if already created
   if (device_window_) {
-    return *device_window_;
+    return device_window_.get();
   }
 
   int commRank = 0;
@@ -425,6 +435,7 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
   config.comm_rank = commRank;
   config.comm_size = commSize;
 
+  // Create device window - the custom deleter handles all cleanup
   device_window_ = Backend::create_device_window(
       nccl_comm_,
       nccl_api_,
@@ -433,7 +444,7 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
       buf_tensor_.has_value() ? buf_tensor_->data_ptr() : nullptr,
       win_size_);
 
-  return *device_window_;
+  return device_window_.get();
 }
 
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
