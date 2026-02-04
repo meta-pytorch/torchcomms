@@ -94,6 +94,9 @@ enum RegElemState {
 
 struct RegElemStateMnger {
   RegElemState state{RegElemState::REGISTERED};
+  // Track how many collectives are actively using this registration.
+  // Used to prevent deregistration while in use.
+  int64_t inUseCount{0};
 };
 
 struct RegElem {
@@ -116,6 +119,32 @@ struct RegElem {
   //   - segment may be looked up and accessed the internal fields by multiple
   //     GPE threads at collective time
   folly::Synchronized<RegElemStateMnger> stateMnger;
+
+  // Increment in-use count when a collective starts using this registration.
+  // Thread-safe via stateMnger lock.
+  void acquireInUse() {
+    stateMnger.wlock()->inUseCount++;
+  }
+
+  // Decrement in-use count when a collective finishes using this
+  // registration. Thread-safe via stateMnger lock.
+  void releaseInUse() {
+    auto stat = stateMnger.wlock();
+    FB_CHECKABORT(
+        stat->inUseCount > 0, "releaseInUse called with inUseCount=0");
+    stat->inUseCount--;
+  }
+
+  // Check if this registration is currently in use by any collective.
+  // Thread-safe via stateMnger lock.
+  bool isInUse() const {
+    return stateMnger.rlock()->inUseCount > 0;
+  }
+
+  // Get the current in-use count. Thread-safe via stateMnger lock.
+  int64_t getInUseCount() const {
+    return stateMnger.rlock()->inUseCount;
+  }
 
  public:
   RegElem(
@@ -202,6 +231,71 @@ struct RegElem {
     }
     return ss.str();
   }
+};
+
+// RAII guard that automatically manages in-use reference counting.
+// When constructed with a RegElem, increments the inUseCount.
+// When destroyed (goes out of scope), decrements the inUseCount.
+// This ensures registrations cannot be deregistered while in use by
+// collectives.
+//
+// Usage:
+//   RegElemGuard guard(regElem);  // inUseCount++
+//   // ... use guard.get() for operations ...
+//   // When guard goes out of scope, inUseCount-- automatically
+class RegElemGuard {
+ public:
+  RegElemGuard() : regElem_(nullptr) {}
+
+  explicit RegElemGuard(RegElem* regElem) : regElem_(regElem) {
+    if (regElem_) {
+      regElem_->acquireInUse();
+    }
+  }
+
+  // Move constructor
+  RegElemGuard(RegElemGuard&& other) noexcept : regElem_(other.regElem_) {
+    other.regElem_ = nullptr;
+  }
+
+  // Move assignment
+  RegElemGuard& operator=(RegElemGuard&& other) noexcept {
+    if (this != &other) {
+      release();
+      regElem_ = other.regElem_;
+      other.regElem_ = nullptr;
+    }
+    return *this;
+  }
+
+  // Disable copy
+  RegElemGuard(const RegElemGuard&) = delete;
+  RegElemGuard& operator=(const RegElemGuard&) = delete;
+
+  ~RegElemGuard() {
+    release();
+  }
+
+  // Access the underlying RegElem
+  RegElem* get() const {
+    return regElem_;
+  }
+  RegElem* operator->() const {
+    return regElem_;
+  }
+  explicit operator bool() const {
+    return regElem_ != nullptr;
+  }
+
+ private:
+  void release() {
+    if (regElem_) {
+      regElem_->releaseInUse();
+      regElem_ = nullptr;
+    }
+  }
+
+  RegElem* regElem_;
 };
 
 enum EventType {

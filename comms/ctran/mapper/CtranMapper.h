@@ -108,6 +108,31 @@ class CtranMapper {
       bool* dynamicRegist,
       bool allowDynamic = true);
 
+  /* Get the handle of the given buffer with RAII-based in-use protection.
+   * This is the preferred method for collectives to acquire registration
+   * handles, as it automatically manages the in-use reference count.
+   * The guard ensures that the registration cannot be invalidated (via
+   * deregMem) while the collective is using it.
+   *
+   * Input arguments:
+   *   - buf: the local buffer to be searched in the cache
+   *   - len: number of bytes of 'buf' to be searched
+   *   - allowDynamic: whether or not allow to dynamic register if the
+   *                   segment is not cached
+   * Output arguments:
+   *   - guard: a RegElemGuard that holds the registration handle and
+   *            automatically manages the in-use count. Use guard.get()
+   *            to access the underlying registration handle.
+   *   - dynamicRegist: whether or not this buffer is dynamically cached and
+   *                    registered
+   */
+  commResult_t searchRegHandleGuarded(
+      const void* buf,
+      std::size_t len,
+      ctran::regcache::RegElemGuard* guard,
+      bool* dynamicRegist,
+      bool allowDynamic = true);
+
   DevMemType segmentType(void* segHdl);
 
   /* Deregister a dynamic registration.
