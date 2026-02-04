@@ -288,7 +288,10 @@ class TorchCommRCCLX : public TorchCommBackend,
       if (this != &other) {
         // Destroy current op if we own one
         if (comm_ && rcclx_api_) {
-          rcclx_api_->redOpDestroy(ncclRedOp_, comm_);
+          RCCLX_CHECK_IGNORE(
+              rcclx_api_,
+              rcclx_api_->redOpDestroy(ncclRedOp_, comm_),
+              "failed to destroy NCCL reduction operation");
         }
         ncclRedOp_ = other.ncclRedOp_;
         comm_ = other.comm_;

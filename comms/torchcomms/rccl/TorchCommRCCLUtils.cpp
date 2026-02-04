@@ -54,7 +54,11 @@ void createPreMulSum(
       is_tensor ? dataType == getNcclDataTypeInternal(tensor)
                 : dataType != ncclBfloat16,
       "PreMulSum factor type must match input data type");
-  rccl_api->redOpCreatePreMulSum(op, scalar, dataType, residence, comm);
+  RCCL_CHECK(
+      rccl_api,
+      comm,
+      rccl_api->redOpCreatePreMulSum(op, scalar, dataType, residence, comm),
+      "RCCL redOpCreatePreMulSum failed");
 }
 
 } // namespace
@@ -266,7 +270,11 @@ void TorchCommRCCL::checkAndAbortIfTimedOutOrError() {
     throw std::runtime_error("NCCL operation timed out");
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
-    rccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
+    RCCL_CHECK(
+        rccl_api_,
+        nccl_comm_,
+        rccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+        "failed to get async error");
     RCCLException RCCLException(
         *rccl_api_, "NCCL Async Error", asyncErr, nccl_comm_);
     abortRcclComm();

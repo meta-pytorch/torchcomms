@@ -291,7 +291,11 @@ void TorchCommNCCLX::finalize() {
     TC_LOG(INFO, this) << "Aborting NCCL comm due to error";
     comm_state_ = CommState::ERROR;
     ncclResult_t asyncErr;
-    nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+        "failed to get async error");
     NCCLXException ncclException(
         *nccl_api_, "NCCLX Async Error", asyncErr, nccl_comm_);
     abortNcclComm();
@@ -344,7 +348,11 @@ void TorchCommNCCLX::finalize() {
   if (nccl_comm_) {
     detachMemoryHook();
     // Deregister comm from the CachingAllocator
-    nccl_api_->commDestroy(nccl_comm_);
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commDestroy(nccl_comm_),
+        "NCCLX Destroy failed");
     nccl_comm_ = nullptr;
   }
 }
@@ -352,7 +360,11 @@ void TorchCommNCCLX::finalize() {
 void TorchCommNCCLX::abortNcclComm() {
   detachMemoryHook();
   if (nccl_comm_) {
-    nccl_api_->commAbort(nccl_comm_);
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commAbort(nccl_comm_),
+        "NCCLX Abort failed");
     nccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
