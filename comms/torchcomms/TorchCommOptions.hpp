@@ -148,6 +148,12 @@ class CommOptions {
   std::chrono::milliseconds timeout{kDefaultTimeout};
   bool high_priority_stream{false};
   c10::intrusive_ptr<c10d::Store> store{nullptr};
+  /**
+   * If true, enables reconfigure() for fault tolerance.
+   * With reconfigure enabled, the communicator is not initialized until
+   * reconfigure() is called. Default is false.
+   */
+  bool enable_reconfigure{false};
   std::unordered_map<std::string, std::string> hints;
 
  public:

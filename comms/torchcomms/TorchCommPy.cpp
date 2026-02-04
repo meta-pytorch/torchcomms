@@ -122,6 +122,10 @@ PYBIND11_MODULE(_comms, m) {
           &CommOptions::store,
           "Store for communication between processes")
       .def_readwrite(
+          "enable_reconfigure",
+          &CommOptions::enable_reconfigure,
+          "If true, enables reconfigure() for fault tolerance")
+      .def_readwrite(
           "hints",
           &CommOptions::hints,
           "Dictionary of string hints for backend-specific options");
@@ -694,6 +698,7 @@ Args:
          std::optional<std::chrono::milliseconds> timeout,
          std::optional<bool> high_priority_stream,
          std::optional<c10::intrusive_ptr<c10d::Store>> store,
+         bool enable_reconfigure,
          std::optional<std::unordered_map<std::string, std::string>> hints) {
         py::module_ torchcomms = py::module_::import("torchcomms");
         torchcomms.attr("_load_backend")(backend);
@@ -718,6 +723,7 @@ Args:
           if (hints) {
             opts.hints = *hints;
           }
+          opts.enable_reconfigure = enable_reconfigure;
 
           return new_comm(backend, device, name, opts);
         }
@@ -746,6 +752,9 @@ Args:
   timeout (timedelta): Timeout for initialization.
   high_priority_stream (bool): Whether to use high priority stream.
   store (torch.distributed.Store): Store used to initialize the communicator between processes.
+  enable_reconfigure (bool): If True, enables reconfigure() for fault tolerance.
+      With reconfigure enabled, the communicator is not initialized until
+      reconfigure() is called. Default is False.
   hints (dict): Dictionary of string hints for backend-specific options.
       )",
       py::arg("backend"),
@@ -755,6 +764,7 @@ Args:
       py::arg("timeout") = std::nullopt,
       py::arg("high_priority_stream") = std::nullopt,
       py::arg("store") = nullptr,
+      py::arg("enable_reconfigure") = false,
       py::arg("hints") = std::nullopt);
 
   py::class_<TorchCommBackend, std::shared_ptr<TorchCommBackend>>(
@@ -891,8 +901,7 @@ Raises:
     RuntimeError: If not implemented by the backend.
 
 Example:
-    >>> hints = {"initDynamicRegime": "true"}
-    >>> comm = torchcomms.new_comm("mccl", device, "my_comm", hints=hints)
+    >>> comm = torchcomms.new_comm("mccl", device, "my_comm", init_dynamic_regime=True)
     >>> my_handle = comm.get_init_handle()
     >>> # Exchange handles with all ranks via store/coordinator
     >>> all_handles = collect_handles_from_all_ranks(my_handle)
