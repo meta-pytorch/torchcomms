@@ -221,15 +221,15 @@ TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowWithoutTensorRegisterThrows) {
 }
 
 TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowReturnsConsistentValue) {
-  // Verifies: Multiple calls to get_device_window() return consistent values
-  // Code path: get_device_window() when device_window_initialized_ == true
-  // Production value: Ensures idempotency - values should be consistent
+  // Verifies: Multiple calls to get_device_window() return the same pointer
+  // Code path: get_device_window() when device_window_ is already created
+  // Production value: Ensures idempotency - pointer should be cached
   //
-  // The device window should be created once and cached. This is important
-  // because:
+  // The device window is allocated once in device memory and cached. This is
+  // important because:
   //   1. Multiple kernels may call get_device_window()
-  //   2. The returned struct fields should be consistent across calls
-  //   3. Following NCCL's pattern of pass-by-value for device structs
+  //   2. The returned pointer should be the same across calls
+  //   3. The device window struct is in GPU memory (cudaMalloc)
 
   setupRankAndSize(0, 8);
   setupCCAExpectations(1, 2, 1);
@@ -247,25 +247,19 @@ TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowReturnsConsistentValue) {
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
   win->tensor_register(tensor);
 
-  // First call creates the device window - returns by value (NCCL pattern)
-  auto device_win1 = win->get_device_window();
-  // Verify window has the expected size (from tensor_register)
-  EXPECT_EQ(device_win1.size_, tensor.nbytes())
-      << "Device window should have correct size";
+  // First call creates the device window - returns device pointer
+  auto* device_win1 = win->get_device_window();
+  EXPECT_NE(device_win1, nullptr) << "Device window pointer should not be null";
 
-  // Second call should return the SAME values (cached state)
-  auto device_win2 = win->get_device_window();
-  EXPECT_EQ(device_win1.size_, device_win2.size_)
-      << "get_device_window() should return consistent size";
-  EXPECT_EQ(device_win1.base_, device_win2.base_)
-      << "get_device_window() should return consistent base pointer";
-  EXPECT_EQ(device_win1.window_, device_win2.window_)
-      << "get_device_window() should return consistent backend handle";
+  // Second call should return the SAME pointer (cached)
+  auto* device_win2 = win->get_device_window();
+  EXPECT_EQ(device_win1, device_win2)
+      << "get_device_window() should return same pointer on subsequent calls";
 
-  // Third call with different parameters should STILL return same values
+  // Third call with different parameters should STILL return same pointer
   // (parameters are only used on first call)
-  auto device_win3 = win->get_device_window(16, 16, 2);
-  EXPECT_EQ(device_win1.size_, device_win3.size_)
+  auto* device_win3 = win->get_device_window(16, 16, 2);
+  EXPECT_EQ(device_win1, device_win3)
       << "get_device_window() should ignore parameters on subsequent calls";
 
   EXPECT_NO_THROW(comm->finalize());
@@ -296,15 +290,12 @@ TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowDefaultParameters) {
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
   win->tensor_register(tensor);
 
-  // Call with default parameters - returns by value (NCCL pattern)
-  auto device_win = win->get_device_window();
+  // Call with default parameters - returns device pointer
+  auto* device_win = win->get_device_window();
 
   // The device window should have been created successfully with defaults
-  // Verify the basic fields are populated correctly
-  EXPECT_EQ(device_win.size_, tensor.nbytes())
-      << "Device window should have correct size";
-  EXPECT_NE(device_win.base_, nullptr)
-      << "Device window should have valid base pointer";
+  // Since the pointer points to device memory, we can only verify it's non-null
+  EXPECT_NE(device_win, nullptr) << "Device window pointer should not be null";
 
   EXPECT_NO_THROW(comm->finalize());
 }
