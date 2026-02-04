@@ -298,11 +298,6 @@ TEST_P(CtranTestParamFixture, sendRecvStagedCopyKernel) {
 
 TEST_P(CtranTestParamFixture, sendRecvP2pCopyKernel) {
   const auto& [offset, count, numMaxQp, memType] = GetParam();
-  if (offset != 0) {
-    // TODO: support unaligned buffer for p2p copy kernel
-    GTEST_SKIP()
-        << "P2P copy kernel only support 16-byte aligned buffer (it casts buffer to uint4* by default)";
-  }
   EnvRAII env1(NCCL_SENDRECV_ALGO, NCCL_SENDRECV_ALGO::ctp2p);
   regCache->init();
   runTest(offset, count, numMaxQp, 1 /* nIter */, memType);
