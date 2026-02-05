@@ -154,13 +154,12 @@ struct BroadcastBenchmarkResult {
 
 /**
  * Broadcast algorithm types for parameterized testing.
- * New algorithms should be added here as they are implemented.
  */
 enum class BroadcastAlgorithm {
   FlatTree,
   BinomialTree,
   Ring,
-  // Adaptive - added in D91729719
+  Adaptive,
 };
 
 inline std::string algorithmName(BroadcastAlgorithm algo) {
@@ -171,18 +170,20 @@ inline std::string algorithmName(BroadcastAlgorithm algo) {
       return "Binomial";
     case BroadcastAlgorithm::Ring:
       return "Ring";
+    case BroadcastAlgorithm::Adaptive:
+      return "Adaptive";
   }
   return "Unknown";
 }
 
 /**
  * All broadcast algorithms for parameterized testing.
- * Add new algorithms here as they are implemented.
  */
 const std::vector<BroadcastAlgorithm> kAllAlgorithms = {
     BroadcastAlgorithm::FlatTree,
     BroadcastAlgorithm::BinomialTree,
     BroadcastAlgorithm::Ring,
+    BroadcastAlgorithm::Adaptive,
 };
 
 // ============================================================================
@@ -797,9 +798,31 @@ class BroadcastBenchmarkFixture : public MpiBaseTestFixture {
             config, rootRank, latencyUs, verified);
       case BroadcastAlgorithm::Ring:
         return runPipesRingBenchmark(config, rootRank, latencyUs, verified);
-        // case BroadcastAlgorithm::Adaptive - added in D91729719
+      case BroadcastAlgorithm::Adaptive:
+        return runPipesAdaptiveBenchmark(config, rootRank, latencyUs, verified);
     }
     return 0.0f;
+  }
+
+  /**
+   * Run Pipes Broadcast benchmark with adaptive algorithm selection.
+   * Automatically selects the best algorithm based on message size:
+   * - < 4MB: flat-tree (lowest latency)
+   * - >= 4MB: ring (best bandwidth)
+   * Returns bandwidth in GB/s and sets latency in microseconds.
+   */
+  float runPipesAdaptiveBenchmark(
+      const BroadcastBenchmarkConfig& config,
+      int rootRank,
+      float& latencyUs,
+      bool& verified) {
+    return runGenericPipesBroadcast(
+        broadcastAdaptiveKernel,
+        "Adaptive",
+        config,
+        rootRank,
+        latencyUs,
+        verified);
   }
 
   /**
@@ -811,150 +834,13 @@ class BroadcastBenchmarkFixture : public MpiBaseTestFixture {
       int rootRank,
       float& latencyUs,
       bool& verified) {
-    XLOGF(
-        DBG1,
-        "Rank {}: Running Pipes Binomial Tree broadcast: {} (root={})",
-        globalRank,
-        config.name,
-        rootRank);
-
-    verified = false;
-    DeviceBuffer buffer(config.messageSize);
-
-    // Initialize buffer: root has data, others have zeros
-    if (globalRank == rootRank) {
-      auto h_data = generateExpectedData(config.messageSize, rootRank);
-      CUDA_CHECK(cudaMemcpy(
-          buffer.get(),
-          h_data.data(),
-          config.messageSize,
-          cudaMemcpyHostToDevice));
-    } else {
-      CUDA_CHECK(cudaMemset(buffer.get(), 0, config.messageSize));
-    }
-
-    // Setup P2P NVL transport
-    MultiPeerNvlTransportConfig nvlConfig{
-        .dataBufferSize = config.stagingBufferSize,
-        .chunkSize = config.chunkSize,
-        .pipelineDepth = config.pipelineDepth,
-    };
-
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, nvlConfig);
-    transport.exchange();
-
-    // Create transport array: self for my rank, P2P for others
-    P2pSelfTransportDevice selfTransport;
-    std::vector<Transport> h_transports;
-    h_transports.reserve(numRanks);
-
-    for (int rank = 0; rank < numRanks; rank++) {
-      if (rank == globalRank) {
-        h_transports.emplace_back(selfTransport);
-      } else {
-        h_transports.emplace_back(transport.getP2pTransportDevice(rank));
-      }
-    }
-
-    // Copy transports to device
-    DeviceBuffer d_transports(sizeof(Transport) * numRanks);
-    CUDA_CHECK(cudaMemcpy(
-        d_transports.get(),
-        h_transports.data(),
-        sizeof(Transport) * numRanks,
-        cudaMemcpyHostToDevice));
-
-    DeviceSpan<Transport> transports_span(
-        static_cast<Transport*>(d_transports.get()), numRanks);
-
-    // Prepare kernel launch parameters
-    dim3 gridDim(config.numBlocks);
-    dim3 blockDim(config.numThreads);
-
-    void* buff_d = buffer.get();
-    std::size_t nbytes = config.messageSize;
-    void* args[] = {&buff_d, &globalRank, &rootRank, &transports_span, &nbytes};
-
-    CudaEvent start, stop;
-
-    // Warmup
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    NVTX_RANGE_PUSH("Pipes_BinomialTree_Warmup");
-    for (int i = 0; i < kWarmupIters; i++) {
-      CUDA_CHECK(cudaLaunchKernel(
-          (void*)broadcastBinomialTreeKernel,
-          gridDim,
-          blockDim,
-          args,
-          0,
-          stream_));
-      CUDA_CHECK(cudaStreamSynchronize(stream_));
-    }
-    NVTX_RANGE_POP();
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Benchmark
-    NVTX_RANGE_PUSH("Pipes_BinomialTree_Benchmark");
-    CUDA_CHECK(cudaEventRecord(start.get(), stream_));
-    for (int i = 0; i < kBenchmarkIters; i++) {
-      NVTX_RANGE_PUSH("Pipes_BinomialTree_Iter");
-      CUDA_CHECK(cudaLaunchKernel(
-          (void*)broadcastBinomialTreeKernel,
-          gridDim,
-          blockDim,
-          args,
-          0,
-          stream_));
-      NVTX_RANGE_POP();
-    }
-    CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
-    CUDA_CHECK(cudaStreamSynchronize(stream_));
-    NVTX_RANGE_POP();
-
-    float totalTime_ms = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
-    float avgTime_ms = totalTime_ms / kBenchmarkIters;
-    latencyUs = avgTime_ms * 1000.0f;
-
-    // Broadcast bandwidth: data transferred / time
-    float bandwidth_GBps = (config.messageSize / 1e9f) / (avgTime_ms / 1000.0f);
-
-    // Verify data correctness if enabled
-    if (FLAGS_verify_correctness) {
-      // Re-initialize and run one more broadcast for verification
-      if (globalRank == rootRank) {
-        auto h_data = generateExpectedData(config.messageSize, rootRank);
-        cudaMemcpy(
-            buffer.get(),
-            h_data.data(),
-            config.messageSize,
-            cudaMemcpyHostToDevice);
-      } else {
-        cudaMemset(buffer.get(), 0, config.messageSize);
-      }
-
-      buff_d = buffer.get();
-      cudaLaunchKernel(
-          (void*)broadcastBinomialTreeKernel,
-          gridDim,
-          blockDim,
-          args,
-          0,
-          stream_);
-      cudaStreamSynchronize(stream_);
-
-      verified = verifyBroadcastData(
-          buffer.get(),
-          config.messageSize,
-          rootRank,
-          config.name,
-          "BinomialTree");
-    }
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    return bandwidth_GBps;
+    return runGenericPipesBroadcast(
+        broadcastBinomialTreeKernel,
+        "BinomialTree",
+        config,
+        rootRank,
+        latencyUs,
+        verified);
   }
 
   /**
@@ -966,131 +852,8 @@ class BroadcastBenchmarkFixture : public MpiBaseTestFixture {
       int rootRank,
       float& latencyUs,
       bool& verified) {
-    XLOGF(
-        DBG1,
-        "Rank {}: Running Pipes Ring broadcast: {} (root={})",
-        globalRank,
-        config.name,
-        rootRank);
-
-    verified = false;
-    DeviceBuffer buffer(config.messageSize);
-
-    // Initialize buffer: root has data, others have zeros
-    if (globalRank == rootRank) {
-      auto h_data = generateExpectedData(config.messageSize, rootRank);
-      CUDA_CHECK(cudaMemcpy(
-          buffer.get(),
-          h_data.data(),
-          config.messageSize,
-          cudaMemcpyHostToDevice));
-    } else {
-      CUDA_CHECK(cudaMemset(buffer.get(), 0, config.messageSize));
-    }
-
-    // Setup P2P NVL transport
-    MultiPeerNvlTransportConfig nvlConfig{
-        .dataBufferSize = config.stagingBufferSize,
-        .chunkSize = config.chunkSize,
-        .pipelineDepth = config.pipelineDepth,
-    };
-
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, nvlConfig);
-    transport.exchange();
-
-    // Create transport array: self for my rank, P2P for others
-    P2pSelfTransportDevice selfTransport;
-    std::vector<Transport> h_transports;
-    h_transports.reserve(numRanks);
-
-    for (int rank = 0; rank < numRanks; rank++) {
-      if (rank == globalRank) {
-        h_transports.emplace_back(selfTransport);
-      } else {
-        h_transports.emplace_back(transport.getP2pTransportDevice(rank));
-      }
-    }
-
-    // Copy transports to device
-    DeviceBuffer d_transports(sizeof(Transport) * numRanks);
-    CUDA_CHECK(cudaMemcpy(
-        d_transports.get(),
-        h_transports.data(),
-        sizeof(Transport) * numRanks,
-        cudaMemcpyHostToDevice));
-
-    DeviceSpan<Transport> transports_span(
-        static_cast<Transport*>(d_transports.get()), numRanks);
-
-    // Prepare kernel launch parameters
-    dim3 gridDim(config.numBlocks);
-    dim3 blockDim(config.numThreads);
-
-    void* buff_d = buffer.get();
-    std::size_t nbytes = config.messageSize;
-    void* args[] = {&buff_d, &globalRank, &rootRank, &transports_span, &nbytes};
-
-    CudaEvent start, stop;
-
-    // Warmup
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    NVTX_RANGE_PUSH("Pipes_Ring_Warmup");
-    for (int i = 0; i < kWarmupIters; i++) {
-      CUDA_CHECK(cudaLaunchKernel(
-          (void*)broadcastRingKernel, gridDim, blockDim, args, 0, stream_));
-      CUDA_CHECK(cudaStreamSynchronize(stream_));
-    }
-    NVTX_RANGE_POP();
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Benchmark
-    NVTX_RANGE_PUSH("Pipes_Ring_Benchmark");
-    CUDA_CHECK(cudaEventRecord(start.get(), stream_));
-    for (int i = 0; i < kBenchmarkIters; i++) {
-      NVTX_RANGE_PUSH("Pipes_Ring_Iter");
-      CUDA_CHECK(cudaLaunchKernel(
-          (void*)broadcastRingKernel, gridDim, blockDim, args, 0, stream_));
-      NVTX_RANGE_POP();
-    }
-    CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
-    CUDA_CHECK(cudaStreamSynchronize(stream_));
-    NVTX_RANGE_POP();
-
-    float totalTime_ms = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
-    float avgTime_ms = totalTime_ms / kBenchmarkIters;
-    latencyUs = avgTime_ms * 1000.0f;
-
-    // Broadcast bandwidth: data transferred / time
-    float bandwidth_GBps = (config.messageSize / 1e9f) / (avgTime_ms / 1000.0f);
-
-    // Verify data correctness if enabled
-    if (FLAGS_verify_correctness) {
-      // Re-initialize and run one more broadcast for verification
-      if (globalRank == rootRank) {
-        auto h_data = generateExpectedData(config.messageSize, rootRank);
-        cudaMemcpy(
-            buffer.get(),
-            h_data.data(),
-            config.messageSize,
-            cudaMemcpyHostToDevice);
-      } else {
-        cudaMemset(buffer.get(), 0, config.messageSize);
-      }
-
-      buff_d = buffer.get();
-      cudaLaunchKernel(
-          (void*)broadcastRingKernel, gridDim, blockDim, args, 0, stream_);
-      cudaStreamSynchronize(stream_);
-
-      verified = verifyBroadcastData(
-          buffer.get(), config.messageSize, rootRank, config.name, "Ring");
-    }
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    return bandwidth_GBps;
+    return runGenericPipesBroadcast(
+        broadcastRingKernel, "Ring", config, rootRank, latencyUs, verified);
   }
 
   // --------------------------------------------------------------------------
@@ -1637,7 +1400,7 @@ TEST_F(BroadcastBenchmarkFixture, ExtendedMessageSizes) {
  */
 TEST_F(BroadcastBenchmarkFixture, GridConfigSweep) {
   if (globalRank == 0) {
-    XLOG(INFO) << "\n=== Grid Configuration Sweep ===\n";
+    XLOG(INFO) << "\n=== Grid Configuration Sweep (All Algorithms) ===\n";
     XLOG(INFO) << "Testing various block/thread configurations for 16MB "
                   "message.\n";
   }
@@ -1684,23 +1447,20 @@ TEST_F(BroadcastBenchmarkFixture, GridConfigSweep) {
     ss << "Message Size: " << formatSize(msgSize) << "\n";
     ss << "NCCL Baseline: " << std::fixed << std::setprecision(2)
        << ncclBandwidth << " GB/s\n\n";
-    ss << std::left << std::setw(12) << "Config" << std::right << std::setw(10)
-       << "Blocks" << std::right << std::setw(10) << "Threads" << std::right
-       << std::setw(10) << "Total" << std::right << std::setw(14) << "Algorithm"
+    ss << std::left << std::setw(12) << "Config" << std::left << std::setw(12)
+       << "Algorithm" << std::right << std::setw(10) << "Blocks" << std::right
+       << std::setw(10) << "Threads" << std::right << std::setw(10) << "Total"
        << std::right << std::setw(12) << "Bandwidth" << std::right
        << std::setw(12) << "vs NCCL" << "\n";
-    ss << std::left << std::setw(12) << "(BxT)" << std::right << std::setw(10)
+    ss << std::left << std::setw(12) << "(BxT)" << std::left << std::setw(12)
        << "" << std::right << std::setw(10) << "" << std::right << std::setw(10)
-       << "Threads" << std::right << std::setw(14) << "" << std::right
+       << "" << std::right << std::setw(10) << "Threads" << std::right
        << std::setw(12) << "(GB/s)" << std::right << std::setw(12) << ""
        << "\n";
-    ss << "--------------------------------------------------------------------------------\n";
+    ss << "------------------------------------------------------------------------"
+          "----------\n";
     XLOG(INFO) << ss.str();
   }
-
-  float bestBandwidth = 0.0f;
-  std::string bestConfig;
-  std::string bestAlgorithm;
 
   for (const auto& grid : gridConfigs) {
     BroadcastBenchmarkConfig config{
@@ -1714,6 +1474,7 @@ TEST_F(BroadcastBenchmarkFixture, GridConfigSweep) {
         .name = grid.name,
     };
 
+    // Run each algorithm
     for (auto algo : kAllAlgorithms) {
       float pipesLatencyUs = 0.0f;
       bool pipesVerified = false;
@@ -1726,40 +1487,359 @@ TEST_F(BroadcastBenchmarkFixture, GridConfigSweep) {
         int totalThreads = grid.numBlocks * grid.numThreads;
 
         std::stringstream ss;
-        ss << std::left << std::setw(12) << grid.name << std::right
+        ss << std::left << std::setw(12) << grid.name << std::left
+           << std::setw(12) << algorithmName(algo) << std::right
            << std::setw(10) << grid.numBlocks << std::right << std::setw(10)
            << grid.numThreads << std::right << std::setw(10) << totalThreads
-           << std::right << std::setw(14) << algorithmName(algo) << std::right
-           << std::setw(12) << std::fixed << std::setprecision(2)
+           << std::right << std::setw(12) << std::fixed << std::setprecision(2)
            << pipesBandwidth << std::right << std::setw(11) << std::fixed
            << std::setprecision(2) << speedup << "x";
         XLOG(INFO) << ss.str();
-
-        if (pipesBandwidth > bestBandwidth) {
-          bestBandwidth = pipesBandwidth;
-          bestConfig = grid.name;
-          bestAlgorithm = algorithmName(algo);
-        }
       }
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     }
 
     // Print separator between grid configs
-    if (globalRank == 0) {
-      XLOG(INFO) << "  ---";
+    if (globalRank == 0 && &grid != &gridConfigs.back()) {
+      XLOG(INFO)
+          << "------------------------------------------------------------------------"
+             "----------";
     }
   }
 
   if (globalRank == 0) {
     XLOG(INFO)
-        << "--------------------------------------------------------------------------------";
-    XLOG(INFO) << "Best config: " << bestConfig << " (" << bestAlgorithm
-               << ") at " << std::fixed << std::setprecision(2) << bestBandwidth
-               << " GB/s (" << std::fixed << std::setprecision(2)
-               << (bestBandwidth / ncclBandwidth) << "x of NCCL)";
+        << "========================================================================"
+           "==========";
+    XLOG(INFO) << "Speedup > 1.0x indicates Pipes is faster than NCCL";
     XLOG(INFO)
-        << "================================================================================\n";
+        << "========================================================================"
+           "==========\n";
+  }
+}
+
+// clang-format off
+/**
+ * Broadcast Benchmark
+ *
+ * Tests Pipes Broadcast against NCCL ncclBroadcast across various:
+ * - Message sizes: 64B to 64MB
+ * - Root ranks: 0, middle, last
+ * - Thread configurations
+ *
+ * The Pipes Broadcast uses adaptive algorithm selection:
+ * - Small/medium messages (< 8MB): flat-tree (lowest latency)
+ * - Large messages (>= 8MB): ring (best bandwidth, 77% of NCCL)
+ *
+ * Use --verify_correctness flag to enable data correctness verification.
+ */
+// clang-format on
+TEST_F(BroadcastBenchmarkFixture, OptimalConfigs) {
+  if (globalRank == 0) {
+    XLOG(INFO)
+        << "\n=== Pipes Broadcast vs NCCL Comparison (All Message Sizes) ===\n";
+    if (FLAGS_verify_correctness) {
+      XLOG(INFO) << "Data correctness verification ENABLED\n";
+    }
+  }
+
+  std::vector<BroadcastBenchmarkConfig> configs;
+
+  // === SMALL MESSAGES ===
+  // 64B - latency bound
+  configs.push_back({
+      .messageSize = 64,
+      .stagingBufferSize = 64 * 1024,
+      .pipelineDepth = 4,
+      .chunkSize = 8 * 1024,
+      .numBlocks = 4,
+      .numThreads = 256,
+      .rootRank = 0,
+      .name = "64B_root0",
+  });
+
+  // 1KB
+  configs.push_back({
+      .messageSize = 1 * 1024,
+      .stagingBufferSize = 64 * 1024,
+      .pipelineDepth = 4,
+      .chunkSize = 8 * 1024,
+      .numBlocks = 4,
+      .numThreads = 256,
+      .rootRank = 0,
+      .name = "1KB_root0",
+  });
+
+  // 4KB
+  configs.push_back({
+      .messageSize = 4 * 1024,
+      .stagingBufferSize = 64 * 1024,
+      .pipelineDepth = 4,
+      .chunkSize = 8 * 1024,
+      .numBlocks = 4,
+      .numThreads = 256,
+      .rootRank = 0,
+      .name = "4KB_root0",
+  });
+
+  // === MEDIUM MESSAGES ===
+  // 64KB
+  configs.push_back({
+      .messageSize = 64 * 1024,
+      .stagingBufferSize = 64 * 1024,
+      .pipelineDepth = 4,
+      .chunkSize = 16 * 1024,
+      .numBlocks = 4,
+      .numThreads = 256,
+      .rootRank = 0,
+      .name = "64KB_root0",
+  });
+
+  // 256KB
+  configs.push_back({
+      .messageSize = 256 * 1024,
+      .stagingBufferSize = 256 * 1024,
+      .pipelineDepth = 4,
+      .chunkSize = 32 * 1024,
+      .numBlocks = 8,
+      .numThreads = 256,
+      .rootRank = 0,
+      .name = "256KB_root0",
+  });
+
+  // === LARGE MESSAGES ===
+  // OPTIMIZED: Using empirically validated parameters from profiling sweep
+  // Best config: 32KB chunks (profiling shows 2x better than 128KB)
+  // 1MB
+  configs.push_back({
+      .messageSize = 1 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging
+      .pipelineDepth = 4,
+      .chunkSize = 32 * 1024, // Optimal: 32KB chunks (47 GB/s vs 23 GB/s)
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "1MB_root0",
+  });
+
+  // 4MB
+  configs.push_back({
+      .messageSize = 4 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging
+      .pipelineDepth = 4,
+      .chunkSize = 32 * 1024, // Optimal: 32KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "4MB_root0",
+  });
+
+  // 8MB
+  configs.push_back({
+      .messageSize = 8 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging
+      .pipelineDepth = 4,
+      .chunkSize = 32 * 1024, // Optimal: 32KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "8MB_root0",
+  });
+
+  // === VARYING ROOT RANK ===
+  // Test with middle rank as root
+  int middleRank = numRanks / 2;
+  configs.push_back({
+      .messageSize = 64 * 1024,
+      .stagingBufferSize = 64 * 1024,
+      .pipelineDepth = 4,
+      .chunkSize = 16 * 1024,
+      .numBlocks = 4,
+      .numThreads = 256,
+      .rootRank = middleRank,
+      .name = "64KB_rootMiddle",
+  });
+
+  configs.push_back({
+      .messageSize = 1 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging
+      .pipelineDepth = 4,
+      .chunkSize = 32 * 1024, // Optimal: 32KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = middleRank,
+      .name = "1MB_rootMiddle",
+  });
+
+  // Test with last rank as root
+  int lastRank = numRanks - 1;
+  configs.push_back({
+      .messageSize = 64 * 1024,
+      .stagingBufferSize = 64 * 1024,
+      .pipelineDepth = 4,
+      .chunkSize = 16 * 1024,
+      .numBlocks = 4,
+      .numThreads = 256,
+      .rootRank = lastRank,
+      .name = "64KB_rootLast",
+  });
+
+  configs.push_back({
+      .messageSize = 1 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging
+      .pipelineDepth = 4,
+      .chunkSize = 32 * 1024, // Optimal: 32KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = lastRank,
+      .name = "1MB_rootLast",
+  });
+
+  // === LARGE MESSAGE SIZE SWEEP ===
+  // OPTIMIZED: Using empirically validated parameters from profiling sweep
+  // Best config: 32KB chunks (profiling shows 2x better than 128KB)
+  // For very large messages (>=8MB), consider using Ring algorithm instead
+  configs.push_back({
+      .messageSize = 16 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // Match message size
+      .pipelineDepth = 4,
+      .chunkSize = 32 * 1024, // Optimal: 32KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "16MB_root0",
+  });
+
+  configs.push_back({
+      .messageSize = 32 * 1024 * 1024,
+      .stagingBufferSize = 32 * 1024 * 1024, // Match message size
+      .pipelineDepth = 4,
+      .chunkSize = 32 * 1024, // Optimal: 32KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "32MB_root0",
+  });
+
+  configs.push_back({
+      .messageSize = 64 * 1024 * 1024,
+      .stagingBufferSize = 64 * 1024 * 1024, // Match message size
+      .pipelineDepth = 4,
+      .chunkSize = 32 * 1024, // Optimal: 32KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "64MB_root0",
+  });
+
+  std::vector<BroadcastBenchmarkResult> results;
+
+  // Print header
+  if (globalRank == 0) {
+    std::stringstream ss;
+    ss << "\n";
+    ss << "========================================================================"
+          "====================================================\n";
+    ss << "                    Pipes Broadcast vs NCCL Comparison (All Algorithms)\n";
+    ss << "========================================================================"
+          "====================================================\n";
+    ss << std::left << std::setw(18) << "Test Name" << std::left
+       << std::setw(12) << "Algorithm" << std::right << std::setw(10) << "Size"
+       << std::right << std::setw(8) << "Root" << std::right << std::setw(12)
+       << "NCCL BW" << std::right << std::setw(12) << "Pipes BW" << std::right
+       << std::setw(10) << "Speedup" << std::right << std::setw(12)
+       << "NCCL Lat" << std::right << std::setw(12) << "Pipes Lat" << "\n";
+    ss << std::left << std::setw(18) << "" << std::left << std::setw(12) << ""
+       << std::right << std::setw(10) << "" << std::right << std::setw(8) << ""
+       << std::right << std::setw(12) << "(GB/s)" << std::right << std::setw(12)
+       << "(GB/s)" << std::right << std::setw(10) << "" << std::right
+       << std::setw(12) << "(us)" << std::right << std::setw(12) << "(us)"
+       << "\n";
+    ss << "------------------------------------------------------------------------"
+          "----------------------------------------------------\n";
+    XLOG(INFO) << ss.str();
+  }
+
+  for (const auto& config : configs) {
+    int rootRank = config.rootRank;
+
+    // Run NCCL once per config (baseline)
+    float ncclLatencyUs = 0.0f;
+    bool ncclVerified = false;
+    float ncclBandwidth = runNcclBroadcastBenchmark(
+        config, rootRank, ncclLatencyUs, ncclVerified);
+
+    // Run each algorithm
+    for (auto algo : kAllAlgorithms) {
+      float pipesLatencyUs = 0.0f;
+      bool pipesVerified = false;
+      float pipesBandwidth = runPipesBroadcast(
+          algo, config, rootRank, pipesLatencyUs, pipesVerified);
+
+      if (globalRank == 0) {
+        float speedup =
+            (ncclBandwidth > 0) ? pipesBandwidth / ncclBandwidth : 0;
+
+        std::stringstream ss;
+        ss << std::left << std::setw(18) << config.name << std::left
+           << std::setw(12) << algorithmName(algo) << std::right
+           << std::setw(10) << formatSize(config.messageSize) << std::right
+           << std::setw(8) << rootRank << std::right << std::setw(12)
+           << std::fixed << std::setprecision(2) << ncclBandwidth << std::right
+           << std::setw(12) << std::fixed << std::setprecision(2)
+           << pipesBandwidth << std::right << std::setw(9) << std::fixed
+           << std::setprecision(2) << speedup << "x" << std::right
+           << std::setw(12) << std::fixed << std::setprecision(1)
+           << ncclLatencyUs << std::right << std::setw(12) << std::fixed
+           << std::setprecision(1) << pipesLatencyUs;
+        XLOG(INFO) << ss.str();
+
+        // Collect results for verification
+        BroadcastBenchmarkResult result;
+        result.testName = config.name + "_" + algorithmName(algo);
+        result.messageSize = config.messageSize;
+        result.rootRank = rootRank;
+        result.nRanks = numRanks;
+        result.ncclBandwidth = ncclBandwidth;
+        result.pipesBandwidth = pipesBandwidth;
+        result.ncclLatency = ncclLatencyUs;
+        result.pipesLatency = pipesLatencyUs;
+        result.speedup = speedup;
+        result.ncclVerified = ncclVerified;
+        result.pipesVerified = pipesVerified;
+        results.push_back(result);
+      }
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    }
+
+    // Print separator between configs
+    if (globalRank == 0 && &config != &configs.back()) {
+      XLOG(INFO)
+          << "------------------------------------------------------------------------"
+             "----------------------------------------------------";
+    }
+  }
+
+  if (globalRank == 0) {
+    XLOG(INFO)
+        << "========================================================================"
+           "====================================================";
+    XLOG(INFO) << "Speedup > 1.0x indicates Pipes is faster than NCCL";
+    XLOG(INFO)
+        << "========================================================================"
+           "====================================================\n";
+  }
+
+  // Assert verification results if enabled
+  if (FLAGS_verify_correctness) {
+    for (const auto& r : results) {
+      EXPECT_TRUE(r.ncclVerified)
+          << "NCCL verification failed for " << r.testName;
+      EXPECT_TRUE(r.pipesVerified)
+          << "Pipes verification failed for " << r.testName;
+    }
   }
 }
 
