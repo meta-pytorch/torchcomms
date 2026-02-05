@@ -251,6 +251,16 @@ TEST_P(BroadcastParamTest, DataTransfer) {
             numBlocks,
             blockSize);
         break;
+      case BroadcastAlgorithm::BinomialTree:
+        test::testBroadcastBinomialTree(
+            nullptr,
+            globalRank,
+            rootRank,
+            transports_span,
+            0,
+            numBlocks,
+            blockSize);
+        break;
       default:
         GTEST_SKIP() << "Broadcast algorithm " << algorithmName
                      << " not implemented yet";
@@ -310,7 +320,17 @@ TEST_P(BroadcastParamTest, DataTransfer) {
           numBlocks,
           blockSize);
       break;
-      // TODO: add support for binomial tree and ring.
+    case BroadcastAlgorithm::BinomialTree:
+      test::testBroadcastBinomialTree(
+          buffer.get(),
+          globalRank,
+          rootRank,
+          transports_span,
+          numBytes,
+          numBlocks,
+          blockSize);
+      break;
+      // TODO: add support for ring.
     default:
       GTEST_SKIP() << "Broadcast algorithm " << algorithmName
                    << " not implemented yet";
@@ -472,6 +492,62 @@ INSTANTIATE_TEST_SUITE_P(
             .rootRank = 7,
             .algorithm = BroadcastAlgorithm::FlatTree,
             .testName = "large_128KB_last_root"}),
+    [](const ::testing::TestParamInfo<BroadcastTestParams>& info) {
+      return info.param.testName;
+    });
+
+// Binomial Tree algorithm tests
+// Tests the O(log N) rounds algorithm with various message sizes and root ranks
+// Designed for messages >= 64KB where the reduced number of rounds provides
+// benefits over the flat-tree approach
+INSTANTIATE_TEST_SUITE_P(
+    BinomialTreeConfigs,
+    BroadcastParamTest,
+    ::testing::Values(
+        // Medium message at threshold (64KB), root=0
+        BroadcastTestParams{
+            .numBlocks = 8,
+            .blockSize = 512,
+            .numBytes = 64 * 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::BinomialTree,
+            .testName = "binomial_64KB_root0"},
+
+        // Large message (256KB), root=0
+        BroadcastTestParams{
+            .numBlocks = 8,
+            .blockSize = 512,
+            .numBytes = 256 * 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::BinomialTree,
+            .testName = "binomial_256KB_root0"},
+
+        // Large message (512KB), middle root
+        BroadcastTestParams{
+            .numBlocks = 8,
+            .blockSize = 512,
+            .numBytes = 512 * 1024,
+            .rootRank = -1,
+            .algorithm = BroadcastAlgorithm::BinomialTree,
+            .testName = "binomial_512KB_middle_root"},
+
+        // Near ring threshold (1MB - 1KB), root=0
+        BroadcastTestParams{
+            .numBlocks = 8,
+            .blockSize = 512,
+            .numBytes = 1024 * 1024 - 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::BinomialTree,
+            .testName = "binomial_1MB_minus_1KB_root0"},
+
+        // Boundary test: last rank as root
+        BroadcastTestParams{
+            .numBlocks = 8,
+            .blockSize = 512,
+            .numBytes = 128 * 1024,
+            .rootRank = 7,
+            .algorithm = BroadcastAlgorithm::BinomialTree,
+            .testName = "binomial_128KB_last_root"}),
     [](const ::testing::TestParamInfo<BroadcastTestParams>& info) {
       return info.param.testName;
     });
