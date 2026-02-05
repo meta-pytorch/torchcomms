@@ -7,6 +7,8 @@
 #ifndef NCCL_INFO_H_
 #define NCCL_INFO_H_
 
+#include <optional>
+
 #include "nccl.h"
 #include "collectives.h"
 #include "core.h"
@@ -49,7 +51,16 @@ struct ncclInfo {
   int sliceSteps;
 
   /*
-   * NCCLX Specific attributes
+   * Start of NCCLX Specific attributes
+   */
+  // Stochastic Rounding reduction ops only attribute. The random seed being
+  // used for the stochastic rounding. Intentionally using optional to ensure
+  // that we differentiate between the case where we have not set the attribute
+  // and the case where we set the attribute to 0.
+  std::optional<uint64_t> randomSeed{std::nullopt};
+
+  /*
+   * NCCLX Specific attributes (Not really being used, no idea what they are for)
    */
   int nThreads{0};
   int nChannels{0};
