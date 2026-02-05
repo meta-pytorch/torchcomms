@@ -29,12 +29,26 @@ inline CommPattern ncclToCommPattern(ncclPattern_t ncclPattern) {
 }
 
 constexpr CommFunc ncclToCommFunc(ncclFunc_t ncclFunc) {
-  // NCCLX2.28 adds more functions to ncclFunc_t enum, we need special handling
-  // when ncclFunc is ncclNumFuncs
-  if (ncclFunc == ncclNumFuncs) {
-    return CommFunc::NumFuncs;
+  switch (ncclFunc) {
+    case ::ncclFuncBroadcast:
+      return CommFunc::Broadcast;
+    case ::ncclFuncReduce:
+      return CommFunc::Reduce;
+    case ::ncclFuncAllGather:
+      return CommFunc::AllGather;
+    case ::ncclFuncReduceScatter:
+      return CommFunc::ReduceScatter;
+    case ::ncclFuncAllReduce:
+      return CommFunc::AllReduce;
+    case ::ncclFuncSendRecv:
+      return CommFunc::SendRecv;
+    case ::ncclFuncSend:
+      return CommFunc::Send;
+    case ::ncclFuncRecv:
+      return CommFunc::Recv;
+    default:
+      return CommFunc::NumFuncs;
   }
-  return static_cast<CommFunc>(ncclFunc);
 }
 
 inline commDataType_t ncclToCommDataType(ncclDataType_t ncclDataType) {
@@ -42,7 +56,20 @@ inline commDataType_t ncclToCommDataType(ncclDataType_t ncclDataType) {
 }
 
 inline commRedOp_t ncclToCommRedOp(ncclRedOp_t ncclRedOp) {
-  return static_cast<commRedOp_t>(ncclRedOp);
+  switch (ncclRedOp) {
+    case ::ncclSum:
+      return commSum;
+    case ::ncclProd:
+      return commProd;
+    case ::ncclMax:
+      return commMax;
+    case ::ncclMin:
+      return commMin;
+    case ::ncclAvg:
+      return commAvg;
+    default:
+      return commNumOps;
+  }
 }
 
 inline CommAlgo ncclToCommAlgo(int ncclAlgo) {
@@ -132,50 +159,6 @@ static_assert(
     "CommPattern::Recv must match ncclPatternRecv");
 
 /******************************************************************************
- * Begin of static check to ensure CommFunc enum matches ncclFunc_T enum      *
- *****************************************************************************/
-static_assert(
-    static_cast<int>(CommFunc::Broadcast) ==
-        static_cast<int>(::ncclFuncBroadcast),
-    "CommFunc::Broadcast must match ncclFuncBroadcast");
-
-static_assert(
-    static_cast<int>(CommFunc::Reduce) == static_cast<int>(::ncclFuncReduce),
-    "CommFunc::Reduce must match ncclFuncReduce");
-
-static_assert(
-    static_cast<int>(CommFunc::AllGather) ==
-        static_cast<int>(::ncclFuncAllGather),
-    "CommFunc::AllGather must match ncclFuncAllGather");
-
-static_assert(
-    static_cast<int>(CommFunc::ReduceScatter) ==
-        static_cast<int>(::ncclFuncReduceScatter),
-    "CommFunc::ReduceScatter must match ncclFuncReduceScatter");
-
-static_assert(
-    static_cast<int>(CommFunc::AllReduce) ==
-        static_cast<int>(::ncclFuncAllReduce),
-    "CommFunc::AllReduce must match ncclFuncAllReduce");
-
-static_assert(
-    static_cast<int>(CommFunc::SendRecv) ==
-        static_cast<int>(::ncclFuncSendRecv),
-    "CommFunc::SendRecv must match ncclFuncSendRecv");
-
-static_assert(
-    static_cast<int>(CommFunc::Send) == static_cast<int>(::ncclFuncSend),
-    "CommFunc::Send must match ncclFuncSend");
-
-static_assert(
-    static_cast<int>(CommFunc::Recv) == static_cast<int>(::ncclFuncRecv),
-    "CommFunc::Recv must match ncclFuncRecv");
-
-static_assert(
-    CommFunc::NumFuncs == ncclToCommFunc(::ncclNumFuncs),
-    "CommFunc::commNumFuncs must match ncclNumFuncs");
-
-/******************************************************************************
  * Begin of static check to ensure commDataType_t enum matches ncclDataType_t *
  *****************************************************************************/
 static_assert(
@@ -221,29 +204,6 @@ static_assert(
 static_assert(
     static_cast<int>(commNumTypes) == static_cast<int>(::ncclNumTypes),
     "commNumTypes must match ncclNumTypes");
-
-/******************************************************************************
- * Begin of static check to ensure commRedOp_t enum matches ncclRedOp_t       *
- *****************************************************************************/
-static_assert(
-    static_cast<int>(commSum) == static_cast<int>(::ncclSum),
-    "commSum must match ncclSum");
-
-static_assert(
-    static_cast<int>(commProd) == static_cast<int>(::ncclProd),
-    "commProd must match ncclProd");
-
-static_assert(
-    static_cast<int>(commMax) == static_cast<int>(::ncclMax),
-    "commMax must match ncclMax");
-
-static_assert(
-    static_cast<int>(commMin) == static_cast<int>(::ncclMin),
-    "commMin must match ncclMin");
-
-static_assert(
-    static_cast<int>(commNumOps) == static_cast<int>(::ncclNumOps),
-    "commNumOps must match ncclNumOps");
 
 /******************************************************************************
  * Begin of static check to ensure CommAlgo enum matches NCCL algorithm       *

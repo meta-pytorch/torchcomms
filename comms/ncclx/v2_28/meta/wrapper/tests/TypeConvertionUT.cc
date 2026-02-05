@@ -75,10 +75,7 @@ TEST(DataTypeConvTest, NcclToCommFunc) {
   EXPECT_EQ(ncclToCommFunc(ncclFuncSendRecv), CommFunc::SendRecv);
   EXPECT_EQ(ncclToCommFunc(ncclFuncSend), CommFunc::Send);
   EXPECT_EQ(ncclToCommFunc(ncclFuncRecv), CommFunc::Recv);
-
-  // Test NumFuncs
-  EXPECT_EQ(
-      static_cast<int>(CommFunc::NumFuncs), static_cast<int>(ncclNumFuncs));
+  EXPECT_EQ(ncclToCommFunc(ncclNumFuncs), CommFunc::NumFuncs);
 }
 
 // Test ncclToCommDataType conversion
@@ -110,9 +107,8 @@ TEST(DataTypeConvTest, NcclToCommRedOp) {
   EXPECT_EQ(ncclToCommRedOp(ncclProd), commProd);
   EXPECT_EQ(ncclToCommRedOp(ncclMax), commMax);
   EXPECT_EQ(ncclToCommRedOp(ncclMin), commMin);
-
-  // Test NumOps
-  EXPECT_EQ(static_cast<int>(commNumOps), static_cast<int>(ncclNumOps));
+  EXPECT_EQ(ncclToCommRedOp(ncclAvg), commAvg);
+  EXPECT_EQ(ncclToCommRedOp(ncclNumOps), commNumOps);
 }
 
 TEST(DataTypeConvTest, NcclToCommCmpOp) {
