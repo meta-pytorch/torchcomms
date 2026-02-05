@@ -241,6 +241,23 @@ void TorchCommRCCL::timeoutWatchdog() noexcept {
       }
       abort();
     }
+
+    // Check communicator for async error
+    if (comm_state_ == CommState::NORMAL) {
+      ncclResult_t asyncErr;
+      RCCL_CHECK(
+          rccl_api_,
+          nccl_comm_,
+          rccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+          "failed to get async error");
+      if (asyncErr != ncclSuccess) {
+        comm_state_ = CommState::ERROR;
+        TC_LOG(ERROR, this)
+            << "Aborting process due to error on rank " << rank_
+            << " - rccl hit async error: " << ncclGetErrorString(asyncErr);
+        abort();
+      }
+    }
   }
 
   TC_LOG(INFO, this) << "Timeout thread exiting for rank: " << rank_;
