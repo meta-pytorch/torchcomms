@@ -58,6 +58,9 @@ class TorchWorkNCCLX : public TorchWork {
 
   // Override virtual functions from TorchWork
   void wait() override;
+  std::chrono::milliseconds getTimeout() const override {
+    return timeout_ms_;
+  }
 
   // Set persistent request reference to keep it alive until work is freed
   void setPersistentRequest(
@@ -80,10 +83,6 @@ class TorchWorkNCCLX : public TorchWork {
   WorkStatus checkStatus();
 
   void recordFunctionStart(std::string_view coll_name);
-
-  std::chrono::milliseconds getTimeout() {
-    return timeout_ms_;
-  }
 
   // Tensors supplied might either be a vector of tensors,
   // or a single tensor. In case it is a single tensor, we

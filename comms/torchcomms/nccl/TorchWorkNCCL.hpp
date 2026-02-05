@@ -49,6 +49,9 @@ class TorchWorkNCCL : public TorchWork {
 
   // Override virtual functions from TorchWork
   void wait() override;
+  std::chrono::milliseconds getTimeout() const override {
+    return timeout_ms_;
+  }
 
  protected:
   void recordStart(std::string_view coll_name);
@@ -63,9 +66,6 @@ class TorchWorkNCCL : public TorchWork {
 
   void recordFunctionStart(std::string_view coll_name);
 
-  std::chrono::milliseconds getTimeout() const {
-    return timeout_ms_;
-  }
   std::vector<at::Tensor> inputTensors_;
   at::Tensor inputTensor_;
 

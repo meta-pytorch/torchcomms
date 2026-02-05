@@ -6,14 +6,31 @@
 #include "comms/torchcomms/device/TorchCommDeviceComm.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 
+#include <cuda_runtime.h>
 #include <memory>
 #include <stdexcept>
 #include <string>
 
 namespace torchcomms::device {
 
-std::unique_ptr<TorchCommDeviceWindow<NCCLGinBackend>>
-NCCLGinBackend::create_device_window(
+// =============================================================================
+// DeviceWindowDeleter Implementation
+// =============================================================================
+
+void NCCLGinBackend::DeviceWindowDeleter::operator()(
+    TorchCommDeviceWindow<NCCLGinBackend>* ptr) const {
+  // Only free the device memory - caller is responsible for calling
+  // ncclDevCommDestroy using the dev_comm stored in this deleter
+  if (ptr != nullptr) {
+    cudaFree(ptr);
+  }
+}
+
+// =============================================================================
+// create_device_window Implementation
+// =============================================================================
+
+NCCLGinBackend::Ptr NCCLGinBackend::create_device_window(
     ncclComm_t nccl_comm,
     torch::comms::NcclxApi* nccl_api,
     const DeviceBackendConfig& config,
@@ -60,31 +77,49 @@ NCCLGinBackend::create_device_window(
         std::string(nccl_api->getErrorString(result)));
   }
 
-  // Construct and return the device window via unique_ptr using constructor
-  return std::make_unique<TorchCommDeviceWindow<NCCLGinBackend>>(
+  // Create device window on host first (stack allocation)
+  TorchCommDeviceWindow<NCCLGinBackend> host_dev_window(
       nccl_dev_comm,
       host_window,
       base,
       size,
       config.comm_rank,
       config.comm_size);
-}
 
-void NCCLGinBackend::destroy_device_window(
-    ncclComm_t nccl_comm,
-    torch::comms::NcclxApi* nccl_api,
-    std::unique_ptr<TorchCommDeviceWindow<NCCLGinBackend>> device_window) {
-  if (nccl_comm == nullptr || nccl_api == nullptr || !device_window) {
-    return;
+  // Allocate device memory for the window struct
+  TorchCommDeviceWindow<NCCLGinBackend>* device_ptr = nullptr;
+  cudaError_t cuda_result =
+      cudaMalloc(&device_ptr, sizeof(TorchCommDeviceWindow<NCCLGinBackend>));
+  if (cuda_result != cudaSuccess) {
+    // Cleanup ncclDevComm before throwing
+    nccl_api->devCommDestroy(nccl_comm, &nccl_dev_comm);
+    throw std::runtime_error(
+        "[NCCLGinBackend::create_device_window]: Failed to allocate device memory for window. "
+        "CUDA error: " +
+        std::string(cudaGetErrorString(cuda_result)));
   }
 
-  auto result = nccl_api->devCommDestroy(nccl_comm, &device_window->comm_);
-  if (result != ncclSuccess) {
-    TC_LOG(ERROR) << "Failed to destroy NCCL device communicator: "
-                  << nccl_api->getErrorString(result);
+  // Copy the window struct to device memory
+  cuda_result = cudaMemcpy(
+      device_ptr,
+      &host_dev_window,
+      sizeof(TorchCommDeviceWindow<NCCLGinBackend>),
+      cudaMemcpyHostToDevice);
+  if (cuda_result != cudaSuccess) {
+    // Cleanup on error
+    cudaFree(device_ptr);
+    nccl_api->devCommDestroy(nccl_comm, &nccl_dev_comm);
+    throw std::runtime_error(
+        "[NCCLGinBackend::create_device_window]: Failed to copy window to device memory. "
+        "CUDA error: " +
+        std::string(cudaGetErrorString(cuda_result)));
   }
-  // unique_ptr automatically destroys the device_window when it goes out of
-  // scope
+
+  // Create custom deleter that stores nccl_comm, nccl_api, and dev_comm
+  // The caller accesses dev_comm via get_deleter() for ncclDevCommDestroy
+  DeviceWindowDeleter deleter(nccl_comm, nccl_api, nccl_dev_comm);
+
+  return Ptr(device_ptr, deleter);
 }
 
 } // namespace torchcomms::device

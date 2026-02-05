@@ -242,7 +242,11 @@ void TorchCommRCCLX::finalize() {
     throw std::runtime_error("Work timed out during finalize");
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
-    rcclx_api_->commGetAsyncError(nccl_comm_, &asyncErr);
+    RCCLX_CHECK(
+        rcclx_api_,
+        nccl_comm_,
+        rcclx_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+        "failed to get async error");
     RCCLXException RCCLXException(
         *rcclx_api_, "RCCLX Async Error", asyncErr, nccl_comm_);
     abortRcclxComm();
@@ -296,7 +300,11 @@ void TorchCommRCCLX::finalize() {
   if (nccl_comm_) {
     detachMemoryHook();
     // Deregister comm from the CachingAllocator
-    rcclx_api_->commDestroy(nccl_comm_);
+    RCCLX_CHECK(
+        rcclx_api_,
+        nccl_comm_,
+        rcclx_api_->commDestroy(nccl_comm_),
+        "RCCLX Destroy failed");
     nccl_comm_ = nullptr;
   }
 }
@@ -304,7 +312,11 @@ void TorchCommRCCLX::finalize() {
 void TorchCommRCCLX::abortRcclxComm() {
   detachMemoryHook();
   if (nccl_comm_) {
-    rcclx_api_->commAbort(nccl_comm_);
+    RCCLX_CHECK(
+        rcclx_api_,
+        nccl_comm_,
+        rcclx_api_->commAbort(nccl_comm_),
+        "RCCLX Abort failed");
     nccl_comm_ = nullptr;
   }
 }

@@ -39,7 +39,7 @@ struct WorkEvent {
 
 class TorchCommNCCLXTest : public ::testing::Test {
  public:
-  // Wrapper function to access private getTimeout() method
+  // Wrapper function to access getTimeout() method
   // Since TorchCommNCCLXTest is a friend class of TorchWorkNCCLX,
   // it can access private members
   std::chrono::milliseconds getWorkTimeout(TorchWorkNCCLX* work) {

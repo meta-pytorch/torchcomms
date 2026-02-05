@@ -25,7 +25,8 @@ void testSend(
     int numBlocks,
     int blockSize,
     GroupType groupType = GroupType::WARP,
-    int blocksPerGroup = 1);
+    int blocksPerGroup = 1,
+    cudaStream_t stream = nullptr);
 
 void testRecv(
     P2pNvlTransportDevice p2p,
@@ -34,7 +35,8 @@ void testRecv(
     int numBlocks,
     int blockSize,
     GroupType groupType = GroupType::WARP,
-    int blocksPerGroup = 1);
+    int blocksPerGroup = 1,
+    cudaStream_t stream = nullptr);
 
 // Multiple sequential sends within a single kernel
 void testMultiSend(

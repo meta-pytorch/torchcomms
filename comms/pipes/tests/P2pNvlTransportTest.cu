@@ -138,8 +138,10 @@ void testSend(
     int numBlocks,
     int blockSize,
     GroupType groupType,
-    int /*blocksPerGroup*/) {
-  testSendKernel<<<numBlocks, blockSize>>>(p2p, src_d, nbytes, groupType);
+    int /*blocksPerGroup*/,
+    cudaStream_t stream) {
+  testSendKernel<<<numBlocks, blockSize, 0, stream>>>(
+      p2p, src_d, nbytes, groupType);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
@@ -150,8 +152,10 @@ void testRecv(
     int numBlocks,
     int blockSize,
     GroupType groupType,
-    int /*blocksPerGroup*/) {
-  testRecvKernel<<<numBlocks, blockSize>>>(p2p, dst_d, nbytes, groupType);
+    int /*blocksPerGroup*/,
+    cudaStream_t stream) {
+  testRecvKernel<<<numBlocks, blockSize, 0, stream>>>(
+      p2p, dst_d, nbytes, groupType);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

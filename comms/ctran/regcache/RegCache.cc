@@ -241,6 +241,10 @@ commResult_t ctran::RegCache::destroy() {
     asyncRegQueue_.lock()->push(cmd);
     asyncRegCv_.notify_one();
     asyncRegThread_.join();
+    // Clear the queue after thread terminates
+    std::queue<AsyncRegCmd>().swap(*asyncRegQueue_.lock());
+    // Reset thread object to default state so it can be restarted by init()
+    asyncRegThread_ = std::thread{};
   }
 
   // Report snapshot at destroy if enabled
