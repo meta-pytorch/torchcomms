@@ -3,7 +3,6 @@
 #include "comms/utils/logger/DataTable.h"
 
 #include <atomic>
-#include <filesystem>
 #include <optional>
 
 #include <fmt/format.h>
@@ -13,34 +12,11 @@
 
 #include "comms/utils/EnvUtils.h"
 #include "comms/utils/RankUtils.h"
-#include "comms/utils/StrUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h" // @manual=fbcode//comms/utils/cvars:ncclx-cvars
 #include "comms/utils/logger/BackendTopologyUtil.h"
+#include "comms/utils/logger/ScubaFileUtils.h"
 
 namespace {
-// https://www.internalfb.com/code/configerator/[master]/source/datainfra/logarithm/transport/logarithm_conda_custom_transport.cinc
-std::string getScubaFileName(const std::string& tableName) {
-  auto globalRank = RankUtils::getGlobalRank().value_or(-1);
-  return fmt::format(
-      "{}/dedicated_log_structured_json.perfpipe_{}.Rank_{}.{}.scribe",
-      NCCL_SCUBA_LOG_FILE_PREFIX,
-      tableName,
-      globalRank,
-      getUniqueFileSuffix());
-}
-
-std::optional<folly::File> createScubaFile(const std::string& fileName) {
-  try {
-    // Extract the directory path and create the directory if it doesn't exist
-    std::filesystem::path filePath{fileName};
-    std::filesystem::path dirPath{filePath.parent_path()};
-    std::filesystem::create_directories(dirPath);
-    return folly::File(fileName, O_CREAT | O_WRONLY, 0644);
-  } catch (const std::exception& e) {
-    XLOG(WARNING) << "Failed to create scuba file: " << e.what();
-  }
-  return std::nullopt;
-}
 
 struct JobFields {
   std::string jobName;
@@ -196,8 +172,9 @@ void addCommonFieldsToSample(NcclScubaSample& sample) {
 DataTable::DataTable(const std::string& tableType, const std::string& tableName)
     : tableName_(tableName) {
   if (tableType == "pipe") {
-    auto fileName = getScubaFileName(tableName);
-    file_ = createScubaFile(fileName);
+    auto fileName =
+        comms::logger::getScubaFileName(NCCL_SCUBA_LOG_FILE_PREFIX, tableName);
+    file_ = comms::logger::createScubaFile(fileName);
   } else if (tableType == "scuba") {
     sink_ = std::make_unique<DataSink>(tableName);
   }
