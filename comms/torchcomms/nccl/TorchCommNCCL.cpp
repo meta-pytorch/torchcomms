@@ -133,7 +133,10 @@ void TorchCommNCCL::init(
   // Check for high priority stream hint
   if (high_priority_stream_) {
     int leastPriority, greatestPriority;
-    cuda_api_->getStreamPriorityRange(&leastPriority, &greatestPriority);
+    CUDA_CHECK(
+        cuda_api_,
+        cuda_api_->getStreamPriorityRange(&leastPriority, &greatestPriority),
+        "Failed to get stream");
     stream_priority = greatestPriority;
   }
 

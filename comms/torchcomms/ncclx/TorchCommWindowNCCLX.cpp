@@ -33,8 +33,11 @@ TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
   // Cleanup registered local buffers
   for (auto& buf : registered_local_buffers_) {
     if (buf.backend_window != nullptr && local_comm_ != nullptr) {
-      nccl_api_->commWindowDeregister(
-          local_comm_, static_cast<NcclxWindow>(buf.backend_window));
+      NCCLX_CHECK_IGNORE(
+          nccl_api_,
+          nccl_api_->commWindowDeregister(
+              local_comm_, static_cast<NcclxWindow>(buf.backend_window)),
+          "NCCLX local buffer deregister failed in destructor");
     }
   }
   registered_local_buffers_.clear();
