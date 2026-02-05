@@ -115,12 +115,48 @@ def _dynamo_register_coalesced_tensors(
             )
 
 
-# Mapping from opaque type name to class, shared with registry.py
-_TYPE_NAME_TO_CLASS: dict[str, type] = {}
+def _create_method_call_factory(
+    target_class: type, method_name: str
+) -> Callable[..., VariableTracker]:
+    """Create a dynamo_call_method factory for CustomMemberSpec.
 
-# Registry mapping (target_class, method_name) to op_info for collective methods
-# Populated by _patch_dynamo_for_opaque_methods from _REGISTERED_COLLECTIVES
-_METHOD_TO_OP: dict[tuple[type, str], dict[str, Any]] = {}
+    This factory is invoked by TorchScriptObjectVariable.call_method when a
+    collective method is called. It creates a TorchCommMethodVariable and
+    calls it to generate the appropriate op call.
+
+    Args:
+        target_class: The opaque type class (e.g., TorchComm)
+        method_name: The method name (e.g., "all_reduce")
+
+    Returns:
+        A factory function with signature (tx, self_var, name, args, kwargs) -> VariableTracker
+    """
+
+    def dynamo_call_method(
+        tx: "InstructionTranslator",
+        self_var: "TorchScriptObjectVariable",
+        name: str,
+        args: Sequence[VariableTracker],
+        kwargs: dict[str, VariableTracker],
+    ) -> VariableTracker:
+        # allows the op to be registered after the handler is created
+        from torchcomms.functional.registry import _METHOD_TO_OP
+
+        key = (target_class, method_name)
+        if key not in _METHOD_TO_OP:
+            raise RuntimeError(
+                f"Method {method_name} not registered for {target_class.__name__}"
+            )
+        op_info = _METHOD_TO_OP[key]
+        method_var = TorchCommMethodVariable(
+            obj_var=self_var,
+            method_name=method_name,
+            target_class=target_class,
+            op_info=op_info,
+        )
+        return method_var.call_function(tx, args, kwargs)
+
+    return dynamo_call_method
 
 
 class TorchCommMethodVariable(VariableTracker):
@@ -632,233 +668,7 @@ class AsyncWorkWaitMethod(VariableTracker):
         return self.work_var._do_wait(tx)
 
 
-def _create_op_wrapper_with_defaults(
-    fake_self: Any,
-    torch_op: Any,
-    op_info: dict[str, Any],
-) -> Callable[..., Any]:
-    """Create a wrapper function that applies default values before calling the torch op.
-
-    This is used when FakeScriptObject.__getattribute__ returns a callable for collective
-    methods. The wrapper ensures that default values from param specs are applied when
-    the caller omits optional arguments.
-
-    Uses in-place ops (which now return mutated tensors) for proper mutation tracking.
-    Functionalization will convert to functional ops and maintain data flow.
-    For async ops (async_op=True), returns a FakeWork object for wait() support.
-
-    Args:
-        fake_self: The FakeScriptObject instance (passed as first arg to op)
-        torch_op: The torch op to call (in-place version for mutating ops)
-        op_info: Dict containing param_schema for parsing args
-
-    Returns:
-        A callable that applies defaults and calls the torch op
-    """
-    from torchcomms.functional.async_tensor import FakeWork
-
-    schema = op_info["param_schema"]
-    has_mutable_inputs = len(schema.mutable_params) > 0
-
-    def op_wrapper(*args, **kwargs):
-        # Use ParsedArgs to handle defaults and argument parsing
-        parsed = schema.parse_method_args(fake_self, args, kwargs)
-
-        # Call the op with fake_self as first argument
-        # In-place ops now return the mutated tensors
-        result = torch_op(*parsed.to_values())
-
-        # Check if async_op is True
-        is_async = parsed.get_value("async_op") or False
-
-        if has_mutable_inputs:
-            # For async ops, return a FakeWork object that tracks the result tensors
-            if is_async:
-                return FakeWork(result)
-
-            # Sync ops - return None (caller will use the original tensor which
-            # has in-place semantics from user's perspective)
-            return None
-
-        # Non-mutating ops just return the result
-        return result
-
-    return op_wrapper
-
-
-def _patch_dynamo_for_opaque_methods(
-    registered_collectives: dict[str, dict[str, Any]],
-    type_name_to_class: dict[str, type],
-) -> None:
-    """Patch TorchScriptObjectVariable.var_getattr to allow registered methods on opaque types.
-
-    This enables using the original API (comm.all_reduce(...)) while still treating
-    the objects as opaque. When a registered method is accessed, we return a custom
-    variable that generates the torch op call directly (bypassing method inlining).
-
-    Args:
-        registered_collectives: Dict mapping op_name to collective info from registry.
-        type_name_to_class: Dict mapping opaque type names to classes.
-    """
-    # Update our global type name to class mapping
-    _TYPE_NAME_TO_CLASS.update(type_name_to_class)
-
-    # Build mapping of (class, method_name) -> op_info
-    for op_name, info in registered_collectives.items():
-        target_class = info["target_class"]
-        method_name = info["name"]
-        _METHOD_TO_OP[(target_class, method_name)] = {
-            "op_name": op_name,
-            **info,
-        }
-        logger.info(
-            f"Registered method mapping: ({target_class.__name__}, {method_name}) -> {op_name}"
-        )
-
-    if not _METHOD_TO_OP:
-        return
-
-    logger.info(f"_TYPE_NAME_TO_CLASS = {_TYPE_NAME_TO_CLASS}")
-
-    from torch._library.fake_class_registry import FakeScriptObject
-
-    # Capture the original before patching (closure variable, not global)
-    _original_fake_getattr = FakeScriptObject.__getattribute__
-
-    def patched_fake_getattr(self, name):
-        # Check if this is a collective method - return a wrapper that invokes the torch op
-        # with default values applied from the param specs
-        # Note: Constant methods (get_rank, get_size, etc.) are now handled by
-        # register_opaque_type with members=MemberType.USE_REAL
-        try:
-            script_class_name = object.__getattribute__(self, "script_class_name")
-            target_class = _TYPE_NAME_TO_CLASS.get(script_class_name)
-            if target_class is not None:
-                key = (target_class, name)
-                if key in _METHOD_TO_OP:
-                    op_info = _METHOD_TO_OP[key]
-                    op_name = op_info["op_name"]
-                    schema = op_info["param_schema"]
-
-                    # Use in-place ops for mutating collectives - they now return tensors
-                    # like native PyTorch in-place ops. Functionalization will convert to
-                    # functional ops and update data flow.
-                    if len(schema.mutable_params) > 0:
-                        inplace_op_name = f"{op_name}_"
-                        torch_op = getattr(torch.ops.torchcomms, inplace_op_name)
-                    else:
-                        torch_op = getattr(torch.ops.torchcomms, op_name)
-
-                    # Return a wrapper that applies defaults before calling the op
-                    return _create_op_wrapper_with_defaults(self, torch_op, op_info)
-        except AttributeError:
-            pass
-
-        # Fall back to original FakeScriptObject behavior
-        return _original_fake_getattr(self, name)
-
-    FakeScriptObject.__getattribute__ = patched_fake_getattr  # type: ignore[method-assign]
-    logger.info(
-        "Patched FakeScriptObject.__getattribute__ to handle collective methods"
-    )
-
-    # Note: We intentionally do NOT register FakeScriptObject as a pytree node.
-    # Unregistered types are automatically treated as leaves by default, which is
-    # the correct behavior for opaque objects like FakeScriptObject.
-
-    # Note: The actual var_getattr patching is done in _patch_var_getattr
-    # which handles collective methods (constant methods are now handled by
-    # register_opaque_type with members=MemberType.USE_REAL)
-    logger.info(
-        f"Registered {len(_METHOD_TO_OP)} collective methods for dynamo patching"
-    )
-
-
-def _patch_var_getattr() -> None:
-    """Patch TorchScriptObjectVariable.var_getattr for collective methods.
-
-    Constant methods (get_rank, get_size, etc.) are now handled by
-    register_opaque_type with members=MemberType.USE_REAL.
-    """
-    from torch._dynamo.source import AttrSource
-    from torch._dynamo.variables.script_object import TorchScriptObjectVariable
-
-    # Store the original method
-    original_var_getattr = TorchScriptObjectVariable.var_getattr
-
-    def patched_var_getattr(
-        self: TorchScriptObjectVariable,
-        tx: "InstructionTranslator",
-        name: str,
-    ) -> VariableTracker:
-        # Check if this is one of our registered opaque types
-        value = self.value
-        target_class = None
-
-        # Handle FakeScriptObject wrapping - get the class from script_class_name
-        if hasattr(value, "script_class_name"):
-            script_class_name = object.__getattribute__(value, "script_class_name")
-            target_class = _TYPE_NAME_TO_CLASS.get(script_class_name)
-        else:
-            # Not a FakeScriptObject - check if it's a known class directly
-            for cls in _TYPE_NAME_TO_CLASS.values():
-                if isinstance(value, cls):
-                    target_class = cls
-                    break
-
-        if target_class is not None:
-            key = (target_class, name)
-
-            # Check for collective methods (all_reduce, broadcast, etc.)
-            if key in _METHOD_TO_OP:
-                source = AttrSource(self.source, name) if self.source else None  # type: ignore[call-arg]
-                op_info = _METHOD_TO_OP[key]
-                logger.info(
-                    f"Returning TorchCommMethodVariable for {target_class.__name__}.{name}"
-                )
-                return TorchCommMethodVariable(
-                    obj_var=self,
-                    method_name=name,
-                    target_class=target_class,
-                    op_info=op_info,
-                    source=source,
-                )
-
-        return original_var_getattr(self, tx, name)
-
-    # Apply the patch
-    TorchScriptObjectVariable.var_getattr = patched_var_getattr  # type: ignore[method-assign]
-
-    logger.info(
-        f"Patched TorchScriptObjectVariable.var_getattr for {len(_METHOD_TO_OP)} collective methods"
-    )
-
-
 def register_with_dynamo() -> None:
-    """
-    Register TorchComm method handlers with dynamo.
-
-    This patches TorchScriptObjectVariable.var_getattr to intercept TorchComm
-    collective method calls and generate torch op calls directly.
-
-    Constant methods (get_rank, get_size, etc.) are handled by register_opaque_type
-    with members=MemberType.USE_REAL in collectives.py.
-    """
-    # Import _TYPE_NAME_TO_CLASS from param_parsing to merge registrations
-    try:
-        from torchcomms.functional.param_parsing import (
-            _TYPE_NAME_TO_CLASS as REGISTRY_TYPE_NAME_TO_CLASS,
-        )
-
-        # Merge registry's type mappings into ours
-        _TYPE_NAME_TO_CLASS.update(REGISTRY_TYPE_NAME_TO_CLASS)
-    except ImportError:
-        pass
-
-    # Apply the var_getattr patch
-    _patch_var_getattr()
-
-    # Register handler for _coalescing_wait_traced
     _register_coalescing_wait_handler()
 
 
