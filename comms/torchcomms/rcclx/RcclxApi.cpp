@@ -7,10 +7,12 @@ namespace torch::comms {
 // DefaultRcclxApi implementation
 
 const char* DefaultRcclxApi::getErrorString(ncclResult_t result) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclGetErrorString(result);
 }
 
 std::string DefaultRcclxApi::getLastError(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
 #if NCCL_VERSION_CODE >= NCCL_VERSION(2, 18, 0)
   const char* lastError = ncclGetLastError(comm);
   return lastError ? std::string(lastError) : std::string();
@@ -21,6 +23,7 @@ std::string DefaultRcclxApi::getLastError(ncclComm_t comm) {
 }
 
 ncclResult_t DefaultRcclxApi::getUniqueId(ncclUniqueId* uniqueId) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclGetUniqueId(uniqueId);
 }
 
@@ -30,20 +33,24 @@ ncclResult_t DefaultRcclxApi::commInitRankConfig(
     ncclUniqueId commId,
     int rank,
     ncclConfig_t* config) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommInitRankConfig(comm, nranks, commId, rank, config);
 }
 
 ncclResult_t DefaultRcclxApi::commDestroy(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommDestroy(comm);
 }
 
 ncclResult_t DefaultRcclxApi::commAbort(ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommAbort(comm);
 }
 
 ncclResult_t DefaultRcclxApi::commGetAsyncError(
     ncclComm_t comm,
     ncclResult_t* asyncError) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommGetAsyncError(comm, asyncError);
 }
 
@@ -53,6 +60,7 @@ ncclResult_t DefaultRcclxApi::commSplit(
     int key,
     ncclComm_t* newcomm,
     ncclConfig_t* config) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommSplit(comm, color, key, newcomm, config);
 }
 
@@ -61,10 +69,12 @@ ncclResult_t DefaultRcclxApi::commRegister(
     void* buffer,
     size_t size,
     void** handle) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommRegister(comm, buffer, size, handle);
 }
 
 ncclResult_t DefaultRcclxApi::commDeregister(ncclComm_t comm, void* handle) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommDeregister(comm, handle);
 }
 
@@ -75,6 +85,7 @@ ncclResult_t DefaultRcclxApi::send(
     int peer,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclSend(sendbuff, count, datatype, peer, comm, stream);
 }
 
@@ -85,6 +96,7 @@ ncclResult_t DefaultRcclxApi::recv(
     int peer,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclRecv(recvbuff, count, datatype, peer, comm, stream);
 }
 
@@ -96,6 +108,7 @@ ncclResult_t DefaultRcclxApi::broadcast(
     int root,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclBroadcast(sendbuff, recvbuff, count, datatype, root, comm, stream);
 }
 
@@ -106,6 +119,7 @@ ncclResult_t DefaultRcclxApi::bcast(
     int root,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclBcast(buff, count, datatype, root, comm, stream);
 }
 
@@ -117,6 +131,7 @@ ncclResult_t DefaultRcclxApi::allReduce(
     ncclRedOp_t op,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclAllReduce(sendbuff, recvbuff, count, datatype, op, comm, stream);
 }
 
@@ -129,6 +144,7 @@ ncclResult_t DefaultRcclxApi::reduce(
     int root,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclReduce(
       sendbuff, recvbuff, count, datatype, op, root, comm, stream);
 }
@@ -140,6 +156,7 @@ ncclResult_t DefaultRcclxApi::allGather(
     ncclDataType_t datatype,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclAllGather(sendbuff, recvbuff, sendcount, datatype, comm, stream);
 }
 
@@ -151,6 +168,7 @@ ncclResult_t DefaultRcclxApi::reduceScatter(
     ncclRedOp_t op,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclReduceScatter(
       sendbuff, recvbuff, recvcount, datatype, op, comm, stream);
 }
@@ -162,6 +180,7 @@ ncclResult_t DefaultRcclxApi::allToAll(
     ncclDataType_t datatype,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclAllToAll(sendbuff, recvbuff, count, datatype, comm, stream);
 }
 
@@ -175,6 +194,7 @@ ncclResult_t DefaultRcclxApi::allToAllv(
     ncclDataType_t datatype,
     ncclComm_t comm,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclAllToAllv(
       sendbuff,
       sendcounts,
@@ -194,6 +214,7 @@ ncclResult_t DefaultRcclxApi::winAllocate(
     RcclxWindow* winPtr,
     bool cpuBuf,
     const size_t signal_size) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   (void)size;
   (void)comm;
   (void)baseptr;
@@ -204,6 +225,7 @@ ncclResult_t DefaultRcclxApi::winAllocate(
 }
 
 ncclResult_t DefaultRcclxApi::winFree(ncclComm_t comm, RcclxWindow win) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   (void)comm;
   (void)win;
   throw std::runtime_error("winFree not supported in RCCLX backend");
@@ -217,6 +239,7 @@ ncclResult_t DefaultRcclxApi::winPut(
     size_t targetDisp,
     RcclxWindow win,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   (void)originBuff;
   (void)count;
   (void)datatype;
@@ -232,6 +255,7 @@ ncclResult_t DefaultRcclxApi::winSharedQuery(
     ncclComm_t comm,
     RcclxWindow win,
     void** addr) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   (void)rank;
   (void)comm;
   (void)win;
@@ -245,6 +269,7 @@ ncclResult_t DefaultRcclxApi::winSignal(
     int peer,
     RcclxWindow win,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   (void)signalDisp;
   (void)signalVal;
   (void)peer;
@@ -259,6 +284,7 @@ ncclResult_t DefaultRcclxApi::winWaitSignal(
     RcclxWindowCmpOp cmp_op,
     RcclxWindow win,
     hipStream_t stream) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   (void)signal_disp;
   (void)cmp_val;
   (void)cmp_op;
@@ -268,18 +294,22 @@ ncclResult_t DefaultRcclxApi::winWaitSignal(
 }
 
 ncclResult_t DefaultRcclxApi::groupStart() {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclGroupStart();
 }
 
 ncclResult_t DefaultRcclxApi::groupEnd() {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclGroupEnd();
 }
 
 ncclResult_t DefaultRcclxApi::commUserRank(const ncclComm_t comm, int* myRank) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommUserRank(comm, myRank);
 }
 
 ncclResult_t DefaultRcclxApi::commCount(const ncclComm_t comm, int* count) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclCommCount(comm, count);
 }
 
@@ -289,10 +319,12 @@ ncclResult_t DefaultRcclxApi::redOpCreatePreMulSum(
     ncclDataType_t datatype,
     ncclScalarResidence_t residence,
     ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclRedOpCreatePreMulSum(op, scalar, datatype, residence, comm);
 }
 
 ncclResult_t DefaultRcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
+  std::lock_guard<std::mutex> lock(api_mutex_);
   return ncclRedOpDestroy(op, comm);
 }
 

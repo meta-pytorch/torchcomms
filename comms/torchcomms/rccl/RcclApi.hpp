@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <string>
 
 #include <rccl.h> // @manual=//comms/rccl:rccl-dev
@@ -175,6 +176,9 @@ class RcclApi {
 class DefaultRcclApi : public RcclApi {
  public:
   ~DefaultRcclApi() override = default;
+
+ private:
+  mutable std::mutex api_mutex_;
 
   // Error handling
   const char* getErrorString(ncclResult_t result) override;

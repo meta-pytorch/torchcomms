@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <string>
 
 #include <nccl.h> // @manual=fbsource//third-party/nccl:nccl
@@ -303,6 +304,9 @@ class DefaultNcclApi : public NcclApi {
 
   [[nodiscard]] ncclResult_t memAlloc(void** buff, size_t size) override;
   [[nodiscard]] ncclResult_t memFree(void* buff) override;
+
+ private:
+  mutable std::mutex api_mutex_;
 };
 
 } // namespace torch::comms
