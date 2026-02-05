@@ -57,7 +57,20 @@ inline commDataType_t ncclToCommDataType(ncclDataType_t ncclDataType) {
 }
 
 inline commRedOp_t ncclToCommRedOp(ncclRedOp_t ncclRedOp) {
-  return static_cast<commRedOp_t>(ncclRedOp);
+  switch (ncclRedOp) {
+    case ::ncclSum:
+      return commSum;
+    case ::ncclProd:
+      return commProd;
+    case ::ncclMax:
+      return commMax;
+    case ::ncclMin:
+      return commMin;
+    case ::ncclAvg:
+      return commAvg;
+    default:
+      return commNumOps;
+  }
 }
 
 inline CommAlgo ncclToCommAlgo(int ncclAlgo) {
@@ -192,29 +205,6 @@ static_assert(
 static_assert(
     static_cast<int>(commNumTypes) == static_cast<int>(::ncclNumTypes),
     "commNumTypes must match ncclNumTypes");
-
-/******************************************************************************
- * Begin of static check to ensure commRedOp_t enum matches ncclRedOp_t       *
- *****************************************************************************/
-static_assert(
-    static_cast<int>(commSum) == static_cast<int>(::ncclSum),
-    "commSum must match ncclSum");
-
-static_assert(
-    static_cast<int>(commProd) == static_cast<int>(::ncclProd),
-    "commProd must match ncclProd");
-
-static_assert(
-    static_cast<int>(commMax) == static_cast<int>(::ncclMax),
-    "commMax must match ncclMax");
-
-static_assert(
-    static_cast<int>(commMin) == static_cast<int>(::ncclMin),
-    "commMin must match ncclMin");
-
-static_assert(
-    static_cast<int>(commNumOps) == static_cast<int>(::ncclNumOps),
-    "commNumOps must match ncclNumOps");
 
 /******************************************************************************
  * Begin of static check to ensure CommAlgo enum matches NCCL algorithm       *
