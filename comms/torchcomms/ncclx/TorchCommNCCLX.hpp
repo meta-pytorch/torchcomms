@@ -285,8 +285,11 @@ class TorchCommNCCLX : public TorchCommBackend,
   cudaEvent_t
       dependency_event_{}; // Pre-allocated event for stream dependencies
 
+  // Pointer-based registration for all memory allocations (requires ctran).
+  // This supports both regular allocations (SEGMENT_ALLOC) and
+  // expandable segments (SEGMENT_MAP).
   void register_address(const AddressWithLen& addr);
-  void deregister_address(const Address& addr);
+  void deregister_address(const AddressWithLen& addr);
   ncclDataType_t getNcclDataType(const at::Tensor& tensor);
   ncclDataType_t getNcclDataType(const at::ScalarType scalar_type);
 

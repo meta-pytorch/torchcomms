@@ -330,13 +330,31 @@ ncclResult_t pncclCommCuDevice(const ncclComm_t comm, int* device);
 ncclResult_t  ncclCommUserRank(const ncclComm_t comm, int* rank);
 ncclResult_t pncclCommUserRank(const ncclComm_t comm, int* rank);
 
-/* Register CUDA buffer for zero-copy operation */
+/* [DEPRECATED] Handle-based registration for zero-copy operation.
+ * Prefer ncclCommRegisterWithPtr for new code - it supports both single and
+ * multi-segment buffers without requiring handle management. */
 ncclResult_t  ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
 ncclResult_t pncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
 
-/* Deregister CUDA buffer */
+/* [DEPRECATED] Handle-based deregistration.
+ * Prefer ncclCommDeregisterWithPtr for new code. */
 ncclResult_t  ncclCommDeregister(const ncclComm_t comm, void* handle);
 ncclResult_t pncclCommDeregister(const ncclComm_t comm, void* handle);
+
+/* Pointer-based registration for all buffer types - no handle returned.
+ * Supports both single-segment and multi-segment (expandable) buffers.
+ * Use ncclGlobalDeregisterWithPtr(buf, len, cudaDev) to deregister.
+ * "Global" because registration is stored in a global RegCache, not per-comm.
+ * Does not require a communicator - uses global backends set by first comm. */
+ncclResult_t  ncclGlobalRegisterWithPtr(void* buff, size_t size, int cudaDev);
+ncclResult_t pncclGlobalRegisterWithPtr(void* buff, size_t size, int cudaDev);
+
+/* Pointer-based deregistration for all buffer types.
+ * Uses pinRange to discover all physical segments and frees each.
+ * "Global" because registration is stored in a global RegCache, not per-comm.
+ * Does not require a communicator - uses global backends set by first comm. */
+ncclResult_t  ncclGlobalDeregisterWithPtr(void* buff, size_t size, int cudaDev);
+ncclResult_t pncclGlobalDeregisterWithPtr(void* buff, size_t size, int cudaDev);
 
 /* Register memory window  */
 ncclResult_t  ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, ncclWindow_t* win, int winFlags);
