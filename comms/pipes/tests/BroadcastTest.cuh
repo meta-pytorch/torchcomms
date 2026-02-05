@@ -10,8 +10,80 @@
 
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/collectives/broadcast/BroadcastContext.cuh"
 
 namespace comms::pipes::collectives::test {
+
+// =============================================================================
+// Template API Test Wrappers
+// =============================================================================
+
+/**
+ * Host-callable wrapper to launch broadcast with explicit TopologyTag.
+ *
+ * This is the preferred test interface that directly exercises the template
+ * API: broadcast<TopologyTag>(...). Use this to verify the template dispatch
+ * mechanism works correctly.
+ *
+ * Usage:
+ *   - testBroadcast<FlatTag>(buff, rank, root, transports, nbytes, blocks,
+ * threads);
+ *   - testBroadcast<RingTag>(buff, rank, root, transports, nbytes, blocks,
+ * threads);
+ *   - testBroadcast<BinomialTreeTag>(buff, rank, root, transports, nbytes,
+ * blocks, threads);
+ *
+ * @tparam TopologyTag One of: FlatTag, RingTag, BinomialTreeTag
+ */
+template <typename TopologyTag>
+void testBroadcast(
+    void* buff_d,
+    int my_rank_id,
+    int root_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    std::optional<dim3> clusterDim = std::nullopt,
+    cudaStream_t stream = 0);
+
+// Explicit instantiation declarations for the three topology tags
+extern template void testBroadcast<FlatTag>(
+    void* buff_d,
+    int my_rank_id,
+    int root_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    std::optional<dim3> clusterDim,
+    cudaStream_t stream);
+
+extern template void testBroadcast<RingTag>(
+    void* buff_d,
+    int my_rank_id,
+    int root_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    std::optional<dim3> clusterDim,
+    cudaStream_t stream);
+
+extern template void testBroadcast<BinomialTreeTag>(
+    void* buff_d,
+    int my_rank_id,
+    int root_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize,
+    std::optional<dim3> clusterDim,
+    cudaStream_t stream);
+
+// =============================================================================
+// Legacy Test Wrappers (for backward compatibility with existing tests)
+// =============================================================================
 
 /**
  * Host-callable wrapper to launch the broadcast test kernel (flat-tree).
