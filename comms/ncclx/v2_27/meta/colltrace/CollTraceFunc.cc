@@ -356,6 +356,9 @@ bool collTraceRecordCtranKernelInfo(
     case KernelConfig::KernelType::SIGNAL:
       coll.opName = "Signal";
       break;
+    case KernelConfig::KernelType::ALLGATHERWINDOW:
+      coll.opName = "AllGatherWindow";
+      break;
     case KernelConfig::KernelType::GET:
       coll.opName = "Get";
       break;
@@ -580,6 +583,9 @@ bool collTraceRecordCtranCollective(
       break;
     case OpElem::SIGNAL:
       coll.opName = "Signal";
+      break;
+    case OpElem::ALLGATHERWINDOW:
+      coll.opName = "AllGatherWindow";
       break;
     case OpElem::GET:
       coll.opName = "Get";
