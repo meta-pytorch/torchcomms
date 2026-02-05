@@ -107,9 +107,8 @@ TEST(DataTypeConvTest, NcclToCommRedOp) {
   EXPECT_EQ(ncclToCommRedOp(ncclProd), commProd);
   EXPECT_EQ(ncclToCommRedOp(ncclMax), commMax);
   EXPECT_EQ(ncclToCommRedOp(ncclMin), commMin);
-
-  // Test NumOps
-  EXPECT_EQ(static_cast<int>(commNumOps), static_cast<int>(ncclNumOps));
+  EXPECT_EQ(ncclToCommRedOp(ncclAvg), commAvg);
+  EXPECT_EQ(ncclToCommRedOp(ncclNumOps), commNumOps);
 }
 
 TEST(DataTypeConvTest, NcclToCommCmpOp) {
