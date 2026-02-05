@@ -1096,6 +1096,20 @@ commResult_t CtranIb::connectVcDirect(
   auto vc = createVc(peerRank);
   {
     const std::lock_guard<std::mutex> lock(vc->mutex);
+
+    // Verify that getLocalVcIdentifier() was called first to create QPs.
+    // This is a precondition for connectVcDirect().
+    if (!vc->areQpsInitialized()) {
+      CLOGF(
+          ERR,
+          "CTRAN-IB: connectVcDirect called for peerRank {} before getLocalVcIdentifier(). "
+          "QPs must be initialized first. commHash {:x}, commDesc {}",
+          peerRank,
+          commHash,
+          commDesc);
+      return commInternalError;
+    }
+
     FB_COMMCHECKTHROW_EX(
         vc->setupVc((void*)remoteVcIdentifier.data()), this->ncclLogData);
   }

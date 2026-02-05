@@ -473,14 +473,13 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
 commResult_t CtranMapper::releaseMemCb(int rank, void* msgPtr, void* ctx) {
   auto mapper = reinterpret_cast<CtranMapper*>(ctx);
   auto msg = reinterpret_cast<ControlMsg*>(msgPtr);
-  auto& deregMsg = msg->ipcRls;
   CLOGF_TRACE(
       COLL,
       "CTRAN-MAPPER: Handle received CB ctrlmsg from rank {}: {}",
       rank,
       msg->toString());
   FB_COMMCHECK(mapper->ipcRegCache_->releaseRemReg(
-      mapper->comm->statex_->gPid(rank), deregMsg.base));
+      mapper->comm->statex_->gPid(rank), msg->ipcRls.base, msg->ipcRls.uid));
   return commSuccess;
 }
 
@@ -648,7 +647,7 @@ commResult_t CtranMapper::deregRemReg(struct CtranMapperRemoteAccessKey* rkey) {
           ctranNvl != nullptr,
           "Unexpected rkey with NVL backend but ctranNvl is not initialized");
       FB_COMMCHECK(ipcRegCache_->releaseRemReg(
-          rkey->nvlKey.peerId, rkey->nvlKey.basePtr));
+          rkey->nvlKey.peerId, rkey->nvlKey.basePtr, rkey->nvlKey.uid));
       break;
     }
     default:

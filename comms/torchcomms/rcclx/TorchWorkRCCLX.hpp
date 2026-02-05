@@ -47,6 +47,9 @@ class TorchWorkRCCLX : public TorchWork {
 
   // Check the status of the work object
   WorkStatus checkStatus();
+  std::chrono::milliseconds getTimeout() const override {
+    return timeout_ms_;
+  }
 
   // Test-only accessors to verify tensor storage behavior
   // Returns true if any tensors are stored in this work object
@@ -62,9 +65,7 @@ class TorchWorkRCCLX : public TorchWork {
 
  private:
   void recordFunctionStart(std::string_view coll_name);
-  std::chrono::milliseconds getTimeout() {
-    return timeout_ms_;
-  }
+
   // Tensors supplied might either be a vector of tensors,
   // or a single tensor. In case it is a single tensor, we
   // can avoid allocating space for a vector of tensors.

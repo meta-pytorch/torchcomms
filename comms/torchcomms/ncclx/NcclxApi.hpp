@@ -3,10 +3,17 @@
 #pragma once
 
 #include <exception>
+#include <mutex>
 #include <string>
 
 #include <glog/logging.h>
 #include <nccl.h> // @manual=//comms/ncclx:nccl
+
+// NCCL Device API headers are only available in NCCLX 2.28+
+// For conda feedstock builds with older NCCLX versions, device API is disabled
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+#include <nccl_device/core.h> // @manual=//comms/ncclx:nccl
+#endif
 
 namespace torch::comms {
 
@@ -67,25 +74,25 @@ class NcclxApi {
   virtual std::string getLastError(ncclComm_t comm) = 0;
 
   // Unique ID generation
-  virtual ncclResult_t getUniqueId(ncclUniqueId* uniqueId) = 0;
+  [[nodiscard]] virtual ncclResult_t getUniqueId(ncclUniqueId* uniqueId) = 0;
 
   // Communicator management
-  virtual ncclResult_t commInitRankConfig(
+  [[nodiscard]] virtual ncclResult_t commInitRankConfig(
       ncclComm_t* comm,
       int nranks,
       ncclUniqueId commId,
       int rank,
       ncclConfig_t* config) = 0;
 
-  virtual ncclResult_t commDestroy(ncclComm_t comm) = 0;
+  [[nodiscard]] virtual ncclResult_t commDestroy(ncclComm_t comm) = 0;
 
-  virtual ncclResult_t commAbort(ncclComm_t comm) = 0;
+  [[nodiscard]] virtual ncclResult_t commAbort(ncclComm_t comm) = 0;
 
-  virtual ncclResult_t commGetAsyncError(
+  [[nodiscard]] virtual ncclResult_t commGetAsyncError(
       ncclComm_t comm,
       ncclResult_t* asyncError) = 0;
 
-  virtual ncclResult_t commSplit(
+  [[nodiscard]] virtual ncclResult_t commSplit(
       ncclComm_t comm,
       int color,
       int key,
@@ -93,13 +100,15 @@ class NcclxApi {
       ncclConfig_t* config) = 0;
 
   // Memory registration
-  virtual ncclResult_t
+  [[nodiscard]] virtual ncclResult_t
   commRegister(ncclComm_t comm, void* buffer, size_t size, void** handle) = 0;
 
-  virtual ncclResult_t commDeregister(ncclComm_t comm, void* handle) = 0;
+  [[nodiscard]] virtual ncclResult_t commDeregister(
+      ncclComm_t comm,
+      void* handle) = 0;
 
   // Point-to-point operations
-  virtual ncclResult_t send(
+  [[nodiscard]] virtual ncclResult_t send(
       const void* sendbuff,
       size_t count,
       ncclDataType_t datatype,
@@ -107,7 +116,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t recv(
+  [[nodiscard]] virtual ncclResult_t recv(
       void* recvbuff,
       size_t count,
       ncclDataType_t datatype,
@@ -116,7 +125,7 @@ class NcclxApi {
       cudaStream_t stream) = 0;
 
   // Collective operations
-  virtual ncclResult_t broadcast(
+  [[nodiscard]] virtual ncclResult_t broadcast(
       const void* sendbuff,
       void* recvbuff,
       size_t count,
@@ -125,7 +134,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t bcast(
+  [[nodiscard]] virtual ncclResult_t bcast(
       void* buff,
       size_t count,
       ncclDataType_t datatype,
@@ -133,7 +142,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t allReduce(
+  [[nodiscard]] virtual ncclResult_t allReduce(
       const void* sendbuff,
       void* recvbuff,
       size_t count,
@@ -142,7 +151,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t reduce(
+  [[nodiscard]] virtual ncclResult_t reduce(
       const void* sendbuff,
       void* recvbuff,
       size_t count,
@@ -152,7 +161,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t allGather(
+  [[nodiscard]] virtual ncclResult_t allGather(
       const void* sendbuff,
       void* recvbuff,
       size_t sendcount,
@@ -160,7 +169,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t reduceScatter(
+  [[nodiscard]] virtual ncclResult_t reduceScatter(
       const void* sendbuff,
       void* recvbuff,
       size_t recvcount,
@@ -169,7 +178,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t allToAll(
+  [[nodiscard]] virtual ncclResult_t allToAll(
       const void* sendbuff,
       void* recvbuff,
       size_t count,
@@ -177,7 +186,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t allToAllv(
+  [[nodiscard]] virtual ncclResult_t allToAllv(
       const void* sendbuff,
       const size_t sendcounts[],
       const size_t sdispls[],
@@ -188,7 +197,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t alltoallvDynamicDispatch(
+  [[nodiscard]] virtual ncclResult_t alltoallvDynamicDispatch(
       const void* sendbuff,
       const size_t* sendSplitLengths,
       size_t numSendSplitLengths,
@@ -202,7 +211,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t alltoallvDynamicCombine(
+  [[nodiscard]] virtual ncclResult_t alltoallvDynamicCombine(
       const void* sendbuff,
       const size_t* sendSplitLengths,
       size_t numSendSplitLengths,
@@ -215,7 +224,7 @@ class NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) = 0;
 
-  virtual ncclResult_t alltoallvDedupInit(
+  [[nodiscard]] virtual ncclResult_t alltoallvDedupInit(
       const size_t totalNumSendBlocks, // number of blocks (tokens) per batch
       const size_t blockCount, // number of elements per block (token)
       const size_t blockNumRecvBuckets, // number of receiving buckets for each
@@ -227,7 +236,7 @@ class NcclxApi {
       cudaStream_t stream,
       void** request) = 0;
 
-  virtual ncclResult_t alltoallvDedupExec(
+  [[nodiscard]] virtual ncclResult_t alltoallvDedupExec(
       const void* sendBuff,
       const int* sendIdx,
       const int* fwdIdx,
@@ -236,7 +245,7 @@ class NcclxApi {
       int recvBlockIds[],
       void* request) = 0;
 
-  virtual ncclResult_t alltoallvDedupCombine(
+  [[nodiscard]] virtual ncclResult_t alltoallvDedupCombine(
       const void* sendBuff,
       const int* sendIdx,
       const int* fwdIdx,
@@ -244,18 +253,18 @@ class NcclxApi {
       void* recvBuff,
       void* request) = 0;
 
-  virtual ncclResult_t pFree(void* request) = 0;
+  [[nodiscard]] virtual ncclResult_t pFree(void* request) = 0;
 
-  virtual ncclResult_t commWindowRegister(
+  [[nodiscard]] virtual ncclResult_t commWindowRegister(
       void* baseptr,
       const size_t size,
       ncclComm_t comm,
       NcclxWindow* winPtr,
       int winFlags = NCCL_WIN_DEFAULT) = 0;
-  virtual ncclResult_t commWindowDeregister(
+  [[nodiscard]] virtual ncclResult_t commWindowDeregister(
       ncclComm_t comm,
       NcclxWindow win) = 0;
-  virtual ncclResult_t winPut(
+  [[nodiscard]] virtual ncclResult_t winPut(
       const void* originBuff,
       size_t count,
       ncclDataType_t datatype,
@@ -263,32 +272,50 @@ class NcclxApi {
       size_t targetOffsetNelems,
       NcclxWindow win,
       cudaStream_t stream) = 0;
-  virtual ncclResult_t
+  [[nodiscard]] virtual ncclResult_t
   winSharedQuery(int rank, ncclComm_t comm, NcclxWindow win, void** addr) = 0;
-  virtual ncclResult_t
+  [[nodiscard]] virtual ncclResult_t
   winSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
-  virtual ncclResult_t
+  [[nodiscard]] virtual ncclResult_t
   winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) = 0;
-  virtual ncclResult_t
+  [[nodiscard]] virtual ncclResult_t
   winGetAttributes(int peer, NcclxWindow win, NcclxWindowAttr* attrPtr) = 0;
 
-  virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
-  virtual ncclResult_t memFree(void* buff) = 0;
+  [[nodiscard]] virtual ncclResult_t memAlloc(void** buff, size_t size) = 0;
+  [[nodiscard]] virtual ncclResult_t memFree(void* buff) = 0;
+
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+  // Device communicator operations (for device API / GIN support)
+  // Requires NCCLX 2.28+ with nccl_device headers
+  virtual ncclResult_t devCommCreate(
+      ncclComm_t comm,
+      const ncclDevCommRequirements_t* reqs,
+      ncclDevComm_t* outDevComm) = 0;
+  virtual ncclResult_t devCommDestroy(
+      ncclComm_t comm,
+      const ncclDevComm_t* devComm) = 0;
+#endif
 
   // Group operations
-  virtual ncclResult_t groupStart() = 0;
-  virtual ncclResult_t groupEnd() = 0;
+  [[nodiscard]] virtual ncclResult_t groupStart() = 0;
+  [[nodiscard]] virtual ncclResult_t groupEnd() = 0;
 
-  virtual ncclResult_t commUserRank(const ncclComm_t comm, int* userRank) = 0;
-  virtual ncclResult_t commCount(const ncclComm_t comm, int* count) = 0;
+  [[nodiscard]] virtual ncclResult_t commUserRank(
+      const ncclComm_t comm,
+      int* userRank) = 0;
+  [[nodiscard]] virtual ncclResult_t commCount(
+      const ncclComm_t comm,
+      int* count) = 0;
 
-  virtual ncclResult_t redOpCreatePreMulSum(
+  [[nodiscard]] virtual ncclResult_t redOpCreatePreMulSum(
       ncclRedOp_t* op,
       void* scalar,
       ncclDataType_t datatype,
       ncclScalarResidence_t residence,
       ncclComm_t comm) = 0;
-  virtual ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm) = 0;
+  [[nodiscard]] virtual ncclResult_t redOpDestroy(
+      ncclRedOp_t op,
+      ncclComm_t comm) = 0;
 };
 
 /**
@@ -303,40 +330,42 @@ class DefaultNcclxApi : public NcclxApi {
   std::string getLastError(ncclComm_t comm) override;
 
   // Unique ID generation
-  ncclResult_t getUniqueId(ncclUniqueId* uniqueId) override;
+  [[nodiscard]] ncclResult_t getUniqueId(ncclUniqueId* uniqueId) override;
 
   // Communicator management
-  ncclResult_t commInitRankConfig(
+  [[nodiscard]] ncclResult_t commInitRankConfig(
       ncclComm_t* comm,
       int nranks,
       ncclUniqueId commId,
       int rank,
       ncclConfig_t* config) override;
 
-  ncclResult_t commDestroy(ncclComm_t comm) override;
+  [[nodiscard]] ncclResult_t commDestroy(ncclComm_t comm) override;
 
-  ncclResult_t commAbort(ncclComm_t comm) override;
+  [[nodiscard]] ncclResult_t commAbort(ncclComm_t comm) override;
 
-  ncclResult_t commGetAsyncError(ncclComm_t comm, ncclResult_t* asyncError)
-      override;
+  [[nodiscard]] ncclResult_t commGetAsyncError(
+      ncclComm_t comm,
+      ncclResult_t* asyncError) override;
 
-  ncclResult_t commSplit(
+  [[nodiscard]] ncclResult_t commSplit(
       ncclComm_t comm,
       int color,
       int key,
       ncclComm_t* newcomm,
       ncclConfig_t* config) override;
 
-  ncclResult_t commRegister(
+  [[nodiscard]] ncclResult_t commRegister(
       ncclComm_t comm,
       void* buffer,
       size_t size,
       void** handle) override;
 
-  ncclResult_t commDeregister(ncclComm_t comm, void* handle) override;
+  [[nodiscard]] ncclResult_t commDeregister(ncclComm_t comm, void* handle)
+      override;
 
   // Point-to-point operations
-  ncclResult_t send(
+  [[nodiscard]] ncclResult_t send(
       const void* sendbuff,
       size_t count,
       ncclDataType_t datatype,
@@ -344,7 +373,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t recv(
+  [[nodiscard]] ncclResult_t recv(
       void* recvbuff,
       size_t count,
       ncclDataType_t datatype,
@@ -353,7 +382,7 @@ class DefaultNcclxApi : public NcclxApi {
       cudaStream_t stream) override;
 
   // Collective operations
-  ncclResult_t broadcast(
+  [[nodiscard]] ncclResult_t broadcast(
       const void* sendbuff,
       void* recvbuff,
       size_t count,
@@ -362,7 +391,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t bcast(
+  [[nodiscard]] ncclResult_t bcast(
       void* buff,
       size_t count,
       ncclDataType_t datatype,
@@ -370,7 +399,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t allReduce(
+  [[nodiscard]] ncclResult_t allReduce(
       const void* sendbuff,
       void* recvbuff,
       size_t count,
@@ -379,7 +408,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t reduce(
+  [[nodiscard]] ncclResult_t reduce(
       const void* sendbuff,
       void* recvbuff,
       size_t count,
@@ -389,7 +418,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t allGather(
+  [[nodiscard]] ncclResult_t allGather(
       const void* sendbuff,
       void* recvbuff,
       size_t sendcount,
@@ -397,7 +426,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t reduceScatter(
+  [[nodiscard]] ncclResult_t reduceScatter(
       const void* sendbuff,
       void* recvbuff,
       size_t recvcount,
@@ -406,7 +435,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t allToAll(
+  [[nodiscard]] ncclResult_t allToAll(
       const void* sendbuff,
       void* recvbuff,
       size_t count,
@@ -414,7 +443,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t allToAllv(
+  [[nodiscard]] ncclResult_t allToAllv(
       const void* sendbuff,
       const size_t sendcounts[],
       const size_t senddispls[],
@@ -425,7 +454,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t alltoallvDynamicDispatch(
+  [[nodiscard]] ncclResult_t alltoallvDynamicDispatch(
       const void* sendbuff,
       const size_t* sendSplitLengths,
       size_t numSendSplitLengths,
@@ -439,7 +468,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t alltoallvDynamicCombine(
+  [[nodiscard]] ncclResult_t alltoallvDynamicCombine(
       const void* sendbuff,
       const size_t* sendSplitLengths,
       size_t numSendSplitLengths,
@@ -452,7 +481,7 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm,
       cudaStream_t stream) override;
 
-  ncclResult_t alltoallvDedupInit(
+  [[nodiscard]] ncclResult_t alltoallvDedupInit(
       const size_t totalNumSendBlocks,
       const size_t blockCount,
       const size_t blockNumRecvBuckets,
@@ -462,7 +491,7 @@ class DefaultNcclxApi : public NcclxApi {
       cudaStream_t stream,
       void** request) override;
 
-  ncclResult_t alltoallvDedupExec(
+  [[nodiscard]] ncclResult_t alltoallvDedupExec(
       const void* sendBuff,
       const int* sendIdx,
       const int* fwdIdx,
@@ -471,7 +500,7 @@ class DefaultNcclxApi : public NcclxApi {
       int recvBlockIds[],
       void* request) override;
 
-  ncclResult_t alltoallvDedupCombine(
+  [[nodiscard]] ncclResult_t alltoallvDedupCombine(
       const void* sendBuff,
       const int* sendIdx,
       const int* fwdIdx,
@@ -479,17 +508,19 @@ class DefaultNcclxApi : public NcclxApi {
       void* recvBuff,
       void* request) override;
 
-  ncclResult_t pFree(void* request) override;
+  [[nodiscard]] ncclResult_t pFree(void* request) override;
 
   // Window RMA operations
-  ncclResult_t commWindowRegister(
+  [[nodiscard]] ncclResult_t commWindowRegister(
       void* baseptr,
       const size_t size,
       ncclComm_t comm,
       NcclxWindow* winPtr,
       int winFlags = NCCL_WIN_DEFAULT) override;
-  ncclResult_t commWindowDeregister(ncclComm_t comm, NcclxWindow win) override;
-  ncclResult_t winPut(
+  [[nodiscard]] ncclResult_t commWindowDeregister(
+      ncclComm_t comm,
+      NcclxWindow win) override;
+  [[nodiscard]] ncclResult_t winPut(
       const void* originBuff,
       size_t count,
       ncclDataType_t datatype,
@@ -497,37 +528,54 @@ class DefaultNcclxApi : public NcclxApi {
       size_t targetOffsetNelems,
       NcclxWindow win,
       cudaStream_t stream) override;
-  ncclResult_t winSharedQuery(
+  [[nodiscard]] ncclResult_t winSharedQuery(
       int rank,
       ncclComm_t comm,
       NcclxWindow win,
       void** addr) override;
-  ncclResult_t winSignal(int peer, NcclxWindow win, cudaStream_t stream)
-      override;
-  ncclResult_t winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream)
-      override;
-  ncclResult_t winGetAttributes(
+  [[nodiscard]] ncclResult_t
+  winSignal(int peer, NcclxWindow win, cudaStream_t stream) override;
+  [[nodiscard]] ncclResult_t
+  winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) override;
+  [[nodiscard]] ncclResult_t winGetAttributes(
       int peer,
       NcclxWindow win,
       NcclxWindowAttr* attrPtr) override;
 
-  ncclResult_t memAlloc(void** buff, size_t size) override;
-  ncclResult_t memFree(void* buff) override;
+  [[nodiscard]] ncclResult_t memAlloc(void** buff, size_t size) override;
+  [[nodiscard]] ncclResult_t memFree(void* buff) override;
+
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+  // Device communicator operations (for device API / GIN support)
+  // Requires NCCLX 2.28+ with nccl_device headers
+  ncclResult_t devCommCreate(
+      ncclComm_t comm,
+      const ncclDevCommRequirements_t* reqs,
+      ncclDevComm_t* outDevComm) override;
+  ncclResult_t devCommDestroy(ncclComm_t comm, const ncclDevComm_t* devComm)
+      override;
+#endif
 
   // Group operations
-  ncclResult_t groupStart() override;
-  ncclResult_t groupEnd() override;
+  [[nodiscard]] ncclResult_t groupStart() override;
+  [[nodiscard]] ncclResult_t groupEnd() override;
 
-  ncclResult_t commUserRank(const ncclComm_t comm, int* userRank) override;
-  ncclResult_t commCount(const ncclComm_t comm, int* count) override;
+  [[nodiscard]] ncclResult_t commUserRank(const ncclComm_t comm, int* userRank)
+      override;
+  [[nodiscard]] ncclResult_t commCount(const ncclComm_t comm, int* count)
+      override;
 
-  ncclResult_t redOpCreatePreMulSum(
+  [[nodiscard]] ncclResult_t redOpCreatePreMulSum(
       ncclRedOp_t* op,
       void* scalar,
       ncclDataType_t datatype,
       ncclScalarResidence_t residence,
       ncclComm_t comm) override;
-  ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm) override;
+  [[nodiscard]] ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm)
+      override;
+
+ private:
+  mutable std::mutex api_mutex_;
 };
 
 } // namespace torch::comms

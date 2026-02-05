@@ -162,7 +162,10 @@ void TorchCommNCCLX::init(
   // Check for high priority stream hint
   if (high_priority_stream_) {
     int leastPriority, greatestPriority;
-    cuda_api_->getStreamPriorityRange(&leastPriority, &greatestPriority);
+    CUDA_CHECK(
+        cuda_api_,
+        cuda_api_->getStreamPriorityRange(&leastPriority, &greatestPriority),
+        "Failed to get stream");
     stream_priority = greatestPriority;
   }
 
@@ -291,7 +294,11 @@ void TorchCommNCCLX::finalize() {
     TC_LOG(INFO, this) << "Aborting NCCL comm due to error";
     comm_state_ = CommState::ERROR;
     ncclResult_t asyncErr;
-    nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+        "failed to get async error");
     NCCLXException ncclException(
         *nccl_api_, "NCCLX Async Error", asyncErr, nccl_comm_);
     abortNcclComm();
@@ -344,7 +351,11 @@ void TorchCommNCCLX::finalize() {
   if (nccl_comm_) {
     detachMemoryHook();
     // Deregister comm from the CachingAllocator
-    nccl_api_->commDestroy(nccl_comm_);
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commDestroy(nccl_comm_),
+        "NCCLX Destroy failed");
     nccl_comm_ = nullptr;
   }
 }
@@ -352,7 +363,11 @@ void TorchCommNCCLX::finalize() {
 void TorchCommNCCLX::abortNcclComm() {
   detachMemoryHook();
   if (nccl_comm_) {
-    nccl_api_->commAbort(nccl_comm_);
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commAbort(nccl_comm_),
+        "NCCLX Abort failed");
     nccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
@@ -496,8 +511,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
     const BatchP2POptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  TORCH_CHECK(
-      !is_coalescing_active(), "batch_op_issue does not support coalescing");
 
   if (ops.empty()) {
     throw std::runtime_error("Cannot issue empty batch operation");
@@ -606,12 +619,21 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::broadcast(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  CoalescingContext ctx(
-      this,
-      async_op,
-      "broadcast",
-      getOperationTimeout(options.timeout, options_.timeout),
-      {std::cref(tensor)});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "broadcast", rank_, tensor, tensor);
+
+  cudaStream_t stream = getOperationStream(async_op);
+
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
+
+  // Record start event before NCCL operation
+  work->recordStart("broadcast");
 
   NCCLX_CHECK(
       nccl_api_,
@@ -622,10 +644,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::broadcast(
           getNcclDataType(tensor),
           root,
           nccl_comm_,
-          ctx.get_stream()),
+          stream),
       "NCCLX Broadcast failed");
 
-  return ctx.get_work();
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_reduce(
@@ -637,12 +665,20 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  CoalescingContext ctx(
-      this,
-      async_op,
-      "all_reduce",
-      getOperationTimeout(options.timeout, options_.timeout),
-      {std::cref(tensor)});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_reduce", rank_, tensor, tensor);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
+
+  // Record start event before NCCL operation
+  work->recordStart("all_reduce");
 
   const auto dataType = getNcclDataType(tensor);
   NCCLX_CHECK(
@@ -655,10 +691,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_reduce(
           dataType,
           getNcclReduceOp(op, nccl_comm_, dataType),
           nccl_comm_,
-          ctx.get_stream()),
+          stream),
       "NCCLX AllReduce failed");
 
-  return ctx.get_work();
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
@@ -671,12 +713,20 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  CoalescingContext ctx(
-      this,
-      async_op,
-      "reduce",
-      getOperationTimeout(options.timeout, options_.timeout),
-      {std::cref(tensor)});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce", root, tensor, tensor);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            tensor)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
+
+  // Record start event before NCCL operation
+  work->recordStart("reduce");
 
   const auto dataType = getNcclDataType(tensor);
   NCCLX_CHECK(
@@ -690,10 +740,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
           getNcclReduceOp(op, nccl_comm_, dataType),
           root,
           nccl_comm_,
-          ctx.get_stream()),
+          stream),
       "NCCLX Reduce failed");
 
-  return ctx.get_work();
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather(
@@ -790,8 +846,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
     const AllGatherOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  TORCH_CHECK(
-      !is_coalescing_active(), "all_gather_v does not support coalescing");
   if (tensor_list.size() != static_cast<size_t>(comm_size_)) {
     throw std::runtime_error(
         "tensor_list size must equal comm_size for all_gather_v");
@@ -876,12 +930,19 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
         "Output tensor size must be input_size * comm_size for all_gather_single");
   }
 
-  CoalescingContext ctx(
-      this,
-      async_op,
-      "all_gather_single",
-      getOperationTimeout(options.timeout, options_.timeout),
-      {std::cref(output)});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_single", rank_, input, output);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
+
+  work->recordStart("all_gather_single");
 
   NCCLX_CHECK(
       nccl_api_,
@@ -892,10 +953,15 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
           input.numel(),
           getNcclDataType(input),
           nccl_comm_,
-          ctx.get_stream()),
+          stream),
       "NCCLX AllGather failed");
 
-  return ctx.get_work();
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
@@ -906,8 +972,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
     const ReduceScatterOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  TORCH_CHECK(
-      !is_coalescing_active(), "reduce_scatter does not support coalescing");
   ensureTensorContiguous(output);
 
   if (input_list.size() != static_cast<size_t>(comm_size_)) {
@@ -997,8 +1061,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
     const ReduceScatterOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  TORCH_CHECK(
-      !is_coalescing_active(), "reduce_scatter_v does not support coalescing");
   ensureTensorContiguous(output);
 
   if (input_list.size() != static_cast<size_t>(comm_size_)) {
@@ -1101,12 +1163,20 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
         "Input tensor size must be output_size * comm_size for reduce_scatter_single");
   }
 
-  CoalescingContext ctx(
-      this,
-      async_op,
-      "reduce_scatter_single",
-      getOperationTimeout(options.timeout, options_.timeout),
-      {std::cref(output)});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "reduce_scatter_single", rank_, input, output);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
+
+  // Record start event before NCCL operation
+  work->recordStart("reduce_scatter_single");
 
   const auto dataType = getNcclDataType(input);
   NCCLX_CHECK(
@@ -1119,10 +1189,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
           dataType,
           getNcclReduceOp(op, nccl_comm_, dataType),
           nccl_comm_,
-          ctx.get_stream()),
+          stream),
       "NCCLX ReduceScatter failed");
 
-  return ctx.get_work();
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
@@ -1145,13 +1221,20 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
         "Tensor size must be divisible by comm_size for all_to_all_single");
   }
 
-  // Only register output tensor for coalescing (it's the one being written to)
-  CoalescingContext ctx(
-      this,
-      async_op,
-      "all_to_all_single",
-      getOperationTimeout(options.timeout, options_.timeout),
-      {std::cref(output)});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_to_all_single", rank_, input, output);
+
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
+
+  // Record start event before NCCL operation
+  work->recordStart("all_to_all_single");
 
   size_t chunk_size = input.numel() / comm_size_;
 
@@ -1164,10 +1247,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
           chunk_size,
           getNcclDataType(input),
           nccl_comm_,
-          ctx.get_stream()),
+          stream),
       "NCCLX AllToAll failed");
 
-  return ctx.get_work();
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
@@ -1214,12 +1303,17 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
   TorchCommTracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
-  CoalescingContext ctx(
-      this,
-      async_op,
-      "all_to_all_v_single",
-      getOperationTimeout(options.timeout, options_.timeout),
-      {std::cref(output)});
+  cudaStream_t stream = getOperationStream(async_op);
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
+
+  // Record start event before NCCL operation
+  work->recordStart("all_to_all_v_single");
 
   // Convert split sizes to arrays and calculate displacements
   std::vector<size_t> sendcounts(comm_size_);
@@ -1259,10 +1353,16 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
           recvdispls.data(),
           getNcclDataType(input),
           nccl_comm_,
-          ctx.get_stream()),
+          stream),
       "NCCLX AllToAllv failed");
 
-  return ctx.get_work();
+  // Record end event after NCCL operation
+  work->recordEnd();
+
+  // Enqueue the work after events have been recorded
+  enqueueWork(work, stream);
+
+  return work;
 }
 
 c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
@@ -1272,8 +1372,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
     const AllToAllOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  TORCH_CHECK(
-      !is_coalescing_active(), "all_to_all does not support coalescing");
   if (output_tensor_list.size() != static_cast<size_t>(comm_size_) ||
       input_tensor_list.size() != static_cast<size_t>(comm_size_)) {
     throw std::runtime_error(
@@ -1675,7 +1773,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::barrier(
     const BarrierOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  TORCH_CHECK(!is_coalescing_active(), "barrier does not support coalescing");
 
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
 
@@ -1717,7 +1814,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::scatter(
     const ScatterOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  TORCH_CHECK(!is_coalescing_active(), "scatter does not support coalescing");
   ensureTensorContiguous(output_tensor);
 
   // Only the root rank needs valid input tensors
@@ -1821,7 +1917,6 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
     const GatherOptions& options) {
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
-  TORCH_CHECK(!is_coalescing_active(), "gather does not support coalescing");
   ensureTensorContiguous(input_tensor);
 
   // Only the root rank needs valid output tensors
@@ -1918,73 +2013,11 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
   return work;
 }
 
-void TorchCommNCCLX::onCoalescingStart() {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  coalesced_stream_ = nullptr;
-  nccl_api_->groupStart();
-}
-
-void TorchCommNCCLX::onCoalescingEnd() {
-  checkInitialized();
-  checkAndAbortIfTimedOutOrError();
-  nccl_api_->groupEnd();
-}
-
-c10::intrusive_ptr<TorchWork> TorchCommNCCLX::createCoalescedWork(
-    const std::vector<at::Tensor>& tensors) {
-  if (coalesced_stream_ == nullptr) {
-    return nullptr;
-  }
-
-  auto ncclWork = createWork(coalesced_stream_, options_.timeout, tensors);
-  ncclWork->recordEnd();
-  enqueueWork(ncclWork, coalesced_stream_);
-
-  coalesced_stream_ = nullptr;
-
-  return ncclWork;
-}
-
-TorchCommNCCLX::CoalescingContext::CoalescingContext(
-    TorchCommNCCLX* comm,
-    bool async_op,
-    const char* op_name,
-    std::chrono::milliseconds timeout,
-    std::initializer_list<std::reference_wrapper<const at::Tensor>> tensors) {
-  comm_ = comm;
-  is_coalescing_ = comm_->is_coalescing_active();
-
-  if (is_coalescing_) {
-    if (comm_->coalesced_stream_ == nullptr) {
-      comm_->coalesced_stream_ = comm_->getOperationStream(async_op);
-    }
-    stream_ = comm_->coalesced_stream_;
-    comm_->register_coalesced_tensors(tensors);
-  } else {
-    stream_ = comm_->getOperationStream(async_op);
-    work_ = async_op
-        ? comm_->createWork(
-              stream_,
-              timeout,
-              std::vector<at::Tensor>(tensors.begin(), tensors.end()))
-        : comm_->createWork(stream_, timeout);
-    work_->recordStart(op_name);
-  }
-}
-
-TorchCommNCCLX::CoalescingContext::~CoalescingContext() {
-  if (!is_coalescing_) {
-    work_->recordEnd();
-    comm_->enqueueWork(work_, stream_);
-  }
-}
-
 // Window & One-sided Operations
 std::shared_ptr<TorchCommWindow> TorchCommNCCLX::new_window(
     const std::optional<at::Tensor>& tensor) {
   auto win =
-      std::make_shared<TorchCommWindowNCCLX>(nccl_comm_, shared_from_this());
+      std::make_shared<TorchCommWindowNCCLXGin>(nccl_comm_, shared_from_this());
   if (tensor.has_value()) {
     win->tensor_register(tensor.value());
   }

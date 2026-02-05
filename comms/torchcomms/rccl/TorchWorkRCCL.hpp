@@ -46,8 +46,7 @@ class TorchWorkRCCL : public TorchWork {
 
   // Check the status of the work object
   WorkStatus checkStatus();
-
-  std::chrono::milliseconds getTimeout() {
+  std::chrono::milliseconds getTimeout() const override {
     return timeout_ms_;
   }
 

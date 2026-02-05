@@ -1381,37 +1381,6 @@ Args:
           py::arg("timeout") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
 
-      // Coalescing operations
-      .def(
-          "start_coalescing",
-          &TorchComm::startCoalescing,
-          R"(
-Start a coalescing block.
-
-Subsequent collective operations will be batched together and executed
-as a single fused operation when end_coalescing() is called.
-
-Example:
-    comm.start_coalescing()
-    comm.all_reduce(tensor1, op, async_op=True)
-    comm.all_reduce(tensor2, op, async_op=True)
-    work = comm.end_coalescing()
-    work.wait()
-          )",
-          py::call_guard<py::gil_scoped_release>())
-      .def(
-          "end_coalescing",
-          [](TorchComm& self, bool async_op) { return self.endCoalescing(); },
-          py::arg("async_op") = true,
-          R"(
-End the coalescing block and execute all batched operations.
-
-Returns:
-    TorchWork: A work handle representing all coalesced operations,
-               or None if no operations were coalesced.
-          )",
-          py::call_guard<py::gil_scoped_release>())
-
       // window operations
       .def(
           "new_window",
@@ -1537,6 +1506,34 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
           "options",
           &BackendWrapper::getOptions,
           R"(Return the options used to create the torchComm under the hood.)",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_verify_work_timeout",
+          &BackendWrapper::verifyWorkTimeoutForTest,
+          R"(
+Verify that a work object has the expected timeout.
+Used for testing timeout propagation.
+
+Args:
+    work: The work object to verify.
+    timeout: The expected timeout.
+
+Returns:
+    bool: True if the work object has the expected timeout, False otherwise.
+          )",
+          py::arg("work"),
+          py::arg("timeout"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "_set_default_timeout",
+          &BackendWrapper::setTimeout,
+          R"(
+Set the default timeout for this backend.
+
+Args:
+    timeout: The timeout value to set.
+          )",
+          py::arg("timeout"),
           py::call_guard<py::gil_scoped_release>());
   intrusive_ptr_class_<WorkWrapper, c10d::Work>(m, "WorkWrapper");
   // Register the backend Options

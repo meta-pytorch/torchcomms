@@ -66,7 +66,11 @@ void createPreMulSum(
       is_tensor ? dataType == getNcclDataTypeInternal(tensor)
                 : dataType != ncclBfloat16,
       "PreMulSum factor type must match input data type");
-  nccl_api->redOpCreatePreMulSum(op, scalar, dataType, residence, comm);
+  NCCLX_CHECK(
+      nccl_api,
+      comm,
+      nccl_api->redOpCreatePreMulSum(op, scalar, dataType, residence, comm),
+      "NCCLX redOpCreatePreMulSum failed");
 }
 
 } // namespace
@@ -223,6 +227,23 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
       }
       abort();
     }
+
+    // Check communicator for async error
+    if (comm_state_ == CommState::NORMAL) {
+      ncclResult_t asyncErr;
+      NCCLX_CHECK(
+          nccl_api_,
+          nccl_comm_,
+          nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+          "failed to get async error");
+      if (asyncErr != ncclSuccess) {
+        comm_state_ = CommState::ERROR;
+        TC_LOG(ERROR, this)
+            << "Aborting process due to error on rank " << rank_
+            << " - nccl hit async error: " << ncclGetErrorString(asyncErr);
+        abort();
+      }
+    }
   }
 
   TC_LOG(INFO, this) << "Timeout thread exiting for rank: " << rank_;
@@ -253,7 +274,11 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
     }
   } else if (comm_state_ == CommState::ERROR) {
     ncclResult_t asyncErr;
-    nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr);
+    NCCLX_CHECK(
+        nccl_api_,
+        nccl_comm_,
+        nccl_api_->commGetAsyncError(nccl_comm_, &asyncErr),
+        "failed to get async error");
     NCCLXException ncclException(
         *nccl_api_, "NCCLX Async Error", asyncErr, nccl_comm_);
     abortNcclComm();
