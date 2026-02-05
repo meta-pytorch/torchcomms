@@ -1,4 +1,4 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <folly/init/Init.h>
 #include <folly/logging/xlog.h>
@@ -6,14 +6,15 @@
 
 #include "comms/common/CudaWrap.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
-#include "comms/pipes/TimeoutUtils.h"
 #include "comms/pipes/benchmarks/BenchmarkKernel.cuh"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
+#include "comms/pipes/benchmarks/P2pNvlBenchmarkUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
 #include <iomanip>
+#include <iostream>
 #include <sstream>
 #include <vector>
 
@@ -24,37 +25,7 @@ using meta::comms::MPIEnvironmentBase;
 
 namespace comms::pipes::benchmark {
 
-// Test configuration struct
-struct BenchmarkConfig {
-  std::size_t nBytes = 0;
-  std::size_t stagedBufferSize = 0;
-  int numBlocks = 0;
-  int numThreads = 0;
-  std::size_t pipelineDepth = 4;
-  std::size_t chunkSize = 512 * 1024; // 512KB default
-  SyncScope groupScope = SyncScope::WARP; // Thread group scope for parallelism
-  bool spreadClusterLaunch = false; // Use spread cluster kernel launch
-  uint32_t timeout_ms = 0; // Timeout in milliseconds (0 = no timeout)
-  std::string name;
-};
-
-// Result struct for collecting benchmark data
-struct BenchmarkResult {
-  std::string testName;
-  std::size_t messageSize{};
-  std::size_t stagingBufferSize{};
-  std::size_t pipelineDepth{};
-  std::size_t chunkSize{};
-  int numBlocks{};
-  int numThreads{};
-  float ncclBandwidth{};
-  float p2pBandwidth{};
-  float ncclTime{};
-  float p2pTime{};
-  float p2pSpeedup{}; // P2P vs NCCL
-};
-
-class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
+class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
@@ -166,16 +137,173 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     dim3 gridDim(config.numBlocks);
     dim3 blockDim(config.numThreads);
 
+    cudaStream_t sendStream, recvStream;
+    CUDA_CHECK(cudaStreamCreate(&sendStream));
+    CUDA_CHECK(cudaStreamCreate(&recvStream));
+
     CudaEvent start, stop;
 
     std::size_t nBytes = config.nBytes;
     bool isSend = (globalRank == 0);
     SyncScope groupScope = config.groupScope;
     void* devicePtr = (isSend ? sendBuff.get() : recvBuff.get());
-    Timeout timeout = comms::pipes::makeTimeout(config.timeout_ms, localRank);
+    Timeout timeout; // Default timeout (disabled)
     void* args[] = {&p2p, &devicePtr, &nBytes, &groupScope, &timeout};
     void* kernelFunc = isSend ? (void*)comms::pipes::benchmark::p2pSend
                               : (void*)comms::pipes::benchmark::p2pRecv;
+    cudaStream_t stream = isSend ? sendStream : recvStream;
+
+    // Warmup
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    for (int i = 0; i < kWarmupIters; i++) {
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+      CUDA_CHECK(
+          cudaLaunchKernel(kernelFunc, gridDim, blockDim, args, 0, stream));
+      CUDA_CHECK(cudaStreamSynchronize(stream));
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Benchmark - measure time across all iterations
+    // No barrier between iterations - ChunkState provides synchronization
+    CUDA_CHECK(cudaEventRecord(start.get(), stream));
+    for (int i = 0; i < kBenchmarkIters; i++) {
+      CUDA_CHECK(
+          cudaLaunchKernel(kernelFunc, gridDim, blockDim, args, 0, stream));
+    }
+    CUDA_CHECK(cudaEventRecord(stop.get(), stream));
+    CUDA_CHECK(cudaStreamSynchronize(stream));
+
+    float totalTime_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
+    float avgTime_ms = totalTime_ms / kBenchmarkIters;
+    timeUs = avgTime_ms * 1000.0f;
+    // Unidirectional bandwidth: data transferred in one direction / time
+    float bandwidth_GBps = (config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
+
+    CUDA_CHECK(cudaStreamDestroy(sendStream));
+    CUDA_CHECK(cudaStreamDestroy(recvStream));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    return bandwidth_GBps;
+  }
+
+  // Helper function to run NCCL bidirectional benchmark - returns algorithm BW
+  float runNcclBidirectionalBenchmark(
+      const BenchmarkConfig& config,
+      float& timeUs) {
+    XLOGF(
+        DBG1,
+        "Rank {}: Starting NCCL bidirectional benchmark: {}",
+        globalRank,
+        config.name);
+
+    DeviceBuffer sendBuff(config.nBytes);
+    DeviceBuffer recvBuff(config.nBytes);
+
+    // Initialize buffers - each rank sends its own data
+    CUDA_CHECK(cudaMemset(sendBuff.get(), globalRank, config.nBytes));
+    CUDA_CHECK(cudaMemset(recvBuff.get(), 0, config.nBytes));
+
+    int peerRank = (globalRank == 0) ? 1 : 0;
+
+    CudaEvent start, stop;
+
+    // Warmup
+    XLOGF(DBG1, "Rank {}: NCCL bidi warmup starting", globalRank);
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    for (int i = 0; i < kWarmupIters; i++) {
+      NCCL_CHECK(ncclGroupStart());
+      NCCL_CHECK(ncclSend(
+          sendBuff.get(),
+          config.nBytes,
+          ncclChar,
+          peerRank,
+          ncclComm_,
+          stream_));
+      NCCL_CHECK(ncclRecv(
+          recvBuff.get(),
+          config.nBytes,
+          ncclChar,
+          peerRank,
+          ncclComm_,
+          stream_));
+      NCCL_CHECK(ncclGroupEnd());
+      CUDA_CHECK(cudaStreamSynchronize(stream_));
+    }
+    XLOGF(DBG1, "Rank {}: NCCL bidi warmup complete", globalRank);
+
+    // Benchmark - measure time across all iterations
+    // No barrier between iterations - rely on NCCL's internal synchronization
+    CUDA_CHECK(cudaEventRecord(start.get(), stream_));
+    for (int i = 0; i < kBenchmarkIters; i++) {
+      NCCL_CHECK(ncclGroupStart());
+      NCCL_CHECK(ncclSend(
+          sendBuff.get(),
+          config.nBytes,
+          ncclChar,
+          peerRank,
+          ncclComm_,
+          stream_));
+      NCCL_CHECK(ncclRecv(
+          recvBuff.get(),
+          config.nBytes,
+          ncclChar,
+          peerRank,
+          ncclComm_,
+          stream_));
+      NCCL_CHECK(ncclGroupEnd());
+    }
+    CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
+    CUDA_CHECK(cudaStreamSynchronize(stream_));
+
+    float totalTime_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
+    float avgTime_ms = totalTime_ms / kBenchmarkIters;
+    timeUs = avgTime_ms * 1000.0f;
+    // Bidirectional bandwidth: 2x data (send + recv) / time
+    float bandwidth_GBps =
+        (2.0f * config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    return bandwidth_GBps;
+  }
+
+  // Helper function to run P2P NVL bidirectional benchmark - returns algorithm
+  // BW
+  float runP2pNvlBidirectionalBenchmark(
+      comms::pipes::P2pNvlTransportDevice& p2p,
+      const BenchmarkConfig& config,
+      float& timeUs) {
+    XLOGF(
+        DBG1,
+        "Rank {}: Starting P2P NVL bidirectional benchmark: {}",
+        globalRank,
+        config.name);
+
+    DeviceBuffer sendBuff(config.nBytes);
+    DeviceBuffer recvBuff(config.nBytes);
+
+    // Initialize buffers
+    CUDA_CHECK(cudaMemset(sendBuff.get(), globalRank, config.nBytes));
+    CUDA_CHECK(cudaMemset(recvBuff.get(), 0, config.nBytes));
+
+    dim3 gridDim(config.numBlocks);
+    dim3 blockDim(config.numThreads);
+
+    CudaEvent start, stop;
+
+    std::size_t nBytes = config.nBytes;
+    void* sendPtr = sendBuff.get();
+    void* recvPtr = recvBuff.get();
+    SyncScope groupScope = config.groupScope;
+    Timeout timeout; // Default timeout (disabled)
+    void* args[] = {&p2p, &sendPtr, &recvPtr, &nBytes, &groupScope, &timeout};
+    void* kernelFunc = (void*)comms::pipes::benchmark::p2pBidirectional;
+
+    // Warmup - no reset needed, recv() signals -1 after each transfer
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     // Use pointer to cluster dimension for clustered launch
     dim3 defaultClusterDim(comms::common::kDefaultClusterSize, 1, 1);
@@ -183,10 +311,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
         ? std::optional{defaultClusterDim}
         : std::nullopt;
 
-    // Warmup
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     for (int i = 0; i < kWarmupIters; i++) {
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
       CUDA_CHECK(
           comms::common::launchKernel(
               kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
@@ -209,15 +334,18 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
     float avgTime_ms = totalTime_ms / kBenchmarkIters;
     timeUs = avgTime_ms * 1000.0f;
-    // Unidirectional bandwidth: data transferred in one direction / time
-    float bandwidth_GBps = (config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
+    // Bidirectional bandwidth: 2x data (send + recv) / time
+    float bandwidth_GBps =
+        (2.0f * config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     return bandwidth_GBps;
   }
 
-  void printResultsTable(const std::vector<BenchmarkResult>& results) {
+  void printResultsTable(
+      const std::vector<BenchmarkResult>& results,
+      const std::string& title) {
     if (globalRank != 0) {
       return; // Only rank 0 prints the table
     }
@@ -225,7 +353,7 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     std::stringstream ss;
     ss << "\n";
     ss << "==============================================================================================================================\n";
-    ss << "                              NCCL vs P2P NVLink Benchmark Results\n";
+    ss << "                              " << title << "\n";
     ss << "==============================================================================================================================\n";
     ss << std::left << std::setw(18) << "Test Name" << std::right
        << std::setw(10) << "Msg Size" << std::right << std::setw(12)
@@ -275,225 +403,14 @@ class P2pNvlBenchmarkFixture : public MpiBaseTestFixture {
     ss << "Speedup = P2P Bandwidth / NCCL Bandwidth\n";
     ss << "==============================================================================================================================\n\n";
 
-    XLOG(INFO) << ss.str();
-  }
-
-  std::string formatSize(std::size_t bytes) {
-    std::stringstream ss;
-    if (bytes >= 1024 * 1024 * 1024) {
-      ss << std::fixed << std::setprecision(0)
-         << (bytes / (1024.0 * 1024.0 * 1024.0)) << "GB";
-    } else if (bytes >= 1024 * 1024) {
-      ss << std::fixed << std::setprecision(0) << (bytes / (1024.0 * 1024.0))
-         << "MB";
-    } else if (bytes >= 1024) {
-      ss << std::fixed << std::setprecision(0) << (bytes / 1024.0) << "KB";
-    } else {
-      ss << bytes << "B";
-    }
-    return ss.str();
-  }
-
-  // Helper function to run NCCL bidirectional benchmark - returns algorithm BW
-  float runNcclBidirectionalBenchmark(
-      const BenchmarkConfig& config,
-      float& timeUs) {
-    XLOGF(
-        INFO,
-        "Rank {}: Starting NCCL bidirectional benchmark: {}",
-        globalRank,
-        config.name);
-
-    DeviceBuffer sendBuff(config.nBytes);
-    DeviceBuffer recvBuff(config.nBytes);
-
-    // Initialize buffers - each rank sends its own data
-    CUDA_CHECK(cudaMemset(sendBuff.get(), globalRank, config.nBytes));
-    CUDA_CHECK(cudaMemset(recvBuff.get(), 0, config.nBytes));
-
-    int peerRank = (globalRank == 0) ? 1 : 0;
-
-    CudaEvent start, stop;
-
-    // Warmup
-    XLOGF(INFO, "Rank {}: NCCL bidi warmup starting", globalRank);
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    for (int i = 0; i < kWarmupIters; i++) {
-      NCCL_CHECK(ncclGroupStart());
-      NCCL_CHECK(ncclSend(
-          sendBuff.get(),
-          config.nBytes,
-          ncclChar,
-          peerRank,
-          ncclComm_,
-          stream_));
-      NCCL_CHECK(ncclRecv(
-          recvBuff.get(),
-          config.nBytes,
-          ncclChar,
-          peerRank,
-          ncclComm_,
-          stream_));
-      NCCL_CHECK(ncclGroupEnd());
-      CUDA_CHECK(cudaStreamSynchronize(stream_));
-    }
-    XLOGF(INFO, "Rank {}: NCCL bidi warmup complete", globalRank);
-
-    // Benchmark - measure time across all iterations
-    // No barrier between iterations - rely on NCCL's internal synchronization
-    CUDA_CHECK(cudaEventRecord(start.get(), stream_));
-    for (int i = 0; i < kBenchmarkIters; i++) {
-      NCCL_CHECK(ncclGroupStart());
-      NCCL_CHECK(ncclSend(
-          sendBuff.get(),
-          config.nBytes,
-          ncclChar,
-          peerRank,
-          ncclComm_,
-          stream_));
-      NCCL_CHECK(ncclRecv(
-          recvBuff.get(),
-          config.nBytes,
-          ncclChar,
-          peerRank,
-          ncclComm_,
-          stream_));
-      NCCL_CHECK(ncclGroupEnd());
-    }
-    CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
-    CUDA_CHECK(cudaStreamSynchronize(stream_));
-
-    float totalTime_ms = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
-    float avgTime_ms = totalTime_ms / kBenchmarkIters;
-    timeUs = avgTime_ms * 1000.0f;
-    // Bidirectional bandwidth: 2x data (send + recv) / time
-    float bandwidth_GBps =
-        (2.0f * config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    return bandwidth_GBps;
-  }
-
-  // Helper function to run P2P NVL bidirectional benchmark - returns algorithm
-  // BW
-  float runP2pNvlBidirectionalBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
-      const BenchmarkConfig& config,
-      float& timeUs) {
-    XLOGF(
-        INFO,
-        "Rank {}: Starting P2P NVL bidirectional benchmark: {}",
-        globalRank,
-        config.name);
-
-    DeviceBuffer sendBuff(config.nBytes);
-    DeviceBuffer recvBuff(config.nBytes);
-
-    // Initialize buffers
-    CUDA_CHECK(cudaMemset(sendBuff.get(), globalRank, config.nBytes));
-    CUDA_CHECK(cudaMemset(recvBuff.get(), 0, config.nBytes));
-
-    dim3 gridDim(config.numBlocks);
-    dim3 blockDim(config.numThreads);
-
-    CudaEvent start, stop;
-
-    std::size_t nBytes = config.nBytes;
-    void* sendPtr = sendBuff.get();
-    void* recvPtr = recvBuff.get();
-    SyncScope groupScope = config.groupScope;
-    Timeout timeout = comms::pipes::makeTimeout(config.timeout_ms, localRank);
-    void* args[] = {&p2p, &sendPtr, &recvPtr, &nBytes, &groupScope, &timeout};
-    void* kernelFunc = (void*)comms::pipes::benchmark::p2pBidirectional;
-
-    // Warmup - no reset needed, recv() signals -1 after each transfer
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Use pointer to cluster dimension for clustered launch
-    dim3 defaultClusterDim(comms::common::kDefaultClusterSize, 1, 1);
-    std::optional<dim3> clusterDimOpt = config.spreadClusterLaunch
-        ? std::optional{defaultClusterDim}
-        : std::nullopt;
-
-    for (int i = 0; i < kWarmupIters; i++) {
-      CUDA_CHECK(
-          comms::common::launchKernel(
-              kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
-      CUDA_CHECK(cudaDeviceSynchronize());
-    }
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Benchmark - measure time across all iterations
-    // No barrier between iterations - ChunkState provides synchronization
-    CUDA_CHECK(cudaEventRecord(start.get()));
-    for (int i = 0; i < kBenchmarkIters; i++) {
-      CUDA_CHECK(
-          comms::common::launchKernel(
-              kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
-    }
-    CUDA_CHECK(cudaEventRecord(stop.get()));
-    CUDA_CHECK(cudaDeviceSynchronize());
-
-    float totalTime_ms = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
-    float avgTime_ms = totalTime_ms / kBenchmarkIters;
-    timeUs = avgTime_ms * 1000.0f;
-    // Bidirectional bandwidth: 2x data (send + recv) / time
-    float bandwidth_GBps =
-        (2.0f * config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    return bandwidth_GBps;
-  }
-
-  // Helper function to run P2P signal benchmark - returns latency
-  // in microseconds
-  float runSignalBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
-      const BenchmarkConfig& config,
-      int nSteps = 1000) {
-    XLOGF(DBG1, "=== Running Signal benchmark: {} ===", config.name);
-
-    dim3 gridDim(config.numBlocks);
-    dim3 blockDim(config.numThreads);
-
-    CudaEvent start, stop;
-
-    int nStepsArg = nSteps;
-    SyncScope groupScope = config.groupScope;
-    void* args[] = {&p2p, &nStepsArg, &groupScope};
-    void* kernelFunc = (void*)comms::pipes::benchmark::p2pSignalBenchKernel;
-
-    // Synchronize both ranks before starting to ensure both GPUs launch
-    // together
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Benchmark
-    CUDA_CHECK(cudaEventRecord(start.get(), stream_));
-    CUDA_CHECK(
-        cudaLaunchKernel(kernelFunc, gridDim, blockDim, args, 0, stream_));
-    CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
-    CUDA_CHECK(cudaStreamSynchronize(stream_));
-
-    float totalTime_ms = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
-
-    // Calculate per-signal latency in microseconds
-    float avgLatencyUs = (totalTime_ms / nSteps) * 1000.0f;
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    return avgLatencyUs;
+    std::cout << ss.str();
   }
 
   ncclComm_t ncclComm_{};
   cudaStream_t stream_{};
 };
 
-TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
+TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
   // Only test with 2 ranks
   if (numRanks != 2) {
     XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -636,20 +553,6 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
       .name = "1GB",
   });
 
-  // 1GB with timeout (NCCL-like config with 30 second timeout)
-  configs.push_back({
-      .nBytes = 1024 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .spreadClusterLaunch = true,
-      .timeout_ms = 30000, // 30 second timeout
-      .name = "1GB_Timeout",
-  });
-
   // === BLOCK-BASED GROUPS (fewer coordination points) ===
   // With block groups: 256 blocks = 256 groups (vs 1024 warps)
 
@@ -729,10 +632,11 @@ TEST_F(P2pNvlBenchmarkFixture, CompareNcclVsP2pNvl) {
     results.push_back(result);
   }
 
-  printResultsTable(results);
+  printResultsTable(
+      results, "NCCL vs P2P NVLink UNIDIRECTIONAL Benchmark Results");
 }
 
-TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
+TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
   // Only test with 2 ranks
   if (numRanks != 2) {
     XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -814,20 +718,6 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
       .name = "Bidir_1GB",
   });
 
-  // 1GB with timeout (NCCL-like config with 30 second timeout)
-  configs.push_back({
-      .nBytes = 1024 * 1024 * 1024,
-      .stagedBufferSize = 8 * 1024 * 1024,
-      .numBlocks = 32,
-      .numThreads = 512,
-      .pipelineDepth = 2,
-      .chunkSize = 512 * 1024,
-      .groupScope = SyncScope::BLOCK,
-      .spreadClusterLaunch = true,
-      .timeout_ms = 30000, // 30 second timeout
-      .name = "Bidir_1GB_Timeout",
-  });
-
   // === NCCL-LIKE CONFIGURATIONS ===
   // Helper function to add NCCL-like configs with consistent parameters
   // NCCL uses 16 blocks for < 512M messages, 32 blocks for >= 512M messages
@@ -841,11 +731,8 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
   // Helper function for adding NCCL-like config with auto-computed numBlocks
   // Uses 16 blocks for < 512M, 32 blocks for >= 512M (like NCCL)
   auto addNcclConfig = [&configs,
-                        kNcclBlocksSmall,
                         kNcclBlocksLarge,
-                        kNcclThreads,
                         kNcclStagedBufferSize,
-                        kChunkSize,
                         kLargeMessageThreshold](
                            std::size_t sizeBytes,
                            const std::string& sizeName,
@@ -986,154 +873,7 @@ TEST_F(P2pNvlBenchmarkFixture, BidirectionalBenchmark) {
     ss << "BW = Algorithm bandwidth (2 x message size / time)\n";
     ss << "==============================================================================================================================\n\n";
 
-    XLOG(INFO) << ss.str();
-  }
-}
-
-TEST_F(P2pNvlBenchmarkFixture, SignalBenchmark) {
-  // Only test with 2 ranks
-  if (numRanks != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  int peerRank = (globalRank == 0) ? 1 : 0;
-
-  // Signal benchmark configurations using BenchmarkConfig
-  std::vector<BenchmarkConfig> configs = {
-      {.numBlocks = 1,
-       .numThreads = 32,
-       .groupScope = SyncScope::WARP,
-       .name = "1b_32t_warp"},
-      {.numBlocks = 1,
-       .numThreads = 128,
-       .groupScope = SyncScope::WARP,
-       .name = "1b_warp"},
-      {.numBlocks = 2,
-       .numThreads = 128,
-       .groupScope = SyncScope::WARP,
-       .name = "2b_warp"},
-      {.numBlocks = 4,
-       .numThreads = 128,
-       .groupScope = SyncScope::WARP,
-       .name = "4b_warp"},
-      {.numBlocks = 8,
-       .numThreads = 128,
-       .groupScope = SyncScope::WARP,
-       .name = "8b_warp"},
-      {.numBlocks = 16,
-       .numThreads = 128,
-       .groupScope = SyncScope::WARP,
-       .name = "16b_warp"},
-      {.numBlocks = 32,
-       .numThreads = 128,
-       .groupScope = SyncScope::WARP,
-       .name = "32b_warp"},
-      {.numBlocks = 1,
-       .numThreads = 128,
-       .groupScope = SyncScope::BLOCK,
-       .name = "1b_block"},
-      {.numBlocks = 2,
-       .numThreads = 128,
-       .groupScope = SyncScope::BLOCK,
-       .name = "2b_block"},
-      {.numBlocks = 4,
-       .numThreads = 128,
-       .groupScope = SyncScope::BLOCK,
-       .name = "4b_block"},
-      {.numBlocks = 8,
-       .numThreads = 128,
-       .groupScope = SyncScope::BLOCK,
-       .name = "8b_block"},
-      {.numBlocks = 16,
-       .numThreads = 128,
-       .groupScope = SyncScope::BLOCK,
-       .name = "16b_block"},
-      {.numBlocks = 32,
-       .numThreads = 128,
-       .groupScope = SyncScope::BLOCK,
-       .name = "32b_block"},
-  };
-
-  const int nSteps = 1000; // Number of signal iterations per kernel launch
-
-  // GPU warmup phase - run one iteration to avoid cold start overhead
-  {
-    const auto& warmupConfig = configs[0];
-    std::size_t signalCount = warmupConfig.groupScope == SyncScope::BLOCK
-        ? warmupConfig.numBlocks
-        : warmupConfig.numBlocks * (warmupConfig.numThreads / 32);
-
-    comms::pipes::MultiPeerNvlTransportConfig p2pConfig{
-        .dataBufferSize = 1,
-        .chunkSize = 1,
-        .pipelineDepth = 1,
-        .signalCount = signalCount,
-    };
-
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    comms::pipes::MultiPeerNvlTransport transport(
-        globalRank, numRanks, bootstrap, p2pConfig);
-    transport.exchange();
-
-    auto p2p = transport.getP2pTransportDevice(peerRank);
-    runSignalBenchmark(p2p, warmupConfig, nSteps); // Discard result
-  }
-
-  std::vector<BenchmarkResult> results;
-
-  for (const auto& config : configs) {
-    // Calculate signalCount for this config
-    // For warp groups: numBlocks * (numThreads / 32)
-    // For block groups: numBlocks
-    std::size_t signalCount = config.groupScope == SyncScope::BLOCK
-        ? config.numBlocks
-        : config.numBlocks * (config.numThreads / 32);
-
-    // Create fresh P2P transport for each config to reset signal buffers
-    comms::pipes::MultiPeerNvlTransportConfig p2pConfig{
-        .dataBufferSize = 1,
-        .chunkSize = 1,
-        .pipelineDepth = 1,
-        .signalCount = signalCount,
-    };
-
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    comms::pipes::MultiPeerNvlTransport transport(
-        globalRank, numRanks, bootstrap, p2pConfig);
-    transport.exchange();
-
-    auto p2p = transport.getP2pTransportDevice(peerRank);
-
-    BenchmarkResult result;
-    result.testName = config.name;
-    result.p2pTime = runSignalBenchmark(p2p, config, nSteps);
-    results.push_back(result);
-  }
-
-  // Print results
-  if (globalRank == 0) {
-    std::stringstream ss;
-    ss << "\n";
-    ss << "================================================================\n";
-    ss << "              P2P NVLink Signal Benchmark Results\n";
-    ss << "================================================================\n";
-    ss << std::left << std::setw(20) << "Config" << std::right << std::setw(15)
-       << "Latency (us)\n";
-    ss << "----------------------------------------------------------------\n";
-
-    for (const auto& r : results) {
-      ss << std::left << std::setw(20) << r.testName << std::right
-         << std::setw(15) << std::fixed << std::setprecision(3) << r.p2pTime
-         << "\n";
-    }
-    ss << "================================================================\n";
-    ss << "Latency = Average time per signal/wait pair\n";
-    ss << "Each measurement: 1 kernel launches x " << nSteps
-       << " signal+wait/launch\n";
-    ss << "================================================================\n\n";
-
-    XLOG(INFO) << ss.str();
+    std::cout << ss.str();
   }
 }
 

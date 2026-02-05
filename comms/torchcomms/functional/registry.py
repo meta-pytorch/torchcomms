@@ -587,7 +587,8 @@ def _generate_lib_ops(lib: Any) -> None:
                         raise RuntimeError(
                             "Operation has OUTPUT params but no meta_func provided"
                         )
-                    elif captured_schema.needs_async_dummy_return:
+
+                    if captured_schema.needs_async_dummy_return:
                         async_op = parsed.get_value("async_op") or False
                         if async_op:
                             # Use CPU device for the dummy tensor since it's just a placeholder
@@ -650,8 +651,11 @@ def _generate_lib_ops(lib: Any) -> None:
 
                 def _create_fake_impl(captured_meta_kernel, captured_schema):
                     def _fake_impl(fake_mode, func, *args, **kwargs):
+                        # First arg is the opaque object - get device directly from it
+                        obj = args[0]
                         with in_kernel_invocation_manager(fake_mode):
                             result = captured_meta_kernel(*args, **kwargs)
+
                         if result is None:
                             return None
                         if isinstance(result, torch.Tensor):
@@ -662,10 +666,10 @@ def _generate_lib_ops(lib: Any) -> None:
                                 meta_result = result
                             # For async dummy tensors, always use CPU device
                             # For other tensors, get device from the opaque object
-                            if result.device.type != "meta":
-                                target_device = result.device
-                            elif captured_schema.needs_async_dummy_return:
+                            if captured_schema.needs_async_dummy_return:
                                 target_device = torch.device("cpu")
+                            elif result.device.type != "meta":
+                                target_device = result.device
                             else:
                                 raise RuntimeError("Unable to determine target device")
                             return FakeTensor(fake_mode, meta_result, target_device)
@@ -896,32 +900,6 @@ def _register_lowerings() -> None:
             logger.warning(f"Failed to register lowering for {op_name}: {e}")
 
 
-def _register_tensors_with_coalescing(
-    tensors: list | tuple | torch.Tensor | None,
-) -> None:
-    """Register tensors with the active coalescing manager if one exists.
-
-    This is used to track tensors that are part of a coalescing block so they
-    can be waited on together.
-    """
-    from torchcomms.functional.collectives import _get_coalescing_manager
-
-    manager = _get_coalescing_manager()
-    if manager is None:
-        return
-
-    if tensors is None:
-        return
-    elif isinstance(tensors, (list, tuple)):
-        for t in tensors:
-            if isinstance(t, torch.Tensor):
-                manager.tensors.append(t)
-            elif isinstance(t, (list, tuple)):
-                manager.tensors.extend(t)
-    elif isinstance(tensors, torch.Tensor):
-        manager.tensors.append(tensors)
-
-
 def _patch_eager_methods() -> None:
     """Patch TorchComm methods to dispatch to functional ops for tracing and autograd.
 
@@ -970,15 +948,12 @@ def _patch_eager_methods() -> None:
             )
 
             if not has_requires_grad and not in_tracing_context:
-                _register_tensors_with_coalescing(parsed.get_mutable_outputs())
                 return original_method(self, *args, **kwargs)
 
             # Use the inplace op - it has Autograd kernel registered that handles
             # gradient tracking for all tensor types including tensor lists
             inplace_op_name = op_name + "_"
             result = getattr(torch.ops.torchcomms, inplace_op_name)(*parsed.to_values())
-
-            _register_tensors_with_coalescing(result)
 
             async_op = parsed.get_value("async_op") or False
 
@@ -1074,9 +1049,6 @@ def finalize_registration(lib: Any) -> None:
         _patch_dynamo_for_opaque_methods,
         register_with_dynamo,
     )
-    from torchcomms.functional.functional_backend import (
-        register_torchcomms_funcols_impl,
-    )
     from torchcomms.functional.inductor_lowering import register_torchcomms_lowerings
 
     logger.info(
@@ -1090,9 +1062,6 @@ def finalize_registration(lib: Any) -> None:
     )
     register_torchcomms_lowerings()
     register_with_dynamo()
-
-    # Register functional collectives backend (includes autograd generation)
-    register_torchcomms_funcols_impl()
 
     # Patch eager methods for tracing and autograd support
     _patch_eager_methods()

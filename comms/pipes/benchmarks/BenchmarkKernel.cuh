@@ -71,4 +71,32 @@ __global__ void p2pSignalBenchKernel(
     int nSteps,
     SyncScope groupScope = SyncScope::WARP);
 
+// Send one kernel - single chunk transfer with metadata
+__global__ void p2pSendOne(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    SyncScope groupScope = SyncScope::WARP);
+
+// Recv one kernel - single chunk receive with metadata
+__global__ void p2pRecvOne(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    SyncScope groupScope = SyncScope::WARP);
+
+// Send multiple kernel - transfer multiple chunks with metadata
+__global__ void p2pSendMultiple(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    DeviceSpan<const std::size_t> chunkSizes,
+    DeviceSpan<const std::size_t> chunkIndices,
+    SyncScope groupScope = SyncScope::WARP);
+
+// Recv multiple kernel - receive multiple chunks with metadata
+__global__ void p2pRecvMultiple(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    DeviceSpan<std::size_t> chunkSizes,
+    SyncScope groupScope = SyncScope::WARP);
+
 } // namespace comms::pipes::benchmark

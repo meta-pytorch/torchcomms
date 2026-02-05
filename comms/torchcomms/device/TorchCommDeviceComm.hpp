@@ -97,6 +97,28 @@ template <typename Backend>
 class TorchCommDeviceWindow {
  public:
   // =========================================================================
+  // Constructor
+  // =========================================================================
+
+  // Default constructor for backwards compatibility
+  TorchCommDeviceWindow() = default;
+
+  // Constructor with initializer list - preferred for explicit initialization
+  TorchCommDeviceWindow(
+      typename Backend::Comm comm,
+      typename Backend::Window window,
+      void* base,
+      size_t size,
+      int rank,
+      int num_ranks)
+      : comm_(comm),
+        window_(window),
+        base_(base),
+        size_(size),
+        rank_(rank),
+        num_ranks_(num_ranks) {}
+
+  // =========================================================================
   // Metadata
   // =========================================================================
 

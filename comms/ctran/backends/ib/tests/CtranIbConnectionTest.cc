@@ -265,3 +265,39 @@ TEST_F(CtranIbConnectionTest, BaseNoAbort) {
 TEST_F(CtranIbConnectionTest, TestAbortCtrl) {
   this->runTest(/*testAbort=*/true);
 }
+
+// Test that calling connectVcDirect before getLocalVcIdentifier returns an
+// error instead of segfaulting. This validates the fix for the segfault caused
+// by uninitialized QPs when setupVc is called before getLocalBusCard.
+TEST_F(CtranIbConnectionTest, ConnectVcDirectWithoutLocalVcIdentifierFails) {
+  const uint64_t commHash = 0x12345678;
+  const std::string commDesc = "test_uninitialized_qp";
+  const int rank = 0;
+  const int peerRank = 1;
+
+  EXPECT_EQ(cudaSetDevice(rank), cudaSuccess);
+
+  auto abortCtrl = ctran::utils::createAbort(/*enabled=*/false);
+
+  auto ctranIb = std::make_unique<CtranIb>(
+      rank,
+      rank,
+      commHash,
+      commDesc,
+      nullptr, // ctrlMgr
+      false, // enableLocalFlush
+      CtranIb::BootstrapMode::kExternal,
+      /*qpServerAddr=*/std::nullopt,
+      /*abortCtrl=*/abortCtrl);
+
+  // Create a fake remote VC identifier (just need the right size, content
+  // doesn't matter for this test since we expect early failure)
+  std::string fakeRemoteVcId(256, '\0');
+
+  // Calling connectVcDirect without first calling getLocalVcIdentifier should
+  // fail gracefully with commInternalError, not segfault.
+  // This tests the fix for the segfault in CtranIbVirtualConn::setupVc when
+  // QPs are not initialized.
+  EXPECT_EQ(
+      ctranIb->connectVcDirect(fakeRemoteVcId, peerRank), commInternalError);
+}

@@ -5,13 +5,18 @@
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+// Initialize static unique ID counter
+std::atomic<uint32_t> ctran::IpcRegCache::nextUniqueId_{0};
+
 commResult_t ctran::IpcRegCache::regMem(
     const void* buf,
     const size_t len,
     const int cudaDev,
     void** ipcRegElem,
     bool shouldSupportCudaMalloc) {
-  auto reg = new ctran::regcache::IpcRegElem(buf, len, cudaDev);
+  // Atomically fetch and increment the unique ID
+  uint32_t uid = nextUniqueId_.fetch_add(1, std::memory_order_relaxed);
+  auto reg = new ctran::regcache::IpcRegElem(buf, len, cudaDev, uid);
   bool supported = false;
 
   FB_COMMCHECK(reg->tryLoad(supported, shouldSupportCudaMalloc));
@@ -43,6 +48,7 @@ void ctran::IpcRegCache::remReleaseMem(
     ctran::regcache::IpcRelease& ipcRelease) {
   auto reg = reinterpret_cast<ctran::regcache::IpcRegElem*>(ipcRegElem);
   ipcRelease.base = reg->ipcMem.rlock()->getBase();
+  ipcRelease.uid = reg->uid;
 }
 
 ctran::IpcRegCache::IpcRegCache() : cudaDev_(0), logMetaData_(nullptr) {}
@@ -52,9 +58,11 @@ void ctran::IpcRegCache::init(
     const struct CommLogData* logMetaData) {
   cudaDev_ = cudaDev;
   logMetaData_ = logMetaData;
+  initAsyncSocket();
 }
 
 ctran::IpcRegCache::~IpcRegCache() {
+  stopAsyncSocket();
   clearAllRemReg();
 }
 
@@ -64,36 +72,39 @@ commResult_t ctran::IpcRegCache::importMem(
     void** buf,
     struct ctran::regcache::IpcRemHandle* remKey) {
   void* basePtr = nullptr;
-  FB_COMMCHECK(importRemMemImpl(peerId, ipcDesc.desc, &basePtr));
+  FB_COMMCHECK(importRemMemImpl(peerId, ipcDesc, &basePtr));
 
   // import from baseAddr of a remote segment, return buf at offset from
   // baseAddr
   *buf = reinterpret_cast<char*>(basePtr) + ipcDesc.offset;
   remKey->peerId = peerId;
   remKey->basePtr = ipcDesc.desc.base;
+  remKey->uid = ipcDesc.uid;
   CLOGF_TRACE(
       COLL,
-      "CTRAN-REGCACHE: Imported NVL remote mem from peer {}: buf {} (base {} offset {})",
+      "CTRAN-REGCACHE: Imported NVL remote mem from peer {}: buf {} (base {} offset {} uid {})",
       peerId,
       (void*)*buf,
       (void*)basePtr,
-      ipcDesc.offset);
+      ipcDesc.offset,
+      ipcDesc.uid);
   return commSuccess;
 }
 
 commResult_t ctran::IpcRegCache::importRemMemImpl(
     const std::string& peerId,
-    const ctran::utils::CtranIpcDesc& ipcDesc,
+    const ctran::regcache::IpcDesc& ipcDesc,
     void** mappedBase) {
   auto lockedMap = ipcRemRegMap_.wlock();
-  uint64_t base = reinterpret_cast<uint64_t>(ipcDesc.base);
+  uint64_t base = reinterpret_cast<uint64_t>(ipcDesc.desc.base);
+  IpcRemRegKey key{base, ipcDesc.uid};
 
   // Check if already mapped
   auto peerIt = lockedMap->find(peerId);
   if (peerIt != lockedMap->end()) {
-    auto baseIt = peerIt->second.find(base);
-    if (baseIt != peerIt->second.end()) {
-      *mappedBase = baseIt->second->ipcRemMem.getBase();
+    auto keyIt = peerIt->second.find(key);
+    if (keyIt != peerIt->second.end()) {
+      *mappedBase = keyIt->second->ipcRemMem.getBase();
       return commSuccess;
     }
   }
@@ -101,7 +112,7 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
   std::unique_ptr<ctran::regcache::IpcRemRegElem> reg = nullptr;
   try {
     reg = std::make_unique<ctran::regcache::IpcRemRegElem>(
-        ipcDesc, cudaDev_, logMetaData_);
+        ipcDesc.desc, cudaDev_, logMetaData_);
   } catch (std::exception& e) {
     CLOGF(
         WARN,
@@ -114,48 +125,54 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
 
   CLOGF_TRACE(
       COLL,
-      "CTRAN-REGCACHE: cache IPC remote registration peer:base=<{}:{}> {}",
+      "CTRAN-REGCACHE: cache IPC remote registration peer:base:uid=<{}:{}:{}> {}",
       peerId,
-      reinterpret_cast<void*>(ipcDesc.base),
+      reinterpret_cast<void*>(ipcDesc.desc.base),
+      ipcDesc.uid,
       reg->toString());
 
   *mappedBase = reg->ipcRemMem.getBase();
-  (*lockedMap)[peerId][base] = std::move(reg);
+  (*lockedMap)[peerId][key] = std::move(reg);
 
   return commSuccess;
 }
 
 commResult_t ctran::IpcRegCache::releaseRemReg(
     const std::string& peerId,
-    void* basePtr) {
+    void* basePtr,
+    uint32_t uid) {
   auto lockedMap = ipcRemRegMap_.wlock();
   uint64_t base = reinterpret_cast<uint64_t>(basePtr);
+  IpcRemRegKey key{base, uid};
 
   if (lockedMap->find(peerId) == lockedMap->end() ||
-      (*lockedMap)[peerId].find(base) == (*lockedMap)[peerId].end()) {
+      (*lockedMap)[peerId].find(key) == (*lockedMap)[peerId].end()) {
     CLOGF(
         ERR,
-        "CTRAN-REGCACHE: Unknown IPC remote memory registration from peer {} base {}",
+        "CTRAN-REGCACHE: Unknown IPC remote memory registration from peer {} base {} uid {}",
         peerId,
-        basePtr);
+        basePtr,
+        uid);
     return ErrorStackTraceUtil::log(commInternalError);
   }
 
   CLOGF_TRACE(
       COLL,
-      "CTRAN-REGCACHE: remove IPC remote registration from cache peer:base=<{}:{}> : {}",
+      "CTRAN-REGCACHE: remove IPC remote registration from cache peer:base:uid=<{}:{}:{}> : {}",
       peerId,
       basePtr,
-      (*lockedMap)[peerId][base]->toString());
+      uid,
+      (*lockedMap)[peerId][key]->toString());
 
   try {
-    (*lockedMap)[peerId].erase(base);
+    (*lockedMap)[peerId].erase(key);
   } catch (std::exception& e) {
     CLOGF(
         WARN,
-        "CTRAN-REGCACHE: failed to remove IPC remote registration from cache peer:base=<{}:{}>, error {}",
+        "CTRAN-REGCACHE: failed to remove IPC remote registration from cache peer:base:uid=<{}:{}:{}>, error {}",
         peerId,
         basePtr,
+        uid,
         e.what());
     return ErrorStackTraceUtil::log(commInternalError);
   }
@@ -186,4 +203,175 @@ size_t ctran::IpcRegCache::getNumRemReg(const std::string& peerId) const {
     return it->second.size();
   }
   return 0;
+}
+
+commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
+    const std::string& myId,
+    const folly::SocketAddress& peerAddr,
+    ctran::regcache::IpcRegElem* ipcRegElem,
+    ctran::regcache::IpcReqCb* reqCb) {
+  // Check if AsyncSocket is initialized
+  if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
+    CLOGF(
+        WARN,
+        "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote release");
+    return commInternalError;
+  }
+
+  // Initialize the request
+  reqCb->req =
+      ctran::regcache::IpcReq(ctran::regcache::IpcReqType::kRelease, myId);
+  reqCb->completed.store(false);
+  remReleaseMem(ipcRegElem, reqCb->req.release);
+
+  CLOGF_TRACE(
+      COLL,
+      "CTRAN-REGCACHE: Sending IPC_RELEASE to peerAddr {}: {}",
+      peerAddr.describe(),
+      reqCb->req.toString());
+
+  // Send the whole IpcReq via AsyncClientSocket
+  // The peer checks IpcReqType to determine which callback to invoke
+  ctran::bootstrap::AsyncClientSocket::send(
+      *asyncSocketEvbThread_->getEventBase(),
+      peerAddr,
+      &reqCb->req,
+      sizeof(ctran::regcache::IpcReq),
+      [reqCb, peerAddr](const folly::AsyncSocketException* err) {
+        if (err != nullptr) {
+          CLOGF(
+              WARN,
+              "CTRAN-REGCACHE: Failed to send IpcReq to peerAddr {}: {}",
+              peerAddr.describe(),
+              err->what());
+        }
+        // Mark as completed regardless of success/failure
+        reqCb->completed.store(true);
+      });
+
+  return commSuccess;
+}
+
+commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
+    const std::string& myId,
+    const folly::SocketAddress& peerAddr,
+    const ctran::regcache::IpcDesc& ipcDesc,
+    ctran::regcache::IpcReqCb* reqCb) {
+  // Check if AsyncSocket is initialized
+  if (!asyncSocketEvbThread_ || !asyncServerSocket_) {
+    CLOGF(
+        WARN,
+        "CTRAN-REGCACHE: AsyncSocket not initialized, skipping remote export");
+    return commInternalError;
+  }
+
+  // Initialize the request
+  reqCb->req =
+      ctran::regcache::IpcReq(ctran::regcache::IpcReqType::kDesc, myId);
+  reqCb->completed.store(false);
+  reqCb->req.desc = ipcDesc;
+
+  CLOGF_TRACE(
+      COLL,
+      "CTRAN-REGCACHE: Sending IPC_DESC to peerAddr {}: {}",
+      peerAddr.describe(),
+      reqCb->req.toString());
+
+  // Send the whole IpcReq via AsyncClientSocket
+  // The peer checks IpcReqType and calls importMem for kDesc
+  ctran::bootstrap::AsyncClientSocket::send(
+      *asyncSocketEvbThread_->getEventBase(),
+      peerAddr,
+      &reqCb->req,
+      sizeof(ctran::regcache::IpcReq),
+      [reqCb, peerAddr](const folly::AsyncSocketException* err) {
+        if (err != nullptr) {
+          CLOGF(
+              WARN,
+              "CTRAN-REGCACHE: Failed to send IpcReq (DESC) to peerAddr {}: {}",
+              peerAddr.describe(),
+              err->what());
+        }
+        // Mark as completed regardless of success/failure
+        reqCb->completed.store(true);
+      });
+
+  return commSuccess;
+}
+
+commResult_t ctran::IpcRegCache::initAsyncSocket() {
+  // Create the event base thread for async socket operations
+  asyncSocketEvbThread_ = std::make_unique<folly::ScopedEventBaseThread>();
+
+  // Create and start the async server socket
+  asyncServerSocket_ = std::make_unique<ctran::bootstrap::AsyncServerSocket>(
+      *asyncSocketEvbThread_->getEventBase());
+
+  // Start the server with a callback that handles IPC requests
+  // The peer sends the whole IpcReq, and we check the type to dispatch
+  auto serverAddrFuture = asyncServerSocket_->start(
+      folly::SocketAddress("::1", 0),
+      sizeof(ctran::regcache::IpcReq),
+      [this](std::unique_ptr<folly::IOBuf> buf) {
+        // Extract the IpcReq from the received buffer
+        ctran::regcache::IpcReq ipcReq;
+        std::memcpy(&ipcReq, buf->data(), sizeof(ipcReq));
+
+        // Dispatch based on request type
+        switch (ipcReq.type) {
+          case ctran::regcache::IpcReqType::kRelease: {
+            // Handle release request - release the imported NVL memory
+            std::string peerId = ipcReq.getPeerId();
+
+            CLOGF_TRACE(
+                COLL,
+                "CTRAN-REGCACHE: Received IPC_RELEASE from peer {}: {}",
+                peerId,
+                ipcReq.release.toString());
+
+            FB_COMMCHECKIGNORE(
+                releaseRemReg(peerId, ipcReq.release.base, ipcReq.release.uid));
+            break;
+          }
+          case ctran::regcache::IpcReqType::kDesc: {
+            // Handle descriptor request - import the remote memory
+            std::string peerId = ipcReq.getPeerId();
+            void* buf = nullptr;
+            ctran::regcache::IpcRemHandle remKey;
+
+            CLOGF_TRACE(
+                COLL,
+                "CTRAN-REGCACHE: Received IPC_DESC from peer {}: {}",
+                peerId,
+                ipcReq.desc.toString());
+
+            FB_COMMCHECKIGNORE(importMem(peerId, ipcReq.desc, &buf, &remKey));
+            break;
+          }
+        }
+      });
+
+  // Get the server address
+  serverAddr_ = std::move(serverAddrFuture).get();
+
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-REGCACHE: AsyncSocket server started at {}",
+      serverAddr_.describe());
+
+  return commSuccess;
+}
+
+void ctran::IpcRegCache::stopAsyncSocket() {
+  if (asyncServerSocket_) {
+    auto fut = asyncServerSocket_->stop();
+    std::move(fut).get();
+    asyncServerSocket_.reset();
+    CLOGF_SUBSYS(INFO, INIT, "CTRAN-REGCACHE: AsyncSocket server stopped");
+  }
+
+  if (asyncSocketEvbThread_) {
+    asyncSocketEvbThread_.reset();
+  }
 }

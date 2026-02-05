@@ -4,10 +4,8 @@
 import ctypes
 import os
 import sys
-from contextlib import contextmanager
 from datetime import timedelta
 from importlib.metadata import entry_points
-from typing import Generator, Optional
 
 # We need to load this upfront since libtorchcomms depend on libtorch
 import torch  # noqa: F401
@@ -44,7 +42,6 @@ def _load_libtorchcomms() -> None:
 
 _load_libtorchcomms()
 from torchcomms._comms import *  # noqa: E402, F401, F403
-import torchcomms.coalescing as coalescing  # noqa F401
 import torchcomms.objcol as objcol  # noqa: E402, F401, F403
 
 if torch_compile_supported_and_enabled:
@@ -67,15 +64,11 @@ __all__ = [  # noqa: F405
     "P2POp",
     "CommOptions",
     "TorchCommWindow",
-    "coalescing",
-    "CoalescingManager",
 ]
 
 for name in __all__:
-    try:
-        globals()[name].__module__ = "torchcomms"
-    except KeyError:  # ignore non-c++ bindings
-        pass
+    cls = globals()[name]
+    cls.__module__ = "torchcomms"
 
 
 def _load_backend(backend: str) -> None:
@@ -90,77 +83,3 @@ def _load_backend(backend: str) -> None:
         )
     wheel = next(iter(found))
     wheel.load()
-
-
-class CoalescingManager:
-    """Manager returned by coalescing() context manager.
-
-    Provides access to the work handle and coalesced tensors after
-    the coalescing block completes.
-    """
-
-    def __init__(self) -> None:
-        self.work: Optional["TorchWork"] = None  # noqa: F405
-        self._waited: bool = False
-
-    def wait(self) -> None:
-        """Wait for all coalesced operations to complete.
-
-        In eager mode, it waits on the work handle directly.
-
-        Raises:
-            RuntimeError: If wait() has already been called on this manager.
-        """
-        if self._waited:
-            raise RuntimeError(
-                "CoalescingManager.wait() has already been called. "
-                "Each coalescing block can only be waited on once."
-            )
-
-        self._waited = True
-
-        if self.work is not None:
-            self.work.wait()
-
-
-@contextmanager
-def coalesce(
-    comm: "TorchComm",  # noqa: F405
-) -> Generator[CoalescingManager, None, None]:
-    """Context manager for coalescing collective operations.
-
-    Within this context, collective operations are batched together and
-    executed as a single fused operation when the context exits.
-
-    For torch.compile compatibility, the returned manager provides access
-    to the work handle and tensors for proper data dependency tracking.
-
-    Args:
-        comm: The TorchComm communicator to use.
-
-    Yields:
-        CoalescingManager with work handle and tensors available after exit.
-
-    Example:
-        with torchcomms.coalesce(comm) as cm:
-            comm.all_reduce(tensor1, op, async_op=True)
-            comm.all_reduce(tensor2, op, async_op=True)
-        # After context exit, cm.work is the coalesced work handle
-        cm.wait()  # Wait for all operations
-    """
-    manager = CoalescingManager()
-
-    logger.info(
-        "[torchcomms] Starting coalescing block on comm=%s",
-        comm.get_name(),
-    )
-
-    comm.start_coalescing()
-    try:
-        yield manager
-    finally:
-        manager.work = comm.end_coalescing()
-        logger.info(
-            "[torchcomms] Coalescing block ended on comm=%s",
-            comm.get_name(),
-        )

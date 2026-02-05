@@ -475,14 +475,6 @@ c10::intrusive_ptr<TorchWork> TorchComm::gather(
   return work;
 }
 
-void TorchComm::startCoalescing() {
-  impl_->startCoalescing();
-}
-
-c10::intrusive_ptr<TorchWork> TorchComm::endCoalescing() {
-  return impl_->endCoalescing();
-}
-
 std::shared_ptr<TorchCommWindow> TorchComm::new_window(
     const std::optional<at::Tensor>& tensor) {
   preHook(

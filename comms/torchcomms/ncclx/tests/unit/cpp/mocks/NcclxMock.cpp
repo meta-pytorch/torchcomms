@@ -108,6 +108,14 @@ void NcclxMock::setupDefaultBehaviors() {
   ON_CALL(*this, redOpCreatePreMulSum(_, _, _, _, _))
       .WillByDefault(Return(ncclSuccess));
   ON_CALL(*this, redOpDestroy(_, _)).WillByDefault(Return(ncclSuccess));
+
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+  // Device communicator operations (for device API / GIN support)
+  // Note: devCommCreate sets output pointer via side effect, but we can't
+  // easily mock SetArgPointee with ncclDevComm struct, so just return success
+  ON_CALL(*this, devCommCreate(_, _, _)).WillByDefault(Return(ncclSuccess));
+  ON_CALL(*this, devCommDestroy(_, _)).WillByDefault(Return(ncclSuccess));
+#endif
 }
 
 void NcclxMock::reset() {
