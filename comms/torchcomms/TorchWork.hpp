@@ -3,6 +3,7 @@
 #pragma once
 
 #include <c10/util/intrusive_ptr.h>
+#include <chrono>
 #include <functional>
 #include <future>
 
@@ -41,6 +42,13 @@ class TorchWork : public c10::intrusive_ptr_target {
 
   // Pure virtual functions that derived classes must implement
   virtual void wait() = 0;
+
+  // Returns the timeout for this work object.
+  // Derived classes with timeout support should override this.
+  // Returns max() by default for work types that don't support timeout.
+  virtual std::chrono::milliseconds getTimeout() const {
+    return std::chrono::milliseconds::max();
+  }
 
   // Disable copy and move semantics
   TorchWork(const TorchWork&) = delete;

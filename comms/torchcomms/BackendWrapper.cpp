@@ -116,6 +116,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
   BroadcastOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->broadcast(
       tensors.at(0), static_cast<int>(opts.rootRank), opts.asyncOp, bopts));
@@ -132,6 +134,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce(
   AllReduceOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->all_reduce(
       tensors.at(0), toReduceOp(opts.reduceOp), opts.asyncOp, bopts));
@@ -148,6 +152,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allreduce_coalesced(
   AllReduceOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->all_reduce(
       tensors.at(0), toReduceOp(opts.reduceOp), opts.asyncOp, bopts));
@@ -164,6 +170,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce(
   ReduceOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->reduce(
       tensors.at(0),
@@ -188,6 +196,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather(
   AllGatherOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->all_gather(
       outputTensors.at(0), inputTensors.at(0), opts.asyncOp, bopts));
@@ -208,6 +218,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_coalesced(
   AllGatherOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->all_gather(
       outputTensorLists.at(0), inputTensors.at(0), opts.asyncOp, bopts));
@@ -231,6 +243,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::allgather_into_tensor_coalesced(
   AllGatherSingleOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->all_gather_single(
       output_tensors.at(0), inputTensors.at(0), opts.asyncOp, bopts));
@@ -243,6 +257,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::_allgather_base(
   AllGatherSingleOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->all_gather_single(
       outputTensor, inputTensor, opts.asyncOp, bopts));
@@ -263,6 +279,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::gather(
   GatherOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->gather(
       outputTensors.at(0),
@@ -280,7 +298,11 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::scatter(
       "Only single output tensor supported, but got ",
       outputTensors.size());
   ScatterOptions bopts;
-  bopts.timeout = opts.timeout;
+  if (opts.timeout != kUnsetTimeout) {
+    bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
+  }
   if (getRank() == opts.rootRank) {
     TORCH_CHECK(
         inputTensors.size() == 1,
@@ -314,6 +336,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter(
   ReduceScatterOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->reduce_scatter(
       outputTensors.at(0),
@@ -341,6 +365,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::reduce_scatter_tensor_coalesced(
   ReduceScatterSingleOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->reduce_scatter_single(
       outputTensors.at(0),
@@ -357,6 +383,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::_reduce_scatter_base(
   ReduceScatterSingleOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->reduce_scatter_single(
       outputTensor,
@@ -375,6 +403,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::alltoall_base(
   AllToAllvSingleOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(backend_->all_to_all_v_single(
       outputTensor,
@@ -400,6 +430,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::alltoall(
   AllToAllOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(
       backend_->all_to_all(outputTensors, inputTensors, opts.asyncOp, bopts));
@@ -410,6 +442,8 @@ c10::intrusive_ptr<c10d::Work> BackendWrapper::barrier(
   BarrierOptions bopts;
   if (opts.timeout != kUnsetTimeout) {
     bopts.timeout = opts.timeout;
+  } else {
+    bopts.timeout = options_->timeout;
   }
   return c10::make_intrusive<WorkWrapper>(
       backend_->barrier(opts.asyncOp, bopts));
@@ -449,6 +483,22 @@ c10::intrusive_ptr<c10d::Backend::Options> BackendWrapper::getBackendOptions() {
   return c10::static_intrusive_pointer_cast<c10d::Backend::Options>(options_);
 }
 
+bool BackendWrapper::verifyWorkTimeoutForTest(
+    const c10::intrusive_ptr<c10d::Work>& work,
+    const std::chrono::milliseconds& timeout) {
+  // The work must be a WorkWrapper that wraps a TorchWork
+  auto workWrapper = c10::dynamic_intrusive_pointer_cast<WorkWrapper>(work);
+  if (!workWrapper) {
+    TORCH_CHECK(false, "Work is not a WorkWrapper");
+  }
+
+  // Get the timeout from the underlying TorchWork
+  return workWrapper->work_->getTimeout() == timeout;
+}
+
+void BackendWrapper::setTimeout(std::chrono::milliseconds timeout) {
+  options_->timeout = timeout;
+}
 c10::intrusive_ptr<c10d::Backend> BackendWrapper::split(
     const c10::intrusive_ptr<c10d::Store>& /* store */,
     const std::vector<int>& ranks,
