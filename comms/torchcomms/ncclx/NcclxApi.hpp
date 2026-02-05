@@ -3,6 +3,7 @@
 #pragma once
 
 #include <exception>
+#include <mutex>
 #include <string>
 
 #include <glog/logging.h>
@@ -572,6 +573,9 @@ class DefaultNcclxApi : public NcclxApi {
       ncclComm_t comm) override;
   [[nodiscard]] ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm)
       override;
+
+ private:
+  mutable std::mutex api_mutex_;
 };
 
 } // namespace torch::comms
