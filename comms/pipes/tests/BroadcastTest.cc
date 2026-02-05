@@ -261,6 +261,16 @@ TEST_P(BroadcastParamTest, DataTransfer) {
             numBlocks,
             blockSize);
         break;
+      case BroadcastAlgorithm::Ring:
+        test::testBroadcastRing(
+            nullptr,
+            globalRank,
+            rootRank,
+            transports_span,
+            0,
+            numBlocks,
+            blockSize);
+        break;
       default:
         GTEST_SKIP() << "Broadcast algorithm " << algorithmName
                      << " not implemented yet";
@@ -330,7 +340,16 @@ TEST_P(BroadcastParamTest, DataTransfer) {
           numBlocks,
           blockSize);
       break;
-      // TODO: add support for ring.
+    case BroadcastAlgorithm::Ring:
+      test::testBroadcastRing(
+          buffer.get(),
+          globalRank,
+          rootRank,
+          transports_span,
+          numBytes,
+          numBlocks,
+          blockSize);
+      break;
     default:
       GTEST_SKIP() << "Broadcast algorithm " << algorithmName
                    << " not implemented yet";
@@ -548,6 +567,60 @@ INSTANTIATE_TEST_SUITE_P(
             .rootRank = 7,
             .algorithm = BroadcastAlgorithm::BinomialTree,
             .testName = "binomial_128KB_last_root"}),
+    [](const ::testing::TestParamInfo<BroadcastTestParams>& info) {
+      return info.param.testName;
+    });
+
+// Ring algorithm tests (designed for messages >= 1MB)
+// Tests the bandwidth-optimized ring algorithm with various message sizes
+INSTANTIATE_TEST_SUITE_P(
+    RingConfigs,
+    BroadcastParamTest,
+    ::testing::Values(
+        // At ring threshold (1MB), root=0
+        BroadcastTestParams{
+            .numBlocks = 8,
+            .blockSize = 512,
+            .numBytes = 1024 * 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::Ring,
+            .testName = "ring_1MB_root0"},
+
+        // Large message (2MB), root=0
+        BroadcastTestParams{
+            .numBlocks = 16,
+            .blockSize = 512,
+            .numBytes = 2 * 1024 * 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::Ring,
+            .testName = "ring_2MB_root0"},
+
+        // Large message (4MB), middle root
+        BroadcastTestParams{
+            .numBlocks = 16,
+            .blockSize = 512,
+            .numBytes = 4 * 1024 * 1024,
+            .rootRank = -1,
+            .algorithm = BroadcastAlgorithm::Ring,
+            .testName = "ring_4MB_middle_root"},
+
+        // Very large message (8MB), root=0
+        BroadcastTestParams{
+            .numBlocks = 16,
+            .blockSize = 512,
+            .numBytes = 8 * 1024 * 1024,
+            .rootRank = 0,
+            .algorithm = BroadcastAlgorithm::Ring,
+            .testName = "ring_8MB_root0"},
+
+        // Boundary test: last rank as root
+        BroadcastTestParams{
+            .numBlocks = 16,
+            .blockSize = 512,
+            .numBytes = 2 * 1024 * 1024,
+            .rootRank = 7,
+            .algorithm = BroadcastAlgorithm::Ring,
+            .testName = "ring_2MB_last_root"}),
     [](const ::testing::TestParamInfo<BroadcastTestParams>& info) {
       return info.param.testName;
     });
