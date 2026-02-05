@@ -385,7 +385,7 @@ ncclResult_t DefaultNcclxApi::winSharedQuery(
 
 ncclResult_t
 DefaultNcclxApi::winSignal(int peer, NcclxWindow win, cudaStream_t stream) {
-  return ncclSignal(peer, 0, peer, win, stream);
+  return ncclSignal(peer, win, stream);
 }
 
 ncclResult_t
