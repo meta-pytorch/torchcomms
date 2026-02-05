@@ -438,7 +438,7 @@ class AsyncWorkVariable(VariableTracker):
                         local_name = None
                         # LocalSource (function parameters)
                         if hasattr(source, "local_name"):
-                            local_name = source.local_name
+                            local_name = source.local_name  # pyre-ignore[16]
                         # other source types that might have name()
                         elif hasattr(source, "name") and callable(source.name):
                             local_name = source.name()
