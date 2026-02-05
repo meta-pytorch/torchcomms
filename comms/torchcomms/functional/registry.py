@@ -12,16 +12,13 @@ from torchcomms.functional.async_tensor import (
     _wrap_result_with_registered_work,
     FakeWork,
 )
-from torchcomms.functional.param_parsing import (
-    _TYPE_NAME_TO_CLASS,
-    CollectiveParamSchema,
-    ParamSpec,
-)
+from torchcomms.functional.param_parsing import CollectiveParamSchema, ParamSpec
 
 
 logger = logging.getLogger(__name__)
 
 _REGISTERED_COLLECTIVES: dict[str, dict[str, Any]] = {}
+_METHOD_TO_OP: dict[tuple[type, str], dict[str, Any]] = {}
 
 
 def _pack_result(results: list) -> Any:
@@ -78,6 +75,12 @@ def register_collective(
     }
     _REGISTERED_COLLECTIVES[op_name] = collective_info
 
+    _METHOD_TO_OP[(target_class, name)] = {
+        "op_name": op_name,
+        **collective_info,
+    }
+    _register_dynamo_method_handler(target_class, name)
+
     logger.info(
         f"Registered collective: {op_name} (method={name}, "
         f"inputs={[p.name for p in param_schema.input_params]}, "
@@ -87,6 +90,49 @@ def register_collective(
     )
 
     return method
+
+
+def _register_dynamo_method_handler(
+    target_class: type,
+    method_name: str,
+) -> None:
+    """Register a DynamoCallMethod handler for a collective method on its opaque type.
+
+    This is called immediately during register_collective() so that the method
+    is available to dynamo as soon as it's registered, eliminating timing issues.
+
+    Args:
+        target_class: The class this method belongs to (e.g., TorchComm)
+        method_name: The method name (e.g., "all_reduce")
+    """
+    from torch._library.opaque_object import (
+        DynamoCallMethod,
+        get_opaque_obj_info,
+        get_opaque_type_name,
+        is_opaque_type,
+    )
+
+    if not is_opaque_type(target_class):
+        logger.debug(
+            f"Skipping dynamo handler for {target_class.__name__}.{method_name}: "
+            f"not yet registered as opaque type"
+        )
+        return
+
+    opaque_name = get_opaque_type_name(target_class)
+    type_info = get_opaque_obj_info(opaque_name)
+    if type_info is None:
+        logger.warning(
+            f"Opaque type info not found for {target_class.__name__}, "
+            f"method {method_name} will not be registered with dynamo"
+        )
+        return
+
+    from torchcomms.functional.dynamo import _create_method_call_factory
+
+    handler = _create_method_call_factory(target_class, method_name)
+    type_info.members[method_name] = DynamoCallMethod(handler)
+    logger.info(f"Registered DynamoCallMethod: {target_class.__name__}.{method_name}")
 
 
 # Track functional ops created for autograd (for effectful registration)
@@ -932,16 +978,12 @@ def _patch_eager_methods() -> None:
 
     This ensures proper behavior during tracing where meta/fake tensors should not
     hit the real C++ collective implementations.
+
+    All registered ops are patched so that FakeScriptObject can use the patched methods directly.
     """
     # Group registered collectives by target class
     class_methods: dict[type, list[tuple[str, dict]]] = {}
     for op_name, info in _REGISTERED_COLLECTIVES.items():
-        schema = info["param_schema"]
-
-        # Only patch mutating ops (they have functional versions)
-        if len(schema.mutable_params) == 0:
-            continue
-
         target_class = info["target_class"]
         if target_class not in class_methods:
             class_methods[target_class] = []
@@ -951,10 +993,11 @@ def _patch_eager_methods() -> None:
         """Create a wrapper that dispatches to the functional op for tracing and autograd.
 
         When tensors require grad or are fake/meta tensors (during torch.compile),
-        we dispatch to the inplace op which has proper kernels registered for
+        we dispatch to the appropriate op which has proper kernels registered for
         autograd, FakeTensor, and Meta modes.
         """
         wrapper_schema = info["param_schema"]
+        has_mutable_params = len(wrapper_schema.mutable_params) > 0
 
         def wrapper(self, *args, **kwargs):
             # Parse args using schema
@@ -970,15 +1013,23 @@ def _patch_eager_methods() -> None:
             )
 
             if not has_requires_grad and not in_tracing_context:
-                _register_tensors_with_coalescing(parsed.get_mutable_outputs())
+                if has_mutable_params:
+                    _register_tensors_with_coalescing(parsed.get_mutable_outputs())
                 return original_method(self, *args, **kwargs)
 
-            # Use the inplace op - it has Autograd kernel registered that handles
-            # gradient tracking for all tensor types including tensor lists
-            inplace_op_name = op_name + "_"
-            result = getattr(torch.ops.torchcomms, inplace_op_name)(*parsed.to_values())
+            # Dispatch to the appropriate torch op
+            if has_mutable_params:
+                # Use the inplace op - it has Autograd kernel registered that handles
+                # gradient tracking for all tensor types including tensor lists
+                torch_op = getattr(torch.ops.torchcomms, op_name + "_")
+            else:
+                # Non-mutating ops use the regular op
+                torch_op = getattr(torch.ops.torchcomms, op_name)
 
-            _register_tensors_with_coalescing(result)
+            result = torch_op(*parsed.to_values())
+
+            if has_mutable_params:
+                _register_tensors_with_coalescing(result)
 
             async_op = parsed.get_value("async_op") or False
 
@@ -1070,10 +1121,7 @@ def _register_effectful_ops() -> None:
 
 def finalize_registration(lib: Any) -> None:
     """Finalize registration of all collectives."""
-    from torchcomms.functional.dynamo import (
-        _patch_dynamo_for_opaque_methods,
-        register_with_dynamo,
-    )
+    from torchcomms.functional.dynamo import register_with_dynamo
     from torchcomms.functional.functional_backend import (
         register_torchcomms_funcols_impl,
     )
@@ -1084,10 +1132,6 @@ def finalize_registration(lib: Any) -> None:
     )
     _generate_lib_ops(lib)
     _register_effectful_ops()
-    _patch_dynamo_for_opaque_methods(
-        _REGISTERED_COLLECTIVES,
-        _TYPE_NAME_TO_CLASS,
-    )
     register_torchcomms_lowerings()
     register_with_dynamo()
 
