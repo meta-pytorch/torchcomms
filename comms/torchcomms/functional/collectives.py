@@ -327,6 +327,44 @@ if lib is not None:
         work = ctx.comm.all_to_all_single(grad_input, grad_output, async_op=True)
         return _maybe_wrap_tensor(grad_input, work)
 
+    def _all_to_all_v_single_setup_context(ctx, inputs, output):
+        """Save context for all_to_all_v_single backward.
+
+        For functional version (all input params included):
+        - inputs: (comm, output, input, output_split_sizes, input_split_sizes,
+                   async_op, hints, timeout)
+        - output: The all_to_all output tensor (returned from functional op)
+        """
+        ctx.comm = inputs[0]
+        ctx.output_split_sizes = inputs[3]
+        ctx.input_split_sizes = inputs[4]
+
+    def _all_to_all_v_single_backward(ctx, grad_output):
+        """Backward for all_to_all_v_single.
+
+        all_to_all backward is all_to_all with reversed split sizes.
+        Forward: output_split_sizes, input_split_sizes
+        Backward: input_split_sizes, output_split_sizes (swapped)
+
+        Returns only input tensor gradients - the wrapper expands to full tuple.
+        Non-mutable tensor input: input -> returns grad_input
+        """
+        grad_output = grad_output.contiguous()
+
+        # compute output size from reversed splits (input_split_sizes becomes output)
+        grad_input_size = list(grad_output.size())
+        grad_input_size[0] = sum(ctx.input_split_sizes)
+        grad_input = grad_output.new_empty(grad_input_size)
+
+        work = ctx.comm.all_to_all_v_single(
+            grad_input,
+            grad_output,
+            ctx.input_split_sizes,  # was output, now input
+            ctx.output_split_sizes,  # was input, now output
+            async_op=True,
+        )
+        return _maybe_wrap_tensor(grad_input, work)
+
     def _reduce_scatter_setup_context(ctx, inputs, output):
         """Save context for reduce_scatter backward.
 
@@ -659,6 +697,8 @@ if lib is not None:
             ),
             ParamSpec("timeout", ParamKind.EXTRA, Timeout | None, default_value=None),
         ],
+        backward_fn=_all_to_all_v_single_backward,
+        setup_context_fn=_all_to_all_v_single_setup_context,
     )
 
     # all_to_all: all-to-all with tensor lists
