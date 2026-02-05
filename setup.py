@@ -40,6 +40,7 @@ USE_GLOO = flag_enabled("USE_GLOO", True)
 USE_RCCL = flag_enabled("USE_RCCL", False)
 USE_RCCLX = flag_enabled("USE_RCCLX", False)
 USE_XCCL = flag_enabled("USE_XCCL", False)
+USE_HCCL = flag_enabled("USE_HCCL", False)
 IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
 # Transport is CUDA-only; disable by default on ROCm but allow explicit opt-in.
 USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
@@ -129,6 +130,7 @@ class build_ext(build_ext_orig):
             f"-DUSE_RCCL={flag_str(USE_RCCL)}",
             f"-DUSE_RCCLX={flag_str(USE_RCCLX)}",
             f"-DUSE_XCCL={flag_str(USE_XCCL)}",
+            f"-DUSE_HCCL={flag_str(USE_HCCL)}",
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
         ]
         build_args = ["--", "-j"]
@@ -180,6 +182,10 @@ if USE_XCCL:
     ext_modules += [
         CMakeExtension("torchcomms._comms_xccl"),
     ]
+if USE_HCCL:
+    ext_modules += [
+        CMakeExtension("torchcomms._comms_hccl"),
+    ]
 if USE_TRANSPORT:
     ext_modules += [
         CMakeExtension("torchcomms._transport"),
@@ -198,6 +204,7 @@ setup(
             "rccl = torchcomms._comms_rccl",
             "rcclx = torchcomms._comms_rcclx",
             "xccl = torchcomms._comms_xccl",
+            "hccl = torchcomms._comms_hccl",
             "dummy = torchcomms._comms",
         ]
     },
