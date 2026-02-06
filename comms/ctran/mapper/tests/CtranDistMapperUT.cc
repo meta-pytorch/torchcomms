@@ -841,7 +841,7 @@ TEST_P(CtranDistMapperBufExportParam, BufExportCtrl) {
 
   COMMCHECK_TEST(mapper->deregMem(segHandle, skipRemRelease));
   if (!skipRemRelease) {
-    auto ipcRegCache = mapper->ipcRegCachePtr();
+    auto ipcRegCache = ctran::IpcRegCache::getInstance();
     if (remoteAccessKeys.backend == CtranMapperBackend::NVL) {
       while (ipcRegCache->getNumRemReg(remoteAccessKeys.nvlKey.peerId) > 0) {
         std::this_thread::yield();
