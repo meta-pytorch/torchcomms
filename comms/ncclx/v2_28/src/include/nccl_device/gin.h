@@ -9,7 +9,7 @@
 #include "core.h"
 #include "gin/gin_device_common.h"
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 struct ncclGinCtx; // Definition in nccl_device/gin/gin_device_host_common.h
 template<unsigned> struct ncclGinCtx_M; // ...
 
@@ -40,7 +40,7 @@ using ncclGin = ncclGin_BackendMask<NCCL_GIN_BACKEND_MASK_ALL>;
 
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned backendMask>
 struct ncclGin_BackendMask {
   ncclDevComm const& comm;
