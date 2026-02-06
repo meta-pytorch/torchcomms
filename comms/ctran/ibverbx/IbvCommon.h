@@ -22,6 +22,12 @@ constexpr int kIbMaxCqe_ = 100;
 constexpr int kNotifyBit = 31;
 constexpr uint32_t kSeqNumMask = 0xFFFFFF; // 24 bits
 
+// Scatter-gather constants
+constexpr int kMaxScatterGatherElements =
+    256; // Max total scatter-gather elements per operation
+constexpr int kMaxSgBuffersPerWr =
+    32; // Max scatter-gather elements per work request (can be configured)
+
 // Command types for coordinator routing and operations
 enum class RequestType { SEND = 0, RECV = 1, SEND_NOTIFY = 2 };
 enum class LoadBalancingScheme { SPRAY = 0, DQPLB = 1 };
