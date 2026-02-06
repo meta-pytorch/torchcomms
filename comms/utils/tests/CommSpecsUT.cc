@@ -42,6 +42,8 @@ TEST(CommSpecsTest, CommResultToString) {
   EXPECT_STREQ(commResultToString(commInvalidUsage), "commInvalidUsage");
   EXPECT_STREQ(commResultToString(commRemoteError), "commRemoteError");
   EXPECT_STREQ(commResultToString(commInProgress), "commInProgress");
+  EXPECT_STREQ(commResultToString(commTimeout), "commTimeout");
+  EXPECT_STREQ(commResultToString(commUserAbort), "commUserAbort");
 
   // Test invalid result code
   EXPECT_STREQ(commResultToString(static_cast<commResult_t>(100)), "Unknown");
@@ -307,6 +309,8 @@ TEST(ConversionTest, CommCodeStringConversion) {
   EXPECT_STREQ(commCodeToName(commInvalidUsage), "commInvalidUsage");
   EXPECT_STREQ(commCodeToName(commRemoteError), "commRemoteError");
   EXPECT_STREQ(commCodeToName(commInProgress), "commInProgress");
+  EXPECT_STREQ(commCodeToName(commTimeout), "commTimeout");
+  EXPECT_STREQ(commCodeToName(commUserAbort), "commUserAbort");
   EXPECT_STREQ(commCodeToName(commNumResults), "commNumResults");
   EXPECT_STREQ(
       commCodeToName(static_cast<commResult_t>(100)), "unknown result code");
@@ -332,6 +336,8 @@ TEST(ConversionTest, CommCodeStringConversion) {
       commCodeToString(commRemoteError),
       "remote process exited or there was a network error");
   EXPECT_STREQ(commCodeToString(commInProgress), "NCCL operation in progress");
+  EXPECT_STREQ(commCodeToString(commTimeout), "operation timed out");
+  EXPECT_STREQ(commCodeToString(commUserAbort), "operation aborted by user");
   EXPECT_STREQ(commCodeToString(commNumResults), "numericall error");
   EXPECT_STREQ(
       commCodeToString(static_cast<commResult_t>(100)), "unknown result code");
