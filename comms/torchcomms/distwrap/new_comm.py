@@ -227,24 +227,22 @@ def destroy_process_group(group: ProcessGroup | None = None) -> None:
 
 
 def split_group(  # noqa: C901
-    group: ProcessGroup | None = None,
+    parent_pg: ProcessGroup | None = None,
     split_ranks: list[list[int]] | None = None,
     timeout: timedelta | None = None,
     pg_options: Any | None = None,
     group_desc: str | None = None,
     # Extension API
     backend: str | None = None,
-) -> ProcessGroup:
+) -> ProcessGroup | None:
     if not dist.is_initialized():
         raise AssertionError("split_group called before init_process_group")
 
     # Default to WORLD if no group specified
-    if group is None:
+    if parent_pg is None:
         parent_pg = dist.group.WORLD
         if parent_pg is None:
             raise AssertionError("World process group is not initialized")
-    else:
-        parent_pg = group
     pg_info_assert_registered(parent_pg)
 
     if split_ranks is None:
