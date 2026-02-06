@@ -841,17 +841,12 @@ TEST_P(CtranDistMapperBufExportParam, BufExportCtrl) {
 
   COMMCHECK_TEST(mapper->deregMem(segHandle, skipRemRelease));
   if (!skipRemRelease) {
-    // necessary sync ctrl-msg to progress the runCb for NVL_RELEASE_MEM
-    CtranMapperEpochRAII epochRAII(mapper);
-    CtranMapperRequest *sReq = nullptr, *rReq = nullptr;
-    COMMCHECK_TEST(mapper->isendCtrl(sendPeer, &sReq));
-    COMMCHECK_TEST(mapper->irecvCtrl(recvPeer, &rReq));
-    COMMCHECK_TEST(mapper->waitRequest(sReq));
-    COMMCHECK_TEST(mapper->waitRequest(rReq));
+    auto ipcRegCache = mapper->ipcRegCachePtr();
     if (remoteAccessKeys.backend == CtranMapperBackend::NVL) {
-      assert(
-          mapper->ipcRegCachePtr()->getNumRemReg(
-              remoteAccessKeys.nvlKey.peerId) == 0);
+      while (ipcRegCache->getNumRemReg(remoteAccessKeys.nvlKey.peerId) > 0) {
+        std::this_thread::yield();
+      }
+      ASSERT_EQ(ipcRegCache->getNumRemReg(remoteAccessKeys.nvlKey.peerId), 0);
     }
   }
   NCCLCHECK_TEST(ncclMemFree(buf));

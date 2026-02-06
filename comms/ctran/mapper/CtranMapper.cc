@@ -13,6 +13,7 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/StrUtils.h"
@@ -26,6 +27,7 @@
 #endif
 
 using namespace ncclx;
+using namespace ctran;
 namespace {
 std::vector<CtranMapperBackend> getToEnableBackends(
     const std::vector<CommBackend>& overrideBackend) {
@@ -78,6 +80,10 @@ CtranMapper::CtranMapper(CtranComm* comm) {
   this->ipcRegCache_->init(statex->cudaDev(), &this->logMetaData_);
 
   this->comm = comm;
+
+  // AllGather IPC server addresses after comm is set
+  FB_COMMCHECKTHROW_EX(allGatherIpcServerAddrs(), comm->logMetaData_);
+
   auto backendsToEnable = getToEnableBackends(comm->config_.backends);
 
   iPutCount = std::vector<int>(CtranMapperBackend::NUM_BACKENDS, 0);
@@ -142,8 +148,6 @@ CtranMapper::CtranMapper(CtranComm* comm) {
     if (this->ctranIb || this->ctranSock || this->ctranTcpDm) {
       try {
         this->ctranNvl = std::make_unique<class CtranNvl>(comm);
-        this->ctrlMgr->regCb(
-            ControlMsgType::NVL_RELEASE_MEM, releaseMemCb, this /* ctx */);
       } catch ([[maybe_unused]] const std::bad_alloc& e) {
         enableBackends_[CtranMapperBackend::NVL] = false;
         // FIXME: give more specific exception + error message
@@ -396,7 +400,7 @@ CtranMapper::~CtranMapper() {
 
   this->reportProfiling(true);
 
-  // Release any pending CB_CTRL requests;
+  // Release any pending IPC release requests;
   // intentionally avoid progress polling in destructor to ensure it is never
   // blocked.
   this->postedCbCtrlReqs_.clear();
@@ -420,6 +424,31 @@ commResult_t CtranMapper::epochUnlock() {
   return commSuccess;
 }
 
+commResult_t CtranMapper::allGatherIpcServerAddrs() {
+  const int nRanks = comm->statex_->nRanks();
+  const int myRank = comm->statex_->rank();
+  peerIpcServerAddrs_.resize(nRanks);
+
+  ipcRegCache_->getServerAddr().getAddress(&peerIpcServerAddrs_[myRank]);
+  auto resFuture = comm->bootstrap_->allGather(
+      peerIpcServerAddrs_.data(), sizeof(sockaddr_storage), myRank, nRanks);
+  FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
+
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-MAPPER: AllGathered IPC server addresses from {} ranks",
+      nRanks);
+  return commSuccess;
+}
+
+folly::SocketAddress CtranMapper::getPeerIpcServerAddr(int rank) const {
+  folly::SocketAddress addr;
+  addr.setFromSockaddr(
+      reinterpret_cast<const sockaddr*>(&peerIpcServerAddrs_[rank]));
+  return addr;
+}
+
 commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
   if (!this->atDestruction) {
     // Notify remote rank to release previous imported memory via NVL backend.
@@ -427,59 +456,30 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
     // any remaining imported memory at destruction.
     auto exportedNvlRanks = exportRegCache_.wlock()->remove(regElem);
     for (auto peerRank : exportedNvlRanks) {
-      // We ensure the remote rank always release before next import because
-      // all control messages to the given peer are transferred in order via a
-      // single vc's control channel. This guarantee can prevent the remote rank
-      // misuse a previously imported and cached segment if the same vaddr of
-      // the segment is reused in a future importing segment but mapped to a
-      // different range.
+      // Warning: the remote rank may release the memory after the next import,
+      // becase exportMem msgs are transfered over CtranIB&CtranSocket while
+      // releaseMem msgs are transfered over AsyncSocket. To prevent the remote
+      // rank from misusing a previously imported&cached but invalid segment, we
+      // add version ID to each exported segment
 
-      auto backend =
-          ctranIb ? CtranMapperBackend::IB : CtranMapperBackend::SOCKET;
-      std::unique_ptr<CbCtrlRequest> req =
-          std::make_unique<CbCtrlRequest>(peerRank, backend);
-
-      req->msg.setType(ControlMsgType::NVL_RELEASE_MEM);
-      ctran::IpcRegCache::remReleaseMem(regElem->ipcRegElem, req->msg.ipcRls);
-      if (this->ctranIb) {
-        FB_COMMCHECK(this->ctranIb->isendCtrlMsg(
-            req->msg.type,
-            &req->msg,
-            sizeof(ControlMsg),
-            peerRank,
-            req->ibReq));
-      } else if (this->ctranSock) {
-        FB_COMMCHECK(
-            this->ctranSock->isendCtrlMsg(req->msg, peerRank, req->sockReq));
-      }
-      // TCPDM does not share local memory registration with the remote
-      // and does not need to release it.
+      folly::SocketAddress peerAddr = getPeerIpcServerAddr(peerRank);
+      std::unique_ptr<regcache::IpcReqCb> req =
+          std::make_unique<regcache::IpcReqCb>();
+      FB_COMMCHECK(ipcRegCache_->notifyRemoteIpcRelease(
+          comm->statex_->gPid(),
+          peerAddr,
+          reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
+          req.get()));
 
       CLOGF_TRACE(
-          COLL,
-          "CTRAN-MAPPER: Posted CB ctrlmsg to rank {}: {}",
-          peerRank,
-          req->msg.toString());
+          COLL, "CTRAN-MAPPER: Posted IPC release to rank {}", peerRank);
 
-      // cbCtrl requests will be checked in progress and erase & free at
-      // completion. mapper needs to free up all cbCtrl requests at destruction.
+      // IPC release requests will be checked in progress and erased at
+      // completion. Mapper needs to free up all requests at destruction.
       this->postedCbCtrlReqs_.push_back(std::move(req));
     }
   }
 
-  return commSuccess;
-}
-
-commResult_t CtranMapper::releaseMemCb(int rank, void* msgPtr, void* ctx) {
-  auto mapper = reinterpret_cast<CtranMapper*>(ctx);
-  auto msg = reinterpret_cast<ControlMsg*>(msgPtr);
-  CLOGF_TRACE(
-      COLL,
-      "CTRAN-MAPPER: Handle received CB ctrlmsg from rank {}: {}",
-      rank,
-      msg->toString());
-  FB_COMMCHECK(mapper->ipcRegCache_->releaseRemReg(
-      mapper->comm->statex_->gPid(rank), msg->ipcRls.base, msg->ipcRls.uid));
   return commSuccess;
 }
 
