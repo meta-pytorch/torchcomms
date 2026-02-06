@@ -1,0 +1,88 @@
+name: Build RCCL
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+      id-token: write
+      contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: RCCLX
+            runs-on: amd-mi350-runner
+            gpu-arch-type: "rocm"
+            gpu-arch-version: "7.0"
+            torch-spec: '--pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.0'
+            docker-image: pytorch/manylinux2_28-builder:rocm7.0
+            cmake-version: "latest"
+    uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
+    with:
+      timeout: 180
+      runner: ${{ matrix.runs-on }}
+      gpu-arch-type: ${{ matrix.gpu-arch-type }}
+      gpu-arch-version: ${{ matrix.gpu-arch-version }}
+      script: |
+        set -ex
+        # use faster libmamba solver
+        conda config --set solver libmamba
+
+        # TODO: remove dependency on fbwhoami
+        echo "DEVICE_NAME=$(hostname)" > /etc/fbwhoami
+        cat /etc/fbwhoami
+
+        # For picking C++ 20 compiler from toolset-13
+        export PATH=/opt/rh/gcc-toolset-13/root/usr/bin:$PATH
+        export CXX=/opt/rh/gcc-toolset-13/root/usr/bin/c++
+        export CC=/opt/rh/gcc-toolset-13/root/usr/bin/cc
+
+        conda create -n venv python=3.12 -y
+        conda activate venv
+        python -m pip install --upgrade pip
+        conda install conda-forge::libopenssl-static conda-forge::rsync -y
+        conda install conda-forge::glog=0.4.0 conda-forge::gflags conda-forge::fmt -y
+
+        pip install --pre torch --index-url https://download.pytorch.org/whl/nightly/rocm7.0
+
+        if [ "${{ matrix.cmake-version }}" = "latest" ]; then
+          conda install -y cmake
+        else # default to latest
+          conda install -y cmake==${{ matrix.cmake-version }}
+        fi
+
+        pip install -r requirements.txt
+
+        export BUILD_DIR=${PWD}/comms/rcclx/develop/build/release/build
+        export ROCM_HOME=/opt/rocm
+        export RCCLX_INCLUDE=${BUILD_DIR}/include/rccl
+        export RCCLX_LIB=${BUILD_DIR}/lib
+
+        ./build_rcclx.sh
+        pip install numpy
+        USE_SYSTEM_LIBS=1 USE_NCCL=0 USE_NCCLX=0 USE_GLOO=0 USE_RCCL=0 USE_RCCLX=1 USE_TRANSPORT=OFF pip install --no-build-isolation -v -e .
+
+        # Verify installation
+        python -c "import torch; print(f'PyTorch version: {torch.__version__}')"
+        python -c "import torch; print(f'HIP available: {torch.cuda.is_available()}')"
+        python -c "import torchcomms; print('TorchComms imported successfully')"
+
+        # Test RCCLX backend availability
+        python -c "
+        import torchcomms
+        try:
+            comm = torchcomms.new_comm('rcclx', torch.device('hip'), 'test_comm')
+            print('RCCLX backend available')
+        except Exception as e:
+            print(f'RCCLX backend test failed: {e}')
+        "
+
+        # Run integration tests
+        echo "Running RCCL integration tests..."
+        comms/torchcomms/scripts/run_tests_integration_rccl_py.sh
