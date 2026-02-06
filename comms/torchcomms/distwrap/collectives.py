@@ -674,3 +674,53 @@ def broadcast_object_list(
         dist.broadcast_object_list(
             object_list, src=src, group=pg, device=device, group_src=group_src
         )
+
+
+# =============================================================================
+# Memory Pool Operations
+# =============================================================================
+
+
+def get_mem_allocator(
+    group: ProcessGroup | None,
+    device: torch.device,
+) -> Any:
+    """
+    Get the memory allocator for the given process group and device.
+
+    Args:
+        group: The process group (None for WORLD).
+        device: The device to get the allocator for.
+
+    Returns:
+        The memory allocator for the specified device.
+    """
+    pg = get_group(group)
+
+    if torchcomms_is_enabled():
+        tc = get_torchcomms_instance(pg, device_type=device.type)
+        return tc.mem_allocator
+    else:
+        return pg._get_backend(device).mem_allocator  # type: ignore[union-attr]
+
+
+def register_mem_pool(
+    group: ProcessGroup | None,
+    device: torch.device,
+    pool: Any,
+) -> None:
+    """
+    Register a memory pool with the process group backend.
+
+    Note: This is a no-op when torchcomms is enabled, as torchcomms manages
+    its own memory pools.
+
+    Args:
+        group: The process group (None for WORLD).
+        device: The device to register the pool for.
+        pool: The memory pool to register.
+    """
+    # We don't need to register the mem pool for torchcomms
+    if not torchcomms_is_enabled():
+        pg = get_group(group)
+        pg._get_backend(device).register_mem_pool(pool)  # type: ignore[union-attr]

@@ -147,6 +147,12 @@ class ExportedFunctionsTest(unittest.TestCase):
     def test__make_nccl_premul_sum_is_exported(self) -> None:
         self.assertTrue(callable(torchcomms.distwrap._make_nccl_premul_sum))
 
+    def test_get_mem_allocator_is_exported(self) -> None:
+        self.assertTrue(callable(torchcomms.distwrap.get_mem_allocator))
+
+    def test_register_mem_pool_is_exported(self) -> None:
+        self.assertTrue(callable(torchcomms.distwrap.register_mem_pool))
+
     def test_new_window_is_exported(self) -> None:
         self.assertTrue(callable(torchcomms.distwrap.new_window))
 
