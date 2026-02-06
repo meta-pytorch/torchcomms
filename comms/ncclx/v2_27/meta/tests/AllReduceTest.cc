@@ -2,7 +2,6 @@
 
 #include <stdlib.h>
 #include <cstddef>
-#include <list>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -20,24 +19,7 @@
 
 #include "meta/wrapper/MetaFactory.h"
 
-// Define a struct to hold all test parameters
-struct AllReduceTestParams {
-  size_t count;
-  ncclDataType_t dataType;
-  bool enableDequant;
-
-  // For test name generation
-  friend std::ostream& operator<<(
-      std::ostream& os,
-      const AllReduceTestParams& params) {
-    return os << "Count_" << params.count << "_Type_" << params.dataType
-              << (params.enableDequant ? "_WithDequant" : "");
-  }
-};
-
-class AllReduceTest
-    : public NcclxBaseTest,
-      public ::testing::WithParamInterface<AllReduceTestParams> {
+class AllReduceTest : public NcclxBaseTest {
  public:
   AllReduceTest() = default;
   void SetUp() override {
@@ -166,53 +148,6 @@ class AllReduceTest
   ncclComm_t comm;
   cudaStream_t stream;
 };
-
-TEST_P(AllReduceTest, DISABLED_AllToAll) {
-  const auto& params = GetParam();
-
-  if (params.dataType == ncclInt32) {
-    run<int>(
-        NCCL_ALLREDUCE_ALGO::ctarg,
-        params.dataType,
-        params.enableDequant,
-        params.count);
-  } else if (params.dataType == ncclBfloat16) {
-    run<__nv_bfloat16>(
-        NCCL_ALLREDUCE_ALGO::ctarg,
-        params.dataType,
-        params.enableDequant,
-        params.count);
-  }
-}
-
-// Instantiate the test suite with different parameter combinations
-std::list<AllReduceTestParams> createTestParams() {
-  std::list<AllReduceTestParams> params;
-  // Int32 tests without dequantization
-  params.push_back(AllReduceTestParams{1, ncclInt32, false});
-  params.push_back(AllReduceTestParams{2, ncclInt32, false});
-  params.push_back(AllReduceTestParams{64, ncclInt32, false});
-  params.push_back(AllReduceTestParams{(1 << 10) - 1, ncclInt32, false});
-  params.push_back(AllReduceTestParams{1 << 20, ncclInt32, false});
-  params.push_back(AllReduceTestParams{1 << 25, ncclInt32, false});
-  params.push_back(
-      AllReduceTestParams{1024 * 1024 * 1024 + 17, ncclInt32, false});
-
-  // BFloat16 tests without dequantization
-  params.push_back(AllReduceTestParams{64, ncclBfloat16, false});
-
-  // BFloat16 tests with dequantization
-  params.push_back(AllReduceTestParams{2, ncclBfloat16, true});
-  params.push_back(AllReduceTestParams{64, ncclBfloat16, true});
-  params.push_back(AllReduceTestParams{(1 << 10) - 1, ncclBfloat16, true});
-
-  return params;
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    AllReduceTests,
-    AllReduceTest,
-    ::testing::ValuesIn(createTestParams()));
 
 class AllReduceHintOverrideTest : public AllReduceTest {};
 
