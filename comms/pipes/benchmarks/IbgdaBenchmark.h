@@ -29,6 +29,21 @@ void launchIbgdaPutSignalWaitLocal(
     cudaStream_t stream);
 
 /**
+ * Launch kernel: Put with signal (non-adaptive routing version)
+ * Uses fused put_signal operation - faster but unsafe with adaptive routing.
+ */
+void launchIbgdaPutSignalNonAdaptiveWaitLocal(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int numThreads,
+    cudaStream_t stream);
+
+/**
  * Launch kernel: Wait for signal from remote
  */
 void launchIbgdaWaitSignal(

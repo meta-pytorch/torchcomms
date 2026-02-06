@@ -21,6 +21,21 @@ __global__ void ibgdaPutSignalWaitLocalKernel(
   }
 }
 
+__global__ void ibgdaPutSignalNonAdaptiveWaitLocalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal) {
+  // Only first thread performs the operation
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    auto work = transport->put_signal_non_adaptive(
+        localBuf, remoteBuf, nbytes, signalId, signalVal);
+    transport->wait_local(work);
+  }
+}
+
 __global__ void ibgdaWaitSignalKernel(
     P2pIbgdaTransportDevice* transport,
     int signalId,
@@ -66,6 +81,23 @@ void launchIbgdaPutSignalWaitLocal(
     cudaStream_t stream) {
   ibgdaPutSignalWaitLocalKernel<<<numBlocks, numThreads, 0, stream>>>(
       transport, localBuf, remoteBuf, nbytes, signalId, signalVal);
+}
+
+void launchIbgdaPutSignalNonAdaptiveWaitLocal(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int numThreads,
+    cudaStream_t stream) {
+  ibgdaPutSignalNonAdaptiveWaitLocalKernel<<<
+      numBlocks,
+      numThreads,
+      0,
+      stream>>>(transport, localBuf, remoteBuf, nbytes, signalId, signalVal);
 }
 
 void launchIbgdaWaitSignal(
