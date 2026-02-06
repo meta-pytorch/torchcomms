@@ -2,6 +2,7 @@
 #pragma once
 
 #include <atomic>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 
@@ -58,18 +59,23 @@ class IpcRegCache {
       ctran::regcache::IpcRelease& ipcRelease);
 
   IpcRegCache();
+  // IpcRegCache is a singleton shared by all communicators and will be
+  // destroyed at program exit.
   ~IpcRegCache();
 
-  // Initialize the cache with CUDA device and logging metadata.
+  static std::shared_ptr<IpcRegCache> getInstance();
+
+  // Initialize the cache with CUDA device.
   // Must be called before using importMem.
-  void init(int cudaDev, const struct CommLogData* logMetaData);
+  void init(int cudaDev);
 
   // Import a remote NVL memory registration from IPC descriptor.
   // The imported memory is cached for reuse across multiple operations.
-  // Requires init() to be called first to set cudaDev and logMetaData.
+  // Requires init() to be called first to set cudaDev.
   // Input arguments:
   //   - peerId: Id of the peer, which should be unique per process instance
   //   - ipcDesc: the remote memory IPC descriptor
+  //   - logMetaData: (optional) logging metadata from the communicator
   // Output arguments:
   //   - buf: the local buffer mapped to the imported remote memory
   //   - remKey: the remoteAccessKey (rkey) of the remote buffer registration
@@ -77,7 +83,8 @@ class IpcRegCache {
       const std::string& peerId,
       const ctran::regcache::IpcDesc& ipcDesc,
       void** buf,
-      struct ctran::regcache::IpcRemHandle* remKey);
+      struct ctran::regcache::IpcRemHandle* remKey,
+      const struct CommLogData* logMetaData = nullptr);
 
   // Export local NVL memory registration for sharing with remote peers.
   // Input arguments:
@@ -148,6 +155,7 @@ class IpcRegCache {
   commResult_t importRemMemImpl(
       const std::string& peerId,
       const ctran::regcache::IpcDesc& ipcDesc,
+      const struct CommLogData* logMetaData,
       void** mappedBase);
 
   // Initialize the AsyncSocket infrastructure for this rank.
@@ -174,7 +182,9 @@ class IpcRegCache {
   folly::Synchronized<IpcRemRegMap> ipcRemRegMap_;
 
   int cudaDev_;
-  const struct CommLogData* logMetaData_;
+
+  // Flag for one-time initialization
+  std::once_flag initFlag_;
 
   // Member variables for AsyncSocket-based remote release mechanism
   std::unique_ptr<folly::ScopedEventBaseThread> asyncSocketEvbThread_;

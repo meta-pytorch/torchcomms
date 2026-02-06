@@ -858,8 +858,6 @@ class CtranMapper {
 
   CtranSocket* ctranSockPtr();
 
-  ctran::IpcRegCache* ipcRegCachePtr();
-
   // number of iput requests made for each backend
   std::vector<int> iPutCount;
   std::vector<int> iGetCount;
@@ -1087,7 +1085,8 @@ class CtranMapper {
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
       FB_COMMCHECK(
-          ipcRegCache_->exportMem(buf, regElem->ipcRegElem, msg.ipcDesc));
+          ctran::IpcRegCache::getInstance()->exportMem(
+              buf, regElem->ipcRegElem, msg.ipcDesc));
 
       // Record the exported remote rank to notify at deregistration
       exportRegCache_.wlock()->record(regElem, rank);
@@ -1136,8 +1135,13 @@ class CtranMapper {
         }
         remKey->backend = CtranMapperBackend::NVL;
         const std::string peerId = comm->statex_->gPid(rank);
-        FB_COMMCHECK(ipcRegCache_->importMem(
-            peerId, msg.ipcDesc, buf, &(remKey->nvlKey)));
+        FB_COMMCHECK(
+            ctran::IpcRegCache::getInstance()->importMem(
+                peerId,
+                msg.ipcDesc,
+                buf,
+                &(remKey->nvlKey),
+                &this->logMetaData_));
         break;
       }
       default:
@@ -1926,7 +1930,6 @@ class CtranMapper {
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
   std::unique_ptr<class CtranCtrlManager> ctrlMgr{nullptr};
-  std::unique_ptr<class ctran::IpcRegCache> ipcRegCache_{nullptr};
 
   // holds enabled backends when the mapper is created.
   // A unified struct for holding all available backends.
