@@ -34,9 +34,11 @@ class HipMock : public HipApi {
       streamWaitEvent,
       (hipStream_t stream, hipEvent_t event, unsigned int flags),
       (override));
+  // Note: Uses getCurrentCUDAStream because tests go through hipify which
+  // transforms getCurrentHIPStreamMasqueradingAsCUDA to getCurrentCUDAStream
   MOCK_METHOD(
       hipStream_t,
-      getCurrentHIPStreamMasqueradingAsCUDA,
+      getCurrentCUDAStream,
       (int device_index),
       (override));
   MOCK_METHOD(hipError_t, streamSynchronize, (hipStream_t stream), (override));

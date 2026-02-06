@@ -170,8 +170,7 @@ void TorchCommRCCLXBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
     // object.
     store_.reset();
 
-    auto stream =
-        hip_api_->getCurrentHIPStreamMasqueradingAsCUDA(device_.index());
+    auto stream = hip_api_->getCurrentCUDAStream(device_.index());
     ncclResult_t result = rcclx_api_->allReduce(
         barrier_buffer_,
         barrier_buffer_,

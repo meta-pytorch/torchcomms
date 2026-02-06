@@ -57,8 +57,9 @@ class HipApi {
   [[nodiscard]] virtual hipError_t streamDestroy(hipStream_t stream) = 0;
   [[nodiscard]] virtual hipError_t
   streamWaitEvent(hipStream_t stream, hipEvent_t event, unsigned int flags) = 0;
-  virtual hipStream_t getCurrentHIPStreamMasqueradingAsCUDA(
-      int device_index) = 0;
+  // Note: Named getCurrentCUDAStream because hipify transforms
+  // getCurrentHIPStreamMasqueradingAsCUDA to getCurrentCUDAStream
+  virtual hipStream_t getCurrentCUDAStream(int device_index) = 0;
   [[nodiscard]] virtual hipError_t streamSynchronize(hipStream_t stream) = 0;
   [[nodiscard]] virtual hipError_t threadExchangeStreamCaptureMode(
       enum hipStreamCaptureMode* mode) = 0;
@@ -113,7 +114,7 @@ class DefaultHipApi : public HipApi {
       hipStream_t stream,
       hipEvent_t event,
       unsigned int flags) override;
-  hipStream_t getCurrentHIPStreamMasqueradingAsCUDA(int device_index) override;
+  hipStream_t getCurrentCUDAStream(int device_index) override;
   [[nodiscard]] hipError_t streamSynchronize(hipStream_t stream) override;
   [[nodiscard]] hipError_t threadExchangeStreamCaptureMode(
       enum hipStreamCaptureMode* mode) override;

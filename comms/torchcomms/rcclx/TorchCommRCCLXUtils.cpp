@@ -331,7 +331,7 @@ hipStream_t TorchCommRCCLX::getOperationStream(bool async_op) {
   if (async_op) {
     // Get current PyTorch CUDA stream for this device
     hipStream_t current_stream =
-        hip_api_->getCurrentHIPStreamMasqueradingAsCUDA(device_.index());
+        hip_api_->getCurrentCUDAStream(device_.index());
 
     // Record event on current stream and wait for it on internal stream
     HIP_CHECK(
@@ -347,7 +347,7 @@ hipStream_t TorchCommRCCLX::getOperationStream(bool async_op) {
     return internal_stream_;
   } else {
     // Use the current PyTorch CUDA stream for synchronous operations
-    return hip_api_->getCurrentHIPStreamMasqueradingAsCUDA(device_.index());
+    return hip_api_->getCurrentCUDAStream(device_.index());
   }
 }
 
