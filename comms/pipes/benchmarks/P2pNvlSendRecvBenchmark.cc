@@ -9,7 +9,7 @@
 #include "comms/pipes/benchmarks/BenchmarkKernel.cuh"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
 #include "comms/pipes/benchmarks/P2pNvlBenchmarkUtils.h"
-#include "comms/testinfra/mpi/MpiBootstrap.h"
+#include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -20,29 +20,29 @@
 
 using meta::comms::CudaEvent;
 using meta::comms::DeviceBuffer;
-using meta::comms::MpiBaseTestFixture;
-using meta::comms::MPIEnvironmentBase;
 
 namespace comms::pipes::benchmark {
 
-class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
+class P2pSendRecvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    // Initialize bootstrap and rank variables from base class
+    BenchmarkTestFixture::SetUp();
+
     // Use localRank for cudaSetDevice since each node has its own set of GPUs
     // globalRank would fail on multi-node setups where rank > num_gpus_per_node
     CUDA_CHECK_VOID(cudaSetDevice(localRank));
 
     // Initialize NCCL
     NCCL_CHECK_VOID(
-        ncclCommInitRank(&ncclComm_, numRanks, getNCCLId(), globalRank));
+        ncclCommInitRank(&ncclComm_, worldSize, getNCCLId(), globalRank));
     CUDA_CHECK_VOID(cudaStreamCreate(&stream_));
   }
 
   void TearDown() override {
     NCCL_CHECK_VOID(ncclCommDestroy(ncclComm_));
     CUDA_CHECK_VOID(cudaStreamDestroy(stream_));
-    MpiBaseTestFixture::TearDown();
+    BenchmarkTestFixture::TearDown();
   }
 
   ncclUniqueId getNCCLId() {
@@ -54,7 +54,20 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
         std::abort();
       }
     }
-    MPI_CHECK(MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD));
+
+    // Broadcast NCCL ID using bootstrap allGather
+    std::vector<ncclUniqueId> allIds(worldSize);
+    allIds[globalRank] = id;
+    auto result =
+        bootstrap
+            ->allGather(
+                allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
+            .get();
+    if (result != 0) {
+      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      std::abort();
+    }
+    id = allIds[0]; // Take rank 0's ID
     return id;
   }
 
@@ -76,7 +89,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
     CudaEvent start, stop;
 
     // Warmup
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
     for (int i = 0; i < kWarmupIters; i++) {
       if (globalRank == 0) {
         NCCL_CHECK(ncclSend(
@@ -87,7 +100,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
       }
       CUDA_CHECK(cudaStreamSynchronize(stream_));
     }
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     // Benchmark - measure time across all iterations
     // No barrier between iterations - rely on NCCL's internal synchronization
@@ -111,7 +124,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
     // Unidirectional bandwidth: data transferred in one direction / time
     float bandwidth_GBps = (config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     return bandwidth_GBps;
   }
@@ -154,14 +167,14 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
     cudaStream_t stream = isSend ? sendStream : recvStream;
 
     // Warmup
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
     for (int i = 0; i < kWarmupIters; i++) {
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+      bootstrap->barrierAll();
       CUDA_CHECK(
           cudaLaunchKernel(kernelFunc, gridDim, blockDim, args, 0, stream));
       CUDA_CHECK(cudaStreamSynchronize(stream));
     }
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     // Benchmark - measure time across all iterations
     // No barrier between iterations - ChunkState provides synchronization
@@ -183,7 +196,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
     CUDA_CHECK(cudaStreamDestroy(sendStream));
     CUDA_CHECK(cudaStreamDestroy(recvStream));
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     return bandwidth_GBps;
   }
@@ -211,7 +224,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
 
     // Warmup
     XLOGF(DBG1, "Rank {}: NCCL bidi warmup starting", globalRank);
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
     for (int i = 0; i < kWarmupIters; i++) {
       NCCL_CHECK(ncclGroupStart());
       NCCL_CHECK(ncclSend(
@@ -265,7 +278,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
     float bandwidth_GBps =
         (2.0f * config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     return bandwidth_GBps;
   }
@@ -303,7 +316,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
     void* kernelFunc = (void*)comms::pipes::benchmark::p2pBidirectional;
 
     // Warmup - no reset needed, recv() signals -1 after each transfer
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     // Use pointer to cluster dimension for clustered launch
     dim3 defaultClusterDim(comms::common::kDefaultClusterSize, 1, 1);
@@ -317,7 +330,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
               kernelFunc, gridDim, blockDim, args, nullptr, clusterDimOpt));
       CUDA_CHECK(cudaDeviceSynchronize());
     }
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     // Benchmark - measure time across all iterations
     // No barrier between iterations - ChunkState provides synchronization
@@ -338,7 +351,7 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
     float bandwidth_GBps =
         (2.0f * config.nBytes / 1e9f) / (avgTime_ms / 1000.0f);
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     return bandwidth_GBps;
   }
@@ -412,8 +425,8 @@ class P2pSendRecvBenchmarkFixture : public MpiBaseTestFixture {
 
 TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
   // Only test with 2 ranks
-  if (numRanks != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+  if (worldSize != 2) {
+    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -602,9 +615,8 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
         .pipelineDepth = config.pipelineDepth,
     };
 
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     comms::pipes::MultiPeerNvlTransport transport(
-        globalRank, numRanks, bootstrap, p2pConfig);
+        globalRank, worldSize, bootstrap, p2pConfig);
     transport.exchange();
 
     auto p2p = transport.getP2pTransportDevice(peerRank);
@@ -638,8 +650,8 @@ TEST_F(P2pSendRecvBenchmarkFixture, UnidirectionalBenchmark) {
 
 TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
   // Only test with 2 ranks
-  if (numRanks != 2) {
-    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+  if (worldSize != 2) {
+    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
     return;
   }
 
@@ -789,9 +801,8 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
         .pipelineDepth = config.pipelineDepth,
     };
 
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     comms::pipes::MultiPeerNvlTransport transport(
-        globalRank, numRanks, bootstrap, p2pConfig);
+        globalRank, worldSize, bootstrap, p2pConfig);
     transport.exchange();
 
     auto p2p = transport.getP2pTransportDevice(peerRank);
@@ -881,7 +892,13 @@ TEST_F(P2pSendRecvBenchmarkFixture, BidirectionalBenchmark) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
+
+  // Set up distributed environment
+  if (!meta::comms::isTcpEnvironment()) {
+    ::testing::AddGlobalTestEnvironment(
+        new meta::comms::BenchmarkEnvironment());
+  }
+
   return RUN_ALL_TESTS();
 }
