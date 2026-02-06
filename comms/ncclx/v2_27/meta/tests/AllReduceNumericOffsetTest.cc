@@ -101,10 +101,8 @@ class AllReduceNumericOffsetTest : public NcclxBaseTest {
     TYPE *tensorA = nullptr, *tensorB = nullptr;
 
     // create and register buffers
-    FB_COMMCHECKTHROW(ncclToMetaComm(
-        ncclMemAlloc((void**)&tensorA, tensorASize * sizeof(TYPE))));
-    FB_COMMCHECKTHROW(ncclToMetaComm(
-        ncclMemAlloc((void**)&tensorB, tensorBSize * sizeof(TYPE))));
+    NCCLCHECK_TEST(ncclMemAlloc((void**)&tensorA, tensorASize * sizeof(TYPE)));
+    NCCLCHECK_TEST(ncclMemAlloc((void**)&tensorB, tensorBSize * sizeof(TYPE)));
 
     // Initialize tensorA with rank-specific values
     std::vector<TYPE> hostTensorA(tensorASize);

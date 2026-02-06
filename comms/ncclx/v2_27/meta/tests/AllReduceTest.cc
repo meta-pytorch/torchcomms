@@ -120,10 +120,8 @@ class AllReduceTest
 
     // create and register buffers
     // constexpr int count = 1 << 24;
-    FB_COMMCHECKTHROW(
-        ncclToMetaComm(ncclMemAlloc((void**)&sendBuf, count * sizeof(T))));
-    FB_COMMCHECKTHROW(
-        ncclToMetaComm(ncclMemAlloc((void**)&recvBuf, count * sizeof(T))));
+    NCCLCHECK_TEST(ncclMemAlloc((void**)&sendBuf, count * sizeof(T)));
+    NCCLCHECK_TEST(ncclMemAlloc((void**)&recvBuf, count * sizeof(T)));
     assignChunkValue<T>(sendBuf, count, this->globalRank);
 
     void *sendHandle = nullptr, *recvHandle = nullptr;
