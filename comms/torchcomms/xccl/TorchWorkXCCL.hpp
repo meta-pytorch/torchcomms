@@ -44,7 +44,6 @@ class TorchWorkXCCL : public TorchWork {
   TorchWorkXCCL& operator=(TorchWorkXCCL&&) = delete;
 
   // Override virtual functions from TorchWork
-  bool isCompleted() override;
   void wait() override;
   std::chrono::milliseconds getTimeout() const override {
     return timeout_ms_;

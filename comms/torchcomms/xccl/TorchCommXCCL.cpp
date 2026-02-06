@@ -549,11 +549,6 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
       "XCCL split is not supported now and will be added later");
 }
 
-std::shared_ptr<c10::Allocator> TorchCommXCCL::getMemAllocator() {
-  throw std::runtime_error(
-      "XCCL getMemAllocator is not supported now and will be added later");
-}
-
 XCCLException::XCCLException(
     XcclApi& xccl_api,
     const std::string& message,
