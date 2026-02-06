@@ -114,7 +114,7 @@ class TorchCommRCCLXWorkQueueTest : public ::testing::Test {
     ON_CALL(*hip_mock_, streamSynchronize(_)).WillByDefault(Return(hipSuccess));
     ON_CALL(*hip_mock_, streamWaitEvent(_, _, _))
         .WillByDefault(Return(hipSuccess));
-    ON_CALL(*hip_mock_, getCurrentHIPStreamMasqueradingAsCUDA(_))
+    ON_CALL(*hip_mock_, getCurrentCUDAStream(_))
         .WillByDefault(Return(current_stream_));
     ON_CALL(*hip_mock_, getStreamPriorityRange(_, _))
         .WillByDefault(DoAll(
