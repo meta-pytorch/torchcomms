@@ -11,6 +11,7 @@
 #include "comms/torchcomms/BackendWrapper.hpp"
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/TorchCommFlightRecorder.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 
 namespace py = pybind11;
@@ -1574,4 +1575,87 @@ Args:
       )",
       py::arg("backend"),
       py::call_guard<py::gil_scoped_release>());
+
+  // Bind FlightRecorderHook class
+  py::class_<FlightRecorderHook, std::shared_ptr<FlightRecorderHook>>(
+      m,
+      "FlightRecorderHook",
+      R"(
+FlightRecorderHook tracks all collective operations in flight for TorchComm communicators.
+
+The output format matches the OSS FlightRecorder format from PyTorch's
+distributed module, so traces can be analyzed using the same fr_trace
+analysis tools.
+
+Example:
+    >>> comm = torchcomms.new_comm("nccl", device, "world")
+    >>> recorder = torchcomms.FlightRecorderHook(max_entries=1024)
+    >>> recorder.register_with_comm(comm, pg_id=0, pg_desc="default")
+    >>> # ... run some collectives ...
+    >>> json_trace = recorder.dump_json()
+      )")
+      .def(
+          py::init<size_t>(),
+          R"(
+          Create a FlightRecorderHook with specified buffer size.
+
+          Args:
+              max_entries: Maximum number of entries in the ring buffer.
+                          Older entries are overwritten when full.
+          )",
+          py::arg("max_entries") = 2048)
+      .def(
+          "register_with_comm",
+          &FlightRecorderHook::registerWithComm,
+          R"(
+          Register this hook with a TorchComm communicator.
+
+          Args:
+              comm: The communicator to register with.
+              pg_id: Optional process group ID for this communicator.
+              pg_desc: Optional description for this process group.
+          )",
+          py::arg("comm"),
+          py::arg("pg_id") = 0,
+          py::arg("pg_desc") = "",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "unregister",
+          &FlightRecorderHook::unregister,
+          "Unregister this hook from all communicators.",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "dump_json",
+          &FlightRecorderHook::dump_json,
+          R"(
+          Dump all entries as a JSON string in the OSS FlightRecorder format.
+
+          This format is compatible with the fr_trace analyzer tools from
+          torch.distributed.flight_recorder.
+
+          Args:
+              include_completed: If False, only return entries that are not completed.
+
+          Returns:
+              A JSON string containing the flight recorder trace.
+          )",
+          py::arg("include_completed") = true,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "reset",
+          &FlightRecorderHook::reset,
+          "Clear all entries and reset sequence counters.",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "is_enabled",
+          &FlightRecorderHook::isEnabled,
+          "Check if the hook has registered communicators.")
+      .def(
+          "__len__",
+          &FlightRecorderHook::size,
+          "Get the current number of entries.")
+      .def(
+          "size",
+          &FlightRecorderHook::size,
+          "Get the current number of entries.");
 }

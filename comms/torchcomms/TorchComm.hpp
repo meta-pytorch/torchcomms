@@ -244,6 +244,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
     // For split
     const std::vector<int>* ranks{nullptr};
     const std::string* split_name{nullptr};
+    // Unique operation ID to correlate pre-hook and post-hook calls
+    size_t op_id{0};
   };
   using PreHook = std::function<void(PreHookArgs)>;
   struct PostHookArgs {
@@ -251,13 +253,15 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
     std::optional<c10::weak_intrusive_ptr<TorchWork>> work{};
     std::weak_ptr<TorchComm> new_comm{};
     std::weak_ptr<TorchCommWindow> new_window{};
+    // Unique operation ID to correlate pre-hook and post-hook calls
+    size_t op_id{0};
   };
   using PostHook = std::function<void(PostHookArgs)>;
 
   // These are not thread safe and must not be modified while a collective is
   // in progress.
-  RemovableHandle registerPreHook(PreHook preHook);
-  RemovableHandle registerPostHook(PostHook postHook);
+  std::unique_ptr<RemovableHandle> registerPreHook(PreHook preHook);
+  std::unique_ptr<RemovableHandle> registerPostHook(PostHook postHook);
 
   // Disable copy and move semantics
   TorchComm(const TorchComm&) = delete;
@@ -283,7 +287,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       const std::string& backend,
       std::shared_ptr<TorchCommBackend> impl);
 
-  void preHook(PreHookArgs&& args);
+  void preHook(PreHookArgs& args);
   void postHook(PostHookArgs&& args);
 
   // Rank validation helper
@@ -298,6 +302,8 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   int64_t nextHookId_ = 0;
   std::unordered_map<int64_t, PreHook> preHooks_;
   std::unordered_map<int64_t, PostHook> postHooks_;
+  // Counter for generating unique operation IDs
+  size_t nextOpId_{0};
 };
 
 // Constructor that creates the appropriate backend implementation
