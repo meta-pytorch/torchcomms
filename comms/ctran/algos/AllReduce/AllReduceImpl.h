@@ -17,15 +17,6 @@ commResult_t ctranAllReduceDirect(
     CtranComm* comm,
     cudaStream_t stream,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
-commResult_t ctranAllReduceARG(
-    const void* sendbuff,
-    void* recvbuff,
-    size_t count,
-    commDataType_t datatype,
-    commRedOp_t redOp,
-    CtranComm* comm,
-    cudaStream_t stream,
-    std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 commResult_t ctranAllReduceRing(
     const void* sendbuff,
     void* recvbuff,
@@ -45,8 +36,6 @@ static inline const std::string allReduceAlgoName(
       return "CtranAuto";
     case NCCL_ALLREDUCE_ALGO::orig:
       return "Baseline";
-    case NCCL_ALLREDUCE_ALGO::ctarg:
-      return "CtranAllReduceA2ARAG";
     case NCCL_ALLREDUCE_ALGO::ctring:
       return "CtranAllReduceRing";
     default:
