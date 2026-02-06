@@ -1,0 +1,9 @@
+# RCCLX Snapshot Metadata
+# This file records the source commit for this snapshot.
+# The rcclx/ directory contains sources extracted from this commit.
+
+commit: 6f840ba5d808af9407979bca2132790a72898887
+commit_date: 2026-01-30 10:51 -0800
+commit_description: DDA nranks check patch
+snapshot_created: 2026-02-01T16:26:17.476463
+created_by: create_snapshot.py

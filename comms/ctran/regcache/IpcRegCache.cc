@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/regcache/IpcRegCache.h"
+#include <folly/Singleton.h>
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -51,14 +52,28 @@ void ctran::IpcRegCache::remReleaseMem(
   ipcRelease.uid = reg->uid;
 }
 
-ctran::IpcRegCache::IpcRegCache() : cudaDev_(0), logMetaData_(nullptr) {}
+static folly::Singleton<ctran::IpcRegCache> ipcRegCacheSingleton;
+std::shared_ptr<ctran::IpcRegCache> ctran::IpcRegCache::getInstance() {
+  return ipcRegCacheSingleton.try_get();
+}
 
-void ctran::IpcRegCache::init(
-    int cudaDev,
-    const struct CommLogData* logMetaData) {
-  cudaDev_ = cudaDev;
-  logMetaData_ = logMetaData;
-  initAsyncSocket();
+ctran::IpcRegCache::IpcRegCache() : cudaDev_(0) {}
+
+void ctran::IpcRegCache::init(int cudaDev) {
+  // Perform one-time initialization atomically
+  std::call_once(initFlag_, [this, cudaDev]() {
+    cudaDev_ = cudaDev;
+    initAsyncSocket();
+  });
+  // After initialization, verify cudaDev matches (for subsequent callers)
+  if (cudaDev_ != cudaDev) {
+    CLOGF(
+        ERR,
+        "CTRAN-REGCACHE: IpcRegCache already initialized with cudaDev {}, cannot reinitialize with different cudaDev {}",
+        cudaDev_,
+        cudaDev);
+    FB_COMMCHECKTHROW_EX_NOCOMM(commInvalidUsage);
+  }
 }
 
 ctran::IpcRegCache::~IpcRegCache() {
@@ -70,9 +85,10 @@ commResult_t ctran::IpcRegCache::importMem(
     const std::string& peerId,
     const ctran::regcache::IpcDesc& ipcDesc,
     void** buf,
-    struct ctran::regcache::IpcRemHandle* remKey) {
+    struct ctran::regcache::IpcRemHandle* remKey,
+    const struct CommLogData* logMetaData) {
   void* basePtr = nullptr;
-  FB_COMMCHECK(importRemMemImpl(peerId, ipcDesc, &basePtr));
+  FB_COMMCHECK(importRemMemImpl(peerId, ipcDesc, logMetaData, &basePtr));
 
   // import from baseAddr of a remote segment, return buf at offset from
   // baseAddr
@@ -94,6 +110,7 @@ commResult_t ctran::IpcRegCache::importMem(
 commResult_t ctran::IpcRegCache::importRemMemImpl(
     const std::string& peerId,
     const ctran::regcache::IpcDesc& ipcDesc,
+    const struct CommLogData* logMetaData,
     void** mappedBase) {
   auto lockedMap = ipcRemRegMap_.wlock();
   uint64_t base = reinterpret_cast<uint64_t>(ipcDesc.desc.base);
@@ -112,7 +129,7 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
   std::unique_ptr<ctran::regcache::IpcRemRegElem> reg = nullptr;
   try {
     reg = std::make_unique<ctran::regcache::IpcRemRegElem>(
-        ipcDesc.desc, cudaDev_, logMetaData_);
+        ipcDesc.desc, cudaDev_, logMetaData);
   } catch (std::exception& e) {
     CLOGF(
         WARN,
