@@ -2,6 +2,7 @@
 
 #include "comms/pipes/tests/MultiPeerNvlTransportIntegrationTest.cuh"
 
+#include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -13,7 +14,7 @@ namespace comms::pipes::test {
 // =============================================================================
 
 __global__ void multiPeerDeviceTransportAccessorsKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int* results) {
   results[0] = transport.rank();
   results[1] = transport.n_ranks();
@@ -21,10 +22,43 @@ __global__ void multiPeerDeviceTransportAccessorsKernel(
 }
 
 void testMultiPeerDeviceTransportAccessors(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int* results) {
   multiPeerDeviceTransportAccessorsKernel<<<1, 1>>>(transport, results);
   CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Signal/Wait Test
+// =============================================================================
+
+__global__ void signalWaitKernel(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int signalIdx,
+    bool isSignaler,
+    int* result) {
+  auto group = make_warp_group();
+
+  if (isSignaler) {
+    // Signal the peer's inbox
+    transport.signal_peer(peerIndex, group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    *result = 1;
+  } else {
+    // Wait for signal (peerIndex signals us, we wait on our inbox)
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+    *result = 1;
+  }
+}
+
+void testSignalWait(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int signalIdx,
+    bool isSignaler,
+    int* result) {
+  signalWaitKernel<<<1, 32>>>(
+      transport, peerIndex, signalIdx, isSignaler, result);
 }
 
 // =============================================================================
@@ -32,7 +66,7 @@ void testMultiPeerDeviceTransportAccessors(
 // =============================================================================
 
 __global__ void singlePeerSendKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int peerIndex,
     void* srcBuff,
     std::size_t nbytes) {
@@ -41,7 +75,7 @@ __global__ void singlePeerSendKernel(
 }
 
 void testSinglePeerSend(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int peerIndex,
     void* srcBuff,
     std::size_t nbytes,
@@ -53,7 +87,7 @@ void testSinglePeerSend(
 }
 
 __global__ void singlePeerRecvKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int peerIndex,
     void* dstBuff,
     std::size_t nbytes) {
@@ -62,7 +96,7 @@ __global__ void singlePeerRecvKernel(
 }
 
 void testSinglePeerRecv(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int peerIndex,
     void* dstBuff,
     std::size_t nbytes,
@@ -78,7 +112,7 @@ void testSinglePeerRecv(
 // =============================================================================
 
 __global__ void multiPeerSendAllPeersKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     void** srcBuffs,
     std::size_t nbytesPerPeer) {
   auto group = make_warp_group();
@@ -91,7 +125,7 @@ __global__ void multiPeerSendAllPeersKernel(
 }
 
 void testMultiPeerSendAllPeers(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     void** srcBuffs,
     std::size_t nbytesPerPeer,
     int numBlocks,
@@ -102,7 +136,7 @@ void testMultiPeerSendAllPeers(
 }
 
 __global__ void multiPeerRecvAllPeersKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     void** dstBuffs,
     std::size_t nbytesPerPeer) {
   auto group = make_warp_group();
@@ -115,7 +149,7 @@ __global__ void multiPeerRecvAllPeersKernel(
 }
 
 void testMultiPeerRecvAllPeers(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     void** dstBuffs,
     std::size_t nbytesPerPeer,
     int numBlocks,
@@ -123,6 +157,46 @@ void testMultiPeerRecvAllPeers(
   multiPeerRecvAllPeersKernel<<<numBlocks, blockSize>>>(
       transport, dstBuffs, nbytesPerPeer);
   CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Concurrent Signal Multi-Block Test
+// =============================================================================
+
+__global__ void concurrentSignalMultiBlockKernel(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int numSlots,
+    bool isSignaler,
+    int* results) {
+  auto group = make_warp_group();
+
+  // Each block uses a different signal slot (blockIdx.x % numSlots)
+  auto slotId = blockIdx.x % numSlots;
+
+  if (isSignaler) {
+    // Signal the peer's inbox at this slot
+    transport.signal_peer(peerIndex, group, slotId, SignalOp::SIGNAL_ADD, 1);
+  } else {
+    // Wait for signal at this slot (peerIndex signals us, we wait on our inbox)
+    transport.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
+  }
+
+  // Record success for this block
+  if (threadIdx.x == 0) {
+    results[blockIdx.x] = 1;
+  }
+}
+
+void testConcurrentSignalMultiBlock(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int numSlots,
+    bool isSignaler,
+    int* results,
+    int numBlocks) {
+  concurrentSignalMultiBlockKernel<<<numBlocks, 32>>>(
+      transport, peerIndex, numSlots, isSignaler, results);
 }
 
 // =============================================================================
@@ -153,6 +227,234 @@ void testTransportTypes(
     int* results) {
   transportTypesKernel<<<1, 1>>>(transport, results);
   CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Concurrent Signal Multi-Warp Test
+// =============================================================================
+
+__global__ void concurrentSignalWaitMultiWarpKernel(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int numSlots,
+    bool isSignaler,
+    int* results,
+    int warpsPerBlock) {
+  // Each warp uses a different signal slot based on its warp index
+  uint32_t warpIdx = threadIdx.x / 32;
+  uint32_t laneIdx = threadIdx.x % 32;
+
+  // Only process if this warp is within the configured range
+  if (warpIdx >= warpsPerBlock) {
+    return;
+  }
+
+  // Create a warp-level thread group
+  auto group = make_warp_group();
+
+  // Use different slot per warp (warpIdx % numSlots)
+  int slotId = warpIdx % numSlots;
+
+  if (isSignaler) {
+    // Signal the peer's inbox at this slot
+    transport.signal_peer(peerIndex, group, slotId, SignalOp::SIGNAL_ADD, 1);
+  } else {
+    // Wait for signal at this slot (peerIndex signals us, we wait on our inbox)
+    transport.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
+  }
+
+  // Record success for this warp (only lane 0 writes)
+  if (laneIdx == 0) {
+    results[warpIdx] = 1;
+  }
+}
+
+void testConcurrentSignalWaitMultiWarp(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int numSlots,
+    bool isSignaler,
+    int* results,
+    int warpsPerBlock) {
+  int blockSize = warpsPerBlock * 32; // 32 threads per warp
+  concurrentSignalWaitMultiWarpKernel<<<1, blockSize>>>(
+      transport, peerIndex, numSlots, isSignaler, results, warpsPerBlock);
+}
+
+// =============================================================================
+// signal_all() Test
+// =============================================================================
+
+__global__ void signalAllKernel(
+    MultiPeerDeviceTransport& transport,
+    int signalerRank,
+    int signalIdx,
+    int* result) {
+  auto group = make_warp_group();
+  int myRank = transport.rank();
+
+  if (myRank == signalerRank) {
+    // This rank signals all peers
+    transport.get_signal().signal_all(
+        group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+  } else {
+    // Wait for signal from the signaler (signaler writes to our inbox)
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+  }
+
+  *result = 1;
+}
+
+void testSignalAll(
+    MultiPeerDeviceTransport& transport,
+    int signalerRank,
+    int signalIdx,
+    int* result) {
+  signalAllKernel<<<1, 32>>>(transport, signalerRank, signalIdx, result);
+}
+
+// =============================================================================
+// wait_signal_from_all() Test
+// =============================================================================
+
+__global__ void waitSignalFromAllKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result) {
+  auto group = make_warp_group();
+  int myRank = transport.rank();
+
+  if (myRank == targetRank) {
+    // Wait for accumulated signals from all (nRanks - 1) peers
+    int nRanks = transport.n_ranks();
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
+  } else {
+    // Signal the target rank
+    transport.signal_peer(
+        targetRank, group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+  }
+
+  *result = 1;
+}
+
+void testWaitSignalFromAll(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result) {
+  waitSignalFromAllKernel<<<1, 32>>>(transport, targetRank, signalIdx, result);
+}
+
+// =============================================================================
+// Wait with CMP_EQ Test
+// =============================================================================
+
+__global__ void waitWithCmpEqKernel(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int signalIdx,
+    uint64_t expectedValue,
+    bool isSignaler,
+    int* result) {
+  auto group = make_warp_group();
+
+  if (isSignaler) {
+    // Signal with the exact expected value using SIGNAL_SET
+    transport.signal_peer(
+        peerIndex, group, signalIdx, SignalOp::SIGNAL_SET, expectedValue);
+  } else {
+    // Wait for the exact value with CMP_EQ
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_EQ, expectedValue);
+  }
+
+  *result = 1;
+}
+
+void testWaitWithCmpEq(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int signalIdx,
+    uint64_t expectedValue,
+    bool isSignaler,
+    int* result) {
+  waitWithCmpEqKernel<<<1, 32>>>(
+      transport, peerIndex, signalIdx, expectedValue, isSignaler, result);
+}
+
+// =============================================================================
+// Monotonic Wait Values Test
+// =============================================================================
+
+__global__ void monotonicWaitValuesKernel(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int signalIdx,
+    int numIterations,
+    bool isSignaler,
+    int* result) {
+  auto group = make_warp_group();
+
+  for (int i = 0; i < numIterations; ++i) {
+    if (isSignaler) {
+      // Signal with value=1 (adds to accumulated value)
+      transport.signal_peer(
+          peerIndex, group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    } else {
+      // Wait for accumulated value (i+1)
+      transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, i + 1);
+    }
+    group.sync();
+  }
+
+  *result = 1;
+}
+
+void testMonotonicWaitValues(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int signalIdx,
+    int numIterations,
+    bool isSignaler,
+    int* result) {
+  monotonicWaitValuesKernel<<<1, 32>>>(
+      transport, peerIndex, signalIdx, numIterations, isSignaler, result);
+}
+
+// =============================================================================
+// SIGNAL_SET Integration Test
+// =============================================================================
+
+__global__ void signalWithSetKernel(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int signalIdx,
+    uint64_t setValue,
+    bool isSignaler,
+    int* result) {
+  auto group = make_warp_group();
+
+  if (isSignaler) {
+    // Use SIGNAL_SET instead of SIGNAL_ADD
+    transport.signal_peer(
+        peerIndex, group, signalIdx, SignalOp::SIGNAL_SET, setValue);
+  } else {
+    // Wait for the set value
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, setValue);
+  }
+
+  *result = 1;
+}
+
+void testSignalWithSet(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int signalIdx,
+    uint64_t setValue,
+    bool isSignaler,
+    int* result) {
+  signalWithSetKernel<<<1, 32>>>(
+      transport, peerIndex, signalIdx, setValue, isSignaler, result);
 }
 
 } // namespace comms::pipes::test

@@ -4,6 +4,7 @@
 
 #include <vector>
 
+#include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
 #include "comms/utils/checks.h"
 
@@ -81,6 +82,28 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       signalInitStates.data(),
       totalSignalBufferSize,
       cudaMemcpyDefault));
+
+  // ===========================================================================
+  // Multi-peer transport buffers (inbox model)
+  // ===========================================================================
+
+  // Calculate multi-peer buffer sizes
+  // Signal inbox: signalCount slots (all peers write to same slot)
+  signalInboxSize_ = getSignalInboxBufferSize(config_.signalCount);
+
+  // Allocate signal inbox (all peers write to this rank's inbox)
+  signalInboxHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_, myRank_, nRanks_, signalInboxSize_, memSharingMode_);
+
+  // Initialize signal inbox to 0
+  auto signalInboxPtr =
+      static_cast<SignalState*>(signalInboxHandler_->getLocalDeviceMemPtr());
+  std::vector<SignalState> signalInboxInitStates(config_.signalCount);
+  CUDA_CHECK(cudaMemcpy(
+      signalInboxPtr,
+      signalInboxInitStates.data(),
+      signalInboxSize_,
+      cudaMemcpyDefault));
 }
 
 void MultiPeerNvlTransport::exchange() {
@@ -88,6 +111,9 @@ void MultiPeerNvlTransport::exchange() {
   dataBufferHandler_->exchangeMemPtrs();
   stateBufferHandler_->exchangeMemPtrs();
   signalBufferHandler_->exchangeMemPtrs();
+
+  // Exchange multi-peer transport buffer pointers (inbox model)
+  signalInboxHandler_->exchangeMemPtrs();
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
@@ -183,18 +209,65 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
 }
 
 MultiPeerDeviceTransport MultiPeerNvlTransport::getMultiPeerDeviceTransport() {
-  // Lazy initialization of device-accessible arrays
+  // Thread-safe lazy initialization of device-accessible arrays
   if (!multiPeerInitialized_) {
+    initializePeerSignalInboxPointers();
     initializeTransportsArray();
     multiPeerInitialized_ = true;
   }
+
+  // Build DeviceSignal with inbox semantics
+  DeviceSpan<SignalState> localInbox(
+      static_cast<SignalState*>(signalInboxHandler_->getLocalDeviceMemPtr()),
+      config_.signalCount);
+  DeviceSpan<SignalState*> peerSignalInboxPtrs(
+      static_cast<SignalState**>(
+          peerSignalInboxPtrsHandler_->getLocalDeviceMemPtr()),
+      nRanks_);
+  DeviceSignal signal(
+      myRank_, nRanks_, config_.signalCount, localInbox, peerSignalInboxPtrs);
 
   // Build transports span directly from the device array (no pointer
   // indirection)
   DeviceSpan<Transport> transports(
       static_cast<Transport*>(transportsDevice_->get()), nRanks_);
 
-  return MultiPeerDeviceTransport(myRank_, nRanks_, transports);
+  return MultiPeerDeviceTransport(myRank_, nRanks_, transports, signal);
+}
+
+void MultiPeerNvlTransport::initializePeerSignalInboxPointers() {
+  // Allocate device array for peer signal inbox pointers
+  peerSignalInboxPtrsHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_,
+      myRank_,
+      nRanks_,
+      nRanks_ * sizeof(SignalState*),
+      memSharingMode_);
+
+  // Populate peer signal inbox pointers array
+  std::vector<SignalState*> peerSignalInboxPtrs(nRanks_);
+  for (int peer = 0; peer < nRanks_; ++peer) {
+    if (peer == myRank_) {
+      // Self pointer - included for indexing consistency (self-signaling not
+      // supported)
+      peerSignalInboxPtrs[peer] = static_cast<SignalState*>(
+          signalInboxHandler_->getLocalDeviceMemPtr());
+    } else {
+      // Remote pointer - point to peer's inbox
+      peerSignalInboxPtrs[peer] = static_cast<SignalState*>(
+          signalInboxHandler_->getPeerDeviceMemPtr(peer));
+    }
+  }
+
+  auto cudaErr = cudaMemcpy(
+      peerSignalInboxPtrsHandler_->getLocalDeviceMemPtr(),
+      peerSignalInboxPtrs.data(),
+      nRanks_ * sizeof(SignalState*),
+      cudaMemcpyDefault);
+  if (cudaErr != cudaSuccess) {
+    throw std::runtime_error(
+        "cudaMemcpy failed in peer signal inbox pointers initialization");
+  }
 }
 
 void MultiPeerNvlTransport::initializeTransportsArray() {

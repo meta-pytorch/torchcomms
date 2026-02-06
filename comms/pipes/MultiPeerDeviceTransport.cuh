@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
@@ -65,7 +66,16 @@ namespace comms::pipes {
  * MultiPeerDeviceTransport - Unified device-side multi-peer NVLink transport
  *
  * Provides a single device object with:
+ * - DeviceSignal for inbox-style signaling (remote notification)
  * - Peer-indexed send/recv operations
+ *
+ * PEER INDEX SPACE:
+ * All public APIs that target a specific peer accept a peer_index in the
+ * range [0, num_peers()), which excludes self. Use peer_index_to_rank()
+ * and rank_to_peer_index() to convert between peer index and global rank.
+ *
+ * For local (self) operations, use get_self_transport() to access the
+ * self transport directly.
  *
  * DESIGN:
  * - Aligned with TorchComm Device API style (D91172575)
@@ -91,13 +101,13 @@ namespace comms::pipes {
  * Data Transfer (put, send, recv):
  * - No implicit ordering; pair with signal for visibility guarantee
  *
- * Example pattern (rank 0 sends to rank 1):
+ * Example pattern (rank 0 sends to rank 1, 2-rank setup):
  *
- *   // Rank 0 (Sender)
- *   send(1, group, src, nbytes);
- *   signal_peer(1, group, 0);
+ *   // Rank 0 (Sender): peer_index 0 maps to rank 1
+ *   send(0, group, src, nbytes);
+ *   signal_peer(0, group, 0);
  *
- *   // Rank 1 (Receiver)
+ *   // Rank 1 (Receiver): peer_index 0 maps to rank 0
  *   wait_signal(group, 0, CMP_GE, 1);  // data now visible
  *   recv(0, group, dst, nbytes);
  *
@@ -119,6 +129,8 @@ namespace comms::pipes {
  *   │  │   ├── Transport[0]: SELF or P2P_NVL                          │
  *   │  │   ├── Transport[1]: P2P_NVL                                  │
  *   │  │   └── ...                                                    │
+ *   │  ├── DeviceSignal signal_ (inbox model)                         │
+ *   │  │   └── signal_peer() / wait_signal()                          │
  *   └─────────────────────────────────────────────────────────────────┘
  *
  * USAGE:
@@ -131,15 +143,18 @@ namespace comms::pipes {
  *   __global__ void myKernel(const MultiPeerDeviceTransport& transport, ...) {
  *     auto group = make_warp_group();
  *
- *     // Data transfer
- *     transport.send(peer, group, src, nbytes);
+ *     // Data transfer (peer_index in [0, num_peers()))
+ *     transport.send(peer_index, group, src, nbytes);
  *
- *     // Signaling (flattened API)
- *     transport.signal_peer(peer, group, 0, SIGNAL_ADD, 1);
+ *     // Signaling (peer_index based)
+ *     transport.signal_peer(peer_index, group, 0, SIGNAL_ADD, 1);
  *     transport.wait_signal(group, 0, CMP_GE, 1);
  *
  *     // Barrier
  *     transport.barrier(group, 0);
+ *
+ *     // Local copy via self transport
+ *     transport.get_self_transport()->self.put(group, dst, src, nbytes);
  *   }
  *
  * SELF-TRANSPORT LIMITATIONS:
@@ -164,12 +179,17 @@ class MultiPeerDeviceTransport {
    * @param myRank This rank's ID (must be in range [0, nRanks))
    * @param nRanks Total number of ranks
    * @param transports Span of Transport objects for each peer (size = nRanks)
+   * @param signal DeviceSignal for inbox-style signaling
    */
   __host__ __device__ MultiPeerDeviceTransport(
       int myRank,
       int nRanks,
-      DeviceSpan<Transport> transports)
-      : myRank_(myRank), nRanks_(nRanks), transports_(transports) {
+      DeviceSpan<Transport> transports,
+      DeviceSignal signal)
+      : myRank_(myRank),
+        nRanks_(nRanks),
+        transports_(transports),
+        signal_(signal) {
     // Validate constraints
     assert(nRanks > 0);
     assert(myRank >= 0 && myRank < nRanks);
@@ -219,9 +239,76 @@ class MultiPeerDeviceTransport {
     return (index < myRank_) ? index : (index + 1);
   }
 
+  /**
+   * rank_to_peer_index - Convert global rank to peer index
+   *
+   * Inverse of peer_index_to_rank(). Useful when the caller has a global rank
+   * and needs to call a peer-indexed API.
+   *
+   * @param rank Global rank (must NOT be myRank)
+   * @return Peer index in [0, num_peers())
+   */
+  __host__ __device__ __forceinline__ int rank_to_peer_index(int rank) const {
+    assert(rank != myRank_);
+    return (rank < myRank_) ? rank : (rank - 1);
+  }
+
   // ===========================================================================
-  // Send/Recv Operations (peer ID as input)
+  // Signal Object (inbox model)
   // ===========================================================================
+
+  __device__ __forceinline__ DeviceSignal& get_signal() {
+    return signal_;
+  }
+
+  __device__ __forceinline__ const DeviceSignal& get_signal() const {
+    return signal_;
+  }
+
+  // ===========================================================================
+  // Signal Operations (delegated to signal_)
+  // ===========================================================================
+
+  /**
+   * send - Send data to a specific peer over NVLink
+   * signal_peer - Signal a specific peer's inbox
+   *
+   * @param peer_index Peer index in [0, num_peers())
+   * @param group ThreadGroup for cooperative processing
+   * @param signal_id Signal slot to use
+   * @param op Signal operation (SIGNAL_ADD or SIGNAL_SET)
+   * @param value Value for the signal operation (default: 1)
+   */
+  __device__ __forceinline__ void signal_peer(
+      int peer_index,
+      ThreadGroup& group,
+      int signal_id,
+      SignalOp op = SignalOp::SIGNAL_ADD,
+      uint64_t value = 1) {
+    int rank = peer_index_to_rank(peer_index);
+    signal_.signal_peer(rank, group, signal_id, op, value);
+  }
+
+  __device__ __forceinline__ void signal_all(
+      ThreadGroup& group,
+      int signal_id,
+      SignalOp op = SignalOp::SIGNAL_ADD,
+      uint64_t value = 1) {
+    signal_.signal_all(group, signal_id, op, value);
+  }
+
+  __device__ __forceinline__ void wait_signal(
+      ThreadGroup& group,
+      int signal_id,
+      CmpOp cmp,
+      uint64_t value,
+      uint64_t timeout_ns = UINT64_MAX) {
+    signal_.wait_signal(group, signal_id, cmp, value, timeout_ns);
+  }
+
+  __device__ __forceinline__ uint64_t read_signal(int signal_id) {
+    return signal_.read_signal(signal_id);
+  }
 
   // ===========================================================================
   // Send/Recv Operations (peer index as input)
@@ -355,6 +442,7 @@ class MultiPeerDeviceTransport {
   const int myRank_{-1};
   const int nRanks_{0};
   const DeviceSpan<Transport> transports_;
+  DeviceSignal signal_;
 };
 
 } // namespace comms::pipes

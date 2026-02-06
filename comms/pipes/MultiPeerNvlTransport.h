@@ -42,6 +42,11 @@ struct MultiPeerNvlTransportConfig {
   // Larger = more signals available for parallelism.
   // Typical: 1-num of blocks for most workloads.
   std::size_t signalCount{1};
+
+  // Number of counter slots for local completion tracking.
+  // Counters track when source buffers are safe to reuse.
+  // Typical: 1-4 for most workloads.
+  std::size_t counterCount{1};
 };
 
 /**
@@ -166,6 +171,7 @@ class MultiPeerNvlTransport {
    * getMultiPeerDeviceTransport - Get unified device handle for all peers
    *
    * Returns a MultiPeerDeviceTransport that provides:
+   * - DeviceSignal with inbox semantics (all peers write to this rank's inbox)
    * - Peer-indexed send/recv operations
    *
    * PRECONDITION: exchange() must have been called by all ranks first.
@@ -206,6 +212,9 @@ class MultiPeerNvlTransport {
   // Lazy initialization helpers for getMultiPeerDeviceTransport()
   // ==========================================================================
 
+  // Initialize peer signal inbox pointers array on device
+  void initializePeerSignalInboxPointers();
+
   // Initialize transports array on device (both P2P and SELF transports)
   void initializeTransportsArray();
 
@@ -228,11 +237,23 @@ class MultiPeerNvlTransport {
   // Allocated on device and populated in getMultiPeerDeviceTransport()
   // Uses DeviceBuffer instead of GpuMemHandler since no exchange is needed
   std::unique_ptr<meta::comms::DeviceBuffer> transportsDevice_;
+  // Multi-peer transport buffers (inbox model)
+  // Signal inbox: All peers write to this rank's inbox for signaling
+  std::unique_ptr<GpuMemHandler> signalInboxHandler_;
+
+  // Device-accessible arrays for multi-peer transport
+  // These are allocated on device and populated in
+  // getMultiPeerDeviceTransport()
+  std::unique_ptr<GpuMemHandler> peerSignalInboxPtrsHandler_;
+  std::unique_ptr<GpuMemHandler> transportsHandler_;
 
   // Per-peer buffer sizes for offset calculation
   std::size_t perPeerDataBufferSize_{0};
   std::size_t perPeerChunkStateBufferSize_{0};
   std::size_t perPeerSignalBufferSize_{0};
+
+  // Multi-peer buffer sizes
+  std::size_t signalInboxSize_{0}; // signalCount * nRanks
 
   // Flag to track if multi-peer device arrays have been initialized
   bool multiPeerInitialized_{false};

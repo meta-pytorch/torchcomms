@@ -305,15 +305,128 @@ class MultiPeerBenchmarkFixture : public MpiBaseTestFixture {
 // =============================================================================
 // Benchmark Test Cases
 // =============================================================================
-//
-// Individual benchmark tests (BarrierLatency, SignalAllLatency, etc.) are
-// added in subsequent diffs alongside their respective primitive
-// implementations:
-// - D92190695: DeviceSignal -> SignalAllLatency, SignalPingPongLatency
-// - D92190692: DeviceCounter -> CounterLatency
-// - D92190696: DeviceBarrier -> BarrierLatency
-//
+
 // =============================================================================
+// Test: Signal-All Latency (N-way signaling)
+// =============================================================================
+
+TEST_F(MultiPeerBenchmarkFixture, SignalAllLatency) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  // Use reduced config set for expensive operations
+  auto configs = getStandardConfigs(/*reduced=*/true);
+  std::vector<MultiPeerBenchResult> results;
+
+  int maxSlots = getMaxSlots(configs);
+  MultiPeerNvlTransportConfig transportConfig{
+      .dataBufferSize = 1,
+      .chunkSize = 1,
+      .pipelineDepth = 1,
+      .signalCount = static_cast<std::size_t>(maxSlots),
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(
+      globalRank, numRanks, bootstrap, transportConfig);
+  transport.exchange();
+  auto device = transport.getMultiPeerDeviceTransport();
+
+  for (const auto& config : configs) {
+    void* kernelFunc = config.useBlockGroups
+        ? (void*)multiPeerSignalAllKernel<SyncScope::BLOCK>
+        : (void*)multiPeerSignalAllKernel<SyncScope::WARP>;
+
+    int nSteps = getStepsPerIter();
+    dim3 grid(config.numBlocks);
+    dim3 block(kDefaultThreads);
+    void* args[] = {&device, &nSteps};
+
+    auto timing = runBenchmark(
+        [&]() -> cudaError_t {
+          return cudaLaunchKernel(kernelFunc, grid, block, args, 0, stream_);
+        },
+        nSteps,
+        /*useMpiBarrier=*/true);
+
+    ASSERT_TRUE(timing.success)
+        << "Benchmark failed for config: " << config.name;
+
+    results.push_back({
+        .configName = config.name,
+        .nRanks = numRanks,
+        .groupScope = config.scopeString(),
+        .latencyUs = timing.avgLatencyUs,
+    });
+  }
+
+  printResultsTable(
+      "Signal-All Benchmark",
+      "Latency = Average time per signalAll/waitAll cycle",
+      results);
+}
+
+// =============================================================================
+// Test: Signal Ping-Pong Latency (2-way signaling)
+// =============================================================================
+
+TEST_F(MultiPeerBenchmarkFixture, SignalPingPongLatency) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
+  }
+
+  int peerIndex = 0; // In 2-rank setup, each rank has exactly one peer
+  auto configs = getStandardConfigs();
+  std::vector<MultiPeerBenchResult> results;
+
+  int maxSlots = getMaxSlots(configs);
+  MultiPeerNvlTransportConfig transportConfig{
+      .dataBufferSize = 1,
+      .chunkSize = 1,
+      .pipelineDepth = 1,
+      .signalCount = static_cast<std::size_t>(maxSlots),
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(
+      globalRank, numRanks, bootstrap, transportConfig);
+  transport.exchange();
+  auto device = transport.getMultiPeerDeviceTransport();
+
+  for (const auto& config : configs) {
+    void* kernelFunc = config.useBlockGroups
+        ? (void*)multiPeerSignalPingPongKernel<SyncScope::BLOCK>
+        : (void*)multiPeerSignalPingPongKernel<SyncScope::WARP>;
+
+    int nSteps = getStepsPerIter();
+    dim3 grid(config.numBlocks);
+    dim3 block(kDefaultThreads);
+    void* args[] = {&device, &peerIndex, &nSteps};
+
+    auto timing = runBenchmark(
+        [&]() -> cudaError_t {
+          return cudaLaunchKernel(kernelFunc, grid, block, args, 0, stream_);
+        },
+        nSteps,
+        /*useMpiBarrier=*/true);
+
+    ASSERT_TRUE(timing.success)
+        << "Benchmark failed for config: " << config.name;
+
+    results.push_back({
+        .configName = config.name,
+        .nRanks = 2,
+        .groupScope = config.scopeString(),
+        .latencyUs = timing.avgLatencyUs,
+    });
+  }
+
+  printResultsTable(
+      "Signal Ping-Pong Benchmark (Half-Duplex)",
+      "Latency = Average time per signal/wait pair",
+      results);
+}
 
 } // namespace comms::pipes::benchmark
 
