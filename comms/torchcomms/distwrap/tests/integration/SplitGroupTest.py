@@ -194,7 +194,7 @@ class SplitGroupTest(unittest.TestCase):
 
         # Then split from that parent group
         new_pg = dist.split_group(
-            group=parent_pg,
+            parent_pg=parent_pg,
             split_ranks=[all_ranks],
         )
 
