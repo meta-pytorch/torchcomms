@@ -84,10 +84,8 @@ class AllReduceStableTestIdenticalInput
   void runTest(size_t tensorSize, ncclDataType_t dataType) {
     TYPE *tensorA = nullptr, *tensorB = nullptr;
 
-    FB_COMMCHECKTHROW(ncclToMetaComm(
-        ncclMemAlloc((void**)&tensorA, tensorSize * sizeof(TYPE))));
-    FB_COMMCHECKTHROW(ncclToMetaComm(
-        ncclMemAlloc((void**)&tensorB, tensorSize * sizeof(TYPE))));
+    NCCLCHECK_TEST(ncclMemAlloc((void**)&tensorA, tensorSize * sizeof(TYPE)));
+    NCCLCHECK_TEST(ncclMemAlloc((void**)&tensorB, tensorSize * sizeof(TYPE)));
 
     std::vector<TYPE> randomValues(tensorSize);
     for (size_t i = 0; i < tensorSize; i++) {
