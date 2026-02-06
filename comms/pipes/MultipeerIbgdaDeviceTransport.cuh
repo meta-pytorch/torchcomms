@@ -3,7 +3,17 @@
 #pragma once
 
 #include "comms/pipes/DeviceSpan.cuh"
+
+// When compiling with CUDA, include full definition for device methods
+// When compiling with host-only compiler, forward declaration is sufficient
+#ifdef __CUDACC__
 #include "comms/pipes/P2pIbgdaTransportDevice.cuh"
+#else
+namespace comms::pipes {
+// Forward declaration - full definition in P2pIbgdaTransportDevice.cuh
+class P2pIbgdaTransportDevice;
+} // namespace comms::pipes
+#endif
 
 namespace comms::pipes {
 
@@ -74,6 +84,29 @@ struct MultipeerIbgdaDeviceTransport {
       : myRank(rank), nRanks(numRanks), peerTransports(transports) {}
 
   /**
+   * numPeers - Get number of peer connections
+   *
+   * @return Number of peers (nRanks - 1)
+   */
+  __host__ __device__ __forceinline__ int numPeers() const {
+    return nRanks - 1;
+  }
+
+  /**
+   * indexToRank - Convert index back to global rank
+   *
+   * @param index Index into peerTransports (0 to numPeers()-1)
+   * @return Global rank at this index
+   */
+  __host__ __device__ __forceinline__ int indexToRank(int index) const {
+    // Reverse the mapping: if index < myRank, rank = index; else rank = index+1
+    return (index < myRank) ? index : (index + 1);
+  }
+
+// Device-only methods require full P2pIbgdaTransportDevice definition
+// and are only available when compiling with nvcc
+#ifdef __CUDACC__
+  /**
    * get - Get transport handle for a specific rank
    *
    * Returns a reference to the P2pIbgdaTransportDevice for the given
@@ -98,15 +131,6 @@ struct MultipeerIbgdaDeviceTransport {
   }
 
   /**
-   * numPeers - Get number of peer connections
-   *
-   * @return Number of peers (nRanks - 1)
-   */
-  __host__ __device__ __forceinline__ int numPeers() const {
-    return nRanks - 1;
-  }
-
-  /**
    * getByIndex - Get transport by index (not rank)
    *
    * Direct access to the transport array by index. Use when iterating
@@ -126,17 +150,7 @@ struct MultipeerIbgdaDeviceTransport {
       int index) const {
     return peerTransports[index];
   }
-
-  /**
-   * indexToRank - Convert index back to global rank
-   *
-   * @param index Index into peerTransports (0 to numPeers()-1)
-   * @return Global rank at this index
-   */
-  __host__ __device__ __forceinline__ int indexToRank(int index) const {
-    // Reverse the mapping: if index < myRank, rank = index; else rank = index+1
-    return (index < myRank) ? index : (index + 1);
-  }
+#endif // __CUDACC__
 };
 
 } // namespace comms::pipes
