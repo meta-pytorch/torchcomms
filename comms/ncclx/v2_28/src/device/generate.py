@@ -7,7 +7,7 @@ import shutil
 
 # Order of redops, tys, protos, algos must match src/include/device.h
 all_colls =  ["Broadcast","Reduce","AllGather","ReduceScatter","AllReduce","SendRecv"]
-all_redops = ["Sum","Prod","MinMax","PreMulSum","SumPostDiv"]
+all_redops = ["Sum","Prod","MinMax","PreMulSum","SumPostDiv","PatAvg"]
 all_tys =    ["i8","u8","i32","u32","i64","u64","f16","f32","f64","bf16","f8e4m3","f8e5m2"]
 all_protos = ["LL","LL128","SIMPLE"]
 all_algos =  ["TREE","RING","COLLNET_DIRECT","COLLNET_CHAIN","NVLS","NVLS_TREE","PAT"]
@@ -112,6 +112,8 @@ def required_cuda(coll, redop, ty, algo, proto):
 
   if coll in ("AllReduce","Reduce","ReduceScatter"):
     if redop=="SumPostDiv" and ty[0] not in ("i","u"): return None
+    # [META:PAT_AVG] PatAvg is only valid for ReduceScatter with PAT algorithm
+    if redop=="PatAvg" and (coll != "ReduceScatter" or algo != "PAT"): return None
     if ty=="bf16": cudart = max(cudart, 11000)
     if ty.startswith("f8"):
       cudart = max(cudart, 11080)
@@ -133,8 +135,8 @@ def required_cuda(coll, redop, ty, algo, proto):
 # belongs to. For instance (sum, signed int) maps to (sum, unsigned int).
 def equivalent_primary(coll, redop, ty, algo, proto):
   if coll in ("AllReduce", "Reduce", "ReduceScatter"):
-    # map signed integer sum/prod to unsigned
-    if redop in ("Sum","Prod","PreMulSum","SumPostDiv") and ty[0]=="i":
+    # map signed integer sum/prod to unsigned (PatAvg uses sum internally)
+    if redop in ("Sum","Prod","PreMulSum","SumPostDiv","PatAvg") and ty[0]=="i":
       return (coll, redop, "u"+ty[1:], algo, proto)
     # map signed integer min/max to unsigned for non-NVLS
     if redop=="MinMax" and ty[0]=="i" and ("NVLS" not in algo):
@@ -378,7 +380,8 @@ redop_to_cxx = {
   "Prod": "FuncProd",
   "MinMax": "FuncMinMax",
   "PreMulSum": "FuncPreMulSum",
-  "SumPostDiv": "FuncSumPostDiv"
+  "SumPostDiv": "FuncSumPostDiv",
+  "PatAvg": "FuncPatAvg"  # [META:PAT_AVG]
 }
 
 ty_to_cxx = {
