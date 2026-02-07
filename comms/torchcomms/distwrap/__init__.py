@@ -24,6 +24,7 @@ from torch.distributed import (  # noqa: F401
     Work,
 )
 from torchcomms.distwrap.collectives import (
+    _make_nccl_premul_sum,
     all_gather,
     all_gather_into_tensor,
     all_gather_object,
@@ -132,6 +133,7 @@ class P2POp:
 
 
 __all__ = [
+    "_make_nccl_premul_sum",
     "init_process_group",
     "destroy_process_group",
     "new_group",

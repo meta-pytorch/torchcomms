@@ -144,6 +144,9 @@ class ExportedFunctionsTest(unittest.TestCase):
     def test_broadcast_object_list_is_exported(self) -> None:
         self.assertTrue(callable(torchcomms.distwrap.broadcast_object_list))
 
+    def test__make_nccl_premul_sum_is_exported(self) -> None:
+        self.assertTrue(callable(torchcomms.distwrap._make_nccl_premul_sum))
+
     def test_new_window_is_exported(self) -> None:
         self.assertTrue(callable(torchcomms.distwrap.new_window))
 
