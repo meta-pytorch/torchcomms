@@ -259,4 +259,32 @@ void testSignalWithSet(
     bool isSignaler,
     int* result);
 
+// =============================================================================
+// DeviceCounter Integration Tests
+// =============================================================================
+
+/**
+ * Test kernel: Counter increment and read via transport wrapper
+ *
+ * Verifies counter operations work correctly through MultiPeerDeviceTransport.
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param results Output: [0]=counter value after increment
+ */
+void testTransportCounterIncrementRead(
+    MultiPeerDeviceTransport transport,
+    uint64_t* results);
+
+/**
+ * Test kernel: Counter reset operations via transport wrapper
+ *
+ * Tests both reset_counter() and reset_all_counters() through transport.
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param results Output: [0..3]=counter values after reset operations
+ */
+void testTransportCounterResetOperations(
+    MultiPeerDeviceTransport transport,
+    uint64_t* results);
+
 } // namespace comms::pipes::test

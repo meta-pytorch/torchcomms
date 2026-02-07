@@ -173,6 +173,7 @@ class MultiPeerNvlTransport {
    *
    * Returns a MultiPeerDeviceTransport that provides:
    * - DeviceSignal with inbox semantics (all peers write to this rank's inbox)
+   * - DeviceCounter for local completion tracking
    * - Peer-indexed send/recv operations
    *
    * PRECONDITION: exchange() must have been called by all ranks first.

@@ -128,4 +128,34 @@ template __global__ void multiPeerSignalAllKernel<SyncScope::BLOCK>(
     MultiPeerDeviceTransport,
     int);
 
+// =============================================================================
+// Counter Benchmark Kernel Implementation
+// =============================================================================
+
+template <SyncScope G>
+__global__ void multiPeerCounterKernel(
+    MultiPeerDeviceTransport transport,
+    int nSteps) {
+  auto group = makeGroup<G>();
+  int slotId = computeSlotIndex<G>();
+
+  for (int step = 0; step < nSteps; ++step) {
+    transport.increment_counter(group, slotId, 1);
+    transport.wait_counter(
+        group, slotId, CmpOp::CMP_GE, static_cast<uint64_t>(step + 1));
+  }
+}
+
+// =============================================================================
+// Explicit Template Instantiations for Counter Kernels
+// =============================================================================
+
+// Counter kernels
+template __global__ void multiPeerCounterKernel<SyncScope::WARP>(
+    MultiPeerDeviceTransport,
+    int);
+template __global__ void multiPeerCounterKernel<SyncScope::BLOCK>(
+    MultiPeerDeviceTransport,
+    int);
+
 } // namespace comms::pipes::benchmark

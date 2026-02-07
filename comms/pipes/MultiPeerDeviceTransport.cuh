@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include "comms/pipes/DeviceCounter.cuh"
 #include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
@@ -67,6 +68,7 @@ namespace comms::pipes {
  *
  * Provides a single device object with:
  * - DeviceSignal for inbox-style signaling (remote notification)
+ * - DeviceCounter for local completion notification
  * - Peer-indexed send/recv/put operations
  *
  * PEER INDEX SPACE:
@@ -130,6 +132,8 @@ namespace comms::pipes {
  *   │  │   └── ...                                                    │
  *   │  ├── DeviceSignal signal_ (inbox model)                         │
  *   │  │   └── signal_peer() / wait_signal()                          │
+ *   │  ├── DeviceCounter counter_ (local completion)                  │
+ *   │  │   └── increment_counter() / wait_counter()                   │
  *   └─────────────────────────────────────────────────────────────────┘
  *
  * USAGE:
@@ -175,16 +179,19 @@ class MultiPeerDeviceTransport {
    * @param nRanks Total number of ranks
    * @param transports Span of Transport objects for each peer (size = nRanks)
    * @param signal DeviceSignal for inbox-style signaling
+   * @param counter DeviceCounter for local completion
    */
   __host__ __device__ MultiPeerDeviceTransport(
       int myRank,
       int nRanks,
       DeviceSpan<Transport> transports,
-      DeviceSignal signal)
+      DeviceSignal signal,
+      DeviceCounter counter)
       : myRank_(myRank),
         nRanks_(nRanks),
         transports_(transports),
-        signal_(signal) {
+        signal_(signal),
+        counter_(counter) {
     // Validate constraints
     assert(nRanks > 0);
     assert(myRank >= 0 && myRank < nRanks);
@@ -266,6 +273,18 @@ class MultiPeerDeviceTransport {
   }
 
   // ===========================================================================
+  // Counter Object (local completion)
+  // ===========================================================================
+
+  __device__ __forceinline__ DeviceCounter& get_counter() {
+    return counter_;
+  }
+
+  __device__ __forceinline__ const DeviceCounter& get_counter() const {
+    return counter_;
+  }
+
+  // ===========================================================================
   // Signal Operations (delegated to signal_)
   // ===========================================================================
 
@@ -307,6 +326,42 @@ class MultiPeerDeviceTransport {
   __device__ __forceinline__ uint64_t read_signal(int signal_id) {
     return signal_.read_signal(signal_id);
   }
+
+  // ===========================================================================
+  // Counter Operations (delegated to counter_)
+  // ===========================================================================
+
+  __device__ __forceinline__ void
+  increment_counter(ThreadGroup& group, int counter_id, uint64_t value = 1) {
+    counter_.increment_counter(group, counter_id, value);
+  }
+
+  __device__ __forceinline__ void wait_counter(
+      ThreadGroup& group,
+      int counter_id,
+      CmpOp cmp,
+      uint64_t value,
+      uint64_t timeout_ns = UINT64_MAX) {
+    counter_.wait_counter(group, counter_id, cmp, value, timeout_ns);
+  }
+
+  __device__ __forceinline__ uint64_t read_counter(int counter_id) {
+    return counter_.read_counter(counter_id);
+  }
+
+  // NOTE: Counter reset methods are provided but Signal reset methods are NOT.
+  // Counters are LOCAL-only (safe to reset). Signals are written by REMOTE
+  // peers (reset creates race conditions). See DeviceSignal.cuh for details.
+
+  __device__ __forceinline__ void reset_counter(int counter_id) {
+    counter_.reset_counter(counter_id);
+  }
+
+  __device__ __forceinline__ void reset_all_counters() {
+    counter_.reset_all_counters();
+  }
+
+  // ===========================================================================
 
   // ===========================================================================
   // Send/Recv Operations (peer index as input)
@@ -410,6 +465,7 @@ class MultiPeerDeviceTransport {
   const int nRanks_{0};
   const DeviceSpan<Transport> transports_;
   DeviceSignal signal_;
+  DeviceCounter counter_;
 
   // ===========================================================================
   // Private Match Helper

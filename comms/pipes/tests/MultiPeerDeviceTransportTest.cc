@@ -5,6 +5,7 @@
 #include <numeric>
 #include <vector>
 
+#include "comms/pipes/DeviceCounter.cuh"
 #include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
 #include "comms/pipes/Transport.cuh"
@@ -61,6 +62,40 @@ TEST_F(MultiPeerDeviceTransportTestFixture, SignalInboxBufferSize) {
   // Expected: signalCount * sizeof(SignalState), aligned to 128 bytes
   std::size_t expectedSlots = signalCount;
   std::size_t expectedMinSize = expectedSlots * sizeof(SignalState);
+  // Should be aligned to 128 bytes
+  EXPECT_GE(bufferSize, expectedMinSize);
+  EXPECT_EQ(bufferSize % 128, 0) << "Buffer size should be 128-byte aligned";
+}
+
+// =============================================================================
+// DeviceCounter Tests
+// =============================================================================
+
+TEST_F(MultiPeerDeviceTransportTestFixture, DeviceCounterConstruction) {
+  const int counterCount = 4;
+
+  DeviceBuffer resultsBuffer(sizeof(uint32_t));
+  auto results_d = static_cast<uint32_t*>(resultsBuffer.get());
+
+  test::testDeviceCounterConstruction(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, static_cast<uint32_t>(counterCount))
+      << "counterCount() should return " << counterCount;
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, CounterBufferSize) {
+  // Test buffer size calculation
+  const int counterCount = 4;
+
+  std::size_t bufferSize = getCounterBufferSize(counterCount);
+
+  // Expected: counterCount * sizeof(SignalState), aligned to 128 bytes
+  std::size_t expectedMinSize = counterCount * sizeof(SignalState);
   // Should be aligned to 128 bytes
   EXPECT_GE(bufferSize, expectedMinSize);
   EXPECT_EQ(bufferSize % 128, 0) << "Buffer size should be 128-byte aligned";
@@ -402,6 +437,179 @@ TEST_F(
     PeerIndexConversionRoundtripRank4Of8) {
   // 8-rank case with middle rank: exercises larger peer counts
   verifyPeerIndexConversionRoundtrip(/*myRank=*/4, /*nRanks=*/8);
+}
+
+// =============================================================================
+// DeviceCounter Operation Tests
+// =============================================================================
+
+// Verify basic increment_counter() and read_counter() operations work
+// correctly. Increments counter by 1 and reads back the value, expecting 1.
+TEST_F(MultiPeerDeviceTransportTestFixture, CounterIncrementAndRead) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(uint64_t)));
+
+  test::testCounterIncrementAndRead(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint64_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "Counter should be 1 after increment_counter(1)";
+}
+
+// Verify that multiple increment_counter() calls accumulate correctly.
+// Increments counter 3 times with value=1, expecting final value of 3.
+TEST_F(MultiPeerDeviceTransportTestFixture, CounterValueAccumulation) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(uint64_t)));
+
+  test::testCounterValueAccumulation(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint64_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 3)
+      << "Counter should be 3 after three increment_counter(1) calls";
+}
+
+// Verify increment_counter() works with values other than 1.
+// Increments counter with value=1000 and reads back, expecting 1000.
+TEST_F(MultiPeerDeviceTransportTestFixture, CounterIncrementCustomValue) {
+  const int counterCount = 1;
+  const uint64_t incrementValue = 1000;
+
+  DeviceBuffer resultsBuffer(sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(uint64_t)));
+
+  test::testCounterIncrementCustomValue(
+      counterCount, incrementValue, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint64_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, incrementValue)
+      << "Counter should be " << incrementValue << " after increment";
+}
+
+// Verify wait_counter() with CMP_GE comparison completes when condition is met.
+// Increments counter to 5, then waits for >= 5, which should pass immediately.
+TEST_F(MultiPeerDeviceTransportTestFixture, WaitCounterCmpGe) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(int)));
+
+  test::testWaitCounterCmpGe(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, results_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "wait_counter with CMP_GE should complete";
+}
+
+// Verify wait_counter() with CMP_EQ comparison completes when exact value
+// matches. Increments counter to 3, then waits for == 3, which should pass
+// immediately.
+TEST_F(MultiPeerDeviceTransportTestFixture, WaitCounterCmpEq) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(int)));
+
+  test::testWaitCounterCmpEq(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, results_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "wait_counter with CMP_EQ should complete";
+}
+
+// Verify reset_counter() resets a single counter to 0.
+// Increments counter to 5, resets it, then reads back expecting 0.
+TEST_F(MultiPeerDeviceTransportTestFixture, ResetCounter) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0xFF, sizeof(uint64_t)));
+
+  test::testResetCounter(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint64_t result_h = 0xFFFFFFFFFFFFFFFF;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 0) << "Counter should be 0 after reset_counter()";
+}
+
+// Verify reset_all_counters() resets all counters to 0.
+// Increments 3 counters to different values, resets all, expects all to be 0.
+TEST_F(MultiPeerDeviceTransportTestFixture, ResetAllCounters) {
+  const int counterCount = 3;
+
+  DeviceBuffer resultsBuffer(counterCount * sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0xFF, counterCount * sizeof(uint64_t)));
+
+  test::testResetAllCounters(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<uint64_t> results_h(counterCount, 0xFFFFFFFFFFFFFFFF);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      counterCount * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+
+  for (int i = 0; i < counterCount; ++i) {
+    EXPECT_EQ(results_h[i], 0)
+        << "Counter " << i << " should be 0 after reset_all_counters()";
+  }
+}
+
+// Verify that different counter IDs are independent of each other.
+// Increments counters 0, 1, 2 with values 10, 20, 30 respectively,
+// then verifies each counter has its own independent value.
+TEST_F(MultiPeerDeviceTransportTestFixture, MultipleCounterIndependence) {
+  const int counterCount = 3;
+
+  DeviceBuffer resultsBuffer(3 * sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, 3 * sizeof(uint64_t)));
+
+  test::testMultipleCounterIndependence(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<uint64_t> results_h(3);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      3 * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], 10) << "Counter 0 should have value 10";
+  EXPECT_EQ(results_h[1], 20) << "Counter 1 should have value 20";
+  EXPECT_EQ(results_h[2], 30) << "Counter 2 should have value 30";
 }
 
 // =============================================================================

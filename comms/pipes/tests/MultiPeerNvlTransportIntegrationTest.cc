@@ -1144,6 +1144,92 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWithSet) {
       kSetValue);
 }
 
+// =============================================================================
+// DeviceCounter Integration Tests
+// =============================================================================
+
+// Test counter increment/read through transport wrapper.
+TEST_F(
+    MultiPeerNvlTransportIntegrationTestFixture,
+    TransportCounterIncrementRead) {
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDefaultDataBufferSize,
+      .chunkSize = kDefaultChunkSize,
+      .pipelineDepth = kDefaultPipelineDepth,
+      .counterCount = 4,
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  DeviceBuffer resultsBuffer(sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(uint64_t)));
+
+  test::testTransportCounterIncrementRead(device, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint64_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 5)
+      << "Counter should be 5 after transport.increment_counter(5)";
+
+  XLOGF(
+      INFO,
+      "Rank {}: TransportCounterIncrementRead test completed",
+      globalRank);
+}
+
+// Test reset_counter() and reset_all_counters() through transport wrapper.
+TEST_F(
+    MultiPeerNvlTransportIntegrationTestFixture,
+    TransportCounterResetOperations) {
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDefaultDataBufferSize,
+      .chunkSize = kDefaultChunkSize,
+      .pipelineDepth = kDefaultPipelineDepth,
+      .counterCount = 4,
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  // Need 8 results: 4 after single reset, 4 after reset_all
+  DeviceBuffer resultsBuffer(8 * sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0xFF, 8 * sizeof(uint64_t)));
+
+  test::testTransportCounterResetOperations(device, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<uint64_t> results_h(8);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      8 * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+
+  // After reset_counter(0): counter 0 should be 0, others retain values
+  EXPECT_EQ(results_h[0], 0) << "Counter 0 should be 0 after reset_counter(0)";
+  EXPECT_EQ(results_h[1], 20)
+      << "Counter 1 should retain value 20 after reset_counter(0)";
+  EXPECT_EQ(results_h[2], 30)
+      << "Counter 2 should retain value 30 after reset_counter(0)";
+  EXPECT_EQ(results_h[3], 40)
+      << "Counter 3 should retain value 40 after reset_counter(0)";
+
+  // After reset_all_counters(): all counters should be 0
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_EQ(results_h[4 + i], 0)
+        << "Counter " << i << " should be 0 after reset_all_counters()";
+  }
+
+  XLOGF(
+      INFO,
+      "Rank {}: TransportCounterResetOperations test completed",
+      globalRank);
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {

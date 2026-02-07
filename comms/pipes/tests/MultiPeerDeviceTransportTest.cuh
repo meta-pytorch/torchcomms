@@ -22,6 +22,14 @@ void testDeviceSignalConstruction(
     int* results);
 
 /**
+ * Test kernel: Verify DeviceCounter construction and basic accessors
+ *
+ * @param counterCount Number of counters
+ * @param results Output array for test results [0]=counterCount
+ */
+void testDeviceCounterConstruction(int counterCount, uint32_t* results);
+
+/**
  * Test kernel: Verify MultiPeerDeviceTransport construction and basic accessors
  *
  * @param myRank Rank ID for the transport object
@@ -64,4 +72,75 @@ void testPeerIterationHelpers(int myRank, int nRanks, int* results);
  */
 void testPeerIndexConversionRoundtrip(int myRank, int nRanks, int* results);
 
+// =============================================================================
+// DeviceCounter Operation Tests
+// =============================================================================
+
+/**
+ * Test kernel: Verify counter increment and read operations
+ *
+ * @param counterCount Number of counters
+ * @param results Output array: [0]=counter value after increment
+ */
+void testCounterIncrementAndRead(int counterCount, uint64_t* results);
+
+/**
+ * Test kernel: Verify counter value accumulation
+ *
+ * @param counterCount Number of counters
+ * @param results Output array: [0]=accumulated counter value after 3 increments
+ */
+void testCounterValueAccumulation(int counterCount, uint64_t* results);
+
+/**
+ * Test kernel: Verify counter increment with custom value
+ *
+ * @param counterCount Number of counters
+ * @param incrementValue Value to increment by
+ * @param results Output array: [0]=counter value after increment
+ */
+void testCounterIncrementCustomValue(
+    int counterCount,
+    uint64_t incrementValue,
+    uint64_t* results);
+
+/**
+ * Test kernel: Verify wait_counter with CMP_GE comparison
+ *
+ * @param counterCount Number of counters
+ * @param results Output array: [0]=1 if wait completed successfully
+ */
+void testWaitCounterCmpGe(int counterCount, int* results);
+
+/**
+ * Test kernel: Verify wait_counter with CMP_EQ comparison
+ *
+ * @param counterCount Number of counters
+ * @param results Output array: [0]=1 if wait completed successfully
+ */
+void testWaitCounterCmpEq(int counterCount, int* results);
+
+/**
+ * Test kernel: Verify reset_counter resets a single counter
+ *
+ * @param counterCount Number of counters
+ * @param results Output array: [0]=counter value after reset
+ */
+void testResetCounter(int counterCount, uint64_t* results);
+
+/**
+ * Test kernel: Verify reset_all_counters resets all counters
+ *
+ * @param counterCount Number of counters (should be >= 3)
+ * @param results Output array: [0..counterCount-1]=counter values after reset
+ */
+void testResetAllCounters(int counterCount, uint64_t* results);
+
+/**
+ * Test kernel: Verify multiple counters are independent
+ *
+ * @param counterCount Number of counters (should be >= 3)
+ * @param results Output array: [0..2]=counter values for counters 0, 1, 2
+ */
+void testMultipleCounterIndependence(int counterCount, uint64_t* results);
 } // namespace comms::pipes::test
