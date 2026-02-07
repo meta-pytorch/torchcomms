@@ -5,6 +5,7 @@
 #include <numeric>
 #include <vector>
 
+#include "comms/pipes/DeviceBarrier.cuh"
 #include "comms/pipes/DeviceCounter.cuh"
 #include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
@@ -96,6 +97,41 @@ TEST_F(MultiPeerDeviceTransportTestFixture, CounterBufferSize) {
 
   // Expected: counterCount * sizeof(SignalState), aligned to 128 bytes
   std::size_t expectedMinSize = counterCount * sizeof(SignalState);
+  // Should be aligned to 128 bytes
+  EXPECT_GE(bufferSize, expectedMinSize);
+  EXPECT_EQ(bufferSize % 128, 0) << "Buffer size should be 128-byte aligned";
+}
+
+// =============================================================================
+// DeviceBarrier Tests
+// =============================================================================
+
+TEST_F(MultiPeerDeviceTransportTestFixture, DeviceBarrierConstruction) {
+  const int myRank = 1;
+  const int nRanks = 4;
+
+  DeviceBuffer resultsBuffer(2 * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testDeviceBarrierConstruction(myRank, nRanks, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(2);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(), results_d, 2 * sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], myRank) << "rank() should return " << myRank;
+  EXPECT_EQ(results_h[1], nRanks) << "nRanks() should return " << nRanks;
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, BarrierBufferSize) {
+  // Test buffer size calculation
+  const int barrierCount = 4;
+
+  std::size_t bufferSize = getMultiPeerBarrierBufferSize(barrierCount);
+
+  // Expected: barrierCount * sizeof(BarrierState), aligned to 128 bytes
+  std::size_t expectedMinSize = barrierCount * sizeof(BarrierState);
   // Should be aligned to 128 bytes
   EXPECT_GE(bufferSize, expectedMinSize);
   EXPECT_EQ(bufferSize % 128, 0) << "Buffer size should be 128-byte aligned";

@@ -111,6 +111,42 @@ struct alignas(128) BarrierState {
     }
     group.sync();
   }
+
+  // ===========================================================================
+  // Reset Operations
+  // ===========================================================================
+
+  /**
+   * reset - Reset the barrier to initial state
+   *
+   * Resets both counters to 0. This is only safe when:
+   * - No threads are currently in arrive() or wait()
+   * - All prior barrier operations have completed
+   *
+   * Typically used between communication phases when reusing barrier slots.
+   *
+   * WARNING: Calling reset() while other threads are using the barrier
+   * leads to undefined behavior. Use MPI_Barrier or similar host-side
+   * synchronization to ensure all ranks have completed before resetting.
+   */
+  __device__ __forceinline__ void reset() {
+    current_counter_.store(0);
+    expected_counter_.store(0);
+  }
+
+  /**
+   * reset - Reset the barrier to initial state (thread group)
+   *
+   * Thread-group-safe version. Only the leader performs the reset.
+   *
+   * @param group ThreadGroup for cooperative synchronization
+   */
+  __device__ __forceinline__ void reset(ThreadGroup& group) {
+    if (group.is_leader()) {
+      reset();
+    }
+    group.sync();
+  }
 };
 
 /**

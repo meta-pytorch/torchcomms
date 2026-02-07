@@ -11,6 +11,23 @@ namespace comms::pipes::benchmark {
 // Use SyncScope from ThreadGroup.cuh for thread group type selection
 
 // =============================================================================
+// Barrier Benchmark Kernel
+// =============================================================================
+
+/**
+ * N-way barrier benchmark kernel.
+ *
+ * Each thread group executes barrier() in a loop.
+ * Uses unique slot per group to avoid contention.
+ *
+ * Half-duplex measurement: all ranks synchronize together.
+ */
+template <SyncScope G>
+__global__ void multiPeerBarrierKernel(
+    MultiPeerDeviceTransport transport,
+    int nSteps);
+
+// =============================================================================
 // Signal Ping-Pong Benchmark Kernel
 // =============================================================================
 

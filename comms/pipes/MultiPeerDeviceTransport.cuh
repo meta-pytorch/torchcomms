@@ -4,6 +4,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include "comms/pipes/DeviceBarrier.cuh"
 #include "comms/pipes/DeviceCounter.cuh"
 #include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
@@ -69,6 +70,7 @@ namespace comms::pipes {
  * Provides a single device object with:
  * - DeviceSignal for inbox-style signaling (remote notification)
  * - DeviceCounter for local completion notification
+ * - DeviceBarrier for multi-peer synchronization
  * - Peer-indexed send/recv/put operations
  *
  * PEER INDEX SPACE:
@@ -134,6 +136,8 @@ namespace comms::pipes {
  *   │  │   └── signal_peer() / wait_signal()                          │
  *   │  ├── DeviceCounter counter_ (local completion)                  │
  *   │  │   └── increment_counter() / wait_counter()                   │
+ *   │  └── DeviceBarrier barrier_ (N-way sync)                        │
+ *   │      └── barrier() / barrier_peer()                             │
  *   └─────────────────────────────────────────────────────────────────┘
  *
  * USAGE:
@@ -180,18 +184,21 @@ class MultiPeerDeviceTransport {
    * @param transports Span of Transport objects for each peer (size = nRanks)
    * @param signal DeviceSignal for inbox-style signaling
    * @param counter DeviceCounter for local completion
+   * @param barrier DeviceBarrier for multi-peer synchronization
    */
   __host__ __device__ MultiPeerDeviceTransport(
       int myRank,
       int nRanks,
       DeviceSpan<Transport> transports,
       DeviceSignal signal,
-      DeviceCounter counter)
+      DeviceCounter counter,
+      DeviceBarrier barrier)
       : myRank_(myRank),
         nRanks_(nRanks),
         transports_(transports),
         signal_(signal),
-        counter_(counter) {
+        counter_(counter),
+        barrier_(barrier) {
     // Validate constraints
     assert(nRanks > 0);
     assert(myRank >= 0 && myRank < nRanks);
@@ -285,6 +292,18 @@ class MultiPeerDeviceTransport {
   }
 
   // ===========================================================================
+  // Barrier Object
+  // ===========================================================================
+
+  __device__ __forceinline__ DeviceBarrier& get_barrier() {
+    return barrier_;
+  }
+
+  __device__ __forceinline__ const DeviceBarrier& get_barrier() const {
+    return barrier_;
+  }
+
+  // ===========================================================================
   // Signal Operations (delegated to signal_)
   // ===========================================================================
 
@@ -362,6 +381,62 @@ class MultiPeerDeviceTransport {
   }
 
   // ===========================================================================
+  // Barrier Operations (delegated to barrier_)
+  // ===========================================================================
+
+  __device__ __forceinline__ void barrier(
+      ThreadGroup& group,
+      int barrier_id,
+      uint64_t timeout_ns = UINT64_MAX) {
+    barrier_.barrier(group, barrier_id, timeout_ns);
+  }
+
+  /**
+   * barrier_peer - Two-sided barrier with a specific peer
+   *
+   * @param peer_index Peer index in [0, num_peers())
+   * @param group ThreadGroup for cooperative processing
+   * @param barrier_id Barrier slot to use
+   * @param timeout_ns Timeout in nanoseconds (default: infinite)
+   */
+  __device__ __forceinline__ void barrier_peer(
+      int peer_index,
+      ThreadGroup& group,
+      int barrier_id,
+      uint64_t timeout_ns = UINT64_MAX) {
+    barrier_.barrier_peer(peer_index, group, barrier_id, timeout_ns);
+  }
+
+  /**
+   * reset_barrier - Reset a specific barrier slot to initial state
+   *
+   * Resets the barrier's counters to 0. Only safe when all ranks have
+   * completed prior barrier operations on this slot.
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param barrier_id Index of the barrier to reset
+   *
+   * SAFETY: Must be called collectively by all ranks after ensuring no
+   * barrier operations are in flight. Typically done after a host-side
+   * MPI_Barrier to guarantee synchronization.
+   */
+  __device__ __forceinline__ void reset_barrier(
+      ThreadGroup& group,
+      int barrier_id) {
+    barrier_.reset_barrier(group, barrier_id);
+  }
+
+  /**
+   * reset_all_barriers - Reset all barrier slots
+   *
+   * Convenience method to reset all barriers. Same safety requirements
+   * as reset_barrier().
+   *
+   * @param group ThreadGroup for cooperative processing
+   */
+  __device__ __forceinline__ void reset_all_barriers(ThreadGroup& group) {
+    barrier_.reset_all_barriers(group);
+  }
 
   // ===========================================================================
   // Send/Recv Operations (peer index as input)
@@ -466,6 +541,7 @@ class MultiPeerDeviceTransport {
   const DeviceSpan<Transport> transports_;
   DeviceSignal signal_;
   DeviceCounter counter_;
+  DeviceBarrier barrier_;
 
   // ===========================================================================
   // Private Match Helper

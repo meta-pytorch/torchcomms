@@ -4,6 +4,7 @@
 
 #include <vector>
 
+#include "comms/pipes/DeviceBarrier.cuh"
 #include "comms/pipes/DeviceCounter.cuh"
 #include "comms/pipes/DeviceSignal.cuh"
 #include "comms/utils/checks.h"
@@ -55,6 +56,25 @@ WindowMemory::WindowMemory(
       counterInitStates.data(),
       counterSize_,
       cudaMemcpyDefault));
+
+  // Allocate barrier inbox buffer (shared with peers via exchange)
+  barrierInboxSize_ =
+      getMultiPeerBarrierBufferSize(static_cast<int>(config_.barrierCount));
+  barrierInboxHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_, myRank_, nRanks_, barrierInboxSize_, memSharingMode_);
+
+  // Initialize barrier inbox to zero
+  std::vector<BarrierState> barrierInitStates(config_.barrierCount);
+  CUDA_CHECK(cudaMemcpy(
+      barrierInboxHandler_->getLocalDeviceMemPtr(),
+      barrierInitStates.data(),
+      barrierInboxSize_,
+      cudaMemcpyDefault));
+
+  // Allocate peer barrier pointers array (populate later in exchange())
+  std::size_t barrierPtrArraySize = nPeers * sizeof(BarrierState*);
+  peerBarrierPtrsDevice_ =
+      std::make_unique<meta::comms::DeviceBuffer>(barrierPtrArraySize);
 }
 
 void WindowMemory::exchange() {
@@ -75,6 +95,24 @@ void WindowMemory::exchange() {
       peerInboxPtrsDevice_->get(),
       peerPtrs.data(),
       nPeers * sizeof(SignalState*),
+      cudaMemcpyDefault));
+
+  // Exchange barrier inbox handles so peers can write arrive signals
+  barrierInboxHandler_->exchangeMemPtrs();
+
+  // Build peer barrier pointers array on host (peer-indexed, excludes self)
+  std::vector<BarrierState*> peerBarrierPtrs(nPeers);
+  for (int peerIdx = 0; peerIdx < nPeers; ++peerIdx) {
+    int rank = peerToRank(peerIdx);
+    peerBarrierPtrs[peerIdx] = static_cast<BarrierState*>(
+        barrierInboxHandler_->getPeerDeviceMemPtr(rank));
+  }
+
+  // Copy peer barrier pointers to device
+  CUDA_CHECK(cudaMemcpy(
+      peerBarrierPtrsDevice_->get(),
+      peerBarrierPtrs.data(),
+      nPeers * sizeof(BarrierState*),
       cudaMemcpyDefault));
 
   exchanged_ = true;
@@ -106,6 +144,25 @@ DeviceCounter WindowMemory::getDeviceCounter() const {
   // No exchange check — counters are local-only, usable immediately
   auto* counters = static_cast<SignalState*>(counterDevice_->get());
   return DeviceCounter(DeviceSpan<SignalState>(counters, config_.counterCount));
+}
+
+DeviceBarrier WindowMemory::getDeviceBarrier() const {
+  if (!exchanged_) {
+    throw std::runtime_error(
+        "WindowMemory::getDeviceBarrier() called before exchange()");
+  }
+
+  auto* localBarriers =
+      static_cast<BarrierState*>(barrierInboxHandler_->getLocalDeviceMemPtr());
+  auto** peerBarrierPtrs =
+      static_cast<BarrierState**>(peerBarrierPtrsDevice_->get());
+
+  int nPeers = nRanks_ - 1;
+  return DeviceBarrier(
+      myRank_,
+      nRanks_,
+      DeviceSpan<BarrierState>(localBarriers, config_.barrierCount),
+      DeviceSpan<BarrierState*>(peerBarrierPtrs, nPeers));
 }
 
 } // namespace comms::pipes

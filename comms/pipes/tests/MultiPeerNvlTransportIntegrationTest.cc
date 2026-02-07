@@ -288,6 +288,84 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSignalWait) {
 }
 
 // =============================================================================
+// Multi-GPU Barrier Test
+// =============================================================================
+
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, Barrier) {
+  const size_t dataBufferSize = 1024 * 1024;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  DeviceBuffer resultBuffer(sizeof(int));
+  auto result_d = static_cast<int*>(resultBuffer.get());
+  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  test::testBarrier(device, 0, result_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "Barrier operation failed";
+
+  XLOGF(INFO, "Rank {}: Barrier test completed", globalRank);
+}
+
+// =============================================================================
+// Multi-GPU Barrier Peer Test (Two-Sided Barrier)
+// =============================================================================
+
+// Test barrier_peer() which synchronizes with a single peer.
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierPeer) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDefaultDataBufferSize,
+      .chunkSize = kDefaultChunkSize,
+      .pipelineDepth = kDefaultPipelineDepth,
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  int peerIndex = 0; // In 2-rank setup, each rank has exactly one peer
+
+  DeviceBuffer resultBuffer(sizeof(int));
+  auto result_d = static_cast<int*>(resultBuffer.get());
+  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Both ranks call barrier_peer with each other's rank
+  test::testBarrierPeer(device, peerIndex, 0, result_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "barrier_peer() operation failed on rank "
+                         << globalRank;
+
+  XLOGF(
+      INFO,
+      "Rank {}: BarrierPeer test completed (peerIndex={})",
+      globalRank,
+      peerIndex);
+}
 
 // =============================================================================
 // Multi-GPU Send/Recv Test
@@ -424,6 +502,58 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSendRecv) {
       << "Rank " << globalRank << ": Data mismatch in BidirectionalSendRecv";
 
   XLOGF(INFO, "Rank {}: Bidirectional Send/Recv test completed", globalRank);
+}
+
+// =============================================================================
+// Multiple Barrier Iterations Test
+// =============================================================================
+
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarriers) {
+  const size_t dataBufferSize = 1024 * 1024;
+  // Use multiple barrier slots to avoid state accumulation issues
+  constexpr int kNumBarrierSlots = 4;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+      .barrierCount = kNumBarrierSlots,
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  const int numIterations = 10;
+
+  DeviceBuffer resultBuffer(sizeof(int));
+  auto result_d = static_cast<int*>(resultBuffer.get());
+
+  for (int iter = 0; iter < numIterations; ++iter) {
+    // Use modular slot selection to avoid barrier state accumulation
+    // Each iteration uses a different slot in round-robin fashion
+    int slotIdx = iter % kNumBarrierSlots;
+
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testBarrier(device, slotIdx, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(result_h, 1) << "Barrier iteration " << iter << " (slot "
+                           << slotIdx << ") failed on rank " << globalRank;
+  }
+
+  XLOGF(
+      INFO,
+      "Rank {}: Multiple Barriers test completed ({} iterations, {} slots)",
+      globalRank,
+      numIterations,
+      kNumBarrierSlots);
 }
 
 // =============================================================================
@@ -617,6 +747,303 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, ConcurrentSignalSlots) {
       "Rank {}: Concurrent signal slots test completed ({} slots)",
       globalRank,
       numSignalSlots);
+}
+
+// =============================================================================
+// Tests with Custom barrierCount Configuration
+// =============================================================================
+
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarrierSlots) {
+  const size_t dataBufferSize = 1024 * 1024;
+  const int numBarrierSlots = 4;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+      .barrierCount = numBarrierSlots,
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  // Test each barrier slot
+  for (int slotIdx = 0; slotIdx < numBarrierSlots; ++slotIdx) {
+    DeviceBuffer resultBuffer(sizeof(int));
+    auto result_d = static_cast<int*>(resultBuffer.get());
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testBarrier(device, slotIdx, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(result_h, 1) << "Barrier slot " << slotIdx << " failed on rank "
+                           << globalRank;
+  }
+
+  XLOGF(
+      INFO,
+      "Rank {}: Multiple barrier slots test completed ({} slots)",
+      globalRank,
+      numBarrierSlots);
+}
+
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierSlotStress) {
+  const size_t dataBufferSize = 1024 * 1024;
+  const int numBarrierSlots = 4;
+  const int numIterations = 20;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+      .barrierCount = numBarrierSlots,
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  DeviceBuffer resultBuffer(sizeof(int));
+  auto result_d = static_cast<int*>(resultBuffer.get());
+
+  // Stress test: cycle through all barrier slots multiple times
+  for (int iter = 0; iter < numIterations; ++iter) {
+    int slotIdx = iter % numBarrierSlots;
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testBarrier(device, slotIdx, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(result_h, 1) << "Barrier stress iter " << iter << " (slot "
+                           << slotIdx << ") failed on rank " << globalRank;
+  }
+
+  XLOGF(
+      INFO,
+      "Rank {}: Barrier slot stress test completed ({} iterations, {} slots)",
+      globalRank,
+      numIterations,
+      numBarrierSlots);
+}
+
+// =============================================================================
+// Barrier Reset Between Phases Test
+// =============================================================================
+
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierResetBetweenPhases) {
+  const size_t dataBufferSize = 1024 * 1024;
+  constexpr int kNumPhases = 3;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+      .barrierCount = 1, // Single barrier slot, reused with reset
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  DeviceBuffer resultBuffer(sizeof(int));
+  auto result_d = static_cast<int*>(resultBuffer.get());
+
+  // Test that a single barrier slot can be reused across multiple phases
+  // by calling reset_barrier() between phases
+  for (int phase = 0; phase < kNumPhases; ++phase) {
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Use barrier slot 0 with reset after each phase
+    bool doReset = true;
+    test::testBarrierWithReset(device, 0, doReset, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+    EXPECT_EQ(result_h, 1) << "Barrier reset phase " << phase
+                           << " failed on rank " << globalRank;
+  }
+
+  XLOGF(
+      INFO,
+      "Rank {}: Barrier reset between phases test completed ({} phases)",
+      globalRank,
+      kNumPhases);
+}
+
+// =============================================================================
+// Barrier Multi-Block Stress Test (Issue 3)
+// =============================================================================
+
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMultiBlockStress) {
+  constexpr int kNumBlocks = 8;
+  constexpr int kNumBarrierSlots = 8;
+
+  const size_t dataBufferSize = 1024 * 1024;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+      .barrierCount = kNumBarrierSlots,
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  DeviceBuffer resultsBuffer(kNumBlocks * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, kNumBlocks * sizeof(int)));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  test::testBarrierMultiBlockStress(
+      device, kNumBarrierSlots, results_d, kNumBlocks);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Verify all blocks completed successfully
+  std::vector<int> results_h(kNumBlocks);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      kNumBlocks * sizeof(int),
+      cudaMemcpyDeviceToHost));
+
+  std::vector<int> expected(kNumBlocks, 1);
+  EXPECT_EQ(results_h, expected)
+      << "Not all blocks completed barrier successfully on rank " << globalRank;
+
+  XLOGF(
+      INFO,
+      "Rank {}: Barrier multi-block stress test completed ({} blocks, {} slots)",
+      globalRank,
+      kNumBlocks,
+      kNumBarrierSlots);
+}
+
+// =============================================================================
+// Combined Signal and Barrier Configuration Test
+// =============================================================================
+
+TEST_F(
+    MultiPeerNvlTransportIntegrationTestFixture,
+    CombinedSignalBarrierConfig) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
+  }
+
+  const size_t dataBufferSize = 1024 * 1024;
+  const int numSignalSlots = 4;
+  const int numBarrierSlots = 2;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = 1024,
+      .pipelineDepth = 4,
+      .signalCount = numSignalSlots,
+      .barrierCount = numBarrierSlots,
+  };
+
+  auto [transport, device] = createTransport(config);
+
+  int peerIndex = 0; // In 2-rank setup, each rank has exactly one peer
+
+  // Phase 1: Signal on slot 0
+  {
+    DeviceBuffer resultBuffer(sizeof(int));
+    auto result_d = static_cast<int*>(resultBuffer.get());
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testSignalWait(device, peerIndex, 0, globalRank == 0, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(result_h, 1) << "Phase 1 signal failed";
+  }
+
+  // Phase 2: Barrier on slot 0
+  {
+    DeviceBuffer resultBuffer(sizeof(int));
+    auto result_d = static_cast<int*>(resultBuffer.get());
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testBarrier(device, 0, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(result_h, 1) << "Phase 2 barrier failed";
+  }
+
+  // Phase 3: Signal on slot 3 (max slot)
+  {
+    DeviceBuffer resultBuffer(sizeof(int));
+    auto result_d = static_cast<int*>(resultBuffer.get());
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testSignalWait(
+        device, peerIndex, numSignalSlots - 1, globalRank == 1, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(result_h, 1) << "Phase 3 signal failed";
+  }
+
+  // Phase 4: Barrier on slot 1 (max slot)
+  {
+    DeviceBuffer resultBuffer(sizeof(int));
+    auto result_d = static_cast<int*>(resultBuffer.get());
+    CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testBarrier(device, numBarrierSlots - 1, result_d);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    int result_h = 0;
+    CUDACHECK_TEST(
+        cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(result_h, 1) << "Phase 4 barrier failed";
+  }
+
+  XLOGF(
+      INFO,
+      "Rank {}: Combined signal/barrier config test completed ({} signal slots, {} barrier slots)",
+      globalRank,
+      numSignalSlots,
+      numBarrierSlots);
 }
 
 // =============================================================================
