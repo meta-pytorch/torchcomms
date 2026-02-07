@@ -16,6 +16,8 @@ import unittest
 
 import torch
 import torch._dynamo
+from torchcomms import ReduceOp
+from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -135,13 +137,6 @@ class TestWaitProxyPropagation(unittest.TestCase):
         and returns the tensor. The FX graph should show that the returned tensor
         flows through wait_tensors, not directly from the collective.
         """
-        try:
-            from torchcomms import ReduceOp
-            from torchcomms.tests.integration.py.TorchCommTestHelpers import (
-                TorchCommTestWrapper,
-            )
-        except ImportError:
-            self.skipTest("torchcomms not available")
 
         wrapper = TorchCommTestWrapper()
         comm = wrapper.get_torchcomm()
@@ -185,12 +180,6 @@ class TestWaitProxyPropagation(unittest.TestCase):
 
     def test_list_return_uses_wait_output(self):
         """Test that list of tensors returned after wait uses wait outputs."""
-        try:
-            from torchcomms.tests.integration.py.TorchCommTestHelpers import (
-                TorchCommTestWrapper,
-            )
-        except ImportError:
-            self.skipTest("torchcomms not available")
 
         wrapper = TorchCommTestWrapper()
         comm = wrapper.get_torchcomm()
