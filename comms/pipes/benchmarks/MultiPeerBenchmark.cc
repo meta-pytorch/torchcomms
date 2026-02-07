@@ -23,6 +23,10 @@
 DEFINE_int32(benchmark_iters, 50, "Number of benchmark iterations");
 DEFINE_int32(steps_per_iter, 100, "Number of steps per kernel launch");
 DEFINE_int32(warmup_iters, 10, "Number of warmup iterations");
+DEFINE_int32(
+    put_message_size,
+    4096,
+    "Message size in bytes for put benchmarks");
 
 using meta::comms::CudaEvent;
 using meta::comms::MpiBaseTestFixture;
@@ -50,6 +54,11 @@ inline int getBenchmarkIters() {
 inline int getStepsPerIter() {
   CHECK_GT(FLAGS_steps_per_iter, 0) << "steps_per_iter must be positive";
   return FLAGS_steps_per_iter;
+}
+
+inline std::size_t getPutMessageSize() {
+  CHECK_GT(FLAGS_put_message_size, 0) << "put_message_size must be positive";
+  return static_cast<std::size_t>(FLAGS_put_message_size);
 }
 
 // =============================================================================

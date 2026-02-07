@@ -16,7 +16,7 @@ namespace comms::pipes::test {
  * @param results Output array: [0]=rank, [1]=nRanks, [2]=numPeers
  */
 void testMultiPeerDeviceTransportAccessors(
-    MultiPeerDeviceTransport& transport,
+    const MultiPeerDeviceTransport& transport,
     int* results);
 
 /**
@@ -49,7 +49,7 @@ void testSignalWait(
  * @param result Output: 1 if barrier completed successfully
  */
 void testBarrier(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int barrierIdx,
     int* result);
 
@@ -287,7 +287,7 @@ void testSignalWithSet(
  * @param results Output: [0]=counter value after increment
  */
 void testTransportCounterIncrementRead(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     uint64_t* results);
 
 /**
@@ -299,7 +299,7 @@ void testTransportCounterIncrementRead(
  * @param results Output: [0..3]=counter values after reset operations
  */
 void testTransportCounterResetOperations(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     uint64_t* results);
 
 /**
@@ -313,7 +313,7 @@ void testTransportCounterResetOperations(
  * @param result Output: 1 if successful
  */
 void testBarrierWithReset(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int barrierIdx,
     bool doReset,
     int* result);
@@ -330,7 +330,7 @@ void testBarrierWithReset(
  * @param numBlocks Number of blocks to launch
  */
 void testBarrierMultiBlockStress(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int numSlots,
     int* results,
     int numBlocks);
@@ -347,9 +347,31 @@ void testBarrierMultiBlockStress(
  * @param result Output: 1 if successful
  */
 void testBarrierPeer(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int peerIndex,
     int barrierIdx,
+    int* result);
+
+/**
+ * Test kernel: Test the put() operation
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param peerIndex Target peer index
+ * @param remoteDst Remote destination buffer
+ * @param localSrc Local source buffer
+ * @param nbytes Number of bytes to transfer
+ * @param signalId Signal slot to use for completion notification
+ * @param isWriter True if this rank writes, false if it waits
+ * @param result Output: 1 if successful
+ */
+void testPutOperation(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    void* remoteDst,
+    const void* localSrc,
+    std::size_t nbytes,
+    int signalId,
+    bool isWriter,
     int* result);
 
 } // namespace comms::pipes::test

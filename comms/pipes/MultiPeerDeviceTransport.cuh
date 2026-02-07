@@ -488,6 +488,85 @@ class MultiPeerDeviceTransport {
     });
   }
 
+  // ===========================================================================
+  // Zero-Copy Operations
+  // ===========================================================================
+
+  /**
+   * put - Zero-copy write to peer's memory
+   *
+   * Writes data directly to the remote buffer via NVLink without staging.
+   *
+   * Caller is responsible for signaling completion separately.
+   * The put operation itself has no implicit memory ordering guarantees.
+   *
+   * Memory ordering: Caller must use signal_peer() after put() to ensure
+   * visibility. The signal operation includes a release fence.
+   *
+   * @param peer_index Peer index in [0, num_peers())
+   * @param group ThreadGroup for cooperative processing
+   * @param remoteDst Remote destination buffer (on peer's GPU)
+   * @param localSrc Local source buffer
+   * @param nbytes Number of bytes to transfer
+   */
+  __device__ __forceinline__ void put(
+      int peer_index,
+      ThreadGroup& group,
+      void* remoteDst,
+      const void* localSrc,
+      std::size_t nbytes) {
+    MULTI_PEER_CHECK_PEER_INDEX(peer_index, num_peers());
+    int rank = peer_index_to_rank(peer_index);
+    transports_[rank].p2p_nvl.put(
+        group,
+        static_cast<char*>(remoteDst),
+        static_cast<const char*>(localSrc),
+        nbytes);
+  }
+
+  // ===========================================================================
+  // Combined Put + Signal Operations
+  // ===========================================================================
+
+  /**
+   * put_signal - Zero-copy write with atomic signal
+   *
+   * Performs put() followed by signal_peer() with proper memory ordering.
+   * The signal is guaranteed to be visible only after data transfer completes.
+   *
+   * Memory ordering: Release semantics - all prior writes visible before
+   * signal.
+   *
+   * @param peer_index Peer index in [0, num_peers())
+   * @param group ThreadGroup for cooperative processing
+   * @param remoteDst Remote destination buffer
+   * @param localSrc Local source buffer
+   * @param nbytes Number of bytes to transfer
+   * @param signalId Signal slot to increment
+   * @param signalVal Value to atomically add (default: 1)
+   */
+  __device__ __forceinline__ void put_signal(
+      int peer_index,
+      ThreadGroup& group,
+      void* remoteDst,
+      const void* localSrc,
+      std::size_t nbytes,
+      int signalId,
+      uint64_t signalVal = 1) {
+    // 1. Copy data to remote
+    put(peer_index, group, remoteDst, localSrc, nbytes);
+
+    // 2. Ensure all threads complete copy before signaling
+    group.sync();
+
+    // 3. Signal with release semantics (leader only in signalPeer)
+    signal_peer(peer_index, group, signalId, SignalOp::SIGNAL_ADD, signalVal);
+  }
+
+  // ===========================================================================
+  // Advanced Access
+  // ===========================================================================
+
   /**
    * get_peer_transport - Get Transport pointer for specific peer
    *

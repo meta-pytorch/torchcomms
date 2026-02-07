@@ -16,7 +16,7 @@ namespace comms::pipes::test {
 // =============================================================================
 
 __global__ void multiPeerDeviceTransportAccessorsKernel(
-    MultiPeerDeviceTransport& transport,
+    const MultiPeerDeviceTransport& transport,
     int* results) {
   results[0] = transport.rank();
   results[1] = transport.n_ranks();
@@ -24,7 +24,7 @@ __global__ void multiPeerDeviceTransportAccessorsKernel(
 }
 
 void testMultiPeerDeviceTransportAccessors(
-    MultiPeerDeviceTransport& transport,
+    const MultiPeerDeviceTransport& transport,
     int* results) {
   multiPeerDeviceTransportAccessorsKernel<<<1, 1>>>(transport, results);
   CUDACHECK_TEST(cudaGetLastError());
@@ -66,8 +66,10 @@ void testSignalWait(
 // Barrier Test
 // =============================================================================
 
-__global__ void
-barrierKernel(MultiPeerDeviceTransport transport, int barrierIdx, int* result) {
+__global__ void barrierKernel(
+    MultiPeerDeviceTransport& transport,
+    int barrierIdx,
+    int* result) {
   auto group = make_warp_group();
 
   // Execute barrier
@@ -78,7 +80,7 @@ barrierKernel(MultiPeerDeviceTransport transport, int barrierIdx, int* result) {
 }
 
 void testBarrier(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int barrierIdx,
     int* result) {
   barrierKernel<<<1, 32>>>(transport, barrierIdx, result);
@@ -222,6 +224,55 @@ void testConcurrentSignalMultiBlock(
     int numBlocks) {
   concurrentSignalMultiBlockKernel<<<numBlocks, 32>>>(
       transport, peer, numSlots, isSignaler, results);
+}
+
+// =============================================================================
+// Put Operation Test
+// =============================================================================
+
+__global__ void putOperationKernel(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    void* remoteDst,
+    const void* localSrc,
+    std::size_t nbytes,
+    int signalId,
+    bool isWriter,
+    int* result) {
+  auto group = make_warp_group();
+
+  if (isWriter) {
+    // Use put_signal to write and signal completion
+    transport.put_signal(
+        peerIndex, group, remoteDst, localSrc, nbytes, signalId, 1);
+  } else {
+    // Wait for signal indicating data is ready
+    transport.wait_signal(group, signalId, CmpOp::CMP_GE, 1);
+  }
+
+  if (threadIdx.x == 0) {
+    *result = 1;
+  }
+}
+
+void testPutOperation(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    void* remoteDst,
+    const void* localSrc,
+    std::size_t nbytes,
+    int signalId,
+    bool isWriter,
+    int* result) {
+  putOperationKernel<<<1, 32>>>(
+      transport,
+      peerIndex,
+      remoteDst,
+      localSrc,
+      nbytes,
+      signalId,
+      isWriter,
+      result);
 }
 
 // =============================================================================
@@ -487,7 +538,7 @@ void testSignalWithSet(
 // =============================================================================
 
 __global__ void transportCounterIncrementReadKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     uint64_t* results) {
   auto group = make_warp_group();
 
@@ -500,13 +551,13 @@ __global__ void transportCounterIncrementReadKernel(
 }
 
 void testTransportCounterIncrementRead(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     uint64_t* results) {
   transportCounterIncrementReadKernel<<<1, 32>>>(transport, results);
 }
 
 __global__ void transportCounterResetOperationsKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     uint64_t* results) {
   auto group = make_warp_group();
 
@@ -542,7 +593,7 @@ __global__ void transportCounterResetOperationsKernel(
 }
 
 void testTransportCounterResetOperations(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     uint64_t* results) {
   transportCounterResetOperationsKernel<<<1, 32>>>(transport, results);
 }
@@ -552,7 +603,7 @@ void testTransportCounterResetOperations(
 // =============================================================================
 
 __global__ void barrierWithResetKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int barrierIdx,
     bool doReset,
     int* result) {
@@ -572,7 +623,7 @@ __global__ void barrierWithResetKernel(
 }
 
 void testBarrierWithReset(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int barrierIdx,
     bool doReset,
     int* result) {
@@ -584,7 +635,7 @@ void testBarrierWithReset(
 // =============================================================================
 
 __global__ void barrierMultiBlockStressKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int numSlots,
     int* results) {
   auto group = make_warp_group();
@@ -602,7 +653,7 @@ __global__ void barrierMultiBlockStressKernel(
 }
 
 void testBarrierMultiBlockStress(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int numSlots,
     int* results,
     int numBlocks) {
@@ -615,7 +666,7 @@ void testBarrierMultiBlockStress(
 // =============================================================================
 
 __global__ void barrierPeerKernel(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int peerIndex,
     int barrierIdx,
     int* result) {
@@ -631,7 +682,7 @@ __global__ void barrierPeerKernel(
 }
 
 void testBarrierPeer(
-    MultiPeerDeviceTransport transport,
+    MultiPeerDeviceTransport& transport,
     int peerIndex,
     int barrierIdx,
     int* result) {

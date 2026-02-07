@@ -77,4 +77,61 @@ __global__ void multiPeerCounterKernel(
     MultiPeerDeviceTransport transport,
     int nSteps);
 
+// =============================================================================
+// Put Ping-Pong Benchmark Kernel
+// =============================================================================
+
+/**
+ * Put ping-pong benchmark kernel (2 ranks only).
+ *
+ * Rank 0 and Rank 1 alternate put() + signal_peer() operations.
+ * Measures NVLink write bandwidth for small messages combined with
+ * signal latency.
+ *
+ * Half-duplex measurement: one put in flight at a time.
+ *
+ * @param transport MultiPeerDeviceTransport for NVLink operations
+ * @param peerRank The peer rank to communicate with
+ * @param localSrc Local source buffer to read from
+ * @param remoteDst Remote destination buffer to write to (IPC-mapped)
+ * @param nbytes Number of bytes to transfer per put
+ * @param nSteps Number of ping-pong iterations
+ */
+template <SyncScope S>
+__global__ void multiPeerPutPingPongKernel(
+    MultiPeerDeviceTransport transport,
+    int peerIndex,
+    const void* localSrc,
+    void* remoteDst,
+    std::size_t nbytes,
+    int nSteps);
+
+// =============================================================================
+// Put+Signal Ping-Pong Benchmark Kernel
+// =============================================================================
+
+/**
+ * Put+Signal ping-pong benchmark kernel (2 ranks only).
+ *
+ * Rank 0 and Rank 1 alternate put_signal() operations.
+ * Measures combined NVLink write + signal latency using the convenience API.
+ *
+ * Half-duplex measurement: one put_signal in flight at a time.
+ *
+ * @param transport MultiPeerDeviceTransport for NVLink operations
+ * @param peerRank The peer rank to communicate with
+ * @param localSrc Local source buffer to read from
+ * @param remoteDst Remote destination buffer to write to (IPC-mapped)
+ * @param nbytes Number of bytes to transfer per put
+ * @param nSteps Number of ping-pong iterations
+ */
+template <SyncScope S>
+__global__ void multiPeerPutSignalPingPongKernel(
+    MultiPeerDeviceTransport transport,
+    int peerIndex,
+    const void* localSrc,
+    void* remoteDst,
+    std::size_t nbytes,
+    int nSteps);
+
 } // namespace comms::pipes::benchmark
