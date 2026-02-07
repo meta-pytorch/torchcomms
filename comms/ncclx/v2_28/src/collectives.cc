@@ -12,6 +12,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "meta/algoconf/AlgoConfig.h"
+#include "meta/collectives/PatAvgHelper.h"
 #include "comms/ctran/utils/Checks.h"
 #include "meta/wrapper/MetaFactory.h"
 
@@ -223,6 +224,13 @@ ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recv
   struct ncclInfo info = { ncclFuncReduceScatter, "ReduceScatter",
     sendbuff, recvbuff, recvcount, datatype, op, 0, comm, stream, /* Args */
     REDUCESCATTER_CHUNKSTEPS, REDUCESCATTER_SLICESTEPS };
+
+  // [META:PAT_AVG] Set up infoExt for per-comm PAT AVG control
+  if (comm->usePatAvg_ && op == ncclAvg) {
+    size_t nBytes = recvcount * ncclTypeSize(datatype) * comm->nRanks;
+    ncclx::setupPatAvgInfoExt(comm, nBytes, &info.ext);
+  }
+
   return ncclEnqueueCheck(&info);
 }
 
