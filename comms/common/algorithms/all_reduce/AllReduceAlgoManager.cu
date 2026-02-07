@@ -5,7 +5,7 @@
 namespace meta::comms {
 
 AllReduceAlgoManager::AllReduceAlgoManager(
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<IBootstrap> bootstrap,
     int nRanks,
     int selfRank,
     int maxBlocks,

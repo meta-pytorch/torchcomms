@@ -4,7 +4,7 @@
 
 #include "comms/common/IpcGpuBarrier.cuh"
 #include "comms/common/algorithms/all_reduce/AlgoAllReduce.cuh"
-#include "comms/ctran/interfaces/IBootstrap.h" // @manual
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/commSpecs.h"
 
@@ -13,7 +13,7 @@ namespace meta::comms {
 class AllReduceAlgoManager {
  public:
   AllReduceAlgoManager(
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<IBootstrap> bootstrap,
       int nRanks,
       int selfRank,
       int maxBlocks,

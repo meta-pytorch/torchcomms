@@ -8,7 +8,7 @@
 namespace meta::comms {
 
 AlgoFactory::AlgoFactory(
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<IBootstrap> bootstrap,
     int nRanks,
     int selfRank,
     int maxBlocks,
@@ -38,7 +38,7 @@ AlgoFactory::AlgoFactory(
 }
 
 AlgoFactoryDev::AlgoFactoryDev(
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<IBootstrap> bootstrap,
     int nRanks,
     int selfRank,
     int maxBlocks,

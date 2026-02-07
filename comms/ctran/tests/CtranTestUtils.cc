@@ -531,7 +531,7 @@ namespace {
 
 void initRankStatesTopologyWrapper(
     ncclx::CommStateX* statex,
-    ctran::bootstrap::IBootstrap* bootstrap,
+    meta::comms::IBootstrap* bootstrap,
     int nRanks) {
   // Fake topology with nLocalRanks=1
   if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {

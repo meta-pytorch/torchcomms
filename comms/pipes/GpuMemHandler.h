@@ -6,7 +6,7 @@
 #include <cuda_runtime.h>
 #include <vector>
 
-#include "comms/ctran/interfaces/IBootstrap.h"
+#include "comms/common/bootstrap/IBootstrap.h"
 
 namespace comms::pipes {
 
@@ -84,7 +84,7 @@ class GpuMemHandler {
    * @throws std::runtime_error if memory allocation fails
    */
   GpuMemHandler(
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       int32_t selfRank,
       int32_t nRanks,
       size_t size);
@@ -102,7 +102,7 @@ class GpuMemHandler {
    * fails
    */
   GpuMemHandler(
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       int32_t selfRank,
       int32_t nRanks,
       size_t size,
@@ -191,7 +191,7 @@ class GpuMemHandler {
   void exchangeCudaIpcHandles();
   void cleanupCudaIpc();
 
-  std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap_;
+  std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   const int32_t selfRank_{-1};
   const int32_t nRanks_{-1};
   const MemSharingMode mode_{MemSharingMode::kCudaIpc};

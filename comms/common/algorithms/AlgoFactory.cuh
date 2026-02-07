@@ -7,7 +7,7 @@
 #include "comms/common/algorithms/all_reduce/AllReduceAlgoManager.h"
 #include "comms/common/algorithms/all_to_all/AllToAllAlgoManager.h"
 #include "comms/common/algorithms/reduce_scatter/ReduceScatterAlgoManager.h"
-#include "comms/ctran/interfaces/IBootstrap.h" // @manual
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/commSpecs.h"
 
@@ -37,7 +37,7 @@ class AlgoFactory {
     int ddaTreeMaxThresholdBytes{0};
   };
   AlgoFactory(
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<IBootstrap> bootstrap,
       int nRanks,
       int selfRank,
       int maxBlocks,
@@ -103,7 +103,7 @@ class AlgoFactoryDev {
   };
 
   AlgoFactoryDev(
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<IBootstrap> bootstrap,
       int nRanks,
       int selfRank,
       int maxBlocks,

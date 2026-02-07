@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "comms/ctran/interfaces/IBootstrap.h" // @manual
+#include "comms/common/bootstrap/IBootstrap.h"
 
 #if defined(USE_ROCM)
 #include "rccl.h" // @manual
@@ -13,7 +13,7 @@
 namespace meta::comms {
 
 // Only used in unit tests for the components in /comms/common
-class TestBaselineBootstrap : public ::ctran::bootstrap::IBootstrap {
+class TestBaselineBootstrap : public IBootstrap {
  public:
   explicit TestBaselineBootstrap(ncclComm_t comm) : comm_(comm) {}
   virtual folly::SemiFuture<int>

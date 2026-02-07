@@ -33,9 +33,9 @@
 
 // Forward declarations of ncclx classes to avoid circular dependencies
 class ICtran;
-namespace ctran::bootstrap {
+namespace meta::comms {
 class IBootstrap;
-} // namespace ctran::bootstrap
+} // namespace meta::comms
 class CollTrace;
 namespace ncclx {
 class CommStateX;
@@ -728,7 +728,7 @@ struct ncclComm {
   std::shared_ptr<CollTrace> collTrace;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
   std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats;
-  std::shared_ptr<ctran::bootstrap::IBootstrap> ctranBootstrap;
+  std::shared_ptr<meta::comms::IBootstrap> ctranBootstrap;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
   std::vector<std::string> connSetupBufKeys;
   std::shared_ptr<ncclx::transport::TransportProxy> transportProxy_;

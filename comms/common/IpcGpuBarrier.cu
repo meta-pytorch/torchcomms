@@ -37,7 +37,7 @@ __host__ IpcGpuBarrier::IpcGpuBarrier(
         int nRanks,
         int nBlocks,
         int selfRank,
-        std::shared_ptr<ctran::bootstrap::IBootstrap> commBootstrap) {
+        std::shared_ptr<IBootstrap> commBootstrap) {
   assert(nRanks == NRANKS);
   auto [selfMboxBuf, selfMbox] = DeviceMailbox::mallocAndInit(nRanks, nBlocks);
 

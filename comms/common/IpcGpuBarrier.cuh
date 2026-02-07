@@ -5,7 +5,7 @@
 #include <cuda.h>
 #include <memory>
 #include "comms/common/IpcMemHandler.h"
-#include "comms/ctran/interfaces/IBootstrap.h" // @manual
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/utils/CudaRAII.h"
 
 namespace meta::comms {
@@ -113,7 +113,7 @@ class IpcGpuBarrier {
           int nRanks,
           int nBlocks,
           int selfRank,
-          std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap);
+          std::shared_ptr<IBootstrap> bootstrap);
 
   // If the kernel has peer rank mem access before the barrier, set
   // hasPreviousMemAccess=true; If the kernel has peer rank mem access after the
