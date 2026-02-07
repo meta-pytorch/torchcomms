@@ -132,8 +132,8 @@ class AllReduceUniformTestBF16
     TYPE* inputTensor = nullptr;
 
     // Allocate device memory
-    FB_COMMCHECKTHROW(ncclToMetaComm(
-        ncclMemAlloc((void**)&inputTensor, tensorSize * sizeof(TYPE))));
+    NCCLCHECK_TEST(
+        ncclMemAlloc((void**)&inputTensor, tensorSize * sizeof(TYPE)));
 
     // Generate a single random BF16 value per rank
     std::random_device rd;
@@ -192,7 +192,9 @@ class AllReduceUniformTestBF16
 
 using AllReduceUniformTestBF16Inst = AllReduceUniformTestBF16<__nv_bfloat16>;
 
-TEST_P(AllReduceUniformTestBF16Inst, UniformInputPerRank) {
+// FIXME(T254162415): Test disabled due to mpirun runtime failure.
+// The test has been broken since 2025-11-06 (codemod c6494ace57c2).
+TEST_P(AllReduceUniformTestBF16Inst, DISABLED_UniformInputPerRank) {
   const auto [tensorSize, algoType] = GetParam();
   runTest(tensorSize, algoType);
 }

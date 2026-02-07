@@ -224,20 +224,10 @@ def gen_allreduce_files(gensrc, srcs, rules):
         srcs,
         rules,
         {
-            "bases": ["AllReduceDirect", "AllReduceRing", "AllReduceARG"],
+            "bases": ["AllReduceDirect", "AllReduceRing"],
             "dir": "AllReduce",
             "has_ops": True,
             "variants": [""],  # No variants
-            "special_types": {
-                # AllReduceARG supports __nv_bfloat16 with float reduction type
-                # This matches the original AllReduceARG.cu which had:
-                # DECL_ALL_REDUCE_ARG_KERN_ALL_TYPES(float) for __nv_bfloat16
-                "AllReduceARG": [("__nv_bfloat16", "float", op) for op in ops],
-            },
-            "ifdef": {
-                # AllReduceARG is not supported on ROCm
-                "AllReduceARG": "#if !defined(USE_ROCM)",
-            },
         },
     )
 
