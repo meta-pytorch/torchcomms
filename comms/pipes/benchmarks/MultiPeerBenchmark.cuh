@@ -45,4 +45,19 @@ __global__ void multiPeerSignalAllKernel(
     MultiPeerDeviceTransport transport,
     int nSteps);
 
+// =============================================================================
+// Counter Benchmark Kernel
+// =============================================================================
+
+/**
+ * Counter benchmark kernel.
+ *
+ * Measures incrementCounter() / waitCounter() latency.
+ * Local operation only (no NVLink).
+ */
+template <SyncScope G>
+__global__ void multiPeerCounterKernel(
+    MultiPeerDeviceTransport transport,
+    int nSteps);
+
 } // namespace comms::pipes::benchmark

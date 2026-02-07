@@ -79,8 +79,8 @@ namespace comms::pipes {
  * - Signal: Written to REMOTE peer's memory (remote completion notification)
  * - Counter: Written to LOCAL memory (source buffer consumed, safe to reuse)
  *
- * This class implements the Signal semantics. We will later introduce
- * DeviceCounter for local completion tracking.
+ * This class implements the Signal semantics. See DeviceCounter for local
+ * completion tracking.
  *
  * SLOT MAPPING (NCCL-style):
  * All peers write to the same slot: slot = signal_id

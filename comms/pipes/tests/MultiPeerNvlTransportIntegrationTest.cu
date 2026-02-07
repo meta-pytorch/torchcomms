@@ -2,6 +2,7 @@
 
 #include "comms/pipes/tests/MultiPeerNvlTransportIntegrationTest.cuh"
 
+#include "comms/pipes/DeviceCounter.cuh"
 #include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
@@ -456,6 +457,71 @@ void testSignalWithSet(
     int* result) {
   signalWithSetKernel<<<1, 32>>>(
       transport, peer, signalIdx, setValue, isSignaler, result);
+}
+
+// =============================================================================
+// DeviceCounter Integration Tests
+// =============================================================================
+
+__global__ void transportCounterIncrementReadKernel(
+    MultiPeerDeviceTransport transport,
+    uint64_t* results) {
+  auto group = make_warp_group();
+
+  // Increment counter 0 via transport wrapper with value=5
+  transport.increment_counter(group, 0, 5);
+  group.sync();
+
+  // Read via transport wrapper
+  results[0] = transport.read_counter(0);
+}
+
+void testTransportCounterIncrementRead(
+    MultiPeerDeviceTransport transport,
+    uint64_t* results) {
+  transportCounterIncrementReadKernel<<<1, 32>>>(transport, results);
+}
+
+__global__ void transportCounterResetOperationsKernel(
+    MultiPeerDeviceTransport transport,
+    uint64_t* results) {
+  auto group = make_warp_group();
+
+  // Increment multiple counters
+  transport.increment_counter(group, 0, 10);
+  group.sync();
+  transport.increment_counter(group, 1, 20);
+  group.sync();
+  transport.increment_counter(group, 2, 30);
+  group.sync();
+  transport.increment_counter(group, 3, 40);
+  group.sync();
+
+  // Test reset_counter on counter 0
+  transport.reset_counter(0);
+
+  // Read counter 0 after single reset - should be 0
+  results[0] = transport.read_counter(0);
+
+  // Counters 1, 2, 3 should still have their values
+  results[1] = transport.read_counter(1);
+  results[2] = transport.read_counter(2);
+  results[3] = transport.read_counter(3);
+
+  // Test reset_all_counters
+  transport.reset_all_counters();
+
+  // Read all counters after reset_all - all should be 0
+  // Store in results[4..7]
+  for (int i = 0; i < 4; ++i) {
+    results[4 + i] = transport.read_counter(i);
+  }
+}
+
+void testTransportCounterResetOperations(
+    MultiPeerDeviceTransport transport,
+    uint64_t* results) {
+  transportCounterResetOperationsKernel<<<1, 32>>>(transport, results);
 }
 
 } // namespace comms::pipes::test

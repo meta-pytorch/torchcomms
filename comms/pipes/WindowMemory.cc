@@ -4,6 +4,7 @@
 
 #include <vector>
 
+#include "comms/pipes/DeviceCounter.cuh"
 #include "comms/pipes/DeviceSignal.cuh"
 #include "comms/utils/checks.h"
 
@@ -42,6 +43,18 @@ WindowMemory::WindowMemory(
   std::size_t ptrArraySize = nPeers * sizeof(SignalState*);
   peerInboxPtrsDevice_ =
       std::make_unique<meta::comms::DeviceBuffer>(ptrArraySize);
+
+  // Allocate counter buffer (local-only, no exchange needed)
+  counterSize_ = getCounterBufferSize(static_cast<int>(config_.counterCount));
+  counterDevice_ = std::make_unique<meta::comms::DeviceBuffer>(counterSize_);
+
+  // Initialize counter buffer to zero
+  std::vector<SignalState> counterInitStates(config_.counterCount);
+  CUDA_CHECK(cudaMemcpy(
+      counterDevice_->get(),
+      counterInitStates.data(),
+      counterSize_,
+      cudaMemcpyDefault));
 }
 
 void WindowMemory::exchange() {
@@ -87,6 +100,12 @@ DeviceSignal WindowMemory::getDeviceSignal() const {
       static_cast<int>(config_.signalCount),
       DeviceSpan<SignalState>(localInbox, config_.signalCount),
       DeviceSpan<SignalState*>(peerInboxPtrs, nPeers));
+}
+
+DeviceCounter WindowMemory::getDeviceCounter() const {
+  // No exchange check — counters are local-only, usable immediately
+  auto* counters = static_cast<SignalState*>(counterDevice_->get());
+  return DeviceCounter(DeviceSpan<SignalState>(counters, config_.counterCount));
 }
 
 } // namespace comms::pipes

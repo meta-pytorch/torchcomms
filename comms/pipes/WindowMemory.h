@@ -12,6 +12,7 @@ namespace comms::pipes {
 // Forward declarations - users must include the corresponding .cuh to use the
 // returned objects
 class DeviceSignal;
+class DeviceCounter;
 
 /**
  * Configuration for window memory allocation.
@@ -20,14 +21,19 @@ struct WindowMemoryConfig {
   // Number of signal slots (inbox size)
   // Typical: 1 for simple signaling, more for multi-phase patterns
   std::size_t signalCount{1};
+
+  // Number of counter slots for local completion tracking
+  // Typical: 1 for simple tracking, more for multi-phase patterns
+  std::size_t counterCount{1};
 };
 
 /**
  * WindowMemory - Host-side RAII manager for synchronization primitive buffers
- * (signals, eventually counters and barriers)
+ * (signals, eventually counters and eventually barriers)
  *
- * Manages GPU memory allocation and handle exchange for DeviceSignal.
- * Later on, it will manage DeviceCounter and DeviceBarrier as well.
+ * Manages GPU memory allocation and handle exchange for DeviceSignal and
+ * DeviceCounter. Later on, it will manage DeviceBarrier as well.
+ *
  * This class can be used standalone or internally by MultiPeerNvlTransport.
  *
  * MEMORY MODEL (Inbox):
@@ -107,6 +113,17 @@ class WindowMemory {
   DeviceSignal getDeviceSignal() const;
 
   /**
+   * getDeviceCounter - Get device-side counter object
+   *
+   * No exchange() precondition - counters are local-only.
+   *
+   * Returns by value since DeviceCounter is a lightweight handle.
+   *
+   * @return DeviceCounter for use in CUDA kernels
+   */
+  DeviceCounter getDeviceCounter() const;
+
+  /**
    * Get the memory sharing mode being used.
    */
   MemSharingMode getMemSharingMode() const {
@@ -118,6 +135,13 @@ class WindowMemory {
    */
   std::size_t signalCount() const {
     return config_.signalCount;
+  }
+
+  /**
+   * Get counter count.
+   */
+  std::size_t counterCount() const {
+    return config_.counterCount;
   }
 
   /**
@@ -160,8 +184,15 @@ class WindowMemory {
   // Size = nPeers (not nRanks) - excludes self
   std::unique_ptr<meta::comms::DeviceBuffer> peerInboxPtrsDevice_;
 
+  // Counter buffer (local-only, not shared with peers)
+  // Uses DeviceBuffer because this is NOT shared with peers
+  std::unique_ptr<meta::comms::DeviceBuffer> counterDevice_;
+
   // Inbox size in bytes
   std::size_t inboxSize_{0};
+
+  // Counter buffer size in bytes
+  std::size_t counterSize_{0};
 
   // Flag to track if exchange has been called
   bool exchanged_{false};

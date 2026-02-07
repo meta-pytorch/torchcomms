@@ -87,11 +87,10 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   // Multi-peer transport buffers (inbox model)
   // ===========================================================================
   WindowMemoryConfig windowConfig{
-      .signalCount = config_.signalCount,
-      .counterCount = config_.counterCount,
-      .barrierCount = config_.barrierCount};
+      .signalCount = config_.signalCount, .counterCount = config_.counterCount};
   windowMemory_ = std::make_unique<WindowMemory>(
       myRank_, nRanks_, bootstrap_, windowConfig, memSharingMode_);
+  // Signal inbox: signalCount slots (all peers write to same slot)
 }
 
 void MultiPeerNvlTransport::exchange() {
@@ -204,13 +203,17 @@ MultiPeerDeviceTransport MultiPeerNvlTransport::getMultiPeerDeviceTransport() {
   }
 
   DeviceSignal signal = windowMemory_->getDeviceSignal();
+  DeviceCounter counter = windowMemory_->getDeviceCounter();
 
   // Build transports span directly from the device array (no pointer
   // indirection)
   DeviceSpan<Transport> transports(
       static_cast<Transport*>(transportsDevice_->get()), nRanks_);
 
-  return MultiPeerDeviceTransport(myRank_, nRanks_, transports, signal);
+  return MultiPeerDeviceTransport(
+      myRank_, nRanks_, transports, signal, counter);
+}
+
 void MultiPeerNvlTransport::initializeTransportsArray() {
   // Allocate device memory for Transport objects using DeviceBuffer
   transportsDevice_ =
@@ -229,7 +232,8 @@ void MultiPeerNvlTransport::initializeTransportsArray() {
   }
 
   // Single batched memcpy for all Transport objects
-  // This works because Transport is designed for byte-copy (see Transport.cuh)
+  // This works because Transport is designed for byte-copy (see
+  // Transport.cuh)
   CUDA_CHECK(cudaMemcpy(
       transportsDevice_->get(),
       hostTransports.data(),

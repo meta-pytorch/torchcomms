@@ -428,6 +428,66 @@ TEST_F(MultiPeerBenchmarkFixture, SignalPingPongLatency) {
       results);
 }
 
+// =============================================================================
+// Test: Counter Latency (Local operation)
+// =============================================================================
+
+TEST_F(MultiPeerBenchmarkFixture, CounterLatency) {
+  // Counter is local-only, but we still need transport for the API
+  auto configs = getStandardConfigs();
+  std::vector<MultiPeerBenchResult> results;
+
+  int maxSlots = getMaxSlots(configs);
+  MultiPeerNvlTransportConfig transportConfig{
+      .dataBufferSize = 1,
+      .chunkSize = 1,
+      .pipelineDepth = 1,
+      .signalCount = 1,
+      .counterCount = static_cast<std::size_t>(maxSlots),
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(
+      globalRank, numRanks, bootstrap, transportConfig);
+  transport.exchange();
+  auto device = transport.getMultiPeerDeviceTransport();
+
+  for (const auto& config : configs) {
+    void* kernelFunc = config.useBlockGroups
+        ? (void*)multiPeerCounterKernel<SyncScope::BLOCK>
+        : (void*)multiPeerCounterKernel<SyncScope::WARP>;
+
+    int nSteps = getStepsPerIter();
+    dim3 grid(config.numBlocks);
+    dim3 block(kDefaultThreads);
+    void* args[] = {&device, &nSteps};
+
+    // No MPI barrier. Counter is local-only.
+    auto timing = runBenchmark(
+        [&]() -> cudaError_t {
+          return cudaLaunchKernel(kernelFunc, grid, block, args, 0, stream_);
+        },
+        nSteps,
+        /*useMpiBarrier=*/false);
+
+    ASSERT_TRUE(timing.success)
+        << "Benchmark failed for config: " << config.name;
+
+    results.push_back({
+        .configName = config.name,
+        .nRanks = 1,
+        .groupScope = config.scopeString(),
+        .latencyUs = timing.avgLatencyUs,
+    });
+  }
+
+  printResultsTable(
+      "Counter Benchmark (Local, No NVLink)",
+      "Latency = Average time per increment/wait cycle",
+      results,
+      /*showRanks=*/false);
+}
+
 } // namespace comms::pipes::benchmark
 
 int main(int argc, char* argv[]) {
