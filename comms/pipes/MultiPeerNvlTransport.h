@@ -2,10 +2,19 @@
 
 #pragma once
 
+#include <memory>
+
 #include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/pipes/Transport.cuh"
+#include "comms/pipes/WindowMemory.h"
+#include "comms/utils/CudaRAII.h"
 
 namespace comms::pipes {
+
+// Forward declarations for multi-peer device transport types
+class MultiPeerDeviceTransport;
+struct Transport;
 
 /**
  * Configuration for multi-peer NVLink transport.
@@ -31,9 +40,14 @@ struct MultiPeerNvlTransportConfig {
   std::size_t pipelineDepth{0};
 
   // Number of signal slots per peer for signal/wait communication.
-  // Larger = more signal available for parallelism.
-  // Typical: 1-num of block for most workloads.
+  // Larger = more signals available for parallelism.
+  // Typical: 1-num of blocks for most workloads.
   std::size_t signalCount{1};
+
+  // Number of counter slots for local completion tracking.
+  // Counters track when source buffers are safe to reuse.
+  // Typical: 1-4 for most workloads.
+  std::size_t counterCount{1};
 };
 
 /**
@@ -70,6 +84,12 @@ struct MultiPeerNvlTransportConfig {
  */
 class MultiPeerNvlTransport {
  public:
+  // Non-copyable and non-movable (CUDA resources cannot be safely moved)
+  MultiPeerNvlTransport(const MultiPeerNvlTransport&) = delete;
+  MultiPeerNvlTransport& operator=(const MultiPeerNvlTransport&) = delete;
+  MultiPeerNvlTransport(MultiPeerNvlTransport&&) = delete;
+  MultiPeerNvlTransport& operator=(MultiPeerNvlTransport&&) = delete;
+
   /**
    * Constructor - Initialize multi-peer NVLink transport
    *
@@ -96,6 +116,13 @@ class MultiPeerNvlTransport {
       int nRanks,
       std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
       const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig);
+
+  /**
+   * Destructor - Clean up CUDA resources
+   *
+   * Frees device memory allocated for Transport array.
+   */
+  ~MultiPeerNvlTransport() = default;
 
   /**
    * exchange - Exchange memory handles across all ranks
@@ -142,6 +169,25 @@ class MultiPeerNvlTransport {
   P2pNvlTransportDevice getP2pTransportDevice(int peerRank);
 
   /**
+   * getMultiPeerDeviceTransport - Get unified device handle for all peers
+   *
+   * Returns a MultiPeerDeviceTransport that provides:
+   * - DeviceSignal with inbox semantics (all peers write to this rank's inbox)
+   * - Peer-indexed send/recv operations
+   *
+   * PRECONDITION: exchange() must have been called by all ranks first.
+   *
+   * The returned device handle is designed for multi-peer collective operations
+   * where a single kernel needs to communicate with multiple peers.
+   *
+   * @return MultiPeerDeviceTransport handle for use in CUDA kernels
+   *
+   * @note Thread-safe after exchange() completes
+   * @note The returned handle is copyable and can be passed to multiple kernels
+   */
+  MultiPeerDeviceTransport getMultiPeerDeviceTransport();
+
+  /**
    * Check if fabric-based transport is supported (H100+, CUDA 12.3+).
    *
    * Note: Even if this returns false, the transport will still work using
@@ -163,6 +209,17 @@ class MultiPeerNvlTransport {
   }
 
  private:
+  // ==========================================================================
+  // Lazy initialization helpers for getMultiPeerDeviceTransport()
+  // ==========================================================================
+
+  // Initialize transports array on device (both P2P and SELF transports)
+  void initializeTransportsArray();
+
+  // ==========================================================================
+  // Member variables
+  // ==========================================================================
+
   const int myRank_{-1};
   const int nRanks_{-1};
   std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap_;
@@ -174,10 +231,25 @@ class MultiPeerNvlTransport {
   std::unique_ptr<GpuMemHandler> stateBufferHandler_;
   std::unique_ptr<GpuMemHandler> signalBufferHandler_;
 
+  // Device-accessible Transport array for multi-peer transport
+  // Allocated on device and populated in getMultiPeerDeviceTransport()
+  // Uses DeviceBuffer instead of GpuMemHandler since no exchange is needed
+  std::unique_ptr<meta::comms::DeviceBuffer> transportsDevice_;
+
+  // Multi-peer window memory (inbox model)
+  // Manages signal inbox buffer and peer inbox pointers
+  std::unique_ptr<WindowMemory> windowMemory_;
+
   // Per-peer buffer sizes for offset calculation
   std::size_t perPeerDataBufferSize_{0};
   std::size_t perPeerChunkStateBufferSize_{0};
   std::size_t perPeerSignalBufferSize_{0};
+
+  // Flag to track if multi-peer device arrays have been initialized
+  bool multiPeerInitialized_{false};
+
+  // Cached memory sharing mode (detected once in constructor)
+  MemSharingMode memSharingMode_;
 };
 
 } // namespace comms::pipes
