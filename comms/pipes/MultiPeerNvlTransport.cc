@@ -4,6 +4,7 @@
 
 #include <vector>
 
+#include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
 #include "comms/utils/checks.h"
 
@@ -81,6 +82,16 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       signalInitStates.data(),
       totalSignalBufferSize,
       cudaMemcpyDefault));
+
+  // ===========================================================================
+  // Multi-peer transport buffers (inbox model)
+  // ===========================================================================
+  WindowMemoryConfig windowConfig{
+      .signalCount = config_.signalCount,
+      .counterCount = config_.counterCount,
+      .barrierCount = config_.barrierCount};
+  windowMemory_ = std::make_unique<WindowMemory>(
+      myRank_, nRanks_, bootstrap_, windowConfig, memSharingMode_);
 }
 
 void MultiPeerNvlTransport::exchange() {
@@ -88,6 +99,9 @@ void MultiPeerNvlTransport::exchange() {
   dataBufferHandler_->exchangeMemPtrs();
   stateBufferHandler_->exchangeMemPtrs();
   signalBufferHandler_->exchangeMemPtrs();
+
+  // Exchange multi-peer transport buffer pointers (inbox model)
+  windowMemory_->exchange();
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
@@ -183,20 +197,20 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
 }
 
 MultiPeerDeviceTransport MultiPeerNvlTransport::getMultiPeerDeviceTransport() {
-  // Lazy initialization of device-accessible arrays
+  // Thread-safe lazy initialization of device-accessible arrays
   if (!multiPeerInitialized_) {
     initializeTransportsArray();
     multiPeerInitialized_ = true;
   }
+
+  DeviceSignal signal = windowMemory_->getDeviceSignal();
 
   // Build transports span directly from the device array (no pointer
   // indirection)
   DeviceSpan<Transport> transports(
       static_cast<Transport*>(transportsDevice_->get()), nRanks_);
 
-  return MultiPeerDeviceTransport(myRank_, nRanks_, transports);
-}
-
+  return MultiPeerDeviceTransport(myRank_, nRanks_, transports, signal);
 void MultiPeerNvlTransport::initializeTransportsArray() {
   // Allocate device memory for Transport objects using DeviceBuffer
   transportsDevice_ =
