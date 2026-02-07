@@ -24,8 +24,10 @@ __global__ void deviceSignalConstructionKernel(
     SignalState** peerInboxPtrs,
     int* results) {
   // Construct DeviceSignal with provided buffers
+  // peerInboxPtrs has nPeers entries (not nRanks)
+  int nPeers = nRanks - 1;
   DeviceSpan<SignalState> inboxSpan(localInbox, signalCount);
-  DeviceSpan<SignalState*> peerPtrsSpan(peerInboxPtrs, nRanks);
+  DeviceSpan<SignalState*> peerPtrsSpan(peerInboxPtrs, nPeers);
 
   DeviceSignal signal(myRank, nRanks, signalCount, inboxSpan, peerPtrsSpan);
 
@@ -41,13 +43,15 @@ void testDeviceSignalConstruction(
     int signalCount,
     int* results) {
   // Allocate minimal buffers for construction test
+  // peerInboxPtrs has nPeers entries (not nRanks)
+  int nPeers = nRanks - 1;
   SignalState* localInbox = nullptr;
   SignalState** peerInboxPtrs = nullptr;
 
   cudaMalloc(&localInbox, signalCount * sizeof(SignalState));
-  cudaMalloc(&peerInboxPtrs, nRanks * sizeof(SignalState*));
+  cudaMalloc(&peerInboxPtrs, nPeers * sizeof(SignalState*));
   cudaMemset(localInbox, 0, signalCount * sizeof(SignalState));
-  cudaMemset(peerInboxPtrs, 0, nRanks * sizeof(SignalState*));
+  cudaMemset(peerInboxPtrs, 0, nPeers * sizeof(SignalState*));
 
   deviceSignalConstructionKernel<<<1, 1>>>(
       myRank, nRanks, signalCount, localInbox, peerInboxPtrs, results);
@@ -71,8 +75,10 @@ __global__ void multiPeerDeviceTransportConstructionKernel(
     SignalState** signalPeerPtrs,
     int* results) {
   // Construct component objects
+  // signalPeerPtrs has nPeers entries (not nRanks)
+  int nPeers = nRanks - 1;
   DeviceSpan<SignalState> inboxSpan(signalInbox, 1); // signalCount=1
-  DeviceSpan<SignalState*> signalPeerSpan(signalPeerPtrs, nRanks);
+  DeviceSpan<SignalState*> signalPeerSpan(signalPeerPtrs, nPeers);
   DeviceSignal signal(myRank, nRanks, 1, inboxSpan, signalPeerSpan);
 
   // Construct MultiPeerDeviceTransport
@@ -89,17 +95,19 @@ void testMultiPeerDeviceTransportConstruction(
     int nRanks,
     int* results) {
   // Allocate minimal buffers for construction test
+  // signalPeerPtrs has nPeers entries (not nRanks)
+  int nPeers = nRanks - 1;
   Transport* transports = nullptr;
   SignalState* signalInbox = nullptr;
   SignalState** signalPeerPtrs = nullptr;
 
   CUDACHECK_TEST(cudaMalloc(&transports, nRanks * sizeof(Transport)));
   cudaMalloc(&signalInbox, sizeof(SignalState)); // signalCount=1
-  cudaMalloc(&signalPeerPtrs, nRanks * sizeof(SignalState*));
+  cudaMalloc(&signalPeerPtrs, nPeers * sizeof(SignalState*));
 
   CUDACHECK_TEST(cudaMemset(transports, 0, nRanks * sizeof(Transport)));
   cudaMemset(signalInbox, 0, sizeof(SignalState));
-  cudaMemset(signalPeerPtrs, 0, nRanks * sizeof(SignalState*));
+  cudaMemset(signalPeerPtrs, 0, nPeers * sizeof(SignalState*));
 
   multiPeerDeviceTransportConstructionKernel<<<1, 1>>>(
       myRank, nRanks, transports, signalInbox, signalPeerPtrs, results);
@@ -140,8 +148,10 @@ __global__ void peerIterationHelpersKernel(
     SignalState** signalPeerPtrs,
     int* results) {
   // Construct component objects
+  // signalPeerPtrs has nPeers entries (not nRanks)
+  int nPeers = nRanks - 1;
   DeviceSpan<SignalState> inboxSpan(signalInbox, 1); // signalCount=1
-  DeviceSpan<SignalState*> signalPeerSpan(signalPeerPtrs, nRanks);
+  DeviceSpan<SignalState*> signalPeerSpan(signalPeerPtrs, nPeers);
   DeviceSignal signal(myRank, nRanks, 1, inboxSpan, signalPeerSpan);
 
   // Construct MultiPeerDeviceTransport
@@ -160,17 +170,19 @@ __global__ void peerIterationHelpersKernel(
 
 void testPeerIterationHelpers(int myRank, int nRanks, int* results) {
   // Allocate minimal buffers for construction test
+  // signalPeerPtrs has nPeers entries (not nRanks)
+  int nPeers = nRanks - 1;
   Transport* transports = nullptr;
   SignalState* signalInbox = nullptr;
   SignalState** signalPeerPtrs = nullptr;
 
   CUDACHECK_TEST(cudaMalloc(&transports, nRanks * sizeof(Transport)));
   cudaMalloc(&signalInbox, sizeof(SignalState)); // signalCount=1
-  cudaMalloc(&signalPeerPtrs, nRanks * sizeof(SignalState*));
+  cudaMalloc(&signalPeerPtrs, nPeers * sizeof(SignalState*));
 
   CUDACHECK_TEST(cudaMemset(transports, 0, nRanks * sizeof(Transport)));
   cudaMemset(signalInbox, 0, sizeof(SignalState));
-  cudaMemset(signalPeerPtrs, 0, nRanks * sizeof(SignalState*));
+  cudaMemset(signalPeerPtrs, 0, nPeers * sizeof(SignalState*));
 
   peerIterationHelpersKernel<<<1, 1>>>(
       myRank, nRanks, transports, signalInbox, signalPeerPtrs, results);

@@ -55,6 +55,9 @@ __global__ void multiPeerSignalPingPongKernel(
   int slotId = computeSlotIndex<S>();
   int myRank = transport.rank();
 
+  // For 2-rank ping-pong, there's exactly one peer at index 0
+  assert(peerIndex == 0);
+
   // Ping-pong pattern:
   // - Even steps: Rank 0 signals, Rank 1 waits
   // - Odd steps: Rank 1 signals, Rank 0 waits
@@ -110,11 +113,9 @@ __global__ void multiPeerSignalAllKernel(
 // Signal ping-pong kernels
 template __global__ void multiPeerSignalPingPongKernel<SyncScope::WARP>(
     MultiPeerDeviceTransport,
-    int,
     int);
 template __global__ void multiPeerSignalPingPongKernel<SyncScope::BLOCK>(
     MultiPeerDeviceTransport,
-    int,
     int);
 
 // Signal-all kernels

@@ -242,14 +242,19 @@ class MultiPeerDeviceTransport {
   /**
    * rank_to_peer_index - Convert global rank to peer index
    *
-   * Inverse of peer_index_to_rank(). Useful when the caller has a global rank
-   * and needs to call a peer-indexed API.
+   * Inverse of peer_index_to_rank(). Only valid for rank != myRank.
+   *
+   * Example for myRank=2, nRanks=4:
+   *   rank_to_peer_index(0) -> 0
+   *   rank_to_peer_index(1) -> 1
+   *   rank_to_peer_index(3) -> 2  (self at rank 2 is skipped)
    *
    * @param rank Global rank (must NOT be myRank)
-   * @return Peer index in [0, num_peers())
+   * @return Peer index for use with send/recv/signal_peer
    */
   __host__ __device__ __forceinline__ int rank_to_peer_index(int rank) const {
-    assert(rank != myRank_);
+    assert(rank != myRank_ && "Cannot convert self rank to peer index");
+    assert(rank >= 0 && rank < nRanks_ && "Rank out of range");
     return (rank < myRank_) ? rank : (rank - 1);
   }
 
@@ -280,13 +285,12 @@ class MultiPeerDeviceTransport {
    * @param value Value for the signal operation (default: 1)
    */
   __device__ __forceinline__ void signal_peer(
-      int peer_index,
+      int peer,
       ThreadGroup& group,
       int signal_id,
       SignalOp op = SignalOp::SIGNAL_ADD,
       uint64_t value = 1) {
-    int rank = peer_index_to_rank(peer_index);
-    signal_.signal_peer(rank, group, signal_id, op, value);
+    signal_.signal_peer(peer, group, signal_id, op, value);
   }
 
   __device__ __forceinline__ void signal_all(
@@ -317,45 +321,47 @@ class MultiPeerDeviceTransport {
   /**
    * send - Send data to a specific peer over NVLink
    *
-   * Uses NVLink pipelined staged transfer.
+   * For local copies (self transport), use:
+   *   get_transport(myRank)->self.put(group, dst, src, nbytes)
    *
-   * @param peer_index Peer index in [0, num_peers())
+   * @param peer Peer index (0 to num_peers()-1, NOT rank)
    * @param group ThreadGroup for cooperative processing
    * @param srcbuff Source buffer (local GPU memory)
    * @param nbytes Number of bytes to send
    * @param call_index Index for multiple concurrent calls (default: 0)
    */
   __device__ __forceinline__ void send(
-      int peer_index,
+      int peer,
       ThreadGroup& group,
       void* srcbuff,
       std::size_t nbytes,
       uint32_t call_index = 0) {
-    MULTI_PEER_CHECK_PEER_INDEX(peer_index, num_peers());
-    int rank = peer_index_to_rank(peer_index);
-    transports_[rank].p2p_nvl.send(group, srcbuff, nbytes, call_index);
+    match(peer, [&](P2pNvlTransportDevice& t) {
+      t.send(group, srcbuff, nbytes, call_index);
+    });
   }
 
   /**
    * recv - Receive data from a specific peer over NVLink
    *
-   * Uses NVLink pipelined staged transfer.
+   * For local copies (self transport), use:
+   *   get_transport(myRank)->self.put(group, dst, src, nbytes)
    *
-   * @param peer_index Peer index in [0, num_peers())
+   * @param peer Peer index (0 to num_peers()-1, NOT rank)
    * @param group ThreadGroup for cooperative processing
    * @param dstbuff Destination buffer (local GPU memory)
    * @param nbytes Number of bytes to receive
    * @param call_index Index for multiple concurrent calls (default: 0)
    */
   __device__ __forceinline__ void recv(
-      int peer_index,
+      int peer,
       ThreadGroup& group,
       void* dstbuff,
       std::size_t nbytes,
       uint32_t call_index = 0) {
-    MULTI_PEER_CHECK_PEER_INDEX(peer_index, num_peers());
-    int rank = peer_index_to_rank(peer_index);
-    transports_[rank].p2p_nvl.recv(group, dstbuff, nbytes, call_index);
+    match(peer, [&](P2pNvlTransportDevice& t) {
+      t.recv(group, dstbuff, nbytes, call_index);
+    });
   }
 
   // ===========================================================================
@@ -367,8 +373,10 @@ class MultiPeerDeviceTransport {
    *
    * For advanced use cases or custom communication patterns.
    *
-   * @param peer_index Peer index in [0, num_peers())
-   * @return Pointer to Transport object for the peer
+   * @param peer Peer index (0 to num_peers()-1, NOT rank)
+   * @param group ThreadGroup for cooperative processing
+   * @param signalId Signal slot to use
+   * @param signalVal Value to atomically add (default: 1)
    */
   __device__ __forceinline__ Transport* get_peer_transport(int peer_index) {
     MULTI_PEER_CHECK_PEER_INDEX(peer_index, num_peers());
@@ -443,6 +451,32 @@ class MultiPeerDeviceTransport {
   const int nRanks_{0};
   const DeviceSpan<Transport> transports_;
   DeviceSignal signal_;
+
+  // ===========================================================================
+  // Private Match Helper
+  // ===========================================================================
+
+  /**
+   * match - Internal helper to dispatch operations to the correct transport
+   *
+   * Reduces code duplication by abstracting the transport type dispatch
+   * pattern. Used by send/recv and other transport-specific operations.
+   *
+   * Operates on peer index (not rank). Peer index never refers to self,
+   * so this only dispatches to P2P NVLink transport.
+   *
+   * @tparam P2pFn Callable for P2pNvlTransportDevice operations
+   * @param peer Peer index (0 to num_peers()-1)
+   * @param p2p_fn Lambda to execute for P2P NVLink transport
+   */
+  template <typename P2pFn>
+  __device__ __forceinline__ void match(int peer, P2pFn&& p2p_fn) {
+    assert(peer >= 0 && peer < num_peers());
+    int rank = peer_index_to_rank(peer);
+    Transport* transport = &transports_[rank];
+    // Peer index never refers to self, so always P2P
+    p2p_fn(transport->p2p_nvl);
+  }
 };
 
 } // namespace comms::pipes

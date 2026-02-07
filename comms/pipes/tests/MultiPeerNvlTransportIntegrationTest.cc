@@ -374,7 +374,8 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSendRecv) {
 
   auto [transport, device] = createTransport(config);
 
-  int peerIndex = 0; // In 2-rank setup, each rank has exactly one peer
+  // For 2-rank case, there's exactly one peer at index 0
+  int peerIndex = 0;
   const size_t numInts = nbytes / sizeof(int);
 
   DeviceBuffer sendBuffer(nbytes);

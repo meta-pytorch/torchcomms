@@ -21,6 +21,8 @@ namespace comms::pipes::benchmark {
  * Uses SIGNAL_ADD with cumulative wait values for reusability.
  *
  * Half-duplex measurement: one signal in flight at a time.
+ *
+ * Note: For 2-rank case, there's exactly one peer at index 0.
  */
 template <SyncScope S>
 __global__ void multiPeerSignalPingPongKernel(

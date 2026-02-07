@@ -13,24 +13,24 @@ namespace comms::pipes {
 // Debug-only bounds check helper for device code
 // TODO(D91689639): Replace with PIPES_DEVICE_CHECK_MSG once D91689639 lands
 #ifdef __CUDA_ARCH__
-#define DEVICE_SIGNAL_CHECK_PEER(peer, nRanks)             \
-  do {                                                     \
-    if (!((peer) >= 0 && (peer) < (nRanks))) {             \
-      printf(                                              \
-          "DeviceSignal: peer %d out of range [0, %d) at " \
-          "%s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",    \
-          (int)(peer),                                     \
-          (int)(nRanks),                                   \
-          __FILE__,                                        \
-          __LINE__,                                        \
-          blockIdx.x,                                      \
-          blockIdx.y,                                      \
-          blockIdx.z,                                      \
-          threadIdx.x,                                     \
-          threadIdx.y,                                     \
-          threadIdx.z);                                    \
-      __trap();                                            \
-    }                                                      \
+#define DEVICE_SIGNAL_CHECK_BOUNDS(index, limit)            \
+  do {                                                      \
+    if (!((index) >= 0 && (index) < (limit))) {             \
+      printf(                                               \
+          "DeviceSignal: index %d out of range [0, %d) at " \
+          "%s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",     \
+          (int)(index),                                     \
+          (int)(limit),                                     \
+          __FILE__,                                         \
+          __LINE__,                                         \
+          blockIdx.x,                                       \
+          blockIdx.y,                                       \
+          blockIdx.z,                                       \
+          threadIdx.x,                                      \
+          threadIdx.y,                                      \
+          threadIdx.z);                                     \
+      __trap();                                             \
+    }                                                       \
   } while (0)
 
 #define DEVICE_SIGNAL_CHECK_SIGNAL_ID(signal_id, signalCount)   \
@@ -53,8 +53,8 @@ namespace comms::pipes {
     }                                                           \
   } while (0)
 #else
-#define DEVICE_SIGNAL_CHECK_PEER(peer, nRanks) \
-  assert((peer) >= 0 && (peer) < (nRanks))
+#define DEVICE_SIGNAL_CHECK_BOUNDS(index, limit) \
+  assert((index) >= 0 && (index) < (limit))
 #define DEVICE_SIGNAL_CHECK_SIGNAL_ID(signal_id, signalCount) \
   assert((signal_id) >= 0 && (signal_id) < (signalCount))
 #endif
@@ -68,6 +68,13 @@ namespace comms::pipes {
  * - Values accumulate: slot[signal_id] += value from each peer
  * - Inbox size = signalCount (one slot per signal)
  *
+ * PEER INDEX SPACE:
+ * All peer-facing APIs use peer index (0 to nPeers-1), not rank.
+ * - For ranks [0, 1, 2, 3, 4] where myRank=2:
+ *   - Rank space: 0, 1, 2, 3, 4 (5 entries, includes self)
+ *   - Peer space: 0, 1, 2, 3 (4 entries, excludes self)
+ * - peerInboxPtrs_ has nPeers entries (not nRanks)
+ *
  * SIGNAL VS COUNTER (NCCL semantics):
  * - Signal: Written to REMOTE peer's memory (remote completion notification)
  * - Counter: Written to LOCAL memory (source buffer consumed, safe to reuse)
@@ -78,10 +85,6 @@ namespace comms::pipes {
  * SLOT MAPPING (NCCL-style):
  * All peers write to the same slot: slot = signal_id
  * Values accumulate from all peers who signal with the same signal_id.
- *
- * SELF-SIGNALING:
- * NOT SUPPORTED. Calling signal_peer(myRank, ...) will trap with an error.
- * For local synchronization, use DeviceCounter or explicit barriers.
  *
  * WAIT SEMANTICS:
  * wait_signal() waits for the accumulated value in the inbox slot to reach
@@ -120,7 +123,8 @@ namespace comms::pipes {
  *
  * USAGE:
  *   // Sender (rank 0) signals receiver (rank 1) that data is ready
- *   signal.signal_peer(1, group, 0, SignalOp::SIGNAL_ADD, 1);
+ *   // Peer index for rank 1 when myRank=0 is 0 (first peer)
+ *   signal.signal_peer(0, group, 0, SignalOp::SIGNAL_ADD, 1);
  *
  *   // Receiver (rank 1) waits for accumulated signals
  *   signal.wait_signal(group, 0, CmpOp::CMP_GE, 1);
@@ -158,48 +162,32 @@ class DeviceSignal {
   // ===========================================================================
 
   /**
-   * signal_peer - Signal a specific rank by writing to their inbox.
+   * signal_peer - Signal a specific peer by writing to their inbox.
    *
    * Writes to the target's inbox at the signal_id slot.
    * Uses release semantics for memory ordering.
    *
-   * @param target_rank Target rank (must NOT be self)
+   * @param peer Peer index (0 to num_peers()-1, NOT rank)
    * @param group ThreadGroup for cooperative processing
    * @param signal_id Index within this rank's slot range (0 to signalCount-1)
    * @param op SIGNAL_SET or SIGNAL_ADD
    * @param value Value to set or add (default: 1)
    */
   __device__ __forceinline__ void signal_peer(
-      int target_rank,
+      int peer,
       ThreadGroup& group,
       int signal_id,
       SignalOp op = SignalOp::SIGNAL_ADD,
       uint64_t value = 1) {
-    DEVICE_SIGNAL_CHECK_PEER(target_rank, nRanks_);
+    DEVICE_SIGNAL_CHECK_BOUNDS(peer, peerInboxPtrs_.size());
     DEVICE_SIGNAL_CHECK_SIGNAL_ID(signal_id, signalCount_);
-#ifdef __CUDA_ARCH__
-    if (target_rank == myRank_) {
-      printf(
-          "DeviceSignal::signal_peer: self-signaling not supported at "
-          "%s:%d block=(%u,%u,%u) thread=(%u,%u,%u)\n",
-          __FILE__,
-          __LINE__,
-          blockIdx.x,
-          blockIdx.y,
-          blockIdx.z,
-          threadIdx.x,
-          threadIdx.y,
-          threadIdx.z);
-      __trap();
-    }
-#endif
-    peerInboxPtrs_[target_rank][signal_id].signal(group, op, value);
+    peerInboxPtrs_[peer][signal_id].signal(group, op, value);
   }
 
   /**
    * signal_all - Signal all peers (parallel unicast writes)
    *
-   * Writes to all peers' inboxes via NVLink (excluding self).
+   * Writes to all peers' inboxes via NVLink.
    * Uses thread-level parallelism: each thread signals different peers.
    * v1: Parallel unicast writes to each peer
    * v2 (future): Multi-mem multicast for efficiency
@@ -226,11 +214,11 @@ class DeviceSignal {
     group.sync();
 
     // Thread-level parallelism: each thread signals different peers
-    for (int peer = static_cast<int>(group.thread_id_in_group); peer < nRanks_;
+    // peerInboxPtrs_ has nPeers entries (excludes self)
+    int nPeers = static_cast<int>(peerInboxPtrs_.size());
+    for (int peer = static_cast<int>(group.thread_id_in_group); peer < nPeers;
          peer += static_cast<int>(group.group_size)) {
-      if (peer != myRank_) {
-        peerInboxPtrs_[peer][signal_id].signal(op, value);
-      }
+      peerInboxPtrs_[peer][signal_id].signal(op, value);
     }
 
     // Sync AFTER: ensures all signals complete before returning
@@ -291,6 +279,10 @@ class DeviceSignal {
 
   __device__ __forceinline__ int n_ranks() const {
     return nRanks_;
+  }
+
+  __device__ __forceinline__ int num_peers() const {
+    return static_cast<int>(peerInboxPtrs_.size());
   }
 
   __device__ __forceinline__ int signal_count() const {

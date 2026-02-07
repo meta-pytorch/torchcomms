@@ -26,14 +26,14 @@ void testMultiPeerDeviceTransportAccessors(
  * inbox.
  *
  * @param transport The MultiPeerDeviceTransport to use
- * @param peerIndex The peer rank to signal/wait from
+ * @param peer Peer index (0 to num_peers()-1, NOT rank)
  * @param signalIdx The signal slot index to use
  * @param isSignaler If true, this rank signals; if false, this rank waits
  * @param result Output: 1 if successful, 0 if failed
  */
 void testSignalWait(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     bool isSignaler,
     int* result);
@@ -42,7 +42,7 @@ void testSignalWait(
  * Test kernel: Send data from this rank to a single peer
  *
  * @param transport The MultiPeerDeviceTransport to use
- * @param peerIndex The destination peer index in [0, num_peers())
+ * @param peer Peer index (0 to num_peers()-1, NOT rank)
  * @param srcBuff Source buffer containing data to send
  * @param nbytes Number of bytes to send
  * @param numBlocks Number of thread blocks to launch
@@ -50,7 +50,7 @@ void testSignalWait(
  */
 void testSinglePeerSend(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     void* srcBuff,
     std::size_t nbytes,
     int numBlocks,
@@ -60,7 +60,7 @@ void testSinglePeerSend(
  * Test kernel: Receive data from a single peer to this rank
  *
  * @param transport The MultiPeerDeviceTransport to use
- * @param peerIndex The source peer index in [0, num_peers())
+ * @param peer Peer index (0 to num_peers()-1, NOT rank)
  * @param dstBuff Destination buffer for received data
  * @param nbytes Number of bytes to receive
  * @param numBlocks Number of thread blocks to launch
@@ -68,7 +68,7 @@ void testSinglePeerSend(
  */
 void testSinglePeerRecv(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     void* dstBuff,
     std::size_t nbytes,
     int numBlocks,
@@ -115,14 +115,14 @@ void testMultiPeerRecvAllPeers(
  * to verify no races or deadlocks.
  *
  * @param transport The MultiPeerDeviceTransport to use
- * @param peerIndex The peer rank to signal/wait from
+ * @param peer Peer index (0 to num_peers()-1, NOT rank)
  * @param numSlots Number of slots to test concurrently
  * @param isSignaler If true, this rank signals; if false, waits
  * @param results Output array: results[blockIdx] = 1 if successful
  */
 void testConcurrentSignalMultiBlock(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int numSlots,
     bool isSignaler,
     int* results,
@@ -148,7 +148,7 @@ void testTransportTypes(
  * signal operations when multiple warps operate concurrently.
  *
  * @param transport The MultiPeerDeviceTransport to use
- * @param peerIndex The peer rank to signal/wait from
+ * @param peer Peer index (0 to num_peers()-1, NOT rank)
  * @param numSlots Number of signal slots (should be >= warps per block)
  * @param isSignaler If true, this rank signals; if false, waits
  * @param results Output array: results[warpIdx] = 1 if successful
@@ -156,7 +156,7 @@ void testTransportTypes(
  */
 void testConcurrentSignalWaitMultiWarp(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int numSlots,
     bool isSignaler,
     int* results,
@@ -203,7 +203,7 @@ void testWaitSignalFromAll(
  * Signals with exact value, waits with CMP_EQ.
  *
  * @param transport The MultiPeerDeviceTransport to use
- * @param peerIndex The peer rank to signal/wait from
+ * @param peer Peer index (0 to num_peers()-1, NOT rank)
  * @param signalIdx The signal slot index to use
  * @param expectedValue The value to signal and wait for
  * @param isSignaler If true, this rank signals; if false, waits
@@ -211,7 +211,7 @@ void testWaitSignalFromAll(
  */
 void testWaitWithCmpEq(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     uint64_t expectedValue,
     bool isSignaler,
@@ -225,7 +225,7 @@ void testWaitWithCmpEq(
  * multiple iterations.
  *
  * @param transport The MultiPeerDeviceTransport to use
- * @param peerIndex The peer rank to signal/wait from
+ * @param peer Peer index (0 to num_peers()-1, NOT rank)
  * @param signalIdx The signal slot index to use
  * @param numIterations Number of iterations to perform
  * @param isSignaler If true, this rank signals; if false, waits
@@ -233,7 +233,7 @@ void testWaitWithCmpEq(
  */
 void testMonotonicWaitValues(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     int numIterations,
     bool isSignaler,
@@ -245,7 +245,7 @@ void testMonotonicWaitValues(
  * Tests that SIGNAL_SET correctly overwrites values in multi-GPU signaling.
  *
  * @param transport The MultiPeerDeviceTransport to use
- * @param peerIndex The peer rank to signal/wait from
+ * @param peer Peer index (0 to num_peers()-1, NOT rank)
  * @param signalIdx The signal slot index to use
  * @param setValue The value to SET
  * @param isSignaler If true, this rank signals; if false, waits
@@ -253,7 +253,7 @@ void testMonotonicWaitValues(
  */
 void testSignalWithSet(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     uint64_t setValue,
     bool isSignaler,

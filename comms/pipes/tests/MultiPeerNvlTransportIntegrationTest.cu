@@ -34,18 +34,18 @@ void testMultiPeerDeviceTransportAccessors(
 
 __global__ void signalWaitKernel(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     bool isSignaler,
     int* result) {
   auto group = make_warp_group();
 
   if (isSignaler) {
-    // Signal the peer's inbox
-    transport.signal_peer(peerIndex, group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    // Signal the peer's inbox (peer is peer index, not rank)
+    transport.signal_peer(peer, group, signalIdx, SignalOp::SIGNAL_ADD, 1);
     *result = 1;
   } else {
-    // Wait for signal (peerIndex signals us, we wait on our inbox)
+    // Wait for signal (peer signals us, we wait on our inbox)
     transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
     *result = 1;
   }
@@ -53,12 +53,11 @@ __global__ void signalWaitKernel(
 
 void testSignalWait(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     bool isSignaler,
     int* result) {
-  signalWaitKernel<<<1, 32>>>(
-      transport, peerIndex, signalIdx, isSignaler, result);
+  signalWaitKernel<<<1, 32>>>(transport, peer, signalIdx, isSignaler, result);
 }
 
 // =============================================================================
@@ -67,43 +66,43 @@ void testSignalWait(
 
 __global__ void singlePeerSendKernel(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     void* srcBuff,
     std::size_t nbytes) {
   auto group = make_warp_group();
-  transport.send(peerIndex, group, srcBuff, nbytes);
+  transport.send(peer, group, srcBuff, nbytes);
 }
 
 void testSinglePeerSend(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     void* srcBuff,
     std::size_t nbytes,
     int numBlocks,
     int blockSize) {
   singlePeerSendKernel<<<numBlocks, blockSize>>>(
-      transport, peerIndex, srcBuff, nbytes);
+      transport, peer, srcBuff, nbytes);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
 __global__ void singlePeerRecvKernel(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     void* dstBuff,
     std::size_t nbytes) {
   auto group = make_warp_group();
-  transport.recv(peerIndex, group, dstBuff, nbytes);
+  transport.recv(peer, group, dstBuff, nbytes);
 }
 
 void testSinglePeerRecv(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     void* dstBuff,
     std::size_t nbytes,
     int numBlocks,
     int blockSize) {
   singlePeerRecvKernel<<<numBlocks, blockSize>>>(
-      transport, peerIndex, dstBuff, nbytes);
+      transport, peer, dstBuff, nbytes);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -117,7 +116,8 @@ __global__ void multiPeerSendAllPeersKernel(
     std::size_t nbytesPerPeer) {
   auto group = make_warp_group();
 
-  // send() now takes peer index directly — no conversion needed
+  // Use peer iteration helpers to send to all peers
+  // send() now takes peer index directly
   int numPeers = transport.num_peers();
   for (int i = 0; i < numPeers; ++i) {
     transport.send(i, group, srcBuffs[i], nbytesPerPeer, i);
@@ -141,7 +141,8 @@ __global__ void multiPeerRecvAllPeersKernel(
     std::size_t nbytesPerPeer) {
   auto group = make_warp_group();
 
-  // recv() now takes peer index directly — no conversion needed
+  // Use peer iteration helpers to receive from all peers
+  // recv() now takes peer index directly
   int numPeers = transport.num_peers();
   for (int i = 0; i < numPeers; ++i) {
     transport.recv(i, group, dstBuffs[i], nbytesPerPeer, i);
@@ -165,7 +166,7 @@ void testMultiPeerRecvAllPeers(
 
 __global__ void concurrentSignalMultiBlockKernel(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int numSlots,
     bool isSignaler,
     int* results) {
@@ -175,10 +176,10 @@ __global__ void concurrentSignalMultiBlockKernel(
   auto slotId = blockIdx.x % numSlots;
 
   if (isSignaler) {
-    // Signal the peer's inbox at this slot
-    transport.signal_peer(peerIndex, group, slotId, SignalOp::SIGNAL_ADD, 1);
+    // Signal the peer's inbox at this slot (peer is peer index, not rank)
+    transport.signal_peer(peer, group, slotId, SignalOp::SIGNAL_ADD, 1);
   } else {
-    // Wait for signal at this slot (peerIndex signals us, we wait on our inbox)
+    // Wait for signal at this slot (peer signals us, we wait on our inbox)
     transport.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
   }
 
@@ -190,13 +191,13 @@ __global__ void concurrentSignalMultiBlockKernel(
 
 void testConcurrentSignalMultiBlock(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int numSlots,
     bool isSignaler,
     int* results,
     int numBlocks) {
   concurrentSignalMultiBlockKernel<<<numBlocks, 32>>>(
-      transport, peerIndex, numSlots, isSignaler, results);
+      transport, peer, numSlots, isSignaler, results);
 }
 
 // =============================================================================
@@ -235,7 +236,7 @@ void testTransportTypes(
 
 __global__ void concurrentSignalWaitMultiWarpKernel(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int numSlots,
     bool isSignaler,
     int* results,
@@ -256,10 +257,10 @@ __global__ void concurrentSignalWaitMultiWarpKernel(
   int slotId = warpIdx % numSlots;
 
   if (isSignaler) {
-    // Signal the peer's inbox at this slot
-    transport.signal_peer(peerIndex, group, slotId, SignalOp::SIGNAL_ADD, 1);
+    // Signal the peer's inbox at this slot (peer is peer index, not rank)
+    transport.signal_peer(peer, group, slotId, SignalOp::SIGNAL_ADD, 1);
   } else {
-    // Wait for signal at this slot (peerIndex signals us, we wait on our inbox)
+    // Wait for signal at this slot (peer signals us, we wait on our inbox)
     transport.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
   }
 
@@ -271,14 +272,14 @@ __global__ void concurrentSignalWaitMultiWarpKernel(
 
 void testConcurrentSignalWaitMultiWarp(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int numSlots,
     bool isSignaler,
     int* results,
     int warpsPerBlock) {
   int blockSize = warpsPerBlock * 32; // 32 threads per warp
   concurrentSignalWaitMultiWarpKernel<<<1, blockSize>>>(
-      transport, peerIndex, numSlots, isSignaler, results, warpsPerBlock);
+      transport, peer, numSlots, isSignaler, results, warpsPerBlock);
 }
 
 // =============================================================================
@@ -330,9 +331,9 @@ __global__ void waitSignalFromAllKernel(
     int nRanks = transport.n_ranks();
     transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
   } else {
-    // Signal the target rank
-    transport.signal_peer(
-        targetRank, group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    // Signal the target rank - convert rank to peer index
+    int peer = transport.rank_to_peer_index(targetRank);
+    transport.signal_peer(peer, group, signalIdx, SignalOp::SIGNAL_ADD, 1);
   }
 
   *result = 1;
@@ -352,7 +353,7 @@ void testWaitSignalFromAll(
 
 __global__ void waitWithCmpEqKernel(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     uint64_t expectedValue,
     bool isSignaler,
@@ -362,7 +363,7 @@ __global__ void waitWithCmpEqKernel(
   if (isSignaler) {
     // Signal with the exact expected value using SIGNAL_SET
     transport.signal_peer(
-        peerIndex, group, signalIdx, SignalOp::SIGNAL_SET, expectedValue);
+        peer, group, signalIdx, SignalOp::SIGNAL_SET, expectedValue);
   } else {
     // Wait for the exact value with CMP_EQ
     transport.wait_signal(group, signalIdx, CmpOp::CMP_EQ, expectedValue);
@@ -373,13 +374,13 @@ __global__ void waitWithCmpEqKernel(
 
 void testWaitWithCmpEq(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     uint64_t expectedValue,
     bool isSignaler,
     int* result) {
   waitWithCmpEqKernel<<<1, 32>>>(
-      transport, peerIndex, signalIdx, expectedValue, isSignaler, result);
+      transport, peer, signalIdx, expectedValue, isSignaler, result);
 }
 
 // =============================================================================
@@ -388,7 +389,7 @@ void testWaitWithCmpEq(
 
 __global__ void monotonicWaitValuesKernel(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     int numIterations,
     bool isSignaler,
@@ -398,8 +399,7 @@ __global__ void monotonicWaitValuesKernel(
   for (int i = 0; i < numIterations; ++i) {
     if (isSignaler) {
       // Signal with value=1 (adds to accumulated value)
-      transport.signal_peer(
-          peerIndex, group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+      transport.signal_peer(peer, group, signalIdx, SignalOp::SIGNAL_ADD, 1);
     } else {
       // Wait for accumulated value (i+1)
       transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, i + 1);
@@ -412,13 +412,13 @@ __global__ void monotonicWaitValuesKernel(
 
 void testMonotonicWaitValues(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     int numIterations,
     bool isSignaler,
     int* result) {
   monotonicWaitValuesKernel<<<1, 32>>>(
-      transport, peerIndex, signalIdx, numIterations, isSignaler, result);
+      transport, peer, signalIdx, numIterations, isSignaler, result);
 }
 
 // =============================================================================
@@ -427,7 +427,7 @@ void testMonotonicWaitValues(
 
 __global__ void signalWithSetKernel(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     uint64_t setValue,
     bool isSignaler,
@@ -437,7 +437,7 @@ __global__ void signalWithSetKernel(
   if (isSignaler) {
     // Use SIGNAL_SET instead of SIGNAL_ADD
     transport.signal_peer(
-        peerIndex, group, signalIdx, SignalOp::SIGNAL_SET, setValue);
+        peer, group, signalIdx, SignalOp::SIGNAL_SET, setValue);
   } else {
     // Wait for the set value
     transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, setValue);
@@ -448,13 +448,13 @@ __global__ void signalWithSetKernel(
 
 void testSignalWithSet(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int peer,
     int signalIdx,
     uint64_t setValue,
     bool isSignaler,
     int* result) {
   signalWithSetKernel<<<1, 32>>>(
-      transport, peerIndex, signalIdx, setValue, isSignaler, result);
+      transport, peer, signalIdx, setValue, isSignaler, result);
 }
 
 } // namespace comms::pipes::test
