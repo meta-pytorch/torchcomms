@@ -7,6 +7,7 @@
 #include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/WindowMemory.h"
 #include "comms/utils/CudaRAII.h"
 
 namespace comms::pipes {
@@ -42,6 +43,11 @@ struct MultiPeerNvlTransportConfig {
   // Larger = more signals available for parallelism.
   // Typical: 1-num of blocks for most workloads.
   std::size_t signalCount{1};
+
+  // Number of counter slots for local completion tracking.
+  // Counters track when source buffers are safe to reuse.
+  // Typical: 1-4 for most workloads.
+  std::size_t counterCount{1};
 };
 
 /**
@@ -166,6 +172,7 @@ class MultiPeerNvlTransport {
    * getMultiPeerDeviceTransport - Get unified device handle for all peers
    *
    * Returns a MultiPeerDeviceTransport that provides:
+   * - DeviceSignal with inbox semantics (all peers write to this rank's inbox)
    * - Peer-indexed send/recv operations
    *
    * PRECONDITION: exchange() must have been called by all ranks first.
@@ -228,6 +235,9 @@ class MultiPeerNvlTransport {
   // Allocated on device and populated in getMultiPeerDeviceTransport()
   // Uses DeviceBuffer instead of GpuMemHandler since no exchange is needed
   std::unique_ptr<meta::comms::DeviceBuffer> transportsDevice_;
+  // Multi-peer window memory (inbox model)
+  // Manages signal inbox, counter, and barrier buffers
+  std::unique_ptr<WindowMemory> windowMemory_;
 
   // Per-peer buffer sizes for offset calculation
   std::size_t perPeerDataBufferSize_{0};
