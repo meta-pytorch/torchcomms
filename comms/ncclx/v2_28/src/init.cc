@@ -3089,8 +3089,16 @@ ncclResult_t ncclCommGetAsyncError(ncclComm_t comm, ncclResult_t *asyncError) {
   *asyncError = __atomic_load_n(&comm->asyncResult, __ATOMIC_ACQUIRE);
   if (*asyncError == ncclSuccess && comm->proxyState) *asyncError = __atomic_load_n(&comm->proxyState->asyncResult, __ATOMIC_ACQUIRE);
 
-  /* Check gin status */
-  if (*asyncError == ncclSuccess && comm->sharedRes && comm->sharedRes->ginState.ncclGin) {
+  /* Check gin status -- only after GIN initialization is fully complete.
+   * ncclGinQueryLastError queries GDAKI QP error states via
+   * doca_gpu_verbs_query_last_error(). During ncclGinConnectOnce /
+   * ncclGinGdakiCreateContext, QPs are still transitioning through IB
+   * states (INIT -> RTR -> RTS) and report spurious errors that appear
+   * as ncclRemoteError. ginState->connected is only set true after
+   * ncclGinConnectOnce fully completes, so gating on it avoids querying
+   * QPs that are mid-initialization. */
+  if (*asyncError == ncclSuccess && comm->sharedRes && comm->sharedRes->ginState.ncclGin
+      && comm->sharedRes->ginState.connected) {
     struct ncclGinState* ginState = &comm->sharedRes->ginState;
     // Gin progress thread status
     if (ginState->needsProxyProgress) *asyncError = __atomic_load_n(&comm->sharedRes->ginState.asyncResult, __ATOMIC_ACQUIRE);
