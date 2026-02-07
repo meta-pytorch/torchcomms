@@ -87,10 +87,11 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   // Multi-peer transport buffers (inbox model)
   // ===========================================================================
   WindowMemoryConfig windowConfig{
-      .signalCount = config_.signalCount, .counterCount = config_.counterCount};
+      .signalCount = config_.signalCount,
+      .counterCount = config_.counterCount,
+      .barrierCount = config_.barrierCount};
   windowMemory_ = std::make_unique<WindowMemory>(
       myRank_, nRanks_, bootstrap_, windowConfig, memSharingMode_);
-  // Signal inbox: signalCount slots (all peers write to same slot)
 }
 
 void MultiPeerNvlTransport::exchange() {
@@ -204,6 +205,7 @@ MultiPeerDeviceTransport MultiPeerNvlTransport::getMultiPeerDeviceTransport() {
 
   DeviceSignal signal = windowMemory_->getDeviceSignal();
   DeviceCounter counter = windowMemory_->getDeviceCounter();
+  DeviceBarrier barrier = windowMemory_->getDeviceBarrier();
 
   // Build transports span directly from the device array (no pointer
   // indirection)
@@ -211,7 +213,7 @@ MultiPeerDeviceTransport MultiPeerNvlTransport::getMultiPeerDeviceTransport() {
       static_cast<Transport*>(transportsDevice_->get()), nRanks_);
 
   return MultiPeerDeviceTransport(
-      myRank_, nRanks_, transports, signal, counter);
+      myRank_, nRanks_, transports, signal, counter, barrier);
 }
 
 void MultiPeerNvlTransport::initializeTransportsArray() {

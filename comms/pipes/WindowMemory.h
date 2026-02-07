@@ -13,6 +13,7 @@ namespace comms::pipes {
 // returned objects
 class DeviceSignal;
 class DeviceCounter;
+class DeviceBarrier;
 
 /**
  * Configuration for window memory allocation.
@@ -25,14 +26,18 @@ struct WindowMemoryConfig {
   // Number of counter slots for local completion tracking
   // Typical: 1 for simple tracking, more for multi-phase patterns
   std::size_t counterCount{1};
+
+  // Number of barrier slots for multi-peer synchronization
+  // Typical: 1-4 for most workloads
+  std::size_t barrierCount{1};
 };
 
 /**
  * WindowMemory - Host-side RAII manager for synchronization primitive buffers
- * (signals, eventually counters and eventually barriers)
+ * (signals, counters, and barriers)
  *
- * Manages GPU memory allocation and handle exchange for DeviceSignal and
- * DeviceCounter. Later on, it will manage DeviceBarrier as well.
+ * Manages GPU memory allocation and handle exchange for DeviceSignal,
+ * DeviceCounter, and DeviceBarrier.
  *
  * This class can be used standalone or internally by MultiPeerNvlTransport.
  *
@@ -124,6 +129,18 @@ class WindowMemory {
   DeviceCounter getDeviceCounter() const;
 
   /**
+   * getDeviceBarrier - Get device-side barrier object
+   *
+   * PRECONDITION: exchange() must have completed on all ranks.
+   *
+   * Returns by value since DeviceBarrier is a lightweight handle.
+   *
+   * @return DeviceBarrier for use in CUDA kernels
+   * @throws std::runtime_error if called before exchange()
+   */
+  DeviceBarrier getDeviceBarrier() const;
+
+  /**
    * Get the memory sharing mode being used.
    */
   MemSharingMode getMemSharingMode() const {
@@ -142,6 +159,13 @@ class WindowMemory {
    */
   std::size_t counterCount() const {
     return config_.counterCount;
+  }
+
+  /**
+   * Get barrier count.
+   */
+  std::size_t barrierCount() const {
+    return config_.barrierCount;
   }
 
   /**
@@ -188,11 +212,21 @@ class WindowMemory {
   // Uses DeviceBuffer because this is NOT shared with peers
   std::unique_ptr<meta::comms::DeviceBuffer> counterDevice_;
 
+  // Barrier inbox buffer (shared with peers via exchange)
+  std::unique_ptr<GpuMemHandler> barrierInboxHandler_;
+
+  // Peer barrier pointers array (device-accessible, LOCAL-only)
+  // Size = nPeers (not nRanks) - excludes self
+  std::unique_ptr<meta::comms::DeviceBuffer> peerBarrierPtrsDevice_;
+
   // Inbox size in bytes
   std::size_t inboxSize_{0};
 
   // Counter buffer size in bytes
   std::size_t counterSize_{0};
+
+  // Barrier inbox size in bytes
+  std::size_t barrierInboxSize_{0};
 
   // Flag to track if exchange has been called
   bool exchanged_{false};

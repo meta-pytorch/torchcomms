@@ -44,6 +44,11 @@ struct MultiPeerNvlTransportConfig {
   // Typical: 1-num of blocks for most workloads.
   std::size_t signalCount{1};
 
+  // Number of barrier slots for multi-peer barrier synchronization.
+  // Each barrier_id is independent; more barriers = more concurrent phases.
+  // Typical: 1-4 for most workloads.
+  std::size_t barrierCount{1};
+
   // Number of counter slots for local completion tracking.
   // Counters track when source buffers are safe to reuse.
   // Typical: 1-4 for most workloads.
@@ -174,6 +179,7 @@ class MultiPeerNvlTransport {
    * Returns a MultiPeerDeviceTransport that provides:
    * - DeviceSignal with inbox semantics (all peers write to this rank's inbox)
    * - DeviceCounter for local completion tracking
+   * - DeviceBarrier for multi-peer synchronization
    * - Peer-indexed send/recv operations
    *
    * PRECONDITION: exchange() must have been called by all ranks first.

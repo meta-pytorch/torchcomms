@@ -2,6 +2,7 @@
 
 #include "comms/pipes/tests/MultiPeerNvlTransportIntegrationTest.cuh"
 
+#include "comms/pipes/DeviceBarrier.cuh"
 #include "comms/pipes/DeviceCounter.cuh"
 #include "comms/pipes/DeviceSignal.cuh"
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
@@ -59,6 +60,28 @@ void testSignalWait(
     bool isSignaler,
     int* result) {
   signalWaitKernel<<<1, 32>>>(transport, peer, signalIdx, isSignaler, result);
+}
+
+// =============================================================================
+// Barrier Test
+// =============================================================================
+
+__global__ void
+barrierKernel(MultiPeerDeviceTransport transport, int barrierIdx, int* result) {
+  auto group = make_warp_group();
+
+  // Execute barrier
+  transport.barrier(group, barrierIdx);
+
+  // If we get here, barrier succeeded
+  *result = 1;
+}
+
+void testBarrier(
+    MultiPeerDeviceTransport transport,
+    int barrierIdx,
+    int* result) {
+  barrierKernel<<<1, 32>>>(transport, barrierIdx, result);
 }
 
 // =============================================================================
@@ -522,6 +545,97 @@ void testTransportCounterResetOperations(
     MultiPeerDeviceTransport transport,
     uint64_t* results) {
   transportCounterResetOperationsKernel<<<1, 32>>>(transport, results);
+}
+
+// =============================================================================
+// Barrier With Reset Test
+// =============================================================================
+
+__global__ void barrierWithResetKernel(
+    MultiPeerDeviceTransport transport,
+    int barrierIdx,
+    bool doReset,
+    int* result) {
+  auto group = make_warp_group();
+
+  // Perform barrier synchronization
+  transport.barrier(group, barrierIdx);
+
+  // Optionally reset the barrier for reuse
+  if (doReset) {
+    transport.reset_barrier(group, barrierIdx);
+  }
+
+  if (threadIdx.x == 0) {
+    *result = 1;
+  }
+}
+
+void testBarrierWithReset(
+    MultiPeerDeviceTransport transport,
+    int barrierIdx,
+    bool doReset,
+    int* result) {
+  barrierWithResetKernel<<<1, 32>>>(transport, barrierIdx, doReset, result);
+}
+
+// =============================================================================
+// Barrier Multi-Block Stress Test
+// =============================================================================
+
+__global__ void barrierMultiBlockStressKernel(
+    MultiPeerDeviceTransport transport,
+    int numSlots,
+    int* results) {
+  auto group = make_warp_group();
+
+  // Each block uses a different barrier slot (blockIdx.x % numSlots)
+  uint32_t slotId = blockIdx.x % numSlots;
+
+  // Perform barrier synchronization
+  transport.barrier(group, slotId);
+
+  // Record success for this block
+  if (threadIdx.x == 0) {
+    results[blockIdx.x] = 1;
+  }
+}
+
+void testBarrierMultiBlockStress(
+    MultiPeerDeviceTransport transport,
+    int numSlots,
+    int* results,
+    int numBlocks) {
+  barrierMultiBlockStressKernel<<<numBlocks, 32>>>(
+      transport, numSlots, results);
+}
+
+// =============================================================================
+// Barrier Peer Test (Two-Sided Barrier)
+// =============================================================================
+
+__global__ void barrierPeerKernel(
+    MultiPeerDeviceTransport transport,
+    int peerIndex,
+    int barrierIdx,
+    int* result) {
+  auto group = make_warp_group();
+
+  // Two-sided barrier: synchronize with specific peer
+  transport.barrier_peer(peerIndex, group, barrierIdx);
+
+  // If we get here, barrier_peer succeeded
+  if (threadIdx.x == 0) {
+    *result = 1;
+  }
+}
+
+void testBarrierPeer(
+    MultiPeerDeviceTransport transport,
+    int peerIndex,
+    int barrierIdx,
+    int* result) {
+  barrierPeerKernel<<<1, 32>>>(transport, peerIndex, barrierIdx, result);
 }
 
 } // namespace comms::pipes::test

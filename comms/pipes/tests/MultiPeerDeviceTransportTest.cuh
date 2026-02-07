@@ -30,6 +30,15 @@ void testDeviceSignalConstruction(
 void testDeviceCounterConstruction(int counterCount, uint32_t* results);
 
 /**
+ * Test kernel: Verify DeviceBarrier construction and basic accessors
+ *
+ * @param myRank Rank ID for the barrier object
+ * @param nRanks Total number of ranks
+ * @param results Output array for test results [0]=rank, [1]=nRanks
+ */
+void testDeviceBarrierConstruction(int myRank, int nRanks, int* results);
+
+/**
  * Test kernel: Verify MultiPeerDeviceTransport construction and basic accessors
  *
  * @param myRank Rank ID for the transport object
