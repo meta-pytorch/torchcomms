@@ -7,8 +7,8 @@
 #include <cstdint>
 
 #include <folly/Synchronized.h>
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/ctran/commstate/CommStateX.h"
-#include "comms/ctran/interfaces/IBootstrap.h"
 #include "comms/ctran/interfaces/ICtran.h"
 #include "comms/ctran/utils/Abort.h"
 #include "comms/ctran/utils/AsyncError.h"
@@ -169,7 +169,7 @@ class CtranComm {
   // TODO: change shared_prt to unique_ptr after refactor all ctran code using
   // CtranComm
   std::shared_ptr<ICtran> ctran_;
-  std::unique_ptr<ctran::bootstrap::IBootstrap> bootstrap_;
+  std::unique_ptr<meta::comms::IBootstrap> bootstrap_;
   std::shared_ptr<CollTrace> collTrace_;
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;

@@ -9,12 +9,12 @@
 
 #include "comms/ctran/interfaces/ICtran.h"
 
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/commstate/CommStateX.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/hints/Hints.h"
-#include "comms/ctran/interfaces/IBootstrap.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/ctran/profiler/Profiler.h"

@@ -9,8 +9,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/ctran/commstate/CommStateXDev.h"
-#include "comms/ctran/interfaces/IBootstrap.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 namespace ncclx {
@@ -88,7 +88,7 @@ class CommStateX {
   void initRankTopologyNolocal();
   void initRankTopologyVnode(const int nLocalRanks);
   friend void initRankTopologyFrom(CommStateX* _CommStateX, void* _comm);
-  void initRankStatesTopology(ctran::bootstrap::IBootstrap* bootstrap);
+  void initRankStatesTopology(meta::comms::IBootstrap* bootstrap);
 
   /* Setters */
   void setRankTopologies(std::vector<RankTopology> rankTopologies);
