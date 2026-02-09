@@ -204,7 +204,7 @@ IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
                   // freed for the corresponding qpIdx. After using this slot,
                   // reset qpIdx to -1.
     } else if (
-        physicalQps_.at(0).physicalSendWrStatus_.size() < maxMsgCntPerQp_) {
+        physicalQps_.at(0).physicalSendQueStatus_.size() < maxMsgCntPerQp_) {
       availableQpIdx = 0;
     }
     if (availableQpIdx == -1) {
@@ -230,7 +230,7 @@ IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
 
     // Enqueue the send information to physicalQps_
     physicalQps_.at(availableQpIdx)
-        .physicalSendWrStatus_.emplace_back(
+        .physicalSendQueStatus_.emplace_back(
             sendWr_.wr_id, virtualSendWr.wr.wr_id);
 
     // Decide if need to deque the front of vSendQ_
@@ -260,7 +260,7 @@ inline int IbvVirtualQp::findAvailableSendQp() {
   }
 
   for (int i = 0; i < physicalQps_.size(); i++) {
-    if (physicalQps_.at(nextSendPhysicalQpIdx_).physicalSendWrStatus_.size() <
+    if (physicalQps_.at(nextSendPhysicalQpIdx_).physicalSendQueStatus_.size() <
         maxMsgCntPerQp_) {
       auto availableQpIdx = nextSendPhysicalQpIdx_;
       nextSendPhysicalQpIdx_ =
@@ -290,7 +290,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendNotifyImm() {
   if (maybeSend.hasError()) {
     return folly::makeUnexpected(maybeSend.error());
   }
-  notifyQp_.physicalSendWrStatus_.emplace_back(
+  notifyQp_.physicalSendQueStatus_.emplace_back(
       sendWr_.wr_id, virtualSendWr.wr.wr_id);
   virtualSendWr.remainingMsgCnt = 0;
   pendingSendNotifyVirtualWrQue_.pop_front();
@@ -359,7 +359,7 @@ inline void IbvVirtualQp::updatePhysicalSendWrFromVirtualSendWr(
   if (sendWr->opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
       loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
     sendWr->imm_data =
-        dqplbSeqTracker.getSendImm(virtualSendWr.remainingMsgCnt);
+        dqplbSeqTracker.getSendImm(virtualSendWr.remainingMsgCnt == 1);
   }
 }
 
@@ -448,16 +448,16 @@ inline folly::Expected<VirtualQpResponse, Error> IbvVirtualQp::processRequest(
   auto& physicalQp = qpIdx == -1 ? notifyQp_ : physicalQps_.at(qpIdx);
 
   if (request.type == RequestType::RECV) {
-    if (physicalQp.physicalRecvWrStatus_.empty()) {
+    if (physicalQp.physicalRecvQueStatus_.empty()) {
       return folly::makeUnexpected(Error(
           EINVAL,
           fmt::format(
               "In pollCq, after calling submit command to IbvVirtualQp, \
-              physicalRecvWrStatus_ at physicalQp {} is empty!",
+              physicalRecvQueStatus_ at physicalQp {} is empty!",
               request.physicalQpNum)));
     }
 
-    auto& physicalRecvWrStatus = physicalQp.physicalRecvWrStatus_.front();
+    auto& physicalRecvWrStatus = physicalQp.physicalRecvQueStatus_.front();
 
     if (physicalRecvWrStatus.physicalWrId != request.wrId) {
       return folly::makeUnexpected(Error(
@@ -470,7 +470,7 @@ inline folly::Expected<VirtualQpResponse, Error> IbvVirtualQp::processRequest(
     }
 
     response.virtualWrId = physicalRecvWrStatus.virtualWrId;
-    physicalQp.physicalRecvWrStatus_.pop_front();
+    physicalQp.physicalRecvQueStatus_.pop_front();
     if (loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
       if (postRecvNotifyImm(qpIdx).hasError()) {
         return folly::makeUnexpected(
@@ -487,16 +487,16 @@ inline folly::Expected<VirtualQpResponse, Error> IbvVirtualQp::processRequest(
       }
     }
   } else if (request.type == RequestType::SEND) {
-    if (physicalQp.physicalSendWrStatus_.empty()) {
+    if (physicalQp.physicalSendQueStatus_.empty()) {
       return folly::makeUnexpected(Error(
           EINVAL,
           fmt::format(
               "In pollCq, after calling submit command to IbvVirtualQp, \
-              physicalSendWrStatus_ at physicalQp {} is empty!",
+              physicalSendQueStatus_ at physicalQp {} is empty!",
               request.physicalQpNum)));
     }
 
-    auto physicalSendWrStatus = physicalQp.physicalSendWrStatus_.front();
+    auto physicalSendWrStatus = physicalQp.physicalSendQueStatus_.front();
 
     if (physicalSendWrStatus.physicalWrId != request.wrId) {
       return folly::makeUnexpected(Error(
@@ -509,7 +509,7 @@ inline folly::Expected<VirtualQpResponse, Error> IbvVirtualQp::processRequest(
     }
 
     response.virtualWrId = physicalSendWrStatus.virtualWrId;
-    physicalQp.physicalSendWrStatus_.pop_front();
+    physicalQp.physicalSendQueStatus_.pop_front();
     if (qpIdx != -1) {
       if (mapPendingSendQueToPhysicalQp(qpIdx).hasError()) {
         return folly::makeUnexpected(Error(
@@ -545,7 +545,7 @@ inline int IbvVirtualQp::findAvailableRecvQp() {
   // maxMsgCntPerQp_ with a value of -1 indicates there is no limit.
   auto availableQpIdx = -1;
   if (maxMsgCntPerQp_ == -1 ||
-      physicalQps_.at(0).physicalRecvWrStatus_.size() < maxMsgCntPerQp_) {
+      physicalQps_.at(0).physicalRecvQueStatus_.size() < maxMsgCntPerQp_) {
     availableQpIdx = 0;
   }
 
@@ -569,7 +569,7 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvNotifyImm(
   if (maybeRecv.hasError()) {
     return folly::makeUnexpected(maybeRecv.error());
   }
-  qp.physicalRecvWrStatus_.emplace_back(recvWr_.wr_id, virtualRecvWrId);
+  qp.physicalRecvQueStatus_.emplace_back(recvWr_.wr_id, virtualRecvWrId);
 
   if (loadBalancingScheme_ == LoadBalancingScheme::SPRAY) {
     pendingRecvVirtualWrQue_.pop_front();
@@ -592,7 +592,7 @@ IbvVirtualQp::initializeDqplbReceiver() {
       if (maybeRecv.hasError()) {
         return folly::makeUnexpected(maybeRecv.error());
       }
-      physicalQps_.at(j).physicalRecvWrStatus_.emplace_back(recvWr_.wr_id, -1);
+      physicalQps_.at(j).physicalRecvQueStatus_.emplace_back(recvWr_.wr_id, -1);
     }
   }
 
@@ -659,7 +659,7 @@ IbvVirtualQp::mapPendingRecvQueToPhysicalQp(int qpIdx) {
 
     // Enqueue the receive information to physicalQps_
     physicalQps_.at(availableQpIdx)
-        .physicalRecvWrStatus_.emplace_back(
+        .physicalRecvQueStatus_.emplace_back(
             recvWr_.wr_id, virtualRecvWr.wr.wr_id);
 
     // Decide if need to deque the front of vRecvQ_
