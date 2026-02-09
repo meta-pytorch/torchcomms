@@ -637,7 +637,7 @@ class CtranIbAbortCtrlMsgTest
 
   // Execute a test for control message operations (send or recv) with abort
   //
-  // CtranIb throws an std::runtime_error when a socket operation returns a
+  // CtranIb throws an runtime error when a socket operation returns a
   // non-zero error code and the abortCtrl_ is unset.
   void testAbortedCtrlMsg(
       std::unique_ptr<StrictMock<ctran::bootstrap::testing::MockISocket>>
