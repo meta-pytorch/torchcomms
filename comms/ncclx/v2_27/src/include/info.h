@@ -7,6 +7,8 @@
 #ifndef NCCL_INFO_H_
 #define NCCL_INFO_H_
 
+#include <optional>
+
 #include "nccl.h"
 #include "collectives.h"
 #include "core.h"
@@ -49,7 +51,18 @@ struct ncclInfo {
   int sliceSteps;
 
   /*
-   * NCCLX Specific attributes
+   * Start of NCCLX Specific attributes
+   */
+  // Stochastic Rounding reduction ops only attribute. The random seed being
+  // used for the stochastic rounding. This will point to the GPU memory holding
+  // the random seed.
+  uint64_t* randomSeed{nullptr};
+  // The type we should use for transport. This feild will only be set for
+  // quantized collectives. For non-quantized collectives, this will be nullopt
+  std::optional<ncclDataType_t> transportType{std::nullopt};
+
+  /*
+   * NCCLX Specific attributes (Not really being used, no idea what they are for)
    */
   int nThreads{0};
   int nChannels{0};
