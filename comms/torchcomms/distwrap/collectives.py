@@ -23,12 +23,24 @@ from torchcomms.distwrap.utils import (
 
 
 # =============================================================================
+# Module-level State
+# =============================================================================
+
+# Dictionary mapping dist PREMUL_SUM ops to their torchcomms equivalents
+_PREMUL_SUM_OPS: dict[ReduceOp, TcReduceOp] = {}
+
+
+# =============================================================================
 # Private Helper Functions
 # =============================================================================
 
 
 def _convert_reduce_op(op: ReduceOp) -> TcReduceOp:
     """Convert torch.distributed.ReduceOp to torchcomms.ReduceOp."""
+    # Check for PREMUL_SUM ops first
+    if op in _PREMUL_SUM_OPS:
+        return _PREMUL_SUM_OPS[op]
+
     # Map from torch.distributed ReduceOp to torchcomms ReduceOp
     op_map = {
         ReduceOp.SUM: TcReduceOp.SUM,
@@ -71,6 +83,27 @@ def _get_default_torchcomms_instance(pg: ProcessGroup) -> TorchComm:
 # =============================================================================
 # Public API Functions
 # =============================================================================
+
+
+def _make_nccl_premul_sum(mul_factor: float | torch.Tensor) -> ReduceOp:
+    """
+    Create a NCCL PREMUL_SUM reduce operation with the given multiplication factor.
+
+    This creates a reduce operation that multiplies all inputs by mul_factor before
+    summing them. When torchcomms is enabled, it also registers the corresponding
+    torchcomms reduce operation.
+
+    Args:
+        mul_factor: The multiplication factor (scalar or tensor).
+
+    Returns:
+        A ReduceOp that can be used with all_reduce, reduce_scatter, etc.
+    """
+    op = dist._make_nccl_premul_sum(mul_factor)  # type: ignore[attr-defined]
+    if torchcomms_is_enabled():
+        tc_op = TcReduceOp.PREMUL_SUM(mul_factor)  # type: ignore[attr-defined]
+        _PREMUL_SUM_OPS[op] = tc_op
+    return op
 
 
 def all_reduce(
@@ -641,3 +674,53 @@ def broadcast_object_list(
         dist.broadcast_object_list(
             object_list, src=src, group=pg, device=device, group_src=group_src
         )
+
+
+# =============================================================================
+# Memory Pool Operations
+# =============================================================================
+
+
+def get_mem_allocator(
+    group: ProcessGroup | None,
+    device: torch.device,
+) -> Any:
+    """
+    Get the memory allocator for the given process group and device.
+
+    Args:
+        group: The process group (None for WORLD).
+        device: The device to get the allocator for.
+
+    Returns:
+        The memory allocator for the specified device.
+    """
+    pg = get_group(group)
+
+    if torchcomms_is_enabled():
+        tc = get_torchcomms_instance(pg, device_type=device.type)
+        return tc.mem_allocator
+    else:
+        return pg._get_backend(device).mem_allocator  # type: ignore[union-attr]
+
+
+def register_mem_pool(
+    group: ProcessGroup | None,
+    device: torch.device,
+    pool: Any,
+) -> None:
+    """
+    Register a memory pool with the process group backend.
+
+    Note: This is a no-op when torchcomms is enabled, as torchcomms manages
+    its own memory pools.
+
+    Args:
+        group: The process group (None for WORLD).
+        device: The device to register the pool for.
+        pool: The memory pool to register.
+    """
+    # We don't need to register the mem pool for torchcomms
+    if not torchcomms_is_enabled():
+        pg = get_group(group)
+        pg._get_backend(device).register_mem_pool(pool)  # type: ignore[union-attr]

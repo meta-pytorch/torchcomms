@@ -203,6 +203,7 @@ class TorchCommGloo : public TorchCommBackend,
   std::shared_ptr<gloo::Context> context_;
 
   uint32_t collectiveCounter_{0};
+  uint32_t splitCounter_{0};
 };
 
 } // namespace torch::comms

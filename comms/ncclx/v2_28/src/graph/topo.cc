@@ -1273,8 +1273,12 @@ ncclResult_t ncclTopoGetVNicParent(struct ncclXml* xml, ncclResult_t (*getProper
   int path = PATH_LOC;
   NCCLCHECK(ncclTopoGetPath(physNetNodes, vProps->ndevs, &path, parent));
   if (path == PATH_PHB || path == PATH_PXB || path == PATH_PIX) {
-    INFO(NCCL_GRAPH, "Widening links");
-    NCCLCHECK(ncclTopoWidenLinks(physNetNodes, vProps->ndevs, *parent));
+    if (NCCL_NET_WIDEN_LINKS) {
+      INFO(NCCL_GRAPH, "Widening links");
+      NCCLCHECK(ncclTopoWidenLinks(physNetNodes, vProps->ndevs, *parent));
+    } else {
+      INFO(NCCL_GRAPH, "Skipping link widening (NCCL_NET_WIDEN_LINKS=0)");
+    }
   }
 
   if (*parent) {

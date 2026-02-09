@@ -26,6 +26,10 @@ constexpr const char* commCodeToName(const commResult_t code) {
       return "commRemoteError";
     case commInProgress:
       return "commInProgress";
+    case commTimeout:
+      return "commTimeout";
+    case commUserAbort:
+      return "commUserAbort";
     case commNumResults:
       return "commNumResults";
     default:
@@ -71,6 +75,10 @@ constexpr const char* commCodeToString(commResult_t code) {
       return "remote process exited or there was a network error";
     case commInProgress:
       return "NCCL operation in progress";
+    case commTimeout:
+      return "operation timed out";
+    case commUserAbort:
+      return "operation aborted by user";
     case commNumResults:
       return "numericall error";
     default:

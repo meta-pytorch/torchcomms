@@ -2,7 +2,7 @@
 # pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-"""Integration tests for wait_tensors proxy propagation in Dynamo tracing.
+"""Unit tests for wait_tensors proxy propagation in Dynamo tracing.
 
 These tests verify that after calling work.wait(), the returned tensors
 use the wait_tensors output proxy instead of the pre-wait collective output.
@@ -12,12 +12,19 @@ the data may not be ready yet, causing race conditions and NaN values.
 """
 
 import logging
+import os
 import unittest
+
+
+os.environ["TORCHCOMMS_PATCH_FOR_COMPILE"] = "1"
 
 import torch
 import torch._dynamo
-from torchcomms import ReduceOp
-from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWrapper
+from torchcomms import new_comm, ReduceOp
+from torchcomms.tests.helpers.py.test_helpers import (
+    skip_if_torch_compile_not_supported_or_enabled,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +113,7 @@ def _check_node_in_output_path(gm, target_node) -> bool:
     return False
 
 
+@skip_if_torch_compile_not_supported_or_enabled()
 class TestWaitProxyPropagation(unittest.TestCase):
     """Test that wait_tensors output proxies are properly propagated."""
 
@@ -137,11 +145,8 @@ class TestWaitProxyPropagation(unittest.TestCase):
         and returns the tensor. The FX graph should show that the returned tensor
         flows through wait_tensors, not directly from the collective.
         """
-
-        wrapper = TorchCommTestWrapper()
-        comm = wrapper.get_torchcomm()
-        device = comm.get_device()
-        tensor = torch.ones(4, dtype=torch.float, device=device)
+        comm = new_comm("dummy", torch.device("cpu"), name="test_wait_return")
+        tensor = torch.ones(4, dtype=torch.float, device="cpu")
 
         def my_func(comm_arg, t):
             work = comm_arg.all_reduce(t, ReduceOp.SUM, async_op=True)
@@ -174,20 +179,18 @@ class TestWaitProxyPropagation(unittest.TestCase):
             f"Output sources: {_get_graph_output_sources(gm)}",
         )
 
-        wrapper = None
+        comm.finalize()
         comm = None
         torch._dynamo.reset()
 
     def test_list_return_uses_wait_output(self):
         """Test that list of tensors returned after wait uses wait outputs."""
 
-        wrapper = TorchCommTestWrapper()
-        comm = wrapper.get_torchcomm()
-        device = comm.get_device()
+        comm = new_comm("dummy", torch.device("cpu"), name="test_wait_list")
         num_ranks = comm.get_size()
-        tensor = torch.ones(4, dtype=torch.float, device=device) * (comm.get_rank() + 1)
+        tensor = torch.ones(4, dtype=torch.float, device="cpu") * (comm.get_rank() + 1)
         output_list = [
-            torch.zeros(4, dtype=torch.float, device=device) for _ in range(num_ranks)
+            torch.zeros(4, dtype=torch.float, device="cpu") for _ in range(num_ranks)
         ]
 
         def my_func(comm_arg, output, inp):
@@ -218,7 +221,7 @@ class TestWaitProxyPropagation(unittest.TestCase):
             f"Output sources: {_get_graph_output_sources(gm)}",
         )
 
-        wrapper = None
+        comm.finalize()
         comm = None
         torch._dynamo.reset()
 

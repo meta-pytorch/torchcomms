@@ -660,7 +660,6 @@ TEST_F(CvarInitEdgeCasesTest, EnumCvarTesting) {
       {"dda", true},
       {"ctran", true},
       {"ctdirect", true},
-      {"ctarg", true},
       {"ctring", true},
       {"ctmring", true},
       {"ORIG", true}, // Test case sensitivity

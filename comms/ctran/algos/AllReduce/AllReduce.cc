@@ -15,12 +15,6 @@ bool ctranAllReduceSupport(CtranComm* comm, enum NCCL_ALLREDUCE_ALGO algo) {
   }
 
   switch (algo) {
-    case NCCL_ALLREDUCE_ALGO::ctarg:
-      // Once ctarg is supported, remove this check and return true
-      CLOGF(
-          WARN,
-          "ctarg algo not supported for ctranAllReduce, falling back to baseline");
-      return false;
     case NCCL_ALLREDUCE_ALGO::ctring:
       // TODO(T240133674): remove this check and return true once ctring is
       // supported for all topologies
@@ -50,14 +44,6 @@ commResult_t ctranAllReduce(
     enum NCCL_ALLREDUCE_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout) {
   switch (algo) {
-#if !defined(USE_ROCM)
-    case NCCL_ALLREDUCE_ALGO::ctarg:
-      if (timeout != std::nullopt) {
-        CLOGF(WARN, "timeout is ignored for AllReduce ctarg algorithm");
-      }
-      return ctranAllReduceARG(
-          sendbuff, recvbuff, count, datatype, redOp, comm, stream, timeout);
-#endif
     case NCCL_ALLREDUCE_ALGO::ctring:
       if (comm->statex_->nRanks() == 1) {
         // TODO(T242570177): this is a temp workaround for nRanks == 1. Remove

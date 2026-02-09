@@ -117,7 +117,6 @@ TEST_F(AlgoConfigUT, AllReduceAlgoHintOverride) {
   std::unordered_map<enum NCCL_ALLREDUCE_ALGO, const char*> overrideAlgos = {
       {NCCL_ALLREDUCE_ALGO::ctran, "ctran"},
       {NCCL_ALLREDUCE_ALGO::ctdirect, "ctdirect"},
-      {NCCL_ALLREDUCE_ALGO::ctarg, "ctarg"},
       {NCCL_ALLREDUCE_ALGO::ctring, "ctring"},
   };
 
