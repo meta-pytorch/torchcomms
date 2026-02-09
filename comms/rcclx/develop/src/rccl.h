@@ -1057,6 +1057,8 @@ ncclResult_t allGatherExec(
  * created by ncclAllGatherInit or ncclAllToAllDedupInit
  */
 ncclResult_t pExec(void* request);
+
+ncclResult_t pFree(void* request);
 } // namespace ncclx
 
 
