@@ -625,6 +625,10 @@ cvars:
    default     : ""
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-force-merge
 
+ - name        : NCCL_NET_WIDEN_LINKS
+   type        : bool
+   default     : true
+   description : When set to false, disables PCI link widening for bonded vNics in ncclTopoGetVNicParent. By default (true), ncclTopoWidenLinks sums the PCI link widths of constituent physical NICs.
 
  - name        : NCCL_NTHREADS
    type        : int64_t
