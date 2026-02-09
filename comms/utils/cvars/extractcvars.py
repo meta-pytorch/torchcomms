@@ -9,7 +9,7 @@ import pathlib
 import subprocess
 from io import StringIO
 
-import ruamel.yaml as yaml
+import yaml
 
 # Maps from environment variables to CVAR names.
 # These are used to populate the C++ CVAR mappings.
@@ -33,7 +33,10 @@ double_cvar_for_unit_tests: str = "__NCCL_UNIT_TEST_DOUBLE_CVAR__"
 
 @functools.lru_cache(maxsize=1)
 def fbsource_root():
-    return subprocess.check_output(["hg", "root"]).decode("utf-8").strip()
+    try:
+        return subprocess.check_output(["hg", "root"]).decode("utf-8").strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return "."  # When running in genrule, we don't have hg context
 
 
 def static_vars(**kwargs):
@@ -676,13 +679,21 @@ extern std::unordered_map<std::string, bool*> env_bool_values;
 
 
 def format_file(path):
-    subprocess.run(["clang-format", "-i", path])
+    try:
+        subprocess.run(["clang-format", "-i", path], check=False)
+    except FileNotFoundError:
+        # clang-format might not be available in genrule environment
+        print(f"Warning: clang-format not found, skipping formatting for {path}")
 
 
 def codesign_file(path):
-    return subprocess.check_call(
-        [os.path.join(fbsource_root(), "tools/signedsource"), "sign", path]
-    )
+    try:
+        return subprocess.check_call(
+            [os.path.join(fbsource_root(), "tools/signedsource"), "sign", path]
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        # signedsource might not be available in genrule environment
+        print(f"Warning: signedsource not available, skipping signing for {path}")
 
 
 def append_unit_test_cvars(allcvars: list) -> None:
@@ -764,14 +775,36 @@ def append_unit_test_cvars(allcvars: list) -> None:
     )
 
 
+def get_script_and_output_directories() -> tuple[pathlib.Path, pathlib.Path]:
+    # Determine where to find input files and where to write output files
+    # When running in genrule, NCCL_CVARS_OUTPUT_DIR tells us where to write outputs
+    # Input files (yaml, .in) are in the python binary's resources
+    output_dir_env = os.getenv("NCCL_CVARS_OUTPUT_DIR")
+
+    if output_dir_env:
+        # Running in genrule, so write outputs to specified directory
+        # But read inputs from the script's resource directory
+        script_dir = pathlib.Path(__file__).parent
+        output_dir = pathlib.Path(output_dir_env)
+    elif os.path.basename(os.path.dirname(__file__)).startswith("extractcvars"):
+        # Running as a packaged binary, so use current working directory
+        script_dir = pathlib.Path.cwd()
+        output_dir = script_dir
+    else:
+        # Running as a normal script, so use script directory for both
+        script_dir = pathlib.Path(__file__).parent
+        output_dir = script_dir
+
+    return output_dir, script_dir
+
+
 def main():
-    # Get the directory of the current script
-    script_dir = pathlib.Path(__file__).parent
+    output_dir, script_dir = get_script_and_output_directories()
     config_file = os.path.join(script_dir, "nccl_cvars.yaml")
 
     print(f"Parsing NCCL env variables from {config_file}")
     with open(config_file, "r") as f:
-        data = yaml.YAML().load(f.read())
+        data = yaml.safe_load(f)
     if data["cvars"] is None:
         data["cvars"] = []
 
@@ -800,16 +833,14 @@ def main():
 
     append_unit_test_cvars(allcvars)
 
-    populateCCFile(
-        allcvars,
-        "comms/utils/cvars/nccl_cvars.cc.in",
-        "comms/utils/cvars/nccl_cvars.cc",
-    )
-    populateHFile(allcvars, "comms/utils/cvars/nccl_cvars.h")
-    for f in [
-        "comms/utils/cvars/nccl_cvars.cc",
-        "comms/utils/cvars/nccl_cvars.h",
-    ]:
+    # Generate files
+    template_file = os.path.join(script_dir, "nccl_cvars.cc.in")
+    output_cc = os.path.join(output_dir, "nccl_cvars.cc")
+    output_h = os.path.join(output_dir, "nccl_cvars.h")
+
+    populateCCFile(allcvars, template_file, output_cc)
+    populateHFile(allcvars, output_h)
+    for f in [output_cc, output_h]:
         format_file(f)
         codesign_file(f)
 

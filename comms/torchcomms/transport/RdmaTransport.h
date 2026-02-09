@@ -2,8 +2,10 @@
 
 #pragma once
 
+#include <chrono>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -316,11 +318,18 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * [Remote Op] Transfer data from local buffer to remote buffer on the peer
    * rank via RDMA. The remote side can use the `checkNotify` API to wait for
    * the completion of the transfer for every iput call with notify=true.
+   *
+   * @param timeout Optional timeout duration for the write operation. Currently
+   *                only used for mock testing (MockType::Timeout). When mock is
+   *                enabled, the operation will complete with commTimeout after
+   *                this duration. Defaults to 60 seconds if not specified.
+   *                In production (MockType::None), this parameter is ignored.
    */
   folly::SemiFuture<commResult_t> write(
       RdmaMemory::View localBuffer,
       const RdmaRemoteBuffer& remoteBuffer,
-      bool notify);
+      bool notify,
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
   /*
    * [Remote Op] Check the arrival of incoming put transfer from the remote
@@ -336,6 +345,72 @@ class __attribute__((visibility("default"))) RdmaTransport {
       RdmaMemory::MutableView& localBuffer,
       const RdmaRemoteBuffer& remoteBuffer);
 
+  /*
+   * Mock type for testing RDMA transport error scenarios
+   */
+  enum class MockType {
+    None, // No mock, normal operation
+    Timeout, // Works complete with timeout error after specified duration
+    Failure, // Works complete immediately with commInternalError
+  };
+
+  /*
+   * Context for mock behavior. The type is set via setMockForTest(),
+   * while timeout and creationTime are captured from write() call.
+   */
+  struct MockContext {
+    MockType type{MockType::None};
+    // Timeout duration captured from write() parameter
+    std::optional<std::chrono::milliseconds> timeout;
+    // Creation time for timeout calculation
+    std::chrono::steady_clock::time_point creationTime;
+
+    // Default timeout duration when not specified (60 seconds)
+    static constexpr std::chrono::milliseconds kDefaultTimeout{60000};
+
+    /*
+     * Check if timeout has elapsed since creation time.
+     * Returns true if type is Timeout AND elapsed time >= timeout duration.
+     */
+    bool hasTimedOut() const {
+      if (type != MockType::Timeout) {
+        return false;
+      }
+      auto timeoutDuration = timeout.value_or(kDefaultTimeout);
+      if (timeoutDuration.count() <= 0) {
+        return true; // Duration 0 means immediate timeout
+      }
+      auto elapsed = std::chrono::steady_clock::now() - creationTime;
+      return elapsed >= timeoutDuration;
+    }
+  };
+
+  /*
+   * Inject software mock for testing. Any write while mock is enabled
+   * will behave according to the mock configuration:
+   * - Timeout: works complete with commTimeout after the timeout duration
+   *            specified in the write() call (defaults to 60s if not specified)
+   * - Failure: works complete immediately with commInternalError
+   * - None: reset to disable mock
+   *
+   * The mock type is captured when operations are created, not when they
+   * complete. Changing the mock config after calling write does not affect
+   * already-created operations.
+   *
+   * The control is per RdmaTransport instance, and the state is shared with
+   * all threads accessing the instance.
+   */
+  void setMockForTest(MockContext config);
+
+  /*
+   * Abort all pending works and complete them with commUserAbort status.
+   * This is called by upper layer to cancel pending operations.
+   *
+   * Currently cleans up pending works at RDMA Transport level. This API is
+   * preserved for future cleanup extensions.
+   */
+  void abort();
+
  private:
   /*
    * Drive the IB progress loop and drive completion of pending requests.
@@ -349,6 +424,8 @@ class __attribute__((visibility("default"))) RdmaTransport {
   struct Work;
   folly::Synchronized<std::deque<std::unique_ptr<Work>>> pendingWorks_;
   std::unique_ptr<folly::AsyncTimeout> progressTimeout_;
+  // Mock configuration for testing; updated by setMockForTest
+  folly::Synchronized<MockContext> mockContext_;
 };
 
 } // namespace torch::comms

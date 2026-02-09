@@ -858,8 +858,6 @@ class CtranMapper {
 
   CtranSocket* ctranSockPtr();
 
-  ctran::IpcRegCache* ipcRegCachePtr();
-
   // number of iput requests made for each backend
   std::vector<int> iPutCount;
   std::vector<int> iGetCount;
@@ -904,11 +902,11 @@ class CtranMapper {
       FB_COMMCHECK(this->ctranTcpDm->progress());
     }
 
-    // Check if any posted CB_CTRL requests are completed and cleanup
+    // Check if any posted IPC release requests are completed and cleanup
     for (auto it = this->postedCbCtrlReqs_.begin();
          it != this->postedCbCtrlReqs_.end();) {
       auto& req = *it;
-      if (req->checkComplete()) {
+      if (req->completed.load()) {
         it = this->postedCbCtrlReqs_.erase(it);
       } else {
         it++;
@@ -1087,7 +1085,8 @@ class CtranMapper {
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
       FB_COMMCHECK(
-          ipcRegCache_->exportMem(buf, regElem->ipcRegElem, msg.ipcDesc));
+          ctran::IpcRegCache::getInstance()->exportMem(
+              buf, regElem->ipcRegElem, msg.ipcDesc));
 
       // Record the exported remote rank to notify at deregistration
       exportRegCache_.wlock()->record(regElem, rank);
@@ -1136,8 +1135,13 @@ class CtranMapper {
         }
         remKey->backend = CtranMapperBackend::NVL;
         const std::string peerId = comm->statex_->gPid(rank);
-        FB_COMMCHECK(ipcRegCache_->importMem(
-            peerId, msg.ipcDesc, buf, &(remKey->nvlKey)));
+        FB_COMMCHECK(
+            ctran::IpcRegCache::getInstance()->importMem(
+                peerId,
+                msg.ipcDesc,
+                buf,
+                &(remKey->nvlKey),
+                &this->logMetaData_));
         break;
       }
       default:
@@ -1919,14 +1923,6 @@ class CtranMapper {
 
   commResult_t remReleaseMem(ctran::regcache::RegElem* regElem);
 
-  // Callback function to handle incoming NVL_RELEASE_MEM ctrl msg
-  // Input arguments:
-  //   - rank: the rank sent the ctrl msg
-  //   - msgPtr: the pointer to the received ctrl msg
-  //   - ctx: the context of the ctrl msg; it is the CtranMapper object passed
-  //          in at cb registration
-  static commResult_t releaseMemCb(int rank, void* msgPtr, void* ctx);
-
   bool atDestruction{false};
 
   std::unique_ptr<class CtranIb> ctranIb{nullptr};
@@ -1934,56 +1930,26 @@ class CtranMapper {
   std::unique_ptr<class CtranSocket> ctranSock{nullptr};
   std::unique_ptr<class ctran::CtranTcpDm> ctranTcpDm{nullptr};
   std::unique_ptr<class CtranCtrlManager> ctrlMgr{nullptr};
-  std::unique_ptr<class ctran::IpcRegCache> ipcRegCache_{nullptr};
 
   // holds enabled backends when the mapper is created.
   // A unified struct for holding all available backends.
   std::vector<bool> enableBackends_{
       std::vector<bool>(CtranMapperBackend::NUM_BACKENDS, false)};
 
-  // Lightweight request object to track mapper internal callback ctrl msgs
-  class CbCtrlRequest {
-   public:
-    CbCtrlRequest(int peer, CtranMapperBackend backend)
-        : peer(peer), backend(backend) {
-      if (backend == CtranMapperBackend::IB) {
-        ibReq = CtranIbRequest();
-      } else if (backend == CtranMapperBackend::SOCKET) {
-        sockReq = CtranSocketRequest();
-      } else if (backend == CtranMapperBackend::TCPDM) {
-        tcpDmReq = ctran::CtranTcpDmRequest();
-      } else {
-        CLOGF(ERR, "CTRAN-MAPPER: Unsupported backend {}", backend);
-        FB_COMMCHECKTHROW_EX_NOCOMM(commInternalError);
-      }
-    };
-    ~CbCtrlRequest() {};
-    bool checkComplete() {
-      if (backend == CtranMapperBackend::IB) {
-        return ibReq.isComplete();
-      } else if (backend == CtranMapperBackend::SOCKET) {
-        return sockReq.isComplete();
-      } else if (backend == CtranMapperBackend::TCPDM) {
-        return tcpDmReq.isComplete();
-      }
-      return false;
-    }
-
-    int peer{-1};
-    union {
-      CtranIbRequest ibReq;
-      CtranSocketRequest sockReq;
-      ctran::CtranTcpDmRequest tcpDmReq;
-    };
-    CtranMapperBackend backend;
-    ControlMsg msg;
-  };
-
-  // List of outstanding internal callback ctrl message requests to be processed
-  // when polling progress. The internal msg buffer is used to hold the content
-  // and may be queued at VC layer. Thus, we need temporarily hold the request
+  // List of outstanding internal IPC release requests to be processed
+  // when polling progress. We need to temporarily hold the request
   // instance and erase after completion.
-  std::deque<std::unique_ptr<CbCtrlRequest>> postedCbCtrlReqs_;
+  std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedCbCtrlReqs_;
+
+  // Peer IPC server addresses for async socket communication, indexed by rank.
+  // Populated via bootstrap allGather during mapper initialization.
+  std::vector<sockaddr_storage> peerIpcServerAddrs_;
+
+  // AllGather IPC server addresses from all ranks via bootstrap.
+  commResult_t allGatherIpcServerAddrs();
+
+  // Get peer's IPC server address by rank.
+  folly::SocketAddress getPeerIpcServerAddr(int rank) const;
 
   // Record remote ranks that each ipcRegElem has exported to.
   // - For each remote rank, the local rank will send RELEASE_MEM ctrlmsg to

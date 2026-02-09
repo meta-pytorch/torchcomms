@@ -1,0 +1,9 @@
+# RCCLX Snapshot Metadata
+# This file records the source commit for this snapshot.
+# The rcclx/ directory contains sources extracted from this commit.
+
+commit: 3a4e8509bb074e214b0c61eb5c80a91c371404be
+commit_date: 2025-11-10 17:35 -0800
+commit_description: Add a stable snapshot
+snapshot_created: 2026-02-01T16:26:10.855006
+created_by: create_snapshot.py

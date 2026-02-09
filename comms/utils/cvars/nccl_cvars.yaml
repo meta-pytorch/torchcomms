@@ -625,6 +625,10 @@ cvars:
    default     : ""
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-net-force-merge
 
+ - name        : NCCL_NET_WIDEN_LINKS
+   type        : bool
+   default     : true
+   description : When set to false, disables PCI link widening for bonded vNics in ncclTopoGetVNicParent. By default (true), ncclTopoWidenLinks sums the PCI link widths of constituent physical NICs.
 
  - name        : NCCL_NTHREADS
    type        : int64_t
@@ -2362,13 +2366,12 @@ cvars:
  - name        : NCCL_ALLREDUCE_ALGO
    type        : enum
    default     : orig
-   choices     : orig, ctran, ctdirect, ctarg, ctring
+   choices     : orig, ctran, ctdirect, ctring
    description : |-
      The algorithm to use for Allreduce communication
      orig - Copy-based algorithm
      ctran - Picks the best ctran-based algorithm
      ctdirect - Ctran-based direct point-to-point algorithm
-     ctarg - ctran-based direct alltoall + reduce + all gather algorithm
      ctring - ctran-based ring algorithm
 
  - name        : NCCL_ALLREDUCE_TYPE

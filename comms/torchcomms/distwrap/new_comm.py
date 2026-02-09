@@ -227,24 +227,22 @@ def destroy_process_group(group: ProcessGroup | None = None) -> None:
 
 
 def split_group(  # noqa: C901
-    group: ProcessGroup | None = None,
+    parent_pg: ProcessGroup | None = None,
     split_ranks: list[list[int]] | None = None,
     timeout: timedelta | None = None,
     pg_options: Any | None = None,
     group_desc: str | None = None,
     # Extension API
     backend: str | None = None,
-) -> ProcessGroup:
+) -> ProcessGroup | None:
     if not dist.is_initialized():
         raise AssertionError("split_group called before init_process_group")
 
     # Default to WORLD if no group specified
-    if group is None:
+    if parent_pg is None:
         parent_pg = dist.group.WORLD
         if parent_pg is None:
             raise AssertionError("World process group is not initialized")
-    else:
-        parent_pg = group
     pg_info_assert_registered(parent_pg)
 
     if split_ranks is None:
@@ -301,6 +299,31 @@ def split_group(  # noqa: C901
             split_group_supported = False
 
         if split_group_supported:
+            # Force split_share=0 for NCCL-based backends.
+            #
+            # Note on pg_options limitation: torch.distributed only supports a
+            # single pg_options parameter, which must be backend-specific (e.g.,
+            # ProcessGroupNCCL.Options or ProcessGroupGloo._Options). For
+            # multi-backend process groups (e.g., cpu:gloo + cuda:nccl), users
+            # can only pass options for one backend; the other backend uses
+            # defaults. This is a fundamental limitation of the torch.distributed
+            # API. Here we only handle the NCCL case: if pg_options is None, we
+            # create NCCL options with split_share=0; if pg_options is already
+            # NCCL options, we set split_share=0 on them. If the user passes
+            # non-NCCL options (e.g., Gloo), we pass them through unchanged.
+            #
+            # pyre-fixme[16]: Module `torch.distributed` has no attribute `ProcessGroupNCCL`.
+            if hasattr(dist, "ProcessGroupNCCL"):
+                if pg_options is None:
+                    # pyre-fixme[16]: Module `torch.distributed` has no attribute `ProcessGroupNCCL`.
+                    pg_options = dist.ProcessGroupNCCL.Options()
+                # pyre-fixme[16]: Module `torch.distributed` has no attribute `ProcessGroupNCCL`.
+                if isinstance(pg_options, dist.ProcessGroupNCCL.Options):
+                    if hasattr(pg_options, "config") and hasattr(
+                        pg_options.config, "split_share"
+                    ):
+                        pg_options.config.split_share = 0
+
             # Use dist.split_group
             new_pg = dist.split_group(
                 parent_pg,

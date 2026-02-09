@@ -1646,7 +1646,9 @@ std::shared_ptr<TorchCommBackend> TorchCommGloo::split(
   new_torchcomm->comm_size_ = new_size;
 
   auto new_name = fmt::format("{}_{}", name, color);
-  auto new_store = c10::make_intrusive<c10d::PrefixStore>(new_name, store_);
+  auto split_id = splitCounter_++;
+  auto store_prefix = fmt::format("{}/{}_{}", split_id, name, color);
+  auto new_store = c10::make_intrusive<c10d::PrefixStore>(store_prefix, store_);
 
   CommOptions new_options = options;
   new_options.store = new_store;

@@ -286,6 +286,33 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         expected_grad = torch.ones(chunk_size * self.num_ranks)
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
+    def test_all_to_all_v_single_backward_eager(self):
+        # amount sent to rank j = j + 1, amount received from rank j = self.rank + 1
+        # e.g.,
+        # 0: sends [1,2,3,4], receives [1,1,1,1]
+        # 1: sends [1,2,3,4], receives [2,2,2,2]
+        # 2: sends [1,2,3,4], receives [3,3,3,3]
+        # 3: sends [1,2,3,4], receives [4,4,4,4]
+
+        input_split_sizes = [j + 1 for j in range(self.num_ranks)]
+        output_split_sizes = [self.rank + 1] * self.num_ranks
+
+        total_input = sum(input_split_sizes)
+        total_output = sum(output_split_sizes)
+
+        x = torch.randn(total_input, requires_grad=True, device=self.device)
+
+        b = x * 1.0
+        output = torch.zeros(total_output, device=self.device)
+        output = self.torchcomm.all_to_all_v_single(
+            output, b, output_split_sizes, input_split_sizes, async_op=True
+        )
+        loss = output.sum()
+        loss.backward()
+
+        expected_grad = torch.ones(total_input)
+        torch.testing.assert_close(x.grad.cpu(), expected_grad)
+
     def test_all_reduce_async_backward_eager(self):
         from torchcomms import ReduceOp
 
@@ -523,6 +550,38 @@ class FullgraphCompileAutogradTest(unittest.TestCase):
         loss.backward()
 
         expected_grad = torch.ones(chunk_size * self.num_ranks)
+        torch.testing.assert_close(x.grad.cpu(), expected_grad)
+
+    def test_all_to_all_v_single_backward_compiled(self):
+        # amount sent to rank j = j + 1, amount received from rank j = self.rank + 1
+        # e.g.,
+        # 0: sends [1,2,3,4], receives [1,1,1,1]
+        # 1: sends [1,2,3,4], receives [2,2,2,2]
+        # 2: sends [1,2,3,4], receives [3,3,3,3]
+        # 3: sends [1,2,3,4], receives [4,4,4,4]
+
+        input_split_sizes = [j + 1 for j in range(self.num_ranks)]
+        output_split_sizes = [self.rank + 1] * self.num_ranks
+
+        total_input = sum(input_split_sizes)
+        total_output = sum(output_split_sizes)
+
+        x = torch.randn(total_input, requires_grad=True, device=self.device)
+
+        def fn(a):
+            b = a * 1.0
+            output = torch.zeros(total_output, device=self.device)
+            self.torchcomm.all_to_all_v_single(
+                output, b, output_split_sizes, input_split_sizes, async_op=False
+            )
+            loss = output.sum()
+            return loss
+
+        compiled_fn = torch.compile(fn, fullgraph=True)
+        loss = compiled_fn(x)
+        loss.backward()
+
+        expected_grad = torch.ones(total_input)
         torch.testing.assert_close(x.grad.cpu(), expected_grad)
 
 

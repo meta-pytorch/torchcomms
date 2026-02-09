@@ -18,15 +18,13 @@
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
 #include "comms/pipes/Transport.cuh"
 #include "comms/pipes/collectives/Dispatchv.h"
-#include "comms/testinfra/mpi/MpiBootstrap.h"
+#include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
 using comms::pipes::ShardingMode;
 using meta::comms::CudaEvent;
 using meta::comms::DeviceBuffer;
-using meta::comms::MpiBaseTestFixture;
-using meta::comms::MPIEnvironmentBase;
 
 namespace comms::pipes::benchmark {
 
@@ -101,21 +99,24 @@ struct ImbalancedBenchmarkResult {
   float bandwidthGBps;
 };
 
-class DispatchBenchmarkFixture : public MpiBaseTestFixture {
+class DispatchBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    // Initialize bootstrap and rank variables from base class
+    BenchmarkTestFixture::SetUp();
+
     CUDA_CHECK_VOID(cudaSetDevice(localRank));
   }
 
   void TearDown() override {
-    MpiBaseTestFixture::TearDown();
+    // Base class handles barrier and cleanup
+    BenchmarkTestFixture::TearDown();
   }
 
   float runDispatchBenchmark(
       const DispatchBenchmarkConfig& config,
       float& latencyUs) {
-    const int nranks = numRanks;
+    const int nranks = worldSize;
     const std::size_t perPeerBytes = config.perPeerBytes;
     const int chunksPerPeer = config.chunksPerPeer;
     const std::size_t chunkSize = perPeerBytes / chunksPerPeer;
@@ -189,7 +190,6 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
         .pipelineDepth = 4,
     };
 
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultiPeerNvlTransport transport(
         globalRank, nranks, bootstrap, transportConfig);
     transport.exchange();
@@ -227,7 +227,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     const int nIterWarmup = 5;
 
     // Warmup
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
     for (int i = 0; i < nIterWarmup; i++) {
       comms::pipes::dispatchv(
           DeviceSpan<void* const>(
@@ -255,7 +255,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     }
 
     // Timed iterations
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
     std::vector<float> latencies(nIter);
     for (int i = 0; i < nIter; i++) {
       CUDA_CHECK(cudaEventRecord(start.get()));
@@ -288,7 +288,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
       latencies[i] = ms * 1000.0f; // Convert to microseconds
     }
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     // Compute average latency
     float totalLatency = 0.0f;
@@ -310,7 +310,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
   float runImbalancedDispatchBenchmark(
       const ImbalancedBenchmarkConfig& config,
       float& latencyUs) {
-    const int nranks = numRanks;
+    const int nranks = worldSize;
     const std::size_t largeBytes = config.largeBytes;
     const std::size_t smallBytes = config.smallBytes;
 
@@ -396,7 +396,6 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
         .pipelineDepth = 4,
     };
 
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultiPeerNvlTransport transport(
         globalRank, nranks, bootstrap, transportConfig);
     transport.exchange();
@@ -434,7 +433,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     const int nIterWarmup = 5;
 
     // Warmup
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
     for (int i = 0; i < nIterWarmup; i++) {
       comms::pipes::dispatchv(
           DeviceSpan<void* const>(
@@ -461,7 +460,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     }
 
     // Timed iterations
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
     std::vector<float> latencies(nIter);
     for (int i = 0; i < nIter; i++) {
       CUDA_CHECK(cudaEventRecord(start.get()));
@@ -493,7 +492,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
       latencies[i] = ms * 1000.0f; // Convert to microseconds
     }
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     // Compute average latency
     float totalLatency = 0.0f;
@@ -515,7 +514,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
   // Helper function to print tables with proper synchronization
   void printTable(const std::string& table) {
     // Synchronize all ranks and flush CUDA before printing
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
     cudaDeviceSynchronize();
 
     if (globalRank == 0) {
@@ -549,7 +548,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     ss << "╔════════════════════════════════════════════════════════════════════════════════════════╗\n";
     ss << "║                     TABLE 1: BALANCED WORKLOAD BENCHMARK                               ║\n";
     ss << "╠════════════════════════════════════════════════════════════════════════════════════════╣\n";
-    ss << "║  " << numRanks
+    ss << "║  " << worldSize
        << " ranks, 256 threads | Warmup: 5 iter, Timed: 20 iter                                ║\n";
     ss << "║  All ranks send equal-sized data to all peers                                          ║\n";
     ss << "║  Mode: H=Horizontal (parallel peers), V=Vertical (sequential peers)                    ║\n";
@@ -617,7 +616,7 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
     ss << "╔════════════════════════════════════════════════════════════════════════════════════════╗\n";
     ss << "║                     TABLE 2: IMBALANCED WORKLOAD BENCHMARK                             ║\n";
     ss << "╠════════════════════════════════════════════════════════════════════════════════════════╣\n";
-    ss << "║  " << numRanks
+    ss << "║  " << worldSize
        << " ranks, 256 threads | Warmup: 5 iter, Timed: 20 iter                                ║\n";
     ss << "║  Rank 0 sends LARGE to Rank 1, all other transfers are SMALL                           ║\n";
     ss << "║  Mode: H=Horizontal (parallel peers), V=Vertical (sequential peers)                    ║\n";
@@ -675,8 +674,8 @@ class DispatchBenchmarkFixture : public MpiBaseTestFixture {
 };
 
 TEST_F(DispatchBenchmarkFixture, Benchmark) {
-  if (numRanks != 8) {
-    XLOGF(WARNING, "Skipping: requires exactly 8 ranks, got {}", numRanks);
+  if (worldSize != 8) {
+    XLOGF(WARNING, "Skipping: requires exactly 8 ranks, got {}", worldSize);
     return;
   }
 
@@ -712,7 +711,7 @@ TEST_F(DispatchBenchmarkFixture, Benchmark) {
 
           if (globalRank == 0) {
             std::size_t chunkSize = perPeerBytes / chunksPerPeer;
-            std::size_t totalBytes = perPeerBytes * numRanks;
+            std::size_t totalBytes = perPeerBytes * worldSize;
 
             DispatchBenchmarkResult result{
                 .perPeerBytes = perPeerBytes,
@@ -728,7 +727,7 @@ TEST_F(DispatchBenchmarkFixture, Benchmark) {
             results.push_back(result);
           }
 
-          MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+          bootstrap->barrierAll();
         }
       }
     }
@@ -738,8 +737,8 @@ TEST_F(DispatchBenchmarkFixture, Benchmark) {
 }
 
 TEST_F(DispatchBenchmarkFixture, ImbalancedBenchmark) {
-  if (numRanks != 8) {
-    XLOGF(WARNING, "Skipping: requires exactly 8 ranks, got {}", numRanks);
+  if (worldSize != 8) {
+    XLOGF(WARNING, "Skipping: requires exactly 8 ranks, got {}", worldSize);
     return;
   }
 
@@ -781,7 +780,7 @@ TEST_F(DispatchBenchmarkFixture, ImbalancedBenchmark) {
         results.push_back(result);
       }
 
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+      bootstrap->barrierAll();
     }
   }
 
@@ -794,7 +793,10 @@ TEST_F(DispatchBenchmarkFixture, ImbalancedBenchmark) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new meta::comms::MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
+
+  // Set up distributed environment
+  ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
+
   return RUN_ALL_TESTS();
 }
