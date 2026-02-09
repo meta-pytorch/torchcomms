@@ -15,63 +15,6 @@ class P2pIbgdaTransportDevice;
 namespace comms::pipes::benchmark {
 
 /**
- * Launch kernel: Put with signal, then wait for local completion
- */
-void launchIbgdaPutSignalWaitLocal(
-    P2pIbgdaTransportDevice* transport,
-    const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
-    std::size_t nbytes,
-    int signalId,
-    uint64_t signalVal,
-    int numBlocks,
-    int numThreads,
-    cudaStream_t stream);
-
-/**
- * Launch kernel: Wait for signal from remote
- */
-void launchIbgdaWaitSignal(
-    P2pIbgdaTransportDevice* transport,
-    int signalId,
-    IbgdaCmpOp cmpOp,
-    uint64_t expectedSignal,
-    int numBlocks,
-    int numThreads,
-    cudaStream_t stream);
-
-/**
- * Launch kernel: Signal only (no data transfer)
- */
-void launchIbgdaSignalOnly(
-    P2pIbgdaTransportDevice* transport,
-    int signalId,
-    uint64_t signalVal,
-    int numBlocks,
-    int numThreads,
-    cudaStream_t stream);
-
-/**
- * Launch kernel: Reset signal buffer
- */
-void launchIbgdaResetSignal(
-    P2pIbgdaTransportDevice* transport,
-    int signalId,
-    cudaStream_t stream);
-
-/**
- * Launch kernel: Put only (no signal), then wait for local completion
- */
-void launchIbgdaPutWaitLocal(
-    P2pIbgdaTransportDevice* transport,
-    const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
-    std::size_t nbytes,
-    int numBlocks,
-    int numThreads,
-    cudaStream_t stream);
-
-/**
  * Launch batched kernel: Multiple put+wait_local iterations in a single kernel
  *
  * This avoids per-operation kernel launch overhead and uses GPU cycle counters
@@ -91,9 +34,28 @@ void launchIbgdaPutWaitLocalBatch(
 /**
  * Launch batched kernel: Multiple put_signal+wait_local iterations
  *
+ * Uses separate put + signal operations, which is safe for adaptive routing.
+ *
  * @param totalCycles Output: total GPU cycles for numIters operations
  */
 void launchIbgdaPutSignalWaitLocalBatch(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    int numIters,
+    unsigned long long* totalCycles,
+    cudaStream_t stream);
+
+/**
+ * Launch batched kernel: Multiple put_signal_non_adaptive+wait_local iterations
+ *
+ * Uses fused put_signal operation - faster but unsafe with adaptive routing.
+ *
+ * @param totalCycles Output: total GPU cycles for numIters operations
+ */
+void launchIbgdaPutSignalNonAdaptiveWaitLocalBatch(
     P2pIbgdaTransportDevice* transport,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,

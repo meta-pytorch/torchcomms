@@ -43,9 +43,26 @@ constexpr int kIbgdaBatchIters = 1000;
     }                                \
   } while (0)
 
+// CUDA error checking macro for value-returning functions
+#define CUDA_CHECK(call)             \
+  do {                               \
+    cudaError_t err = call;          \
+    if (err != cudaSuccess) {        \
+      XLOGF(                         \
+          ERR,                       \
+          "CUDA error at {}:{}: {}", \
+          __FILE__,                  \
+          __LINE__,                  \
+          cudaGetErrorString(err));  \
+      return 0.0f;                   \
+    }                                \
+  } while (0)
+
 // Benchmark configuration
 struct IbgdaBenchmarkConfig {
   std::size_t nBytes = 0;
+  int numBlocks = 1;
+  int numThreads = 32;
   std::string name;
 };
 
@@ -95,6 +112,92 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
       ss << bytes << "B";
     }
     return ss.str();
+  }
+
+  // Run put_signal_non_adaptive + wait_local benchmark using batched kernel
+  // Returns bandwidth, excludes kernel launch overhead
+  float runPutSignalNonAdaptiveBenchmark(
+      P2pIbgdaTransportDevice* deviceTransportPtr,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      const IbgdaBenchmarkConfig& config,
+      unsigned long long* d_totalCycles,
+      float& latencyUs) {
+    constexpr int kSignalId = 0;
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Only rank 0 (sender) runs the batched benchmark
+    if (globalRank == 0) {
+      launchIbgdaPutSignalNonAdaptiveWaitLocalBatch(
+          deviceTransportPtr,
+          localBuf,
+          remoteBuf,
+          config.nBytes,
+          kSignalId,
+          kIbgdaBatchIters,
+          d_totalCycles,
+          stream_);
+      CUDA_CHECK(cudaStreamSynchronize(stream_));
+
+      unsigned long long totalCycles;
+      CUDA_CHECK(cudaMemcpy(
+          &totalCycles,
+          d_totalCycles,
+          sizeof(unsigned long long),
+          cudaMemcpyDeviceToHost));
+
+      latencyUs = cyclesToUs(totalCycles) / kIbgdaBatchIters;
+    }
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Unidirectional bandwidth
+    float bandwidth_GBps = (config.nBytes / 1e9f) / (latencyUs / 1e6f);
+    return bandwidth_GBps;
+  }
+
+  // Run put_signal (adaptive-safe) + wait_local benchmark using batched kernel
+  // Returns bandwidth, excludes kernel launch overhead
+  float runPutSignalBenchmark(
+      P2pIbgdaTransportDevice* deviceTransportPtr,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      const IbgdaBenchmarkConfig& config,
+      unsigned long long* d_totalCycles,
+      float& latencyUs) {
+    constexpr int kSignalId = 0;
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Only rank 0 (sender) runs the batched benchmark
+    if (globalRank == 0) {
+      launchIbgdaPutSignalWaitLocalBatch(
+          deviceTransportPtr,
+          localBuf,
+          remoteBuf,
+          config.nBytes,
+          kSignalId,
+          kIbgdaBatchIters,
+          d_totalCycles,
+          stream_);
+      CUDA_CHECK(cudaStreamSynchronize(stream_));
+
+      unsigned long long totalCycles;
+      CUDA_CHECK(cudaMemcpy(
+          &totalCycles,
+          d_totalCycles,
+          sizeof(unsigned long long),
+          cudaMemcpyDeviceToHost));
+
+      latencyUs = cyclesToUs(totalCycles) / kIbgdaBatchIters;
+    }
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Unidirectional bandwidth
+    float bandwidth_GBps = (config.nBytes / 1e9f) / (latencyUs / 1e6f);
+    return bandwidth_GBps;
   }
 
   void printResultsTable(
@@ -436,6 +539,142 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     CUDA_CHECK_VOID(cudaFree(d_totalCycles));
+
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
+// Benchmark comparing put_signal (adaptive-safe) vs put_signal_non_adaptive
+TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
+  if (numRanks != 2) {
+    XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  // Test a subset of sizes for comparison
+  std::vector<IbgdaBenchmarkConfig> configs;
+  configs.push_back(
+      {.nBytes = 64, .numBlocks = 1, .numThreads = 32, .name = "64B"});
+  configs.push_back(
+      {.nBytes = 1024, .numBlocks = 1, .numThreads = 32, .name = "1KB"});
+  configs.push_back(
+      {.nBytes = 64 * 1024, .numBlocks = 1, .numThreads = 32, .name = "64KB"});
+  configs.push_back(
+      {.nBytes = 1024 * 1024, .numBlocks = 1, .numThreads = 32, .name = "1MB"});
+  configs.push_back(
+      {.nBytes = 16 * 1024 * 1024,
+       .numBlocks = 1,
+       .numThreads = 32,
+       .name = "16MB"});
+
+  std::size_t maxBufferSize = 0;
+  for (const auto& config : configs) {
+    maxBufferSize = std::max(maxBufferSize, config.nBytes);
+  }
+
+  try {
+    MultipeerIbgdaTransportConfig transportConfig{
+        .cudaDevice = localRank,
+        .signalCount = 1,
+    };
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    MultipeerIbgdaTransport transport(
+        globalRank, numRanks, bootstrap, transportConfig);
+    transport.exchange();
+
+    DeviceBuffer dataBuffer(maxBufferSize);
+    auto localDataBuf =
+        transport.registerBuffer(dataBuffer.get(), maxBufferSize);
+    auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    P2pIbgdaTransportDevice* deviceTransportPtr =
+        transport.getP2pTransportDevice(peerRank);
+
+    // Allocate device memory for cycle counter output
+    unsigned long long* d_totalCycles;
+    CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
+
+    if (globalRank == 0) {
+      XLOGF(
+          INFO,
+          "\n================================================================================");
+      XLOGF(INFO, "        put_signal vs put_signal_non_adaptive Comparison");
+      XLOGF(
+          INFO, "        (Using batched kernels - no kernel launch overhead)");
+      XLOGF(
+          INFO,
+          "================================================================================");
+      XLOGF(
+          INFO,
+          "{:>10} {:>15} {:>15} {:>15} {:>15}",
+          "Size",
+          "Adaptive BW",
+          "NonAdapt BW",
+          "Adapt Lat",
+          "NonAdapt Lat");
+      XLOGF(
+          INFO,
+          "{:>10} {:>15} {:>15} {:>15} {:>15}",
+          "",
+          "(GB/s)",
+          "(GB/s)",
+          "(us)",
+          "(us)");
+      XLOGF(
+          INFO,
+          "--------------------------------------------------------------------------------");
+    }
+
+    for (const auto& config : configs) {
+      float adaptiveLatency = 0.0f;
+      float nonAdaptiveLatency = 0.0f;
+
+      float adaptiveBw = runPutSignalBenchmark(
+          deviceTransportPtr,
+          localDataBuf,
+          remoteDataBuf,
+          config,
+          d_totalCycles,
+          adaptiveLatency);
+
+      float nonAdaptiveBw = runPutSignalNonAdaptiveBenchmark(
+          deviceTransportPtr,
+          localDataBuf,
+          remoteDataBuf,
+          config,
+          d_totalCycles,
+          nonAdaptiveLatency);
+
+      if (globalRank == 0) {
+        XLOGF(
+            INFO,
+            "{:>10} {:>15.2f} {:>15.2f} {:>15.1f} {:>15.1f}",
+            config.name,
+            adaptiveBw,
+            nonAdaptiveBw,
+            adaptiveLatency,
+            nonAdaptiveLatency);
+      }
+    }
+
+    if (globalRank == 0) {
+      XLOGF(
+          INFO,
+          "================================================================================");
+      XLOGF(INFO, "Adaptive = put_signal (safe for adaptive routing networks)");
+      XLOGF(
+          INFO,
+          "NonAdaptive = put_signal_non_adaptive (faster, but unsafe with adaptive routing)");
+      XLOGF(
+          INFO,
+          "================================================================================\n");
+    }
 
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
