@@ -1044,15 +1044,13 @@ ncclResult_t allGatherInit(void* recvbuff, const size_t maxRecvCount, const Hint
  *    IN  count       - count of elements to send to (receive from) each rank
  *    IN  datatype    - NCCL data type used for the allgather execution. It may be different
  *                      from the datatype used in ncclAllGatherInit.
- *    IN  stream      - HIP stream
  *    IN  request     - Request created by ncclAllGatherInit
  */
 ncclResult_t allGatherExec(
     const void* sendbuff,
     const size_t count,
     const ncclDataType_t datatype,
-    void* request,
-    hipStream_t stream);
+    void* request);
 
 /*
  * Trigger the execution of a request of persistent collective operation
