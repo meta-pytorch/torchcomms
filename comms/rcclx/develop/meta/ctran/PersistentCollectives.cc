@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comm.h"
-#include "nccl.h"
+#include "rccl.h"
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/utils/Checks.h"
