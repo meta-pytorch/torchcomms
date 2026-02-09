@@ -23,6 +23,14 @@ __global__ void ibgdaPutSignalWaitLocalKernel(
     int signalId,
     uint64_t signalVal);
 
+__global__ void ibgdaPutSignalNonAdaptiveWaitLocalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal);
+
 __global__ void ibgdaWaitSignalKernel(
     P2pIbgdaTransportDevice* transport,
     int signalId,
