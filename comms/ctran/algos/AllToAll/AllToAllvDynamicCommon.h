@@ -236,8 +236,7 @@ commResult_t peerPutNonContig(
                     CtranMapperConfig{
                         .memHdl_ = sendcountsTmpbufRegHdl,
                         .remoteAccessKey_ = interNodeRemoteTmpAccessKey,
-                        .notify_ = true /*notify*/,
-                        .ibFastPath_ = true /*ibFastPath*/},
+                        .notify_ = true /*notify*/},
                 .req = ibPutReqs.back().get()});
       }
 
