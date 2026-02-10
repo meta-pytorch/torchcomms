@@ -26,6 +26,7 @@
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/algoconf/InfoExtOverride.h"
 #include "meta/colltrace/CollTraceFunc.h"
 #include "meta/colltrace/ProxyTraceFunc.h"
 #include "comms/utils/logger/EventsScubaUtil.h"
@@ -405,7 +406,17 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
         aggEnd = aggEnd->next;
       }
 
-      NCCLCHECK(getAlgoInfo(comm, &agg, collNetSupport, nvlsSupport, nTasksPerChannel, simInfo));
+      // [META:INFO_EXT] Handle optional algorithm override for the collective
+      // task and bypass normal getAlgoInfo
+      // Algorithm override may fail with ncclInvalidUsage if grouped ops
+      // (see infoExtOverride). We error rather than
+      // implictly fallback because this is unexpected usage and should fix callsite.
+      if (agg.ext.has_value()) {
+        const auto isGrouped = (aggBeg->next != nullptr);
+        NCCLCHECK(ncclx::algoconf::infoExtOverride(&agg, isGrouped));
+      } else {
+        NCCLCHECK(getAlgoInfo(comm, &agg, collNetSupport, nvlsSupport, nTasksPerChannel, simInfo));
+      }
       agg.devFuncId = ncclDevFuncId(agg.func, agg.opDev.op, agg.datatype, agg.algorithm, agg.protocol);
 
       int isCollnet=0, isNvls=0;
@@ -429,6 +440,10 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
         aggBeg->nMaxChannels = agg.nMaxChannels;
         aggBeg->nWarps = agg.nWarps;
         aggBeg->devFuncId = agg.devFuncId;
+        // [META:INFO_EXT] Copy opDev if override was applied
+        if (agg.ext.has_value()) {
+          aggBeg->opDev = agg.opDev;
+        }
         aggBeg->isCollnet = isCollnet;
         aggBeg->isNvls = isNvls;
         ncclIntruQueueEnqueue(&collBins[isCollnet][isNvls], aggBeg);
@@ -2516,6 +2531,8 @@ static ncclResult_t collTaskAppend(
   t->opDev = opDev; // C++ struct assignment
   t->chunkSteps = info->chunkSteps;
   t->sliceSteps = info->sliceSteps;
+  // [META:INFO_EXT] Copy ext to task to be handled in ncclPrepareTasks
+  t->ext = info->ext;
   t->eActivationMask = ncclProfilerApiState.eActivationMask;
   t->groupApiEventHandle = ncclProfilerApiState.groupApiEventHandle;
   t->collApiEventHandle = ncclProfilerApiState.collApiEventHandle;

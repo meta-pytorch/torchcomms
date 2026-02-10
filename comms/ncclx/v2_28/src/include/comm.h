@@ -28,6 +28,7 @@
 #include "comms/utils/colltrace/AlgoStats.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/ctran/memory/SlabAllocator.h"
+#include "meta/algoconf/InfoExt.h"
 #include "comms/ctran/memory/memCacheAllocator.h"
 #include "comms/utils/commSpecs.h"
 
@@ -251,6 +252,8 @@ struct ncclTaskColl {
   void* collApiEventHandle;
   void* eventHandle;
   uint8_t nChannels;
+  // [META:INFO_EXT] Extension for per-comm algorithm/protocol override
+  std::optional<ncclx::algoconf::ncclInfoExt> ext;
 };
 
 struct ncclTaskP2p {
