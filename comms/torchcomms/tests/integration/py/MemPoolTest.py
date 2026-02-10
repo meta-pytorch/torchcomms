@@ -16,9 +16,6 @@ class MemPoolTorchCommTest(unittest.TestCase):
         self.device_ = torch.device("cuda")
         self.backend_ = os.environ["TEST_BACKEND"]
 
-        # Get allocator using global function - can be obtained once and reused
-        self.allocator_ = torchcomms.get_mem_allocator(self.backend_)
-
         self.num_comms_ = 16
         self.tensor_size_ = 1024 * 1024
         self.comms_ = []
@@ -28,6 +25,10 @@ class MemPoolTorchCommTest(unittest.TestCase):
                     self.backend_, self.device_, name=f"test_mem_pool_{x}"
                 )
             )
+        # Get allocator using global function - can be obtained once and reused
+        # This should be called after torchcomms.new_comm(), since the mempool
+        # related symbols is lazy loaded at runtime during torchcomms.new_comm()
+        self.allocator_ = torchcomms.get_mem_allocator(self.backend_)
 
     def tearDown(self) -> None:
         for comm in self.comms_:

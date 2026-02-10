@@ -9,8 +9,7 @@
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
 #include "comms/pipes/collectives/AllToAllv.h"
-#include "comms/pipes/collectives/benchmarks/CollectiveBenchmark.cuh"
-#include "comms/testinfra/mpi/MpiBootstrap.h"
+#include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -20,8 +19,6 @@
 
 using meta::comms::CudaEvent;
 using meta::comms::DeviceBuffer;
-using meta::comms::MpiBaseTestFixture;
-using meta::comms::MPIEnvironmentBase;
 
 namespace comms::pipes::benchmark {
 
@@ -56,24 +53,26 @@ struct AllToAllvBenchmarkResult {
   float speedup{}; // AllToAllv / NCCL
 };
 
-class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
+class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    // Initialize bootstrap and rank variables from base class
+    BenchmarkTestFixture::SetUp();
+
     // Use localRank for cudaSetDevice since each node has its own set of GPUs
     // globalRank would fail on multi-node setups where rank > num_gpus_per_node
     CUDA_CHECK_VOID(cudaSetDevice(localRank));
 
     // Initialize NCCL with default channel settings
     NCCL_CHECK_VOID(
-        ncclCommInitRank(&ncclComm_, numRanks, getNCCLId(), globalRank));
+        ncclCommInitRank(&ncclComm_, worldSize, getNCCLId(), globalRank));
     CUDA_CHECK_VOID(cudaStreamCreate(&stream_));
   }
 
   void TearDown() override {
     NCCL_CHECK_VOID(ncclCommDestroy(ncclComm_));
     CUDA_CHECK_VOID(cudaStreamDestroy(stream_));
-    MpiBaseTestFixture::TearDown();
+    BenchmarkTestFixture::TearDown();
   }
 
   ncclUniqueId getNCCLId() {
@@ -85,7 +84,20 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
         std::abort();
       }
     }
-    MPI_CHECK(MPI_Bcast(&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD));
+
+    // Broadcast NCCL ID using bootstrap allGather
+    std::vector<ncclUniqueId> allIds(worldSize);
+    allIds[globalRank] = id;
+    auto result =
+        bootstrap
+            ->allGather(
+                allIds.data(), sizeof(ncclUniqueId), globalRank, worldSize)
+            .get();
+    if (result != 0) {
+      XLOG(ERR) << "Bootstrap allGather for NCCL ID failed";
+      std::abort();
+    }
+    id = allIds[0]; // Take rank 0's ID
     return id;
   }
 
@@ -102,7 +114,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
         globalRank,
         config.name);
 
-    const int nranks = numRanks;
+    const int nranks = worldSize;
     const std::size_t bytesPerPeer = config.bytesPerPeer;
     const std::size_t totalBytes = bytesPerPeer * nranks;
 
@@ -138,7 +150,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     const int nIterWarmup = 5;
 
     // Warmup
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
     for (int i = 0; i < nIterWarmup; i++) {
       NCCL_CHECK(ncclAllToAllv(
           sendBuffer.get(),
@@ -179,7 +191,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     float bandwidth_GBps = (totalDataMoved / (1000.0f * 1000.0f * 1000.0f)) /
         (avgTime_ms / 1000.0f);
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     return bandwidth_GBps;
   }
@@ -197,7 +209,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
         globalRank,
         config.name);
 
-    const int nranks = numRanks;
+    const int nranks = worldSize;
     const std::size_t bytesPerPeer = config.bytesPerPeer;
     const std::size_t totalBytes = bytesPerPeer * nranks;
 
@@ -225,8 +237,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
         .pipelineDepth = config.pipelineDepth,
     };
 
-    // Create transport with MPI bootstrap and exchange IPC handles
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    // Create transport with bootstrap and exchange IPC handles
     MultiPeerNvlTransport transport(globalRank, nranks, bootstrap, nvlConfig);
     transport.exchange();
 
@@ -297,7 +308,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
         : std::nullopt;
 
     // Warmup
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     for (int i = 0; i < nIterWarmup; i++) {
       comms::pipes::all_to_allv(
@@ -314,7 +325,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
           clusterDimOpt);
       CUDA_CHECK(cudaDeviceSynchronize());
     }
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     // Benchmark
     CUDA_CHECK(cudaEventRecord(start.get()));
@@ -346,7 +357,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     float bandwidth_GBps = (totalDataMoved / (1000.0f * 1000.0f * 1000.0f)) /
         (avgTime_ms / 1000.0f);
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
 
     return bandwidth_GBps;
   }
@@ -406,7 +417,7 @@ class AllToAllvBenchmarkFixture : public MpiBaseTestFixture {
     }
 
     ss << "================================================================================================================\n";
-    ss << "Per-Peer: Message size per peer (equal for all peers), " << numRanks
+    ss << "Per-Peer: Message size per peer (equal for all peers), " << worldSize
        << " ranks\n";
     ss << "PD = Pipeline Depth, Chunk = Chunk Size\n";
     ss << "BW (Bandwidth) = Algorithm bandwidth (2 x total data / time), in GB/s\n";
@@ -636,7 +647,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       AllToAllvBenchmarkResult result;
       result.testName = config.name;
       result.bytesPerPeer = config.bytesPerPeer;
-      result.totalBytes = config.bytesPerPeer * numRanks * 2;
+      result.totalBytes = config.bytesPerPeer * worldSize * 2;
       result.pipelineDepth = config.pipelineDepth;
       result.chunkSize = config.chunkSize;
       result.ncclBandwidth = ncclBandwidth;
@@ -647,7 +658,7 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
       results.push_back(result);
     }
 
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    bootstrap->barrierAll();
   }
 
   printResultsTable(results);
@@ -659,7 +670,10 @@ TEST_F(AllToAllvBenchmarkFixture, OptimalConfigs) {
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new meta::comms::MPIEnvironmentBase);
   folly::Init init(&argc, &argv);
+
+  // Set up distributed environment
+  ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
+
   return RUN_ALL_TESTS();
 }

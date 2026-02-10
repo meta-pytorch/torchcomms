@@ -458,12 +458,6 @@ __global__ void ncclKernelAllReduceCtranDirect(
     CtranAlgoDeviceState* devState,
     ctran::allreduce::KernelArgs args);
 
-template <typename T, typename RedT, commRedOp_t RedOp>
-__global__ void ncclKernelAllReduceARG(
-    int* flag,
-    CtranAlgoDeviceState* devState,
-    ctran::allreduce::KernelArgs args);
-
 extern __global__ void ncclKernelSend(
     int* flag,
     CtranAlgoDeviceState* devState,

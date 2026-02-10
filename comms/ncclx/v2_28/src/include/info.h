@@ -11,6 +11,7 @@
 #include "collectives.h"
 #include "core.h"
 #include "utils.h"
+#include "meta/algoconf/InfoExt.h"
 
 // Used to pass NCCL call information between functions
 struct ncclInfo {
@@ -28,6 +29,8 @@ struct ncclInfo {
   // Algorithm details
   int chunkSteps;
   int sliceSteps;
+  // [META:INFO_EXT] Extension for per-comm algorithm/protocol override
+  std::optional<ncclx::algoconf::ncclInfoExt> ext;
 };
 
 #endif

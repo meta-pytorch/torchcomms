@@ -8,11 +8,11 @@
 #define _NCCL_DEVICE_GIN_SESSION__FUNCS_H_
 #include "gin__types.h"
 #include "ptr__types.h"
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 #include "nccl_device/gin/gin_device_api.h"
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 NCCL_DEVICE_INLINE ncclGin_BackendMask<beMask>::ncclGin_BackendMask(ncclDevComm const& comm, int contextIndex):
   comm(comm) {
@@ -30,7 +30,7 @@ NCCL_DEVICE_INLINE ncclGin_BackendMask<beMask>::ncclGin_BackendMask(ncclDevComm 
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 NCCL_DEVICE_INLINE ncclGinCtx_M<beMask> ncclGin_BackendMask<beMask>::_makeCtx() const {
   ncclGinCtx_M<beMask> ans;
@@ -45,7 +45,7 @@ NCCL_DEVICE_INLINE ncclGinCtx_M<beMask> ncclGin_BackendMask<beMask>::_makeCtx() 
 ////////////////////////////////////////////////////////////////////////////////
 // ncclGin descriptor helpers:
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<typename Descriptor>
 NCCL_DEVICE_INLINE constexpr bool ncclGin_isDescriptor(Descriptor) { return false; }
 template<typename Descriptor>
@@ -58,7 +58,7 @@ NCCL_DEVICE_INLINE constexpr ncclGinDescriptorSmem* ncclGin_getDescriptor(ncclGi
 ////////////////////////////////////////////////////////////////////////////////
 // ncclGin signal helpers:
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<typename RemoteAction>
 NCCL_DEVICE_INLINE constexpr bool ncclGin_isSignal(RemoteAction) { return false; }
 template<typename RemoteAction>
@@ -69,7 +69,7 @@ template<typename RemoteAction>
 NCCL_DEVICE_INLINE constexpr uint64_t ncclGin_getSignalOpArg(RemoteAction) { return 0; }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 NCCL_DEVICE_INLINE constexpr bool ncclGin_isSignal(ncclGin_SignalInc) { return true; }
 NCCL_DEVICE_INLINE constexpr ncclGinSignal_t ncclGin_getSignalId(
     ncclGin const& net, ncclGin_SignalInc arg
@@ -82,7 +82,7 @@ NCCL_DEVICE_INLINE constexpr ncclGinSignalOp_t ncclGin_getSignalOp(ncclGin_Signa
 NCCL_DEVICE_INLINE constexpr uint64_t ncclGin_getSignalOpArg(ncclGin_SignalInc) { return 1; }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 NCCL_DEVICE_INLINE constexpr bool ncclGin_isSignal(ncclGin_SignalAdd) { return true; }
 NCCL_DEVICE_INLINE constexpr ncclGinSignal_t ncclGin_getSignalId(
     ncclGin const& net, ncclGin_SignalAdd arg
@@ -98,21 +98,21 @@ NCCL_DEVICE_INLINE constexpr uint64_t ncclGin_getSignalOpArg(ncclGin_SignalAdd a
 ////////////////////////////////////////////////////////////////////////////////
 // ncclGin counter helpers:
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<typename LocalAction>
 NCCL_DEVICE_INLINE constexpr bool ncclGin_isCounter(LocalAction) { return false; }
 template<typename LocalAction>
 NCCL_DEVICE_INLINE constexpr ncclGinSignal_t ncclGin_getCounterId(ncclGin const&, LocalAction) { return -1u; }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 NCCL_DEVICE_INLINE constexpr bool ncclGin_isCounter(ncclGin_CounterInc) { return true; }
 NCCL_DEVICE_INLINE constexpr ncclGinSignal_t ncclGin_getCounterId(ncclGin const& net, ncclGin_CounterInc arg) { return net.comm.ginCounterBase + arg.counter; }
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<
   typename RemoteAction, // one of ncclGin_{None|SignalInc}
@@ -155,7 +155,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::put(
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<
   typename T,
@@ -180,7 +180,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::put(
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<
   typename T,
@@ -219,7 +219,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::putValue(
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<
   typename T,
@@ -242,7 +242,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::putValue(
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<typename RemoteAction, typename Coop, typename DescriptorSmem>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::signal(
@@ -269,7 +269,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::signal(
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<typename Coop>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::flush(Coop coop, cuda::memory_order ord) const {
@@ -279,7 +279,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::flush(Coop coop, cuda::memo
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<typename Coop>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::waitCounter(
@@ -297,7 +297,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::waitCounter(
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 NCCL_DEVICE_INLINE uint64_t ncclGin_BackendMask<beMask>::readCounter(ncclGinCounter_t counter, int bits, cuda::memory_order ord) const {
   uint64_t* ptr = ncclGinCall<ncclGinApi_GetCounterPtr>(this->_makeCtx(), this->comm.ginCounterBase + counter);
@@ -306,21 +306,21 @@ NCCL_DEVICE_INLINE uint64_t ncclGin_BackendMask<beMask>::readCounter(ncclGinCoun
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 NCCL_DEVICE_INLINE uint64_t* ncclGin_BackendMask<beMask>::getSignalShadowPtr(ncclGinSignal_t signal) const {
   return &this->_signalShadows[signal];
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::increaseSignalShadow(ncclGinSignal_t signal, uint64_t delta) const {
   asm volatile("red.relaxed.cta.add.u64 [%0],%1;" :: "l"(this->_signalShadows + signal), "l"(delta) : "memory");
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 NCCL_DEVICE_INLINE uint64_t ncclGin_BackendMask<beMask>::readSignal(ncclGinSignal_t signal, int bits, cuda::memory_order ord) const {
   uint64_t* ptr = ncclGinCall<ncclGinApi_GetSignalPtr>(this->_makeCtx(), this->comm.ginSignalBase + signal);
@@ -329,7 +329,7 @@ NCCL_DEVICE_INLINE uint64_t ncclGin_BackendMask<beMask>::readSignal(ncclGinSigna
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<typename Coop>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::waitSignal(Coop coop, ncclGinSignal_t signal, uint64_t least, int bits, cuda::memory_order ord) const {
@@ -345,7 +345,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::waitSignal(Coop coop, ncclG
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<typename Coop>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::waitSignalMeetShadow(Coop coop, ncclGinSignal_t signal, int bits, cuda::memory_order ord) const {
@@ -362,7 +362,7 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::waitSignalMeetShadow(Coop c
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 template<typename Coop, typename Uint>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::waitSignalFollowShadow(Coop coop, ncclGinSignal_t signal, Uint leastDelta, Uint* before, Uint* delta, int bits, cuda::memory_order ord) const {
@@ -389,14 +389,14 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::waitSignalFollowShadow(Coop
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::resetCounter(ncclGinCounter_t counter) const {
   ncclGinCall<ncclGinApi_ResetCounter>(this->_makeCtx(), this->comm.ginCounterBase + counter);
 }
 #endif
 
-#if __CUDACC__
+#if NCCL_CHECK_CUDACC
 template<unsigned beMask>
 NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::resetSignal(ncclGinSignal_t signal) const {
   ncclGinCall<ncclGinApi_ResetSignal>(this->_makeCtx(), this->comm.ginSignalBase + signal);

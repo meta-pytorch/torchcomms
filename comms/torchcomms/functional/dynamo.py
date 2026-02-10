@@ -224,14 +224,17 @@ class TorchCommMethodVariable(VariableTracker):
                 return None, None
 
             # Update each mutable input variable's proxy to the corresponding result
-            # This ensures subsequent uses of the input tensors use the op's outputs
+            # This ensures subsequent uses of the input tensors use the op's outputs.
+            # Also collect the original mutable vars for async work tracking
+            collected_mutable_vars: list[VariableTracker] = []
             for i, mutable_idx in enumerate(mutable_arg_indices):
                 if mutable_idx < len(args):
                     mutable_var = args[mutable_idx]
                     # Unwrap lazy variable to get actual ListVariable or TensorVariable
                     mutable_var = unwrap_lazy(mutable_var)
                     if isinstance(mutable_var, TensorVariable):
-                        # Single tensor input
+                        # Single tensor input - collect for async tracking
+                        collected_mutable_vars.append(mutable_var)
                         if i < len(result_tensors):
                             result_tensor = result_tensors[i]
                             if isinstance(result_tensor, TensorVariable):
@@ -258,7 +261,10 @@ class TorchCommMethodVariable(VariableTracker):
                                         # Mark the list as mutated
                                         tx.output.side_effects.mutation(parent_list)
                     elif isinstance(mutable_var, ListVariable):
-                        # List of tensors - replace items with the result tensors
+                        # List of tensors - collect individual items for async tracking
+                        for item in mutable_var.items:
+                            if isinstance(item, TensorVariable):
+                                collected_mutable_vars.append(item)
                         # IMPORTANT: We replace the items entirely (not just update proxies)
                         # because Dynamo may track source information that we need to update
                         new_items = list(mutable_var.items)  # Make a copy to modify
@@ -277,9 +283,11 @@ class TorchCommMethodVariable(VariableTracker):
 
             # Return appropriate variable
             if async_op:
-                # For async ops, pass the result tensors (not original inputs)
-                # so wait_tensors is called on the collective's output tensors
-                return AsyncWorkVariable(result_tensors)
+                # For async ops, pass both result_tensors (for wait_tensors call)
+                # and mutable_vars (for updating proxies after wait)
+                return AsyncWorkVariable(
+                    result_tensors, mutable_vars=collected_mutable_vars
+                )
             else:
                 return ConstantVariable.create(None)
 
@@ -308,12 +316,12 @@ class AsyncWorkVariable(VariableTracker):
     def __init__(
         self,
         tensor_vars: list[VariableTracker],
-        mutable_lists: list[tuple[ListVariable, int]] | None = None,
+        mutable_vars: list[VariableTracker] = [],
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.tensor_vars = tensor_vars
-        self.mutable_lists = mutable_lists or []
+        self.mutable_vars = mutable_vars
 
     def as_proxy(self) -> None:
         # AsyncWorkVariable doesn't have a direct graph representation.
@@ -352,6 +360,10 @@ class AsyncWorkVariable(VariableTracker):
         from torch._dynamo.variables.builder import wrap_fx_proxy
         from torch._dynamo.variables.lists import BaseListVariable
 
+        logger.debug(
+            f"_do_wait called: tensor_vars={len(self.tensor_vars)}, mutable_vars={len(self.mutable_vars)}"
+        )
+
         # Generate wait_tensors call with all tensors (mutable inputs or dummy)
         tensor_proxies = [tv.as_proxy() for tv in self.tensor_vars]
         proxy = tx.output.create_proxy(
@@ -364,11 +376,19 @@ class AsyncWorkVariable(VariableTracker):
         # Wrap the result - wait_tensors returns the waited tensors
         result_var = wrap_fx_proxy(tx=tx, proxy=proxy)
 
+        logger.debug(
+            f"wrap_fx_proxy returned: {result_var}, type={type(result_var).__name__}"
+        )
+
         # Extract result tensors
         if isinstance(result_var, BaseListVariable):
             result_tensors = list(result_var.items)
+            logger.debug(
+                f"result_var is BaseListVariable with {len(result_tensors)} items"
+            )
         else:
             result_tensors = [result_var]
+            logger.debug("result_var is not a list, wrapping as single item")
 
         # Update each tensor variable's proxy to point to the waited result
         # This ensures that subsequent uses of the tensors (including returns)
@@ -380,6 +400,60 @@ class AsyncWorkVariable(VariableTracker):
                     result_tensor, TensorVariable
                 ):
                     tensor_var.proxy = result_tensor.proxy
+
+        # also update the original mutable input variables' proxies
+        # after some collective (e.g., _all_reduce), mutable_var.proxy == tensor_var.proxy (same value),
+        # but when we update tensor_var.proxy above, mutable_var.proxy still points
+        # to the old value. we need to update mutable_var.proxy to the wait result
+        # so that when the function returns the original inputs, they use the waited
+        # tensors in the graph.
+        for result_idx, mutable_var in enumerate(self.mutable_vars):
+            if result_idx < len(result_tensors):
+                result_tensor = result_tensors[result_idx]
+                if isinstance(mutable_var, TensorVariable) and isinstance(
+                    result_tensor, TensorVariable
+                ):
+                    logger.debug(
+                        f"Updating mutable_var proxy after wait: {mutable_var.proxy} -> {result_tensor.proxy}"
+                    )
+                    mutable_var.proxy = result_tensor.proxy
+                    # mark as mutated so dynamo regenerates from new proxy
+                    if (
+                        hasattr(mutable_var, "mutation_type")
+                        and mutable_var.mutation_type is not None
+                    ):
+                        tx.output.side_effects.mutation(mutable_var)
+
+                    # also try to update symbolic_locals if this variable came from a local
+                    # This ensures that when the function returns the variable by name,
+                    # dynamo uses the updated tensor with the waited proxy
+                    if (
+                        hasattr(mutable_var, "source")
+                        and mutable_var.source is not None
+                    ):
+                        source = mutable_var.source
+                        logger.debug(
+                            f"mutable_var source type: {type(source).__name__}, source: {source}"
+                        )
+                        local_name = None
+                        # LocalSource (function parameters)
+                        if hasattr(source, "local_name"):
+                            local_name = source.local_name  # pyre-ignore[16]
+                        # other source types that might have name()
+                        elif hasattr(source, "name") and callable(source.name):
+                            local_name = source.name()
+
+                        if local_name and local_name in tx.symbolic_locals:
+                            logger.debug(
+                                f"Replacing symbolic_locals[{local_name}] with result_tensor"
+                            )
+                            tx.symbolic_locals[local_name] = result_tensor
+                        elif local_name:
+                            logger.debug(
+                                f"local_name={local_name} not in symbolic_locals. Keys: {list(tx.symbolic_locals.keys())}"
+                            )
+                    else:
+                        logger.debug("mutable_var has no source or source is None")
 
         return ConstantVariable.create(None)
 

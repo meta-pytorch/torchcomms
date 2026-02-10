@@ -189,7 +189,7 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
 
   auto& mapper = comm_->ctran_->mapper;
   ASSERT_NE(mapper, nullptr);
-  auto* ipcRegCache = mapper->ipcRegCachePtr();
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
   ASSERT_NE(ipcRegCache, nullptr);
 
   std::unique_ptr<CtranIb> ctranIb;
@@ -264,7 +264,12 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
     CtranMapperRemoteAccessKey remKey{};
     remKey.backend = CtranMapperBackend::NVL;
     COMMCHECK_TEST(ipcRegCache->importMem(
-        peerId, msg.ipcDesc, &mappedData, &remKey.nvlKey));
+        peerId,
+        msg.ipcDesc,
+        comm_->statex_->cudaDev(),
+        &mappedData,
+        &remKey.nvlKey,
+        &comm_->logMetaData_));
     EXPECT_NE(mappedData, nullptr);
     EXPECT_EQ(remKey.nvlKey.basePtr, msg.ipcDesc.desc.base);
 
@@ -292,7 +297,8 @@ TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
   const size_t dataCount = 100;
   size_t dataRange = dataCount * sizeof(int);
 
-  auto* ipcRegCache = mapper->ipcRegCachePtr();
+  // Get ipcRegCache singleton
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
   folly::SocketAddress localServerAddr = ipcRegCache->getServerAddr();
   std::vector<folly::SocketAddress> peerServerAddrs;
   allGatherSocketAddress(localServerAddr, peerServerAddrs);
@@ -366,8 +372,8 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
   ASSERT_NE(mapper, nullptr);
   const size_t dataCount = 100;
   size_t dataRange = dataCount * sizeof(int);
-  // Get ipcRegCache from mapper
-  auto* ipcRegCache = mapper->ipcRegCachePtr();
+  // Get ipcRegCache singleton
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
   folly::SocketAddress localServerAddr = ipcRegCache->getServerAddr();
   std::vector<folly::SocketAddress> peerServerAddrs;
   allGatherSocketAddress(localServerAddr, peerServerAddrs);

@@ -24,6 +24,7 @@ from torch.distributed import (  # noqa: F401
     Work,
 )
 from torchcomms.distwrap.collectives import (
+    _make_nccl_premul_sum,
     all_gather,
     all_gather_into_tensor,
     all_gather_object,
@@ -36,12 +37,14 @@ from torchcomms.distwrap.collectives import (
     broadcast_object_list,
     gather,
     gather_object,
+    get_mem_allocator,
     irecv,
     isend,
     recv,
     reduce,
     reduce_scatter,
     reduce_scatter_tensor,
+    register_mem_pool,
     scatter,
     scatter_object_list,
     send,
@@ -132,6 +135,7 @@ class P2POp:
 
 
 __all__ = [
+    "_make_nccl_premul_sum",
     "init_process_group",
     "destroy_process_group",
     "new_group",
@@ -157,6 +161,8 @@ __all__ = [
     "gather_object",
     "scatter_object_list",
     "broadcast_object_list",
+    "get_mem_allocator",
+    "register_mem_pool",
     "new_window",
     "alltoallv_dedup_init",
     "alltoallv_dedup_exec",

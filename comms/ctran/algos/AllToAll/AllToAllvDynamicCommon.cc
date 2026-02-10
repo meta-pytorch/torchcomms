@@ -198,8 +198,7 @@ static inline commResult_t peerPutContig(
                   CtranMapperConfig{
                       .memHdl_ = sendMemHdls[peer],
                       .remoteAccessKey_ = remoteAccessKeys[peer],
-                      .notify_ = true /*notify*/,
-                      .ibFastPath_ = true /*ibFastPath*/},
+                      .notify_ = true /*notify*/},
               .req = ibPutReqs.back().get()});
       FB_COMMCHECK(comm->ctran_->mapper->iputBatch(std::move(putMsgs), peer));
       timestamp->putIssued.emplace_back(peer);
