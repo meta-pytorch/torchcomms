@@ -17,7 +17,7 @@ class DqplbSeqTracker {
   DqplbSeqTracker& operator=(DqplbSeqTracker&&) = default;
 
   // This helper function calculates sender IMM message in DQPLB mode.
-  inline uint32_t getSendImm(int remainingMsgCnt);
+  inline uint32_t getSendImm(bool isLastFragment);
   // This helper function processes received IMM message and update
   // receivedSeqNums_ map and receiveNext_ field.
   inline int processReceivedImm(uint32_t receivedImm);
@@ -29,10 +29,10 @@ class DqplbSeqTracker {
 };
 
 // DqplbSeqTracker inline functions
-inline uint32_t DqplbSeqTracker::getSendImm(int remainingMsgCnt) {
+inline uint32_t DqplbSeqTracker::getSendImm(bool isLastFragment) {
   uint32_t immData = sendNext_;
   sendNext_ = (sendNext_ + 1) % kSeqNumMask;
-  if (remainingMsgCnt == 1) {
+  if (isLastFragment) {
     immData |= (1 << kNotifyBit);
   }
   return immData;

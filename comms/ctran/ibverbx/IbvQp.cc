@@ -29,8 +29,8 @@ IbvQp::~IbvQp() {
 
 IbvQp::IbvQp(IbvQp&& other) noexcept {
   qp_ = other.qp_;
-  physicalSendWrStatus_ = std::move(other.physicalSendWrStatus_);
-  physicalRecvWrStatus_ = std::move(other.physicalRecvWrStatus_);
+  physicalSendQueStatus_ = std::move(other.physicalSendQueStatus_);
+  physicalRecvQueStatus_ = std::move(other.physicalRecvQueStatus_);
   deviceId_ = other.deviceId_;
   other.qp_ = nullptr;
   other.deviceId_ = -1;
@@ -38,8 +38,8 @@ IbvQp::IbvQp(IbvQp&& other) noexcept {
 
 IbvQp& IbvQp::operator=(IbvQp&& other) noexcept {
   qp_ = other.qp_;
-  physicalSendWrStatus_ = std::move(other.physicalSendWrStatus_);
-  physicalRecvWrStatus_ = std::move(other.physicalRecvWrStatus_);
+  physicalSendQueStatus_ = std::move(other.physicalSendQueStatus_);
+  physicalRecvQueStatus_ = std::move(other.physicalRecvQueStatus_);
   deviceId_ = other.deviceId_;
   other.qp_ = nullptr;
   other.deviceId_ = -1;
@@ -106,33 +106,33 @@ void IbvQp::logInfo() const {
 }
 
 void IbvQp::enquePhysicalSendWrStatus(int physicalWrId, int virtualWrId) {
-  physicalSendWrStatus_.emplace_back(physicalWrId, virtualWrId);
+  physicalSendQueStatus_.emplace_back(physicalWrId, virtualWrId);
 }
 
 void IbvQp::dequePhysicalSendWrStatus() {
-  physicalSendWrStatus_.pop_front();
+  physicalSendQueStatus_.pop_front();
 }
 
 void IbvQp::dequePhysicalRecvWrStatus() {
-  physicalRecvWrStatus_.pop_front();
+  physicalRecvQueStatus_.pop_front();
 }
 
 void IbvQp::enquePhysicalRecvWrStatus(int physicalWrId, int virtualWrId) {
-  physicalRecvWrStatus_.emplace_back(physicalWrId, virtualWrId);
+  physicalRecvQueStatus_.emplace_back(physicalWrId, virtualWrId);
 }
 
 bool IbvQp::isSendQueueAvailable(int maxMsgCntPerQp) const {
   if (maxMsgCntPerQp < 0) {
     return true;
   }
-  return physicalSendWrStatus_.size() < maxMsgCntPerQp;
+  return physicalSendQueStatus_.size() < maxMsgCntPerQp;
 }
 
 bool IbvQp::isRecvQueueAvailable(int maxMsgCntPerQp) const {
   if (maxMsgCntPerQp < 0) {
     return true;
   }
-  return physicalRecvWrStatus_.size() < maxMsgCntPerQp;
+  return physicalRecvQueStatus_.size() < maxMsgCntPerQp;
 }
 
 folly::Expected<struct device_qp, Error> IbvQp::getDeviceQp(
