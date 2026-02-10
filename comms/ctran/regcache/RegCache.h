@@ -269,7 +269,18 @@ class RegCache {
   void init();
   commResult_t destroy();
 
+  // Global registration using the globally-set backends.
+  // This allows registration without requiring a communicator.
+  // Backends are initialized from NCCL_CTRAN_BACKENDS cvar in init().
+  commResult_t globalRegister(const void* buf, size_t len, int cudaDev);
+
+  // Global deregistration using pointer lookup.
+  // Frees cached segments and their associated registrations.
+  commResult_t globalDeregister(const void* buf, size_t len, int cudaDev);
+
   // Thread-safe functions to cache a buffer range into the global cache.
+  // This function uses pinRange to discover all physical segments underlying
+  // the given buffer and caches each one individually.
   // input:
   //   - buf: the buffer to be cached
   //   - len: the length of the buffer
@@ -407,6 +418,10 @@ class RegCache {
   folly::Synchronized<regcache::Profiler> profiler;
 
  private:
+  // Global backends configuration, initialized from NCCL_CTRAN_BACKENDS in
+  // init().
+  std::vector<bool> globalBackends_;
+
   // AVL tree based segment cache
   folly::Synchronized<CtranAvlTree> segmentsAvl_;
   class RegElemMaps {
