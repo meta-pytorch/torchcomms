@@ -523,12 +523,20 @@ struct ibv_qp_init_attr {
 enum ibv_qp_init_attr_mask {
   IBV_QP_INIT_ATTR_PD = 1 << 0,
   IBV_QP_INIT_ATTR_XRCD = 1 << 1,
-  IBV_QP_INIT_ATTR_RESERVED = 1 << 2,
-  IBV_QP_INIT_ATTR_CREATE_FLAGS = 1 << 3,
-  IBV_QP_INIT_ATTR_MAX_TSO_HEADER = 1 << 4,
-  IBV_QP_INIT_ATTR_IND_TABLE = 1 << 5,
-  IBV_QP_INIT_ATTR_RX_HASH = 1 << 6,
-  IBV_QP_INIT_ATTR_SEND_OPS_FLAGS = 1 << 7,
+  IBV_QP_INIT_ATTR_CREATE_FLAGS = 1 << 2,
+  IBV_QP_INIT_ATTR_MAX_TSO_HEADER = 1 << 3,
+  IBV_QP_INIT_ATTR_IND_TABLE = 1 << 4,
+  IBV_QP_INIT_ATTR_RX_HASH = 1 << 5,
+  IBV_QP_INIT_ATTR_SEND_OPS_FLAGS = 1 << 6,
+};
+
+struct ibv_rx_hash_conf {
+  /* enum ibv_rx_hash_function_flags */
+  uint8_t rx_hash_function;
+  uint8_t rx_hash_key_len;
+  uint8_t* rx_hash_key;
+  /* enum ibv_rx_hash_fields */
+  uint64_t rx_hash_fields_mask;
 };
 
 struct ibv_qp_init_attr_ex {
@@ -546,6 +554,8 @@ struct ibv_qp_init_attr_ex {
   uint32_t create_flags;
   uint16_t max_tso_header;
   struct ibv_rwq_ind_table* rwq_ind_tbl;
+  struct ibv_rx_hash_conf rx_hash_conf;
+  uint32_t source_qpn;
   uint64_t send_ops_flags;
 };
 
