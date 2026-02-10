@@ -65,16 +65,17 @@ class IpcRegCache {
 
   static std::shared_ptr<IpcRegCache> getInstance();
 
-  // Initialize the cache with CUDA device.
+  // Initialize the cache (starts AsyncSocket server).
   // Must be called before using importMem.
-  void init(int cudaDev);
+  void init();
 
   // Import a remote NVL memory registration from IPC descriptor.
   // The imported memory is cached for reuse across multiple operations.
-  // Requires init() to be called first to set cudaDev.
+  // Requires init() to be called first.
   // Input arguments:
   //   - peerId: Id of the peer, which should be unique per process instance
   //   - ipcDesc: the remote memory IPC descriptor
+  //   - cudaDev: the CUDA device to import the memory to
   //   - logMetaData: (optional) logging metadata from the communicator
   // Output arguments:
   //   - buf: the local buffer mapped to the imported remote memory
@@ -82,6 +83,7 @@ class IpcRegCache {
   commResult_t importMem(
       const std::string& peerId,
       const ctran::regcache::IpcDesc& ipcDesc,
+      int cudaDev,
       void** buf,
       struct ctran::regcache::IpcRemHandle* remKey,
       const struct CommLogData* logMetaData = nullptr);
@@ -155,6 +157,7 @@ class IpcRegCache {
   commResult_t importRemMemImpl(
       const std::string& peerId,
       const ctran::regcache::IpcDesc& ipcDesc,
+      int cudaDev,
       const struct CommLogData* logMetaData,
       void** mappedBase);
 
@@ -180,8 +183,6 @@ class IpcRegCache {
           std::unique_ptr<ctran::regcache::IpcRemRegElem>,
           folly::Hash>>;
   folly::Synchronized<IpcRemRegMap> ipcRemRegMap_;
-
-  int cudaDev_;
 
   // Flag for one-time initialization
   std::once_flag initFlag_;

@@ -1139,6 +1139,7 @@ class CtranMapper {
             ctran::IpcRegCache::getInstance()->importMem(
                 peerId,
                 msg.ipcDesc,
+                comm->statex_->cudaDev(),
                 buf,
                 &(remKey->nvlKey),
                 &this->logMetaData_));
