@@ -1,9 +1,24 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # pyre-strict
 
-from typing import List
+from typing import Any, List, Union
 
 import torch
+
+class TorchCommWindowNCCLXGin:
+    def tensor_register(self, tensor: torch.Tensor) -> None: ...
+    def tensor_deregister(self) -> None: ...
+    def get_device_window(
+        self,
+        signal_count: int = -1,
+        counter_count: int = -1,
+        barrier_count: int = 1,
+    ) -> int: ...
+    def get_nccl_window(self) -> int: ...
+
+def cast_to_ncclx_window(
+    base_window: Union[TorchCommWindowNCCLXGin, Any],
+) -> TorchCommWindowNCCLXGin: ...
 
 class TorchWork:
     def is_completed(self) -> bool: ...

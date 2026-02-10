@@ -7,6 +7,7 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
+#include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
 namespace py = pybind11;
 using namespace torch::comms;
@@ -242,4 +243,169 @@ Returns:
           py::arg("recv_indices"),
           py::arg("request"),
           py::call_guard<py::gil_scoped_release>());
+
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+  // ==========================================================================
+  // Device API Bindings (requires NCCLX 2.28+)
+  // ==========================================================================
+  //
+  // These bindings expose the device window API for use with Triton kernels.
+  // The get_device_window() method returns a pointer (as int64) that can be
+  // passed to Triton extern functions (torchcomms_put, torchcomms_signal, etc.)
+
+  py::class_<
+      TorchCommWindowNCCLXGin,
+      TorchCommWindow,
+      std::shared_ptr<TorchCommWindowNCCLXGin>>(m, "TorchCommWindowNCCLXGin")
+      .def(
+          "tensor_register",
+          &TorchCommWindowNCCLXGin::tensor_register,
+          R"(
+Register a tensor with this window.
+
+The tensor must be allocated from the RDMA-compatible memory pool
+obtained via torchcomms.get_mem_allocator(backend).
+
+Args:
+    tensor: A torch.Tensor allocated from the RDMA memory pool.
+
+Example:
+    >>> pool = torch.cuda.MemPool(allocator)
+    >>> with torch.cuda.use_mem_pool(pool):
+    ...     buf = torch.zeros(1024, device='cuda')
+    >>> window.tensor_register(buf)
+)",
+          py::arg("tensor"),
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "tensor_deregister",
+          &TorchCommWindowNCCLXGin::tensor_deregister,
+          R"(
+Deregister the tensor from this window.
+
+Must be called before the window is destroyed if tensor_register was called.
+)",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_device_window",
+          [](TorchCommWindowNCCLXGin& self,
+             int signal_count,
+             int counter_count,
+             int barrier_count) {
+            auto* ptr = self.get_device_window(
+                signal_count, counter_count, barrier_count);
+            // Return as int64 for safe passage through Python to Triton
+            return reinterpret_cast<int64_t>(ptr);
+          },
+          R"(
+Get a device-side window handle for GPU-initiated operations.
+
+Returns a pointer (as int64) that can be passed to Triton kernels via
+the torchcomms_* extern functions (torchcomms_put, torchcomms_signal, etc.).
+
+The window is lazily created on first call and cached. The returned pointer
+is valid until this host window is destroyed.
+
+Args:
+    signal_count: Number of signal slots to allocate (-1 for default).
+    counter_count: Number of counter slots to allocate (-1 for default).
+    barrier_count: Number of barrier slots to allocate (default 1).
+
+Returns:
+    int: Device window pointer as int64, suitable for passing to Triton kernels.
+
+Example:
+    >>> window = comm.new_window()
+    >>> window.tensor_register(buffer)
+    >>> dev_win_ptr = ncclx_window.get_device_window(signal_count=8)
+    >>> # Pass dev_win_ptr to Triton kernel
+)",
+          py::arg("signal_count") = -1,
+          py::arg("counter_count") = -1,
+          py::arg("barrier_count") = 1,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_nccl_window",
+          [](TorchCommWindowNCCLXGin& self) {
+            // Return as int64 for safe passage through Python
+            return reinterpret_cast<int64_t>(self.get_nccl_window());
+          },
+          R"(
+Get the host-side NCCL window handle.
+
+Returns the ncclWindow_t as an int64, useful for advanced use cases
+where the raw NCCL window handle is needed.
+
+Returns:
+    int: NCCL window handle as int64.
+)",
+          py::call_guard<py::gil_scoped_release>());
+
+  // Helper function to cast a base TorchCommWindow to TorchCommWindowNCCLXGin
+  // This function has two overloads:
+  // 1. If already a TorchCommWindowNCCLXGin, return as-is
+  // 2. If a base TorchCommWindow, downcast to TorchCommWindowNCCLXGin
+  m.def(
+      "cast_to_ncclx_window",
+      [](std::shared_ptr<TorchCommWindowNCCLXGin> ncclx_window) {
+        // Already the right type, just return it
+        return ncclx_window;
+      },
+      R"(
+Cast a TorchCommWindow to TorchCommWindowNCCLXGin for device API access.
+
+If the window is already a TorchCommWindowNCCLXGin, returns it as-is.
+If the window is a base TorchCommWindow, attempts to downcast it.
+
+Args:
+    base_window: A TorchCommWindow or TorchCommWindowNCCLXGin from comm.new_window().
+
+Returns:
+    TorchCommWindowNCCLXGin: The window with device API methods available.
+
+Raises:
+    RuntimeError: If the window is not backed by NCCLX.
+)",
+      py::arg("base_window"),
+      py::call_guard<py::gil_scoped_release>());
+
+  // Second overload for base TorchCommWindow type
+  m.def(
+      "cast_to_ncclx_window",
+      [](std::shared_ptr<TorchCommWindow> base_window) {
+        auto ncclx_window =
+            std::dynamic_pointer_cast<TorchCommWindowNCCLXGin>(base_window);
+        if (!ncclx_window) {
+          throw std::runtime_error(
+              "Window is not a TorchCommWindowNCCLXGin. "
+              "Device API requires NCCLX backend.");
+        }
+        return ncclx_window;
+      },
+      R"(
+Cast a base TorchCommWindow to TorchCommWindowNCCLXGin for device API access.
+
+This is needed because comm.new_window() returns the base TorchCommWindow type,
+but device API methods (get_device_window, get_nccl_window) are only available
+on TorchCommWindowNCCLXGin.
+
+Args:
+    base_window: A TorchCommWindow obtained from comm.new_window().
+
+Returns:
+    TorchCommWindowNCCLXGin: The same window with device API methods available.
+
+Raises:
+    RuntimeError: If the window is not backed by NCCLX.
+
+Example:
+    >>> from torchcomms._comms_ncclx import cast_to_ncclx_window
+    >>> window = comm.new_window()
+    >>> window.tensor_register(buffer)
+    >>> ncclx_window = cast_to_ncclx_window(window)
+    >>> dev_win_ptr = ncclx_window.get_device_window(signal_count=8)
+)",
+      py::arg("base_window"),
+      py::call_guard<py::gil_scoped_release>());
+#endif
 }
