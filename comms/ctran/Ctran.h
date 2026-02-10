@@ -405,5 +405,11 @@ commResult_t AllToAllPExec(
 
 commResult_t AllToAllPDestroy(CtranPersistentRequest* request);
 
+// Global pointer-based memory registration (does not require a comm).
+commResult_t globalRegisterWithPtr(void* buff, size_t size, int cudaDev);
+
+// Global pointer-based memory deregistration (does not require a comm).
+commResult_t globalDeregisterWithPtr(void* buff, size_t size, int cudaDev);
+
 } // namespace ctran
 #endif // CTRAN_COMM_H_

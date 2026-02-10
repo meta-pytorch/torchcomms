@@ -136,6 +136,12 @@ class IpcRegCache {
     return serverAddr_;
   }
 
+  // Get the local peer ID (hostname:pid) for this process.
+  // Used for identifying this process in IPC communications.
+  inline std::string getLocalPeerId() const {
+    return localPeerId_;
+  }
+
   // Set peer's IPC server address by peer ID (gPid).
   commResult_t setPeerIpcServerAddr(
       const std::string& peerId,
@@ -232,6 +238,9 @@ class IpcRegCache {
   std::unique_ptr<folly::ScopedEventBaseThread> asyncSocketEvbThread_;
   std::unique_ptr<ctran::bootstrap::AsyncServerSocket> asyncServerSocket_;
   folly::SocketAddress serverAddr_;
+
+  // Local peer ID (hostname:pid) for this process, used in IPC communications.
+  std::string localPeerId_;
 
   // Peer IPC server addresses for async socket communication, keyed by gPid.
   // Protected by Synchronized for concurrent access from multiple
