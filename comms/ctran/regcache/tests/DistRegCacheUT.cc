@@ -228,8 +228,9 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
     ASSERT_NE(regHdl, nullptr);
 
     ControlMsg msg(ControlMsgType::NVL_EXPORT_MEM);
+    const std::string peerId = comm_->statex_->gPid(peer);
     COMMCHECK_TEST(
-        ipcRegCache->exportMem(data, regHdl->ipcRegElem, msg.ipcDesc));
+        ipcRegCache->exportMem(data, regHdl->ipcRegElem, peerId, msg.ipcDesc));
     ctran::regcache::IpcRegElem* ipcRegElem =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
     auto ipcMem = ipcRegElem->ipcMem.rlock();
@@ -246,7 +247,7 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
     // send release-mem msg to peer
     ctranIb->waitNotify(peer);
     msg.setType(ControlMsgType::NVL_RELEASE_MEM);
-    ctran::IpcRegCache::remReleaseMem(ipcRegElem, msg.ipcRls);
+    ctran::IpcRegCache::releaseMemReq(ipcRegElem, msg.ipcRls);
     COMMCHECK_TEST(ibSendCtrl(msg, peer, ctranIb));
 
     COMMCHECK_TEST(mapper->deregMem(segHdl, true));
@@ -326,7 +327,8 @@ TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
     std::vector<ctran::regcache::IpcReqCb> exportReqs(numRanks - 1);
     for (int peer = 1; peer < numRanks; peer++) {
       struct ctran::regcache::IpcDesc IpcDesc;
-      COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem, IpcDesc));
+      const std::string peerId = comm_->statex_->gPid(peer);
+      COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem, peerId, IpcDesc));
       EXPECT_EQ(IpcDesc.desc.range, ipcMemSize);
       EXPECT_EQ(IpcDesc.desc.numSegments, 1);
       EXPECT_GT(IpcDesc.desc.segments[0].range, 0);
@@ -381,6 +383,7 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
   if (globalRank == 0) {
     auto myId = comm_->statex_->gPid();
     const int peer = 1;
+    const std::string peerId = comm_->statex_->gPid(peer);
     void* data = nullptr;
     CUDACHECK_TEST(cudaMalloc(&data, dataRange));
     ASSERT_NE(data, nullptr);
@@ -394,7 +397,7 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
         mapper->regMem(data, dataRange, &segHdl, true, true, (void**)&regHdl));
     ctran::regcache::IpcRegElem* ipcRegElem1 =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
-    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem1, IpcDesc));
+    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem1, peerId, IpcDesc));
     ipcRegCache->notifyRemoteIpcExport(
         myId, peerServerAddrs[peer], IpcDesc, &reqs[0]);
     COMMCHECK_TEST(mapper->deregMem(segHdl, true));
@@ -403,7 +406,7 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
         mapper->regMem(data, dataRange, &segHdl, true, true, (void**)&regHdl));
     ctran::regcache::IpcRegElem* ipcRegElem2 =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
-    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem2, IpcDesc));
+    COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem2, peerId, IpcDesc));
     ipcRegCache->notifyRemoteIpcExport(
         myId, peerServerAddrs[peer], IpcDesc, &reqs[1]);
     for (auto it = reqs.begin(); it != reqs.end(); it++) {

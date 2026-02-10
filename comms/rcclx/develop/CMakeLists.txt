@@ -1030,8 +1030,6 @@ set(CTRAN_FILES
   comms/ctran/interfaces/ICtran.h
   comms/ctran/mapper/CtranMapper.cc
   comms/ctran/mapper/CtranMapper.h
-  comms/ctran/mapper/CtranMapperImpl.cc
-  comms/ctran/mapper/CtranMapperImpl.h
   comms/ctran/mapper/CtranMapperRequest.cc
   comms/ctran/mapper/CtranMapperTypes.h
   comms/ctran/mapper/fb/IcompressionManager.h
