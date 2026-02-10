@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/regcache/IpcRegCache.h"
+#include <fmt/core.h>
 #include <folly/Singleton.h>
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
@@ -211,6 +212,44 @@ size_t ctran::IpcRegCache::getNumRemReg(const std::string& peerId) const {
     return it->second.size();
   }
   return 0;
+}
+
+commResult_t ctran::IpcRegCache::setPeerIpcServerAddr(
+    const std::string& peerId,
+    const folly::SocketAddress& addr) {
+  auto lockedMap = peerIpcServerAddrs_.wlock();
+  auto it = lockedMap->find(peerId);
+  if (it != lockedMap->end()) {
+    if (it->second != addr) {
+      CLOGF(
+          ERR,
+          "CTRAN-REGCACHE: Peer IPC server address mismatch for peerId {}: "
+          "cached {} vs new {}",
+          peerId,
+          it->second.describe(),
+          addr.describe());
+      return commInternalError;
+    }
+    return commSuccess;
+  }
+  lockedMap->emplace(peerId, addr);
+  return commSuccess;
+}
+
+commResult_t ctran::IpcRegCache::getPeerIpcServerAddr(
+    const std::string& peerId,
+    folly::SocketAddress& addr) const {
+  auto lockedMap = peerIpcServerAddrs_.rlock();
+  auto it = lockedMap->find(peerId);
+  if (it == lockedMap->end()) {
+    CLOGF(
+        ERR,
+        "CTRAN-REGCACHE: Peer IPC server address not found for peerId {}",
+        peerId);
+    return commInvalidArgument;
+  }
+  addr = it->second;
+  return commSuccess;
 }
 
 commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(

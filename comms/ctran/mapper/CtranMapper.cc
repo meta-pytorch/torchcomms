@@ -423,13 +423,31 @@ commResult_t CtranMapper::epochUnlock() {
 commResult_t CtranMapper::allGatherIpcServerAddrs() {
   const int nRanks = comm->statex_->nRanks();
   const int myRank = comm->statex_->rank();
-  peerIpcServerAddrs_.resize(nRanks);
+  std::vector<sockaddr_storage> peerAddrs(nRanks);
 
   ctran::IpcRegCache::getInstance()->getServerAddr().getAddress(
-      &peerIpcServerAddrs_[myRank]);
+      &peerAddrs[myRank]);
   auto resFuture = comm->bootstrap_->allGather(
-      peerIpcServerAddrs_.data(), sizeof(sockaddr_storage), myRank, nRanks);
+      peerAddrs.data(), sizeof(sockaddr_storage), myRank, nRanks);
   FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
+
+  // Update IpcRegCache with gathered peer addresses, keyed by gPid
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  for (int rank = 0; rank < nRanks; ++rank) {
+    // If bootstrap allGather fails or server address is unspecified, skip it
+    if (peerAddrs[rank].ss_family == AF_UNSPEC) {
+      CLOGF_SUBSYS(
+          WARN,
+          INIT,
+          "CTRAN-MAPPER: IPC server address is unspecified for rank {}",
+          rank);
+      continue;
+    }
+    const std::string peerId = comm->statex_->gPid(rank);
+    folly::SocketAddress addr;
+    addr.setFromSockaddr(reinterpret_cast<const sockaddr*>(&peerAddrs[rank]));
+    FB_COMMCHECK(ipcRegCache->setPeerIpcServerAddr(peerId, addr));
+  }
 
   CLOGF_SUBSYS(
       INFO,
@@ -437,13 +455,6 @@ commResult_t CtranMapper::allGatherIpcServerAddrs() {
       "CTRAN-MAPPER: AllGathered IPC server addresses from {} ranks",
       nRanks);
   return commSuccess;
-}
-
-folly::SocketAddress CtranMapper::getPeerIpcServerAddr(int rank) const {
-  folly::SocketAddress addr;
-  addr.setFromSockaddr(
-      reinterpret_cast<const sockaddr*>(&peerIpcServerAddrs_[rank]));
-  return addr;
 }
 
 commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
@@ -458,7 +469,11 @@ commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
     // rank from misusing a previously imported&cached but invalid segment, we
     // add version ID to each exported segment
 
-    folly::SocketAddress peerAddr = getPeerIpcServerAddr(peerRank);
+    const std::string peerId = comm->statex_->gPid(peerRank);
+    folly::SocketAddress peerAddr;
+    FB_COMMCHECK(
+        ctran::IpcRegCache::getInstance()->getPeerIpcServerAddr(
+            peerId, peerAddr));
     std::unique_ptr<regcache::IpcReqCb> req =
         std::make_unique<regcache::IpcReqCb>();
     FB_COMMCHECK(
