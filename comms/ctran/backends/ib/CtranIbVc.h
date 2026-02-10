@@ -175,7 +175,6 @@ struct PutIbMsg {
   bool notify;
   CtranIbConfig* config;
   CtranIbRequest* req;
-  bool ibFastPath;
 };
 
 /**
@@ -401,16 +400,6 @@ class CtranIbVirtualConn {
   // Getter function for qpScalingTh_
   inline size_t getQpScalingTh() {
     return qpScalingTh_;
-  }
-
-  // Getter function for rcvNxt_
-  inline uint32_t getRcvNxt() {
-    return rcvNxt_;
-  }
-
-  // Getter function for sndNxt_
-  inline uint32_t getSndNxt() {
-    return sndNxt_;
   }
 
   // Getter function for vcMode_
@@ -667,8 +656,7 @@ class CtranIbVirtualConn {
     bool sendChained = true;
     // first check if all the messages can be sent over the fast path
     for (auto& put : msgs) {
-      if (!put.ibFastPath ||
-          !isFastPutValid<PerfConfig>(put.config, put.len, msgs.size())) {
+      if (!isFastPutValid<PerfConfig>(put.config, put.len, msgs.size())) {
         // Fallback to slow path and non batched writes
         sendChained = false;
         break;

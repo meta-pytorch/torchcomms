@@ -763,6 +763,11 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta//lpcoll/low_precision_utility.h
   comms/rcclx/develop/meta//lpcoll/p2p_allgather.cc
   comms/rcclx/develop/meta//lpcoll/p2p_allgather.h
+  comms/rcclx/develop/meta/ctran/MetaFactory.cc
+  comms/rcclx/develop/meta/ctran/MetaFactory.h
+  comms/rcclx/develop/meta/ctran/AllToAllvDynamic.cc
+  comms/rcclx/develop/meta/ctran/PersistentCollectives.cc
+  comms/rcclx/develop/meta/ctran/Hints.cc
 )
 
 # find comms/ctran/ -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" ! -path "*/examples/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
@@ -1228,6 +1233,8 @@ set(COMMON_FILES
   comms/utils/logger/NcclWriterWrapper.h
   comms/utils/logger/ProcessGlobalErrorsUtil.cc
   comms/utils/logger/ProcessGlobalErrorsUtil.h
+  comms/utils/logger/ScubaFileUtils.cc
+  comms/utils/logger/ScubaFileUtils.h
   comms/utils/logger/ScubaLogger.cc
   comms/utils/logger/ScubaLogger.h
   comms/utils/MemUtils.cc

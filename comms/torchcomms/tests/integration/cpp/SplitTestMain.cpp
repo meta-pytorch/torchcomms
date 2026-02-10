@@ -73,6 +73,13 @@ TEST_F(SplitTest, MultiLevelSplit) {
   testMultiLevel();
 }
 
+TEST_F(SplitTest, MultipleSplitsSameRanks) {
+  SCOPED_TRACE(
+      ::testing::Message()
+      << "Testing multiple splits with the same ranks to verify unique store prefixes");
+  testMultipleSplitsSameRanks();
+}
+
 // This main function is provided by gtest
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

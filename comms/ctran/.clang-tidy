@@ -1,0 +1,10 @@
+# CTRAN-specific clang-tidy configuration
+# Enables checks to ban non-approved exceptions in CTRAN code.
+# Only ctran::utils::Exception and std::bad_alloc are allowed.
+---
+InheritParentConfig: true
+Checks: 'facebook-ban-runtime-error-in-ctran,facebook-ban-non-ctran-exceptions,'
+
+WarningsAsErrors: 'facebook-ban-runtime-error-in-ctran,facebook-ban-non-ctran-exceptions,'
+
+CheckOptions: []

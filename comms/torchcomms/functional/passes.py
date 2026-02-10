@@ -30,7 +30,32 @@ logger = logging.getLogger(__name__)
 def reinplacement_pass(
     gm: torch.fx.GraphModule, example_inputs=None
 ) -> torch.fx.GraphModule:
-    logger.info("starting reinplacement pass")
+    """Convert functional ops back to in-place ops where safe to do so.
+
+    Detects the FakeMode from node metadata and uses Inductor's
+    ``reinplace_inplaceable_ops`` to replace functional ops with their
+    in-place variants when the mutation is provably safe. If no FakeMode
+    is found on the graph, the pass is skipped with a warning.
+
+    Args:
+        gm: The GraphModule to transform.
+        example_inputs: Unused; accepted for compatibility with the
+            standard pass interface.
+
+    Returns:
+        The same GraphModule, mutated in-place with the graph recompiled.
+
+    Example::
+
+        # Before: functional add
+        #   %add : [num_users=1] = call_function[target=torch.ops.aten.add.Tensor](args = (%x, 1), ...)
+        #   return (%add,)
+
+        # After: in-place add (when safe)
+        #   %add_ : [num_users=1] = call_function[target=torch.ops.aten.add_.Tensor](args = (%x, 1), ...)
+        #   return (%add_,)
+    """
+    logger.debug("starting reinplacement pass")
     logger.debug("graph before reinplacement pass: %s", gm.graph)
 
     from torch._guards import detect_fake_mode
@@ -50,7 +75,7 @@ def reinplacement_pass(
         logger.warning("No fake mode detected, skipping reinplacement pass")
 
     gm.recompile()
-    logger.info("finished reinplacement pass")
+    logger.debug("finished reinplacement pass")
     logger.debug("graph after reinplacement pass: %s", gm.graph)
     return gm
 
@@ -75,9 +100,40 @@ def _replace_in_output_args(output_node, old_node, new_node):
 def strip_with_effects_pass(
     gm: torch.fx.GraphModule, example_inputs=None
 ) -> torch.fx.GraphModule:
+    """Remove ``with_effects`` higher-order-op wrappers from torchcomms ops.
+
+    ``torch.compile`` wraps ops that have side effects in
+    ``with_effects(token, op, *args)`` to sequence them via token
+    threading. This pass strips those wrappers for torchcomms ops,
+    replacing them with direct ``call_function`` nodes so the graph can
+    be executed outside of Inductor without the token overhead.
+
+    Non-torchcomms ``with_effects`` calls are left untouched.
+
+    Args:
+        gm: The GraphModule to transform.
+        example_inputs: Unused; accepted for compatibility with the
+            standard pass interface.
+
+    Returns:
+        The same GraphModule, mutated in-place with the graph recompiled.
+
+    Example::
+
+        # Before: torchcomms op wrapped in with_effects
+        #   %token0 = call_function[target=aten._make_dep_token.default]()
+        #   %with_effects = call_function[target=with_effects](%token0, torchcomms.allreduce, %x)
+        #   %getitem_0 = call_function[target=operator.getitem](%with_effects, 0)  # token
+        #   %getitem_1 = call_function[target=operator.getitem](%with_effects, 1)  # result
+        #   return (%getitem_0, %getitem_1)
+
+        # After: direct call, wrappers removed
+        #   %allreduce = call_function[target=torchcomms.allreduce](%x)
+        #   return (%allreduce, %allreduce)
+    """
     graph = gm.graph
 
-    logger.info("starting strip_with_effects pass for torchcomms ops")
+    logger.debug("starting strip_with_effects pass for torchcomms ops")
     logger.debug("graph before strip_with_effects pass: %s", graph)
 
     nodes_to_erase = []
@@ -140,7 +196,7 @@ def strip_with_effects_pass(
 
     gm.recompile()
 
-    logger.info(
+    logger.debug(
         f"finished strip_with_effects pass: removed {replacements_made} with_effects wrappers"
     )
     logger.debug("graph after strip_with_effects pass: %s", gm.graph)

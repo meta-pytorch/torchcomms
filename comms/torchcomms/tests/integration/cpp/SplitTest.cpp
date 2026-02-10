@@ -430,3 +430,51 @@ void SplitTest::testMultiLevel() {
   second_level_comm->finalize();
   first_level_comm->finalize();
 }
+
+void SplitTest::testMultipleSplitsSameRanks() {
+  // Test splitting multiple times with the same ranks and same name
+  // This verifies that the splitCounter_ properly creates unique store prefixes
+  // preventing key collisions when the same name and ranks are used
+  std::vector<int> all_ranks;
+  all_ranks.reserve(num_ranks_);
+  for (int i = 0; i < num_ranks_; i++) {
+    all_ranks.push_back(i);
+  }
+
+  // Perform multiple splits with the same ranks AND same name
+  const std::string split_name = "same_name_split";
+  std::shared_ptr<torch::comms::TorchComm> split_comm_1 =
+      torchcomm_->split(all_ranks, split_name);
+  std::shared_ptr<torch::comms::TorchComm> split_comm_2 =
+      torchcomm_->split(all_ranks, split_name);
+  std::shared_ptr<torch::comms::TorchComm> split_comm_3 =
+      torchcomm_->split(all_ranks, split_name);
+
+  // All communicators should be valid since all ranks are included
+  ASSERT_TRUE(split_comm_1 != nullptr)
+      << "Expected first split communicator but got nullptr for rank " << rank_;
+  ASSERT_TRUE(split_comm_2 != nullptr)
+      << "Expected second split communicator but got nullptr for rank "
+      << rank_;
+  ASSERT_TRUE(split_comm_3 != nullptr)
+      << "Expected third split communicator but got nullptr for rank " << rank_;
+
+  // Verify each communicator has the correct rank and size
+  EXPECT_EQ(split_comm_1->getRank(), rank_);
+  EXPECT_EQ(split_comm_1->getSize(), num_ranks_);
+  EXPECT_EQ(split_comm_2->getRank(), rank_);
+  EXPECT_EQ(split_comm_2->getSize(), num_ranks_);
+  EXPECT_EQ(split_comm_3->getRank(), rank_);
+  EXPECT_EQ(split_comm_3->getSize(), num_ranks_);
+
+  // Test communication on each split communicator independently
+  // to verify they are separate and don't interfere with each other
+  testCommunication(split_comm_1);
+  testCommunication(split_comm_2);
+  testCommunication(split_comm_3);
+
+  // Finalize communicators
+  split_comm_1->finalize();
+  split_comm_2->finalize();
+  split_comm_3->finalize();
+}

@@ -35,6 +35,7 @@ class SplitTest : public ::testing::Test {
   void testDuplicateRanks();
   void testRankNotInGroup();
   void testMultiLevel();
+  void testMultipleSplitsSameRanks();
 
   // Helper function declarations
   std::vector<std::vector<int>> createContigGroups(

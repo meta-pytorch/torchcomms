@@ -156,8 +156,7 @@ void TorchWorkRCCLX::wait() {
 
   // Get the current stream using the device from the comm object
   hipStream_t current_stream =
-      comm_->getHipApi()->getCurrentHIPStreamMasqueradingAsCUDA(
-          comm_->device_.index());
+      comm_->getHipApi()->getCurrentCUDAStream(comm_->device_.index());
 
   // Add a dependency from the work's stream to the current stream
   // This makes the current stream wait for the end_event_ recorded on the

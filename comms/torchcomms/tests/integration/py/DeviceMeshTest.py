@@ -68,18 +68,17 @@ class DeviceMeshTest(unittest.TestCase):
     def test_2_d_parallel(self) -> None:
         backend = os.environ["TEST_BACKEND"]
         device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
-        world_size = torch.cuda.device_count()
-        dp_degree = 2
-        tp_degree = world_size // dp_degree
-        mesh = torch.arange(world_size, dtype=torch.int, device="cpu").view(
-            dp_degree, tp_degree
-        )
-
         comm = torchcomms.new_comm(
             backend,
             device,
             name="comms_test_2_d_parallel",
             timeout=datetime.timedelta(seconds=60),
+        )
+        world_size = comm.get_size()
+        dp_degree = 2
+        tp_degree = world_size // dp_degree
+        mesh = torch.arange(world_size, dtype=torch.int, device="cpu").view(
+            dp_degree, tp_degree
         )
 
         # Get current rank to determine which groups this rank belongs to
@@ -216,19 +215,19 @@ class DeviceMeshTest(unittest.TestCase):
     def test_n_d_parallel(self) -> None:
         backend = os.environ["TEST_BACKEND"]
         device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
-        world_size = torch.cuda.device_count()
-        pp_degree = 2
-        ep_degree = 2
-        cp_degree = world_size // (pp_degree * ep_degree)
-        mesh = torch.arange(world_size, dtype=torch.int, device="cpu").view(
-            pp_degree, cp_degree, ep_degree
-        )
-
         comm = torchcomms.new_comm(
             backend,
             device,
             name="comms_test_n_d_parallel",
             timeout=datetime.timedelta(seconds=60),
+        )
+
+        world_size = comm.get_size()
+        pp_degree = 2
+        ep_degree = 2
+        cp_degree = world_size // (pp_degree * ep_degree)
+        mesh = torch.arange(world_size, dtype=torch.int, device="cpu").view(
+            pp_degree, cp_degree, ep_degree
         )
 
         # Get current rank to determine which groups this rank belongs to

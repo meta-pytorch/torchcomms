@@ -107,7 +107,7 @@ class DPTPCommTest(unittest.TestCase):
             name="comms_test_global",
             timeout=datetime.timedelta(seconds=360),
         )
-        world_size = torch.cuda.device_count()
+        world_size = comm.get_size()
         dp_degree = 2
         tp_degree = world_size // dp_degree
         mesh = torch.arange(world_size, dtype=torch.int, device="cpu").view(
