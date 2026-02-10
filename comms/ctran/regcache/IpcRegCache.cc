@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/regcache/IpcRegCache.h"
+#include <fmt/core.h>
 #include <folly/Singleton.h>
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
@@ -57,23 +58,11 @@ std::shared_ptr<ctran::IpcRegCache> ctran::IpcRegCache::getInstance() {
   return ipcRegCacheSingleton.try_get();
 }
 
-ctran::IpcRegCache::IpcRegCache() : cudaDev_(0) {}
+ctran::IpcRegCache::IpcRegCache() {}
 
-void ctran::IpcRegCache::init(int cudaDev) {
+void ctran::IpcRegCache::init() {
   // Perform one-time initialization atomically
-  std::call_once(initFlag_, [this, cudaDev]() {
-    cudaDev_ = cudaDev;
-    initAsyncSocket();
-  });
-  // After initialization, verify cudaDev matches (for subsequent callers)
-  if (cudaDev_ != cudaDev) {
-    CLOGF(
-        ERR,
-        "CTRAN-REGCACHE: IpcRegCache already initialized with cudaDev {}, cannot reinitialize with different cudaDev {}",
-        cudaDev_,
-        cudaDev);
-    FB_COMMCHECKTHROW_EX_NOCOMM(commInvalidUsage);
-  }
+  std::call_once(initFlag_, [this]() { initAsyncSocket(); });
 }
 
 ctran::IpcRegCache::~IpcRegCache() {
@@ -84,11 +73,13 @@ ctran::IpcRegCache::~IpcRegCache() {
 commResult_t ctran::IpcRegCache::importMem(
     const std::string& peerId,
     const ctran::regcache::IpcDesc& ipcDesc,
+    int cudaDev,
     void** buf,
     struct ctran::regcache::IpcRemHandle* remKey,
     const struct CommLogData* logMetaData) {
   void* basePtr = nullptr;
-  FB_COMMCHECK(importRemMemImpl(peerId, ipcDesc, logMetaData, &basePtr));
+  FB_COMMCHECK(
+      importRemMemImpl(peerId, ipcDesc, cudaDev, logMetaData, &basePtr));
 
   // import from baseAddr of a remote segment, return buf at offset from
   // baseAddr
@@ -110,6 +101,7 @@ commResult_t ctran::IpcRegCache::importMem(
 commResult_t ctran::IpcRegCache::importRemMemImpl(
     const std::string& peerId,
     const ctran::regcache::IpcDesc& ipcDesc,
+    int cudaDev,
     const struct CommLogData* logMetaData,
     void** mappedBase) {
   auto lockedMap = ipcRemRegMap_.wlock();
@@ -129,7 +121,7 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
   std::unique_ptr<ctran::regcache::IpcRemRegElem> reg = nullptr;
   try {
     reg = std::make_unique<ctran::regcache::IpcRemRegElem>(
-        ipcDesc.desc, cudaDev_, logMetaData);
+        ipcDesc.desc, cudaDev, logMetaData);
   } catch (std::exception& e) {
     CLOGF(
         WARN,
@@ -220,6 +212,44 @@ size_t ctran::IpcRegCache::getNumRemReg(const std::string& peerId) const {
     return it->second.size();
   }
   return 0;
+}
+
+commResult_t ctran::IpcRegCache::setPeerIpcServerAddr(
+    const std::string& peerId,
+    const folly::SocketAddress& addr) {
+  auto lockedMap = peerIpcServerAddrs_.wlock();
+  auto it = lockedMap->find(peerId);
+  if (it != lockedMap->end()) {
+    if (it->second != addr) {
+      CLOGF(
+          ERR,
+          "CTRAN-REGCACHE: Peer IPC server address mismatch for peerId {}: "
+          "cached {} vs new {}",
+          peerId,
+          it->second.describe(),
+          addr.describe());
+      return commInternalError;
+    }
+    return commSuccess;
+  }
+  lockedMap->emplace(peerId, addr);
+  return commSuccess;
+}
+
+commResult_t ctran::IpcRegCache::getPeerIpcServerAddr(
+    const std::string& peerId,
+    folly::SocketAddress& addr) const {
+  auto lockedMap = peerIpcServerAddrs_.rlock();
+  auto it = lockedMap->find(peerId);
+  if (it == lockedMap->end()) {
+    CLOGF(
+        ERR,
+        "CTRAN-REGCACHE: Peer IPC server address not found for peerId {}",
+        peerId);
+    return commInvalidArgument;
+  }
+  addr = it->second;
+  return commSuccess;
 }
 
 commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
@@ -362,7 +392,13 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
                 peerId,
                 ipcReq.desc.toString());
 
-            FB_COMMCHECKIGNORE(importMem(peerId, ipcReq.desc, &buf, &remKey));
+            // TODO: currently notifyRemoteIpcExport shouldn't be used, we have
+            // to add the correct cudaDev for importMem. When receives
+            // IpcReqType::kDesc, throw exceptions
+            FB_COMMCHECKTHROW_EX_NOCOMM(commInvalidUsage);
+
+            FB_COMMCHECKIGNORE(
+                importMem(peerId, ipcReq.desc, 0, &buf, &remKey));
             break;
           }
         }

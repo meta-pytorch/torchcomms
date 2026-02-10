@@ -266,6 +266,7 @@ TEST_P(DistRegCacheTestSuite, ExportImportMem) {
     COMMCHECK_TEST(ipcRegCache->importMem(
         peerId,
         msg.ipcDesc,
+        comm_->statex_->cudaDev(),
         &mappedData,
         &remKey.nvlKey,
         &comm_->logMetaData_));

@@ -1023,7 +1023,45 @@ ncclResult_t alltoallvDynamicSplitNonContig( const void* sendbuff, const size_t*
     size_t* recvAllSplitLengths, size_t* recvIndices, size_t* recvIndicesBlockLengths, size_t maxSendcount,
     size_t maxRecvcount, const Hints& hints, ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream);
 
+/*
+ * Persistent All-Gather similar to ncclAllgather, the key difference is that
+ * the execution will be deferred until allGatherExec is called
+ * Arguments:
+ *    OUT recvbuff     - Pointer to recvbuf that will receive blocks from other ranks
+ *    IN  maxRecvCount - Count of elements of recvbuff
+ *    IN  hints        - Hints for skipping control msg
+ *    IN  datatype     - NCCL data type
+ *    IN  comm         - NCCL communicator
+ *    IN  stream       - HIP stream
+ *    OUT request      - Request to be used in ncclCommExec to trigger the execution
+ */
+ncclResult_t allGatherInit(void* recvbuff, const size_t maxRecvCount, const Hints& hints,
+    ncclDataType_t datatype, ncclComm_t comm, hipStream_t stream, void** request);
+
+/* Execute the persistent collective operation created by ncclAllGatherInit.
+ * Arguments:
+ *    IN  sendbuff    - Pointer to sendbuf
+ *    IN  count       - count of elements to send to (receive from) each rank
+ *    IN  datatype    - NCCL data type used for the allgather execution. It may be different
+ *                      from the datatype used in ncclAllGatherInit.
+ *    IN  request     - Request created by ncclAllGatherInit
+ */
+ncclResult_t allGatherExec(
+    const void* sendbuff,
+    const size_t count,
+    const ncclDataType_t datatype,
+    void* request);
+
+/*
+ * Trigger the execution of a request of persistent collective operation
+ * created by ncclAllGatherInit or ncclAllToAllDedupInit
+ */
+ncclResult_t pExec(void* request);
+
+ncclResult_t pFree(void* request);
 } // namespace ncclx
+
+
 #endif // __cplusplus
 
 #endif // end include guard

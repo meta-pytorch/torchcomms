@@ -2755,7 +2755,7 @@ cvars:
 
  - name        : NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS
    type        : int
-   default     : 2
+   default     : 8
    description : |-
      Maximum number of thread blocks used for the AllReduce kernel.
      We might use fewer thread blocks, if we can achieve max occupancy

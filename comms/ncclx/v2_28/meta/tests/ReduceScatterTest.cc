@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <comm.h>
+#include <cuda_bf16.h>
 #include <fmt/core.h>
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
@@ -8,12 +9,14 @@
 #include <nccl.h>
 #include <stdlib.h>
 #include <cstddef>
+#include <optional>
 #include "comms/ctran/Ctran.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsCuUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
+#include "VerifyAlgoStatsUtil.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
 #include "meta/wrapper/DataTypeStrUtils.h"
 
@@ -25,9 +28,11 @@ struct ReduceScatterTestParams {
   size_t count{0};
   ncclRedOp_t op{ncclSum};
   ncclDataType_t datatype{ncclInt};
+  // NCCL internal algorithm override (e.g., "RING", "PAT")
+  std::string ncclAlgo{};
 
   std::string name() const {
-    return fmt::format(
+    auto base = fmt::format(
         "{}_{}_{}_{}_{}count_{}_{}",
         reduceScatterAlgoName(algo),
         inplace ? "Inplace" : "OutOfPlace",
@@ -36,6 +41,10 @@ struct ReduceScatterTestParams {
         count,
         getRedOpStr(op),
         getDatatypeStr(datatype));
+    if (!ncclAlgo.empty()) {
+      base += "_" + ncclAlgo;
+    }
+    return base;
   }
 };
 
@@ -44,19 +53,30 @@ class ReduceScatterTest : public NcclxBaseTest {
   ReduceScatterTest() = default;
   void SetUp() override {
     NcclxBaseTest::SetUp();
-    comm = createNcclComm(globalRank, numRanks, localRank);
+    // [META:PAT_AVG] Enable PAT before any comm creation to ensure the
+    // NCCL_PARAM cache gets the right value. This is needed because NCCL_PARAM
+    // uses static caching - once set, the value is never re-read.
+    patEnableGuard_.emplace(NCCL_PAT_ENABLE, (int64_t)1);
+    // Enable AlgoStats for algorithm validation (must be before comm creation)
+    algoStats_.enable();
     CUDACHECK_TEST(cudaStreamCreate(&stream));
   }
 
   void TearDown() override {
-    NCCLCHECK_TEST(ncclCommDestroy(comm));
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     NcclxBaseTest::TearDown();
   }
 
-  // TODO: Add separate benchmark for performance testing
+  // Runs a ReduceScatter collective and verifies results.
+  // Callers are responsible for setting env vars (NCCL_REDUCESCATTER_ALGO,
+  // NCCL_ALGO, NCCL_PROTO, PAT_AVG_ENABLE, etc.) before calling this method.
   template <typename T>
-  void run(const ReduceScatterTestParams& param) {
+  void run(
+      const ReduceScatterTestParams& param,
+      const std::string& expectedAlgoSubstr = "") {
+    using Traits = DataTypeTraits<T>;
+    using HostT = typename Traits::HostT;
+
     const auto algo = param.algo;
     const auto inplace = param.inplace;
     const auto registFlag = param.registFlag;
@@ -70,7 +90,9 @@ class ReduceScatterTest : public NcclxBaseTest {
       GTEST_SKIP() << "Only ncclSum and ncclAvg reduction ops are supported";
     }
 
-    auto envGuard = EnvRAII(NCCL_REDUCESCATTER_ALGO, algo);
+    // Create comm after environment variables are set by caller
+    NcclCommRAII commGuard{globalRank, numRanks, localRank};
+    comm = commGuard.get();
 
     if (memType == kMemNcclMemAlloc && ncclIsCuMemSupported() == false) {
       GTEST_SKIP() << "CuMem not supported, skip test";
@@ -116,10 +138,11 @@ class ReduceScatterTest : public NcclxBaseTest {
       }
     }
 
-    assignChunkValue<T>(recvBuf, count, static_cast<T>(-1));
+    // Initialize send buffer: each rank's chunk r has constant value
+    // (globalRank * numRanks + r)
     for (int r = 0; r < numRanks; r++) {
-      T val = static_cast<T>(globalRank * numRanks + r);
-      assignChunkValue<T>(sendBuf + r * count, count, val);
+      HostT val = static_cast<HostT>(globalRank * numRanks + r);
+      assignChunkValue(sendBuf + r * count, count, Traits::toDevice(val));
     }
 
     if (registFlag) {
@@ -136,25 +159,36 @@ class ReduceScatterTest : public NcclxBaseTest {
 
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
-    // Check received chunk
-    T expectedSum = static_cast<T>(0);
+    // Calculate expected value: sum of (r * numRanks + globalRank) for all r
+    HostT expectedVal = static_cast<HostT>(0);
     for (int r = 0; r < numRanks; r++) {
-      expectedSum += static_cast<T>(r * numRanks + globalRank);
+      expectedVal += static_cast<HostT>(r * numRanks + globalRank);
     }
     if (op == ncclAvg) {
-      expectedSum = expectedSum / static_cast<T>(numRanks);
+      expectedVal = expectedVal / static_cast<HostT>(numRanks);
     }
 
-    std::optional<T> tolerance = std::nullopt;
-    if constexpr (std::is_floating_point_v<T>) {
-      tolerance = static_cast<T>(1e-5);
-    }
-
-    auto errs = checkChunkValue<T>(
-        recvBuf, count, expectedSum, T{0}, globalRank, nullptr, tolerance);
+    // Verify results using checkChunkValue with type-appropriate tolerance
+    size_t errs = checkChunkValue(
+        recvBuf,
+        count,
+        Traits::toDevice(expectedVal),
+        T{0},
+        globalRank,
+        stream,
+        Traits::tolerance());
     EXPECT_EQ(errs, 0) << "Rank " << globalRank << " checked chunk at "
                        << recvBuf << " with " << errs << " errors with inplace "
                        << inplace;
+
+    // Check algorithm stats (orig algo only; ctran has its own path)
+    // TODO: enable algoState check for Ctran algo
+    if (algo == NCCL_REDUCESCATTER_ALGO::orig) {
+      if (!expectedAlgoSubstr.empty()) {
+        algoStats_.verify(comm, "ReduceScatter", expectedAlgoSubstr);
+      }
+      algoStats_.dump(comm, "ReduceScatter");
+    }
 
     // Deregister and free buffers
     if (registFlag) {
@@ -181,6 +215,8 @@ class ReduceScatterTest : public NcclxBaseTest {
  protected:
   ncclComm_t comm{nullptr};
   cudaStream_t stream{nullptr};
+  std::optional<EnvRAII<int64_t>> patEnableGuard_;
+  ncclx::test::VerifyAlgoStatsHelper algoStats_;
 };
 
 class ReduceScatterTestParam : public ReduceScatterTest,
@@ -193,6 +229,8 @@ class ReduceScatterTestParam : public ReduceScatterTest,
 
 TEST_P(ReduceScatterTestParam, Test) {
   auto [algo, inplace, registFlag, memType, count] = GetParam();
+  auto rsAlgoGuard = EnvRAII(NCCL_REDUCESCATTER_ALGO, algo);
+
   ReduceScatterTestParams param{
       .algo = algo,
       .inplace = inplace,
@@ -203,19 +241,31 @@ TEST_P(ReduceScatterTestParam, Test) {
       .datatype = ncclInt,
   };
 
+  // TODO: also check algoState for Ctran algo
   run<int>(param);
 }
 
-std::string GetTestParamName(
-    const testing::TestParamInfo<ReduceScatterTestParam::ParamType>& info) {
-  ReduceScatterTestParams params{
-      .algo = std::get<0>(info.param),
-      .inplace = std::get<1>(info.param),
-      .registFlag = std::get<2>(info.param),
-      .memType = std::get<3>(info.param),
-      .count = std::get<4>(info.param),
+// Parameters: ncclAlgo, count
+// Tests orig algo with enforced NCCL algorithm (RING or PAT) and verifies
+// the algorithm was actually used via AlgoStats.
+class ReduceScatterOrigTestParam
+    : public ReduceScatterTest,
+      public ::testing::WithParamInterface<std::tuple<std::string, size_t>> {};
+
+TEST_P(ReduceScatterOrigTestParam, OrigTest) {
+  auto [ncclAlgo, count] = GetParam();
+  auto rsAlgoGuard =
+      EnvRAII(NCCL_REDUCESCATTER_ALGO, NCCL_REDUCESCATTER_ALGO::orig);
+  auto algoGuard = EnvRAII<std::string>(NCCL_ALGO, ncclAlgo);
+
+  ReduceScatterTestParams param{
+      .algo = NCCL_REDUCESCATTER_ALGO::orig,
+      .count = count,
+      .op = ncclSum,
+      .datatype = ncclInt,
+      .ncclAlgo = ncclAlgo,
   };
-  return params.name();
+  run<int>(param, ncclAlgo);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -232,7 +282,32 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(kMemCudaMalloc, kMemNcclMemAlloc), // memType
         ::testing::Values(1, 8192, 33554432) // count: small, medium, large
         ),
-    GetTestParamName);
+    ([](const auto& info) {
+      ReduceScatterTestParams params{
+          .algo = std::get<0>(info.param),
+          .inplace = std::get<1>(info.param),
+          .registFlag = std::get<2>(info.param),
+          .memType = std::get<3>(info.param),
+          .count = std::get<4>(info.param),
+      };
+      return params.name();
+    }));
+
+INSTANTIATE_TEST_SUITE_P(
+    ReduceScatterOrigTestInstance,
+    ReduceScatterOrigTestParam,
+    ::testing::Combine(
+        ::testing::Values(std::string("RING"), std::string("PAT")),
+        ::testing::Values(1, 8192, 33554432) // count: small, medium, large
+        ),
+    ([](const auto& info) {
+      ReduceScatterTestParams params{
+          .algo = NCCL_REDUCESCATTER_ALGO::orig,
+          .count = std::get<1>(info.param),
+          .ncclAlgo = std::get<0>(info.param),
+      };
+      return params.name();
+    }));
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);

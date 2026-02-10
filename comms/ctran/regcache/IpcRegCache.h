@@ -9,6 +9,7 @@
 #include <folly/Hash.h>
 #include <folly/SocketAddress.h>
 #include <folly/Synchronized.h>
+#include <folly/container/F14Map.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 
 #include "comms/ctran/bootstrap/AsyncSocket.h"
@@ -65,16 +66,17 @@ class IpcRegCache {
 
   static std::shared_ptr<IpcRegCache> getInstance();
 
-  // Initialize the cache with CUDA device.
+  // Initialize the cache (starts AsyncSocket server).
   // Must be called before using importMem.
-  void init(int cudaDev);
+  void init();
 
   // Import a remote NVL memory registration from IPC descriptor.
   // The imported memory is cached for reuse across multiple operations.
-  // Requires init() to be called first to set cudaDev.
+  // Requires init() to be called first.
   // Input arguments:
   //   - peerId: Id of the peer, which should be unique per process instance
   //   - ipcDesc: the remote memory IPC descriptor
+  //   - cudaDev: the CUDA device to import the memory to
   //   - logMetaData: (optional) logging metadata from the communicator
   // Output arguments:
   //   - buf: the local buffer mapped to the imported remote memory
@@ -82,6 +84,7 @@ class IpcRegCache {
   commResult_t importMem(
       const std::string& peerId,
       const ctran::regcache::IpcDesc& ipcDesc,
+      int cudaDev,
       void** buf,
       struct ctran::regcache::IpcRemHandle* remKey,
       const struct CommLogData* logMetaData = nullptr);
@@ -126,6 +129,18 @@ class IpcRegCache {
     return serverAddr_;
   }
 
+  // Set peer's IPC server address by peer ID (gPid).
+  commResult_t setPeerIpcServerAddr(
+      const std::string& peerId,
+      const folly::SocketAddress& addr);
+
+  // Get peer's IPC server address by peer ID (gPid).
+  // Output argument:
+  //   - addr: the socket address for the peer with the given gPid.
+  commResult_t getPeerIpcServerAddr(
+      const std::string& peerId,
+      folly::SocketAddress& addr) const;
+
   // Notify remote peers to release their imported NVL memory.
   // Output argument:
   //   - reqCb: IpcReqCb that the caller can track for completion.
@@ -155,6 +170,7 @@ class IpcRegCache {
   commResult_t importRemMemImpl(
       const std::string& peerId,
       const ctran::regcache::IpcDesc& ipcDesc,
+      int cudaDev,
       const struct CommLogData* logMetaData,
       void** mappedBase);
 
@@ -181,8 +197,6 @@ class IpcRegCache {
           folly::Hash>>;
   folly::Synchronized<IpcRemRegMap> ipcRemRegMap_;
 
-  int cudaDev_;
-
   // Flag for one-time initialization
   std::once_flag initFlag_;
 
@@ -190,6 +204,12 @@ class IpcRegCache {
   std::unique_ptr<folly::ScopedEventBaseThread> asyncSocketEvbThread_;
   std::unique_ptr<ctran::bootstrap::AsyncServerSocket> asyncServerSocket_;
   folly::SocketAddress serverAddr_;
+
+  // Peer IPC server addresses for async socket communication, keyed by gPid.
+  // Protected by Synchronized for concurrent access from multiple
+  // communicators.
+  folly::Synchronized<folly::F14FastMap<std::string, folly::SocketAddress>>
+      peerIpcServerAddrs_;
 
   // Monotonically increasing unique ID counter for IPC registrations
   static std::atomic<uint32_t> nextUniqueId_;
