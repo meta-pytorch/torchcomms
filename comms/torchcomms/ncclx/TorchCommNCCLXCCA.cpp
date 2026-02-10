@@ -1,24 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/ncclx/TorchCommNCCLXCCA.hpp"
-#include <c10/cuda/driver_api.h>
-
-// Helper function to get allocation granularity for a device
-namespace {
-size_t getAllocationGranularity(int device) {
-  auto driver_api = c10::cuda::DriverAPI::get();
-  CUmemAllocationProp prop = {};
-  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
-  prop.location.type = CU_MEM_LOCATION_TYPE_DEVICE;
-  prop.location.id = device;
-
-  size_t granularity;
-  C10_CUDA_DRIVER_CHECK(driver_api->cuMemGetAllocationGranularity_(
-      &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM));
-
-  return granularity;
-}
-} // namespace
 
 namespace torch::comms {
 
@@ -66,137 +48,45 @@ void CachingAllocatorHookImpl::regDeregMem(
   std::lock_guard<std::mutex> lock(mutex_);
 
   if (te.action_ ==
-      c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_ALLOC) {
-    // Memory got allocated, register it with NCCL
+          c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_ALLOC ||
+      te.action_ ==
+          c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_MAP) {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     void* addr = reinterpret_cast<void*>(static_cast<uintptr_t>(te.addr_));
     size_t len = te.size_;
 
     if (registeredMemMap_.contains(addr)) {
-      LOG(ERROR) << "[CCA] SEGMENT_ALLOC: Memory already registered at 0x"
-                 << std::hex << addr << std::dec << " size=" << len
+      LOG(ERROR) << "[CCA] Memory already registered at 0x" << std::hex << addr
+                 << std::dec << " size=" << len
                  << " existing_size=" << registeredMemMap_.at(addr).len;
       throw std::runtime_error("Memory already registered with NCCLX");
-    } else {
-      registeredMemMap_.emplace(addr, MemInfo{len, te.device_});
     }
 
-    // Register the memory through ncclCommRegister and add to commRegHandles_
-    for (auto& comm : registeredComms_) {
-      if (te.device_ == comm->getDevice().index()) {
-        comm->register_address(TorchCommNCCLX::AddressWithLen(addr, len));
-      }
-    }
+    registeredMemMap_.emplace(addr, MemInfo{len, te.device_});
+
+    TorchCommNCCLX::global_register_address(
+        TorchCommNCCLX::AddressWithLen{addr, len}, te.device_);
   } else if (
       te.action_ ==
-      c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_MAP) {
-    // Memory got mapped, register it with NCCL
-
-    // PyTorch expandable segments can send MAP events covering one or more
-    // chunks. We need to register each chunk separately.
-    // Chunk size is determined by the allocation granularity for the device.
-    size_t total_size = te.size_;
-    size_t chunk_size = getAllocationGranularity(te.device_);
-
-    for (size_t offset = 0; offset < total_size;) {
-      // Determine the chunk size at this offset
-      size_t remaining = total_size - offset;
-
-      if (remaining < chunk_size) {
-        LOG(ERROR) << "[CCA] SEGMENT_MAP: Invalid remaining size=" << remaining
-                   << " at offset=" << offset << " total_size=" << total_size
-                   << " chunk_size=" << chunk_size;
-        throw std::runtime_error(
-            "SEGMENT_MAP: Remaining size must be a multiple of allocation granularity");
-      }
-
-      void* chunk_addr =
-          reinterpret_cast<void*>(  // NOLINT(performance-no-int-to-ptr)
-              static_cast<uintptr_t>(te.addr_) + offset);
-
-      if (registeredMemMap_.contains(chunk_addr)) {
-        LOG(ERROR) << "[CCA] SEGMENT_MAP: Memory already registered at 0x"
-                   << std::hex << chunk_addr << std::dec
-                   << " size=" << chunk_size
-                   << " existing_size=" << registeredMemMap_.at(chunk_addr).len;
-        throw std::runtime_error("Memory already registered with NCCLX");
-      }
-
-      registeredMemMap_.emplace(chunk_addr, MemInfo{chunk_size, te.device_});
-
-      // Register the memory through ncclCommRegister
-      for (auto& comm : registeredComms_) {
-        if (te.device_ == comm->getDevice().index()) {
-          comm->register_address(
-              TorchCommNCCLX::AddressWithLen(chunk_addr, chunk_size));
-        }
-      }
-
-      // Move to the next chunk
-      offset += chunk_size;
-    }
-  } else if (
+          c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_FREE ||
       te.action_ ==
-      c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_FREE) {
-    // Memory got freed, deregister it with NCCL
+          c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_UNMAP) {
     // NOLINTNEXTLINE(performance-no-int-to-ptr)
     void* addr = reinterpret_cast<void*>(static_cast<uintptr_t>(te.addr_));
 
-    if (!registeredMemMap_.contains(addr)) {
-      LOG(ERROR) << "[CCA] SEGMENT_FREE: Memory not registered at 0x"
-                 << std::hex << addr << std::dec << " size=" << te.size_;
+    auto it = registeredMemMap_.find(addr);
+    if (it == registeredMemMap_.end() || it->second.device != te.device_) {
+      LOG(ERROR) << "[CCA] Memory not registered at 0x" << std::hex << addr
+                 << std::dec << " size=" << te.size_;
       throw std::runtime_error("Memory not registered with NCCLX");
-    } else {
-      registeredMemMap_.erase(addr);
     }
 
-    for (auto& comm : registeredComms_) {
-      if (te.device_ == comm->getDevice().index()) {
-        comm->deregister_address(TorchCommNCCLX::Address(addr));
-      }
-    }
-  } else if (
-      te.action_ ==
-      c10::cuda::CUDACachingAllocator::TraceEntry::Action::SEGMENT_UNMAP) {
-    // Memory got unmapped, deregister it with NCCL
+    size_t len = it->second.len;
 
-    // PyTorch expandable segments have chunks sized according to the
-    // allocation granularity. UNMAP events can cover multiple chunks.
-    // We iterate through registered chunks within the unmapped range and
-    // deregister each one.
-    size_t total_size = te.size_;
+    TorchCommNCCLX::global_deregister_address(
+        TorchCommNCCLX::AddressWithLen{addr, len}, te.device_);
 
-    for (size_t offset = 0; offset < total_size;) {
-      void* chunk_addr =
-          reinterpret_cast<void*>(  // NOLINT(performance-no-int-to-ptr)
-              static_cast<uintptr_t>(te.addr_) + offset);
-
-      // Check if this chunk address is in our registered map
-      auto it = registeredMemMap_.find(chunk_addr);
-      if (it != registeredMemMap_.end() && it->second.device == te.device_) {
-        // Found a registered chunk, deregister it
-        size_t registered_size = it->second.len;
-
-        for (auto& comm : registeredComms_) {
-          if (te.device_ == comm->getDevice().index()) {
-            comm->deregister_address(TorchCommNCCLX::Address(chunk_addr));
-          }
-        }
-
-        registeredMemMap_.erase(it);
-
-        // Move to the next potential chunk by the size we just deregistered
-        offset += registered_size;
-      } else {
-        // No registered chunk found at this address - this indicates a
-        // serious inconsistency between MAP and UNMAP events
-        LOG(ERROR) << "[CCA] SEGMENT_UNMAP: No registered chunk at 0x"
-                   << std::hex << chunk_addr << std::dec << " offset=" << offset
-                   << " total_size=" << total_size;
-        throw std::runtime_error(
-            "SEGMENT_UNMAP: Expected registered chunk not found");
-      }
-    }
+    registeredMemMap_.erase(it);
   }
 }
 
@@ -206,14 +96,6 @@ void CachingAllocatorHookImpl::registerComm(TorchCommNCCLX* comm) {
   // Check if the communicator is already registered
   if (registeredComms_.contains(comm)) {
     throw std::runtime_error("Communicator already registered");
-  }
-
-  // Register all memory that has already been allocated
-  for (const auto& [addr, mem_info] : registeredMemMap_) {
-    if (mem_info.device == comm->getDevice().index()) {
-      comm->register_address(
-          TorchCommNCCLX::AddressWithLen(addr, mem_info.len));
-    }
   }
 
   registeredComms_.insert(comm);
@@ -227,10 +109,42 @@ void CachingAllocatorHookImpl::deregisterComm(TorchCommNCCLX* comm) {
     return;
   }
 
-  // De-register all memory that has already been allocated
-  for (const auto& [addr, mem_info] : registeredMemMap_) {
-    if (mem_info.device == comm->getDevice().index()) {
-      comm->deregister_address(TorchCommNCCLX::Address(addr));
+  // Deregister all memory for this device when the comm is deregistered.
+  // This ensures that memory is properly deregistered from ctran before the
+  // RegCache singleton is destroyed at process exit.
+  //
+  // Note: For global registration, we only deregister when the LAST comm for
+  // a device is deregistered. If multiple comms share the same device, we
+  // should keep the registration until all are gone.
+  bool lastCommForDevice = true;
+  for (const auto& otherComm : registeredComms_) {
+    if (otherComm != comm &&
+        otherComm->getDevice().index() == comm->getDevice().index()) {
+      lastCommForDevice = false;
+      break;
+    }
+  }
+
+  if (lastCommForDevice) {
+    std::vector<void*> deregisteredAddrs;
+    for (const auto& [addr, mem_info] : registeredMemMap_) {
+      if (mem_info.device == comm->getDevice().index()) {
+        try {
+          TorchCommNCCLX::global_deregister_address(
+              TorchCommNCCLX::AddressWithLen{addr, mem_info.len},
+              mem_info.device);
+        } catch (const std::runtime_error& e) {
+          LOG(WARNING) << "[CCA] Deregistration failed during deregisterComm "
+                       << "for addr=0x" << std::hex << addr << std::dec
+                       << " size=" << mem_info.len
+                       << " device=" << mem_info.device
+                       << " error=" << e.what();
+        }
+        deregisteredAddrs.push_back(addr);
+      }
+    }
+    for (auto addr : deregisteredAddrs) {
+      registeredMemMap_.erase(addr);
     }
   }
 
@@ -239,11 +153,16 @@ void CachingAllocatorHookImpl::deregisterComm(TorchCommNCCLX* comm) {
 
 void CachingAllocatorHookImpl::clear() {
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto& comm : registeredComms_) {
-    for (const auto& [addr, mem_info] : registeredMemMap_) {
-      if (mem_info.device == comm->getDevice().index()) {
-        comm->deregister_address(TorchCommNCCLX::Address(addr));
-      }
+
+  // Deregister all tracked memory globally
+  for (const auto& [addr, mem_info] : registeredMemMap_) {
+    try {
+      TorchCommNCCLX::global_deregister_address(
+          TorchCommNCCLX::AddressWithLen{addr, mem_info.len}, mem_info.device);
+    } catch (const std::runtime_error& e) {
+      LOG(WARNING) << "[CCA] Clear deregistration failed for addr=0x"
+                   << std::hex << addr << std::dec << " size=" << mem_info.len
+                   << " device=" << mem_info.device << " error=" << e.what();
     }
   }
   registeredMemMap_.clear();
