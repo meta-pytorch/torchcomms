@@ -86,6 +86,50 @@ __global__ void deviceResetSignalKernel(DeviceWindowNCCL* win, int signal_id) {
 }
 
 // =============================================================================
+// GIN atomicAdd Test Kernel
+// =============================================================================
+// This kernel directly uses the ncclGin::atomicAdd() API to perform a remote
+// atomic fetch-and-add on a uint64_t in the destination window.
+//
+// Pattern:
+//   1. Each rank atomically adds `add_value` to dstWnd[dstOffset] on dst_rank
+//   2. After atomicAdd, signals dst_rank using gin.signal() for synchronization
+//   3. The receiver waits for the signal and then reads the result (host-side)
+
+__global__ void deviceGinAtomicAddKernel(
+    DeviceWindowNCCL* win,
+    size_t dst_offset,
+    uint64_t add_value,
+    int dst_rank,
+    int signal_id) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    const ncclDevComm& dev_comm = win->comm_;
+    ncclGin gin(dev_comm, torchcomms::device::kDefaultGinContextIndex);
+
+    ncclWindow_t dst_win = win->window_;
+
+    // Perform remote atomic add on the destination window
+    gin.atomicAdd(
+        ncclTeamWorld(dev_comm),
+        dst_rank,
+        dst_win,
+        dst_offset,
+        add_value,
+        ncclCoopThread{});
+
+    // Signal the destination rank that atomicAdd is complete
+    gin.signal(
+        ncclTeamWorld(dev_comm),
+        dst_rank,
+        ncclGin_SignalInc{static_cast<ncclGinSignal_t>(signal_id)},
+        ncclCoopThread{});
+
+    // Flush to ensure all operations are posted
+    gin.flush(ncclCoopThread{});
+  }
+}
+
+// =============================================================================
 // Host-callable wrapper functions
 // =============================================================================
 
@@ -126,6 +170,17 @@ void launchDeviceResetSignalKernel(
     int signal_id,
     cudaStream_t stream) {
   deviceResetSignalKernel<<<1, 1, 0, stream>>>(win, signal_id);
+}
+
+void launchDeviceGinAtomicAddKernel(
+    DeviceWindowNCCL* win,
+    size_t dst_offset,
+    uint64_t add_value,
+    int dst_rank,
+    int signal_id,
+    cudaStream_t stream) {
+  deviceGinAtomicAddKernel<<<1, 1, 0, stream>>>(
+      win, dst_offset, add_value, dst_rank, signal_id);
 }
 
 } // namespace torchcomms::device::test

@@ -63,4 +63,15 @@ void launchDeviceResetSignalKernel(
     int signal_id,
     cudaStream_t stream);
 
+// Launch GIN atomicAdd test kernel - performs remote atomic fetch-and-add
+// on a uint64_t in the destination window, then signals the destination rank.
+// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
+void launchDeviceGinAtomicAddKernel(
+    DeviceWindowNCCL* win,
+    size_t dst_offset,
+    uint64_t add_value,
+    int dst_rank,
+    int signal_id,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test

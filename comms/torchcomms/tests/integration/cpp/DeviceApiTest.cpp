@@ -482,3 +482,110 @@ TEST_F(DeviceApiTest, DeviceWindowWithCountersFloat) {
 TEST_F(DeviceApiTest, DevicePutFloat) {
   testDevicePut(1024, at::kFloat);
 }
+
+// =============================================================================
+// GIN atomicAdd Test
+// =============================================================================
+// This test validates the gin.atomicAdd() API at the NCCLx layer:
+//   1. Each rank creates a window with uint64_t slots
+//   2. In a ring pattern, rank i atomically adds (rank+1) to slot[rank] on
+//      the next rank's window
+//   3. Signal the next rank after atomicAdd completes
+//   4. Wait for signal from previous rank
+//   5. Verify the atomically-added value matches expected
+
+void DeviceApiTest::testGinAtomicAdd() {
+  SCOPED_TRACE(::testing::Message() << "Testing GIN atomicAdd");
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  // Create MemPool for RDMA-compatible memory allocation
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  // Window layout: num_ranks uint64_t slots, one per sender rank
+  // Each slot is 8 bytes (sizeof(uint64_t))
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({num_ranks_}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  // Create window and register tensor
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
+  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
+
+  // Get device window with signals for synchronization
+  int signal_count = num_ranks_;
+  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  ASSERT_NE(dev_win, nullptr) << "Device window pointer should not be null";
+
+  // Ring pattern: rank i atomicAdds to rank (i+1) % num_ranks
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+
+  // Each rank writes to its own slot on the destination.
+  // dst_offset = rank_ * sizeof(uint64_t) bytes into the window.
+  size_t dst_offset = rank_ * sizeof(uint64_t);
+  uint64_t add_value = static_cast<uint64_t>(rank_ + 1);
+  constexpr int kSignalId = 0;
+
+  // Launch atomicAdd kernel
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceGinAtomicAddKernel(
+        dev_win,
+        dst_offset,
+        add_value,
+        dst_rank,
+        kSignalId,
+        op_stream.stream());
+  }
+
+  // Wait for signal from src_rank indicating its atomicAdd completed to us
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchDeviceWaitSignalKernel(
+        dev_win, kSignalId, 1, wait_stream.stream());
+  }
+
+  op_stream.synchronize();
+  wait_stream.synchronize();
+
+  // Verify: slot[src_rank] should have value (src_rank + 1) from the sender
+  at::Tensor result_cpu = win_tensor.cpu();
+  int64_t got = result_cpu[src_rank].item<int64_t>();
+  int64_t expected = static_cast<int64_t>(src_rank + 1);
+  ASSERT_EQ(got, expected) << "atomicAdd mismatch at slot[" << src_rank
+                           << "]: expected " << expected << ", got " << got;
+
+  // Reset signal for cleanup
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceResetSignalKernel(
+        dev_win, kSignalId, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  // Cleanup
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(DeviceApiTest, GinAtomicAdd) {
+  testGinAtomicAdd();
+}

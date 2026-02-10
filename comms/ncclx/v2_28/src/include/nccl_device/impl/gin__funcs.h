@@ -236,9 +236,40 @@ NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::putValue(
     cuda::thread_scope requiredRelease,
     cuda::thread_scope givenRelease
   ) const {
-  this->putValue(
-    team, peer, dst.window, dst.offset, value, remoteAction, coop, descriptor, requiredRelease, givenRelease
-  );
+    this->putValue(
+      team, peer, dst.window, dst.offset, value, remoteAction, coop, descriptor, requiredRelease, givenRelease
+    );
+}
+#endif
+
+#if NCCL_CHECK_CUDACC
+template<unsigned beMask>
+template<
+  typename Coop,
+  typename DescriptorSmem
+>
+NCCL_DEVICE_INLINE void ncclGin_BackendMask<beMask>::atomicAdd(
+    ncclTeam team, int peer,
+    ncclWindow_t dstWin, size_t dstOffset, uint64_t value,
+    Coop coop,
+    DescriptorSmem descriptor,
+    cuda::thread_scope requiredRelease,
+    cuda::thread_scope givenRelease
+  ) const {
+  using nccl::utility::loadConst;
+  coop.sync();
+  if (coop.thread_rank() == 0) {
+    ncclGinCall<ncclGinApi_AtomicAdd>(this->_makeCtx(),
+      ncclCoopThread(), ncclTeamRankToWorld(this->comm, team, peer),
+      loadConst(&dstWin->ginWins[this->contextId]),
+      4096*size_t(loadConst(&dstWin->ginOffset4K)) + dstOffset,
+      value,
+      ncclGin_isDescriptor(descriptor),
+      ncclGin_getDescriptor(descriptor),
+      requiredRelease, givenRelease
+    );
+  }
+  coop.sync();
 }
 #endif
 

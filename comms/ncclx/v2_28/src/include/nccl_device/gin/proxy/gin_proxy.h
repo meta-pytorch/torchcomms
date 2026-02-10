@@ -232,4 +232,17 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_PROXY> {
   }
 };
 
+template <>
+struct ncclGinApi_AtomicAdd<NCCL_NET_DEVICE_GIN_PROXY> {
+  template <typename Coop>
+  NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, Coop coop, int peer, ncclGinWindow_t dstWin,
+                                      size_t dstOff, uint64_t value, bool hasDescriptor,
+                                      ncclGinDescriptorSmem* descriptor,
+                                      cuda::thread_scope required, cuda::thread_scope given) {
+    // Not supported on proxy backend — proxy CPU-side signal path only targets
+    // the signal table, not arbitrary window addresses. Use GDAKI backend.
+    __trap();
+  }
+};
+
 #endif
