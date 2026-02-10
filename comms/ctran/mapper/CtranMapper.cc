@@ -76,7 +76,7 @@ CtranMapper::CtranMapper(CtranComm* comm) {
       statex->nRanks()};
 
   // Initialize IpcRegCache singleton (idempotent - only initializes once)
-  ctran::IpcRegCache::getInstance()->init(statex->cudaDev());
+  ctran::IpcRegCache::getInstance()->init();
 
   this->comm = comm;
 
