@@ -16,7 +16,6 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
-#include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
@@ -887,10 +886,6 @@ class CtranMapper {
     }
   }
 
-  // Dump exported registration cache, for testing only
-  std::unordered_map<ctran::regcache::RegElem*, std::unordered_set<int>>
-  dumpExportRegCache() const;
-
  protected:
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t progress() {
@@ -1084,12 +1079,12 @@ class CtranMapper {
 
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
+      const std::string peerId = comm->statex_->gPid(rank);
       FB_COMMCHECK(
           ctran::IpcRegCache::getInstance()->exportMem(
-              buf, regElem->ipcRegElem, msg.ipcDesc));
+              buf, regElem->ipcRegElem, peerId, msg.ipcDesc));
 
-      // Record the exported remote rank to notify at deregistration
-      exportRegCache_.wlock()->record(regElem, rank);
+      // Export tracking now happens inside IpcRegCache::exportMem
 
     } else if (backend == CtranMapperBackend::IB) {
       FB_COMMCHECK(CtranIb::exportMem(buf, regElem->ibRegElem, msg));
@@ -1941,22 +1936,9 @@ class CtranMapper {
   // instance and erase after completion.
   std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedCbCtrlReqs_;
 
-  // Peer IPC server addresses for async socket communication, indexed by rank.
-  // Populated via bootstrap allGather during mapper initialization.
-  std::vector<sockaddr_storage> peerIpcServerAddrs_;
-
-  // AllGather IPC server addresses from all ranks via bootstrap.
+  // AllGather IPC server addresses from all ranks via bootstrap and update
+  // IpcRegCache with the gathered addresses.
   commResult_t allGatherIpcServerAddrs();
-
-  // Get peer's IPC server address by rank.
-  folly::SocketAddress getPeerIpcServerAddr(int rank) const;
-
-  // Record remote ranks that each ipcRegElem has exported to.
-  // - For each remote rank, the local rank will send RELEASE_MEM ctrlmsg to
-  //   the remote rank at deregMem.
-  // - The export cache is maintained per communicator in order to ensure a
-  //   valid backend to send RELEASE_MEM ctrlmsg.
-  folly::Synchronized<ctran::ExportRegCache> exportRegCache_;
 
   CtranComm* comm{nullptr};
 };
