@@ -49,8 +49,25 @@ TorchCommRCCLX::TorchCommRCCLX(
 
 TorchCommRCCLX::~TorchCommRCCLX() {
   if (init_state_ == InitializationState::INITIALIZED) {
-    TC_LOG(ERROR, this)
-        << "TorchCommRCCLX was not finalized before destruction";
+    TC_LOG(WARNING, this)
+        << "TorchCommRCCLX " << name_
+        << " was not finalized before destruction. "
+        << "This may indicate a resource leak. Please call finalize() explicitly.";
+
+    // Signal shutdown to timeout watchdog thread to prevent it from accessing
+    // this object after destruction
+    shutdown_ = true;
+
+    // Wake up the timeout watchdog thread
+    {
+      std::lock_guard<std::mutex> lock(timeout_mutex_);
+      timeout_cv_.notify_all();
+    }
+
+    // Wait for timeout thread to finish
+    if (timeout_thread_.joinable()) {
+      timeout_thread_.join();
+    }
   }
 
   // We need to detach the memory hook in case finalize is not called,
