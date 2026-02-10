@@ -99,6 +99,18 @@ ncclResult_t DefaultNcclxApi::commDeregister(ncclComm_t comm, void* handle) {
   return ncclCommDeregister(comm, handle);
 }
 
+ncclResult_t
+DefaultNcclxApi::globalRegisterWithPtr(void* buffer, size_t size, int cudaDev) {
+  return ncclGlobalRegisterWithPtr(buffer, size, cudaDev);
+}
+
+ncclResult_t DefaultNcclxApi::globalDeregisterWithPtr(
+    void* buffer,
+    size_t size,
+    int cudaDev) {
+  return ncclGlobalDeregisterWithPtr(buffer, size, cudaDev);
+}
+
 ncclResult_t DefaultNcclxApi::send(
     const void* sendbuff,
     size_t count,
