@@ -1491,7 +1491,6 @@ class CtranMapper {
           .notify = put.config.notify_,
           .config = put.config.ibConfig_,
           .req = put.req == nullptr ? nullptr : &(put.req->ibReq),
-          .ibFastPath = put.config.ibFastPath_,
       };
       msgs.emplace_back(std::move(msg));
 
