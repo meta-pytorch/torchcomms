@@ -1,12 +1,18 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "meta/algoconf/AlgoConfig.h"
-#include <folly/Singleton.h>
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/hints/GlobalHints.h"
 
 using ncclx::GlobalHints;
 namespace {
+
+// Note: We use a Meyers singleton (local static) instead of folly::Singleton
+// because library_object_internal gets statically linked into multiple shared
+// libraries (e.g., ncclx-api.so, libtorch_cuda.so). When both DSOs are loaded,
+// folly's singleton registration happens twice, causing a "Double registration"
+// error. The Meyers singleton pattern with a local static variable is
+// guaranteed by C++11 to be initialized exactly once in a thread-safe manner.
 
 // TODO: populate the helper functions from CVAR auto-generated code
 inline const std::string algoValToStr(enum NCCL_SENDRECV_ALGO val) {
@@ -206,14 +212,12 @@ void AlgoConfig::reset() {
   hintsMngr->regHintEntry("algo_rma", rmaEntry);
 }
 
-folly::Singleton<AlgoConfig> algoConfigSingleton;
-
 std::shared_ptr<AlgoConfig> AlgoConfig::getInstance() {
-  auto algoConfig = algoConfigSingleton.try_get();
-  if (!algoConfig) {
-    throw std::runtime_error("AlgoConfig singleton is not initialized");
-  }
-  return algoConfig;
+  // Meyers singleton: local static is guaranteed to be initialized only once
+  // in a thread-safe manner by C++11 standard.
+  static AlgoConfig instance;
+  return std::shared_ptr<AlgoConfig>(
+      &instance, [](AlgoConfig*) {}); // No-op deleter - singleton lives forever
 }
 
 template <typename T>
@@ -305,7 +309,7 @@ std::string getAlgoHintValue(enum NCCL_RMA_ALGO algo) {
 
 void testOnlyResetAlgoConfig() {
   auto algoConfig = AlgoConfig::getInstance();
-  // It may cause hint entry to be registerd twice if this is the first time to
+  // It may cause hint entry to be registered twice if this is the first time to
   // initialize algoConfigSingleton. I.e., algoConfigSingleton will register all
   // entries in its constructor. It should be OK as this function is called only
   // in tests.

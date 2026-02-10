@@ -2,8 +2,6 @@
 
 #include "meta/comms-monitor/CommsMonitor.h"
 
-#include <folly/Singleton.h>
-
 #include "comms/ctran/Ctran.h" // access to incomplete type
 
 #include "comms/utils/colltrace/NetworkPerfMonitor.h"
@@ -13,12 +11,13 @@ constexpr static auto kGlobalInfoDumpMapKey = "GlobalInfo";
 
 namespace ncclx::comms_monitor {
 
-namespace {
-struct CommsMonitorSingletonTag {};
-} // namespace
-
-folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
-    commsMonitorSingleton{};
+// Note: We use a Meyers singleton (local static) instead of folly::Singleton
+// or folly::LeakySingleton because library_object_internal gets statically
+// linked into multiple shared libraries (e.g., ncclx-api.so, libtorch_cuda.so).
+// When both DSOs are loaded, folly's singleton registration happens twice,
+// causing a "Double registration" error. The Meyers singleton pattern with a
+// local static variable is guaranteed by C++11 to be initialized exactly once
+// in a thread-safe manner, even across DSO boundaries with RTLD_GLOBAL.
 
 /*static*/ NcclCommMonitorInfo NcclCommMonitorInfo::fromNcclComm(
     ncclComm_t comm) {
@@ -129,7 +128,13 @@ CommDumpAllMap CommsMonitor::commDumpAllImpl() {
 }
 
 /*static*/ std::shared_ptr<CommsMonitor> CommsMonitor::getInstance() {
-  return commsMonitorSingleton.try_get();
+  // Meyers singleton: local static is guaranteed to be initialized only once
+  // in a thread-safe manner by C++11 standard. This works correctly even when
+  // this code is compiled into multiple DSOs, as long as they're loaded with
+  // RTLD_GLOBAL (which is the default for shared library dependencies).
+  static CommsMonitor instance;
+  return std::shared_ptr<CommsMonitor>(&instance, [](CommsMonitor*) {
+  }); // No-op deleter - singleton lives forever
 }
 
 /*static*/ std::optional<CommDumpAllMap> CommsMonitor::commDumpAll() {
