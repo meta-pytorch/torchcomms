@@ -55,9 +55,9 @@ class CtranTcpTest : public NcclxBaseTest {
     try {
       this->ctranTcpDm =
           std::make_unique<CtranTcpDm>(this->comm, this->ctrlMgr.get());
-    } catch (const ctran::utils::Exception& e) {
+    } catch (const ctran::utils::Exception&) {
       GTEST_SKIP() << "TCPDM backend not enabled. Skip test";
-    } catch (const std::runtime_error& e) {
+    } catch (const std::runtime_error&) {
       GTEST_SKIP() << "TCPDM backend not enabled. Skip test";
     }
   }

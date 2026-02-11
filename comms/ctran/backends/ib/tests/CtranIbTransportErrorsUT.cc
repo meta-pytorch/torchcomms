@@ -201,7 +201,7 @@ TEST_F(CtranIbTest, Baseline) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     EXPECT_GE(asyncFdCounter, waitCount);
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
   s.stopIbAsyncEventHandler();
@@ -241,7 +241,7 @@ TEST_F(CtranIbTest, PollError) {
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
   pullNcclCommDump(this->commDeprecated);
@@ -292,7 +292,7 @@ TEST_F(CtranIbTest, AsyncEventFound) {
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
@@ -387,7 +387,7 @@ TEST_F(CtranIbTest, AsyncEventLinkFlap) {
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
@@ -489,7 +489,7 @@ TEST_F(CtranIbTest, LinkFlapZeroTimeout) {
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
