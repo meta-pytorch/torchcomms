@@ -162,6 +162,46 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_GDAKI> {
 };
 
 template <>
+struct ncclGinApi_AtomicAdd<NCCL_NET_DEVICE_GIN_GDAKI> {
+  template <typename Coop>
+  NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, Coop coop, int peer, ncclGinWindow_t dstWin,
+                                      size_t dstOff, uint64_t value, bool hasDescriptor,
+                                      ncclGinDescriptorSmem* descriptor,
+                                      cuda::thread_scope required, cuda::thread_scope given) {
+    using nccl::utility::loadConst;
+
+    coop.sync();
+    if (coop.thread_rank() == 0) {
+      ncclGinGdakiGPUContext* gdaki = (struct ncclGinGdakiGPUContext*)ctx.handle;
+      doca_gpu_dev_verbs_qp* qp = loadConst(&gdaki->gdqp) + peer;
+      ncclGinGdakiMemHandle* dstMh = (ncclGinGdakiMemHandle*)dstWin;
+
+      // Target the window address (not the signal table) for the atomic FA
+      doca_gpu_dev_verbs_addr raddr, laddr;
+      raddr.addr = dstOff;
+      raddr.key = loadConst(loadConst(&dstMh->rkeys) + peer);
+      laddr.addr = 0;
+      laddr.key = loadConst(&gdaki->sink_buffer_lkey);
+
+      // cuda::thread_scope_system has the lowest value
+      if ((required == cuda::thread_scope_system) && (given > required)) {
+        doca_gpu_dev_verbs_fence_release<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
+      }
+
+      // Reuse doca_gpu_dev_verbs_signal which builds OPCODE_ATOMIC_FA WQEs.
+      // This works with arbitrary addresses, not just the signal table.
+      doca_gpu_dev_verbs_signal<DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD>(
+        qp, raddr, laddr, value);
+
+#ifdef NCCL_DEVICE_GIN_GDAKI_ENABLE_DEBUG
+      doca_gpu_dev_verbs_wait(qp);
+#endif
+    }
+    coop.sync();
+  }
+};
+
+template <>
 struct ncclGinApi_ResetCounter<NCCL_NET_DEVICE_GIN_GDAKI> {
   NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, ncclGinCounter_t counterId) {
     using nccl::utility::loadConst;

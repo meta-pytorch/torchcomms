@@ -63,4 +63,23 @@ void launchDeviceResetSignalKernel(
     int signal_id,
     cudaStream_t stream);
 
+// Launch read signal kernel - reads aggregated signal value into output buffer.
+// out must be a device pointer to a single uint64_t.
+void launchDeviceReadSignalKernel(
+    DeviceWindowNCCL* win,
+    int signal_id,
+    uint64_t* out,
+    cudaStream_t stream);
+
+// Launch GIN atomicAdd test kernel - performs remote atomic fetch-and-add
+// on a uint64_t in the destination window, then signals the destination rank.
+// Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
+void launchDeviceGinAtomicAddKernel(
+    DeviceWindowNCCL* win,
+    size_t dst_offset,
+    uint64_t add_value,
+    int dst_rank,
+    int signal_id,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test

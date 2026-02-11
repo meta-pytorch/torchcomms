@@ -71,6 +71,15 @@ struct ncclGinApi_PutValue {
 };
 
 template <ncclNetDeviceType backend>
+struct ncclGinApi_AtomicAdd {
+  template <typename Coop>
+  NCCL_DEVICE_INLINE static void call(ncclGinCtx, Coop coop, int peer, ncclGinWindow_t dstWin,
+                                      size_t dstOff, uint64_t value, bool hasDescriptor,
+                                      ncclGinDescriptorSmem* descriptor,
+                                      cuda::thread_scope required, cuda::thread_scope given);
+};
+
+template <ncclNetDeviceType backend>
 struct ncclGinApi_GetSignalPtr {
   NCCL_DEVICE_INLINE static uint64_t* call(ncclGinCtx, int peer, ncclGinSignal_t signalId);
 };
