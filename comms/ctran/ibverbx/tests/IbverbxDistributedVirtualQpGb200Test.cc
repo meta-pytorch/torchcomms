@@ -383,12 +383,11 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
     // Create IbvVirtualQp from vector of QPs
     auto virtualQp = IbvVirtualQp(
         std::move(qps),
-        std::move(*maybeNotifyQp),
-        &virtualCq,
         &virtualCq,
         maxMsgPerQp,
         maxMsgBytes,
-        loadBalancingScheme);
+        loadBalancingScheme,
+        std::move(*maybeNotifyQp));
 
     // init device buffer
     void* devBuf{nullptr};

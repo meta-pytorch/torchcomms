@@ -41,7 +41,7 @@ class IbvEndPoint {
       int nicDevId,
       LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
   ~IbvEndPoint();
-  ibv_qp_init_attr makeIbvQpInitAttr(ibv_cq* sendCq, ibv_cq* recvCq);
+  ibv_qp_init_attr makeIbvQpInitAttr(ibv_cq* cq);
   ibv_qp_attr makeQpAttrInit();
   ibv_qp_attr makeQpAttrRtr(ibv_gid remoteGid);
   void changeVirtualQpStateToRts(
@@ -123,9 +123,8 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
           // Distribute QPs evenly across PDs and physical CQs
           size_t pdIdx = (i * numPds) / kTotalQps;
           size_t cqIdx = (i * numSendCqs) / kTotalQps;
-          auto initAttr = makeIbvQpInitAttr(
-              cq.getPhysicalCqsRef().at(cqIdx).cq(),
-              cq.getPhysicalCqsRef().at(cqIdx).cq());
+          auto initAttr =
+              makeIbvQpInitAttr(cq.getPhysicalCqsRef().at(cqIdx).cq());
 
           auto maybeQp = pds.at(pdIdx).createQp(&initAttr);
           if (maybeQp.hasError()) {
@@ -135,9 +134,8 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
         }
 
         // Create notify QP using the first PD and first physical CQ
-        auto notifyInitAttr = makeIbvQpInitAttr(
-            cq.getPhysicalCqsRef().at(0).cq(),
-            cq.getPhysicalCqsRef().at(0).cq());
+        auto notifyInitAttr =
+            makeIbvQpInitAttr(cq.getPhysicalCqsRef().at(0).cq());
 
         auto maybeNotifyQp = pds.at(0).createQp(&notifyInitAttr);
         if (maybeNotifyQp.hasError()) {
@@ -147,24 +145,21 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
         // Create the IbvVirtualQp instance
         return IbvVirtualQp(
             std::move(qps),
-            std::move(*maybeNotifyQp),
-            &cq,
             &cq,
             kMaxMsgCntPerQp,
             kMaxMsgSize,
-            loadBalancingScheme);
+            loadBalancingScheme,
+            std::move(*maybeNotifyQp));
       }()) {}
 
 IbvEndPoint::~IbvEndPoint() = default;
 
 // helper functions
-ibv_qp_init_attr IbvEndPoint::makeIbvQpInitAttr(
-    ibv_cq* sendCq,
-    ibv_cq* recvCq) {
+ibv_qp_init_attr IbvEndPoint::makeIbvQpInitAttr(ibv_cq* cq) {
   ibv_qp_init_attr initAttr{};
   memset(&initAttr, 0, sizeof(ibv_qp_init_attr));
-  initAttr.send_cq = sendCq;
-  initAttr.recv_cq = recvCq;
+  initAttr.send_cq = cq;
+  initAttr.recv_cq = cq;
   initAttr.qp_type = IBV_QPT_RC; // Reliable Connection
   initAttr.sq_sig_all = 0;
   initAttr.cap.max_send_wr = kMaxOutstandingWrs; // maximum outstanding send WRs
