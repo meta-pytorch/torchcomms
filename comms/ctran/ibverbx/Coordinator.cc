@@ -72,11 +72,13 @@ void Coordinator::registerVirtualQpWithVirtualCqMappings(
         physicalQpNum, deviceId, virtualQpNum);
   }
 
-  // Register the notify QP to virtual QP mapping
-  int notifyPhysicalQpNum = virtualQp->getNotifyQpRef().qp()->qp_num;
-  int notifyDeviceId = virtualQp->getNotifyQpRef().getDeviceId();
-  registerPhysicalQpAndDeviceIdToVirtualQp(
-      notifyPhysicalQpNum, notifyDeviceId, virtualQpNum);
+  // Register the notify QP to virtual QP mapping (if present)
+  if (virtualQp->hasNotifyQp()) {
+    int notifyPhysicalQpNum = virtualQp->getNotifyQpRef().qp()->qp_num;
+    int notifyDeviceId = virtualQp->getNotifyQpRef().getDeviceId();
+    registerPhysicalQpAndDeviceIdToVirtualQp(
+        notifyPhysicalQpNum, notifyDeviceId, virtualQpNum);
+  }
 }
 
 // Access APIs for testing and internal use

@@ -607,8 +607,7 @@ TEST_F(IbverbxTestFixture, IbvVirtualQp) {
   ASSERT_TRUE(pd);
 
   int totalQps = 16;
-  auto virtualQp =
-      pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq);
+  auto virtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
   ASSERT_TRUE(virtualQp);
   ASSERT_EQ(virtualQp->getQpsRef().size(), totalQps);
   ASSERT_EQ(virtualQp->getTotalQps(), totalQps);
@@ -664,8 +663,7 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpMultiThreadUniqueQpNum) {
       ASSERT_TRUE(pd);
 
       int totalQps = 4;
-      auto virtualQp =
-          pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq);
+      auto virtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
       ASSERT_TRUE(virtualQp);
 
       localQpNums.push_back(virtualQp->getVirtualQpNum());
@@ -713,8 +711,8 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpFindAvailableSendQp) {
 
   // Test setting 1: default maxMsgCntPerQp (100)
   {
-    auto virtualQp = pd->createVirtualQp(
-        totalQps, &initAttr, &virtualCq, &virtualCq, maxMsgCntPerQp);
+    auto virtualQp =
+        pd->createVirtualQp(totalQps, &initAttr, &virtualCq, maxMsgCntPerQp);
     ASSERT_TRUE(virtualQp);
     ASSERT_EQ(virtualQp->getQpsRef().size(), totalQps);
     ASSERT_EQ(virtualQp->getTotalQps(), totalQps);
@@ -803,8 +801,7 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpFindAvailableSendQp) {
 
   // Test setting 2: No limit on maxMsgCntPerQp and maxMsgSize
   {
-    auto virtualQp =
-        pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq, -1);
+    auto virtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq, -1);
     ASSERT_TRUE(virtualQp);
     ASSERT_EQ(virtualQp->getQpsRef().size(), totalQps);
     ASSERT_EQ(virtualQp->getTotalQps(), totalQps);
@@ -853,12 +850,7 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpUpdatePhysicalSendWrFromVirtualSendWr) {
   int maxMsgCntPerQp = 100;
   int maxMsgSizeByte = 100;
   auto virtualQp = pd->createVirtualQp(
-      totalQps,
-      &initAttr,
-      &virtualCq,
-      &virtualCq,
-      maxMsgCntPerQp,
-      maxMsgSizeByte);
+      totalQps, &initAttr, &virtualCq, maxMsgCntPerQp, maxMsgSizeByte);
   ASSERT_TRUE(virtualQp);
   ASSERT_EQ(virtualQp->getQpsRef().size(), totalQps);
   ASSERT_EQ(virtualQp->getTotalQps(), totalQps);
@@ -1037,8 +1029,7 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpBusinessCard) {
   ASSERT_TRUE(pd);
 
   int totalQps = 16;
-  auto virtualQp =
-      pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq);
+  auto virtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
   ASSERT_TRUE(virtualQp);
   ASSERT_EQ(virtualQp->getQpsRef().size(), totalQps);
   ASSERT_EQ(virtualQp->getTotalQps(), totalQps);
@@ -1130,8 +1121,7 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpBusinessCardSerializeAndDeserialize) {
   ASSERT_TRUE(pd);
 
   int totalQps = 16;
-  auto virtualQp =
-      pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq);
+  auto virtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
   ASSERT_TRUE(virtualQp);
   ASSERT_EQ(virtualQp->getQpsRef().size(), totalQps);
   ASSERT_EQ(virtualQp->getTotalQps(), totalQps);
@@ -1190,8 +1180,7 @@ TEST_F(IbverbxTestFixture, Coordinator) {
   ASSERT_TRUE(pd);
 
   int totalQps = 16;
-  auto maybeVirtualQp =
-      pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq);
+  auto maybeVirtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
   ASSERT_TRUE(maybeVirtualQp);
   auto virtualQp = std::move(*maybeVirtualQp);
   ASSERT_EQ(virtualQp.getQpsRef().size(), totalQps);
@@ -1296,13 +1285,13 @@ TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {
 
       int totalQps = 4;
       auto maybeVirtualQp1 =
-          pd->createVirtualQp(totalQps, &initAttr, &virtualCq1, &virtualCq1);
+          pd->createVirtualQp(totalQps, &initAttr, &virtualCq1);
       ASSERT_TRUE(maybeVirtualQp1);
       auto virtualQp1 = std::move(*maybeVirtualQp1);
       virtualQpNum1 = virtualQp1.getVirtualQpNum();
 
       auto maybeVirtualQp2 =
-          pd->createVirtualQp(totalQps, &initAttr, &virtualCq2, &virtualCq2);
+          pd->createVirtualQp(totalQps, &initAttr, &virtualCq2);
       ASSERT_TRUE(maybeVirtualQp2);
       auto virtualQp2 = std::move(*maybeVirtualQp2);
       virtualQpNum2 = virtualQp2.getVirtualQpNum();
@@ -1354,8 +1343,7 @@ TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {
     ASSERT_TRUE(pd);
 
     int totalQps = 4;
-    auto maybeVirtualQp =
-        pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq);
+    auto maybeVirtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
     ASSERT_TRUE(maybeVirtualQp);
     auto virtualQp = std::move(*maybeVirtualQp);
 
@@ -1397,8 +1385,7 @@ TEST_F(IbverbxTestFixture, CoordinatorRegisterUnregisterUpdateApis) {
     ASSERT_TRUE(pd);
 
     int totalQps = 4;
-    auto maybeVirtualQp =
-        pd->createVirtualQp(totalQps, &initAttr, &virtualCq1, &virtualCq1);
+    auto maybeVirtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq1);
     ASSERT_TRUE(maybeVirtualQp);
     auto virtualQp1 = std::move(*maybeVirtualQp);
 
