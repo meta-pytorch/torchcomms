@@ -187,4 +187,21 @@ void Coordinator::unregisterVirtualCq(
   }
 }
 
+void Coordinator::submitRequestToVirtualCq(VirtualCqRequest&& request) {
+  if (request.type == RequestType::SEND) {
+    auto virtualCq = getVirtualSendCq(request.virtualQpNum);
+    virtualCq->processRequest(std::move(request));
+  } else {
+    auto virtualCq = getVirtualRecvCq(request.virtualQpNum);
+    virtualCq->processRequest(std::move(request));
+  }
+}
+
+folly::Expected<VirtualQpResponse, Error> Coordinator::submitRequestToVirtualQp(
+    VirtualQpRequest&& request) {
+  auto virtualQp = getVirtualQpByPhysicalQpNumAndDeviceId(
+      request.physicalQpNum, request.deviceId);
+  return virtualQp->processRequest(std::move(request));
+}
+
 } // namespace ibverbx

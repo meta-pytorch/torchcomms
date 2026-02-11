@@ -55,8 +55,8 @@ class Coordinator {
   Coordinator(Coordinator&&) = default;
   Coordinator& operator=(Coordinator&&) = default;
 
-  inline void submitRequestToVirtualCq(VirtualCqRequest&& request);
-  inline folly::Expected<VirtualQpResponse, Error> submitRequestToVirtualQp(
+  void submitRequestToVirtualCq(VirtualCqRequest&& request);
+  folly::Expected<VirtualQpResponse, Error> submitRequestToVirtualQp(
       VirtualQpRequest&& request);
 
   // Register APIs for mapping management

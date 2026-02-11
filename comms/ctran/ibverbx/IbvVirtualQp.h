@@ -200,13 +200,6 @@ class IbvVirtualQp {
   inline folly::Expected<folly::Unit, Error> postRecvNotifyImm(int qpIdx = -1);
 };
 
-inline folly::Expected<VirtualQpResponse, Error>
-Coordinator::submitRequestToVirtualQp(VirtualQpRequest&& request) {
-  auto virtualQp = getVirtualQpByPhysicalQpNumAndDeviceId(
-      request.physicalQpNum, request.deviceId);
-  return virtualQp->processRequest(std::move(request));
-}
-
 // IbvVirtualQp inline functions
 inline folly::Expected<folly::Unit, Error>
 IbvVirtualQp::mapPendingSendQueToPhysicalQp(int qpIdx) {
