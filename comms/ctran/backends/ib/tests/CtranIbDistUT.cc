@@ -667,6 +667,10 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
         waitIbReq(*requests.back(), ctranIb);
         requests.pop_back();
       }
+      // When no notifications, sender signals receiver after puts complete
+      if (expectedNotifications == 0) {
+        sockSend(recvRank);
+      }
       // add a barrier
       sockRecv(recvRank);
     } else if (this->globalRank == recvRank) {
@@ -675,12 +679,16 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
       // Receiver waits for notifications
       if (expectedNotifications > 0) {
         COMMCHECK_TEST(ctranIb->waitNotify(sendRank, expectedNotifications));
-
-        // PCI-e flush to ensure data is immediately visible to GPU
-        auto flushReq = CtranIbRequest();
-        COMMCHECK_TEST(ctranIb->iflush(buf, handle, &flushReq));
-        COMMCHECK_TEST(waitIbReq(flushReq, ctranIb));
+      } else {
+        // Wait for sender to complete puts via socket
+        sockRecv(sendRank);
       }
+
+      // PCI-e flush to ensure data is immediately visible to GPU
+      auto flushReq = CtranIbRequest();
+      COMMCHECK_TEST(ctranIb->iflush(buf, handle, &flushReq));
+      COMMCHECK_TEST(waitIbReq(flushReq, ctranIb));
+
       // add a barrier
       sockSend(sendRank);
     }
