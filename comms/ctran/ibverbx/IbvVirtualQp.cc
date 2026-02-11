@@ -13,17 +13,20 @@ namespace ibverbx {
 
 IbvVirtualQp::IbvVirtualQp(
     std::vector<IbvQp>&& qps,
-    IbvQp&& notifyQp,
-    IbvVirtualCq* sendCq,
-    IbvVirtualCq* recvCq,
+    IbvVirtualCq* virtualCq,
     int maxMsgCntPerQp,
     int maxMsgSize,
-    LoadBalancingScheme loadBalancingScheme)
+    LoadBalancingScheme loadBalancingScheme,
+    std::optional<IbvQp>&& notifyQp)
     : physicalQps_(std::move(qps)),
       maxMsgCntPerQp_(maxMsgCntPerQp),
       maxMsgSize_(maxMsgSize),
       loadBalancingScheme_(loadBalancingScheme),
       notifyQp_(std::move(notifyQp)) {
+  CHECK(!physicalQps_.empty()) << "At least one physical QP must be provided!";
+  CHECK(physicalQps_.size() == 1 || notifyQp_.has_value())
+      << "notifyQp must be provided when using multiple data QPs!";
+
   virtualQpNum_ =
       nextVirtualQpNum_.fetch_add(1); // Assign unique virtual QP number
 
@@ -36,7 +39,9 @@ IbvVirtualQp::IbvVirtualQp(
   for (const auto& qp : physicalQps_) {
     uniqueDevices.insert(qp.getDeviceId());
   }
-  uniqueDevices.insert(notifyQp_.getDeviceId());
+  if (hasNotifyQp()) {
+    uniqueDevices.insert(notifyQp_->getDeviceId());
+  }
   deviceCnt_ = uniqueDevices.size();
 
   // Register the virtual QP and all its mappings with the coordinator
@@ -46,7 +51,7 @@ IbvVirtualQp::IbvVirtualQp(
 
   // Use the consolidated registration API
   coordinator->registerVirtualQpWithVirtualCqMappings(
-      this, sendCq->getVirtualCqNum(), recvCq->getVirtualCqNum());
+      this, virtualCq->getVirtualCqNum(), virtualCq->getVirtualCqNum());
 }
 
 size_t IbvVirtualQp::getTotalQps() const {
@@ -62,11 +67,11 @@ std::vector<IbvQp>& IbvVirtualQp::getQpsRef() {
 }
 
 const IbvQp& IbvVirtualQp::getNotifyQpRef() const {
-  return notifyQp_;
+  return notifyQp_.value();
 }
 
 IbvQp& IbvVirtualQp::getNotifyQpRef() {
-  return notifyQp_;
+  return notifyQp_.value();
 }
 
 uint32_t IbvVirtualQp::getVirtualQpNum() const {
@@ -157,10 +162,13 @@ folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
         return folly::makeUnexpected(maybeModifyQp.error());
       }
     }
-    attr->dest_qp_num = businessCard.notifyQpNum_;
-    auto maybeModifyQp = notifyQp_.modifyQp(attr, attrMask);
-    if (maybeModifyQp.hasError()) {
-      return folly::makeUnexpected(maybeModifyQp.error());
+    // Only modify notifyQp if it exists
+    if (hasNotifyQp()) {
+      attr->dest_qp_num = businessCard.notifyQpNum_;
+      auto maybeModifyQp = notifyQp_->modifyQp(attr, attrMask);
+      if (maybeModifyQp.hasError()) {
+        return folly::makeUnexpected(maybeModifyQp.error());
+      }
     }
   } else {
     // If no businessCard provided, modify all QPs with the same attributes
@@ -170,9 +178,11 @@ folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
         return folly::makeUnexpected(maybeModifyQp.error());
       }
     }
-    auto maybeModifyQp = notifyQp_.modifyQp(attr, attrMask);
-    if (maybeModifyQp.hasError()) {
-      return folly::makeUnexpected(maybeModifyQp.error());
+    if (hasNotifyQp()) {
+      auto maybeModifyQp = notifyQp_->modifyQp(attr, attrMask);
+      if (maybeModifyQp.hasError()) {
+        return folly::makeUnexpected(maybeModifyQp.error());
+      }
     }
   }
   return folly::unit;
@@ -184,7 +194,8 @@ IbvVirtualQpBusinessCard IbvVirtualQp::getVirtualQpBusinessCard() const {
   for (auto& qp : physicalQps_) {
     qpNums.push_back(qp.qp()->qp_num);
   }
-  return IbvVirtualQpBusinessCard(std::move(qpNums), notifyQp_.qp()->qp_num);
+  uint32_t notifyQpNum = hasNotifyQp() ? notifyQp_->qp()->qp_num : 0;
+  return IbvVirtualQpBusinessCard(std::move(qpNums), notifyQpNum);
 }
 
 LoadBalancingScheme IbvVirtualQp::getLoadBalancingScheme() const {

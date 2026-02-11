@@ -5,6 +5,7 @@
 #include <folly/Expected.h>
 #include <folly/dynamic.h>
 #include <deque>
+#include <optional>
 
 #include "comms/ctran/ibverbx/Coordinator.h"
 #include "comms/ctran/ibverbx/DqplbSeqTracker.h"
@@ -52,17 +53,26 @@ struct IbvVirtualQpBusinessCard {
   uint32_t notifyQpNum_{0};
 };
 
-// Ibv Virtual Queue Pair
+// IbvVirtualQp is the user-facing interface for posting RDMA work requests.
+// It abstracts multiple physical QPs behind a single virtual QP interface.
+// When load balancing is enabled, large RDMA messages are fragmented into
+// smaller chunks and distributed across the underlying physical QPs using a
+// configurable load balancing scheme (SPRAY or DQPLB). Completions from all
+// physical QPs are aggregated by a paired IbvVirtualCq into a single virtual
+// completion per original message. When load balancing is not needed, it falls
+// back to single-QP operations.
+//
+// Currently, each IbvVirtualQp is associated with exactly one IbvVirtualCq
+// that serves as both the send and receive completion queue.
 class IbvVirtualQp {
  public:
   IbvVirtualQp(
       std::vector<IbvQp>&& qps,
-      IbvQp&& notifyQp,
-      IbvVirtualCq* sendCq,
-      IbvVirtualCq* recvCq,
+      IbvVirtualCq* virtualCq,
       int maxMsgCntPerQp = kIbMaxMsgCntPerQp,
       int maxMsgSize = kIbMaxMsgSizeByte,
-      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY,
+      std::optional<IbvQp>&& notifyQp = std::nullopt);
   ~IbvVirtualQp();
 
   // disable copy constructor
@@ -78,6 +88,11 @@ class IbvVirtualQp {
   std::vector<IbvQp>& getQpsRef();
   const IbvQp& getNotifyQpRef() const;
   IbvQp& getNotifyQpRef();
+  bool hasNotifyQp() const {
+    CHECK(physicalQps_.size() == 1 || notifyQp_.has_value())
+        << "notifyQp must be provided when using multiple data QPs!";
+    return notifyQp_.has_value();
+  }
   uint32_t getVirtualQpNum() const;
   // If businessCard is not provided, all physical QPs will be updated with the
   // universal attributes specified in attr. This is typically used for changing
@@ -153,7 +168,7 @@ class IbvVirtualQp {
 
   // Spray mode specific fields
   std::deque<VirtualSendWr> pendingSendNotifyVirtualWrQue_;
-  IbvQp notifyQp_;
+  std::optional<IbvQp> notifyQp_;
 
   // DQPLB mode specific fields and functions
   DqplbSeqTracker dqplbSeqTracker;
@@ -286,11 +301,11 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendNotifyImm() {
   sendWr_.wr.rdma.rkey = virtualSendWr.wr.wr.rdma.rkey;
   sendWr_.imm_data = virtualSendWr.wr.imm_data;
   sendWr_.wr_id = nextPhysicalWrId_++;
-  auto maybeSend = notifyQp_.postSend(&sendWr_, &badSendWr_);
+  auto maybeSend = notifyQp_->postSend(&sendWr_, &badSendWr_);
   if (maybeSend.hasError()) {
     return folly::makeUnexpected(maybeSend.error());
   }
-  notifyQp_.physicalSendWrStatus_.emplace_back(
+  notifyQp_->physicalSendWrStatus_.emplace_back(
       sendWr_.wr_id, virtualSendWr.wr.wr_id);
   virtualSendWr.remainingMsgCnt = 0;
   pendingSendNotifyVirtualWrQue_.pop_front();
@@ -440,12 +455,12 @@ inline folly::Expected<VirtualQpResponse, Error> IbvVirtualQp::processRequest(
   VirtualQpResponse response;
   // If request.physicalQpNum differs from notifyQpNum, locate the corresponding
   // physical qpIdx to process this request.
-  auto qpIdx = request.physicalQpNum == notifyQp_.getQpNum()
+  auto qpIdx = (hasNotifyQp() && request.physicalQpNum == notifyQp_->getQpNum())
       ? -1
       : qpNumToIdx_.at(request.physicalQpNum);
   // If qpIdx is -1, physicalQp is notifyQp; otherwise, physicalQp is the qpIdx
   // entry of physicalQps_
-  auto& physicalQp = qpIdx == -1 ? notifyQp_ : physicalQps_.at(qpIdx);
+  auto& physicalQp = qpIdx == -1 ? *notifyQp_ : physicalQps_.at(qpIdx);
 
   if (request.type == RequestType::RECV) {
     if (physicalQp.physicalRecvWrStatus_.empty()) {
@@ -554,7 +569,7 @@ inline int IbvVirtualQp::findAvailableRecvQp() {
 
 inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvNotifyImm(
     int qpIdx) {
-  auto& qp = qpIdx == -1 ? notifyQp_ : physicalQps_.at(qpIdx);
+  auto& qp = qpIdx == -1 ? *notifyQp_ : physicalQps_.at(qpIdx);
   auto virtualRecvWrId = loadBalancingScheme_ == LoadBalancingScheme::SPRAY
       ? pendingRecvVirtualWrQue_.front().wr.wr_id
       : -1;

@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/ctran/ibverbx/IbvPd.h"
+#include "comms/ctran/ibverbx/IbvVirtualCq.h"
 #include "comms/ctran/ibverbx/IbverbxSymbols.h"
 
 namespace ibverbx {
@@ -117,27 +118,21 @@ folly::Expected<IbvQp, Error> IbvPd::createQp(
 folly::Expected<IbvVirtualQp, Error> IbvPd::createVirtualQp(
     int totalQps,
     ibv_qp_init_attr* initAttr,
-    IbvVirtualCq* sendCq,
-    IbvVirtualCq* recvCq,
+    IbvVirtualCq* virtualCq,
     int maxMsgCntPerQp,
     int maxMsgSize,
     LoadBalancingScheme loadBalancingScheme) const {
   std::vector<IbvQp> qps;
   qps.reserve(totalQps);
 
-  if (sendCq == nullptr) {
+  if (virtualCq == nullptr) {
     return folly::makeUnexpected(
-        Error(EINVAL, "Empty sendCq being provided to createVirtualQp"));
-  }
-
-  if (recvCq == nullptr) {
-    return folly::makeUnexpected(
-        Error(EINVAL, "Empty recvCq being provided to createVirtualQp"));
+        Error(EINVAL, "Empty virtualCq being provided to createVirtualQp"));
   }
 
   // Overwrite the CQs in the initAttr to point to the virtual CQ
-  initAttr->send_cq = sendCq->getPhysicalCqsRef().at(0).cq();
-  initAttr->recv_cq = recvCq->getPhysicalCqsRef().at(0).cq();
+  initAttr->send_cq = virtualCq->getPhysicalCqsRef().at(0).cq();
+  initAttr->recv_cq = virtualCq->getPhysicalCqsRef().at(0).cq();
 
   // First create all the data QPs
   for (int i = 0; i < totalQps; i++) {
@@ -148,22 +143,26 @@ folly::Expected<IbvVirtualQp, Error> IbvPd::createVirtualQp(
     qps.emplace_back(std::move(*maybeQp));
   }
 
-  // Create notify QP
-  auto maybeNotifyQp = createQp(initAttr);
-  if (maybeNotifyQp.hasError()) {
-    return folly::makeUnexpected(maybeNotifyQp.error());
+  // Create notify QP when using multiple data QPs, to support all
+  // load balancing schemes that may require it (e.g., SPRAY)
+  std::optional<IbvQp> notifyQp;
+  if (totalQps > 1) {
+    auto maybeNotifyQp = createQp(initAttr);
+    if (maybeNotifyQp.hasError()) {
+      return folly::makeUnexpected(maybeNotifyQp.error());
+    }
+    notifyQp = std::move(*maybeNotifyQp);
   }
 
-  // Create the IbvVirtualQp instance, with coordinator registartion happens
+  // Create the IbvVirtualQp instance, with registration happening
   // within IbvVirtualQp constructor
   return IbvVirtualQp(
       std::move(qps),
-      std::move(*maybeNotifyQp),
-      sendCq,
-      recvCq,
+      virtualCq,
       maxMsgCntPerQp,
       maxMsgSize,
-      loadBalancingScheme);
+      loadBalancingScheme,
+      std::move(notifyQp));
 }
 
 folly::Expected<IbvSrq, Error> IbvPd::createSrq(
