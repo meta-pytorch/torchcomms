@@ -48,9 +48,9 @@ struct MultipeerIbgdaTransportConfig {
   // Each slot is a 64-bit counter for signaling.
   std::size_t signalCount{1};
 
-  // Queue pair depth (number of outstanding WQEs).
+  // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
-  uint32_t qpDepth{1024};
+  uint32_t qpDepth{128};
 };
 
 /**

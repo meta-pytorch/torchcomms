@@ -219,6 +219,108 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
 }
 
 // =============================================================================
+// Put/Signal Non-Adaptive Basic Test - Tests fused put+signal operation
+// =============================================================================
+
+TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalNonAdaptiveBasic) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const std::size_t nbytes = 64 * 1024; // 64KB transfer
+  const int numBlocks = 1;
+  const int blockSize = 32;
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const uint8_t testPattern = 0xCD;
+
+  try {
+    auto transport = createTransport();
+
+    // Allocate and register user-owned data buffer
+    DeviceBuffer dataBuffer(nbytes);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+
+    // Collectively exchange buffer info to get remote buffer handles
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    // Get peer transport for explicit peer selection
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+
+    if (globalRank == 0) {
+      // Rank 0: Sender
+      test::fillBufferWithPattern(
+          localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Perform RDMA put with signal using non-adaptive (fused) operation
+      test::testPutSignalNonAdaptive(
+          peerTransportPtr,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          0, // signal id
+          1, // signal value
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    } else {
+      // Rank 1: Receiver
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Wait for signal from sender
+      test::testWaitSignal(
+          peerTransportPtr,
+          0, // signal id
+          IbgdaCmpOp::GE,
+          1, // expected signal
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Verify received data
+      DeviceBuffer errorCountBuf(sizeof(int));
+      auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+
+      test::verifyBufferPattern(
+          localDataBuf.ptr,
+          nbytes,
+          testPattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+
+      EXPECT_EQ(h_errorCount, 0)
+          << "Rank " << globalRank << ": Found " << h_errorCount
+          << " byte mismatches out of " << nbytes
+          << " bytes (non-adaptive put_signal)";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  XLOGF(INFO, "Rank {}: PutSignalNonAdaptiveBasic test completed", globalRank);
+}
+
+// =============================================================================
 // Multiple Transfers Test - Tests repeated put_signal operations
 // =============================================================================
 
