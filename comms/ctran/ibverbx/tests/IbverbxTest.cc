@@ -13,6 +13,7 @@
   FRIEND_TEST(                     \
       IbverbxTestFixture, IbvVirtualQpUpdatePhysicalSendWrFromVirtualSendWr);
 
+#include "comms/ctran/ibverbx/IbvVirtualWr.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/utils/checks.h"
 
@@ -1747,6 +1748,140 @@ TEST_F(IbverbxTestFixture, IbvQpGetDeviceQp) {
   // Cleanup
   CUDA_CHECK(cudaFree(d_cq));
 #endif
+}
+
+TEST_F(IbverbxTestFixture, ActiveVirtualWr) {
+  // isComplete
+  {
+    ActiveVirtualWr wr;
+    wr.remainingMsgCnt = 2;
+    ASSERT_FALSE(wr.isComplete());
+    wr.remainingMsgCnt = 1;
+    ASSERT_FALSE(wr.isComplete());
+    wr.remainingMsgCnt = 0;
+    ASSERT_TRUE(wr.isComplete());
+  }
+
+  // isSendOp
+  {
+    ActiveVirtualWr wr;
+    for (auto opcode :
+         {IBV_WR_SEND,
+          IBV_WR_RDMA_WRITE,
+          IBV_WR_RDMA_WRITE_WITH_IMM,
+          IBV_WR_RDMA_READ,
+          IBV_WR_ATOMIC_FETCH_AND_ADD,
+          IBV_WR_ATOMIC_CMP_AND_SWP}) {
+      wr.opcode = opcode;
+      ASSERT_TRUE(wr.isSendOp()) << "opcode " << opcode << " should be send op";
+    }
+    wr.opcode = IBV_WR_SEND_WITH_IMM;
+    ASSERT_FALSE(wr.isSendOp());
+  }
+}
+
+TEST_F(IbverbxTestFixture, WrTracker) {
+  // add, find, remove
+  {
+    WrTracker<ActiveVirtualWr> tracker;
+
+    ActiveVirtualWr wr0;
+    wr0.userWrId = 100;
+    ActiveVirtualWr wr1;
+    wr1.userWrId = 200;
+
+    ASSERT_EQ(tracker.add(std::move(wr0)), 0);
+    ASSERT_EQ(tracker.add(std::move(wr1)), 1);
+    ASSERT_EQ(tracker.activeCount(), 2);
+
+    ASSERT_NE(tracker.find(0), nullptr);
+    ASSERT_EQ(tracker.find(0)->userWrId, 100);
+    ASSERT_NE(tracker.find(1), nullptr);
+    ASSERT_EQ(tracker.find(1)->userWrId, 200);
+
+    // const find
+    const auto& constTracker = tracker;
+    ASSERT_NE(constTracker.find(0), nullptr);
+
+    // find non-existent
+    ASSERT_EQ(tracker.find(999), nullptr);
+
+    // remove
+    tracker.remove(0);
+    ASSERT_EQ(tracker.activeCount(), 1);
+    ASSERT_EQ(tracker.find(0), nullptr);
+    ASSERT_NE(tracker.find(1), nullptr);
+
+    // remove non-existent is a no-op
+    tracker.remove(999);
+    ASSERT_EQ(tracker.activeCount(), 1);
+  }
+
+  // queues and counts
+  {
+    WrTracker<ActiveVirtualWr> tracker;
+    ASSERT_FALSE(tracker.hasPendingPost());
+    ASSERT_FALSE(tracker.hasPendingCompletion());
+
+    for (int i = 0; i < 3; i++) {
+      ActiveVirtualWr wr;
+      wr.userWrId = i;
+      tracker.add(std::move(wr));
+    }
+    ASSERT_EQ(tracker.activeCount(), 3);
+    ASSERT_EQ(tracker.pendingPostCount(), 3);
+    ASSERT_EQ(tracker.pendingCompletionCount(), 3);
+
+    // FIFO order for pending queue
+    ASSERT_EQ(tracker.frontPendingPost(), 0);
+    tracker.popPendingPost();
+    ASSERT_EQ(tracker.frontPendingPost(), 1);
+    tracker.popPendingPost();
+    ASSERT_EQ(tracker.frontPendingPost(), 2);
+    tracker.popPendingPost();
+    ASSERT_FALSE(tracker.hasPendingPost());
+
+    // Outstanding queue is independent
+    ASSERT_EQ(tracker.pendingCompletionCount(), 3);
+    ASSERT_EQ(tracker.frontPendingCompletion(), 0);
+    tracker.popPendingCompletion();
+    ASSERT_EQ(tracker.frontPendingCompletion(), 1);
+    tracker.popPendingCompletion();
+    tracker.popPendingCompletion();
+    ASSERT_FALSE(tracker.hasPendingCompletion());
+
+    // Popping queues does not affect active map
+    ASSERT_EQ(tracker.activeCount(), 3);
+  }
+
+  // move semantics
+  {
+    WrTracker<ActiveVirtualWr> tracker;
+
+    ActiveVirtualWr wr;
+    wr.userWrId = 42;
+    wr.deviceKeys[0] = MemoryRegionKeys{111, 222};
+    wr.deviceKeys[1] = MemoryRegionKeys{333, 444};
+
+    uint64_t id = tracker.add(std::move(wr));
+    ASSERT_TRUE(wr.deviceKeys.empty()); // NOLINT(bugprone-use-after-move)
+
+    auto* found = tracker.find(id);
+    ASSERT_NE(found, nullptr);
+    ASSERT_EQ(found->deviceKeys.size(), 2);
+    ASSERT_EQ(found->deviceKeys[0].lkey, 111);
+    ASSERT_EQ(found->deviceKeys[1].rkey, 444);
+  }
+}
+
+TEST_F(IbverbxTestFixture, IbvVirtualWcDefaults) {
+  IbvVirtualWc wc;
+  ASSERT_EQ(wc.wrId, 0);
+  ASSERT_EQ(wc.status, IBV_WC_SUCCESS);
+  ASSERT_EQ(wc.opcode, IBV_WC_SEND);
+  ASSERT_EQ(wc.qpNum, 0);
+  ASSERT_EQ(wc.immData, 0);
+  ASSERT_EQ(wc.byteLen, 0);
 }
 
 } // namespace ibverbx
