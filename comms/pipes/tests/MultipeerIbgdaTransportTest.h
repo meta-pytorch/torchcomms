@@ -17,6 +17,30 @@ class P2pIbgdaTransportDevice;
 namespace comms::pipes::test {
 
 /**
+ * Test kernel: Send data via put_signal_non_adaptive
+ *
+ * Uses the fused put+signal operation (single compound WQE) instead of
+ * the split put + signal used by testPutSignal. Faster but ordering
+ * depends on NIC (not safe with adaptive routing).
+ *
+ * @param deviceTransportPtr Pointer to P2pIbgdaTransportDevice in device memory
+ * @param localBuf Local source buffer (with lkey)
+ * @param remoteBuf Remote destination buffer (with rkey)
+ * @param nbytes Number of bytes to transfer
+ * @param signalId Signal slot index
+ * @param signalVal Signal value to send
+ */
+void testPutSignalNonAdaptive(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Send data via put_signal
  *
  * Sender fills local buffer with pattern and uses put_signal to transfer

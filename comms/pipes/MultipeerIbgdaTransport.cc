@@ -22,7 +22,6 @@ namespace comms::pipes {
 namespace {
 
 constexpr int kDefaultGidIndex = 3; // Default GID index (sample uses 0)
-constexpr int kQueueSize = 128; // Number of WQEs (matches ncclx default)
 constexpr int kHopLimit = 255;
 
 // Sysfs paths for device discovery
@@ -45,76 +44,48 @@ std::string getCudaPciBusId(int cudaDevice) {
   return busId;
 }
 
-// Convert DOCA error to string
+// Convert DOCA error to string using lookup table
+// Values match the doca_error_t enum (0 = DOCA_SUCCESS through 31)
 const char* docaErrorToString(doca_error_t err) {
-  switch (err) {
-    case DOCA_SUCCESS:
-      return "DOCA_SUCCESS";
-    case DOCA_ERROR_UNKNOWN:
-      return "DOCA_ERROR_UNKNOWN";
-    case DOCA_ERROR_NOT_PERMITTED:
-      return "DOCA_ERROR_NOT_PERMITTED";
-    case DOCA_ERROR_IN_USE:
-      return "DOCA_ERROR_IN_USE";
-    case DOCA_ERROR_NOT_SUPPORTED:
-      return "DOCA_ERROR_NOT_SUPPORTED";
-    case DOCA_ERROR_AGAIN:
-      return "DOCA_ERROR_AGAIN";
-    case DOCA_ERROR_INVALID_VALUE:
-      return "DOCA_ERROR_INVALID_VALUE";
-    case DOCA_ERROR_NO_MEMORY:
-      return "DOCA_ERROR_NO_MEMORY";
-    case DOCA_ERROR_INITIALIZATION:
-      return "DOCA_ERROR_INITIALIZATION";
-    case DOCA_ERROR_TIME_OUT:
-      return "DOCA_ERROR_TIME_OUT";
-    case DOCA_ERROR_SHUTDOWN:
-      return "DOCA_ERROR_SHUTDOWN";
-    case DOCA_ERROR_CONNECTION_RESET:
-      return "DOCA_ERROR_CONNECTION_RESET";
-    case DOCA_ERROR_CONNECTION_ABORTED:
-      return "DOCA_ERROR_CONNECTION_ABORTED";
-    case DOCA_ERROR_CONNECTION_INPROGRESS:
-      return "DOCA_ERROR_CONNECTION_INPROGRESS";
-    case DOCA_ERROR_NOT_CONNECTED:
-      return "DOCA_ERROR_NOT_CONNECTED";
-    case DOCA_ERROR_NO_LOCK:
-      return "DOCA_ERROR_NO_LOCK";
-    case DOCA_ERROR_NOT_FOUND:
-      return "DOCA_ERROR_NOT_FOUND";
-    case DOCA_ERROR_IO_FAILED:
-      return "DOCA_ERROR_IO_FAILED";
-    case DOCA_ERROR_BAD_STATE:
-      return "DOCA_ERROR_BAD_STATE";
-    case DOCA_ERROR_UNSUPPORTED_VERSION:
-      return "DOCA_ERROR_UNSUPPORTED_VERSION";
-    case DOCA_ERROR_OPERATING_SYSTEM:
-      return "DOCA_ERROR_OPERATING_SYSTEM";
-    case DOCA_ERROR_DRIVER:
-      return "DOCA_ERROR_DRIVER (check DOCA GPUNetIO driver/infrastructure)";
-    case DOCA_ERROR_UNEXPECTED:
-      return "DOCA_ERROR_UNEXPECTED";
-    case DOCA_ERROR_ALREADY_EXIST:
-      return "DOCA_ERROR_ALREADY_EXIST";
-    case DOCA_ERROR_FULL:
-      return "DOCA_ERROR_FULL";
-    case DOCA_ERROR_EMPTY:
-      return "DOCA_ERROR_EMPTY";
-    case DOCA_ERROR_IN_PROGRESS:
-      return "DOCA_ERROR_IN_PROGRESS";
-    case DOCA_ERROR_TOO_BIG:
-      return "DOCA_ERROR_TOO_BIG";
-    case DOCA_ERROR_AUTHENTICATION:
-      return "DOCA_ERROR_AUTHENTICATION";
-    case DOCA_ERROR_BAD_CONFIG:
-      return "DOCA_ERROR_BAD_CONFIG";
-    case DOCA_ERROR_SKIPPED:
-      return "DOCA_ERROR_SKIPPED";
-    case DOCA_ERROR_DEVICE_FATAL_ERROR:
-      return "DOCA_ERROR_DEVICE_FATAL_ERROR";
-    default:
-      return "DOCA_ERROR_UNKNOWN_CODE";
+  static constexpr const char* kDocaErrorNames[] = {
+      "DOCA_SUCCESS",
+      "DOCA_ERROR_UNKNOWN",
+      "DOCA_ERROR_NOT_PERMITTED",
+      "DOCA_ERROR_IN_USE",
+      "DOCA_ERROR_NOT_SUPPORTED",
+      "DOCA_ERROR_AGAIN",
+      "DOCA_ERROR_INVALID_VALUE",
+      "DOCA_ERROR_NO_MEMORY",
+      "DOCA_ERROR_INITIALIZATION",
+      "DOCA_ERROR_TIME_OUT",
+      "DOCA_ERROR_SHUTDOWN",
+      "DOCA_ERROR_CONNECTION_RESET",
+      "DOCA_ERROR_CONNECTION_ABORTED",
+      "DOCA_ERROR_CONNECTION_INPROGRESS",
+      "DOCA_ERROR_NOT_CONNECTED",
+      "DOCA_ERROR_NO_LOCK",
+      "DOCA_ERROR_NOT_FOUND",
+      "DOCA_ERROR_IO_FAILED",
+      "DOCA_ERROR_BAD_STATE",
+      "DOCA_ERROR_UNSUPPORTED_VERSION",
+      "DOCA_ERROR_OPERATING_SYSTEM",
+      "DOCA_ERROR_DRIVER",
+      "DOCA_ERROR_UNEXPECTED",
+      "DOCA_ERROR_ALREADY_EXIST",
+      "DOCA_ERROR_FULL",
+      "DOCA_ERROR_EMPTY",
+      "DOCA_ERROR_IN_PROGRESS",
+      "DOCA_ERROR_TOO_BIG",
+      "DOCA_ERROR_AUTHENTICATION",
+      "DOCA_ERROR_BAD_CONFIG",
+      "DOCA_ERROR_SKIPPED",
+      "DOCA_ERROR_DEVICE_FATAL_ERROR",
+  };
+  auto idx = static_cast<int>(err);
+  if (idx >= 0 && idx < static_cast<int>(std::size(kDocaErrorNames))) {
+    return kDocaErrorNames[idx];
   }
+  return "DOCA_ERROR_UNKNOWN_CODE";
 }
 
 // Check DOCA error and throw on failure
@@ -450,13 +421,14 @@ void MultipeerIbgdaTransport::createQps() {
   doca_gpu_verbs_qp_init_attr_hl initAttr{};
   initAttr.gpu_dev = docaGpu_;
   initAttr.ibpd = reinterpret_cast<::ibv_pd*>(ibvPd_->pd());
-  initAttr.sq_nwqe = kQueueSize;
+  initAttr.sq_nwqe = config_.qpDepth;
   initAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
   initAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
 
   LOG(INFO) << "MultipeerIbgdaTransport: creating " << numPeers << " QPs"
             << " gpu_dev=" << (void*)docaGpu_
-            << " ibpd=" << (void*)initAttr.ibpd << " sq_nwqe=" << kQueueSize
+            << " ibpd=" << (void*)initAttr.ibpd
+            << " sq_nwqe=" << config_.qpDepth
             << " nic_handler=AUTO mreg_type=DEFAULT";
 
   for (int i = 0; i < numPeers; i++) {

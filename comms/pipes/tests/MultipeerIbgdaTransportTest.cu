@@ -10,6 +10,38 @@
 namespace comms::pipes::test {
 
 // =============================================================================
+// Kernel: Put with signal (non-adaptive routing)
+// =============================================================================
+
+__global__ void putSignalNonAdaptiveKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    auto work = transport->put_signal_non_adaptive(
+        localBuf, remoteBuf, nbytes, signalId, signalVal);
+    transport->wait_local(work);
+  }
+}
+
+void testPutSignalNonAdaptive(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize) {
+  putSignalNonAdaptiveKernel<<<numBlocks, blockSize>>>(
+      deviceTransportPtr, localBuf, remoteBuf, nbytes, signalId, signalVal);
+}
+
+// =============================================================================
 // Kernel: Put with signal
 // =============================================================================
 

@@ -43,7 +43,7 @@ constexpr int kIbgdaBatchIters = 1000;
     }                                \
   } while (0)
 
-// CUDA error checking macro for value-returning functions
+// CUDA error checking macro for functions returning a value
 #define CUDA_CHECK(call)             \
   do {                               \
     cudaError_t err = call;          \
