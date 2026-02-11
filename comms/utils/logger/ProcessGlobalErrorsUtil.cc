@@ -76,6 +76,35 @@ void ProcessGlobalErrorsUtil::addErrorAndStackTrace(
 }
 
 /* static */
+void ProcessGlobalErrorsUtil::addIbCompletionError(IbCompletionError error) {
+  if (NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES == 0) {
+    return;
+  }
+  auto statePtr = kAllState.try_get();
+  if (!statePtr) {
+    return;
+  }
+  statePtr->withWLock([&](auto& state) {
+    // If we are at capacity, remove the earliest one
+    if (state.ibCompletionErrors.size() ==
+        NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES) {
+      state.ibCompletionErrors.pop_front();
+    }
+    error.timestampMs = nowTs();
+    state.ibCompletionErrors.push_back(std::move(error));
+  });
+}
+
+/* static */
+void ProcessGlobalErrorsUtil::clearIbCompletionErrors() {
+  auto statePtr = kAllState.try_get();
+  if (!statePtr) {
+    return;
+  }
+  statePtr->withWLock([](auto& state) { state.ibCompletionErrors.clear(); });
+}
+
+/* static */
 ProcessGlobalErrorsUtil::State ProcessGlobalErrorsUtil::getAllState() {
   auto statePtr = kAllState.try_get();
   if (!statePtr) {

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <deque>
 #include <optional>
 #include <string>
@@ -26,10 +27,26 @@ class ProcessGlobalErrorsUtil {
     std::string errorMessage;
   };
 
+  struct IbCompletionError {
+    std::chrono::milliseconds timestampMs{};
+    std::string peer;
+    std::string statusStr;
+    int status{0};
+    std::string opcodeStr;
+    int opcode{0};
+    int reqSize{0};
+    uint32_t vendorErr{0};
+    std::string reqType;
+    std::string localGid;
+    std::string remoteGid;
+    std::string hcaName;
+  };
+
   struct State {
     // Map of device name -> port -> error message
     std::unordered_map<std::string, std::unordered_map<int, NicError>> badNics;
     std::deque<ErrorAndStackTrace> errorAndStackTraces;
+    std::deque<IbCompletionError> ibCompletionErrors;
   };
 
   // Report an error on a NIC. If errorMessage is std::nullopt, then
@@ -43,6 +60,13 @@ class ProcessGlobalErrorsUtil {
   static void addErrorAndStackTrace(
       std::string errorMessage,
       std::vector<std::string> stackTrace);
+
+  // Report an IB completion error
+  static void addIbCompletionError(IbCompletionError error);
+
+  // Clear all stored IB completion errors (called after reporting to avoid
+  // duplicate reporting)
+  static void clearIbCompletionErrors();
 
   static State getAllState();
 };
