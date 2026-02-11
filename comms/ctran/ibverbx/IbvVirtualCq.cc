@@ -37,12 +37,20 @@ IbvVirtualCq::IbvVirtualCq(IbvVirtualCq&& other) noexcept {
   maxCqe_ = other.maxCqe_;
   virtualWrIdToVirtualWc_ = std::move(other.virtualWrIdToVirtualWc_);
   virtualCqNum_ = other.virtualCqNum_;
+  registeredQps_ = std::move(other.registeredQps_);
 
   // Update coordinator pointer mapping for this virtual CQ after move
   auto coordinator = Coordinator::getCoordinator();
   CHECK(coordinator)
       << "Coordinator should not be nullptr during IbvVirtualCq move construction!";
   coordinator->updateVirtualCqPointer(virtualCqNum_, this);
+
+  // Update registered VirtualQp back-pointers to point to new location
+  for (auto& [qpId, info] : registeredQps_) {
+    CHECK(info.vqp != nullptr)
+        << "Registered physical QP has no associated VirtualQp!";
+    info.vqp->virtualCq_ = this;
+  }
 }
 
 IbvVirtualCq& IbvVirtualCq::operator=(IbvVirtualCq&& other) noexcept {
@@ -53,12 +61,20 @@ IbvVirtualCq& IbvVirtualCq::operator=(IbvVirtualCq&& other) noexcept {
     maxCqe_ = other.maxCqe_;
     virtualWrIdToVirtualWc_ = std::move(other.virtualWrIdToVirtualWc_);
     virtualCqNum_ = other.virtualCqNum_;
+    registeredQps_ = std::move(other.registeredQps_);
 
     // Update coordinator pointer mapping for this virtual CQ after move
     auto coordinator = Coordinator::getCoordinator();
     CHECK(coordinator)
         << "Coordinator should not be nullptr during IbvVirtualCq move construction!";
     coordinator->updateVirtualCqPointer(virtualCqNum_, this);
+
+    // Update registered VirtualQp back-pointers to point to new location
+    for (auto& [qpId, info] : registeredQps_) {
+      CHECK(info.vqp != nullptr)
+          << "Registered physical QP has no associated VirtualQp!";
+      info.vqp->virtualCq_ = this;
+    }
   }
   return *this;
 }
@@ -86,6 +102,24 @@ IbvVirtualCq::~IbvVirtualCq() {
   CHECK(coordinator)
       << "Coordinator should not be nullptr during IbvVirtualCq destruction!";
   coordinator->unregisterVirtualCq(virtualCqNum_, this);
+}
+
+void IbvVirtualCq::registerPhysicalQp(
+    uint32_t physicalQpNum,
+    int32_t deviceId,
+    IbvVirtualQp* vqp,
+    bool isMultiQp,
+    uint32_t virtualQpNum) {
+  QpId key{.deviceId = deviceId, .qpNum = physicalQpNum};
+  registeredQps_[key] = RegisteredQpInfo{
+      .vqp = vqp, .isMultiQp = isMultiQp, .virtualQpNum = virtualQpNum};
+}
+
+void IbvVirtualCq::unregisterPhysicalQp(
+    uint32_t physicalQpNum,
+    int32_t deviceId) {
+  QpId key{.deviceId = deviceId, .qpNum = physicalQpNum};
+  registeredQps_.erase(key);
 }
 
 } // namespace ibverbx
