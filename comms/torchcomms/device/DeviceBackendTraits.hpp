@@ -6,7 +6,7 @@
 // create_device_window methods for device state management.
 //
 // Current Backends:
-//   - NCCLGinBackend: NCCL GIN for GPU-initiated networking
+//   - NCCLDeviceBackend: Unified NCCL backend (GIN + LSA)
 //
 // Future Backends:
 //   - NVSHMEMBackend: NVSHMEM for symmetric memory operations
@@ -32,10 +32,10 @@ template <typename Backend>
 class TorchCommDeviceWindow;
 
 // =============================================================================
-// NCCLGinBackend - Backend traits for NCCL GIN
+// NCCLDeviceBackend - Unified NCCL backend (GIN + LSA)
 // =============================================================================
 //
-// Defines types and static methods for NCCL's GPU-Initiated Networking backend:
+// Defines types and static methods for the unified NCCL device backend:
 //   - Comm: ncclDevComm - Device communicator passed by value to kernels
 //   - Window: ncclWindow_t - Window handle for RMA operations
 //   - Ptr: unique_ptr with custom deleter for device window ownership
@@ -48,7 +48,7 @@ class TorchCommDeviceWindow;
 // The custom deleter stores dev_comm for cleanup and calls cudaFree.
 // The caller must call ncclDevCommDestroy before destroying the Ptr.
 
-struct NCCLGinBackend {
+struct NCCLDeviceBackend {
   using Comm = ncclDevComm;
   using Window = ncclWindow_t;
 
@@ -75,12 +75,12 @@ struct NCCLGinBackend {
         Comm dev_comm_val)
         : nccl_comm(comm), nccl_api(api), dev_comm(dev_comm_val) {}
 
-    void operator()(TorchCommDeviceWindow<NCCLGinBackend>* ptr) const;
+    void operator()(TorchCommDeviceWindow<NCCLDeviceBackend>* ptr) const;
   };
 
   // Type alias for device window unique_ptr with custom deleter
   using Ptr = std::
-      unique_ptr<TorchCommDeviceWindow<NCCLGinBackend>, DeviceWindowDeleter>;
+      unique_ptr<TorchCommDeviceWindow<NCCLDeviceBackend>, DeviceWindowDeleter>;
 
   // Create fully initialized device window struct in DEVICE memory.
   // Creates ncclDevComm internally and populates all window fields.
@@ -147,5 +147,8 @@ struct DeviceBackendConfig {
 //       void* base,
 //       size_t size);
 // };
+
+// Backward compatibility alias — will be removed in the triton update commit.
+using NCCLGinBackend = NCCLDeviceBackend;
 
 } // namespace torchcomms::device

@@ -1,5 +1,5 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
-// TorchComms Device API - NCCL GIN Backend Implementation Header
+// TorchComms Device API - NCCL Backend Implementation Header
 //
 // Device-side implementations for TorchComms using NCCL's GIN APIs.
 // Header-only library - implementations are inline for template instantiation.
@@ -41,11 +41,11 @@ constexpr int kDefaultSignalBits = 64;
 constexpr int kDefaultCounterBits = 56;
 
 // =============================================================================
-// TorchCommDeviceWindow<NCCLGinBackend> RMA Operations
+// TorchCommDeviceWindow<NCCLDeviceBackend> RMA Operations
 // =============================================================================
 
 template <>
-__device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::put(
+__device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::put(
     size_t dst_offset,
     const RegisteredBuffer& src_buf,
     size_t src_offset,
@@ -122,11 +122,11 @@ __device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::put(
 }
 
 // =============================================================================
-// TorchCommDeviceWindow<NCCLGinBackend> Signal Operations
+// TorchCommDeviceWindow<NCCLDeviceBackend> Signal Operations
 // =============================================================================
 
 template <>
-__device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::signal(
+__device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::signal(
     int peer,
     int signal_id,
     SignalOp op,
@@ -150,7 +150,7 @@ __device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::signal(
 }
 
 template <>
-__device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::wait_signal(
+__device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_signal(
     int signal_id,
     CmpOp cmp,
     uint64_t value) {
@@ -173,8 +173,8 @@ __device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::wait_signal(
 }
 
 template <>
-__device__ inline uint64_t TorchCommDeviceWindow<NCCLGinBackend>::read_signal(
-    int signal_id) const {
+__device__ inline uint64_t
+TorchCommDeviceWindow<NCCLDeviceBackend>::read_signal(int signal_id) const {
   const ncclDevComm& dev_comm = comm_;
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
 
@@ -183,7 +183,7 @@ __device__ inline uint64_t TorchCommDeviceWindow<NCCLGinBackend>::read_signal(
 }
 
 template <>
-__device__ inline void TorchCommDeviceWindow<NCCLGinBackend>::reset_signal(
+__device__ inline void TorchCommDeviceWindow<NCCLDeviceBackend>::reset_signal(
     int signal_id) {
   const ncclDevComm& dev_comm = comm_;
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
@@ -192,11 +192,11 @@ __device__ inline void TorchCommDeviceWindow<NCCLGinBackend>::reset_signal(
 }
 
 // =============================================================================
-// TorchCommDeviceWindow<NCCLGinBackend> Counter Operations
+// TorchCommDeviceWindow<NCCLDeviceBackend> Counter Operations
 // =============================================================================
 
 template <>
-__device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::wait_local(
+__device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::wait_local(
     int op_id,
     CmpOp cmp,
     uint64_t value) {
@@ -219,8 +219,8 @@ __device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::wait_local(
 }
 
 template <>
-__device__ inline uint64_t TorchCommDeviceWindow<NCCLGinBackend>::read_counter(
-    int counter_id) const {
+__device__ inline uint64_t
+TorchCommDeviceWindow<NCCLDeviceBackend>::read_counter(int counter_id) const {
   const ncclDevComm& dev_comm = comm_;
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
 
@@ -229,7 +229,7 @@ __device__ inline uint64_t TorchCommDeviceWindow<NCCLGinBackend>::read_counter(
 }
 
 template <>
-__device__ inline void TorchCommDeviceWindow<NCCLGinBackend>::reset_counter(
+__device__ inline void TorchCommDeviceWindow<NCCLDeviceBackend>::reset_counter(
     int counter_id) {
   const ncclDevComm& dev_comm = comm_;
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
@@ -238,11 +238,11 @@ __device__ inline void TorchCommDeviceWindow<NCCLGinBackend>::reset_counter(
 }
 
 // =============================================================================
-// TorchCommDeviceWindow<NCCLGinBackend> Synchronization Operations
+// TorchCommDeviceWindow<NCCLDeviceBackend> Synchronization Operations
 // =============================================================================
 
 template <>
-__device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::fence() {
+__device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::fence() {
   // No-op for NCCL GIN backend.
   // NCCL GIN guarantees ordering: put and signal operations to the same peer
   // are delivered in order. No explicit fence is needed.
@@ -251,7 +251,7 @@ __device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::fence() {
 }
 
 template <>
-__device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::flush() {
+__device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::flush() {
   const ncclDevComm& dev_comm = comm_;
   ncclGin gin(dev_comm, kDefaultGinContextIndex);
 
@@ -260,7 +260,7 @@ __device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::flush() {
 }
 
 template <>
-__device__ inline int TorchCommDeviceWindow<NCCLGinBackend>::barrier(
+__device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::barrier(
     int barrier_id) {
   // NOT IMPLEMENTED - trap to prevent accidental usage.
   //

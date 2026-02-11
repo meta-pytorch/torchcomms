@@ -9,11 +9,11 @@
 //   - 1:1 mapping between host window and device window
 //
 // Backend Types (from DeviceBackendTraits.hpp):
-//   - NCCLGinBackend: NCCL GIN for GPU-initiated networking
+//   - NCCLDeviceBackend: Unified NCCL backend (GIN + LSA)
 //   - Future: NVSHMEMBackend, etc.
 //
 // Type Aliases (defined in backend-specific headers):
-//   - DeviceWindowNCCL = TorchCommDeviceWindow<NCCLGinBackend>
+//   - DeviceWindowNCCL = TorchCommDeviceWindow<NCCLDeviceBackend>
 //   - RegisteredBufferNCCL = RegisteredBuffer
 
 #pragma once
@@ -110,13 +110,15 @@ class TorchCommDeviceWindow {
       void* base,
       size_t size,
       int rank,
-      int num_ranks)
+      int num_ranks,
+      uint32_t signal_buffer_handle = 0)
       : comm_(comm),
         window_(window),
         base_(base),
         size_(size),
         rank_(rank),
-        num_ranks_(num_ranks) {}
+        num_ranks_(num_ranks),
+        signal_buffer_handle_(signal_buffer_handle) {}
 
   // =========================================================================
   // Metadata
@@ -149,6 +151,14 @@ class TorchCommDeviceWindow {
   }
   __device__ typename Backend::Window window() const {
     return window_;
+  }
+
+  // =========================================================================
+  // Signal Buffer Handle
+  // =========================================================================
+
+  __device__ uint32_t signal_buffer_handle() const {
+    return signal_buffer_handle_;
   }
 
   // =========================================================================
@@ -204,6 +214,8 @@ class TorchCommDeviceWindow {
   size_t size_; // Window size in bytes
   int rank_;
   int num_ranks_;
+  uint32_t
+      signal_buffer_handle_; // Resource buffer handle for per-peer signal slots
 };
 
 // Type alias (also defined in backend-specific headers for convenience)
