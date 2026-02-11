@@ -581,16 +581,12 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
   auto regElems = regCache->getRegElems(segHdl);
   if (!skipRemRelease) {
     // Release remote registration associated with each regElem.
-
-    // Acquire epoch lock for thread-safe ctrl msg exchange via backend.
-    // Require the caller not call it within an existing epoch lock.
-    // NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK is enabled in UT to check misuse
-    // within Ctran.
-    epochLock();
+    // No epoch lock needed - remReleaseMem delegates to IpcRegCache which uses
+    // AsyncSocket for IPC release notifications. AsyncSocket runs on its own
+    // EventBase thread and does not access CtranIb resources.
     for (auto& regElem : regElems) {
       FB_COMMCHECK(remReleaseMem(regElem));
     }
-    epochUnlock();
   } else {
     // Skip remote release, just remove the regElems from local exportRegCache_.
     // The caller is responsible to release all remote registration (e.g., in

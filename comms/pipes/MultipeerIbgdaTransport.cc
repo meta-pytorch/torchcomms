@@ -22,7 +22,6 @@ namespace comms::pipes {
 namespace {
 
 constexpr int kDefaultGidIndex = 3; // Default GID index (sample uses 0)
-constexpr int kQueueSize = 128; // Number of WQEs (matches ncclx default)
 constexpr int kHopLimit = 255;
 
 // Sysfs paths for device discovery
@@ -45,76 +44,48 @@ std::string getCudaPciBusId(int cudaDevice) {
   return busId;
 }
 
-// Convert DOCA error to string
+// Convert DOCA error to string using lookup table
+// Values match the doca_error_t enum (0 = DOCA_SUCCESS through 31)
 const char* docaErrorToString(doca_error_t err) {
-  switch (err) {
-    case DOCA_SUCCESS:
-      return "DOCA_SUCCESS";
-    case DOCA_ERROR_UNKNOWN:
-      return "DOCA_ERROR_UNKNOWN";
-    case DOCA_ERROR_NOT_PERMITTED:
-      return "DOCA_ERROR_NOT_PERMITTED";
-    case DOCA_ERROR_IN_USE:
-      return "DOCA_ERROR_IN_USE";
-    case DOCA_ERROR_NOT_SUPPORTED:
-      return "DOCA_ERROR_NOT_SUPPORTED";
-    case DOCA_ERROR_AGAIN:
-      return "DOCA_ERROR_AGAIN";
-    case DOCA_ERROR_INVALID_VALUE:
-      return "DOCA_ERROR_INVALID_VALUE";
-    case DOCA_ERROR_NO_MEMORY:
-      return "DOCA_ERROR_NO_MEMORY";
-    case DOCA_ERROR_INITIALIZATION:
-      return "DOCA_ERROR_INITIALIZATION";
-    case DOCA_ERROR_TIME_OUT:
-      return "DOCA_ERROR_TIME_OUT";
-    case DOCA_ERROR_SHUTDOWN:
-      return "DOCA_ERROR_SHUTDOWN";
-    case DOCA_ERROR_CONNECTION_RESET:
-      return "DOCA_ERROR_CONNECTION_RESET";
-    case DOCA_ERROR_CONNECTION_ABORTED:
-      return "DOCA_ERROR_CONNECTION_ABORTED";
-    case DOCA_ERROR_CONNECTION_INPROGRESS:
-      return "DOCA_ERROR_CONNECTION_INPROGRESS";
-    case DOCA_ERROR_NOT_CONNECTED:
-      return "DOCA_ERROR_NOT_CONNECTED";
-    case DOCA_ERROR_NO_LOCK:
-      return "DOCA_ERROR_NO_LOCK";
-    case DOCA_ERROR_NOT_FOUND:
-      return "DOCA_ERROR_NOT_FOUND";
-    case DOCA_ERROR_IO_FAILED:
-      return "DOCA_ERROR_IO_FAILED";
-    case DOCA_ERROR_BAD_STATE:
-      return "DOCA_ERROR_BAD_STATE";
-    case DOCA_ERROR_UNSUPPORTED_VERSION:
-      return "DOCA_ERROR_UNSUPPORTED_VERSION";
-    case DOCA_ERROR_OPERATING_SYSTEM:
-      return "DOCA_ERROR_OPERATING_SYSTEM";
-    case DOCA_ERROR_DRIVER:
-      return "DOCA_ERROR_DRIVER (check DOCA GPUNetIO driver/infrastructure)";
-    case DOCA_ERROR_UNEXPECTED:
-      return "DOCA_ERROR_UNEXPECTED";
-    case DOCA_ERROR_ALREADY_EXIST:
-      return "DOCA_ERROR_ALREADY_EXIST";
-    case DOCA_ERROR_FULL:
-      return "DOCA_ERROR_FULL";
-    case DOCA_ERROR_EMPTY:
-      return "DOCA_ERROR_EMPTY";
-    case DOCA_ERROR_IN_PROGRESS:
-      return "DOCA_ERROR_IN_PROGRESS";
-    case DOCA_ERROR_TOO_BIG:
-      return "DOCA_ERROR_TOO_BIG";
-    case DOCA_ERROR_AUTHENTICATION:
-      return "DOCA_ERROR_AUTHENTICATION";
-    case DOCA_ERROR_BAD_CONFIG:
-      return "DOCA_ERROR_BAD_CONFIG";
-    case DOCA_ERROR_SKIPPED:
-      return "DOCA_ERROR_SKIPPED";
-    case DOCA_ERROR_DEVICE_FATAL_ERROR:
-      return "DOCA_ERROR_DEVICE_FATAL_ERROR";
-    default:
-      return "DOCA_ERROR_UNKNOWN_CODE";
+  static constexpr const char* kDocaErrorNames[] = {
+      "DOCA_SUCCESS",
+      "DOCA_ERROR_UNKNOWN",
+      "DOCA_ERROR_NOT_PERMITTED",
+      "DOCA_ERROR_IN_USE",
+      "DOCA_ERROR_NOT_SUPPORTED",
+      "DOCA_ERROR_AGAIN",
+      "DOCA_ERROR_INVALID_VALUE",
+      "DOCA_ERROR_NO_MEMORY",
+      "DOCA_ERROR_INITIALIZATION",
+      "DOCA_ERROR_TIME_OUT",
+      "DOCA_ERROR_SHUTDOWN",
+      "DOCA_ERROR_CONNECTION_RESET",
+      "DOCA_ERROR_CONNECTION_ABORTED",
+      "DOCA_ERROR_CONNECTION_INPROGRESS",
+      "DOCA_ERROR_NOT_CONNECTED",
+      "DOCA_ERROR_NO_LOCK",
+      "DOCA_ERROR_NOT_FOUND",
+      "DOCA_ERROR_IO_FAILED",
+      "DOCA_ERROR_BAD_STATE",
+      "DOCA_ERROR_UNSUPPORTED_VERSION",
+      "DOCA_ERROR_OPERATING_SYSTEM",
+      "DOCA_ERROR_DRIVER",
+      "DOCA_ERROR_UNEXPECTED",
+      "DOCA_ERROR_ALREADY_EXIST",
+      "DOCA_ERROR_FULL",
+      "DOCA_ERROR_EMPTY",
+      "DOCA_ERROR_IN_PROGRESS",
+      "DOCA_ERROR_TOO_BIG",
+      "DOCA_ERROR_AUTHENTICATION",
+      "DOCA_ERROR_BAD_CONFIG",
+      "DOCA_ERROR_SKIPPED",
+      "DOCA_ERROR_DEVICE_FATAL_ERROR",
+  };
+  auto idx = static_cast<int>(err);
+  if (idx >= 0 && idx < static_cast<int>(std::size(kDocaErrorNames))) {
+    return kDocaErrorNames[idx];
   }
+  return "DOCA_ERROR_UNKNOWN_CODE";
 }
 
 // Check DOCA error and throw on failure
@@ -208,24 +179,37 @@ void MultipeerIbgdaTransport::initDocaGpu() {
 }
 
 void MultipeerIbgdaTransport::openIbDevice() {
-  int numDevices = 0;
-  ibv_device** deviceList = ibv_get_device_list(&numDevices);
-  if (deviceList == nullptr || numDevices == 0) {
-    throw std::runtime_error("No IB devices found");
+  // Initialize ibverbx symbol table
+  auto initResult = ibverbx::ibvInit();
+  if (initResult.hasError()) {
+    throw std::runtime_error(
+        fmt::format(
+            "Failed to initialize ibverbx: {}", initResult.error().errStr));
   }
 
+  // Get all IB devices (port 1, no Data Direct needed for IBGDA)
+  auto devicesResult = ibverbx::IbvDevice::ibvGetDeviceList({}, "", 1, 0);
+  if (devicesResult.hasError()) {
+    throw std::runtime_error(
+        fmt::format("No IB devices found: {}", devicesResult.error().errStr));
+  }
+  if (devicesResult.value().empty()) {
+    throw std::runtime_error("No IB devices found");
+  }
+  auto& devices = devicesResult.value();
+
   // Find device with best PCIe topology affinity (PIX = same switch)
-  ibv_device* bestDevice = nullptr;
+  int bestIdx = -1;
   int bestDistance = INT_MAX;
   std::string bestNicPcie;
 
-  for (int i = 0; i < numDevices; i++) {
-    const char* devName = ibv_get_device_name(deviceList[i]);
+  for (size_t i = 0; i < devices.size(); i++) {
+    const char* devName = devices[i].device()->name;
 
     // If user specified a NIC, look for it
     if (config_.nicDeviceName.has_value()) {
       if (config_.nicDeviceName.value() == devName) {
-        bestDevice = deviceList[i];
+        bestIdx = static_cast<int>(i);
         nicDeviceName_ = devName;
         bestNicPcie = getPcieForIbDev(devName);
         break;
@@ -243,14 +227,13 @@ void MultipeerIbgdaTransport::openIbDevice() {
 
     if (distance < bestDistance) {
       bestDistance = distance;
-      bestDevice = deviceList[i];
+      bestIdx = static_cast<int>(i);
       nicDeviceName_ = devName;
       bestNicPcie = nicPcie;
     }
   }
 
-  if (bestDevice == nullptr) {
-    ibv_free_device_list(deviceList);
+  if (bestIdx < 0) {
     throw std::runtime_error("No suitable IB device found");
   }
 
@@ -258,25 +241,33 @@ void MultipeerIbgdaTransport::openIbDevice() {
             << " PCIe " << bestNicPcie << " for GPU " << gpuPciBusId_
             << " (distance=" << bestDistance << ")";
 
-  ibvContext_ = ibv_open_device(bestDevice);
-  ibv_free_device_list(deviceList);
+  // Move selected device; others are destroyed (RAII closes them)
+  ibvDevice_ = std::move(devices[bestIdx]);
 
-  if (ibvContext_ == nullptr) {
-    throw std::runtime_error("Failed to open IB device");
-  }
-
-  // Allocate protection domain
-  ibvPd_ = ibv_alloc_pd(ibvContext_);
-  if (ibvPd_ == nullptr) {
-    throw std::runtime_error("Failed to allocate protection domain");
-  }
-
-  // Query local GID
-  int ret = ibv_query_gid(ibvContext_, 1, gidIndex_, &localGid_);
-  if (ret != 0) {
+  // Allocate PD via ibverbx
+  auto pdResult = ibvDevice_->allocPd();
+  if (pdResult.hasError()) {
     throw std::runtime_error(
-        "Failed to query GID at index " + std::to_string(gidIndex_));
+        fmt::format(
+            "Failed to allocate protection domain: {}",
+            pdResult.error().errStr));
   }
+  ibvPd_ = std::move(pdResult.value());
+
+  // Query GID via ibverbx
+  auto gidResult = ibvDevice_->queryGid(1, gidIndex_);
+  if (gidResult.hasError()) {
+    throw std::runtime_error(
+        fmt::format(
+            "Failed to query GID at index {}: {}",
+            gidIndex_,
+            gidResult.error().errStr));
+  }
+  // Copy to ::ibv_gid for DOCA compatibility
+  static_assert(
+      sizeof(gidResult.value()) == sizeof(localGid_),
+      "ibverbx::ibv_gid and ::ibv_gid must be the same size");
+  memcpy(localGid_.raw, gidResult.value().raw, sizeof(localGid_.raw));
 
   // Print GID value for debugging
   auto gidStr = fmt::format(
@@ -302,17 +293,19 @@ void MultipeerIbgdaTransport::openIbDevice() {
             << gidStr;
 
   // Query port to determine link layer (IB vs Ethernet)
-  ibv_port_attr portAttr{};
-  ret = ibv_query_port(ibvContext_, 1, &portAttr);
-  if (ret != 0) {
-    throw std::runtime_error("Failed to query port attributes");
+  auto portResult = ibvDevice_->queryPort(1);
+  if (portResult.hasError()) {
+    throw std::runtime_error(
+        fmt::format(
+            "Failed to query port attributes: {}", portResult.error().errStr));
   }
+  const auto& portAttr = portResult.value();
 
   LOG(INFO) << "MultipeerIbgdaTransport: port 1 state=" << portAttr.state
             << " link_layer=" << (int)portAttr.link_layer
             << " (1=IB, 2=Ethernet)";
 
-  if (portAttr.state != IBV_PORT_ACTIVE) {
+  if (portAttr.state != ibverbx::IBV_PORT_ACTIVE) {
     throw std::runtime_error(
         "Port 1 is not active (state=" + std::to_string(portAttr.state) + ")");
   }
@@ -320,11 +313,14 @@ void MultipeerIbgdaTransport::openIbDevice() {
   // Determine address type based on link layer
   // For RoCE (Ethernet), use IPv6 (our hosts use RoCEv2 with IPv6-only)
   doca_verbs_addr_type addrType =
-      (portAttr.link_layer == IBV_LINK_LAYER_INFINIBAND)
+      (portAttr.link_layer == ibverbx::IBV_LINK_LAYER_INFINIBAND)
       ? DOCA_VERBS_ADDR_TYPE_IB_NO_GRH
       : DOCA_VERBS_ADDR_TYPE_IPv6;
 
-  doca_error_t err = doca_verbs_ah_attr_create(ibvContext_, &ahAttr_);
+  // Use reinterpret_cast for DOCA API which expects ::ibv_context*
+  auto* rawContext = reinterpret_cast<::ibv_context*>(ibvDevice_->context());
+
+  doca_error_t err = doca_verbs_ah_attr_create(rawContext, &ahAttr_);
   checkDocaError(err, "Failed to create AH attributes");
 
   err = doca_verbs_ah_attr_set_addr_type(ahAttr_, addrType);
@@ -361,32 +357,40 @@ void MultipeerIbgdaTransport::allocateResources() {
 }
 
 void MultipeerIbgdaTransport::registerMemory() {
-  int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-      IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
+  auto accessFlags = static_cast<ibverbx::ibv_access_flags>(
+      ibverbx::IBV_ACCESS_LOCAL_WRITE | ibverbx::IBV_ACCESS_REMOTE_WRITE |
+      ibverbx::IBV_ACCESS_REMOTE_READ | ibverbx::IBV_ACCESS_REMOTE_ATOMIC);
 
   // Register signal buffer
+  // Try DMABUF registration first, fall back to regular reg_mr
   int dmabufFd = -1;
   doca_error_t err =
       doca_gpu_dmabuf_fd(docaGpu_, signalBuffer_, signalBufferSize_, &dmabufFd);
   if (err == DOCA_SUCCESS && dmabufFd >= 0) {
-    signalMr_ = ibv_reg_dmabuf_mr(
-        ibvPd_,
+    auto result = ibvPd_->regDmabufMr(
         0,
         signalBufferSize_,
         reinterpret_cast<uint64_t>(signalBuffer_),
         dmabufFd,
         accessFlags);
+    if (result.hasValue()) {
+      signalMr_ = std::move(result.value());
+    }
   }
-  if (signalMr_ == nullptr) {
-    signalMr_ =
-        ibv_reg_mr(ibvPd_, signalBuffer_, signalBufferSize_, accessFlags);
-  }
-  if (signalMr_ == nullptr) {
-    throw std::runtime_error("Failed to register signal memory region");
+  if (!signalMr_) {
+    auto result = ibvPd_->regMr(signalBuffer_, signalBufferSize_, accessFlags);
+    if (result.hasError()) {
+      throw std::runtime_error(
+          fmt::format(
+              "Failed to register signal memory region: {}",
+              result.error().errStr));
+    }
+    signalMr_ = std::move(result.value());
   }
 
   LOG(INFO) << "MultipeerIbgdaTransport: registered signal buffer"
-            << " lkey=" << signalMr_->lkey << " rkey=" << signalMr_->rkey;
+            << " lkey=" << signalMr_->mr()->lkey
+            << " rkey=" << signalMr_->mr()->rkey;
 }
 
 void MultipeerIbgdaTransport::createQps() {
@@ -405,9 +409,9 @@ void MultipeerIbgdaTransport::createQps() {
             << currentDevice << " expected=" << config_.cudaDevice;
 
   // Query IB device capabilities for debugging
-  ibv_device_attr devAttr{};
-  int ret = ibv_query_device(ibvContext_, &devAttr);
-  if (ret == 0) {
+  auto devAttrResult = ibvDevice_->queryDevice();
+  if (devAttrResult.hasValue()) {
+    const auto& devAttr = devAttrResult.value();
     LOG(INFO) << "MultipeerIbgdaTransport: IB device - max_qp="
               << devAttr.max_qp << " max_cq=" << devAttr.max_cq
               << " max_mr=" << devAttr.max_mr
@@ -416,15 +420,15 @@ void MultipeerIbgdaTransport::createQps() {
 
   doca_gpu_verbs_qp_init_attr_hl initAttr{};
   initAttr.gpu_dev = docaGpu_;
-  initAttr.ibpd = ibvPd_;
-  initAttr.sq_nwqe = kQueueSize;
+  initAttr.ibpd = reinterpret_cast<::ibv_pd*>(ibvPd_->pd());
+  initAttr.sq_nwqe = config_.qpDepth;
   initAttr.nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO;
   initAttr.mreg_type = DOCA_GPUNETIO_VERBS_MEM_REG_TYPE_DEFAULT;
 
   LOG(INFO) << "MultipeerIbgdaTransport: creating " << numPeers << " QPs"
-            << " gpu_dev=" << (void*)docaGpu_ << " ibpd=" << (void*)ibvPd_
-            << " ibpd->context=" << (void*)(ibvPd_ ? ibvPd_->context : nullptr)
-            << " sq_nwqe=" << kQueueSize
+            << " gpu_dev=" << (void*)docaGpu_
+            << " ibpd=" << (void*)initAttr.ibpd
+            << " sq_nwqe=" << config_.qpDepth
             << " nic_handler=AUTO mreg_type=DEFAULT";
 
   for (int i = 0; i < numPeers; i++) {
@@ -452,9 +456,12 @@ void MultipeerIbgdaTransport::connectQp(
   checkDocaError(err, "Failed to set remote GID");
 
   // Query port for IB-specific parameters
-  ibv_port_attr portAttr{};
-  ibv_query_port(ibvContext_, 1, &portAttr);
-  if (portAttr.link_layer == IBV_LINK_LAYER_INFINIBAND) {
+  auto portResult = ibvDevice_->queryPort(1);
+  if (portResult.hasError()) {
+    LOG(WARNING) << "Failed to query port for IB-specific parameters: "
+                 << portResult.error().errStr;
+  } else if (
+      portResult.value().link_layer == ibverbx::IBV_LINK_LAYER_INFINIBAND) {
     err = doca_verbs_ah_attr_set_dlid(ahAttr_, peerInfo.lid);
     checkDocaError(err, "Failed to set DLID");
   }
@@ -598,18 +605,9 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
     }
   }
 
-  // Deregister user-registered buffers
-  for (auto& [ptr, mr] : registeredBuffers_) {
-    if (mr != nullptr) {
-      ibv_dereg_mr(mr);
-    }
-  }
-  registeredBuffers_.clear();
-
-  // Deregister signal memory region
-  if (signalMr_ != nullptr) {
-    ibv_dereg_mr(signalMr_);
-  }
+  // RAII cleanup in dependency order (MRs before PD before device)
+  registeredBuffers_.clear(); // ibv_dereg_mr for user buffers
+  signalMr_.reset(); // ibv_dereg_mr for signal buffer
 
   // Free signal buffer (transport-managed)
   if (signalBuffer_ != nullptr) {
@@ -621,15 +619,8 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
     doca_verbs_ah_attr_destroy(ahAttr_);
   }
 
-  // Deallocate PD
-  if (ibvPd_ != nullptr) {
-    ibv_dealloc_pd(ibvPd_);
-  }
-
-  // Close IB device
-  if (ibvContext_ != nullptr) {
-    ibv_close_device(ibvContext_);
-  }
+  ibvPd_.reset(); // ibv_dealloc_pd
+  ibvDevice_.reset(); // ibv_close_device
 
   // Destroy DOCA GPU context
   if (docaGpu_ != nullptr) {
@@ -658,12 +649,16 @@ void MultipeerIbgdaTransport::exchange() {
   memcpy(myInfo.gid, localGid_.raw, sizeof(myInfo.gid));
   myInfo.gidIndex = gidIndex_;
   myInfo.signalAddr = reinterpret_cast<uint64_t>(signalBuffer_);
-  myInfo.signalRkey = HostRKey(signalMr_->rkey);
+  myInfo.signalRkey = HostRKey(signalMr_->mr()->rkey);
 
   // Query port for LID (IB only)
-  ibv_port_attr portAttr{};
-  ibv_query_port(ibvContext_, 1, &portAttr);
-  myInfo.lid = portAttr.lid;
+  auto exchPortResult = ibvDevice_->queryPort(1);
+  if (exchPortResult.hasError()) {
+    LOG(WARNING) << "Failed to query port for LID: "
+                 << exchPortResult.error().errStr;
+  } else {
+    myInfo.lid = exchPortResult.value().lid;
+  }
 
   // Fill in per-target QPNs
   // qpnForRank[j] = QPN I use to connect to rank j
@@ -743,7 +738,7 @@ void MultipeerIbgdaTransport::exchange() {
         gpuQp,
         IbgdaLocalBuffer(
             static_cast<char*>(signalBuffer_) + signalOffset,
-            HostLKey(signalMr_->lkey)),
+            HostLKey(signalMr_->mr()->lkey)),
         IbgdaRemoteBuffer(remoteSignalPtr, peerExchInfo_[i].signal.rkey),
         static_cast<int>(config_.signalCount)};
   }
@@ -799,39 +794,43 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
   // If already registered, return existing registration (no-op)
   auto existingIt = registeredBuffers_.find(ptr);
   if (existingIt != registeredBuffers_.end()) {
-    ibv_mr* existingMr = existingIt->second;
-    return IbgdaLocalBuffer(ptr, HostLKey(existingMr->lkey));
+    return IbgdaLocalBuffer(ptr, HostLKey(existingIt->second.mr()->lkey));
   }
 
-  int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-      IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
+  auto accessFlags = static_cast<ibverbx::ibv_access_flags>(
+      ibverbx::IBV_ACCESS_LOCAL_WRITE | ibverbx::IBV_ACCESS_REMOTE_WRITE |
+      ibverbx::IBV_ACCESS_REMOTE_READ | ibverbx::IBV_ACCESS_REMOTE_ATOMIC);
 
   // Try DMABUF registration first, fall back to regular reg_mr
-  ibv_mr* mr = nullptr;
+  std::optional<ibverbx::IbvMr> mr;
   int dmabufFd = -1;
   doca_error_t err = doca_gpu_dmabuf_fd(docaGpu_, ptr, size, &dmabufFd);
   if (err == DOCA_SUCCESS && dmabufFd >= 0) {
-    mr = ibv_reg_dmabuf_mr(
-        ibvPd_,
-        0,
-        size,
-        reinterpret_cast<uint64_t>(ptr),
-        dmabufFd,
-        accessFlags);
+    auto result = ibvPd_->regDmabufMr(
+        0, size, reinterpret_cast<uint64_t>(ptr), dmabufFd, accessFlags);
+    if (result.hasValue()) {
+      mr = std::move(result.value());
+    }
   }
-  if (mr == nullptr) {
-    mr = ibv_reg_mr(ibvPd_, ptr, size, accessFlags);
-  }
-  if (mr == nullptr) {
-    throw std::runtime_error("Failed to register buffer with RDMA");
+  if (!mr) {
+    auto result = ibvPd_->regMr(ptr, size, accessFlags);
+    if (result.hasError()) {
+      throw std::runtime_error(
+          fmt::format(
+              "Failed to register buffer with RDMA: {}",
+              result.error().errStr));
+    }
+    mr = std::move(result.value());
   }
 
-  registeredBuffers_[ptr] = mr;
+  uint32_t lkey = mr->mr()->lkey;
+  uint32_t rkey = mr->mr()->rkey;
+  registeredBuffers_.emplace(ptr, std::move(*mr));
 
   LOG(INFO) << "MultipeerIbgdaTransport: registered user buffer ptr=" << ptr
-            << " size=" << size << " lkey=" << mr->lkey << " rkey=" << mr->rkey;
+            << " size=" << size << " lkey=" << lkey << " rkey=" << rkey;
 
-  return IbgdaLocalBuffer(ptr, HostLKey(mr->lkey));
+  return IbgdaLocalBuffer(ptr, HostLKey(lkey));
 }
 
 void MultipeerIbgdaTransport::deregisterBuffer(void* ptr) {
@@ -841,10 +840,7 @@ void MultipeerIbgdaTransport::deregisterBuffer(void* ptr) {
     return;
   }
 
-  if (it->second != nullptr) {
-    ibv_dereg_mr(it->second);
-  }
-  registeredBuffers_.erase(it);
+  registeredBuffers_.erase(it); // IbvMr RAII handles deregistration
 
   LOG(INFO) << "MultipeerIbgdaTransport: deregistered buffer ptr=" << ptr;
 }
@@ -859,7 +855,6 @@ std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
     throw std::runtime_error(
         "Buffer not registered - call registerBuffer() first");
   }
-  ibv_mr* mr = it->second;
 
   // Allocate buffer for allGather: one entry per rank
   std::vector<IbgdaBufferExchInfo> allInfo(nRanks_);
@@ -867,7 +862,7 @@ std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
   // Write my info at my rank's slot
   allInfo[myRank_] = IbgdaBufferExchInfo{
       reinterpret_cast<uint64_t>(localBuf.ptr),
-      HostRKey(mr->rkey),
+      HostRKey(it->second.mr()->rkey),
   };
 
   // Use allGather to exchange buffer info with all ranks
