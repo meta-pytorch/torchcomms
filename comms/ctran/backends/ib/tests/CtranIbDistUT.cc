@@ -99,7 +99,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     if (!ctranIb) {
       try {
         ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
-      } catch (const std::bad_alloc& e) {
+      } catch (const std::bad_alloc&) {
         GTEST_SKIP() << "IB backend not enabled. Skip test";
       }
     }
@@ -290,7 +290,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     if (!ctranIb) {
       try {
         ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
-      } catch (const std::bad_alloc& e) {
+      } catch (const std::bad_alloc&) {
         GTEST_SKIP() << "IB backend not enabled. Skip test";
       }
     }
@@ -425,7 +425,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
   void runNotify(const int numNotifies, bool localSignal) {
     try {
       ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
-    } catch (const std::bad_alloc& e) {
+    } catch (const std::bad_alloc&) {
       GTEST_SKIP() << "IB backend not enabled. Skip test";
     }
 
@@ -488,7 +488,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     if (!ctranIb) {
       try {
         ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
-      } catch (const std::bad_alloc& e) {
+      } catch (const std::bad_alloc&) {
         GTEST_SKIP() << "IB backend not enabled. Skip test";
       }
     }
@@ -731,7 +731,7 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
       bool isFetchAdd = true) {
     try {
       ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
-    } catch (const std::bad_alloc& e) {
+    } catch (const std::bad_alloc&) {
       GTEST_SKIP() << "IB backend not enabled. Skip test";
     }
 
@@ -934,7 +934,7 @@ TEST_F(CtranIbTest, NormalInitialize) {
 
   try {
     auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -979,7 +979,7 @@ TEST_F(CtranIbTest, InitializeWithoutComm) {
         true /*enableLocalFlush*/,
         CtranIb::BootstrapMode::kSpecifiedServer,
         &qpServerAddr);
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
@@ -1061,7 +1061,7 @@ TEST_F(CtranIbTest, InitializeWithoutCommAndExternalBootstrap) {
         this->ctrlMgr.get(),
         false /*enableLocalFlush*/,
         CtranIb::BootstrapMode::kExternal);
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
@@ -1106,7 +1106,7 @@ TEST_F(CtranIbTest, RegMem) {
     for (int i = 0; i < numThreads; i++) {
       CUDACHECK_TEST(cudaFree(bufs[i]));
     }
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -1143,7 +1143,7 @@ TEST_F(CtranIbTest, ExportMem) {
     COMMCHECK_TEST(CtranIb::deregMem(handle));
     ASSERT_EQ(getIbRegCount(), commIbRegCount);
     CUDACHECK_TEST(cudaFree(buf));
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -1168,7 +1168,7 @@ TEST_F(CtranIbTest, SmallRegMem) {
       COMMCHECK_TEST(CtranIb::deregMem(handle));
       CUDACHECK_TEST(cudaFree(buf));
     }
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -1222,7 +1222,7 @@ TEST_F(CtranIbTest, MatchAnyCtrlMsg) {
         EXPECT_EQ(rmsg.ibExp.nKeys, 1);
       }
     }
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -1279,7 +1279,7 @@ TEST_F(CtranIbTest, CbCtrlMsg) {
       COMMCHECK_TEST(req.complete());
     }
 
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -1311,7 +1311,7 @@ TEST_F(CtranIbTest, LocalFlush) {
 
     COMMCHECK_TEST(CtranIb::deregMem(handle));
     CUDACHECK_TEST(cudaFree(buf));
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -1711,7 +1711,7 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
     ASSERT_EQ(getIbRegCount(), commIbRegCount);
     CUDACHECK_TEST(cudaFree(buf));
 
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
@@ -1754,7 +1754,7 @@ TEST_F(CtranIbTest, InvalidPeer) {
     bool notify;
     EXPECT_EQ(ctranIb->checkNotify(invalidPeer, &notify), commInternalError);
 
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -1784,7 +1784,7 @@ TEST_F(CtranIbTest, NotReadyPeer) {
 
     EXPECT_EQ(ctranIb->notify(peerRank, nullptr), commInternalError);
 
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -1911,7 +1911,7 @@ TEST_F(CtranIbTest, envQpConfig) {
   std::unique_ptr<CtranIb> ctranIb = nullptr;
   try {
     ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
@@ -1998,7 +1998,7 @@ TEST_F(CtranIbTest, ValidBeTopology) {
   std::unique_ptr<CtranIb> ctranIb = nullptr;
   try {
     ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -2048,7 +2048,7 @@ TEST_F(CtranIbTest, InvalidBeTopology) {
   std::unique_ptr<CtranIb> ctranIb = nullptr;
   try {
     ctranIb = std::make_unique<CtranIb>(comm, ctrlMgr.get());
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   } catch (const ctran::utils::Exception& e) {
     EXPECT_THAT(
@@ -2084,7 +2084,7 @@ TEST_F(CtranIbTest, pgTrafficClassConfig) {
 
     EXPECT_EQ(ctranIb->notify(peerRank, nullptr), commInternalError);
 
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -2142,7 +2142,7 @@ TEST_F(CtranIbTest, pgTrafficClassConfigWithoutComm) {
 
     EXPECT_EQ(ctranIb->notify(peerRank, nullptr), commInternalError);
 
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
@@ -2238,7 +2238,7 @@ TEST_F(CtranIbTest, CtrlMsgAndPreConnect) {
       peerRanks.insert(recvRank);
       COMMCHECK_TEST(ctranIb->preConnect(peerRanks));
     }
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }
