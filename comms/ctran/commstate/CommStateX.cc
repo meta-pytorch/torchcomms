@@ -99,8 +99,7 @@ void CommStateX::initRankTopologyVnode(const int nLocalRanks) {
   }
 }
 
-void CommStateX::initRankStatesTopology(
-    ctran::bootstrap::IBootstrap* bootstrap) {
+void CommStateX::initRankStatesTopology(meta::comms::IBootstrap* bootstrap) {
   auto myTopo = ctran::commstate::loadTopology(rank_, NCCL_TOPO_FILE_PATH);
   if (!myTopo) {
     FB_CHECKTHROW_EX(

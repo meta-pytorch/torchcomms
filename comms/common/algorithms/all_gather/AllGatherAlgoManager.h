@@ -4,7 +4,7 @@
 
 #include "comms/common/IpcGpuBarrier.cuh"
 #include "comms/common/algorithms/all_gather/AlgoAllGather.cuh"
-#include "comms/ctran/interfaces/IBootstrap.h" // @manual
+#include "comms/common/bootstrap/IBootstrap.h" // @manual
 #include "comms/utils/CudaRAII.h"
 #include "comms/utils/commSpecs.h"
 

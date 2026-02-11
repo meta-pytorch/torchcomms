@@ -163,7 +163,7 @@ MemSharingMode GpuMemHandler::detectBestMode() {
 }
 
 GpuMemHandler::GpuMemHandler(
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     int32_t selfRank,
     int32_t nRanks,
     size_t size)
@@ -175,7 +175,7 @@ GpuMemHandler::GpuMemHandler(
           detectBestMode()) {}
 
 GpuMemHandler::GpuMemHandler(
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     int32_t selfRank,
     int32_t nRanks,
     size_t size,

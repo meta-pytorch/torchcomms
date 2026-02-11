@@ -5,7 +5,7 @@
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <glog/logging.h>
-#include "comms/ctran/interfaces/IBootstrap.h" // @manual
+#include "comms/common/bootstrap/IBootstrap.h"
 
 namespace meta::comms {
 
@@ -23,7 +23,7 @@ namespace meta::comms {
 class IpcMemHandler {
  public:
   IpcMemHandler(
-      std::shared_ptr<ctran::bootstrap::IBootstrap> commBootstrap,
+      std::shared_ptr<IBootstrap> commBootstrap,
       int32_t selfRank,
       int32_t nRanks);
   IpcMemHandler(const IpcMemHandler&) = delete;
@@ -41,7 +41,7 @@ class IpcMemHandler {
   void* getPeerDeviceMemPtr(int32_t rank);
 
  private:
-  std::shared_ptr<ctran::bootstrap::IBootstrap> commBootstrap_;
+  std::shared_ptr<IBootstrap> commBootstrap_;
   const int32_t selfRank_{-1};
   const int32_t nRanks_{-1};
   std::vector<void*> memPtrs_;

@@ -2,12 +2,12 @@
 
 #pragma once
 
-#include "comms/ctran/interfaces/IBootstrap.h" // @manual
+#include "comms/common/bootstrap/IBootstrap.h" // @manual
 #include "nccl.h"
 
 namespace rcclx {
 
-class BaselineBootstrap : public ::ctran::bootstrap::IBootstrap {
+class BaselineBootstrap : public ::meta::comms::IBootstrap {
  public:
   explicit BaselineBootstrap(ncclComm_t comm) : comm_(comm) {}
 
