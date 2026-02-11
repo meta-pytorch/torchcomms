@@ -69,9 +69,12 @@ struct RdmaTransport::Work {
   CtranIbRequest ibReq;
   folly::Promise<commResult_t> promise;
 
-  // Mock context for this work (type from setMockForTest, timeout from
-  // write parameter, creationTime captured at write time)
+  // Mock context for this work (type from setMockForTest)
   RdmaTransport::MockContext mockContext;
+
+  // Timeout tracking for write operations (production and mock)
+  std::optional<std::chrono::milliseconds> timeout;
+  std::chrono::steady_clock::time_point creationTime;
 };
 
 RdmaTransport::RdmaTransport(int cudaDev, folly::EventBase* evb)
@@ -183,10 +186,18 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
         nullptr,
         &work->ibReq,
         false));
+    // Capture timeout for production write timeout
+    if (timeout.has_value()) {
+      work->timeout = timeout;
+      work->creationTime = std::chrono::steady_clock::now();
+    }
   } else if (currentMockType == MockType::Timeout) {
-    // Mock timeout path - capture timeout parameters
-    work->mockContext.timeout = timeout;
-    work->mockContext.creationTime = std::chrono::steady_clock::now();
+    // Mock timeout path - capture timeout if provided; if not, operation
+    // stays pending until abort() is called
+    if (timeout.has_value()) {
+      work->timeout = timeout;
+      work->creationTime = std::chrono::steady_clock::now();
+    }
   }
 
   // Add work to pending list and schedule progress
@@ -261,29 +272,10 @@ void RdmaTransport::progress() {
   for (auto it = pendingWorks->begin(); it != pendingWorks->end();) {
     if (!hasError) {
       auto& work = *it;
-      // Handle mock types if no real failure
-      switch (work->mockContext.type) {
-        case MockType::Failure:
-          // Failure-mocked works complete immediately with error
-          work->promise.setValue(commInternalError);
-          it = pendingWorks->erase(it);
-          continue;
-        case MockType::Timeout: {
-          if (work->mockContext.hasTimedOut()) {
-            work->promise.setValue(commTimeout);
-            it = pendingWorks->erase(it);
-            continue;
-          }
-          // Timeout not yet elapsed, keep waiting
-          ++it;
-          continue;
-        }
-        case MockType::None:
-          // Normal operation, fall through to normal handling
-          break;
-        default:
-          // Unknown mock type, treat as normal operation
-          break;
+      if (work->mockContext.type == MockType::Failure) {
+        work->promise.setValue(commInternalError);
+        it = pendingWorks->erase(it);
+        continue;
       }
     }
 
@@ -293,11 +285,22 @@ void RdmaTransport::progress() {
       continue;
     }
 
+    // Check IB completion
     if (((*it)->type == Work::Type::Write || (*it)->type == Work::Type::Read) &&
         (*it)->ibReq.isComplete()) {
-      (*it)->promise.setValue(hasError ? res : commSuccess);
+      (*it)->promise.setValue(commSuccess);
       it = pendingWorks->erase(it);
       continue;
+    }
+
+    // Check write timeout (production and mock)
+    if ((*it)->type == Work::Type::Write && (*it)->timeout.has_value()) {
+      auto elapsed = std::chrono::steady_clock::now() - (*it)->creationTime;
+      if (elapsed >= (*it)->timeout.value()) {
+        (*it)->promise.setValue(commTimeout);
+        it = pendingWorks->erase(it);
+        continue;
+      }
     }
 
     if ((*it)->type == Work::Type::WaitForWrite) {
