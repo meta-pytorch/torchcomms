@@ -160,6 +160,10 @@ struct IbvSymbols {
       struct ibv_qp_init_attr_ex* qp_init_attr_ex) = nullptr;
   struct ibv_qp_ex* (*ibv_internal_qp_to_qp_ex)(struct ibv_qp* qp) = nullptr;
   void (*ibv_internal_wr_start)(struct ibv_qp_ex* qp) = nullptr;
+  void (*ibv_internal_wr_rdma_write)(
+      struct ibv_qp_ex* qp,
+      uint32_t rkey,
+      uint64_t remote_addr) = nullptr;
   void (*ibv_internal_wr_rdma_write_imm)(
       struct ibv_qp_ex* qp,
       uint32_t rkey,
