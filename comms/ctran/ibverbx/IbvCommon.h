@@ -21,6 +21,7 @@ constexpr int kIbMaxMsgSizeByte = 100;
 constexpr int kIbMaxCqe_ = 100;
 constexpr int kNotifyBit = 31;
 constexpr uint32_t kSeqNumMask = 0xFFFFFF; // 24 bits
+constexpr int kPollCqBatchSize = 32;
 
 // Command types for coordinator routing and operations
 enum class RequestType { SEND = 0, RECV = 1, SEND_NOTIFY = 2 };

@@ -11,7 +11,6 @@
 #include "comms/ctran/ibverbx/DqplbSeqTracker.h"
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/IbvQp.h"
-#include "comms/ctran/ibverbx/IbvVirtualCq.h"
 #include "comms/ctran/ibverbx/IbvVirtualWr.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
@@ -123,6 +122,12 @@ class IbvVirtualQp {
   inline folly::Expected<VirtualQpResponse, Error> processRequest(
       VirtualQpRequest&& request);
 
+  // v2 completion processing: Route physical CQEs to virtual WR state.
+  // Stub implementation until postSend_v2/postRecv_v2 are added.
+  inline folly::Expected<std::vector<IbvVirtualWc>, Error> processCompletion(
+      const ibv_wc& physicalWc,
+      int32_t deviceId);
+
  private:
 #ifdef IBVERBX_TEST_FRIENDS
   IBVERBX_TEST_FRIENDS
@@ -138,6 +143,9 @@ class IbvVirtualQp {
 
   friend class IbvPd;
   friend class IbvVirtualCq;
+
+  // Pointer to the VirtualCq this VirtualQp is registered with (for v2 path)
+  IbvVirtualCq* virtualCq_{nullptr};
 
   std::deque<VirtualSendWr> pendingSendVirtualWrQue_;
   std::deque<VirtualRecvWr> pendingRecvVirtualWrQue_;
@@ -739,6 +747,15 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
   }
 
   return folly::unit;
+}
+
+// Stub: processCompletion will be implemented when postSend_v2/postRecv_v2
+// are added. For now, returns empty vector (no v2 WRs are tracked yet).
+inline folly::Expected<std::vector<IbvVirtualWc>, Error>
+IbvVirtualQp::processCompletion(
+    const ibv_wc& /*physicalWc*/,
+    int32_t /*deviceId*/) {
+  return std::vector<IbvVirtualWc>{};
 }
 
 } // namespace ibverbx

@@ -3,6 +3,7 @@
 #include "comms/ctran/ibverbx/Coordinator.h"
 
 #include <folly/Singleton.h>
+#include "comms/ctran/ibverbx/IbvVirtualCq.h"
 #include "comms/ctran/ibverbx/IbvVirtualQp.h"
 
 namespace ibverbx {
