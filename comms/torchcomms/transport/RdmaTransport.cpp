@@ -72,7 +72,7 @@ struct RdmaTransport::Work {
   // Mock context for this work (type from setMockForTest)
   RdmaTransport::MockContext mockContext;
 
-  // Timeout tracking for write operations (production and mock)
+  // Timeout tracking for write and read operations (production and mock)
   std::optional<std::chrono::milliseconds> timeout;
   std::chrono::steady_clock::time_point creationTime;
 };
@@ -227,28 +227,51 @@ folly::SemiFuture<commResult_t> RdmaTransport::waitForWrite() {
 
 folly::SemiFuture<commResult_t> RdmaTransport::read(
     RdmaMemory::MutableView& localBuffer,
-    const RdmaRemoteBuffer& remoteBuffer) {
-  CHECK_THROW(connected(), std::runtime_error);
+    const RdmaRemoteBuffer& remoteBuffer,
+    std::optional<std::chrono::milliseconds> timeout) {
+  auto currentMockType = mockContext_.rlock()->type;
+
+  // Skip connected check when mock is enabled for testing
+  if (currentMockType == MockType::None) {
+    CHECK_THROW(connected(), std::runtime_error);
+  }
   CHECK_THROW(evb_, std::runtime_error);
 
   CHECK_EQ(cudaDev_, localBuffer->getDevice());
 
   auto work = std::make_unique<Work>();
   work->type = Work::Type::Read;
+  work->mockContext.type = currentMockType;
   auto sf = work->promise.getSemiFuture();
 
-  auto ibRemoteKey = CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
-  CtranIbEpochRAII epochRAII(ib_.get());
-  FB_COMMCHECK(ib_->iget(
-      remoteBuffer.ptr,
-      localBuffer.mutable_data(),
-      localBuffer.size(),
-      kDummyRank,
-      localBuffer->localKey(),
-      ibRemoteKey,
-      nullptr,
-      &work->ibReq,
-      false));
+  if (currentMockType == MockType::None) {
+    // Production path - perform actual IB operations
+    auto ibRemoteKey =
+        CtranIbRemoteAccessKey::fromString(remoteBuffer.accessKey);
+    CtranIbEpochRAII epochRAII(ib_.get());
+    FB_COMMCHECK(ib_->iget(
+        remoteBuffer.ptr,
+        localBuffer.mutable_data(),
+        localBuffer.size(),
+        kDummyRank,
+        localBuffer->localKey(),
+        ibRemoteKey,
+        nullptr,
+        &work->ibReq,
+        false));
+    // Capture timeout for production read timeout
+    if (timeout.has_value()) {
+      work->timeout = timeout;
+      work->creationTime = std::chrono::steady_clock::now();
+    }
+  } else if (currentMockType == MockType::Timeout) {
+    // Mock timeout path - capture timeout if provided; if not, operation
+    // stays pending until abort() is called
+    if (timeout.has_value()) {
+      work->timeout = timeout;
+      work->creationTime = std::chrono::steady_clock::now();
+    }
+  }
 
   // Add work to pending list and schedule progress
   auto pendingWorks = pendingWorks_.wlock();
@@ -293,8 +316,9 @@ void RdmaTransport::progress() {
       continue;
     }
 
-    // Check write timeout (production and mock)
-    if ((*it)->type == Work::Type::Write && (*it)->timeout.has_value()) {
+    // Check write/read timeout (production and mock)
+    if (((*it)->type == Work::Type::Write || (*it)->type == Work::Type::Read) &&
+        (*it)->timeout.has_value()) {
       auto elapsed = std::chrono::steady_clock::now() - (*it)->creationTime;
       if (elapsed >= (*it)->timeout.value()) {
         (*it)->promise.setValue(commTimeout);

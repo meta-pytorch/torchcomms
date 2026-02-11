@@ -281,8 +281,8 @@ struct RdmaRemoteBuffer {
  *     write(), read(), waitForWrite(), connect()
  *
  *   commTimeout — operation exceeded its timeout duration:
- *     write()
- *     (read and waitForWrite do not yet support timeout)
+ *     write(), read()
+ *     (waitForWrite does not yet support timeout)
  *
  *   commInternalError — IB / transport-level failure:
  *     write(), read(), waitForWrite()
@@ -360,10 +360,16 @@ class __attribute__((visibility("default"))) RdmaTransport {
   /*
    * [Remote Op] Transfer data from remote buffer on the peer rank to local
    * buffer via RDMA.
+   *
+   * @param timeout Optional timeout duration for the read operation. When
+   *                specified, the operation will complete with commTimeout if
+   *                the RDMA read does not finish within this duration. If not
+   *                specified (nullopt), the read waits indefinitely.
    */
   folly::SemiFuture<commResult_t> read(
       RdmaMemory::MutableView& localBuffer,
-      const RdmaRemoteBuffer& remoteBuffer);
+      const RdmaRemoteBuffer& remoteBuffer,
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
   /*
    * Mock type for testing RDMA transport error scenarios
@@ -382,10 +388,10 @@ class __attribute__((visibility("default"))) RdmaTransport {
   };
 
   /*
-   * Inject software mock for testing. Any write while mock is enabled
+   * Inject software mock for testing. Any write or read while mock is enabled
    * will behave according to the mock configuration:
    * - Timeout: works stay pending until timeout fires (requires a timeout
-   *            to be specified in the write() call) or abort() is called
+   *            to be specified in the API call) or abort() is called
    * - Failure: works complete immediately with commInternalError
    * - None: reset to disable mock
    *

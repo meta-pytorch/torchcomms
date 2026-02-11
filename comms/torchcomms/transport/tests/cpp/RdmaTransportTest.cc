@@ -225,7 +225,8 @@ class RdmaTransportTest : public ::testing::Test {
 
       // Perform RDMA read from server's buffer using WriteableView
       auto readView = readMemory.createMutableView(readBuffer, bufferSize);
-      auto readFuture = transport->read(readView, serverMemInfo);
+      auto readFuture = transport->read(
+          readView, serverMemInfo, std::chrono::milliseconds(30000));
       EXPECT_EQ(commSuccess, std::move(readFuture).get());
       readDonePromise.setValue(true);
 
@@ -848,6 +849,62 @@ TEST_F(RdmaTransportTest, WriteTimeoutReturnsCommTimeout) {
                      .count();
 
   // Verify the write timed out with the correct return value
+  EXPECT_EQ(result, commTimeout);
+
+  // Verify the timeout fired after the specified duration (with tolerance
+  // for system scheduling)
+  EXPECT_GE(elapsed, 175); // 200ms - 25ms tolerance
+
+  EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
+
+// Test that a read operation times out and returns commTimeout when the
+// RDMA operation does not complete within the specified timeout duration.
+//
+// Uses MockType::Timeout to simulate a stalling IB operation (no iget is
+// issued, so ibReq.isComplete() returns false). The timeout detection itself
+// runs through the same unified code path as production reads: IB completion
+// check (returns false) -> timeout check (fires when elapsed >= timeout).
+TEST_F(RdmaTransportTest, ReadTimeoutReturnsCommTimeout) {
+  const size_t bufferSize = 1024;
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  // Create own event base for this test
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+
+  // Create and bind transport
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  std::string myUrl = transport->bind();
+  EXPECT_FALSE(myUrl.empty());
+
+  // Allocate and register memory buffer
+  void* buffer = nullptr;
+  EXPECT_EQ(cudaMalloc(&buffer, bufferSize), cudaSuccess);
+  torch::comms::RdmaMemory rdmaMemory(buffer, bufferSize, cudaDev);
+
+  // Simulate a stalling RDMA read (IB operation never completes)
+  transport->setMockForTest(
+      {.type = torch::comms::RdmaTransport::MockType::Timeout});
+
+  // Create a fake remote buffer for testing
+  torch::comms::RdmaRemoteBuffer remoteBuffer{
+      .ptr = buffer, .len = bufferSize, .accessKey = rdmaMemory.remoteKey()};
+
+  // Issue read with 200ms timeout - the read will stall and timeout should
+  // fire after ~200ms
+  auto startTime = std::chrono::steady_clock::now();
+  auto readView = rdmaMemory.createMutableView(buffer, bufferSize);
+  auto readFuture =
+      transport->read(readView, remoteBuffer, std::chrono::milliseconds(200));
+
+  auto result = std::move(readFuture).get();
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - startTime)
+                     .count();
+
+  // Verify the read timed out with the correct return value
   EXPECT_EQ(result, commTimeout);
 
   // Verify the timeout fired after the specified duration (with tolerance
