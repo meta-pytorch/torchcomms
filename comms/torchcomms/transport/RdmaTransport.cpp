@@ -72,7 +72,7 @@ struct RdmaTransport::Work {
   // Mock context for this work (type from setMockForTest)
   RdmaTransport::MockContext mockContext;
 
-  // Timeout tracking for write and read operations (production and mock)
+  // Timeout tracking for all async operations (production and mock)
   std::optional<std::chrono::milliseconds> timeout;
   std::chrono::steady_clock::time_point creationTime;
 };
@@ -209,13 +209,25 @@ folly::SemiFuture<commResult_t> RdmaTransport::write(
   return sf;
 }
 
-folly::SemiFuture<commResult_t> RdmaTransport::waitForWrite() {
-  CHECK_THROW(connected(), std::runtime_error);
+folly::SemiFuture<commResult_t> RdmaTransport::waitForWrite(
+    std::optional<std::chrono::milliseconds> timeout) {
+  auto currentMockType = mockContext_.rlock()->type;
+
+  // Skip connected check when mock is enabled for testing
+  if (currentMockType == MockType::None) {
+    CHECK_THROW(connected(), std::runtime_error);
+  }
   CHECK_THROW(evb_, std::runtime_error);
 
   auto work = std::make_unique<Work>();
   work->type = Work::Type::WaitForWrite;
+  work->mockContext.type = currentMockType;
   auto sf = work->promise.getSemiFuture();
+
+  if (timeout.has_value()) {
+    work->timeout = timeout;
+    work->creationTime = std::chrono::steady_clock::now();
+  }
 
   // Add work to pending list and schedule progress
   auto pendingWorks = pendingWorks_.wlock();
@@ -316,9 +328,8 @@ void RdmaTransport::progress() {
       continue;
     }
 
-    // Check write/read timeout (production and mock)
-    if (((*it)->type == Work::Type::Write || (*it)->type == Work::Type::Read) &&
-        (*it)->timeout.has_value()) {
+    // Check write/read/waitForWrite timeout (production and mock)
+    if ((*it)->timeout.has_value()) {
       auto elapsed = std::chrono::steady_clock::now() - (*it)->creationTime;
       if (elapsed >= (*it)->timeout.value()) {
         (*it)->promise.setValue(commTimeout);
@@ -327,7 +338,8 @@ void RdmaTransport::progress() {
       }
     }
 
-    if ((*it)->type == Work::Type::WaitForWrite) {
+    if ((*it)->type == Work::Type::WaitForWrite &&
+        (*it)->mockContext.type == MockType::None) {
       bool done = false;
       auto waitRes = ib_->checkNotify(kDummyRank, &done);
       if (waitRes != commSuccess || done) {

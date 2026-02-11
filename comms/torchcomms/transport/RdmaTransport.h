@@ -281,8 +281,7 @@ struct RdmaRemoteBuffer {
  *     write(), read(), waitForWrite(), connect()
  *
  *   commTimeout — operation exceeded its timeout duration:
- *     write(), read()
- *     (waitForWrite does not yet support timeout)
+ *     write(), read(), waitForWrite()
  *
  *   commInternalError — IB / transport-level failure:
  *     write(), read(), waitForWrite()
@@ -354,8 +353,14 @@ class __attribute__((visibility("default"))) RdmaTransport {
   /*
    * [Remote Op] Check the arrival of incoming put transfer from the remote
    * rank.
+   *
+   * @param timeout Optional timeout duration for the wait operation. When
+   *                specified, the operation will complete with commTimeout if
+   *                the notification does not arrive within this duration. If
+   *                not specified (nullopt), the wait blocks indefinitely.
    */
-  folly::SemiFuture<commResult_t> waitForWrite();
+  folly::SemiFuture<commResult_t> waitForWrite(
+      std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
   /*
    * [Remote Op] Transfer data from remote buffer on the peer rank to local

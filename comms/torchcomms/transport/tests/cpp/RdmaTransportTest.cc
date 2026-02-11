@@ -124,8 +124,10 @@ class RdmaTransportTest : public ::testing::Test {
           .accessKey = rdmaMemory.remoteKey()};
       syncObjects.memoryInfoPromise.setValue(myMemInfo);
 
-      // Wait for incoming put transfer from server
-      auto waitFuture = transport->waitForWrite();
+      // Wait for incoming put transfer from server (with generous timeout
+      // to exercise the production timeout path without triggering it)
+      auto waitFuture =
+          transport->waitForWrite(std::chrono::milliseconds(30000));
       EXPECT_EQ(commSuccess, std::move(waitFuture).get());
 
       // Verify data was transferred correctly
@@ -912,4 +914,44 @@ TEST_F(RdmaTransportTest, ReadTimeoutReturnsCommTimeout) {
   EXPECT_GE(elapsed, 175); // 200ms - 25ms tolerance
 
   EXPECT_EQ(cudaFree(buffer), cudaSuccess);
+}
+
+// Test that a waitForWrite operation times out and returns commTimeout when the
+// notification does not arrive within the specified timeout duration.
+//
+// Uses MockType::Timeout to simulate a stalling notification (no checkNotify
+// is polled for mock, so the operation stays pending). The timeout detection
+// fires when elapsed >= timeout.
+TEST_F(RdmaTransportTest, WaitForWriteTimeoutReturnsCommTimeout) {
+  const int cudaDev = 0;
+  EXPECT_EQ(cudaSetDevice(cudaDev), cudaSuccess);
+
+  // Create own event base for this test
+  auto evbThread = std::make_unique<folly::ScopedEventBaseThread>();
+
+  // Create and bind transport
+  auto transport = std::make_unique<torch::comms::RdmaTransport>(
+      cudaDev, evbThread->getEventBase());
+  std::string myUrl = transport->bind();
+  EXPECT_FALSE(myUrl.empty());
+
+  // Simulate a stalling notification (never arrives)
+  transport->setMockForTest(
+      {.type = torch::comms::RdmaTransport::MockType::Timeout});
+
+  // Issue waitForWrite with 200ms timeout
+  auto startTime = std::chrono::steady_clock::now();
+  auto waitFuture = transport->waitForWrite(std::chrono::milliseconds(200));
+
+  auto result = std::move(waitFuture).get();
+  auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - startTime)
+                     .count();
+
+  // Verify the wait timed out with the correct return value
+  EXPECT_EQ(result, commTimeout);
+
+  // Verify the timeout fired after the specified duration (with tolerance
+  // for system scheduling)
+  EXPECT_GE(elapsed, 175); // 200ms - 25ms tolerance
 }
