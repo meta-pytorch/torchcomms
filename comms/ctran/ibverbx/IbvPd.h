@@ -48,12 +48,11 @@ class IbvPd {
 
   // The send_cq and recv_cq fields in initAttr are ignored.
   // Instead, initAttr.send_cq and initAttr.recv_cq will be set to the physical
-  // CQs contained within sendCq and recvCq, respectively.
+  // CQ contained within virtualCq.
   folly::Expected<IbvVirtualQp, Error> createVirtualQp(
       int totalQps,
       ibv_qp_init_attr* initAttr,
-      IbvVirtualCq* sendCq,
-      IbvVirtualCq* recvCq,
+      IbvVirtualCq* virtualCq,
       int maxMsgCntPerQp = kIbMaxMsgCntPerQp,
       int maxMsgSize = kIbMaxMsgSizeByte,
       LoadBalancingScheme loadBalancingScheme =
