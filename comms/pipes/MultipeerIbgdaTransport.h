@@ -9,9 +9,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include <doca_gpunetio_host.h>
-#include <infiniband/verbs.h>
+#include "comms/ctran/ibverbx/Ibverbx.h"
 
+#include <doca_gpunetio_host.h>
 #include "comms/ctran/interfaces/IBootstrap.h"
 #include "comms/pipes/IbgdaBuffer.h"
 
@@ -329,11 +329,11 @@ class MultipeerIbgdaTransport {
   // DOCA GPU context
   doca_gpu* docaGpu_{nullptr};
 
-  // IB verbs resources
-  ibv_context* ibvContext_{nullptr};
-  ibv_pd* ibvPd_{nullptr};
+  // IB verbs resources (ibverbx RAII wrappers)
+  std::optional<ibverbx::IbvDevice> ibvDevice_;
+  std::optional<ibverbx::IbvPd> ibvPd_;
   doca_verbs_ah_attr* ahAttr_{nullptr};
-  ibv_gid localGid_{};
+  ibverbx::ibv_gid localGid_{};
 
   // High-level QPs (one per peer)
   std::vector<doca_gpu_verbs_qp_hl*> qpHlList_;
@@ -343,10 +343,10 @@ class MultipeerIbgdaTransport {
   std::size_t signalBufferSize_{0};
 
   // Memory regions for signal buffer
-  ibv_mr* signalMr_{nullptr};
+  std::optional<ibverbx::IbvMr> signalMr_;
 
-  // User-registered buffers (maps ptr -> ibv_mr*)
-  std::unordered_map<void*, ibv_mr*> registeredBuffers_;
+  // User-registered buffers (maps ptr -> IbvMr)
+  std::unordered_map<void*, ibverbx::IbvMr> registeredBuffers_;
 
   // GPU PCIe bus ID and NIC device name
   std::string gpuPciBusId_;
