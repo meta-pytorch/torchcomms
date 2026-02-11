@@ -31,7 +31,7 @@ class TorchWork : public c10::intrusive_ptr_target {
   };
 
   TorchWork() = default;
-  virtual ~TorchWork() = default;
+  ~TorchWork() override = default;
 
   WorkStatus status() const {
     return status_.load(std::memory_order_relaxed);
@@ -80,6 +80,18 @@ class TorchWork : public c10::intrusive_ptr_target {
       });
     }
   }
+
+  // break weak-ref cycle: postHook() stores a lambda in callback_ that
+  // captures a weak_intrusive_ptr back to this object. after the strong
+  // refcount reaches 0, release_resources() clears the callback, destroying the
+  // weak pointer and allowing the weak refcount to reach 0 so the object is
+  // deleted.
+  void release_resources() override {
+    callback_ = nullptr;
+  }
+
+  template <typename T, typename NullType>
+  friend class c10::intrusive_ptr;
 
  private:
   std::atomic<WorkStatus> status_{WorkStatus::NOT_STARTED};
