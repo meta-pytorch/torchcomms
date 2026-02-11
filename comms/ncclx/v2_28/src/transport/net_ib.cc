@@ -28,6 +28,8 @@
 #include "ibvwrap.h"
 #include "mlx5/mlx5dvwrap.h"
 
+#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
+
 #define MAXSUFFIXSIZE 16
 #define MAXNAMESIZE (64 + MAXSUFFIXSIZE)
 static char ncclIbIfName[MAX_IF_NAME_SIZE+1];
@@ -2544,6 +2546,25 @@ ncclResult_t ncclIbTest(void* request, int* done, int* sizes) {
                 ncclSocketToString(&addr, line), ibvWcStatusStr(wc->status), wc->status,
                 ibvWcOpcodeStr(wc->opcode), wc->opcode, reqSize, wc->vendor_err, reqTypeStr[r->type],
                 localGidStr ?  " localGid ":"", localGidString, remoteGidStr ? " remoteGids":"", remoteGidString, hcaName);
+            {
+              ProcessGlobalErrorsUtil::IbCompletionError ibErr;
+              ibErr.peer = std::string(ncclSocketToString(&addr, line));
+              ibErr.statusStr = std::string(ibvWcStatusStr(wc->status));
+              ibErr.status = wc->status;
+              ibErr.opcodeStr = std::string(ibvWcOpcodeStr(wc->opcode));
+              ibErr.opcode = wc->opcode;
+              ibErr.reqSize = reqSize;
+              ibErr.vendorErr = wc->vendor_err;
+              ibErr.reqType = std::string(reqTypeStr[r->type]);
+              if (localGidStr) {
+                ibErr.localGid = std::string(localGidString);
+              }
+              if (remoteGidStr) {
+                ibErr.remoteGid = std::string(remoteGidString);
+              }
+              ibErr.hcaName = std::string(hcaName);
+              ProcessGlobalErrorsUtil::addIbCompletionError(std::move(ibErr));
+            }
             return ncclRemoteError;
           }
 

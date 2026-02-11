@@ -35,6 +35,7 @@ enum BrokenRankType {
   NCCL_REMOTE_FAILURE_TYPE = 12,
   STUCK_INSIDE_NCCL_BASED_ON_INTERSECT_COLL = 13,
   RANK_UNRESPONSIVE_OVER_HTTP_TOO_LONG = 14,
+  IB_COMPLETION_ERROR_TYPE = 15,
 }
 
 @thrift.DeprecatedUnvalidatedAnnotations{items = {"hash": "1"}}
@@ -64,6 +65,7 @@ enum VerdictType {
   NETWORK_PERF_SLOWNESS = 22,
   JOB_CONTAINS_COLL_DEADLOCK = 23,
   JOB_CONTAINS_COLL_METADATA_MISMATCH = 24,
+  IB_COMPLETION_ERROR = 25,
 }
 
 struct SlowRankLeastCommsVerdict {
