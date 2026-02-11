@@ -137,16 +137,6 @@ class IbvVirtualCq {
       int32_t deviceId) const;
 };
 
-inline void Coordinator::submitRequestToVirtualCq(VirtualCqRequest&& request) {
-  if (request.type == RequestType::SEND) {
-    auto virtualCq = getVirtualSendCq(request.virtualQpNum);
-    virtualCq->processRequest(std::move(request));
-  } else {
-    auto virtualCq = getVirtualRecvCq(request.virtualQpNum);
-    virtualCq->processRequest(std::move(request));
-  }
-}
-
 // IbvVirtualCq inline functions
 inline folly::Expected<std::vector<ibv_wc>, Error> IbvVirtualCq::pollCq(
     int numEntries) {
