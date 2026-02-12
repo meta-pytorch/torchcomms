@@ -262,15 +262,36 @@ struct RdmaRemoteBuffer {
  *
  * Supported RDMA APIs
  * - `write` -> RDMA write to a remote memory
+ * - `read`  -> RDMA read from a remote memory
  * - `waitForWrite` -> Wait for a remote write operation
  *
  * Future APIs that can be supported as per use-case. Given this framework
  * adding new APIs should be relatively straightforward.
  * - Send - RDMA Send (needs matching Recv on other end)
  * - Recv - RDMA Receive (needs matching Send on other end)
- * - Read - RDMA Read from a remote memory
  * - waitForRead - Wait for a remote read operation
  * - <Atomic APIs>
+ *
+ * API return value contracts (commResult_t):
+ * All async APIs (write, read, waitForWrite) return a commResult_t via
+ * SemiFuture. Callers MUST use the timeout parameter to ensure bounded
+ * completion — without it, operations may wait indefinitely for IB
+ * completion.
+ *
+ *   commSuccess — normal completion:
+ *     write(), read(), waitForWrite(), connect()
+ *
+ *   commTimeout — operation exceeded its timeout duration:
+ *     write()
+ *
+ *   commInternalError — IB / transport-level failure:
+ *     write(), read(), waitForWrite()
+ *
+ *   commUserAbort — transport was destroyed while operations were pending:
+ *     write(), read(), waitForWrite()
+ *
+ *   Throws (no commResult_t) — unrecoverable setup error:
+ *     bind(), connect()
  */
 class __attribute__((visibility("default"))) RdmaTransport {
  public:
@@ -298,7 +319,7 @@ class __attribute__((visibility("default"))) RdmaTransport {
 
   /*
    * Bind the transport and retrieve the unique identifier that can be used to
-   * connect from the other end. Throws exception on error.
+   * connect from the other end. Throws on failure.
    */
   std::string bind();
 
@@ -319,11 +340,10 @@ class __attribute__((visibility("default"))) RdmaTransport {
    * rank via RDMA. The remote side can use the `checkNotify` API to wait for
    * the completion of the transfer for every iput call with notify=true.
    *
-   * @param timeout Optional timeout duration for the write operation. Currently
-   *                only used for mock testing (MockType::Timeout). When mock is
-   *                enabled, the operation will complete with commTimeout after
-   *                this duration. Defaults to 60 seconds if not specified.
-   *                In production (MockType::None), this parameter is ignored.
+   * @param timeout Optional timeout duration for the write operation. When
+   *                specified, the operation will complete with commTimeout if
+   *                the RDMA write does not finish within this duration. If not
+   *                specified (nullopt), the write waits indefinitely.
    */
   folly::SemiFuture<commResult_t> write(
       RdmaMemory::View localBuffer,
@@ -355,41 +375,17 @@ class __attribute__((visibility("default"))) RdmaTransport {
   };
 
   /*
-   * Context for mock behavior. The type is set via setMockForTest(),
-   * while timeout and creationTime are captured from write() call.
+   * Context for mock behavior, set via setMockForTest().
    */
   struct MockContext {
     MockType type{MockType::None};
-    // Timeout duration captured from write() parameter
-    std::optional<std::chrono::milliseconds> timeout;
-    // Creation time for timeout calculation
-    std::chrono::steady_clock::time_point creationTime;
-
-    // Default timeout duration when not specified (60 seconds)
-    static constexpr std::chrono::milliseconds kDefaultTimeout{60000};
-
-    /*
-     * Check if timeout has elapsed since creation time.
-     * Returns true if type is Timeout AND elapsed time >= timeout duration.
-     */
-    bool hasTimedOut() const {
-      if (type != MockType::Timeout) {
-        return false;
-      }
-      auto timeoutDuration = timeout.value_or(kDefaultTimeout);
-      if (timeoutDuration.count() <= 0) {
-        return true; // Duration 0 means immediate timeout
-      }
-      auto elapsed = std::chrono::steady_clock::now() - creationTime;
-      return elapsed >= timeoutDuration;
-    }
   };
 
   /*
    * Inject software mock for testing. Any write while mock is enabled
    * will behave according to the mock configuration:
-   * - Timeout: works complete with commTimeout after the timeout duration
-   *            specified in the write() call (defaults to 60s if not specified)
+   * - Timeout: works stay pending until timeout fires (requires a timeout
+   *            to be specified in the write() call) or transport is destroyed
    * - Failure: works complete immediately with commInternalError
    * - None: reset to disable mock
    *
@@ -403,11 +399,9 @@ class __attribute__((visibility("default"))) RdmaTransport {
   void setMockForTest(MockContext config);
 
   /*
-   * Abort all pending works and complete them with commUserAbort status.
-   * This is called by upper layer to cancel pending operations.
-   *
-   * Currently cleans up pending works at RDMA Transport level. This API is
-   * preserved for future cleanup extensions.
+   * Deprecated: This function is a no-op. Pending work cleanup is handled
+   * by the destructor. No upper-layer code should call this function.
+   * TODO: Remove after upper layer removes calling abort().
    */
   void abort();
 
