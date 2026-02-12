@@ -92,6 +92,9 @@ class IbvVirtualQp {
         << "notifyQp must be provided when using multiple data QPs!";
     return notifyQp_.has_value();
   }
+  bool isMultiQp() const {
+    return isMultiQp_;
+  }
   uint32_t getVirtualQpNum() const;
   // If businessCard is not provided, all physical QPs will be updated with the
   // universal attributes specified in attr. This is typically used for changing
@@ -147,6 +150,17 @@ class IbvVirtualQp {
   // Pointer to the VirtualCq this VirtualQp is registered with (for v2 path)
   IbvVirtualCq* virtualCq_{nullptr};
 
+  // Flag indicating if this VirtualQp uses multiple physical QPs
+  bool isMultiQp_{false};
+
+  // v2 WR Tracking: Separate trackers for send and recv
+  WrTracker<ActiveVirtualWr> sendTracker_;
+  WrTracker<ActiveVirtualWr> recvTracker_;
+
+  // v2 SPRAY notify tracking
+  std::deque<uint64_t> pendingSendNotifyQue_;
+  std::deque<uint64_t> pendingRecvNotifyQue_;
+
   std::deque<VirtualSendWr> pendingSendVirtualWrQue_;
   std::deque<VirtualRecvWr> pendingRecvVirtualWrQue_;
 
@@ -198,6 +212,19 @@ class IbvVirtualQp {
   inline folly::Expected<folly::Unit, Error> mapPendingRecvQueToPhysicalQp(
       int qpIdx = -1);
   inline folly::Expected<folly::Unit, Error> postRecvNotifyImm(int qpIdx = -1);
+
+  // v2 common helpers
+  inline bool isSendOpcode(ibv_wc_opcode opcode) const;
+  inline folly::Expected<folly::Unit, Error> updateWrState(
+      WrTracker<ActiveVirtualWr>& tracker,
+      uint64_t internalWrId,
+      ibv_wc_status status,
+      ibv_wc_opcode wcOpcode);
+  inline IbvVirtualWc buildVirtualWc(const ActiveVirtualWr& wr) const;
+
+  // VirtualCq registration helpers (called from constructor/destructor)
+  void registerWithVirtualCq();
+  void unregisterFromVirtualCq();
 };
 
 inline folly::Expected<VirtualQpResponse, Error>
@@ -747,6 +774,54 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
   }
 
   return folly::unit;
+}
+
+// ============================================================
+// v2 Common Helpers
+// ============================================================
+
+inline bool IbvVirtualQp::isSendOpcode(ibv_wc_opcode opcode) const {
+  return opcode == IBV_WC_SEND || opcode == IBV_WC_RDMA_WRITE ||
+      opcode == IBV_WC_RDMA_READ || opcode == IBV_WC_FETCH_ADD ||
+      opcode == IBV_WC_COMP_SWAP;
+}
+
+inline folly::Expected<folly::Unit, Error> IbvVirtualQp::updateWrState(
+    WrTracker<ActiveVirtualWr>& tracker,
+    uint64_t internalWrId,
+    ibv_wc_status status,
+    ibv_wc_opcode wcOpcode) {
+  auto* wr = tracker.find(internalWrId);
+  CHECK(wr) << fmt::format(
+      "[Ibverbx] WR {} not found in tracker during updateWrState",
+      internalWrId);
+
+  wr->remainingMsgCnt--;
+  wr->wcOpcode = wcOpcode;
+
+  // First error wins
+  if (wr->aggregatedStatus == IBV_WC_SUCCESS && status != IBV_WC_SUCCESS) {
+    wr->aggregatedStatus = status;
+    XLOGF(
+        ERR,
+        "[Ibverbx] Physical WC error: status={}, WR internalId={}",
+        static_cast<int>(status),
+        internalWrId);
+  }
+
+  return folly::unit;
+}
+
+inline IbvVirtualWc IbvVirtualQp::buildVirtualWc(
+    const ActiveVirtualWr& wr) const {
+  IbvVirtualWc wc;
+  wc.wrId = wr.userWrId;
+  wc.status = wr.aggregatedStatus;
+  wc.byteLen = wr.length;
+  wc.qpNum = virtualQpNum_;
+  wc.immData = wr.immData;
+  wc.opcode = wr.wcOpcode;
+  return wc;
 }
 
 // Stub: processCompletion will be implemented when postSend_v2/postRecv_v2
