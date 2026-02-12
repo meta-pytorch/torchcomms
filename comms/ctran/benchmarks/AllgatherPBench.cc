@@ -177,10 +177,10 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
 
     for (int i = 0; i < FLAGS_bench_iters; ++i) {
       COMMCHECK_TEST(ctran::allGatherPExec(usedSendBuf, count, dt_, request));
+      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
     }
 
-    // Sync once after all iterations
-    CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
     auto end = std::chrono::high_resolution_clock::now();
 
     // Calculate total time and average per iteration
@@ -247,10 +247,10 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     for (int i = 0; i < FLAGS_bench_iters; ++i) {
       NCCLCHECK_TEST(ncclAllGather(
           usedSendBuf, recvbuf, count, ncclBfloat16, ncclComm_, stream_));
+      CUDACHECK_TEST(cudaStreamSynchronize(stream_));
     }
 
-    // Sync once after all iterations
-    CUDACHECK_TEST(cudaStreamSynchronize(stream_));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
     auto end = std::chrono::high_resolution_clock::now();
 
     // Calculate total time and average per iteration
@@ -343,7 +343,7 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     // Check nNodes for pipeline support
     const auto statex = ctranComm_->statex_.get();
     const auto nNodes = statex->nNodes();
-    const bool pipelineSupported = nNodes > 1;
+    const bool pipelineSupported = nNodes >= 1;
 
     // Generate size range (powers of 2)
     std::vector<size_t> sizes;
@@ -441,7 +441,7 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       }
 
       if (globalRank == 0) {
-        std::cout << std::endl;
+        std::cout << "====" << std::endl;
       }
     }
 

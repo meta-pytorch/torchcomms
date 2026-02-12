@@ -70,6 +70,18 @@ extern __global__ void ncclKernelAllGatherPInit(
 
 commResult_t AlgoImpl::initialize() {
   auto opCount = comm_->ctran_->getOpCount();
+
+  // Pre-allocate streams for parallel icopy in nvlCeBcast
+  // (nLocalRanks - 1) local peers
+  // --> the main stream + (nLocalRanks - 2) CE streams
+  const auto nLocalRanks = comm_->statex_->nLocalRanks();
+  if (nLocalRanks > 2) {
+    ceStreams_.resize(nLocalRanks - 2);
+    for (auto& s : ceStreams_) {
+      FB_CUDACHECK(cudaStreamCreate(&s));
+    }
+  }
+
   CTRAN_COLL_INFO(
       algoInitName,
       nullptr,
@@ -116,6 +128,16 @@ commResult_t AlgoImpl::destroy() {
     FB_CUDACHECK(cudaFreeHost(resource_.pipeSync));
     resource_.pipeSync = nullptr;
   }
+
+  // Destroy pre-allocated CE streams
+  for (auto& s : ceStreams_) {
+    if (s != nullptr) {
+      FB_CUDACHECK(cudaStreamDestroy(s));
+      s = nullptr;
+    }
+  }
+  ceStreams_.clear();
+
   return commSuccess;
 }
 } // namespace ctran::allgatherp

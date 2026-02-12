@@ -47,6 +47,7 @@ inline commResult_t nvlCeBcast(
     const size_t recvOffset,
     PersistArgs& pArgs,
     cudaStream_t stream,
+    const std::vector<cudaStream_t>& ceStreams,
     bool barrier = true) {
   const auto statex = comm->statex_.get();
   const auto rank = statex->rank();
@@ -64,6 +65,9 @@ inline commResult_t nvlCeBcast(
   // Copy data to other local ranks, each rank starts with the next rank as peer
   // and shift by 1 to avoid all-to-one incast traffic
   for (auto r = 1; r < nLocalRanks; r++) {
+    // Use main stream for r=1, ceStreams[r-2] for r>=2
+    cudaStream_t stream_ = (r == 1) ? stream : ceStreams[r - 2];
+
     const auto localPeer = (localRank + r) % nLocalRanks;
     const auto peer = statex->localRankToRank(localPeer);
 
@@ -80,9 +84,46 @@ inline commResult_t nvlCeBcast(
           pArgs.remoteRecvBuffs[peer],
           recvOffset,
           sendSize);
-      FB_COMMCHECK(mapper->icopy(recvPtr, sendBuff, sendSize, stream));
+      FB_COMMCHECK(mapper->icopy(recvPtr, sendBuff, sendSize, stream_));
     }
   }
+
+  /*
+  1) cudaDeviceSynchronize():
+  CPU main thread:    [enqueue icopy x7] [BLOCKED...........]
+  CPU GPE thread:     [IB PUT operations ALSO BLOCKED - same process]
+  GPU ceStreams:      [icopy]──►  ←── still parallel on GPU
+                      [icopy]──►
+                      [icopy]──►
+                                ↑ CPU waits here
+
+  2) CUDA Events:
+  CPU main thread:    [enqueue icopy x7] [return immediately]
+  CPU GPE thread:     [IB PUT operations running concurrently...]
+  GPU ceStreams:      [icopy]──►  ←── parallel
+                      [icopy]──►
+                      [icopy]──►
+  GPU main stream:    ──────────[waits]──────────►
+  */
+
+  // FB_CUDACHECK(cudaDeviceSynchronize());
+
+  // Use CUDA events to synchronize streams without blocking the host
+  // Record an event on each CE stream, then make the main stream wait
+  for (const auto& s : ceStreams) {
+    cudaEvent_t event;
+    FB_CUDACHECK(cudaEventCreateWithFlags(&event, cudaEventDisableTiming));
+    FB_CUDACHECK(cudaEventRecord(event, s));
+    FB_CUDACHECK(cudaStreamWaitEvent(stream, event, 0));
+    FB_CUDACHECK(cudaEventDestroy(event));
+  }
+
+  // Second barrier to ensure all local ranks have finished their CE copies
+  // before any rank proceeds to read the received data
+  if (barrier) {
+    nvlBarrier(comm, stream);
+  }
+
   return commSuccess;
 }
 
