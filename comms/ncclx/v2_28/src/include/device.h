@@ -58,6 +58,7 @@ extern const char* ncclProtoStr[NCCL_NUM_PROTOCOLS];
 enum ncclDevRedOp_t {
   ncclDevSum, ncclDevProd, ncclDevMinMax,
   ncclDevPreMulSum, ncclDevSumPostDiv,
+  ncclDevPatSumPostDiv,  // [META:PAT_AVG] Native AVG for PAT ReduceScatter
   ncclNumDevRedOps
 };
 struct ncclDevRedOpFull {
