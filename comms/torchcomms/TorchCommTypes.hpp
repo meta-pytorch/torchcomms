@@ -6,7 +6,11 @@
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
 #include <chrono>
+#include <optional>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
+#include <vector>
 
 namespace torch::comms {
 
@@ -94,5 +98,47 @@ constexpr std::chrono::milliseconds kNoTimeout = std::chrono::milliseconds(0);
 // An InitHandle encodes information required
 // by the backend to complete the initialization process via reconfigure().
 using InitHandle = std::string;
+
+/**
+ * Options for the reconfigure() fault tolerance API.
+ *
+ * The reconfigure call initializes the communicator with a user-provided set
+ * of peers. After a successful reconfigure call, the communicator is fully
+ * initialized and collective operations are permitted.
+ */
+struct ReconfigureOptions {
+  /**
+   * Uniquely identifies this instance of the communicator.
+   * The uuid must not have been used previously on this communicator.
+   * Every time a communicator is initialized, pass in a new UUID to identify
+   * this new instance of the communicator.
+   */
+  int64_t uuid;
+
+  /**
+   * Represents the members that will participate in this communicator.
+   * Each URL/handle represents a rank in the communicator.
+   *
+   * Two regimes are supported:
+   * - vector<InitHandle>: Guarantees that assigned ranks correspond to
+   *   position of handle in the vector (ordered assignment)
+   * - unordered_set<InitHandle>: The backend will determine the rank
+   *   assignment based on internal considerations (no external rank order
+   *   is guaranteed)
+   */
+  std::variant<std::unordered_set<InitHandle>, std::vector<InitHandle>> handles;
+
+  /**
+   * How long to allow reconfiguration to take before failing with an error.
+   * If nullopt, uses the backend's default timeout.
+   */
+  std::optional<std::chrono::milliseconds> timeout{std::nullopt};
+
+  /**
+   * Additional configuration key-value pairs, implementation-specific.
+   * These hints can be used to pass backend-specific options.
+   */
+  std::unordered_map<std::string, std::string> hints;
+};
 
 } // namespace torch::comms
