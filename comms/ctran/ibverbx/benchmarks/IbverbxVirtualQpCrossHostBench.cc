@@ -470,7 +470,7 @@ static ExchangeInfo exchangeAndConnect(BenchmarkContext* ctx, int peerRank) {
 
 static void pollCqUntilCompletion(IbvVirtualCq& cq) {
   while (true) {
-    auto maybeWcs = cq.pollCq_v2();
+    auto maybeWcs = cq.pollCq();
     if (maybeWcs && !maybeWcs->empty()) {
       const auto& wc = maybeWcs->at(0);
       if (wc.status != IBV_WC_SUCCESS) {
@@ -532,7 +532,7 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
       *postBuf = static_cast<char>(++scnt);
-      ctx->endpoint->qp.postSend_v2(ctx->sendWr);
+      ctx->endpoint->qp.postSend(ctx->sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
 
       ++rcnt;
@@ -550,7 +550,7 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
       auto start = Clock::now();
 
       *postBuf = static_cast<char>(++scnt);
-      ctx->endpoint->qp.postSend_v2(ctx->sendWr);
+      ctx->endpoint->qp.postSend(ctx->sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
 
       ++rcnt;
@@ -606,7 +606,7 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
       }
 
       *postBuf = static_cast<char>(++scnt);
-      ctx->endpoint->qp.postSend_v2(ctx->sendWr);
+      ctx->endpoint->qp.postSend(ctx->sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -870,7 +870,7 @@ static BenchmarkResult runRdmaWriteLatencyBenchmark(
   if (isSender) {
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
-      ctx->endpoint->qp.postSend_v2(sendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -878,7 +878,7 @@ static BenchmarkResult runRdmaWriteLatencyBenchmark(
     deltasUs.resize(iterations);
     for (int i = 0; i < iterations; ++i) {
       auto start = Clock::now();
-      ctx->endpoint->qp.postSend_v2(sendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
       auto end = Clock::now();
       deltasUs[i] =
@@ -928,7 +928,7 @@ static BenchmarkResult runRdmaReadLatencyBenchmark(
   if (!isSender) {
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
-      ctx->endpoint->qp.postSend_v2(sendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -936,7 +936,7 @@ static BenchmarkResult runRdmaReadLatencyBenchmark(
     deltasUs.resize(iterations);
     for (int i = 0; i < iterations; ++i) {
       auto start = Clock::now();
-      ctx->endpoint->qp.postSend_v2(sendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
       auto end = Clock::now();
       deltasUs[i] =
@@ -989,7 +989,7 @@ static BenchmarkResult runRdmaWriteWithImmLatencyBenchmark(
   if (isSender) {
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
-      ctx->endpoint->qp.postSend_v2(sendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -999,7 +999,7 @@ static BenchmarkResult runRdmaWriteWithImmLatencyBenchmark(
     deltasUs.resize(iterations);
     for (int i = 0; i < iterations; ++i) {
       auto start = Clock::now();
-      ctx->endpoint->qp.postSend_v2(sendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
       auto end = Clock::now();
       deltasUs[i] =
@@ -1009,7 +1009,7 @@ static BenchmarkResult runRdmaWriteWithImmLatencyBenchmark(
     // Receiver: post recv and poll completion
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
-      ctx->endpoint->qp.postRecv_v2(recvWr);
+      ctx->endpoint->qp.postRecv(recvWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -1019,7 +1019,7 @@ static BenchmarkResult runRdmaWriteWithImmLatencyBenchmark(
     deltasUs.resize(iterations);
     for (int i = 0; i < iterations; ++i) {
       auto start = Clock::now();
-      ctx->endpoint->qp.postRecv_v2(recvWr);
+      ctx->endpoint->qp.postRecv(recvWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
       auto end = Clock::now();
       deltasUs[i] =
@@ -1068,7 +1068,7 @@ static BenchmarkResult runBandwidthBenchmark(
     // Warmup phase
     for (int i = 0; i < kWarmupIterations; ++i) {
       sendWr.wrId = wrIdCounter++;
-      ctx->endpoint->qp.postSend_v2(sendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -1086,13 +1086,13 @@ static BenchmarkResult runBandwidthBenchmark(
       while (scnt < static_cast<uint64_t>(iterations) &&
              (scnt - ccnt + 1) <= static_cast<uint64_t>(kBwTxDepth)) {
         sendWr.wrId = wrIdCounter++;
-        ctx->endpoint->qp.postSend_v2(sendWr);
+        ctx->endpoint->qp.postSend(sendWr);
         ++scnt;
       }
 
       // Poll completions
       if (ccnt < static_cast<uint64_t>(iterations)) {
-        auto maybeWcs = ctx->endpoint->cq.pollCq_v2();
+        auto maybeWcs = ctx->endpoint->cq.pollCq();
         if (maybeWcs && !maybeWcs->empty()) {
           for (const auto& wc : *maybeWcs) {
             if (wc.status != IBV_WC_SUCCESS) {

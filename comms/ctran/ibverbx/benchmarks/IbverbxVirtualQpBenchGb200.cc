@@ -459,7 +459,7 @@ struct BenchmarkSetup {
       const std::string& cqName) {
     bool stop = false;
     while (!stop) {
-      auto maybeWcsVector = cq.pollCq_v2();
+      auto maybeWcsVector = cq.pollCq();
       auto numWc = maybeWcsVector->size();
       if (numWc == 0) {
         continue;
@@ -511,7 +511,7 @@ static void BM_Ibverbx_VirtualQp_RdmaRead(benchmark::State& state) {
 
     // Benchmark the postSend operation
     for (auto _ : state) {
-      setup.receiver->qp.postSend_v2(sendWr);
+      setup.receiver->qp.postSend(sendWr);
 
       // Poll receiver cq until completion
       BenchmarkSetup::pollCqUntilCompletion(setup.receiver->cq, "Receiver");
@@ -551,7 +551,7 @@ static void BM_Ibverbx_VirtualQp_RdmaWrite(benchmark::State& state) {
 
     // Benchmark the postSend operation
     for (auto _ : state) {
-      auto postSendResult = setup.sender->qp.postSend_v2(sendWr);
+      auto postSendResult = setup.sender->qp.postSend(sendWr);
       BenchmarkSetup::pollCqUntilCompletion(setup.sender->cq, "Sender");
     }
 
@@ -598,8 +598,8 @@ static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm(
 
     // Benchmark the postSend operation
     for (auto _ : state) {
-      setup.receiver->qp.postRecv_v2(recvWr);
-      setup.sender->qp.postSend_v2(sendWr);
+      setup.receiver->qp.postRecv(recvWr);
+      setup.sender->qp.postSend(sendWr);
 
       // Poll sender and receiver cq until completion
       BenchmarkSetup::pollCqUntilCompletion(setup.sender->cq, "Sender");
