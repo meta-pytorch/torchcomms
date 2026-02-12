@@ -6,6 +6,8 @@ from datetime import timedelta
 from enum import auto, Enum
 from typing import Any, Dict, List
 
+InitHandle = str
+
 class RedOpType(Enum):
     SUM = auto()
     PRODUCT = auto()
@@ -122,6 +124,7 @@ class GatherOptions:
 class TorchWork:
     def is_completed(self) -> bool: ...
     def wait(self) -> None: ...
+    def wait_blocking(self) -> None: ...
 
 class TorchCommWinAccessType(Enum):
     WIN_ACCESS_TYPE_UNIFIED = auto()
@@ -203,6 +206,7 @@ class TorchComm:
     def get_device(self) -> Any: ...
     def get_backend(self) -> str: ...
     def unsafe_get_backend(self) -> TorchCommBackend: ...
+    def get_init_handle(self) -> InitHandle: ...
     def send(
         self,
         tensor: Any,

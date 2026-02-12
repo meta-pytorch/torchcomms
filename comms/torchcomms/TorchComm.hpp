@@ -229,6 +229,18 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt);
 
+  // Fault Tolerance API
+
+  /**
+   * Get the initialization handle for this communicator.
+   * In dynamic regime, this handle encodes information required by the backend
+   * to complete the initialization process via reconfigure().
+   *
+   * @return An InitHandle containing the initialization URL/handle.
+   * @throws std::runtime_error if not implemented by the backend.
+   */
+  InitHandle getInitHandle() const;
+
   // Hooks
   struct PreHookArgs {
     OpName name;
