@@ -29,7 +29,7 @@ class CtranMapperTcpdmTest : public ::testing::Test {
       ncclCvarInit();
       auto commRAII = ctran::createDummyCtranComm();
       commRAII.reset();
-    } catch (const ctran::utils::Exception& e) {
+    } catch (const ctran::utils::Exception&) {
       GTEST_SKIP() << "TCPDM backend not enabled. Skip test";
     }
   }

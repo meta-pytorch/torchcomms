@@ -227,7 +227,6 @@ class IbverbxVirtualQpTestFixture : public MpiBaseTestFixture {
         totalQps,
         &initAttr,
         &virtualCq,
-        &virtualCq,
         maxMsgPerQp,
         maxMsgBytes,
         loadBalancingScheme);
@@ -365,8 +364,7 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpModifyVirtualQp) {
   ASSERT_TRUE(pd);
 
   uint32_t totalQps = 16;
-  auto virtualQp =
-      pd->createVirtualQp(totalQps, &initAttr, &virtualCq, &virtualCq);
+  auto virtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
   ASSERT_TRUE(virtualQp);
 
   // create local business card and exchange
@@ -456,8 +454,8 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
   // make qp group
   int totalQps = 16;
   auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
-  auto virtualQp = pd->createVirtualQp(
-      totalQps, &initAttr, &virtualCq, &virtualCq, 128, 1024);
+  auto virtualQp =
+      pd->createVirtualQp(totalQps, &initAttr, &virtualCq, 128, 1024);
   ASSERT_TRUE(virtualQp);
 
   // init device buffer for receiver

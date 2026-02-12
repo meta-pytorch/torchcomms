@@ -78,7 +78,7 @@ TEST_F(CtranIbHcaTest, IbHcaExcludeDev) {
           devId,
           ctranIb->getIbDevName().c_str(),
           ctranIb->getIbDevPort());
-    } catch (const std::bad_alloc& e) {
+    } catch (const std::bad_alloc&) {
       printf("CtranIbTest: IB backend not enabled. Skip test\n");
     }
   }

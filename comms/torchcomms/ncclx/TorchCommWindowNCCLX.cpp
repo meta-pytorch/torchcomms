@@ -508,7 +508,7 @@ void TorchCommWindowNCCLX<Backend>::checkWindowAndThrow() const {
 // =============================================================================
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-template class TorchCommWindowNCCLX<torchcomms::device::NCCLGinBackend>;
+template class TorchCommWindowNCCLX<torchcomms::device::NCCLDeviceBackend>;
 #else
 template class TorchCommWindowNCCLX<HostOnlyBackend>;
 #endif

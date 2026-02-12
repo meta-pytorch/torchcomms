@@ -15,7 +15,7 @@
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 #include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
-#include "comms/torchcomms/device/TorchCommDeviceComm.hpp"
+#include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #endif
 
 namespace torch::comms {
@@ -41,7 +41,7 @@ class TorchCommNCCLX;
 //
 // When TORCHCOMMS_HAS_NCCL_DEVICE_API is defined (NCCLX 2.28+):
 //   Template parameter Backend provides compile-time polymorphism:
-//     - NCCLGinBackend: NCCL GIN for GPU-initiated networking
+//     - NCCLDeviceBackend: Unified NCCL backend (GIN + LSA)
 //     - Future: NVSHMEMBackend, etc.
 //
 // When TORCHCOMMS_HAS_NCCL_DEVICE_API is NOT defined (NCCLX 2.27):
@@ -172,11 +172,11 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
 };
 
 // Type alias for the common case
-// With device API: Uses NCCLGinBackend with full device capabilities
+// With device API: Uses NCCLDeviceBackend with full device capabilities
 // Without device API: Uses HostOnlyBackend for host-side operations only
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 using TorchCommWindowNCCLXGin =
-    TorchCommWindowNCCLX<torchcomms::device::NCCLGinBackend>;
+    TorchCommWindowNCCLX<torchcomms::device::NCCLDeviceBackend>;
 #else
 using TorchCommWindowNCCLXGin = TorchCommWindowNCCLX<HostOnlyBackend>;
 #endif

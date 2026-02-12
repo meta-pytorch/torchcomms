@@ -357,6 +357,13 @@ void linked_wr_start(struct ibv_qp_ex* qp) {
   ibv_wr_start(reinterpret_cast<::ibv_qp_ex*>(qp));
 }
 
+void linked_wr_rdma_write(
+    struct ibv_qp_ex* qp,
+    uint32_t rkey,
+    uint64_t remote_addr) {
+  ibv_wr_rdma_write(reinterpret_cast<::ibv_qp_ex*>(qp), rkey, remote_addr);
+}
+
 void linked_wr_rdma_write_imm(
     struct ibv_qp_ex* qp,
     uint32_t rkey,
@@ -400,6 +407,13 @@ struct ibv_qp_ex* wrapper_qp_to_qp_ex(struct ibv_qp* qp) {
 
 void wrapper_wr_start(struct ibv_qp_ex* qp) {
   qp->wr_start(qp);
+}
+
+void wrapper_wr_rdma_write(
+    struct ibv_qp_ex* qp,
+    uint32_t rkey,
+    uint64_t remote_addr) {
+  qp->wr_rdma_write(qp, rkey, remote_addr);
 }
 
 void wrapper_wr_rdma_write_imm(
@@ -486,6 +500,7 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   symbols.ibv_internal_create_qp_ex = &linked_create_qp_ex;
   symbols.ibv_internal_qp_to_qp_ex = &linked_qp_to_qp_ex;
   symbols.ibv_internal_wr_start = &linked_wr_start;
+  symbols.ibv_internal_wr_rdma_write = &linked_wr_rdma_write;
   symbols.ibv_internal_wr_rdma_write_imm = &linked_wr_rdma_write_imm;
   symbols.ibv_internal_wr_set_sge_list = &linked_wr_set_sge_list;
   symbols.ibv_internal_wr_complete = &linked_wr_complete;

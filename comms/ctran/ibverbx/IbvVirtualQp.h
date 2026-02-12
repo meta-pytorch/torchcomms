@@ -5,12 +5,12 @@
 #include <folly/Expected.h>
 #include <folly/dynamic.h>
 #include <deque>
+#include <optional>
 
 #include "comms/ctran/ibverbx/Coordinator.h"
 #include "comms/ctran/ibverbx/DqplbSeqTracker.h"
 #include "comms/ctran/ibverbx/IbvCommon.h"
 #include "comms/ctran/ibverbx/IbvQp.h"
-#include "comms/ctran/ibverbx/IbvVirtualCq.h"
 #include "comms/ctran/ibverbx/IbvVirtualWr.h"
 #include "comms/ctran/ibverbx/Ibvcore.h"
 
@@ -52,17 +52,26 @@ struct IbvVirtualQpBusinessCard {
   uint32_t notifyQpNum_{0};
 };
 
-// Ibv Virtual Queue Pair
+// IbvVirtualQp is the user-facing interface for posting RDMA work requests.
+// It abstracts multiple physical QPs behind a single virtual QP interface.
+// When load balancing is enabled, large RDMA messages are fragmented into
+// smaller chunks and distributed across the underlying physical QPs using a
+// configurable load balancing scheme (SPRAY or DQPLB). Completions from all
+// physical QPs are aggregated by a paired IbvVirtualCq into a single virtual
+// completion per original message. When load balancing is not needed, it falls
+// back to single-QP operations.
+//
+// Currently, each IbvVirtualQp is associated with exactly one IbvVirtualCq
+// that serves as both the send and receive completion queue.
 class IbvVirtualQp {
  public:
   IbvVirtualQp(
       std::vector<IbvQp>&& qps,
-      IbvQp&& notifyQp,
-      IbvVirtualCq* sendCq,
-      IbvVirtualCq* recvCq,
+      IbvVirtualCq* virtualCq,
       int maxMsgCntPerQp = kIbMaxMsgCntPerQp,
       int maxMsgSize = kIbMaxMsgSizeByte,
-      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY);
+      LoadBalancingScheme loadBalancingScheme = LoadBalancingScheme::SPRAY,
+      std::optional<IbvQp>&& notifyQp = std::nullopt);
   ~IbvVirtualQp();
 
   // disable copy constructor
@@ -78,6 +87,14 @@ class IbvVirtualQp {
   std::vector<IbvQp>& getQpsRef();
   const IbvQp& getNotifyQpRef() const;
   IbvQp& getNotifyQpRef();
+  bool hasNotifyQp() const {
+    CHECK(physicalQps_.size() == 1 || notifyQp_.has_value())
+        << "notifyQp must be provided when using multiple data QPs!";
+    return notifyQp_.has_value();
+  }
+  bool isMultiQp() const {
+    return isMultiQp_;
+  }
   uint32_t getVirtualQpNum() const;
   // If businessCard is not provided, all physical QPs will be updated with the
   // universal attributes specified in attr. This is typically used for changing
@@ -108,6 +125,12 @@ class IbvVirtualQp {
   inline folly::Expected<VirtualQpResponse, Error> processRequest(
       VirtualQpRequest&& request);
 
+  // v2 completion processing: Route physical CQEs to virtual WR state.
+  // Stub implementation until postSend_v2/postRecv_v2 are added.
+  inline folly::Expected<std::vector<IbvVirtualWc>, Error> processCompletion(
+      const ibv_wc& physicalWc,
+      int32_t deviceId);
+
  private:
 #ifdef IBVERBX_TEST_FRIENDS
   IBVERBX_TEST_FRIENDS
@@ -123,6 +146,20 @@ class IbvVirtualQp {
 
   friend class IbvPd;
   friend class IbvVirtualCq;
+
+  // Pointer to the VirtualCq this VirtualQp is registered with (for v2 path)
+  IbvVirtualCq* virtualCq_{nullptr};
+
+  // Flag indicating if this VirtualQp uses multiple physical QPs
+  bool isMultiQp_{false};
+
+  // v2 WR Tracking: Separate trackers for send and recv
+  WrTracker<ActiveVirtualWr> sendTracker_;
+  WrTracker<ActiveVirtualWr> recvTracker_;
+
+  // v2 SPRAY notify tracking
+  std::deque<uint64_t> pendingSendNotifyQue_;
+  std::deque<uint64_t> pendingRecvNotifyQue_;
 
   std::deque<VirtualSendWr> pendingSendVirtualWrQue_;
   std::deque<VirtualRecvWr> pendingRecvVirtualWrQue_;
@@ -153,7 +190,7 @@ class IbvVirtualQp {
 
   // Spray mode specific fields
   std::deque<VirtualSendWr> pendingSendNotifyVirtualWrQue_;
-  IbvQp notifyQp_;
+  std::optional<IbvQp> notifyQp_;
 
   // DQPLB mode specific fields and functions
   DqplbSeqTracker dqplbSeqTracker;
@@ -175,6 +212,19 @@ class IbvVirtualQp {
   inline folly::Expected<folly::Unit, Error> mapPendingRecvQueToPhysicalQp(
       int qpIdx = -1);
   inline folly::Expected<folly::Unit, Error> postRecvNotifyImm(int qpIdx = -1);
+
+  // v2 common helpers
+  inline bool isSendOpcode(ibv_wc_opcode opcode) const;
+  inline folly::Expected<folly::Unit, Error> updateWrState(
+      WrTracker<ActiveVirtualWr>& tracker,
+      uint64_t internalWrId,
+      ibv_wc_status status,
+      ibv_wc_opcode wcOpcode);
+  inline IbvVirtualWc buildVirtualWc(const ActiveVirtualWr& wr) const;
+
+  // VirtualCq registration helpers (called from constructor/destructor)
+  void registerWithVirtualCq();
+  void unregisterFromVirtualCq();
 };
 
 inline folly::Expected<VirtualQpResponse, Error>
@@ -286,11 +336,11 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendNotifyImm() {
   sendWr_.wr.rdma.rkey = virtualSendWr.wr.wr.rdma.rkey;
   sendWr_.imm_data = virtualSendWr.wr.imm_data;
   sendWr_.wr_id = nextPhysicalWrId_++;
-  auto maybeSend = notifyQp_.postSend(&sendWr_, &badSendWr_);
+  auto maybeSend = notifyQp_->postSend(&sendWr_, &badSendWr_);
   if (maybeSend.hasError()) {
     return folly::makeUnexpected(maybeSend.error());
   }
-  notifyQp_.physicalSendWrStatus_.emplace_back(
+  notifyQp_->physicalSendWrStatus_.emplace_back(
       sendWr_.wr_id, virtualSendWr.wr.wr_id);
   virtualSendWr.remainingMsgCnt = 0;
   pendingSendNotifyVirtualWrQue_.pop_front();
@@ -440,12 +490,12 @@ inline folly::Expected<VirtualQpResponse, Error> IbvVirtualQp::processRequest(
   VirtualQpResponse response;
   // If request.physicalQpNum differs from notifyQpNum, locate the corresponding
   // physical qpIdx to process this request.
-  auto qpIdx = request.physicalQpNum == notifyQp_.getQpNum()
+  auto qpIdx = (hasNotifyQp() && request.physicalQpNum == notifyQp_->getQpNum())
       ? -1
       : qpNumToIdx_.at(request.physicalQpNum);
   // If qpIdx is -1, physicalQp is notifyQp; otherwise, physicalQp is the qpIdx
   // entry of physicalQps_
-  auto& physicalQp = qpIdx == -1 ? notifyQp_ : physicalQps_.at(qpIdx);
+  auto& physicalQp = qpIdx == -1 ? *notifyQp_ : physicalQps_.at(qpIdx);
 
   if (request.type == RequestType::RECV) {
     if (physicalQp.physicalRecvWrStatus_.empty()) {
@@ -554,7 +604,7 @@ inline int IbvVirtualQp::findAvailableRecvQp() {
 
 inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecvNotifyImm(
     int qpIdx) {
-  auto& qp = qpIdx == -1 ? notifyQp_ : physicalQps_.at(qpIdx);
+  auto& qp = qpIdx == -1 ? *notifyQp_ : physicalQps_.at(qpIdx);
   auto virtualRecvWrId = loadBalancingScheme_ == LoadBalancingScheme::SPRAY
       ? pendingRecvVirtualWrQue_.front().wr.wr_id
       : -1;
@@ -724,6 +774,63 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
   }
 
   return folly::unit;
+}
+
+// ============================================================
+// v2 Common Helpers
+// ============================================================
+
+inline bool IbvVirtualQp::isSendOpcode(ibv_wc_opcode opcode) const {
+  return opcode == IBV_WC_SEND || opcode == IBV_WC_RDMA_WRITE ||
+      opcode == IBV_WC_RDMA_READ || opcode == IBV_WC_FETCH_ADD ||
+      opcode == IBV_WC_COMP_SWAP;
+}
+
+inline folly::Expected<folly::Unit, Error> IbvVirtualQp::updateWrState(
+    WrTracker<ActiveVirtualWr>& tracker,
+    uint64_t internalWrId,
+    ibv_wc_status status,
+    ibv_wc_opcode wcOpcode) {
+  auto* wr = tracker.find(internalWrId);
+  CHECK(wr) << fmt::format(
+      "[Ibverbx] WR {} not found in tracker during updateWrState",
+      internalWrId);
+
+  wr->remainingMsgCnt--;
+  wr->wcOpcode = wcOpcode;
+
+  // First error wins
+  if (wr->aggregatedStatus == IBV_WC_SUCCESS && status != IBV_WC_SUCCESS) {
+    wr->aggregatedStatus = status;
+    XLOGF(
+        ERR,
+        "[Ibverbx] Physical WC error: status={}, WR internalId={}",
+        static_cast<int>(status),
+        internalWrId);
+  }
+
+  return folly::unit;
+}
+
+inline IbvVirtualWc IbvVirtualQp::buildVirtualWc(
+    const ActiveVirtualWr& wr) const {
+  IbvVirtualWc wc;
+  wc.wrId = wr.userWrId;
+  wc.status = wr.aggregatedStatus;
+  wc.byteLen = wr.length;
+  wc.qpNum = virtualQpNum_;
+  wc.immData = wr.immData;
+  wc.opcode = wr.wcOpcode;
+  return wc;
+}
+
+// Stub: processCompletion will be implemented when postSend_v2/postRecv_v2
+// are added. For now, returns empty vector (no v2 WRs are tracked yet).
+inline folly::Expected<std::vector<IbvVirtualWc>, Error>
+IbvVirtualQp::processCompletion(
+    const ibv_wc& /*physicalWc*/,
+    int32_t /*deviceId*/) {
+  return std::vector<IbvVirtualWc>{};
 }
 
 } // namespace ibverbx

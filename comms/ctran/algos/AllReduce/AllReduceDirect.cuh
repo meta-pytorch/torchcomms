@@ -14,6 +14,13 @@
 #include "comms/ctran/gpe/CtranGpeDev.h"
 #include "comms/utils/commSpecs.h"
 
+#define KERNEL_ABORT()                                         \
+  do {                                                         \
+    if (ctran::device::KernelTestHostAbortBlock(kernelFlag)) { \
+      return;                                                  \
+    }                                                          \
+  } while (0);
+
 template <typename T, commRedOp_t RedOp>
 static __device__ __forceinline__ void reduceOnPost(
     CtranAlgoDeviceState* devState,
@@ -23,6 +30,9 @@ static __device__ __forceinline__ void reduceOnPost(
   T* dst;
 
   elemWaitPostOrRevokeByGroup(elem, blockIdx.x, &revoked);
+  if (revoked) {
+    return;
+  }
 
   for (int i = 0; i < elem->localReduce.nvectors; i++) {
     srcs[i] = reinterpret_cast<const T*>(elem->localReduce.srcs[i]);
@@ -51,6 +61,9 @@ static __device__ __forceinline__ void bcastOnPost(
   T* dsts[CTRAN_MAX_NVL_PEERS];
 
   elemWaitPostOrRevokeByGroup(elem, blockIdx.x, &revoked);
+  if (revoked) {
+    return;
+  }
 
   const auto nLocalRanks = statex->nLocalRanks();
   const auto localRank = statex->localRank();
@@ -69,20 +82,11 @@ static __device__ __forceinline__ void bcastOnPost(
   elemCompleteByGroup(elem, blockIdx.x);
 }
 
+namespace ctran::allreduce::direct {
 template <typename T, commRedOp_t RedOp>
-__global__ void ncclKernelAllReduceCtranDirect(
-    int* flag,
+__device__ void algoFn(
     CtranAlgoDeviceState* devState,
-    ctran::allreduce::KernelArgs args) {
-  const auto tId = threadIdx.x;
-  const auto bId = blockIdx.x;
-
-  devStateLoadToShm(&flag[bId], devState);
-
-  if (flag && tId == 0) {
-    ctran::device::KernelStartGpe(&flag[bId]);
-  }
-
+    ctran::allreduce::KernelArgs& args) {
   const auto nLocalRanks = statex->nLocalRanks();
   const auto localRank = statex->localRank();
 
@@ -97,6 +101,7 @@ __global__ void ncclKernelAllReduceCtranDirect(
         devState,
         args.kernelElems[static_cast<int>(
             ctran::allreduce::KernElemRole::kIntraReduceScatter)]);
+    KERNEL_ABORT();
 
     /* Step 2: Inter-node Reduce-scatter */
     // Each step handles different portion, thus apply post-sum-avg here
@@ -105,6 +110,7 @@ __global__ void ncclKernelAllReduceCtranDirect(
             ctran::allreduce::KernElemRole::kInterReduceScatter)],
         true,
         c);
+    KERNEL_ABORT();
 
     /* Step 3: Inter-node Allgather */
     /* This does not need a kernel element; listing here for
@@ -115,6 +121,7 @@ __global__ void ncclKernelAllReduceCtranDirect(
         devState,
         args.kernelElems[static_cast<int>(
             ctran::allreduce::KernElemRole::kIntraAllGather)]);
+    KERNEL_ABORT();
   }
 
   // Optional steps for remCount
@@ -123,6 +130,7 @@ __global__ void ncclKernelAllReduceCtranDirect(
   if (kRemIntraReduce) {
     /* Step 5: Intra-node reduce(root=0) */
     reduceOnPost<T, RedOp>(devState, kRemIntraReduce);
+    KERNEL_ABORT();
   }
 
   /* Step 6: Intra-node Bcast */
@@ -130,6 +138,7 @@ __global__ void ncclKernelAllReduceCtranDirect(
       ctran::allreduce::KernElemRole::kRemIntraBcast)];
   if (kRemIntraBcast) {
     bcastOnPost<T>(devState, kRemIntraBcast);
+    KERNEL_ABORT();
   }
 
   /* Step 7: Inter-node Allreduce */
@@ -139,7 +148,30 @@ __global__ void ncclKernelAllReduceCtranDirect(
     // Last step to handle remCount segment, thus apply post-sum-avg here
     ctranKernMultiStridedReduce<T, RedOp, true /* complete */, false /*free*/>(
         kRemInterReduce, true /* last step*/);
+    KERNEL_ABORT();
   }
+}
+
+} // namespace ctran::allreduce::direct
+
+template <typename T, commRedOp_t RedOp>
+__global__ void ncclKernelAllReduceCtranDirect(
+    int* flag,
+    CtranAlgoDeviceState* devState,
+    ctran::allreduce::KernelArgs args) {
+  const auto tId = threadIdx.x;
+  const auto bId = blockIdx.x;
+
+  devStateLoadToShm(&flag[bId], devState);
+
+  if (flag && tId == 0) {
+    ctran::device::KernelStartGpe(&flag[bId]);
+  }
+
+  // Run algorithm main body
+  ctran::allreduce::direct::algoFn<T, RedOp>(devState, args);
+
+  __syncthreads();
 
   /* Complete kernel */
   if (flag && tId == 0) {

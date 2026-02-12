@@ -13,17 +13,21 @@ namespace ibverbx {
 
 IbvVirtualQp::IbvVirtualQp(
     std::vector<IbvQp>&& qps,
-    IbvQp&& notifyQp,
-    IbvVirtualCq* sendCq,
-    IbvVirtualCq* recvCq,
+    IbvVirtualCq* virtualCq,
     int maxMsgCntPerQp,
     int maxMsgSize,
-    LoadBalancingScheme loadBalancingScheme)
-    : physicalQps_(std::move(qps)),
+    LoadBalancingScheme loadBalancingScheme,
+    std::optional<IbvQp>&& notifyQp)
+    : virtualCq_(virtualCq),
+      physicalQps_(std::move(qps)),
       maxMsgCntPerQp_(maxMsgCntPerQp),
       maxMsgSize_(maxMsgSize),
       loadBalancingScheme_(loadBalancingScheme),
       notifyQp_(std::move(notifyQp)) {
+  CHECK(!physicalQps_.empty()) << "At least one physical QP must be provided!";
+  CHECK(physicalQps_.size() == 1 || notifyQp_.has_value())
+      << "notifyQp must be provided when using multiple data QPs!";
+
   virtualQpNum_ =
       nextVirtualQpNum_.fetch_add(1); // Assign unique virtual QP number
 
@@ -36,8 +40,12 @@ IbvVirtualQp::IbvVirtualQp(
   for (const auto& qp : physicalQps_) {
     uniqueDevices.insert(qp.getDeviceId());
   }
-  uniqueDevices.insert(notifyQp_.getDeviceId());
+  if (hasNotifyQp()) {
+    uniqueDevices.insert(notifyQp_->getDeviceId());
+  }
   deviceCnt_ = uniqueDevices.size();
+
+  isMultiQp_ = (physicalQps_.size() > 1);
 
   // Register the virtual QP and all its mappings with the coordinator
   auto coordinator = Coordinator::getCoordinator();
@@ -46,7 +54,10 @@ IbvVirtualQp::IbvVirtualQp(
 
   // Use the consolidated registration API
   coordinator->registerVirtualQpWithVirtualCqMappings(
-      this, sendCq->getVirtualCqNum(), recvCq->getVirtualCqNum());
+      this, virtualCq->getVirtualCqNum(), virtualCq->getVirtualCqNum());
+
+  // Register with VirtualCq (v2 path, dual registration)
+  registerWithVirtualCq();
 }
 
 size_t IbvVirtualQp::getTotalQps() const {
@@ -62,11 +73,11 @@ std::vector<IbvQp>& IbvVirtualQp::getQpsRef() {
 }
 
 const IbvQp& IbvVirtualQp::getNotifyQpRef() const {
-  return notifyQp_;
+  return notifyQp_.value();
 }
 
 IbvQp& IbvVirtualQp::getNotifyQpRef() {
-  return notifyQp_;
+  return notifyQp_.value();
 }
 
 uint32_t IbvVirtualQp::getVirtualQpNum() const {
@@ -74,7 +85,13 @@ uint32_t IbvVirtualQp::getVirtualQpNum() const {
 }
 
 IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
-    : pendingSendVirtualWrQue_(std::move(other.pendingSendVirtualWrQue_)),
+    : virtualCq_(other.virtualCq_),
+      isMultiQp_(other.isMultiQp_),
+      sendTracker_(std::move(other.sendTracker_)),
+      recvTracker_(std::move(other.recvTracker_)),
+      pendingSendNotifyQue_(std::move(other.pendingSendNotifyQue_)),
+      pendingRecvNotifyQue_(std::move(other.pendingRecvNotifyQue_)),
+      pendingSendVirtualWrQue_(std::move(other.pendingSendVirtualWrQue_)),
       pendingRecvVirtualWrQue_(std::move(other.pendingRecvVirtualWrQue_)),
       virtualQpNum_(std::move(other.virtualQpNum_)),
       physicalQps_(std::move(other.physicalQps_)),
@@ -91,15 +108,23 @@ IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
       notifyQp_(std::move(other.notifyQp_)),
       dqplbSeqTracker(std::move(other.dqplbSeqTracker)),
       dqplbReceiverInitialized_(std::move(other.dqplbReceiverInitialized_)) {
+  other.virtualCq_ = nullptr; // Prevent double-unregister
+
   // Update coordinator pointer mapping for this virtual QP after move
   auto coordinator = Coordinator::getCoordinator();
   CHECK(coordinator)
       << "Coordinator should not be nullptr during IbvVirtualQp move construction!";
   coordinator->updateVirtualQpPointer(virtualQpNum_, this);
+
+  // Re-register with VirtualCq (v2 path)
+  registerWithVirtualCq();
 }
 
 IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
   if (this != &other) {
+    // Unregister current QPs from VirtualCq before moving
+    unregisterFromVirtualCq();
+
     physicalQps_ = std::move(other.physicalQps_);
     notifyQp_ = std::move(other.notifyQp_);
     nextSendPhysicalQpIdx_ = std::move(other.nextSendPhysicalQpIdx_);
@@ -117,23 +142,77 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
         std::move(other.pendingSendNotifyVirtualWrQue_);
     dqplbSeqTracker = std::move(other.dqplbSeqTracker);
     dqplbReceiverInitialized_ = std::move(other.dqplbReceiverInitialized_);
+    virtualCq_ = other.virtualCq_;
+    isMultiQp_ = other.isMultiQp_;
+    sendTracker_ = std::move(other.sendTracker_);
+    recvTracker_ = std::move(other.recvTracker_);
+    pendingSendNotifyQue_ = std::move(other.pendingSendNotifyQue_);
+    pendingRecvNotifyQue_ = std::move(other.pendingRecvNotifyQue_);
+
+    other.virtualCq_ = nullptr; // Prevent double-unregister
 
     // Update coordinator pointer mapping for this virtual QP after move
     auto coordinator = Coordinator::getCoordinator();
     CHECK(coordinator)
-        << "Coordinator should not be nullptr during IbvVirtualQp move construction!";
+        << "Coordinator should not be nullptr during IbvVirtualQp move assignment!";
     coordinator->updateVirtualQpPointer(virtualQpNum_, this);
+
+    // Re-register with VirtualCq (v2 path)
+    registerWithVirtualCq();
   }
   return *this;
 }
 
 IbvVirtualQp::~IbvVirtualQp() {
+  // Unregister from VirtualCq (v2 path)
+  unregisterFromVirtualCq();
+
   // Always call unregister - the coordinator will check if the pointer matches
   // and do nothing if the object was moved
   auto coordinator = Coordinator::getCoordinator();
   CHECK(coordinator)
       << "Coordinator should not be nullptr during IbvVirtualQp destruction!";
   coordinator->unregisterVirtualQp(virtualQpNum_, this);
+}
+
+void IbvVirtualQp::registerWithVirtualCq() {
+  if (virtualCq_ == nullptr) {
+    return;
+  }
+
+  for (size_t i = 0; i < physicalQps_.size(); i++) {
+    virtualCq_->registerPhysicalQp(
+        physicalQps_.at(i).qp()->qp_num,
+        physicalQps_.at(i).getDeviceId(),
+        this,
+        isMultiQp_,
+        virtualQpNum_);
+  }
+
+  if (hasNotifyQp()) {
+    virtualCq_->registerPhysicalQp(
+        notifyQp_->qp()->qp_num,
+        notifyQp_->getDeviceId(),
+        this,
+        isMultiQp_,
+        virtualQpNum_);
+  }
+}
+
+void IbvVirtualQp::unregisterFromVirtualCq() {
+  if (virtualCq_ == nullptr) {
+    return;
+  }
+
+  for (size_t i = 0; i < physicalQps_.size(); i++) {
+    virtualCq_->unregisterPhysicalQp(
+        physicalQps_.at(i).qp()->qp_num, physicalQps_.at(i).getDeviceId());
+  }
+
+  if (hasNotifyQp()) {
+    virtualCq_->unregisterPhysicalQp(
+        notifyQp_->qp()->qp_num, notifyQp_->getDeviceId());
+  }
 }
 
 folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
@@ -157,10 +236,13 @@ folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
         return folly::makeUnexpected(maybeModifyQp.error());
       }
     }
-    attr->dest_qp_num = businessCard.notifyQpNum_;
-    auto maybeModifyQp = notifyQp_.modifyQp(attr, attrMask);
-    if (maybeModifyQp.hasError()) {
-      return folly::makeUnexpected(maybeModifyQp.error());
+    // Only modify notifyQp if it exists
+    if (hasNotifyQp()) {
+      attr->dest_qp_num = businessCard.notifyQpNum_;
+      auto maybeModifyQp = notifyQp_->modifyQp(attr, attrMask);
+      if (maybeModifyQp.hasError()) {
+        return folly::makeUnexpected(maybeModifyQp.error());
+      }
     }
   } else {
     // If no businessCard provided, modify all QPs with the same attributes
@@ -170,9 +252,11 @@ folly::Expected<folly::Unit, Error> IbvVirtualQp::modifyVirtualQp(
         return folly::makeUnexpected(maybeModifyQp.error());
       }
     }
-    auto maybeModifyQp = notifyQp_.modifyQp(attr, attrMask);
-    if (maybeModifyQp.hasError()) {
-      return folly::makeUnexpected(maybeModifyQp.error());
+    if (hasNotifyQp()) {
+      auto maybeModifyQp = notifyQp_->modifyQp(attr, attrMask);
+      if (maybeModifyQp.hasError()) {
+        return folly::makeUnexpected(maybeModifyQp.error());
+      }
     }
   }
   return folly::unit;
@@ -184,7 +268,8 @@ IbvVirtualQpBusinessCard IbvVirtualQp::getVirtualQpBusinessCard() const {
   for (auto& qp : physicalQps_) {
     qpNums.push_back(qp.qp()->qp_num);
   }
-  return IbvVirtualQpBusinessCard(std::move(qpNums), notifyQp_.qp()->qp_num);
+  uint32_t notifyQpNum = hasNotifyQp() ? notifyQp_->qp()->qp_num : 0;
+  return IbvVirtualQpBusinessCard(std::move(qpNums), notifyQpNum);
 }
 
 LoadBalancingScheme IbvVirtualQp::getLoadBalancingScheme() const {

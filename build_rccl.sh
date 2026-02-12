@@ -75,5 +75,5 @@ else
   export RCCL_HOME=$ROCM_HOME/lib
 fi
 
-popd || exit 1
+popd || true
 pip install numpy

@@ -22,7 +22,7 @@
 
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
-#include "comms/torchcomms/device/TorchCommDeviceComm.hpp"
+#include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
 class DeviceApiTest : public ::testing::Test {
@@ -48,6 +48,10 @@ class DeviceApiTest : public ::testing::Test {
 
   // Device-initiated RMA test - uses CUDA kernel to perform put
   void testDevicePut(int count, at::ScalarType dtype);
+
+  // GIN atomicAdd test - uses CUDA kernel to perform remote atomic
+  // fetch-and-add
+  void testGinAtomicAdd();
 
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;

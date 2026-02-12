@@ -1941,9 +1941,15 @@ class CtranMapper {
   // instance and erase after completion.
   std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedCbCtrlReqs_;
 
-  // AllGather IPC server addresses from all ranks via bootstrap and update
-  // IpcRegCache with the gathered addresses.
+  // Peer IPC server addresses for async socket communication, indexed by rank.
+  // Populated via bootstrap allGather during mapper initialization.
+  std::vector<sockaddr_storage> peerIpcServerAddrs_;
+
+  // AllGather IPC server addresses from all ranks via bootstrap.
   commResult_t allGatherIpcServerAddrs();
+
+  // Get peer's IPC server address by rank.
+  folly::SocketAddress getPeerIpcServerAddr(int rank) const;
 
   // Record remote ranks that each ipcRegElem has exported to.
   // - For each remote rank, the local rank will send RELEASE_MEM ctrlmsg to

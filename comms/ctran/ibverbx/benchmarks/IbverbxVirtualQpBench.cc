@@ -104,7 +104,6 @@ IbvEndPoint::IbvEndPoint(int nicDevId, LoadBalancingScheme loadBalancingScheme)
             kTotalQps,
             &initAttr,
             &cq,
-            &cq,
             kMaxMsgCntPerQp,
             kMaxMsgSize,
             loadBalancingScheme);
