@@ -14,7 +14,7 @@
 
 #include <cuda_runtime.h>
 // Include the host-safe header that provides type aliases
-// (DeviceWindowNCCL = TorchCommDeviceWindow<NCCLGinBackend>)
+// (DeviceWindowNCCL = TorchCommDeviceWindow<NCCLDeviceBackend>)
 // This does NOT include the device implementation code that requires nvcc.
 #include "comms/torchcomms/device/ncclx/TorchCommDeviceNCCLXTypes.hpp"
 

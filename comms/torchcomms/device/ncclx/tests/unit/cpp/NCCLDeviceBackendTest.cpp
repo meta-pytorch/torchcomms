@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-// Unit tests for NCCLGinBackend static methods
+// Unit tests for NCCLDeviceBackend static methods
 //
 // These tests verify the device backend lifecycle and error handling:
 //   1. create_device_window() - tests success path and failure paths
@@ -13,13 +13,13 @@
 //   - Error messages are validated to ensure actionable diagnostics
 //
 // Ownership Design:
-//   NCCLGinBackend::create_device_window() returns std::unique_ptr with a
+//   NCCLDeviceBackend::create_device_window() returns std::unique_ptr with a
 //   custom DeviceWindowDeleter. The deleter only calls cudaFree - the caller
 //   is responsible for calling ncclDevCommDestroy before destroying the ptr.
 //   Access dev_comm via unique_ptr::get_deleter().dev_comm.
 //
 // Note: This entire test file requires TORCHCOMMS_HAS_NCCL_DEVICE_API because
-// it tests NCCLGinBackend which uses devCommCreate/devCommDestroy APIs.
+// it tests NCCLDeviceBackend which uses devCommCreate/devCommDestroy APIs.
 
 #include "comms/torchcomms/ncclx/NcclxApi.hpp" // For TORCHCOMMS_HAS_NCCL_DEVICE_API
 
@@ -29,7 +29,7 @@
 #include <gtest/gtest.h>
 
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
-#include "comms/torchcomms/device/TorchCommDeviceComm.hpp"
+#include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/NcclxMock.hpp"
 
 namespace torchcomms::device::test {
@@ -47,7 +47,7 @@ using torch::comms::test::NcclxMock;
 // Test Fixture
 // =============================================================================
 
-class NCCLGinBackendTest : public ::testing::Test {
+class NCCLDeviceBackendTest : public ::testing::Test {
  protected:
   void SetUp() override {
     nccl_mock_ = std::make_shared<NiceMock<NcclxMock>>();
@@ -81,13 +81,15 @@ class NCCLGinBackendTest : public ::testing::Test {
 // create_device_window() Tests - Null Checks
 // =============================================================================
 
-TEST_F(NCCLGinBackendTest, CreateDeviceWindowWithNullNcclCommThrowsException) {
+TEST_F(
+    NCCLDeviceBackendTest,
+    CreateDeviceWindowWithNullNcclCommThrowsException) {
   auto config = createDefaultConfig();
 
   EXPECT_THROW(
       {
         try {
-          NCCLGinBackend::create_device_window(
+          NCCLDeviceBackend::create_device_window(
               nullptr,
               nccl_mock_.get(),
               config,
@@ -104,13 +106,15 @@ TEST_F(NCCLGinBackendTest, CreateDeviceWindowWithNullNcclCommThrowsException) {
       std::runtime_error);
 }
 
-TEST_F(NCCLGinBackendTest, CreateDeviceWindowWithNullNcclApiThrowsException) {
+TEST_F(
+    NCCLDeviceBackendTest,
+    CreateDeviceWindowWithNullNcclApiThrowsException) {
   auto config = createDefaultConfig();
 
   EXPECT_THROW(
       {
         try {
-          NCCLGinBackend::create_device_window(
+          NCCLDeviceBackend::create_device_window(
               fake_nccl_comm_,
               nullptr,
               config,
@@ -134,7 +138,7 @@ TEST_F(NCCLGinBackendTest, CreateDeviceWindowWithNullNcclApiThrowsException) {
 // on actual GPU infrastructure via buck test.
 // =============================================================================
 
-TEST_F(NCCLGinBackendTest, CreateDeviceWindowSuccessReturnsValidStruct) {
+TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowSuccessReturnsValidStruct) {
   // This test verifies create_device_window returns a valid pointer
   // and that cleanup works correctly.
   auto config = createDefaultConfig();
@@ -143,7 +147,7 @@ TEST_F(NCCLGinBackendTest, CreateDeviceWindowSuccessReturnsValidStruct) {
   EXPECT_CALL(*nccl_mock_, devCommCreate(fake_nccl_comm_, _, _))
       .WillOnce(DoAll(SetArgPointee<2>(ncclDevComm{}), Return(ncclSuccess)));
 
-  auto device_window = NCCLGinBackend::create_device_window(
+  auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
       config,
@@ -163,11 +167,11 @@ TEST_F(NCCLGinBackendTest, CreateDeviceWindowSuccessReturnsValidStruct) {
   EXPECT_EQ(deleter.nccl_api, nccl_mock_.get());
 
   // Copy device window back to host to verify contents
-  TorchCommDeviceWindow<NCCLGinBackend> host_copy;
+  TorchCommDeviceWindow<NCCLDeviceBackend> host_copy;
   cudaError_t cuda_result = cudaMemcpy(
       &host_copy,
       device_window.get(),
-      sizeof(TorchCommDeviceWindow<NCCLGinBackend>),
+      sizeof(TorchCommDeviceWindow<NCCLDeviceBackend>),
       cudaMemcpyDeviceToHost);
   ASSERT_EQ(cuda_result, cudaSuccess);
 
@@ -185,7 +189,7 @@ TEST_F(NCCLGinBackendTest, CreateDeviceWindowSuccessReturnsValidStruct) {
   // Let unique_ptr destructor call cudaFree via the deleter
 }
 
-TEST_F(NCCLGinBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
+TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
   // This test verifies that the config is correctly passed to devCommCreate.
   DeviceBackendConfig config;
   config.signal_count = 16;
@@ -209,7 +213,7 @@ TEST_F(NCCLGinBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
           SetArgPointee<2>(ncclDevComm{}),
           Return(ncclSuccess)));
 
-  auto device_window = NCCLGinBackend::create_device_window(
+  auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
       config,
@@ -223,6 +227,16 @@ TEST_F(NCCLGinBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
   EXPECT_EQ(captured_reqs.barrierCount, config.barrier_count);
   EXPECT_TRUE(captured_reqs.ginForceEnable);
 
+  // Verify resource buffer requirements were chained in
+  EXPECT_NE(captured_reqs.resourceRequirementsList, nullptr);
+  if (captured_reqs.resourceRequirementsList) {
+    auto& res_reqs = *captured_reqs.resourceRequirementsList;
+    size_t expected_buf_size = static_cast<size_t>(config.signal_count) *
+        config.comm_size * sizeof(uint64_t);
+    EXPECT_EQ(res_reqs.bufferSize, expected_buf_size);
+    EXPECT_EQ(res_reqs.bufferAlign, 8u);
+  }
+
   // Clean up: call devCommDestroy before releasing (as required by contract)
   auto& deleter = device_window.get_deleter();
   EXPECT_CALL(*nccl_mock_, devCommDestroy(fake_nccl_comm_, _))
@@ -232,11 +246,49 @@ TEST_F(NCCLGinBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
   // Let unique_ptr destructor call cudaFree via the deleter
 }
 
+TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowStoresSignalBufferHandle) {
+  // This test verifies that the signal_buffer_handle is stored in the window.
+  auto config = createDefaultConfig();
+
+  EXPECT_CALL(*nccl_mock_, devCommCreate(fake_nccl_comm_, _, _))
+      .WillOnce(DoAll(SetArgPointee<2>(ncclDevComm{}), Return(ncclSuccess)));
+
+  auto device_window = NCCLDeviceBackend::create_device_window(
+      fake_nccl_comm_,
+      nccl_mock_.get(),
+      config,
+      fake_nccl_window_,
+      fake_base_,
+      1024);
+
+  ASSERT_NE(device_window, nullptr);
+
+  // Copy device window back to host to verify signal_buffer_handle
+  TorchCommDeviceWindow<NCCLDeviceBackend> host_copy;
+  cudaError_t cuda_result = cudaMemcpy(
+      &host_copy,
+      device_window.get(),
+      sizeof(TorchCommDeviceWindow<NCCLDeviceBackend>),
+      cudaMemcpyDeviceToHost);
+  ASSERT_EQ(cuda_result, cudaSuccess);
+
+  // The signal_buffer_handle_ should be set (value assigned by
+  // ncclDevCommCreate) We verify it was stored in the struct — the actual value
+  // depends on ncclDevCommCreate's allocation, which returns 0 for the mock.
+  EXPECT_EQ(host_copy.signal_buffer_handle_, 0u);
+
+  // Clean up
+  auto& deleter = device_window.get_deleter();
+  EXPECT_CALL(*nccl_mock_, devCommDestroy(fake_nccl_comm_, _))
+      .WillOnce(Return(ncclSuccess));
+  nccl_mock_->devCommDestroy(deleter.nccl_comm, &deleter.dev_comm);
+}
+
 // =============================================================================
 // create_device_window() Tests - Failure Paths
 // =============================================================================
 
-TEST_F(NCCLGinBackendTest, DevCommCreateFailureThrows) {
+TEST_F(NCCLDeviceBackendTest, DevCommCreateFailureThrows) {
   auto config = createDefaultConfig();
 
   EXPECT_CALL(*nccl_mock_, devCommCreate(fake_nccl_comm_, _, _))
@@ -247,7 +299,7 @@ TEST_F(NCCLGinBackendTest, DevCommCreateFailureThrows) {
   EXPECT_THROW(
       {
         try {
-          NCCLGinBackend::create_device_window(
+          NCCLDeviceBackend::create_device_window(
               fake_nccl_comm_,
               nccl_mock_.get(),
               config,
@@ -268,7 +320,7 @@ TEST_F(NCCLGinBackendTest, DevCommCreateFailureThrows) {
 // DeviceWindowDeleter Tests
 // =============================================================================
 
-TEST_F(NCCLGinBackendTest, DeviceWindowDeleterOnlyCudaFrees) {
+TEST_F(NCCLDeviceBackendTest, DeviceWindowDeleterOnlyCudaFrees) {
   // This test verifies the deleter stores the correct state for caller cleanup
   // and that devCommDestroy is NOT called automatically by the deleter.
   auto config = createDefaultConfig();
@@ -276,7 +328,7 @@ TEST_F(NCCLGinBackendTest, DeviceWindowDeleterOnlyCudaFrees) {
   EXPECT_CALL(*nccl_mock_, devCommCreate(_, _, _))
       .WillOnce(DoAll(SetArgPointee<2>(ncclDevComm{}), Return(ncclSuccess)));
 
-  auto device_window = NCCLGinBackend::create_device_window(
+  auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
       config,
@@ -301,7 +353,9 @@ TEST_F(NCCLGinBackendTest, DeviceWindowDeleterOnlyCudaFrees) {
   // Note: This "leaks" the ncclDevComm, but that's intentional for this test
 }
 
-TEST_F(NCCLGinBackendTest, DeviceWindowDeleterStoresDevCommForCallerCleanup) {
+TEST_F(
+    NCCLDeviceBackendTest,
+    DeviceWindowDeleterStoresDevCommForCallerCleanup) {
   // This test verifies the caller can access dev_comm from deleter for cleanup.
   auto config = createDefaultConfig();
   ncclDevComm expected_dev_comm{};
@@ -310,7 +364,7 @@ TEST_F(NCCLGinBackendTest, DeviceWindowDeleterStoresDevCommForCallerCleanup) {
       .WillOnce(
           DoAll(SetArgPointee<2>(expected_dev_comm), Return(ncclSuccess)));
 
-  auto device_window = NCCLGinBackend::create_device_window(
+  auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
       config,
@@ -333,8 +387,8 @@ TEST_F(NCCLGinBackendTest, DeviceWindowDeleterStoresDevCommForCallerCleanup) {
   // Let unique_ptr destructor call cudaFree via the deleter
 }
 
-TEST_F(NCCLGinBackendTest, DeviceWindowDeleterWithNullPtrIsSafe) {
-  NCCLGinBackend::DeviceWindowDeleter deleter(
+TEST_F(NCCLDeviceBackendTest, DeviceWindowDeleterWithNullPtrIsSafe) {
+  NCCLDeviceBackend::DeviceWindowDeleter deleter(
       fake_nccl_comm_, nccl_mock_.get(), ncclDevComm{});
   EXPECT_NO_THROW(deleter(nullptr));
 }
@@ -343,7 +397,7 @@ TEST_F(NCCLGinBackendTest, DeviceWindowDeleterWithNullPtrIsSafe) {
 // Full Lifecycle Tests
 // =============================================================================
 
-TEST_F(NCCLGinBackendTest, FullLifecycleCreateAndDestroy) {
+TEST_F(NCCLDeviceBackendTest, FullLifecycleCreateAndDestroy) {
   // This test verifies the full create and cleanup lifecycle.
   auto config = createDefaultConfig();
   size_t fake_size = 4096;
@@ -351,7 +405,7 @@ TEST_F(NCCLGinBackendTest, FullLifecycleCreateAndDestroy) {
   EXPECT_CALL(*nccl_mock_, devCommCreate(_, _, _))
       .WillOnce(DoAll(SetArgPointee<2>(ncclDevComm{}), Return(ncclSuccess)));
 
-  auto device_window = NCCLGinBackend::create_device_window(
+  auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
       config,
@@ -362,11 +416,11 @@ TEST_F(NCCLGinBackendTest, FullLifecycleCreateAndDestroy) {
   ASSERT_NE(device_window, nullptr);
 
   // Copy device window back to host to verify contents
-  TorchCommDeviceWindow<NCCLGinBackend> host_copy;
+  TorchCommDeviceWindow<NCCLDeviceBackend> host_copy;
   cudaError_t cuda_result = cudaMemcpy(
       &host_copy,
       device_window.get(),
-      sizeof(TorchCommDeviceWindow<NCCLGinBackend>),
+      sizeof(TorchCommDeviceWindow<NCCLDeviceBackend>),
       cudaMemcpyDeviceToHost);
   ASSERT_EQ(cuda_result, cudaSuccess);
   EXPECT_EQ(host_copy.base_, fake_base_);

@@ -22,7 +22,7 @@
 
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
-#include "comms/torchcomms/device/TorchCommDeviceComm.hpp"
+#include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
 
 class DeviceApiTest : public ::testing::Test {

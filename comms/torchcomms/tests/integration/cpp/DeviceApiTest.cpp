@@ -449,7 +449,7 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
 // =============================================================================
 // TEST_F macros MUST be in this file (compiled with
 // TORCHCOMMS_HAS_NCCL_DEVICE_API) to ensure TorchCommWindowNCCLXGin resolves to
-// the correct type (NCCLGinBackend).
+// the correct type (NCCLDeviceBackend).
 
 TEST_F(DeviceApiTest, DeviceWindowCreationFloat) {
   testDeviceWindowCreation(1024, at::kFloat);
