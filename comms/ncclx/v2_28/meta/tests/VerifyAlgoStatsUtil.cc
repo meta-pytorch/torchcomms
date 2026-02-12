@@ -41,6 +41,18 @@ std::string formatAlgoStats(const AlgoStatsMap& algoStats) {
   return result;
 }
 
+// Check if any algorithm matching the substring was used (callCount > 0).
+bool findAlgoWithCalls(
+    const AlgoStatsMap& stats,
+    const std::string& algoSubstr) {
+  for (const auto& [algoName, callCount] : stats) {
+    if (algoName.find(algoSubstr) != std::string::npos && callCount > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 } // namespace
 
 void VerifyAlgoStatsHelper::enable() {
@@ -59,19 +71,21 @@ void VerifyAlgoStatsHelper::verify(
     const std::string& collective,
     const std::string& expectedAlgoSubstr) const {
   auto stats = getAlgoStats(comm, collective);
+  EXPECT_TRUE(findAlgoWithCalls(stats, expectedAlgoSubstr))
+      << "Expected algorithm containing '" << expectedAlgoSubstr
+      << "' not found in " << collective << ". Found algorithms: ["
+      << formatAlgoStats(stats) << "]";
+}
 
-  bool found = false;
-  for (const auto& [algoName, callCount] : stats) {
-    if (algoName.find(expectedAlgoSubstr) != std::string::npos &&
-        callCount > 0) {
-      found = true;
-      break;
-    }
-  }
-  EXPECT_TRUE(found) << "Expected algorithm containing '" << expectedAlgoSubstr
-                     << "' not found in " << collective
-                     << ". Found algorithms: [" << formatAlgoStats(stats)
-                     << "]";
+void VerifyAlgoStatsHelper::verifyNot(
+    ncclComm_t comm,
+    const std::string& collective,
+    const std::string& unexpectedAlgoSubstr) const {
+  auto stats = getAlgoStats(comm, collective);
+  EXPECT_FALSE(findAlgoWithCalls(stats, unexpectedAlgoSubstr))
+      << "Unexpected algorithm containing '" << unexpectedAlgoSubstr
+      << "' was used in " << collective << ". Found algorithms: ["
+      << formatAlgoStats(stats) << "]";
 }
 
 } // namespace ncclx::test

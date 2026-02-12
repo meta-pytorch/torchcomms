@@ -12,6 +12,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "meta/algoconf/AlgoConfig.h"
+#include "meta/collectives/PatAvgHelper.h"
 #include "comms/ctran/utils/Checks.h"
 #include "meta/wrapper/MetaFactory.h"
 
@@ -39,6 +40,7 @@ const char* ncclDevRedOpToString(ncclDevRedOp_t op) {
   case ncclDevMinMax: return "MinMax";
   case ncclDevPreMulSum: return "PreMulSum";
   case ncclDevSumPostDiv: return "SumPostDiv";
+  case ncclDevPatSumPostDiv: return "PatSumPostDiv";
   default: return "Unknown";
   }
 }
@@ -223,6 +225,15 @@ ncclResult_t ncclReduceScatter(const void* sendbuff, void* recvbuff, size_t recv
   struct ncclInfo info = { ncclFuncReduceScatter, "ReduceScatter",
     sendbuff, recvbuff, recvcount, datatype, op, 0, comm, stream, /* Args */
     REDUCESCATTER_CHUNKSTEPS, REDUCESCATTER_SLICESTEPS };
+
+  // [META:PAT_AVG] Set up infoExt for per-comm PAT AVG control
+  // Only for types with enough exponent range (bf16, f32, f64, integers)
+  if (comm->usePatAvg_ && op == ncclAvg &&
+      ncclx::isPatAvgSupportedType(datatype)) {
+    size_t nBytes = recvcount * ncclTypeSize(datatype) * comm->nRanks;
+    info.ext = ncclx::setupPatAvgInfoExt(comm, nBytes, datatype);
+  }
+
   return ncclEnqueueCheck(&info);
 }
 

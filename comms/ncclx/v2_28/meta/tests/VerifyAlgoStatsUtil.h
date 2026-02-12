@@ -51,6 +51,16 @@ class VerifyAlgoStatsHelper {
       const std::string& collective,
       const std::string& expectedAlgoSubstr) const;
 
+  // Verify that the given algorithm was NOT used via AlgoStats.
+  // @param comm The NCCL communicator to query stats from
+  // @param collective The collective name (e.g., "ReduceScatter", "AllReduce")
+  // @param unexpectedAlgoSubstr Substring that must NOT appear in any algorithm
+  // name with nonzero call count
+  void verifyNot(
+      ncclComm_t comm,
+      const std::string& collective,
+      const std::string& unexpectedAlgoSubstr) const;
+
  private:
   std::optional<EnvRAII<std::vector<std::string>>> colltraceGuard_;
 };
