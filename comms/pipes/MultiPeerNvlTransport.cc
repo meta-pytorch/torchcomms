@@ -2,7 +2,10 @@
 
 #include "comms/pipes/MultiPeerNvlTransport.h"
 
+#include <stdexcept>
 #include <vector>
+
+#include <cuda_runtime.h>
 
 namespace comms::pipes {
 
@@ -78,10 +81,13 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   }
 };
 
+MultiPeerNvlTransport::~MultiPeerNvlTransport() = default;
+
 void MultiPeerNvlTransport::exchange() {
   dataBufferHandler_->exchangeMemPtrs();
   stateBufferHandler_->exchangeMemPtrs();
   signalBufferHandler_->exchangeMemPtrs();
+  buildDeviceTransports();
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
@@ -174,6 +180,44 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
 
   return P2pNvlTransportDevice(
       myRank_, peerRank, options, localState, remoteState);
+}
+
+P2pNvlTransportDevice* MultiPeerNvlTransport::getDeviceTransportPtr() const {
+  if (!peerTransportsGpu_) {
+    return nullptr;
+  }
+  return static_cast<P2pNvlTransportDevice*>(peerTransportsGpu_->get());
+}
+
+void MultiPeerNvlTransport::buildDeviceTransports() {
+  const int numPeers = nRanks_ - 1;
+  if (numPeers <= 0) {
+    return;
+  }
+
+  std::vector<P2pNvlTransportDevice> hostTransports;
+  hostTransports.reserve(numPeers);
+  for (int peerRank = 0; peerRank < nRanks_; ++peerRank) {
+    if (peerRank == myRank_) {
+      continue;
+    }
+    hostTransports.push_back(getP2pTransportDevice(peerRank));
+  }
+
+  const std::size_t totalSize = numPeers * sizeof(P2pNvlTransportDevice);
+  peerTransportsGpu_.emplace(totalSize);
+
+  auto err = cudaMemcpy(
+      peerTransportsGpu_->get(),
+      hostTransports.data(),
+      totalSize,
+      cudaMemcpyHostToDevice);
+  if (err != cudaSuccess) {
+    peerTransportsGpu_.reset();
+    throw std::runtime_error(
+        std::string("Failed to copy NVL device transports to GPU: ") +
+        cudaGetErrorString(err));
+  }
 }
 
 } // namespace comms::pipes

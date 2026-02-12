@@ -4,6 +4,7 @@
 
 #include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
+#include "comms/utils/CudaRAII.h"
 
 namespace comms::pipes {
 
@@ -62,6 +63,10 @@ struct MultiPeerNvlTransportConfig {
  *   auto device = transport.getP2pTransportDevice(peerRank);
  *   myKernel<<<...>>>(device, data, size);
  *
+ *   // Or get a GPU array of all peer transports (for MultiPeerDeviceHandle):
+ *   P2pNvlTransportDevice* gpuPtr = transport.getDeviceTransportPtr();
+ *   int numPeers = transport.numPeers();
+ *
  * BUFFER LAYOUT (4 ranks):
  *   Rank 0: [peer1 | peer2 | peer3]
  *   Rank 1: [peer0 | peer2 | peer3]
@@ -96,6 +101,14 @@ class MultiPeerNvlTransport {
       int nRanks,
       std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
       const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig);
+
+  ~MultiPeerNvlTransport();
+
+  // Non-copyable, non-movable (owns GPU memory)
+  MultiPeerNvlTransport(const MultiPeerNvlTransport&) = delete;
+  MultiPeerNvlTransport& operator=(const MultiPeerNvlTransport&) = delete;
+  MultiPeerNvlTransport(MultiPeerNvlTransport&&) = delete;
+  MultiPeerNvlTransport& operator=(MultiPeerNvlTransport&&) = delete;
 
   /**
    * exchange - Exchange memory handles across all ranks
@@ -142,6 +155,32 @@ class MultiPeerNvlTransport {
   P2pNvlTransportDevice getP2pTransportDevice(int peerRank);
 
   /**
+   * getDeviceTransportPtr - Get GPU-resident array of all peer transports
+   *
+   * Returns a pointer to GPU memory containing P2pNvlTransportDevice objects
+   * for all peers, indexed by peer index (same ordering as
+   * getP2pTransportDevice with peerRank mapped through the standard skip-self
+   * index).
+   *
+   * PRECONDITION: exchange() must have been called by all ranks first.
+   *
+   * The array is built once during exchange() and cached. The pointer remains
+   * valid for the lifetime of this transport object.
+   *
+   * @return Pointer to GPU array of P2pNvlTransportDevice (size = nRanks - 1)
+   */
+  P2pNvlTransportDevice* getDeviceTransportPtr() const;
+
+  /**
+   * numPeers - Get number of peer connections
+   *
+   * @return Number of peers (nRanks - 1)
+   */
+  int numPeers() const {
+    return nRanks_ - 1;
+  }
+
+  /**
    * Check if fabric-based transport is supported (H100+, CUDA 12.3+).
    *
    * Note: Even if this returns false, the transport will still work using
@@ -178,6 +217,11 @@ class MultiPeerNvlTransport {
   std::size_t perPeerDataBufferSize_{0};
   std::size_t perPeerChunkStateBufferSize_{0};
   std::size_t perPeerSignalBufferSize_{0};
+
+  // GPU-resident array of P2pNvlTransportDevice (built during exchange())
+  std::optional<meta::comms::DeviceBuffer> peerTransportsGpu_;
+
+  void buildDeviceTransports();
 };
 
 } // namespace comms::pipes
