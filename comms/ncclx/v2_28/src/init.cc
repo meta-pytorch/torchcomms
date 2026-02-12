@@ -2288,9 +2288,11 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   comm->startMagic = comm->endMagic = NCCL_MAGIC; // Used to detect comm corruption.
   // Ctran can be enabled either globally via CVAR or per-communicator using hint
   comm->useCtran_ = ncclx::commUseCtran();
-  INFO(NCCL_INIT, "CommInit comm %p commHash 0x%lx commDesc %s useCtran %d: %s",
+  comm->usePatAvg_ = ncclx::commUsePatAvg();
+  INFO(NCCL_INIT, "CommInit comm %p commHash 0x%lx commDesc %s useCtran %d usePatAvg %d: %s %s",
        comm, getHash(commId->internal, NCCL_UNIQUE_ID_BYTES), ctran::utils::parseCommDesc(config->commDesc),
-       comm->useCtran_, ncclx::getCommUseCtranConfig().c_str());
+       comm->useCtran_, comm->usePatAvg_, ncclx::getCommUseCtranConfig().c_str(),
+       ncclx::getCommUsePatAvgConfig().c_str());
   *comm->abortFlagRefCount = 1;
   NCCLCHECKGOTO(parseCommConfig(comm, config), res, fail);
   /* start with ncclInProgress and will be changed to ncclSuccess if init succeeds. */
@@ -2979,9 +2981,11 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
     childComm->initState = ncclInternalError;
     // Ctran can be enabled either globally via CVAR or per-communicator using hint
     childComm->useCtran_ = ncclx::commUseCtran();
-    INFO(NCCL_INIT, "CommSplit comm %p commDesc %s useCtran %d: %s",
+    childComm->usePatAvg_ = ncclx::commUsePatAvg();
+    INFO(NCCL_INIT, "CommSplit comm %p commDesc %s useCtran %d usePatAvg %d: %s %s",
         childComm, ctran::utils::parseCommDesc(childComm->config.commDesc),
-        childComm->useCtran_, ncclx::getCommUseCtranConfig().c_str());
+        childComm->useCtran_, childComm->usePatAvg_, ncclx::getCommUseCtranConfig().c_str(),
+        ncclx::getCommUsePatAvgConfig().c_str());
   }
 
   NCCLCHECKGOTO(ncclCalloc(&job, 1), res, fail);

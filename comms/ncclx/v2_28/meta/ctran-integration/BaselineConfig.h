@@ -8,5 +8,19 @@ inline const bool commUseCtran() {
   return NCCL_CTRAN_ENABLE || useCtranHint.value_or(false);
 }
 
+// Check if PAT AVG should be enabled for this communicator.
+// PAT AVG can be enabled via:
+//   1. CVAR: NCCL_REDUCESCATTER_PAT_AVG_ENABLE=1
+//   2. Hint: ncclx.comm.algo_reducescatter="avg:patavg"
+// Returns true if either method enables PAT AVG.
+inline const bool commUsePatAvg() {
+  if (NCCL_REDUCESCATTER_PAT_AVG_ENABLE) {
+    return true;
+  }
+  const auto algoHint = getGlobalHint(HintKeys::kCommAlgoReduceScatter);
+  return algoHint.has_value() && algoHint.value() == "avg:patavg";
+}
+
 const std::string getCommUseCtranConfig();
+const std::string getCommUsePatAvgConfig();
 } // namespace ncclx

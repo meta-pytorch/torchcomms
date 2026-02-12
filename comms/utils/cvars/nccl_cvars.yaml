@@ -1951,6 +1951,14 @@ cvars:
      ctring - Ctran-based rail ring algorithm for inter-node only case
      ctrhd - Ctran-based recursive vector-halving distance-doubling algorithm
 
+ - name        : NCCL_REDUCESCATTER_PAT_AVG_ENABLE
+   type        : bool
+   default     : false
+   description : |-
+     Enable PAT algorithm with native AVG support for ReduceScatter operations.
+     When enabled, ReduceScatter with ncclAvg uses FuncPatAvg for true floating-point
+     division instead of FuncSumPostDiv (which only supports unsigned integers).
+
  - name        : NCCL_ALLTOALL_ALGO
    type        : enum
    default     : orig

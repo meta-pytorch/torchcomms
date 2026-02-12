@@ -36,19 +36,67 @@ The `isFinalWrite` flag in `ncclPatStep` controls when postOp (division) is appl
 
 ## Enabling PAT AVG
 
-### Per-Communicator Control (Recommended)
+PAT AVG can be enabled via two methods:
 
-Set `comm->usePatAvg_ = true` during communicator creation:
+### Method 1: CVAR (Recommended for benchmarks/testing)
 
-```cpp
-// At comm creation time (init.cc)
-comm->usePatAvg_ = ncclx::commUsePatAvg();  // From CVAR or hint
+Set the environment variable before running:
+
+```bash
+NCCL_REDUCESCATTER_PAT_AVG_ENABLE=1 ./your_benchmark
 ```
 
-Or via global hint before comm creation:
+Or in code before communicator creation:
 
 ```cpp
-ncclx::setGlobalHint("ncclx.comm.algo_reducescatter", "pat:avg");
+setenv("NCCL_REDUCESCATTER_PAT_AVG_ENABLE", "1", 1);
 ncclComm_t comm = createNcclComm(...);  // usePatAvg_ = true
-ncclx::resetGlobalHint("ncclx.comm.algo_reducescatter");
+```
+
+### Method 2: Global Hint (Recommended for per-communicator control)
+
+Set the global hint before communicator creation:
+
+```cpp
+#include "meta/hints/GlobalHints.h"
+
+// Enable PAT AVG for subsequent communicators
+ncclx::setGlobalHint(
+    std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg");
+
+ncclComm_t comm = createNcclComm(...);  // usePatAvg_ = true
+
+// Reset hint if needed
+ncclx::resetGlobalHint(
+    std::string(ncclx::HintKeys::kCommAlgoReduceScatter));
+```
+
+The hint value format is `<redop>:<algo>`:
+- `avg:patavg` - Enable PAT algorithm for AVG reduction operation
+
+### Precedence
+
+CVAR takes precedence over global hint:
+1. If `NCCL_REDUCESCATTER_PAT_AVG_ENABLE=1`, PAT AVG is enabled regardless of hint
+2. If CVAR is not set or false, global hint `avg:patavg` enables PAT AVG
+3. If neither is set, PAT AVG is disabled
+
+### Implementation Details
+
+At communicator creation time (`init.cc`), `usePatAvg_` is set:
+
+```cpp
+comm->usePatAvg_ = ncclx::commUsePatAvg();  // Checks CVAR and hint
+```
+
+The helper function in `BaselineConfig.h`:
+
+```cpp
+inline const bool commUsePatAvg() {
+  if (NCCL_REDUCESCATTER_PAT_AVG_ENABLE) {
+    return true;
+  }
+  const auto algoHint = getGlobalHint(HintKeys::kCommAlgoReduceScatter);
+  return algoHint.has_value() && algoHint.value() == "avg:patavg";
+}
 ```
