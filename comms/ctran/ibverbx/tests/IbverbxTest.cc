@@ -13,7 +13,13 @@
   FRIEND_TEST(                                                                \
       IbverbxTestFixture, IbvVirtualQpUpdatePhysicalSendWrFromVirtualSendWr); \
   FRIEND_TEST(IbverbxTestFixture, IbvVirtualCqRegisterPhysicalQp);            \
-  FRIEND_TEST(IbverbxTestFixture, IbvVirtualCqRegisterPhysicalQpMoveSemantics);
+  FRIEND_TEST(                                                                \
+      IbverbxTestFixture, IbvVirtualCqRegisterPhysicalQpMoveSemantics);       \
+  FRIEND_TEST(                                                                \
+      IbverbxTestFixture, IbvVirtualQpRegisterUnregisterWithVirtualCq);       \
+  FRIEND_TEST(IbverbxTestFixture, IbvVirtualQpUpdateWrState);                 \
+  FRIEND_TEST(IbverbxTestFixture, IbvVirtualQpBuildVirtualWc);                \
+  FRIEND_TEST(IbverbxTestFixture, IbvVirtualQpIsSendOpcode);
 #include "comms/ctran/ibverbx/IbvVirtualWr.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/utils/checks.h"
@@ -2063,6 +2069,350 @@ TEST_F(IbverbxTestFixture, IbvVirtualCqRegisterPhysicalQpMoveSemantics) {
 
     virtualCq2.unregisterPhysicalQp(testQpNum, 0);
   }
+}
+
+TEST_F(IbverbxTestFixture, IbvVirtualQpIsMultiQp) {
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 100;
+
+  // totalQps > 1 → isMultiQp() returns true
+  {
+    auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+    ASSERT_TRUE(maybeVirtualCq);
+    auto virtualCq = std::move(*maybeVirtualCq);
+
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+    auto pd = device.allocPd();
+    ASSERT_TRUE(pd);
+
+    auto virtualQp = pd->createVirtualQp(4, &initAttr, &virtualCq);
+    ASSERT_TRUE(virtualQp);
+    ASSERT_TRUE(virtualQp->isMultiQp());
+  }
+
+  // totalQps == 1 → isMultiQp() returns false
+  {
+    auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+    ASSERT_TRUE(maybeVirtualCq);
+    auto virtualCq = std::move(*maybeVirtualCq);
+
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+    auto pd = device.allocPd();
+    ASSERT_TRUE(pd);
+
+    auto virtualQp = pd->createVirtualQp(1, &initAttr, &virtualCq);
+    ASSERT_TRUE(virtualQp);
+    ASSERT_FALSE(virtualQp->isMultiQp());
+  }
+}
+
+TEST_F(IbverbxTestFixture, IbvVirtualQpRegisterUnregisterWithVirtualCq) {
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 100;
+
+  // Test 1: Constructor auto-registers all physical QPs + notifyQp
+  {
+    auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+    ASSERT_TRUE(maybeVirtualCq);
+    auto virtualCq = std::move(*maybeVirtualCq);
+
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+    auto pd = device.allocPd();
+    ASSERT_TRUE(pd);
+
+    int totalQps = 4;
+    auto maybeVirtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
+    ASSERT_TRUE(maybeVirtualQp);
+    auto virtualQp = std::move(*maybeVirtualQp);
+
+    // Should have totalQps + 1 (notify QP) registrations
+    ASSERT_EQ(virtualCq.registeredQps_.size(), totalQps + 1);
+
+    // Verify virtualCq_ back-pointer
+    ASSERT_EQ(virtualQp.virtualCq_, &virtualCq);
+
+    // Verify each physical QP is registered correctly
+    for (size_t i = 0; i < virtualQp.getQpsRef().size(); i++) {
+      auto& pqp = virtualQp.getQpsRef().at(i);
+      auto* info =
+          virtualCq.findRegisteredQpInfo(pqp.qp()->qp_num, pqp.getDeviceId());
+      ASSERT_NE(info, nullptr);
+      ASSERT_EQ(info->vqp, &virtualQp);
+      ASSERT_TRUE(info->isMultiQp);
+      ASSERT_EQ(info->virtualQpNum, virtualQp.getVirtualQpNum());
+    }
+
+    // Verify notify QP is registered
+    auto& notifyQp = virtualQp.getNotifyQpRef();
+    auto* notifyInfo = virtualCq.findRegisteredQpInfo(
+        notifyQp.qp()->qp_num, notifyQp.getDeviceId());
+    ASSERT_NE(notifyInfo, nullptr);
+    ASSERT_EQ(notifyInfo->vqp, &virtualQp);
+  }
+
+  // Test 2: Destructor auto-unregisters all physical QPs
+  {
+    auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+    ASSERT_TRUE(maybeVirtualCq);
+    auto virtualCq = std::move(*maybeVirtualCq);
+
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+    auto pd = device.allocPd();
+    ASSERT_TRUE(pd);
+
+    int totalQps = 4;
+    std::vector<std::pair<uint32_t, int32_t>> qpIds;
+
+    {
+      auto maybeVirtualQp =
+          pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
+      ASSERT_TRUE(maybeVirtualQp);
+      auto virtualQp = std::move(*maybeVirtualQp);
+
+      // Record QP identifiers before destruction
+      for (size_t i = 0; i < virtualQp.getQpsRef().size(); i++) {
+        auto& pqp = virtualQp.getQpsRef().at(i);
+        qpIds.emplace_back(pqp.qp()->qp_num, pqp.getDeviceId());
+      }
+      auto& notifyQp = virtualQp.getNotifyQpRef();
+      qpIds.emplace_back(notifyQp.qp()->qp_num, notifyQp.getDeviceId());
+
+      ASSERT_EQ(virtualCq.registeredQps_.size(), totalQps + 1);
+    } // virtualQp destroyed here
+
+    // All registrations should be gone
+    ASSERT_TRUE(virtualCq.registeredQps_.empty());
+    for (const auto& [qpNum, deviceId] : qpIds) {
+      ASSERT_EQ(virtualCq.findRegisteredQpInfo(qpNum, deviceId), nullptr);
+    }
+  }
+
+  // Test 3: Move constructor re-registers with new pointer
+  {
+    auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+    ASSERT_TRUE(maybeVirtualCq);
+    auto virtualCq = std::move(*maybeVirtualCq);
+
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+    auto pd = device.allocPd();
+    ASSERT_TRUE(pd);
+
+    int totalQps = 4;
+    auto maybeVirtualQp = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
+    ASSERT_TRUE(maybeVirtualQp);
+    auto virtualQp1 = std::move(*maybeVirtualQp);
+
+    // Move-construct
+    IbvVirtualQp virtualQp2(std::move(virtualQp1));
+
+    // Old virtualCq_ should be nullptr
+    ASSERT_EQ(virtualQp1.virtualCq_, nullptr);
+
+    // Registration count unchanged
+    ASSERT_EQ(virtualCq.registeredQps_.size(), totalQps + 1);
+
+    // All entries point to new VirtualQp
+    for (size_t i = 0; i < virtualQp2.getQpsRef().size(); i++) {
+      auto& pqp = virtualQp2.getQpsRef().at(i);
+      auto* info =
+          virtualCq.findRegisteredQpInfo(pqp.qp()->qp_num, pqp.getDeviceId());
+      ASSERT_NE(info, nullptr);
+      ASSERT_EQ(info->vqp, &virtualQp2);
+    }
+  }
+
+  // Test 4: Move assignment re-registers with new pointer
+  {
+    auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+    ASSERT_TRUE(maybeVirtualCq);
+    auto virtualCq = std::move(*maybeVirtualCq);
+
+    auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+    auto pd = device.allocPd();
+    ASSERT_TRUE(pd);
+
+    int totalQps = 4;
+    auto maybeVirtualQp1 = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
+    ASSERT_TRUE(maybeVirtualQp1);
+    auto virtualQp1 = std::move(*maybeVirtualQp1);
+
+    auto maybeVirtualQp2 = pd->createVirtualQp(totalQps, &initAttr, &virtualCq);
+    ASSERT_TRUE(maybeVirtualQp2);
+    auto virtualQp2 = std::move(*maybeVirtualQp2);
+
+    // Record QP1's physical QP ids before move
+    std::vector<std::pair<uint32_t, int32_t>> qp1Ids;
+    for (size_t i = 0; i < virtualQp1.getQpsRef().size(); i++) {
+      auto& pqp = virtualQp1.getQpsRef().at(i);
+      qp1Ids.emplace_back(pqp.qp()->qp_num, pqp.getDeviceId());
+    }
+
+    // Move-assign: virtualQp2's old QPs should be unregistered,
+    // virtualQp1's QPs re-registered under virtualQp2's pointer
+    virtualQp2 = std::move(virtualQp1);
+
+    // Source's virtualCq_ should be nullptr
+    ASSERT_EQ(virtualQp1.virtualCq_, nullptr);
+
+    // virtualQp1's physical QPs should now be registered under virtualQp2
+    for (const auto& [qpNum, deviceId] : qp1Ids) {
+      auto* info = virtualCq.findRegisteredQpInfo(qpNum, deviceId);
+      ASSERT_NE(info, nullptr);
+      ASSERT_EQ(info->vqp, &virtualQp2);
+    }
+  }
+}
+
+TEST_F(IbverbxTestFixture, IbvVirtualQpUpdateWrState) {
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 100;
+  auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(maybeVirtualCq);
+  auto virtualCq = std::move(*maybeVirtualCq);
+
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+  auto pd = device.allocPd();
+  ASSERT_TRUE(pd);
+
+  auto maybeVirtualQp = pd->createVirtualQp(4, &initAttr, &virtualCq);
+  ASSERT_TRUE(maybeVirtualQp);
+  auto virtualQp = std::move(*maybeVirtualQp);
+
+  // Test 1: Basic decrement and opcode update
+  {
+    ActiveVirtualWr wr;
+    wr.userWrId = 100;
+    wr.remainingMsgCnt = 3;
+    uint64_t id = virtualQp.sendTracker_.add(std::move(wr));
+
+    auto result = virtualQp.updateWrState(
+        virtualQp.sendTracker_, id, IBV_WC_SUCCESS, IBV_WC_RDMA_WRITE);
+    ASSERT_TRUE(result.hasValue());
+
+    auto* found = virtualQp.sendTracker_.find(id);
+    ASSERT_NE(found, nullptr);
+    ASSERT_EQ(found->remainingMsgCnt, 2);
+    ASSERT_EQ(found->wcOpcode, IBV_WC_RDMA_WRITE);
+    ASSERT_EQ(found->aggregatedStatus, IBV_WC_SUCCESS);
+
+    virtualQp.sendTracker_.remove(id);
+  }
+
+  // Test 2: First-error-wins aggregation
+  {
+    ActiveVirtualWr wr;
+    wr.userWrId = 200;
+    wr.remainingMsgCnt = 3;
+    uint64_t id = virtualQp.sendTracker_.add(std::move(wr));
+
+    // First call: success
+    auto r1 = virtualQp.updateWrState(
+        virtualQp.sendTracker_, id, IBV_WC_SUCCESS, IBV_WC_RDMA_WRITE);
+    ASSERT_TRUE(r1.hasValue());
+    ASSERT_EQ(
+        virtualQp.sendTracker_.find(id)->aggregatedStatus, IBV_WC_SUCCESS);
+
+    // Second call: error
+    auto r2 = virtualQp.updateWrState(
+        virtualQp.sendTracker_, id, IBV_WC_REM_ACCESS_ERR, IBV_WC_RDMA_WRITE);
+    ASSERT_TRUE(r2.hasValue());
+    ASSERT_EQ(
+        virtualQp.sendTracker_.find(id)->aggregatedStatus,
+        IBV_WC_REM_ACCESS_ERR);
+
+    // Third call: different error — first error should stick
+    auto r3 = virtualQp.updateWrState(
+        virtualQp.sendTracker_, id, IBV_WC_RETRY_EXC_ERR, IBV_WC_RDMA_WRITE);
+    ASSERT_TRUE(r3.hasValue());
+    ASSERT_EQ(
+        virtualQp.sendTracker_.find(id)->aggregatedStatus,
+        IBV_WC_REM_ACCESS_ERR);
+
+    ASSERT_EQ(virtualQp.sendTracker_.find(id)->remainingMsgCnt, 0);
+
+    virtualQp.sendTracker_.remove(id);
+  }
+
+  // Test 3: Not-found WR triggers CHECK failure
+  {
+    ASSERT_DEATH(
+        virtualQp.updateWrState(
+            virtualQp.sendTracker_, 99999, IBV_WC_SUCCESS, IBV_WC_SEND),
+        "not found in tracker");
+  }
+}
+
+TEST_F(IbverbxTestFixture, IbvVirtualQpBuildVirtualWc) {
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 100;
+  auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(maybeVirtualCq);
+  auto virtualCq = std::move(*maybeVirtualCq);
+
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+  auto pd = device.allocPd();
+  ASSERT_TRUE(pd);
+
+  auto maybeVirtualQp = pd->createVirtualQp(4, &initAttr, &virtualCq);
+  ASSERT_TRUE(maybeVirtualQp);
+  auto virtualQp = std::move(*maybeVirtualQp);
+
+  ActiveVirtualWr wr;
+  wr.userWrId = 42;
+  wr.aggregatedStatus = IBV_WC_REM_ACCESS_ERR;
+  wr.length = 8192;
+  wr.immData = 0xDEAD;
+  wr.wcOpcode = IBV_WC_RDMA_WRITE;
+
+  IbvVirtualWc wc = virtualQp.buildVirtualWc(wr);
+  ASSERT_EQ(wc.wrId, 42);
+  ASSERT_EQ(wc.status, IBV_WC_REM_ACCESS_ERR);
+  ASSERT_EQ(wc.byteLen, 8192);
+  ASSERT_EQ(wc.immData, 0xDEAD);
+  ASSERT_EQ(wc.opcode, IBV_WC_RDMA_WRITE);
+  ASSERT_EQ(wc.qpNum, virtualQp.getVirtualQpNum());
+}
+
+TEST_F(IbverbxTestFixture, IbvVirtualQpIsSendOpcode) {
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 100;
+  auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(maybeVirtualCq);
+  auto virtualCq = std::move(*maybeVirtualCq);
+
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+  auto pd = device.allocPd();
+  ASSERT_TRUE(pd);
+
+  auto maybeVirtualQp = pd->createVirtualQp(4, &initAttr, &virtualCq);
+  ASSERT_TRUE(maybeVirtualQp);
+  auto virtualQp = std::move(*maybeVirtualQp);
+
+  // Send opcodes → true
+  ASSERT_TRUE(virtualQp.isSendOpcode(IBV_WC_SEND));
+  ASSERT_TRUE(virtualQp.isSendOpcode(IBV_WC_RDMA_WRITE));
+  ASSERT_TRUE(virtualQp.isSendOpcode(IBV_WC_RDMA_READ));
+  ASSERT_TRUE(virtualQp.isSendOpcode(IBV_WC_FETCH_ADD));
+  ASSERT_TRUE(virtualQp.isSendOpcode(IBV_WC_COMP_SWAP));
+
+  // Recv opcodes → false
+  ASSERT_FALSE(virtualQp.isSendOpcode(IBV_WC_RECV));
+  ASSERT_FALSE(virtualQp.isSendOpcode(IBV_WC_RECV_RDMA_WITH_IMM));
 }
 
 } // namespace ibverbx

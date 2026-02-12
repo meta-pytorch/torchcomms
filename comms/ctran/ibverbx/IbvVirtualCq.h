@@ -399,14 +399,10 @@ IbvVirtualCq::pollCq_v2() {
         const RegisteredQpInfo* info =
             findRegisteredQpInfo(physicalWc.qp_num, deviceId);
 
-        if (info == nullptr) {
-          return folly::makeUnexpected(Error(
-              EINVAL,
-              fmt::format(
-                  "[Ibverbx]IbvVirtualCq::pollCq_v2, unregistered QP: qpNum={}, deviceId={}",
-                  physicalWc.qp_num,
-                  deviceId)));
-        }
+        CHECK(info != nullptr) << fmt::format(
+            "[Ibverbx]IbvVirtualCq::pollCq_v2, unregistered QP: qpNum={}, deviceId={}",
+            physicalWc.qp_num,
+            deviceId);
 
         if (isUsingMultiQpLoadBalancing(info->isMultiQp, physicalWc.opcode)) {
           // Multi-QP RDMA: route to VirtualQp for fragment reassembly
