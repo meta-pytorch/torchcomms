@@ -188,9 +188,9 @@ class ReduceScatterTest : public NcclxBaseTest {
       if (!expectedAlgoSubstr.empty()) {
         algoStats_.verify(comm, "ReduceScatter", expectedAlgoSubstr);
       }
-      // Verify nChannels for PAT AVG: the actual nChannels used by the
-      // collective should match what computePatAvgChannelsAndWarps computes.
-      if (op == ncclAvg && expectedAlgoSubstr == "PAT") {
+      // Verify nChannels for PAT: the actual nChannels used by the
+      // collective should match the channel-reduction logic.
+      if (expectedAlgoSubstr == "PAT") {
         int expectedNc = 0, expectedNWarps = 0;
         size_t nBytes = count * numRanks * elemSize;
         ncclx::computePatAvgChannelsAndWarps(
