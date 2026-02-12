@@ -170,6 +170,16 @@ class TorchCommBackend {
   // Fault Tolerance API
 
   /**
+   * Check if this backend supports reconfigure for fault tolerance.
+   * Override this method in backends that support reconfigure.
+   *
+   * @return True if the backend supports reconfigure, false otherwise.
+   */
+  virtual bool supportsReconfigure() const {
+    return false;
+  }
+
+  /**
    * Get the initialization handle for this backend.
    * In dynamic regime, this URL encodes information required by the backend
    * to complete the initialization process via reconfigure().
