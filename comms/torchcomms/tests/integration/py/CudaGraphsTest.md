@@ -64,3 +64,17 @@ Tests capturing collectives into a single CUDA graph with varying async patterns
 | `test_multiple_streams_single_comm` | All_reduce ops across N different streams sharing one comm; asserts single-comm serialization forces sequential kernel ordering despite multi-stream capture |
 | `test_multiple_streams_multiple_comms` | Odd/even all_reduce pattern across two comms on separate streams; verifies no MEMCPYs with multi-comm multi-stream capture |
 | `test_two_streams_two_comms_with_dependency` | Cross-stream dependency chain: allreduce(stream0, comm0) → sum(stream0) → allgather(stream1, comm1) with rank-dependent inputs; asserts AllReduce → reduce → AllGather DAG ordering |
+
+### `TestMultipleGraphs`
+
+Multiple separately-captured complex CUDA graphs (each using `create_capture`: allreduce → sum → allgather with intra-graph stream deps), replayed serially, concurrently, or with inter-graph dependencies.
+
+| Test | Edge case |
+|------|-----------|
+| `test_multiple_graphs_serial` | N complex graphs sharing 2 comms, replayed serially; asserts AllReduce → reduce → AllGather ordering per graph, no MEMCPYs |
+| `test_multiple_graphs_serial_different_comms` | N complex graphs each with dedicated comm pairs (2N comms total), replayed serially; tests comm isolation across graphs |
+| `test_multiple_graphs_concurrent` | N complex graphs sharing 2 comms, replayed concurrently on separate streams; tests concurrent replay with shared comm resources |
+| `test_multiple_graphs_concurrent_different_comms` | N complex graphs with dedicated comm pairs, replayed concurrently; tests fully isolated concurrent replay |
+| `test_multiple_graphs_with_dependency` | Two complex graphs with inter-graph data dependency: graph0's allreduce output is copied into graph1's input between replays (host-side copy with full sync); tests sequential pipeline with data flow between graphs |
+| `test_multiple_graphs_event_sync` | Three complex graphs: graphs 0 and 1 fork concurrently, then an event-synced copy transfers graph0's output into graph2's input, then graph2 runs — all chained via CUDA events (no full device sync); tests event-based inter-graph DAG scheduling |
+| `test_multiple_graphs_external_event_sync` | Two complex graphs replayed concurrently with an external CUDA event captured into both graphs: graph0 records the event after its allreduce, graph1 waits on it before reading graph0's output; tests cross-graph on-device synchronization with no host-side sync |
