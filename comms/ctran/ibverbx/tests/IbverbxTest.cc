@@ -19,7 +19,9 @@
       IbverbxTestFixture, IbvVirtualQpRegisterUnregisterWithVirtualCq);       \
   FRIEND_TEST(IbverbxTestFixture, IbvVirtualQpUpdateWrState);                 \
   FRIEND_TEST(IbverbxTestFixture, IbvVirtualQpBuildVirtualWc);                \
-  FRIEND_TEST(IbverbxTestFixture, IbvVirtualQpIsSendOpcode);
+  FRIEND_TEST(IbverbxTestFixture, IbvVirtualQpIsSendOpcode);                  \
+  FRIEND_TEST(IbverbxTestFixture, IbvVirtualQpHasQpCapacity);                 \
+  FRIEND_TEST(IbverbxTestFixture, IbvVirtualQpBuildPhysicalSendWr);
 #include "comms/ctran/ibverbx/IbvVirtualWr.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/utils/checks.h"
@@ -2413,6 +2415,154 @@ TEST_F(IbverbxTestFixture, IbvVirtualQpIsSendOpcode) {
   // Recv opcodes → false
   ASSERT_FALSE(virtualQp.isSendOpcode(IBV_WC_RECV));
   ASSERT_FALSE(virtualQp.isSendOpcode(IBV_WC_RECV_RDMA_WITH_IMM));
+}
+
+TEST_F(IbverbxTestFixture, IbvVirtualQpHasQpCapacity) {
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 100;
+  auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(maybeVirtualCq);
+  auto virtualCq = std::move(*maybeVirtualCq);
+
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+  auto pd = device.allocPd();
+  ASSERT_TRUE(pd);
+
+  int totalQps = 4;
+  int maxMsgCntPerQp = 2;
+
+  // With limit: capacity depends on outstanding count
+  {
+    auto maybeVirtualQp =
+        pd->createVirtualQp(totalQps, &initAttr, &virtualCq, maxMsgCntPerQp);
+    ASSERT_TRUE(maybeVirtualQp);
+    auto virtualQp = std::move(*maybeVirtualQp);
+
+    ASSERT_TRUE(virtualQp.hasQpCapacity(0));
+
+    // Fill to limit
+    virtualQp.getQpsRef().at(0).enquePhysicalSendWrStatus(0, 0);
+    ASSERT_TRUE(virtualQp.hasQpCapacity(0));
+    virtualQp.getQpsRef().at(0).enquePhysicalSendWrStatus(0, 0);
+    ASSERT_FALSE(virtualQp.hasQpCapacity(0));
+
+    // Free one, capacity returns
+    virtualQp.getQpsRef().at(0).dequePhysicalSendWrStatus();
+    ASSERT_TRUE(virtualQp.hasQpCapacity(0));
+  }
+
+  // No limit (maxMsgCntPerQp == -1): always has capacity
+  {
+    auto maybeVirtualQp =
+        pd->createVirtualQp(totalQps, &initAttr, &virtualCq, -1);
+    ASSERT_TRUE(maybeVirtualQp);
+    auto virtualQp = std::move(*maybeVirtualQp);
+
+    virtualQp.getQpsRef().at(0).enquePhysicalSendWrStatus(0, 0);
+    virtualQp.getQpsRef().at(0).enquePhysicalSendWrStatus(0, 0);
+    virtualQp.getQpsRef().at(0).enquePhysicalSendWrStatus(0, 0);
+    ASSERT_TRUE(virtualQp.hasQpCapacity(0));
+  }
+}
+
+TEST_F(IbverbxTestFixture, IbvVirtualQpBuildPhysicalSendWr) {
+  auto devices = IbvDevice::ibvGetDeviceList({kNicPrefix});
+  ASSERT_TRUE(devices);
+  auto& device = devices->at(0);
+
+  int cqe = 100;
+  auto maybeVirtualCq = device.createVirtualCq(cqe, nullptr, nullptr, 0);
+  ASSERT_TRUE(maybeVirtualCq);
+  auto virtualCq = std::move(*maybeVirtualCq);
+
+  auto initAttr = makeIbvQpInitAttr(virtualCq.getPhysicalCqsRef().at(0).cq());
+  auto pd = device.allocPd();
+  ASSERT_TRUE(pd);
+
+  int32_t deviceId = 0;
+
+  // Test 1: IBV_WR_RDMA_WRITE (default SPRAY mode)
+  {
+    auto maybeVirtualQp =
+        pd->createVirtualQp(4, &initAttr, &virtualCq, 100, 1024);
+    ASSERT_TRUE(maybeVirtualQp);
+    auto virtualQp = std::move(*maybeVirtualQp);
+
+    ActiveVirtualWr pending;
+    pending.localAddr = reinterpret_cast<void*>(0x1000);
+    pending.remoteAddr = 0x2000;
+    pending.length = 2048;
+    pending.offset = 512;
+    pending.opcode = IBV_WR_RDMA_WRITE;
+    pending.deviceKeys[deviceId] = MemoryRegionKeys{111, 222};
+
+    uint32_t fragLen = 1024;
+    auto [sendWr, sendSge] =
+        virtualQp.buildPhysicalSendWr(pending, deviceId, fragLen);
+    sendWr.sg_list = &sendSge;
+
+    ASSERT_EQ(sendSge.addr, 0x1000 + 512);
+    ASSERT_EQ(sendSge.length, fragLen);
+    ASSERT_EQ(sendSge.lkey, 111);
+    ASSERT_EQ(sendWr.sg_list, &sendSge);
+    ASSERT_EQ(sendWr.num_sge, 1);
+    ASSERT_EQ(sendWr.send_flags, IBV_SEND_SIGNALED);
+    ASSERT_EQ(sendWr.wr.rdma.remote_addr, 0x2000 + 512);
+    ASSERT_EQ(sendWr.wr.rdma.rkey, 222);
+    ASSERT_EQ(sendWr.opcode, IBV_WR_RDMA_WRITE);
+  }
+
+  // Test 2: IBV_WR_RDMA_WRITE_WITH_IMM in SPRAY mode → opcode downgraded
+  //         to IBV_WR_RDMA_WRITE (notify sent separately)
+  {
+    auto maybeVirtualQp =
+        pd->createVirtualQp(4, &initAttr, &virtualCq, 100, 1024);
+    ASSERT_TRUE(maybeVirtualQp);
+    auto virtualQp = std::move(*maybeVirtualQp);
+
+    ActiveVirtualWr pending;
+    pending.localAddr = reinterpret_cast<void*>(0x1000);
+    pending.remoteAddr = 0x2000;
+    pending.length = 2048;
+    pending.offset = 0;
+    pending.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+    pending.deviceKeys[deviceId] = MemoryRegionKeys{111, 222};
+
+    auto [sendWr, sendSge] =
+        virtualQp.buildPhysicalSendWr(pending, deviceId, 1024);
+    sendWr.sg_list = &sendSge;
+
+    ASSERT_EQ(sendWr.opcode, IBV_WR_RDMA_WRITE);
+  }
+
+  // Test 3: IBV_WR_RDMA_WRITE_WITH_IMM in DQPLB mode → opcode preserved,
+  //         imm_data populated
+  {
+    auto maybeVirtualQp = pd->createVirtualQp(
+        4, &initAttr, &virtualCq, 100, 1024, LoadBalancingScheme::DQPLB);
+    ASSERT_TRUE(maybeVirtualQp);
+    auto virtualQp = std::move(*maybeVirtualQp);
+
+    ActiveVirtualWr pending;
+    pending.localAddr = reinterpret_cast<void*>(0x1000);
+    pending.remoteAddr = 0x2000;
+    pending.length = 1024;
+    pending.offset = 0;
+    pending.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+    pending.deviceKeys[deviceId] = MemoryRegionKeys{111, 222};
+
+    // Last fragment (offset + fragLen >= length) → notify bit set
+    auto [sendWr, sendSge] =
+        virtualQp.buildPhysicalSendWr(pending, deviceId, 1024);
+    sendWr.sg_list = &sendSge;
+
+    ASSERT_EQ(sendWr.opcode, IBV_WR_RDMA_WRITE_WITH_IMM);
+    // imm_data should have notify bit set (last fragment)
+    ASSERT_NE(sendWr.imm_data & (1U << kNotifyBit), 0);
+  }
 }
 
 } // namespace ibverbx

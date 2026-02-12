@@ -6,6 +6,7 @@
 #include <folly/dynamic.h>
 #include <deque>
 #include <optional>
+#include <utility>
 
 #include "comms/ctran/ibverbx/Coordinator.h"
 #include "comms/ctran/ibverbx/DqplbSeqTracker.h"
@@ -115,6 +116,11 @@ class IbvVirtualQp {
       ibv_send_wr* sendWrBad,
       const std::unordered_map<int32_t, MemoryRegionKeys>& deviceIdToKeys = {});
 
+  // v2 post send: routes by opcode — single-QP passthrough for SEND/atomic
+  // ops, multi-QP load-balanced fragmentation for RDMA ops.
+  inline folly::Expected<folly::Unit, Error> postSend_v2(
+      const IbvVirtualSendWr& wr);
+
   inline folly::Expected<folly::Unit, Error> postRecv(
       ibv_recv_wr* ibvRecvWr,
       ibv_recv_wr* badIbvRecvWr);
@@ -212,6 +218,38 @@ class IbvVirtualQp {
   inline folly::Expected<folly::Unit, Error> mapPendingRecvQueToPhysicalQp(
       int qpIdx = -1);
   inline folly::Expected<folly::Unit, Error> postRecvNotifyImm(int qpIdx = -1);
+
+  // Posts a send WR directly to physical QP 0 without fragmentation or
+  // load balancing.
+  inline folly::Expected<folly::Unit, Error> postSendSingleQp(
+      const IbvVirtualSendWr& wr);
+  // Iterates pending sends in the tracker, fragments them into maxMsgSize_
+  // chunks, and posts each fragment to an available physical QP.
+  // If freedQpIdx is provided, that QP is tried first.
+  inline folly::Expected<folly::Unit, Error> dispatchPendingSends(
+      int freedQpIdx = -1);
+  // Builds a physical ibv_send_wr and ibv_sge from an ActiveVirtualWr
+  // fragment, applying the correct opcode and device-specific keys.
+  // Caller must set sendWr.sg_list = &sendSge after destructuring.
+  inline std::pair<ibv_send_wr, ibv_sge> buildPhysicalSendWr(
+      const ActiveVirtualWr& pending,
+      int32_t deviceId,
+      uint32_t fragLen);
+  // Returns true if the physical QP at qpIdx has room for more outstanding
+  // send WRs (respects maxMsgCntPerQp_ limit).
+  inline bool hasQpCapacity(int qpIdx) const;
+  // Drains completed send WRs in order, emitting virtual completions into
+  // results. For SPRAY mode, triggers notify posts when all data fragments
+  // are done.
+  inline folly::Expected<folly::Unit, Error> reportSendCompletions(
+      std::vector<IbvVirtualWc>& results);
+  // Posts a zero-byte RDMA_WRITE_WITH_IMM on the notify QP to signal the
+  // receiver that all data fragments for this WR have been sent.
+  inline folly::Expected<folly::Unit, Error> postSendToNotifyQp(
+      uint64_t internalWrId);
+  // Drains the pendingSendNotifyQue_ by posting queued notify messages
+  // whenever the notify QP has capacity.
+  inline folly::Expected<folly::Unit, Error> flushPendingSendNotifies();
 
   // v2 common helpers
   inline bool isSendOpcode(ibv_wc_opcode opcode) const;
@@ -771,6 +809,327 @@ inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postRecv(
       *recvWrBad = *recvWr;
       return folly::makeUnexpected(Error(errno));
     }
+  }
+
+  return folly::unit;
+}
+
+// ============================================================
+// v2 Send Path
+// ============================================================
+
+// Helper: Single-QP fast path (pure passthrough, no tracking)
+inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendSingleQp(
+    const IbvVirtualSendWr& wr) {
+  if (wr.length == 0) {
+    return folly::makeUnexpected(Error(
+        EINVAL,
+        "[Ibverbx]IbvVirtualQp::postSendSingleQp, length cannot be zero"));
+  }
+
+  ibv_send_wr sendWr{};
+  ibv_sge sendSge{};
+
+  sendSge.addr = reinterpret_cast<uint64_t>(wr.localAddr);
+  sendSge.length = wr.length;
+  int32_t deviceId = physicalQps_.at(0).getDeviceId();
+  sendSge.lkey = wr.deviceKeys.at(deviceId).lkey;
+
+  sendWr.wr_id = wr.wrId;
+  sendWr.sg_list = &sendSge;
+  sendWr.num_sge = 1;
+  sendWr.opcode = wr.opcode;
+  sendWr.send_flags = wr.sendFlags;
+
+  if (wr.opcode == IBV_WR_ATOMIC_FETCH_AND_ADD ||
+      wr.opcode == IBV_WR_ATOMIC_CMP_AND_SWP) {
+    // Atomic operations use wr.atomic union
+    sendWr.wr.atomic.remote_addr = wr.remoteAddr;
+    sendWr.wr.atomic.rkey = wr.deviceKeys.at(deviceId).rkey;
+    sendWr.wr.atomic.compare_add = wr.compareAdd;
+    sendWr.wr.atomic.swap = wr.swap;
+  } else {
+    // RDMA / SEND operations use wr.rdma union
+    sendWr.wr.rdma.remote_addr = wr.remoteAddr;
+    sendWr.wr.rdma.rkey = wr.deviceKeys.at(deviceId).rkey;
+    if (wr.opcode == IBV_WR_RDMA_WRITE_WITH_IMM) {
+      sendWr.imm_data = wr.immData;
+    }
+  }
+
+  ibv_send_wr badWr{};
+  auto maybePost = physicalQps_.at(0).postSend(&sendWr, &badWr);
+  if (maybePost.hasError()) {
+    return folly::makeUnexpected(maybePost.error());
+  }
+
+  return folly::unit;
+}
+
+inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSend_v2(
+    const IbvVirtualSendWr& wr) {
+  // Opcode routing: route by opcode first, then check isMultiQp_ for RDMA ops
+  switch (wr.opcode) {
+    // Always single-QP pass-through (no load balancing)
+    case IBV_WR_SEND:
+    case IBV_WR_ATOMIC_FETCH_AND_ADD:
+    case IBV_WR_ATOMIC_CMP_AND_SWP:
+      return postSendSingleQp(wr);
+
+    // RDMA ops: single-QP pass-through or multi-QP load balancing
+    case IBV_WR_RDMA_WRITE:
+    case IBV_WR_RDMA_WRITE_WITH_IMM:
+    case IBV_WR_RDMA_READ:
+      if (!isMultiQp_) {
+        return postSendSingleQp(wr);
+      }
+      break; // Fall through to multi-QP load balancing path
+
+    default:
+      return folly::makeUnexpected(Error(
+          EINVAL,
+          fmt::format(
+              "[Ibverbx]IbvVirtualQp::postSend_v2, unsupported opcode: {}",
+              static_cast<int>(wr.opcode))));
+  }
+
+  // ============================================================
+  // MULTI-QP RDMA LOAD BALANCING PATH (only RDMA ops reach here)
+  // ============================================================
+
+  // Parameter validation
+  if (wr.length == 0) {
+    return folly::makeUnexpected(Error(
+        EINVAL,
+        "[Ibverbx]IbvVirtualQp::postSend_v2, RDMA length cannot be zero"));
+  }
+
+  if (!(wr.sendFlags & IBV_SEND_SIGNALED) &&
+      wr.opcode != IBV_WR_RDMA_WRITE_WITH_IMM) {
+    return folly::makeUnexpected(Error(
+        EINVAL,
+        "[Ibverbx]IbvVirtualQp::postSend_v2, unsignaled operations not supported in multi-QP mode"));
+  }
+
+  bool needsNotify =
+      (wr.opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
+       loadBalancingScheme_ == LoadBalancingScheme::SPRAY);
+  int expectedMsgCnt = (wr.length + maxMsgSize_ - 1) / maxMsgSize_;
+
+  sendTracker_.add(
+      ActiveVirtualWr{
+          .userWrId = wr.wrId,
+          .remainingMsgCnt = needsNotify ? expectedMsgCnt + 1 : expectedMsgCnt,
+          .aggregatedStatus = IBV_WC_SUCCESS,
+          .localAddr = wr.localAddr,
+          .length = wr.length,
+          .remoteAddr = wr.remoteAddr,
+          .opcode = wr.opcode,
+          .immData = wr.immData,
+          .deviceKeys = wr.deviceKeys,
+          .offset = 0,
+          .needsNotify = needsNotify,
+          .notifyPosted = false});
+
+  auto result = dispatchPendingSends();
+  if (result.hasError()) {
+    return folly::makeUnexpected(result.error());
+  }
+
+  return folly::unit;
+}
+
+// ============================================================
+// Fragmentation Logic (dispatchPendingSends)
+// ============================================================
+
+inline folly::Expected<folly::Unit, Error> IbvVirtualQp::dispatchPendingSends(
+    int freedQpIdx) {
+  while (sendTracker_.hasPendingPost()) {
+    uint64_t internalId = sendTracker_.frontPendingPost();
+
+    auto* pending = sendTracker_.find(internalId);
+    CHECK(pending) << fmt::format(
+        "[Ibverbx]IbvVirtualQp::dispatchPendingSends, WR {} in pendingPostQue_ but not found in activeVirtualWrs_",
+        internalId);
+
+    while (pending->offset < pending->length) {
+      int qpIdx;
+      if (freedQpIdx >= 0 && hasQpCapacity(freedQpIdx)) {
+        qpIdx = freedQpIdx;
+        freedQpIdx = -1;
+      } else {
+        qpIdx = findAvailableSendQp();
+      }
+
+      if (qpIdx == -1) {
+        return folly::unit;
+      }
+
+      int32_t deviceId = physicalQps_.at(qpIdx).getDeviceId();
+
+      uint32_t fragLen = std::min(
+          maxMsgSize_, static_cast<int>(pending->length - pending->offset));
+
+      auto [sendWr, sendSge] = buildPhysicalSendWr(*pending, deviceId, fragLen);
+      sendWr.sg_list = &sendSge;
+
+      ibv_send_wr badWr{};
+      auto maybePost = physicalQps_.at(qpIdx).postSend(&sendWr, &badWr);
+      if (maybePost.hasError()) {
+        return folly::makeUnexpected(maybePost.error());
+      }
+
+      physicalQps_.at(qpIdx).physicalSendWrStatus_.emplace_back(
+          sendWr.wr_id, internalId);
+
+      pending->offset += fragLen;
+    }
+
+    sendTracker_.popPendingPost();
+  }
+
+  return folly::unit;
+}
+
+inline std::pair<ibv_send_wr, ibv_sge> IbvVirtualQp::buildPhysicalSendWr(
+    const ActiveVirtualWr& pending,
+    int32_t deviceId,
+    uint32_t fragLen) {
+  ibv_sge sendSge{};
+  sendSge.addr = reinterpret_cast<uint64_t>(
+      static_cast<char*>(pending.localAddr) + pending.offset);
+  sendSge.length = fragLen;
+  sendSge.lkey = pending.deviceKeys.at(deviceId).lkey;
+
+  ibv_send_wr sendWr{};
+  sendWr.wr_id = nextPhysicalWrId_++;
+  sendWr.sg_list = &sendSge;
+  sendWr.num_sge = 1;
+  sendWr.send_flags = IBV_SEND_SIGNALED;
+
+  sendWr.wr.rdma.remote_addr = pending.remoteAddr + pending.offset;
+  sendWr.wr.rdma.rkey = pending.deviceKeys.at(deviceId).rkey;
+
+  if (pending.opcode == IBV_WR_RDMA_WRITE_WITH_IMM &&
+      loadBalancingScheme_ == LoadBalancingScheme::SPRAY) {
+    sendWr.opcode = IBV_WR_RDMA_WRITE;
+  } else {
+    sendWr.opcode = pending.opcode;
+    if (loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
+      bool isLastFragment = (pending.offset + fragLen >= pending.length);
+      sendWr.imm_data = dqplbSeqTracker.getSendImm(isLastFragment);
+    }
+  }
+
+  return {sendWr, sendSge};
+}
+
+inline bool IbvVirtualQp::hasQpCapacity(int qpIdx) const {
+  if (maxMsgCntPerQp_ == -1) {
+    return true;
+  }
+  return physicalQps_.at(qpIdx).physicalSendWrStatus_.size() <
+      static_cast<size_t>(maxMsgCntPerQp_);
+}
+
+// ============================================================
+// v2 Send Completion Reporting
+// ============================================================
+
+inline folly::Expected<folly::Unit, Error> IbvVirtualQp::reportSendCompletions(
+    std::vector<IbvVirtualWc>& results) {
+  while (sendTracker_.hasPendingCompletion()) {
+    uint64_t frontId = sendTracker_.frontPendingCompletion();
+    auto* frontWr = sendTracker_.find(frontId);
+    CHECK(frontWr) << fmt::format(
+        "[Ibverbx]IbvVirtualQp::reportSendCompletions, WR {} in pendingCompletionQue_ but not found in activeVirtualWrs_",
+        frontId);
+
+    if (frontWr->needsNotify && !frontWr->notifyPosted) {
+      if (frontWr->remainingMsgCnt > 1) {
+        break;
+      }
+
+      CHECK(hasNotifyQp());
+      if (notifyQp_->physicalSendWrStatus_.size() >=
+          static_cast<size_t>(maxMsgCntPerQp_)) {
+        pendingSendNotifyQue_.push_back(frontId);
+        frontWr->notifyPosted = true;
+        break;
+      }
+
+      auto maybePost = postSendToNotifyQp(frontId);
+      if (maybePost.hasError()) {
+        return folly::makeUnexpected(maybePost.error());
+      }
+      frontWr->notifyPosted = true;
+      break;
+    }
+
+    if (frontWr->remainingMsgCnt > 0) {
+      break;
+    }
+
+    results.push_back(buildVirtualWc(*frontWr));
+    sendTracker_.remove(frontId);
+    sendTracker_.popPendingCompletion();
+  }
+
+  return folly::unit;
+}
+
+inline folly::Expected<folly::Unit, Error> IbvVirtualQp::postSendToNotifyQp(
+    uint64_t internalWrId) {
+  auto* pending = sendTracker_.find(internalWrId);
+  CHECK(pending) << fmt::format(
+      "[Ibverbx]IbvVirtualQp::postSendToNotifyQp, WR {} not found",
+      internalWrId);
+
+  CHECK(hasNotifyQp());
+
+  ibv_send_wr sendWr{};
+  sendWr.wr_id = nextPhysicalWrId_++;
+  sendWr.sg_list = nullptr;
+  sendWr.num_sge = 0;
+  sendWr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+  sendWr.send_flags = IBV_SEND_SIGNALED;
+  sendWr.wr.rdma.remote_addr = pending->remoteAddr;
+  int32_t notifyDeviceId = notifyQp_->getDeviceId();
+  sendWr.wr.rdma.rkey = pending->deviceKeys.at(notifyDeviceId).rkey;
+  sendWr.imm_data = pending->immData;
+
+  ibv_send_wr badWr{};
+  auto maybePost = notifyQp_->postSend(&sendWr, &badWr);
+  if (maybePost.hasError()) {
+    return folly::makeUnexpected(maybePost.error());
+  }
+
+  notifyQp_->physicalSendWrStatus_.emplace_back(sendWr.wr_id, internalWrId);
+
+  return folly::unit;
+}
+
+inline folly::Expected<folly::Unit, Error>
+IbvVirtualQp::flushPendingSendNotifies() {
+  CHECK(hasNotifyQp());
+
+  while (!pendingSendNotifyQue_.empty()) {
+    if (notifyQp_->physicalSendWrStatus_.size() >=
+        static_cast<size_t>(maxMsgCntPerQp_)) {
+      break;
+    }
+
+    uint64_t frontId = pendingSendNotifyQue_.front();
+    auto* frontWr = sendTracker_.find(frontId);
+    CHECK(frontWr) << fmt::format(
+        "[Ibverbx]IbvVirtualQp::flushPendingSendNotifies, WR {} in pendingSendNotifyQue_ but not found in activeVirtualWrs_",
+        frontId);
+
+    if (postSendToNotifyQp(frontId).hasError()) {
+      break;
+    }
+    pendingSendNotifyQue_.pop_front();
   }
 
   return folly::unit;
