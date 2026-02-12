@@ -48,3 +48,19 @@ Reusable complex capture pattern used across multiple test files:
 |----------|-------------|
 | `CUDA_GRAPH_SVG_DIR` | If set, captured graphs are rendered as SVG files in this directory for visual debugging |
 | `TORCH_PROFILE_DIR` | If set, the replay phase is traced with `torch.profiler` and Chrome trace JSON files are saved to this directory |
+
+## Test Classes
+
+### `TestSingleGraph`
+
+Tests capturing collectives into a single CUDA graph with varying async patterns, stream configurations, and communicator layouts. All tests assert graph structure via DOT analysis.
+
+| Test | Edge case |
+|------|-----------|
+| `test_single_allreduce` | Baseline: single sync and async all_reduce; asserts 1 AllReduce kernel, EVENT_WAIT/RECORD nodes, no MEMCPYs |
+| `test_multiple_allreduce` | N sequential all_reduce ops on separate tensors; asserts N AllReduce kernels are sequentially ordered in the graph DAG |
+| `test_multiple_allreduce_async_wait_at_end` | N async all_reduce ops issued back-to-back with all waits deferred to the end; verifies kernels remain sequential despite deferred synchronization |
+| `test_multiple_allreduce_mixed` | Alternating sync/async all_reduce ops within a single capture |
+| `test_multiple_streams_single_comm` | All_reduce ops across N different streams sharing one comm; asserts single-comm serialization forces sequential kernel ordering despite multi-stream capture |
+| `test_multiple_streams_multiple_comms` | Odd/even all_reduce pattern across two comms on separate streams; verifies no MEMCPYs with multi-comm multi-stream capture |
+| `test_two_streams_two_comms_with_dependency` | Cross-stream dependency chain: allreduce(stream0, comm0) → sum(stream0) → allgather(stream1, comm1) with rank-dependent inputs; asserts AllReduce → reduce → AllGather DAG ordering |
