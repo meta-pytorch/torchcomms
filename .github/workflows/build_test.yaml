@@ -111,7 +111,7 @@ jobs:
         source .github/scripts/setup_env.sh --cuda-version "${{ matrix.gpu-arch-version }}" --torch-version "$TORCH_VERSION" "${{ matrix.torch-version }}"
 
         # Install from pre-built wheel (skip build step)
-        pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized
+        pip install "${RUNNER_ARTIFACT_DIR}"/*.whl pytest numpy psutil parameterized pydot
 
         python -c "import torchcomms; import torchcomms._transport"
 
