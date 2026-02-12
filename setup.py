@@ -149,6 +149,7 @@ extras_require = {
         "psutil",
         "lintrunner",
         "parameterized",
+        "pydot",
     ],
 }
 
