@@ -17,6 +17,11 @@ import pydot
 import torch
 import torchcomms
 
+# pyre-fixme[5]: Global annotation for skip decorator.
+skip_unless_ncclx = unittest.skipIf(
+    os.getenv("TEST_BACKEND") != "ncclx", "Skipping NCCLX-only tests"
+)
+
 # pyre-fixme[21]: Could not find name `ProfilerActivity` in `torch.profiler`.
 from torch.profiler import profile, ProfilerActivity
 from torchcomms.tests.integration.py.TorchCommTestHelpers import get_rank_and_size
