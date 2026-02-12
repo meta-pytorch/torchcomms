@@ -87,14 +87,13 @@ IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
       physicalQps_(std::move(other.physicalQps_)),
       qpNumToIdx_(std::move(other.qpNumToIdx_)),
       nextSendPhysicalQpIdx_(std::move(other.nextSendPhysicalQpIdx_)),
-      nextRecvPhysicalQpIdx_(std::move(other.nextRecvPhysicalQpIdx_)),
       maxMsgCntPerQp_(std::move(other.maxMsgCntPerQp_)),
       maxMsgSize_(std::move(other.maxMsgSize_)),
       nextPhysicalWrId_(std::move(other.nextPhysicalWrId_)),
       deviceCnt_(std::move(other.deviceCnt_)),
       loadBalancingScheme_(std::move(other.loadBalancingScheme_)),
       notifyQp_(std::move(other.notifyQp_)),
-      dqplbSeqTracker(std::move(other.dqplbSeqTracker)),
+      dqplbSeqTracker_(std::move(other.dqplbSeqTracker_)),
       dqplbReceiverInitialized_(std::move(other.dqplbReceiverInitialized_)) {
   other.virtualCq_ = nullptr; // Prevent double-unregister
 
@@ -110,7 +109,6 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
     physicalQps_ = std::move(other.physicalQps_);
     notifyQp_ = std::move(other.notifyQp_);
     nextSendPhysicalQpIdx_ = std::move(other.nextSendPhysicalQpIdx_);
-    nextRecvPhysicalQpIdx_ = std::move(other.nextRecvPhysicalQpIdx_);
     qpNumToIdx_ = std::move(other.qpNumToIdx_);
     maxMsgCntPerQp_ = std::move(other.maxMsgCntPerQp_);
     maxMsgSize_ = std::move(other.maxMsgSize_);
@@ -118,7 +116,7 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
     loadBalancingScheme_ = std::move(other.loadBalancingScheme_);
     virtualQpNum_ = std::move(other.virtualQpNum_);
     nextPhysicalWrId_ = std::move(other.nextPhysicalWrId_);
-    dqplbSeqTracker = std::move(other.dqplbSeqTracker);
+    dqplbSeqTracker_ = std::move(other.dqplbSeqTracker_);
     dqplbReceiverInitialized_ = std::move(other.dqplbReceiverInitialized_);
     virtualCq_ = other.virtualCq_;
     isMultiQp_ = other.isMultiQp_;
