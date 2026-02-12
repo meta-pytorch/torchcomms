@@ -23,25 +23,23 @@ inline bool isPatAvgSupportedType(ncclDataType_t dt) {
 }
 
 // Compute nMaxChannels and nWarps for PAT algorithm with SIMPLE protocol.
-// This mirrors the computation in topoGetAlgoInfo() but can be called early
-// to enable per-communicator PAT AVG control via ncclInfoExt.
+// This mirrors the channel-reduction logic in topoGetAlgoInfo() but uses
+// static constants because baseline tuning (ncclTopoTuneModel) does not
+// initialize maxThreads[NCCL_ALGO_PAT], leaving it at 0 and making the
+// channel reduction loop dead code when using comm values directly.
 inline void computePatAvgChannelsAndWarps(
     struct ncclComm* comm,
     size_t nBytes,
     int* outNMaxChannels,
     int* outNWarps) {
   int nc = comm->nChannels;
-  int nt = comm->maxThreads[NCCL_ALGO_PAT][NCCL_PROTO_SIMPLE];
-  int threadThreshold =
-      comm->threadThresholds[NCCL_ALGO_PAT][NCCL_PROTO_SIMPLE];
+  int nt = NCCL_MAX_NTHREADS;
+  int threadThreshold = NCCL_SIMPLE_THREAD_THRESHOLD;
 
   // Reduce channels based on data size (same logic as topoGetAlgoInfo)
   while (nBytes < static_cast<size_t>(nc * nt * threadThreshold) && nc >= 2) {
     nc--;
   }
-
-  // PAT always uses max threads
-  nt = NCCL_MAX_NTHREADS;
 
   *outNMaxChannels = nc;
   *outNWarps = nt / WARP_SIZE;
