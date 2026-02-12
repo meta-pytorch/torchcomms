@@ -78,3 +78,14 @@ Multiple separately-captured complex CUDA graphs (each using `create_capture`: a
 | `test_multiple_graphs_with_dependency` | Two complex graphs with inter-graph data dependency: graph0's allreduce output is copied into graph1's input between replays (host-side copy with full sync); tests sequential pipeline with data flow between graphs |
 | `test_multiple_graphs_event_sync` | Three complex graphs: graphs 0 and 1 fork concurrently, then an event-synced copy transfers graph0's output into graph2's input, then graph2 runs — all chained via CUDA events (no full device sync); tests event-based inter-graph DAG scheduling |
 | `test_multiple_graphs_external_event_sync` | Two complex graphs replayed concurrently with an external CUDA event captured into both graphs: graph0 records the event after its allreduce, graph1 waits on it before reading graph0's output; tests cross-graph on-device synchronization with no host-side sync |
+
+### `TestGraphConcurrency`
+
+Tests complex graph replay (using `create_capture`) running concurrently with non-graphable GPU work — compute kernels or collectives on separate comms — synchronized via CUDA events.
+
+| Test | Edge case |
+|------|-----------|
+| `test_graph_parallel_with_nongraphable` | Complex graph replay runs concurrently with a non-graphable matmul on a separate stream; verifies both produce correct results without interference |
+| `test_graph_parallel_with_nongraphable_collective` | Complex graph replay concurrently with a non-graphable all_reduce on a third comm (comms 0,1 for graph, comm 2 for non-graph); tests comm resource isolation under concurrency |
+| `test_multiple_graphs_parallel_with_nongraphable` | Two complex graph replays plus a non-graphable matmul, all running concurrently on 3 streams; tests high stream concurrency with intra-graph streams nested inside |
+| `test_graph_then_nongraphable_event_sync` | Complex graph replay followed by non-graphable work that reads the graph's allreduce output; synchronized via CUDA events (not full device sync), verifying event-based producer-consumer ordering between graph and non-graph work |
