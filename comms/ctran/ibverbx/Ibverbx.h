@@ -16,7 +16,6 @@ namespace ibverbx {
 
 // Forward declarations
 class IbvVirtualQp;
-class Coordinator;
 
 /*** ibverbx APIs ***/
 
