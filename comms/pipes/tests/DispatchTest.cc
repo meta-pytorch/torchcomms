@@ -10,7 +10,6 @@
 
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/tests/DispatchTestKernels.cuh"
-#include "comms/pipes/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
