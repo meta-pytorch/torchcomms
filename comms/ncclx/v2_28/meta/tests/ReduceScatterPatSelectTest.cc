@@ -19,6 +19,7 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/hints/GlobalHints.h" // @manual
 #include "meta/wrapper/DataTypeStrUtils.h"
 
 /**
@@ -51,6 +52,9 @@ class ReduceScatterPatSelectTest : public NcclxBaseTest {
   void TearDown() override {
     CUDACHECK_TEST(cudaStreamDestroy(stream));
     patEnableGuard_.reset();
+    // Reset global hint to avoid affecting subsequent tests
+    ncclx::resetGlobalHint(
+        std::string(ncclx::HintKeys::kCommAlgoReduceScatter));
     NcclxBaseTest::TearDown();
   }
 
@@ -129,14 +133,20 @@ class ReduceScatterPatSelectTest : public NcclxBaseTest {
 /**
  * Test: User-defined PreMulSum should NOT be converted to PatAvg
  *
- * Verifies that setting usePatAvg_ = true only affects ncclAvg operations,
+ * Verifies that enabling PAT AVG only affects ncclAvg operations,
  * not user-defined PreMulSum ops. The ext is only set when op == ncclAvg,
  * so user ops continue through normal algorithm selection.
  */
 TEST_F(ReduceScatterPatSelectTest, UserPreMulSumNotConvertedToPatAvg) {
+  // Enable PAT AVG via global hint before comm creation
+  ASSERT_EQ(
+      ncclx::setGlobalHint(
+          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
+      ncclSuccess);
+
   NcclCommRAII commGuard{globalRank, numRanks, localRank};
   ncclComm_t comm = commGuard.get();
-  comm->usePatAvg_ = true;
+  ASSERT_TRUE(comm->usePatAvg_);
 
   // Create user-defined PreMulSum with scalar = 0.25
   // This is different from ncclAvg which uses 1/nRanks (0.5 for 2 ranks)
@@ -188,25 +198,54 @@ TEST_F(ReduceScatterPatSelectTest, UserPreMulSumNotConvertedToPatAvg) {
  * and produces correct results (sum / nRanks).
  */
 TEST_F(ReduceScatterPatSelectTest, BuiltInAvgWithPatAvgWorks) {
-  constexpr bool kUsePatAvg = true;
-  const std::string kExpectAlgo = "PAT";
-  run<float>(
-      ncclFloat,
-      ncclAvg,
-      kUsePatAvg,
-      [](int nRanks, int rank, int chunk) -> float {
-        return static_cast<float>(rank * nRanks + chunk);
-      },
-      [](int nRanks, int rank) -> float {
-        float sum = 0.0f;
-        for (int r = 0; r < nRanks; r++) {
-          sum += static_cast<float>(r * nRanks + rank);
-        }
-        return sum / static_cast<float>(nRanks);
-      },
-      kExpectAlgo,
-      std::nullopt,
-      1e-3);
+  // Enable PAT AVG via global hint before comm creation
+  ASSERT_EQ(
+      ncclx::setGlobalHint(
+          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
+      ncclSuccess);
+
+  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclComm_t comm = commGuard.get();
+  ASSERT_TRUE(comm->usePatAvg_);
+
+  const size_t count = 8000;
+  const size_t allocSize = count * numRanks * sizeof(float);
+
+  float* sendBuf = nullptr;
+  float* recvBuf = nullptr;
+  NCCLCHECK_TEST(ncclMemAlloc((void**)&sendBuf, allocSize));
+  NCCLCHECK_TEST(ncclMemAlloc((void**)&recvBuf, allocSize));
+
+  // Initialize send buffer
+  for (int r = 0; r < numRanks; r++) {
+    float val = static_cast<float>(globalRank * numRanks + r);
+    assignChunkValue(sendBuf + r * count, count, val);
+  }
+
+  // Run ReduceScatter with built-in ncclAvg
+  auto res = ncclReduceScatter(
+      sendBuf, recvBuf, count, ncclFloat, ncclAvg, comm, stream);
+  ASSERT_EQ(res, ncclSuccess);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Expected: average of (r * numRanks + globalRank) for all r
+  float sum = 0.0f;
+  for (int r = 0; r < numRanks; r++) {
+    sum += static_cast<float>(r * numRanks + globalRank);
+  }
+  float expectedVal = sum / static_cast<float>(numRanks);
+
+  size_t errs = checkChunkValue(
+      recvBuf, count, expectedVal, 0.0f, globalRank, stream, 1e-3);
+  EXPECT_EQ(errs, 0) << "Rank " << globalRank
+                     << " ncclAvg with PAT_AVG got wrong result"
+                     << " (expected=" << expectedVal << ")";
+
+  // Verify PAT algorithm was used
+  algoStats_.verify(comm, "ReduceScatter", "PAT");
+
+  NCCLCHECK_TEST(ncclMemFree(sendBuf));
+  NCCLCHECK_TEST(ncclMemFree(recvBuf));
 }
 
 /**
@@ -227,17 +266,41 @@ TEST_P(ReduceScatterPatAlgoSelectionTest, AlgoSelection) {
 
   // Enforce PAT algorithm selection via env vars for SUM (both NCCL_ALGO,
   // NCCL_PROTO and NCCL_PAT_ENABLE must be set, NCCL_PAT_ENABLE=1 is set in
-  // base fixture SetUp()). AVG require usePatAvg_ = true
+  // base fixture SetUp()). AVG requires PAT AVG CVAR or hint.
   auto algoGuard = EnvRAII<std::string>(NCCL_ALGO, "reducescatter:pat");
   auto protoGuard = EnvRAII<std::string>(NCCL_PROTO, "Simple");
 
-  run<float>(
-      ncclFloat,
-      op,
-      patAvgEnable,
-      [](int /*nRanks*/, int /*rank*/, int /*chunk*/) -> float { return 1.0f; },
-      nullptr, // no result check, only algo verification
-      expectedAlgoSubstr);
+  // Enable PAT AVG via CVAR before comm creation
+  auto patAvgGuard = EnvRAII(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, patAvgEnable);
+
+  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclComm_t comm = commGuard.get();
+  ASSERT_EQ(comm->usePatAvg_, patAvgEnable);
+
+  const size_t count = 8000;
+  const size_t allocSize = count * numRanks * sizeof(float);
+
+  float* sendBuf = nullptr;
+  float* recvBuf = nullptr;
+  NCCLCHECK_TEST(ncclMemAlloc((void**)&sendBuf, allocSize));
+  NCCLCHECK_TEST(ncclMemAlloc((void**)&recvBuf, allocSize));
+
+  // Initialize send buffer with simple values
+  for (int r = 0; r < numRanks; r++) {
+    assignChunkValue(sendBuf + r * count, count, 1.0f);
+  }
+
+  // Run ReduceScatter
+  auto res =
+      ncclReduceScatter(sendBuf, recvBuf, count, ncclFloat, op, comm, stream);
+  ASSERT_EQ(res, ncclSuccess);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify expected algorithm was used
+  algoStats_.verify(comm, "ReduceScatter", expectedAlgoSubstr);
+
+  NCCLCHECK_TEST(ncclMemFree(sendBuf));
+  NCCLCHECK_TEST(ncclMemFree(recvBuf));
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -271,10 +334,15 @@ INSTANTIATE_TEST_SUITE_P(
  * This is a negative test - it validates that the proper error is returned.
  */
 TEST_F(ReduceScatterPatSelectTest, GroupedReduceScatterPatAvg) {
+  // Enable PAT AVG via global hint before comm creation
+  ASSERT_EQ(
+      ncclx::setGlobalHint(
+          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
+      ncclSuccess);
+
   NcclCommRAII commGuard{globalRank, numRanks, localRank};
   ncclComm_t comm = commGuard.get();
-  // Enable PAT AVG via per-communicator control
-  comm->usePatAvg_ = true;
+  ASSERT_TRUE(comm->usePatAvg_);
 
   constexpr int kNumOpsInGroup = 3;
   const size_t count = 8000;
@@ -318,55 +386,109 @@ TEST_F(ReduceScatterPatSelectTest, GroupedReduceScatterPatAvg) {
 }
 
 /**
- * Test: Direct usePatAvg_ control enables PAT AVG for ReduceScatter
+ * Test: CVAR control enables PAT AVG for ReduceScatter
  *
- * Verifies that setting comm->usePatAvg_ = true directly enables PAT AVG
- * for ReduceScatter with ncclAvg, bypassing the need for CVARs.
- * This is the per-communicator control mechanism.
+ * Verifies that setting NCCL_REDUCESCATTER_PAT_AVG_ENABLE=true enables PAT AVG
+ * for ReduceScatter with ncclAvg at comm creation time.
  */
-TEST_F(ReduceScatterPatSelectTest, UsePatAvgDirectControl) {
-  // Verify default is disabled before run() creates a comm with it enabled
-  {
-    NcclCommRAII probe{globalRank, numRanks, localRank};
-    ASSERT_FALSE(probe.get()->usePatAvg_);
+TEST_F(ReduceScatterPatSelectTest, UsePatAvgCvarControl) {
+  // Enable PAT AVG via CVAR before comm creation
+  auto patAvgGuard = EnvRAII(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, true);
+
+  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclComm_t comm = commGuard.get();
+
+  // Verify CVAR enabled usePatAvg_
+  ASSERT_TRUE(comm->usePatAvg_);
+
+  const size_t count = 8000;
+  const size_t allocSize = count * numRanks * sizeof(float);
+
+  float* sendBuf = nullptr;
+  float* recvBuf = nullptr;
+  NCCLCHECK_TEST(ncclMemAlloc((void**)&sendBuf, allocSize));
+  NCCLCHECK_TEST(ncclMemAlloc((void**)&recvBuf, allocSize));
+
+  // Initialize: each rank sends its rank value in all chunks
+  for (int r = 0; r < numRanks; r++) {
+    float val = static_cast<float>(globalRank * numRanks + r);
+    assignChunkValue(sendBuf + r * count, count, val);
   }
-  constexpr bool kUsePatAvg = true;
-  const std::string kExpectAlgo = "PAT";
-  run<float>(
-      ncclFloat,
-      ncclAvg,
-      kUsePatAvg,
-      [](int numRanks, int globalRank, int chunkIdx) -> float {
-        return static_cast<float>(globalRank * numRanks + chunkIdx);
-      },
-      [](int numRanks, int globalRank) -> float {
-        float sum = 0.0f;
-        for (int r = 0; r < numRanks; r++) {
-          sum += static_cast<float>(r * numRanks + globalRank);
-        }
-        return sum / static_cast<float>(numRanks);
-      },
-      kExpectAlgo,
-      std::nullopt,
-      1e-3);
+
+  // Run ReduceScatter with ncclAvg - should use PAT AVG
+  auto res = ncclReduceScatter(
+      sendBuf, recvBuf, count, ncclFloat, ncclAvg, comm, stream);
+  ASSERT_EQ(res, ncclSuccess);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Expected: average of (r * numRanks + globalRank) for all r
+  float sum = 0.0f;
+  for (int r = 0; r < numRanks; r++) {
+    sum += static_cast<float>(r * numRanks + globalRank);
+  }
+  float expectedVal = sum / static_cast<float>(numRanks);
+
+  size_t errs = checkChunkValue(
+      recvBuf, count, expectedVal, 0.0f, globalRank, stream, 1e-3);
+  EXPECT_EQ(errs, 0) << "Rank " << globalRank
+                     << " CVAR control got wrong result"
+                     << " (expected=" << expectedVal << ")";
+
+  // Verify PAT algorithm was used
+  algoStats_.verify(comm, "ReduceScatter", "PAT");
+
+  NCCLCHECK_TEST(ncclMemFree(sendBuf));
+  NCCLCHECK_TEST(ncclMemFree(recvBuf));
 }
 
 /**
- * Test: usePatAvg_ only affects ReduceScatter with ncclAvg
+ * Test: PAT AVG only affects ReduceScatter with ncclAvg
+ *
+ * Verifies that PAT AVG doesn't affect:
+ * 1. ReduceScatter with other ops (ncclSum) - uses normal algorithm selection
+ * 2. Other collectives (AllReduce with ncclAvg) - not affected
  */
 TEST_F(ReduceScatterPatSelectTest, UsePatAvgOnlyAffectsReduceScatterAvg) {
-  constexpr bool kUsePatAvg = true;
-  run<float>(
-      ncclFloat,
-      ncclSum,
-      kUsePatAvg,
-      [](int /*nRanks*/, int /*rank*/, int /*chunk*/) -> float { return 1.0f; },
-      [](int nRanks, int /*rank*/) -> float {
-        return static_cast<float>(nRanks);
-      },
-      std::nullopt,
-      std::nullopt,
-      1e-3);
+  // Enable PAT AVG via global hint before comm creation
+  ASSERT_EQ(
+      ncclx::setGlobalHint(
+          std::string(ncclx::HintKeys::kCommAlgoReduceScatter), "avg:patavg"),
+      ncclSuccess);
+
+  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclComm_t comm = commGuard.get();
+  ASSERT_TRUE(comm->usePatAvg_);
+
+  const size_t count = 8000;
+  const size_t allocSize = count * numRanks * sizeof(float);
+
+  float* sendBuf = nullptr;
+  float* recvBuf = nullptr;
+  NCCLCHECK_TEST(ncclMemAlloc((void**)&sendBuf, allocSize));
+  NCCLCHECK_TEST(ncclMemAlloc((void**)&recvBuf, allocSize));
+
+  // Initialize send buffer
+  for (int r = 0; r < numRanks; r++) {
+    assignChunkValue(sendBuf + r * count, count, 1.0f);
+  }
+
+  // ReduceScatter with ncclSum should NOT force PAT (PAT AVG only affects
+  // ncclAvg)
+  auto res = ncclReduceScatter(
+      sendBuf, recvBuf, count, ncclFloat, ncclSum, comm, stream);
+  ASSERT_EQ(res, ncclSuccess);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Expected: sum of 1.0 from each rank = numRanks
+  float expectedVal = static_cast<float>(numRanks);
+  size_t errs = checkChunkValue(
+      recvBuf, count, expectedVal, 0.0f, globalRank, stream, 1e-3);
+  EXPECT_EQ(errs, 0) << "Rank " << globalRank
+                     << " ncclSum with PAT_AVG got wrong result"
+                     << " (expected=" << expectedVal << ")";
+
+  NCCLCHECK_TEST(ncclMemFree(sendBuf));
+  NCCLCHECK_TEST(ncclMemFree(recvBuf));
 }
 
 /**

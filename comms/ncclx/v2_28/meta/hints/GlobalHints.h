@@ -21,13 +21,18 @@ struct HintKeys {
   // NOTE: torch eager init mode is required; otherwise, the hint to
   // communicator mapping may be incorrect
   static constexpr std::string_view kCommUseCtran = "ncclx.comm.useCtran";
+  // per-communicator ReduceScatter algorithm override
+  // Format: "<redop>:<algo>" e.g., "avg:patavg"
+  static constexpr std::string_view kCommAlgoReduceScatter =
+      "ncclx.comm.algo_reducescatter";
 };
 
-constexpr std::array<std::string_view, 4> kHintKeysArray = {
+constexpr std::array<std::string_view, 5> kHintKeysArray = {
     HintKeys::kCollTraceCrashOnAsyncError,
     HintKeys::kCollTraceCrashOnTimeout,
     HintKeys::kCollTraceTimeoutMs,
-    HintKeys::kCommUseCtran};
+    HintKeys::kCommUseCtran,
+    HintKeys::kCommAlgoReduceScatter};
 
 using GlobalSetHintHook =
     std::function<void(const std::string& key, const std::string& val)>;
