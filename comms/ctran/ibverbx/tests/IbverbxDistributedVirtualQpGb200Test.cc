@@ -737,7 +737,7 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     // post a dummy IbvVirtualRecvWr as this is one-sided comm
     IbvVirtualRecvWr recvWr;
     recvWr.wrId = wr_id;
-    ASSERT_TRUE(setup.virtualQp.postRecv_v2(recvWr));
+    ASSERT_TRUE(setup.virtualQp.postRecv(recvWr));
   } else if (globalRank == 1) {
     // writer
 
@@ -750,13 +750,13 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     sendWr.sendFlags = IBV_SEND_SIGNALED;
     sendWr.immData = imm_data;
     sendWr.deviceKeys = setup.deviceIdToKeys;
-    ASSERT_TRUE(setup.virtualQp.postSend_v2(sendWr));
+    ASSERT_TRUE(setup.virtualQp.postSend(sendWr));
   }
 
   // poll cq and check cq
   bool stop = false;
   while (!stop) {
-    auto maybeWcsVector = setup.virtualCq.pollCq_v2();
+    auto maybeWcsVector = setup.virtualCq.pollCq();
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
     ASSERT_GE(numWc, 0);
@@ -846,11 +846,11 @@ void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
     sendWr.opcode = IBV_WR_RDMA_READ;
     sendWr.sendFlags = IBV_SEND_SIGNALED;
     sendWr.deviceKeys = setup.deviceIdToKeys;
-    ASSERT_TRUE(setup.virtualQp.postSend_v2(sendWr));
+    ASSERT_TRUE(setup.virtualQp.postSend(sendWr));
 
     // poll cq and check cq
     while (true) {
-      auto maybeWcsVector = setup.virtualCq.pollCq_v2();
+      auto maybeWcsVector = setup.virtualCq.pollCq();
       ASSERT_TRUE(maybeWcsVector);
       auto numWc = maybeWcsVector->size();
       ASSERT_GE(numWc, 0);
@@ -925,7 +925,7 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     recvWr.localAddr = setup.devBuf;
     recvWr.length = static_cast<uint32_t>(devBufSize);
     recvWr.deviceKeys = setup.deviceIdToKeys;
-    ASSERT_TRUE(setup.virtualQp.postRecv_v2(recvWr));
+    ASSERT_TRUE(setup.virtualQp.postRecv(recvWr));
   } else if (globalRank == 1) {
     // sender
     IbvVirtualSendWr sendWr;
@@ -935,13 +935,13 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     sendWr.opcode = IBV_WR_SEND;
     sendWr.sendFlags = IBV_SEND_SIGNALED;
     sendWr.deviceKeys = setup.deviceIdToKeys;
-    ASSERT_TRUE(setup.virtualQp.postSend_v2(sendWr));
+    ASSERT_TRUE(setup.virtualQp.postSend(sendWr));
   }
 
   // poll cq and check cq
   bool stop = false;
   while (!stop) {
-    auto maybeWcsVector = setup.virtualCq.pollCq_v2();
+    auto maybeWcsVector = setup.virtualCq.pollCq();
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
     ASSERT_GE(numWc, 0);

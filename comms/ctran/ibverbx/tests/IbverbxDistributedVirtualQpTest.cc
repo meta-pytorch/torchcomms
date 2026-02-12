@@ -575,7 +575,7 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
     for (int i = 0; i < 2; ++i) {
       IbvVirtualRecvWr recvWr;
       recvWr.wrId = i;
-      ASSERT_TRUE(virtualQp->postRecv_v2(recvWr));
+      ASSERT_TRUE(virtualQp->postRecv(recvWr));
     }
   } else if (globalRank == 1) {
     // sender: register memory for the 2 buffers and post 2 RDMA writes
@@ -613,8 +613,8 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
         MemoryRegionKeys{.lkey = mr2->mr()->lkey, .rkey = remoteCard.rkey};
 
     // Post both RDMA writes
-    ASSERT_TRUE(virtualQp->postSend_v2(sendWr1));
-    ASSERT_TRUE(virtualQp->postSend_v2(sendWr2));
+    ASSERT_TRUE(virtualQp->postSend(sendWr1));
+    ASSERT_TRUE(virtualQp->postSend(sendWr2));
   }
 
   // poll cq and check completion entries
@@ -622,7 +622,7 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
   int expectedOps = 2; // 2 operations per rank
 
   while (completedOps < expectedOps) {
-    auto maybeWcsVector = virtualCq.pollCq_v2();
+    auto maybeWcsVector = virtualCq.pollCq();
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
 
@@ -896,7 +896,7 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     // post a dummy recv as this is one-sided comm
     IbvVirtualRecvWr recvWr;
     recvWr.wrId = wr_id;
-    ASSERT_TRUE(setup.virtualQp.postRecv_v2(recvWr));
+    ASSERT_TRUE(setup.virtualQp.postRecv(recvWr));
   } else if (globalRank == 1) {
     // writer
 
@@ -911,13 +911,13 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
     int32_t deviceId = setup.virtualQp.getQpsRef().at(0).getDeviceId();
     sendWr.deviceKeys[deviceId] = MemoryRegionKeys{
         .lkey = setup.mr.mr()->lkey, .rkey = setup.remoteCard.rkey};
-    ASSERT_TRUE(setup.virtualQp.postSend_v2(sendWr));
+    ASSERT_TRUE(setup.virtualQp.postSend(sendWr));
   }
 
   // poll cq and check cq
   bool stop = false;
   while (!stop) {
-    auto maybeWcsVector = setup.virtualCq.pollCq_v2();
+    auto maybeWcsVector = setup.virtualCq.pollCq();
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
     ASSERT_GE(numWc, 0);
@@ -1009,11 +1009,11 @@ void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
     int32_t deviceId = setup.virtualQp.getQpsRef().at(0).getDeviceId();
     sendWr.deviceKeys[deviceId] = MemoryRegionKeys{
         .lkey = setup.mr.mr()->lkey, .rkey = setup.remoteCard.rkey};
-    ASSERT_TRUE(setup.virtualQp.postSend_v2(sendWr));
+    ASSERT_TRUE(setup.virtualQp.postSend(sendWr));
 
     // poll cq and check cq
     while (true) {
-      auto maybeWcsVector = setup.virtualCq.pollCq_v2();
+      auto maybeWcsVector = setup.virtualCq.pollCq();
       ASSERT_TRUE(maybeWcsVector);
       auto numWc = maybeWcsVector->size();
       ASSERT_GE(numWc, 0);
@@ -1090,7 +1090,7 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     int32_t deviceId = setup.virtualQp.getQpsRef().at(0).getDeviceId();
     recvWr.deviceKeys[deviceId] =
         MemoryRegionKeys{.lkey = setup.mr.mr()->lkey, .rkey = 0};
-    ASSERT_TRUE(setup.virtualQp.postRecv_v2(recvWr));
+    ASSERT_TRUE(setup.virtualQp.postRecv(recvWr));
   } else if (globalRank == 1) {
     // sender
     IbvVirtualSendWr sendWr;
@@ -1102,13 +1102,13 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
     int32_t deviceId = setup.virtualQp.getQpsRef().at(0).getDeviceId();
     sendWr.deviceKeys[deviceId] =
         MemoryRegionKeys{.lkey = setup.mr.mr()->lkey, .rkey = 0};
-    ASSERT_TRUE(setup.virtualQp.postSend_v2(sendWr));
+    ASSERT_TRUE(setup.virtualQp.postSend(sendWr));
   }
 
   // poll cq and check cq
   bool stop = false;
   while (!stop) {
-    auto maybeWcsVector = setup.virtualCq.pollCq_v2();
+    auto maybeWcsVector = setup.virtualCq.pollCq();
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
     ASSERT_GE(numWc, 0);

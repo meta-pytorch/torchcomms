@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -23,8 +24,6 @@ constexpr int kNotifyBit = 31;
 constexpr uint32_t kSeqNumMask = 0xFFFFFF; // 24 bits
 constexpr int kPollCqBatchSize = 32;
 
-// Command types for coordinator routing and operations
-enum class RequestType { SEND = 0, RECV = 1, SEND_NOTIFY = 2 };
 enum class LoadBalancingScheme { SPRAY = 0, DQPLB = 1 };
 
 struct Error {
@@ -38,28 +37,25 @@ struct Error {
 
 std::ostream& operator<<(std::ostream&, Error const&);
 
-struct VirtualQpRequest {
-  RequestType type{RequestType::SEND};
-  uint64_t wrId{0};
-  uint32_t physicalQpNum{0};
-  int32_t deviceId{0};
-  uint32_t immData{0};
-  int cqIdx{0}; // CQ index from which this request originated
+// QpId uniquely identifies a physical QP using both the device ID and QP
+// number. This is necessary because different NIC devices can have QPs with the
+// same QP number, so we need both fields to uniquely identify a physical QP.
+struct QpId {
+  int32_t deviceId{-1};
+  uint32_t qpNum{0};
+
+  bool operator==(const QpId& other) const {
+    return deviceId == other.deviceId && qpNum == other.qpNum;
+  }
 };
 
-struct VirtualQpResponse {
-  uint64_t virtualWrId{0};
-  bool useDqplb{false};
-  int notifyCount{0};
-};
-
-struct VirtualCqRequest {
-  RequestType type{RequestType::SEND};
-  int virtualQpNum{-1};
-  int expectedMsgCnt{-1};
-  ibv_send_wr* sendWr{nullptr};
-  ibv_recv_wr* recvWr{nullptr};
-  bool sendExtraNotifyImm{false};
+// Hash function for QpId to enable use in hash maps
+struct QpIdHash {
+  std::size_t operator()(const QpId& id) const {
+    auto h1 = std::hash<int32_t>{}(id.deviceId);
+    auto h2 = std::hash<uint32_t>{}(id.qpNum);
+    return h1 ^ (h2 << 1);
+  }
 };
 
 } // namespace ibverbx
