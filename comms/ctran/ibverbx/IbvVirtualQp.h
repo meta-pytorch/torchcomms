@@ -168,7 +168,6 @@ class IbvVirtualQp {
   std::unordered_map<QpId, int, QpIdHash> qpNumToIdx_;
 
   int nextSendPhysicalQpIdx_{0};
-  int nextRecvPhysicalQpIdx_{0};
 
   int maxMsgCntPerQp_{
       -1}; // Maximum number of messages that can be sent on each physical QP. A
@@ -187,7 +186,7 @@ class IbvVirtualQp {
   std::optional<IbvQp> notifyQp_;
 
   // DQPLB mode specific fields and functions
-  DqplbSeqTracker dqplbSeqTracker;
+  DqplbSeqTracker dqplbSeqTracker_;
   bool dqplbReceiverInitialized_{
       false}; // flag to indicate if dqplb receiver is initialized
   inline folly::Expected<folly::Unit, Error> initializeDqplbReceiver();
@@ -712,7 +711,7 @@ inline std::pair<ibv_send_wr, ibv_sge> IbvVirtualQp::buildPhysicalSendWr(
     sendWr.opcode = pending.opcode;
     if (loadBalancingScheme_ == LoadBalancingScheme::DQPLB) {
       bool isLastFragment = (pending.offset + fragLen >= pending.length);
-      sendWr.imm_data = dqplbSeqTracker.getSendImm(isLastFragment);
+      sendWr.imm_data = dqplbSeqTracker_.getSendImm(isLastFragment);
     }
   }
 
@@ -1087,7 +1086,7 @@ IbvVirtualQp::processDataQpRecvCompletion(
     return folly::makeUnexpected(popResult.error());
   }
 
-  int notifyCount = dqplbSeqTracker.processReceivedImm(physicalWc.imm_data);
+  int notifyCount = dqplbSeqTracker_.processReceivedImm(physicalWc.imm_data);
 
   for (int i = 0; i < notifyCount; i++) {
     CHECK(recvTracker_.hasPendingCompletion()) << fmt::format(
