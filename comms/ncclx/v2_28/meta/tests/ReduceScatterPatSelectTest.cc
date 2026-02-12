@@ -19,6 +19,7 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/collectives/PatAvgHelper.h"
 #include "meta/hints/GlobalHints.h" // @manual
 #include "meta/wrapper/DataTypeStrUtils.h"
 
@@ -557,6 +558,59 @@ TEST_F(ReduceScatterPatSelectTest, SignedIntAvgWithPatSumPostDiv) {
         return sum / static_cast<int32_t>(nRanks);
       },
       kExpectAlgo);
+}
+
+/**
+ * Test: computePatAvgChannelsAndWarps scales nChannels with message size
+ *
+ * Verifies the channel-reduction logic: for small messages, fewer channels
+ * are used; for large messages, all channels are used. The threshold per
+ * channel is NCCL_MAX_NTHREADS * NCCL_SIMPLE_THREAD_THRESHOLD = 640 * 64
+ * = 40960 bytes.
+ */
+TEST_F(ReduceScatterPatSelectTest, ComputePatAvgChannelsScalesWithMsgSize) {
+  NcclCommRAII commGuard{globalRank, numRanks, localRank};
+  ncclComm_t comm = commGuard.get();
+
+  const int maxNc = comm->nChannels;
+  ASSERT_GE(maxNc, 2) << "Need at least 2 channels to test scaling";
+
+  const size_t perChannelThreshold =
+      static_cast<size_t>(NCCL_MAX_NTHREADS) * NCCL_SIMPLE_THREAD_THRESHOLD;
+  int nc = 0, nWarps = 0;
+  const int expectedWarps = NCCL_MAX_NTHREADS / WARP_SIZE;
+
+  // Tiny message (1 byte): should reduce to 1 channel
+  ncclx::computePatAvgChannelsAndWarps(comm, 1, &nc, &nWarps);
+  EXPECT_EQ(nc, 1) << "1 byte message should use 1 channel";
+  EXPECT_EQ(nWarps, expectedWarps);
+
+  // Large message (>= maxNc * threshold): should use all channels
+  size_t largeBytes = static_cast<size_t>(maxNc) * perChannelThreshold;
+  ncclx::computePatAvgChannelsAndWarps(comm, largeBytes, &nc, &nWarps);
+  EXPECT_EQ(nc, maxNc) << "Large message should use all channels";
+  EXPECT_EQ(nWarps, expectedWarps);
+
+  // Exact boundary: nBytes == N * threshold should yield N channels
+  for (int targetNc : {2, 3, 5}) {
+    if (targetNc > maxNc) {
+      continue;
+    }
+    size_t boundaryBytes = static_cast<size_t>(targetNc) * perChannelThreshold;
+    ncclx::computePatAvgChannelsAndWarps(comm, boundaryBytes, &nc, &nWarps);
+    EXPECT_EQ(nc, targetNc) << "nBytes=" << boundaryBytes << " should yield "
+                            << targetNc << " channels";
+
+    // Just below boundary should yield one fewer channel
+    ncclx::computePatAvgChannelsAndWarps(comm, boundaryBytes - 1, &nc, &nWarps);
+    EXPECT_EQ(nc, targetNc - 1)
+        << "nBytes=" << (boundaryBytes - 1) << " should yield "
+        << (targetNc - 1) << " channels";
+  }
+
+  // Zero bytes: should reduce to 1 channel
+  ncclx::computePatAvgChannelsAndWarps(comm, 0, &nc, &nWarps);
+  EXPECT_EQ(nc, 1) << "0 byte message should use 1 channel";
 }
 
 int main(int argc, char* argv[]) {

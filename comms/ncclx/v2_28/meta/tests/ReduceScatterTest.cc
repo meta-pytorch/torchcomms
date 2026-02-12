@@ -18,6 +18,7 @@
 
 #include "VerifyAlgoStatsUtil.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
+#include "meta/collectives/PatAvgHelper.h"
 #include "meta/wrapper/DataTypeStrUtils.h"
 
 struct ReduceScatterTestParams {
@@ -186,6 +187,16 @@ class ReduceScatterTest : public NcclxBaseTest {
     if (algo == NCCL_REDUCESCATTER_ALGO::orig) {
       if (!expectedAlgoSubstr.empty()) {
         algoStats_.verify(comm, "ReduceScatter", expectedAlgoSubstr);
+      }
+      // Verify nChannels for PAT AVG: the actual nChannels used by the
+      // collective should match what computePatAvgChannelsAndWarps computes.
+      if (op == ncclAvg && expectedAlgoSubstr == "PAT") {
+        int expectedNc = 0, expectedNWarps = 0;
+        size_t nBytes = count * numRanks * elemSize;
+        ncclx::computePatAvgChannelsAndWarps(
+            comm, nBytes, &expectedNc, &expectedNWarps);
+        std::string expectedAlgoFull = fmt::format("SIMPLE_PAT_{}", expectedNc);
+        algoStats_.verify(comm, "ReduceScatter", expectedAlgoFull);
       }
       algoStats_.dump(comm, "ReduceScatter");
     }
