@@ -71,7 +71,7 @@ if [ -n "$CUDA_VERSION" ]; then
     if [ -n "$TORCH_VERSION" ]; then
       pip install --pre torch=="${TORCH_VERSION}" --index-url "$INDEX_URL"
     else
-      pip install --pre torch torchvision torchaudio --index-url "$INDEX_URL"
+      pip install --pre torch --index-url "$INDEX_URL"
     fi
   else
     # Stable with CUDA - use PyTorch wheel index
@@ -79,7 +79,7 @@ if [ -n "$CUDA_VERSION" ]; then
     if [ -n "$TORCH_VERSION" ]; then
       pip install torch=="${TORCH_VERSION}" --index-url "$INDEX_URL"
     else
-      pip install torch torchvision torchaudio --index-url "$INDEX_URL"
+      pip install torch --index-url "$INDEX_URL"
     fi
   fi
 else
