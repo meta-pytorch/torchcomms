@@ -483,7 +483,7 @@ int CommStateX::gRank(int rank) const {
 std::string CommStateX::gPid(int rank) const {
   CHECK_TOPO_AND_SET_RANK(rank, rank_, rankStates_);
   return rankStates_.at(rank).host + ":" +
-      std::to_string(rankStates_.at(rank).pid);
+      std::to_string(rankStates_.at(rank).pid) + ":" + std::to_string(rank);
 }
 
 std::string CommStateX::dc(int rank) const {
