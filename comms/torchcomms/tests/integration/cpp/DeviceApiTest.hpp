@@ -49,6 +49,10 @@ class DeviceApiTest : public ::testing::Test {
   // Device-initiated RMA test - uses CUDA kernel to perform put
   void testDevicePut(int count, at::ScalarType dtype);
 
+  // GIN atomicAdd test - uses CUDA kernel to perform remote atomic
+  // fetch-and-add
+  void testGinAtomicAdd();
+
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;

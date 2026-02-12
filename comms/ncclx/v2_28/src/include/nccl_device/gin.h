@@ -131,6 +131,22 @@ struct ncclGin_BackendMask {
     cuda::thread_scope expected_scope = cuda::thread_scope_device
   ) const;
 
+  // Performs a remote atomic fetch-and-add on a uint64_t in the destination window.
+  // The value at dstWnd[dstOffset] on the peer is atomically incremented by `value`.
+  // This uses RDMA OPCODE_ATOMIC_FA under the hood (same mechanism as signal).
+  template<
+    typename Coop = ncclCoopThread,
+    typename DescriptorSmem = ncclGin_None
+  >
+  NCCL_DEVICE_INLINE void atomicAdd(
+    ncclTeam, int peer,
+    ncclWindow_t dstWnd, size_t dstOffset, uint64_t value,
+    Coop coop = ncclCoopThread{},
+    DescriptorSmem descriptor = ncclGin_None{},
+    cuda::thread_scope alreadyReleased = cuda::thread_scope_thread,
+    cuda::thread_scope expected_scope = cuda::thread_scope_device
+  ) const;
+
   template<typename RemoteAction,
            typename Coop = ncclCoopThread,
            typename DescriptorSmem = ncclGin_None>
