@@ -110,6 +110,8 @@ class CtranMapper {
 
   DevMemType segmentType(void* segHdl);
 
+  const void* segmentBuf(void* segHdl);
+
   /* Deregister a dynamic registration.
    * Input arguments:
    *   - regHdl: a handle of the dynamic registration
