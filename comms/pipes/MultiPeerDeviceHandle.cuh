@@ -4,8 +4,9 @@
 
 #include <cstdint>
 
-#include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
+
+#include "comms/pipes/DeviceSpan.cuh"
 
 // When compiling with CUDA, include full IBGDA definition for device methods.
 // When compiling with host-only compiler, forward declaration is sufficient.
@@ -59,8 +60,7 @@ struct MultiPeerDeviceHandle {
   // Global rank → index into ibgdaTransports (-1 if not IBGDA peer)
   DeviceSpan<int> globalToIbgdaIndex;
 
-  __host__ __device__ MultiPeerDeviceHandle() = default;
-
+#ifdef __CUDACC__
   /** @return Transport type for the given global rank. */
   __device__ __forceinline__ TransportType get_type(int rank) const {
     return typePerRank[rank];
