@@ -32,7 +32,8 @@ IbvVirtualQp::IbvVirtualQp(
       nextVirtualQpNum_.fetch_add(1); // Assign unique virtual QP number
 
   for (int i = 0; i < physicalQps_.size(); i++) {
-    qpNumToIdx_[physicalQps_.at(i).qp()->qp_num] = i;
+    qpNumToIdx_[QpId{
+        physicalQps_.at(i).getDeviceId(), physicalQps_.at(i).qp()->qp_num}] = i;
   }
 
   // Calculate the number of unique devices that the physical QPs span
