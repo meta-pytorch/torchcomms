@@ -250,6 +250,35 @@ TEST_F(ReduceScatterPatSelectTest, BuiltInAvgWithPatAvgWorks) {
 }
 
 /**
+ * Test: ncclInt8 signed division correctness with PAT AVG
+ *
+ * Regression test for signed division bug where small unsigned types
+ * (uint8_t, used as kernel type for ncclInt8) were zero-extended instead
+ * of sign-extended when widening for signed division. This caused
+ * incorrect results for negative int8 values.
+ */
+TEST_F(ReduceScatterPatSelectTest, Int8SignedDivisionCorrectness) {
+  constexpr bool kUsePatAvg = true;
+  const std::string kExpectAlgo = "PAT";
+  // All ranks send -10. AVG(-10, -10, ...) = -10.
+  // The value is chosen so that the sum (-10 * nRanks) fits in int8 range
+  // for nRanks <= 12, avoiding intermediate overflow in uint8 reduction.
+  // With the sign-extension bug, uint8_t(246) [=-10 in two's complement]
+  // would be zero-extended to int32_t(246), giving 246/nRanks instead of -10.
+  run<int8_t>(
+      ncclInt8,
+      ncclAvg,
+      kUsePatAvg,
+      [](int /*nRanks*/, int /*rank*/, int /*chunk*/) -> int8_t {
+        return static_cast<int8_t>(-10);
+      },
+      [](int /*nRanks*/, int /*rank*/) -> int8_t {
+        return static_cast<int8_t>(-10);
+      },
+      kExpectAlgo);
+}
+
+/**
  * Parameterized test for PAT algorithm selection with different settings.
  *
  * Tests PAT algorithm selection with:
