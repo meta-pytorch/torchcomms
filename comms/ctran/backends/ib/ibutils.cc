@@ -59,8 +59,9 @@ commResult_t IbUtils::pollForAsyncEvent(
     ret = verbsPtr->ibv_poll_async_fd(
         &fdSet, 1, NCCL_CTRAN_IB_ASYNC_EVENT_POLL_INTERVAL_MS);
     if (NCCL_IB_ASYNC_EVENT_LOOP == NCCL_IB_ASYNC_EVENT_LOOP::ctran) {
-      stopRequested =
-          CtranIbSingleton::getInstance().stopIbAsyncEventHandlerFlag;
+      auto singleton = CtranIbSingleton::getInstance();
+      CHECK_VALID_IB_SINGLETON(singleton);
+      stopRequested = singleton->stopIbAsyncEventHandlerFlag;
     }
     linkDown = linkDownTimeout();
   } while (ret == 0 && !stopRequested && !linkDown);

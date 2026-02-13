@@ -37,8 +37,9 @@ class CtranTest : public NcclxBaseTest, public CtranBaseTest {
 
   void verifyPostCommResourceLeak() {
     // Check that all local/remote handles have been deregistered by CommAbort
-    CtranIbSingleton& s = CtranIbSingleton::getInstance();
-    EXPECT_EQ(s.getActiveRegCount(), 0);
+    auto s = CtranIbSingleton::getInstance();
+    CHECK_VALID_IB_SINGLETON(s);
+    EXPECT_EQ(s->getActiveRegCount(), 0);
     EXPECT_EQ(ctran::utils::getActiveIpcMemCount(), 0);
     EXPECT_EQ(ctran::utils::getActiveIpcRemMemCount(), 0);
   }
@@ -518,11 +519,12 @@ TEST_F(CtranTest, CommAbortScopeNone) {
   res = ncclCommAbort(comm);
   ASSERT_EQ(res, ncclSuccess);
 
-  CtranIbSingleton& s = CtranIbSingleton::getInstance();
+  auto s = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(s);
 
   testing::internal::CaptureStdout();
   testing::internal::CaptureStderr();
-  ASSERT_EQ(s.destroy(), ncclSuccess);
+  ASSERT_EQ(s->destroy(), ncclSuccess);
 
   // Except no warning nor error message is printed
   std::string output = testing::internal::GetCapturedStdout();

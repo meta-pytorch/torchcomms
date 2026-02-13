@@ -65,8 +65,9 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
   }
 
   size_t getIbRegCount() {
-    CtranIbSingleton& s = CtranIbSingleton::getInstance();
-    return s.getActiveRegCount();
+    auto s = CtranIbSingleton::getInstance();
+    CHECK_VALID_IB_SINGLETON(s);
+    return s->getActiveRegCount();
   }
 
   constexpr static int kSockSyncLen = 16;
