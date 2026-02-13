@@ -273,9 +273,8 @@ class IbvVirtualQp {
 
   // Pops and validates the front entry of a physical WR status queue,
   // returning the associated internal (virtual) WR ID.
-  template <typename PhysicalWrStatusT>
   inline folly::Expected<uint64_t, Error> popPhysicalQueueStatus(
-      std::deque<PhysicalWrStatusT>& queStatus,
+      std::deque<IbvQp::PhysicalWrStatus>& queStatus,
       uint64_t expectedPhysicalWrId,
       const char* queueName);
 
@@ -898,12 +897,11 @@ inline IbvVirtualWc IbvVirtualQp::buildVirtualWc(
 }
 
 // ============================================================
-// Physical Queue Status Helper (templated)
+// Physical Queue Status Helper
 // ============================================================
 
-template <typename PhysicalWrStatusT>
 inline folly::Expected<uint64_t, Error> IbvVirtualQp::popPhysicalQueueStatus(
-    std::deque<PhysicalWrStatusT>& queStatus,
+    std::deque<IbvQp::PhysicalWrStatus>& queStatus,
     uint64_t expectedPhysicalWrId,
     const char* queueName) {
   CHECK(!queStatus.empty()) << fmt::format(
