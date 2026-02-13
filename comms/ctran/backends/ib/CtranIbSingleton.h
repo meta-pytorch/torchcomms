@@ -3,11 +3,15 @@
 #ifndef CTRAN_IB_SINGLETON_H_
 #define CTRAN_IB_SINGLETON_H_
 
+#include <memory>
 #include <vector>
+
+#include <folly/Singleton.h>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/backends/ib/ibutils.h"
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/Checks.h"
 #include "comms/utils/commSpecs.h"
 
 /**
@@ -17,7 +21,11 @@
 class CtranIbSingleton {
  public:
   CtranIbSingleton(const CtranIbSingleton& obj) = delete;
-  static CtranIbSingleton& getInstance();
+  CtranIbSingleton& operator=(const CtranIbSingleton&) = delete;
+
+  // Returns a shared_ptr to the singleton instance. Using shared_ptr ensures
+  // that callers who hold a reference will keep the singleton alive.
+  static std::shared_ptr<CtranIbSingleton> getInstance();
   std::vector<ibverbx::IbvDevice> ibvDevices;
 
   const ibverbx::IbvPd& getIbvPd(size_t idx) const;
@@ -60,6 +68,9 @@ class CtranIbSingleton {
   std::unique_ptr<VerbsUtils> verbsUtils = std::make_unique<VerbsUtils>();
 
  private:
+  // Allow folly::Singleton to construct the singleton
+  friend class folly::Singleton<CtranIbSingleton>;
+
   CtranIbSingleton();
   ~CtranIbSingleton();
   std::vector<ibverbx::IbvPd> ibvPds_;
@@ -77,5 +88,11 @@ class CtranIbSingleton {
   // COMM_ABORT_SCOPE setting
   bool destroySkipped_ = false;
 };
+
+static inline void CHECK_VALID_IB_SINGLETON(
+    std::shared_ptr<CtranIbSingleton> singleton) {
+  FB_CHECKABORT(
+      singleton != nullptr, "Failed to get CtranIbSingleton instance");
+}
 
 #endif
