@@ -9,6 +9,7 @@
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/Transport.cuh"
 #include "comms/pipes/collectives/BroadcastFlat.cuh"
+#include "comms/pipes/collectives/BroadcastRing.cuh"
 
 namespace comms::pipes::collectives {
 
