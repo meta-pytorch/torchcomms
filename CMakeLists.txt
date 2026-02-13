@@ -30,6 +30,15 @@ else()
 endif()
 message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
 
+# Fetch nlohmann/json
+include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # Find Python and PyTorch
 find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
 
@@ -88,7 +97,7 @@ target_include_directories(torchcomms PRIVATE
 )
 target_compile_features(torchcomms PRIVATE cxx_std_20)
 target_link_directories(torchcomms PRIVATE ${CONDA_LIB})
-target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES})
+target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json)
 if(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms PRIVATE
         "-lglog"

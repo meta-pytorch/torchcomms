@@ -44,6 +44,9 @@ _load_libtorchcomms()
 from torchcomms._comms import *  # noqa: E402, F401, F403
 import torchcomms.objcol as objcol  # noqa: E402, F401, F403
 
+# Import FlightRecorderHook from the hooks module for backward compatibility
+from torchcomms.hooks import FlightRecorderHook  # noqa: E402, F401
+
 if torch_compile_supported_and_enabled:
     # Import collectives first to ensure all operations are registered
     # This must happen before patch_torchcomm() so that window operations
@@ -64,6 +67,7 @@ __all__ = [  # noqa: F405
     "P2POp",
     "CommOptions",
     "TorchCommWindow",
+    "FlightRecorderHook",
 ]
 
 for name in __all__:
