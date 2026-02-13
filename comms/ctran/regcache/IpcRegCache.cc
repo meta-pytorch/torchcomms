@@ -2,8 +2,10 @@
 
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include <folly/Singleton.h>
+#include "comms/ctran/bootstrap/Socket.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
+#include "comms/ctran/utils/Utils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
 
 // Initialize static unique ID counter
@@ -317,8 +319,15 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
 
   // Start the server with a callback that handles IPC requests
   // The peer sends the whole IpcReq, and we check the type to dispatch
+  auto maybeAddr = ctran::bootstrap::getInterfaceAddress(
+      NCCL_SOCKET_IFNAME, NCCL_SOCKET_IPADDR_PREFIX);
+  if (maybeAddr.hasError()) {
+    CLOGF(WARN, "CTRAN-REGCACHE: No socket interfaces found");
+    throw ::ctran::utils::Exception(
+        "CTRAN-IB : No socket interfaces found", commSystemError);
+  }
   auto serverAddrFuture = asyncServerSocket_->start(
-      folly::SocketAddress("::1", 0),
+      folly::SocketAddress(maybeAddr.value(), 0),
       sizeof(ctran::regcache::IpcReq),
       [this](std::unique_ptr<folly::IOBuf> buf) {
         // Extract the IpcReq from the received buffer
@@ -353,11 +362,11 @@ commResult_t ctran::IpcRegCache::initAsyncSocket() {
                 peerId,
                 ipcReq.desc.toString());
 
-            // TODO: currently notifyRemoteIpcExport shouldn't be used, we have
-            // to add the correct cudaDev for importMem. When receives
-            // IpcReqType::kDesc, throw exceptions
-            FB_COMMCHECKTHROW_EX_NOCOMM(commInvalidUsage);
-
+            // FIXME: currently notifyRemoteIpcExport shouldn't be used, since
+            // the cudaDev is not passed in
+            CLOGF(
+                WARN,
+                "CTRAN-REGCACHE: unsafe path to importMem with cudaDev 0 via async-socket");
             FB_COMMCHECKIGNORE(
                 importMem(peerId, ipcReq.desc, 0, &buf, &remKey));
             break;
