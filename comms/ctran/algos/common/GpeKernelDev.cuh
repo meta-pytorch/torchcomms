@@ -24,12 +24,7 @@ static inline __device__ void devLoadAbortFlags(
   kernelFlag = flag;
   kernelDoAbort = false;
 }
-static inline __device__ bool KernelTestHostAbort(volatile int* flag);
-
 static inline __device__ void KernelStartGpe(volatile int* flag) {
-  if (KernelTestHostAbort(flag)) {
-    return;
-  }
   comms::device::st_volatile_global(flag, KERNEL_STARTED);
 }
 
