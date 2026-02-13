@@ -263,6 +263,11 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   std::unique_ptr<RemovableHandle> registerPreHook(PreHook preHook);
   std::unique_ptr<RemovableHandle> registerPostHook(PostHook postHook);
 
+  // Abort hook - called before aborting when a collective times out or fails.
+  // This allows users to capture debug information before the abort.
+  using AbortHook = TorchCommBackend::AbortHook;
+  std::unique_ptr<RemovableHandle> registerAbortHook(AbortHook hook);
+
   // Disable copy and move semantics
   TorchComm(const TorchComm&) = delete;
   TorchComm& operator=(const TorchComm&) = delete;

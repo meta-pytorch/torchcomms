@@ -814,6 +814,10 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
   auto post_hook_handle = comm->registerPostHook(
       [this](const TorchComm::PostHookArgs& args) { this->onPostHook(args); });
 
+  // Register abort hook - called before aborting to dump flight recorder data
+  int rank = comm->getRank();
+  comm->registerAbortHook([this, rank]() { this->dump_file(rank); });
+
   // Store registration with handles for proper cleanup
   registrations_.emplace_back(
       comm,

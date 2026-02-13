@@ -141,6 +141,11 @@ class TorchCommDummy : public TorchCommBackend {
   const CommOptions& getOptions() const override;
   const at::Device& getDevice() const override;
 
+  // Test helper to trigger abort hooks (for testing purposes only)
+  void triggerAbort() {
+    runAbortHooks();
+  }
+
  private:
   bool initialized_;
   at::Device device_;
