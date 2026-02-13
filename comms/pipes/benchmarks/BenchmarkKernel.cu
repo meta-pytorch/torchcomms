@@ -180,4 +180,15 @@ __global__ void broadcastFlatKernel(
   comms::pipes::collectives::broadcast_flat(
       buff_d, myRank, rootRank, transports, nbytes);
 }
+
+__global__ void broadcastBinomialTreeKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast_binomial_tree(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
 } // namespace comms::pipes::benchmark
