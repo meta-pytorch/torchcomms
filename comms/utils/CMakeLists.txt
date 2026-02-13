@@ -4,6 +4,7 @@ find_package(CUDA REQUIRED)
 
 file(GLOB_RECURSE UTILS_SOURCES
     "*.cc"
+    "*.cpp"
 )
 list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/tests/.*")
 
