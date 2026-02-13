@@ -67,6 +67,7 @@ class TorchWork : public c10::intrusive_ptr_target {
   }
 
   friend class TorchComm;
+  friend class WorkWrapper;
 
   void setCallback(std::function<void()> callback) {
     callback_ = std::move(callback);

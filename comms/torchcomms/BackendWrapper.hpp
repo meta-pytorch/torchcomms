@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #pragma once
 
+#include <ATen/core/ivalue.h> // @manual=//caffe2:ATen-core
 #include <torch/csrc/distributed/c10d/Backend.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/Work.hpp> // @manual=//caffe2:torch-cpp-cpu
@@ -13,7 +14,9 @@ namespace torch::comms {
 
 class WorkWrapper : public c10d::Work {
  public:
-  explicit WorkWrapper(c10::intrusive_ptr<TorchWork> work);
+  explicit WorkWrapper(
+      c10::intrusive_ptr<TorchWork> work,
+      std::vector<at::Tensor> outputTensors = {});
   ~WorkWrapper() override = default;
 
   bool isCompleted() override;
@@ -22,10 +25,13 @@ class WorkWrapper : public c10d::Work {
   void synchronize() override;
   bool wait(std::chrono::milliseconds timeout) override;
   std::vector<at::Tensor> result() override;
+  c10::intrusive_ptr<c10::ivalue::Future> getFuture() override;
 
  private:
   friend class BackendWrapper;
   c10::intrusive_ptr<TorchWork> work_;
+  c10::intrusive_ptr<c10::ivalue::Future> future_;
+  std::vector<at::Tensor> outputTensors_;
 };
 
 using c10d::kUnsetTimeout;
