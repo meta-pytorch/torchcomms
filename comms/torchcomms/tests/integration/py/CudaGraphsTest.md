@@ -89,3 +89,13 @@ Tests complex graph replay (using `create_capture`) running concurrently with no
 | `test_graph_parallel_with_nongraphable_collective` | Complex graph replay concurrently with a non-graphable all_reduce on a third comm (comms 0,1 for graph, comm 2 for non-graph); tests comm resource isolation under concurrency |
 | `test_multiple_graphs_parallel_with_nongraphable` | Two complex graph replays plus a non-graphable matmul, all running concurrently on 3 streams; tests high stream concurrency with intra-graph streams nested inside |
 | `test_graph_then_nongraphable_event_sync` | Complex graph replay followed by non-graphable work that reads the graph's allreduce output; synchronized via CUDA events (not full device sync), verifying event-based producer-consumer ordering between graph and non-graph work |
+
+### `TestGraphLifecycle`
+
+Tests graph creation, destruction, and recreation — verifying that comms can safely participate in multiple graph lifecycles with varying topologies and that graph capture and replay can coexist concurrently.
+
+| Test | Edge case |
+|------|-----------|
+| `test_graph_destroy_and_recreate` | Destroy a graph and recreate it with the same comm across two full capture-replay cycles (sync and async variants); verifies comm state is clean after graph destruction |
+| `test_graph_recreate_with_different_body` | Cycle 1: simple allreduce with comm0 only; cycle 2: complex body (allreduce → sum → allgather via `create_capture`) with comm0 and comm1; verifies comms can participate in graphs with different topologies across their lifetime |
+| `test_graph_replay_concurrent_with_graph_capture` | Graph1 replay (allreduce → sum → allgather on comm0/comm1) on a side stream runs concurrently with graph2 capture (same pattern on comm2/comm3); verifies graph capture doesn't interfere with ongoing replays, then replays both graphs and re-replays graph1 to confirm all survive |
