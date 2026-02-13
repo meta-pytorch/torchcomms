@@ -25,26 +25,38 @@ struct RedOpArg<FuncPatSumPostDiv<T>> {
 template <typename T>
 struct FuncPatSumPostDiv {
   using EltType = T;
+  using UintType =
+      typename std::conditional<sizeof(T) == 8, uint64_t, uint32_t>::type;
   uint32_t divisor;
   uint32_t isSigned;
+  UintType recip;
 
   __device__ __forceinline__ FuncPatSumPostDiv(uint64_t opArg = 0) {
     isSigned = opArg & 1;
     divisor = opArg >> 1;
+    if constexpr (std::is_integral_v<T>) {
+      recip = UintType(-1) / divisor;
+    }
   }
 
-  // Division helper - uses signed division when the original dtype is signed
+  // Division helper - uses reciprocal multiplication for integer types,
+  // matching FuncSumPostDiv's approach
   __device__ __forceinline__ T divide(T x) const {
     if constexpr (std::is_integral_v<T>) {
-      if (isSigned) {
-        // Use at least 32-bit signed type to avoid overflow for small T (e.g.,
-        // uint8_t with nRanks > 127)
-        using WideSignedT = typename std::conditional<
-            sizeof(T) < 4,
-            int32_t,
-            typename std::make_signed<T>::type>::type;
-        return T(WideSignedT(x) / WideSignedT(divisor));
+      bool xneg = isSigned && (x & ~(T(-1) >> 1));
+      // Compute abs(x):
+      // T(-x) vs -T(x) is critical. We have to negate then truncate the bits.
+      // Consider if we are doing signed 8-bit types, thus T=uint8_t. The value
+      // -1 is encoded as 0xff. -T(0xff) when promoted to 32-bit (which is
+      // implicit by compiler) gives 0xffffff01, but T(-0xff) is 0x1, and that
+      // is the abs value we want.
+      UintType xabs = xneg ? T(-x) : x;
+      UintType q =
+          sizeof(T) == 8 ? __umul64hi(xabs, recip) : __umulhi(xabs, recip);
+      if (xabs - q * divisor >= divisor) {
+        q += 1;
       }
+      return xneg ? -T(q) : T(q);
     }
     return x / T(divisor);
   }
