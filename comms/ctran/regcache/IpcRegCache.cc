@@ -390,11 +390,15 @@ void ctran::IpcRegCache::stopAsyncSocket() {
   if (asyncServerSocket_) {
     auto fut = asyncServerSocket_->stop();
     std::move(fut).get();
-    asyncServerSocket_.reset();
     CLOGF_SUBSYS(INFO, INIT, "CTRAN-REGCACHE: AsyncSocket server stopped");
   }
 
+  // Destroy the EVB thread BEFORE asyncServerSocket_ to drain pending
+  // callbacks (e.g. RemoteAcceptor cleanup) while the AcceptCallback is
+  // still alive, avoiding a use-after-free SIGSEGV.
   if (asyncSocketEvbThread_) {
     asyncSocketEvbThread_.reset();
   }
+
+  asyncServerSocket_.reset();
 }
