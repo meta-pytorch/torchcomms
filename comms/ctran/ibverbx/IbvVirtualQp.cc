@@ -48,16 +48,7 @@ IbvVirtualQp::IbvVirtualQp(
 
   isMultiQp_ = (physicalQps_.size() > 1);
 
-  // Register the virtual QP and all its mappings with the coordinator
-  auto coordinator = Coordinator::getCoordinator();
-  CHECK(coordinator)
-      << "Coordinator should not be nullptr during IbvVirtualQp construction!";
-
-  // Use the consolidated registration API
-  coordinator->registerVirtualQpWithVirtualCqMappings(
-      this, virtualCq->getVirtualCqNum(), virtualCq->getVirtualCqNum());
-
-  // Register with VirtualCq (v2 path, dual registration)
+  // Register with VirtualCq
   registerWithVirtualCq();
 }
 
@@ -92,8 +83,6 @@ IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
       recvTracker_(std::move(other.recvTracker_)),
       pendingSendNotifyQue_(std::move(other.pendingSendNotifyQue_)),
       pendingRecvNotifyQue_(std::move(other.pendingRecvNotifyQue_)),
-      pendingSendVirtualWrQue_(std::move(other.pendingSendVirtualWrQue_)),
-      pendingRecvVirtualWrQue_(std::move(other.pendingRecvVirtualWrQue_)),
       virtualQpNum_(std::move(other.virtualQpNum_)),
       physicalQps_(std::move(other.physicalQps_)),
       qpNumToIdx_(std::move(other.qpNumToIdx_)),
@@ -104,20 +93,12 @@ IbvVirtualQp::IbvVirtualQp(IbvVirtualQp&& other) noexcept
       nextPhysicalWrId_(std::move(other.nextPhysicalWrId_)),
       deviceCnt_(std::move(other.deviceCnt_)),
       loadBalancingScheme_(std::move(other.loadBalancingScheme_)),
-      pendingSendNotifyVirtualWrQue_(
-          std::move(other.pendingSendNotifyVirtualWrQue_)),
       notifyQp_(std::move(other.notifyQp_)),
       dqplbSeqTracker(std::move(other.dqplbSeqTracker)),
       dqplbReceiverInitialized_(std::move(other.dqplbReceiverInitialized_)) {
   other.virtualCq_ = nullptr; // Prevent double-unregister
 
-  // Update coordinator pointer mapping for this virtual QP after move
-  auto coordinator = Coordinator::getCoordinator();
-  CHECK(coordinator)
-      << "Coordinator should not be nullptr during IbvVirtualQp move construction!";
-  coordinator->updateVirtualQpPointer(virtualQpNum_, this);
-
-  // Re-register with VirtualCq (v2 path)
+  // Re-register with VirtualCq
   registerWithVirtualCq();
 }
 
@@ -135,12 +116,8 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
     maxMsgSize_ = std::move(other.maxMsgSize_);
     deviceCnt_ = std::move(other.deviceCnt_);
     loadBalancingScheme_ = std::move(other.loadBalancingScheme_);
-    pendingSendVirtualWrQue_ = std::move(other.pendingSendVirtualWrQue_);
-    pendingRecvVirtualWrQue_ = std::move(other.pendingRecvVirtualWrQue_);
     virtualQpNum_ = std::move(other.virtualQpNum_);
     nextPhysicalWrId_ = std::move(other.nextPhysicalWrId_);
-    pendingSendNotifyVirtualWrQue_ =
-        std::move(other.pendingSendNotifyVirtualWrQue_);
     dqplbSeqTracker = std::move(other.dqplbSeqTracker);
     dqplbReceiverInitialized_ = std::move(other.dqplbReceiverInitialized_);
     virtualCq_ = other.virtualCq_;
@@ -152,28 +129,15 @@ IbvVirtualQp& IbvVirtualQp::operator=(IbvVirtualQp&& other) noexcept {
 
     other.virtualCq_ = nullptr; // Prevent double-unregister
 
-    // Update coordinator pointer mapping for this virtual QP after move
-    auto coordinator = Coordinator::getCoordinator();
-    CHECK(coordinator)
-        << "Coordinator should not be nullptr during IbvVirtualQp move assignment!";
-    coordinator->updateVirtualQpPointer(virtualQpNum_, this);
-
-    // Re-register with VirtualCq (v2 path)
+    // Re-register with VirtualCq
     registerWithVirtualCq();
   }
   return *this;
 }
 
 IbvVirtualQp::~IbvVirtualQp() {
-  // Unregister from VirtualCq (v2 path)
+  // Unregister from VirtualCq
   unregisterFromVirtualCq();
-
-  // Always call unregister - the coordinator will check if the pointer matches
-  // and do nothing if the object was moved
-  auto coordinator = Coordinator::getCoordinator();
-  CHECK(coordinator)
-      << "Coordinator should not be nullptr during IbvVirtualQp destruction!";
-  coordinator->unregisterVirtualQp(virtualQpNum_, this);
 }
 
 void IbvVirtualQp::registerWithVirtualCq() {
