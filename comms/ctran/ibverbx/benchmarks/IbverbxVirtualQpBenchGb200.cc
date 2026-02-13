@@ -457,22 +457,16 @@ struct BenchmarkSetup {
   static void pollCqUntilCompletion(
       IbvVirtualCq& cq,
       const std::string& cqName) {
-    int numEntries = 1;
     bool stop = false;
     while (!stop) {
-      auto maybeWcsVector = cq.pollCq(numEntries);
+      auto maybeWcsVector = cq.pollCq();
       auto numWc = maybeWcsVector->size();
       if (numWc == 0) {
         continue;
       } else if (numWc == 1) {
         const auto& wc = maybeWcsVector->at(0);
         if (wc.status != IBV_WC_SUCCESS) {
-          XLOGF(
-              FATAL,
-              "{} WC failed with status {}, vendor_err={}",
-              cqName,
-              wc.status,
-              wc.vendor_err);
+          XLOGF(FATAL, "{} WC failed with status {}", cqName, wc.status);
           return;
         }
         stop = true;
@@ -504,26 +498,20 @@ static void BM_Ibverbx_VirtualQp_RdmaRead(benchmark::State& state) {
     BenchmarkSetup setup(bufferSize, cudaDev0, cudaDev1, nicDev0, nicDev1);
 
     // Construct send WRs
-    int wr_id = 0;
-    ibv_sge senderSgList = {
-        .addr = (uint64_t)setup.recvBuffer,
-        .length = static_cast<uint32_t>(bufferSize),
-        .lkey = setup.recvMrs.at(0)->mr()->lkey};
-    ibv_send_wr sendWr = {
-        .wr_id = static_cast<uint64_t>(wr_id),
-        .next = nullptr,
-        .sg_list = &senderSgList,
-        .num_sge = 1,
-        .opcode = IBV_WR_RDMA_READ,
-        .send_flags = IBV_SEND_SIGNALED};
-    sendWr.wr.rdma.remote_addr = (uint64_t)setup.sendBuffer;
-    sendWr.wr.rdma.rkey = setup.sendMrs.at(0)->mr()->rkey;
-    ibv_send_wr sendWrBad{};
+    IbvVirtualSendWr sendWr;
+    sendWr.wrId = 0;
+    sendWr.localAddr = setup.recvBuffer;
+    sendWr.length = static_cast<uint32_t>(bufferSize);
+    sendWr.remoteAddr = (uint64_t)setup.sendBuffer;
+    sendWr.opcode = IBV_WR_RDMA_READ;
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    for (const auto& [deviceId, keys] : setup.receiverDeviceIdToKeys) {
+      sendWr.deviceKeys[deviceId] = keys;
+    }
 
     // Benchmark the postSend operation
     for (auto _ : state) {
-      setup.receiver->qp.postSend(
-          &sendWr, &sendWrBad, setup.receiverDeviceIdToKeys);
+      setup.receiver->qp.postSend(sendWr);
 
       // Poll receiver cq until completion
       BenchmarkSetup::pollCqUntilCompletion(setup.receiver->cq, "Receiver");
@@ -550,28 +538,20 @@ static void BM_Ibverbx_VirtualQp_RdmaWrite(benchmark::State& state) {
     BenchmarkSetup setup(bufferSize, cudaDev0, cudaDev1, nicDev0, nicDev1);
 
     // Construct send WRs
-    int wr_id = 0;
-    ibv_sge senderSgList = {
-        .addr = (uint64_t)setup.sendBuffer,
-        .length = static_cast<uint32_t>(bufferSize),
-        .lkey = setup.sendMrs.at(0)->mr()->lkey};
-
-    ibv_send_wr sendWr = {
-        .wr_id = static_cast<uint64_t>(wr_id),
-        .next = nullptr,
-        .sg_list = &senderSgList,
-        .num_sge = 1,
-        .opcode = IBV_WR_RDMA_WRITE,
-        .send_flags = IBV_SEND_SIGNALED};
-    sendWr.wr.rdma.remote_addr = (uint64_t)setup.recvBuffer;
-    sendWr.wr.rdma.rkey = setup.recvMrs.at(0)->mr()->rkey;
-
-    ibv_send_wr sendWrBad{};
+    IbvVirtualSendWr sendWr;
+    sendWr.wrId = 0;
+    sendWr.localAddr = setup.sendBuffer;
+    sendWr.length = static_cast<uint32_t>(bufferSize);
+    sendWr.remoteAddr = (uint64_t)setup.recvBuffer;
+    sendWr.opcode = IBV_WR_RDMA_WRITE;
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    for (const auto& [deviceId, keys] : setup.senderDeviceIdToKeys) {
+      sendWr.deviceKeys[deviceId] = keys;
+    }
 
     // Benchmark the postSend operation
     for (auto _ : state) {
-      auto postSendResult = setup.sender->qp.postSend(
-          &sendWr, &sendWrBad, setup.senderDeviceIdToKeys);
+      auto postSendResult = setup.sender->qp.postSend(sendWr);
       BenchmarkSetup::pollCqUntilCompletion(setup.sender->cq, "Sender");
     }
 
@@ -599,37 +579,27 @@ static void BM_Ibverbx_VirtualQp_RdmaWriteWithImm(
         bufferSize, cudaDev0, cudaDev1, nicDev0, nicDev1, loadBalancingScheme);
 
     // Construct send WRs
-    int wr_id = 0;
     uint32_t imm_data = static_cast<uint32_t>(bufferSize);
-    ibv_sge senderSgList = {
-        .addr = (uint64_t)setup.sendBuffer,
-        .length = static_cast<uint32_t>(bufferSize),
-        .lkey = setup.sendMrs.at(0)->mr()->lkey};
-    ibv_send_wr sendWr = {
-        .wr_id = static_cast<uint64_t>(wr_id),
-        .next = nullptr,
-        .sg_list = &senderSgList,
-        .num_sge = 1,
-        .opcode = IBV_WR_RDMA_WRITE_WITH_IMM,
-        .send_flags = IBV_SEND_SIGNALED};
-    sendWr.wr.rdma.remote_addr = (uint64_t)setup.recvBuffer;
-    sendWr.wr.rdma.rkey = setup.recvMrs.at(0)->mr()->rkey;
-    sendWr.imm_data = imm_data;
-    ibv_send_wr sendWrBad{};
+    IbvVirtualSendWr sendWr;
+    sendWr.wrId = 0;
+    sendWr.localAddr = setup.sendBuffer;
+    sendWr.length = static_cast<uint32_t>(bufferSize);
+    sendWr.remoteAddr = (uint64_t)setup.recvBuffer;
+    sendWr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    sendWr.immData = imm_data;
+    for (const auto& [deviceId, keys] : setup.senderDeviceIdToKeys) {
+      sendWr.deviceKeys[deviceId] = keys;
+    }
 
     // Construct recv WRs
-    ibv_sge sgList = {};
-    ibv_recv_wr recvWr = {
-        .wr_id = static_cast<uint64_t>(wr_id),
-        .sg_list = &sgList,
-        .num_sge = 0};
-    ibv_recv_wr recvWrBad{};
+    IbvVirtualRecvWr recvWr;
+    recvWr.wrId = 0;
 
     // Benchmark the postSend operation
     for (auto _ : state) {
-      setup.receiver->qp.postRecv(&recvWr, &recvWrBad);
-      setup.sender->qp.postSend(
-          &sendWr, &sendWrBad, setup.senderDeviceIdToKeys);
+      setup.receiver->qp.postRecv(recvWr);
+      setup.sender->qp.postSend(sendWr);
 
       // Poll sender and receiver cq until completion
       BenchmarkSetup::pollCqUntilCompletion(setup.sender->cq, "Sender");

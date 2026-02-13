@@ -740,6 +740,10 @@ struct ncclComm {
   bool useCtran_{false}; // Ctran per-communicator control; set at init entry functions
   std::unique_ptr<CtranComm> ctranComm_;
 
+  // [META:PAT_AVG] per-communicator control; set at init entry functions
+  // When enabled, forces PAT algorithm with ncclDevPatSumPostDiv for ReduceScatter with ncclAvg
+  bool usePatAvg_{false};
+
   uint64_t endMagic;
 };
 

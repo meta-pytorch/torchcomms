@@ -58,14 +58,8 @@ class IbvQp {
   friend class IbvVirtualQp;
   friend class IbvVirtualCq;
 
-  struct PhysicalSendWrStatus {
-    PhysicalSendWrStatus(uint64_t physicalWrId, uint64_t virtualWrId)
-        : physicalWrId(physicalWrId), virtualWrId(virtualWrId) {}
-    uint64_t physicalWrId{0};
-    uint64_t virtualWrId{0};
-  };
-  struct PhysicalRecvWrStatus {
-    PhysicalRecvWrStatus(uint64_t physicalWrId, uint64_t virtualWrId)
+  struct PhysicalWrStatus {
+    PhysicalWrStatus(uint64_t physicalWrId, uint64_t virtualWrId)
         : physicalWrId(physicalWrId), virtualWrId(virtualWrId) {}
     uint64_t physicalWrId{0};
     uint64_t virtualWrId{0};
@@ -73,8 +67,8 @@ class IbvQp {
   explicit IbvQp(ibv_qp* qp, int32_t deviceId);
 
   ibv_qp* qp_{nullptr};
-  std::deque<PhysicalSendWrStatus> physicalSendWrStatus_;
-  std::deque<PhysicalRecvWrStatus> physicalRecvWrStatus_;
+  std::deque<PhysicalWrStatus> physicalSendWrStatus_;
+  std::deque<PhysicalWrStatus> physicalRecvWrStatus_;
   int32_t deviceId_{-1}; // The IbvDevice's DeviceId that corresponds to this
                          // Queue Pair (QP)
 };

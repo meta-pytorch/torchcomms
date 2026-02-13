@@ -18,6 +18,7 @@
 
 #include "VerifyAlgoStatsUtil.h"
 #include "comms/ctran/algos/ReduceScatter/ReduceScatterImpl.h"
+#include "meta/collectives/PatAvgHelper.h"
 #include "meta/wrapper/DataTypeStrUtils.h"
 
 struct ReduceScatterTestParams {
@@ -187,6 +188,16 @@ class ReduceScatterTest : public NcclxBaseTest {
       if (!expectedAlgoSubstr.empty()) {
         algoStats_.verify(comm, "ReduceScatter", expectedAlgoSubstr);
       }
+      // Verify nChannels for PAT: the actual nChannels used by the
+      // collective should match the channel-reduction logic.
+      if (expectedAlgoSubstr == "PAT") {
+        int expectedNc = 0, expectedNWarps = 0;
+        size_t nBytes = count * numRanks * elemSize;
+        ncclx::computePatAvgChannelsAndWarps(
+            comm, nBytes, &expectedNc, &expectedNWarps);
+        std::string expectedAlgoFull = fmt::format("SIMPLE_PAT_{}", expectedNc);
+        algoStats_.verify(comm, "ReduceScatter", expectedAlgoFull);
+      }
       algoStats_.dump(comm, "ReduceScatter");
     }
 
@@ -268,6 +279,41 @@ TEST_P(ReduceScatterOrigTestParam, OrigTest) {
   run<int>(param, ncclAlgo);
 }
 
+// Parameters: inplace, count, datatype
+// Tests native PAT AVG implementation with per-communicator control (usePatAvg)
+class ReduceScatterPatAvgTestParam
+    : public ReduceScatterTest,
+      public ::testing::WithParamInterface<
+          std::tuple<bool, size_t, ncclDataType_t>> {};
+
+TEST_P(ReduceScatterPatAvgTestParam, PatAvgTest) {
+  auto [inplace, count, datatype] = GetParam();
+  auto rsAlgoGuard =
+      EnvRAII(NCCL_REDUCESCATTER_ALGO, NCCL_REDUCESCATTER_ALGO::orig);
+  auto patAvgGuard = EnvRAII(NCCL_REDUCESCATTER_PAT_AVG_ENABLE, true);
+
+  ReduceScatterTestParams param{
+      .algo = NCCL_REDUCESCATTER_ALGO::orig, // Use orig algo, PAT is selected
+                                             // via CVAR
+      .inplace = inplace,
+      .registFlag = false,
+      .memType = kMemNcclMemAlloc,
+      .count = count,
+      .op = ncclAvg,
+      .datatype = datatype,
+  };
+
+  if (datatype == ncclInt) {
+    run<int>(param, "PAT");
+  } else if (datatype == ncclFloat) {
+    run<float>(param, "PAT");
+  } else if (datatype == ncclDouble) {
+    run<double>(param, "PAT");
+  } else if (datatype == ncclBfloat16) {
+    run<__nv_bfloat16>(param, "PAT");
+  }
+}
+
 INSTANTIATE_TEST_SUITE_P(
     ReduceScatterTestInstance,
     ReduceScatterTestParam,
@@ -305,6 +351,30 @@ INSTANTIATE_TEST_SUITE_P(
           .algo = NCCL_REDUCESCATTER_ALGO::orig,
           .count = std::get<1>(info.param),
           .ncclAlgo = std::get<0>(info.param),
+      };
+      return params.name();
+    }));
+
+INSTANTIATE_TEST_SUITE_P(
+    ReduceScatterPatAvgTestInstance,
+    ReduceScatterPatAvgTestParam,
+    ::testing::Combine(
+        ::testing::Values(true, false), // inplace
+        ::testing::Values(1, 8000, 33554430), // count per rank
+        ::testing::Values(
+            ncclInt,
+            ncclFloat,
+            ncclDouble,
+            ncclBfloat16)), // datatype
+    ([](const auto& info) {
+      ReduceScatterTestParams params{
+          .algo = NCCL_REDUCESCATTER_ALGO::orig,
+          .inplace = std::get<0>(info.param),
+          .registFlag = false,
+          .memType = kMemNcclMemAlloc,
+          .count = std::get<1>(info.param),
+          .op = ncclAvg,
+          .datatype = std::get<2>(info.param),
       };
       return params.name();
     }));

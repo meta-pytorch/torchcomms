@@ -238,7 +238,7 @@ Register a tensor buffer with the window for RMA operations.
 
 Args:
     tensor (torch.Tensor): Contiguous tensor to register. Must be allocated
-        via ``comm.mem_allocator`` using cuMem APIs.
+        within a memory pool created via ``torchcomms.get_mem_allocator()``.
 
 Raises:
     RuntimeError: If tensor is not contiguous or a buffer is already registered.
@@ -247,7 +247,13 @@ Example:
 
 .. code-block:: python
 
-    buffer = comm.mem_allocator.allocate(size, dtype, device)
+    import torchcomms
+
+    allocator = torchcomms.get_mem_allocator(comm.get_backend())
+    pool = torch.cuda.MemPool(allocator)
+    with torch.cuda.use_mem_pool(pool):
+        buffer = torch.ones([size], dtype=dtype, device=device)
+
     window = comm.new_window()
     window.tensor_register(buffer)
 
@@ -1395,9 +1401,10 @@ to a remote rank's buffer without receiver-side participation.
 
 Args:
     tensor (torch.Tensor, optional): Contiguous tensor to register with the
-        window. Must be allocated via ``comm.mem_allocator`` using cuMem APIs.
-        If provided, the tensor will be registered immediately during window
-        creation. If not provided, use ``tensor_register()`` later.
+        window. Must be allocated within a memory pool created via
+        ``torchcomms.get_mem_allocator()``. If provided, the tensor will be
+        registered immediately during window creation. If not provided, use
+        ``tensor_register()`` later.
 
 Raises:
     RuntimeError: If tensor is provided and a buffer is already registered
@@ -1413,12 +1420,17 @@ Example:
 
 .. code-block:: python
 
+    import torchcomms
+
+    allocator = torchcomms.get_mem_allocator(comm.get_backend())
+    pool = torch.cuda.MemPool(allocator)
+    with torch.cuda.use_mem_pool(pool):
+        buffer = torch.ones([size], dtype=dtype, device=device)
+
     # Option 1: Create window with tensor registration in one step
-    buffer = comm.mem_allocator.allocate(size, dtype, device)
     window = comm.new_window(buffer)
 
     # Option 2: Create window and register buffer separately
-    buffer = comm.mem_allocator.allocate(size, dtype, device)
     window = comm.new_window()
     window.tensor_register(buffer)
 

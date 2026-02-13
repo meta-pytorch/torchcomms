@@ -345,10 +345,8 @@ struct BenchmarkContext {
   char* sendBuf{nullptr};
   volatile char* recvBuf{nullptr};
 
-  // Pre-constructed work requests
-  ibv_sge sge{};
-  ibv_send_wr sendWr{};
-  ibv_send_wr badSendWr{};
+  // Pre-constructed work request
+  IbvVirtualSendWr sendWr;
 
   ~BenchmarkContext() {
     if (buffer) {
@@ -417,21 +415,18 @@ static void initSendWr(
     BenchmarkContext* ctx,
     size_t msgSize,
     const ExchangeInfo& remoteInfo) {
-  ctx->sge.addr = reinterpret_cast<uint64_t>(ctx->sendBuf);
-  ctx->sge.length = static_cast<uint32_t>(msgSize);
-  ctx->sge.lkey = ctx->mr->mr()->lkey;
-
-  ctx->sendWr.wr_id = 0;
-  ctx->sendWr.next = nullptr;
-  ctx->sendWr.sg_list = &ctx->sge;
-  ctx->sendWr.num_sge = 1;
+  ctx->sendWr.wrId = 0;
+  ctx->sendWr.localAddr = ctx->sendBuf;
+  ctx->sendWr.length = static_cast<uint32_t>(msgSize);
+  ctx->sendWr.remoteAddr = remoteInfo.addr;
   ctx->sendWr.opcode = IBV_WR_RDMA_WRITE;
-  ctx->sendWr.send_flags = IBV_SEND_SIGNALED;
+  ctx->sendWr.sendFlags = IBV_SEND_SIGNALED;
   if (msgSize <= kMaxInlineData) {
-    ctx->sendWr.send_flags |= IBV_SEND_INLINE;
+    ctx->sendWr.sendFlags |= IBV_SEND_INLINE;
   }
-  ctx->sendWr.wr.rdma.remote_addr = remoteInfo.addr;
-  ctx->sendWr.wr.rdma.rkey = remoteInfo.rkey;
+  int32_t deviceId = ctx->endpoint->qp.getQpsRef().at(0).getDeviceId();
+  ctx->sendWr.deviceKeys[deviceId] =
+      MemoryRegionKeys{.lkey = ctx->mr->mr()->lkey, .rkey = remoteInfo.rkey};
 }
 
 // Exchange connection info with peer and establish QP connection
@@ -475,7 +470,7 @@ static ExchangeInfo exchangeAndConnect(BenchmarkContext* ctx, int peerRank) {
 
 static void pollCqUntilCompletion(IbvVirtualCq& cq) {
   while (true) {
-    auto maybeWcs = cq.pollCq(1);
+    auto maybeWcs = cq.pollCq();
     if (maybeWcs && !maybeWcs->empty()) {
       const auto& wc = maybeWcs->at(0);
       if (wc.status != IBV_WC_SUCCESS) {
@@ -537,7 +532,7 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
       *postBuf = static_cast<char>(++scnt);
-      ctx->endpoint->qp.postSend(&ctx->sendWr, &ctx->badSendWr);
+      ctx->endpoint->qp.postSend(ctx->sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
 
       ++rcnt;
@@ -555,7 +550,7 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
       auto start = Clock::now();
 
       *postBuf = static_cast<char>(++scnt);
-      ctx->endpoint->qp.postSend(&ctx->sendWr, &ctx->badSendWr);
+      ctx->endpoint->qp.postSend(ctx->sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
 
       ++rcnt;
@@ -611,7 +606,7 @@ class IbverbxVirtualQpBenchmarkFixture : public MpiBaseTestFixture {
       }
 
       *postBuf = static_cast<char>(++scnt);
-      ctx->endpoint->qp.postSend(&ctx->sendWr, &ctx->badSendWr);
+      ctx->endpoint->qp.postSend(ctx->sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -853,23 +848,18 @@ static BenchmarkResult runRdmaWriteLatencyBenchmark(
   bool isSender = (globalRank == 0);
 
   // Prepare send WR (only sender needs it)
-  ibv_sge sge{};
-  ibv_send_wr sendWr{};
-  ibv_send_wr badSendWr{};
+  IbvVirtualSendWr sendWr;
 
   if (isSender) {
-    sge.addr = reinterpret_cast<uint64_t>(ctx->sendBuf);
-    sge.length = static_cast<uint32_t>(msgSize);
-    sge.lkey = ctx->mr->mr()->lkey;
-
-    sendWr.wr_id = 0;
-    sendWr.next = nullptr;
-    sendWr.sg_list = &sge;
-    sendWr.num_sge = 1;
+    sendWr.wrId = 0;
+    sendWr.localAddr = ctx->sendBuf;
+    sendWr.length = static_cast<uint32_t>(msgSize);
+    sendWr.remoteAddr = remoteInfo.addr;
     sendWr.opcode = IBV_WR_RDMA_WRITE;
-    sendWr.send_flags = IBV_SEND_SIGNALED;
-    sendWr.wr.rdma.remote_addr = remoteInfo.addr;
-    sendWr.wr.rdma.rkey = remoteInfo.rkey;
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    int32_t deviceId = ctx->endpoint->qp.getQpsRef().at(0).getDeviceId();
+    sendWr.deviceKeys[deviceId] =
+        MemoryRegionKeys{.lkey = ctx->mr->mr()->lkey, .rkey = remoteInfo.rkey};
   }
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -880,7 +870,7 @@ static BenchmarkResult runRdmaWriteLatencyBenchmark(
   if (isSender) {
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
-      ctx->endpoint->qp.postSend(&sendWr, &badSendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -888,7 +878,7 @@ static BenchmarkResult runRdmaWriteLatencyBenchmark(
     deltasUs.resize(iterations);
     for (int i = 0; i < iterations; ++i) {
       auto start = Clock::now();
-      ctx->endpoint->qp.postSend(&sendWr, &badSendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
       auto end = Clock::now();
       deltasUs[i] =
@@ -915,24 +905,19 @@ static BenchmarkResult runRdmaReadLatencyBenchmark(
   bool isSender = (globalRank == 0);
 
   // Prepare send WR for RDMA_READ (only receiver needs it)
-  ibv_sge sge{};
-  ibv_send_wr sendWr{};
-  ibv_send_wr badSendWr{};
+  IbvVirtualSendWr sendWr;
 
   if (!isSender) {
     // Receiver reads FROM sender's buffer INTO its own recvBuf
-    sge.addr = reinterpret_cast<uint64_t>(ctx->recvBuf);
-    sge.length = static_cast<uint32_t>(msgSize);
-    sge.lkey = ctx->mr->mr()->lkey;
-
-    sendWr.wr_id = 0;
-    sendWr.next = nullptr;
-    sendWr.sg_list = &sge;
-    sendWr.num_sge = 1;
+    sendWr.wrId = 0;
+    sendWr.localAddr = const_cast<char*>(ctx->recvBuf);
+    sendWr.length = static_cast<uint32_t>(msgSize);
+    sendWr.remoteAddr = remoteInfo.addr;
     sendWr.opcode = IBV_WR_RDMA_READ;
-    sendWr.send_flags = IBV_SEND_SIGNALED;
-    sendWr.wr.rdma.remote_addr = remoteInfo.addr;
-    sendWr.wr.rdma.rkey = remoteInfo.rkey;
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    int32_t deviceId = ctx->endpoint->qp.getQpsRef().at(0).getDeviceId();
+    sendWr.deviceKeys[deviceId] =
+        MemoryRegionKeys{.lkey = ctx->mr->mr()->lkey, .rkey = remoteInfo.rkey};
   }
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -943,7 +928,7 @@ static BenchmarkResult runRdmaReadLatencyBenchmark(
   if (!isSender) {
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
-      ctx->endpoint->qp.postSend(&sendWr, &badSendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -951,7 +936,7 @@ static BenchmarkResult runRdmaReadLatencyBenchmark(
     deltasUs.resize(iterations);
     for (int i = 0; i < iterations; ++i) {
       auto start = Clock::now();
-      ctx->endpoint->qp.postSend(&sendWr, &badSendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
       auto end = Clock::now();
       deltasUs[i] =
@@ -978,32 +963,22 @@ static BenchmarkResult runRdmaWriteWithImmLatencyBenchmark(
   bool isSender = (globalRank == 0);
 
   // Prepare WRs
-  ibv_sge sge{};
-  ibv_send_wr sendWr{};
-  ibv_send_wr badSendWr{};
-  ibv_sge recvSge{};
-  ibv_recv_wr recvWr{};
-  ibv_recv_wr badRecvWr{};
+  IbvVirtualSendWr sendWr;
+  IbvVirtualRecvWr recvWr;
 
   if (isSender) {
-    sge.addr = reinterpret_cast<uint64_t>(ctx->sendBuf);
-    sge.length = static_cast<uint32_t>(msgSize);
-    sge.lkey = ctx->mr->mr()->lkey;
-
-    sendWr.wr_id = 0;
-    sendWr.next = nullptr;
-    sendWr.sg_list = &sge;
-    sendWr.num_sge = 1;
+    sendWr.wrId = 0;
+    sendWr.localAddr = ctx->sendBuf;
+    sendWr.length = static_cast<uint32_t>(msgSize);
+    sendWr.remoteAddr = remoteInfo.addr;
     sendWr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
-    sendWr.send_flags = IBV_SEND_SIGNALED;
-    sendWr.wr.rdma.remote_addr = remoteInfo.addr;
-    sendWr.wr.rdma.rkey = remoteInfo.rkey;
-    sendWr.imm_data = static_cast<uint32_t>(msgSize);
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    sendWr.immData = static_cast<uint32_t>(msgSize);
+    int32_t deviceId = ctx->endpoint->qp.getQpsRef().at(0).getDeviceId();
+    sendWr.deviceKeys[deviceId] =
+        MemoryRegionKeys{.lkey = ctx->mr->mr()->lkey, .rkey = remoteInfo.rkey};
   } else {
-    recvWr.wr_id = 0;
-    recvWr.next = nullptr;
-    recvWr.sg_list = &recvSge;
-    recvWr.num_sge = 0;
+    recvWr.wrId = 0;
   }
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1014,7 +989,7 @@ static BenchmarkResult runRdmaWriteWithImmLatencyBenchmark(
   if (isSender) {
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
-      ctx->endpoint->qp.postSend(&sendWr, &badSendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -1024,7 +999,7 @@ static BenchmarkResult runRdmaWriteWithImmLatencyBenchmark(
     deltasUs.resize(iterations);
     for (int i = 0; i < iterations; ++i) {
       auto start = Clock::now();
-      ctx->endpoint->qp.postSend(&sendWr, &badSendWr);
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
       auto end = Clock::now();
       deltasUs[i] =
@@ -1034,7 +1009,7 @@ static BenchmarkResult runRdmaWriteWithImmLatencyBenchmark(
     // Receiver: post recv and poll completion
     // Warmup
     for (int i = 0; i < kWarmupIterations; ++i) {
-      ctx->endpoint->qp.postRecv(&recvWr, &badRecvWr);
+      ctx->endpoint->qp.postRecv(recvWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -1044,7 +1019,7 @@ static BenchmarkResult runRdmaWriteWithImmLatencyBenchmark(
     deltasUs.resize(iterations);
     for (int i = 0; i < iterations; ++i) {
       auto start = Clock::now();
-      ctx->endpoint->qp.postRecv(&recvWr, &badRecvWr);
+      ctx->endpoint->qp.postRecv(recvWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
       auto end = Clock::now();
       deltasUs[i] =
@@ -1068,23 +1043,18 @@ static BenchmarkResult runBandwidthBenchmark(
   bool isSender = (globalRank == 0);
 
   // Prepare SGE and WR for RDMA_WRITE
-  ibv_sge sge{};
-  ibv_send_wr sendWr{};
-  ibv_send_wr badSendWr{};
+  IbvVirtualSendWr sendWr;
 
   if (isSender) {
-    sge.addr = reinterpret_cast<uint64_t>(ctx->sendBuf);
-    sge.length = static_cast<uint32_t>(msgSize);
-    sge.lkey = ctx->mr->mr()->lkey;
-
-    sendWr.wr_id = 0;
-    sendWr.next = nullptr;
-    sendWr.sg_list = &sge;
-    sendWr.num_sge = 1;
+    sendWr.wrId = 0;
+    sendWr.localAddr = ctx->sendBuf;
+    sendWr.length = static_cast<uint32_t>(msgSize);
+    sendWr.remoteAddr = remoteInfo.addr;
     sendWr.opcode = IBV_WR_RDMA_WRITE;
-    sendWr.send_flags = IBV_SEND_SIGNALED;
-    sendWr.wr.rdma.remote_addr = remoteInfo.addr;
-    sendWr.wr.rdma.rkey = remoteInfo.rkey;
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    int32_t deviceId = ctx->endpoint->qp.getQpsRef().at(0).getDeviceId();
+    sendWr.deviceKeys[deviceId] =
+        MemoryRegionKeys{.lkey = ctx->mr->mr()->lkey, .rkey = remoteInfo.rkey};
   }
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1097,8 +1067,8 @@ static BenchmarkResult runBandwidthBenchmark(
 
     // Warmup phase
     for (int i = 0; i < kWarmupIterations; ++i) {
-      sendWr.wr_id = wrIdCounter++;
-      ctx->endpoint->qp.postSend(&sendWr, &badSendWr);
+      sendWr.wrId = wrIdCounter++;
+      ctx->endpoint->qp.postSend(sendWr);
       pollCqUntilCompletion(ctx->endpoint->cq);
     }
 
@@ -1107,7 +1077,6 @@ static BenchmarkResult runBandwidthBenchmark(
     // Measurement phase - pipelined posting with tx_depth outstanding WRs
     uint64_t scnt = 0;
     uint64_t ccnt = 0;
-    constexpr int kPollBatch = 16;
 
     auto start = Clock::now();
 
@@ -1116,14 +1085,14 @@ static BenchmarkResult runBandwidthBenchmark(
       // Post while pipeline has room
       while (scnt < static_cast<uint64_t>(iterations) &&
              (scnt - ccnt + 1) <= static_cast<uint64_t>(kBwTxDepth)) {
-        sendWr.wr_id = wrIdCounter++;
-        ctx->endpoint->qp.postSend(&sendWr, &badSendWr);
+        sendWr.wrId = wrIdCounter++;
+        ctx->endpoint->qp.postSend(sendWr);
         ++scnt;
       }
 
       // Poll completions
       if (ccnt < static_cast<uint64_t>(iterations)) {
-        auto maybeWcs = ctx->endpoint->cq.pollCq(kPollBatch);
+        auto maybeWcs = ctx->endpoint->cq.pollCq();
         if (maybeWcs && !maybeWcs->empty()) {
           for (const auto& wc : *maybeWcs) {
             if (wc.status != IBV_WC_SUCCESS) {

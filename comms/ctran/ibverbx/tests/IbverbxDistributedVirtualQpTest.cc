@@ -573,11 +573,9 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
   if (globalRank == 0) {
     // receiver: post 2 dummy recv WRs for the 2 RDMA writes with immediate
     for (int i = 0; i < 2; ++i) {
-      ibv_sge sgList = {};
-      ibv_recv_wr recvWr = {
-          .wr_id = static_cast<uint64_t>(i), .sg_list = &sgList, .num_sge = 0};
-      ibv_recv_wr recvWrBad{};
-      ASSERT_TRUE(virtualQp->postRecv(&recvWr, &recvWrBad));
+      IbvVirtualRecvWr recvWr;
+      recvWr.wrId = i;
+      ASSERT_TRUE(virtualQp->postRecv(recvWr));
     }
   } else if (globalRank == 1) {
     // sender: register memory for the 2 buffers and post 2 RDMA writes
@@ -588,51 +586,43 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
     auto mr2 = pd->regMr(devBuf2, devBufSize, access);
     ASSERT_TRUE(mr2);
 
+    int32_t deviceId = virtualQp->getQpsRef().at(0).getDeviceId();
+
     // First RDMA write
-    ibv_sge sgList1 = {
-        .addr = (uint64_t)devBuf1,
-        .length = static_cast<uint32_t>(devBufSize),
-        .lkey = mr1->mr()->lkey};
-    ibv_send_wr sendWr1 = {
-        .wr_id = 0,
-        .next = nullptr,
-        .sg_list = &sgList1,
-        .num_sge = 1,
-        .opcode = IBV_WR_RDMA_WRITE_WITH_IMM,
-        .send_flags = IBV_SEND_SIGNALED};
-    sendWr1.wr.rdma.remote_addr = remoteCard.remoteAddr;
-    sendWr1.wr.rdma.rkey = remoteCard.rkey;
-    sendWr1.imm_data = imm_data1;
+    IbvVirtualSendWr sendWr1;
+    sendWr1.wrId = 0;
+    sendWr1.localAddr = devBuf1;
+    sendWr1.length = static_cast<uint32_t>(devBufSize);
+    sendWr1.remoteAddr = remoteCard.remoteAddr;
+    sendWr1.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+    sendWr1.sendFlags = IBV_SEND_SIGNALED;
+    sendWr1.immData = imm_data1;
+    sendWr1.deviceKeys[deviceId] =
+        MemoryRegionKeys{.lkey = mr1->mr()->lkey, .rkey = remoteCard.rkey};
 
     // Second RDMA write
-    ibv_sge sgList2 = {
-        .addr = (uint64_t)devBuf2,
-        .length = static_cast<uint32_t>(devBufSize),
-        .lkey = mr2->mr()->lkey};
-    ibv_send_wr sendWr2 = {
-        .wr_id = 1,
-        .next = nullptr,
-        .sg_list = &sgList2,
-        .num_sge = 1,
-        .opcode = IBV_WR_RDMA_WRITE_WITH_IMM,
-        .send_flags = IBV_SEND_SIGNALED};
-    sendWr2.wr.rdma.remote_addr = remoteCard.remoteAddr;
-    sendWr2.wr.rdma.rkey = remoteCard.rkey;
-    sendWr2.imm_data = imm_data2;
+    IbvVirtualSendWr sendWr2;
+    sendWr2.wrId = 1;
+    sendWr2.localAddr = devBuf2;
+    sendWr2.length = static_cast<uint32_t>(devBufSize);
+    sendWr2.remoteAddr = remoteCard.remoteAddr;
+    sendWr2.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+    sendWr2.sendFlags = IBV_SEND_SIGNALED;
+    sendWr2.immData = imm_data2;
+    sendWr2.deviceKeys[deviceId] =
+        MemoryRegionKeys{.lkey = mr2->mr()->lkey, .rkey = remoteCard.rkey};
 
     // Post both RDMA writes
-    ibv_send_wr sendWrBad{};
-    ASSERT_TRUE(virtualQp->postSend(&sendWr1, &sendWrBad));
-    ASSERT_TRUE(virtualQp->postSend(&sendWr2, &sendWrBad));
+    ASSERT_TRUE(virtualQp->postSend(sendWr1));
+    ASSERT_TRUE(virtualQp->postSend(sendWr2));
   }
 
   // poll cq and check completion entries
-  int numEntries{20};
   int completedOps = 0;
   int expectedOps = 2; // 2 operations per rank
 
   while (completedOps < expectedOps) {
-    auto maybeWcsVector = virtualCq.pollCq(numEntries);
+    auto maybeWcsVector = virtualCq.pollCq();
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
 
@@ -649,18 +639,17 @@ TEST_F(IbverbxVirtualQpTestFixture, IbvVirtualQpMultipleRdmaWrites) {
       ASSERT_EQ(wc.status, IBV_WC_SUCCESS);
 
       if (globalRank == 0) {
-        // receiver: check immediate data values
-        if (wc.wr_id == 0) {
-          ASSERT_EQ(wc.imm_data, imm_data1);
-        } else if (wc.wr_id == 1) {
-          ASSERT_EQ(wc.imm_data, imm_data2);
-        }
+        // NOTE: IbvVirtualWc does not propagate immData from physical
+        // completions. The IMM field is consumed internally by the
+        // VirtualQp layer (SPRAY uses it for notify signaling, DQPLB
+        // uses it for sequence tracking). User-level immData is not
+        // forwarded through the virtual completion path.
       } else if (globalRank == 1) {
         // sender: verify completion of our writes
-        ASSERT_TRUE(wc.wr_id == 0 || wc.wr_id == 1);
+        ASSERT_TRUE(wc.wrId == 0 || wc.wrId == 1);
       }
 
-      XLOGF(INFO, "Rank {} got WC: wr_id {}", globalRank, wc.wr_id);
+      XLOGF(INFO, "Rank {} got WC: wrId {}", globalRank, wc.wrId);
       completedOps++;
     }
   }
@@ -904,42 +893,31 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
   if (globalRank == 0) {
     // receiver
 
-    // post a dummy ibv_recv_wr as this is one-sided comm
-    ibv_sge sgList = {};
-    ibv_recv_wr recvWr = {
-        .wr_id = static_cast<uint64_t>(wr_id),
-        .sg_list = &sgList,
-        .num_sge = 0};
-    ibv_recv_wr recvWrBad{};
-    ASSERT_TRUE(setup.virtualQp.postRecv(&recvWr, &recvWrBad));
+    // post a dummy recv as this is one-sided comm
+    IbvVirtualRecvWr recvWr;
+    recvWr.wrId = wr_id;
+    ASSERT_TRUE(setup.virtualQp.postRecv(recvWr));
   } else if (globalRank == 1) {
     // writer
 
-    ibv_sge sgList = {
-        .addr = (uint64_t)setup.devBuf,
-        .length = static_cast<uint32_t>(devBufSize),
-        .lkey = setup.mr.mr()->lkey};
-    ibv_send_wr sendWr = {
-        .wr_id = static_cast<uint64_t>(wr_id),
-        .next = nullptr,
-        .sg_list = &sgList,
-        .num_sge = 1,
-        .opcode = IBV_WR_RDMA_WRITE_WITH_IMM,
-        .send_flags = IBV_SEND_SIGNALED};
-    // set rdma remote fields for WRITE operation
-    sendWr.wr.rdma.remote_addr = setup.remoteCard.remoteAddr;
-    sendWr.wr.rdma.rkey = setup.remoteCard.rkey;
-    sendWr.imm_data = imm_data;
-
-    ibv_send_wr sendWrBad{};
-    ASSERT_TRUE(setup.virtualQp.postSend(&sendWr, &sendWrBad));
+    IbvVirtualSendWr sendWr;
+    sendWr.wrId = wr_id;
+    sendWr.localAddr = setup.devBuf;
+    sendWr.length = static_cast<uint32_t>(devBufSize);
+    sendWr.remoteAddr = setup.remoteCard.remoteAddr;
+    sendWr.opcode = IBV_WR_RDMA_WRITE_WITH_IMM;
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    sendWr.immData = imm_data;
+    int32_t deviceId = setup.virtualQp.getQpsRef().at(0).getDeviceId();
+    sendWr.deviceKeys[deviceId] = MemoryRegionKeys{
+        .lkey = setup.mr.mr()->lkey, .rkey = setup.remoteCard.rkey};
+    ASSERT_TRUE(setup.virtualQp.postSend(sendWr));
   }
 
   // poll cq and check cq
-  int numEntries{20};
   bool stop = false;
   while (!stop) {
-    auto maybeWcsVector = setup.virtualCq.pollCq(numEntries);
+    auto maybeWcsVector = setup.virtualCq.pollCq();
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
     ASSERT_GE(numWc, 0);
@@ -955,15 +933,14 @@ void IbverbxVirtualQpRdmaWriteTestFixture::runRdmaWriteVirtualQpTest(
 
     // got a WC
     const auto wc = maybeWcsVector->at(0);
-    ASSERT_EQ(wc.wr_id, wr_id);
+    ASSERT_EQ(wc.wrId, wr_id);
     ASSERT_EQ(wc.status, IBV_WC_SUCCESS);
-    if (globalRank == 0 && loadBalancingScheme == LoadBalancingScheme::SPRAY) {
-      // In spray mode, receive checks the value of the IMM field to determine
-      // status. In DQPLB mode, the IMM field is used to track sequence number
-      // completion, so it should not be checked here.
-      ASSERT_EQ(wc.imm_data, imm_data);
-    }
-    XLOGF(DBG1, "Rank {} got a wc: wr_id {}", globalRank, wc.wr_id);
+    // NOTE: IbvVirtualWc does not propagate immData from physical
+    // completions. The IMM field is consumed internally by the VirtualQp
+    // layer (SPRAY uses it for notify signaling, DQPLB uses it for
+    // sequence tracking). User-level immData is not forwarded through
+    // the virtual completion path.
+    XLOGF(DBG1, "Rank {} got a wc: wrId {}", globalRank, wc.wrId);
     stop = true;
   }
 
@@ -1022,28 +999,21 @@ void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
   if (globalRank == 0) {
     // reader - does the work in RDMA Read
 
-    ibv_sge sgList = {
-        .addr = (uint64_t)setup.devBuf,
-        .length = static_cast<uint32_t>(devBufSize),
-        .lkey = setup.mr.mr()->lkey};
-    ibv_send_wr sendWr = {
-        .wr_id = static_cast<uint64_t>(wr_id),
-        .next = nullptr,
-        .sg_list = &sgList,
-        .num_sge = 1,
-        .opcode = IBV_WR_RDMA_READ,
-        .send_flags = IBV_SEND_SIGNALED};
-    // set rdma remote fields for READ operation
-    sendWr.wr.rdma.remote_addr = setup.remoteCard.remoteAddr;
-    sendWr.wr.rdma.rkey = setup.remoteCard.rkey;
-
-    ibv_send_wr sendWrBad{};
-    ASSERT_TRUE(setup.virtualQp.postSend(&sendWr, &sendWrBad));
+    IbvVirtualSendWr sendWr;
+    sendWr.wrId = wr_id;
+    sendWr.localAddr = setup.devBuf;
+    sendWr.length = static_cast<uint32_t>(devBufSize);
+    sendWr.remoteAddr = setup.remoteCard.remoteAddr;
+    sendWr.opcode = IBV_WR_RDMA_READ;
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    int32_t deviceId = setup.virtualQp.getQpsRef().at(0).getDeviceId();
+    sendWr.deviceKeys[deviceId] = MemoryRegionKeys{
+        .lkey = setup.mr.mr()->lkey, .rkey = setup.remoteCard.rkey};
+    ASSERT_TRUE(setup.virtualQp.postSend(sendWr));
 
     // poll cq and check cq
-    int numEntries{20};
     while (true) {
-      auto maybeWcsVector = setup.virtualCq.pollCq(numEntries);
+      auto maybeWcsVector = setup.virtualCq.pollCq();
       ASSERT_TRUE(maybeWcsVector);
       auto numWc = maybeWcsVector->size();
       ASSERT_GE(numWc, 0);
@@ -1059,9 +1029,9 @@ void IbverbxVirtualQpRdmaReadTestFixture::runRdmaReadVirtualQpTest(
 
       // got a WC
       const auto wc = maybeWcsVector->at(0);
-      ASSERT_EQ(wc.wr_id, wr_id);
+      ASSERT_EQ(wc.wrId, wr_id);
       ASSERT_EQ(wc.status, IBV_WC_SUCCESS);
-      XLOGF(DBG1, "Rank {} got a wc: wr_id {}", globalRank, wc.wr_id);
+      XLOGF(DBG1, "Rank {} got a wc: wrId {}", globalRank, wc.wrId);
       break;
     }
 
@@ -1113,41 +1083,32 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
   int wr_id = 0;
   if (globalRank == 0) {
     // receiver
-    ibv_recv_wr recvWr{};
-    ibv_recv_wr recvWrBad{};
-    struct ibv_sge sge = {
-        .addr = (uint64_t)setup.devBuf,
-        .length = static_cast<uint32_t>(devBufSize),
-        .lkey = setup.mr.mr()->lkey,
-    };
-    recvWr.wr_id = wr_id;
-    recvWr.sg_list = &sge;
-    recvWr.num_sge = 1;
-    recvWr.next = nullptr;
-    ASSERT_TRUE(setup.virtualQp.postRecv(&recvWr, &recvWrBad));
+    IbvVirtualRecvWr recvWr;
+    recvWr.wrId = wr_id;
+    recvWr.localAddr = setup.devBuf;
+    recvWr.length = static_cast<uint32_t>(devBufSize);
+    int32_t deviceId = setup.virtualQp.getQpsRef().at(0).getDeviceId();
+    recvWr.deviceKeys[deviceId] =
+        MemoryRegionKeys{.lkey = setup.mr.mr()->lkey, .rkey = 0};
+    ASSERT_TRUE(setup.virtualQp.postRecv(recvWr));
   } else if (globalRank == 1) {
     // sender
-    ibv_send_wr sendWr{};
-    ibv_send_wr sendWrBad{};
-    struct ibv_sge sge = {
-        .addr = (uint64_t)setup.devBuf,
-        .length = static_cast<uint32_t>(devBufSize),
-        .lkey = setup.mr.mr()->lkey,
-    };
-    sendWr.wr_id = wr_id;
-    sendWr.sg_list = &sge;
-    sendWr.num_sge = 1;
+    IbvVirtualSendWr sendWr;
+    sendWr.wrId = wr_id;
+    sendWr.localAddr = setup.devBuf;
+    sendWr.length = static_cast<uint32_t>(devBufSize);
     sendWr.opcode = IBV_WR_SEND;
-    sendWr.send_flags = IBV_SEND_SIGNALED;
-    sendWr.next = nullptr;
-    ASSERT_TRUE(setup.virtualQp.postSend(&sendWr, &sendWrBad));
+    sendWr.sendFlags = IBV_SEND_SIGNALED;
+    int32_t deviceId = setup.virtualQp.getQpsRef().at(0).getDeviceId();
+    sendWr.deviceKeys[deviceId] =
+        MemoryRegionKeys{.lkey = setup.mr.mr()->lkey, .rkey = 0};
+    ASSERT_TRUE(setup.virtualQp.postSend(sendWr));
   }
 
   // poll cq and check cq
-  int numEntries{20};
   bool stop = false;
   while (!stop) {
-    auto maybeWcsVector = setup.virtualCq.pollCq(numEntries);
+    auto maybeWcsVector = setup.virtualCq.pollCq();
     ASSERT_TRUE(maybeWcsVector);
     auto numWc = maybeWcsVector->size();
     ASSERT_GE(numWc, 0);
@@ -1163,7 +1124,7 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
 
     // got a WC
     const auto wc = maybeWcsVector->at(0);
-    ASSERT_EQ(wc.wr_id, wr_id);
+    ASSERT_EQ(wc.wrId, wr_id);
     ASSERT_EQ(wc.status, IBV_WC_SUCCESS);
     if (globalRank == 0) {
       // According to ibverblib, this value is relevant for the Receive Queue
@@ -1171,10 +1132,10 @@ void IbverbxVirtualQpSendRecvTestFixture::runSendRecvVirtualQpTest(
       // Note that this value excludes the length of any immediate data present.
       // For the Send Queue, this value applies to RDMA Read and Atomic
       // operations. Therefore, only check the receiver's work completion (wc)
-      // byte_len here.
-      ASSERT_EQ(wc.byte_len, devBufSize);
+      // byteLen here.
+      ASSERT_EQ(wc.byteLen, devBufSize);
     }
-    XLOGF(DBG1, "Rank {} got a wc: wr_id {}", globalRank, wc.wr_id);
+    XLOGF(DBG1, "Rank {} got a wc: wrId {}", globalRank, wc.wrId);
     stop = true;
   }
 

@@ -140,7 +140,7 @@ TEST_F(CtranIbCtrlMsgTest, CtrlMsg) {
       EXPECT_EQ(rmsg0.ibExp.nKeys, 2);
       EXPECT_EQ(rmsg0.ibExp.remoteAddr, 101);
     }
-  } catch (const std::bad_alloc& e) {
+  } catch (const std::bad_alloc& _) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 }

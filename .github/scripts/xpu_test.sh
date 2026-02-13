@@ -21,7 +21,7 @@ export USE_NCCLX=OFF
 export USE_TRANSPORT=OFF
 export USE_SYSTEM_LIBS=1
 
-python3 -m pip install torch torchvision torchaudio pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir 
+python3 -m pip install torch pytorch-triton-xpu --index-url https://download.pytorch.org/whl/nightly/xpu --force-reinstall --no-cache-dir
 cd torchcomms && pip install . --no-build-isolation && cd ..
 
 python3 -c "import torch; import torchcomms; print(f'Torch version: {torch.__version__}')"
