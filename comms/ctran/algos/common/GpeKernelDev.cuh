@@ -54,6 +54,7 @@ static inline __device__ bool KernelTestHostAbortBlock(volatile int* flag) {
   if (threadIdx.x == 0 && ctran::device::KernelTestHostAbort(kernelFlag)) {
     kernelDoAbort = true;
   }
+  __syncthreads();
   return kernelDoAbort;
 }
 
