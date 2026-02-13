@@ -9,10 +9,7 @@
 #include "comms/pipes/TimeoutUtils.h"
 
 #include "comms/pipes/collectives/AllToAllv.cuh"
-#include "comms/pipes/collectives/BroadcastAdaptive.cuh"
-#include "comms/pipes/collectives/BroadcastBinomialTree.cuh"
-#include "comms/pipes/collectives/BroadcastFlat.cuh"
-#include "comms/pipes/collectives/BroadcastRing.cuh"
+#include "comms/pipes/collectives/broadcast/BroadcastTopologies.cuh"
 
 namespace comms::pipes::benchmark {
 

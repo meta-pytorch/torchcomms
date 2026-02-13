@@ -177,7 +177,7 @@ __global__ void broadcastFlatKernel(
     int rootRank,
     DeviceSpan<Transport> transports,
     std::size_t nbytes) {
-  comms::pipes::collectives::broadcast_flat(
+  comms::pipes::collectives::broadcast<comms::pipes::collectives::FlatTag>(
       buff_d, myRank, rootRank, transports, nbytes);
 }
 
@@ -187,7 +187,8 @@ __global__ void broadcastBinomialTreeKernel(
     int rootRank,
     DeviceSpan<Transport> transports,
     std::size_t nbytes) {
-  comms::pipes::collectives::broadcast_binomial_tree(
+  comms::pipes::collectives::broadcast<
+      comms::pipes::collectives::BinomialTreeTag>(
       buff_d, myRank, rootRank, transports, nbytes);
 }
 
@@ -197,8 +198,17 @@ __global__ void broadcastAdaptiveKernel(
     int rootRank,
     DeviceSpan<Transport> transports,
     std::size_t nbytes) {
-  comms::pipes::collectives::broadcast_adaptive(
-      buff_d, myRank, rootRank, transports, nbytes);
+  // Adaptive logic: use RingTag for large messages (>= 4MB) with nranks > 2
+  constexpr std::size_t kRingThreshold = 4 * 1024 * 1024;
+  const auto nranks = transports.size();
+
+  if (nbytes >= kRingThreshold && nranks > 2) {
+    comms::pipes::collectives::broadcast<comms::pipes::collectives::RingTag>(
+        buff_d, myRank, rootRank, transports, nbytes);
+  } else {
+    comms::pipes::collectives::broadcast<comms::pipes::collectives::FlatTag>(
+        buff_d, myRank, rootRank, transports, nbytes);
+  }
 }
 
 __global__ void broadcastRingKernel(
@@ -207,7 +217,7 @@ __global__ void broadcastRingKernel(
     int rootRank,
     DeviceSpan<Transport> transports,
     std::size_t nbytes) {
-  comms::pipes::collectives::broadcast_ring(
+  comms::pipes::collectives::broadcast<comms::pipes::collectives::RingTag>(
       buff_d, myRank, rootRank, transports, nbytes);
 }
 
