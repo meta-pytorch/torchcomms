@@ -214,7 +214,9 @@ struct ibv_port_attr {
   uint8_t active_speed;
   uint8_t phys_state;
   uint8_t link_layer;
-  uint8_t reserved;
+  uint8_t flags;
+  uint16_t port_cap_flags2;
+  uint32_t active_speed_ex;
 };
 
 enum ibv_event_type {
