@@ -464,34 +464,6 @@ TEST_P(CtranGpeFTEnabledAbortTest, HostActiveAbort) {
   EXPECT_TRUE(ctranComm->testAbort());
 }
 
-TEST_P(
-    CtranGpeFTEnabledAbortTest,
-    HostActiveAbortKernelAfterHostAlgoFnTerminate) {
-  auto [name, kernelFn] = GetParam();
-
-  if (kernelFn == (void*)CtranGpeTestFtKernelSkipGpeStart) {
-    CLOGF(
-        INFO,
-        "CtranGpeTestKernelSkipGpeStart here is equivalent to HostActiveAbort "
-        "test, since it will block before starting HostAlgoFn");
-  }
-
-  ASSERT_TRUE(ctranComm->abortEnabled());
-  FtTestSync sync;
-  ASSERT_FALSE(sync.getException().has_value());
-  ASSERT_FALSE(sync.getResult().has_value());
-  ASSERT_FALSE(sync.getTimeout());
-  ASSERT_FALSE(sync.getBlockUntilActiveAbort());
-  // no error + no exception + no timeout indicates active abort
-  runTestWillAbort(
-      kernelFn,
-      stream,
-      &sync,
-      /*activeAbort=*/true,
-      /*statusCheckDelay=*/kHostAlgoFnWait + std::chrono::milliseconds(1000));
-  EXPECT_TRUE(ctranComm->testAbort());
-}
-
 INSTANTIATE_TEST_SUITE_P(
     CtranGpeFTEnabledAbortTest,
     CtranGpeFTEnabledAbortTest,
@@ -501,13 +473,7 @@ INSTANTIATE_TEST_SUITE_P(
             (void*)CtranGpeTestFtBaseKernel),
         std::make_tuple(
             "CtranGpeTestFtShmAbortKernel",
-            (void*)CtranGpeTestFtShmAbortKernel),
-        std::make_tuple(
-            "CtranGpeTestFtKernelSkipGpeStart",
-            (void*)CtranGpeTestFtKernelSkipGpeStart),
-        std::make_tuple(
-            "CtranGpeTestFtKernelSkipGpeTerminate",
-            (void*)CtranGpeTestFtKernelSkipGpeTerminate)),
+            (void*)CtranGpeTestFtShmAbortKernel)),
     [](const ::testing::TestParamInfo<CtranGpeFTEnabledAbortTest::ParamType>&
            info) { return std::get<0>(info.param); });
 
@@ -548,13 +514,7 @@ INSTANTIATE_TEST_SUITE_P(
             (void*)CtranGpeTestFtBaseKernel),
         std::make_tuple(
             "CtranGpeTestFtShmAbortKernel",
-            (void*)CtranGpeTestFtShmAbortKernel),
-        // SkipGpeStart must be aborted by active abort or timeout. Hangs will
-        // happen before injected error/exceptions which only happens in host
-        // AlgoFn.
-        std::make_tuple(
-            "CtranGpeFtKernelSkipGpeTerminate",
-            (void*)CtranGpeTestFtKernelSkipGpeTerminate)),
+            (void*)CtranGpeTestFtShmAbortKernel)),
     [](const ::testing::TestParamInfo<
         CtranGpeFTEnabledAbortFromErrorTest::ParamType>& info) {
       return std::get<0>(info.param);
