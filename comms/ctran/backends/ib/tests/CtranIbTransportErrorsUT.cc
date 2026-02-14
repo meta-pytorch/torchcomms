@@ -80,12 +80,15 @@ class CtranIbTest : public NcclxBaseTest {
         globalRank, numRanks, localRank, false, nullptr, server.get());
     this->comm = this->commDeprecated->ctranComm_.get();
     this->ctrlMgr = std::make_unique<CtranCtrlManager>();
-    CtranIbSingleton& s = CtranIbSingleton::getInstance();
-    installedVerbs = s.verbsUtils->setVerbs<MockIbVerbsWrapper>();
+    auto s = CtranIbSingleton::getInstance();
+    CHECK_VALID_IB_SINGLETON(s);
+    installedVerbs = s->verbsUtils->setVerbs<MockIbVerbsWrapper>();
   }
 
   void TearDown() override {
-    CtranIbSingleton::getInstance().verbsUtils->setVerbs<VerbsWrapper>();
+    auto s = CtranIbSingleton::getInstance();
+    CHECK_VALID_IB_SINGLETON(s);
+    s->verbsUtils->setVerbs<VerbsWrapper>();
     ncclCommSetAsyncError(this->commDeprecated, ncclSuccess);
     finalizeNcclComm(globalRank, server.get());
     NCCLCHECK_TEST(ncclCommDestroy(this->commDeprecated));
@@ -173,11 +176,12 @@ TEST_F(CtranIbTest, Baseline) {
   this->printTestDesc(
       "Baseline",
       "Expect CTranIbAsyncEventHandler to run without internal error.");
-  CtranIbSingleton& s = CtranIbSingleton::getInstance();
+  auto s = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(s);
   int asyncFdCounter = 0;
 
   // For testing, stop and restart the async event handler
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
   const int waitCount = 10;
 
   EXPECT_CALL(*installedVerbs, ibv_poll_async_fd(_, 1, _))
@@ -189,7 +193,7 @@ TEST_F(CtranIbTest, Baseline) {
           });
   EXPECT_CALL(*installedVerbs, ibv_get_async_event(_, _)).Times(0);
 
-  s.startIbAsyncEventHandler(this->comm->statex_->cudaDev());
+  s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
   try {
     auto ctranIb1 = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
     auto ctranIb2 = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
@@ -204,7 +208,7 @@ TEST_F(CtranIbTest, Baseline) {
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
 }
 
 /* ibv_poll_async_fd() returns with negative value (error). Thread
@@ -214,11 +218,12 @@ TEST_F(CtranIbTest, PollError) {
   this->printTestDesc(
       "PollError", "Expect CTranIbAsyncEventHandler to exit gracefully.");
   int asyncFdCounter = 0;
-  CtranIbSingleton& s = CtranIbSingleton::getInstance();
+  auto s = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(s);
 
   // CtranIbSingleton is instantiated the first time CtranIb is instantiated
   // but freed when the process dies and so remains active throughout the test
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
 
   EXPECT_CALL(*installedVerbs, ibv_poll_async_fd(_, 1, _))
       .Times(1)
@@ -231,7 +236,7 @@ TEST_F(CtranIbTest, PollError) {
   // the thread to break
   EXPECT_CALL(*installedVerbs, ibv_get_async_event(_, _)).Times(0);
 
-  s.startIbAsyncEventHandler(this->comm->statex_->cudaDev());
+  s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
   try {
     auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
     // ensures ibv_poll_async_fd runs at least once
@@ -245,7 +250,7 @@ TEST_F(CtranIbTest, PollError) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
   pullNcclCommDump(this->commDeprecated);
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
 }
 
 /* ibv_poll_async_fd() returns with positive value meaning that
@@ -255,11 +260,12 @@ TEST_F(CtranIbTest, PollError) {
 TEST_F(CtranIbTest, AsyncEventFound) {
   this->printTestDesc(
       "AsyncEventFound", "Expect an async event and then return to polling.");
-  CtranIbSingleton& s = CtranIbSingleton::getInstance();
+  auto s = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(s);
   int asyncFdCounter = 0;
 
   // For testing, stop and restart the async event handler
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
 
   EXPECT_CALL(*installedVerbs, ibv_poll_async_fd(_, 1, _))
       .Times(1)
@@ -281,7 +287,7 @@ TEST_F(CtranIbTest, AsyncEventFound) {
 
   EXPECT_CALL(*installedVerbs, ibv_ack_async_event(_)).Times(1);
 
-  s.startIbAsyncEventHandler(this->comm->statex_->cudaDev());
+  s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
   try {
     auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
     // ensures ibv_poll_async_fd runs at least waitCount times
@@ -302,7 +308,7 @@ TEST_F(CtranIbTest, AsyncEventFound) {
   EXPECT_EQ(asyncError, ncclSystemError);
 
   pullNcclCommDump(this->commDeprecated);
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
 }
 
 /* This test includes 2 link flaps: The first one is
@@ -314,11 +320,12 @@ TEST_F(CtranIbTest, AsyncEventLinkFlap) {
   EnvRAII env1(NCCL_IB_LINK_DOWN_TIMEOUT, linkDownTimeout);
   this->printTestDesc(
       "AsyncEventLinkFlap", "Expect failure after second link down.");
-  CtranIbSingleton& s = CtranIbSingleton::getInstance();
+  auto s = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(s);
   int asyncFdCounter = 0;
 
   // For testing, stop and restart the async event handler
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
 
   EXPECT_CALL(*installedVerbs, ibv_poll_async_fd)
       .Times(AtLeast(3)) // down, up, down
@@ -374,7 +381,7 @@ TEST_F(CtranIbTest, AsyncEventLinkFlap) {
 
   EXPECT_CALL(*installedVerbs, ibv_ack_async_event(_)).Times(3);
 
-  s.startIbAsyncEventHandler(this->comm->statex_->cudaDev());
+  s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
   ncclResult_t asyncError;
   try {
     auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
@@ -395,7 +402,7 @@ TEST_F(CtranIbTest, AsyncEventLinkFlap) {
   EXPECT_EQ(asyncError, ncclSystemError);
 
   auto dump = pullNcclCommDump(this->commDeprecated);
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
 
   // there are two link down events in this test. Only the second
   // one is long enough to trigger a timeout.
@@ -417,11 +424,12 @@ TEST_F(CtranIbTest, LinkFlapZeroTimeout) {
   EnvRAII env1(NCCL_IB_LINK_DOWN_TIMEOUT, 0);
   this->printTestDesc(
       "LinkFlapZeroTimeout", "Expect stack trace but no failure.");
-  CtranIbSingleton& s = CtranIbSingleton::getInstance();
+  auto s = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(s);
   int asyncFdCounter = 0;
 
   // For testing, stop and restart the async event handler
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
 
   EXPECT_CALL(*installedVerbs, ibv_poll_async_fd)
       .Times(AtLeast(4)) // down, up, down
@@ -477,7 +485,7 @@ TEST_F(CtranIbTest, LinkFlapZeroTimeout) {
 
   EXPECT_CALL(*installedVerbs, ibv_ack_async_event(_)).Times(3);
 
-  s.startIbAsyncEventHandler(this->comm->statex_->cudaDev());
+  s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
 
   try {
     auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
@@ -498,7 +506,7 @@ TEST_F(CtranIbTest, LinkFlapZeroTimeout) {
   EXPECT_EQ(asyncStatus, ncclSuccess);
 
   auto dump = pullNcclCommDump(this->commDeprecated);
-  s.stopIbAsyncEventHandler();
+  s->stopIbAsyncEventHandler();
 }
 
 int main(int argc, char* argv[]) {

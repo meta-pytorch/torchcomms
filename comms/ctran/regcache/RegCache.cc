@@ -180,6 +180,13 @@ ctran::regcache::Snapshot ctran::regcache::Profiler::getSnapshot() const {
 }
 
 void ctran::RegCache::init() {
+  // Acquire a reference to CtranIbSingleton to establish dependency ordering.
+  // By holding this shared_ptr, we ensure that CtranIbSingleton is destroyed
+  // AFTER RegCache during program shutdown, preventing use-after-free when
+  // RegCache::destroy() calls CtranIb::deregMem().
+  ibSingleton_ = CtranIbSingleton::getInstance();
+  CHECK_VALID_IB_SINGLETON(ibSingleton_);
+
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
       !asyncRegThread_.joinable()) {
     int cudaDev;
@@ -191,10 +198,8 @@ void ctran::RegCache::init() {
 commResult_t ctran::RegCache::destroy() {
   {
     // Warn if user missed any buffer registration.
-    // Skip deregistration to avoid unexpected error at destruction time for
-    // now. We need revisit after sets RegCache's dependency to
-    // CtranIbSingleton, otherwise ib singleton may be released before
-    // deregisteration here.
+    // RegCache holds a shared_ptr to CtranIbSingleton which guarantees
+    // IB singleton stays alive during deregistration.
     auto [segmentsAvl, regElemsMaps] =
         folly::acquireLocked(segmentsAvl_, regElemsMaps_);
     auto& regHdlToElemMap = regElemsMaps->regHdlToElemMap;

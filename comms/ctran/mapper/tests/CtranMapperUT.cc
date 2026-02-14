@@ -234,6 +234,39 @@ TEST_F(CtranMapperTest, regHostMemLazy) {
   EXPECT_EQ(snapshot.totalNumDynamicReg, 0);
 }
 
+TEST_F(CtranMapperTest, segmentBufReturnsOriginalAddr) {
+  EnvRAII env(NCCL_CTRAN_REGISTER, NCCL_CTRAN_REGISTER::lazy);
+
+  mapper = std::make_unique<CtranMapper>(dummyComm_);
+  EXPECT_THAT(mapper, testing::NotNull());
+
+  auto res = mapper->regMem(buf, bufSize, &hdl, false);
+  EXPECT_EQ(res, commSuccess);
+  EXPECT_THAT(hdl, testing::NotNull());
+
+  EXPECT_EQ(mapper->segmentBuf(hdl), buf);
+
+  EXPECT_EQ(mapper->deregMem(hdl), commSuccess);
+}
+
+TEST_F(CtranMapperTest, segmentBufReturnsOriginalAddrHostMem) {
+  EnvRAII env(NCCL_CTRAN_REGISTER, NCCL_CTRAN_REGISTER::lazy);
+
+  mapper = std::make_unique<CtranMapper>(dummyComm_);
+  EXPECT_THAT(mapper, testing::NotNull());
+
+  void* bufH = malloc(bufSize);
+  void* segHdl = nullptr;
+  auto res = mapper->regMem(bufH, bufSize, &segHdl, false);
+  EXPECT_EQ(res, commSuccess);
+  EXPECT_THAT(segHdl, testing::NotNull());
+
+  EXPECT_EQ(mapper->segmentBuf(segHdl), bufH);
+
+  EXPECT_EQ(mapper->deregMem(segHdl), commSuccess);
+  free(bufH);
+}
+
 TEST_F(CtranMapperTest, deregMem) {
   mapper = std::make_unique<CtranMapper>(dummyComm_);
   EXPECT_THAT(mapper, testing::NotNull());
