@@ -45,6 +45,13 @@ ncclResult_t ncclGinRegister(struct ncclComm* comm, void* address, size_t size,
                              void* ginHostWins[NCCL_GIN_MAX_CONTEXTS],
                              ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONTEXTS]);
 ncclResult_t ncclGinDeregister(struct ncclComm* comm, void* ginHostWins[NCCL_GIN_MAX_CONTEXTS]);
+// Local-only registration for source buffers (non-collective).
+// Uses the shared ginState to get the parent's PD, but skips the rkey allGather.
+// GIN must already be connected before calling this function.
+ncclResult_t ncclGinRegisterLocal(struct ncclComm* comm, void* address, size_t size,
+                                  void* ginHostWins[NCCL_GIN_MAX_CONTEXTS],
+                                  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONTEXTS]);
+ncclResult_t ncclGinDeregisterLocal(struct ncclComm* comm, void* ginHostWins[NCCL_GIN_MAX_CONTEXTS]);
 ncclResult_t ncclGinAllocSignalsCounters(struct ncclComm* comm, int nSignals, uint32_t* outSignal0,
                                          int nCounters, uint32_t* outCounter0);
 ncclResult_t ncclGinFreeSignalsCounters(struct ncclComm* comm, uint32_t signal0, int nSignals,

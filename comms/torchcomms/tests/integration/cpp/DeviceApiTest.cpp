@@ -142,6 +142,9 @@ void DeviceApiTest::testLocalBufferRegistration(
       at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
   at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
 
+  at::Tensor src_tensor = at::zeros({count}, options);
+  src_tensor.fill_(static_cast<float>(rank_ + 1));
+
   // End pool context immediately after allocation
   c10::cuda::CUDACachingAllocator::endAllocateToPool(
       mem_pool->device(), mem_pool->id());
@@ -157,8 +160,12 @@ void DeviceApiTest::testLocalBufferRegistration(
       dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
-  // Create and register local source buffer
-  at::Tensor src_tensor = createTestTensor(count, dtype);
+  // Get device window first to ensure GIN is enabled.
+  // GIN is only enabled when ncclDevCommCreate is called (inside
+  // get_device_window), not during window registration.
+  auto* dev_win = win->get_device_window();
+  ASSERT_NE(dev_win, nullptr) << "Device window should not be null";
+
   auto src_buf = win->register_local_buffer(src_tensor);
 
   // Verify buffer properties
@@ -327,40 +334,13 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
   auto* dev_win = win->get_device_window(signal_count, -1, 1);
   EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
-  // TODO: The current NCCL GIN implementation
-  // and destination windows are registered with the same communicator. Windows
-  // registered via ncclCommSplit (local_comm_) have separate window tables and
-  // cannot be used with the parent comm's ncclDevComm. As a temporary
-  // workaround, we register the source buffer as a separate collective window.
-  // In the future, we should either:
-  //   1. Implement proper non-collective local buffer registration for GIN
-  //   2. Use a different approach like LSA (Load-Store Access) for local
-  //   buffers
-  //   3. Work with NCCL team to enable cross-comm window access for split comms
-  //
-  // Create source window (COLLECTIVE - all ranks must participate)
-  torchcomm_->barrier(false);
-  auto src_base_win = torchcomm_->new_window();
-  src_base_win->tensor_register(src_tensor);
-  torchcomm_->barrier(false);
-
-  auto* src_win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(src_base_win.get());
-  ASSERT_NE(src_win, nullptr)
-      << "Source window should be TorchCommWindowNCCLXGin";
-
-  // Get the source device window to access its nccl_orig_win_ via window_ field
-  auto* src_dev_win = src_win->get_device_window(signal_count, -1, 1);
-  ASSERT_NE(src_dev_win, nullptr)
-      << "Source device window pointer should not be null";
-
-  // Create RegisteredBuffer pointing to the source window's nccl_orig_win_
-  // Note: We need to copy window_ from device memory to access it on host.
-  // For now, we use the host-side NCCL window from the TorchCommWindow.
-  torchcomms::device::RegisteredBufferNCCL src_buf;
-  src_buf.base_ptr = src_tensor.data_ptr();
-  src_buf.size = count * src_tensor.element_size();
-  src_buf.backend_window = src_win->get_nccl_window();
+  // Register source buffer as a local-only window using NCCL_WIN_LOCAL_ONLY.
+  // This is NON-COLLECTIVE - uses the parent comm's PD but skips rkey
+  // allGather. The resulting window can only be used as a source buffer for put
+  // operations.
+  auto src_buf = win->register_local_buffer(src_tensor);
+  ASSERT_NE(src_buf.base_ptr, nullptr)
+      << "Source buffer base_ptr should not be null";
   ASSERT_NE(src_buf.backend_window, nullptr)
       << "Source buffer backend_window should not be null";
 
@@ -433,9 +413,8 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
   }
   put_stream.synchronize();
 
-  // Cleanup - deregister source window first (collective), then destination
-  src_base_win->tensor_deregister();
-  src_base_win.reset();
+  // Cleanup - deregister local source buffer (non-collective), then destination
+  win->deregister_local_buffer(src_buf);
 
   base_win->tensor_deregister();
   base_win.reset();
@@ -460,14 +439,10 @@ TEST_F(DeviceApiTest, DeviceWindowCreationHalf) {
 }
 
 TEST_F(DeviceApiTest, LocalBufferRegistrationFloat) {
-  // TODO(T123456789): Skip this test until initLocalComm() is fixed.
-  // The register_local_buffer() API requires a local split communicator
-  // (ncclCommSplit), but this is currently disabled because split-comm
-  // windows have separate window tables from parent ncclDevComm.
-  // The DevicePutFloat test uses collective window registration as a
-  // workaround.
-  GTEST_SKIP() << "Skipping: register_local_buffer() requires initLocalComm() "
-                  "which is currently disabled";
+  // Test non-collective local buffer registration using NCCL_WIN_LOCAL_ONLY.
+  // This uses the parent comm's PD but skips the rkey allGather, making
+  // registration truly non-collective. The resulting window can only be used
+  // as a source buffer for put operations.
   testLocalBufferRegistration(1024, at::kFloat);
 }
 
