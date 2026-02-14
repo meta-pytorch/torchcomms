@@ -21,11 +21,11 @@ def store_deletion_barrier(torchcomm):
 
     # Synchronize based on device type
     device = torchcomm.get_device()
-    if device.type == "cuda":
+    if torch.accelerator.is_available():
         # Calculate device index as rank % num_devices and synchronize
         rank = torchcomm.get_rank()
-        device_index = rank % torch.cuda.device_count()
-        torch.cuda.current_stream(device_index).synchronize()
+        device_index = rank % torch.accelerator.device_count()
+        torch.accelerator.current_stream(device_index).synchronize()
     # For CPU devices, no synchronization needed
 
 
