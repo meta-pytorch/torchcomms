@@ -553,6 +553,14 @@ DevMemType CtranMapper::segmentType(void* segHdl) {
   return segment->getType();
 }
 
+const void* CtranMapper::segmentBuf(void* segHdl) {
+  auto regCache = ctran::RegCache::getInstance();
+  ctran::CHECK_VALID_REGCACHE(regCache);
+
+  ctran::regcache::Segment* segment = regCache->getSegment(segHdl);
+  return segment ? segment->range.buf : nullptr;
+}
+
 commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
   auto regCache = ctran::RegCache::getInstance();
   ctran::CHECK_VALID_REGCACHE(regCache);
