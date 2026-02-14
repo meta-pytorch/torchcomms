@@ -6,6 +6,7 @@
 #include <queue>
 #include <unordered_map>
 
+#include "comms/ctran/backends/ib/CtranIbSingleton.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CtranAvlTree.h"
@@ -407,6 +408,12 @@ class RegCache {
   folly::Synchronized<regcache::Profiler> profiler;
 
  private:
+  // Hold a reference to CtranIbSingleton to ensure proper destruction order.
+  // By holding this shared_ptr, we guarantee CtranIbSingleton stays alive
+  // as long as RegCache exists, preventing use-after-free during
+  // deregistration.
+  std::shared_ptr<CtranIbSingleton> ibSingleton_;
+
   // AVL tree based segment cache
   folly::Synchronized<CtranAvlTree> segmentsAvl_;
   class RegElemMaps {
