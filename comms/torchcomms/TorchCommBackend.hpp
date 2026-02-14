@@ -166,6 +166,35 @@ class TorchCommBackend {
         "[TorchCommBackend]: new_window not implemented for communicator:" +
         std::string(getCommName()));
   }
+
+  // Abort hook support - called before aborting when a collective times out or
+  // fails. This allows users to capture debug information before the abort.
+  // Multiple hooks can be registered and will be called in order.
+  using AbortHook = std::function<void()>;
+
+  virtual void registerAbortHook(int64_t hookId, AbortHook hook) {
+    abortHooks_.emplace(hookId, std::move(hook));
+  }
+
+  virtual void unregisterAbortHook(int64_t hookId) {
+    abortHooks_.erase(hookId);
+  }
+
+ protected:
+  void runAbortHooks() {
+    for (const auto& [_, hook] : abortHooks_) {
+      try {
+        hook();
+      } catch (const std::exception& e) {
+        LOG(ERROR) << "[TorchCommBackend] Abort hook threw exception: "
+                   << e.what();
+      } catch (...) {
+        LOG(ERROR) << "[TorchCommBackend] Abort hook threw unknown exception.";
+      }
+    }
+  }
+
+  std::unordered_map<int64_t, AbortHook> abortHooks_;
 };
 
 /**

@@ -71,6 +71,12 @@ class TorchWork : public c10::intrusive_ptr_target {
 
   void setCallback(std::function<void()> callback) {
     callback_ = std::move(callback);
+    auto currentStatus = status();
+    if (currentStatus == WorkStatus::COMPLETED ||
+        currentStatus == WorkStatus::ERROR ||
+        currentStatus == WorkStatus::TIMEDOUT) {
+      runCallback();
+    }
   }
 
   void runCallback() {
