@@ -30,6 +30,15 @@ else()
 endif()
 message(STATUS "TORCH_CUDA_ARCH_LIST : ${TORCH_CUDA_ARCH_LIST}")
 
+# Fetch nlohmann/json
+include(FetchContent)
+FetchContent_Declare(
+    nlohmann_json
+    GIT_REPOSITORY https://github.com/nlohmann/json.git
+    GIT_TAG v3.11.3
+)
+FetchContent_MakeAvailable(nlohmann_json)
+
 # Find Python and PyTorch
 find_package(Python3 COMPONENTS Interpreter Development.Module REQUIRED)
 
@@ -53,7 +62,14 @@ find_package(Torch REQUIRED)
 # Helper to glob sources
 file(GLOB TORCHCOMMS_SOURCES "comms/torchcomms/*.cpp")
 file(GLOB TORCHCOMMS_PYTHON_SOURCES "comms/torchcomms/*Py.cpp")
+file(GLOB HOOKS_SOURCES "comms/torchcomms/hooks/*.cpp")
+file(GLOB HOOKS_PYTHON_SOURCES "comms/torchcomms/hooks/*Py.cpp")
+
 list(REMOVE_ITEM TORCHCOMMS_SOURCES ${TORCHCOMMS_PYTHON_SOURCES})
+list(REMOVE_ITEM HOOKS_SOURCES ${HOOKS_PYTHON_SOURCES})
+
+list(APPEND TORCHCOMMS_SOURCES ${HOOKS_SOURCES})
+list(APPEND TORCHCOMMS_PYTHON_SOURCES ${HOOKS_PYTHON_SOURCES})
 
 # Set include directories
 set(ROOT ${CMAKE_CURRENT_SOURCE_DIR})
@@ -88,7 +104,7 @@ target_include_directories(torchcomms PRIVATE
 )
 target_compile_features(torchcomms PRIVATE cxx_std_20)
 target_link_directories(torchcomms PRIVATE ${CONDA_LIB})
-target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES})
+target_link_libraries(torchcomms PRIVATE ${TORCH_LIBRARIES} nlohmann_json::nlohmann_json)
 if(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms PRIVATE
         "-lglog"
@@ -107,7 +123,7 @@ else()
 endif()
 
 # Extension: torchcomms._comms
-add_library(torchcomms_comms MODULE ${TORCHCOMMS_PYTHON_SOURCES})
+add_library(torchcomms_comms MODULE ${TORCHCOMMS_PYTHON_SOURCES} ${HOOKS_PYTHON_SOURCES})
 set_target_properties(torchcomms_comms PROPERTIES
     PREFIX ""  # No 'lib' prefix for Python extension
     OUTPUT_NAME "_comms"
@@ -125,6 +141,7 @@ target_link_libraries(torchcomms_comms PRIVATE
     ${TORCH_LIBRARIES}
     ${TORCH_PYTHON_LIB}
     torchcomms
+    nlohmann_json::nlohmann_json
 )
 
 if (USE_NCCL)

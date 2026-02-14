@@ -305,6 +305,10 @@ void TorchCommNCCL::finalize() {
 }
 
 void TorchCommNCCL::abortNcclComm() {
+  // Call abort hooks before aborting to allow users to capture debug info
+  TC_LOG(INFO, this) << "Calling abort hooks before aborting.";
+  runAbortHooks();
+
   detachMemoryHook();
   if (nccl_comm_) {
     NCCL_CHECK(
