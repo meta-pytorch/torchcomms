@@ -9,6 +9,8 @@
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/window/DeviceWindowMemory.cuh"
+#include "comms/pipes/window/DeviceWindowSignal.cuh"
 
 namespace comms::pipes {
 
@@ -102,6 +104,7 @@ namespace comms::pipes {
  *
  * Provides a single device object with:
  * - Rank-based send/recv/put operations
+ * - DeviceWindowSignal for inbox-style signaling (remote notification)
  *
  * RANK-BASED API:
  * All public APIs that target a specific peer accept a target_rank in the
@@ -137,15 +140,15 @@ namespace comms::pipes {
  * Data Transfer (put, send, recv):
  * - No implicit ordering; pair with signal for visibility guarantee
  *
- * Example pattern (rank 0 sends to rank 1):
+ * Example pattern (rank 0 sends to rank 1, 2-rank setup):
  *
- * // Rank 0 (Sender): target_rank = 1
- * send(1, group, src, nbytes);
- * signal_peer(1, group, 0);
+ *   // Rank 0 (Sender): target_rank = 1
+ *   send(1, group, src, nbytes);
+ *   signal_peer(group, 1, 0);
  *
- * // Rank 1 (Receiver): target_rank = 0
- * wait_signal(group, 0, CMP_GE, 1);  // data now visible
- * recv(0, group, dst, nbytes);
+ *   // Rank 1 (Receiver): target_rank = 0
+ *   wait_signal(group, 0, CMP_GE, 1);  // data now visible
+ *   recv(0, group, dst, nbytes);
  *
  * ARCHITECTURE
  * ============
@@ -165,13 +168,17 @@ namespace comms::pipes {
  *   │  │   ├── Transport[0]: SELF or P2P_NVL                          │
  *   │  │   ├── Transport[1]: P2P_NVL                                  │
  *   │  │   └── ...                                                    │
+ *   │  ├── DeviceWindowSignal signal_ (inbox model)                         │
+ *   │  │   └── signal_peer() / wait_signal()                          │
  *   └─────────────────────────────────────────────────────────────────┘
  *
  * USAGE:
  *   // Host setup
  *   MultiPeerNvlTransport hostTransport(myRank, nRanks, bootstrap, config);
+ *   WindowMemory wm(myRank, nRanks, bootstrap, wmConfig);
  *   hostTransport.exchange();
- *   auto transport = hostTransport.getMultiPeerDeviceTransport();
+ *   wm.exchange();
+ *   auto transport = hostTransport.getMultiPeerDeviceTransport(wm);
  *
  *   // Kernel (pass by const reference to avoid copy)
  *   __global__ void myKernel(const MultiPeerDeviceTransport& transport, ...) {
@@ -181,18 +188,21 @@ namespace comms::pipes {
  *     transport.send(target_rank, group, src, nbytes);
  *
  *     // Signaling (rank-based)
- *     transport.signal_peer(target_rank, group, 0, SIGNAL_ADD, 1);
+ *     transport.signal_peer(group, target_rank, 0, SIGNAL_ADD, 1);
  *     transport.wait_signal(group, 0, CMP_GE, 1);
  *
  *     // Barrier
  *     transport.barrier(group, 0);
+ *
+ *     // Local copy via self transport
+ *     transport.get_self_transport()->self.put(group, dst, src, nbytes);
  *   }
  */
 class MultiPeerDeviceTransport {
  public:
   __host__ __device__ MultiPeerDeviceTransport() = default;
 
-  MultiPeerDeviceTransport(const MultiPeerDeviceTransport&) = delete;
+  MultiPeerDeviceTransport(const MultiPeerDeviceTransport&) = default;
   MultiPeerDeviceTransport& operator=(const MultiPeerDeviceTransport&) = delete;
 
   // Move is allowed
@@ -207,12 +217,17 @@ class MultiPeerDeviceTransport {
    * @param myRank This rank's ID (must be in range [0, nRanks))
    * @param nRanks Total number of ranks
    * @param transports Span of Transport objects for each peer (size = nRanks)
+   * @param wm DeviceWindowMemory bundling signal and barrier primitives
    */
   __host__ __device__ MultiPeerDeviceTransport(
       int myRank,
       int nRanks,
-      DeviceSpan<Transport> transports)
-      : myRank_(myRank), nRanks_(nRanks), transports_(transports) {
+      DeviceSpan<Transport> transports,
+      DeviceWindowMemory wm)
+      : myRank_(myRank),
+        nRanks_(nRanks),
+        transports_(transports),
+        signal_(wm.signal()) {
     // Validate constraints
     assert(nRanks > 0);
     assert(myRank >= 0 && myRank < nRanks);
@@ -262,6 +277,80 @@ class MultiPeerDeviceTransport {
     return (index < myRank_) ? index : (index + 1);
   }
 
+  /**
+   * rank_to_peer_index - Convert global rank to peer index
+   *
+   * Inverse of peer_index_to_rank(). Only valid for rank != myRank.
+   *
+   * Example for myRank=2, nRanks=4:
+   *   rank_to_peer_index(0) -> 0
+   *   rank_to_peer_index(1) -> 1
+   *   rank_to_peer_index(3) -> 2  (self at rank 2 is skipped)
+   *
+   * @param rank Global rank (must NOT be myRank)
+   * @return Peer index for use with send/recv/signal_peer
+   */
+  __host__ __device__ __forceinline__ int rank_to_peer_index(int rank) const {
+    assert(rank != myRank_ && "Cannot convert self rank to peer index");
+    assert(rank >= 0 && rank < nRanks_ && "Rank out of range");
+    return (rank < myRank_) ? rank : (rank - 1);
+  }
+
+  // ===========================================================================
+  // Signal Object (inbox model)
+  // ===========================================================================
+
+  __device__ __forceinline__ DeviceWindowSignal& get_signal() {
+    return signal_;
+  }
+
+  __device__ __forceinline__ const DeviceWindowSignal& get_signal() const {
+    return signal_;
+  }
+
+  // ===========================================================================
+  // Signal Operations (delegated to signal_)
+  // ===========================================================================
+
+  /**
+   * signal_peer - Signal a specific peer's inbox
+   *
+   * @param target_rank Global rank in [0, n_ranks()), must not be self
+   * @param group ThreadGroup for cooperative processing
+   * @param signal_id Signal slot to use
+   * @param op Signal operation (SIGNAL_ADD or SIGNAL_SET)
+   * @param value Value for the signal operation (default: 1)
+   */
+  __device__ __forceinline__ void signal_peer(
+      ThreadGroup& group,
+      int target_rank,
+      int signal_id,
+      SignalOp op = SignalOp::SIGNAL_ADD,
+      uint64_t value = 1) {
+    signal_.signal_peer(group, target_rank, signal_id, op, value);
+  }
+
+  __device__ __forceinline__ void signal_all(
+      ThreadGroup& group,
+      int signal_id,
+      SignalOp op = SignalOp::SIGNAL_ADD,
+      uint64_t value = 1) {
+    signal_.signal_all(group, signal_id, op, value);
+  }
+
+  __device__ __forceinline__ void wait_signal(
+      ThreadGroup& group,
+      int signal_id,
+      CmpOp cmp,
+      uint64_t value,
+      uint64_t timeout_ns = UINT64_MAX) {
+    signal_.wait_signal(group, signal_id, cmp, value, timeout_ns);
+  }
+
+  __device__ __forceinline__ uint64_t read_signal(int signal_id) {
+    return signal_.read_signal(signal_id);
+  }
+
   // ===========================================================================
   // Send/Recv Operations
   // ===========================================================================
@@ -286,8 +375,8 @@ class MultiPeerDeviceTransport {
       void* srcbuff,
       std::size_t nbytes,
       uint32_t call_index = 0) {
-    MULTI_PEER_CHECK_RANK(target_rank, nRanks_);
-    MULTI_PEER_CHECK_NOT_SELF(target_rank, myRank_);
+    DEVICE_WINDOW_SIGNAL_CHECK_RANK(target_rank, nRanks_);
+    DEVICE_WINDOW_SIGNAL_CHECK_NOT_SELF(target_rank, myRank_);
     transports_[target_rank].p2p_nvl.send(group, srcbuff, nbytes, call_index);
   }
 
@@ -309,8 +398,8 @@ class MultiPeerDeviceTransport {
       void* dstbuff,
       std::size_t nbytes,
       uint32_t call_index = 0) {
-    MULTI_PEER_CHECK_RANK(target_rank, nRanks_);
-    MULTI_PEER_CHECK_NOT_SELF(target_rank, myRank_);
+    DEVICE_WINDOW_SIGNAL_CHECK_RANK(target_rank, nRanks_);
+    DEVICE_WINDOW_SIGNAL_CHECK_NOT_SELF(target_rank, myRank_);
     transports_[target_rank].p2p_nvl.recv(group, dstbuff, nbytes, call_index);
   }
 
@@ -325,8 +414,8 @@ class MultiPeerDeviceTransport {
    * @return Pointer to Transport object for the peer
    */
   __device__ __forceinline__ Transport* get_peer_transport(int target_rank) {
-    MULTI_PEER_CHECK_RANK(target_rank, nRanks_);
-    MULTI_PEER_CHECK_NOT_SELF(target_rank, myRank_);
+    DEVICE_WINDOW_SIGNAL_CHECK_RANK(target_rank, nRanks_);
+    DEVICE_WINDOW_SIGNAL_CHECK_NOT_SELF(target_rank, myRank_);
     return &transports_[target_rank];
   }
 
@@ -338,8 +427,8 @@ class MultiPeerDeviceTransport {
    */
   __device__ __forceinline__ const Transport* get_peer_transport(
       int target_rank) const {
-    MULTI_PEER_CHECK_RANK(target_rank, nRanks_);
-    MULTI_PEER_CHECK_NOT_SELF(target_rank, myRank_);
+    DEVICE_WINDOW_SIGNAL_CHECK_RANK(target_rank, nRanks_);
+    DEVICE_WINDOW_SIGNAL_CHECK_NOT_SELF(target_rank, myRank_);
     return &transports_[target_rank];
   }
 
@@ -369,6 +458,33 @@ class MultiPeerDeviceTransport {
   const int myRank_{-1};
   const int nRanks_{0};
   const DeviceSpan<Transport> transports_;
+  DeviceWindowSignal signal_;
+
+  // ===========================================================================
+  // Private Match Helper
+  // ===========================================================================
+
+  /**
+   * match - Internal helper to dispatch operations to the correct transport
+   *
+   * Reduces code duplication by abstracting the transport type dispatch
+   * pattern. Used by send/recv and other transport-specific operations.
+   *
+   * Operates on peer index (not rank). Peer index never refers to self,
+   * so this only dispatches to P2P NVLink transport.
+   *
+   * @tparam P2pFn Callable for P2pNvlTransportDevice operations
+   * @param peer Peer index (0 to num_peers()-1)
+   * @param p2p_fn Lambda to execute for P2P NVLink transport
+   */
+  template <typename P2pFn>
+  __device__ __forceinline__ void match(int peer, P2pFn&& p2p_fn) {
+    assert(peer >= 0 && peer < num_peers());
+    int rank = peer_index_to_rank(peer);
+    Transport* transport = &transports_[rank];
+    // Peer index never refers to self, so always P2P
+    p2p_fn(transport->p2p_nvl);
+  }
 };
 
 } // namespace comms::pipes

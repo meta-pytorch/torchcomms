@@ -13,6 +13,7 @@ namespace comms::pipes {
 
 // Forward declarations for multi-peer device transport types
 class MultiPeerDeviceTransport;
+class WindowMemory;
 struct Transport;
 
 /**
@@ -38,10 +39,16 @@ struct MultiPeerNvlTransportConfig {
   // Typical: 2-4 for most workloads.
   std::size_t pipelineDepth{0};
 
-  // Number of signal slots per peer for signal/wait communication.
-  // Larger = more signals available for parallelism.
+  // Number of P2P signal slots per peer for chunk-level pipeline coordination.
+  // Used by signalBufferHandler_ and P2pNvlTransportDevice for send()/recv().
+  // This is separate from WindowMemoryConfig.signalCount (inbox model).
   // Typical: 1-num of blocks for most workloads.
-  std::size_t signalCount{1};
+  std::size_t p2pSignalCount{1};
+
+  // Number of counter slots for local completion tracking.
+  // Counters track when source buffers are safe to reuse.
+  // Typical: 1-4 for most workloads.
+  std::size_t counterCount{1};
 };
 
 /**
@@ -166,19 +173,24 @@ class MultiPeerNvlTransport {
    * getMultiPeerDeviceTransport - Get unified device handle for all peers
    *
    * Returns a MultiPeerDeviceTransport that provides:
+   * - DeviceWindowSignal with inbox semantics (all peers write to this rank's
+   * inbox)
+   * - DeviceBarrier for multi-peer synchronization
    * - Peer-indexed send/recv operations
    *
    * PRECONDITION: exchange() must have been called by all ranks first.
+   * PRECONDITION: wm.exchange() must have been called by all ranks first.
    *
    * The returned device handle is designed for multi-peer collective operations
    * where a single kernel needs to communicate with multiple peers.
    *
+   * @param wm WindowMemory providing sync primitives (signal, barrier)
    * @return MultiPeerDeviceTransport handle for use in CUDA kernels
    *
    * @note Thread-safe after exchange() completes
    * @note The returned handle is copyable and can be passed to multiple kernels
    */
-  MultiPeerDeviceTransport getMultiPeerDeviceTransport();
+  MultiPeerDeviceTransport getMultiPeerDeviceTransport(const WindowMemory& wm);
 
   /**
    * getDeviceTransports - Get device-accessible array of Transport objects
