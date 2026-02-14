@@ -769,6 +769,22 @@ guarantees. Users depending on unsafe_get_backend should expect their code to
 break as interfaces change.
           )",
           py::call_guard<py::gil_scoped_release>())
+      .def(
+          "get_init_handle",
+          &TorchComm::getInitHandle,
+          R"(
+Get the initialization handle for this communicator.
+
+In dynamic regime, this handle encodes information required by the backend
+to complete the initialization process via reconfigure().
+
+Returns:
+    An InitHandle string.
+
+Raises:
+    RuntimeError: If not implemented by the backend.
+          )",
+          py::call_guard<py::gil_scoped_release>())
 
       // Point-to-Point Operations
       .def(
