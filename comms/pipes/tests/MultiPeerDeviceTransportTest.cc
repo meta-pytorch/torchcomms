@@ -1,0 +1,647 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#include <cuda_runtime.h>
+#include <gtest/gtest.h>
+#include <numeric>
+#include <vector>
+
+#include "comms/pipes/DeviceCounter.cuh"
+#include "comms/pipes/DeviceSignal.cuh"
+#include "comms/pipes/MultiPeerDeviceTransport.cuh"
+#include "comms/pipes/Transport.cuh"
+#include "comms/pipes/tests/MultiPeerDeviceTransportTest.cuh"
+#include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/CudaRAII.h"
+
+using meta::comms::DeviceBuffer;
+
+namespace comms::pipes {
+
+class MultiPeerDeviceTransportTestFixture : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    CUDACHECK_TEST(cudaSetDevice(0));
+  }
+
+  void TearDown() override {
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+  }
+};
+
+// =============================================================================
+// DeviceSignal Tests
+// =============================================================================
+
+TEST_F(MultiPeerDeviceTransportTestFixture, DeviceSignalConstruction) {
+  const int myRank = 0;
+  const int nRanks = 4;
+  const int signalCount = 2;
+
+  DeviceBuffer resultsBuffer(3 * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testDeviceSignalConstruction(myRank, nRanks, signalCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(3);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(), results_d, 3 * sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], myRank) << "rank() should return " << myRank;
+  EXPECT_EQ(results_h[1], nRanks) << "nRanks() should return " << nRanks;
+  EXPECT_EQ(results_h[2], signalCount)
+      << "signalCount() should return " << signalCount;
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, SignalInboxBufferSize) {
+  // Test buffer size calculation
+  const int signalCount = 2;
+
+  std::size_t bufferSize = getSignalInboxBufferSize(signalCount);
+
+  // Expected: signalCount * sizeof(SignalState), aligned to 128 bytes
+  std::size_t expectedSlots = signalCount;
+  std::size_t expectedMinSize = expectedSlots * sizeof(SignalState);
+  // Should be aligned to 128 bytes
+  EXPECT_GE(bufferSize, expectedMinSize);
+  EXPECT_EQ(bufferSize % 128, 0) << "Buffer size should be 128-byte aligned";
+}
+
+// =============================================================================
+// DeviceCounter Tests
+// =============================================================================
+
+TEST_F(MultiPeerDeviceTransportTestFixture, DeviceCounterConstruction) {
+  const int counterCount = 4;
+
+  DeviceBuffer resultsBuffer(sizeof(uint32_t));
+  auto results_d = static_cast<uint32_t*>(resultsBuffer.get());
+
+  test::testDeviceCounterConstruction(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, static_cast<uint32_t>(counterCount))
+      << "counterCount() should return " << counterCount;
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, CounterBufferSize) {
+  // Test buffer size calculation
+  const int counterCount = 4;
+
+  std::size_t bufferSize = getCounterBufferSize(counterCount);
+
+  // Expected: counterCount * sizeof(SignalState), aligned to 128 bytes
+  std::size_t expectedMinSize = counterCount * sizeof(SignalState);
+  // Should be aligned to 128 bytes
+  EXPECT_GE(bufferSize, expectedMinSize);
+  EXPECT_EQ(bufferSize % 128, 0) << "Buffer size should be 128-byte aligned";
+}
+
+// =============================================================================
+// MultiPeerDeviceTransport Tests
+// =============================================================================
+
+TEST_F(
+    MultiPeerDeviceTransportTestFixture,
+    MultiPeerDeviceTransportConstruction) {
+  const int myRank = 2;
+  const int nRanks = 4;
+
+  DeviceBuffer resultsBuffer(2 * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testMultiPeerDeviceTransportConstruction(myRank, nRanks, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(2);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(), results_d, 2 * sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], myRank) << "rank() should return " << myRank;
+  EXPECT_EQ(results_h[1], nRanks) << "nRanks() should return " << nRanks;
+}
+
+// =============================================================================
+// Edge Cases
+// =============================================================================
+
+TEST_F(MultiPeerDeviceTransportTestFixture, SingleRankSignal) {
+  // Test with single rank (edge case)
+  const int myRank = 0;
+  const int nRanks = 1;
+  const int signalCount = 1;
+
+  DeviceBuffer resultsBuffer(3 * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testDeviceSignalConstruction(myRank, nRanks, signalCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(3);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(), results_d, 3 * sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], myRank);
+  EXPECT_EQ(results_h[1], nRanks);
+  EXPECT_EQ(results_h[2], signalCount);
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, MaxRanksTransport) {
+  // Test with a high rank count to verify construction works
+  // (actual max depends on hardware: H100=8, GB200=72)
+  const int myRank = 7;
+  const int nRanks = 8;
+
+  DeviceBuffer resultsBuffer(2 * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testMultiPeerDeviceTransportConstruction(myRank, nRanks, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(2);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(), results_d, 2 * sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], myRank) << "rank() should return " << myRank;
+  EXPECT_EQ(results_h[1], nRanks) << "nRanks() should return " << nRanks;
+}
+
+// =============================================================================
+// Self-Transport Tests (via get_self_transport())
+// =============================================================================
+
+TEST_F(MultiPeerDeviceTransportTestFixture, GetTransportReturnsCorrectType) {
+  // Test that get_self_transport() returns a valid Transport with SELF type
+  // when accessing myRank's transport
+
+  // Allocate Transport on device with SELF type
+  P2pSelfTransportDevice selfTransport;
+  Transport hostTransport(selfTransport);
+
+  // Copy Transport to device (need to use placement new due to deleted copy)
+  Transport* transport_d = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&transport_d, sizeof(Transport)));
+
+  // Use cudaMemcpy to copy the bytes (Transport has trivial layout for union)
+  CUDACHECK_TEST(cudaMemcpy(
+      transport_d, &hostTransport, sizeof(Transport), cudaMemcpyHostToDevice));
+
+  // Allocate results buffer
+  DeviceBuffer resultsBuffer(sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(int)));
+
+  // Test that transport type is SELF
+  test::testGetTransportType(transport_d, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, results_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "Transport type should be SELF";
+
+  CUDACHECK_TEST(cudaFree(transport_d));
+}
+
+// Peer Iteration Helper Tests
+// =============================================================================
+
+TEST_F(MultiPeerDeviceTransportTestFixture, PeerIterationHelpersRank0) {
+  // Test peer iteration helpers with myRank=0, nRanks=4
+  // Expected: numPeers=3, peerIndexToRank=[1, 2, 3]
+  const int myRank = 0;
+  const int nRanks = 4;
+  const int numPeers = nRanks - 1;
+
+  DeviceBuffer resultsBuffer((1 + numPeers) * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testPeerIterationHelpers(myRank, nRanks, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(1 + numPeers);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      (1 + numPeers) * sizeof(int),
+      cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], numPeers) << "numPeers() should return " << numPeers;
+  EXPECT_EQ(results_h[1], 1) << "peerIndexToRank(0) should return 1";
+  EXPECT_EQ(results_h[2], 2) << "peerIndexToRank(1) should return 2";
+  EXPECT_EQ(results_h[3], 3) << "peerIndexToRank(2) should return 3";
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, PeerIterationHelpersRank2) {
+  // Test peer iteration helpers with myRank=2, nRanks=4
+  // Expected: numPeers=3, peerIndexToRank=[0, 1, 3] (skips self at 2)
+  const int myRank = 2;
+  const int nRanks = 4;
+  const int numPeers = nRanks - 1;
+
+  DeviceBuffer resultsBuffer((1 + numPeers) * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testPeerIterationHelpers(myRank, nRanks, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(1 + numPeers);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      (1 + numPeers) * sizeof(int),
+      cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], numPeers) << "numPeers() should return " << numPeers;
+  EXPECT_EQ(results_h[1], 0) << "peerIndexToRank(0) should return 0";
+  EXPECT_EQ(results_h[2], 1) << "peerIndexToRank(1) should return 1";
+  EXPECT_EQ(results_h[3], 3)
+      << "peerIndexToRank(2) should return 3 (skip self)";
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, PeerIterationHelpersRank7) {
+  // Test peer iteration helpers with myRank=7, nRanks=8 (max rank)
+  // Expected: numPeers=7, peerIndexToRank=[0, 1, 2, 3, 4, 5, 6]
+  const int myRank = 7;
+  const int nRanks = 8;
+  const int numPeers = nRanks - 1;
+
+  DeviceBuffer resultsBuffer((1 + numPeers) * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testPeerIterationHelpers(myRank, nRanks, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(1 + numPeers);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      (1 + numPeers) * sizeof(int),
+      cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], numPeers) << "numPeers() should return " << numPeers;
+  // For myRank=7, all indices map directly (0->0, 1->1, ..., 6->6)
+  std::vector<int> expectedPeerRanks(numPeers);
+  std::iota(expectedPeerRanks.begin(), expectedPeerRanks.end(), 0);
+  std::vector<int> actualPeerRanks(results_h.begin() + 1, results_h.end());
+  EXPECT_EQ(actualPeerRanks, expectedPeerRanks)
+      << "peerIndexToRank mapping mismatch for myRank=7";
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, PeerIterationHelpersSinglePeer) {
+  // Test with nRanks=2 (minimal multi-peer case)
+  // Expected: numPeers=1
+  const int myRank = 0;
+  const int nRanks = 2;
+  const int numPeers = nRanks - 1;
+
+  DeviceBuffer resultsBuffer((1 + numPeers) * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testPeerIterationHelpers(myRank, nRanks, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(1 + numPeers);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      (1 + numPeers) * sizeof(int),
+      cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], 1) << "numPeers() should return 1";
+  EXPECT_EQ(results_h[1], 1) << "peerIndexToRank(0) should return 1";
+}
+
+// =============================================================================
+// Peer Index Conversion Roundtrip Tests
+// =============================================================================
+
+// Helper to run the roundtrip test kernel and verify results for a given
+// myRank/nRanks configuration. Tests:
+//   1. rank_to_peer_index() produces expected values
+//   2. peer_index_to_rank(rank_to_peer_index(rank)) == rank (roundtrip)
+//   3. rank_to_peer_index(peer_index_to_rank(i)) == i (roundtrip)
+//   4. get_self_transport()->type == SELF
+//   5. get_peer_transport(i)->type == P2P_NVL for all peers
+void verifyPeerIndexConversionRoundtrip(int myRank, int nRanks) {
+  const int numPeers = nRanks - 1;
+  // Results layout: numPeers + 3*numPeers (conversions/roundtrips) + 1 (self)
+  //                 + numPeers (peer types) = 4*numPeers + 2
+  const int numResults = 4 * numPeers + 2;
+
+  DeviceBuffer resultsBuffer(numResults * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0xFF, numResults * sizeof(int)));
+
+  test::testPeerIndexConversionRoundtrip(myRank, nRanks, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> r(numResults);
+  CUDACHECK_TEST(cudaMemcpy(
+      r.data(), results_d, numResults * sizeof(int), cudaMemcpyDeviceToHost));
+
+  int idx = 0;
+
+  // [0] = numPeers
+  EXPECT_EQ(r[idx++], numPeers)
+      << "numPeers() for myRank=" << myRank << ", nRanks=" << nRanks;
+
+  // [1 .. numPeers] = rank_to_peer_index for each non-self rank
+  // Compute expected: for rank in [0, nRanks) excluding myRank,
+  //   peer_index = (rank < myRank) ? rank : (rank - 1)
+  for (int rank = 0; rank < nRanks; ++rank) {
+    if (rank == myRank) {
+      continue;
+    }
+    int expectedPeerIndex = (rank < myRank) ? rank : (rank - 1);
+    EXPECT_EQ(r[idx], expectedPeerIndex)
+        << "rank_to_peer_index(" << rank << ") for myRank=" << myRank
+        << ", nRanks=" << nRanks;
+    idx++;
+  }
+
+  // [numPeers+1 .. 2*numPeers] = roundtrip rank->peer_index->rank
+  for (int rank = 0; rank < nRanks; ++rank) {
+    if (rank == myRank) {
+      continue;
+    }
+    EXPECT_EQ(r[idx], rank)
+        << "Roundtrip peer_index_to_rank(rank_to_peer_index(" << rank
+        << ")) should equal " << rank << " for myRank=" << myRank
+        << ", nRanks=" << nRanks;
+    idx++;
+  }
+
+  // [2*numPeers+1 .. 3*numPeers] = roundtrip peer_index->rank->peer_index
+  for (int i = 0; i < numPeers; ++i) {
+    EXPECT_EQ(r[idx], i) << "Roundtrip rank_to_peer_index(peer_index_to_rank("
+                         << i << ")) should equal " << i
+                         << " for myRank=" << myRank << ", nRanks=" << nRanks;
+    idx++;
+  }
+
+  // [3*numPeers+1] = get_self_transport()->type (expect SELF=0)
+  EXPECT_EQ(r[idx++], 0)
+      << "get_self_transport()->type should be SELF for myRank=" << myRank;
+
+  // [3*numPeers+2 .. 4*numPeers+1] = get_peer_transport(i)->type
+  // (expect P2P_NVL=1)
+  for (int i = 0; i < numPeers; ++i) {
+    EXPECT_EQ(r[idx], 1) << "get_peer_transport(" << i
+                         << ")->type should be P2P_NVL for myRank=" << myRank;
+    idx++;
+  }
+}
+
+TEST_F(
+    MultiPeerDeviceTransportTestFixture,
+    PeerIndexConversionRoundtripRank0Of4) {
+  verifyPeerIndexConversionRoundtrip(/*myRank=*/0, /*nRanks=*/4);
+}
+
+TEST_F(
+    MultiPeerDeviceTransportTestFixture,
+    PeerIndexConversionRoundtripRank2Of4) {
+  // Middle rank: tests the skip-self logic in both directions
+  verifyPeerIndexConversionRoundtrip(/*myRank=*/2, /*nRanks=*/4);
+}
+
+TEST_F(
+    MultiPeerDeviceTransportTestFixture,
+    PeerIndexConversionRoundtripRank3Of4) {
+  // Last rank: peer indices map 1:1 to ranks [0, 1, 2]
+  verifyPeerIndexConversionRoundtrip(/*myRank=*/3, /*nRanks=*/4);
+}
+
+TEST_F(
+    MultiPeerDeviceTransportTestFixture,
+    PeerIndexConversionRoundtripRank0Of2) {
+  // Minimal 2-rank case: single peer
+  verifyPeerIndexConversionRoundtrip(/*myRank=*/0, /*nRanks=*/2);
+}
+
+TEST_F(
+    MultiPeerDeviceTransportTestFixture,
+    PeerIndexConversionRoundtripRank1Of2) {
+  // Minimal 2-rank case from the other side
+  verifyPeerIndexConversionRoundtrip(/*myRank=*/1, /*nRanks=*/2);
+}
+
+TEST_F(
+    MultiPeerDeviceTransportTestFixture,
+    PeerIndexConversionRoundtripRank4Of8) {
+  // 8-rank case with middle rank: exercises larger peer counts
+  verifyPeerIndexConversionRoundtrip(/*myRank=*/4, /*nRanks=*/8);
+}
+
+// =============================================================================
+// DeviceCounter Operation Tests
+// =============================================================================
+
+// Verify basic increment_counter() and read_counter() operations work
+// correctly. Increments counter by 1 and reads back the value, expecting 1.
+TEST_F(MultiPeerDeviceTransportTestFixture, CounterIncrementAndRead) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(uint64_t)));
+
+  test::testCounterIncrementAndRead(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint64_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "Counter should be 1 after increment_counter(1)";
+}
+
+// Verify that multiple increment_counter() calls accumulate correctly.
+// Increments counter 3 times with value=1, expecting final value of 3.
+TEST_F(MultiPeerDeviceTransportTestFixture, CounterValueAccumulation) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(uint64_t)));
+
+  test::testCounterValueAccumulation(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint64_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 3)
+      << "Counter should be 3 after three increment_counter(1) calls";
+}
+
+// Verify increment_counter() works with values other than 1.
+// Increments counter with value=1000 and reads back, expecting 1000.
+TEST_F(MultiPeerDeviceTransportTestFixture, CounterIncrementCustomValue) {
+  const int counterCount = 1;
+  const uint64_t incrementValue = 1000;
+
+  DeviceBuffer resultsBuffer(sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(uint64_t)));
+
+  test::testCounterIncrementCustomValue(
+      counterCount, incrementValue, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint64_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, incrementValue)
+      << "Counter should be " << incrementValue << " after increment";
+}
+
+// Verify wait_counter() with CMP_GE comparison completes when condition is met.
+// Increments counter to 5, then waits for >= 5, which should pass immediately.
+TEST_F(MultiPeerDeviceTransportTestFixture, WaitCounterCmpGe) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(int)));
+
+  test::testWaitCounterCmpGe(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, results_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "wait_counter with CMP_GE should complete";
+}
+
+// Verify wait_counter() with CMP_EQ comparison completes when exact value
+// matches. Increments counter to 3, then waits for == 3, which should pass
+// immediately.
+TEST_F(MultiPeerDeviceTransportTestFixture, WaitCounterCmpEq) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, sizeof(int)));
+
+  test::testWaitCounterCmpEq(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, results_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "wait_counter with CMP_EQ should complete";
+}
+
+// Verify reset_counter() resets a single counter to 0.
+// Increments counter to 5, resets it, then reads back expecting 0.
+TEST_F(MultiPeerDeviceTransportTestFixture, ResetCounter) {
+  const int counterCount = 1;
+
+  DeviceBuffer resultsBuffer(sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0xFF, sizeof(uint64_t)));
+
+  test::testResetCounter(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint64_t result_h = 0xFFFFFFFFFFFFFFFF;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, results_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 0) << "Counter should be 0 after reset_counter()";
+}
+
+// Verify reset_all_counters() resets all counters to 0.
+// Increments 3 counters to different values, resets all, expects all to be 0.
+TEST_F(MultiPeerDeviceTransportTestFixture, ResetAllCounters) {
+  const int counterCount = 3;
+
+  DeviceBuffer resultsBuffer(counterCount * sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0xFF, counterCount * sizeof(uint64_t)));
+
+  test::testResetAllCounters(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<uint64_t> results_h(counterCount, 0xFFFFFFFFFFFFFFFF);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      counterCount * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+
+  for (int i = 0; i < counterCount; ++i) {
+    EXPECT_EQ(results_h[i], 0)
+        << "Counter " << i << " should be 0 after reset_all_counters()";
+  }
+}
+
+// Verify that different counter IDs are independent of each other.
+// Increments counters 0, 1, 2 with values 10, 20, 30 respectively,
+// then verifies each counter has its own independent value.
+TEST_F(MultiPeerDeviceTransportTestFixture, MultipleCounterIndependence) {
+  const int counterCount = 3;
+
+  DeviceBuffer resultsBuffer(3 * sizeof(uint64_t));
+  auto results_d = static_cast<uint64_t*>(resultsBuffer.get());
+  CUDACHECK_TEST(cudaMemset(results_d, 0, 3 * sizeof(uint64_t)));
+
+  test::testMultipleCounterIndependence(counterCount, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<uint64_t> results_h(3);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(),
+      results_d,
+      3 * sizeof(uint64_t),
+      cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], 10) << "Counter 0 should have value 10";
+  EXPECT_EQ(results_h[1], 20) << "Counter 1 should have value 20";
+  EXPECT_EQ(results_h[2], 30) << "Counter 2 should have value 30";
+}
+
+// =============================================================================
+// Bounds Checking Documentation
+// =============================================================================
+//
+// MULTI_PEER_CHECK_PEER_INDEX TESTING STRATEGY:
+//
+// The MULTI_PEER_CHECK_PEER_INDEX macro provides bounds validation for peer
+// ranks. Testing this is challenging because:
+//
+// 1. Device code (__CUDA_ARCH__): The macro calls __trap() which aborts the
+//    kernel. This cannot be caught by standard gtest mechanisms. Testing
+//    invalid peer ranks on device would require:
+//    - Running the kernel with invalid input
+//    - Checking cudaGetLastError() for cudaErrorLaunchFailure
+//    - This is not done here because it would leave the CUDA context in a bad
+//      state and contaminate subsequent tests
+//
+// 2. Host code: The macro uses assert() which is:
+//    - A no-op in release builds
+//    - Calls abort() in debug builds, testable with EXPECT_DEBUG_DEATH
+//
+// IMPLICIT TESTING:
+// All functional tests that pass valid peer ranks indirectly test that
+// MULTI_PEER_CHECK_PEER_INDEX allows valid inputs through. The tests above
+// (PeerIterationHelpers*) verify peer iteration for all valid peer indices.
+//
+// For invalid peer detection during development, the macro prints detailed
+// debug information (file:line, block/thread indices) before aborting,
+// making issues easy to diagnose.
+//
+// =============================================================================
+
+} // namespace comms::pipes

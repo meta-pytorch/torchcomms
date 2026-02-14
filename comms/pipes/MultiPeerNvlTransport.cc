@@ -4,6 +4,10 @@
 
 #include <vector>
 
+#include "comms/pipes/DeviceSignal.cuh"
+#include "comms/pipes/MultiPeerDeviceTransport.cuh"
+#include "comms/utils/checks.h"
+
 namespace comms::pipes {
 
 MultiPeerNvlTransport::MultiPeerNvlTransport(
@@ -14,7 +18,22 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
     : myRank_(myRank),
       nRanks_(nRanks),
       bootstrap_(std::move(bootstrap)),
-      config_(multiPeerNvlTransportConfig) {
+      config_(multiPeerNvlTransportConfig),
+      memSharingMode_(GpuMemHandler::detectBestMode()) {
+  // ===========================================================================
+  // Buffer Allocation
+  // ===========================================================================
+  //
+  // Memory allocation uses RAII pattern via std::unique_ptr<GpuMemHandler>.
+  // If any allocation or initialization fails and throws an exception:
+  // - Previously allocated GpuMemHandler objects are automatically cleaned up
+  //   when the exception propagates and unique_ptr destructors run
+  // - No manual cleanup is needed in the constructor
+  // - The destructor only needs to handle successfully constructed objects
+  //
+  // Allocation order: signal -> data -> state
+  // Each handler's destructor will free its GPU memory if constructed.
+
   // Calculate per-peer buffer sizes with pipelining
   perPeerDataBufferSize_ = config_.pipelineDepth * config_.dataBufferSize;
 
@@ -33,55 +52,55 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   const std::size_t totalSignalBufferSize =
       perPeerSignalBufferSize_ * (nRanks_ - 1);
 
-  // Detect memory sharing mode once and use for both handlers
-  // This avoids redundant mode detection (fabric check is cached but this is
-  // cleaner)
-  const auto memSharingMode = GpuMemHandler::detectBestMode();
-
   signalBufferHandler_ = std::make_unique<GpuMemHandler>(
-      bootstrap_, myRank_, nRanks_, totalSignalBufferSize, memSharingMode);
+      bootstrap_, myRank_, nRanks_, totalSignalBufferSize, memSharingMode_);
 
   dataBufferHandler_ = std::make_unique<GpuMemHandler>(
-      bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode);
+      bootstrap_, myRank_, nRanks_, totalDataBufferSize, memSharingMode_);
 
   stateBufferHandler_ = std::make_unique<GpuMemHandler>(
-      bootstrap_, myRank_, nRanks_, totalChunkStateBufferSize, memSharingMode);
+      bootstrap_, myRank_, nRanks_, totalChunkStateBufferSize, memSharingMode_);
 
   // Initialize state buffer to READY_TO_SEND for all pipeline slots
   auto statePtr =
       static_cast<ChunkState*>(stateBufferHandler_->getLocalDeviceMemPtr());
   const std::size_t totalNumChunksAllPeers = numChunksPerPeer * (nRanks_ - 1);
   std::vector<ChunkState> initStates(totalNumChunksAllPeers);
-  auto cudaErr = cudaMemcpy(
+  CUDA_CHECK(cudaMemcpy(
       statePtr,
       initStates.data(),
       totalChunkStateBufferSize,
-      cudaMemcpyDefault);
-  if (cudaErr != cudaSuccess) {
-    throw std::runtime_error(
-        "cudaMemcpy failed in state buffer initialization");
-  }
+      cudaMemcpyDefault));
 
   // Initialize signal state buffer to 0 for all ranks
   auto signalPtr =
       static_cast<SignalState*>(signalBufferHandler_->getLocalDeviceMemPtr());
   std::vector<SignalState> signalInitStates(
       config_.signalCount * (nRanks_ - 1));
-  cudaErr = cudaMemcpy(
+  CUDA_CHECK(cudaMemcpy(
       signalPtr,
       signalInitStates.data(),
       totalSignalBufferSize,
-      cudaMemcpyDefault);
-  if (cudaErr != cudaSuccess) {
-    throw std::runtime_error(
-        "cudaMemcpy failed in signal state buffer initialization");
-  }
-};
+      cudaMemcpyDefault));
+
+  // ===========================================================================
+  // Multi-peer transport buffers (inbox model)
+  // ===========================================================================
+  WindowMemoryConfig windowConfig{
+      .signalCount = config_.signalCount, .counterCount = config_.counterCount};
+  windowMemory_ = std::make_unique<WindowMemory>(
+      myRank_, nRanks_, bootstrap_, windowConfig, memSharingMode_);
+  // Signal inbox: signalCount slots (all peers write to same slot)
+}
 
 void MultiPeerNvlTransport::exchange() {
+  // Exchange P2P transport buffer pointers
   dataBufferHandler_->exchangeMemPtrs();
   stateBufferHandler_->exchangeMemPtrs();
   signalBufferHandler_->exchangeMemPtrs();
+
+  // Exchange multi-peer transport buffer pointers (inbox model)
+  windowMemory_->exchange();
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
@@ -174,6 +193,52 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
 
   return P2pNvlTransportDevice(
       myRank_, peerRank, options, localState, remoteState);
+}
+
+MultiPeerDeviceTransport MultiPeerNvlTransport::getMultiPeerDeviceTransport() {
+  // Thread-safe lazy initialization of device-accessible arrays
+  if (!multiPeerInitialized_) {
+    initializeTransportsArray();
+    multiPeerInitialized_ = true;
+  }
+
+  DeviceSignal signal = windowMemory_->getDeviceSignal();
+  DeviceCounter counter = windowMemory_->getDeviceCounter();
+
+  // Build transports span directly from the device array (no pointer
+  // indirection)
+  DeviceSpan<Transport> transports(
+      static_cast<Transport*>(transportsDevice_->get()), nRanks_);
+
+  return MultiPeerDeviceTransport(
+      myRank_, nRanks_, transports, signal, counter);
+}
+
+void MultiPeerNvlTransport::initializeTransportsArray() {
+  // Allocate device memory for Transport objects using DeviceBuffer
+  transportsDevice_ =
+      std::make_unique<meta::comms::DeviceBuffer>(nRanks_ * sizeof(Transport));
+
+  // Build host-side Transport array, then batch copy to device
+  // Note: We use move semantics since Transport is non-copyable
+  std::vector<Transport> hostTransports;
+  hostTransports.reserve(nRanks_);
+  for (int rank = 0; rank < nRanks_; ++rank) {
+    if (rank == myRank_) {
+      hostTransports.emplace_back(P2pSelfTransportDevice());
+    } else {
+      hostTransports.emplace_back(getP2pTransportDevice(rank));
+    }
+  }
+
+  // Single batched memcpy for all Transport objects
+  // This works because Transport is designed for byte-copy (see
+  // Transport.cuh)
+  CUDA_CHECK(cudaMemcpy(
+      transportsDevice_->get(),
+      hostTransports.data(),
+      nRanks_ * sizeof(Transport),
+      cudaMemcpyDefault));
 }
 
 } // namespace comms::pipes
