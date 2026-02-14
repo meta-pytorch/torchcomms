@@ -249,4 +249,21 @@ void launchDeviceWaitSignalFromKernel(
       win, peer, signal_id, cmp, value);
 }
 
+// =============================================================================
+// Device Barrier Kernel
+// =============================================================================
+
+__global__ void deviceBarrierKernel(DeviceWindowNCCL* win, int barrier_id) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->barrier(barrier_id);
+  }
+}
+
+void launchDeviceBarrierKernel(
+    DeviceWindowNCCL* win,
+    int barrier_id,
+    cudaStream_t stream) {
+  deviceBarrierKernel<<<1, 1, 0, stream>>>(win, barrier_id);
+}
+
 } // namespace torchcomms::device::test
