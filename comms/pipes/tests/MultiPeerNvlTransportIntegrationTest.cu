@@ -4,6 +4,7 @@
 
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/window/DeviceWindowSignal.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 namespace comms::pipes::test {
@@ -24,6 +25,41 @@ void testMultiPeerDeviceTransportAccessors(
     MultiPeerDeviceTransport& transport,
     int* results) {
   multiPeerDeviceTransportAccessorsKernel<<<1, 1>>>(transport, results);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Signal/Wait Test
+// =============================================================================
+
+__global__ void signalWaitKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    bool isSignaler,
+    int* result) {
+  auto group = make_warp_group();
+
+  if (isSignaler) {
+    // Signal the peer's inbox (peer is peer index, not rank)
+    transport.signal_peer(
+        group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    *result = 1;
+  } else {
+    // Wait for signal (peer signals us, we wait on our inbox)
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+    *result = 1;
+  }
+}
+
+void testSignalWait(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    bool isSignaler,
+    int* result) {
+  signalWaitKernel<<<1, 32>>>(
+      transport, targetRank, signalIdx, isSignaler, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -119,6 +155,47 @@ void testMultiPeerSendRecvAllPeers(
 }
 
 // =============================================================================
+// Concurrent Signal Multi-Block Test
+// =============================================================================
+
+__global__ void concurrentSignalMultiBlockKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int numSlots,
+    bool isSignaler,
+    int* results) {
+  auto group = make_warp_group();
+
+  // Each block uses a different signal slot (blockIdx.x % numSlots)
+  auto slotId = blockIdx.x % numSlots;
+
+  if (isSignaler) {
+    // Signal the peer's inbox at this slot
+    transport.signal_peer(group, targetRank, slotId, SignalOp::SIGNAL_ADD, 1);
+  } else {
+    // Wait for signal at this slot (peer signals us, we wait on our inbox)
+    transport.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
+  }
+
+  // Record success for this block
+  if (threadIdx.x == 0) {
+    results[blockIdx.x] = 1;
+  }
+}
+
+void testConcurrentSignalMultiBlock(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int numSlots,
+    bool isSignaler,
+    int* results,
+    int numBlocks) {
+  concurrentSignalMultiBlockKernel<<<numBlocks, 32>>>(
+      transport, targetRank, numSlots, isSignaler, results);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
 // Transport Types Test
 // =============================================================================
 
@@ -145,6 +222,241 @@ void testTransportTypes(
     const MultiPeerDeviceTransport& transport,
     int* results) {
   transportTypesKernel<<<1, 1>>>(transport, results);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Concurrent Signal Multi-Warp Test
+// =============================================================================
+
+__global__ void concurrentSignalWaitMultiWarpKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int numSlots,
+    bool isSignaler,
+    int* results,
+    int warpsPerBlock) {
+  // Each warp uses a different signal slot based on its warp index
+  uint32_t warpIdx = threadIdx.x / 32;
+  uint32_t laneIdx = threadIdx.x % 32;
+
+  // Only process if this warp is within the configured range
+  if (warpIdx >= warpsPerBlock) {
+    return;
+  }
+
+  // Create a warp-level thread group
+  auto group = make_warp_group();
+
+  // Use different slot per warp (warpIdx % numSlots)
+  int slotId = warpIdx % numSlots;
+
+  if (isSignaler) {
+    // Signal the target rank's inbox at this slot (peer is peer index, not
+    // rank)
+    transport.signal_peer(group, targetRank, slotId, SignalOp::SIGNAL_ADD, 1);
+  } else {
+    // Wait for signal at this slot (peer signals us, we wait on our inbox)
+    transport.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
+  }
+
+  // Record success for this warp (only lane 0 writes)
+  if (laneIdx == 0) {
+    results[warpIdx] = 1;
+  }
+}
+
+void testConcurrentSignalWaitMultiWarp(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int numSlots,
+    bool isSignaler,
+    int* results,
+    int warpsPerBlock) {
+  int blockSize = warpsPerBlock * 32; // 32 threads per warp
+  concurrentSignalWaitMultiWarpKernel<<<1, blockSize>>>(
+      transport, targetRank, numSlots, isSignaler, results, warpsPerBlock);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// signal_all() Test
+// =============================================================================
+
+__global__ void signalAllKernel(
+    MultiPeerDeviceTransport& transport,
+    int signalerRank,
+    int signalIdx,
+    int* result) {
+  auto group = make_warp_group();
+  int myRank = transport.rank();
+
+  if (myRank == signalerRank) {
+    // This rank signals all peers
+    transport.get_signal().signal_all(
+        group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+  } else {
+    // Wait for signal from the signaler (signaler writes to our inbox)
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+  }
+
+  *result = 1;
+}
+
+void testSignalAll(
+    MultiPeerDeviceTransport& transport,
+    int signalerRank,
+    int signalIdx,
+    int* result) {
+  signalAllKernel<<<1, 32>>>(transport, signalerRank, signalIdx, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// wait_signal_from_all() Test
+// =============================================================================
+
+__global__ void waitSignalFromAllKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result) {
+  auto group = make_warp_group();
+  int myRank = transport.rank();
+
+  if (myRank == targetRank) {
+    // Wait for accumulated signals from all (nRanks - 1) peers
+    int nRanks = transport.n_ranks();
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
+  } else {
+    // Signal the target rank
+    transport.signal_peer(
+        group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+  }
+
+  *result = 1;
+}
+
+void testWaitSignalFromAll(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result) {
+  waitSignalFromAllKernel<<<1, 32>>>(transport, targetRank, signalIdx, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Wait with CMP_EQ Test
+// =============================================================================
+
+__global__ void waitWithCmpEqKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    uint64_t expectedValue,
+    bool isSignaler,
+    int* result) {
+  auto group = make_warp_group();
+
+  if (isSignaler) {
+    // Signal with the exact expected value using SIGNAL_SET
+    transport.signal_peer(
+        group, targetRank, signalIdx, SignalOp::SIGNAL_SET, expectedValue);
+  } else {
+    // Wait for the exact value with CMP_EQ
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_EQ, expectedValue);
+  }
+
+  *result = 1;
+}
+
+void testWaitWithCmpEq(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    uint64_t expectedValue,
+    bool isSignaler,
+    int* result) {
+  waitWithCmpEqKernel<<<1, 32>>>(
+      transport, targetRank, signalIdx, expectedValue, isSignaler, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Monotonic Wait Values Test
+// =============================================================================
+
+__global__ void monotonicWaitValuesKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int numIterations,
+    bool isSignaler,
+    int* result) {
+  auto group = make_warp_group();
+
+  for (int i = 0; i < numIterations; ++i) {
+    if (isSignaler) {
+      // Signal with value=1 (adds to accumulated value)
+      transport.signal_peer(
+          group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    } else {
+      // Wait for accumulated value (i+1)
+      transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, i + 1);
+    }
+    group.sync();
+  }
+
+  *result = 1;
+}
+
+void testMonotonicWaitValues(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int numIterations,
+    bool isSignaler,
+    int* result) {
+  monotonicWaitValuesKernel<<<1, 32>>>(
+      transport, targetRank, signalIdx, numIterations, isSignaler, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// SIGNAL_SET Integration Test
+// =============================================================================
+
+__global__ void signalWithSetKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    uint64_t setValue,
+    bool isSignaler,
+    int* result) {
+  auto group = make_warp_group();
+
+  if (isSignaler) {
+    // Use SIGNAL_SET instead of SIGNAL_ADD
+    transport.signal_peer(
+        group, targetRank, signalIdx, SignalOp::SIGNAL_SET, setValue);
+  } else {
+    // Wait for the set value
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, setValue);
+  }
+
+  *result = 1;
+}
+
+void testSignalWithSet(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    uint64_t setValue,
+    bool isSignaler,
+    int* result) {
+  signalWithSetKernel<<<1, 32>>>(
+      transport, targetRank, signalIdx, setValue, isSignaler, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
