@@ -191,10 +191,10 @@ void ctran::RegCache::init() {
 commResult_t ctran::RegCache::destroy() {
   {
     // Warn if user missed any buffer registration.
-    // Skip deregistration to avoid unexpected error at destruction time for
-    // now. We need revisit after sets RegCache's dependency to
-    // CtranIbSingleton, otherwise ib singleton may be released before
-    // deregisteration here.
+    // TODO: With folly::Singleton, destruction order may not be guaranteed
+    // between RegCache and CtranIbSingleton. We need to ensure CtranIbSingleton
+    // is destroyed after RegCache to avoid use-after-free during
+    // deregistration.
     auto [segmentsAvl, regElemsMaps] =
         folly::acquireLocked(segmentsAvl_, regElemsMaps_);
     auto& regHdlToElemMap = regElemsMaps->regHdlToElemMap;
