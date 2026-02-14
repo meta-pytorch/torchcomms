@@ -5,6 +5,9 @@
 #include <vector>
 
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
+#include "comms/pipes/window/DeviceWindowMemory.cuh"
+#include "comms/pipes/window/DeviceWindowSignal.cuh"
+#include "comms/pipes/window/WindowMemory.h"
 #include "comms/utils/checks.h"
 
 namespace comms::pipes {
@@ -41,7 +44,7 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       (config_.dataBufferSize + config_.chunkSize - 1) / config_.chunkSize;
   const std::size_t numChunksPerPeer = config_.pipelineDepth * numChunksPerStep;
   perPeerChunkStateBufferSize_ = numChunksPerPeer * sizeof(ChunkState);
-  perPeerSignalBufferSize_ = getSignalBufferSize(config_.signalCount);
+  perPeerSignalBufferSize_ = getSignalBufferSize(config_.p2pSignalCount);
 
   // Allocate buffers for (nRanks - 1) peers using GpuMemHandler
   const std::size_t totalDataBufferSize =
@@ -75,7 +78,7 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   auto signalPtr =
       static_cast<SignalState*>(signalBufferHandler_->getLocalDeviceMemPtr());
   std::vector<SignalState> signalInitStates(
-      config_.signalCount * (nRanks_ - 1));
+      config_.p2pSignalCount * (nRanks_ - 1));
   CUDA_CHECK(cudaMemcpy(
       signalPtr,
       signalInitStates.data(),
@@ -156,7 +159,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
       .signalBuffer = DeviceSpan<SignalState>(
           reinterpret_cast<SignalState*>(
               localSignalPtr + localSignalBufferOffset),
-          config_.signalCount),
+          config_.p2pSignalCount),
   };
 
   auto* remoteDataPtr =
@@ -175,7 +178,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
       .signalBuffer = DeviceSpan<SignalState>(
           reinterpret_cast<SignalState*>(
               remoteSignalPtr + remoteSignalBufferOffset),
-          config_.signalCount),
+          config_.p2pSignalCount),
   };
 
   return P2pNvlTransportDevice(
@@ -183,7 +186,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
 }
 
 DeviceSpan<Transport> MultiPeerNvlTransport::getDeviceTransports() {
-  // Lazy initialization of device-accessible arrays
+  // Thread-safe lazy initialization of device-accessible arrays
   if (!multiPeerInitialized_) {
     initializeTransportsArray();
     multiPeerInitialized_ = true;
@@ -193,8 +196,10 @@ DeviceSpan<Transport> MultiPeerNvlTransport::getDeviceTransports() {
       static_cast<Transport*>(transportsDevice_->get()), nRanks_);
 }
 
-MultiPeerDeviceTransport MultiPeerNvlTransport::getMultiPeerDeviceTransport() {
-  return MultiPeerDeviceTransport(myRank_, nRanks_, getDeviceTransports());
+MultiPeerDeviceTransport MultiPeerNvlTransport::getMultiPeerDeviceTransport(
+    const WindowMemory& wm) {
+  DeviceWindowMemory dwm = wm.getDeviceWindowMemory();
+  return MultiPeerDeviceTransport(myRank_, nRanks_, getDeviceTransports(), dwm);
 }
 
 void MultiPeerNvlTransport::initializeTransportsArray() {
