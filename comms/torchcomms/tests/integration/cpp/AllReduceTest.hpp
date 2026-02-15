@@ -1,71 +1,66 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #pragma once
 
-#include <ATen/cuda/CUDAContext.h>
-#include <ATen/cuda/CUDAGraph.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <memory>
+#include <tuple>
+
+#include <ATen/ATen.h>
+#include <c10/core/Device.h>
 #include <gtest/gtest.h>
+#include "comms/torchcomms/tests/integration/cpp/GraphTestFixtures.hpp"
 #include "comms/torchcomms/tests/integration/cpp/TorchCommTestHelpers.h"
 
-class AllReduceTest
-    : public ::testing::TestWithParam<
-          std::tuple<int, at::ScalarType, torch::comms::ReduceOp>> {
+using AllReduceParams = std::tuple<int, at::ScalarType, torch::comms::ReduceOp>;
+
+enum class PreMulSumOpType { kScalar, kTensor };
+using PreMulSumParams = std::tuple<int, at::ScalarType, PreMulSumOpType>;
+
+// Helper class for AllReduce test operations.
+// Methods are non-static to allow subclass override if needed.
+class AllReduceHelper {
  public:
-  AllReduceTest()
-      : AllReduceTest(
-            isRunningOnCPU() ? c10::DeviceType::CPU : c10::DeviceType::CUDA) {}
-  explicit AllReduceTest(c10::DeviceType device_type)
-      : rank_(0), num_ranks_(0), device_type_(device_type) {}
+  at::Tensor createInputTensor(
+      int count,
+      at::ScalarType dtype,
+      c10::DeviceType deviceType,
+      int rank);
 
-  // Test function declarations with parameters
-  void testSyncAllReduce(
-      int count,
+  at::Tensor createPreMulFactorTensor(
       at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testSyncAllReduceNoWork(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testAsyncAllReduce(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testAsyncAllReduceEarlyReset(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testAllReduceInputDeleted(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testGraphAllReduce(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testGraphAllReduceInputDeleted(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
+      c10::DeviceType deviceType);
 
+  double calculateExpectedResult(
+      const torch::comms::ReduceOp& op,
+      int numRanks);
+
+  void verifyResults(
+      const at::Tensor& input,
+      const torch::comms::ReduceOp& op,
+      int numRanks);
+};
+
+// AllReduce test class template. Fixture determines execution mode
+// (Eager, SingleGraph, MultiGraph).
+template <typename Fixture>
+class AllReduceTest : public Fixture {
  protected:
-  virtual std::unique_ptr<TorchCommTestWrapper> createWrapper();
+  void
+  testSync(int count, at::ScalarType dtype, const torch::comms::ReduceOp& op);
+  void testSyncNoWork(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void
+  testAsync(int count, at::ScalarType dtype, const torch::comms::ReduceOp& op);
+  void testAsyncEarlyReset(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void testInputDeleted(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
 
-  virtual void SetUp() override;
-
-  virtual void TearDown() override;
-
-  std::unique_ptr<TorchCommTestWrapper> wrapper_;
-  std::shared_ptr<torch::comms::TorchComm> torchcomm_;
-  int rank_;
-  int num_ranks_;
-  c10::DeviceType device_type_;
-
-  static constexpr int num_replays = 4;
-
-  // Helper function declarations with parameters
-  virtual at::Tensor createInputTensor(int count, at::ScalarType dtype);
-  virtual at::Tensor createPreMulFactorTensor(at::ScalarType dtype);
-  double calculateExpectedResult(const torch::comms::ReduceOp& op);
-  void verifyResults(const at::Tensor& input, const torch::comms::ReduceOp& op);
+  AllReduceHelper helper_;
 };
