@@ -63,7 +63,9 @@ static void barrierBench(
   float totalTimeMs = 0.0f;
 
   for (uint32_t i = 0; i < iters; ++i) {
-    // Reset barriers to 0
+    // Reset barriers to 0 from the host side. This is safe because
+    // cudaStreamSynchronize below ensures the GPU is idle before the
+    // next kernel launch, so no device threads are accessing the memory.
     CHECK_EQ(cudaSetDevice(gpu0), cudaSuccess);
     CHECK_EQ(
         cudaMemsetAsync(barrier0, 0, barrierBufferSize, bench0.stream),
