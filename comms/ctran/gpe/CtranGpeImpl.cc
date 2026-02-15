@@ -504,7 +504,7 @@ void CtranGpe::Impl::gpeThreadFn() {
         // is only used for tracing purposes. Before the flags are freed below
         // with reset, all block flags are checked.
         while (flag_d[0] != KERNEL_STARTED &&
-               flag_d[0] != KERNEL_STARTED_AND_EXIT && !comm->testAbort()) {
+               flag_d[0] != KERNEL_STARTED_AND_EXIT) {
           std::this_thread::yield();
         }
       }
