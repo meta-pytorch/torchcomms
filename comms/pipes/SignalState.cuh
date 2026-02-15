@@ -92,9 +92,11 @@ __device__ inline const char* cmpOpToString(CmpOp op) {
  * 2. Slot rotation: Use different signal slots for different phases
  *    to avoid accumulation within a single slot.
  *
- * 3. Phase-based reset: Reset signals between communication phases
- *    using host-side reinitialization (cudaMemset the inbox to 0).
+ * 3. Host-side reset between kernel launches: Reset signals using
+ *    host-side cudaMemset (zero the inbox) when the GPU is idle.
  *    Synchronize all ranks (e.g., MPI_Barrier) before reset.
+ *    WARNING: Do NOT reset from device code — a fast peer can race
+ *    with the reset store, causing a data race.
  *
  * DEBUG OVERFLOW DETECTION:
  * In debug builds (PIPES_DEBUG defined), SIGNAL_ADD operations check

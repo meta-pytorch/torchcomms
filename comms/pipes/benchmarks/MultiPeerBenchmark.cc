@@ -305,6 +305,71 @@ class MultiPeerBenchmarkFixture : public MpiBaseTestFixture {
 };
 
 // =============================================================================
+// Test: Barrier Latency (N-way synchronization)
+// =============================================================================
+
+TEST_F(MultiPeerBenchmarkFixture, BarrierLatency) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto configs = getStandardConfigs();
+  std::vector<MultiPeerBenchResult> results;
+
+  // Create transport once with max slot count
+  int maxSlots = getMaxSlots(configs);
+  MultiPeerNvlTransportConfig transportConfig{
+      .dataBufferSize = 1,
+      .chunkSize = 1,
+      .pipelineDepth = 1,
+  };
+  WindowMemoryConfig wmConfig{
+      .barrierCount = static_cast<std::size_t>(maxSlots),
+  };
+
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(
+      globalRank, numRanks, bootstrap, transportConfig);
+  WindowMemory wm(globalRank, numRanks, bootstrap, wmConfig);
+  transport.exchange();
+  wm.exchange();
+  auto device = transport.getMultiPeerDeviceTransport(wm);
+
+  for (const auto& config : configs) {
+    void* kernelFunc = config.useBlockGroups
+        ? (void*)multiPeerBarrierKernel<SyncScope::BLOCK>
+        : (void*)multiPeerBarrierKernel<SyncScope::WARP>;
+
+    int nSteps = getStepsPerIter();
+    dim3 grid(config.numBlocks);
+    dim3 block(kDefaultThreads);
+    void* args[] = {&device, &nSteps};
+
+    auto timing = runBenchmark(
+        [&]() -> cudaError_t {
+          return cudaLaunchKernel(kernelFunc, grid, block, args, 0, stream_);
+        },
+        nSteps,
+        /*useMpiBarrier=*/true);
+
+    ASSERT_TRUE(timing.success)
+        << "Benchmark failed for config: " << config.name;
+
+    results.push_back({
+        .configName = config.name,
+        .nRanks = numRanks,
+        .groupScope = config.scopeString(),
+        .latencyUs = timing.avgLatencyUs,
+    });
+  }
+
+  printResultsTable(
+      "MultiPeerDeviceTransport Barrier Benchmark (Half-Duplex)",
+      "Latency = Average time per barrier() call",
+      results);
+}
+
+// =============================================================================
 // Test: Signal-All Latency (N-way signaling)
 // =============================================================================
 

@@ -8,6 +8,7 @@
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
 #include "comms/pipes/Transport.cuh"
 #include "comms/pipes/tests/MultiPeerDeviceTransportTest.cuh"
+#include "comms/pipes/window/DeviceWindowBarrier.cuh"
 #include "comms/pipes/window/DeviceWindowSignal.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/utils/CudaRAII.h"
@@ -68,6 +69,41 @@ TEST_F(MultiPeerDeviceTransportTestFixture, SignalInboxBufferSize) {
 }
 
 // =============================================================================
+// DeviceWindowBarrier Tests
+// =============================================================================
+
+TEST_F(MultiPeerDeviceTransportTestFixture, DeviceWindowBarrierConstruction) {
+  const int myRank = 1;
+  const int nRanks = 4;
+
+  DeviceBuffer resultsBuffer(2 * sizeof(int));
+  auto results_d = static_cast<int*>(resultsBuffer.get());
+
+  test::testDeviceWindowBarrierConstruction(myRank, nRanks, results_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int> results_h(2);
+  CUDACHECK_TEST(cudaMemcpy(
+      results_h.data(), results_d, 2 * sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(results_h[0], myRank) << "rank() should return " << myRank;
+  EXPECT_EQ(results_h[1], nRanks) << "nRanks() should return " << nRanks;
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, BarrierBufferSize) {
+  // Test buffer size calculation
+  const int barrierCount = 4;
+
+  std::size_t bufferSize = getMultiPeerBarrierBufferSize(barrierCount);
+
+  // Expected: barrierCount * sizeof(BarrierState), aligned to 128 bytes
+  std::size_t expectedMinSize = barrierCount * sizeof(BarrierState);
+  // Should be aligned to 128 bytes
+  EXPECT_GE(bufferSize, expectedMinSize);
+  EXPECT_EQ(bufferSize % 128, 0) << "Buffer size should be 128-byte aligned";
+}
+
+// =============================================================================
 // MultiPeerDeviceTransport Tests
 // =============================================================================
 
@@ -96,7 +132,7 @@ TEST_F(
 // =============================================================================
 
 // Verify DeviceWindowMemory bundles signal and barrier correctly.
-// Constructs DeviceWindowMemory from DeviceWindowSignal + DeviceBarrier,
+// Constructs DeviceWindowMemory from DeviceWindowSignal + DeviceWindowBarrier,
 // then verifies signal() and barrier() return objects with matching metadata.
 TEST_F(MultiPeerDeviceTransportTestFixture, DeviceWindowMemoryAccessors) {
   const int myRank = 1;
@@ -117,6 +153,10 @@ TEST_F(MultiPeerDeviceTransportTestFixture, DeviceWindowMemoryAccessors) {
   EXPECT_EQ(results_h[0], myRank) << "signal().rank()";
   EXPECT_EQ(results_h[1], nRanks) << "signal().n_ranks()";
   EXPECT_EQ(results_h[2], signalCount) << "signal().signal_count()";
+
+  // Barrier accessors should match input parameters
+  EXPECT_EQ(results_h[3], myRank) << "barrier().rank()";
+  EXPECT_EQ(results_h[4], nRanks) << "barrier().n_ranks()";
 }
 
 // =============================================================================

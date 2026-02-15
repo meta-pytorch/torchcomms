@@ -36,12 +36,13 @@ class WindowMemoryTestFixture : public MpiBaseTestFixture {
  */
 TEST_F(WindowMemoryTestFixture, Construction) {
   auto bootstrap = std::make_shared<MpiBootstrap>();
-  WindowMemoryConfig config{.signalCount = 4};
+  WindowMemoryConfig config{.signalCount = 4, .barrierCount = 2};
   WindowMemory signals(globalRank, numRanks, bootstrap, config);
 
   EXPECT_EQ(signals.rank(), globalRank);
   EXPECT_EQ(signals.nRanks(), numRanks);
   EXPECT_EQ(signals.signalCount(), 4);
+  EXPECT_EQ(signals.barrierCount(), 2);
   EXPECT_FALSE(signals.isExchanged());
 }
 
@@ -115,10 +116,12 @@ TEST_F(WindowMemoryTestFixture, SingleRankExchange) {
   EXPECT_TRUE(signals.isExchanged());
 }
 
-// Note: getDeviceWindowSignal() error path (calling before exchange()) and
-// success path are tested via MultiPeerNvlTransport integration tests since
-// DeviceWindowSignal requires CUDA compilation (.cuh file with __device__
-// methods).
+// Note: getDeviceWindowBarrier(), getDeviceWindowSignal(), and
+// getDeviceWindowMemory() cannot be tested in this .cc file because they return
+// CUDA types (DeviceWindowSignal, DeviceWindowBarrier, DeviceWindowMemory)
+// defined in .cuh headers that require CUDA compilation. Their success and
+// error paths are validated by the MultiPeerDeviceTransport unit tests and
+// integration tests.
 
 } // namespace comms::pipes::tests
 
