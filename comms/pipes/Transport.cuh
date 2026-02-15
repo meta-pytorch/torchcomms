@@ -4,11 +4,39 @@
 
 #include <cstdint>
 #include <new>
+#include <type_traits>
 
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
 
 namespace comms::pipes {
+// Transport union members must be safe for cudaMemcpy to device.
+// Requirements:
+// - Standard layout: predictable byte representation, no hidden members
+// - Trivially destructible: source destructor after memcpy is a no-op
+// See MultiPeerNvlTransport::initializeTransportsArray().
+static_assert(
+    std::is_standard_layout_v<P2pSelfTransportDevice> &&
+        std::is_trivially_destructible_v<P2pSelfTransportDevice>,
+    "P2pSelfTransportDevice must be standard layout with trivial destructor");
+static_assert(
+    std::is_standard_layout_v<P2pNvlTransportDevice> &&
+        std::is_trivially_destructible_v<P2pNvlTransportDevice>,
+    "P2pNvlTransportDevice must be standard layout with trivial destructor");
+
+// Transport union members must be safe for cudaMemcpy to device.
+// Requirements:
+// - Standard layout: predictable byte representation, no hidden members
+// - Trivially destructible: source destructor after memcpy is a no-op
+// See MultiPeerNvlTransport::initializeTransportsArray().
+static_assert(
+    std::is_standard_layout_v<P2pSelfTransportDevice> &&
+        std::is_trivially_destructible_v<P2pSelfTransportDevice>,
+    "P2pSelfTransportDevice must be standard layout with trivial destructor");
+static_assert(
+    std::is_standard_layout_v<P2pNvlTransportDevice> &&
+        std::is_trivially_destructible_v<P2pNvlTransportDevice>,
+    "P2pNvlTransportDevice must be standard layout with trivial destructor");
 
 /**
  * Transport type tag for discriminated union.
