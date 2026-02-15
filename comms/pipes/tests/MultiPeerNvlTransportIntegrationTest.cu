@@ -15,7 +15,7 @@ namespace comms::pipes::test {
 // =============================================================================
 
 __global__ void multiPeerDeviceTransportAccessorsKernel(
-    MultiPeerDeviceTransport& transport,
+    const MultiPeerDeviceTransport& transport,
     int* results) {
   results[0] = transport.rank();
   results[1] = transport.n_ranks();
@@ -23,7 +23,7 @@ __global__ void multiPeerDeviceTransportAccessorsKernel(
 }
 
 void testMultiPeerDeviceTransportAccessors(
-    MultiPeerDeviceTransport& transport,
+    const MultiPeerDeviceTransport& transport,
     int* results) {
   multiPeerDeviceTransportAccessorsKernel<<<1, 1>>>(transport, results);
   CUDACHECK_TEST(cudaGetLastError());
@@ -219,6 +219,55 @@ void testConcurrentSignalMultiBlock(
   concurrentSignalMultiBlockKernel<<<numBlocks, 32>>>(
       transport, targetRank, numSlots, isSignaler, results);
   CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Put Operation Test
+// =============================================================================
+
+__global__ void putOperationKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    void* remoteDst,
+    const void* localSrc,
+    std::size_t nbytes,
+    int signalId,
+    bool isWriter,
+    int* result) {
+  auto group = make_warp_group();
+
+  if (isWriter) {
+    // Use put_signal to write and signal completion
+    transport.put_signal(
+        targetRank, group, remoteDst, localSrc, nbytes, signalId, 1);
+  } else {
+    // Wait for signal indicating data is ready
+    transport.wait_signal(group, signalId, CmpOp::CMP_GE, 1);
+  }
+
+  if (threadIdx.x == 0) {
+    *result = 1;
+  }
+}
+
+void testPutOperation(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    void* remoteDst,
+    const void* localSrc,
+    std::size_t nbytes,
+    int signalId,
+    bool isWriter,
+    int* result) {
+  putOperationKernel<<<1, 32>>>(
+      transport,
+      targetRank,
+      remoteDst,
+      localSrc,
+      nbytes,
+      signalId,
+      isWriter,
+      result);
 }
 
 // =============================================================================
@@ -555,13 +604,13 @@ void testBarrierMultiBlockStress(
 
 __global__ void barrierPeerKernel(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int targetRank,
     int barrierIdx,
     int* result) {
   auto group = make_warp_group();
 
   // Two-sided barrier: synchronize with specific peer
-  transport.barrier_peer(peerIndex, group, barrierIdx);
+  transport.barrier_peer(targetRank, group, barrierIdx);
 
   // If we get here, barrier_peer succeeded
   if (threadIdx.x == 0) {
@@ -571,10 +620,10 @@ __global__ void barrierPeerKernel(
 
 void testBarrierPeer(
     MultiPeerDeviceTransport& transport,
-    int peerIndex,
+    int targetRank,
     int barrierIdx,
     int* result) {
-  barrierPeerKernel<<<1, 32>>>(transport, peerIndex, barrierIdx, result);
+  barrierPeerKernel<<<1, 32>>>(transport, targetRank, barrierIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 

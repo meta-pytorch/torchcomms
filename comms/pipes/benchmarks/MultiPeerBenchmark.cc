@@ -24,6 +24,10 @@
 DEFINE_int32(benchmark_iters, 50, "Number of benchmark iterations");
 DEFINE_int32(steps_per_iter, 100, "Number of steps per kernel launch");
 DEFINE_int32(warmup_iters, 10, "Number of warmup iterations");
+DEFINE_int32(
+    put_message_size,
+    4096,
+    "Message size in bytes for put benchmarks");
 
 using meta::comms::CudaEvent;
 using meta::comms::MpiBaseTestFixture;
