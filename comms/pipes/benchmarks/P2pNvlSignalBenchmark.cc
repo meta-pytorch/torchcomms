@@ -193,7 +193,7 @@ TEST_F(P2pSignalBenchmarkFixture, SignalBenchmark) {
         .dataBufferSize = 1,
         .chunkSize = 1,
         .pipelineDepth = 1,
-        .signalCount = signalCount,
+        .p2pSignalCount = signalCount,
     };
 
     comms::pipes::MultiPeerNvlTransport transport(
@@ -219,7 +219,7 @@ TEST_F(P2pSignalBenchmarkFixture, SignalBenchmark) {
         .dataBufferSize = 1,
         .chunkSize = 1,
         .pipelineDepth = 1,
-        .signalCount = signalCount,
+        .p2pSignalCount = signalCount,
     };
 
     comms::pipes::MultiPeerNvlTransport transport(
