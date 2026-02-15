@@ -224,7 +224,7 @@ class TorchCommTestWrapper:
             hints.update({"fastInitMode": fast_init_mode})
         return hints
 
-    def __init__(self, store=None, hints=None):
+    def __init__(self, store=None, hints=None, abort_process_on_timeout_or_error=None):
         maybe_set_rank_envs()
 
         # Get backend from TEST_BACKEND environment variable, throw if not set
@@ -248,6 +248,7 @@ class TorchCommTestWrapper:
             store=store,
             name=f"comms_test_{TorchCommTestWrapper.NEXT_COMM_ID}",
             hints=hints,
+            abort_process_on_timeout_or_error=abort_process_on_timeout_or_error,
         )
 
         print(
