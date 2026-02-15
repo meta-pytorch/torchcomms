@@ -490,6 +490,16 @@ std::shared_ptr<TorchCommWindow> TorchComm::new_window(
   return window;
 }
 
+// Fault Tolerance API
+InitHandle TorchComm::getInitHandle() const {
+  return impl_->getInitHandle();
+}
+
+c10::intrusive_ptr<TorchWork> TorchComm::reconfigure(
+    const ReconfigureOptions& opts) {
+  return impl_->reconfigure(opts);
+}
+
 // Communicator Management
 std::shared_ptr<TorchComm> TorchComm::split(
     const std::vector<int>& ranks,

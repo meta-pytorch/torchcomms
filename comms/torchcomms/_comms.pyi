@@ -4,7 +4,9 @@
 
 from datetime import timedelta
 from enum import auto, Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Set
+
+InitHandle = str
 
 class RedOpType(Enum):
     SUM = auto()
@@ -53,6 +55,21 @@ class BatchP2POptions:
     def __init__(self) -> None: ...
     timeout: timedelta
     hints: Dict[str, str]
+
+class ReconfigureOptions:
+    """Options for the reconfigure() fault tolerance API."""
+
+    uuid: int
+    init_handles: List[InitHandle] | Set[InitHandle]
+    timeout: timedelta | None
+    hints: Dict[str, str]
+    def __init__(
+        self,
+        uuid: int = ...,
+        init_handles: List[InitHandle] | Set[InitHandle] = ...,
+        timeout: timedelta | None = None,
+        hints: Dict[str, str] | None = None,
+    ) -> None: ...
 
 class BroadcastOptions:
     def __init__(self) -> None: ...
@@ -122,6 +139,7 @@ class GatherOptions:
 class TorchWork:
     def is_completed(self) -> bool: ...
     def wait(self) -> None: ...
+    def wait_blocking(self) -> None: ...
 
 class TorchCommWinAccessType(Enum):
     WIN_ACCESS_TYPE_UNIFIED = auto()
@@ -203,6 +221,14 @@ class TorchComm:
     def get_device(self) -> Any: ...
     def get_backend(self) -> str: ...
     def unsafe_get_backend(self) -> TorchCommBackend: ...
+    def get_init_handle(self) -> InitHandle: ...
+    def reconfigure(
+        self,
+        uuid: int,
+        init_handles: List[InitHandle] | Set[InitHandle],
+        timeout: timedelta | None = None,
+        hints: Dict[str, str] | None = None,
+    ) -> TorchWork: ...
     def send(
         self,
         tensor: Any,
