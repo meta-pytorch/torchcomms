@@ -9,6 +9,7 @@
 #include <folly/Hash.h>
 #include <folly/SocketAddress.h>
 #include <folly/Synchronized.h>
+#include <folly/container/F14Map.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 
 #include "comms/ctran/bootstrap/AsyncSocket.h"
@@ -128,6 +129,18 @@ class IpcRegCache {
     return serverAddr_;
   }
 
+  // Set peer's IPC server address by peer ID (gPid).
+  commResult_t setPeerIpcServerAddr(
+      const std::string& peerId,
+      const folly::SocketAddress& addr);
+
+  // Get peer's IPC server address by peer ID (gPid).
+  // Output argument:
+  //   - addr: the socket address for the peer with the given gPid.
+  commResult_t getPeerIpcServerAddr(
+      const std::string& peerId,
+      folly::SocketAddress& addr) const;
+
   // Notify remote peers to release their imported NVL memory.
   // Output argument:
   //   - reqCb: IpcReqCb that the caller can track for completion.
@@ -191,6 +204,12 @@ class IpcRegCache {
   std::unique_ptr<folly::ScopedEventBaseThread> asyncSocketEvbThread_;
   std::unique_ptr<ctran::bootstrap::AsyncServerSocket> asyncServerSocket_;
   folly::SocketAddress serverAddr_;
+
+  // Peer IPC server addresses for async socket communication, keyed by gPid.
+  // Protected by Synchronized for concurrent access from multiple
+  // communicators.
+  folly::Synchronized<folly::F14FastMap<std::string, folly::SocketAddress>>
+      peerIpcServerAddrs_;
 
   // Monotonically increasing unique ID counter for IPC registrations
   static std::atomic<uint32_t> nextUniqueId_;
