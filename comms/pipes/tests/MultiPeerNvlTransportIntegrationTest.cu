@@ -4,6 +4,7 @@
 
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/window/DeviceWindowBarrier.cuh"
 #include "comms/pipes/window/DeviceWindowSignal.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 
@@ -60,6 +61,31 @@ void testSignalWait(
     int* result) {
   signalWaitKernel<<<1, 32>>>(
       transport, targetRank, signalIdx, isSignaler, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Barrier Test
+// =============================================================================
+
+__global__ void barrierKernel(
+    MultiPeerDeviceTransport& transport,
+    int barrierIdx,
+    int* result) {
+  auto group = make_warp_group();
+
+  // Execute barrier
+  transport.barrier(group, barrierIdx);
+
+  // If we get here, barrier succeeded
+  *result = 1;
+}
+
+void testBarrier(
+    MultiPeerDeviceTransport& transport,
+    int barrierIdx,
+    int* result) {
+  barrierKernel<<<1, 32>>>(transport, barrierIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -457,6 +483,98 @@ void testSignalWithSet(
     int* result) {
   signalWithSetKernel<<<1, 32>>>(
       transport, targetRank, signalIdx, setValue, isSignaler, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Barrier Monotonic Counters Test
+// =============================================================================
+
+__global__ void barrierMonotonicKernel(
+    MultiPeerDeviceTransport& transport,
+    int barrierIdx,
+    int numPhases,
+    int* result) {
+  auto group = make_warp_group();
+
+  // Perform multiple barrier synchronizations on the same slot.
+  // Counters accumulate monotonically — no reset needed.
+  for (int phase = 0; phase < numPhases; ++phase) {
+    transport.barrier(group, barrierIdx);
+  }
+
+  if (threadIdx.x == 0) {
+    *result = 1;
+  }
+}
+
+void testBarrierMonotonic(
+    MultiPeerDeviceTransport& transport,
+    int barrierIdx,
+    int numPhases,
+    int* result) {
+  barrierMonotonicKernel<<<1, 32>>>(transport, barrierIdx, numPhases, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Barrier Multi-Block Stress Test
+// =============================================================================
+
+__global__ void barrierMultiBlockStressKernel(
+    MultiPeerDeviceTransport& transport,
+    int numSlots,
+    int* results) {
+  auto group = make_warp_group();
+
+  // Each block uses a different barrier slot (blockIdx.x % numSlots)
+  uint32_t slotId = blockIdx.x % numSlots;
+
+  // Perform barrier synchronization
+  transport.barrier(group, slotId);
+
+  // Record success for this block
+  if (threadIdx.x == 0) {
+    results[blockIdx.x] = 1;
+  }
+}
+
+void testBarrierMultiBlockStress(
+    MultiPeerDeviceTransport& transport,
+    int numSlots,
+    int* results,
+    int numBlocks) {
+  barrierMultiBlockStressKernel<<<numBlocks, 32>>>(
+      transport, numSlots, results);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Barrier Peer Test (Two-Sided Barrier)
+// =============================================================================
+
+__global__ void barrierPeerKernel(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int barrierIdx,
+    int* result) {
+  auto group = make_warp_group();
+
+  // Two-sided barrier: synchronize with specific peer
+  transport.barrier_peer(peerIndex, group, barrierIdx);
+
+  // If we get here, barrier_peer succeeded
+  if (threadIdx.x == 0) {
+    *result = 1;
+  }
+}
+
+void testBarrierPeer(
+    MultiPeerDeviceTransport& transport,
+    int peerIndex,
+    int barrierIdx,
+    int* result) {
+  barrierPeerKernel<<<1, 32>>>(transport, peerIndex, barrierIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 

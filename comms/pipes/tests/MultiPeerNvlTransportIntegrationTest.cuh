@@ -39,6 +39,21 @@ void testSignalWait(
     int* result);
 
 /**
+ * Test kernel: Execute barrier across all ranks
+ *
+ * Each rank increments a counter before and after the barrier.
+ * This tests that the barrier correctly synchronizes all ranks.
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param barrierIdx The barrier slot index to use
+ * @param result Output: 1 if barrier completed successfully
+ */
+void testBarrier(
+    MultiPeerDeviceTransport& transport,
+    int barrierIdx,
+    int* result);
+
+/**
  * Test kernel: Send data from this rank to a single peer
  *
  * @param transport The MultiPeerDeviceTransport to use
@@ -245,6 +260,57 @@ void testSignalWithSet(
     int signalIdx,
     uint64_t setValue,
     bool isSignaler,
+    int* result);
+
+/**
+ * Test kernel: Barrier with monotonic counters across multiple phases
+ *
+ * Tests that a single barrier slot works across multiple phases via
+ * counter accumulation (no reset needed).
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param barrierIdx The barrier slot index to use
+ * @param numPhases Number of barrier phases to execute
+ * @param result Output: 1 if successful
+ */
+void testBarrierMonotonic(
+    MultiPeerDeviceTransport& transport,
+    int barrierIdx,
+    int numPhases,
+    int* result);
+
+/**
+ * Test kernel: Multi-block barrier stress test
+ *
+ * Each block performs a barrier synchronization using a different slot.
+ * Tests concurrent barrier operations from multiple blocks.
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param numSlots Number of barrier slots to use
+ * @param results Output array: results[blockIdx] = 1 if successful
+ * @param numBlocks Number of blocks to launch
+ */
+void testBarrierMultiBlockStress(
+    MultiPeerDeviceTransport& transport,
+    int numSlots,
+    int* results,
+    int numBlocks);
+
+/**
+ * Test kernel: Two-sided barrier with a specific peer
+ *
+ * Tests barrier_peer() which synchronizes with a single peer rather than
+ * all ranks. Both ranks must call barrier_peer() with each other's rank.
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param targetRank The target rank to synchronize with
+ * @param barrierIdx The barrier slot index to use
+ * @param result Output: 1 if successful
+ */
+void testBarrierPeer(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int barrierIdx,
     int* result);
 
 } // namespace comms::pipes::test

@@ -9,6 +9,7 @@
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/window/DeviceWindowBarrier.cuh"
 #include "comms/pipes/window/DeviceWindowMemory.cuh"
 #include "comms/pipes/window/DeviceWindowSignal.cuh"
 
@@ -105,6 +106,7 @@ namespace comms::pipes {
  * Provides a single device object with:
  * - Rank-based send/recv/put operations
  * - DeviceWindowSignal for inbox-style signaling (remote notification)
+ * - DeviceWindowBarrier for multi-peer synchronization
  *
  * RANK-BASED API:
  * All public APIs that target a specific peer accept a target_rank in the
@@ -170,6 +172,8 @@ namespace comms::pipes {
  *   │  │   └── ...                                                    │
  *   │  ├── DeviceWindowSignal signal_ (inbox model)                         │
  *   │  │   └── signal_peer() / wait_signal()                          │
+ *   │  └── DeviceWindowBarrier barrier_ (N-way sync)                        │
+ *   │      └── barrier() / barrier_peer()                             │
  *   └─────────────────────────────────────────────────────────────────┘
  *
  * USAGE:
@@ -227,7 +231,8 @@ class MultiPeerDeviceTransport {
       : myRank_(myRank),
         nRanks_(nRanks),
         transports_(transports),
-        signal_(wm.signal()) {
+        signal_(wm.signal()),
+        barrier_(wm.barrier()) {
     // Validate constraints
     assert(nRanks > 0);
     assert(myRank >= 0 && myRank < nRanks);
@@ -309,6 +314,18 @@ class MultiPeerDeviceTransport {
   }
 
   // ===========================================================================
+  // Barrier Object
+  // ===========================================================================
+
+  __device__ __forceinline__ DeviceWindowBarrier& get_barrier() {
+    return barrier_;
+  }
+
+  __device__ __forceinline__ const DeviceWindowBarrier& get_barrier() const {
+    return barrier_;
+  }
+
+  // ===========================================================================
   // Signal Operations (delegated to signal_)
   // ===========================================================================
 
@@ -349,6 +366,36 @@ class MultiPeerDeviceTransport {
 
   __device__ __forceinline__ uint64_t read_signal(int signal_id) {
     return signal_.read_signal(signal_id);
+  }
+
+  // ===========================================================================
+  // Barrier Operations (delegated to barrier_)
+  // ===========================================================================
+
+  __device__ __forceinline__ void barrier(
+      ThreadGroup& group,
+      int barrier_id,
+      const Timeout& timeout = Timeout()) {
+    barrier_.barrier(group, barrier_id, timeout);
+  }
+
+  /**
+   * barrier_peer - Two-sided barrier with a specific peer
+   *
+   * @param target_rank Global rank in [0, n_ranks()), must not be self
+   * @param group ThreadGroup for cooperative processing
+   * @param barrier_id Barrier slot to use
+   * @param timeout Optional timeout (default: no timeout, infinite wait)
+   */
+  __device__ __forceinline__ void barrier_peer(
+      int target_rank,
+      ThreadGroup& group,
+      int barrier_id,
+      const Timeout& timeout = Timeout()) {
+    MULTI_PEER_CHECK_RANK(target_rank, nRanks_);
+    MULTI_PEER_CHECK_NOT_SELF(target_rank, myRank_);
+    int peer_index = rank_to_peer_index(target_rank);
+    barrier_.barrier_peer(peer_index, group, barrier_id, timeout);
   }
 
   // ===========================================================================
@@ -459,6 +506,7 @@ class MultiPeerDeviceTransport {
   const int nRanks_{0};
   const DeviceSpan<Transport> transports_;
   DeviceWindowSignal signal_;
+  DeviceWindowBarrier barrier_;
 
   // ===========================================================================
   // Private Match Helper

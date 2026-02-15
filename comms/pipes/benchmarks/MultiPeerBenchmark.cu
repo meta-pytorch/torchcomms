@@ -43,6 +43,22 @@ template __device__ int computeSlotIndex<SyncScope::WARP>();
 template __device__ int computeSlotIndex<SyncScope::BLOCK>();
 
 // =============================================================================
+// Barrier Benchmark Kernel Implementation
+// =============================================================================
+
+template <SyncScope G>
+__global__ void multiPeerBarrierKernel(
+    MultiPeerDeviceTransport transport,
+    int nSteps) {
+  auto group = makeGroup<G>();
+  int slotId = computeSlotIndex<G>();
+
+  for (int step = 0; step < nSteps; ++step) {
+    transport.barrier(group, slotId);
+  }
+}
+
+// =============================================================================
 // Signal Ping-Pong Benchmark Kernel Implementation
 // =============================================================================
 
@@ -102,6 +118,18 @@ __global__ void multiPeerSignalAllKernel(
         static_cast<uint64_t>(nPeers * (step + 1)));
   }
 }
+
+// =============================================================================
+// Explicit Template Instantiations for Barrier Kernels
+// =============================================================================
+
+// Barrier kernels
+template __global__ void multiPeerBarrierKernel<SyncScope::WARP>(
+    MultiPeerDeviceTransport,
+    int);
+template __global__ void multiPeerBarrierKernel<SyncScope::BLOCK>(
+    MultiPeerDeviceTransport,
+    int);
 
 // =============================================================================
 // Explicit Template Instantiations for Signal Kernels
