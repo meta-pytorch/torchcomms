@@ -4,6 +4,7 @@
 
 #include <vector>
 
+#include "comms/pipes/window/DeviceWindowBarrier.cuh"
 #include "comms/pipes/window/DeviceWindowMemory.cuh"
 #include "comms/pipes/window/DeviceWindowSignal.cuh"
 #include "comms/utils/checks.h"
@@ -44,6 +45,25 @@ WindowMemory::WindowMemory(
   std::size_t spanArraySize = nPeers * sizeof(DeviceSpan<SignalState>);
   peerInboxPtrsDevice_ =
       std::make_unique<meta::comms::DeviceBuffer>(spanArraySize);
+
+  // Allocate barrier inbox buffer (shared with peers via exchange)
+  barrierInboxSize_ =
+      getMultiPeerBarrierBufferSize(static_cast<int>(config_.barrierCount));
+  barrierInboxHandler_ = std::make_unique<GpuMemHandler>(
+      bootstrap_, myRank_, nRanks_, barrierInboxSize_, memSharingMode_);
+
+  // Initialize barrier inbox to zero
+  std::vector<BarrierState> barrierInitStates(config_.barrierCount);
+  CUDA_CHECK(cudaMemcpy(
+      barrierInboxHandler_->getLocalDeviceMemPtr(),
+      barrierInitStates.data(),
+      barrierInboxSize_,
+      cudaMemcpyDefault));
+
+  // Allocate peer barrier pointers array (populate later in exchange())
+  std::size_t barrierPtrArraySize = nPeers * sizeof(BarrierState*);
+  peerBarrierPtrsDevice_ =
+      std::make_unique<meta::comms::DeviceBuffer>(barrierPtrArraySize);
 }
 
 void WindowMemory::exchange() {
@@ -68,6 +88,24 @@ void WindowMemory::exchange() {
       peerInboxPtrsDevice_->get(),
       peerSpans.data(),
       nPeers * sizeof(DeviceSpan<SignalState>),
+      cudaMemcpyDefault));
+
+  // Exchange barrier inbox handles so peers can write arrive signals
+  barrierInboxHandler_->exchangeMemPtrs();
+
+  // Build peer barrier pointers array on host (peer-indexed, excludes self)
+  std::vector<BarrierState*> peerBarrierPtrs(nPeers);
+  for (int peerIdx = 0; peerIdx < nPeers; ++peerIdx) {
+    int rank = peerToRank(peerIdx);
+    peerBarrierPtrs[peerIdx] = static_cast<BarrierState*>(
+        barrierInboxHandler_->getPeerDeviceMemPtr(rank));
+  }
+
+  // Copy peer barrier pointers to device
+  CUDA_CHECK(cudaMemcpy(
+      peerBarrierPtrsDevice_->get(),
+      peerBarrierPtrs.data(),
+      nPeers * sizeof(BarrierState*),
       cudaMemcpyDefault));
 
   exchanged_ = true;
@@ -96,8 +134,28 @@ DeviceWindowSignal WindowMemory::getDeviceWindowSignal() const {
       DeviceSpan<DeviceSpan<SignalState>>(peerSpans, nPeers));
 }
 
+DeviceWindowBarrier WindowMemory::getDeviceWindowBarrier() const {
+  if (!exchanged_) {
+    throw std::runtime_error(
+        "WindowMemory::getDeviceWindowBarrier() called before exchange()");
+  }
+
+  auto* localBarriers =
+      static_cast<BarrierState*>(barrierInboxHandler_->getLocalDeviceMemPtr());
+  auto** peerBarrierPtrs =
+      static_cast<BarrierState**>(peerBarrierPtrsDevice_->get());
+
+  int nPeers = nRanks_ - 1;
+  return DeviceWindowBarrier(
+      myRank_,
+      nRanks_,
+      DeviceSpan<BarrierState>(
+          localBarriers, static_cast<uint32_t>(config_.barrierCount)),
+      DeviceSpan<BarrierState*>(peerBarrierPtrs, nPeers));
+}
+
 DeviceWindowMemory WindowMemory::getDeviceWindowMemory() const {
-  return DeviceWindowMemory(getDeviceWindowSignal());
+  return DeviceWindowMemory(getDeviceWindowSignal(), getDeviceWindowBarrier());
 }
 
 } // namespace comms::pipes

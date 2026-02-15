@@ -12,7 +12,7 @@ namespace comms::pipes {
 // Forward declarations - users must include the corresponding .cuh to use the
 // returned objects
 class DeviceWindowSignal;
-
+class DeviceWindowBarrier;
 class DeviceWindowMemory;
 
 /**
@@ -22,13 +22,18 @@ struct WindowMemoryConfig {
   // Number of signal slots (inbox size)
   // Typical: 1 for simple signaling, more for multi-phase patterns
   std::size_t signalCount{1};
+
+  // Number of barrier slots for multi-peer synchronization
+  // Typical: 1-4 for most workloads
+  std::size_t barrierCount{1};
 };
 
 /**
  * WindowMemory - Host-side RAII manager for synchronization primitive buffers
- * (signals, eventually counters and barriers)
+ * (signals and barriers)
  *
- * Manages GPU memory allocation and handle exchange for DeviceWindowSignal.
+ * Manages GPU memory allocation and handle exchange for DeviceWindowSignal
+ * and DeviceWindowBarrier.
  *
  * MEMORY MODEL (Inbox):
  * Each rank has a local "inbox" buffer. All peers can write to this rank's
@@ -43,10 +48,11 @@ struct WindowMemoryConfig {
  * - getDeviceWindowSignal() returns device object after exchange()
  *
  * USAGE:
- *   WindowMemoryConfig config{.signalCount = 4};
+ *   WindowMemoryConfig config{.signalCount = 4, .barrierCount = 2};
  *   WindowMemory windowMemory(myRank, nRanks, bootstrap, config);
  *   windowMemory.exchange();  // Collective - all ranks must call
  *   auto deviceSignal = windowMemory.getDeviceWindowSignal();
+ *   auto deviceBarrier = windowMemory.getDeviceWindowBarrier();
  *   auto deviceWM = windowMemory.getDeviceWindowMemory();
  *   myKernel<<<...>>>(deviceWM, ...);
  */
@@ -104,9 +110,22 @@ class WindowMemory {
   DeviceWindowSignal getDeviceWindowSignal() const;
 
   /**
+   * getDeviceWindowBarrier - Get device-side barrier object
+   *
+   * PRECONDITION: exchange() must have completed on all ranks.
+   *
+   * Returns by value since DeviceWindowBarrier is a lightweight handle.
+   *
+   * @return DeviceWindowBarrier for use in CUDA kernels
+   * @throws std::runtime_error if called before exchange()
+   */
+  DeviceWindowBarrier getDeviceWindowBarrier() const;
+
+  /**
    * getDeviceWindowMemory - Get unified device-side window memory object
    *
-   * Returns a DeviceWindowMemory that bundles DeviceWindowSignal.
+   * Returns a DeviceWindowMemory that bundles DeviceWindowSignal and
+   * DeviceWindowBarrier.
    *
    * PRECONDITION: exchange() must have completed on all ranks.
    *
@@ -127,6 +146,13 @@ class WindowMemory {
    */
   std::size_t signalCount() const {
     return config_.signalCount;
+  }
+
+  /**
+   * Get barrier count.
+   */
+  std::size_t barrierCount() const {
+    return config_.barrierCount;
   }
 
   /**
@@ -170,8 +196,18 @@ class WindowMemory {
   // Size = nPeers (not nRanks) - excludes self
   std::unique_ptr<meta::comms::DeviceBuffer> peerInboxPtrsDevice_;
 
+  // Barrier inbox buffer (shared with peers via exchange)
+  std::unique_ptr<GpuMemHandler> barrierInboxHandler_;
+
+  // Peer barrier pointers array (device-accessible, LOCAL-only)
+  // Size = nPeers (not nRanks) - excludes self
+  std::unique_ptr<meta::comms::DeviceBuffer> peerBarrierPtrsDevice_;
+
   // Inbox size in bytes
   std::size_t inboxSize_{0};
+
+  // Barrier inbox size in bytes
+  std::size_t barrierInboxSize_{0};
 
   // Flag to track if exchange has been called
   bool exchanged_{false};

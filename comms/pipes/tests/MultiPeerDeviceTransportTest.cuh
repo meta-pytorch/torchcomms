@@ -22,6 +22,15 @@ void testDeviceWindowSignalConstruction(
     int* results);
 
 /**
+ * Test kernel: Verify DeviceWindowBarrier construction and basic accessors
+ *
+ * @param myRank Rank ID for the barrier object
+ * @param nRanks Total number of ranks
+ * @param results Output array for test results [0]=rank, [1]=nRanks
+ */
+void testDeviceWindowBarrierConstruction(int myRank, int nRanks, int* results);
+
+/**
  * Test kernel: Verify MultiPeerDeviceTransport construction and basic accessors
  *
  * @param myRank Rank ID for the transport object
@@ -67,8 +76,8 @@ void testPeerIndexConversionRoundtrip(int myRank, int nRanks, int* results);
 /**
  * Test kernel: Verify DeviceWindowMemory accessors return correct metadata
  *
- * Constructs DeviceWindowMemory from DeviceWindowSignal + DeviceBarrier, then
- * verifies signal() and barrier() return objects with matching metadata.
+ * Constructs DeviceWindowMemory from DeviceWindowSignal + DeviceWindowBarrier,
+ * then verifies signal() and barrier() return objects with matching metadata.
  *
  * @param myRank Rank ID
  * @param nRanks Total number of ranks

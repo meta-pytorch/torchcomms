@@ -5,6 +5,7 @@
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/window/DeviceWindowBarrier.cuh"
 #include "comms/pipes/window/DeviceWindowMemory.cuh"
 #include "comms/pipes/window/DeviceWindowSignal.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -63,6 +64,37 @@ void testDeviceWindowSignalConstruction(
 }
 
 // =============================================================================
+// DeviceWindowBarrier Construction Test
+// =============================================================================
+
+__global__ void deviceBarrierConstructionKernel(
+    int myRank,
+    int nRanks,
+    DeviceSpan<BarrierState> localBarriers,
+    DeviceSpan<BarrierState*> peerBarrierPtrs,
+    int* results) {
+  DeviceWindowBarrier barrier(myRank, nRanks, localBarriers, peerBarrierPtrs);
+
+  // Verify accessors return correct values
+  results[0] = barrier.rank();
+  results[1] = barrier.n_ranks();
+}
+
+void testDeviceWindowBarrierConstruction(int myRank, int nRanks, int* results) {
+  int nPeers = nRanks - 1;
+  meta::comms::DeviceBuffer localBarriersBuf(sizeof(BarrierState));
+  meta::comms::DeviceBuffer peerBarrierPtrsBuf(nPeers * sizeof(BarrierState*));
+
+  auto localBarriers = makeZeroedSpan<BarrierState>(localBarriersBuf, 1);
+  auto peerBarrierPtrs =
+      makeZeroedSpan<BarrierState*>(peerBarrierPtrsBuf, nPeers);
+
+  deviceBarrierConstructionKernel<<<1, 1>>>(
+      myRank, nRanks, localBarriers, peerBarrierPtrs, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
 // =============================================================================
 // MultiPeerDeviceTransport Construction Test
 // =============================================================================
@@ -73,10 +105,13 @@ __global__ void multiPeerDeviceTransportConstructionKernel(
     DeviceSpan<Transport> transports,
     DeviceSpan<SignalState> signalInbox,
     DeviceSpan<DeviceSpan<SignalState>> peerSignals,
+    DeviceSpan<BarrierState> barriers,
+    DeviceSpan<BarrierState*> barrierPeerPtrs,
     int* results) {
   // Construct component objects
   DeviceWindowSignal signal(myRank, nRanks, 1, signalInbox, peerSignals);
-  DeviceWindowMemory wm(signal);
+  DeviceWindowBarrier barrier(myRank, nRanks, barriers, barrierPeerPtrs);
+  DeviceWindowMemory wm(signal, barrier);
 
   // Construct MultiPeerDeviceTransport
   MultiPeerDeviceTransport transport(myRank, nRanks, transports, wm);
@@ -95,14 +130,26 @@ void testMultiPeerDeviceTransportConstruction(
   meta::comms::DeviceBuffer signalInboxBuf(sizeof(SignalState));
   meta::comms::DeviceBuffer peerSignalsBuf(
       nPeers * sizeof(DeviceSpan<SignalState>));
+  meta::comms::DeviceBuffer barriersBuf(sizeof(BarrierState));
+  meta::comms::DeviceBuffer barrierPeerPtrsBuf(nPeers * sizeof(BarrierState*));
 
   auto transports = makeZeroedSpan<Transport>(transportsBuf, nRanks);
   auto signalInbox = makeZeroedSpan<SignalState>(signalInboxBuf, 1);
   auto peerSignals =
       makeZeroedSpan<DeviceSpan<SignalState>>(peerSignalsBuf, nPeers);
+  auto barriers = makeZeroedSpan<BarrierState>(barriersBuf, 1);
+  auto barrierPeerPtrs =
+      makeZeroedSpan<BarrierState*>(barrierPeerPtrsBuf, nPeers);
 
   multiPeerDeviceTransportConstructionKernel<<<1, 1>>>(
-      myRank, nRanks, transports, signalInbox, peerSignals, results);
+      myRank,
+      nRanks,
+      transports,
+      signalInbox,
+      peerSignals,
+      barriers,
+      barrierPeerPtrs,
+      results);
   CUDACHECK_TEST(cudaGetLastError());
   CUDACHECK_TEST(cudaDeviceSynchronize());
 }
@@ -133,10 +180,13 @@ __global__ void peerIterationHelpersKernel(
     DeviceSpan<Transport> transports,
     DeviceSpan<SignalState> signalInbox,
     DeviceSpan<DeviceSpan<SignalState>> peerSignals,
+    DeviceSpan<BarrierState> barriers,
+    DeviceSpan<BarrierState*> barrierPeerPtrs,
     int* results) {
   // Construct component objects
   DeviceWindowSignal signal(myRank, nRanks, 1, signalInbox, peerSignals);
-  DeviceWindowMemory wm(signal);
+  DeviceWindowBarrier barrier(myRank, nRanks, barriers, barrierPeerPtrs);
+  DeviceWindowMemory wm(signal, barrier);
 
   // Construct MultiPeerDeviceTransport
   MultiPeerDeviceTransport transport(myRank, nRanks, transports, wm);
@@ -157,14 +207,26 @@ void testPeerIterationHelpers(int myRank, int nRanks, int* results) {
   meta::comms::DeviceBuffer signalInboxBuf(sizeof(SignalState));
   meta::comms::DeviceBuffer peerSignalsBuf(
       nPeers * sizeof(DeviceSpan<SignalState>));
+  meta::comms::DeviceBuffer barriersBuf(sizeof(BarrierState));
+  meta::comms::DeviceBuffer barrierPeerPtrsBuf(nPeers * sizeof(BarrierState*));
 
   auto transports = makeZeroedSpan<Transport>(transportsBuf, nRanks);
   auto signalInbox = makeZeroedSpan<SignalState>(signalInboxBuf, 1);
   auto peerSignals =
       makeZeroedSpan<DeviceSpan<SignalState>>(peerSignalsBuf, nPeers);
+  auto barriers = makeZeroedSpan<BarrierState>(barriersBuf, 1);
+  auto barrierPeerPtrs =
+      makeZeroedSpan<BarrierState*>(barrierPeerPtrsBuf, nPeers);
 
   peerIterationHelpersKernel<<<1, 1>>>(
-      myRank, nRanks, transports, signalInbox, peerSignals, results);
+      myRank,
+      nRanks,
+      transports,
+      signalInbox,
+      peerSignals,
+      barriers,
+      barrierPeerPtrs,
+      results);
   CUDACHECK_TEST(cudaGetLastError());
   CUDACHECK_TEST(cudaDeviceSynchronize());
 }
@@ -179,10 +241,13 @@ __global__ void peerIndexConversionRoundtripKernel(
     DeviceSpan<Transport> transports,
     DeviceSpan<SignalState> signalInbox,
     DeviceSpan<DeviceSpan<SignalState>> peerSignals,
+    DeviceSpan<BarrierState> barriers,
+    DeviceSpan<BarrierState*> barrierPeerPtrs,
     int* results) {
   // Construct component objects
   DeviceWindowSignal signal(myRank, nRanks, 1, signalInbox, peerSignals);
-  DeviceWindowMemory wm(signal);
+  DeviceWindowBarrier barrier(myRank, nRanks, barriers, barrierPeerPtrs);
+  DeviceWindowMemory wm(signal, barrier);
 
   // Construct MultiPeerDeviceTransport
   MultiPeerDeviceTransport transport(myRank, nRanks, transports, wm);
@@ -241,6 +306,8 @@ void testPeerIndexConversionRoundtrip(int myRank, int nRanks, int* results) {
   meta::comms::DeviceBuffer signalInboxBuf(sizeof(SignalState));
   meta::comms::DeviceBuffer peerSignalsBuf(
       nPeers * sizeof(DeviceSpan<SignalState>));
+  meta::comms::DeviceBuffer barriersBuf(sizeof(BarrierState));
+  meta::comms::DeviceBuffer barrierPeerPtrsBuf(nPeers * sizeof(BarrierState*));
 
   // Set up transports: self = SELF type, peers = P2P_NVL type.
   auto* transportsPtr = static_cast<Transport*>(transportsBuf.get());
@@ -260,9 +327,19 @@ void testPeerIndexConversionRoundtrip(int myRank, int nRanks, int* results) {
   auto signalInbox = makeZeroedSpan<SignalState>(signalInboxBuf, 1);
   auto peerSignals =
       makeZeroedSpan<DeviceSpan<SignalState>>(peerSignalsBuf, nPeers);
+  auto barriers = makeZeroedSpan<BarrierState>(barriersBuf, 1);
+  auto barrierPeerPtrs =
+      makeZeroedSpan<BarrierState*>(barrierPeerPtrsBuf, nPeers);
 
   peerIndexConversionRoundtripKernel<<<1, 1>>>(
-      myRank, nRanks, transports, signalInbox, peerSignals, results);
+      myRank,
+      nRanks,
+      transports,
+      signalInbox,
+      peerSignals,
+      barriers,
+      barrierPeerPtrs,
+      results);
   CUDACHECK_TEST(cudaGetLastError());
   CUDACHECK_TEST(cudaDeviceSynchronize());
 }
@@ -277,18 +354,25 @@ __global__ void deviceWindowMemoryAccessorsKernel(
     int signalCount,
     DeviceSpan<SignalState> signalInbox,
     DeviceSpan<DeviceSpan<SignalState>> peerSignals,
+    DeviceSpan<BarrierState> barriers,
+    DeviceSpan<BarrierState*> barrierPeerPtrs,
     int* results) {
   // Construct primitives
   DeviceWindowSignal signal(
       myRank, nRanks, signalCount, signalInbox, peerSignals);
+  DeviceWindowBarrier barrier(myRank, nRanks, barriers, barrierPeerPtrs);
 
   // Construct DeviceWindowMemory
-  DeviceWindowMemory wm(signal);
+  DeviceWindowMemory wm(signal, barrier);
 
   // Verify signal() accessor returns correct metadata
   results[0] = wm.signal().rank();
   results[1] = wm.signal().n_ranks();
   results[2] = wm.signal().signal_count();
+
+  // Verify barrier() accessor returns correct metadata
+  results[3] = wm.barrier().rank();
+  results[4] = wm.barrier().n_ranks();
 }
 
 void testDeviceWindowMemoryAccessors(
@@ -300,13 +384,25 @@ void testDeviceWindowMemoryAccessors(
   meta::comms::DeviceBuffer signalInboxBuf(signalCount * sizeof(SignalState));
   meta::comms::DeviceBuffer peerSignalsBuf(
       nPeers * sizeof(DeviceSpan<SignalState>));
+  meta::comms::DeviceBuffer barriersBuf(sizeof(BarrierState));
+  meta::comms::DeviceBuffer barrierPeerPtrsBuf(nPeers * sizeof(BarrierState*));
 
   auto signalInbox = makeZeroedSpan<SignalState>(signalInboxBuf, signalCount);
   auto peerSignals =
       makeZeroedSpan<DeviceSpan<SignalState>>(peerSignalsBuf, nPeers);
+  auto barriers = makeZeroedSpan<BarrierState>(barriersBuf, 1);
+  auto barrierPeerPtrs =
+      makeZeroedSpan<BarrierState*>(barrierPeerPtrsBuf, nPeers);
 
   deviceWindowMemoryAccessorsKernel<<<1, 1>>>(
-      myRank, nRanks, signalCount, signalInbox, peerSignals, results);
+      myRank,
+      nRanks,
+      signalCount,
+      signalInbox,
+      peerSignals,
+      barriers,
+      barrierPeerPtrs,
+      results);
   CUDACHECK_TEST(cudaGetLastError());
   CUDACHECK_TEST(cudaDeviceSynchronize());
 }

@@ -44,11 +44,6 @@ struct MultiPeerNvlTransportConfig {
   // This is separate from WindowMemoryConfig.signalCount (inbox model).
   // Typical: 1-num of blocks for most workloads.
   std::size_t p2pSignalCount{1};
-
-  // Number of counter slots for local completion tracking.
-  // Counters track when source buffers are safe to reuse.
-  // Typical: 1-4 for most workloads.
-  std::size_t counterCount{1};
 };
 
 /**
@@ -175,7 +170,7 @@ class MultiPeerNvlTransport {
    * Returns a MultiPeerDeviceTransport that provides:
    * - DeviceWindowSignal with inbox semantics (all peers write to this rank's
    * inbox)
-   * - DeviceBarrier for multi-peer synchronization
+   * - DeviceWindowBarrier for multi-peer synchronization
    * - Peer-indexed send/recv operations
    *
    * PRECONDITION: exchange() must have been called by all ranks first.
