@@ -38,6 +38,20 @@ class MockBootstrap : public ctran::bootstrap::IBootstrap {
       (override));
   MOCK_METHOD(
       folly::SemiFuture<int>,
+      allGatherNvlDomain,
+      (void* buf,
+       int len,
+       int nvlLocalRank,
+       int nvlNranks,
+       std::vector<int> nvlRankToCommRank),
+      (override));
+  MOCK_METHOD(
+      folly::SemiFuture<int>,
+      barrierNvlDomain,
+      (int nvlLocalRank, int nvlNranks, std::vector<int> nvlRankToCommRank),
+      (override));
+  MOCK_METHOD(
+      folly::SemiFuture<int>,
       send,
       (void* buf, int len, int peer, int tag),
       (override));

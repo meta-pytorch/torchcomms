@@ -20,6 +20,16 @@ void MockBootstrap::expectSuccessfulCtranInitCalls() {
       .WillRepeatedly([](int localRank,
                          int localNRanks,
                          std::vector<int> localRankToCommRank) { return 0; });
+  EXPECT_CALL(*this, allGatherNvlDomain(_, _, _, _, _))
+      .WillRepeatedly([](void* buf,
+                         int len,
+                         int nvlLocalRank,
+                         int nvlNranks,
+                         std::vector<int> nvlRankToCommRank) { return 0; });
+  EXPECT_CALL(*this, barrierNvlDomain(_, _, _))
+      .WillRepeatedly([](int nvlLocalRank,
+                         int nvlNranks,
+                         std::vector<int> nvlRankToCommRank) { return 0; });
 }
 
 } // namespace ctran::testing
