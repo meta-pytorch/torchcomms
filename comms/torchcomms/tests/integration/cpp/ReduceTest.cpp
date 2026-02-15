@@ -1,316 +1,190 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "ReduceTest.hpp"
 
-#include <ATen/cuda/CUDAGraph.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <memory>
+
 #include <gtest/gtest.h>
 #include "TorchCommTestHelpers.h"
-#include "comms/torchcomms/TorchWork.hpp"
 
-std::unique_ptr<TorchCommTestWrapper> ReduceTest::createWrapper() {
-  return std::make_unique<TorchCommTestWrapper>();
-}
-
-void ReduceTest::synchronizeStream() {
-  if (!isRunningOnCPU()) {
-    at::cuda::getCurrentCUDAStream(device_index_).synchronize();
-  }
-}
-
-void ReduceTest::SetUp() {
-  wrapper_ = createWrapper();
-  torchcomm_ = wrapper_->getTorchComm();
-  rank_ = torchcomm_->getRank();
-  num_ranks_ = torchcomm_->getSize();
-  device_type_ = wrapper_->getDevice().type();
-}
-
-void ReduceTest::TearDown() {
-  // Explicitly reset the TorchComm object to ensure proper cleanup
-  torchcomm_.reset();
-  wrapper_.reset();
-}
-
-// Test function for synchronous reduce with work object
-void ReduceTest::testSyncReduce(
+at::Tensor ReduceHelper::createInputTensor(
     int count,
     at::ScalarType dtype,
-    const torch::comms::ReduceOp& op) {
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing sync reduce with count=" << count
-                           << " and dtype=" << getDtypeName(dtype)
-                           << " and op=" << getOpName(op));
-
-  const int root_rank = 0;
-
-  // Everyone creates the input tensor
-  at::Tensor tensor = createInputTensor(count, dtype);
-
-  // Call reduce
-  auto work = torchcomm_->reduce(tensor, root_rank, op, false);
-  work->wait();
-
-  // Verify the results
-  verifyResults(tensor, op, root_rank);
-}
-
-// Test function for synchronous reduce without work object
-void ReduceTest::testSyncReduceNoWork(
-    int count,
-    at::ScalarType dtype,
-    const torch::comms::ReduceOp& op) {
-  SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing sync reduce without work object with count=" << count
-      << " and dtype=" << getDtypeName(dtype) << " and op=" << getOpName(op));
-
-  const int root_rank = 0;
-
-  // Everyone creates the input tensor
-  at::Tensor tensor = createInputTensor(count, dtype);
-
-  // Call reduce without keeping the work object
-  torchcomm_->reduce(tensor, root_rank, op, false);
-
-  // Verify the results
-  verifyResults(tensor, op, root_rank);
-}
-
-// Test function for asynchronous reduce with wait
-void ReduceTest::testAsyncReduce(
-    int count,
-    at::ScalarType dtype,
-    const torch::comms::ReduceOp& op) {
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing async reduce with count=" << count
-                           << " and dtype=" << getDtypeName(dtype)
-                           << " and op=" << getOpName(op));
-
-  const int root_rank = 0;
-
-  // Everyone creates the input tensor
-  at::Tensor tensor = createInputTensor(count, dtype);
-
-  // Call reduce
-  auto work = torchcomm_->reduce(tensor, root_rank, op, true);
-
-  // Wait for the reduce to complete
-  work->wait();
-
-  // Verify the results
-  verifyResults(tensor, op, root_rank);
-}
-
-// Test function for asynchronous reduce with early reset
-void ReduceTest::testAsyncReduceEarlyReset(
-    int count,
-    at::ScalarType dtype,
-    const torch::comms::ReduceOp& op) {
-  SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing async reduce with early reset with count=" << count
-      << " and dtype=" << getDtypeName(dtype) << " and op=" << getOpName(op));
-
-  const int root_rank = 0;
-
-  // Everyone creates the input tensor
-  at::Tensor tensor = createInputTensor(count, dtype);
-
-  // Call reduce
-  auto work = torchcomm_->reduce(tensor, root_rank, op, true);
-
-  // Wait for the work to complete before resetting
-  work->wait();
-
-  // Reset the work object
-  work.reset();
-
-  // Verify the results
-  verifyResults(tensor, op, root_rank);
-}
-
-// Test function for asynchronous reduce with input deleted after enqueue
-void ReduceTest::testReduceInputDeleted(
-    int count,
-    at::ScalarType dtype,
-    const torch::comms::ReduceOp& op) {
-  SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing async reduce with input deleted after enqueue with count="
-      << count << " and dtype=" << getDtypeName(dtype)
-      << " and op=" << getOpName(op));
-
-  const int root_rank = 0;
-
-  // Create work object to hold the async operation
-  c10::intrusive_ptr<torch::comms::TorchWork> work;
-
-  {
-    // Create input tensor in a limited scope
-    at::Tensor tensor = createInputTensor(count, dtype);
-
-    // Call reduce
-    work = torchcomm_->reduce(tensor, root_rank, op, true);
-
-    // Tensor goes out of scope here and gets deleted
-  }
-
-  // Wait for the reduce to complete even though tensor is deleted
-  work->wait();
-
-  // Note: Cannot verify results since tensor is deleted
-  // This test validates that the operation completes without crashing
-}
-
-// Helper function to create input tensor
-at::Tensor ReduceTest::createInputTensor(int count, at::ScalarType dtype) {
-  auto options = at::TensorOptions().dtype(dtype).device(device_type_);
+    c10::DeviceType deviceType,
+    int rank) {
+  auto options = at::TensorOptions().dtype(dtype).device(deviceType);
   at::Tensor input;
-  if (dtype == at::kFloat || dtype == at::kBFloat16 || dtype == at::kHalf) {
-    input = at::ones({count}, options) * static_cast<float>(rank_ + 1);
+  if (dtype == at::kFloat || dtype == at::kBFloat16 || dtype == at::kHalf ||
+      dtype == at::kDouble) {
+    input = at::ones({count}, options) * static_cast<float>(rank + 1);
   } else if (dtype == at::kInt) {
-    input = at::ones({count}, options) * static_cast<int>(rank_ + 1);
+    input = at::ones({count}, options) * static_cast<int>(rank + 1);
   } else if (dtype == at::kChar) {
-    input = at::ones({count}, options) * static_cast<signed char>(rank_ + 1);
+    input = at::ones({count}, options) * static_cast<signed char>(rank + 1);
   }
   return input;
 }
 
-// Helper function to calculate expected result
-double ReduceTest::calculateExpectedResult(const torch::comms::ReduceOp& op) {
+void ReduceHelper::synchronizeStream(c10::DeviceType deviceType) {
+  if (deviceType != c10::DeviceType::CPU) {
+    at::cuda::getCurrentCUDAStream(0).synchronize();
+  }
+}
+
+double ReduceHelper::calculateExpectedResult(
+    const torch::comms::ReduceOp& op,
+    int numRanks) {
   if (op == torch::comms::ReduceOp::SUM) {
-    return num_ranks_ * (num_ranks_ + 1) / 2;
-  } else if (op == torch::comms::ReduceOp::MAX) {
-    return num_ranks_;
-  } else if (op == torch::comms::ReduceOp::AVG) {
-    // For AVG, use floating point division to get correct expected value
-    // Sum of ranks 1..n = n*(n+1)/2, divided by n gives (n+1)/2.0
-    return static_cast<double>(num_ranks_ + 1) / 2.0;
+    return numRanks * (numRanks + 1) / 2;
+  } else if (op == torch::comms::ReduceOp::RedOpType::MAX) {
+    return numRanks;
+  } else if (op == torch::comms::ReduceOp::RedOpType::AVG) {
+    return static_cast<double>(numRanks + 1) / 2.0;
   } else {
     throw std::runtime_error("Unsupported reduce operation");
   }
 }
 
-// Helper function to verify results
-void ReduceTest::verifyResults(
+void ReduceHelper::verifyResults(
     const at::Tensor& output,
     const torch::comms::ReduceOp& op,
-    int root_rank) {
-  if (rank_ != root_rank) {
-    synchronizeStream();
+    int rank,
+    int numRanks,
+    c10::DeviceType deviceType) {
+  if (rank != 0) {
+    synchronizeStream(deviceType);
     return;
   }
 
-  // Calculate expected result
-  double expected = calculateExpectedResult(op);
-
-  // Use verifyTensorEquality to compare output with expected tensor
+  double expected = calculateExpectedResult(op, numRanks);
   std::string description = "reduce with op " + getOpName(op);
   verifyTensorEquality(output.cpu(), expected, description);
 }
 
-// CUDA Graph test function for reduce
-void ReduceTest::testGraphReduce(
+template <typename Fixture>
+void ReduceTest<Fixture>::testSync(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
-  // Skip CUDA Graph tests when running on CPU
-  if (isRunningOnCPU()) {
-    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
-  }
-
   SCOPED_TRACE(
-      ::testing::Message() << "Testing CUDA Graph reduce with count=" << count
-                           << " and dtype=" << getDtypeName(dtype)
-                           << " and op=" << getOpName(op));
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
   const int root_rank = 0;
+  auto input =
+      helper_.createInputTensor(count, dtype, this->deviceType_, this->rank_);
+  auto original = input.clone();
 
-  // Everyone creates the input tensor AFTER setting non-default stream but
-  // BEFORE graph capture
-  at::Tensor tensor = createInputTensor(count, dtype);
-  at::Tensor original_values = tensor.clone();
-
-  // Create PyTorch CUDA graph
-  at::cuda::CUDAGraph graph;
-
-  // Capture the reset + reduce operations in the graph
-  graph.capture_begin();
-
-  // Call reduce without keeping the work object
-  torchcomm_->reduce(tensor, root_rank, op, false);
-
-  graph.capture_end();
-
-  // Replay the captured graph multiple times
-  for (int i = 0; i < num_replays; ++i) {
-    // Reset tensor before graph replay
-    tensor.copy_(original_values);
-
-    graph.replay();
-
-    // Verify the results after each replay
-    verifyResults(tensor, op, root_rank);
-  }
+  auto execute = [&]() {
+    auto work = this->torchcomm_->reduce(input, root_rank, op, false);
+    work->wait();
+  };
+  auto reset = [&]() { input.copy_(original); };
+  auto verify = [&]() {
+    helper_.verifyResults(
+        input, op, this->rank_, this->numRanks_, this->deviceType_);
+  };
+  this->run(execute, reset, verify);
 }
 
-// CUDA Graph test function for reduce with input deleted after graph creation
-void ReduceTest::testGraphReduceInputDeleted(
+template <typename Fixture>
+void ReduceTest<Fixture>::testSyncNoWork(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
-  // Skip CUDA Graph tests when running on CPU
-  if (isRunningOnCPU()) {
-    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
-  }
-
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing CUDA Graph reduce with input deleted after graph creation with count="
-      << count << " and dtype=" << getDtypeName(dtype)
-      << " and op=" << getOpName(op));
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
   const int root_rank = 0;
+  auto input =
+      helper_.createInputTensor(count, dtype, this->deviceType_, this->rank_);
+  auto original = input.clone();
 
-  // Create PyTorch CUDA graph
-  at::cuda::CUDAGraph graph;
-
-  {
-    // Create input tensor in a limited scope
-    at::Tensor tensor = createInputTensor(count, dtype);
-
-    // Store original values to reset with
-    at::Tensor original_values = tensor.clone();
-
-    // Capture the reset + reduce operations in the graph
-    graph.capture_begin();
-
-    // Call reduce without keeping the work object
-    torchcomm_->reduce(tensor, root_rank, op, false);
-
-    graph.capture_end();
-
-    // Tensor goes out of scope here and gets deleted
-  }
-
-  // Replay the captured graph multiple times even though tensor is deleted
-  for (int i = 0; i < num_replays; ++i) {
-    graph.replay();
-
-    // Note: Cannot verify results since tensor is deleted
-    // This test validates that the graph replay completes without crashing
-  }
+  auto execute = [&]() {
+    this->torchcomm_->reduce(input, root_rank, op, false);
+  };
+  auto reset = [&]() { input.copy_(original); };
+  auto verify = [&]() {
+    helper_.verifyResults(
+        input, op, this->rank_, this->numRanks_, this->deviceType_);
+  };
+  this->run(execute, reset, verify);
 }
+
+template <typename Fixture>
+void ReduceTest<Fixture>::testAsync(
+    int count,
+    at::ScalarType dtype,
+    const torch::comms::ReduceOp& op) {
+  SCOPED_TRACE(
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
+
+  const int root_rank = 0;
+  auto input =
+      helper_.createInputTensor(count, dtype, this->deviceType_, this->rank_);
+  auto original = input.clone();
+
+  auto execute = [&]() {
+    auto work = this->torchcomm_->reduce(input, root_rank, op, true);
+    work->wait();
+  };
+  auto reset = [&]() { input.copy_(original); };
+  auto verify = [&]() {
+    helper_.verifyResults(
+        input, op, this->rank_, this->numRanks_, this->deviceType_);
+  };
+  this->run(execute, reset, verify);
+}
+
+template <typename Fixture>
+void ReduceTest<Fixture>::testAsyncEarlyReset(
+    int count,
+    at::ScalarType dtype,
+    const torch::comms::ReduceOp& op) {
+  SCOPED_TRACE(
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
+
+  const int root_rank = 0;
+  auto input =
+      helper_.createInputTensor(count, dtype, this->deviceType_, this->rank_);
+  auto original = input.clone();
+
+  auto execute = [&]() {
+    auto work = this->torchcomm_->reduce(input, root_rank, op, true);
+    work->wait();
+    work.reset();
+  };
+  auto reset = [&]() { input.copy_(original); };
+  auto verify = [&]() {
+    helper_.verifyResults(
+        input, op, this->rank_, this->numRanks_, this->deviceType_);
+  };
+  this->run(execute, reset, verify);
+}
+
+template <typename Fixture>
+void ReduceTest<Fixture>::testInputDeleted(
+    int count,
+    at::ScalarType dtype,
+    const torch::comms::ReduceOp& op) {
+  SCOPED_TRACE(
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
+
+  const int root_rank = 0;
+  auto input = std::make_shared<at::Tensor>(
+      helper_.createInputTensor(count, dtype, this->deviceType_, this->rank_));
+
+  auto execute = [&]() {
+    this->torchcomm_->reduce(*input, root_rank, op, false);
+  };
+  auto cleanup = [&]() { input.reset(); };
+  this->run(execute, {}, {}, cleanup);
+}
+
+template class ReduceTest<EagerTestFixture<ReduceParams>>;
+template class ReduceTest<GraphTestFixture<ReduceParams, 1>>;
+template class ReduceTest<GraphTestFixture<ReduceParams, 2>>;
