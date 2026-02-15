@@ -53,6 +53,16 @@ class DeviceApiTest : public ::testing::Test {
   // fetch-and-add
   void testGinAtomicAdd();
 
+  // Per-peer signal test - validates resource buffer signal model
+  // Each rank signals the next in a ring, receiver aggregates per-peer slots
+  void testPerPeerSignal();
+
+  // Wait signal from specific peer test - validates point-to-point sync
+  void testWaitSignalFrom();
+
+  // Device barrier test - validates world barrier (LSA + GIN)
+  void testDeviceBarrier();
+
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;

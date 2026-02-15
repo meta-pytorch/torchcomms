@@ -72,7 +72,8 @@ void launchDeviceReadSignalKernel(
     cudaStream_t stream);
 
 // Launch GIN atomicAdd test kernel - performs remote atomic fetch-and-add
-// on a uint64_t in the destination window, then signals the destination rank.
+// on a uint64_t in the destination window, then signals the destination rank
+// using resource buffer signals.
 // Note: DeviceWindowNCCL* is a DEVICE pointer (allocated via cudaMalloc)
 void launchDeviceGinAtomicAddKernel(
     DeviceWindowNCCL* win,
@@ -80,6 +81,32 @@ void launchDeviceGinAtomicAddKernel(
     uint64_t add_value,
     int dst_rank,
     int signal_id,
+    cudaStream_t stream);
+
+// Launch standalone signal kernel - signals a peer without data transfer.
+// Tests per-peer resource buffer signal model in isolation.
+void launchDeviceSignalKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    SignalOp op,
+    uint64_t value,
+    cudaStream_t stream);
+
+// Launch wait signal from specific peer kernel - waits for signal from a
+// single peer (not aggregated). Tests point-to-point synchronization.
+void launchDeviceWaitSignalFromKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    CmpOp cmp,
+    uint64_t value,
+    cudaStream_t stream);
+
+// Launch device barrier kernel - synchronizes all ranks via world barrier
+void launchDeviceBarrierKernel(
+    DeviceWindowNCCL* win,
+    int barrier_id,
     cudaStream_t stream);
 
 } // namespace torchcomms::device::test

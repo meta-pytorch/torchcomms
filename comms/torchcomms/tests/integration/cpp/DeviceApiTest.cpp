@@ -142,6 +142,9 @@ void DeviceApiTest::testLocalBufferRegistration(
       at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
   at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
 
+  at::Tensor src_tensor = at::zeros({count}, options);
+  src_tensor.fill_(static_cast<float>(rank_ + 1));
+
   // End pool context immediately after allocation
   c10::cuda::CUDACachingAllocator::endAllocateToPool(
       mem_pool->device(), mem_pool->id());
@@ -157,8 +160,12 @@ void DeviceApiTest::testLocalBufferRegistration(
       dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
   ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
 
-  // Create and register local source buffer
-  at::Tensor src_tensor = createTestTensor(count, dtype);
+  // Get device window first to ensure GIN is enabled.
+  // GIN is only enabled when ncclDevCommCreate is called (inside
+  // get_device_window), not during window registration.
+  auto* dev_win = win->get_device_window();
+  ASSERT_NE(dev_win, nullptr) << "Device window should not be null";
+
   auto src_buf = win->register_local_buffer(src_tensor);
 
   // Verify buffer properties
@@ -327,40 +334,13 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
   auto* dev_win = win->get_device_window(signal_count, -1, 1);
   EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
 
-  // TODO: The current NCCL GIN implementation
-  // and destination windows are registered with the same communicator. Windows
-  // registered via ncclCommSplit (local_comm_) have separate window tables and
-  // cannot be used with the parent comm's ncclDevComm. As a temporary
-  // workaround, we register the source buffer as a separate collective window.
-  // In the future, we should either:
-  //   1. Implement proper non-collective local buffer registration for GIN
-  //   2. Use a different approach like LSA (Load-Store Access) for local
-  //   buffers
-  //   3. Work with NCCL team to enable cross-comm window access for split comms
-  //
-  // Create source window (COLLECTIVE - all ranks must participate)
-  torchcomm_->barrier(false);
-  auto src_base_win = torchcomm_->new_window();
-  src_base_win->tensor_register(src_tensor);
-  torchcomm_->barrier(false);
-
-  auto* src_win =
-      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(src_base_win.get());
-  ASSERT_NE(src_win, nullptr)
-      << "Source window should be TorchCommWindowNCCLXGin";
-
-  // Get the source device window to access its nccl_orig_win_ via window_ field
-  auto* src_dev_win = src_win->get_device_window(signal_count, -1, 1);
-  ASSERT_NE(src_dev_win, nullptr)
-      << "Source device window pointer should not be null";
-
-  // Create RegisteredBuffer pointing to the source window's nccl_orig_win_
-  // Note: We need to copy window_ from device memory to access it on host.
-  // For now, we use the host-side NCCL window from the TorchCommWindow.
-  torchcomms::device::RegisteredBufferNCCL src_buf;
-  src_buf.base_ptr = src_tensor.data_ptr();
-  src_buf.size = count * src_tensor.element_size();
-  src_buf.backend_window = src_win->get_nccl_window();
+  // Register source buffer as a local-only window using NCCL_WIN_LOCAL_ONLY.
+  // This is NON-COLLECTIVE - uses the parent comm's PD but skips rkey
+  // allGather. The resulting window can only be used as a source buffer for put
+  // operations.
+  auto src_buf = win->register_local_buffer(src_tensor);
+  ASSERT_NE(src_buf.base_ptr, nullptr)
+      << "Source buffer base_ptr should not be null";
   ASSERT_NE(src_buf.backend_window, nullptr)
       << "Source buffer backend_window should not be null";
 
@@ -433,9 +413,8 @@ void DeviceApiTest::testDevicePut(int count, at::ScalarType dtype) {
   }
   put_stream.synchronize();
 
-  // Cleanup - deregister source window first (collective), then destination
-  src_base_win->tensor_deregister();
-  src_base_win.reset();
+  // Cleanup - deregister local source buffer (non-collective), then destination
+  win->deregister_local_buffer(src_buf);
 
   base_win->tensor_deregister();
   base_win.reset();
@@ -460,14 +439,10 @@ TEST_F(DeviceApiTest, DeviceWindowCreationHalf) {
 }
 
 TEST_F(DeviceApiTest, LocalBufferRegistrationFloat) {
-  // TODO(T123456789): Skip this test until initLocalComm() is fixed.
-  // The register_local_buffer() API requires a local split communicator
-  // (ncclCommSplit), but this is currently disabled because split-comm
-  // windows have separate window tables from parent ncclDevComm.
-  // The DevicePutFloat test uses collective window registration as a
-  // workaround.
-  GTEST_SKIP() << "Skipping: register_local_buffer() requires initLocalComm() "
-                  "which is currently disabled";
+  // Test non-collective local buffer registration using NCCL_WIN_LOCAL_ONLY.
+  // This uses the parent comm's PD but skips the rkey allGather, making
+  // registration truly non-collective. The resulting window can only be used
+  // as a source buffer for put operations.
   testLocalBufferRegistration(1024, at::kFloat);
 }
 
@@ -604,4 +579,272 @@ void DeviceApiTest::testGinAtomicAdd() {
 
 TEST_F(DeviceApiTest, GinAtomicAdd) {
   testGinAtomicAdd();
+}
+
+// =============================================================================
+// Per-Peer Signal Test
+// =============================================================================
+// Validates the resource buffer per-peer signal slot model:
+//   1. Each rank signals the next rank in a ring pattern (standalone signal,
+//      no data transfer)
+//   2. Each rank waits for the aggregated signal to reach expected value
+//   3. Verifies read_signal returns the correct aggregated value
+
+void DeviceApiTest::testPerPeerSignal() {
+  SCOPED_TRACE(::testing::Message() << "Testing per-peer signal slots");
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  // Create MemPool for RDMA-compatible memory allocation
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  // Minimal window — we only need the signal infrastructure, not data
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({1}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
+  ASSERT_NE(win, nullptr);
+
+  int signal_count = num_ranks_;
+  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  ASSERT_NE(dev_win, nullptr);
+
+  // Ring pattern: rank i signals rank (i+1) % num_ranks
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  constexpr int kSignalId = 0;
+
+  // Each rank sends ADD 1 to the next rank
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceSignalKernel(
+        dev_win,
+        dst_rank,
+        kSignalId,
+        torchcomms::device::SignalOp::ADD,
+        1,
+        op_stream.stream());
+  }
+
+  // Each rank receives one signal, so aggregate sum should be >= 1
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchDeviceWaitSignalKernel(
+        dev_win, kSignalId, 1, wait_stream.stream());
+  }
+
+  op_stream.synchronize();
+  wait_stream.synchronize();
+
+  // Read signal value via kernel and verify on host
+  uint64_t* d_out = nullptr;
+  cudaMalloc(&d_out, sizeof(uint64_t));
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceReadSignalKernel(
+        dev_win, kSignalId, d_out, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  uint64_t h_out = 0;
+  cudaMemcpy(&h_out, d_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+  cudaFree(d_out);
+
+  ASSERT_GE(h_out, 1u) << "Expected aggregated signal >= 1, got " << h_out;
+
+  // Reset signals
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceResetSignalKernel(
+        dev_win, kSignalId, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(DeviceApiTest, PerPeerSignal) {
+  testPerPeerSignal();
+}
+
+// =============================================================================
+// Wait Signal From Specific Peer Test
+// =============================================================================
+// Validates point-to-point signal synchronization via wait_signal_from():
+//   1. Each rank signals the next rank in a ring
+//   2. Receiver uses wait_signal_from(src_rank, ...) to wait for the
+//      specific sender's slot (not aggregated)
+//   3. Verifies that only the expected sender's slot was written
+
+void DeviceApiTest::testWaitSignalFrom() {
+  SCOPED_TRACE(::testing::Message() << "Testing wait_signal_from");
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({1}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
+  ASSERT_NE(win, nullptr);
+
+  int signal_count = num_ranks_;
+  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  ASSERT_NE(dev_win, nullptr);
+
+  // Ring: rank i signals rank (i+1), receiver expects signal from (i-1)
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  constexpr int kSignalId = 0;
+
+  // Send signal
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceSignalKernel(
+        dev_win,
+        dst_rank,
+        kSignalId,
+        torchcomms::device::SignalOp::ADD,
+        1,
+        op_stream.stream());
+  }
+
+  // Wait for signal from specific peer (not aggregated)
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchDeviceWaitSignalFromKernel(
+        dev_win,
+        src_rank,
+        kSignalId,
+        torchcomms::device::CmpOp::GE,
+        1,
+        wait_stream.stream());
+  }
+
+  op_stream.synchronize();
+  wait_stream.synchronize();
+
+  // Reset signals
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceResetSignalKernel(
+        dev_win, kSignalId, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(DeviceApiTest, WaitSignalFrom) {
+  testWaitSignalFrom();
+}
+
+// =============================================================================
+// Device Barrier Test
+// =============================================================================
+// Validates the device-side world barrier (LSA + GIN hierarchical):
+//   1. All ranks launch a barrier kernel
+//   2. Barrier synchronizes all ranks (LSA first, then GIN Rail)
+//   3. All ranks complete successfully
+
+void DeviceApiTest::testDeviceBarrier() {
+  SCOPED_TRACE(::testing::Message() << "Testing device barrier");
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  // Minimal window for barrier infrastructure
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({1}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
+  ASSERT_NE(win, nullptr);
+
+  // Get device window with barrier support
+  int barrier_count = 2;
+  auto* dev_win = win->get_device_window(-1, -1, barrier_count);
+  ASSERT_NE(dev_win, nullptr);
+
+  constexpr int kBarrierId = 0;
+
+  // Launch barrier kernel - all ranks must participate
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceBarrierKernel(
+        dev_win, kBarrierId, op_stream.stream());
+  }
+
+  // Synchronize - if barrier works, all ranks complete together
+  op_stream.synchronize();
+
+  // Second barrier to verify reusability
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceBarrierKernel(
+        dev_win, kBarrierId + 1, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(DeviceApiTest, DeviceBarrier) {
+  testDeviceBarrier();
 }

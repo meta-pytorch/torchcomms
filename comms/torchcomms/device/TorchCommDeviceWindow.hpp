@@ -185,6 +185,8 @@ class TorchCommDeviceWindow {
       uint64_t value = 1);
 
   __device__ int wait_signal(int signal_id, CmpOp cmp, uint64_t value);
+  __device__ int
+  wait_signal_from(int peer, int signal_id, CmpOp cmp, uint64_t value);
   __device__ uint64_t read_signal(int signal_id) const;
   __device__ void reset_signal(int signal_id);
 

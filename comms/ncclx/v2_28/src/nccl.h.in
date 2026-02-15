@@ -94,6 +94,9 @@ typedef enum { ncclSuccess                 =  0,
 // TODO: Revisit NCCL_WIN_DEVICE_API - this is a temporary fix to bypass CTRAN
 // and force the original NCCL path for device API (GIN support).
 #define NCCL_WIN_DEVICE_API 0x02
+// Local-only registration for source buffers. Skips rkey allGather.
+// The resulting window can only be used as a source for put operations.
+#define NCCL_WIN_LOCAL_ONLY 0x04
 
 #define NCCL_WIN_REQUIRED_ALIGNMENT 4096
 
