@@ -433,24 +433,8 @@ commResult_t ctran::RegCache::lookupSegmentsForBuffer(
 
   SetCudaDevRAII setCudaDev(cudaDev);
 
-  // Discover all physical segments underlying this buffer via pinRange
-  std::vector<ctran::regcache::SegmentRange> segRanges;
-  FB_COMMCHECK(
-      ctran::regcache::SegmentRange::pinRange(buf, cudaDev, len, segRanges));
-
-  // Look up each segment and collect handles and regElems
-  auto segmentsAvl = segmentsAvl_.rlock();
-  for (const auto& range : segRanges) {
-    void* segHdl = segmentsAvl->search(const_cast<void*>(range.buf), range.len);
-    if (segHdl != nullptr) {
-      segHdls.push_back(segHdl);
-      // Get all regElems associated with this segment
-      auto segRegElems = getRegElems(segHdl);
-      for (auto* regElem : segRegElems) {
-        regElems.push_back(regElem);
-      }
-    }
-  }
+  segHdls = segmentsAvl_.rlock()->searchRange(buf, len);
+  regElems = getRegElems(segHdls);
 
   return commSuccess;
 }
@@ -772,18 +756,34 @@ ctran::regcache::Segment* ctran::RegCache::getSegment(void* segHdl) {
 
 std::vector<ctran::regcache::RegElem*> ctran::RegCache::getRegElems(
     const void* segHdl) const {
+  return getRegElems(std::vector<void*>{const_cast<void*>(segHdl)});
+}
+
+std::vector<ctran::regcache::RegElem*> ctran::RegCache::getRegElems(
+    const std::vector<void*>& segHdls) const {
+  std::unordered_set<ctran::regcache::RegElem*> seen;
   std::vector<ctran::regcache::RegElem*> regElems;
 
-  const auto segment = reinterpret_cast<ctran::regcache::Segment*>(
-      segmentsAvl_.rlock()->lookup(const_cast<void*>(segHdl)));
-  if (segment) {
-    // Find all associated regElems of the segment
-    auto locked = regElemsMaps_.rlock();
-    auto& segToRegElemsMap = locked->segToRegElemsMap;
-    auto segIt = segToRegElemsMap.find(segment);
-    if (segIt != segToRegElemsMap.end()) {
-      // Copy vector and return
-      regElems = segIt->second;
+  auto segmentsLock = segmentsAvl_.rlock();
+  auto regElemsLock = regElemsMaps_.rlock();
+  auto& segToRegElemsMap = regElemsLock->segToRegElemsMap;
+
+  for (void* segHdl : segHdls) {
+    const auto segment = reinterpret_cast<ctran::regcache::Segment*>(
+        segmentsLock->lookup(segHdl));
+    if (segment) {
+      auto segIt = segToRegElemsMap.find(segment);
+      if (segIt != segToRegElemsMap.end()) {
+        for (auto* regElem : segIt->second) {
+          if (regElem == nullptr) {
+            continue;
+          }
+          auto [_, inserted] = seen.insert(regElem);
+          if (inserted) {
+            regElems.push_back(regElem);
+          }
+        }
+      }
     }
   }
 
