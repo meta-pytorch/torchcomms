@@ -153,4 +153,117 @@ template __global__ void multiPeerSignalAllKernel<SyncScope::BLOCK>(
     MultiPeerDeviceTransport,
     int);
 
+// =============================================================================
+// Put Ping-Pong Benchmark Kernel Implementation
+// =============================================================================
+
+template <SyncScope S>
+__global__ void multiPeerPutPingPongKernel(
+    MultiPeerDeviceTransport transport,
+    int targetRank,
+    const void* localSrc,
+    void* remoteDst,
+    std::size_t nbytes,
+    int nSteps) {
+  auto group = makeGroup<S>();
+  int slotId = computeSlotIndex<S>();
+  int myRank = transport.rank();
+
+  // Ping-pong pattern using put() + signal_peer():
+  // - Even steps: Rank 0 puts data, Rank 1 waits
+  // - Odd steps: Rank 1 puts data, Rank 0 waits
+  //
+  // Uses SIGNAL_ADD: each signal adds 1, wait for cumulative value.
+
+  for (int step = 0; step < nSteps; ++step) {
+    bool myTurnToPut = ((step % 2) == myRank);
+
+    if (myTurnToPut) {
+      // Put data to peer's buffer
+      transport.put(targetRank, group, remoteDst, localSrc, nbytes);
+      // Sync to ensure put completes before signaling
+      group.sync();
+      // Signal peer that data is ready
+      transport.signal_peer(group, targetRank, slotId, SignalOp::SIGNAL_ADD, 1);
+    } else {
+      // Wait for (step/2 + 1) signals from peer
+      uint64_t expectedValue = (step / 2) + 1;
+      transport.wait_signal(group, slotId, CmpOp::CMP_GE, expectedValue);
+    }
+  }
+}
+
+// =============================================================================
+// Put+Signal Ping-Pong Benchmark Kernel Implementation
+// =============================================================================
+
+template <SyncScope S>
+__global__ void multiPeerPutSignalPingPongKernel(
+    MultiPeerDeviceTransport transport,
+    int targetRank,
+    const void* localSrc,
+    void* remoteDst,
+    std::size_t nbytes,
+    int nSteps) {
+  auto group = makeGroup<S>();
+  int slotId = computeSlotIndex<S>();
+  int myRank = transport.rank();
+
+  // Ping-pong pattern using put_signal():
+  // - Even steps: Rank 0 puts+signals, Rank 1 waits
+  // - Odd steps: Rank 1 puts+signals, Rank 0 waits
+  //
+  // Uses put_signal() convenience API which combines put + signal_peer.
+
+  for (int step = 0; step < nSteps; ++step) {
+    bool myTurnToPut = ((step % 2) == myRank);
+
+    if (myTurnToPut) {
+      // Combined put + signal
+      transport.put_signal(
+          targetRank, group, remoteDst, localSrc, nbytes, slotId, 1);
+    } else {
+      // Wait for (step/2 + 1) signals from peer
+      uint64_t expectedValue = (step / 2) + 1;
+      transport.wait_signal(group, slotId, CmpOp::CMP_GE, expectedValue);
+    }
+  }
+}
+
+// =============================================================================
+// Explicit Template Instantiations for Put Kernels
+// =============================================================================
+
+// Put ping-pong kernels
+template __global__ void multiPeerPutPingPongKernel<SyncScope::WARP>(
+    MultiPeerDeviceTransport,
+    int,
+    const void*,
+    void*,
+    std::size_t,
+    int);
+template __global__ void multiPeerPutPingPongKernel<SyncScope::BLOCK>(
+    MultiPeerDeviceTransport,
+    int,
+    const void*,
+    void*,
+    std::size_t,
+    int);
+
+// Put+signal ping-pong kernels
+template __global__ void multiPeerPutSignalPingPongKernel<SyncScope::WARP>(
+    MultiPeerDeviceTransport,
+    int,
+    const void*,
+    void*,
+    std::size_t,
+    int);
+template __global__ void multiPeerPutSignalPingPongKernel<SyncScope::BLOCK>(
+    MultiPeerDeviceTransport,
+    int,
+    const void*,
+    void*,
+    std::size_t,
+    int);
+
 } // namespace comms::pipes::benchmark
