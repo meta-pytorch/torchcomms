@@ -243,6 +243,129 @@ TEST_F(MultiPeerDeviceTransportTestFixture, GetTransportReturnsCorrectType) {
   CUDACHECK_TEST(cudaFree(transport_d));
 }
 
+TEST_F(MultiPeerDeviceTransportTestFixture, SelfTransportPutCopiesData) {
+  // Test that self-transport put() correctly copies data
+  // This tests the path: get_self_transport()->self.put()
+
+  const std::size_t nbytes = 4096; // 4KB transfer
+  const std::size_t numInts = nbytes / sizeof(int);
+  const int testValue = 42;
+
+  // Allocate source and destination buffers
+  DeviceBuffer srcBuffer(nbytes);
+  DeviceBuffer dstBuffer(nbytes);
+  auto src_d = static_cast<int*>(srcBuffer.get());
+  auto dst_d = static_cast<int*>(dstBuffer.get());
+
+  // Initialize source with test value, destination with zeros
+  std::vector<int> srcHost(numInts, testValue);
+  CUDACHECK_TEST(
+      cudaMemcpy(src_d, srcHost.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
+
+  // Create self-transport on device
+  P2pSelfTransportDevice selfTransport;
+  Transport hostTransport(selfTransport);
+
+  Transport* transport_d = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&transport_d, sizeof(Transport)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport_d, &hostTransport, sizeof(Transport), cudaMemcpyHostToDevice));
+
+  // Run the put operation
+  const int numBlocks = 4;
+  const int blockSize = 256;
+  test::testSelfTransportPut(
+      transport_d,
+      reinterpret_cast<char*>(dst_d),
+      reinterpret_cast<const char*>(src_d),
+      nbytes,
+      numBlocks,
+      blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify destination has correct data
+  std::vector<int> dstHost(numInts);
+  CUDACHECK_TEST(
+      cudaMemcpy(dstHost.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
+
+  int errorCount = 0;
+  for (std::size_t i = 0; i < numInts; ++i) {
+    if (dstHost[i] != testValue) {
+      ++errorCount;
+      if (errorCount <= 5) {
+        ADD_FAILURE() << "Mismatch at index " << i << ": expected " << testValue
+                      << ", got " << dstHost[i];
+      }
+    }
+  }
+
+  EXPECT_EQ(errorCount, 0) << "Total mismatches: " << errorCount;
+
+  CUDACHECK_TEST(cudaFree(transport_d));
+}
+
+TEST_F(MultiPeerDeviceTransportTestFixture, SelfTransportPutLargeTransfer) {
+  // Test larger transfer to exercise multi-chunk path
+  const std::size_t nbytes = 1024 * 1024; // 1MB transfer
+  const std::size_t numInts = nbytes / sizeof(int);
+  const int testValue = 0xDEADBEEF;
+
+  // Allocate source and destination buffers
+  DeviceBuffer srcBuffer(nbytes);
+  DeviceBuffer dstBuffer(nbytes);
+  auto src_d = static_cast<int*>(srcBuffer.get());
+  auto dst_d = static_cast<int*>(dstBuffer.get());
+
+  // Initialize source with test pattern
+  std::vector<int> srcHost(numInts, testValue);
+  CUDACHECK_TEST(
+      cudaMemcpy(src_d, srcHost.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
+
+  // Create self-transport on device
+  P2pSelfTransportDevice selfTransport;
+  Transport hostTransport(selfTransport);
+
+  Transport* transport_d = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&transport_d, sizeof(Transport)));
+  CUDACHECK_TEST(cudaMemcpy(
+      transport_d, &hostTransport, sizeof(Transport), cudaMemcpyHostToDevice));
+
+  // Run the put operation with more parallelism
+  const int numBlocks = 8;
+  const int blockSize = 256;
+  test::testSelfTransportPut(
+      transport_d,
+      reinterpret_cast<char*>(dst_d),
+      reinterpret_cast<const char*>(src_d),
+      nbytes,
+      numBlocks,
+      blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify destination has correct data (spot check for performance)
+  std::vector<int> dstHost(numInts);
+  CUDACHECK_TEST(
+      cudaMemcpy(dstHost.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
+
+  // Check first, middle, and last values
+  EXPECT_EQ(dstHost[0], testValue) << "First element mismatch";
+  EXPECT_EQ(dstHost[numInts / 2], testValue) << "Middle element mismatch";
+  EXPECT_EQ(dstHost[numInts - 1], testValue) << "Last element mismatch";
+
+  // Full verification
+  int errorCount = 0;
+  for (std::size_t i = 0; i < numInts; ++i) {
+    if (dstHost[i] != testValue) {
+      ++errorCount;
+    }
+  }
+  EXPECT_EQ(errorCount, 0) << "Total mismatches in 1MB transfer: "
+                           << errorCount;
+
+  CUDACHECK_TEST(cudaFree(transport_d));
+}
 // Peer Iteration Helper Tests
 // =============================================================================
 

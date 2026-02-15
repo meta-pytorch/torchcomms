@@ -43,6 +43,27 @@ void testMultiPeerDeviceTransportConstruction(
     int* results);
 
 /**
+ * Test kernel: Verify self-transport put() operation via get_self_transport()
+ *
+ * Tests that MultiPeerDeviceTransport::get_self_transport() returns a
+ * valid self-transport and that put() correctly copies data.
+ *
+ * @param transport_d Device pointer to Transport object
+ * @param dst_d Destination buffer (device memory)
+ * @param src_d Source buffer (device memory)
+ * @param nbytes Number of bytes to copy
+ * @param numBlocks Number of blocks to launch
+ * @param blockSize Threads per block
+ */
+void testSelfTransportPut(
+    void* transport_d,
+    char* dst_d,
+    const char* src_d,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Verify transport returns correct transport type
  *
  * @param transport_d Device pointer to Transport object (self-transport)

@@ -1599,6 +1599,122 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWithSet) {
       kSetValue);
 }
 
+// =============================================================================
+// Put Operation Test (P2P path) - Tests put_signal() and wait_signal()
+// =============================================================================
+
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
+  }
+
+  // Use a transfer size that fits within the transport's data buffer
+  constexpr std::size_t kTransferSize = 4096;
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDefaultDataBufferSize,
+      .chunkSize = kDefaultChunkSize,
+      .pipelineDepth = kDefaultPipelineDepth,
+  };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
+
+  auto [transport, wm, device] = createTransport(config, wmConfig);
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+  const int testValue = 0xCD + globalRank;
+
+  // Get the P2pNvlTransportDevice to access IPC-mapped remote buffers
+  // The transport's remoteState_.dataBuffer is already IPC-mapped
+  auto p2pTransport = transport->getP2pTransportDevice(peerRank);
+
+  // POINTER RELATIONSHIP CLARIFICATION:
+  //
+  // remoteDataBuffer: This rank's IPC-mapped pointer to the PEER's local
+  // buffer.
+  //                   When this rank writes here, data appears in peer's
+  //                   memory.
+  //
+  // localDataBuffer: This rank's local staging buffer. When the PEER writes to
+  //                  their remoteDataBuffer, the data appears here.
+  //
+  // So for rank 0 writing to rank 1:
+  //   - rank 0's remoteDataBuffer == IPC pointer to rank 1's localDataBuffer
+  //   - rank 0 writes to its remoteDataBuffer
+  //   - rank 1 reads from its localDataBuffer (same physical memory)
+  //
+  char* remoteDataBuffer = p2pTransport.getRemoteState().dataBuffer;
+  char* localDataBuffer = p2pTransport.getLocalState().dataBuffer;
+
+  // Allocate local source buffer and result buffer
+  DeviceBuffer localSrcBuffer(kTransferSize);
+  DeviceBuffer resultBuffer(sizeof(int));
+
+  auto localSrc_d = static_cast<int*>(localSrcBuffer.get());
+  auto result_d = static_cast<int*>(resultBuffer.get());
+
+  // Rank 0: fill local source buffer with test pattern
+  // Rank 1: the local data buffer (destination) will receive the data
+  if (globalRank == 0) {
+    test::fillBuffer(localSrc_d, testValue, kTransferSize / sizeof(int));
+  }
+
+  // Clear the local data buffer (this is where peer will write to via NVLink)
+  CUDACHECK_TEST(cudaMemset(localDataBuffer, 0, kTransferSize));
+  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Rank 0 writes to rank 1's buffer using put_signal (via IPC-mapped ptr)
+  // Rank 1 waits for the signal
+  bool isWriter = (globalRank == 0);
+  constexpr int kSignalId = 0;
+
+  // remoteDataBuffer points to peer's local data buffer (via IPC)
+  // So rank 0's remoteDataBuffer points to rank 1's localDataBuffer
+  test::testPutOperation(
+      device,
+      peerRank,
+      isWriter ? remoteDataBuffer : nullptr, // Write to peer's buffer via IPC
+      isWriter ? localSrc_d : nullptr, // Source is our local data
+      kTransferSize,
+      kSignalId,
+      isWriter,
+      result_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Verify operation completed
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(result_h, 1) << "Put/Signal operation failed on rank "
+                         << globalRank;
+
+  // Verify data on receiver side
+  // Rank 1's localDataBuffer should now contain the data written by rank 0
+  if (globalRank == 1) {
+    std::vector<int> recvHost(kTransferSize / sizeof(int));
+    CUDACHECK_TEST(cudaMemcpy(
+        recvHost.data(),
+        localDataBuffer,
+        kTransferSize,
+        cudaMemcpyDeviceToHost));
+
+    const int expectedValue = 0xCD + 0; // Sender's testValue (rank 0)
+    std::vector<int> expected(kTransferSize / sizeof(int), expectedValue);
+    EXPECT_EQ(recvHost, expected) << "Data mismatch after put_signal";
+  }
+
+  XLOGF(
+      INFO,
+      "Rank {}: Put/Signal operation test completed (isWriter={})",
+      globalRank,
+      isWriter);
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {

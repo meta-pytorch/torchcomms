@@ -16,7 +16,7 @@ namespace comms::pipes::test {
  * @param results Output array: [0]=rank, [1]=nRanks, [2]=numPeers
  */
 void testMultiPeerDeviceTransportAccessors(
-    MultiPeerDeviceTransport& transport,
+    const MultiPeerDeviceTransport& transport,
     int* results);
 
 /**
@@ -41,7 +41,6 @@ void testSignalWait(
 /**
  * Test kernel: Execute barrier across all ranks
  *
- * Each rank increments a counter before and after the barrier.
  * This tests that the barrier correctly synchronizes all ranks.
  *
  * @param transport The MultiPeerDeviceTransport to use
@@ -311,6 +310,28 @@ void testBarrierPeer(
     MultiPeerDeviceTransport& transport,
     int targetRank,
     int barrierIdx,
+    int* result);
+
+/**
+ * Test kernel: Test the put() operation
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param targetRank Target rank
+ * @param remoteDst Remote destination buffer
+ * @param localSrc Local source buffer
+ * @param nbytes Number of bytes to transfer
+ * @param signalId Signal slot to use for completion notification
+ * @param isWriter True if this rank writes, false if it waits
+ * @param result Output: 1 if successful
+ */
+void testPutOperation(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    void* remoteDst,
+    const void* localSrc,
+    std::size_t nbytes,
+    int signalId,
+    bool isWriter,
     int* result);
 
 } // namespace comms::pipes::test

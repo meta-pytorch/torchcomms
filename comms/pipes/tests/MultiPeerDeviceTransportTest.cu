@@ -155,6 +155,33 @@ void testMultiPeerDeviceTransportConstruction(
 }
 
 // =============================================================================
+// Self-Transport Put Test
+// =============================================================================
+
+__global__ void selfTransportPutKernel(
+    Transport* transport,
+    char* dst_d,
+    const char* src_d,
+    std::size_t nbytes) {
+  // Use self transport's put() method for local copy
+  auto group = make_warp_group();
+  transport->self.put(group, dst_d, src_d, nbytes);
+}
+
+void testSelfTransportPut(
+    void* transport_d,
+    char* dst_d,
+    const char* src_d,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize) {
+  selfTransportPutKernel<<<numBlocks, blockSize>>>(
+      static_cast<Transport*>(transport_d), dst_d, src_d, nbytes);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
 // Get Transport Type Test
 // =============================================================================
 

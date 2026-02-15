@@ -451,6 +451,81 @@ class MultiPeerDeviceTransport {
   }
 
   // ===========================================================================
+  // Zero-Copy Operations
+  // ===========================================================================
+
+  /**
+   * put - Zero-copy write to peer's memory
+   *
+   * Writes data directly to the remote buffer via NVLink without staging.
+   *
+   * Caller is responsible for signaling completion separately.
+   * The put operation itself has no implicit memory ordering guarantees.
+   *
+   * Memory ordering: Caller must use signal_peer() after put() to ensure
+   * visibility. The signal operation includes a release fence.
+   *
+   * @param target_rank Global rank in [0, n_ranks()), must not be self
+   * @param group ThreadGroup for cooperative processing
+   * @param remoteDst Remote destination buffer (on peer's GPU)
+   * @param localSrc Local source buffer
+   * @param nbytes Number of bytes to transfer
+   */
+  __device__ __forceinline__ void put(
+      int target_rank,
+      ThreadGroup& group,
+      void* remoteDst,
+      const void* localSrc,
+      std::size_t nbytes) {
+    MULTI_PEER_CHECK_RANK(target_rank, nRanks_);
+    MULTI_PEER_CHECK_NOT_SELF(target_rank, myRank_);
+    transports_[target_rank].p2p_nvl.put(
+        group,
+        static_cast<char*>(remoteDst),
+        static_cast<const char*>(localSrc),
+        nbytes);
+  }
+
+  // ===========================================================================
+  // Combined Put + Signal Operations
+  // ===========================================================================
+
+  /**
+   * put_signal - Zero-copy write with atomic signal
+   *
+   * Performs put() followed by signal_peer() with proper memory ordering.
+   * The signal is guaranteed to be visible only after data transfer completes.
+   *
+   * Memory ordering: Release semantics - all prior writes visible before
+   * signal.
+   *
+   * @param target_rank Global rank in [0, n_ranks()), must not be self
+   * @param group ThreadGroup for cooperative processing
+   * @param remoteDst Remote destination buffer
+   * @param localSrc Local source buffer
+   * @param nbytes Number of bytes to transfer
+   * @param signalId Signal slot to increment
+   * @param signalVal Value to atomically add (default: 1)
+   */
+  __device__ __forceinline__ void put_signal(
+      int target_rank,
+      ThreadGroup& group,
+      void* remoteDst,
+      const void* localSrc,
+      std::size_t nbytes,
+      int signalId,
+      uint64_t signalVal = 1) {
+    // 1. Copy data to remote
+    put(target_rank, group, remoteDst, localSrc, nbytes);
+
+    // 2. Ensure all threads complete copy before signaling
+    group.sync();
+
+    // 3. Signal with release semantics (leader only in signalPeer)
+    signal_peer(group, target_rank, signalId, SignalOp::SIGNAL_ADD, signalVal);
+  }
+
+  // ===========================================================================
   // Advanced Access
   // ===========================================================================
 
@@ -507,32 +582,6 @@ class MultiPeerDeviceTransport {
   const DeviceSpan<Transport> transports_;
   DeviceWindowSignal signal_;
   DeviceWindowBarrier barrier_;
-
-  // ===========================================================================
-  // Private Match Helper
-  // ===========================================================================
-
-  /**
-   * match - Internal helper to dispatch operations to the correct transport
-   *
-   * Reduces code duplication by abstracting the transport type dispatch
-   * pattern. Used by send/recv and other transport-specific operations.
-   *
-   * Operates on peer index (not rank). Peer index never refers to self,
-   * so this only dispatches to P2P NVLink transport.
-   *
-   * @tparam P2pFn Callable for P2pNvlTransportDevice operations
-   * @param peer Peer index (0 to num_peers()-1)
-   * @param p2p_fn Lambda to execute for P2P NVLink transport
-   */
-  template <typename P2pFn>
-  __device__ __forceinline__ void match(int peer, P2pFn&& p2p_fn) {
-    assert(peer >= 0 && peer < num_peers());
-    int rank = peer_index_to_rank(peer);
-    Transport* transport = &transports_[rank];
-    // Peer index never refers to self, so always P2P
-    p2p_fn(transport->p2p_nvl);
-  }
 };
 
 } // namespace comms::pipes
