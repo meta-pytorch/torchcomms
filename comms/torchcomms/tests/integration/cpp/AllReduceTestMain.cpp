@@ -1,79 +1,121 @@
-// Copyright (c) Meta Platforms, Inc. and affiliates.
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include "AllReduceTest.hpp"
 
 #include <gtest/gtest.h>
 #include "TorchCommTestHelpers.h"
 
-TEST_P(AllReduceTest, SyncAllReduce) {
-  int count = std::get<0>(GetParam());
-  at::ScalarType dtype = std::get<1>(GetParam());
-  torch::comms::ReduceOp op = std::get<2>(GetParam());
-  testSyncAllReduce(count, dtype, op);
+using Eager = AllReduceTest<EagerTestFixture<AllReduceParams>>;
+using SingleGraph = AllReduceTest<GraphTestFixture<AllReduceParams, 1>>;
+using MultiGraph = AllReduceTest<GraphTestFixture<AllReduceParams, 2>>;
+
+TEST_P(Eager, Sync) {
+  auto [count, dtype, op] = GetParam();
+  testSync(count, dtype, op);
 }
 
-TEST_P(AllReduceTest, SyncAllReduceNoWork) {
-  int count = std::get<0>(GetParam());
-  at::ScalarType dtype = std::get<1>(GetParam());
-  torch::comms::ReduceOp op = std::get<2>(GetParam());
-  testSyncAllReduceNoWork(count, dtype, op);
+TEST_P(Eager, SyncNoWork) {
+  auto [count, dtype, op] = GetParam();
+  testSyncNoWork(count, dtype, op);
 }
 
-TEST_P(AllReduceTest, AsyncAllReduce) {
-  int count = std::get<0>(GetParam());
-  at::ScalarType dtype = std::get<1>(GetParam());
-  torch::comms::ReduceOp op = std::get<2>(GetParam());
-  testAsyncAllReduce(count, dtype, op);
+TEST_P(Eager, Async) {
+  auto [count, dtype, op] = GetParam();
+  testAsync(count, dtype, op);
 }
 
-TEST_P(AllReduceTest, AsyncAllReduceEarlyReset) {
-  int count = std::get<0>(GetParam());
-  at::ScalarType dtype = std::get<1>(GetParam());
-  torch::comms::ReduceOp op = std::get<2>(GetParam());
-  testAsyncAllReduceEarlyReset(count, dtype, op);
+TEST_P(Eager, AsyncEarlyReset) {
+  auto [count, dtype, op] = GetParam();
+  testAsyncEarlyReset(count, dtype, op);
 }
 
-TEST_P(AllReduceTest, AllReduceInputDeleted) {
-  int count = std::get<0>(GetParam());
-  at::ScalarType dtype = std::get<1>(GetParam());
-  torch::comms::ReduceOp op = std::get<2>(GetParam());
-  testAllReduceInputDeleted(count, dtype, op);
+TEST_P(Eager, InputDeleted) {
+  auto [count, dtype, op] = GetParam();
+  testInputDeleted(count, dtype, op);
 }
 
-TEST_P(AllReduceTest, GraphAllReduce) {
-  int count = std::get<0>(GetParam());
-  at::ScalarType dtype = std::get<1>(GetParam());
-  torch::comms::ReduceOp op = std::get<2>(GetParam());
-  testGraphAllReduce(count, dtype, op);
+TEST_P(SingleGraph, Sync) {
+  auto [count, dtype, op] = GetParam();
+  testSync(count, dtype, op);
 }
 
-TEST_P(AllReduceTest, GraphAllReduceInputDeleted) {
-  int count = std::get<0>(GetParam());
-  at::ScalarType dtype = std::get<1>(GetParam());
-  torch::comms::ReduceOp op = std::get<2>(GetParam());
-  testGraphAllReduceInputDeleted(count, dtype, op);
+TEST_P(SingleGraph, SyncNoWork) {
+  auto [count, dtype, op] = GetParam();
+  testSyncNoWork(count, dtype, op);
+}
+
+TEST_P(SingleGraph, Async) {
+  auto [count, dtype, op] = GetParam();
+  testAsync(count, dtype, op);
+}
+
+TEST_P(SingleGraph, InputDeleted) {
+  auto [count, dtype, op] = GetParam();
+  testInputDeleted(count, dtype, op);
+}
+
+TEST_P(MultiGraph, Sync) {
+  auto [count, dtype, op] = GetParam();
+  testSync(count, dtype, op);
+}
+
+TEST_P(MultiGraph, SyncNoWork) {
+  auto [count, dtype, op] = GetParam();
+  testSyncNoWork(count, dtype, op);
+}
+
+TEST_P(MultiGraph, Async) {
+  auto [count, dtype, op] = GetParam();
+  testAsync(count, dtype, op);
+}
+
+TEST_P(MultiGraph, InputDeleted) {
+  auto [count, dtype, op] = GetParam();
+  testInputDeleted(count, dtype, op);
+}
+
+auto allReduceParamValues() {
+  return ::testing::Combine(
+      ::testing::Values(0, 4, 1024, 1024 * 1024),
+      ::testing::Values(at::kFloat, at::kInt, at::kChar),
+      ::testing::Values(
+          torch::comms::ReduceOp::SUM,
+          torch::comms::ReduceOp::MAX,
+          torch::comms::ReduceOp::AVG));
+}
+
+auto allReduceGraphParamValues() {
+  return ::testing::Combine(
+      ::testing::Values(0, 1000, 1024 * 1024),
+      ::testing::Values(at::kFloat),
+      ::testing::Values(torch::comms::ReduceOp::SUM));
+}
+
+auto allReduceParamNamer(
+    const ::testing::TestParamInfo<AllReduceParams>& info) {
+  auto [count, dtype, op] = info.param;
+  return "Count_" + std::to_string(count) + "_" + getDtypeName(dtype) + "_" +
+      getOpName(op);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    AllReduceTestParams,
-    AllReduceTest,
-    ::testing::Combine(
-        ::testing::Values(0, 4, 1024, 1024 * 1024),
-        ::testing::Values(at::kFloat, at::kInt, at::kChar),
-        ::testing::Values(
-            torch::comms::ReduceOp::SUM,
-            torch::comms::ReduceOp::MAX,
-            torch::comms::ReduceOp::AVG)),
-    [](const ::testing::TestParamInfo<
-        std::tuple<int, at::ScalarType, torch::comms::ReduceOp>>& info) {
-      int count = std::get<0>(info.param);
-      at::ScalarType dtype = std::get<1>(info.param);
-      torch::comms::ReduceOp op = std::get<2>(info.param);
-      return "Count_" + std::to_string(count) + "_" + getDtypeName(dtype) +
-          "_" + getOpName(op);
-    });
+    AllReduce,
+    Eager,
+    allReduceParamValues(),
+    allReduceParamNamer);
 
-// This main function is provided by gtest
+INSTANTIATE_TEST_SUITE_P(
+    AllReduce,
+    SingleGraph,
+    allReduceGraphParamValues(),
+    allReduceParamNamer);
+
+INSTANTIATE_TEST_SUITE_P(
+    AllReduce,
+    MultiGraph,
+    allReduceGraphParamValues(),
+    allReduceParamNamer);
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
