@@ -4,7 +4,6 @@
 
 #include <dlfcn.h>
 
-#include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
 
 namespace torch::comms {
@@ -171,6 +170,18 @@ std::shared_ptr<TorchCommBackend> TorchCommFactory::create_backend(
   }
 
   if (impl) {
+    // Check if enable_reconfigure is requested but backend doesn't support it
+    // We do this check AFTER creating the backend instance but BEFORE calling
+    // init(). This is safe because the backend destructor won't complain about
+    // lack of finalization since init() was never called.
+    if (options.enable_reconfigure && !impl->supportsReconfigure()) {
+      throw std::runtime_error(
+          "[TorchComm]: enable_reconfigure=true is not supported by backend: " +
+          backend +
+          ". Only backends that implement supportsReconfigure() can use "
+          "reconfigure for fault tolerance.");
+    }
+
     impl->init(device, name, options);
   }
 

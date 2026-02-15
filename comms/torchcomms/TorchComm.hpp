@@ -229,6 +229,31 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt);
 
+  // Fault Tolerance API
+
+  /**
+   * Get the initialization handle for this communicator.
+   * In dynamic regime, this handle encodes information required by the backend
+   * to complete the initialization process via reconfigure().
+   *
+   * @return An InitHandle containing the initialization URL/handle.
+   * @throws std::runtime_error if not implemented by the backend.
+   */
+  InitHandle getInitHandle() const;
+
+  /**
+   * Reconfigure the communicator with a new set of peers.
+   * In dynamic regime, this method initializes the communicator with the
+   * provided set of peers. After a successful reconfigure call, the
+   * communicator is fully initialized and collective operations are permitted.
+   *
+   * @param opts ReconfigureOptions containing uuid, handles, timeout, and
+   * hints.
+   * @return A TorchWork handle that can be used to wait for completion.
+   * @throws std::runtime_error if not implemented by the backend.
+   */
+  c10::intrusive_ptr<TorchWork> reconfigure(const ReconfigureOptions& opts);
+
   // Hooks
   struct PreHookArgs {
     OpName name;
