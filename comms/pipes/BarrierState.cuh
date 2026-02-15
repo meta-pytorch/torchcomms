@@ -15,10 +15,25 @@ namespace comms::pipes {
  *
  * This barrier implements a split-phase synchronization primitive where
  * participants first "arrive" to signal they've reached the barrier, then
- * "wait" until expected arrival have occurred.
+ * "wait" until expected arrivals have occurred.
  *
- * The barrier is reusable: each wait() call increments the expected counter,
- * allowing the barrier to be used multiple times without resetting.
+ * MONOTONIC COUNTER DESIGN:
+ * Counters grow monotonically and are never reset from the device side.
+ * Each arrive() increments current_counter_, each wait() increments
+ * expected_counter_ and spins until current_counter_ catches up. This
+ * means calling barrier() N times on the same slot works without any
+ * reset — the counters simply accumulate (1, 2, 3, ...).
+ *
+ * Device-side reset is intentionally not supported because it has an
+ * inherent race condition: after a barrier completes, a fast peer can
+ * call arrive() on the local rank's current_counter_ before the local
+ * rank finishes its reset store of 0. This is a data race between
+ * st.release.sys(counter, 0) and atom.release.sys.add(counter, 1) from
+ * different GPUs with no ordering guarantee.
+ *
+ * To reinitialize counters between kernel launches (when the GPU is
+ * idle), use host-side cudaMemset — this is safe because no device
+ * threads are accessing the memory.
  *
  * Memory layout is 128-byte aligned to avoid false sharing between barriers
  * and to ensure optimal memory access patterns on GPU.
