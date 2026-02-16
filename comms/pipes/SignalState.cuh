@@ -64,8 +64,43 @@ __device__ inline const char* cmpOpToString(CmpOp op) {
  * MEMORY SEMANTICS:
  * =================
  * - All reads use acquire ordering (visible after peer's release)
+ *   Uses ld_acquire_sys_global for system-scope acquire load
  * - All writes use release ordering (visible to peer after their acquire)
+ *   Uses st_release_sys_global for system-scope release store
  * - Uses .sys scope for cross-GPU NVLink coherence
+ *
+ * USAGE PATTERN:
+ * ==============
+ *   // Producer (on GPU A)            // Consumer (on GPU B)
+ *   // Write data first               // Wait for signal
+ *   memcpy_vectorized(dst, src, n);   wait_until(CMP_GE, 1);
+ *   signal(SIGNAL_ADD, 1);            // Data is now visible
+ *   // Release fence ensures          // Acquire fence ensures
+ *   // data is visible before signal  // data is visible after wait
+ *
+ * SIGNAL OVERFLOW AND LIFETIME:
+ * =============================
+ * The 64-bit counter is unlikely to overflow in practice:
+ * - At 1 billion signals/second, overflow takes ~584 years
+ * - Typical workloads signal at most millions of times
+ *
+ * RECOMMENDED USAGE PATTERNS:
+ * 1. Monotonically increasing values: Use cumulative signal values
+ *    (wait for 1, then 2, then 3, ...) without resetting. Works well
+ *    for streaming patterns with bounded iteration counts.
+ *
+ * 2. Slot rotation: Use different signal slots for different phases
+ *    to avoid accumulation within a single slot.
+ *
+ * 3. Host-side reset between kernel launches: Reset signals using
+ *    host-side cudaMemset (zero the inbox) when the GPU is idle.
+ *    Synchronize all ranks (e.g., MPI_Barrier) before reset.
+ *    WARNING: Do NOT reset from device code — a fast peer can race
+ *    with the reset store, causing a data race.
+ *
+ * DEBUG OVERFLOW DETECTION:
+ * In debug builds (PIPES_DEBUG defined), SIGNAL_ADD operations check
+ * for overflow and call __trap() with an error message if detected.
  *
  */
 struct alignas(128) SignalState {
@@ -100,6 +135,26 @@ struct alignas(128) SignalState {
    * @param value The value to set or add
    */
   __device__ __forceinline__ void signal(SignalOp op, uint64_t value) {
+#if defined(__CUDA_ARCH__) && defined(PIPES_DEBUG)
+    // Debug-only overflow detection for SIGNAL_ADD
+    if (op == SignalOp::SIGNAL_ADD) {
+      uint64_t current = load();
+      if (current > UINT64_MAX - value) {
+        printf(
+            "SignalState overflow detected: current=%llu, adding=%llu at "
+            "block=(%u,%u,%u) thread=(%u,%u,%u)\n",
+            (unsigned long long)current,
+            (unsigned long long)value,
+            blockIdx.x,
+            blockIdx.y,
+            blockIdx.z,
+            threadIdx.x,
+            threadIdx.y,
+            threadIdx.z);
+        __trap();
+      }
+    }
+#endif
     switch (op) {
       case SignalOp::SIGNAL_SET:
         store(value);

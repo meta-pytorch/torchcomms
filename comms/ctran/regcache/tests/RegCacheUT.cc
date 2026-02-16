@@ -309,9 +309,10 @@ TEST_F(RegCacheTest, LookupSegmentsForBufferMultiSegment) {
 
   // Should find all cached segments
   EXPECT_EQ(foundSegHdls.size(), numSegments);
-  for (size_t i = 0; i < numSegments; i++) {
-    EXPECT_EQ(foundSegHdls[i], segHdls[i]);
-  }
+  std::unordered_set<void*> segHdlSet(segHdls.begin(), segHdls.end());
+  std::unordered_set<void*> foundSegHdlSet(
+      foundSegHdls.begin(), foundSegHdls.end());
+  EXPECT_EQ(segHdlSet, foundSegHdlSet);
 
   // Free all segments
   for (auto segHdl : segHdls) {
@@ -346,6 +347,93 @@ TEST_F(RegCacheTest, LookupSegmentsForBufferNotCached) {
   EXPECT_EQ(foundRegElems.size(), 0);
 
   CUDACHECK_TEST(cudaFree(buf));
+}
+
+// Test lookupSegmentsForBuffer works after underlying memory is unmapped.
+TEST_F(RegCacheTest, LookupSegmentsForBufferAfterUnmap) {
+  constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB per segment
+  constexpr int numSegments = 3;
+  std::vector<size_t> segSizes(numSegments, segmentSize);
+
+  void* buf = nullptr;
+  std::vector<TestMemSegment> memSegments;
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(&buf, segSizes, memSegments, true));
+  ASSERT_NE(buf, nullptr);
+  ASSERT_EQ(memSegments.size(), numSegments);
+
+  size_t totalSize = segmentSize * numSegments;
+
+  // Cache the segments in RegCache
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, totalSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  EXPECT_EQ(segHdls.size(), numSegments);
+
+  // Unmap the underlying physical memory
+  CUmemAllocationProp memprop = {};
+  size_t memGran = 0;
+  ASSERT_EQ(
+      cuMemGetAllocationGranularity(
+          &memGran, &memprop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+      CUDA_SUCCESS);
+
+  for (const auto& memSeg : memSegments) {
+    size_t alignedSize = memSeg.size;
+    // Align to granularity (same as commMemAllocDisjoint does)
+    alignedSize = ((alignedSize + memGran - 1) / memGran) * memGran;
+
+    // Get and release the allocation handle before unmapping
+    CUmemGenericAllocationHandle handle;
+    ASSERT_EQ(
+        cuMemRetainAllocationHandle(&handle, const_cast<void*>(memSeg.ptr)),
+        CUDA_SUCCESS);
+    ASSERT_EQ(cuMemRelease(handle), CUDA_SUCCESS);
+
+    // Unmap the segment
+    ASSERT_EQ(cuMemUnmap((CUdeviceptr)memSeg.ptr, alignedSize), CUDA_SUCCESS);
+
+    // Release the handle again (cuMemRetainAllocationHandle incremented
+    // refcount)
+    ASSERT_EQ(cuMemRelease(handle), CUDA_SUCCESS);
+  }
+
+  // Now call lookupSegmentsForBuffer on the UNMAPPED memory range.
+  std::vector<void*> foundSegHdls;
+  std::vector<ctran::regcache::RegElem*> foundRegElems;
+  EXPECT_EQ(
+      regCache->lookupSegmentsForBuffer(
+          buf, totalSize, cudaDev, foundSegHdls, foundRegElems),
+      commSuccess);
+
+  // Should still find all cached segments even though memory is unmapped
+  EXPECT_EQ(foundSegHdls.size(), numSegments);
+  std::unordered_set<void*> segHdlSet(segHdls.begin(), segHdls.end());
+  std::unordered_set<void*> foundSegHdlSet(
+      foundSegHdls.begin(), foundSegHdls.end());
+  EXPECT_EQ(segHdlSet, foundSegHdlSet);
+
+  // Clean up: free segments from cache (memory is already unmapped)
+  for (auto segHdl : segHdls) {
+    bool freed = false;
+    bool ncclManaged = false;
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+    EXPECT_EQ(
+        regCache->freeSegment(segHdl, freed, ncclManaged, regElems),
+        commSuccess);
+    EXPECT_TRUE(freed);
+  }
+
+  // Free the VA reservation
+  size_t vaSize = 0;
+  for (const auto& sz : segSizes) {
+    size_t aligned = ((sz + memGran - 1) / memGran) * memGran;
+    vaSize += aligned;
+  }
+  ASSERT_EQ(cuMemAddressFree((CUdeviceptr)buf, vaSize), CUDA_SUCCESS);
 }
 
 // Test that destroy clears all cached segments and registrations

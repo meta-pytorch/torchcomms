@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <deque>
+#include <functional>
 #include <iostream>
 #include <sstream>
 
@@ -140,6 +141,60 @@ std::vector<void*> CtranAvlTree::getAllElems() const {
   }
 
   return ret;
+}
+
+std::vector<void*> CtranAvlTree::searchRange(const void* addr, std::size_t len)
+    const {
+  std::vector<void*> result;
+  std::lock_guard<std::mutex> lock(this->mutex_);
+
+  uintptr_t rangeStart = reinterpret_cast<uintptr_t>(addr);
+  uintptr_t rangeEnd = rangeStart + len;
+
+  // Helper lambda for recursive tree traversal with pruning
+  std::function<void(TreeElem*)> traverse = [&](TreeElem* node) {
+    if (node == nullptr) {
+      return;
+    }
+
+    uintptr_t nodeStart = node->addr;
+    uintptr_t nodeEnd = node->addr + node->len;
+
+    // Check if this node overlaps with the search range
+    bool overlaps = (nodeStart < rangeEnd) && (nodeEnd > rangeStart);
+    if (overlaps) {
+      result.push_back(node);
+    }
+
+    // Prune left subtree: only traverse if search range could overlap with
+    // nodes having smaller addresses. Since segments don't overlap, all nodes
+    // in the left subtree have ranges that end before nodeStart. So we only
+    // need to check left if rangeStart < nodeStart.
+    if (node->left && rangeStart < nodeStart) {
+      traverse(node->left);
+    }
+
+    // Prune right subtree: only traverse if search range extends past this
+    // node's start (could overlap with larger addresses)
+    if (node->right && rangeEnd > nodeStart) {
+      traverse(node->right);
+    }
+  };
+
+  // Traverse the AVL tree with pruning
+  traverse(this->root_);
+
+  // Also check the fallback list for overlapping ranges
+  for (auto e : this->list_) {
+    uintptr_t nodeStart = e->addr;
+    uintptr_t nodeEnd = e->addr + e->len;
+    bool overlaps = (nodeStart < rangeEnd) && (nodeEnd > rangeStart);
+    if (overlaps) {
+      result.push_back(e);
+    }
+  }
+
+  return result;
 }
 
 std::string CtranAvlTree::rangeToString(const void* addr, std::size_t len) {

@@ -366,6 +366,12 @@ class RegCache {
   // If no regElem is associated, empty vector is returned
   std::vector<regcache::RegElem*> getRegElems(const void* segHdl) const;
 
+  // Get deduplicated regElems associated with multiple segHdls.
+  // Deduplication is needed because a single regElem can span multiple
+  // segments.
+  std::vector<regcache::RegElem*> getRegElems(
+      const std::vector<void*>& segHdls) const;
+
   // Thread-safe functions to get a list of all cached segments in the global
   // cache.
   std::vector<void*> getSegments() const;
