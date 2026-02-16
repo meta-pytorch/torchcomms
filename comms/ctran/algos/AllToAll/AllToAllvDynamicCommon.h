@@ -94,12 +94,6 @@ commResult_t peerPutNonContig(
     tmpRegHdls.push_back(sendMemHdl);
   }
 
-  // Fix for non-contiguous indices
-  int totalBlock = 0;
-  for (int r = 0; r < comm->statex_->nRanks(); r++) {
-    totalBlock += sendIndicesBlockLengthsTmpbufCPU[r];
-  }
-
   // Calculate the offset of each recvbuff, considering if it is 1st or 2nd
   // all2allv.
   std::vector<size_t> remoteRecvBuffsBytesOffset(sendcountsLength);
