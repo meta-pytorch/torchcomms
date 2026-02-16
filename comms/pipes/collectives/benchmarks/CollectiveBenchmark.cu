@@ -22,4 +22,20 @@ __global__ void all_to_allv_kernel(
       timeout);
 }
 
+__global__ void all_gather_kernel(
+    void* recvbuff_d,
+    const void* sendbuff_d,
+    std::size_t sendcount,
+    int my_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    Timeout timeout) {
+  all_gather(
+      recvbuff_d,
+      sendbuff_d,
+      sendcount,
+      my_rank_id,
+      transports_per_rank,
+      timeout);
+}
+
 } // namespace comms::pipes::benchmark
