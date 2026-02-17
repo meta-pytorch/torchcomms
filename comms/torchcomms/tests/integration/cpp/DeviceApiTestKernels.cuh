@@ -103,4 +103,10 @@ void launchDeviceWaitSignalFromKernel(
     uint64_t value,
     cudaStream_t stream);
 
+// Launch device barrier kernel - synchronizes all ranks via world barrier
+void launchDeviceBarrierKernel(
+    DeviceWindowNCCL* win,
+    int barrier_id,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test

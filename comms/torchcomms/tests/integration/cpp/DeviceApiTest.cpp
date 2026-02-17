@@ -776,3 +776,75 @@ void DeviceApiTest::testWaitSignalFrom() {
 TEST_F(DeviceApiTest, WaitSignalFrom) {
   testWaitSignalFrom();
 }
+
+// =============================================================================
+// Device Barrier Test
+// =============================================================================
+// Validates the device-side world barrier (LSA + GIN hierarchical):
+//   1. All ranks launch a barrier kernel
+//   2. Barrier synchronizes all ranks (LSA first, then GIN Rail)
+//   3. All ranks complete successfully
+
+void DeviceApiTest::testDeviceBarrier() {
+  SCOPED_TRACE(::testing::Message() << "Testing device barrier");
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  // Minimal window for barrier infrastructure
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({1}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
+  ASSERT_NE(win, nullptr);
+
+  // Get device window with barrier support
+  int barrier_count = 2;
+  auto* dev_win = win->get_device_window(-1, -1, barrier_count);
+  ASSERT_NE(dev_win, nullptr);
+
+  constexpr int kBarrierId = 0;
+
+  // Launch barrier kernel - all ranks must participate
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceBarrierKernel(
+        dev_win, kBarrierId, op_stream.stream());
+  }
+
+  // Synchronize - if barrier works, all ranks complete together
+  op_stream.synchronize();
+
+  // Second barrier to verify reusability
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceBarrierKernel(
+        dev_win, kBarrierId + 1, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(DeviceApiTest, DeviceBarrier) {
+  testDeviceBarrier();
+}

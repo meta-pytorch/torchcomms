@@ -60,6 +60,9 @@ class DeviceApiTest : public ::testing::Test {
   // Wait signal from specific peer test - validates point-to-point sync
   void testWaitSignalFrom();
 
+  // Device barrier test - validates world barrier (LSA + GIN)
+  void testDeviceBarrier();
+
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;

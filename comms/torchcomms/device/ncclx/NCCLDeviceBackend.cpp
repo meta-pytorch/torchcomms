@@ -77,7 +77,7 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
       .teamRequirementsList = nullptr,
       .lsaMultimem = false,
       .barrierCount = config.barrier_count,
-      .lsaBarrierCount = 0,
+      .lsaBarrierCount = config.barrier_count,
       .railGinBarrierCount = config.barrier_count,
       .lsaLLA2ABlockCount = 0,
       .lsaLLA2ASlotCount = 0,
