@@ -2936,6 +2936,15 @@ ncclResult_t ncclGinIbGdakiDeregMrSym(void* collComm, void* mhandle) {
   return ncclGinGdakiDeregMrSym((struct ncclGinIbCollComm *)collComm, mhandle);
 }
 
+ncclResult_t ncclGinIbGdakiRegMrLocal(void* collComm, void* data, size_t size, int type,
+                                      uint64_t mr_flags, void** mhandle, void **ginHandle) {
+  return ncclGinGdakiRegMrLocal((struct ncclGinIbCollComm *)collComm, data, size, type, mhandle, ginHandle);
+}
+
+ncclResult_t ncclGinIbGdakiDeregMrLocal(void* collComm, void* mhandle) {
+  return ncclGinGdakiDeregMrLocal((struct ncclGinIbCollComm *)collComm, mhandle);
+}
+
 ncclResult_t ncclGinIbGdakiDestroyContext(void* ginCtx) {
   return ncclGinGdakiDestroyContext(ginCtx);
 }
@@ -2960,6 +2969,8 @@ ncclGin_t ncclGinIbGdaki = {
   ncclGinIbGdakiRegMrSym,
   NULL, // regMrSymDmaBuf
   ncclGinIbGdakiDeregMrSym,
+  ncclGinIbGdakiRegMrLocal,   // Local-only registration (non-collective)
+  ncclGinIbGdakiDeregMrLocal, // Local-only deregistration
   ncclGinIbGdakiDestroyContext,
   ncclGinIbCloseColl,
   ncclIbCloseListen,
@@ -3215,13 +3226,15 @@ ncclGin_t ncclGinIbProxy = {
   ncclGinIbProxyRegMrSym,
   ncclGinIbProxyRegMrSymDmaBuf,
   ncclGinIbProxyDeregMrSym,
-  NULL,
+  NULL, // regMrLocal - not supported in proxy mode
+  NULL, // deregMrLocal - not supported in proxy mode
+  NULL, // destroyContext
   ncclGinIbCloseColl,
   ncclIbCloseListen,
   ncclGinIbProxyIPut,
   ncclGinIbProxyIPutSignal,
   ncclGinIbProxyTest,
-  NULL,
-  NULL,
+  NULL, // ginProgress
+  NULL, // queryLastError
   ncclGinIbFinalize
 };
