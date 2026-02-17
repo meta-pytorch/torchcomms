@@ -39,7 +39,7 @@ DEFINE_bool(
 DEFINE_string(
     benchmark,
     "all",
-    "Which benchmark(s) to run: all, optimal, tuning, algorithm (comma-separated)");
+    "Which benchmark(s) to run: all, clustered, rootsweep, extended, gridconfig, optimal, tuning, algorithm (comma-separated)");
 
 namespace {
 // NVTX helper macros for profiling
@@ -157,7 +157,7 @@ struct BroadcastBenchmarkResult {
  */
 enum class BroadcastAlgorithm {
   FlatTree,
-  // BinomialTree - added in D91729677
+  BinomialTree,
   // Ring - added in D91697545
   // Adaptive - added in D91729719
 };
@@ -166,6 +166,8 @@ inline std::string algorithmName(BroadcastAlgorithm algo) {
   switch (algo) {
     case BroadcastAlgorithm::FlatTree:
       return "Flat-Tree";
+    case BroadcastAlgorithm::BinomialTree:
+      return "Binomial";
   }
   return "Unknown";
 }
@@ -176,6 +178,7 @@ inline std::string algorithmName(BroadcastAlgorithm algo) {
  */
 const std::vector<BroadcastAlgorithm> kAllAlgorithms = {
     BroadcastAlgorithm::FlatTree,
+    BroadcastAlgorithm::BinomialTree,
 };
 
 // ============================================================================
@@ -785,11 +788,168 @@ class BroadcastBenchmarkFixture : public MpiBaseTestFixture {
       case BroadcastAlgorithm::FlatTree:
         return runPipesBroadcastFlatBenchmark(
             config, rootRank, latencyUs, verified);
-        // case BroadcastAlgorithm::BinomialTree - added in D91729677
+      case BroadcastAlgorithm::BinomialTree:
+        return runPipesBinomialTreeBenchmark(
+            config, rootRank, latencyUs, verified);
         // case BroadcastAlgorithm::Ring - added in D91697545
         // case BroadcastAlgorithm::Adaptive - added in D91729719
     }
     return 0.0f;
+  }
+
+  /**
+   * Run Pipes Broadcast benchmark with binomial tree algorithm.
+   * Returns bandwidth in GB/s and sets latency in microseconds.
+   */
+  float runPipesBinomialTreeBenchmark(
+      const BroadcastBenchmarkConfig& config,
+      int rootRank,
+      float& latencyUs,
+      bool& verified) {
+    XLOGF(
+        DBG1,
+        "Rank {}: Running Pipes Binomial Tree broadcast: {} (root={})",
+        globalRank,
+        config.name,
+        rootRank);
+
+    verified = false;
+    DeviceBuffer buffer(config.messageSize);
+
+    // Initialize buffer: root has data, others have zeros
+    if (globalRank == rootRank) {
+      auto h_data = generateExpectedData(config.messageSize, rootRank);
+      CUDA_CHECK(cudaMemcpy(
+          buffer.get(),
+          h_data.data(),
+          config.messageSize,
+          cudaMemcpyHostToDevice));
+    } else {
+      CUDA_CHECK(cudaMemset(buffer.get(), 0, config.messageSize));
+    }
+
+    // Setup P2P NVL transport
+    MultiPeerNvlTransportConfig nvlConfig{
+        .dataBufferSize = config.stagingBufferSize,
+        .chunkSize = config.chunkSize,
+        .pipelineDepth = config.pipelineDepth,
+    };
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, nvlConfig);
+    transport.exchange();
+
+    // Create transport array: self for my rank, P2P for others
+    P2pSelfTransportDevice selfTransport;
+    std::vector<Transport> h_transports;
+    h_transports.reserve(numRanks);
+
+    for (int rank = 0; rank < numRanks; rank++) {
+      if (rank == globalRank) {
+        h_transports.emplace_back(selfTransport);
+      } else {
+        h_transports.emplace_back(transport.getP2pTransportDevice(rank));
+      }
+    }
+
+    // Copy transports to device
+    DeviceBuffer d_transports(sizeof(Transport) * numRanks);
+    CUDA_CHECK(cudaMemcpy(
+        d_transports.get(),
+        h_transports.data(),
+        sizeof(Transport) * numRanks,
+        cudaMemcpyHostToDevice));
+
+    DeviceSpan<Transport> transports_span(
+        static_cast<Transport*>(d_transports.get()), numRanks);
+
+    // Prepare kernel launch parameters
+    dim3 gridDim(config.numBlocks);
+    dim3 blockDim(config.numThreads);
+
+    void* buff_d = buffer.get();
+    std::size_t nbytes = config.messageSize;
+    void* args[] = {&buff_d, &globalRank, &rootRank, &transports_span, &nbytes};
+
+    CudaEvent start, stop;
+
+    // Warmup
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    NVTX_RANGE_PUSH("Pipes_BinomialTree_Warmup");
+    for (int i = 0; i < kWarmupIters; i++) {
+      CUDA_CHECK(cudaLaunchKernel(
+          (void*)broadcastBinomialTreeKernel,
+          gridDim,
+          blockDim,
+          args,
+          0,
+          stream_));
+      CUDA_CHECK(cudaStreamSynchronize(stream_));
+    }
+    NVTX_RANGE_POP();
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Benchmark
+    NVTX_RANGE_PUSH("Pipes_BinomialTree_Benchmark");
+    CUDA_CHECK(cudaEventRecord(start.get(), stream_));
+    for (int i = 0; i < kBenchmarkIters; i++) {
+      NVTX_RANGE_PUSH("Pipes_BinomialTree_Iter");
+      CUDA_CHECK(cudaLaunchKernel(
+          (void*)broadcastBinomialTreeKernel,
+          gridDim,
+          blockDim,
+          args,
+          0,
+          stream_));
+      NVTX_RANGE_POP();
+    }
+    CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
+    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    NVTX_RANGE_POP();
+
+    float totalTime_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
+    float avgTime_ms = totalTime_ms / kBenchmarkIters;
+    latencyUs = avgTime_ms * 1000.0f;
+
+    // Broadcast bandwidth: data transferred / time
+    float bandwidth_GBps = (config.messageSize / 1e9f) / (avgTime_ms / 1000.0f);
+
+    // Verify data correctness if enabled
+    if (FLAGS_verify_correctness) {
+      // Re-initialize and run one more broadcast for verification
+      if (globalRank == rootRank) {
+        auto h_data = generateExpectedData(config.messageSize, rootRank);
+        cudaMemcpy(
+            buffer.get(),
+            h_data.data(),
+            config.messageSize,
+            cudaMemcpyHostToDevice);
+      } else {
+        cudaMemset(buffer.get(), 0, config.messageSize);
+      }
+
+      buff_d = buffer.get();
+      cudaLaunchKernel(
+          (void*)broadcastBinomialTreeKernel,
+          gridDim,
+          blockDim,
+          args,
+          0,
+          stream_);
+      cudaStreamSynchronize(stream_);
+
+      verified = verifyBroadcastData(
+          buffer.get(),
+          config.messageSize,
+          rootRank,
+          config.name,
+          "BinomialTree");
+    }
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    return bandwidth_GBps;
   }
 
   // --------------------------------------------------------------------------
@@ -1161,9 +1321,8 @@ TEST_F(BroadcastBenchmarkFixture, RootRankSweep) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     }
 
-    // Print separator between root ranks (when multiple algorithms exist)
-    if (globalRank == 0 && rootRank < numRanks - 1 &&
-        kAllAlgorithms.size() > 1) {
+    // Print separator between root ranks
+    if (globalRank == 0 && rootRank < numRanks - 1) {
       XLOG(INFO)
           << "------------------------------------------------------------------------"
              "--------------------------------------";
@@ -1309,9 +1468,8 @@ TEST_F(BroadcastBenchmarkFixture, ExtendedMessageSizes) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     }
 
-    // Print separator between message sizes (when multiple algorithms exist)
-    if (globalRank == 0 && msgSize != messageSizes.back() &&
-        kAllAlgorithms.size() > 1) {
+    // Print separator between message sizes
+    if (globalRank == 0 && msgSize != messageSizes.back()) {
       XLOG(INFO)
           << "------------------------------------------------------------------------"
              "--------------------------------------------";
@@ -1446,8 +1604,8 @@ TEST_F(BroadcastBenchmarkFixture, GridConfigSweep) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     }
 
-    // Print separator between grid configs when there are multiple algorithms
-    if (kAllAlgorithms.size() > 1 && globalRank == 0) {
+    // Print separator between grid configs
+    if (globalRank == 0) {
       XLOG(INFO) << "  ---";
     }
   }
@@ -1493,7 +1651,13 @@ int main(int argc, char* argv[]) {
       token.erase(token.find_last_not_of(" \t") + 1);
 
       std::string testPattern;
-      if (token == "clustered") {
+      if (token == "optimal") {
+        testPattern = "*OptimalConfigs*";
+      } else if (token == "tuning") {
+        testPattern = "*StagingBufferTuning*";
+      } else if (token == "algorithm") {
+        testPattern = "*AlgorithmComparison*";
+      } else if (token == "clustered") {
         testPattern = "*ClusteredLaunchComparison*";
       } else if (token == "rootsweep") {
         testPattern = "*RootRankSweep*";
@@ -1505,8 +1669,7 @@ int main(int argc, char* argv[]) {
         // Unknown benchmark name, print help and continue
         std::cerr
             << "Warning: Unknown benchmark '" << token << "'. "
-            << "Valid values: clustered, rootsweep, extended, gridconfig, clustered, "
-            << "rootsweep, extended, gridconfig, all\n";
+            << "Valid values: rootsweep, extended, gridconfig, optimal, tuning, algorithm, clustered, all\n";
         continue;
       }
 
