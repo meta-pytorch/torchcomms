@@ -437,12 +437,20 @@ __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::flush() {
 template <>
 __device__ inline int TorchCommDeviceWindow<NCCLDeviceBackend>::barrier(
     int barrier_id) {
-  // NOT IMPLEMENTED — barrier requires LSA barrier handle allocation
-  // at host side (ncclLsaBarrierCreateRequirement). Will be added in a
-  // future phase.
-  (void)barrier_id;
-  __trap();
-  return -1; // Unreachable
+  const ncclDevComm& dev_comm = comm_;
+  ncclGin gin(dev_comm, kDefaultGinContextIndex);
+
+  // World barrier: syncs LSA team (NVLink) first, then Rail team (RDMA)
+  ncclBarrierSession barrier(
+      ncclCoopThread{},
+      ncclTeamTagWorld{},
+      gin,
+      static_cast<uint32_t>(barrier_id),
+      false /* multimem */);
+  barrier.sync(
+      ncclCoopThread{}, cuda::memory_order_acq_rel, ncclGinFenceLevel::Relaxed);
+
+  return 0;
 }
 
 } // namespace torchcomms::device
