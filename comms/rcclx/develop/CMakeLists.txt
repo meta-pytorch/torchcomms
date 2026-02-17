@@ -732,6 +732,7 @@ set(RCCLX_FILES
   meta/ctran/Hints.cc
   meta/ctran/MetaFactory.cc
   meta/ctran/MetaFactory.h
+  meta/ctran/PersistentCollectives.cc
 )
 
 # Run this command to get RCCLX_LIB_FILES:
@@ -763,11 +764,6 @@ set(RCCLX_LIB_FILES
   comms/rcclx/develop/meta//lpcoll/low_precision_utility.h
   comms/rcclx/develop/meta//lpcoll/p2p_allgather.cc
   comms/rcclx/develop/meta//lpcoll/p2p_allgather.h
-  comms/rcclx/develop/meta/ctran/MetaFactory.cc
-  comms/rcclx/develop/meta/ctran/MetaFactory.h
-  comms/rcclx/develop/meta/ctran/AllToAllvDynamic.cc
-  comms/rcclx/develop/meta/ctran/PersistentCollectives.cc
-  comms/rcclx/develop/meta/ctran/Hints.cc
 )
 
 # find comms/ctran/ -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" ! -path "*/examples/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
@@ -790,9 +786,7 @@ set(CTRAN_FILES
   comms/ctran/algos/AllGatherP/PipelineImpl.cc
   comms/ctran/algos/AllGatherP/PipelineImpl.cu
   comms/ctran/algos/AllGatherP/Types.h
-  comms/ctran/algos/AllReduce/AllReduceARG.cc
-  comms/ctran/algos/AllReduce/AllReduceARGCommonDev.h
-  comms/ctran/algos/AllReduce/AllReduceARG.cuh
+  comms/ctran/algos/AllGather/Types.h
   comms/ctran/algos/AllReduce/AllReduce.cc
   comms/ctran/algos/AllReduce/AllReduceDevTypes.h
   comms/ctran/algos/AllReduce/AllReduceDirect.cc
@@ -806,6 +800,7 @@ set(CTRAN_FILES
   comms/ctran/algos/AllReduce/AllReduceRing.cuh
   comms/ctran/algos/AllReduce/AllReduceShm.cu
   comms/ctran/algos/AllReduce/AllReduceShm.cuh
+  comms/ctran/algos/AllReduce/Types.h
   comms/ctran/algos/AllToAll/AllToAll.cc
   comms/ctran/algos/AllToAll/AllToAll.cuh
   comms/ctran/algos/AllToAll/AllToAllDedup.cc
@@ -836,6 +831,7 @@ set(CTRAN_FILES
   comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.cc
   comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllv.h
   comms/ctran/algos/AllToAll/fb/compressed/CompressedAllToAllvImpl.h
+  comms/ctran/algos/AllToAll/HostTypes.h
   comms/ctran/algos/AllToAll/Types.h
   comms/ctran/algos/AllToAllvDedup/AlgoImpl.cc
   comms/ctran/algos/AllToAllvDedup/AlgoImpl.h
@@ -867,6 +863,7 @@ set(CTRAN_FILES
   comms/ctran/algos/Broadcast/Broadcast.cu
   comms/ctran/algos/Broadcast/BroadcastDirect.cc
   comms/ctran/algos/Broadcast/BroadcastImpl.h
+  comms/ctran/algos/Broadcast/Types.h
   comms/ctran/algos/Checksum.cu
   comms/ctran/algos/Checksum.cuh
   comms/ctran/algos/CollUtils.h
@@ -907,6 +904,7 @@ set(CTRAN_FILES
   comms/ctran/algos/ReduceScatter/ReduceScatterRHD.cuh
   comms/ctran/algos/ReduceScatter/ReduceScatterRing.cc
   comms/ctran/algos/ReduceScatter/ReduceScatterRing.cuh
+  comms/ctran/algos/ReduceScatter/Types.h
   comms/ctran/algos/RMA/Get.cc
   comms/ctran/algos/RMA/Get.cu
   comms/ctran/algos/RMA/PutSignal.cc
@@ -936,8 +934,6 @@ set(CTRAN_FILES
   comms/ctran/backends/ib/CtranIbImpl.h
   comms/ctran/backends/ib/CtranIbLocalVc.cc
   comms/ctran/backends/ib/CtranIbLocalVc.h
-  comms/ctran/ibverbx/IbvQpUtils.cc
-  comms/ctran/ibverbx/IbvQpUtils.h
   comms/ctran/backends/ib/CtranIbRequest.cc
   comms/ctran/backends/ib/CtranIbSingleton.h
   comms/ctran/backends/ib/CtranIbVc.cc
@@ -948,10 +944,8 @@ set(CTRAN_FILES
   comms/ctran/backends/ib/IbvWrap.h
   comms/ctran/backends/mock/CtranTcpDmBaseMock.h
   comms/ctran/backends/mock/CtranTcpDmMock.h
-  comms/ctran/backends/nvl/CtranNvlBase.h
   comms/ctran/backends/nvl/CtranNvl.cc
   comms/ctran/backends/nvl/CtranNvl.h
-  comms/ctran/backends/nvl/CtranNvlImpl.cc
   comms/ctran/backends/nvl/CtranNvlImpl.h
   comms/ctran/backends/socket/CtranSocketBase.h
   comms/ctran/backends/socket/CtranSocket.cc
@@ -995,13 +989,14 @@ set(CTRAN_FILES
   comms/ctran/hints/Hints.h
   comms/ctran/hints/HintUtils.cc
   comms/ctran/hints/HintUtils.h
-  comms/ctran/ibverbx/Coordinator.cc
-  comms/ctran/ibverbx/Coordinator.h
   comms/ctran/ibverbx/device/structs.h
   comms/ctran/ibverbx/DqplbSeqTracker.h
-  comms/ctran/ibverbx/fb/ibgda/DeviceQueuePair.h
-  comms/ctran/ibverbx/fb/ibgda/SegmentBuilder.h
-  comms/ctran/ibverbx/fb/ibgda/Utils.h
+# IBGDA depends on NVIDIA DOCA, not available for ROCm/RCCL builds
+# comms/ctran/ibverbx/fb/ibgda/DeviceQueuePair.h # manual
+# comms/ctran/ibverbx/fb/ibgda/SegmentBuilder.h # manual
+# comms/ctran/ibverbx/fb/ibgda/Utils.h # manual
+  comms/ctran/ibverbx/IbvAh.cc
+  comms/ctran/ibverbx/IbvAh.h
   comms/ctran/ibverbx/IbvCommon.cc
   comms/ctran/ibverbx/IbvCommon.h
   comms/ctran/ibverbx/Ibvcore.h
@@ -1019,11 +1014,16 @@ set(CTRAN_FILES
   comms/ctran/ibverbx/IbvPd.h
   comms/ctran/ibverbx/IbvQp.cc
   comms/ctran/ibverbx/IbvQp.h
+  comms/ctran/ibverbx/IbvQpUtils.cc
+  comms/ctran/ibverbx/IbvQpUtils.h
+  comms/ctran/ibverbx/IbvSrq.cc
+  comms/ctran/ibverbx/IbvSrq.h
   comms/ctran/ibverbx/IbvVirtualCq.cc
   comms/ctran/ibverbx/IbvVirtualCq.h
   comms/ctran/ibverbx/IbvVirtualQp.cc
   comms/ctran/ibverbx/IbvVirtualQp.h
   comms/ctran/ibverbx/IbvVirtualWr.h
+  comms/ctran/ibverbx/Mlx5core.h
   comms/ctran/ibverbx/Mlx5dv.cc
   comms/ctran/ibverbx/Mlx5dv.h
   comms/ctran/interfaces/IBootstrap.h
@@ -1049,6 +1049,9 @@ set(CTRAN_FILES
   comms/ctran/profiler/Profiler.h
   comms/ctran/profiler/QueuePairProfilerModule.cc
   comms/ctran/profiler/QueuePairProfilerModule.h
+  comms/ctran/regcache/IpcRegCacheBase.h
+  comms/ctran/regcache/IpcRegCache.cc
+  comms/ctran/regcache/IpcRegCache.h
   comms/ctran/regcache/RegCache.cc
   comms/ctran/regcache/RegCache.h
   comms/ctran/utils/Abort.cc
@@ -1105,7 +1108,7 @@ set(CTRAN_FILES
 
 # TODO: Add back comms/common/ files
 # Run this command to get COMMON_FILES:
-# find comms/utils/ comms/common -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
+# find comms/utils/ comms/common comms/pipes -type f ! -path "*/tests/*" ! -path "*/benchmarks/*" \( -name "*.cc" -o -name "*.h" -o -name "*.hpp" -o -name "*.cuh" -o -name "*.cu" \) | sort
 set(COMMON_FILES
   comms/common/algorithms/AlgoFactory.cu
   comms/common/algorithms/AlgoFactory.cuh
@@ -1140,25 +1143,48 @@ set(COMMON_FILES
   comms/common/IpcGpuBarrier.cuh
   comms/common/IpcMemHandler.cc
   comms/common/IpcMemHandler.h
-  comms/pipes/AllToAllv.cuh
   comms/pipes/BarrierState.cuh
   comms/pipes/ChunkState.cuh
-  # comms/pipes/collectives/dispatch.cu
-  # comms/pipes/collectives/dispatch.cuh
-  # comms/pipes/collectives/dispatch.h
+  comms/pipes/collectives/AllGather.cuh
+  comms/pipes/collectives/AllToAllv.cu
+  comms/pipes/collectives/AllToAllv.cuh
+  comms/pipes/collectives/AllToAllv.h
+# comms/pipes/collectives/Dispatchv.cu
+# comms/pipes/collectives/Dispatchv.cuh
+# comms/pipes/collectives/Dispatchv.h
   comms/pipes/CopyUtils.cuh
+  comms/pipes/DeviceCheck.cuh
   comms/pipes/DeviceSpan.cuh
+# IBGDA/DOCA files depend on NVIDIA DOCA, not available for ROCm/RCCL builds
+# comms/pipes/DocaVerbsUtils.cuh # manual
   comms/pipes/GpuMemHandler.cc
   comms/pipes/GpuMemHandler.h
+# comms/pipes/IbgdaBuffer.h # manual
+  comms/pipes/MultiPeerDeviceTransport.cuh
+# comms/pipes/MultipeerIbgdaDeviceTransport.cuh # manual
+# comms/pipes/MultipeerIbgdaTransport.cc # manual
+# comms/pipes/MultipeerIbgdaTransportCuda.cu # manual
+# comms/pipes/MultipeerIbgdaTransportCuda.cuh # manual
+# comms/pipes/MultipeerIbgdaTransport.h # manual
   comms/pipes/MultiPeerNvlTransport.cc
   comms/pipes/MultiPeerNvlTransport.h
+# comms/pipes/P2pIbgdaTransportDevice.cuh # manual
   comms/pipes/P2pNvlTransportDevice.cuh
   comms/pipes/P2pSelfTransportDevice.cuh
   comms/pipes/SignalState.cuh
   comms/pipes/ThreadGroup.cuh
+  comms/pipes/Timeout.cuh
+  comms/pipes/TimeoutUtils.h
   comms/pipes/Transport.cuh
   comms/pipes/tests/Checks.h # manual
+  comms/pipes/window/DeviceWindowBarrier.cuh
+  comms/pipes/window/DeviceWindowMemory.cuh
+  comms/pipes/window/DeviceWindowSignal.cuh
+  comms/pipes/window/WindowMemory.cc
+  comms/pipes/window/WindowMemory.h
   comms/utils/checks.h
+  comms/utils/colltrace/AlgoStats.cc
+  comms/utils/colltrace/AlgoStats.h
   comms/utils/colltrace/CollMetadata.h
   comms/utils/colltrace/CollMetadataImpl.cc
   comms/utils/colltrace/CollMetadataImpl.h
@@ -1194,6 +1220,7 @@ set(COMMON_FILES
   comms/utils/commSpecs.h
   comms/utils/Conversion.cc
   comms/utils/Conversion.h
+  comms/utils/CudaChecks.h
   comms/utils/CudaRAII.cc
   comms/utils/CudaRAII.h
   comms/utils/cvars/nccl_baseline_adapter.cc
