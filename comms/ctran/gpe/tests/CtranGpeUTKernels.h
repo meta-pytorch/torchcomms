@@ -65,13 +65,3 @@ __global__ void CtranGpeTestFtShmAbortKernel(
     int* flag,
     CtranAlgoDeviceState* devState_d,
     CtranKernelFtArgs args);
-
-__global__ void CtranGpeTestFtKernelSkipGpeStart(
-    int* flag,
-    CtranAlgoDeviceState* devState_d,
-    CtranKernelFtArgs args);
-
-__global__ void CtranGpeTestFtKernelSkipGpeTerminate(
-    int* flag,
-    CtranAlgoDeviceState* devState_d,
-    CtranKernelFtArgs args);
