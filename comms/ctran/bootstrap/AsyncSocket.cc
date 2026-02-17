@@ -134,7 +134,7 @@ folly::SemiFuture<folly::SocketAddress> AsyncServerSocket::start(
     server_ = folly::AsyncServerSocket::newSocket(&evb_);
     server_->setReusePortEnabled(true);
     server_->bind(bindAddr_);
-    server_->addAcceptCallback(this, &evb_);
+    server_->addAcceptCallback(this, nullptr);
     server_->listen(1024 /* backlog */);
     server_->startAccepting();
     auto addr = server_->getAddress();
