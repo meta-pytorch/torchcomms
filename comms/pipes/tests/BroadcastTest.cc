@@ -7,7 +7,7 @@
 
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
-#include "comms/pipes/collectives/BroadcastFlat.cuh"
+#include "comms/pipes/collectives/broadcast/BroadcastTopologies.cuh"
 #include "comms/pipes/tests/BroadcastTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -729,6 +729,294 @@ INSTANTIATE_TEST_SUITE_P(
     [](const ::testing::TestParamInfo<BroadcastTestParams>& info) {
       return info.param.testName;
     });
+
+// =============================================================================
+// Template API Tests
+// =============================================================================
+// These tests directly exercise the broadcast<TopologyTag>() template API
+// to verify the template dispatch mechanism works correctly.
+
+/**
+ * Test fixture for template API tests.
+ * Inherits from BroadcastTestFixture to reuse MPI setup.
+ */
+class BroadcastTemplateAPITest : public BroadcastTestFixture {};
+
+/**
+ * Test that broadcast<FlatTag>() works correctly via testBroadcast<FlatTag>().
+ *
+ * This test directly exercises the template API to verify:
+ * 1. Template instantiation compiles correctly
+ * 2. TopologyTraits<FlatTag>::execute() is called
+ * 3. Data is correctly broadcast from root to all ranks
+ */
+TEST_F(BroadcastTemplateAPITest, FlatTagDirectCall) {
+  const size_t numBytes = 4096;
+  const int numBlocks = 4;
+  const int blockSize = 256;
+  const int rootRank = 0;
+
+  XLOGF(
+      DBG1,
+      "Rank {}: Testing broadcast<FlatTag>() template API with numBytes={}",
+      globalRank,
+      numBytes);
+
+  // Create transport
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = 256 * 1024,
+      .chunkSize = 512,
+      .pipelineDepth = 4,
+  };
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+
+  // Build transport array
+  P2pSelfTransportDevice selfTransport;
+  std::vector<Transport> h_transports;
+  h_transports.reserve(numRanks);
+  for (int rank = 0; rank < numRanks; rank++) {
+    if (rank == globalRank) {
+      h_transports.emplace_back(selfTransport);
+    } else {
+      h_transports.emplace_back(transport.getP2pTransportDevice(rank));
+    }
+  }
+
+  DeviceBuffer d_transports(sizeof(Transport) * numRanks);
+  CUDACHECK_TEST(cudaMemcpy(
+      d_transports.get(),
+      h_transports.data(),
+      sizeof(Transport) * numRanks,
+      cudaMemcpyHostToDevice));
+  DeviceSpan<Transport> transports_span(
+      static_cast<Transport*>(d_transports.get()), numRanks);
+
+  // Allocate and initialize buffer
+  DeviceBuffer buffer(numBytes);
+  const size_t numInts = numBytes / sizeof(int32_t);
+
+  if (globalRank == rootRank) {
+    std::vector<int32_t> h_init(numInts);
+    for (size_t i = 0; i < numInts; i++) {
+      h_init[i] = rootRank * 1000 + static_cast<int32_t>(i);
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        buffer.get(), h_init.data(), numBytes, cudaMemcpyHostToDevice));
+  } else {
+    ::comms::pipes::test::fillBuffer(
+        reinterpret_cast<int*>(buffer.get()), -1, numInts);
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // Call the template API directly
+  test::testBroadcast<FlatTag>(
+      buffer.get(),
+      globalRank,
+      rootRank,
+      transports_span,
+      numBytes,
+      numBlocks,
+      blockSize);
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify results
+  std::vector<int32_t> h_expected(numInts);
+  for (size_t i = 0; i < numInts; i++) {
+    h_expected[i] = rootRank * 1000 + static_cast<int32_t>(i);
+  }
+
+  std::vector<int32_t> h_result(numInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      h_result.data(), buffer.get(), numBytes, cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(h_result, h_expected)
+      << "Rank " << globalRank << " broadcast<FlatTag> verification failed";
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+/**
+ * Test that broadcast<RingTag>() works correctly via testBroadcast<RingTag>().
+ */
+TEST_F(BroadcastTemplateAPITest, RingTagDirectCall) {
+  const size_t numBytes = 1024 * 1024; // 1MB - ring works well for large msgs
+  const int numBlocks = 8;
+  const int blockSize = 512;
+  const int rootRank = 0;
+
+  XLOGF(
+      DBG1,
+      "Rank {}: Testing broadcast<RingTag>() template API with numBytes={}",
+      globalRank,
+      numBytes);
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = 256 * 1024,
+      .chunkSize = 512,
+      .pipelineDepth = 4,
+  };
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+
+  P2pSelfTransportDevice selfTransport;
+  std::vector<Transport> h_transports;
+  h_transports.reserve(numRanks);
+  for (int rank = 0; rank < numRanks; rank++) {
+    if (rank == globalRank) {
+      h_transports.emplace_back(selfTransport);
+    } else {
+      h_transports.emplace_back(transport.getP2pTransportDevice(rank));
+    }
+  }
+
+  DeviceBuffer d_transports(sizeof(Transport) * numRanks);
+  CUDACHECK_TEST(cudaMemcpy(
+      d_transports.get(),
+      h_transports.data(),
+      sizeof(Transport) * numRanks,
+      cudaMemcpyHostToDevice));
+  DeviceSpan<Transport> transports_span(
+      static_cast<Transport*>(d_transports.get()), numRanks);
+
+  DeviceBuffer buffer(numBytes);
+  const size_t numInts = numBytes / sizeof(int32_t);
+
+  if (globalRank == rootRank) {
+    std::vector<int32_t> h_init(numInts);
+    for (size_t i = 0; i < numInts; i++) {
+      h_init[i] = rootRank * 1000 + static_cast<int32_t>(i % 1000);
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        buffer.get(), h_init.data(), numBytes, cudaMemcpyHostToDevice));
+  } else {
+    ::comms::pipes::test::fillBuffer(
+        reinterpret_cast<int*>(buffer.get()), -1, numInts);
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // Call the template API directly
+  test::testBroadcast<RingTag>(
+      buffer.get(),
+      globalRank,
+      rootRank,
+      transports_span,
+      numBytes,
+      numBlocks,
+      blockSize);
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int32_t> h_expected(numInts);
+  for (size_t i = 0; i < numInts; i++) {
+    h_expected[i] = rootRank * 1000 + static_cast<int32_t>(i % 1000);
+  }
+
+  std::vector<int32_t> h_result(numInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      h_result.data(), buffer.get(), numBytes, cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(h_result, h_expected)
+      << "Rank " << globalRank << " broadcast<RingTag> verification failed";
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+/**
+ * Test that broadcast<BinomialTreeTag>() works correctly.
+ */
+TEST_F(BroadcastTemplateAPITest, BinomialTreeTagDirectCall) {
+  const size_t numBytes = 64 * 1024; // 64KB
+  const int numBlocks = 8;
+  const int blockSize = 512;
+  const int rootRank = numRanks / 2; // Middle rank as root
+
+  XLOGF(
+      DBG1,
+      "Rank {}: Testing broadcast<BinomialTreeTag>() template API with "
+      "numBytes={}, root={}",
+      globalRank,
+      numBytes,
+      rootRank);
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = 256 * 1024,
+      .chunkSize = 512,
+      .pipelineDepth = 4,
+  };
+  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  transport.exchange();
+
+  P2pSelfTransportDevice selfTransport;
+  std::vector<Transport> h_transports;
+  h_transports.reserve(numRanks);
+  for (int rank = 0; rank < numRanks; rank++) {
+    if (rank == globalRank) {
+      h_transports.emplace_back(selfTransport);
+    } else {
+      h_transports.emplace_back(transport.getP2pTransportDevice(rank));
+    }
+  }
+
+  DeviceBuffer d_transports(sizeof(Transport) * numRanks);
+  CUDACHECK_TEST(cudaMemcpy(
+      d_transports.get(),
+      h_transports.data(),
+      sizeof(Transport) * numRanks,
+      cudaMemcpyHostToDevice));
+  DeviceSpan<Transport> transports_span(
+      static_cast<Transport*>(d_transports.get()), numRanks);
+
+  DeviceBuffer buffer(numBytes);
+  const size_t numInts = numBytes / sizeof(int32_t);
+
+  if (globalRank == rootRank) {
+    std::vector<int32_t> h_init(numInts);
+    for (size_t i = 0; i < numInts; i++) {
+      h_init[i] = rootRank * 1000 + static_cast<int32_t>(i);
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        buffer.get(), h_init.data(), numBytes, cudaMemcpyHostToDevice));
+  } else {
+    ::comms::pipes::test::fillBuffer(
+        reinterpret_cast<int*>(buffer.get()), -1, numInts);
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  // Call the template API directly
+  test::testBroadcast<BinomialTreeTag>(
+      buffer.get(),
+      globalRank,
+      rootRank,
+      transports_span,
+      numBytes,
+      numBlocks,
+      blockSize);
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  std::vector<int32_t> h_expected(numInts);
+  for (size_t i = 0; i < numInts; i++) {
+    h_expected[i] = rootRank * 1000 + static_cast<int32_t>(i);
+  }
+
+  std::vector<int32_t> h_result(numInts);
+  CUDACHECK_TEST(cudaMemcpy(
+      h_result.data(), buffer.get(), numBytes, cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(h_result, h_expected)
+      << "Rank " << globalRank
+      << " broadcast<BinomialTreeTag> verification failed";
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
 
 } // namespace comms::pipes::collectives
 
