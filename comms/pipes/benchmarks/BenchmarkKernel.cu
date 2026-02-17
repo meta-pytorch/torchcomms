@@ -153,4 +153,72 @@ __global__ void p2pRecvMultiple(
   p2p.recv_multiple(group, dstBuff, chunkSizes);
 }
 
+__global__ void allToAllvKernel(
+    void* recvbuff_d,
+    const void* sendbuff_d,
+    int my_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    DeviceSpan<ChunkInfo> send_chunk_infos,
+    DeviceSpan<ChunkInfo> recv_chunk_infos,
+    Timeout timeout) {
+  all_to_allv(
+      recvbuff_d,
+      sendbuff_d,
+      my_rank_id,
+      transports_per_rank,
+      send_chunk_infos,
+      recv_chunk_infos,
+      timeout);
+}
+
+__global__ void broadcastFlatKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast<comms::pipes::collectives::FlatTag>(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
+__global__ void broadcastBinomialTreeKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast<
+      comms::pipes::collectives::BinomialTreeTag>(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
+__global__ void broadcastAdaptiveKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  // Adaptive logic: use RingTag for large messages (>= 4MB) with nranks > 2
+  constexpr std::size_t kRingThreshold = 4 * 1024 * 1024;
+  const auto nranks = transports.size();
+
+  if (nbytes >= kRingThreshold && nranks > 2) {
+    comms::pipes::collectives::broadcast<comms::pipes::collectives::RingTag>(
+        buff_d, myRank, rootRank, transports, nbytes);
+  } else {
+    comms::pipes::collectives::broadcast<comms::pipes::collectives::FlatTag>(
+        buff_d, myRank, rootRank, transports, nbytes);
+  }
+}
+
+__global__ void broadcastRingKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast<comms::pipes::collectives::RingTag>(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
 } // namespace comms::pipes::benchmark
