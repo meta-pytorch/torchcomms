@@ -75,9 +75,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, ConstructAndExchange) {
 
     XLOGF(
         INFO,
-        "Rank {}: Transport created with NIC {} GID index {}",
+        "Rank {}: Transport created with GID index {}",
         globalRank,
-        transport->getNicDeviceName(),
         transport->getGidIndex());
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
