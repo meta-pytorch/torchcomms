@@ -12,6 +12,7 @@
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+#include "comms/torchcomms/hooks/FlightRecorderPy.h"
 
 namespace py = pybind11;
 using namespace torch::comms;
@@ -1586,4 +1587,8 @@ Args:
       )",
       py::arg("backend"),
       py::call_guard<py::gil_scoped_release>());
+
+  // Add Flight Recorder submodule
+  auto hooks_submodule = m.def_submodule("hooks", "TorchComm module for hooks");
+  torch::comms::fr::initFlightRecorderPyBindings(hooks_submodule);
 }
