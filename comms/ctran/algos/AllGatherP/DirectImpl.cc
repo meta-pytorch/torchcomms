@@ -121,7 +121,9 @@ commResult_t AlgoImpl::execDirect(
   auto ctran = comm_->ctran_.get();
   const auto opCount = ctran->getOpCount();
   const auto myRank = comm_->statex_->rank();
-  const auto nLocalRanks = comm_->statex_->nRanks();
+  const auto nRanks = comm_->statex_->nRanks();
+  const auto nLocalRanks = comm_->statex_->nLocalRanks();
+  const auto nNodes = comm_->statex_->nNodes();
 
   CTRAN_COLL_INFO(
       AlgoImpl::algoName(myAlgo),
@@ -140,40 +142,52 @@ commResult_t AlgoImpl::execDirect(
 
   // Wait till async init is done, so that we can schedule copy operations with
   // the remote address
-  if (nLocalRanks > 1) {
+  if (nRanks > 1) {
     FB_COMMCHECK(waitInit());
   }
 
   // Copy data to other local ranks
-  FB_COMMCHECK(
-      nvlCeBcast(comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+  if (nLocalRanks > 1) {
+    FB_COMMCHECK(nvlCeBcast(
+        comm_,
+        sendbuff,
+        sendSize,
+        myRank * sendSize,
+        pArgs,
+        stream_,
+        ceStreams_));
+  }
 
-  auto op = std::make_unique<OpElem>(
-      OpElem::opType::ALLGATHERP, stream_, comm_, opCount);
-  op->allgatherP.pArgs = &pArgs;
-  op->allgatherP.algoResource = &resource_;
-  op->allgatherP.sendbuff = sendbuff;
-  op->allgatherP.count = count;
-  op->allgatherP.datatype = datatype;
+  if (nNodes > 1) {
+    // Issue PUT operations to remote ranks
+    auto op = std::make_unique<OpElem>(
+        OpElem::opType::ALLGATHERP, stream_, comm_, opCount);
+    op->allgatherP.pArgs = &pArgs;
+    op->allgatherP.algoResource = &resource_;
+    op->allgatherP.sendbuff = sendbuff;
+    op->allgatherP.count = count;
+    op->allgatherP.datatype = datatype;
 
-  std::vector<std::unique_ptr<struct OpElem>> opGroup;
-  opGroup.push_back(std::move(op));
+    std::vector<std::unique_ptr<struct OpElem>> opGroup;
+    opGroup.push_back(std::move(op));
 
-  auto config = KernelConfig(
-      KernelConfig::KernelType::ALLGATHERP,
-      stream_,
-      AlgoImpl::algoName(myAlgo),
-      opCount);
-  config.numBlocks = 1;
-  config.numThreads = 1;
-  config.algoArgs = reinterpret_cast<void*>(&pArgs);
-  config.args.devState_d = ctran->algo->getDevState();
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHERP,
+        stream_,
+        AlgoImpl::algoName(myAlgo),
+        opCount);
+    config.numBlocks = 1;
+    config.numThreads = 1;
+    config.algoArgs = reinterpret_cast<void*>(&pArgs);
+    config.args.devState_d = ctran->algo->getDevState();
 
-  FB_COMMCHECK(ctran->gpe->submit(
-      std::move(opGroup),
-      gpnFn,
-      config,
-      reinterpret_cast<void*>(ncclKernelAllGatherPDirect)));
+    FB_COMMCHECK(ctran->gpe->submit(
+        std::move(opGroup),
+        gpnFn,
+        config,
+        reinterpret_cast<void*>(ncclKernelAllGatherPDirect)));
+  }
+
   return commSuccess;
 }
 } // namespace ctran::allgatherp

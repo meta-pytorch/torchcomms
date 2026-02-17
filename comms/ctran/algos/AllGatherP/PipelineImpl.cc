@@ -155,7 +155,7 @@ commResult_t AlgoImpl::execPipeline(
 
   // Wait till async init is done, so that we can schedule copy operations with
   // the remote address
-  if (nLocalRanks > 1) {
+  if (nRanks > 1) {
     FB_COMMCHECK(waitInit());
   }
 
@@ -214,7 +214,13 @@ commResult_t AlgoImpl::execPipeline(
     // - Step 0: Broadcast local chunk to intra-node peers
     // Copy data to other local ranks
     FB_COMMCHECK(nvlCeBcast(
-        comm_, sendbuff, sendSize, myRank * sendSize, pArgs, stream_));
+        comm_,
+        sendbuff,
+        sendSize,
+        myRank * sendSize,
+        pArgs,
+        stream_,
+        ceStreams_));
 
     const int upPeer = (nRanks + myRank - nLocalRanks) & (nRanks - 1);
 
@@ -238,8 +244,8 @@ commResult_t AlgoImpl::execPipeline(
       const auto offset =
           getRecvChunkIdxInRail(upPeer, step, nLocalRanks, nRanks) * sendSize;
       const auto sendPtr = getPtr(pArgs.recvbuff, offset);
-      FB_COMMCHECK(
-          nvlCeBcast(comm_, sendPtr, sendSize, offset, pArgs, stream_));
+      FB_COMMCHECK(nvlCeBcast(
+          comm_, sendPtr, sendSize, offset, pArgs, stream_, ceStreams_));
     }
 
     PipeEndKernArgs kernArgs = {
