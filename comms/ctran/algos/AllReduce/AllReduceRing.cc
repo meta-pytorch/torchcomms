@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <algorithm>
 #include <chrono>
 
 #include <cuda.h>
@@ -15,6 +16,7 @@
 #include "comms/ctran/CtranComm.h"
 
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
+#include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -736,18 +738,36 @@ static commResult_t impl(
   return commSuccess;
 }
 
-commResult_t
-getNumBlocksAndThreads(int* numBlocks, int* numThreads, const void* func) {
-  // Allow user to customize thread block size if specified
+commResult_t getNumBlocksAndThreads(
+    int* numBlocks,
+    int* numThreads,
+    const void* func,
+    size_t messageBytes,
+    int nRanks) {
   FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
       numBlocks,
       numThreads,
       func,
       0 /* dynamicSMemSize */,
       0 /* blockSizeLimit */));
-  if (*numBlocks > NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS) {
+
+  if (NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP > 0) {
+    GpuArch arch = GpuArch::Default;
+    int cudaDev = 0;
+    FB_CUDACHECK(cudaGetDevice(&cudaDev));
+    int smMajor = 0;
+    FB_CUDACHECK(cudaDeviceGetAttribute(
+        &smMajor, cudaDevAttrComputeCapabilityMajor, cudaDev));
+    if (smMajor < 10) {
+      arch = GpuArch::Hopper;
+    }
+    *numBlocks = getAutoTunedNumBlocks(messageBytes, nRanks, *numBlocks, arch);
+    *numThreads =
+        getAutoTunedThreadBlockSize(messageBytes, nRanks, *numThreads, arch);
+  } else if (*numBlocks > NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS) {
     *numBlocks = NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS;
   }
+
   if (*numThreads > NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE) {
     *numThreads = NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE;
   }
@@ -821,9 +841,10 @@ commResult_t ctranAllReduceRing(
 
   int numBlocks = 0;
   int numThreads = 0;
+  const size_t messageBytes = count * typeSize;
   FB_COMMCHECK(
       ctran::allreduce::ring::getNumBlocksAndThreads(
-          &numBlocks, &numThreads, func));
+          &numBlocks, &numThreads, func, messageBytes, nRanks));
 
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
 
@@ -851,8 +872,59 @@ commResult_t ctranAllReduceRing(
   hostResource->sendCopySync = gpeKernelSyncs[0];
   hostResource->recvRedCopySync = gpeKernelSyncs[1];
   hostResource->partitionSync = gpeKernelSyncs[2];
-  hostResource->chunkSize = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE;
-  hostResource->numChunks = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS;
+  const int kAutoTuneMaxBDP = NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP;
+  if (kAutoTuneMaxBDP <= 0) {
+    hostResource->chunkSize = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE;
+    hostResource->numChunks = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS;
+  } else {
+    auto params = ctran::allreduce::ring::getAutoTunedPipeline(
+        messageBytes, kAutoTuneMaxBDP, nRanks);
+    hostResource->chunkSize = params.chunkSize;
+    hostResource->numChunks = params.numChunks;
+
+    // One-time log of auto-tune decisions across message sizes
+    static bool autoTuneLogged = false;
+    if (!autoTuneLogged) {
+      autoTuneLogged = true;
+
+      // 32GB max
+      constexpr int kPow2MaxExponent = 25;
+      constexpr size_t KB = 1024ULL;
+      for (int i = 0; i <= kPow2MaxExponent; i++) {
+        const size_t sz = (1 << i) * KB;
+
+        const auto p = ctran::allreduce::ring::getAutoTunedPipeline(
+            sz, kAutoTuneMaxBDP, nRanks);
+        const int blks = ctran::allreduce::ring::getAutoTunedNumBlocks(
+            sz, nRanks, numBlocks);
+        CLOGF(
+            INFO,
+            "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",
+            nRanks,
+            sz,
+            blks,
+            p.numChunks,
+            p.chunkSize);
+
+        if (i != kPow2MaxExponent) {
+          const size_t sz_next = (1 << (i + 1)) * KB;
+          const size_t mid = (sz + sz_next) / 2;
+          auto mp = ctran::allreduce::ring::getAutoTunedPipeline(
+              mid, kAutoTuneMaxBDP, nRanks);
+          int mblks = ctran::allreduce::ring::getAutoTunedNumBlocks(
+              mid, nRanks, numBlocks);
+          CLOGF(
+              INFO,
+              "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",
+              nRanks,
+              sz_next,
+              mblks,
+              mp.numChunks,
+              mp.chunkSize);
+        }
+      }
+    }
+  }
   std::tie(hostResource->tmpSendBuf, hostResource->tmpSendBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_SEND_BUF);

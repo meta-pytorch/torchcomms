@@ -2776,6 +2776,15 @@ cvars:
      Number of threads in each thread block used for the AllReduce
      kernel. Default -1 to use the recommended size by CUDA runtime.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP
+   type        : int
+   default     : 134217728
+   description : |-
+     Enable auto-tuning of AllReduceRing parameters based on message size.
+     When enabled, overrides MAX_NUM_THREAD_BLOCKS and pipeline parameters
+     with per-message-size optimal values. Set to 0 to use static CVAR
+     values instead.
+
  - name        : NCCL_CTRAN_ENABLE_FAULT_TOLERANCE
    type        : bool
    default     : False

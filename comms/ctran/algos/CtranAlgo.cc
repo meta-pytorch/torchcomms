@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <string.h>
+#include <algorithm>
 #include <memory>
 
 #include "comms/ctran/CtranComm.h"
@@ -809,14 +810,16 @@ commResult_t CtranAlgo::initTmpBufs() {
       TmpbufType::RECVCOUNTS_TMPBUF,
       sizeof(size_t) * all2allvDynamicMaxSendcounts);
 
-  segmentManager.insert(
-      TmpbufType::RING_TMP_SEND_BUF,
-      NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS *
-          NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE);
-  segmentManager.insert(
-      TmpbufType::RING_TMP_RECV_BUF,
-      NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS *
-          NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE);
+  // When auto-tune is enabled, allocate for the maximum BDP we may use at
+  // runtime. Otherwise use CVAR values.
+  size_t ringBufSize = NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP;
+  if (ringBufSize <= 0) {
+    ringBufSize =
+        static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS) *
+        NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE;
+  }
+  segmentManager.insert(TmpbufType::RING_TMP_SEND_BUF, ringBufSize);
+  segmentManager.insert(TmpbufType::RING_TMP_RECV_BUF, ringBufSize);
 
   // request slab buffer from memory pool
   if (comm_->memCache_) {
