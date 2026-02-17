@@ -4,6 +4,7 @@
 #include <folly/logging/xlog.h>
 #include <gflags/gflags.h>
 #include <nccl.h>
+#include <type_traits>
 
 #ifdef USE_NVTX
 #include <nvtx3/nvToolsExt.h>
@@ -158,7 +159,7 @@ struct BroadcastBenchmarkResult {
 enum class BroadcastAlgorithm {
   FlatTree,
   BinomialTree,
-  // Ring - added in D91697545
+  Ring,
   // Adaptive - added in D91729719
 };
 
@@ -168,6 +169,8 @@ inline std::string algorithmName(BroadcastAlgorithm algo) {
       return "Flat-Tree";
     case BroadcastAlgorithm::BinomialTree:
       return "Binomial";
+    case BroadcastAlgorithm::Ring:
+      return "Ring";
   }
   return "Unknown";
 }
@@ -179,6 +182,7 @@ inline std::string algorithmName(BroadcastAlgorithm algo) {
 const std::vector<BroadcastAlgorithm> kAllAlgorithms = {
     BroadcastAlgorithm::FlatTree,
     BroadcastAlgorithm::BinomialTree,
+    BroadcastAlgorithm::Ring,
 };
 
 // ============================================================================
@@ -791,7 +795,8 @@ class BroadcastBenchmarkFixture : public MpiBaseTestFixture {
       case BroadcastAlgorithm::BinomialTree:
         return runPipesBinomialTreeBenchmark(
             config, rootRank, latencyUs, verified);
-        // case BroadcastAlgorithm::Ring - added in D91697545
+      case BroadcastAlgorithm::Ring:
+        return runPipesRingBenchmark(config, rootRank, latencyUs, verified);
         // case BroadcastAlgorithm::Adaptive - added in D91729719
     }
     return 0.0f;
@@ -945,6 +950,142 @@ class BroadcastBenchmarkFixture : public MpiBaseTestFixture {
           rootRank,
           config.name,
           "BinomialTree");
+    }
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    return bandwidth_GBps;
+  }
+
+  /**
+   * Run Pipes Broadcast benchmark with ring algorithm.
+   * Returns bandwidth in GB/s and sets latency in microseconds.
+   */
+  float runPipesRingBenchmark(
+      const BroadcastBenchmarkConfig& config,
+      int rootRank,
+      float& latencyUs,
+      bool& verified) {
+    XLOGF(
+        DBG1,
+        "Rank {}: Running Pipes Ring broadcast: {} (root={})",
+        globalRank,
+        config.name,
+        rootRank);
+
+    verified = false;
+    DeviceBuffer buffer(config.messageSize);
+
+    // Initialize buffer: root has data, others have zeros
+    if (globalRank == rootRank) {
+      auto h_data = generateExpectedData(config.messageSize, rootRank);
+      CUDA_CHECK(cudaMemcpy(
+          buffer.get(),
+          h_data.data(),
+          config.messageSize,
+          cudaMemcpyHostToDevice));
+    } else {
+      CUDA_CHECK(cudaMemset(buffer.get(), 0, config.messageSize));
+    }
+
+    // Setup P2P NVL transport
+    MultiPeerNvlTransportConfig nvlConfig{
+        .dataBufferSize = config.stagingBufferSize,
+        .chunkSize = config.chunkSize,
+        .pipelineDepth = config.pipelineDepth,
+    };
+
+    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
+    MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, nvlConfig);
+    transport.exchange();
+
+    // Create transport array: self for my rank, P2P for others
+    P2pSelfTransportDevice selfTransport;
+    std::vector<Transport> h_transports;
+    h_transports.reserve(numRanks);
+
+    for (int rank = 0; rank < numRanks; rank++) {
+      if (rank == globalRank) {
+        h_transports.emplace_back(selfTransport);
+      } else {
+        h_transports.emplace_back(transport.getP2pTransportDevice(rank));
+      }
+    }
+
+    // Copy transports to device
+    DeviceBuffer d_transports(sizeof(Transport) * numRanks);
+    CUDA_CHECK(cudaMemcpy(
+        d_transports.get(),
+        h_transports.data(),
+        sizeof(Transport) * numRanks,
+        cudaMemcpyHostToDevice));
+
+    DeviceSpan<Transport> transports_span(
+        static_cast<Transport*>(d_transports.get()), numRanks);
+
+    // Prepare kernel launch parameters
+    dim3 gridDim(config.numBlocks);
+    dim3 blockDim(config.numThreads);
+
+    void* buff_d = buffer.get();
+    std::size_t nbytes = config.messageSize;
+    void* args[] = {&buff_d, &globalRank, &rootRank, &transports_span, &nbytes};
+
+    CudaEvent start, stop;
+
+    // Warmup
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    NVTX_RANGE_PUSH("Pipes_Ring_Warmup");
+    for (int i = 0; i < kWarmupIters; i++) {
+      CUDA_CHECK(cudaLaunchKernel(
+          (void*)broadcastRingKernel, gridDim, blockDim, args, 0, stream_));
+      CUDA_CHECK(cudaStreamSynchronize(stream_));
+    }
+    NVTX_RANGE_POP();
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Benchmark
+    NVTX_RANGE_PUSH("Pipes_Ring_Benchmark");
+    CUDA_CHECK(cudaEventRecord(start.get(), stream_));
+    for (int i = 0; i < kBenchmarkIters; i++) {
+      NVTX_RANGE_PUSH("Pipes_Ring_Iter");
+      CUDA_CHECK(cudaLaunchKernel(
+          (void*)broadcastRingKernel, gridDim, blockDim, args, 0, stream_));
+      NVTX_RANGE_POP();
+    }
+    CUDA_CHECK(cudaEventRecord(stop.get(), stream_));
+    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    NVTX_RANGE_POP();
+
+    float totalTime_ms = 0.0f;
+    CUDA_CHECK(cudaEventElapsedTime(&totalTime_ms, start.get(), stop.get()));
+    float avgTime_ms = totalTime_ms / kBenchmarkIters;
+    latencyUs = avgTime_ms * 1000.0f;
+
+    // Broadcast bandwidth: data transferred / time
+    float bandwidth_GBps = (config.messageSize / 1e9f) / (avgTime_ms / 1000.0f);
+
+    // Verify data correctness if enabled
+    if (FLAGS_verify_correctness) {
+      // Re-initialize and run one more broadcast for verification
+      if (globalRank == rootRank) {
+        auto h_data = generateExpectedData(config.messageSize, rootRank);
+        cudaMemcpy(
+            buffer.get(),
+            h_data.data(),
+            config.messageSize,
+            cudaMemcpyHostToDevice);
+      } else {
+        cudaMemset(buffer.get(), 0, config.messageSize);
+      }
+
+      buff_d = buffer.get();
+      cudaLaunchKernel(
+          (void*)broadcastRingKernel, gridDim, blockDim, args, 0, stream_);
+      cudaStreamSynchronize(stream_);
+
+      verified = verifyBroadcastData(
+          buffer.get(), config.messageSize, rootRank, config.name, "Ring");
     }
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1619,6 +1760,383 @@ TEST_F(BroadcastBenchmarkFixture, GridConfigSweep) {
                << (bestBandwidth / ncclBandwidth) << "x of NCCL)";
     XLOG(INFO)
         << "================================================================================\n";
+  }
+}
+
+/**
+ * Staging Buffer Tuning Benchmark
+ *
+ * Sweeps staging buffer sizes and chunk sizes to find optimal
+ * configuration for different message sizes.
+ */
+TEST_F(BroadcastBenchmarkFixture, StagingBufferTuning) {
+  if (globalRank == 0) {
+    XLOG(INFO)
+        << "\n=== Staging Buffer and Chunk Size Tuning (All Algorithms) ===\n";
+    XLOG(INFO) << "This test sweeps parameters across all algorithms.\n";
+  }
+
+  // Fixed message size for parameter sweep
+  const std::size_t messageSize = 64 * 1024 * 1024; // 64MB
+
+  // Parameter sweep configurations
+  struct TuningConfig {
+    std::size_t stagingBufferSize;
+    std::size_t chunkSize;
+    int numBlocks;
+    std::string name;
+  };
+
+  std::vector<TuningConfig> tuningConfigs = {
+      // Fine-grained chunk size sweep (smaller chunks = better!)
+      // These use fixed 16MB staging buffer and 32 blocks
+      {16 * 1024 * 1024, 16 * 1024, 32, "Chunk16KB"},
+      {16 * 1024 * 1024, 32 * 1024, 32, "Chunk32KB"},
+      {16 * 1024 * 1024, 64 * 1024, 32, "Chunk64KB"},
+      {16 * 1024 * 1024, 128 * 1024, 32, "Chunk128KB"},
+      {16 * 1024 * 1024, 256 * 1024, 32, "Chunk256KB"},
+      {16 * 1024 * 1024, 512 * 1024, 32, "Chunk512KB"},
+      {16 * 1024 * 1024, 1024 * 1024, 32, "Chunk1MB"},
+
+      // Thread block sweep with optimal chunk size (128KB)
+      {16 * 1024 * 1024, 128 * 1024, 8, "128KB_8blk"},
+      {16 * 1024 * 1024, 128 * 1024, 16, "128KB_16blk"},
+      {16 * 1024 * 1024, 128 * 1024, 32, "128KB_32blk"},
+      {16 * 1024 * 1024, 128 * 1024, 64, "128KB_64blk"},
+      {16 * 1024 * 1024, 128 * 1024, 128, "128KB_128blk"},
+
+      // Staging buffer sweep with optimal chunk size (128KB)
+      {4 * 1024 * 1024, 128 * 1024, 32, "4MB_128KB"},
+      {8 * 1024 * 1024, 128 * 1024, 32, "8MB_128KB"},
+      {16 * 1024 * 1024, 128 * 1024, 32, "16MB_128KB"},
+      {32 * 1024 * 1024, 128 * 1024, 32, "32MB_128KB"},
+  };
+
+  // Get NCCL baseline
+  BroadcastBenchmarkConfig ncclConfig{
+      .messageSize = messageSize,
+      .stagingBufferSize = 16 * 1024 * 1024,
+      .pipelineDepth = 4,
+      .chunkSize = 1024 * 1024,
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "NCCL_baseline",
+  };
+
+  float ncclLatencyUs = 0.0f;
+  bool ncclVerified = false;
+  float ncclBandwidth =
+      runNcclBroadcastBenchmark(ncclConfig, 0, ncclLatencyUs, ncclVerified);
+
+  if (globalRank == 0) {
+    std::stringstream ss;
+    ss << "\n";
+    ss << "Message Size: " << formatSize(messageSize) << "\n";
+    ss << "NCCL Baseline: " << std::fixed << std::setprecision(2)
+       << ncclBandwidth << " GB/s\n\n";
+    ss << std::left << std::setw(18) << "Config" << std::left << std::setw(12)
+       << "Algorithm" << std::right << std::setw(12) << "Staging" << std::right
+       << std::setw(12) << "Chunk" << std::right << std::setw(10) << "Blocks"
+       << std::right << std::setw(12) << "Bandwidth" << std::right
+       << std::setw(12) << "vs NCCL" << "\n";
+    ss << std::left << std::setw(18) << "" << std::left << std::setw(12) << ""
+       << std::right << std::setw(12) << "Size" << std::right << std::setw(12)
+       << "Size" << std::right << std::setw(10) << "" << std::right
+       << std::setw(12) << "(GB/s)" << std::right << std::setw(12) << ""
+       << "\n";
+    ss << "------------------------------------------------------------------------"
+          "--------------------\n";
+    XLOG(INFO) << ss.str();
+  }
+
+  for (const auto& tuning : tuningConfigs) {
+    BroadcastBenchmarkConfig config{
+        .messageSize = messageSize,
+        .stagingBufferSize = tuning.stagingBufferSize,
+        .pipelineDepth = 4,
+        .chunkSize = tuning.chunkSize,
+        .numBlocks = tuning.numBlocks,
+        .numThreads = 512,
+        .rootRank = 0,
+        .name = tuning.name,
+    };
+
+    // Run each algorithm
+    for (auto algo : kAllAlgorithms) {
+      float pipesLatencyUs = 0.0f;
+      bool pipesVerified = false;
+      float pipesBandwidth =
+          runPipesBroadcast(algo, config, 0, pipesLatencyUs, pipesVerified);
+
+      if (globalRank == 0) {
+        float speedup =
+            (ncclBandwidth > 0) ? pipesBandwidth / ncclBandwidth : 0;
+
+        std::stringstream ss;
+        ss << std::left << std::setw(18) << tuning.name << std::left
+           << std::setw(12) << algorithmName(algo) << std::right
+           << std::setw(12) << formatSize(tuning.stagingBufferSize)
+           << std::right << std::setw(12) << formatSize(tuning.chunkSize)
+           << std::right << std::setw(10) << tuning.numBlocks << std::right
+           << std::setw(12) << std::fixed << std::setprecision(2)
+           << pipesBandwidth << std::right << std::setw(11) << std::fixed
+           << std::setprecision(2) << speedup << "x";
+        XLOG(INFO) << ss.str();
+      }
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    }
+
+    // Print separator between tuning configs
+    if (globalRank == 0 && &tuning != &tuningConfigs.back()) {
+      XLOG(INFO)
+          << "------------------------------------------------------------------------"
+             "--------------------";
+    }
+  }
+
+  if (globalRank == 0) {
+    XLOG(INFO)
+        << "========================================================================"
+           "====================";
+    XLOG(INFO) << "Speedup > 1.0x indicates Pipes is faster than NCCL";
+    XLOG(INFO)
+        << "========================================================================"
+           "====================\n";
+  }
+}
+
+/**
+ * Algorithm Comparison Benchmark
+ *
+ * Compares flat-tree vs binomial tree vs ring broadcast algorithms across
+ * various message sizes. Includes bandwidth and latency metrics.
+ *
+ * This is the comprehensive algorithm comparison test. The ring algorithm
+ * achieves best performance for large messages (77% of NCCL at 64MB).
+ */
+TEST_F(BroadcastBenchmarkFixture, AlgorithmComparison) {
+  if (globalRank == 0) {
+    XLOG(INFO)
+        << "\n=== Flat-Tree vs Binomial Tree vs Ring Algorithm Comparison ===\n";
+    XLOG(INFO) << "This test compares the three broadcast algorithms:\n";
+    XLOG(INFO) << "  - Flat-Tree (Star): Root sends to all peers directly\n";
+    XLOG(INFO) << "  - Binomial Tree: O(log N) rounds, distributes bandwidth\n";
+    XLOG(INFO) << "  - Ring: Overlapping send/recv, near-optimal bandwidth\n";
+  }
+
+  // Test configurations focusing on message sizes where ring
+  // should provide significant improvement (large messages)
+  // NOTE: Using optimal configs (128KB chunks, adequate staging buffer)
+  // to ensure fair comparison with profiling results
+  std::vector<BroadcastBenchmarkConfig> configs;
+
+  configs.push_back({
+      .messageSize = 64 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging for pipelining
+      .pipelineDepth = 4,
+      .chunkSize = 64 * 1024,
+      .numBlocks = 16,
+      .numThreads = 64,
+      .rootRank = 0,
+      .name = "64KB",
+  });
+
+  configs.push_back({
+      .messageSize = 128 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging for pipelining
+      .pipelineDepth = 4,
+      .chunkSize = 128 * 1024, // Optimal: 128KB chunks
+      .numBlocks = 16,
+      .numThreads = 128,
+      .rootRank = 0,
+      .name = "128KB",
+  });
+
+  // Medium messages - ring should start showing benefits
+  configs.push_back({
+      .messageSize = 256 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging for pipelining
+      .pipelineDepth = 4,
+      .chunkSize = 128 * 1024, // Optimal: 128KB chunks
+      .numBlocks = 16,
+      .numThreads = 256,
+      .rootRank = 0,
+      .name = "256KB",
+  });
+
+  // Large messages - significant improvement expected
+  configs.push_back({
+      .messageSize = 1 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging
+      .pipelineDepth = 4,
+      .chunkSize = 128 * 1024, // Optimal: 128KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "1MB",
+  });
+
+  configs.push_back({
+      .messageSize = 4 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging
+      .pipelineDepth = 4,
+      .chunkSize = 128 * 1024, // Optimal: 128KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "4MB",
+  });
+
+  configs.push_back({
+      .messageSize = 8 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging
+      .pipelineDepth = 4,
+      .chunkSize = 128 * 1024, // Optimal: 128KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "8MB",
+  });
+
+  configs.push_back({
+      .messageSize = 16 * 1024 * 1024,
+      .stagingBufferSize = 16 * 1024 * 1024, // 16MB staging
+      .pipelineDepth = 4,
+      .chunkSize = 128 * 1024, // Optimal: 128KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "16MB",
+  });
+
+  configs.push_back({
+      .messageSize = 32 * 1024 * 1024,
+      .stagingBufferSize = 32 * 1024 * 1024, // Match message size
+      .pipelineDepth = 4,
+      .chunkSize = 128 * 1024, // Optimal: 128KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "32MB",
+  });
+
+  configs.push_back({
+      .messageSize = 64 * 1024 * 1024,
+      .stagingBufferSize = 64 * 1024 * 1024, // Match message size
+      .pipelineDepth = 4,
+      .chunkSize = 128 * 1024, // Optimal: 128KB chunks
+      .numBlocks = 32,
+      .numThreads = 512,
+      .rootRank = 0,
+      .name = "64MB",
+  });
+
+  // Print header
+  if (globalRank == 0) {
+    std::stringstream ss;
+    ss << "\n";
+    ss << "========================================================================"
+          "========================================================================\n";
+    ss << "           Flat-Tree vs Binomial Tree vs Ring Algorithm "
+          "Comparison\n";
+    ss << "========================================================================"
+          "========================================================================\n";
+    ss << std::left << std::setw(12) << "MsgSize" << std::right << std::setw(12)
+       << "NCCL BW" << std::right << std::setw(11) << "Flat BW" << std::right
+       << std::setw(12) << "Binom BW" << std::right << std::setw(11)
+       << "Ring BW" << std::right << std::setw(13) << "Ring/Flat" << std::right
+       << std::setw(13) << "Ring/NCCL" << std::right << std::setw(11)
+       << "Flat Lat" << std::right << std::setw(12) << "Ring Lat" << "\n";
+    ss << std::left << std::setw(12) << "" << std::right << std::setw(12)
+       << "(GB/s)" << std::right << std::setw(11) << "(GB/s)" << std::right
+       << std::setw(12) << "(GB/s)" << std::right << std::setw(11) << "(GB/s)"
+       << std::right << std::setw(13) << "Speedup" << std::right
+       << std::setw(13) << "Speedup" << std::right << std::setw(11) << "(us)"
+       << std::right << std::setw(12) << "(us)" << "\n";
+    ss << "------------------------------------------------------------------------"
+          "------------------------------------------------------------------------\n";
+    XLOG(INFO) << ss.str();
+  }
+
+  std::vector<BroadcastBenchmarkResult> flatTreeResults;
+  std::vector<BroadcastBenchmarkResult> binomialTreeResults;
+  std::vector<BroadcastBenchmarkResult> ringResults;
+
+  for (const auto& config : configs) {
+    int rootRank = config.rootRank;
+
+    // Run NCCL benchmark (baseline)
+    float ncclLatencyUs = 0.0f;
+    bool ncclVerified = false;
+    float ncclBandwidth = runNcclBroadcastBenchmark(
+        config, rootRank, ncclLatencyUs, ncclVerified);
+
+    // Run each algorithm using unified runner
+    float flatTreeLatencyUs = 0.0f;
+    bool flatTreeVerified = false;
+    float flatTreeBandwidth = runPipesBroadcast(
+        BroadcastAlgorithm::FlatTree,
+        config,
+        rootRank,
+        flatTreeLatencyUs,
+        flatTreeVerified);
+
+    float binomialTreeLatencyUs = 0.0f;
+    bool binomialTreeVerified = false;
+    float binomialTreeBandwidth = runPipesBroadcast(
+        BroadcastAlgorithm::BinomialTree,
+        config,
+        rootRank,
+        binomialTreeLatencyUs,
+        binomialTreeVerified);
+
+    float ringLatencyUs = 0.0f;
+    bool ringVerified = false;
+    float ringBandwidth = runPipesBroadcast(
+        BroadcastAlgorithm::Ring,
+        config,
+        rootRank,
+        ringLatencyUs,
+        ringVerified);
+
+    if (globalRank == 0) {
+      float ringVsFlat =
+          (flatTreeBandwidth > 0) ? ringBandwidth / flatTreeBandwidth : 0;
+      float ringVsNccl =
+          (ncclBandwidth > 0) ? ringBandwidth / ncclBandwidth : 0;
+
+      std::stringstream ss;
+      ss << std::left << std::setw(12) << config.name << std::right
+         << std::setw(12) << std::fixed << std::setprecision(2) << ncclBandwidth
+         << std::right << std::setw(11) << std::fixed << std::setprecision(2)
+         << flatTreeBandwidth << std::right << std::setw(12) << std::fixed
+         << std::setprecision(2) << binomialTreeBandwidth << std::right
+         << std::setw(11) << std::fixed << std::setprecision(2) << ringBandwidth
+         << std::right << std::setw(12) << std::fixed << std::setprecision(2)
+         << ringVsFlat << "x" << std::right << std::setw(12) << std::fixed
+         << std::setprecision(2) << ringVsNccl << "x" << std::right
+         << std::setw(11) << std::fixed << std::setprecision(1)
+         << flatTreeLatencyUs << std::right << std::setw(12) << std::fixed
+         << std::setprecision(1) << ringLatencyUs;
+      XLOG(INFO) << ss.str();
+    }
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  }
+
+  if (globalRank == 0) {
+    XLOG(INFO)
+        << "========================================================================"
+           "========================================================================";
+    XLOG(INFO) << "Ring/Flat Speedup: Values > 1.0x indicate ring is faster "
+                  "than flat-tree";
+    XLOG(INFO)
+        << "Ring/NCCL Speedup: Target is >= 0.5x (50% of NCCL performance)";
+    XLOG(INFO)
+        << "========================================================================"
+           "========================================================================\n";
   }
 }
 

@@ -191,4 +191,14 @@ __global__ void broadcastBinomialTreeKernel(
       buff_d, myRank, rootRank, transports, nbytes);
 }
 
+__global__ void broadcastRingKernel(
+    void* buff_d,
+    int myRank,
+    int rootRank,
+    DeviceSpan<Transport> transports,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast_ring(
+      buff_d, myRank, rootRank, transports, nbytes);
+}
+
 } // namespace comms::pipes::benchmark
