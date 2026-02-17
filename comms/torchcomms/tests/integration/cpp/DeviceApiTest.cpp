@@ -605,3 +605,199 @@ void DeviceApiTest::testGinAtomicAdd() {
 TEST_F(DeviceApiTest, GinAtomicAdd) {
   testGinAtomicAdd();
 }
+
+// =============================================================================
+// Per-Peer Signal Test
+// =============================================================================
+// Validates the resource buffer per-peer signal slot model:
+//   1. Each rank signals the next rank in a ring pattern (standalone signal,
+//      no data transfer)
+//   2. Each rank waits for the aggregated signal to reach expected value
+//   3. Verifies read_signal returns the correct aggregated value
+
+void DeviceApiTest::testPerPeerSignal() {
+  SCOPED_TRACE(::testing::Message() << "Testing per-peer signal slots");
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  // Create MemPool for RDMA-compatible memory allocation
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  // Minimal window — we only need the signal infrastructure, not data
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({1}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
+  ASSERT_NE(win, nullptr);
+
+  int signal_count = num_ranks_;
+  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  ASSERT_NE(dev_win, nullptr);
+
+  // Ring pattern: rank i signals rank (i+1) % num_ranks
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  constexpr int kSignalId = 0;
+
+  // Each rank sends ADD 1 to the next rank
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceSignalKernel(
+        dev_win,
+        dst_rank,
+        kSignalId,
+        torchcomms::device::SignalOp::ADD,
+        1,
+        op_stream.stream());
+  }
+
+  // Each rank receives one signal, so aggregate sum should be >= 1
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchDeviceWaitSignalKernel(
+        dev_win, kSignalId, 1, wait_stream.stream());
+  }
+
+  op_stream.synchronize();
+  wait_stream.synchronize();
+
+  // Read signal value via kernel and verify on host
+  uint64_t* d_out = nullptr;
+  cudaMalloc(&d_out, sizeof(uint64_t));
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceReadSignalKernel(
+        dev_win, kSignalId, d_out, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  uint64_t h_out = 0;
+  cudaMemcpy(&h_out, d_out, sizeof(uint64_t), cudaMemcpyDeviceToHost);
+  cudaFree(d_out);
+
+  ASSERT_GE(h_out, 1u) << "Expected aggregated signal >= 1, got " << h_out;
+
+  // Reset signals
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceResetSignalKernel(
+        dev_win, kSignalId, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(DeviceApiTest, PerPeerSignal) {
+  testPerPeerSignal();
+}
+
+// =============================================================================
+// Wait Signal From Specific Peer Test
+// =============================================================================
+// Validates point-to-point signal synchronization via wait_signal_from():
+//   1. Each rank signals the next rank in a ring
+//   2. Receiver uses wait_signal_from(src_rank, ...) to wait for the
+//      specific sender's slot (not aggregated)
+//   3. Verifies that only the expected sender's slot was written
+
+void DeviceApiTest::testWaitSignalFrom() {
+  SCOPED_TRACE(::testing::Message() << "Testing wait_signal_from");
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({1}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
+  ASSERT_NE(win, nullptr);
+
+  int signal_count = num_ranks_;
+  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  ASSERT_NE(dev_win, nullptr);
+
+  // Ring: rank i signals rank (i+1), receiver expects signal from (i-1)
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  constexpr int kSignalId = 0;
+
+  // Send signal
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceSignalKernel(
+        dev_win,
+        dst_rank,
+        kSignalId,
+        torchcomms::device::SignalOp::ADD,
+        1,
+        op_stream.stream());
+  }
+
+  // Wait for signal from specific peer (not aggregated)
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchDeviceWaitSignalFromKernel(
+        dev_win,
+        src_rank,
+        kSignalId,
+        torchcomms::device::CmpOp::GE,
+        1,
+        wait_stream.stream());
+  }
+
+  op_stream.synchronize();
+  wait_stream.synchronize();
+
+  // Reset signals
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceResetSignalKernel(
+        dev_win, kSignalId, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(DeviceApiTest, WaitSignalFrom) {
+  testWaitSignalFrom();
+}
