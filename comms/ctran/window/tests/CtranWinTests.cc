@@ -9,6 +9,7 @@
 
 #include "comm.h"
 #include "comms/ctran/Ctran.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/tests/CtranDistTestUtils.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/ctran/utils/Checks.h"
@@ -119,7 +120,7 @@ TEST_P(CtranWinTestParam, winAllocCreate) {
   EXPECT_THAT(win, ::testing::NotNull());
 
   // Expect window allocation would trigger internal buffer registration export
-  const auto dump0 = comm->ctranComm_->ctran_->mapper->dumpExportRegCache();
+  const auto dump0 = ctran::IpcRegCache::getInstance()->dumpExportRegCache();
   EXPECT_GE(dump0.size(), 0);
 
   for (int peer = 0; peer < this->numRanks; peer++) {
@@ -156,7 +157,7 @@ TEST_P(CtranWinTestParam, winAllocCreate) {
 
   // This test only exported buffers in window, thus expect all exported cache
   // is freed upon window free
-  const auto dump1 = comm->ctranComm_->ctran_->mapper->dumpExportRegCache();
+  const auto dump1 = ctran::IpcRegCache::getInstance()->dumpExportRegCache();
   EXPECT_EQ(dump1.size(), 0);
 
   freeWinBuf(userBuf, winBase, sizeBytes, bufType);
