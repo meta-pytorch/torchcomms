@@ -339,6 +339,84 @@ where the raw NCCL window handle is needed.
 Returns:
     int: NCCL window handle as int64.
 )",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "register_local_buffer",
+          [](TorchCommWindowNCCLXGin& self, const at::Tensor& tensor) {
+            // Release GIL only during the C++ call, then reacquire for tuple
+            // creation
+            TorchCommWindowNCCLXGin::DeviceRegisteredBuffer buf;
+            {
+              py::gil_scoped_release release;
+              buf = self.register_local_buffer(tensor);
+            }
+            // GIL is held here - safe to create Python objects
+            // Return RegisteredBuffer as a tuple of (base_ptr, size,
+            // backend_window) All as int64 for safe passage through Python to
+            // Triton
+            return py::make_tuple(
+                reinterpret_cast<int64_t>(buf.base_ptr),
+                static_cast<int64_t>(buf.size),
+                reinterpret_cast<int64_t>(buf.backend_window));
+          },
+          R"(
+Register a local buffer for use as source in device-side put operations.
+
+This is a NON-COLLECTIVE operation - only the calling rank participates.
+The registered buffer can only be used as a source for put operations,
+not as a destination.
+
+Prerequisites: Must call tensor_register() then get_device_window() before
+this method. get_device_window() triggers ncclDevCommCreate which enables
+GIN - required for local buffer registration to work.
+
+Args:
+    tensor: A torch.Tensor to register as a local source buffer.
+
+Returns:
+    tuple: (base_ptr, size, backend_window) as int64 values.
+           These can be used with create_local_registered_buffer().
+
+Example:
+    >>> dst_win = comm.new_window()
+    >>> dst_win.tensor_register(dst_buf)
+    >>> dev_win_ptr = ncclx_window.get_device_window(signal_count=8)
+    >>> # Now register a local source buffer (non-collective)
+    >>> src_buf_info = ncclx_window.register_local_buffer(src_tensor)
+)",
+          py::arg("tensor"))
+      .def(
+          "deregister_local_buffer",
+          [](TorchCommWindowNCCLXGin& self,
+             int64_t base_ptr,
+             int64_t size,
+             int64_t backend_window) {
+            // Reconstruct RegisteredBuffer from tuple components
+            TorchCommWindowNCCLXGin::DeviceRegisteredBuffer buf;
+            buf.base_ptr = reinterpret_cast<void*>(base_ptr);
+            buf.size = static_cast<size_t>(size);
+            buf.backend_window = reinterpret_cast<void*>(backend_window);
+            self.deregister_local_buffer(buf);
+          },
+          R"(
+Deregister a previously registered local buffer.
+
+This is a NON-COLLECTIVE operation. Must be called before the window
+is destroyed if register_local_buffer() was called.
+
+Args:
+    base_ptr: The base_ptr from register_local_buffer() return tuple.
+    size: The size from register_local_buffer() return tuple.
+    backend_window: The backend_window from register_local_buffer() return tuple.
+
+Example:
+    >>> src_buf_info = ncclx_window.register_local_buffer(src_tensor)
+    >>> # ... use in put operations ...
+    >>> ncclx_window.deregister_local_buffer(*src_buf_info)
+)",
+          py::arg("base_ptr"),
+          py::arg("size"),
+          py::arg("backend_window"),
           py::call_guard<py::gil_scoped_release>());
 
   // Helper function to cast a base TorchCommWindow to TorchCommWindowNCCLXGin

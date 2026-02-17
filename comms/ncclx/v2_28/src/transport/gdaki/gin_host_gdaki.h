@@ -30,6 +30,10 @@ ncclResult_t ncclGinGdakiDestroyContext(void *ginCtx);
 ncclResult_t ncclGinGdakiRegMrSym(void *collComm, void *data, size_t size, int type, void **mhandle,
                                   void **ginHandle);
 ncclResult_t ncclGinGdakiDeregMrSym(void *collComm, void *mhandle);
+// Local-only registration (non-collective, for source buffers only)
+ncclResult_t ncclGinGdakiRegMrLocal(void *collComm, void *data, size_t size, int type, void **mhandle,
+                                    void **ginHandle);
+ncclResult_t ncclGinGdakiDeregMrLocal(void *collComm, void *mhandle);
 ncclResult_t ncclGinGdakiProgress(void *ginCtx);
 ncclResult_t ncclGinGdakiQueryLastError(void *ginCtx, bool *hasError);
 
