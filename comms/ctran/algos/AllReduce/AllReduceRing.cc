@@ -764,11 +764,13 @@ commResult_t getNumBlocksAndThreads(
     *numBlocks = getAutoTunedNumBlocks(messageBytes, nRanks, *numBlocks, arch);
     *numThreads =
         getAutoTunedThreadBlockSize(messageBytes, nRanks, *numThreads, arch);
-  } else if (*numBlocks > NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS) {
-    *numBlocks = NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS;
   }
 
-  if (*numThreads > NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE) {
+  // if (*numBlocks > NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS) {
+  if (NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS > 0) {
+    *numBlocks = NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS;
+  }
+  if (NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE > 0) {
     *numThreads = NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE;
   }
 
@@ -873,12 +875,17 @@ commResult_t ctranAllReduceRing(
   hostResource->recvRedCopySync = gpeKernelSyncs[1];
   hostResource->partitionSync = gpeKernelSyncs[2];
   const int kAutoTuneMaxBDP = NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP;
-  if (kAutoTuneMaxBDP <= 0) {
-    hostResource->chunkSize = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE;
-    hostResource->numChunks = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS;
-  } else {
+  if (kAutoTuneMaxBDP > 0) {
     auto params = ctran::allreduce::ring::getAutoTunedPipeline(
         messageBytes, kAutoTuneMaxBDP, nRanks);
+    CLOGF(
+        INFO,
+        "AutoTune: pipline ({}, {}, {}) = ({}, {}) ",
+        messageBytes,
+        kAutoTuneMaxBDP,
+        nRanks,
+        params.chunkSize,
+        params.numChunks);
     hostResource->chunkSize = params.chunkSize;
     hostResource->numChunks = params.numChunks;
 
@@ -925,12 +932,26 @@ commResult_t ctranAllReduceRing(
       }
     }
   }
+
+  if (NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS > 0) {
+    hostResource->numChunks = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS;
+  }
+  if (NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE > 0) {
+    hostResource->chunkSize = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE;
+  }
   std::tie(hostResource->tmpSendBuf, hostResource->tmpSendBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_SEND_BUF);
   std::tie(hostResource->tmpRecvBuf, hostResource->tmpRecvBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_RECV_BUF);
+  CLOGF(
+      INFO,
+      "AutoTune: {} blocks of {} threads, tmpbuf {} x {} chunks",
+      numBlocks,
+      numThreads,
+      hostResource->numChunks,
+      hostResource->chunkSize);
 
   auto* hostArgs = new ctran::allreduce::ring::HostArgs();
   op->allreduce.args = hostArgs;
