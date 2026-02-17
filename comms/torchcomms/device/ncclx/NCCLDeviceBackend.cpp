@@ -83,7 +83,7 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
       .lsaLLA2ASlotCount = 0,
       .ginForceEnable = true,
       .ginContextCount = 1,
-      .ginSignalCount = config.signal_count,
+      .ginSignalCount = 0,
       .ginCounterCount = config.counter_count,
   };
 
