@@ -101,7 +101,7 @@ deviceReadSignalKernel(DeviceWindowNCCL* win, int signal_id, uint64_t* out) {
 //
 // Pattern:
 //   1. Each rank atomically adds `add_value` to dstWnd[dstOffset] on dst_rank
-//   2. After atomicAdd, signals dst_rank using gin.signal() for synchronization
+//   2. After atomicAdd, signals dst_rank via resource buffer signal for sync
 //   3. The receiver waits for the signal and then reads the result (host-side)
 
 __global__ void deviceGinAtomicAddKernel(
@@ -125,15 +125,43 @@ __global__ void deviceGinAtomicAddKernel(
         add_value,
         ncclCoopThread{});
 
-    // Signal the destination rank that atomicAdd is complete
-    gin.signal(
-        ncclTeamWorld(dev_comm),
-        dst_rank,
-        ncclGin_SignalInc{static_cast<ncclGinSignal_t>(signal_id)},
-        ncclCoopThread{});
+    // Signal the destination rank using resource buffer signal.
+    // QP ordering guarantees the atomicAdd arrives before the signal.
+    win->signal(dst_rank, signal_id, SignalOp::ADD, 1);
+  }
+}
 
-    // Flush to ensure all operations are posted
-    gin.flush(ncclCoopThread{});
+// =============================================================================
+// Standalone Signal Test Kernel
+// =============================================================================
+// Sends a signal to a peer without any associated data transfer.
+// Used to test the per-peer resource buffer signal model in isolation.
+
+__global__ void deviceSignalKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    SignalOp op,
+    uint64_t value) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->signal(peer, signal_id, op, value);
+  }
+}
+
+// =============================================================================
+// Wait Signal From Specific Peer Kernel
+// =============================================================================
+// Waits for a signal from a specific peer (not aggregated across all peers).
+// Tests the wait_signal_from() API for point-to-point synchronization.
+
+__global__ void deviceWaitSignalFromKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    CmpOp cmp,
+    uint64_t value) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->wait_signal_from(peer, signal_id, cmp, value);
   }
 }
 
@@ -197,6 +225,107 @@ void launchDeviceGinAtomicAddKernel(
     cudaStream_t stream) {
   deviceGinAtomicAddKernel<<<1, 1, 0, stream>>>(
       win, dst_offset, add_value, dst_rank, signal_id);
+}
+
+void launchDeviceSignalKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    SignalOp op,
+    uint64_t value,
+    cudaStream_t stream) {
+  deviceSignalKernel<<<1, 1, 0, stream>>>(win, peer, signal_id, op, value);
+}
+
+void launchDeviceWaitSignalFromKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    CmpOp cmp,
+    uint64_t value,
+    cudaStream_t stream) {
+  deviceWaitSignalFromKernel<<<1, 1, 0, stream>>>(
+      win, peer, signal_id, cmp, value);
+}
+
+// =============================================================================
+// Device Barrier Kernel
+// =============================================================================
+
+__global__ void deviceBarrierKernel(DeviceWindowNCCL* win, int barrier_id) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->barrier(barrier_id);
+  }
+}
+
+void launchDeviceBarrierKernel(
+    DeviceWindowNCCL* win,
+    int barrier_id,
+    cudaStream_t stream) {
+  deviceBarrierKernel<<<1, 1, 0, stream>>>(win, barrier_id);
+}
+
+// =============================================================================
+// Scope-Aware Put Test Kernel
+// =============================================================================
+// Validates put() with CoopScope parameter. All threads in the cooperative
+// group call put() together. The kernel launch config must match the scope:
+//   - WARP:  <<<1, 32>>>
+//   - BLOCK: <<<1, 256>>>
+
+__global__ void devicePutScopedKernel(
+    DeviceWindowNCCL* win,
+    RegisteredBufferNCCL src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    CoopScope scope) {
+  // All threads in the cooperative group call put together
+  if (blockIdx.x == 0) {
+    win->put(
+        dst_offset, src_buf, src_offset, dst_rank, bytes, signal_id, -1, scope);
+    win->flush(scope);
+  }
+}
+
+void launchDevicePutScopedKernel(
+    DeviceWindowNCCL* win,
+    RegisteredBufferNCCL src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  devicePutScopedKernel<<<1, num_threads, 0, stream>>>(
+      win, src_buf, src_offset, dst_offset, bytes, dst_rank, signal_id, scope);
+}
+
+// =============================================================================
+// Scope-Aware Barrier Test Kernel
+// =============================================================================
+
+__global__ void deviceBarrierScopedKernel(
+    DeviceWindowNCCL* win,
+    int barrier_id,
+    CoopScope scope) {
+  if (blockIdx.x == 0) {
+    win->barrier(barrier_id, scope);
+  }
+}
+
+void launchDeviceBarrierScopedKernel(
+    DeviceWindowNCCL* win,
+    int barrier_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  deviceBarrierScopedKernel<<<1, num_threads, 0, stream>>>(
+      win, barrier_id, scope);
 }
 
 } // namespace torchcomms::device::test

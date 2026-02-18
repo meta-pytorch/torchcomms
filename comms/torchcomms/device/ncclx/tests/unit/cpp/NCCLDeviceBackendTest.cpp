@@ -222,7 +222,7 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
       1024);
 
   ASSERT_NE(device_window, nullptr);
-  EXPECT_EQ(captured_reqs.ginSignalCount, config.signal_count);
+  EXPECT_EQ(captured_reqs.ginSignalCount, 0);
   EXPECT_EQ(captured_reqs.ginCounterCount, config.counter_count);
   EXPECT_EQ(captured_reqs.barrierCount, config.barrier_count);
   EXPECT_TRUE(captured_reqs.ginForceEnable);

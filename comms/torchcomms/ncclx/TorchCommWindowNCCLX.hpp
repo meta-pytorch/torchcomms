@@ -100,7 +100,13 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   // ==========================================================================
 
   // Register a local buffer for use as source in device-side put operations.
-  // This is NON-COLLECTIVE because it uses local_comm_ (1-rank communicator).
+  // This is NON-COLLECTIVE because it uses NCCL_WIN_LOCAL_ONLY flag which
+  // registers with local lkey only (no rkey allGather). The resulting window
+  // can only be used as a source buffer for put operations.
+  //
+  // Prerequisites: Must call tensor_register() then get_device_window() before
+  // this method. get_device_window() triggers ncclDevCommCreate which enables
+  // GIN - required for local buffer registration to work.
   DeviceRegisteredBuffer register_local_buffer(const at::Tensor& tensor);
 
   // Deregister a previously registered local buffer. NON-COLLECTIVE.
@@ -139,7 +145,6 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
 
  private:
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-  void initLocalComm();
   void initNcclOrigWindow(void* ptr, size_t size);
 #endif
 
@@ -154,8 +159,6 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
   // Device API state (only available with NCCLX 2.28+)
-  ncclComm_t local_comm_{nullptr};
-  bool local_comm_initialized_{false};
   NcclxWindow nccl_orig_win_{nullptr};
 
   // Device window is allocated in DEVICE memory (cudaMalloc) for GPU access.
