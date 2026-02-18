@@ -628,6 +628,247 @@ TEST_F(RegCacheTest, HoldsCtranIbSingletonReference) {
   EXPECT_NE(ibSingletonAfterInit, nullptr);
 }
 
+// Test multiple deregAll/regAll cycles to verify no resource leaks or
+// corruption. This simulates a workload that periodically re-registers
+// memory (e.g., for BAR1 memory management).
+TEST_F(RegCacheTest, MultipleDeregAllRegAllCycles) {
+  constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB
+  constexpr int numSegments = 2;
+  constexpr int numCycles = 5;
+  std::vector<size_t> segSizes(numSegments, segmentSize);
+
+  void* buf = nullptr;
+  std::vector<TestMemSegment> memSegments;
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(&buf, segSizes, memSegments, true));
+  ASSERT_NE(buf, nullptr);
+
+  size_t totalSize = segmentSize * numSegments;
+
+  // Cache segments once
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, totalSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+
+  // Multiple deregAll/regAll cycles
+  for (int i = 0; i < numCycles; i++) {
+    // deregAll first (even on first iteration - should be no-op)
+    EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
+    EXPECT_FALSE(regCache->isRegistered(buf, totalSize));
+
+    // Then regAll
+    EXPECT_EQ(ctran::RegCache::regAll(), commSuccess);
+    EXPECT_TRUE(regCache->isRegistered(buf, totalSize));
+  }
+
+  // Segments should still be cached after all cycles
+  EXPECT_EQ(regCache->getSegments().size(), numSegments);
+
+  // Final cleanup
+  EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
+
+  for (auto segHdl : segHdls) {
+    bool freed = false;
+    bool ncclManaged = false;
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+    EXPECT_EQ(
+        regCache->freeSegment(segHdl, freed, ncclManaged, regElems),
+        commSuccess);
+    EXPECT_TRUE(freed);
+  }
+
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
+}
+
+// Test regAll with no cached segments returns success (edge case)
+TEST_F(RegCacheTest, RegAllWithNoSegmentsReturnsSuccess) {
+  // Verify no segments are cached
+  EXPECT_EQ(regCache->getSegments().size(), 0);
+
+  // regAll should succeed (no-op)
+  EXPECT_EQ(ctran::RegCache::regAll(), commSuccess);
+}
+
+// Test deregAll with no registrations returns success (edge case)
+TEST_F(RegCacheTest, DeregAllWithNoRegistrationsReturnsSuccess) {
+  // deregAll should succeed (no-op)
+  EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
+}
+
+// Test getContiguousRegions logic: single segment forms one region
+// This indirectly tests getContiguousRegions through regAll
+TEST_F(RegCacheTest, GetContiguousRegionsSingleSegment) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  // Cache a single segment
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  EXPECT_EQ(segments.size(), 1);
+
+  // regAll should create exactly one registration for the single segment
+  EXPECT_EQ(ctran::RegCache::regAll(), commSuccess);
+  EXPECT_TRUE(regCache->isRegistered(buf, bufSize));
+
+  // Clean up
+  EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
+
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  EXPECT_EQ(
+      regCache->freeSegment(segHdls[0], freed, ncclManaged, regElems),
+      commSuccess);
+  EXPECT_TRUE(freed);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// Test getContiguousRegions logic: multiple contiguous segments form one region
+// This tests that adjacent segments (where end addr == next start addr) are
+// grouped together
+TEST_F(RegCacheTest, GetContiguousRegionsMultipleContiguousSegments) {
+  constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB per segment
+  constexpr int numSegments = 4;
+  std::vector<size_t> segSizes(numSegments, segmentSize);
+
+  void* buf = nullptr;
+  std::vector<TestMemSegment> memSegments;
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(&buf, segSizes, memSegments, true));
+  ASSERT_NE(buf, nullptr);
+
+  size_t totalSize = segmentSize * numSegments;
+
+  // Cache all segments - they should be contiguous in virtual address space
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, totalSize, cudaDev, false, 0, segments, segHdls),
+      commSuccess);
+  EXPECT_EQ(segments.size(), numSegments);
+
+  // regAll should group all contiguous segments into ONE registration
+  EXPECT_EQ(ctran::RegCache::regAll(), commSuccess);
+
+  // The entire buffer should be registered as one contiguous region
+  EXPECT_TRUE(regCache->isRegistered(buf, totalSize));
+
+  // Clean up
+  EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
+
+  for (auto segHdl : segHdls) {
+    bool freed = false;
+    bool ncclManaged = false;
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+    EXPECT_EQ(
+        regCache->freeSegment(segHdl, freed, ncclManaged, regElems),
+        commSuccess);
+    EXPECT_TRUE(freed);
+  }
+
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf, segSizes));
+}
+
+// Test regAll handles multiple non-contiguous memory regions correctly.
+// This ensures that regAll creates separate registrations for each
+// contiguous region, not one giant registration spanning gaps.
+TEST_F(RegCacheTest, RegAllHandlesNonContiguousRegions) {
+  // Allocate three disjoint buffers. Cache only buf1 and buf3, using buf2
+  // as a spacer to guarantee buf1 and buf3 are non-contiguous in memory.
+  constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB
+  constexpr int numSegments = 2;
+  std::vector<size_t> segSizes(numSegments, segmentSize);
+
+  void* buf1 = nullptr;
+  void* buf2 = nullptr; // Spacer buffer - will not be cached
+  void* buf3 = nullptr;
+  std::vector<TestMemSegment> memSegments1;
+  std::vector<TestMemSegment> memSegments2;
+  std::vector<TestMemSegment> memSegments3;
+
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(&buf1, segSizes, memSegments1, true));
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(&buf2, segSizes, memSegments2, true));
+  COMMCHECK_TEST(
+      ctran::commMemAllocDisjoint(&buf3, segSizes, memSegments3, true));
+  ASSERT_NE(buf1, nullptr);
+  ASSERT_NE(buf2, nullptr);
+  ASSERT_NE(buf3, nullptr);
+
+  size_t totalSize = segmentSize * numSegments;
+
+  // Verify buf1 and buf3 are non-contiguous (buf2 is between them)
+  uintptr_t buf1End = reinterpret_cast<uintptr_t>(buf1) + totalSize;
+  uintptr_t buf3Start = reinterpret_cast<uintptr_t>(buf3);
+  EXPECT_NE(buf1End, buf3Start)
+      << "buf1 and buf3 should be non-contiguous with buf2 as spacer";
+
+  // Cache only buf1 and buf3 (skip buf2 to ensure non-contiguity)
+  std::vector<ctran::regcache::Segment*> segments1;
+  std::vector<void*> segHdls1;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf1, totalSize, cudaDev, false, 0, segments1, segHdls1),
+      commSuccess);
+
+  std::vector<ctran::regcache::Segment*> segments3;
+  std::vector<void*> segHdls3;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf3, totalSize, cudaDev, false, 0, segments3, segHdls3),
+      commSuccess);
+
+  // Should have 4 segments total (2 per cached buffer, buf2 not cached)
+  EXPECT_EQ(regCache->getSegments().size(), numSegments * 2);
+
+  // deregAll/regAll cycle should work with non-contiguous regions
+  EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
+  EXPECT_EQ(ctran::RegCache::regAll(), commSuccess);
+
+  // buf1 and buf3 should be registered, buf2 should not
+  EXPECT_TRUE(regCache->isRegistered(buf1, totalSize));
+  EXPECT_TRUE(regCache->isRegistered(buf3, totalSize));
+  EXPECT_FALSE(regCache->isRegistered(buf2, totalSize));
+
+  // Clean up
+  EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
+
+  for (auto segHdl : segHdls1) {
+    bool freed = false;
+    bool ncclManaged = false;
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+    EXPECT_EQ(
+        regCache->freeSegment(segHdl, freed, ncclManaged, regElems),
+        commSuccess);
+    EXPECT_TRUE(freed);
+  }
+
+  for (auto segHdl : segHdls3) {
+    bool freed = false;
+    bool ncclManaged = false;
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+    EXPECT_EQ(
+        regCache->freeSegment(segHdl, freed, ncclManaged, regElems),
+        commSuccess);
+    EXPECT_TRUE(freed);
+  }
+
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf1, segSizes));
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf2, segSizes));
+  COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf3, segSizes));
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

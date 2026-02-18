@@ -152,4 +152,12 @@ commResult_t globalDeregisterWithPtr(void* buff, size_t size) {
   return regCache->globalDeregister(buff, size);
 }
 
+commResult_t registerAll() {
+  return RegCache::regAll();
+}
+
+commResult_t deregisterAll() {
+  return RegCache::deregAll();
+}
+
 } // namespace ctran

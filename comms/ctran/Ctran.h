@@ -420,5 +420,10 @@ globalRegisterWithPtr(void* buff, size_t size, bool forceReg = false);
 // Global pointer-based memory deregistration (does not require a comm).
 commResult_t globalDeregisterWithPtr(void* buff, size_t size);
 
+// Global APIs for bulk registration/deregistration of cached segments.
+// These are global operations that work on the singleton RegCache.
+commResult_t registerAll();
+commResult_t deregisterAll();
+
 } // namespace ctran
 #endif // CTRAN_COMM_H_

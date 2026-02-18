@@ -48,6 +48,9 @@ class CtranAvlTree {
   // Get all elements in the tree.
   std::vector<void*> getAllElems() const;
 
+  // Get all element values in the tree directly.
+  std::vector<void*> getAllElemVals() const;
+
   // Search for all elements whose address range overlaps with [addr, addr+len).
   // Returns handles to all overlapping elements.
   std::vector<void*> searchRange(const void* addr, std::size_t len) const;
