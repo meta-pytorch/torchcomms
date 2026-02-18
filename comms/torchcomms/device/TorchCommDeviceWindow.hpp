@@ -49,6 +49,22 @@ enum class CmpOp : int {
   GE = 5, // >= (most common for wait operations)
 };
 
+// Cooperative scope for device-side operations.
+// Determines how many threads participate in each API call.
+//
+// Usage: Pass as parameter to scope-aware API overloads.
+//   - THREAD: Single thread (default, backward-compatible)
+//   - WARP:   All 32 threads in a warp must call together
+//   - BLOCK:  All threads in a block must call together
+//
+// For WARP/BLOCK scope, the kernel launch config must provide enough
+// threads (>= 32 for WARP, >= blockDim.x for BLOCK).
+enum class CoopScope : int {
+  THREAD = 0,
+  WARP = 1,
+  BLOCK = 2,
+};
+
 // =============================================================================
 // RegisteredBuffer - Handle for Local Registered Source Buffers
 // =============================================================================
@@ -165,6 +181,9 @@ class TorchCommDeviceWindow {
   // RMA Operations - Put
   // =========================================================================
 
+  // Put data from local src_buf to dst_rank's window.
+  // All threads in the cooperative group must call together when scope !=
+  // THREAD.
   __device__ int put(
       size_t dst_offset,
       const RegisteredBuffer& src_buf,
@@ -172,7 +191,8 @@ class TorchCommDeviceWindow {
       int dst_rank,
       size_t bytes,
       int signal_id = -1,
-      int counter_id = -1);
+      int counter_id = -1,
+      CoopScope scope = CoopScope::THREAD);
 
   // =========================================================================
   // Signaling Operations (Remote Notification)
@@ -182,7 +202,8 @@ class TorchCommDeviceWindow {
       int peer,
       int signal_id,
       SignalOp op = SignalOp::ADD,
-      uint64_t value = 1);
+      uint64_t value = 1,
+      CoopScope scope = CoopScope::THREAD);
 
   __device__ int wait_signal(int signal_id, CmpOp cmp, uint64_t value);
   __device__ int
@@ -203,8 +224,8 @@ class TorchCommDeviceWindow {
   // =========================================================================
 
   __device__ int fence();
-  __device__ int flush();
-  __device__ int barrier(int barrier_id);
+  __device__ int flush(CoopScope scope = CoopScope::THREAD);
+  __device__ int barrier(int barrier_id, CoopScope scope = CoopScope::THREAD);
 
   // =========================================================================
   // Data Members
