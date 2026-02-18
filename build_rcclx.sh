@@ -81,7 +81,7 @@ function build_automake_library() {
   pushd "$library_name"
   ./configure --prefix="$CMAKE_PREFIX_PATH" --disable-pie
 
-  make -j
+  make -j$(nproc)
   make install
   popd
 }
@@ -101,7 +101,7 @@ function build_boost() {
 
   export LDFLAGS="-Wl,--allow-shlib-undefined"
   pushd "$library_name"
-  ./bootstrap.sh --prefix="$CMAKE_PREFIX_PATH" --libdir="$CMAKE_PREFIX_PATH/$LIB_SUFFIX" --without-libraries=python
+  ./bootstrap.sh --prefix="$CMAKE_PREFIX_PATH" --libdir="$CMAKE_PREFIX_PATH/$LIB_SUFFIX" --without-libraries=python --without-icu
   ./b2 -q cxxflags=-fPIC cflags=-fPIC install
   popd
 }
@@ -122,7 +122,7 @@ function build_openssl() {
   pushd "$library_name"
   ./config no-shared --prefix="$CMAKE_PREFIX_PATH" --openssldir="$CMAKE_PREFIX_PATH" --libdir=lib
 
-  make -j
+  make -j$(nproc)
   make install
   popd
 }

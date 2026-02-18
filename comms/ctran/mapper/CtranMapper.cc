@@ -458,36 +458,17 @@ commResult_t CtranMapper::allGatherIpcServerAddrs() {
 }
 
 commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
-  // Notify remote rank to release previous imported memory via NVL backend.
+  // Notify remote peer to release previous imported memory via NVL backend.
   // Shouldn't skip it even at destruction, since imported memory is stored in
   // IpcRegCache singleton and not cleared at mapper destruction
-  auto exportedNvlRanks = exportRegCache_.wlock()->remove(regElem);
-  for (auto peerRank : exportedNvlRanks) {
-    // Warning: the remote rank may release the memory after the next import,
-    // becase exportMem msgs are transferred over CtranIB&CtranSocket while
-    // releaseMem msgs are transferred over AsyncSocket. To prevent the remote
-    // rank from misusing a previously imported&cached but invalid segment, we
-    // add version ID to each exported segment
 
-    const std::string peerId = comm->statex_->gPid(peerRank);
-    folly::SocketAddress peerAddr;
+  // Delegate to IpcRegCache for IPC-based remote release
+  auto ipcRegElem =
+      reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
+  if (ipcRegElem != nullptr) {
     FB_COMMCHECK(
-        ctran::IpcRegCache::getInstance()->getPeerIpcServerAddr(
-            peerId, peerAddr));
-    std::unique_ptr<regcache::IpcReqCb> req =
-        std::make_unique<regcache::IpcReqCb>();
-    FB_COMMCHECK(
-        ctran::IpcRegCache::getInstance()->notifyRemoteIpcRelease(
-            comm->statex_->gPid(),
-            peerAddr,
-            reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
-            req.get()));
-
-    CLOGF_TRACE(COLL, "CTRAN-MAPPER: Posted IPC release to rank {}", peerRank);
-
-    // IPC release requests will be checked in progress and erased at
-    // completion. Mapper needs to free up all requests at destruction.
-    this->postedCbCtrlReqs_.push_back(std::move(req));
+        ctran::IpcRegCache::getInstance()->remReleaseMem(
+            comm->statex_->gPid(), ipcRegElem, this->postedCbCtrlReqs_));
   }
 
   return commSuccess;
@@ -596,11 +577,15 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
       FB_COMMCHECK(remReleaseMem(regElem));
     }
   } else {
-    // Skip remote release, just remove the regElems from local exportRegCache_.
-    // The caller is responsible to release all remote registration (e.g., in
-    // winFree)
+    // Skip remote release, just remove the regElems from IpcRegCache export
+    // cache. The caller is responsible to release all remote registration
+    // (e.g., in winFree)
     for (auto& regElem : regElems) {
-      exportRegCache_.wlock()->remove(regElem);
+      auto ipcRegElem =
+          reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
+      if (ipcRegElem != nullptr) {
+        ctran::IpcRegCache::getInstance()->removeExport(ipcRegElem);
+      }
     }
   }
 
@@ -991,11 +976,6 @@ commResult_t CtranMapper::intraBarrier() {
     FB_COMMCHECK(waitRequest(&req));
   }
   return commSuccess;
-}
-
-std::unordered_map<ctran::regcache::RegElem*, std::unordered_set<int>>
-CtranMapper::dumpExportRegCache() const {
-  return exportRegCache_.rlock()->dump();
 }
 
 std::string CtranMapperNotify::toString() const {

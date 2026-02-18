@@ -14,6 +14,7 @@
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/wrapper/MetaFactory.h"
+#include "comms/ctran/Ctran.h"
 
 // conflict with ctran, disable for now.
 NCCL_PARAM(LocalRegister, "LOCAL_REGISTER", 0);
@@ -250,4 +251,18 @@ ncclResult_t ncclCommDeregister(const ncclComm_t comm, void *handle) {
 ncclResult_t ncclCommGraphDeregister(const ncclComm_t comm, struct ncclReg *handle) {
   NCCLCHECK(commDeregister(comm, true, handle));
   return ncclSuccess;
+}
+
+// Global pointer-based registration (no handle, no comm required).
+NCCL_API(ncclResult_t, ncclGlobalRegisterWithPtr, void* buff, size_t size);
+ncclResult_t ncclGlobalRegisterWithPtr(void* buff, size_t size) {
+  auto res = ctran::globalRegisterWithPtr(buff, size);
+  return metaCommToNccl(res);
+}
+
+// Global pointer-based deregistration (no handle, no comm required).
+NCCL_API(ncclResult_t, ncclGlobalDeregisterWithPtr, void* buff, size_t size);
+ncclResult_t ncclGlobalDeregisterWithPtr(void* buff, size_t size) {
+  auto res = ctran::globalDeregisterWithPtr(buff, size);
+  return metaCommToNccl(res);
 }

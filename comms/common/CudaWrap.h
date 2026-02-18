@@ -50,6 +50,7 @@ inline cudaError_t launchKernel(
     return cudaLaunchKernel(kernelFunc, gridDim, blockDim, args, 0, stream);
   }
 
+#ifndef __HIP_PLATFORM_AMD__
   cudaLaunchConfig_t launchConfig = {};
   launchConfig.gridDim = gridDim;
   launchConfig.blockDim = blockDim;
@@ -69,6 +70,11 @@ inline cudaError_t launchKernel(
   launchConfig.numAttrs = 2;
 
   return cudaLaunchKernelExC(&launchConfig, kernelFunc, args);
+#else
+  // Thread block clusters are not supported on AMD GPUs; fall back to
+  // a standard kernel launch, ignoring the cluster configuration.
+  return cudaLaunchKernel(kernelFunc, gridDim, blockDim, args, 0, stream);
+#endif
 }
 
 } // namespace comms::common
