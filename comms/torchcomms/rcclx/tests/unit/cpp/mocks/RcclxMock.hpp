@@ -241,6 +241,32 @@ class RcclxMock : public RcclxApi {
       (ncclRedOp_t op, ncclComm_t comm),
       (override));
 
+  // Persistent AllGather operations
+  MOCK_METHOD(
+      ncclResult_t,
+      allGatherInit,
+      (void* recvbuff,
+       size_t maxRecvCount,
+       const RcclxHints& hints,
+       ncclDataType_t datatype,
+       ncclComm_t comm,
+       hipStream_t stream,
+       void** request),
+      (override));
+  MOCK_METHOD(
+      ncclResult_t,
+      allGatherExec,
+      (const void* sendbuff,
+       size_t count,
+       ncclDataType_t datatype,
+       void* request),
+      (override));
+  MOCK_METHOD(ncclResult_t, pFree, (void* request), (override));
+
+  // Memory allocation
+  MOCK_METHOD(ncclResult_t, memAlloc, (void** ptr, size_t size), (override));
+  MOCK_METHOD(ncclResult_t, memFree, (void* ptr), (override));
+
   // Helper method to set up default behaviors for common operations
   void setupDefaultBehaviors();
 };

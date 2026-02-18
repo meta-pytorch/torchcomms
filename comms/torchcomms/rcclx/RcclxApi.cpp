@@ -328,4 +328,41 @@ ncclResult_t DefaultRcclxApi::redOpDestroy(ncclRedOp_t op, ncclComm_t comm) {
   return ncclRedOpDestroy(op, comm);
 }
 
+ncclResult_t DefaultRcclxApi::allGatherInit(
+    void* recvbuff,
+    size_t maxRecvCount,
+    const RcclxHints& hints,
+    ncclDataType_t datatype,
+    ncclComm_t comm,
+    hipStream_t stream,
+    void** request) {
+  // Convert RcclxHints to ncclx::Hints
+  ncclx::Hints ncclxHints;
+  for (const auto& [key, value] : hints) {
+    ncclxHints.set(key, value);
+  }
+  return ncclx::allGatherInit(
+      recvbuff, maxRecvCount, ncclxHints, datatype, comm, stream, request);
+}
+
+ncclResult_t DefaultRcclxApi::allGatherExec(
+    const void* sendbuff,
+    size_t count,
+    ncclDataType_t datatype,
+    void* request) {
+  return ncclx::allGatherExec(sendbuff, count, datatype, request);
+}
+
+ncclResult_t DefaultRcclxApi::pFree(void* request) {
+  return ncclx::pFree(request);
+}
+
+ncclResult_t DefaultRcclxApi::memAlloc(void** ptr, size_t size) {
+  return ncclMemAlloc(ptr, size);
+}
+
+ncclResult_t DefaultRcclxApi::memFree(void* ptr) {
+  return ncclMemFree(ptr);
+}
+
 } // namespace torch::comms
