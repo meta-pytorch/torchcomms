@@ -350,6 +350,9 @@ if [[ -z "${NVCC_GENCODE-}" ]]; then
         "b200")
             arch_gencode="$arch_gencode -gencode=arch=compute_100,code=sm_100"
         ;;
+        "b300")
+            arch_gencode="$arch_gencode -gencode=arch=compute_103a,code=sm_103a"
+        ;;
         esac
     done
     NVCC_GENCODE=$arch_gencode
