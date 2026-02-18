@@ -257,6 +257,20 @@ ncclResult_t ncclCommGraphDeregister(const ncclComm_t comm, struct ncclReg *hand
   return ncclSuccess;
 }
 
+// Global pointer-based registration (no handle, no comm required).
+NCCL_API(ncclResult_t, ncclGlobalRegisterWithPtr, void* buff, size_t size);
+ncclResult_t ncclGlobalRegisterWithPtr(void* buff, size_t size) {
+  auto res = ctran::globalRegisterWithPtr(buff, size);
+  return metaCommToNccl(res);
+}
+
+// Global pointer-based deregistration (no handle, no comm required).
+NCCL_API(ncclResult_t, ncclGlobalDeregisterWithPtr, void* buff, size_t size);
+ncclResult_t ncclGlobalDeregisterWithPtr(void* buff, size_t size) {
+  auto res = ctran::globalDeregisterWithPtr(buff, size);
+  return metaCommToNccl(res);
+}
+
 ncclResult_t ncclCommSymmetricRegisterInternal(struct ncclComm* comm, void* buff, size_t baseSize, size_t alignment, CUmemGenericAllocationHandle memHandle, struct ncclReg* regHandle) {
   ncclResult_t ret = ncclSuccess;
   void* regSymAddr = NULL;
