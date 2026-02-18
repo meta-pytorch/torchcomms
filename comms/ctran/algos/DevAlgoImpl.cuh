@@ -14,6 +14,50 @@
  * Algorithm module functions
  */
 
+// For cases where where sendbuff != recvbuff
+// D2D copy data between buffers within the same GPU.
+template <typename T>
+__device__ __forceinline__ void ctranKernCopyRaw(
+    const T* sendbuff,
+    T* recvbuff,
+    size_t count,
+    int groupIdx,
+    int ngroups) {
+  if (canCopy16(sendbuff, recvbuff, count)) {
+    copy<uint4>(
+        reinterpret_cast<uint4*>(recvbuff),
+        reinterpret_cast<const uint4*>(sendbuff),
+        count * sizeof(T) / sizeof(uint4),
+        groupIdx,
+        ngroups);
+  } else {
+    copy<T>(recvbuff, sendbuff, count, groupIdx, ngroups);
+  }
+}
+
+// For cases where where sendbuff != recvbuff1 != recvbuff2
+// D2D copy data between buffers within the same GPU.
+template <typename T>
+__device__ __forceinline__ void ctranKernCopyRaw(
+    const T* sendbuff,
+    T* recvbuff1,
+    T* recvbuff2,
+    size_t count,
+    int groupIdx,
+    int ngroups) {
+  if (canCopy16(sendbuff, recvbuff1, recvbuff2, count)) {
+    copy<uint4>(
+        reinterpret_cast<uint4*>(recvbuff1),
+        reinterpret_cast<uint4*>(recvbuff2),
+        reinterpret_cast<const uint4*>(sendbuff),
+        count * sizeof(T) / sizeof(uint4),
+        groupIdx,
+        ngroups);
+  } else {
+    copy<T>(recvbuff1, recvbuff2, sendbuff, count, groupIdx, ngroups);
+  }
+}
+
 // D2D copy data between buffers within the same GPU.
 template <typename T>
 __device__ __forceinline__ void ctranKernCopy(
@@ -23,16 +67,28 @@ __device__ __forceinline__ void ctranKernCopy(
     int groupIdx,
     int ngroups) {
   if (sendbuff != recvbuff) {
-    if (canCopy16(sendbuff, recvbuff, count)) {
-      copy<uint4>(
-          reinterpret_cast<uint4*>(recvbuff),
-          reinterpret_cast<const uint4*>(sendbuff),
-          count * sizeof(T) / sizeof(uint4),
-          groupIdx,
-          ngroups);
-    } else {
-      copy<T>(recvbuff, sendbuff, count, groupIdx, ngroups);
-    }
+    ctranKernCopyRaw<T>(sendbuff, recvbuff, count, groupIdx, ngroups);
+  }
+}
+
+// D2D copy data between buffers within the same GPU.
+template <typename T>
+__device__ __forceinline__ void ctranKernCopy(
+    const T* sendbuff,
+    T* recvbuff1,
+    T* recvbuff2,
+    size_t count,
+    int groupIdx,
+    int ngroups) {
+  bool sendIsRecv1 = sendbuff == recvbuff1;
+  bool sendIsRecv2 = sendbuff == recvbuff2;
+  if (!sendIsRecv1 && !sendIsRecv2) {
+    ctranKernCopyRaw<T>(
+        sendbuff, recvbuff1, recvbuff2, count, groupIdx, ngroups);
+  } else if (!sendIsRecv1) {
+    ctranKernCopyRaw<T>(sendbuff, recvbuff1, count, groupIdx, ngroups);
+  } else if (!sendIsRecv2) {
+    ctranKernCopyRaw<T>(sendbuff, recvbuff2, count, groupIdx, ngroups);
   }
 }
 
