@@ -42,12 +42,24 @@ inline const char* devMemTypeStr(DevMemType memType) {
  * @param addr The memory pointer to analyze. Must not be nullptr.
  * @param cudaDev The CUDA device associated with the memory. Must be
  * non-negative.
- * @param memType [out] Reference to store the determined memory type.
- *
- * @return commSuccess on successful memory type determination
+ * @return commSuccess on successful classification
  *         commInvalidUsage if addr is nullptr or cudaDev is negative
  *         commInternalError for unsupported cuMem handle types or other
  * internal errors
  */
 commResult_t
 getDevMemType(const void* addr, const int cudaDev, DevMemType& memType);
+
+/**
+ * Determines the CUDA device associated with a given memory pointer.
+ *
+ * For device or managed memory, returns the device from
+ * cudaPointerGetAttributes. For host memory (pinned or unregistered), returns
+ * the current CUDA device.
+ *
+ * @param addr The memory pointer to analyze. Must not be nullptr.
+ * @param cudaDev Output parameter for the CUDA device ID.
+ * @return commSuccess on successful determination
+ *         commInvalidUsage if addr is nullptr
+ */
+commResult_t getCudaDevFromPtr(const void* addr, int& cudaDev);
