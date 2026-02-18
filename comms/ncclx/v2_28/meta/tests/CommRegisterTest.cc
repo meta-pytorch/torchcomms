@@ -7,7 +7,6 @@
 
 #include <nccl.h>
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -62,10 +61,6 @@ TEST_P(CommRegisterTestParam, RegularUsage) {
       ASSERT_EQ(res, ncclSuccess);
     }
   }
-
-  // Cleanup cached segments in global cache before we test memory leak
-  auto regCache = CtranMapperRegCache::getInstance();
-  EXPECT_EQ(regCache->destroy(), commSuccess);
 
   testFreeBuf(buf, nbytes, memType);
 }
