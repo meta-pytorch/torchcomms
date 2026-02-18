@@ -187,6 +187,36 @@ void ctran::RegCache::init() {
   ibSingleton_ = CtranIbSingleton::getInstance();
   CHECK_VALID_IB_SINGLETON(ibSingleton_);
 
+  // Initialize global backends from environment variable.
+  // The NCCL_CTRAN_BACKENDS cvar is already parsed at cvar initialization time.
+  // This allows registration to work without requiring a communicator.
+  globalBackends_.resize(CommBackend::NUM_BACKENDS, false);
+  for (const auto& backend : NCCL_CTRAN_BACKENDS) {
+    switch (backend) {
+      case NCCL_CTRAN_BACKENDS::ib:
+        globalBackends_[CommBackend::IB] = true;
+        break;
+      case NCCL_CTRAN_BACKENDS::nvl:
+        globalBackends_[CommBackend::NVL] = true;
+        break;
+      case NCCL_CTRAN_BACKENDS::socket:
+        globalBackends_[CommBackend::SOCKET] = true;
+        break;
+      case NCCL_CTRAN_BACKENDS::tcpdm:
+        globalBackends_[CommBackend::TCPDM] = true;
+        break;
+    }
+  }
+  CLOGF_SUBSYS(
+      INFO,
+      INIT,
+      "CTRAN-REGCACHE: Global backends initialized from NCCL_CTRAN_BACKENDS: "
+      "IB={} NVL={} SOCKET={} TCPDM={}",
+      static_cast<bool>(globalBackends_[CommBackend::IB]),
+      static_cast<bool>(globalBackends_[CommBackend::NVL]),
+      static_cast<bool>(globalBackends_[CommBackend::SOCKET]),
+      static_cast<bool>(globalBackends_[CommBackend::TCPDM]));
+
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
       !asyncRegThread_.joinable()) {
     int cudaDev;
@@ -255,6 +285,129 @@ commResult_t ctran::RegCache::destroy() {
   // Report snapshot at destroy if enabled
   if (NCCL_CTRAN_REGISTER_REPORT_SNAPSHOT_COUNT >= 0) {
     profiler.rlock()->reportSnapshot();
+  }
+
+  return commSuccess;
+}
+
+commResult_t
+ctran::RegCache::globalRegister(const void* buf, size_t len, bool forceReg) {
+  if (buf == nullptr || len == 0) {
+    return commSuccess;
+  }
+
+  // Auto-detect cudaDev from buffer pointer.
+  // For CPU tensors (malloc'd memory), getCudaDevFromPtr may fail.
+  // In that case, fall back to current device like CtranMapper does.
+  int cudaDev = 0;
+  commResult_t devResult = getCudaDevFromPtr(buf, cudaDev);
+  if (devResult != commSuccess) {
+    // Fall back to current CUDA device for CPU memory
+    FB_CUDACHECK(cudaGetDevice(&cudaDev));
+  }
+
+  // Cache the segments first
+  std::vector<ctran::regcache::Segment*> segments;
+  std::vector<void*> segHdls;
+  FB_COMMCHECK(cacheSegment(
+      buf,
+      len,
+      cudaDev,
+      false /* ncclManaged */,
+      0 /* commHash - not used for global registration */,
+      segments,
+      segHdls));
+
+  // Register if in eager mode or forced by caller
+  if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::eager || forceReg) {
+    bool didRegister = false;
+    ctran::regcache::RegElem* regHdl = nullptr;
+    CommLogData globalLogData{};
+    globalLogData.commDesc = "global";
+    FB_COMMCHECK(regRange(
+        buf,
+        len,
+        cudaDev,
+        "eagerGlobalRegister",
+        globalLogData,
+        globalBackends_,
+        didRegister,
+        &regHdl,
+        false /* ncclManaged */));
+  }
+
+  return commSuccess;
+}
+
+commResult_t ctran::RegCache::globalDeregister(const void* buf, size_t len) {
+  if (buf == nullptr || len == 0) {
+    return commSuccess;
+  }
+
+  // Auto-detect cudaDev from buffer pointer.
+  // For CPU tensors (malloc'd memory), getCudaDevFromPtr may fail.
+  // In that case, fall back to current device like globalRegister does.
+  int cudaDev = 0;
+  commResult_t devResult = getCudaDevFromPtr(buf, cudaDev);
+  if (devResult != commSuccess) {
+    // Fall back to current CUDA device for CPU memory
+    FB_CUDACHECK(cudaGetDevice(&cudaDev));
+  }
+
+  auto timerBegin = std::chrono::steady_clock::now();
+
+  // Use lookupSegmentsForBuffer to discover all cached segments and regElems
+  std::vector<void*> segHdls;
+  std::vector<ctran::regcache::RegElem*> regElems;
+  FB_COMMCHECK(lookupSegmentsForBuffer(buf, len, cudaDev, segHdls, regElems));
+
+  // Call remReleaseMem on ipcRegElems before freeing segments.
+  // This notifies remote peers to release their imported NVL memory.
+  // Like the mapper path, we use fire-and-forget semantics - the async socket
+  // sends will complete in the background. We don't wait for completion since
+  // the mapper also clears postedCbCtrlReqs_ without waiting at destruction.
+  // TODO: verify this is correct and that we shouldn't be waiting for the
+  // requests to finish.
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  std::string localPeerId = ipcRegCache->getLocalPeerId();
+  std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedReqs;
+  for (auto& regElem : regElems) {
+    auto ipcRegElem =
+        reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
+    if (ipcRegElem != nullptr) {
+      FB_COMMCHECK(
+          ipcRegCache->remReleaseMem(localPeerId, ipcRegElem, postedReqs));
+    }
+  }
+
+  // Free each segment
+  size_t totalSegmentsFreed = 0;
+  for (auto segHdl : segHdls) {
+    bool freed = false;
+    bool ncclManaged = false;
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElemsFreed;
+    FB_COMMCHECK(freeSegment(segHdl, freed, ncclManaged, regElemsFreed));
+
+    if (freed) {
+      totalSegmentsFreed++;
+    }
+  }
+
+  // Log a single memory event for the entire deregistration
+  if (totalSegmentsFreed > 0) {
+    CommLogData globalLogData{};
+    globalLogData.commDesc = "global";
+    logMemoryEvent(
+        globalLogData,
+        "",
+        "globalDeregister",
+        reinterpret_cast<uintptr_t>(buf),
+        len,
+        totalSegmentsFreed,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - timerBegin)
+            .count(),
+        true /* isRegMemEvent */);
   }
 
   return commSuccess;
