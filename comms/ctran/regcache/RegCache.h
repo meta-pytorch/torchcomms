@@ -470,6 +470,22 @@ class RegCache {
   // Thread-safe function to search given <ptr, len> range in regElem cache.
   regcache::RegElem* searchRegElem(const void* ptr, const size_t len);
 
+  // Helper function to perform backend registration for a set of segments.
+  // Creates a RegElem, registers with backends, and updates regElemsMaps.
+  // Caller must hold segmentsAvl lock (for thread safety with segment
+  // pointers). This function acquires regElemsMaps_ lock internally.
+  //
+  // Returns commSuccess on success, or error code on failure.
+  // On success, *regHdl is set to the created RegElem pointer.
+  commResult_t registerSegments(
+      void* ptr,
+      size_t len,
+      int cudaDev,
+      std::vector<regcache::Segment*>& segments,
+      const std::vector<bool>& backends,
+      bool ncclManaged,
+      regcache::RegElem** regHdl);
+
   commResult_t deregElem(regcache::RegElem* regElem);
 };
 
