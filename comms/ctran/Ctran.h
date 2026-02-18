@@ -405,5 +405,13 @@ commResult_t AllToAllPExec(
 
 commResult_t AllToAllPDestroy(CtranPersistentRequest* request);
 
+// Global pointer-based memory registration (does not require a comm).
+// If forceReg is true, registration happens even in async/lazy mode.
+commResult_t
+globalRegisterWithPtr(void* buff, size_t size, bool forceReg = false);
+
+// Global pointer-based memory deregistration (does not require a comm).
+commResult_t globalDeregisterWithPtr(void* buff, size_t size);
+
 } // namespace ctran
 #endif // CTRAN_COMM_H_

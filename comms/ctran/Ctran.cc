@@ -6,6 +6,7 @@
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/LogInit.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -118,3 +119,37 @@ commResult_t ctranFinalize(CtranComm* comm) {
   }
   return commSuccess;
 }
+
+namespace ctran {
+
+commResult_t globalRegisterWithPtr(void* buff, size_t size, bool forceReg) {
+  if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::none) {
+    // ctran registration is disabled, no-op
+    return commSuccess;
+  }
+
+  auto regCache = RegCache::getInstance();
+  if (!regCache) {
+    CLOGF(ERR, "globalRegisterWithPtr: RegCache not available");
+    return commInternalError;
+  }
+
+  return regCache->globalRegister(buff, size, forceReg);
+}
+
+commResult_t globalDeregisterWithPtr(void* buff, size_t size) {
+  if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::none) {
+    // ctran registration is disabled, no-op
+    return commSuccess;
+  }
+
+  auto regCache = RegCache::getInstance();
+  if (!regCache) {
+    CLOGF(ERR, "globalDeregisterWithPtr: RegCache not available");
+    return commInternalError;
+  }
+
+  return regCache->globalDeregister(buff, size);
+}
+
+} // namespace ctran
