@@ -3,6 +3,7 @@
 #include "comms/ctran/regcache/IpcRegCache.h"
 #include <fmt/core.h>
 #include <folly/Singleton.h>
+#include <unistd.h>
 #include "comms/ctran/bootstrap/Socket.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Debug.h"
@@ -349,6 +350,15 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcExport(
 }
 
 commResult_t ctran::IpcRegCache::initAsyncSocket() {
+  // Initialize local peer ID (hostname:pid) for IPC communications
+  char hostname[256];
+  if (gethostname(hostname, sizeof(hostname)) != 0) {
+    CLOGF(ERR, "CTRAN-REGCACHE: Failed to get hostname");
+    return commInternalError;
+  }
+  hostname[sizeof(hostname) - 1] = '\0';
+  localPeerId_ = std::string(hostname) + ":" + std::to_string(getpid());
+
   // Create the event base thread for async socket operations
   asyncSocketEvbThread_ = std::make_unique<folly::ScopedEventBaseThread>();
 

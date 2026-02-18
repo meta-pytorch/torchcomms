@@ -92,3 +92,22 @@ getDevMemType(const void* addr, const int cudaDev, DevMemType& memType) {
 
 #endif
 }
+
+commResult_t getCudaDevFromPtr(const void* addr, int& cudaDev) {
+  if (addr == nullptr) {
+    return commInvalidUsage;
+  }
+
+  cudaPointerAttributes attr;
+  FB_CUDACHECK(cudaPointerGetAttributes(&attr, addr));
+
+  // For device or managed memory, use the device from attributes
+  if (attr.type == cudaMemoryTypeDevice || attr.type == cudaMemoryTypeManaged) {
+    cudaDev = attr.device;
+  } else {
+    // For host memory (pinned or unregistered), use current device
+    FB_CUDACHECK(cudaGetDevice(&cudaDev));
+  }
+
+  return commSuccess;
+}
