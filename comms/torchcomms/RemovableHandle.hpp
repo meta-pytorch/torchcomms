@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <memory>
 #include <mutex>
 
 namespace torch::comms {
@@ -23,9 +24,17 @@ class RemovableHandle {
     });
   }
 
+  // Factory function to create a unique_ptr to RemovableHandle
+  // This allows the handle to be moved via the unique_ptr
+  static std::unique_ptr<RemovableHandle> create(
+      std::function<void()>&& callback) {
+    return std::unique_ptr<RemovableHandle>(
+        new RemovableHandle(std::move(callback)));
+  }
+
  private:
-  std::once_flag once_;
   std::function<void()> callback_;
+  std::once_flag once_;
 };
 
 } // namespace torch::comms
