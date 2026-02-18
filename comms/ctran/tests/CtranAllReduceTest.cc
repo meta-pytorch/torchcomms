@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <chrono>
+#include <cstdlib>
+#include <filesystem>
 #include <future>
 #include <memory>
 #include <optional>
@@ -494,6 +496,258 @@ TEST_F(CtranAllReduceRingOneRankTest, Basic) {
 
 TEST_F(CtranAllReduceRingOneRankTest, SmallMessageSize) {
   this->runAllReduce(/*nElem=*/1);
+}
+
+// Test fixture for AllReduceRing perftrace CVAR controls.
+// Runs real multi-rank AllReduce ring operations and verifies:
+// 1. AllReduce results are always correct
+// 2. NCCL_CTRAN_ENABLE_PERFTRACE controls trace file production
+// 3. NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_SKIP_OPS skips initial ops
+// 4. NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_NUM_OPS limits traced ops
+class AllReduceRingPerfTraceTest : public CtranIntraProcessFixture {
+ protected:
+  static constexpr int kNRanks = 4;
+  static_assert(kNRanks % 2 == 0);
+  static constexpr commRedOp_t kReduceOpType = commSum;
+  static constexpr commDataType_t kDataType = commFloat32;
+  static constexpr size_t kTypeSize = sizeof(float);
+  static constexpr size_t kBufferNElem = kBufferSize / kTypeSize;
+
+  void SetUp() override {
+    setenv("NCCL_COMM_STATE_DEBUG_TOPO", "nolocal", 1);
+    setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "1", 1);
+
+    // Create temp directory for trace output
+    traceDir_ = std::filesystem::temp_directory_path() /
+        ("ctran_perftrace_test_" + std::to_string(getpid()));
+    std::filesystem::create_directories(traceDir_);
+    setenv("NCCL_CTRAN_PERFTRACE_DIR", traceDir_.c_str(), 1);
+
+    CtranIntraProcessFixture::SetUp();
+  }
+
+  void TearDown() override {
+    CtranIntraProcessFixture::TearDown();
+
+    // Clean up trace dir
+    std::filesystem::remove_all(traceDir_);
+
+    // Reset perftrace env vars
+    unsetenv("NCCL_CTRAN_ENABLE_PERFTRACE");
+    unsetenv("NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_SKIP_OPS");
+    unsetenv("NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_NUM_OPS");
+    unsetenv("NCCL_CTRAN_PERFTRACE_DIR");
+    ncclCvarInit();
+  }
+
+  void startWorkers() {
+    std::vector<std::shared_ptr<::ctran::utils::Abort>> aborts;
+    for (int i = 0; i < kNRanks; ++i) {
+      aborts.push_back(ctran::utils::createAbort(/*enabled=*/true));
+    }
+    CtranIntraProcessFixture::startWorkers(kNRanks, /*aborts=*/aborts);
+  }
+
+  void
+  configurePerfTrace(bool enable, int64_t skipOps = 0, int64_t numOps = 0) {
+    setenv("NCCL_CTRAN_ENABLE_PERFTRACE", enable ? "1" : "0", 1);
+    setenv(
+        "NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_SKIP_OPS",
+        std::to_string(skipOps).c_str(),
+        1);
+    setenv(
+        "NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_NUM_OPS",
+        std::to_string(numOps).c_str(),
+        1);
+    ncclCvarInit();
+  }
+
+  // Run a single AllReduce operation on all ranks and verify correctness.
+  // Each rank r fills srcBuffer with float(r+1). After commSum AllReduce,
+  // every element should equal kNRanks*(kNRanks+1)/2.
+  void runAllReduceAndVerify(PerRankState& state) {
+    // Fill src buffer: each rank writes (rank + 1) to all elements
+    float fillVal = static_cast<float>(state.rank + 1);
+    std::vector<float> srcHost(kBufferNElem, fillVal);
+    ASSERT_EQ(
+        cudaSuccess,
+        cudaMemcpy(
+            state.srcBuffer,
+            srcHost.data(),
+            kBufferSize,
+            cudaMemcpyHostToDevice));
+    ASSERT_EQ(cudaSuccess, cudaMemset(state.dstBuffer, 0, kBufferSize));
+
+    void* srcHandle;
+    void* dstHandle;
+    ASSERT_EQ(
+        commSuccess,
+        state.ctranComm->ctran_->commRegister(
+            state.srcBuffer, kBufferSize, &srcHandle));
+    ASSERT_EQ(
+        commSuccess,
+        state.ctranComm->ctran_->commRegister(
+            state.dstBuffer, kBufferSize, &dstHandle));
+    SCOPE_EXIT {
+      state.ctranComm->ctran_->commDeregister(dstHandle);
+      state.ctranComm->ctran_->commDeregister(srcHandle);
+    };
+
+    EXPECT_EQ(
+        commSuccess,
+        ctranAllReduce(
+            state.srcBuffer,
+            state.dstBuffer,
+            kBufferNElem,
+            kDataType,
+            kReduceOpType,
+            state.ctranComm.get(),
+            state.stream,
+            NCCL_ALLREDUCE_ALGO::ctring,
+            /*timeout=*/std::nullopt));
+
+    EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));
+    EXPECT_EQ(commSuccess, state.ctranComm->getAsyncResult());
+
+    // Verify correctness: expected sum = 1 + 2 + ... + kNRanks
+    float expectedVal = static_cast<float>(kNRanks * (kNRanks + 1) / 2);
+    std::vector<float> dstHost(kBufferNElem);
+    ASSERT_EQ(
+        cudaSuccess,
+        cudaMemcpy(
+            dstHost.data(),
+            state.dstBuffer,
+            kBufferSize,
+            cudaMemcpyDeviceToHost));
+    for (size_t i = 0; i < kBufferNElem; ++i) {
+      EXPECT_EQ(expectedVal, dstHost[i])
+          << "Mismatch at index " << i << " on rank " << state.rank;
+    }
+  }
+
+  size_t countTraceFiles() {
+    size_t count = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(traceDir_)) {
+      if (entry.path().extension() == ".json" &&
+          entry.path().filename().string().find("ctran_trace_log") !=
+              std::string::npos) {
+        ++count;
+      }
+    }
+    return count;
+  }
+
+  std::filesystem::path traceDir_;
+};
+
+TEST_F(AllReduceRingPerfTraceTest, Disabled) {
+  configurePerfTrace(/*enable=*/false);
+  startWorkers();
+  for (int rank = 0; rank < kNRanks; ++rank) {
+    run(rank, [this](PerRankState& state) {
+      runAllReduceAndVerify(state);
+
+      state.getBootstrap()->barrierNamed(
+          state.rank, state.nRanks, /*timeoutSeconds=*/10, "after_allreduce");
+
+      // 0 traced ops × kNRanks = 0 files
+      EXPECT_EQ(0u, countTraceFiles())
+          << "No trace files expected when perftrace is disabled"
+          << " (rank " << state.rank << ")";
+    });
+  }
+}
+
+TEST_F(AllReduceRingPerfTraceTest, Enabled) {
+  configurePerfTrace(/*enable=*/true);
+  startWorkers();
+  for (int rank = 0; rank < kNRanks; ++rank) {
+    run(rank, [this](PerRankState& state) {
+      runAllReduceAndVerify(state);
+
+      state.getBootstrap()->barrierNamed(
+          state.rank, state.nRanks, /*timeoutSeconds=*/10, "after_allreduce");
+
+      // 1 traced op × kNRanks ranks = kNRanks files
+      EXPECT_EQ(static_cast<size_t>(kNRanks), countTraceFiles())
+          << "rank " << state.rank;
+    });
+  }
+}
+
+TEST_F(AllReduceRingPerfTraceTest, SkipOps) {
+  // Run 3 ops total, skip the first 2: only opCount=2 is traced
+  constexpr int kTotalOps = 3;
+  constexpr int64_t kSkipOps = 2;
+  constexpr int kTracedOps = kTotalOps - kSkipOps; // 1
+  configurePerfTrace(/*enable=*/true, /*skipOps=*/kSkipOps);
+  startWorkers();
+  for (int rank = 0; rank < kNRanks; ++rank) {
+    run(rank, [this](PerRankState& state) {
+      for (int op = 0; op < kTotalOps; ++op) {
+        runAllReduceAndVerify(state);
+        state.getBootstrap()->barrierNamed(
+            state.rank,
+            state.nRanks,
+            /*timeoutSeconds=*/10,
+            "after_op_" + std::to_string(op));
+      }
+
+      // 1 traced op × kNRanks ranks = kNRanks files
+      EXPECT_EQ(static_cast<size_t>(kTracedOps * kNRanks), countTraceFiles())
+          << "rank " << state.rank;
+    });
+  }
+}
+
+TEST_F(AllReduceRingPerfTraceTest, NumOps) {
+  // Run 3 ops total, trace only the first 1 (numOps=1, opCount=0 traced)
+  constexpr int kTotalOps = 3;
+  constexpr int64_t kNumOps = 1;
+  configurePerfTrace(/*enable=*/true, /*skipOps=*/0, /*numOps=*/kNumOps);
+  startWorkers();
+  for (int rank = 0; rank < kNRanks; ++rank) {
+    run(rank, [this](PerRankState& state) {
+      for (int op = 0; op < kTotalOps; ++op) {
+        runAllReduceAndVerify(state);
+        state.getBootstrap()->barrierNamed(
+            state.rank,
+            state.nRanks,
+            /*timeoutSeconds=*/10,
+            "after_op_" + std::to_string(op));
+      }
+
+      // 1 traced op × kNRanks ranks = kNRanks files
+      EXPECT_EQ(static_cast<size_t>(kNumOps * kNRanks), countTraceFiles())
+          << "rank " << state.rank;
+    });
+  }
+}
+
+TEST_F(AllReduceRingPerfTraceTest, SkipAndNumOps) {
+  // Run 5 ops total, skip 1, trace 2 (opCounts 1 and 2 are traced)
+  constexpr int kTotalOps = 5;
+  constexpr int64_t kSkipOps = 1;
+  constexpr int64_t kNumOps = 2;
+  configurePerfTrace(
+      /*enable=*/true, /*skipOps=*/kSkipOps, /*numOps=*/kNumOps);
+  startWorkers();
+  for (int rank = 0; rank < kNRanks; ++rank) {
+    run(rank, [this](PerRankState& state) {
+      for (int op = 0; op < kTotalOps; ++op) {
+        runAllReduceAndVerify(state);
+        state.getBootstrap()->barrierNamed(
+            state.rank,
+            state.nRanks,
+            /*timeoutSeconds=*/10,
+            "after_op_" + std::to_string(op));
+      }
+
+      // 2 traced ops × kNRanks ranks = 2*kNRanks files
+      EXPECT_EQ(static_cast<size_t>(kNumOps * kNRanks), countTraceFiles())
+          << "rank " << state.rank;
+    });
+  }
 }
 
 } // namespace ctran::testing

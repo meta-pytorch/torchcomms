@@ -19,6 +19,8 @@
 #include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/perftrace/Record.h"
+#include "comms/ctran/algos/perftrace/Tracer.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -169,7 +171,8 @@ inline void progressSendCheckTrans(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps,
+    perftrace::Record* ts) {
   int startRound = algoCtx.opRounds[Op::kSendTrans].done;
   int lastRound = algoCtx.opRounds[Op::kSendTrans].post;
   int step = algoCtx.opRounds[Op::kSendTrans].doneStep.step;
@@ -189,6 +192,10 @@ inline void progressSendCheckTrans(
             COLL,
             "progressSendCheckTrans {} done",
             roundLogPrefix<Op::kSendTrans>(r, step, algoCtx));
+        if (ts) {
+          ts->endInterval(
+              "SendTrans_mapper_rdma", algoCtx.partitionStartSendRounds + r);
+        }
         opUpdateDone<Op::kSendTrans>(algoCtx);
       }
     }
@@ -198,18 +205,29 @@ inline void progressSendCheckTrans(
 inline void progressSendPostCopyKern(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
+    const AlgoContext& algoCtx,
+    perftrace::Record* ts) {
   int round = algoCtx.opRounds[Op::kSendCopy].post;
   int step = algoCtx.opRounds[Op::kSendCopy].postStep.step;
   CLOGF_TRACE(
       COLL, "{} posted", roundLogPrefix<Op::kSendCopy>(round, step, algoCtx));
   resource.sendCopySync->post(round);
+  if (ts) {
+    int seqNum = algoCtx.partitionStartSendRounds + round;
+    std::map<std::string, std::string> md = {
+        {"partition", std::to_string(algoCtx.partition)},
+        {"round", std::to_string(round)},
+        {"step", std::to_string(step)}};
+    ts->startInterval(
+        "SendCopy_kernelsync_device", seqNum, args.rightRank, std::move(md));
+  }
 }
 
 inline bool progressSendCheckCopyKern(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
+    const AlgoContext& algoCtx,
+    perftrace::Record* ts) {
   int round = algoCtx.opRounds[Op::kSendCopy].done;
   auto& opStep = algoCtx.opRounds[Op::kSendCopy].doneStep;
   int step = opStep.step;
@@ -222,6 +240,11 @@ inline bool progressSendCheckCopyKern(
         "{} done: tmpChunkId {}",
         roundLogPrefix<Op::kSendCopy>(round, step, algoCtx),
         tmpChunkId);
+    if (ts) {
+      ts->endInterval(
+          "SendCopy_kernelsync_device",
+          algoCtx.partitionStartSendRounds + round);
+    }
   }
   return done;
 }
@@ -230,7 +253,8 @@ inline void progressSendPostTrans(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
     const AlgoContext& algoCtx,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps,
+    perftrace::Record* ts) {
   int round = algoCtx.opRounds[Op::kSendTrans].post;
   auto& opStep = algoCtx.opRounds[Op::kSendTrans].postStep;
   int step = opStep.step;
@@ -279,12 +303,23 @@ inline void progressSendPostTrans(
       chunkArg.dataOffsetElem,
       tmpChunkId,
       chunkArg.numel);
+  if (ts) {
+    int seqNum = algoCtx.partitionStartSendRounds + round;
+    std::map<std::string, std::string> md = {
+        {"partition", std::to_string(algoCtx.partition)},
+        {"round", std::to_string(round)},
+        {"step", std::to_string(step)},
+        {"bytes", std::to_string(chunkArg.numel * algoCtx.typeSize)}};
+    ts->startInterval(
+        "SendTrans_mapper_rdma", seqNum, args.rightRank, std::move(md));
+  }
 }
 
 inline bool progressRecvCheckTrans(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
+    const AlgoContext& algoCtx,
+    perftrace::Record* ts) {
   int round = algoCtx.opRounds[Op::kRecvTrans].post;
   auto& opStep = algoCtx.opRounds[Op::kRecvTrans].postStep;
   int step = opStep.step;
@@ -308,6 +343,16 @@ inline bool progressRecvCheckTrans(
         chunkArg.shardDataChunkId,
         chunkArg.dataOffsetElem,
         tmpChunkId);
+    if (ts) {
+      int seqNum = algoCtx.partitionStartRecvRounds + round;
+      std::map<std::string, std::string> md = {
+          {"partition", std::to_string(algoCtx.partition)},
+          {"round", std::to_string(round)},
+          {"step", std::to_string(step)},
+          {"bytes", std::to_string(chunkArg.numel * algoCtx.typeSize)}};
+      ts->addPoint(
+          "RecvTrans_mapper_rdma", seqNum, args.leftRank, std::move(md));
+    }
   }
   return done;
 }
@@ -316,11 +361,10 @@ inline void progressRecvPostFlush(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps,
+    perftrace::Record* ts) {
   int round = algoCtx.opRounds[Op::kRecvFlush].post;
   int step = algoCtx.opRounds[Op::kRecvFlush].postStep.step;
-  std::map<std::string, std::string> metaData = {
-      {"step", std::to_string(step)}, {"round", std::to_string(round)}};
 
   int tmpChunkId = getTmpChunkId(algoCtx, round);
   char* tmpRecvBuf = reinterpret_cast<char*>(resource.tmpRecvBuf) +
@@ -332,13 +376,23 @@ inline void progressRecvPostFlush(
           tmpRecvBuf, resource.tmpRecvBufHdl, &req),
       resource.comm->logMetaData_);
   flushResps.at(round).reset(req);
+  if (ts) {
+    int seqNum = algoCtx.partitionStartRecvRounds + round;
+    std::map<std::string, std::string> md = {
+        {"partition", std::to_string(algoCtx.partition)},
+        {"round", std::to_string(round)},
+        {"step", std::to_string(step)}};
+    ts->startInterval(
+        "RecvFlush_mapper_rdma", seqNum, args.leftRank, std::move(md));
+  }
 }
 
 inline bool progressRecvCheckFlush(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps,
+    perftrace::Record* ts) {
   int round = algoCtx.opRounds[Op::kRecvFlush].done;
   int step = algoCtx.opRounds[Op::kRecvFlush].doneStep.step;
   int chunkId = getTmpChunkId(algoCtx, round);
@@ -360,6 +414,10 @@ inline bool progressRecvCheckFlush(
   if (isComplete) {
     CLOGF_TRACE(
         COLL, "{} done", roundLogPrefix<Op::kRecvFlush>(round, step, algoCtx));
+    if (ts) {
+      ts->endInterval(
+          "RecvFlush_mapper_rdma", algoCtx.partitionStartRecvRounds + round);
+    }
   }
   return isComplete;
 }
@@ -395,7 +453,8 @@ inline bool progressRecvCheckSendBuf(const AlgoContext& algoCtx) {
 inline void progressRecvPostRedCopyKern(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
+    const AlgoContext& algoCtx,
+    perftrace::Record* ts) {
   int round = algoCtx.opRounds[Op::kRecvRedCopy].post;
   int step = algoCtx.opRounds[Op::kRecvRedCopy].postStep.step;
 
@@ -404,12 +463,22 @@ inline void progressRecvPostRedCopyKern(
       "{} posted",
       roundLogPrefix<Op::kRecvRedCopy>(round, step, algoCtx));
   resource.recvRedCopySync->post(round);
+  if (ts) {
+    int seqNum = algoCtx.partitionStartRecvRounds + round;
+    std::map<std::string, std::string> md = {
+        {"partition", std::to_string(algoCtx.partition)},
+        {"round", std::to_string(round)},
+        {"step", std::to_string(step)}};
+    ts->startInterval(
+        "RecvRedCopy_kernelsync_device", seqNum, args.leftRank, std::move(md));
+  }
 }
 
 inline bool progressRecvCheckRedCopyKern(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
-    const AlgoContext& algoCtx) {
+    const AlgoContext& algoCtx,
+    perftrace::Record* ts) {
   int round = algoCtx.opRounds[Op::kRecvRedCopy].done;
   auto& opStep = algoCtx.opRounds[Op::kRecvRedCopy].doneStep;
   int tmpChunkId = getTmpChunkId(algoCtx, round);
@@ -427,6 +496,11 @@ inline bool progressRecvCheckRedCopyKern(
         tmpChunkId,
         fwdRound,
         tmpFwdChunkId);
+    if (ts) {
+      ts->endInterval(
+          "RecvRedCopy_kernelsync_device",
+          algoCtx.partitionStartRecvRounds + round);
+    }
   }
   return done;
 }
@@ -458,17 +532,18 @@ inline void progressSend(
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
     std::vector<std::unique_ptr<CtranMapperRequest>>& dataSResps,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncRResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncRResps,
+    perftrace::Record* ts) {
   // Try post copy to kernel if the send data is ready
   if (opReadyToPost<Op::kSendCopy>(algoCtx) &&
       progressSendCheckSendBuf(algoCtx)) {
-    progressSendPostCopyKern(args, resource, algoCtx);
+    progressSendPostCopyKern(args, resource, algoCtx, ts);
     opUpdatePost<Op::kSendCopy>(algoCtx);
   }
 
   // Check if any outstanding copy is done
   if (opHasPosted<Op::kSendCopy>(algoCtx) &&
-      progressSendCheckCopyKern(args, resource, algoCtx)) {
+      progressSendCheckCopyKern(args, resource, algoCtx, ts)) {
     opUpdateDone<Op::kSendCopy>(algoCtx);
   }
 
@@ -476,13 +551,13 @@ inline void progressSend(
   if (opReadyToPost<Op::kSendTrans>(algoCtx)) {
     // Check if right neighbor has consumed the tmpRecvBuf chunk
     if (progressSendCheckRemRecvBuf(args, resource, algoCtx, bufSyncRResps)) {
-      progressSendPostTrans(args, resource, algoCtx, dataSResps);
+      progressSendPostTrans(args, resource, algoCtx, dataSResps, ts);
       opUpdatePost<Op::kSendTrans>(algoCtx);
     }
   }
 
   // Check if any outstanding transmission has been done
-  progressSendCheckTrans(args, resource, algoCtx, dataSResps);
+  progressSendCheckTrans(args, resource, algoCtx, dataSResps, ts);
 }
 
 inline void progressRecv(
@@ -490,25 +565,26 @@ inline void progressRecv(
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx,
     std::vector<std::unique_ptr<CtranMapperRequest>>& bufSyncSResps,
-    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps) {
+    std::vector<std::unique_ptr<CtranMapperRequest>>& flushResps,
+    perftrace::Record* ts) {
   // Check if have received a chunk from left
   // Data receive doesn't need specific post, thus updating post & done
   // together
   if (opReadyToPost<Op::kRecvTrans>(algoCtx) &&
-      progressRecvCheckTrans(args, resource, algoCtx)) {
+      progressRecvCheckTrans(args, resource, algoCtx, ts)) {
     opUpdatePost<Op::kRecvTrans>(algoCtx);
     opUpdateDone<Op::kRecvTrans>(algoCtx);
   }
 
   // Check if any received chunk is ready to flush
   if (opReadyToPost<Op::kRecvFlush>(algoCtx)) {
-    progressRecvPostFlush(args, resource, algoCtx, flushResps);
+    progressRecvPostFlush(args, resource, algoCtx, flushResps, ts);
     opUpdatePost<Op::kRecvFlush>(algoCtx);
   }
 
   // Check if any outstanding flush is done
   if (opHasPosted<Op::kRecvFlush>(algoCtx)) {
-    if (progressRecvCheckFlush(args, resource, algoCtx, flushResps)) {
+    if (progressRecvCheckFlush(args, resource, algoCtx, flushResps, ts)) {
       opUpdateDone<Op::kRecvFlush>(algoCtx);
     }
   }
@@ -523,14 +599,14 @@ inline void progressRecv(
     // - Combine reduce and next step's sendCopy. Consequently, need check
     // sendBuf availability before reduce.
     if (!isRecvFwd(algoCtx, step) || progressRecvCheckSendBuf(algoCtx)) {
-      progressRecvPostRedCopyKern(args, resource, algoCtx);
+      progressRecvPostRedCopyKern(args, resource, algoCtx, ts);
       opUpdatePost<Op::kRecvRedCopy>(algoCtx);
     }
   }
 
   // Check if any outstanding reduceCopy is done
   if (opHasPosted<Op::kRecvRedCopy>(algoCtx)) {
-    if (progressRecvCheckRedCopyKern(args, resource, algoCtx)) {
+    if (progressRecvCheckRedCopyKern(args, resource, algoCtx, ts)) {
       // Post buffer-ready sync after local reduce used the data.
       progressRecvPostRecvBuf(args, resource, algoCtx, bufSyncSResps);
       opUpdateDone<Op::kRecvRedCopy>(algoCtx);
@@ -634,6 +710,33 @@ static commResult_t impl(
   };
   setupAlgoCtxImpl(algoCtx);
 
+  // Perftrace: conditionally create tracer/record based on CVARs
+  const bool shouldTrace = NCCL_CTRAN_ENABLE_PERFTRACE &&
+      op->opCount >=
+          static_cast<uint64_t>(NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_SKIP_OPS) &&
+      (NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_NUM_OPS == 0 ||
+       op->opCount < static_cast<uint64_t>(
+                         NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_SKIP_OPS +
+                         NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_NUM_OPS));
+
+  std::unique_ptr<perftrace::Tracer> tracer;
+  std::unique_ptr<perftrace::Record> ts;
+  if (shouldTrace) {
+    tracer = std::make_unique<perftrace::Tracer>(algoCtx.rank);
+    ts = std::make_unique<perftrace::Record>("allReduceRing", algoCtx.rank);
+    ts->addMetadata("opCount", std::to_string(op->opCount));
+    ts->addMetadata("count", std::to_string(op->allreduce.count));
+    ts->addMetadata(
+        "datatype", std::to_string(static_cast<int>(op->allreduce.datatype)));
+    ts->addMetadata("nRanks", std::to_string(algoCtx.nRanks));
+    ts->addMetadata("rank", std::to_string(algoCtx.rank));
+    ts->addMetadata("leftRank", std::to_string(args.leftRank));
+    ts->addMetadata("rightRank", std::to_string(args.rightRank));
+    ts->addMetadata("chunkSize", std::to_string(resource.chunkSize));
+    ts->addMetadata("numChunks", std::to_string(resource.numChunks));
+  }
+  perftrace::Record* tsPtr = ts.get();
+
   std::vector<std::unique_ptr<CtranMapperRequest>> dataSResps;
   // - Responses for sync control send to left neighbor. Need wait for a
   // previous response to finish when want to post the same recvBuf chunk.
@@ -651,6 +754,9 @@ static commResult_t impl(
   // we move to next partition.
   while (algoCtx.partitionOffset < algoCtx.numElements) {
     updatePartitionCtxHost(args, resource, algoCtx);
+    if (tsPtr) {
+      tsPtr->startInterval("partition", algoCtx.partition);
+    }
     CLOGF_TRACE(
         COLL,
         ALGO_CXT_LOG_FMT_HOST,
@@ -696,9 +802,9 @@ static commResult_t impl(
             fmt::format("Unsupported data type {}", op->allreduce.datatype),
             commInvalidArgument);
       }
-      progressSend(args, resource, algoCtx, dataSResps, bufSyncRResps);
+      progressSend(args, resource, algoCtx, dataSResps, bufSyncRResps, tsPtr);
       HOST_ABORT();
-      progressRecv(args, resource, algoCtx, bufSyncSResps, flushResps);
+      progressRecv(args, resource, algoCtx, bufSyncSResps, flushResps, tsPtr);
       HOST_ABORT();
     }
 
@@ -719,6 +825,10 @@ static commResult_t impl(
         numSyncRResps,
         numDataSResps);
 
+    if (tsPtr) {
+      tsPtr->endInterval("partition", algoCtx.partition);
+    }
+
     // Reset flags for next partition to reuse.
     // Kernel will wait for partitionSync update before checking the sync flags
     // for the next partition.
@@ -734,6 +844,11 @@ static commResult_t impl(
   resource.sendCopySync->reset();
   resource.recvRedCopySync->reset();
   resource.partitionSync->reset();
+
+  if (tracer && ts) {
+    ts->end();
+    tracer->addRecord(std::move(ts));
+  }
 
   return commSuccess;
 }

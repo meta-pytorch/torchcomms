@@ -2504,6 +2504,24 @@ cvars:
      The default value is /tmp/, and the trace file will be stored in /tmp/ctran_trace_log.*.log.
      If want to upload to manifold, set this as /tmp/{uuid}, then manually upload to manifold.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_SKIP_OPS
+   type        : int64_t
+   default     : 0
+   description : |-
+     Number of initial collective operations to skip before perftrace
+     starts recording in the AllReduceRing algorithm. Use with nccl-tests
+     -w flag to skip warmup iterations. E.g., set to 50 with -w 50 to
+     skip all warmups.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_PERFTRACE_NUM_OPS
+   type        : int64_t
+   default     : 0
+   description : |-
+     Maximum number of collective operations to trace after skipping
+     in the AllReduceRing algorithm.
+     0 means unlimited (trace all remaining operations).
+     E.g., set to 2 to only trace 2 iterations after warmup.
+
  - name        : NCCL_DEBUG_LOGGING_ASYNC
    type        : bool
    default     : true
