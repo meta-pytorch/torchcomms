@@ -143,6 +143,35 @@ std::vector<void*> CtranAvlTree::getAllElems() const {
   return ret;
 }
 
+std::vector<void*> CtranAvlTree::getAllElemVals() const {
+  std::vector<void*> ret;
+  std::deque<CtranAvlTree::TreeElem*> pendingList;
+  std::lock_guard<std::mutex> lock(this->mutex_);
+
+  if (this->root_ != nullptr) {
+    pendingList.push_back(this->root_);
+  }
+
+  // Enqueue all element values in the tree via breadth first traversal
+  while (!pendingList.empty()) {
+    auto r = dequeFront(pendingList);
+    ret.push_back(r->val);
+
+    if (r->left) {
+      pendingList.push_back(r->left);
+    }
+    if (r->right) {
+      pendingList.push_back(r->right);
+    }
+  }
+
+  for (auto e : this->list_) {
+    ret.push_back(e->val);
+  }
+
+  return ret;
+}
+
 std::vector<void*> CtranAvlTree::searchRange(const void* addr, std::size_t len)
     const {
   std::vector<void*> result;

@@ -172,3 +172,57 @@ int main(int argc, char* argv[]) {
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }
+
+// Benchmark for regAll - registers all cached segments as contiguous regions
+TEST_F(RegCacheBench, RegAllTime) {
+  constexpr int numIter = 10;
+  constexpr int numSegments = 8;
+  constexpr size_t segmentSize = 20 * 1024 * 1024; // 20MB per segment
+  std::vector<size_t> segSizes(numSegments, segmentSize);
+
+  auto& mapper = comm_->ctran_->mapper;
+  EXPECT_THAT(mapper, testing::NotNull());
+
+  // Allocate buffers for each iteration
+  std::vector<void*> allBufs(numIter, nullptr);
+  std::vector<std::vector<void*>> allSegHandles(numIter);
+
+  for (int iter = 0; iter < numIter; iter++) {
+    std::vector<TestMemSegment> segments;
+    NCCLCHECK_TEST(ncclMemAllocDisjoint(&allBufs[iter], segSizes, segments));
+
+    // Cache segments (but don't register)
+    for (auto& segment : segments) {
+      void* hdl = nullptr;
+      COMMCHECK_TEST(mapper->regMem(segment.ptr, segment.size, &hdl, false));
+      allSegHandles[iter].push_back(hdl);
+    }
+  }
+
+  // Reset profiler to track only regAll
+  regCache->profiler.wlock()->reset();
+
+  auto t0 = std::chrono::steady_clock::now();
+  for (int iter = 0; iter < numIter; iter++) {
+    COMMCHECK_TEST(ctran::RegCache::deregAll());
+    COMMCHECK_TEST(ctran::RegCache::regAll());
+  }
+  auto t1 = std::chrono::steady_clock::now();
+  auto regAllTime =
+      std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count() /
+      numIter;
+
+  // Cleanup
+  for (int iter = 0; iter < numIter; iter++) {
+    for (auto& segHdl : allSegHandles[iter]) {
+      COMMCHECK_TEST(mapper->deregMem(segHdl));
+    }
+    NCCLCHECK_TEST(ncclMemFreeDisjoint(allBufs[iter], segSizes));
+  }
+
+  std::cout << "RegAllTime: numSegments " << numSegments << ", segmentSize "
+            << segmentSize << ", regAllTime(us) " << regAllTime << std::endl;
+
+  // Report profiler stats
+  regCache->profiler.rlock()->reportSnapshot();
+}

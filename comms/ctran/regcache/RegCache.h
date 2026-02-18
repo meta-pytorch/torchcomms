@@ -423,6 +423,44 @@ class RegCache {
   // Used by test only.
   void waitAsyncRegComplete();
 
+  // Global API to register all cached segments. This is useful in lazy
+  // registration mode where segments are cached but not immediately registered.
+  // Instead of registering each segment individually via
+  // searchRegHandle/regRange, this function discovers all contiguous memory
+  // regions among the cached segments and registers each region separately.
+  //
+  // This function does NOT assume all cached segments form a single
+  // contiguous region. It finds ALL contiguous regions (which may be
+  // non-adjacent in memory) and creates one registration per region.
+  //
+  // The function:
+  // 1. Retrieves all cached segments from the AVL tree
+  // 2. Sorts segments by starting address
+  // 3. Groups adjacent segments into contiguous regions (where one segment's
+  //    end address equals the next segment's start address)
+  // 4. Registers each contiguous region separately
+  //
+  // Example: If segments are at addresses [0x1000-0x2000], [0x2000-0x3000],
+  // [0x5000-0x6000], this creates TWO registrations:
+  //   - Region 1: [0x1000-0x3000] (first two segments are contiguous)
+  //   - Region 2: [0x5000-0x6000] (third segment is isolated)
+  //
+  // This function does NOT check for existing registrations.
+  // Callers should call deregAll() before regAll() if they want to avoid
+  // duplicate registrations.
+  //
+  // Returns commSuccess if successful, or error code otherwise.
+  static commResult_t regAll();
+
+  // Deregister all non-dynamic registration elements from the global cache.
+  // This removes all registrations that were created via regAll() or
+  // regRange(), but does NOT remove the cached segments themselves (they can be
+  // re-registered later). Dynamic registrations (created via regDynamic) are
+  // not affected.
+  //
+  // Returns commSuccess if successful, or error code otherwise.
+  static commResult_t deregAll();
+
   // Profiler to record the events of the global cache.
   // Check its APIs for more details.
   folly::Synchronized<regcache::Profiler> profiler;
@@ -477,7 +515,7 @@ class RegCache {
   //
   // Returns commSuccess on success, or error code on failure.
   // On success, *regHdl is set to the created RegElem pointer.
-  commResult_t registerSegments(
+  commResult_t registerSegmentsTogether(
       void* ptr,
       size_t len,
       int cudaDev,

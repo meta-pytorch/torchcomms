@@ -767,7 +767,7 @@ commResult_t ctran::RegCache::cacheSegment(
 //
 // Returns commSuccess on success, or error code on failure.
 // On success, *regHdl is set to the created RegElem pointer.
-commResult_t ctran::RegCache::registerSegments(
+commResult_t ctran::RegCache::registerSegmentsTogether(
     void* ptr,
     size_t len,
     int cudaDev,
@@ -879,7 +879,7 @@ commResult_t ctran::RegCache::regRange(
       numSegmentsToReg = segments.size();
 
       // Use helper to perform backend registration and update maps
-      FB_COMMCHECK(registerSegments(
+      FB_COMMCHECK(registerSegmentsTogether(
           ptrToReg,
           lenToReg,
           cudaDev,
@@ -1133,6 +1133,297 @@ commResult_t ctran::RegCache::deregDynamic(ctran::regcache::RegElem* regHdl) {
 
   // Deregistration (expensive)
   FB_COMMCHECK(deregElem(regElem.get()));
+
+  return commSuccess;
+}
+
+// Helper function to get all segments and group them into contiguous memory
+// regions. Sorts segments by address and groups when one segment's end address
+// equals the next segment's start address.
+// Takes segments by value to allow move semantics and avoid extra copies.
+namespace {
+std::vector<std::vector<ctran::regcache::Segment*>> getContiguousRegions(
+    std::vector<ctran::regcache::Segment*> segments) {
+  std::vector<std::vector<ctran::regcache::Segment*>> contiguousRegions;
+
+  if (segments.empty()) {
+    return contiguousRegions;
+  }
+
+  // Sort segments by starting address (sort in-place)
+  std::sort(
+      segments.begin(),
+      segments.end(),
+      [](const ctran::regcache::Segment* a, const ctran::regcache::Segment* b) {
+        return reinterpret_cast<uintptr_t>(a->range.buf) <
+            reinterpret_cast<uintptr_t>(b->range.buf);
+      });
+
+  // Group segments into contiguous regions
+  // A contiguous region is a set of segments where each segment's end address
+  // equals the next segment's start address
+  std::vector<ctran::regcache::Segment*> currentRegion;
+  currentRegion.push_back(segments[0]);
+
+  for (size_t i = 1; i < segments.size(); i++) {
+    auto prevSeg = segments[i - 1];
+    auto currSeg = segments[i];
+
+    uintptr_t prevEndAddr =
+        reinterpret_cast<uintptr_t>(prevSeg->range.buf) + prevSeg->range.len;
+    uintptr_t currStartAddr = reinterpret_cast<uintptr_t>(currSeg->range.buf);
+
+    if (prevEndAddr == currStartAddr) {
+      // Contiguous with previous segment, add to current region
+      currentRegion.push_back(currSeg);
+    } else {
+      // Gap detected, start a new region
+      contiguousRegions.push_back(std::move(currentRegion));
+      currentRegion.clear();
+      currentRegion.push_back(currSeg);
+    }
+  }
+  // Add the last region
+  contiguousRegions.push_back(std::move(currentRegion));
+
+  // Log summary of contiguous regions
+  for (size_t i = 0; i < contiguousRegions.size(); i++) {
+    auto& region = contiguousRegions[i];
+    uintptr_t regionStart =
+        reinterpret_cast<uintptr_t>(region.front()->range.buf);
+    uintptr_t regionEnd =
+        reinterpret_cast<uintptr_t>(region.back()->range.buf) +
+        region.back()->range.len;
+    size_t regionLen = regionEnd - regionStart;
+    CLOGF_TRACE(
+        ALLOC,
+        "getContiguousRegions: region[{}] ptr=0x{:x} len={} ({} segments)",
+        i,
+        regionStart,
+        regionLen,
+        region.size());
+  }
+
+  return contiguousRegions;
+}
+} // namespace
+
+// Global API: Static version that doesn't require communicator-specific params
+commResult_t ctran::RegCache::regAll() {
+  auto regCache = ctran::RegCache::getInstance();
+  if (!regCache) {
+    CLOGF(ERR, "regAll: RegCache instance not available");
+    return commInternalError;
+  }
+
+  auto dur = CtranMapperTimer();
+  auto timerBegin = std::chrono::steady_clock::now();
+
+  // Track total stats for scuba logging
+  size_t totalLenRegistered = 0;
+  size_t totalSegmentsRegistered = 0;
+  size_t numContiguousRegions = 0;
+
+  {
+    // Global lock:
+    // - Serialize concurrent registration updates, also with cache|free
+    // segments.
+    auto segmentsAvl = regCache->segmentsAvl_.wlock();
+
+    // Get all segment values directly from AVL tree
+    auto allSegmentVals = segmentsAvl->getAllElemVals();
+    if (allSegmentVals.empty()) {
+      CLOGF(WARN, "regAll: no cached segments found");
+      return commSuccess;
+    }
+
+    // Convert to typed segment pointers
+    std::vector<ctran::regcache::Segment*> segments;
+    segments.reserve(allSegmentVals.size());
+    for (auto val : allSegmentVals) {
+      segments.push_back(reinterpret_cast<ctran::regcache::Segment*>(val));
+    }
+
+    // Use helper to group segments into contiguous regions
+    // Move segments since we no longer need them after this call
+    auto contiguousRegions = getContiguousRegions(std::move(segments));
+
+    if (contiguousRegions.empty()) {
+      CLOGF(WARN, "regAll: no cached segments found");
+      return commSuccess;
+    }
+
+    int cudaDev = contiguousRegions[0].front()->cudaDev;
+    if (cudaDev < 0) {
+      CLOGF(ERR, "regAll: could not determine cudaDev from cached segments");
+      return commInternalError;
+    }
+
+    SetCudaDevRAII setCudaDev(cudaDev);
+
+    numContiguousRegions = contiguousRegions.size();
+
+    // Register each contiguous region separately using the helper
+    for (size_t regionIdx = 0; regionIdx < contiguousRegions.size();
+         regionIdx++) {
+      auto& regionSegments = contiguousRegions[regionIdx];
+
+      // Calculate the range for this contiguous region
+      void* regionPtr = const_cast<void*>(regionSegments.front()->range.buf);
+      uintptr_t regionStartAddr = reinterpret_cast<uintptr_t>(regionPtr);
+      uintptr_t regionEndAddr =
+          reinterpret_cast<uintptr_t>(regionSegments.back()->range.buf) +
+          regionSegments.back()->range.len;
+      size_t regionLen = regionEndAddr - regionStartAddr;
+
+      CLOGF_TRACE(
+          ALLOC,
+          "regAll: registering region {} with {} segments, ptr {} len {}",
+          regionIdx,
+          regionSegments.size(),
+          regionPtr,
+          regionLen);
+
+      ctran::regcache::RegElem* regHdl = nullptr;
+      FB_COMMCHECK(regCache->registerSegmentsTogether(
+          regionPtr,
+          regionLen,
+          cudaDev,
+          regionSegments,
+          regCache->globalBackends_,
+          false /* ncclManaged */,
+          &regHdl));
+
+      totalLenRegistered += regionLen;
+      totalSegmentsRegistered += regionSegments.size();
+
+      // Record registration event for this region
+      regCache->profiler.wlock()->record(
+          ctran::regcache::EventType::kRegMemEvent, dur);
+    }
+  }
+
+  // Log to scuba (aggregate stats for all regions)
+  if (totalLenRegistered > 0) {
+    struct CommLogData defaultLogMetaData = {
+        0, // opCount
+        0, // commHash
+        "regAll", // commDesc
+        0, // rank
+        0 // nRanks
+    };
+    logMemoryEvent(
+        defaultLogMetaData,
+        "",
+        "regAll",
+        0, // No single pointer for multiple regions
+        totalLenRegistered,
+        totalSegmentsRegistered,
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - timerBegin)
+            .count(),
+        true /* isRegMemEvent */);
+  }
+
+  CLOGF_TRACE(
+      ALLOC,
+      "regAll: completed - registered {} contiguous regions, "
+      "total {} segments, {} bytes",
+      numContiguousRegions,
+      totalSegmentsRegistered,
+      totalLenRegistered);
+
+  return commSuccess;
+}
+
+// Global API: Deregister all non-dynamic registration elements.
+// This removes all registrations but keeps cached segments intact.
+commResult_t ctran::RegCache::deregAll() {
+  auto regCache = ctran::RegCache::getInstance();
+  if (!regCache) {
+    CLOGF(ERR, "deregAll: RegCache instance not available");
+    return commInternalError;
+  }
+
+  size_t totalDeregistered = 0;
+  size_t totalSkippedDynamic = 0;
+
+  // Collect regElems to deregister outside the lock
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> toDeregister;
+
+  {
+    auto regElemsMaps = regCache->regElemsMaps_.wlock();
+    auto& regHdlToElemMap = regElemsMaps->regHdlToElemMap;
+    auto& segToRegElemsMap = regElemsMaps->segToRegElemsMap;
+
+    // Iterate through all regElems and collect non-dynamic ones for
+    // deregistration
+    for (auto it = regHdlToElemMap.begin(); it != regHdlToElemMap.end();) {
+      auto& regElem = it->second;
+
+      // Skip dynamic registrations
+      if (regElem->isDynamic_) {
+        totalSkippedDynamic++;
+        ++it;
+        continue;
+      }
+
+      // Remove from segToRegElemsMap
+      for (auto seg : regElem->segments_) {
+        auto segIt = segToRegElemsMap.find(seg);
+        if (segIt != segToRegElemsMap.end()) {
+          auto& regElemsVec = segIt->second;
+          regElemsVec.erase(
+              std::remove(
+                  regElemsVec.begin(), regElemsVec.end(), regElem.get()),
+              regElemsVec.end());
+          if (regElemsVec.empty()) {
+            segToRegElemsMap.erase(segIt);
+          }
+        }
+      }
+
+      // Transfer ownership to toDeregister vector and remove from map
+      toDeregister.push_back(std::move(regElem));
+      it = regHdlToElemMap.erase(it);
+      totalDeregistered++;
+    }
+  }
+
+  // Call remReleaseMem on ipcRegElems before deregistering.
+  // This notifies remote peers to release their imported NVL memory.
+  // Like the mapper path, we use fire-and-forget semantics - the async socket
+  // sends will complete in the background.
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  std::string localPeerId = ipcRegCache->getLocalPeerId();
+  std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedReqs;
+  for (auto& regElem : toDeregister) {
+    auto ipcRegElem =
+        reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
+    if (ipcRegElem != nullptr) {
+      FB_COMMCHECK(
+          ipcRegCache->remReleaseMem(localPeerId, ipcRegElem, postedReqs));
+    }
+  }
+
+  // Perform actual deregistration outside the lock
+  for (auto& regElem : toDeregister) {
+    auto res = regCache->deregElem(regElem.get());
+    if (res != commSuccess) {
+      CLOGF(
+          ERR,
+          "deregAll: failed to deregister regElem ptr {} len {}",
+          regElem->buf,
+          regElem->len);
+    }
+  }
+
+  CLOGF(
+      INFO,
+      "deregAll: completed - deregistered {} registrations, "
+      "skipped {} dynamic",
+      totalDeregistered,
+      totalSkippedDynamic);
 
   return commSuccess;
 }
