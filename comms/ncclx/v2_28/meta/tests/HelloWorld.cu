@@ -3,12 +3,54 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <tuple>
 
 #include <folly/init/Init.h>
 
 #include "cuda_runtime.h"
 #include "mpi.h"
 #include "nccl.h"
+#include "tests_common.cuh"
+
+static std::tuple<int, int, int, ncclComm_t> setupNccl(int argc, char** argv) {
+  MPICHECK_TEST(MPI_Init(&argc, &argv));
+
+  int localRank, globalRank, numRanks;
+  MPICHECK_TEST(MPI_Comm_rank(MPI_COMM_WORLD, &globalRank));
+  MPICHECK_TEST(MPI_Comm_size(MPI_COMM_WORLD, &numRanks));
+
+  MPI_Comm localComm;
+  MPICHECK_TEST(MPI_Comm_split_type(
+      MPI_COMM_WORLD,
+      MPI_COMM_TYPE_SHARED,
+      globalRank,
+      MPI_INFO_NULL,
+      &localComm));
+  MPICHECK_TEST(MPI_Comm_rank(localComm, &localRank));
+  MPICHECK_TEST(MPI_Comm_free(&localComm));
+
+  CUDACHECK_TEST(cudaSetDevice(localRank));
+
+  ncclUniqueId id;
+  if (globalRank == 0) {
+    NCCLCHECK_TEST(ncclGetUniqueId(&id));
+  }
+  MPICHECK_TEST(MPI_Bcast((void*)&id, sizeof(id), MPI_BYTE, 0, MPI_COMM_WORLD));
+
+  ncclComm_t comm;
+  NCCLCHECK_TEST(ncclCommInitRank(&comm, numRanks, id, globalRank));
+
+  return std::make_tuple(localRank, globalRank, numRanks, comm);
+}
+
+static void cleanupNccl(ncclComm_t comm) {
+  ncclCommDestroy(comm);
+  int initialized = 0;
+  MPICHECK_TEST(MPI_Initialized(&initialized));
+  if (initialized) {
+    MPICHECK_TEST(MPI_Finalize());
+  }
+}
 
 int main(int argc, char* argv[]) {
   folly::Init init(&argc, &argv);

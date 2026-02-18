@@ -23,7 +23,7 @@ class LogTest : public ::testing::Test {
 
   void initLogging() {
     ncclDebugLevel = -1;
-    ncclDebugLogFileStr = "";
+    ncclDebugFile = nullptr;
     initNcclLogger();
   }
 };
