@@ -40,23 +40,15 @@ if [ -z "$TORCH_CHANNEL" ]; then
   exit 1
 fi
 
-# Install system packages
-dnf config-manager --set-enabled powertools
-dnf install -y almalinux-release-devel
-
-if [ "$INSTALL_CMAKE" = true ]; then
-  dnf install -y ninja-build cmake
-  # Remove old cmake/ninja from conda/local
-  rm -f "/opt/conda/bin/ninja" || true
-  rm -f "/opt/conda/bin/cmake" || true
-  rm -f "/usr/local/bin/cmake" || true
-fi
-
 # Set up conda environment
 conda config --set solver libmamba
-conda create -n venv python=3.12 -y
+conda create -n venv python=3.12 -c conda-forge -y
 conda activate venv
 python -m pip install --upgrade pip
+
+if [ "$INSTALL_CMAKE" = true ]; then
+  conda install -y conda-forge::cmake conda-forge::ninja
+fi
 
 # Nuke conda libstd++ to avoid conflicts with system toolset
 rm -f "$CONDA_PREFIX/lib/libstdc"* || true
