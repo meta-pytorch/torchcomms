@@ -335,7 +335,7 @@ fi
 
 # Note: debug with: make SHELL="/bin/bash -x"
 # build libnccl
-make -j \
+make -j$(nproc) \
   src.build \
   NVCC_GENCODE="$NVCC_GENCODE" \
   CUDA_HOME="$CUDA_HOME" \
