@@ -9,7 +9,7 @@
 #include <unordered_map>
 
 #include <ATen/ATen.h>
-#include "comms/torchcomms/TorchCommTracing.hpp"
+#include <ATen/record_function.h>
 #include "comms/torchcomms/TorchWork.hpp"
 #include "comms/torchcomms/device/xpu/XpuApi.hpp"
 
@@ -33,8 +33,12 @@ class TorchWorkXCCL : public TorchWork {
       std::shared_ptr<TorchCommXCCL> comm,
       xpuStream_t stream,
       std::chrono::milliseconds timeout_ms,
-      const std::vector<at::Tensor>& inputTensors,
-      std::shared_ptr<TorchCommTracing> tracing);
+      const std::vector<at::Tensor>& inputTensors);
+  TorchWorkXCCL(
+      std::shared_ptr<TorchCommXCCL> comm,
+      xpuStream_t stream,
+      std::chrono::milliseconds timeout_ms,
+      const at::Tensor& inputTensor);
   ~TorchWorkXCCL() override;
 
   // Delete copy and move operations
@@ -50,7 +54,7 @@ class TorchWorkXCCL : public TorchWork {
   }
 
  protected:
-  void recordStart();
+  void recordStart(std::string_view coll_name);
   void recordEnd();
 
   friend class TorchCommXCCL;
@@ -60,7 +64,10 @@ class TorchWorkXCCL : public TorchWork {
   // Check the status of the work object
   WorkStatus checkStatus();
 
+  void recordFunctionStart(std::string_view coll_name);
+
   std::vector<at::Tensor> inputTensors_;
+  at::Tensor inputTensor_;
 
   std::shared_ptr<TorchCommXCCL> comm_;
   xpuEvent_t start_event_;
@@ -73,7 +80,8 @@ class TorchWorkXCCL : public TorchWork {
   std::atomic<WorkStatus> state_;
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
-  std::shared_ptr<TorchCommTracing> tracing_;
+
+  std::optional<at::RecordFunction> recordFunction_;
 };
 
 class TorchWorkXCCLQueue {
@@ -81,16 +89,16 @@ class TorchWorkXCCLQueue {
   TorchWorkXCCLQueue() = default;
   ~TorchWorkXCCLQueue() = default;
 
-  TorchWorkXCCL::WorkStatus garbageCollect(bool isMainThread);
+  TorchWorkXCCL::WorkStatus garbageCollect();
   // Finalize function can only be called from the main thread
   TorchWorkXCCL::WorkStatus finalize();
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
 
  private:
+  TorchWorkXCCL::WorkStatus garbageCollectLocked();
   std::unordered_map<xpuStream_t, std::queue<c10::intrusive_ptr<TorchWorkXCCL>>>
       stream_work_queues_;
-  std::vector<c10::intrusive_ptr<TorchWorkXCCL>> completed_work_queue_;
-  std::recursive_mutex work_queues_mutex_;
+  std::mutex work_queues_mutex_;
 };
 
 } // namespace torch::comms
