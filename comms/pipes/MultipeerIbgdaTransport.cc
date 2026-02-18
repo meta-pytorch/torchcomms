@@ -727,17 +727,25 @@ void MultipeerIbgdaTransport::exchange() {
         doca_gpu_verbs_get_qp_dev(qpHlList_[i]->qp_gverbs, &gpuQp);
     checkDocaError(err, "Failed to get GPU QP handle");
 
-    // Calculate signal buffer offsets for this peer
-    std::size_t signalOffset = i * config_.signalCount * sizeof(uint64_t);
+    // Local signal buffer: use my peer index i for my own buffer layout
+    std::size_t localSignalOffset = i * config_.signalCount * sizeof(uint64_t);
 
-    // Calculate remote signal buffer address with offset
+    // Remote signal buffer: use the peer's index for ME, not my index
+    // for the peer. The remote rank partitions its signal buffer using
+    // its own peer indexing (skip-self), so the slice reserved for us
+    // is at the index the remote rank assigns to myRank_.
+    int peerRank = peerIndexToRank(i);
+    int myIndexOnPeer = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+    std::size_t remoteSignalOffset =
+        myIndexOnPeer * config_.signalCount * sizeof(uint64_t);
+
     auto* remoteSignalPtr = reinterpret_cast<void*>( // NOLINT(performance-no-int-to-ptr)
-        peerExchInfo_[i].signal.addr + signalOffset);
+        peerExchInfo_[i].signal.addr + remoteSignalOffset);
 
     buildParams[i] = P2pIbgdaTransportBuildParams{
         gpuQp,
         IbgdaLocalBuffer(
-            static_cast<char*>(signalBuffer_) + signalOffset,
+            static_cast<char*>(signalBuffer_) + localSignalOffset,
             HostLKey(signalMr_->mr()->lkey)),
         IbgdaRemoteBuffer(remoteSignalPtr, peerExchInfo_[i].signal.rkey),
         static_cast<int>(config_.signalCount)};
