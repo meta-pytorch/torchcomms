@@ -760,6 +760,46 @@ commResult_t ctran::RegCache::cacheSegment(
   return commSuccess;
 }
 
+// Helper function to perform backend registration for a set of segments.
+// Creates a RegElem, registers with backends, and updates regElemsMaps.
+// Caller must hold segmentsAvl lock (for thread safety with segment pointers).
+// This function acquires regElemsMaps_ lock internally.
+//
+// Returns commSuccess on success, or error code on failure.
+// On success, *regHdl is set to the created RegElem pointer.
+commResult_t ctran::RegCache::registerSegments(
+    void* ptr,
+    size_t len,
+    int cudaDev,
+    std::vector<ctran::regcache::Segment*>& segments,
+    const std::vector<bool>& backends,
+    bool ncclManaged,
+    ctran::regcache::RegElem** regHdl) {
+  // Create a new registration element for the segments
+  auto newRegElem = std::make_unique<ctran::regcache::RegElem>(
+      ptr, len, cudaDev, segments, ncclManaged);
+
+  // Backend registration
+  FB_COMMCHECK(newRegElem->doRegister(backends));
+
+  auto regHdlPtr = newRegElem.get();
+
+  // Acquire regElemsMaps_ lock to update maps
+  auto regElemsMaps = regElemsMaps_.wlock();
+  auto& regHdlToElemMap = regElemsMaps->regHdlToElemMap;
+  auto& segToRegElemsMap = regElemsMaps->segToRegElemsMap;
+
+  regHdlToElemMap.emplace(regHdlPtr, std::move(newRegElem));
+  // Correlate the regElem with all associated segments to deregister it
+  // when any segment is freed
+  for (auto seg : segments) {
+    segToRegElemsMap[seg].emplace_back(regHdlPtr);
+  }
+
+  *regHdl = regHdlPtr;
+  return commSuccess;
+}
+
 commResult_t ctran::RegCache::regRange(
     const void* ptr,
     const size_t len,
@@ -837,32 +877,16 @@ commResult_t ctran::RegCache::regRange(
       // range.
       ptrToReg = const_cast<void*>(segments.at(0)->range.buf);
       numSegmentsToReg = segments.size();
-      auto newRegElem = std::make_unique<ctran::regcache::RegElem>(
-          ptrToReg, lenToReg, cudaDev, segments, ncclManaged);
 
-      // Backend registration
-      FB_COMMCHECK(newRegElem->doRegister(backends));
-      auto regHdl_ = newRegElem.get();
-
-      // Global lock to update regElemsMaps.
-      // We have to update regElemsMaps before releasing the global lock to
-      // segmentsAvl. Otherwise, another thread may hold the global lock to
-      // segmentsAvl before regElemsMaps updates, and duplicate the registration
-      // for a given buffer.
-      {
-        auto regElemsMaps = regElemsMaps_.wlock();
-        auto& regHdlToElemMap = regElemsMaps->regHdlToElemMap;
-        auto& segToRegElemsMap = regElemsMaps->segToRegElemsMap;
-
-        regHdlToElemMap.emplace(regHdl_, std::move(newRegElem));
-        // Correlate the regElem with all associated segments to deregister it
-        // when any segment is freed
-        for (auto seg : segments) {
-          segToRegElemsMap[seg].emplace_back(regHdl_);
-        }
-      }
-
-      *regHdl = regHdl_;
+      // Use helper to perform backend registration and update maps
+      FB_COMMCHECK(registerSegments(
+          ptrToReg,
+          lenToReg,
+          cudaDev,
+          segments,
+          backends,
+          ncclManaged,
+          regHdl));
       didRegister = true;
     } else {
       // - WORST PATH: if any one is not found, return nullptr to trigger
