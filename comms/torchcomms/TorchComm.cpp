@@ -632,6 +632,17 @@ std::unique_ptr<RemovableHandle> TorchComm::registerPostHook(
   });
 }
 
+std::unique_ptr<RemovableHandle> TorchComm::registerAbortHook(
+    TorchComm::AbortHook hook) {
+  auto hookId = nextHookId_++;
+  impl_->registerAbortHook(hookId, std::move(hook));
+  return RemovableHandle::create([self = weak_from_this(), hookId]() {
+    if (auto selfPtr = self.lock()) {
+      selfPtr->impl_->unregisterAbortHook(hookId);
+    }
+  });
+}
+
 void TorchComm::preHook(PreHookArgs&& args) {
   for (auto& hook : preHooks_) {
     hook.second(args);

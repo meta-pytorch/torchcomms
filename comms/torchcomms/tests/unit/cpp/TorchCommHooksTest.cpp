@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <comms/torchcomms/TorchComm.hpp>
+#include <comms/torchcomms/TorchCommDummy.hpp>
 #include <comms/torchcomms/TorchCommFactory.hpp>
 #include <gtest/gtest.h>
 #include <cstdlib>
@@ -198,6 +199,86 @@ TEST_F(
   EXPECT_EQ(preHookCalls[0].second, postHookCalls[0].second);
   EXPECT_EQ(preHookCalls[1].second, postHookCalls[1].second);
   EXPECT_EQ(preHookCalls[2].second, postHookCalls[2].second);
+}
+
+TEST_F(TorchCommHooksTest, AbortHookNotCalledAfterRemoval) {
+  at::Device device(at::kCPU);
+  auto torchcomm = new_comm(kBackendName, device, "test_comm", {});
+  ASSERT_NE(torchcomm, nullptr);
+
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->unsafeGetBackend());
+  ASSERT_NE(backend, nullptr);
+
+  int abortHookCallCount = 0;
+  auto handle = torchcomm->registerAbortHook(
+      [&abortHookCallCount]() { abortHookCallCount++; });
+
+  // Trigger abort - hook should be called
+  backend->triggerAbort();
+  EXPECT_EQ(abortHookCallCount, 1);
+
+  // Remove the hook
+  handle->remove();
+
+  // Trigger abort again - hook should NOT be called
+  backend->triggerAbort();
+  EXPECT_EQ(abortHookCallCount, 1);
+}
+
+TEST_F(TorchCommHooksTest, AbortHookInvoked) {
+  at::Device device(at::kCPU);
+  auto torchcomm = new_comm(kBackendName, device, "test_comm", {});
+  ASSERT_NE(torchcomm, nullptr);
+
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->unsafeGetBackend());
+  ASSERT_NE(backend, nullptr);
+
+  int abortHookCallCount = 0;
+  torchcomm->registerAbortHook(
+      [&abortHookCallCount]() { abortHookCallCount++; });
+
+  EXPECT_EQ(abortHookCallCount, 0);
+
+  // Trigger abort to invoke hooks
+  backend->triggerAbort();
+
+  EXPECT_EQ(abortHookCallCount, 1);
+
+  // Trigger abort again - hook should be called again
+  backend->triggerAbort();
+
+  EXPECT_EQ(abortHookCallCount, 2);
+}
+
+TEST_F(TorchCommHooksTest, MultipleAbortHooksInvoked) {
+  at::Device device(at::kCPU);
+  auto torchcomm = new_comm(kBackendName, device, "test_comm", {});
+  ASSERT_NE(torchcomm, nullptr);
+
+  auto backend =
+      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->unsafeGetBackend());
+  ASSERT_NE(backend, nullptr);
+
+  int hook1CallCount = 0;
+  int hook2CallCount = 0;
+  int hook3CallCount = 0;
+
+  torchcomm->registerAbortHook([&hook1CallCount]() { hook1CallCount++; });
+  torchcomm->registerAbortHook([&hook2CallCount]() { hook2CallCount++; });
+  torchcomm->registerAbortHook([&hook3CallCount]() { hook3CallCount++; });
+
+  EXPECT_EQ(hook1CallCount, 0);
+  EXPECT_EQ(hook2CallCount, 0);
+  EXPECT_EQ(hook3CallCount, 0);
+
+  // Trigger abort - all hooks should be called
+  backend->triggerAbort();
+
+  EXPECT_EQ(hook1CallCount, 1);
+  EXPECT_EQ(hook2CallCount, 1);
+  EXPECT_EQ(hook3CallCount, 1);
 }
 
 } // namespace torch::comms
