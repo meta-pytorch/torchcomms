@@ -211,23 +211,17 @@ from torchcomms import new_comm, ReduceOp
 
 def main():
     # Initialize TorchComm with device-specific backend
-    device = torch.accelerator.current_accelerator()
-    device_type = torch.accelerator.current_accelerator().type
-    if device_type == "xpu":
-        backend = "xccl"
-    else:
-        device_type = "cuda"
-        backend = "nccl" # or ncclx
-    torchcomm = new_comm(backend, device, name="main_comm")
+    device = torch.device("<device>") # cuda, xpu, etc
+    torchcomm = new_comm("<backend>", device, name="main_comm") # nccl, ncclx, rccl, xccl, etc
 
     # Get rank and world size
     rank = torchcomm.get_rank()
     world_size = torchcomm.get_size()
 
     # Calculate device ID
-    num_devices = torch.accelerator.device_count()
+    num_devices = torch.<device>.device_count()
     device_id = rank % num_devices
-    target_device = torch.device(f"{device_type}:{device_id}")
+    target_device = torch.device(f"<device>:{device_id}")
 
     print(f"Rank {rank}/{world_size}: Running on device {device_id}")
 
@@ -245,7 +239,7 @@ def main():
     torchcomm.all_reduce(tensor, ReduceOp.SUM, async_op=False)
 
     # Synchronize device stream
-    torch.accelerator.current_stream().synchronize()
+    torch.<device>.current_stream().synchronize()
 
     print(f"Rank {rank}: After AllReduce: {tensor[0].item()}")
 
@@ -296,21 +290,13 @@ Here is the same example as above, but with asynchronous `AllReduce`:
 import torch
 from torchcomms import new_comm, ReduceOp
 
-# Use the correct accelerator device and backend for TorchComms initilizations
-device = torch.accelerator.current_accelerator()
-device_type = torch.accelerator.current_accelerator().type
-
-if device_type == "xpu":
-    backend = "xccl"
-else:
-    device_type = "cuda"
-    backend = "nccl" # or ncclx
-
-torchcomm = new_comm(backend, device, name="main_comm")
+# Use the correct device and backend for TorchComms initilizations
+device = torch.device("<device>") # cuda, xpu, etc
+torchcomm = new_comm("<backend>", device, name="main_comm") # nccl, ncclx, rccl, xccl, etc
 
 rank = torchcomm.get_rank()
-device_id = rank % torch.accelerator.device_count()
-target_device = torch.device(f"{device_type}:{device_id}")
+device_id = rank % torch.<device>.device_count()
+target_device = torch.device(f"<device>:{device_id}")
 
 # Create tensor
 tensor = torch.full((1024,), float(rank + 1), dtype=torch.float32, device=target_device)
