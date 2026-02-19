@@ -7,6 +7,7 @@
 #include "comms/pipes/Timeout.cuh"
 #include "comms/pipes/collectives/AllGather.cuh"
 #include "comms/pipes/collectives/AllToAllv.cuh"
+#include "comms/pipes/collectives/BroadcastContext.cuh"
 
 namespace comms::pipes::benchmark {
 
@@ -36,5 +37,16 @@ __global__ void all_gather_kernel(
     int my_rank_id,
     DeviceSpan<Transport> transports_per_rank,
     Timeout timeout);
+
+/**
+ * Broadcast benchmark kernel.
+ * Single buffer (in-place): root's data is broadcast to all other ranks.
+ */
+__global__ void broadcast_kernel(
+    void* buff_d,
+    int my_rank_id,
+    int root_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    std::size_t nbytes);
 
 } // namespace comms::pipes::benchmark
