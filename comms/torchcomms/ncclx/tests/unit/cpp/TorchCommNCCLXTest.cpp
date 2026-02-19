@@ -1484,6 +1484,28 @@ TEST_F(TorchCommNCCLXTest, NCCLXExceptionIncludesLastErrorString) {
   EXPECT_EQ(exception.getResult(), ncclInternalError);
 }
 
+TEST_F(TorchCommNCCLXTest, NCCLXExceptionIncludesBacktrace) {
+  // Test that NCCLXException message includes a backtrace
+
+  nccl_mock_->setupDefaultBehaviors();
+
+  EXPECT_CALL(*nccl_mock_, getErrorString(ncclInternalError))
+      .WillOnce(Return("internal error"));
+  EXPECT_CALL(*nccl_mock_, getLastError(_)).WillOnce(Return("some error"));
+
+  ncclComm_t mock_comm = reinterpret_cast<ncclComm_t>(0x3000);
+  NCCLXException exception(
+      *nccl_mock_, "Test operation failed", ncclInternalError, mock_comm);
+
+  std::string what_message = exception.what();
+  EXPECT_TRUE(what_message.find("Backtrace:") != std::string::npos)
+      << "Exception message should contain 'Backtrace:' label";
+  EXPECT_TRUE(
+      what_message.find("NCCLXException") != std::string::npos ||
+      what_message.find("getStackTraceStr") != std::string::npos)
+      << "Backtrace should contain a recognizable frame: " << what_message;
+}
+
 TEST_F(TorchCommNCCLXTest, NCCLXExceptionFromFailedSendIncludesLastError) {
   // Test that when send() fails, the thrown NCCLXException includes
   // the NCCL last error string
