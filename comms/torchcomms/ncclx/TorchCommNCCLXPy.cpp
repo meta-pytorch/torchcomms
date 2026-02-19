@@ -242,6 +242,23 @@ Returns:
           py::arg("forward_indices"),
           py::arg("recv_indices"),
           py::arg("request"),
+          py::call_guard<py::gil_scoped_release>())
+      // TODO: Switch to global API when ready. This should not require a
+      // communicator since registration is global and not tied to any specific
+      // communicator.
+      .def(
+          "register_all",
+          &TorchCommNCCLX::registerAll,
+          R"(
+Register all cached memory segments in contiguous registrations.
+)",
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "deregister_all",
+          &TorchCommNCCLX::deregisterAll,
+          R"(
+Deregister registration elements from the global cache.
+)",
           py::call_guard<py::gil_scoped_release>());
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API

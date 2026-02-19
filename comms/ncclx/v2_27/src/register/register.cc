@@ -173,6 +173,20 @@ ncclResult_t ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, vo
   return ncclSuccess;
 }
 
+// Register all cached memory segments in contiguous memory registrations.
+NCCL_API(ncclResult_t, ncclRegisterAll, void);
+ncclResult_t ncclRegisterAll(void) {
+  auto res = ctran::registerAll();
+  return metaCommToNccl(res);
+}
+
+// Deregister all registrations from the global cache.
+NCCL_API(ncclResult_t, ncclDeregisterAll, void);
+ncclResult_t ncclDeregisterAll(void) {
+  auto res = ctran::deregisterAll();
+  return metaCommToNccl(res);
+}
+
 ncclResult_t ncclCommGraphRegister(const ncclComm_t comm, void* buff, size_t size, void** handle) {
   NCCLCHECK(ncclRegister(comm, buff, size, true, handle));
   return ncclSuccess;
