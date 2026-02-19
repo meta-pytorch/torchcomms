@@ -68,8 +68,11 @@ WorkWrapper::WorkWrapper(
     std::vector<at::Tensor> outputTensors)
     : work_(std::move(work)), outputTensors_(std::move(outputTensors)) {
   std::vector<c10::Device> devices;
+  // MTIA, CPU needs to wait for the TorchWork to complete before marking Future
+  // as completed
   for (const auto& tensor : outputTensors_) {
-    if (tensor.device().type() != c10::DeviceType::CPU) {
+    if (tensor.device().type() != c10::DeviceType::CPU &&
+        tensor.device().type() != c10::DeviceType::MTIA) {
       devices.push_back(tensor.device());
       break;
     }
@@ -84,10 +87,12 @@ WorkWrapper::WorkWrapper(
     c10::OptionalDeviceGuard guard(devices[0]);
     future_->markCompleted(c10::IValue(outputTensors_));
   } else if (work_->isCompleted()) {
-    // CPU synchronous op already finished — resolve now.
+    // For other device types (CPU, MTIA etc.) synchronous op already finished —
+    // resolve now.
     future_->markCompleted(c10::IValue(outputTensors_));
   } else {
-    // CPU async: register callback so future completes when setStatus fires.
+    // For other device types (CPU, MTIA etc.) async: register callback so
+    // future completes when setStatus fires.
     work_->setCallback([future = future_, tensors = outputTensors_]() {
       if (!future->completed()) {
         future->markCompleted(c10::IValue(tensors));
