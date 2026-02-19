@@ -38,4 +38,14 @@ __global__ void all_gather_kernel(
       timeout);
 }
 
+__global__ void broadcast_kernel(
+    void* buff_d,
+    int my_rank_id,
+    int root_rank_id,
+    DeviceSpan<Transport> transports_per_rank,
+    std::size_t nbytes) {
+  comms::pipes::collectives::broadcast(
+      buff_d, my_rank_id, root_rank_id, transports_per_rank, nbytes);
+}
+
 } // namespace comms::pipes::benchmark
