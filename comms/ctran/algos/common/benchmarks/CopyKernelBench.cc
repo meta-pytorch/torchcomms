@@ -26,6 +26,14 @@ template <typename T>
 __global__ void
 copyKernel(const T* sendbuff, T* recvbuff, size_t count, int nRuns);
 
+template <typename T>
+__global__ void copyKernel2Dst(
+    const T* sendbuff,
+    T* recvbuff1,
+    T* recvbuff2,
+    size_t count,
+    int nRuns);
+
 //------------------------------------------------------------------------------
 // Common Helper Functions
 //------------------------------------------------------------------------------
@@ -208,6 +216,145 @@ static void d2dCopyKernel(
   CHECK_EQ(cudaFree(dstPtr), cudaSuccess);
 }
 
+/**
+ * Benchmark D2D copyKernel2Dst (dual-destination copy on the same device) with
+ * varying message size and number of groups
+ */
+static void d2dCopyKernel2Dst(
+    uint32_t iters,
+    size_t nBytes,
+    int nBlocks,
+    folly::UserCounters& counters) {
+  const int nRunsPerIter = 50;
+
+  CHECK_EQ(cudaSetDevice(0), cudaSuccess);
+  CudaBenchBase bench;
+  using T = uint8_t;
+  const size_t count = nBytes / sizeof(T);
+  void* srcPtr = nullptr;
+  void* dst1Ptr = nullptr;
+  void* dst2Ptr = nullptr;
+  CHECK_EQ(cudaMalloc(&srcPtr, nBytes), cudaSuccess);
+  CHECK_EQ(cudaMalloc(&dst1Ptr, nBytes), cudaSuccess);
+  CHECK_EQ(cudaMalloc(&dst2Ptr, nBytes), cudaSuccess);
+  float totalTimeMs = 0.0f;
+
+  for (uint32_t i = 0; i < iters; ++i) {
+    bench.startTiming();
+
+    {
+      void* kernArgs[5] = {
+          (void*)&srcPtr,
+          (void*)&dst1Ptr,
+          (void*)&dst2Ptr,
+          (void*)&count,
+          (void*)&nRunsPerIter};
+      dim3 grid = {(unsigned int)nBlocks, 1, 1};
+      dim3 blocks = {256, 1, 1};
+      CHECK_EQ(
+          cudaLaunchKernel(
+              (const void*)copyKernel2Dst<T>,
+              grid,
+              blocks,
+              kernArgs,
+              sizeof(CtranAlgoDeviceState),
+              bench.stream),
+          cudaSuccess);
+    }
+
+    bench.stopTiming();
+    totalTimeMs += bench.measureTime();
+  }
+
+  float avgTimeUs =
+      (totalTimeMs / iters / nRunsPerIter) * 1000.0f; // Convert ms to us
+  float busBwGBps =
+      (nBytes / 1e9f) / (avgTimeUs / 1e6f); // GB/s = bytes / time_in_seconds
+  counters["deviceTimeUs"] =
+      folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
+  counters["busBwGBps"] =
+      folly::UserMetric(busBwGBps, folly::UserMetric::Type::METRIC);
+  counters["nBlocks"] =
+      folly::UserMetric(nBlocks, folly::UserMetric::Type::METRIC);
+
+  CHECK_EQ(cudaFree(srcPtr), cudaSuccess);
+  CHECK_EQ(cudaFree(dst1Ptr), cudaSuccess);
+  CHECK_EQ(cudaFree(dst2Ptr), cudaSuccess);
+}
+
+/**
+ * Benchmark P2P copyKernel2Dst (dual-destination copy across devices) with
+ * varying message size and number of groups: src and dst1 are local on GPU 0,
+ * dst2 is an IPC-imported remote buffer on GPU 1.
+ */
+static void p2pCopyKernel2Dst(
+    uint32_t iters,
+    size_t nBytes,
+    int nBlocks,
+    folly::UserCounters& counters) {
+  const int nRunsPerIter = 50;
+
+  const int senderCudaDev = 0;
+  CHECK_EQ(cudaSetDevice(senderCudaDev), cudaSuccess);
+  CopyBenchSetup senderBench(senderCudaDev);
+  using T = uint8_t;
+  const size_t count = nBytes / sizeof(T);
+  void* srcPtr = nullptr;
+  void* dst1Ptr = nullptr;
+  CHECK_EQ(cudaMalloc(&srcPtr, nBytes), cudaSuccess);
+  CHECK_EQ(cudaMalloc(&dst1Ptr, nBytes), cudaSuccess);
+
+  const int receiverCudaDev = 1;
+  CHECK_EQ(cudaSetDevice(receiverCudaDev), cudaSuccess);
+  CopyBenchSetup receiverBench(receiverCudaDev, nBytes);
+
+  CHECK_EQ(cudaSetDevice(senderCudaDev), cudaSuccess);
+  auto dst2Ptr = senderBench.importRemoteDeviceSyncPtr(receiverBench.ipcDesc);
+
+  float totalTimeMs = 0.0f;
+
+  for (uint32_t i = 0; i < iters; ++i) {
+    senderBench.startTiming();
+
+    {
+      void* kernArgs[5] = {
+          (void*)&srcPtr,
+          (void*)&dst1Ptr,
+          (void*)&dst2Ptr,
+          (void*)&count,
+          (void*)&nRunsPerIter};
+      dim3 grid = {(unsigned int)nBlocks, 1, 1};
+      dim3 blocks = {256, 1, 1};
+      CHECK_EQ(
+          cudaLaunchKernel(
+              (const void*)copyKernel2Dst<T>,
+              grid,
+              blocks,
+              kernArgs,
+              sizeof(CtranAlgoDeviceState),
+              senderBench.stream),
+          cudaSuccess);
+    }
+
+    senderBench.stopTiming();
+    totalTimeMs += senderBench.measureTime();
+  }
+
+  float avgTimeUs =
+      (totalTimeMs / iters / nRunsPerIter) * 1000.0f; // Convert ms to us
+  float busBwGBps =
+      (nBytes / 1e9f) / (avgTimeUs / 1e6f); // GB/s = bytes / time_in_seconds
+  counters["deviceTimeUs"] =
+      folly::UserMetric(avgTimeUs, folly::UserMetric::Type::METRIC);
+  counters["busBwGBps"] =
+      folly::UserMetric(busBwGBps, folly::UserMetric::Type::METRIC);
+  counters["nBlocks"] =
+      folly::UserMetric(nBlocks, folly::UserMetric::Type::METRIC);
+
+  CHECK_EQ(cudaFree(srcPtr), cudaSuccess);
+  CHECK_EQ(cudaFree(dst1Ptr), cudaSuccess);
+}
+
 //------------------------------------------------------------------------------
 // Benchmark Registration Helper Macros
 //------------------------------------------------------------------------------
@@ -244,6 +391,14 @@ REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel);
 // Register p2pCopyKernel benchmarks for all sizes (4MB, 8MB, 16MB, 32MB)
 // and all group counts (1, 2, 4, 8, 16, 32)
 REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel);
+
+// Register d2dCopyKernel2Dst benchmarks for all sizes (4MB, 8MB, 16MB, 32MB)
+// and all group counts (1, 2, 4, 8, 16, 32)
+REGISTER_COPY_BENCH_ALL_SIZES(d2dCopyKernel2Dst);
+
+// Register p2pCopyKernel2Dst benchmarks for all sizes (4MB, 8MB, 16MB, 32MB)
+// and all group counts (1, 2, 4, 8, 16, 32)
+REGISTER_COPY_BENCH_ALL_SIZES(p2pCopyKernel2Dst);
 
 int main(int argc, char** argv) {
   CHECK_GE(bench_utils::getNumCudaDevices(), 2);
