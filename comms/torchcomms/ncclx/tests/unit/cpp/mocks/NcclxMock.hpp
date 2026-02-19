@@ -74,6 +74,19 @@ class NcclxMock : public NcclxApi {
       (ncclComm_t comm, void* handle),
       (override));
 
+  // Pointer-based memory registration (global - does not require comm)
+  MOCK_METHOD(
+      ncclResult_t,
+      globalRegisterWithPtr,
+      (void* buffer, size_t size),
+      (override));
+
+  MOCK_METHOD(
+      ncclResult_t,
+      globalDeregisterWithPtr,
+      (void* buffer, size_t size),
+      (override));
+
   // Point-to-point operations
   MOCK_METHOD(
       ncclResult_t,

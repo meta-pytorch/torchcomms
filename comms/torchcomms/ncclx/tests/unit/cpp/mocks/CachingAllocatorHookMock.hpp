@@ -23,10 +23,7 @@ class CachingAllocatorHookMock : public CachingAllocatorHookImpl {
       regDeregMem,
       (const c10::cuda::CUDACachingAllocator::TraceEntry& te),
       (override));
-  MOCK_METHOD(void, registerComm, (TorchCommNCCLX * comm), (override));
-  MOCK_METHOD(void, deregisterComm, (TorchCommNCCLX * comm), (override));
   MOCK_METHOD(void, registerMemPreHook, (), (override));
-  MOCK_METHOD(void, clear, (), (override));
 
   /**
    * Set up default behaviors for common operations.
@@ -40,21 +37,10 @@ class CachingAllocatorHookMock : public CachingAllocatorHookImpl {
   void reset();
 
   /**
-   * Check if a communicator is registered with this hook.
-   * @param comm Pointer to the communicator to check
-   * @return true if the communicator is registered, false otherwise
-   */
-  bool isCommRegistered(TorchCommNCCLX* comm) override;
-
-  /**
    * Check if registerMemPreHook was called.
    * @return true if registerMemPreHook was called, false otherwise
    */
-  bool isMemRegisteredCalled();
-
- private:
-  std::set<TorchCommNCCLX*> registered_comms_;
-  bool mem_pre_hook_registered_ = false;
+  bool isMemPreHookRegistered() override;
 };
 
 } // namespace torch::comms::test
