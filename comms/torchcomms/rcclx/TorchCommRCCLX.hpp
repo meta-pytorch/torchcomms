@@ -188,6 +188,20 @@ class TorchCommRCCLX : public TorchCommBackend,
       int root,
       bool async_op,
       const GatherOptions& options = {}) override;
+
+  // Persistent AllGather operations
+  AllGatherPHandle all_gather_p_init(
+      at::Tensor& output,
+      const AllGatherPInitOptions& options = {}) override;
+
+  c10::intrusive_ptr<TorchWork> all_gather_p_exec(
+      AllGatherPHandle handle,
+      const at::Tensor& input,
+      bool async_op,
+      const AllGatherPExecOptions& options = {}) override;
+
+  void all_gather_p_free(AllGatherPHandle handle) override;
+
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
   // Communicator Management

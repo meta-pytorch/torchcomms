@@ -4,10 +4,14 @@
 
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include <rccl.h> // @manual=//comms/rcclx:rcclx-dev
 
 namespace torch::comms {
+
+// Hints type for persistent collective operations
+using RcclxHints = std::unordered_map<std::string, std::string>;
 
 #ifdef NCCL_RMA_SUPPORTED
 using RcclxWindow = ncclWindow_t;
@@ -214,6 +218,28 @@ class RcclxApi {
   [[nodiscard]] virtual ncclResult_t redOpDestroy(
       ncclRedOp_t op,
       ncclComm_t comm) = 0;
+
+  // Persistent AllGather operations (ncclx namespace)
+  virtual ncclResult_t allGatherInit(
+      void* recvbuff,
+      size_t maxRecvCount,
+      const RcclxHints& hints,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      hipStream_t stream,
+      void** request) = 0;
+
+  virtual ncclResult_t allGatherExec(
+      const void* sendbuff,
+      size_t count,
+      ncclDataType_t datatype,
+      void* request) = 0;
+
+  virtual ncclResult_t pFree(void* request) = 0;
+
+  // Memory allocation for NCCL-managed buffers
+  virtual ncclResult_t memAlloc(void** ptr, size_t size) = 0;
+  virtual ncclResult_t memFree(void* ptr) = 0;
 };
 
 /**
@@ -409,6 +435,28 @@ class DefaultRcclxApi : public RcclxApi {
 
   [[nodiscard]] ncclResult_t redOpDestroy(ncclRedOp_t op, ncclComm_t comm)
       override;
+
+  // Persistent AllGather operations (ncclx namespace)
+  ncclResult_t allGatherInit(
+      void* recvbuff,
+      size_t maxRecvCount,
+      const RcclxHints& hints,
+      ncclDataType_t datatype,
+      ncclComm_t comm,
+      hipStream_t stream,
+      void** request) override;
+
+  ncclResult_t allGatherExec(
+      const void* sendbuff,
+      size_t count,
+      ncclDataType_t datatype,
+      void* request) override;
+
+  ncclResult_t pFree(void* request) override;
+
+  // Memory allocation for NCCL-managed buffers
+  ncclResult_t memAlloc(void** ptr, size_t size) override;
+  ncclResult_t memFree(void* ptr) override;
 };
 
 } // namespace torch::comms

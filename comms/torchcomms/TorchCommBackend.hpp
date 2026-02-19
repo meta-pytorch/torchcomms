@@ -180,6 +180,44 @@ class TorchCommBackend {
     abortHooks_.erase(hookId);
   }
 
+  std::unordered_map<int64_t, AbortHook> abortHooks_;
+
+  // Persistent AllGather operations
+  // Handle type for persistent AllGather (opaque pointer)
+  using AllGatherPHandle = void*;
+
+  // Initialize persistent AllGather operation
+  // Returns a handle that can be used for multiple executions
+  virtual AllGatherPHandle all_gather_p_init(
+      at::Tensor& /* output */,
+      const AllGatherPInitOptions& /* options */ = {}) {
+    throw std::logic_error(
+        "[TorchCommBackend]: all_gather_p_init not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
+  }
+
+  // Execute persistent AllGather
+  // Can be called multiple times with the same handle
+  virtual c10::intrusive_ptr<TorchWork> all_gather_p_exec(
+      AllGatherPHandle /* handle */,
+      const at::Tensor& /* input */,
+      bool /* async_op */,
+      const AllGatherPExecOptions& /* options */ = {}) {
+    throw std::logic_error(
+        "[TorchCommBackend]: all_gather_p_exec not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
+  }
+
+  // Free persistent AllGather handle
+  virtual void all_gather_p_free(AllGatherPHandle /* handle */) {
+    throw std::logic_error(
+        "[TorchCommBackend]: all_gather_p_free not implemented for "
+        "communicator:" +
+        std::string(getCommName()));
+  }
+
  protected:
   void runAbortHooks() {
     for (const auto& [_, hook] : abortHooks_) {
@@ -193,8 +231,6 @@ class TorchCommBackend {
       }
     }
   }
-
-  std::unordered_map<int64_t, AbortHook> abortHooks_;
 };
 
 /**

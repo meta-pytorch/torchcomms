@@ -538,6 +538,25 @@ std::shared_ptr<TorchCommWindow> TorchComm::new_window(
   return window;
 }
 
+// Persistent AllGather operations
+TorchComm::AllGatherPHandle TorchComm::all_gather_p_init(
+    at::Tensor& output,
+    const AllGatherPInitOptions& options) {
+  return impl_->all_gather_p_init(output, options);
+}
+
+c10::intrusive_ptr<TorchWork> TorchComm::all_gather_p_exec(
+    AllGatherPHandle handle,
+    const at::Tensor& input,
+    bool async_op,
+    const AllGatherPExecOptions& options) {
+  return impl_->all_gather_p_exec(handle, input, async_op, options);
+}
+
+void TorchComm::all_gather_p_free(AllGatherPHandle handle) {
+  impl_->all_gather_p_free(handle);
+}
+
 // Communicator Management
 std::shared_ptr<TorchComm> TorchComm::split(
     const std::vector<int>& ranks,
