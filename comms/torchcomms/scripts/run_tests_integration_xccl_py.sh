@@ -23,6 +23,7 @@ run_tests () {
         BarrierTest.py
         BatchSendRecvTest.py
         BroadcastTest.py
+        DDPCommTest.py
         FSDPCommTest.py
         GatherTest.py
         MultiCommTest.py

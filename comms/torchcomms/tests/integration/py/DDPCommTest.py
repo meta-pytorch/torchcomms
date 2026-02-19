@@ -61,8 +61,8 @@ class DDPCommTest(unittest.TestCase):
                 )
             prev_loss = loss_val
 
-        if device.type == "cuda":
-            torch.cuda.synchronize()
+        if torch.accelerator.is_available():
+            torch.accelerator.synchronize()
         comm.finalize()
 
 
