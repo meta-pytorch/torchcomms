@@ -10,7 +10,7 @@ namespace ctran::perftrace {
 
 namespace {
 // Convert tp to dur in us to be visible in trace
-const int kPointToDurUs = 5;
+const int kPointToDurUs = 1;
 } // namespace
 
 std::string TimestampPoint::toJsonEntry(

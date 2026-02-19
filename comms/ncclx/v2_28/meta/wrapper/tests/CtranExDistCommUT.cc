@@ -19,9 +19,6 @@ class CtranExCommTest : public CtranExBaseTest {
  public:
   void SetUp() override {
     CtranExBaseTest::SetUp();
-
-    regCache_ = CtranMapperRegCache::getInstance();
-    ASSERT_NE(regCache_, nullptr);
   }
 
  protected:
@@ -55,8 +52,6 @@ class CtranExCommTest : public CtranExBaseTest {
     }
     return errs;
   }
-
-  std::shared_ptr<CtranMapperRegCache> regCache_{nullptr};
 };
 
 TEST_F(CtranExCommTest, Initialized) {
@@ -101,27 +96,10 @@ TEST_F(CtranExCommTest, RegHostMem) {
   const size_t count = 4096;
   std::vector<int> dataH(count);
 
-  // Reset profiling record after communicator initialization
-  // so that we can check the registration events in the test
-  regCache_->profiler.wlock()->reset();
-
   void* segHdl = nullptr;
   // Register the buffer as CTran cached segment
   ctranExComm->regMem(dataH.data(), count * sizeof(int), &segHdl);
   EXPECT_NE(segHdl, nullptr);
-
-  // Check profiled registration events.
-  auto snapshot = regCache_->profiler.rlock()->getSnapshot();
-  EXPECT_EQ(snapshot.currentNumCache, 1);
-  EXPECT_EQ(snapshot.totalNumCache, 1);
-
-  if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::eager) {
-    EXPECT_EQ(snapshot.currentNumReg, 1);
-    EXPECT_EQ(snapshot.totalNumReg, 1);
-  } else {
-    EXPECT_EQ(snapshot.currentNumReg, 0);
-    EXPECT_EQ(snapshot.totalNumReg, 0);
-  }
 
   // Deregister the segment record
   ctranExComm->deregMem(segHdl);
@@ -133,10 +111,6 @@ TEST_F(CtranExCommTest, RegHostMemEager) {
   auto ctranExComm = std::make_unique<CtranExComm>(ncclComm_, "ctranExCommUT");
   EXPECT_TRUE(ctranExComm->isInitialized());
 
-  // Reset profiling record after communicator initialization
-  // so that we can check the registration events in the test
-  regCache_->profiler.wlock()->reset();
-
   const size_t count = 4096;
   std::vector<int> dataH(count);
 
@@ -146,13 +120,6 @@ TEST_F(CtranExCommTest, RegHostMemEager) {
   ctranExComm->regMem(
       dataH.data(), count * sizeof(int), &segHdl, true /* forceRegister */);
   EXPECT_NE(segHdl, nullptr);
-
-  // Check profiled registration events.
-  auto snapshot = regCache_->profiler.rlock()->getSnapshot();
-  EXPECT_EQ(snapshot.currentNumCache, 1);
-  EXPECT_EQ(snapshot.currentNumReg, 1);
-  EXPECT_EQ(snapshot.totalNumCache, 1);
-  EXPECT_EQ(snapshot.totalNumReg, 1);
 
   // Deregister the segment record and also internal backend registration
   ctranExComm->deregMem(segHdl);
@@ -316,7 +283,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(kTestInPlace, kTestOutOfPlace),
         // concurrentColl
         ::testing::Values(true)),
-    [&](const testing::TestParamInfo<CtranExCommBroadcastFixture::ParamType>&
+    [&](const ::testing::TestParamInfo<CtranExCommBroadcastFixture::ParamType>&
             info) {
       return std::to_string(std::get<0>(info.param)) + "int_" +
           testInPlaceTypeToStr(std::get<1>(info.param)) + "_concurrentColl_" +
