@@ -226,7 +226,16 @@ void TorchCommNCCL::timeoutWatchdog() noexcept {
     // Thread-safety: checkWorkQueue() calls garbageCollect() which acquires
     // work_queues_mutex_ before accessing the work queue, ensuring safe
     // concurrent access with the main thread's enqueueWork() calls.
+    //
+    // NOTE: garbageCollect may pop a completed work item whose destruction
+    // releases the last shared_ptr to this comm, triggering our destructor.
+    // In that case, the destructor sets shutdown_=true and detaches this
+    // thread. We must check shutdown_ immediately after to avoid accessing
+    // potentially destroyed member state.
     checkWorkQueue();
+    if (shutdown_) {
+      break;
+    }
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {
       // Log the error and abort the process.  We cannot abort the NCCL

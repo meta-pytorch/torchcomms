@@ -74,8 +74,44 @@ TorchCommNCCLX::TorchCommNCCLX(const ncclComm_t nccl_comm)
 
 TorchCommNCCLX::~TorchCommNCCLX() {
   if (init_state_ == InitializationState::INITIALIZED) {
-    TC_LOG(ERROR, this) << "TorchCommNCCLX " << name_
-                        << " was not finalized before destruction";
+    TC_LOG(WARNING, this)
+        << "TorchCommNCCLX " << name_
+        << " was not finalized before destruction. "
+        << "This may indicate a resource leak. Please call finalize() explicitly.";
+
+    // Signal shutdown to timeout watchdog thread to prevent it from accessing
+    // this object after destruction
+    shutdown_ = true;
+
+    // Wake up the timeout watchdog thread
+    {
+      std::lock_guard<std::mutex> lock(timeout_mutex_);
+      timeout_cv_.notify_all();
+    }
+
+    // Wait for timeout thread to finish. If we're being called from within
+    // the timeout thread itself (e.g., garbageCollect popped a work item whose
+    // destruction released the last shared_ptr to this comm), we must detach
+    // instead of join to avoid a deadlock.
+    if (timeout_thread_.joinable()) {
+      if (std::this_thread::get_id() != timeout_thread_.get_id()) {
+        timeout_thread_.join();
+      } else {
+        timeout_thread_.detach();
+      }
+    }
+
+    // Abort the NCCL communicator since we can't do a clean finalization
+    // Note: We don't call the full abortNcclComm() to avoid potential abort()
+    // calls from options_.abort_process_on_timeout_or_error
+    if (nccl_comm_) {
+      // Best effort to abort the communicator - ignore errors since we're
+      // in the destructor
+      if (nccl_api_) {
+        (void)nccl_api_->commAbort(nccl_comm_);
+      }
+      nccl_comm_ = nullptr;
+    }
   }
 
   // We need to detach the memory hook in case finalize is not called,
