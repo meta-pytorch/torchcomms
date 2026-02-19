@@ -1,10 +1,12 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <string.h>
+#include <algorithm>
 #include <memory>
 
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/utils/Alloc.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/TmpBufSegManager.h"
@@ -809,14 +811,21 @@ commResult_t CtranAlgo::initTmpBufs() {
       TmpbufType::RECVCOUNTS_TMPBUF,
       sizeof(size_t) * all2allvDynamicMaxSendcounts);
 
-  segmentManager.insert(
-      TmpbufType::RING_TMP_SEND_BUF,
-      NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS *
-          NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE);
-  segmentManager.insert(
-      TmpbufType::RING_TMP_RECV_BUF,
-      NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS *
-          NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE);
+  // Ring buffer must be large enough for the maximum BDP the auto-tune may
+  // produce at runtime. Priority: (1) explicit chunk_size * num_chunks CVARs,
+  // (2) AUTO_TUNE_MAX_BDP CVAR, (3) kMaxBDP fallback.
+  size_t ringBufSize = NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP;
+  if (NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE > 0 &&
+      NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS > 0) {
+    ringBufSize =
+        static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE) *
+        NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS;
+  }
+  if (ringBufSize <= 0) {
+    ringBufSize = ctran::allreduce::ring::kMaxBDP;
+  }
+  segmentManager.insert(TmpbufType::RING_TMP_SEND_BUF, ringBufSize);
+  segmentManager.insert(TmpbufType::RING_TMP_RECV_BUF, ringBufSize);
 
   // request slab buffer from memory pool
   if (comm_->memCache_) {
