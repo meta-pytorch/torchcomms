@@ -19,8 +19,8 @@ if(NOT EXISTS "${XCCL_INCLUDE}" OR NOT EXISTS "${XCCL_SHARED_LIB}")
     return()
 endif()
 
-message(STATUS "XCCL include path   : ${XCCL_INCLUDE}")
-message(STATUS "XCCL library        : ${XCCL_SHARED_LIB}")
+message(STATUS "XCCL include path    : ${XCCL_INCLUDE}")
+message(STATUS "XCCL library         : ${XCCL_SHARED_LIB}")
 
 file(GLOB TORCHCOMMS_XCCL_SOURCES "comms/torchcomms/xccl/*.cpp")
 file(GLOB TORCHCOMMS_XPU_API_SOURCE "comms/torchcomms/device/xpu/XpuApi.cpp")
@@ -56,6 +56,18 @@ target_link_libraries(torchcomms_comms_xccl PRIVATE
 target_link_libraries(torchcomms_comms_xccl PRIVATE
     ${XCCL_SHARED_LIB}
 )
+
+SET(XCCL_COMPILE_OPTIONS -Wall -Wextra)
+
+# Enable additional warnings and treat them as errors if XCCL_WERROR is set
+set(XCCL_WERROR $ENV{XCCL_WERROR})
+if(XCCL_WERROR)
+    list(APPEND XCCL_COMPILE_OPTIONS -Wpedantic -Werror)
+endif()
+
+message(STATUS "XCCL compile options : ${XCCL_COMPILE_OPTIONS}")
+
+target_compile_options(torchcomms_comms_xccl PRIVATE ${XCCL_COMPILE_OPTIONS})
 
 install(TARGETS torchcomms_comms_xccl
     LIBRARY DESTINATION .

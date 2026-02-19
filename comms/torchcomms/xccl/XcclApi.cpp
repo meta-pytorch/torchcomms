@@ -33,14 +33,18 @@ onecclResult_t DefaultXcclApi::commDestroy(onecclComm_t comm) {
   return onecclCommDestroy(comm);
 }
 
-onecclResult_t DefaultXcclApi::commAbort(onecclComm_t comm) {
+// Remove [[maybe_unused]] when implementing this function once onecclCommAbort
+// is available.
+onecclResult_t DefaultXcclApi::commAbort([[maybe_unused]] onecclComm_t comm) {
   // return onecclCommAbort(comm);
   return onecclNotImplemented;
 }
 
+// Remove [[maybe_unused]] when implementing this function once
+// onecclCommGetAsyncError is available.
 onecclResult_t DefaultXcclApi::commGetAsyncError(
-    onecclComm_t comm,
-    onecclResult_t* asyncError) {
+    [[maybe_unused]] onecclComm_t comm,
+    [[maybe_unused]] onecclResult_t* asyncError) {
   // return onecclCommGetAsyncError(comm);
   return onecclNotImplemented;
 }
@@ -55,16 +59,22 @@ onecclResult_t DefaultXcclApi::commSplit(
   return onecclCommSplit(comm, color, key, newcomm, config);
 }
 
+// Remove [[maybe_unused]] when implementing this function once
+// onecclCommRegister is available.
 onecclResult_t DefaultXcclApi::commRegister(
-    onecclComm_t comm,
-    void* buffer,
-    size_t size,
-    void** handle) {
+    [[maybe_unused]] onecclComm_t comm,
+    [[maybe_unused]] void* buffer,
+    [[maybe_unused]] size_t size,
+    [[maybe_unused]] void** handle) {
   // return onecclCommRegister(comm, buffer, size, handle);
   return onecclNotImplemented;
 }
 
-onecclResult_t DefaultXcclApi::commDeregister(onecclComm_t comm, void* handle) {
+// Remove [[maybe_unused]] when implementing this function once
+// onecclCommDeregister is available.
+onecclResult_t DefaultXcclApi::commDeregister(
+    [[maybe_unused]] onecclComm_t comm,
+    [[maybe_unused]] void* handle) {
   // return onecclCommDeregister(comm, handle);
   return onecclNotImplemented;
 }

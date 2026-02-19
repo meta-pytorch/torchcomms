@@ -483,7 +483,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::recv(
   if (src == rank_) [[unlikely]] {
     throw XCCLException(
         *xccl_api_,
-        "XCCL recv called with source rank equal to current rank" +
+        "XCCL recv called with source rank equal to current rank " +
             std::to_string(rank_) + "; operation would hang",
         onecclInvalidUsage);
   }
@@ -2053,13 +2053,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
     for (int peer_rank = 0; peer_rank < comm_size_; ++peer_rank) {
       if (peer_rank != root) {
         auto& peer_tensor = output_tensor_list[peer_rank];
-        xccl_api_->recv(
+        onecclResult_t result = xccl_api_->recv(
             peer_tensor.data_ptr(),
             peer_tensor.numel(),
             getXcclDataType(peer_tensor),
             peer_rank,
             xccl_comm_,
             stream);
+        if (result != onecclSuccess) [[unlikely]] {
+          throw XCCLException(*xccl_api_, "XCCL recv failed in gather", result);
+        }
       }
     }
     // xccl_api_->groupEnd();
@@ -2075,13 +2078,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
         "memcpyAsync failed in gather");
   } else {
     // Non-root ranks send to root
-    xccl_api_->send(
+    onecclResult_t result = xccl_api_->send(
         input_tensor.data_ptr(),
         input_tensor.numel(),
         getXcclDataType(input_tensor),
         root,
         xccl_comm_,
         stream);
+    if (result != onecclSuccess) [[unlikely]] {
+      throw XCCLException(*xccl_api_, "XCCL send failed in gather", result);
+    }
   }
 
   // Record end event after XCCL operations
@@ -2093,10 +2099,11 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
   return work;
 }
 
+// Remove [[maybe_unused]] when split is implemented
 std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
-    const std::vector<int>& ranks,
-    const std::string& name,
-    const CommOptions& options) {
+    [[maybe_unused]] const std::vector<int>& ranks,
+    [[maybe_unused]] const std::string& name,
+    [[maybe_unused]] const CommOptions& options) {
   throw std::runtime_error(
       "XCCL split is not supported now and will be added later");
 }
