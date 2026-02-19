@@ -9,6 +9,7 @@ import unittest
 import torch
 from torchcomms import ReduceOp
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+    filter_int8_overflow_cases,
     get_dtype_name,
     get_op_name,
     TorchCommTestWrapper,
@@ -21,8 +22,13 @@ class ReduceScatterVTest(unittest.TestCase):
     # Class variables for test parameters
     counts = [0, 4, 1024, 1024 * 1024]
     dtypes = [torch.float, torch.int, torch.int8]
-    ops = [ReduceOp.SUM, ReduceOp.MAX]
+    ops = [ReduceOp.SUM, ReduceOp.MAX, ReduceOp.AVG]
     num_replays = 4
+
+    def get_test_cases(self):
+        normal_test_cases = list(itertools.product(self.counts, self.dtypes, self.ops))
+        # Max ranks for int8 is 11 because 12 * 12 = 144 overflows int8 (>127)
+        return filter_int8_overflow_cases(normal_test_cases, self.num_ranks, 11)
 
     def get_wrapper(self):
         return TorchCommTestWrapper()
@@ -253,6 +259,8 @@ class ReduceScatterVTest(unittest.TestCase):
             return self.num_ranks * (self.rank + 1)
         elif op == ReduceOp.MAX:
             return self.rank + 1
+        elif op == ReduceOp.AVG:
+            return self.rank + 1
         else:
             raise RuntimeError("Unsupported reduce operation")
 
@@ -280,31 +288,31 @@ class ReduceScatterVTest(unittest.TestCase):
 
     def test_sync_reduce_scatter_v(self):
         """Test synchronous reduce_scatter_v with work object."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._sync_reduce_scatter_v(count, dtype, op)
 
     def test_sync_reduce_scatter_v_no_work(self):
         """Test synchronous reduce_scatter_v without work object."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._sync_reduce_scatter_v_no_work(count, dtype, op)
 
     def test_async_reduce_scatter_v(self):
         """Test asynchronous reduce_scatter_v with wait."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._async_reduce_scatter_v(count, dtype, op)
 
     def test_async_reduce_scatter_v_early_reset(self):
         """Test asynchronous reduce_scatter_v with early reset."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._async_reduce_scatter_v_early_reset(count, dtype, op)
 
     def test_reduce_scatter_v_input_deleted(self):
         """Test asynchronous reduce_scatter_v with input deleted after enqueue."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._reduce_scatter_v_input_deleted(count, dtype, op)
 
@@ -314,7 +322,7 @@ class ReduceScatterVTest(unittest.TestCase):
     )
     def test_graph_reduce_scatter_v(self):
         """Test CUDA Graph reduce_scatter_v."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._graph_reduce_scatter_v(count, dtype, op)
 
@@ -324,7 +332,7 @@ class ReduceScatterVTest(unittest.TestCase):
     )
     def test_graph_reduce_scatter_v_input_deleted(self):
         """Test CUDA Graph reduce_scatter_v with input deleted after graph creation."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._graph_reduce_scatter_v_input_deleted(count, dtype, op)
 

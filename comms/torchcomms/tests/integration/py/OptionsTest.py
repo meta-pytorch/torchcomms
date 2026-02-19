@@ -64,6 +64,9 @@ class OptionsTest(unittest.TestCase):
 
     def test_send_recv(self):
         """Test Send and Recv operations with options."""
+        if self.num_ranks < 2:
+            self.skipTest("This test requires at least 2 ranks.")
+
         if self.rank % 2 == 0:
             # Even ranks: send first, then receive
             self.torchcomm.send(

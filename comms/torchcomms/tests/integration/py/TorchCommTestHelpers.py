@@ -3,10 +3,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import os
-from typing import Tuple, Union
+from typing import List, Tuple, Union
 
 import torch
-from torchcomms import new_comm, RedOpType
+from torchcomms import new_comm, RedOpType, ReduceOp
 from torchcomms._comms import _get_store
 
 
@@ -46,6 +46,8 @@ def get_op_name(op):
         return "BXor"
     elif op.type == RedOpType.PREMUL_SUM:
         return "PremulSum"
+    elif op.type == RedOpType.AVG:
+        return "Avg"
     else:
         return "Unknown: " + str(op.type)
 
@@ -90,9 +92,52 @@ def get_rank_and_size() -> Tuple[int, int]:
     if torchrun_rank is not None and torchrun_size is not None:
         return int(torchrun_rank), int(torchrun_size)
 
+    # Try PALS environment variables
+    pals_rank = os.environ.get("PALS_RANKID")
+    # Note: PALS does not provide an env variable for size, like `PALS_SIZE`.
+    # We just check it if supplied in the future. We try to query size from other
+    # env vars that may be set in a PALS environment, such as PMI_SIZE, WORLD_SIZE,
+    # etc.
+    # TODO: replace with the correct PALS env var for size once it is available.
+    pals_size = (
+        os.environ.get("PALS_SIZE")
+        or os.environ.get("WORLD_SIZE")
+        or os.environ.get("PMI_SIZE")
+        or os.environ.get("OMPI_COMM_WORLD_SIZE")
+    )
+
+    if pals_rank is not None and pals_size is not None:
+        return int(pals_rank), int(pals_size)
+
     raise RuntimeError(
         "Could not determine rank or world size from environment variables."
     )
+
+
+def filter_int8_overflow_cases(
+    test_cases: List[Tuple[int, torch.dtype, ReduceOp]], num_ranks: int, max_ranks: int
+) -> List[Tuple[int, torch.dtype, ReduceOp]]:
+    """
+    Filter out test cases that would cause int8 overflow.
+
+    When the current number of ranks is greater than the specified maximum,
+    this function removes any test case that uses an ``int8`` tensor with ``ReduceOp.SUM`` or ``ReduceOp.AVG``,
+    since the accumulated result may overflow the int8 range.
+    """
+    if num_ranks > max_ranks:
+        print(
+            f"Filtering ReduceOp.SUM or ReduceOp.AVG test cases for int8 overflow (num_ranks > {max_ranks})..."
+        )
+        return [
+            test_case
+            for test_case in test_cases
+            if not (
+                test_case[1] == torch.int8
+                and (test_case[2] == ReduceOp.SUM or test_case[2] == ReduceOp.AVG)
+            )
+        ]
+    else:
+        return test_cases
 
 
 def maybe_set_rank_envs():

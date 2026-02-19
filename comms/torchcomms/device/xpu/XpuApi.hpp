@@ -60,64 +60,70 @@ class XpuApi {
   virtual ~XpuApi() = default;
 
   // Device management
-  virtual xpu_result_t setDevice(int device) = 0;
-  virtual xpu_result_t getDeviceProperties(xpuDeviceProp* prop, int device) = 0;
-  virtual xpu_result_t memGetInfo(size_t* free, size_t* total) = 0;
-  virtual xpu_result_t getDeviceCount(int* count) = 0;
+  [[nodiscard]] virtual xpu_result_t setDevice(int device) = 0;
+  [[nodiscard]] virtual xpu_result_t getDeviceProperties(
+      xpuDeviceProp* prop,
+      int device) = 0;
+  [[nodiscard]] virtual xpu_result_t memGetInfo(
+      size_t* free,
+      size_t* total) = 0;
+  [[nodiscard]] virtual xpu_result_t getDeviceCount(int* count) = 0;
 
   // Stream management
-  virtual xpu_result_t streamCreateWithPriority(
+  [[nodiscard]] virtual xpu_result_t streamCreateWithPriority(
       xpuStream_t& stream,
       unsigned int flags,
       int priority) = 0;
-  virtual xpu_result_t streamDestroy(const xpuStream_t& stream) = 0;
-  virtual xpu_result_t streamWaitEvent(
+  [[nodiscard]] virtual xpu_result_t streamDestroy(
+      const xpuStream_t& stream) = 0;
+  [[nodiscard]] virtual xpu_result_t streamWaitEvent(
       const xpuStream_t& stream,
       xpuEvent_t& event,
       unsigned int flags) = 0;
-  virtual xpuStream_t getCurrentXPUStream(int device_index) = 0;
-  virtual xpu_result_t streamSynchronize(const xpuStream_t& stream) = 0;
-  virtual xpu_result_t streamIsCapturing(
+  [[nodiscard]] virtual xpuStream_t getCurrentXPUStream(int device_index) = 0;
+  [[nodiscard]] virtual xpu_result_t streamSynchronize(
+      const xpuStream_t& stream) = 0;
+  [[nodiscard]] virtual xpu_result_t streamIsCapturing(
       const xpuStream_t& stream,
       xpuStreamCaptureStatus* pCaptureStatus) = 0;
-  virtual xpu_result_t streamGetCaptureInfo(
+  [[nodiscard]] virtual xpu_result_t streamGetCaptureInfo(
       const xpuStream_t& stream,
       xpuStreamCaptureStatus* pCaptureStatus,
       unsigned long long* pId) = 0;
 
   // Memory management
-  virtual xpu_result_t malloc(void** devPtr, size_t size) = 0;
-  virtual xpu_result_t free(void* devPtr) = 0;
-  virtual xpu_result_t memcpyAsync(
+  [[nodiscard]] virtual xpu_result_t malloc(void** devPtr, size_t size) = 0;
+  [[nodiscard]] virtual xpu_result_t free(void* devPtr) = 0;
+  [[nodiscard]] virtual xpu_result_t memcpyAsync(
       void* dst,
       const void* src,
       size_t count,
       const xpuStream_t& stream) = 0;
 
   // Event management
-  virtual xpu_result_t eventCreate(xpuEvent_t& event) = 0;
-  virtual xpu_result_t eventCreateWithFlags(
+  [[nodiscard]] virtual xpu_result_t eventCreate(xpuEvent_t& event) = 0;
+  [[nodiscard]] virtual xpu_result_t eventCreateWithFlags(
       xpuEvent_t& event,
       unsigned int flags) = 0;
-  virtual xpu_result_t eventDestroy(const xpuEvent_t& event) = 0;
-  virtual xpu_result_t eventRecord(
+  [[nodiscard]] virtual xpu_result_t eventDestroy(const xpuEvent_t& event) = 0;
+  [[nodiscard]] virtual xpu_result_t eventRecord(
       xpuEvent_t& event,
       const xpuStream_t& stream) = 0;
-  virtual xpu_result_t eventQuery(const xpuEvent_t& event) = 0;
+  [[nodiscard]] virtual xpu_result_t eventQuery(const xpuEvent_t& event) = 0;
 
   // Graph operations (unsupported, kept for API compatibility)
-  virtual xpu_result_t userObjectCreate(
+  [[nodiscard]] virtual xpu_result_t userObjectCreate(
       xpuUserObject_t* object_out,
       void* ptr,
       xpuHostFn_t destroy,
       unsigned int initialRefcount,
       unsigned int flags) = 0;
-  virtual xpu_result_t graphRetainUserObject(
+  [[nodiscard]] virtual xpu_result_t graphRetainUserObject(
       xpuGraph_t graph,
       xpuUserObject_t object,
       unsigned int count,
       unsigned int flags) = 0;
-  virtual xpu_result_t streamGetCaptureInfo_v2(
+  [[nodiscard]] virtual xpu_result_t streamGetCaptureInfo_v2(
       const xpuStream_t& stream,
       xpuStreamCaptureStatus* captureStatus_out,
       unsigned long long* id_out,
@@ -134,62 +140,67 @@ class DefaultXpuApi : public XpuApi {
   ~DefaultXpuApi() override = default;
 
   // Device management
-  xpu_result_t setDevice(int device) override;
-  xpu_result_t getDeviceProperties(xpuDeviceProp* prop, int device) override;
-  xpu_result_t memGetInfo(size_t* free, size_t* total) override;
-  xpu_result_t getDeviceCount(int* count) override;
+  [[nodiscard]] xpu_result_t setDevice(int device) override;
+  [[nodiscard]] xpu_result_t getDeviceProperties(
+      xpuDeviceProp* prop,
+      int device) override;
+  [[nodiscard]] xpu_result_t memGetInfo(size_t* free, size_t* total) override;
+  [[nodiscard]] xpu_result_t getDeviceCount(int* count) override;
 
   // Stream management
-  xpu_result_t streamCreateWithPriority(
+  [[nodiscard]] xpu_result_t streamCreateWithPriority(
       xpuStream_t& stream,
       unsigned int flags,
       int priority) override;
-  xpu_result_t streamDestroy(const xpuStream_t& stream) override;
-  xpu_result_t streamWaitEvent(
+  [[nodiscard]] xpu_result_t streamDestroy(const xpuStream_t& stream) override;
+  [[nodiscard]] xpu_result_t streamWaitEvent(
       const xpuStream_t& stream,
       xpuEvent_t& event,
       unsigned int flags) override;
-  xpuStream_t getCurrentXPUStream(int device_index) override;
-  xpu_result_t streamSynchronize(const xpuStream_t& stream) override;
-  xpu_result_t streamIsCapturing(
+  [[nodiscard]] xpuStream_t getCurrentXPUStream(int device_index) override;
+  [[nodiscard]] xpu_result_t streamSynchronize(
+      const xpuStream_t& stream) override;
+  [[nodiscard]] xpu_result_t streamIsCapturing(
       const xpuStream_t& stream,
       xpuStreamCaptureStatus* pCaptureStatus) override;
-  xpu_result_t streamGetCaptureInfo(
+  [[nodiscard]] xpu_result_t streamGetCaptureInfo(
       const xpuStream_t& stream,
       xpuStreamCaptureStatus* pCaptureStatus,
       unsigned long long* pId) override;
 
   // Memory management
-  xpu_result_t malloc(void** devPtr, size_t size) override;
-  xpu_result_t free(void* devPtr) override;
-  xpu_result_t memcpyAsync(
+  [[nodiscard]] xpu_result_t malloc(void** devPtr, size_t size) override;
+  [[nodiscard]] xpu_result_t free(void* devPtr) override;
+  [[nodiscard]] xpu_result_t memcpyAsync(
       void* dst,
       const void* src,
       size_t count,
       const xpuStream_t& stream) override;
 
   // Event management
-  xpu_result_t eventCreate(xpuEvent_t& event) override;
-  xpu_result_t eventCreateWithFlags(xpuEvent_t& event, unsigned int flags)
-      override;
-  xpu_result_t eventDestroy(const xpuEvent_t& event) override;
-  xpu_result_t eventRecord(xpuEvent_t& event, const xpuStream_t& stream)
-      override;
-  xpu_result_t eventQuery(const xpuEvent_t& event) override;
+  [[nodiscard]] xpu_result_t eventCreate(xpuEvent_t& event) override;
+  [[nodiscard]] xpu_result_t eventCreateWithFlags(
+      xpuEvent_t& event,
+      unsigned int flags) override;
+  [[nodiscard]] xpu_result_t eventDestroy(const xpuEvent_t& event) override;
+  [[nodiscard]] xpu_result_t eventRecord(
+      xpuEvent_t& event,
+      const xpuStream_t& stream) override;
+  [[nodiscard]] xpu_result_t eventQuery(const xpuEvent_t& event) override;
 
   // Graph operations (unsupported)
-  xpu_result_t userObjectCreate(
+  [[nodiscard]] xpu_result_t userObjectCreate(
       xpuUserObject_t* object_out,
       void* ptr,
       xpuHostFn_t destroy,
       unsigned int initialRefcount,
       unsigned int flags) override;
-  xpu_result_t graphRetainUserObject(
+  [[nodiscard]] xpu_result_t graphRetainUserObject(
       xpuGraph_t graph,
       xpuUserObject_t object,
       unsigned int count,
       unsigned int flags) override;
-  xpu_result_t streamGetCaptureInfo_v2(
+  [[nodiscard]] xpu_result_t streamGetCaptureInfo_v2(
       const xpuStream_t& stream,
       xpuStreamCaptureStatus* captureStatus_out,
       unsigned long long* id_out,

@@ -9,6 +9,7 @@ import unittest
 import torch
 from torchcomms import ReduceOp
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+    filter_int8_overflow_cases,
     get_dtype_name,
     get_op_name,
     TorchCommTestWrapper,
@@ -23,6 +24,12 @@ class ReduceScatterTest(unittest.TestCase):
     dtypes = [torch.float, torch.int, torch.int8]
     ops = [ReduceOp.SUM, ReduceOp.MAX, ReduceOp.AVG]
     num_replays = 4
+
+    def get_test_cases(self):
+        # Create all test parameters
+        normal_test_cases = list(itertools.product(self.counts, self.dtypes, self.ops))
+        # Max ranks for int8 is 11 because 12 * 12 = 144 overflows int8 (>127)
+        return filter_int8_overflow_cases(normal_test_cases, self.num_ranks, 11)
 
     def get_wrapper(self):
         return TorchCommTestWrapper()
@@ -267,31 +274,31 @@ class ReduceScatterTest(unittest.TestCase):
 
     def test_sync_reduce_scatter(self):
         """Test synchronous reduce_scatter with work object."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._sync_reduce_scatter(count, dtype, op)
 
     def test_sync_reduce_scatter_no_work(self):
         """Test synchronous reduce_scatter without work object."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._sync_reduce_scatter_no_work(count, dtype, op)
 
     def test_async_reduce_scatter(self):
         """Test asynchronous reduce_scatter with wait."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._async_reduce_scatter(count, dtype, op)
 
     def test_async_reduce_scatter_early_reset(self):
         """Test asynchronous reduce_scatter with early reset."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._async_reduce_scatter_early_reset(count, dtype, op)
 
     def test_reduce_scatter_input_deleted(self):
         """Test asynchronous reduce_scatter with input deleted after enqueue."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._reduce_scatter_input_deleted(count, dtype, op)
 
@@ -300,7 +307,7 @@ class ReduceScatterTest(unittest.TestCase):
     )
     def test_graph_reduce_scatter(self):
         """Test CUDA Graph reduce_scatter."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._graph_reduce_scatter(count, dtype, op)
 
@@ -309,7 +316,7 @@ class ReduceScatterTest(unittest.TestCase):
     )
     def test_graph_reduce_scatter_input_deleted(self):
         """Test CUDA Graph reduce_scatter with input deleted after graph creation."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._graph_reduce_scatter_input_deleted(count, dtype, op)
 

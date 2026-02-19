@@ -9,6 +9,7 @@ import unittest
 import torch
 from torchcomms import RedOpType, ReduceOp
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+    filter_int8_overflow_cases,
     get_dtype_name,
     get_op_name,
     TorchCommTestWrapper,
@@ -44,7 +45,11 @@ class AllReduceTest(unittest.TestCase):
                 self.counts, premul_sum_types_ops
             )
         ]
-        return normal_test_cases + premul_sum_test_cases
+        # Max ranks for int8 is 15 because sum(1..16) = 136 which overflows int8 (>127)
+        return (
+            filter_int8_overflow_cases(normal_test_cases, self.num_ranks, 15)
+            + premul_sum_test_cases
+        )
 
     def get_wrapper(self):
         return TorchCommTestWrapper()

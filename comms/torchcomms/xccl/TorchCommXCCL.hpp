@@ -226,7 +226,13 @@ class TorchCommXCCL : public TorchCommBackend,
   c10::intrusive_ptr<TorchWorkXCCL> createWork(
       xpuStream_t stream,
       std::chrono::milliseconds timeout,
-      const std::vector<at::Tensor>& inputTensors);
+      const std::vector<at::Tensor>& inputTensors = {});
+  c10::intrusive_ptr<TorchWorkXCCL> createWork(
+      xpuStream_t stream,
+      std::chrono::milliseconds timeout,
+      const at::Tensor& inputTensor);
+
+  void checkRankRange(int rank) const;
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -268,7 +274,7 @@ class TorchCommXCCL : public TorchCommBackend,
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
-  void checkWorkQueue(bool isMainThread);
+  void checkWorkQueue();
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
   xpuStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
@@ -278,6 +284,8 @@ class TorchCommXCCL : public TorchCommBackend,
   at::Device device_;
   int comm_size_{};
   int rank_{};
+  int local_size_{};
+  bool is_scale_out_{false};
   CommOptions options_;
   size_t max_event_pool_size_{};
   std::optional<xpuStream_t> internal_stream_; // Initialized in init()
@@ -309,7 +317,6 @@ class TorchCommXCCL : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  std::shared_ptr<TorchCommTracing> tracing_;
   bool high_priority_stream_{false};
   std::string name_;
 };
