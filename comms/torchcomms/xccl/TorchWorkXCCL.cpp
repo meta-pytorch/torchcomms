@@ -109,6 +109,21 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
   return state_;
 }
 
+std::optional<float> TorchWorkXCCL::getDuration() const {
+  // Duration is only available after work has completed
+  if (state_ != WorkStatus::COMPLETED) {
+    return std::nullopt;
+  }
+
+  try {
+    // XPUEvent::elapsed_time returns time in milliseconds
+    double duration_ms = start_event_.elapsed_time(end_event_);
+    return static_cast<float>(duration_ms);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 void TorchWorkXCCL::wait() {
   // If already completed, return immediately
   WorkStatus local_state = state_;

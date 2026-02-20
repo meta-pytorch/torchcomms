@@ -158,6 +158,21 @@ TorchWorkNCCL::WorkStatus TorchWorkNCCL::checkStatus() {
   return status();
 }
 
+std::optional<float> TorchWorkNCCL::getDuration() const {
+  // Duration is only available after work has completed
+  if (status() != WorkStatus::COMPLETED) {
+    return std::nullopt;
+  }
+
+  float duration_ms = 0.0f;
+  cudaError_t err =
+      cudaEventElapsedTime(&duration_ms, start_event_, end_event_);
+  if (err != cudaSuccess) {
+    return std::nullopt;
+  }
+  return duration_ms;
+}
+
 void TorchWorkNCCL::wait() {
   // If already completed, return immediately
   WorkStatus local_state = status();
