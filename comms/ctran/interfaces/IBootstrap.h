@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <stdexcept>
 #include <vector>
 
 #include <folly/futures/Future.h>
@@ -59,6 +60,43 @@ class IBootstrap {
       int localRank,
       int localNranks,
       std::vector<int> localRankToCommRank) = 0;
+
+  /**
+   * AllGather within an NVLink domain, which may span multiple hosts (MNNVL).
+   *
+   * `buf` refers to a continuous memory segment of size `nvlNranks * len`.
+   * `nvlLocalRank` is this rank's index within the NVL domain [0, nvlNranks).
+   * `nvlRankToCommRank` maps NVL-local indices to global communicator ranks.
+   *
+   * Unlike allGatherIntraNode (which uses a host-scoped communicator),
+   * this creates a dynamic subcommunicator from the specified global ranks,
+   * supporting cross-host NVLink domains like GB200 NVL72.
+   *
+   * Subclasses must override this if NVL domain operations are needed.
+   */
+  virtual folly::SemiFuture<int> allGatherNvlDomain(
+      void* buf,
+      int len,
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) {
+    throw std::runtime_error("allGatherNvlDomain not implemented");
+  }
+
+  /**
+   * Barrier within an NVLink domain, which may span multiple hosts (MNNVL).
+   *
+   * `nvlLocalRank` is this rank's index within the NVL domain [0, nvlNranks).
+   * `nvlRankToCommRank` maps NVL-local indices to global communicator ranks.
+   *
+   * Subclasses must override this if NVL domain operations are needed.
+   */
+  virtual folly::SemiFuture<int> barrierNvlDomain(
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) {
+    throw std::runtime_error("barrierNvlDomain not implemented");
+  }
 
   /*
    * `buf` refers to a continuous memory segment that is of size `len`

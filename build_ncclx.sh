@@ -366,7 +366,7 @@ mkdir -p "$BUILDDIR"
 pushd "${NCCL_HOME}"
 
 function build_nccl {
-  make VERBOSE=1 -j \
+  make VERBOSE=1 -j$(nproc) \
     src.build \
     BUILDDIR="$BUILDDIR" \
     NVCC_GENCODE="$NVCC_GENCODE" \

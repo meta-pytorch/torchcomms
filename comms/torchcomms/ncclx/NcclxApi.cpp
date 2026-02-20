@@ -2,6 +2,8 @@
 
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 
+#include <folly/debugging/symbolizer/Symbolizer.h>
+
 // Check NCCL version at compile time
 #if NCCL_VERSION_CODE < NCCL_VERSION(2, 25, 0)
 #error \
@@ -19,7 +21,8 @@ NCCLXException::NCCLXException(
     ncclComm_t comm)
     : message_(
           message + ": " + nccl_api.getErrorString(result) +
-          " \nNCCL Last Error: " + nccl_api.getLastError(comm)),
+          " \nNCCL Last Error: " + nccl_api.getLastError(comm) +
+          " \nBacktrace:\n" + folly::symbolizer::getStackTraceStr()),
       result_(result) {}
 
 const char* NCCLXException::what() const noexcept {

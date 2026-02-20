@@ -8,6 +8,7 @@
 #include <c10/util/thread_name.h>
 #include <nlohmann/json.hpp>
 #include <torch/csrc/distributed/c10d/TraceUtils.h>
+#include <torch/csrc/distributed/c10d/control_plane/Handlers.hpp>
 #include <torch/csrc/jit/serialization/pickler.h>
 #include <sstream>
 
@@ -54,6 +55,58 @@ inline std::string pickle_str(const c10::IValue& v) {
 }
 } // namespace
 
+namespace {
+
+// Static registration of the torchcomms_fr_trace_json handler
+c10d::control_plane::RegisterHandler torchcommsFrTraceJsonRegistration(
+    "torchcomms_fr_trace_json",
+    [](const c10d::control_plane::Request& req,
+       c10d::control_plane::Response& res) {
+      const auto& params = req.params();
+      size_t validParamCount = 0;
+
+      // valid params
+      const std::string includeCollectivesStr = "includecollectives";
+      const std::string onlyActiveStr = "onlyactive";
+
+      std::unordered_map<std::string, bool> processedParams = {
+          {includeCollectivesStr, true}, {onlyActiveStr, false}};
+
+      for (const auto& [paramName, paramValue] : params) {
+        auto it = processedParams.find(paramName);
+        if (it != processedParams.end()) {
+          validParamCount++;
+          if (paramValue == "true") {
+            it->second = true;
+          } else if (paramValue == "false") {
+            it->second = false;
+          } else {
+            res.setStatus(400);
+            res.setContent(
+                "Invalid value for " + paramName +
+                    " valid values are true or false",
+                "text/plain");
+            return;
+          }
+        }
+      }
+      if (validParamCount < params.size()) {
+        res.setStatus(400);
+        res.setContent(
+            "Invalid parameters - unexpected param passed in", "text/plain");
+        return;
+      }
+
+      auto* recorder = FlightRecorder<c10::Event>::get();
+      auto trace = recorder->dump_json(
+          std::nullopt,
+          processedParams[includeCollectivesStr],
+          processedParams[onlyActiveStr]);
+      res.setContent(std::move(trace), "application/json");
+      res.setStatus(200);
+    });
+
+} // namespace
 template <typename EventType>
 float getDurationFromEvent(EventType& start, EventType& end);
 
