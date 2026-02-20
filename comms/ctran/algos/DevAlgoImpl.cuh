@@ -14,6 +14,50 @@
  * Algorithm module functions
  */
 
+// For cases where where sendbuff != recvbuff
+// D2D copy data between buffers within the same GPU.
+template <typename T>
+__device__ __forceinline__ void ctranKernCopyRaw(
+    const T* sendbuff,
+    T* recvbuff,
+    size_t count,
+    int groupIdx,
+    int ngroups) {
+  if (canCopy16(sendbuff, recvbuff, count)) {
+    copy<uint4>(
+        reinterpret_cast<uint4*>(recvbuff),
+        reinterpret_cast<const uint4*>(sendbuff),
+        count * sizeof(T) / sizeof(uint4),
+        groupIdx,
+        ngroups);
+  } else {
+    copy<T>(recvbuff, sendbuff, count, groupIdx, ngroups);
+  }
+}
+
+// For cases where where src != dst1 != dst2
+// D2D copy data between buffers within the same GPU.
+template <typename T>
+__device__ __forceinline__ void ctranKernCopyMultiDestRaw(
+    const T* src,
+    T* dst1,
+    T* dst2,
+    size_t count,
+    int groupIdx,
+    int ngroups) {
+  if (canCopy16(src, dst1, dst2, count)) {
+    copy<uint4>(
+        reinterpret_cast<uint4*>(dst1),
+        reinterpret_cast<uint4*>(dst2),
+        reinterpret_cast<const uint4*>(src),
+        count * sizeof(T) / sizeof(uint4),
+        groupIdx,
+        ngroups);
+  } else {
+    copy<T>(dst1, dst2, src, count, groupIdx, ngroups);
+  }
+}
+
 // D2D copy data between buffers within the same GPU.
 template <typename T>
 __device__ __forceinline__ void ctranKernCopy(
@@ -23,16 +67,27 @@ __device__ __forceinline__ void ctranKernCopy(
     int groupIdx,
     int ngroups) {
   if (sendbuff != recvbuff) {
-    if (canCopy16(sendbuff, recvbuff, count)) {
-      copy<uint4>(
-          reinterpret_cast<uint4*>(recvbuff),
-          reinterpret_cast<const uint4*>(sendbuff),
-          count * sizeof(T) / sizeof(uint4),
-          groupIdx,
-          ngroups);
-    } else {
-      copy<T>(recvbuff, sendbuff, count, groupIdx, ngroups);
-    }
+    ctranKernCopyRaw<T>(sendbuff, recvbuff, count, groupIdx, ngroups);
+  }
+}
+
+// D2D copy data between buffers within the same GPU.
+template <typename T>
+__device__ __forceinline__ void ctranKernCopyMultiDest(
+    const T* src,
+    T* dst1,
+    T* dst2,
+    size_t count,
+    int groupIdx,
+    int ngroups) {
+  bool srcIsDst1 = src == dst1;
+  bool srcIsDst2 = src == dst2;
+  if (!srcIsDst1 && !srcIsDst2) {
+    ctranKernCopyMultiDestRaw<T>(src, dst1, dst2, count, groupIdx, ngroups);
+  } else if (!srcIsDst1) {
+    ctranKernCopyRaw<T>(src, dst1, count, groupIdx, ngroups);
+  } else if (!srcIsDst2) {
+    ctranKernCopyRaw<T>(src, dst2, count, groupIdx, ngroups);
   }
 }
 

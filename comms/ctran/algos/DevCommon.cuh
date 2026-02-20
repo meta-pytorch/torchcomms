@@ -454,6 +454,65 @@ copy(T* dst, const T* src, size_t count, int groupIdx, int nGroups) {
   copyUnroll<4, T>(dst, src, count, groupIdx, nGroups);
 }
 
+// Fused dual-destination copy: reads src once and writes to two destinations.
+// Reduces memory read traffic vs two separate copy() calls.
+template <int Unroll16, typename T>
+__device__ __forceinline__ void copyUnroll(
+    T* dst1,
+    T* dst2,
+    const T* src,
+    size_t count,
+    int groupIdx,
+    int nGroups) {
+  if (groupIdx >= nGroups) {
+    return;
+  }
+
+  constexpr int kTPer16Bytes = sizeof(uint4) / sizeof(T);
+  constexpr int kUnroll = kTPer16Bytes * Unroll16;
+
+  auto numPerBlock = blockDim.x * kUnroll;
+  auto limitUnroll = ctran::utils::roundDown(count, numPerBlock);
+
+  for (size_t i = groupIdx * numPerBlock + threadIdx.x; i < limitUnroll;
+       i += nGroups * numPerBlock) {
+    T v[kUnroll];
+
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      v[j] = src[i + j * blockDim.x];
+    }
+
+#pragma unroll
+    for (int j = 0; j < kUnroll; ++j) {
+      dst1[i + j * blockDim.x] = v[j];
+      dst2[i + j * blockDim.x] = v[j];
+    }
+  }
+
+  if (count != limitUnroll &&
+      groupIdx == ((limitUnroll / numPerBlock) % nGroups)) {
+    for (size_t i = limitUnroll + threadIdx.x; i < count; i += blockDim.x) {
+      T val = src[i];
+      dst1[i] = val;
+      dst2[i] = val;
+    }
+  }
+}
+
+template <typename T>
+__device__ __forceinline__ void
+copy(T* dst1, T* dst2, const T* src, size_t count, int groupIdx, int nGroups) {
+  // Skip if my group is not invovled
+  if (groupIdx >= nGroups) {
+    return;
+  }
+
+  // Each thread handles 4 x uint4 = 64 bytes per loop iteration, regardless
+  // of sizeof(T)
+  copyUnroll<4, T>(dst1, dst2, src, count, groupIdx, nGroups);
+}
+
 template <typename T>
 __device__ __forceinline__ void copyWarp(
     T* dst,
@@ -482,12 +541,20 @@ __device__ __forceinline__ bool canCopy16(const T* buf, size_t count) {
 // aligned copy (i.e., copy<uint4>) can be used. It is used in self-copy or NVL
 // zero-copy cases where both buffers are provided by user.
 template <typename T>
-__device__ __forceinline__ bool
-canCopy16(const T* sendbuff, T* recvbuff, size_t count) {
-  bool sendBuffAligned = ((uintptr_t)sendbuff % 16) == 0;
-  bool recvBuffAligned = ((uintptr_t)recvbuff % 16) == 0;
+__device__ __forceinline__ bool canCopy16(const T* src, T* dst, size_t count) {
+  bool srcAligned = ((uintptr_t)src % 16) == 0;
+  bool dstAligned = ((uintptr_t)dst % 16) == 0;
   bool sizeAligned = ((size_t)count * sizeof(T) % 16) == 0;
-  return sendBuffAligned && recvBuffAligned && sizeAligned;
+  return srcAligned && dstAligned && sizeAligned;
+}
+
+template <typename T>
+__device__ __forceinline__ bool
+canCopy16(const T* src, T* dst1, T* dst2, size_t count) {
+  bool srcAligned = ((uintptr_t)src % 16) == 0;
+  bool dstAligned = ((uintptr_t)dst1 % 16) == 0 && ((uintptr_t)dst2 % 16) == 0;
+  bool sizeAligned = ((size_t)count * sizeof(T) % 16) == 0;
+  return srcAligned && dstAligned && sizeAligned;
 }
 
 // Checks whether a single buffer's address is aligned to 16 bytes
