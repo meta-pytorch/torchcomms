@@ -3,6 +3,7 @@
 #pragma once
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
 #include "comms/ctran/algos/CtranAlgoDev.h"
+#include "comms/ctran/algos/DevAlgoImpl.cuh"
 #include "comms/ctran/algos/DevCommon.cuh"
 #include "comms/ctran/algos/barrier.cuh"
 #include "comms/ctran/algos/common/GpeKernelSyncDev.cuh"
@@ -120,16 +121,20 @@ __device__ __forceinline__ void _progressRecv(
       localReduce<T, RedOp>(2, srcs, 2, dsts, roundArgs.numel, algoCtx.nRanks);
     }
   } else {
-    // src is internal buffer, should always be 16B aligned. Thus, check only
-    // dst buffer
     if (isRecvFwd_ && updateData) { // steps [n, 2n-2)
       // all gather pipelining
       // copy recvBuf to both sendBuf and data
-      copy(tmpSendBuf, tmpRecvBuf, roundArgs.numel, blockIdx.x, gridDim.x);
-      copy(recv_data, tmpRecvBuf, roundArgs.numel, blockIdx.x, gridDim.x);
+      ctranKernCopyMultiDestRaw<T>(
+          tmpRecvBuf,
+          recv_data,
+          tmpSendBuf,
+          roundArgs.numel,
+          blockIdx.x,
+          gridDim.x);
     } else if (!isRecvFwd_ && updateData) { // step 2n-2
       // copy recvBuf to only data
-      copy(recv_data, tmpRecvBuf, roundArgs.numel, blockIdx.x, gridDim.x);
+      ctranKernCopyRaw<T>(
+          tmpRecvBuf, recv_data, roundArgs.numel, blockIdx.x, gridDim.x);
     }
   }
 
@@ -182,7 +187,8 @@ __device__ __forceinline__ void _progressSend(
       tmpSendBuf,
       roundArgs.numel);
 
-  copy(tmpSendBuf, send_data, roundArgs.numel, blockIdx.x, gridDim.x);
+  ctranKernCopy<T>(
+      send_data, tmpSendBuf, roundArgs.numel, blockIdx.x, gridDim.x);
 
   // Notify host side its completion
   complete(args.sendCopySync, blockIdx.x, round);

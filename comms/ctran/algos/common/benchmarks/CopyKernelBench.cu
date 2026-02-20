@@ -24,3 +24,29 @@ template __global__ void copyKernel<uint8_t>(
     uint8_t* recvbuff,
     size_t count,
     int nRuns);
+
+//------------------------------------------------------------------------------
+// Test Kernel: Dual-Destination Copy
+//------------------------------------------------------------------------------
+template <typename T>
+__global__ void copyKernel2Dst(
+    const T* sendbuff,
+    T* recvbuff1,
+    T* recvbuff2,
+    size_t count,
+    int nRuns) {
+  for (int i = 0; i < nRuns; i++) {
+    ctranKernCopyMultiDest<T>(
+        sendbuff, recvbuff1, recvbuff2, count, blockIdx.x, gridDim.x);
+  }
+}
+
+//------------------------------------------------------------------------------
+// Explicit Template Instantiations: Dual-Destination Copy
+//------------------------------------------------------------------------------
+template __global__ void copyKernel2Dst<uint8_t>(
+    const uint8_t* sendbuff,
+    uint8_t* recvbuff1,
+    uint8_t* recvbuff2,
+    size_t count,
+    int nRuns);
