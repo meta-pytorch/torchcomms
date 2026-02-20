@@ -1946,6 +1946,13 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
             xccl_comm_,
             stream);
         if (result != onecclSuccess) [[unlikely]] {
+          onecclResult_t result_cleanup =
+              xccl_api_->groupEnd(); // Clean up group on error
+          if (result_cleanup != onecclSuccess) {
+            TC_LOG(ERROR)
+                << "XCCL groupEnd failed during error cleanup after send failure in scatter: "
+                << xccl_api_->getErrorString(result_cleanup);
+          }
           throw XCCLException(
               *xccl_api_, "XCCL send failed in scatter", result);
         }
@@ -1964,7 +1971,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
         "memcpyAsync failed in scatter");
   } else {
     // Non-root ranks receive from root
-    onecclResult_t result = xccl_api_->recv(
+     result = xccl_api_->recv(
         output_tensor.data_ptr(),
         output_tensor.numel(),
         getXcclDataType(output_tensor),
@@ -1972,6 +1979,13 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
         xccl_comm_,
         stream);
     if (result != onecclSuccess) [[unlikely]] {
+      onecclResult_t result_cleanup =
+          xccl_api_->groupEnd(); // Clean up group on error
+      if (result_cleanup != onecclSuccess) {
+        TC_LOG(ERROR)
+            << "XCCL groupEnd failed during error cleanup after recv failure in scatter: "
+            << xccl_api_->getErrorString(result_cleanup);
+      }
       throw XCCLException(*xccl_api_, "XCCL recv failed in scatter", result);
     }
   }
@@ -2070,6 +2084,13 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
             xccl_comm_,
             stream);
         if (result != onecclSuccess) [[unlikely]] {
+          onecclResult_t result_cleanup =
+              xccl_api_->groupEnd(); // Clean up group on error
+          if (result_cleanup != onecclSuccess) {
+            TC_LOG(ERROR)
+                << "XCCL groupEnd failed during error cleanup after recv failure in gather: "
+                << xccl_api_->getErrorString(result_cleanup);
+          }
           throw XCCLException(*xccl_api_, "XCCL recv failed in gather", result);
         }
       }
@@ -2094,6 +2115,13 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
         xccl_comm_,
         stream);
     if (result != onecclSuccess) [[unlikely]] {
+      onecclResult_t result_cleanup =
+          xccl_api_->groupEnd(); // Clean up group on error
+      if (result_cleanup != onecclSuccess) {
+        TC_LOG(ERROR)
+            << "XCCL groupEnd failed during error cleanup after send failure in gather: "
+            << xccl_api_->getErrorString(result_cleanup);
+      }
       throw XCCLException(*xccl_api_, "XCCL send failed in gather", result);
     }
   }
