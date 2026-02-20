@@ -1929,13 +1929,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
   }
 
   // Implement Scatter using point-to-point operations
+  onecclResult_t result = xccl_api_->groupStart();
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "XCCL groupStart failed in scatter", result);
+  }
   if (rank_ == root) {
     // Root sends to all ranks (except itself)
-    // TODO: Enable group call once it is supported by XCCL
-    // xccl_api_->groupStart();
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
-        onecclResult_t result = xccl_api_->send(
+        result = xccl_api_->send(
             input_tensor_list[i].data_ptr(),
             input_tensor_list[i].numel(),
             getXcclDataType(input_tensor_list[i]),
@@ -1948,7 +1951,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
         }
       }
     }
-    // xccl_api_->groupEnd();
 
     // Root copies its own data using memcpyAsync
     XPU_CHECK(
@@ -1972,6 +1974,11 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
     if (result != onecclSuccess) [[unlikely]] {
       throw XCCLException(*xccl_api_, "XCCL recv failed in scatter", result);
     }
+  }
+  result = xccl_api_->groupEnd();
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "XCCL groupEnd failed in scatter", result);
   }
 
   // Record end event after XCCL operations
@@ -2045,11 +2052,13 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
     return work;
   }
 
+  onecclResult_t result = xccl_api_->groupStart();
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "XCCL groupStart failed in all_gather", result);
+  }
   if (rank_ == root) {
     // Root receives from all ranks (except itself)
-    // TODO: Group calls currently disabled due to a functionality issue with
-    // send/recv operations.
-    // xccl_api_->groupStart();
     for (int peer_rank = 0; peer_rank < comm_size_; ++peer_rank) {
       if (peer_rank != root) {
         auto& peer_tensor = output_tensor_list[peer_rank];
@@ -2065,7 +2074,6 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
         }
       }
     }
-    // xccl_api_->groupEnd();
 
     // Root copies its own data using memcpyAsync
     XPU_CHECK(
@@ -2088,6 +2096,11 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
     if (result != onecclSuccess) [[unlikely]] {
       throw XCCLException(*xccl_api_, "XCCL send failed in gather", result);
     }
+  }
+  result = xccl_api_->groupEnd();
+  if (result != onecclSuccess) [[unlikely]] {
+    throw XCCLException(
+        *xccl_api_, "XCCL groupEnd failed in all_gather_v", result);
   }
 
   // Record end event after XCCL operations
