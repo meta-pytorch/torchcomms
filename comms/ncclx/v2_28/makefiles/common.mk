@@ -68,7 +68,7 @@ else
 endif
 $(info NVCC_GENCODE is ${NVCC_GENCODE})
 
-CXXSTD ?= -std=c++17
+CXXSTD ?= -std=c++20
 
 CXXFLAGS   := -DCUDA_MAJOR=$(CUDA_MAJOR) -DCUDA_MINOR=$(CUDA_MINOR) -fPIC -fvisibility=hidden \
               -Wall -Wno-unused-function -Wno-sign-compare -std=c++2a -Wvla \
