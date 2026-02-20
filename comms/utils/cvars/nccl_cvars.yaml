@@ -2807,6 +2807,21 @@ cvars:
      events to dedicated MCCL Scuba tables for observability and debugging.
      This is separate from NCCLX logging to minimize risk.
 
+ - name        : MCCL_SCUBA_LOG_LEVEL
+   type        : enum
+   default     : HIGH
+   choices     : CRITICAL, HIGH, NORMAL, LOW
+   description : |-
+     Minimum log priority level for MCCL Scuba logging. Only logs at or above
+     this priority level will be forwarded to Scuba; lower-priority logs are
+     dropped. The priority levels from highest to lowest are:
+       CRITICAL - Critical logs only (e.g., errors, failures)
+       HIGH     - Critical and high-priority logs (e.g., important events)
+       NORMAL   - Critical, high, and normal logs (default operational logs)
+       LOW      - All logs including low-priority (verbose/debug)
+     For example, setting MCCL_SCUBA_LOG_LEVEL=HIGH means only HIGH and
+     CRITICAL priority logs will be forwarded to Scuba.
+
  - name        : NCCL_GIN_GDAKI_NIC_HANDLER
    type        : int
    default     : 0
