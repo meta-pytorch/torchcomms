@@ -208,6 +208,11 @@ typedef struct {
   ncclResult_t (*regMrSym)(void* collComm, void* data, size_t size, int type, uint64_t mrFlags, void** mhandle, void **ginHandle);
   ncclResult_t (*regMrSymDmaBuf)(void* collComm, void* data, size_t size, int type, uint64_t offset, int fd, uint64_t mrFlags, void** mhandle, void **ginHandle);
   ncclResult_t (*deregMrSym)(void* collComm, void* mhandle);
+  // Local-only memory registration (non-collective, for source buffers only)
+  // Registers memory with the local PD but skips rkey exchange (allGather).
+  // The resulting handle can only be used as a source buffer for RDMA writes.
+  ncclResult_t (*regMrLocal)(void* collComm, void* data, size_t size, int type, uint64_t mrFlags, void** mhandle, void **ginHandle);
+  ncclResult_t (*deregMrLocal)(void* collComm, void* mhandle);
   // Close and free collective comm objects
   ncclResult_t (*destroyContext)(void* ginCtx);
   ncclResult_t (*closeColl)(void* collComm);

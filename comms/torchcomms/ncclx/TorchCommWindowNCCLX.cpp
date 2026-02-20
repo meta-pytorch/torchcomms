@@ -30,13 +30,14 @@ TorchCommWindowNCCLX<Backend>::TorchCommWindowNCCLX(
 template <typename Backend>
 TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
-  // Cleanup registered local buffers
+  // Cleanup registered local buffers (registered with parent comm using
+  // NCCL_WIN_LOCAL_ONLY)
   for (auto& buf : registered_local_buffers_) {
-    if (buf.backend_window != nullptr && local_comm_ != nullptr) {
+    if (buf.backend_window != nullptr && nccl_comm_ != nullptr) {
       NCCLX_CHECK_IGNORE(
           nccl_api_,
           nccl_api_->commWindowDeregister(
-              local_comm_, static_cast<NcclxWindow>(buf.backend_window)),
+              nccl_comm_, static_cast<NcclxWindow>(buf.backend_window)),
           "NCCLX local buffer deregister failed in destructor");
     }
   }
@@ -67,15 +68,6 @@ TorchCommWindowNCCLX<Backend>::~TorchCommWindowNCCLX() noexcept {
     nccl_orig_win_ = nullptr;
   }
 
-  // Cleanup local communicator
-  if (local_comm_ != nullptr) {
-    auto result = nccl_api_->commDestroy(local_comm_);
-    if (result != ncclSuccess) {
-      TC_LOG(ERROR) << "NCCLX local_comm destroy failed in destructor";
-    }
-    local_comm_ = nullptr;
-    local_comm_initialized_ = false;
-  }
 #endif
 
   // Cleanup CTRAN window (host API)
@@ -301,23 +293,6 @@ std::shared_ptr<TorchCommWindowAttr> TorchCommWindowNCCLX<Backend>::get_attr(
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 
 template <typename Backend>
-void TorchCommWindowNCCLX<Backend>::initLocalComm() {
-  if (local_comm_initialized_) {
-    return;
-  }
-
-  ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.splitShare = 1;
-
-  CHECK_EQ(
-      nccl_api_->commSplit(nccl_comm_, 0, 0, &local_comm_, &config),
-      ncclSuccess)
-      << "[TorchCommWindowNCCLX]: Failed to create local communicator";
-
-  local_comm_initialized_ = true;
-}
-
-template <typename Backend>
 void TorchCommWindowNCCLX<Backend>::initNcclOrigWindow(void* ptr, size_t size) {
   if (nccl_orig_win_ != nullptr) {
     return;
@@ -335,10 +310,18 @@ typename TorchCommWindowNCCLX<Backend>::DeviceRegisteredBuffer
 TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
   checkCommAndThrow();
 
-  if (!local_comm_initialized_) {
+  // GIN must be enabled via prior get_device_window() call.
+  // tensor_register creates nccl_orig_win_ but doesn't enable GIN.
+  // get_device_window() calls ncclDevCommCreate which enables GIN.
+  if (nccl_orig_win_ == nullptr) {
     throw std::runtime_error(
-        "[TorchCommWindowNCCLX]: Local comm not initialized. "
+        "[TorchCommWindowNCCLX]: Device API not initialized. "
         "Call tensor_register first.");
+  }
+  if (device_window_ == nullptr) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX]: GIN not enabled. "
+        "Call get_device_window() first to enable GIN before registering local buffers.");
   }
 
   if (!tensor.defined() || !tensor.is_contiguous()) {
@@ -352,10 +335,18 @@ TorchCommWindowNCCLX<Backend>::register_local_buffer(const at::Tensor& tensor) {
   buf.base_ptr = tensor.data_ptr();
   buf.size = tensor.numel() * tensor.element_size();
 
+  // Use NCCL_WIN_LOCAL_ONLY flag with parent comm for non-collective
+  // registration. This uses the parent's PD but skips the rkey allGather,
+  // making it truly local. The resulting window can only be used as a source
+  // buffer for put operations (lkey only, no rkeys).
   NcclxWindow local_win = nullptr;
   CHECK_EQ(
       nccl_api_->commWindowRegister(
-          buf.base_ptr, buf.size, local_comm_, &local_win),
+          buf.base_ptr,
+          buf.size,
+          nccl_comm_,
+          &local_win,
+          NCCL_WIN_DEVICE_API | NCCL_WIN_LOCAL_ONLY),
       ncclSuccess)
       << "[TorchCommWindowNCCLX]: Local buffer registration failed";
 
@@ -372,14 +363,9 @@ void TorchCommWindowNCCLX<Backend>::deregister_local_buffer(
     return;
   }
 
-  if (!local_comm_initialized_ || local_comm_ == nullptr) {
-    TC_LOG(WARNING)
-        << "Local comm not initialized, skipping local buffer deregister";
-    return;
-  }
-
+  // Use parent comm for deregistration (matches register_local_buffer)
   auto result = nccl_api_->commWindowDeregister(
-      local_comm_, static_cast<NcclxWindow>(buf.backend_window));
+      nccl_comm_, static_cast<NcclxWindow>(buf.backend_window));
   if (result != ncclSuccess) {
     TC_LOG(ERROR) << "Failed to deregister local buffer";
   }
