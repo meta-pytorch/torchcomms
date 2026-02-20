@@ -212,6 +212,9 @@ class IbverbxSingleQpTestFixture : public MpiBaseTestFixture {
  protected:
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
+    if (numRanks < 2) {
+      GTEST_SKIP() << "Need at least 2 ranks";
+    }
     ncclCvarInit();
     ASSERT_TRUE(ibvInit());
   }
