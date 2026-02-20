@@ -198,7 +198,7 @@ TEST_F(MultiPeerTransportMultiNodeFixture, DeviceHandleMultiNode) {
   EXPECT_EQ(handle.nRanks, numRanks);
   EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
 
-  // NVL peers are always present (at minimum same-node peers).
+  // NVL peers should be present (at minimum same-node peers).
   EXPECT_GT(handle.numNvlPeers, 0);
 
   if (isMnnvl_) {
