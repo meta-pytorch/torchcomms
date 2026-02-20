@@ -2100,7 +2100,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
   result = xccl_api_->groupEnd();
   if (result != onecclSuccess) [[unlikely]] {
     throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in all_gather_v", result);
+        *xccl_api_, "XCCL groupEnd failed in gather", result);
   }
 
   // Record end event after XCCL operations
