@@ -12,7 +12,29 @@ on:
       - comms/torchcomms/device/XpuApi.hpp
       - comms/torchcomms/tests/integration/py/TorchCommTestHelpers.py
       - comms/torchcomms/xccl/**
-      - comms/torchcomms/tests/integration/py/*.py
+      - comms/torchcomms/tests/integration/py/AllGatherSingleTest.py
+      - comms/torchcomms/tests/integration/py/AllGatherTest.py
+      - comms/torchcomms/tests/integration/py/AllGatherVTest.py
+      - comms/torchcomms/tests/integration/py/AllReduceTest.py
+      - comms/torchcomms/tests/integration/py/AllToAllSingleTest.py
+      - comms/torchcomms/tests/integration/py/AllToAllTest.py
+      - comms/torchcomms/tests/integration/py/AllToAllvSingleTest.py
+      - comms/torchcomms/tests/integration/py/BarrierTest.py
+      - comms/torchcomms/tests/integration/py/BatchSendRecvTest.py
+      - comms/torchcomms/tests/integration/py/BroadcastTest.py
+      - comms/torchcomms/tests/integration/py/DDPCommTest.py
+      - comms/torchcomms/tests/integration/py/FSDPCommTest.py
+      - comms/torchcomms/tests/integration/py/GatherTest.py
+      - comms/torchcomms/tests/integration/py/MultiCommTest.py
+      - comms/torchcomms/tests/integration/py/ObjColTest.py
+      - comms/torchcomms/tests/integration/py/OptionsTest.py
+      - comms/torchcomms/tests/integration/py/ReduceScatterSingleTest.py
+      - comms/torchcomms/tests/integration/py/ReduceScatterTest.py
+      - comms/torchcomms/tests/integration/py/ReduceScatterVTest.py
+      - comms/torchcomms/tests/integration/py/ReduceTest.py
+      - comms/torchcomms/tests/integration/py/SendRecvTest.py
+      - comms/torchcomms/tests/integration/py/ScatterTest.py
+      - comms/torchcomms/tests/integration/py/TPCommTest.py
       - setup.py
 
 permissions:
