@@ -1,7 +1,9 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #pragma once
-
+#include <ATen/ATen.h>
+#include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
+#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -13,14 +15,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include <ATen/ATen.h>
-#include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
-#include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp
-
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
+#include "comms/torchcomms/ncclx/GraphEventTracker.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
 #include "comms/torchcomms/ncclx/TorchCommWindowNCCLX.hpp"
@@ -38,8 +37,8 @@ constexpr size_t kDefaultMaxEventPoolSize = 1000;
 // overhead from frequent GC runs.
 constexpr size_t kDefaultGarbageCollectIntervalMs = 100;
 
-// Whether to enable CUDA graph support by default. When enabled, work objects
-// are tracked during graph capture to ensure proper lifetime management.
+// Whether to enable CUDA graph support by default. When enabled, monitoring
+// events are tracked during graph capture for timeout detection during replay.
 constexpr bool kDefaultEnableCudaGraphSupport = true;
 
 class TorchCommNCCLX : public TorchCommBackend,
@@ -225,6 +224,7 @@ class TorchCommNCCLX : public TorchCommBackend,
 
   // Friend access for TorchCommNCCLX
   friend class TorchWorkNCCLX;
+  friend class GraphEventTracker;
   friend class CachingAllocatorHookImpl;
   template <typename B>
   friend class TorchCommWindowNCCLX;
@@ -308,6 +308,8 @@ class TorchCommNCCLX : public TorchCommBackend,
   cudaStream_t getInternalStream() const {
     return internal_stream_;
   }
+
+  void checkGraphEvents();
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -452,26 +454,9 @@ class TorchCommNCCLX : public TorchCommBackend,
   bool high_priority_stream_{false};
   std::string name_;
 
-  // Graph capture mode work references
-  // Keep references to work objects during graph capture to prevent premature
-  // destruction, organized per graph using capture ID
-  std::unordered_map<
-      unsigned long long,
-      std::vector<c10::intrusive_ptr<TorchWorkNCCLX>>>
-      graph_capture_work_refs_;
-  std::mutex graph_capture_work_mutex_;
-
-  // Structure to hold cleanup data for CUDA user objects
-  struct GraphCleanupData {
-    TorchCommNCCLX* comm;
-    unsigned long long graph_id;
-
-    GraphCleanupData(TorchCommNCCLX* comm_, unsigned long long id)
-        : comm(comm_), graph_id(id) {}
-  };
-
-  // Static callback function for CUDA user object cleanup
-  static void CUDART_CB graphCleanupCallback(void* userData);
+  // Tracks ad-hoc events for CUDA graph-captured collectives and monitors
+  // them for timeout during graph replay.
+  GraphEventTracker graph_event_tracker_;
 
   friend class TorchWorkNCCLXQueueCommTest;
 };
