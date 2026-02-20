@@ -169,6 +169,9 @@ static ncclResult_t ncclCollPreconnect(struct ncclComm* comm, bool* algoNeedConn
         case NCCL_ALGO_NVLS: {
           /* If we are using NVLS_TREE algo, we must mark NVLS algo to set up
            * NVLS intra-node buffer */
+          if (comm->nvlsResources == NULL) {
+            NCCLCHECK(ncclNvlsSetup(comm, NULL));
+          }
           NCCLCHECK(ncclNvlsBufferSetup(comm));
           break;
         }
