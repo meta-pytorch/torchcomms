@@ -12,7 +12,7 @@ on:
       - comms/torchcomms/device/XpuApi.hpp
       - comms/torchcomms/tests/integration/py/TorchCommTestHelpers.py
       - comms/torchcomms/xccl/**
-      - comms/torchcomms/tests/integration/py/**/*.py
+      - comms/torchcomms/tests/integration/py/*.py
       - setup.py
 
 permissions:
