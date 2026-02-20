@@ -11,11 +11,7 @@ namespace torch::comms::test {
 
 class CachingAllocatorHookMock : public CachingAllocatorHookImpl {
  public:
-  MOCK_METHOD(
-      void,
-      regDeregMem,
-      (const c10::hip::HIPCachingAllocator::TraceEntry& entry),
-      (override));
+  MOCK_METHOD(void, regDeregMem, (const TraceEntry& entry), (override));
   MOCK_METHOD(void, registerComm, (TorchCommRCCL * comm), (override));
   MOCK_METHOD(void, deregisterComm, (TorchCommRCCL * comm), (override));
   MOCK_METHOD(void, clear, (), (override));

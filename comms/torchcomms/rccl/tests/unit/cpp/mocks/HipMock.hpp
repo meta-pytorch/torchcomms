@@ -36,7 +36,7 @@ class HipMock : public HipApi {
       (override));
   MOCK_METHOD(
       hipStream_t,
-      getCurrentHIPStreamMasqueradingAsCUDA,
+      getCurrentCUDAStream,
       (int device_index),
       (override));
   MOCK_METHOD(hipError_t, streamSynchronize, (hipStream_t stream), (override));

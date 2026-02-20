@@ -49,8 +49,7 @@ hipError_t DefaultHipApi::streamWaitEvent(
   return hipStreamWaitEvent(stream, event, flags);
 }
 
-hipStream_t DefaultHipApi::getCurrentHIPStreamMasqueradingAsCUDA(
-    int device_index) {
+hipStream_t DefaultHipApi::getCurrentCUDAStream(int device_index) {
 #ifdef HIPIFY_V2
   return at::cuda::getCurrentCUDAStream(device_index).stream();
 #else
