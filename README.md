@@ -22,6 +22,7 @@ torchcomms requires the following software and hardware:
 - PyTorch 2.8 or higher
 - CUDA-capable GPU (for NCCL/NCCLX or RCCL backends)
 - Intel XPU (for XCCL backend)
+- Huawei Ascend NPU (for HCCL backend)
 
 ## Installation
 
@@ -155,6 +156,23 @@ export USE_TRANSPORT=OFF
 pip install --no-build-isolation -v .
 ```
 
+##### HCCL Backend
+
+Source Ascend toolkit environment (update path to your Ascend installation)
+```bash
+export ASCEND_TOOLKIT_HOME=/usr/local/Ascend/ascend-toolkit/latest
+source $ASCEND_TOOLKIT_HOME/set_env.sh
+```
+
+Enable HCCL backend and install
+```bash
+export USE_HCCL=ON
+export USE_NCCL=OFF
+export USE_NCCLX=OFF
+export USE_TRANSPORT=OFF
+pip install --no-build-isolation -v .
+```
+
 
 #### Install torchcomms:
 
@@ -189,6 +207,7 @@ export USE_GLOO=ON    # Default: ON
 export USE_RCCL=OFF   # Default: OFF
 export USE_RCCLX=OFF  # Default: OFF
 export USE_XCCL=OFF   # Default: OFF
+export USE_HCCL=OFF   # Default: OFF
 ```
 
 Then run:
