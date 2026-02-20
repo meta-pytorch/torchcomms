@@ -101,7 +101,7 @@ deviceReadSignalKernel(DeviceWindowNCCL* win, int signal_id, uint64_t* out) {
 //
 // Pattern:
 //   1. Each rank atomically adds `add_value` to dstWnd[dstOffset] on dst_rank
-//   2. After atomicAdd, signals dst_rank using gin.signal() for synchronization
+//   2. After atomicAdd, signals dst_rank via resource buffer signal for sync
 //   3. The receiver waits for the signal and then reads the result (host-side)
 
 __global__ void deviceGinAtomicAddKernel(
@@ -125,15 +125,44 @@ __global__ void deviceGinAtomicAddKernel(
         add_value,
         ncclCoopThread{});
 
-    // Signal the destination rank that atomicAdd is complete
-    gin.signal(
-        ncclTeamWorld(dev_comm),
-        dst_rank,
-        ncclGin_SignalInc{static_cast<ncclGinSignal_t>(signal_id)},
-        ncclCoopThread{});
+    // Signal the destination rank using resource buffer signal.
+    // This also flushes all pending GIN WQEs (including the atomicAdd above).
+    // QP ordering guarantees the atomicAdd arrives before the signal.
+    win->signal(dst_rank, signal_id, SignalOp::ADD, 1);
+  }
+}
 
-    // Flush to ensure all operations are posted
-    gin.flush(ncclCoopThread{});
+// =============================================================================
+// Standalone Signal Test Kernel
+// =============================================================================
+// Sends a signal to a peer without any associated data transfer.
+// Used to test the per-peer resource buffer signal model in isolation.
+
+__global__ void deviceSignalKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    SignalOp op,
+    uint64_t value) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->signal(peer, signal_id, op, value);
+  }
+}
+
+// =============================================================================
+// Wait Signal From Specific Peer Kernel
+// =============================================================================
+// Waits for a signal from a specific peer (not aggregated across all peers).
+// Tests the wait_signal_from() API for point-to-point synchronization.
+
+__global__ void deviceWaitSignalFromKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    CmpOp cmp,
+    uint64_t value) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    win->wait_signal_from(peer, signal_id, cmp, value);
   }
 }
 
@@ -197,6 +226,27 @@ void launchDeviceGinAtomicAddKernel(
     cudaStream_t stream) {
   deviceGinAtomicAddKernel<<<1, 1, 0, stream>>>(
       win, dst_offset, add_value, dst_rank, signal_id);
+}
+
+void launchDeviceSignalKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    SignalOp op,
+    uint64_t value,
+    cudaStream_t stream) {
+  deviceSignalKernel<<<1, 1, 0, stream>>>(win, peer, signal_id, op, value);
+}
+
+void launchDeviceWaitSignalFromKernel(
+    DeviceWindowNCCL* win,
+    int peer,
+    int signal_id,
+    CmpOp cmp,
+    uint64_t value,
+    cudaStream_t stream) {
+  deviceWaitSignalFromKernel<<<1, 1, 0, stream>>>(
+      win, peer, signal_id, cmp, value);
 }
 
 } // namespace torchcomms::device::test
