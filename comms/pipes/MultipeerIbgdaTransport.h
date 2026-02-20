@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -32,10 +33,6 @@ struct MultipeerIbgdaTransportConfig {
   // CUDA device index for GPU operations
   int cudaDevice{0};
 
-  // Override NIC device name (e.g., "mlx5_0").
-  // If empty, auto-discovers the NIC closest to the GPU.
-  std::optional<std::string> nicDeviceName;
-
   // Override GID index for RoCE.
   // If not set, auto-discovers a valid RoCEv2 GID.
   std::optional<int> gidIndex;
@@ -43,6 +40,20 @@ struct MultipeerIbgdaTransportConfig {
   // NOTE: Data buffers are NOT managed by the transport.
   // Users must allocate their own buffers and call registerBuffer() +
   // exchangeBuffer().
+  // GPU-to-NIC mapping for RDMA device selection.
+  // Maps CUDA device index to a list of NIC names (first element is preferred).
+  // If empty, uses topology-aware auto-discovery.
+  std::map<int, std::vector<std::string>> gpuNicMap;
+
+  // IB HCA allowlist for NIC filtering during auto-discovery.
+  // If empty, all discovered NICs are considered.
+  // Only used during auto-discovery (not when gpuNicMap has a mapping for the
+  // GPU).
+  std::vector<std::string> ibHca;
+
+  // Per-peer data buffer size in bytes.
+  // This determines the maximum transfer size per put_signal call.
+  std::size_t dataBufferSize{0};
 
   // Number of signal slots per peer.
   // Each slot is a 64-bit counter for signaling.
@@ -161,11 +172,14 @@ struct IbgdaTransportExchInfoAll {
  *   // Get device handle for kernel (requires including .cuh header)
  *   auto* deviceTransportPtr = transport.getDeviceTransportPtr();
  *
- * NIC AUTO-DISCOVERY:
- * ===================
+ * NIC SELECTION:
+ * ==============
  *
- * When nicDeviceName is not specified, the transport automatically selects
- * the RDMA NIC with the closest NUMA affinity to the specified GPU.
+ * The transport selects the RDMA NIC in order of priority:
+ * 1. config.gpuNicMap - explicit GPU-to-NIC mapping (map from GPU index to NIC
+ * names)
+ * 2. Auto-discovery - selects the NIC with closest NUMA affinity to the GPU
+ *    (optionally filtered by config.ibHca allowlist)
  *
  * COMMUNICATOR SEMANTICS:
  * =======================
@@ -292,11 +306,6 @@ class MultipeerIbgdaTransport {
    */
   std::vector<IbgdaRemoteBuffer> exchangeBuffer(
       const IbgdaLocalBuffer& localBuf);
-
-  /**
-   * Get the RDMA device name being used
-   */
-  std::string getNicDeviceName() const;
 
   /**
    * Get the GID index being used

@@ -4,10 +4,10 @@
 
 #include <cuda_runtime.h>
 #include <glog/logging.h>
-#include <unistd.h>
 
-#include <climits>
+#include <algorithm>
 #include <cstring>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -16,33 +16,14 @@
 
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/pipes/MultipeerIbgdaTransportCuda.cuh"
+#include "comms/pipes/NicDiscovery.h"
 
 namespace comms::pipes {
 
 namespace {
 
-constexpr int kDefaultGidIndex = 3; // Default GID index (sample uses 0)
+constexpr int kDefaultGidIndex = 3; // Default GID index
 constexpr int kHopLimit = 255;
-
-// Sysfs paths for device discovery
-constexpr std::string_view kSysClassInfiniband = "/sys/class/infiniband/";
-
-// Helper to get PCIe bus ID string from CUDA device
-// Uses cudaDeviceGetPCIBusId to get the exact format DOCA expects
-std::string getCudaPciBusId(int cudaDevice) {
-  std::string busId(32, '\0');
-  cudaError_t err = cudaDeviceGetPCIBusId(
-      busId.data(), static_cast<int>(busId.size()), cudaDevice);
-  if (err != cudaSuccess) {
-    throw std::runtime_error(
-        fmt::format(
-            "Failed to get CUDA device PCIe bus ID: {}",
-            cudaGetErrorString(err)));
-  }
-  // Trim null terminator
-  busId.resize(std::strlen(busId.c_str()));
-  return busId;
-}
 
 // Convert DOCA error to string using lookup table
 // Values match the doca_error_t enum (0 = DOCA_SUCCESS through 31)
@@ -95,62 +76,6 @@ void checkDocaError(doca_error_t err, const char* msg) {
   }
 }
 
-// Get PCIe bus ID for an IB device (e.g., "0000:18:00.0")
-std::string getPcieForIbDev(std::string_view devName) {
-  auto devPath = fmt::format("{}{}/device", kSysClassInfiniband, devName);
-  std::string linkBuf(PATH_MAX, '\0');
-  ssize_t len = readlink(devPath.c_str(), linkBuf.data(), linkBuf.size() - 1);
-  if (len <= 0) {
-    return "";
-  }
-  linkBuf.resize(len);
-  // linkBuf is like "../../../0000:18:00.0", extract the last component
-  auto pos = linkBuf.rfind('/');
-  if (pos != std::string::npos) {
-    return linkBuf.substr(pos + 1);
-  }
-  return linkBuf;
-}
-
-// Calculate PCIe "distance" based on bus ID similarity
-// Lower is better; 0 = same switch, higher = different switches
-int getPcieBusDistance(const std::string& pcie1, const std::string& pcie2) {
-  // Extract bus number (e.g., "1b" from "0000:1b:00.0" or "0000:1B:00.0")
-  // Format: domain:bus:device.function
-  auto extractBus = [](const std::string& pcie) -> int {
-    auto colonPos = pcie.find(':');
-    if (colonPos == std::string::npos) {
-      return -1;
-    }
-    auto secondColon = pcie.find(':', colonPos + 1);
-    if (secondColon == std::string::npos) {
-      return -1;
-    }
-    std::string busStr = pcie.substr(colonPos + 1, secondColon - colonPos - 1);
-    // stoi with base 16 handles both uppercase and lowercase hex
-    try {
-      return std::stoi(busStr, nullptr, 16);
-    } catch (...) {
-      return -1;
-    }
-  };
-
-  int bus1 = extractBus(pcie1);
-  int bus2 = extractBus(pcie2);
-  if (bus1 < 0 || bus2 < 0) {
-    return INT_MAX;
-  }
-
-  // Check if on same PCIe switch (top nibble of bus matches)
-  // e.g., GPU at 0x1b and NIC at 0x18 are both in 0x1x range
-  int switch1 = bus1 >> 4;
-  int switch2 = bus2 >> 4;
-  if (switch1 == switch2) {
-    return std::abs(bus1 - bus2); // Small difference = PIX
-  }
-  return 1000 + std::abs(bus1 - bus2); // Different switch = SYS
-}
-
 } // namespace
 
 // Helper method implementations
@@ -164,7 +89,7 @@ void MultipeerIbgdaTransport::initDocaGpu() {
         std::string(cudaGetErrorString(cudaErr)));
   }
 
-  gpuPciBusId_ = getCudaPciBusId(config_.cudaDevice);
+  gpuPciBusId_ = NicDiscovery::getCudaPciBusId(config_.cudaDevice);
 
   LOG(INFO) << "MultipeerIbgdaTransport: GPU " << config_.cudaDevice << " PCIe "
             << gpuPciBusId_;
@@ -198,51 +123,40 @@ void MultipeerIbgdaTransport::openIbDevice() {
   }
   auto& devices = devicesResult.value();
 
-  // Find device with best PCIe topology affinity (PIX = same switch)
-  int bestIdx = -1;
-  int bestDistance = INT_MAX;
-  std::string bestNicPcie;
-
-  for (size_t i = 0; i < devices.size(); i++) {
-    const char* devName = devices[i].device()->name;
-
-    // If user specified a NIC, look for it
-    if (config_.nicDeviceName.has_value()) {
-      if (config_.nicDeviceName.value() == devName) {
-        bestIdx = static_cast<int>(i);
-        nicDeviceName_ = devName;
-        bestNicPcie = getPcieForIbDev(devName);
-        break;
-      }
-      continue;
-    }
-
-    // Get NIC PCIe address and calculate distance to GPU
-    std::string nicPcie = getPcieForIbDev(devName);
-    int distance = getPcieBusDistance(gpuPciBusId_, nicPcie);
-
-    LOG(INFO) << "MultipeerIbgdaTransport: IB device " << devName << " PCIe "
-              << nicPcie << " distance " << distance
-              << (distance < 100 ? " (PIX)" : " (SYS)");
-
-    if (distance < bestDistance) {
-      bestDistance = distance;
-      bestIdx = static_cast<int>(i);
-      nicDeviceName_ = devName;
-      bestNicPcie = nicPcie;
-    }
+  // Priority 1: Explicit GPU-to-NIC mapping from config
+  auto it = config_.gpuNicMap.find(config_.cudaDevice);
+  if (it != config_.gpuNicMap.end() && !it->second.empty()) {
+    nicDeviceName_ = it->second[0]; // Use first (preferred) NIC
+    LOG(INFO) << "MultipeerIbgdaTransport: using config.gpuNicMap for GPU "
+              << config_.cudaDevice << " -> " << nicDeviceName_;
   }
 
-  if (bestIdx < 0) {
-    throw std::runtime_error("No suitable IB device found");
+  // Priority 2: Auto-discovery if no config override
+  if (nicDeviceName_.empty()) {
+    NicDiscovery discovery(config_.cudaDevice, config_.ibHca);
+    const auto& candidates = discovery.getCandidates();
+    nicDeviceName_ = candidates[0].name;
+    LOG(INFO) << "MultipeerIbgdaTransport: using NIC " << nicDeviceName_
+              << " for GPU device " << config_.cudaDevice;
   }
+
+  // Find and open the NIC by name using ibverbx
+  auto nicIt =
+      std::find_if(devices.begin(), devices.end(), [this](const auto& dev) {
+        return nicDeviceName_ == dev.device()->name;
+      });
+  if (nicIt == devices.end()) {
+    throw std::runtime_error("Specified NIC not found: " + nicDeviceName_);
+  }
+  auto nicIdx = std::distance(devices.begin(), nicIt);
+  LOG(INFO) << "MultipeerIbgdaTransport: found NIC " << nicDeviceName_
+            << " at index " << nicIdx;
 
   LOG(INFO) << "MultipeerIbgdaTransport: selected NIC " << nicDeviceName_
-            << " PCIe " << bestNicPcie << " for GPU " << gpuPciBusId_
-            << " (distance=" << bestDistance << ")";
+            << " for GPU " << gpuPciBusId_;
 
   // Move selected device; others are destroyed (RAII closes them)
-  ibvDevice_ = std::move(devices[bestIdx]);
+  ibvDevice_ = std::move(devices[nicIdx]);
 
   // Allocate PD via ibverbx
   auto pdResult = ibvDevice_->allocPd();
@@ -588,8 +502,7 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
   createQps();
 
   LOG(INFO) << "MultipeerIbgdaTransport: rank " << myRank_ << "/" << nRanks_
-            << " initialized on GPU " << gpuPciBusId_ << " with NIC "
-            << nicDeviceName_;
+            << " initialized on GPU " << gpuPciBusId_;
 }
 
 MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
@@ -898,11 +811,6 @@ std::vector<IbgdaRemoteBuffer> MultipeerIbgdaTransport::exchangeBuffer(
 
   return peerBuffers;
 }
-
-std::string MultipeerIbgdaTransport::getNicDeviceName() const {
-  return nicDeviceName_;
-}
-
 int MultipeerIbgdaTransport::nRanks() const {
   return nRanks_;
 }
