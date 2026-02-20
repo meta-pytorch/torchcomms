@@ -2055,7 +2055,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
   onecclResult_t result = xccl_api_->groupStart();
   if (result != onecclSuccess) [[unlikely]] {
     throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in all_gather", result);
+        *xccl_api_, "XCCL groupStart failed in gather", result);
   }
   if (rank_ == root) {
     // Root receives from all ranks (except itself)
