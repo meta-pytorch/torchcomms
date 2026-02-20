@@ -161,7 +161,7 @@ xpu_result_t DefaultXpuApi::streamIsCapturing(
 
   // XPU/SYCL doesn't support stream capture
   *pCaptureStatus = xpuStreamCaptureStatusNone;
-  return XPU_SUCCESS;
+  return XPU_ERROR_UNSUPPORTED;
 }
 
 // Remove [[maybe_unused]] and implement this function once stream capture is
@@ -178,7 +178,7 @@ xpu_result_t DefaultXpuApi::streamGetCaptureInfo(
   if (pId) {
     *pId = 0;
   }
-  return XPU_SUCCESS;
+  return XPU_ERROR_UNSUPPORTED;
 }
 
 xpu_result_t DefaultXpuApi::malloc(void** devPtr, size_t size) {
