@@ -33,7 +33,7 @@ ncclResult_t RCCLException::getResult() const {
 
 TorchCommRCCL::TorchCommRCCL()
     : nccl_comm_{nullptr},
-      device_(at::kHIP),
+      device_(at::kCUDA),
       options_(),
       init_state_(InitializationState::UNINITIALIZED),
       shutdown_(false) {}
@@ -1394,14 +1394,14 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::scatter(
   // Record start event before NCCL operations
   work->recordStart("scatter");
 
-  // Implement scatter using point-to-point operations
+  // Implement scatter using point-to-point operations.
+  // All ranks must participate in the group -- RCCL requires matched
+  // groupStart/groupEnd across all ranks (unlike NCCL which is lenient).
+  RCCL_CHECK(
+      rccl_api_, nccl_comm_, rccl_api_->groupStart(), "NCCL GroupStart failed");
+
   if (rank_ == root) {
     // Root sends to all ranks (except itself)
-    RCCL_CHECK(
-        rccl_api_,
-        nccl_comm_,
-        rccl_api_->groupStart(),
-        "NCCL GroupStart failed");
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
         ncclResult_t sendResult = rccl_api_->send(
@@ -1420,20 +1420,6 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::scatter(
         }
       }
     }
-    RCCL_CHECK(
-        rccl_api_, nccl_comm_, rccl_api_->groupEnd(), "NCCL GroupEnd failed");
-
-    // Root copies its own data using hipMemcpyAsync
-    HIP_CHECK(
-        hip_api_,
-        hip_api_->memcpyAsync(
-            output_tensor.data_ptr(),
-            input_tensor_list[root].data_ptr(),
-            input_tensor_list[root].numel() *
-                input_tensor_list[root].element_size(),
-            hipMemcpyDeviceToDevice,
-            stream),
-        "memcpyAsync failed");
   } else {
     // Non-root ranks receive from root
     ncclResult_t recvResult = rccl_api_->recv(
@@ -1447,6 +1433,23 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::scatter(
       throw RCCLException(
           *rccl_api_, "NCCL Recv failed in scatter", recvResult, nccl_comm_);
     }
+  }
+
+  RCCL_CHECK(
+      rccl_api_, nccl_comm_, rccl_api_->groupEnd(), "NCCL GroupEnd failed");
+
+  if (rank_ == root) {
+    // Root copies its own data using hipMemcpyAsync
+    HIP_CHECK(
+        hip_api_,
+        hip_api_->memcpyAsync(
+            output_tensor.data_ptr(),
+            input_tensor_list[root].data_ptr(),
+            input_tensor_list[root].numel() *
+                input_tensor_list[root].element_size(),
+            hipMemcpyDeviceToDevice,
+            stream),
+        "memcpyAsync failed");
   }
 
   // Record end event after NCCL operations
@@ -1500,13 +1503,13 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::gather(
   // Record start event before NCCL operations
   work->recordStart("gather");
 
+  // All ranks must participate in the group -- RCCL requires matched
+  // groupStart/groupEnd across all ranks (unlike NCCL which is lenient).
+  RCCL_CHECK(
+      rccl_api_, nccl_comm_, rccl_api_->groupStart(), "NCCL GroupStart failed");
+
   if (rank_ == root) {
     // Root receives from all ranks (except itself)
-    RCCL_CHECK(
-        rccl_api_,
-        nccl_comm_,
-        rccl_api_->groupStart(),
-        "NCCL GroupStart failed");
     for (int i = 0; i < comm_size_; ++i) {
       if (i != root) {
         ncclResult_t recvResult = rccl_api_->recv(
@@ -1522,19 +1525,6 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::gather(
         }
       }
     }
-    RCCL_CHECK(
-        rccl_api_, nccl_comm_, rccl_api_->groupEnd(), "NCCL GroupEnd failed");
-
-    // Root copies its own data using hipMemcpyAsync
-    HIP_CHECK(
-        hip_api_,
-        hip_api_->memcpyAsync(
-            output_tensor_list[root].data_ptr(),
-            input_tensor.data_ptr(),
-            input_tensor.numel() * input_tensor.element_size(),
-            hipMemcpyDeviceToDevice,
-            stream),
-        "memcpyAsync failed");
   } else {
     // Non-root ranks send to root
     ncclResult_t sendResult = rccl_api_->send(
@@ -1548,6 +1538,22 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCL::gather(
       throw RCCLException(
           *rccl_api_, "NCCL Send failed in gather", sendResult, nccl_comm_);
     }
+  }
+
+  RCCL_CHECK(
+      rccl_api_, nccl_comm_, rccl_api_->groupEnd(), "NCCL GroupEnd failed");
+
+  if (rank_ == root) {
+    // Root copies its own data using hipMemcpyAsync
+    HIP_CHECK(
+        hip_api_,
+        hip_api_->memcpyAsync(
+            output_tensor_list[root].data_ptr(),
+            input_tensor.data_ptr(),
+            input_tensor.numel() * input_tensor.element_size(),
+            hipMemcpyDeviceToDevice,
+            stream),
+        "memcpyAsync failed");
   }
 
   // Record end event after NCCL operations
