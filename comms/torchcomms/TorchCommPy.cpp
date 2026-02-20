@@ -191,6 +191,79 @@ See https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams for more d
           "WIN_ACCESS_TYPE_SEPARATE",
           TorchCommWinAccessType::WIN_ACCESS_TYPE_SEPARATE);
 
+  // Bind OpName enum for hooks
+  py::enum_<OpName>(m, "OpName", "Collective operation name for hooks.")
+      .value("send", OpName::send)
+      .value("recv", OpName::recv)
+      .value("broadcast", OpName::broadcast)
+      .value("all_reduce", OpName::all_reduce)
+      .value("reduce", OpName::reduce)
+      .value("all_gather", OpName::all_gather)
+      .value("all_gather_v", OpName::all_gather_v)
+      .value("all_gather_single", OpName::all_gather_single)
+      .value("reduce_scatter", OpName::reduce_scatter)
+      .value("reduce_scatter_v", OpName::reduce_scatter_v)
+      .value("reduce_scatter_single", OpName::reduce_scatter_single)
+      .value("all_to_all_single", OpName::all_to_all_single)
+      .value("all_to_all_v_single", OpName::all_to_all_v_single)
+      .value("all_to_all", OpName::all_to_all)
+      .value("barrier", OpName::barrier)
+      .value("scatter", OpName::scatter)
+      .value("gather", OpName::gather)
+      .value("split", OpName::split)
+      .value("new_window", OpName::new_window);
+
+  // Bind RemovableHandle class for hook management
+  py::class_<RemovableHandle, std::unique_ptr<RemovableHandle>>(
+      m,
+      "RemovableHandle",
+      R"(
+Handle for removing a registered hook.
+
+Call remove() to unregister the hook. The hook will be automatically
+unregistered when the handle is garbage collected if remove() was not called.
+      )")
+      .def(
+          "remove",
+          &RemovableHandle::remove,
+          "Unregister the hook associated with this handle.");
+
+  // Bind PreHookArgs struct for pre-hook callbacks
+  py::class_<TorchComm::PreHookArgs>(
+      m,
+      "PreHookArgs",
+      R"(
+Arguments passed to pre-hook callbacks.
+
+Pre-hooks are called before each collective operation starts.
+      )")
+      .def_readonly("name", &TorchComm::PreHookArgs::name, "Operation name")
+      .def_readonly(
+          "async_op",
+          &TorchComm::PreHookArgs::async_op,
+          "Whether the operation is asynchronous")
+      .def_readonly(
+          "root", &TorchComm::PreHookArgs::root, "Root rank for rooted ops")
+      .def_readonly(
+          "op_id",
+          &TorchComm::PreHookArgs::op_id,
+          "Unique operation ID for correlation with post-hook");
+
+  // Bind PostHookArgs struct for post-hook callbacks
+  py::class_<TorchComm::PostHookArgs>(
+      m,
+      "PostHookArgs",
+      R"(
+Arguments passed to post-hook callbacks.
+
+Post-hooks are called after each collective operation completes.
+      )")
+      .def_readonly("name", &TorchComm::PostHookArgs::name, "Operation name")
+      .def_readonly(
+          "op_id",
+          &TorchComm::PostHookArgs::op_id,
+          "Unique operation ID for correlation with pre-hook");
+
   py::class_<TorchCommWindowAttr, std::shared_ptr<TorchCommWindowAttr>>(
       m, "TorchCommWindowAttr", "Window attributes.")
       .def(py::init<>(), "Create default TorchCommWindowAttr")
@@ -1501,7 +1574,109 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       .def_property_readonly(
           "mem_allocator",
           [](TorchComm& self) { return get_mem_allocator(self.getBackend()); },
-          "Get the communication-specific memory allocator");
+          "Get the communication-specific memory allocator")
+
+      // Hook registration methods
+      .def(
+          "register_pre_hook",
+          [](TorchComm& self, py::function callback) {
+            auto hook = [callback](TorchComm::PreHookArgs args) {
+              py::gil_scoped_acquire acquire;
+              callback(args);
+            };
+            return self.registerPreHook(std::move(hook));
+          },
+          R"doc(
+Register a pre-hook callback that is called before each collective operation.
+
+The callback receives a PreHookArgs object containing operation metadata.
+
+Args:
+    callback: A callable that takes a PreHookArgs argument.
+
+Returns:
+    RemovableHandle: A handle that can be used to unregister the hook.
+
+Example::
+
+    def my_pre_hook(args):
+        print(f"Starting {args.name}")
+    handle = comm.register_pre_hook(my_pre_hook)
+    # ... run operations ...
+    handle.remove()  # Unregister when done
+
+Note:
+    Hooks are not thread-safe and must not be modified while a collective
+    operation is in progress.
+          )doc",
+          py::arg("callback"))
+      .def(
+          "register_post_hook",
+          [](TorchComm& self, py::function callback) {
+            auto hook = [callback](TorchComm::PostHookArgs args) {
+              py::gil_scoped_acquire acquire;
+              callback(args);
+            };
+            return self.registerPostHook(std::move(hook));
+          },
+          R"doc(
+Register a post-hook callback that is called after each collective operation.
+
+The callback receives a PostHookArgs object containing operation metadata.
+The op_id can be used to correlate with the corresponding pre-hook call.
+
+Args:
+    callback: A callable that takes a PostHookArgs argument.
+
+Returns:
+    RemovableHandle: A handle that can be used to unregister the hook.
+
+Example::
+
+    def my_post_hook(args):
+        print(f"Completed {args.name}")
+    handle = comm.register_post_hook(my_post_hook)
+    # ... run operations ...
+    handle.remove()  # Unregister when done
+
+Note:
+    Hooks are not thread-safe and must not be modified while a collective
+    operation is in progress.
+          )doc",
+          py::arg("callback"))
+      .def(
+          "register_abort_hook",
+          [](TorchComm& self, py::function callback) {
+            auto hook = [callback]() {
+              py::gil_scoped_acquire acquire;
+              callback();
+            };
+            return self.registerAbortHook(std::move(hook));
+          },
+          R"doc(
+Register an abort hook callback that is called before process abort.
+
+This hook is called when a collective operation times out or fails and the
+process is about to abort. Use this to capture debug information.
+
+Args:
+    callback: A callable with no arguments.
+
+Returns:
+    RemovableHandle: A handle that can be used to unregister the hook.
+
+Example::
+
+    def my_abort_hook():
+        print("About to abort, saving debug info...")
+        save_debug_state()
+    handle = comm.register_abort_hook(my_abort_hook)
+
+Note:
+    Hooks are not thread-safe and must not be modified while a collective
+    operation is in progress.
+          )doc",
+          py::arg("callback"));
 
   intrusive_ptr_class_<BackendWrapper, c10d::Backend>(m, "_BackendWrapper")
       .def(
