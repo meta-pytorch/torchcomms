@@ -21,6 +21,7 @@
 #include "comms/ctran/ibverbx/Ibverbx.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
+#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 #include "nccl.h"
 
 using namespace ::testing;
@@ -37,6 +38,11 @@ class MPIEnvironment : public DistEnvironmentBase {
     setenv("NCCL_IB_ASYNC_EVENT_LOOP", "ctran", 1);
     setenv("NCCL_ERROR_TRACE_ENABLE", "True", 0);
     setenv("NCCL_CTRAN_ENABLE", "1", 0);
+    // Initialize ctran::ibvwrap symbols so that wrap_ibv_event_type_str
+    // (called from triageIbAsyncEvents) does not crash on a null function
+    // pointer. ibverbx::ibvInit() only initializes ibverbx::ibvSymbols,
+    // not ctran::ibvwrap::ibvSymbols.
+    ctran::ibvwrap::wrap_ibv_symbols();
   }
 };
 
@@ -290,25 +296,36 @@ TEST_F(CtranIbTest, AsyncEventFound) {
   s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
   try {
     auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
-    // ensures ibv_poll_async_fd runs at least waitCount times
-    const int waitCount = 10;
+    // Wait for ibv_poll_async_fd to run at least once and for the handler
+    // to process the event
     for (int i = 0; i < 10; i++) {
-      if (asyncFdCounter >= waitCount) {
+      if (asyncFdCounter >= 1) {
         break;
       }
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    EXPECT_GE(asyncFdCounter, 1);
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
-  // IBV_EVENT_QP_FATAL will trigger a ncclSystemError
-  ncclResult_t asyncError;
-  NCCLCHECK_TEST(ncclCommGetAsyncError(this->commDeprecated, &asyncError));
-  EXPECT_EQ(asyncError, ncclSystemError);
-
-  pullNcclCommDump(this->commDeprecated);
+  // Fatal events are recorded in process global errors via
+  // ProcessGlobalErrorsUtil::setNic
+  auto dump = pullNcclCommDump(this->commDeprecated);
   s->stopIbAsyncEventHandler();
+
+  // Verify the fatal event was recorded in process global errors
+  auto state = ProcessGlobalErrorsUtil::getAllState();
+  bool foundFatalEvent = false;
+  for (const auto& entry : state.errorAndStackTraces) {
+    if (entry.errorMessage.find("local work queue catastrophic error") !=
+        std::string::npos) {
+      foundFatalEvent = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(foundFatalEvent)
+      << "Expected QP_FATAL event in processGlobalErrors";
 }
 
 /* This test includes 2 link flaps: The first one is
@@ -382,24 +399,24 @@ TEST_F(CtranIbTest, AsyncEventLinkFlap) {
   EXPECT_CALL(*installedVerbs, ibv_ack_async_event(_)).Times(3);
 
   s->startIbAsyncEventHandler(this->comm->statex_->cudaDev());
-  ncclResult_t asyncError;
   try {
     auto ctranIb = std::make_unique<CtranIb>(this->comm, this->ctrlMgr.get());
-    // need to wait for timeout; total time > down + up + timeout (2s in this
-    // test)
+    // need to wait for timeout; total time > down + up + down + timeout (2s in
+    // this test)
     for (int i = 0; i < 10; i++) {
-      ncclCommGetAsyncError(this->commDeprecated, &asyncError);
-      if (asyncError != ncclSuccess) {
-        break;
-      }
       std::this_thread::sleep_for(std::chrono::milliseconds(250));
     }
   } catch (const std::bad_alloc&) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";
   }
 
-  ncclCommGetAsyncError(this->commDeprecated, &asyncError);
-  EXPECT_EQ(asyncError, ncclSystemError);
+  // Link down timeout errors are recorded in process global errors
+  // via ProcessGlobalErrorsUtil::setNic
+
+  // Verify the link down timeout was recorded in badNics
+  auto state = ProcessGlobalErrorsUtil::getAllState();
+  EXPECT_FALSE(state.badNics.empty())
+      << "Expected badNics to be non-empty after link down timeout";
 
   auto dump = pullNcclCommDump(this->commDeprecated);
   s->stopIbAsyncEventHandler();
