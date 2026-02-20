@@ -254,9 +254,6 @@ void TorchCommXCCL::init(
     throw std::runtime_error("XCCL commCount failed");
   }
 
-  local_size_ = query_localsize();
-  is_scale_out_ = (local_size_ > 0 && local_size_ < comm_size_);
-
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
@@ -711,16 +708,15 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   }
 
   // Workaround for oneCCL issue:
-  // oneCCL incorrectly skips premul when comm_size is 1 and fails for
-  // scale-out. If we encounter this scenario, we manually pre-multiply the
-  // tensor in-place and switch the operation to a standard SUM.
-  // TODO: remove this workaround when oneCCL bug is fixed
-  bool needs_premul_sum_wa = (op == ReduceOp::RedOpType::PREMUL_SUM) &&
-      (comm_size_ == 1 || is_scale_out_);
-  ReduceOp maybe_new_op =
-      needs_premul_sum_wa ? applyPremulSumWorkaround(tensor, op) : op;
+  // oneCCL doesn't support premul for scale-out yet, pending next release.
+  // Since there is no convenient way to know if comm is using scale out, we
+  // convert all PreMulSum and AVG ops to sum and apply workarounds manually.
+  // TODO: remove this workaround for oneCCL 2022.0 release
+  ReduceOp maybe_new_op = (op == ReduceOp::RedOpType::PREMUL_SUM)
+      ? applyPremulSumWorkaround(tensor, op)
+      : op;
 
-  ReduceOp final_op = (op == ReduceOp::RedOpType::AVG && is_scale_out_)
+  ReduceOp final_op = (op == ReduceOp::RedOpType::AVG)
       ? ReduceOp(ReduceOp::RedOpType::SUM)
       : maybe_new_op;
 
@@ -738,7 +734,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
     throw XCCLException(*xccl_api_, "XCCL allReduce failed", result);
   }
 
-  if (op == ReduceOp::RedOpType::AVG && is_scale_out_) {
+  if (op == ReduceOp::RedOpType::AVG) {
     // For scale-out all_reduce with AVG, oneCCL does not support AVG
     // reduction natively on this path. We therefore perform a SUM across all
     // ranks and then divide the result in-place by comm_size on every rank to
@@ -1381,20 +1377,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   // Workaround for oneCCL issue:
-  // oneCCL incorrectly skips premul when comm_size is 1 and fails for
-  // scale-out. If we encounter this scenario, we manually pre-multiply the
-  // tensor in-place and switch the operation to a standard SUM.
-  // TODO: remove this workaround when oneCCL bug is fixed
-  const bool needs_premul_sum_wa = (op == ReduceOp::RedOpType::PREMUL_SUM) &&
-      (comm_size_ == 1 || is_scale_out_);
-  const auto [maybe_scaled_input, maybe_new_op] = needs_premul_sum_wa
+  // oneCCL doesn't support premul for scale-out yet, pending next release.
+  // Since there is no convenient way to know if comm is using scale out, we
+  // convert all PreMulSum and AVG ops to sum and apply workarounds manually.
+  // TODO: remove this workaround for oneCCL 2022.0 release
+  const auto [maybe_scaled_input, maybe_new_op] = (op == ReduceOp::RedOpType::PREMUL_SUM)
       ? applyPremulSumWorkaround(input, op)
       : std::make_pair(input, op);
 
-  const bool needs_avg_sum_wa =
-      (op == ReduceOp::RedOpType::AVG) && is_scale_out_;
-  ReduceOp final_op =
-      needs_avg_sum_wa ? ReduceOp(ReduceOp::RedOpType::SUM) : maybe_new_op;
+  ReduceOp final_op = (op == ReduceOp::RedOpType::AVG)
+      ? ReduceOp(ReduceOp::RedOpType::SUM) : maybe_new_op;
 
   xpuStream_t stream = getOperationStream(async_op);
 
@@ -1438,7 +1430,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
         result);
   }
 
-  if (needs_avg_sum_wa) {
+  if (op == ReduceOp::RedOpType::AVG) {
     // If this is a reduce_scatter with AVG, we need to divide the result by
     // comm_size to get the correct average value. oneCCL does not support
     // AVG reduction natively, so we have to do this manually after the reduce.

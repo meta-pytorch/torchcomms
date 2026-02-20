@@ -15,7 +15,5 @@ T env_to_value(std::string_view env_key, const T& default_value);
 
 // Query rank and size based on TORCHCOMM_BOOTSTRAP_RANKSIZE_QUERY_METHOD
 std::pair<int, int> query_ranksize();
-// Query local size based on TORCHCOMM_BOOTSTRAP_LOCALSIZE_QUERY_METHOD
-int query_localsize();
 
 } // namespace torch::comms

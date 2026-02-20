@@ -284,8 +284,6 @@ class TorchCommXCCL : public TorchCommBackend,
   at::Device device_;
   int comm_size_{};
   int rank_{};
-  int local_size_{};
-  bool is_scale_out_{false};
   CommOptions options_;
   size_t max_event_pool_size_{};
   std::optional<xpuStream_t> internal_stream_; // Initialized in init()
