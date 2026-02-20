@@ -10,9 +10,9 @@ using c10::cuda::CUDACachingAllocator::snapshot;
 using c10::cuda::CUDACachingAllocator::TraceEntry;
 #else
 #include <ATen/hip/impl/HIPCachingAllocatorMasqueradingAsCUDA.h> // @manual
-using c10::hip::HIPCachingAllocator::attachAllocatorTraceTracker;
-using c10::hip::HIPCachingAllocator::snapshot;
-using c10::hip::HIPCachingAllocator::TraceEntry;
+using c10::cuda::CUDACachingAllocator::attachAllocatorTraceTracker;
+using c10::cuda::CUDACachingAllocator::snapshot;
+using c10::cuda::CUDACachingAllocator::TraceEntry;
 #endif
 #include <memory>
 #include <mutex>
