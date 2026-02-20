@@ -1928,12 +1928,17 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
     return work;
   }
 
+  // Unlike the NCCL implementation which groups only the send operations,
+  // we group both send and receive operations to avoid a hang in oneCCL.
+  // See https://github.com/uxlfoundation/oneCCL/issues/193 for details.
+
   // Implement Scatter using point-to-point operations
   onecclResult_t result = xccl_api_->groupStart();
   if (result != onecclSuccess) [[unlikely]] {
     throw XCCLException(
         *xccl_api_, "XCCL groupStart failed in scatter", result);
   }
+
   if (rank_ == root) {
     // Root sends to all ranks (except itself)
     for (int i = 0; i < comm_size_; ++i) {
@@ -1971,7 +1976,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
         "memcpyAsync failed in scatter");
   } else {
     // Non-root ranks receive from root
-     result = xccl_api_->recv(
+    result = xccl_api_->recv(
         output_tensor.data_ptr(),
         output_tensor.numel(),
         getXcclDataType(output_tensor),
@@ -1991,8 +1996,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
   }
   result = xccl_api_->groupEnd();
   if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in scatter", result);
+    throw XCCLException(*xccl_api_, "XCCL groupEnd failed in scatter", result);
   }
 
   // Record end event after XCCL operations
@@ -2066,11 +2070,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
     return work;
   }
 
+  // Unlike the NCCL implementation which groups only the send operations,
+  // we group both send and receive operations to avoid a hang in oneCCL.
+  // See https://github.com/uxlfoundation/oneCCL/issues/193 for details.
   onecclResult_t result = xccl_api_->groupStart();
   if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in gather", result);
+    throw XCCLException(*xccl_api_, "XCCL groupStart failed in gather", result);
   }
+
   if (rank_ == root) {
     // Root receives from all ranks (except itself)
     for (int peer_rank = 0; peer_rank < comm_size_; ++peer_rank) {
@@ -2127,8 +2134,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
   }
   result = xccl_api_->groupEnd();
   if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in gather", result);
+    throw XCCLException(*xccl_api_, "XCCL groupEnd failed in gather", result);
   }
 
   // Record end event after XCCL operations
