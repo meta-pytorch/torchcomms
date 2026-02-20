@@ -48,6 +48,7 @@ class TorchWorkXCCL : public TorchWork {
   std::chrono::milliseconds getTimeout() const override {
     return timeout_ms_;
   }
+  std::optional<float> getDuration() const override;
 
  protected:
   void recordStart();

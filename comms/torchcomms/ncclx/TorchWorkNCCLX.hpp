@@ -61,6 +61,7 @@ class TorchWorkNCCLX : public TorchWork {
   std::chrono::milliseconds getTimeout() const override {
     return timeout_ms_;
   }
+  std::optional<float> getDuration() const override;
 
   // Set persistent request reference to keep it alive until work is freed
   void setPersistentRequest(
