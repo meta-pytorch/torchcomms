@@ -189,6 +189,7 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX<Backend>::put(
 
   checkDeviceAndThrow(tensor);
   auto stream = torch_comm_->getOperationStream(asyncOp);
+  torch_comm_->graph_event_tracker_.initOnGraphStart(stream);
   auto work = torch_comm_->createWork(stream, options.timeout, {tensor});
   work->recordStart("put");
   CHECK_EQ(
@@ -234,6 +235,7 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX<Backend>::signal(
     const SignalOptions& options) {
   checkWindowAndThrow();
   auto stream = torch_comm_->getOperationStream(asyncOp);
+  torch_comm_->graph_event_tracker_.initOnGraphStart(stream);
   auto work = torch_comm_->createWork(stream, options.timeout);
   work->recordStart("signal");
   CHECK_EQ(nccl_api_->winSignal(peerRank, win_, stream), ncclSuccess);
@@ -250,6 +252,7 @@ c10::intrusive_ptr<TorchWork> TorchCommWindowNCCLX<Backend>::wait_signal(
   checkWindowAndThrow();
   auto stream = torch_comm_->getOperationStream(asyncOp);
 
+  torch_comm_->graph_event_tracker_.initOnGraphStart(stream);
   auto work = torch_comm_->createWork(stream, options.timeout);
   work->recordStart("wait_signal");
   CHECK_EQ(nccl_api_->winWaitSignal(peerRank, win_, stream), ncclSuccess);

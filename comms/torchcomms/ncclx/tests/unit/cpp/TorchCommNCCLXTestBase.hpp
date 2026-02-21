@@ -83,6 +83,10 @@ class TorchCommNCCLXTest : public ::testing::Test {
     cudaEvent_t getAsyncDependencyEvent() const {
       return dependency_event_;
     }
+
+    void checkGraphEvents() {
+      TorchCommNCCLX::checkGraphEvents();
+    }
   };
 
   void setupEventsForWork(TestTorchCommNCCLX& torchcomm, size_t numWork);

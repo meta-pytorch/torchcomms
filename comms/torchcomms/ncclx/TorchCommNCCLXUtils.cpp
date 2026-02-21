@@ -180,6 +180,20 @@ void TorchCommNCCLX::checkWorkQueue() {
   }
 }
 
+void TorchCommNCCLX::checkGraphEvents() {
+  auto result = graph_event_tracker_.checkAll();
+  switch (result) {
+    case GraphEventTracker::CheckResult::TIMEOUT:
+      comm_state_ = CommState::TIMEOUT;
+      break;
+    case GraphEventTracker::CheckResult::ERROR:
+      comm_state_ = CommState::ERROR;
+      break;
+    default:
+      break;
+  }
+}
+
 // The timeout thread cannot make NCCL calls.  The only CUDA call it can make
 // it cudaEventQuery.
 void TorchCommNCCLX::timeoutWatchdog() noexcept {
@@ -221,6 +235,12 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
     if (shutdown_) {
       break;
     }
+
+    // Check graph replay work entries; skip if already in error or timeout
+    if (comm_state_ == CommState::NORMAL) {
+      checkGraphEvents();
+    }
+
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {
       // Log the error and abort the process.  We cannot abort the NCCL
@@ -272,6 +292,12 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
 
   // First, check work queue status
   checkWorkQueue();
+
+  // Also check graph event tracker so the calling thread can
+  // synchronously detect graph timeouts
+  if (comm_state_ == CommState::NORMAL) {
+    checkGraphEvents();
+  }
 
   if (comm_state_ == CommState::TIMEOUT) {
     abortNcclComm();
@@ -325,7 +351,6 @@ c10::intrusive_ptr<TorchWorkNCCLX> TorchCommNCCLX::createWork(
     cudaStream_t stream,
     std::chrono::milliseconds timeout,
     const std::vector<at::Tensor>& inputTensors) {
-  // Only create the work object without enqueuing it
   auto work = c10::make_intrusive<TorchWorkNCCLX>(
       shared_from_this(), stream, timeout, inputTensors);
   return work;
@@ -335,7 +360,6 @@ c10::intrusive_ptr<TorchWorkNCCLX> TorchCommNCCLX::createWork(
     cudaStream_t stream,
     std::chrono::milliseconds timeout,
     const at::Tensor& inputTensor) {
-  // Only create the work object without enqueuing it
   auto work = c10::make_intrusive<TorchWorkNCCLX>(
       shared_from_this(), stream, timeout, inputTensor);
   return work;
@@ -344,86 +368,23 @@ c10::intrusive_ptr<TorchWorkNCCLX> TorchCommNCCLX::createWork(
 void TorchCommNCCLX::enqueueWork(
     c10::intrusive_ptr<TorchWorkNCCLX> work,
     cudaStream_t stream) {
-  // In graph capture mode, keep a reference to the work object to prevent
-  // premature destruction until the graph gets destroyed, organized per graph
   if (getGraphCaptureMode()) {
-    cudaStreamCaptureStatus capture_status;
-    unsigned long long graph_id;
-    cudaGraph_t graph;
-
-    cudaError_t err = cuda_api_->streamGetCaptureInfo_v2(
-        stream, &capture_status, &graph_id, &graph, nullptr, nullptr);
-    if (err != cudaSuccess) {
+    // Graph replay timeouts are unrecoverable — there is no way to halt a
+    // replaying graph. The only safe response is abort().
+    if (!options_.abort_process_on_timeout_or_error) {
       throw std::runtime_error(
-          "Failed to get CUDA stream capture info: " +
-          std::string(cuda_api_->getErrorString(err)));
-    } else if (capture_status == cudaStreamCaptureStatusActive) {
-      std::lock_guard<std::mutex> lock(graph_capture_work_mutex_);
-
-      // Check if this is the first work object for this graph
-      bool is_first_work = graph_capture_work_refs_[graph_id].empty();
-
-      // Add work reference to the per-graph container
-      graph_capture_work_refs_[graph_id].push_back(work);
-
-      // If this is the first work object for this graph, set up automatic
-      // cleanup
-      if (is_first_work) {
-        // Create cleanup data that will be passed to the callback
-        auto* cleanup_data = new GraphCleanupData(this, graph_id);
-
-        // Create a CUDA user object with our cleanup callback
-        cudaUserObject_t user_object;
-        err = cuda_api_->userObjectCreate(
-            &user_object,
-            cleanup_data,
-            graphCleanupCallback,
-            1, // initial reference count
-            cudaUserObjectNoDestructorSync);
-        if (err != cudaSuccess) {
-          // If we failed to create the user object, clean up manually
-          delete cleanup_data;
-          throw std::runtime_error(
-              "Failed to create user object: " +
-              std::string(cuda_api_->getErrorString(err)));
-        } else {
-          // Retain the user object in the graph so it gets cleaned up when the
-          // graph is destroyed
-          err = cuda_api_->graphRetainUserObject(
-              graph,
-              user_object,
-              1, // reference count
-              cudaGraphUserObjectMove);
-          if (err != cudaSuccess) {
-            // If we failed to retain the user object, clean up manually
-            delete cleanup_data;
-            throw std::runtime_error(
-                "Failed to retain user object: " +
-                std::string(cuda_api_->getErrorString(err)));
-          }
-        }
-      }
+          "CUDA graph capture requires abort_process_on_timeout_or_error=true. "
+          "Graph replay timeouts are unrecoverable and must abort the process.");
     }
+
+    // Transfer start/end event ownership to the tracker.
+    // Work object is NOT stored — it will be destroyed when the caller's
+    // intrusive_ptr goes out of scope, destroying ad-hoc sync_event_.
+    graph_event_tracker_.addEntry(work.get());
   } else {
     // Add work to stream's queue after events have been recorded
     workq_.enqueueWork(std::move(work), stream);
   }
-}
-
-// Static callback function for CUDA user object cleanup
-void CUDART_CB TorchCommNCCLX::graphCleanupCallback(void* userData) {
-  auto* cleanup_data = static_cast<GraphCleanupData*>(userData);
-  if (cleanup_data == nullptr || cleanup_data->comm == nullptr) {
-    throw std::runtime_error("Invalid cleanup data");
-  }
-
-  // Clear the work references for this graph
-  std::lock_guard<std::mutex> lock(
-      cleanup_data->comm->graph_capture_work_mutex_);
-  cleanup_data->comm->graph_capture_work_refs_.erase(cleanup_data->graph_id);
-
-  // Clean up the cleanup data itself
-  delete cleanup_data;
 }
 
 cudaStream_t TorchCommNCCLX::getOperationStream(bool async_op) {
