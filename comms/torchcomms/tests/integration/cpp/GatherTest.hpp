@@ -1,51 +1,36 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #pragma once
 
-#include <ATen/cuda/CUDAContext.h>
-#include <ATen/cuda/CUDAGraph.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <ATen/ATen.h>
+#include <c10/core/Device.h>
 #include <gtest/gtest.h>
+#include <memory>
+#include <tuple>
 #include <vector>
+#include "comms/torchcomms/tests/integration/cpp/GraphTestFixtures.hpp"
 #include "comms/torchcomms/tests/integration/cpp/TorchCommTestHelpers.h"
 
-class GatherTest
-    : public ::testing::TestWithParam<std::tuple<int, at::ScalarType>> {
- public:
-  GatherTest() : GatherTest(c10::DeviceType::CUDA) {}
-  explicit GatherTest(c10::DeviceType device_type)
-      : rank_(0), num_ranks_(0), device_type_(device_type) {}
+using GatherParams = std::tuple<int, at::ScalarType>;
 
-  // Test function declarations with parameters
-  void testSyncGather(int count, at::ScalarType dtype);
-  void testSyncGatherNoWork(int count, at::ScalarType dtype);
-  void testAsyncGather(int count, at::ScalarType dtype);
-  void testAsyncGatherEarlyReset(int count, at::ScalarType dtype);
-  void testGatherInputDeleted(int count, at::ScalarType dtype);
-  void testGraphGather(int count, at::ScalarType dtype);
-  void testGraphGatherInputDeleted(int count, at::ScalarType dtype);
-
+template <typename Fixture>
+class GatherTest : public Fixture {
  protected:
-  virtual std::unique_ptr<TorchCommTestWrapper> createWrapper();
+  using Fixture::device_type_;
+  using Fixture::num_ranks_;
+  using Fixture::rank_;
+  using Fixture::run;
+  using Fixture::torchcomm_;
 
-  virtual void synchronizeStream();
+  void testSync(int count, at::ScalarType dtype);
+  void testSyncNoWork(int count, at::ScalarType dtype);
+  void testAsync(int count, at::ScalarType dtype);
+  void testAsyncEarlyReset(int count, at::ScalarType dtype);
+  void testInputDeleted(int count, at::ScalarType dtype);
 
-  virtual void SetUp() override;
-
-  virtual void TearDown() override;
-
-  std::unique_ptr<TorchCommTestWrapper> wrapper_;
-  std::shared_ptr<torch::comms::TorchComm> torchcomm_;
-  int rank_;
-  int num_ranks_;
-  c10::DeviceType device_type_;
-
-  static constexpr int num_replays = 4;
-
-  // Helper function declarations with parameters
   virtual at::Tensor createInputTensor(int count, at::ScalarType dtype);
   virtual std::vector<at::Tensor>
   createOutputTensors(int root_rank, int count, at::ScalarType dtype);
-  void verifyGatherResults(
-      const std::vector<at::Tensor>& outputs,
-      int root_rank);
+  void verifyResults(const std::vector<at::Tensor>& outputs);
+  virtual void synchronizeStream();
 };
