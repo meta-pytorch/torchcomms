@@ -45,11 +45,11 @@ struct MultipeerIbgdaTransportConfig {
   // If empty, uses topology-aware auto-discovery.
   std::map<int, std::vector<std::string>> gpuNicMap;
 
-  // IB HCA allowlist for NIC filtering during auto-discovery.
-  // If empty, all discovered NICs are considered.
+  // IB HCA filter string (NCCL_IB_HCA format) for NIC filtering during
+  // auto-discovery. If empty, all discovered NICs are considered.
   // Only used during auto-discovery (not when gpuNicMap has a mapping for the
   // GPU).
-  std::vector<std::string> ibHca;
+  std::string ibHca;
 
   // Per-peer data buffer size in bytes.
   // This determines the maximum transfer size per put_signal call.
