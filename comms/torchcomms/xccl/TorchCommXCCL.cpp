@@ -707,11 +707,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
     return work;
   }
 
-  // Workaround for oneCCL issue:
-  // oneCCL doesn't support premul for scale-out yet, pending next release.
-  // Since there is no convenient way to know if comm is using scale out, we
-  // convert all PreMulSum and AVG ops to sum and apply workarounds manually.
-  // TODO: remove this workaround for oneCCL 2022.0 release
+  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
+  // ops to SUM and apply workarounds manually.
+  //
+  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
+  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
+  //
+  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
+  // reductions natively.
   ReduceOp maybe_new_op = (op == ReduceOp::RedOpType::PREMUL_SUM)
       ? applyPremulSumWorkaround(tensor, op)
       : op;
@@ -776,11 +779,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
 
   xpuStream_t stream = getOperationStream(async_op);
 
-  // Workaround for oneCCL issue:
-  // oneCCL doesn't support PREMUL_SUM reduction for the reduce operation.
-  // If we encounter this case, we scale the tensor here and change to SUM.
-  // We do this before creating the work object to store the scaled tensor.
-  // TODO: remove this workaround when oneCCL bug is fixed.
+  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
+  // ops to SUM and apply workarounds manually.
+  //
+  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
+  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
+  //
+  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
+  // reductions natively.
   const auto [maybe_scaled_tensor, maybe_new_op] =
       (op == ReduceOp::RedOpType::PREMUL_SUM)
       ? applyPremulSumWorkaround(tensor, op)
@@ -1131,11 +1137,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
   TorchCommTracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
 
-  // Workaround for oneCCL issue:
-  // oneCCL doesn't support PREMUL_SUM reduction for the reduce operation.
-  // If we encounter this case, we scale the tensor here and change to SUM.
-  // We do this before creating the work object to store the scaled tensor.
-  // TODO: remove this workaround when oneCCL bug is fixed.
+  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
+  // ops to SUM and apply workarounds manually.
+  //
+  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
+  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
+  //
+  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
+  // reductions natively.
   const auto [maybe_scaled_input_list, maybe_new_op] =
       (op == ReduceOp::RedOpType::PREMUL_SUM)
       ? applyPremulSumWorkaround(input_list, op)
@@ -1258,11 +1267,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
   TorchCommTracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
-  // Workaround for oneCCL issue:
-  // oneCCL doesn't support PREMUL_SUM reduction for the reduce operation.
-  // If we encounter this case, we scale the tensor here and change to SUM.
-  // We do this before creating the work object to store the scaled tensor.
-  // TODO: remove this workaround when oneCCL bug is fixed.
+  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
+  // ops to SUM and apply workarounds manually.
+  //
+  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
+  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
+  //
+  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
+  // reductions natively.
   const auto [maybe_scaled_input_list, maybe_new_op] =
       (op == ReduceOp::RedOpType::PREMUL_SUM)
       ? applyPremulSumWorkaround(input_list, op)
@@ -1376,17 +1388,22 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
   TorchCommTracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
-  // Workaround for oneCCL issue:
-  // oneCCL doesn't support premul for scale-out yet, pending next release.
-  // Since there is no convenient way to know if comm is using scale out, we
-  // convert all PreMulSum and AVG ops to sum and apply workarounds manually.
-  // TODO: remove this workaround for oneCCL 2022.0 release
-  const auto [maybe_scaled_input, maybe_new_op] = (op == ReduceOp::RedOpType::PREMUL_SUM)
+  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
+  // ops to SUM and apply workarounds manually.
+  //
+  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
+  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
+  //
+  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
+  // reductions natively.
+  const auto [maybe_scaled_input, maybe_new_op] =
+      (op == ReduceOp::RedOpType::PREMUL_SUM)
       ? applyPremulSumWorkaround(input, op)
       : std::make_pair(input, op);
 
   ReduceOp final_op = (op == ReduceOp::RedOpType::AVG)
-      ? ReduceOp(ReduceOp::RedOpType::SUM) : maybe_new_op;
+      ? ReduceOp(ReduceOp::RedOpType::SUM)
+      : maybe_new_op;
 
   xpuStream_t stream = getOperationStream(async_op);
 
