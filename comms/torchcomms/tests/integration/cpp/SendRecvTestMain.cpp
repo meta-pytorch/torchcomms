@@ -5,59 +5,121 @@
 #include <gtest/gtest.h>
 #include "TorchCommTestHelpers.h"
 
-TEST_P(SendRecvTest, SyncSendRecv) {
+using Eager = SendRecvTest<EagerTestFixture<SendRecvParams>>;
+using SingleGraph = SendRecvTest<GraphTestFixture<SendRecvParams, 1>>;
+using MultiGraph = SendRecvTest<GraphTestFixture<SendRecvParams, 2>>;
+
+TEST_P(Eager, Sync) {
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
-  testSyncSendRecv(count, dtype);
+  testSync(count, dtype);
 }
 
-TEST_P(SendRecvTest, SyncSendRecvNoWork) {
+TEST_P(Eager, SyncNoWork) {
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
-  testSyncSendRecvNoWork(count, dtype);
+  testSyncNoWork(count, dtype);
 }
 
-TEST_P(SendRecvTest, AsyncSendRecv) {
+TEST_P(Eager, Async) {
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
-  testAsyncSendRecv(count, dtype);
+  testAsync(count, dtype);
 }
 
-TEST_P(SendRecvTest, AsyncSendRecvEarlyReset) {
+TEST_P(Eager, AsyncEarlyReset) {
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
-  testAsyncSendRecvEarlyReset(count, dtype);
+  testAsyncEarlyReset(count, dtype);
 }
 
-TEST_P(SendRecvTest, SendRecvInputDeleted) {
+TEST_P(Eager, InputDeleted) {
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
-  testSendRecvInputDeleted(count, dtype);
+  testInputDeleted(count, dtype);
 }
 
-TEST_P(SendRecvTest, GraphSendRecv) {
+TEST_P(SingleGraph, Sync) {
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
-  testGraphSendRecv(count, dtype);
+  testSync(count, dtype);
 }
 
-TEST_P(SendRecvTest, GraphSendRecvInputDeleted) {
+TEST_P(SingleGraph, SyncNoWork) {
   int count = std::get<0>(GetParam());
   at::ScalarType dtype = std::get<1>(GetParam());
-  testGraphSendRecvInputDeleted(count, dtype);
+  testSyncNoWork(count, dtype);
+}
+
+TEST_P(SingleGraph, Async) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testAsync(count, dtype);
+}
+
+TEST_P(SingleGraph, InputDeleted) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testInputDeleted(count, dtype);
+}
+
+TEST_P(MultiGraph, Sync) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testSync(count, dtype);
+}
+
+TEST_P(MultiGraph, SyncNoWork) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testSyncNoWork(count, dtype);
+}
+
+TEST_P(MultiGraph, Async) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testAsync(count, dtype);
+}
+
+TEST_P(MultiGraph, InputDeleted) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testInputDeleted(count, dtype);
+}
+
+auto sendRecvParamValues() {
+  return ::testing::Combine(
+      ::testing::Values(4), ::testing::Values(at::kFloat, at::kInt, at::kChar));
+}
+
+auto sendRecvGraphParamValues() {
+  return ::testing::Combine(
+      ::testing::Values(4), ::testing::Values(at::kFloat));
+}
+
+auto sendRecvParamNamer(const ::testing::TestParamInfo<SendRecvParams>& info) {
+  int count = std::get<0>(info.param);
+  at::ScalarType dtype = std::get<1>(info.param);
+  return "Count_" + std::to_string(count) + "_" + getDtypeName(dtype);
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    SendRecvTestParams,
-    SendRecvTest,
-    ::testing::Combine(
-        ::testing::Values(4),
-        ::testing::Values(at::kFloat, at::kInt, at::kChar)),
-    [](const ::testing::TestParamInfo<std::tuple<int, at::ScalarType>>& info) {
-      int count = std::get<0>(info.param);
-      at::ScalarType dtype = std::get<1>(info.param);
-      return "Count_" + std::to_string(count) + "_" + getDtypeName(dtype);
-    });
+    SendRecv,
+    Eager,
+    sendRecvParamValues(),
+    sendRecvParamNamer);
+
+INSTANTIATE_TEST_SUITE_P(
+    SendRecv,
+    SingleGraph,
+    sendRecvGraphParamValues(),
+    sendRecvParamNamer);
+
+INSTANTIATE_TEST_SUITE_P(
+    SendRecv,
+    MultiGraph,
+    sendRecvGraphParamValues(),
+    sendRecvParamNamer);
 
 // This main function is provided by gtest
 int main(int argc, char** argv) {
