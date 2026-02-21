@@ -627,8 +627,8 @@ cvars:
 
  - name        : NCCL_NET_WIDEN_LINKS
    type        : bool
-   default     : true
-   description : When set to false, disables PCI link widening for bonded vNics in ncclTopoGetVNicParent. By default (true), ncclTopoWidenLinks sums the PCI link widths of constituent physical NICs.
+   default     : false
+   description : When set to false (by default), disables PCI link widening for bonded vNics in ncclTopoGetVNicParent. When set to true, ncclTopoWidenLinks sums the PCI link widths of constituent physical NICs.
 
  - name        : NCCL_NTHREADS
    type        : int64_t
