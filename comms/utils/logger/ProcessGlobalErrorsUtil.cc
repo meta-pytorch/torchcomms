@@ -122,6 +122,34 @@ void ProcessGlobalErrorsUtil::clearIbCompletionErrors() {
 }
 
 /* static */
+void ProcessGlobalErrorsUtil::addCudaError(CudaError error) {
+  if (NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES == 0) {
+    return;
+  }
+  auto statePtr = kAllState.try_get();
+  if (!statePtr) {
+    return;
+  }
+  statePtr->withWLock([&](auto& state) {
+    if (state.cudaErrors.size() ==
+        NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES) {
+      state.cudaErrors.pop_front();
+    }
+    error.timestampMs = nowTs();
+    state.cudaErrors.push_back(std::move(error));
+  });
+}
+
+/* static */
+void ProcessGlobalErrorsUtil::clearCudaErrors() {
+  auto statePtr = kAllState.try_get();
+  if (!statePtr) {
+    return;
+  }
+  statePtr->withWLock([](auto& state) { state.cudaErrors.clear(); });
+}
+
+/* static */
 ProcessGlobalErrorsUtil::State ProcessGlobalErrorsUtil::getAllState() {
   auto statePtr = kAllState.try_get();
   if (!statePtr) {
