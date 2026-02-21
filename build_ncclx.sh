@@ -22,7 +22,7 @@ function do_cmake_build() {
     -DCMAKE_POLICY_VERSION_MINIMUM=3.22 \
     $extra_flags \
     -S "${source_dir}"
-  ninja
+  ninja -j$(nproc)
   ninja install
 }
 
@@ -178,10 +178,10 @@ function build_third_party {
         zstd
         conda-forge::zlib
         conda-forge::libopenssl-static
-        conda-forge::folly
         fmt
       )
       conda install "${DEPS[@]}" --yes
+      build_fb_oss_library "https://github.com/facebook/folly.git" "$third_party_tag" folly
     fi
   fi
 
