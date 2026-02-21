@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/pipes/NicDiscovery.h"
+#include "comms/pipes/rdma/NicDiscovery.h"
 
 #include <cuda_runtime.h>
 #include <glog/logging.h>
