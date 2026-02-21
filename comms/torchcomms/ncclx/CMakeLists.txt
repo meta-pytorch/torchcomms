@@ -102,7 +102,10 @@ target_link_libraries(torchcomms_comms_ncclx PRIVATE
 if(USE_SYSTEM_LIBS)
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
         ${NCCLX_SHARED_LIB}
+        ${FOLLY_LDFLAGS}
         "-lfmt"
+        "-lboost_program_options"
+        "-lboost_filesystem"
     )
 else()
     target_link_libraries(torchcomms_comms_ncclx PRIVATE
