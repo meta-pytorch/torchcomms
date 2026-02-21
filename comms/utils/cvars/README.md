@@ -31,7 +31,7 @@ that depends on the `ncclx-cvars` library.
 
 To regenerate the files manually (for development/testing), you can run:
 ```bash
-cd ~/fbsource/fbcode && buck2 run comms/utils/cvars:extractcvars
+cd ~/fbsource/fbcode && NCCL_CVARS_OUTPUT_DIR=comms/utils/cvars buck2 run comms/utils/cvars:extractcvars
 ```
 
 The CVAR is initialized as part of ncclInit and it is done by `initEnv` from
