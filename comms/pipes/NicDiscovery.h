@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include "comms/pipes/rdma/IbHcaParser.h"
+
 namespace comms::pipes {
 
 /**
@@ -80,11 +82,10 @@ class NicDiscovery {
    * to retrieve the ranked NIC list.
    *
    * @param cudaDevice CUDA device index for GPU topology analysis
+   * @param ibHcaEnv NCCL_IB_HCA-style filter string (empty = no filtering)
    * @throws std::runtime_error if no suitable NIC found
    */
-  explicit NicDiscovery(
-      int cudaDevice,
-      const std::vector<std::string>& ibHca = {});
+  explicit NicDiscovery(int cudaDevice, const std::string& ibHcaEnv = {});
 
   /**
    * Get all discovered NIC candidates, sorted best-to-worst.
@@ -155,8 +156,8 @@ class NicDiscovery {
   std::unordered_set<std::string> gpuAncestors_;
   int gpuNumaNode_{-1};
 
-  // IB HCA allowlist filter (empty = no filtering)
-  std::unordered_set<std::string> ibHcaFilter_;
+  // IB HCA filter (empty = no filtering)
+  IbHcaParser ibHcaParser_;
 
   // Discovered candidates (populated during discovery)
   std::vector<NicCandidate> candidates_;
