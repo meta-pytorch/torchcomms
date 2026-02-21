@@ -60,35 +60,38 @@ static void checkAllTensorsOnXPUorCPU(
   }
 }
 
-static ReduceOp applyPremulSumWorkaround(
-    at::Tensor& tensor,
-    const ReduceOp& r) {
+static void applyPreMulFactor(at::Tensor& tensor, const ReduceOp& r) {
   TORCH_CHECK(r.factor().has_value(), "PREMUL_SUM requires a scaling factor");
   std::visit([&tensor](auto&& arg) { tensor.mul_(arg); }, *r.factor());
-  return ReduceOp::RedOpType::SUM;
 }
 
 template <typename T>
-static std::pair<T, ReduceOp> applyPremulSumWorkaround(
+static std::pair<T, ReduceOp> getMaybeScaledInputsAndNewOp(
     const T& input,
-    const ReduceOp& r) {
-  TORCH_CHECK(r.factor().has_value(), "PREMUL_SUM requires a scaling factor");
-  auto scale_fn = [&](const at::Tensor& t) {
-    return std::visit([&t](auto&& arg) { return t.mul(arg); }, *r.factor());
-  };
-
-  if constexpr (std::is_same_v<T, at::Tensor>) {
-    return {scale_fn(input), ReduceOp::RedOpType::SUM};
-  } else if constexpr (std::is_same_v<T, std::vector<at::Tensor>>) {
-    std::vector<at::Tensor> scaled_tensors;
-    scaled_tensors.reserve(input.size());
-    for (const auto& tensor : input) {
-      scaled_tensors.push_back(scale_fn(tensor));
+    const ReduceOp& op,
+    const xpuStream_t& stream) {
+  if (op == ReduceOp::RedOpType::PREMUL_SUM) {
+    c10::StreamGuard guard(stream);
+    if constexpr (std::is_same_v<T, at::Tensor>) {
+      at::Tensor scaled_input = input.clone();
+      applyPreMulFactor(scaled_input, op);
+      return {std::move(scaled_input), ReduceOp(ReduceOp::RedOpType::SUM)};
+    } else if constexpr (std::is_same_v<T, std::vector<at::Tensor>>) {
+      std::vector<at::Tensor> scaled_inputs;
+      scaled_inputs.reserve(input.size());
+      for (const auto& tensor : input) {
+        at::Tensor scaled_input = tensor.clone();
+        applyPreMulFactor(scaled_input, op);
+        scaled_inputs.push_back(std::move(scaled_input));
+      }
+      return {std::move(scaled_inputs), ReduceOp(ReduceOp::RedOpType::SUM)};
+    } else {
+      throw std::runtime_error("Unsupported type for PREMUL_SUM scaling");
     }
-    return {scaled_tensors, ReduceOp::RedOpType::SUM};
-  } else {
-    throw std::runtime_error("Unsupported type for PREMUL_SUM workaround");
+  } else if (op == ReduceOp::RedOpType::AVG) {
+    return {input, ReduceOp(ReduceOp::RedOpType::SUM)};
   }
+  return {input, op};
 }
 
 onecclResult_t XCCLException::getResult() const {
@@ -715,13 +718,16 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   //
   // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
   // reductions natively.
-  ReduceOp maybe_new_op = (op == ReduceOp::RedOpType::PREMUL_SUM)
-      ? applyPremulSumWorkaround(tensor, op)
-      : op;
-
-  ReduceOp final_op = (op == ReduceOp::RedOpType::AVG)
-      ? ReduceOp(ReduceOp::RedOpType::SUM)
-      : maybe_new_op;
+  const auto maybe_new_op = [&]() -> ReduceOp {
+    if (op == ReduceOp::RedOpType::PREMUL_SUM) {
+      c10::StreamGuard guard(stream);
+      applyPreMulFactor(tensor, op);
+      return ReduceOp(ReduceOp::RedOpType::SUM);
+    } else if (op == ReduceOp::RedOpType::AVG) {
+      return ReduceOp(ReduceOp::RedOpType::SUM);
+    }
+    return op;
+  }();
 
   const auto dataType = getXcclDataType(tensor);
   onecclResult_t result = xccl_api_->allReduce(
@@ -729,7 +735,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
       tensor.data_ptr(), // In-place operation
       tensor.numel(),
       dataType,
-      getXcclReduceOp(final_op, xccl_comm_, dataType),
+      getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
       xccl_comm_,
       stream);
 
@@ -779,28 +785,11 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
 
   xpuStream_t stream = getOperationStream(async_op);
 
-  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
-  // ops to SUM and apply workarounds manually.
-  //
-  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
-  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
-  //
-  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
-  // reductions natively.
-  const auto [maybe_scaled_tensor, maybe_new_op] =
-      (op == ReduceOp::RedOpType::PREMUL_SUM)
-      ? applyPremulSumWorkaround(tensor, op)
-      : std::make_pair(tensor, op);
-
-  ReduceOp final_op = (op == ReduceOp::RedOpType::AVG)
-      ? ReduceOp(ReduceOp::RedOpType::SUM)
-      : maybe_new_op;
-
   auto work = async_op
       ? createWork(
             stream,
             getOperationTimeout(options.timeout, options_.timeout),
-            maybe_scaled_tensor)
+            tensor)
       : createWork(
             stream, getOperationTimeout(options.timeout, options_.timeout));
 
@@ -818,13 +807,24 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
     return work;
   }
 
+  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
+  // ops to SUM and apply workarounds manually.
+  //
+  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
+  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
+  //
+  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
+  // reductions natively.
+  const auto [maybe_scaled_tensor, maybe_new_op] =
+      getMaybeScaledInputsAndNewOp(tensor, op, stream);
+
   const auto dataType = getXcclDataType(tensor);
   onecclResult_t result = xccl_api_->reduce(
       maybe_scaled_tensor.data_ptr(),
       tensor.data_ptr(),
       tensor.numel(),
       dataType,
-      getXcclReduceOp(final_op, xccl_comm_, dataType),
+      getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
       root,
       xccl_comm_,
       stream);
@@ -1137,30 +1137,13 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
   TorchCommTracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
 
-  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
-  // ops to SUM and apply workarounds manually.
-  //
-  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
-  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
-  //
-  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
-  // reductions natively.
-  const auto [maybe_scaled_input_list, maybe_new_op] =
-      (op == ReduceOp::RedOpType::PREMUL_SUM)
-      ? applyPremulSumWorkaround(input_list, op)
-      : std::make_pair(input_list, op);
-
-  ReduceOp final_op = (op == ReduceOp::RedOpType::AVG)
-      ? ReduceOp(ReduceOp::RedOpType::SUM)
-      : maybe_new_op;
-
   xpuStream_t stream = getOperationStream(async_op);
 
   auto work = async_op
       ? createWork(
             stream,
             getOperationTimeout(options.timeout, options_.timeout),
-            maybe_scaled_input_list)
+            input_list)
       : createWork(
             stream, getOperationTimeout(options.timeout, options_.timeout));
 
@@ -1171,6 +1154,18 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
     enqueueWork(work, stream);
     return work;
   }
+
+  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
+  // ops to SUM and apply workarounds manually.
+  //
+  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
+  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
+  //
+  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
+  // reductions natively.
+
+  const auto [maybe_scaled_input_list, maybe_new_op] =
+      getMaybeScaledInputsAndNewOp(input_list, op, stream);
 
   onecclResult_t result = xccl_api_->groupStart();
   if (result != onecclSuccess) [[unlikely]] {
@@ -1191,7 +1186,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
         out_ptr,
         maybe_scaled_input_list[peer].numel(),
         dtype,
-        getXcclReduceOp(final_op, xccl_comm_, dtype),
+        getXcclReduceOp(maybe_new_op, xccl_comm_, dtype),
         peer,
         xccl_comm_,
         stream);
@@ -1267,6 +1262,18 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
   TorchCommTracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
+  xpuStream_t stream = getOperationStream(async_op);
+
+  auto work = async_op
+      ? createWork(
+            stream,
+            getOperationTimeout(options.timeout, options_.timeout),
+            input_list)
+      : createWork(
+            stream, getOperationTimeout(options.timeout, options_.timeout));
+
+  work->recordStart("reduce_scatter_v");
+
   // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
   // ops to SUM and apply workarounds manually.
   //
@@ -1276,25 +1283,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
   // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
   // reductions natively.
   const auto [maybe_scaled_input_list, maybe_new_op] =
-      (op == ReduceOp::RedOpType::PREMUL_SUM)
-      ? applyPremulSumWorkaround(input_list, op)
-      : std::make_pair(input_list, op);
-
-  ReduceOp final_op = (op == ReduceOp::RedOpType::AVG)
-      ? ReduceOp(ReduceOp::RedOpType::SUM)
-      : maybe_new_op;
-
-  xpuStream_t stream = getOperationStream(async_op);
-
-  auto work = async_op
-      ? createWork(
-            stream,
-            getOperationTimeout(options.timeout, options_.timeout),
-            maybe_scaled_input_list)
-      : createWork(
-            stream, getOperationTimeout(options.timeout, options_.timeout));
-
-  work->recordStart("reduce_scatter_v");
+      getMaybeScaledInputsAndNewOp(input_list, op, stream);
 
   // Use multiple reduce operations for reduce_scatter
   onecclResult_t result = xccl_api_->groupStart();
@@ -1320,7 +1309,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
         out_ptr,
         input_tensor.numel(),
         dataType,
-        getXcclReduceOp(final_op, xccl_comm_, dataType),
+        getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
         i,
         xccl_comm_,
         stream);
@@ -1388,30 +1377,13 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
   TorchCommTracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
-  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
-  // ops to SUM and apply workarounds manually.
-  //
-  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
-  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
-  //
-  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
-  // reductions natively.
-  const auto [maybe_scaled_input, maybe_new_op] =
-      (op == ReduceOp::RedOpType::PREMUL_SUM)
-      ? applyPremulSumWorkaround(input, op)
-      : std::make_pair(input, op);
-
-  ReduceOp final_op = (op == ReduceOp::RedOpType::AVG)
-      ? ReduceOp(ReduceOp::RedOpType::SUM)
-      : maybe_new_op;
-
   xpuStream_t stream = getOperationStream(async_op);
 
   auto work = async_op
       ? createWork(
             stream,
             getOperationTimeout(options.timeout, options_.timeout),
-            maybe_scaled_input)
+            input)
       : createWork(
             stream, getOperationTimeout(options.timeout, options_.timeout));
 
@@ -1430,13 +1402,24 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
     return work;
   }
 
+  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
+  // ops to SUM and apply workarounds manually.
+  //
+  // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
+  // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
+  //
+  // TODO: remove this workaround when oneCCL fully supports PREMUL_SUM/AVG
+  // reductions natively.
+  const auto [maybe_scaled_input, maybe_new_op] =
+      getMaybeScaledInputsAndNewOp(input, op, stream);
+
   const auto dataType = getXcclDataType(maybe_scaled_input);
   onecclResult_t result = xccl_api_->reduceScatter(
       maybe_scaled_input.data_ptr(),
       output.data_ptr(),
       output.numel(),
       dataType,
-      getXcclReduceOp(final_op, xccl_comm_, dataType),
+      getXcclReduceOp(maybe_new_op, xccl_comm_, dataType),
       xccl_comm_,
       stream);
 
