@@ -55,13 +55,14 @@ TEST_F(MultiPeerDeviceTransportTestFixture, DeviceWindowSignalConstruction) {
 }
 
 TEST_F(MultiPeerDeviceTransportTestFixture, SignalInboxBufferSize) {
-  // Test buffer size calculation
+  // Test buffer size calculation with per-peer inbox model
   const int signalCount = 2;
+  const int nPeers = 3; // e.g., 4 ranks -> 3 peers
 
-  std::size_t bufferSize = getSignalInboxBufferSize(signalCount);
+  std::size_t bufferSize = getSignalInboxBufferSize(signalCount, nPeers);
 
-  // Expected: signalCount * sizeof(SignalState), aligned to 128 bytes
-  std::size_t expectedSlots = signalCount;
+  // Expected: nPeers * signalCount * sizeof(SignalState), aligned to 128 bytes
+  std::size_t expectedSlots = nPeers * signalCount;
   std::size_t expectedMinSize = expectedSlots * sizeof(SignalState);
   // Should be aligned to 128 bytes
   EXPECT_GE(bufferSize, expectedMinSize);

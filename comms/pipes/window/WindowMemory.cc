@@ -22,16 +22,20 @@ WindowMemory::WindowMemory(
       bootstrap_(std::move(bootstrap)),
       config_(config),
       memSharingMode_(memSharingMode) {
-  // Calculate inbox size: signalCount * sizeof(SignalState)
+  // Calculate inbox size: nPeers * signalCount * sizeof(SignalState)
   // Note: sizeof(SignalState) == 128 due to alignas(128) on the struct
-  inboxSize_ = getSignalInboxBufferSize(static_cast<int>(config_.signalCount));
+  int nPeers = nRanks_ - 1;
+  inboxSize_ =
+      getSignalInboxBufferSize(static_cast<int>(config_.signalCount), nPeers);
 
   // Allocate inbox buffer using GpuMemHandler (needs exchange with peers)
   inboxHandler_ = std::make_unique<GpuMemHandler>(
       bootstrap_, myRank_, nRanks_, inboxSize_, memSharingMode_);
 
-  // Initialize inbox to zero
-  std::vector<SignalState> initStates(config_.signalCount);
+  // Initialize inbox to zero (nPeers * signalCount entries)
+  std::size_t totalSlots =
+      static_cast<std::size_t>(nPeers) * config_.signalCount;
+  std::vector<SignalState> initStates(totalSlots);
   CUDA_CHECK(cudaMemcpy(
       inboxHandler_->getLocalDeviceMemPtr(),
       initStates.data(),
@@ -41,7 +45,6 @@ WindowMemory::WindowMemory(
   // Allocate peer signal spans array (populate later in exchange())
   // Each entry is a DeviceSpan<SignalState> pointing to a peer's inbox
   // Size = nPeers (not nRanks) - excludes self
-  int nPeers = nRanks_ - 1;
   std::size_t spanArraySize = nPeers * sizeof(DeviceSpan<SignalState>);
   peerInboxPtrsDevice_ =
       std::make_unique<meta::comms::DeviceBuffer>(spanArraySize);
@@ -71,16 +74,22 @@ void WindowMemory::exchange() {
   inboxHandler_->exchangeMemPtrs();
 
   // Build peer signal spans on host (peer-indexed, excludes self)
-  // Each span wraps a peer's inbox pointer + signalCount
+  // Each span points to the sender's per-peer row in the target's inbox.
+  // When this rank (myRank_) signals peerIdx, it writes to its own row
+  // in that peer's inbox.
   int nPeers = nRanks_ - 1;
-  auto signalCount = static_cast<uint32_t>(config_.signalCount);
+  auto signalCount = static_cast<int>(config_.signalCount);
   std::vector<DeviceSpan<SignalState>> peerSpans;
   peerSpans.reserve(nPeers);
   for (int peerIdx = 0; peerIdx < nPeers; ++peerIdx) {
-    int rank = peerToRank(peerIdx);
-    auto* ptr =
-        static_cast<SignalState*>(inboxHandler_->getPeerDeviceMemPtr(rank));
-    peerSpans.emplace_back(ptr, signalCount);
+    int peerRank = peerToRank(peerIdx);
+    auto* peerBase =
+        static_cast<SignalState*>(inboxHandler_->getPeerDeviceMemPtr(peerRank));
+    // My peer index at the remote rank (how the remote rank indexes me)
+    int myPeerIndexOnPeer = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
+    // Point to my row in the remote rank's inbox
+    SignalState* myRowInPeer = peerBase + myPeerIndexOnPeer * signalCount;
+    peerSpans.emplace_back(myRowInPeer, signalCount);
   }
 
   // Copy peer spans to device (buffer already allocated in constructor)
@@ -124,13 +133,14 @@ DeviceWindowSignal WindowMemory::getDeviceWindowSignal() const {
       static_cast<DeviceSpan<SignalState>*>(peerInboxPtrsDevice_->get());
 
   // peerSpans has nPeers entries (not nRanks)
+  // localInbox has nPeers * signalCount entries (per-peer inbox model)
   int nPeers = nRanks_ - 1;
+  auto signalCount = static_cast<int>(config_.signalCount);
   return DeviceWindowSignal(
       myRank_,
       nRanks_,
-      static_cast<int>(config_.signalCount),
-      DeviceSpan<SignalState>(
-          localInbox, static_cast<uint32_t>(config_.signalCount)),
+      signalCount,
+      DeviceSpan<SignalState>(localInbox, nPeers * signalCount),
       DeviceSpan<DeviceSpan<SignalState>>(peerSpans, nPeers));
 }
 

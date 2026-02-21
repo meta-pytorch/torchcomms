@@ -398,6 +398,41 @@ class MultiPeerDeviceTransport {
     barrier_.barrier_peer(peer_index, group, barrier_id, timeout);
   }
 
+  /**
+   * wait_signal_from - Wait for signal from a specific peer
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param source_rank Global rank of the source peer in [0, n_ranks()),
+   *        must not be self
+   * @param signal_id Signal slot to use
+   * @param cmp Comparison operation (CMP_EQ, CMP_GE, etc.)
+   * @param value Value to compare against
+   * @param timeout_ns Optional timeout in nanoseconds (default: infinite)
+   */
+  __device__ __forceinline__ void wait_signal_from(
+      ThreadGroup& group,
+      int source_rank,
+      int signal_id,
+      CmpOp cmp,
+      uint64_t value,
+      uint64_t timeout_ns = UINT64_MAX) {
+    signal_.wait_signal_from(
+        group, source_rank, signal_id, cmp, value, timeout_ns);
+  }
+
+  /**
+   * read_signal_from - Read signal value from a specific peer (non-blocking)
+   *
+   * @param source_rank Global rank of the source peer in [0, n_ranks()),
+   *        must not be self
+   * @param signal_id Signal slot to use
+   * @return Current signal value from the specified peer
+   */
+  __device__ __forceinline__ uint64_t
+  read_signal_from(int source_rank, int signal_id) {
+    return signal_.read_signal_from(source_rank, signal_id);
+  }
+
   // ===========================================================================
   // Send/Recv Operations
   // ===========================================================================
