@@ -16,7 +16,7 @@
 
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/pipes/MultipeerIbgdaTransportCuda.cuh"
-#include "comms/pipes/NicDiscovery.h"
+#include "comms/pipes/rdma/NicDiscovery.h"
 
 namespace comms::pipes {
 

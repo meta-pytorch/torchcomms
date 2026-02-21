@@ -1,6 +1,6 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
-#include "comms/pipes/NicDiscovery.h"
+#include "comms/pipes/rdma/NicDiscovery.h"
 
 #include <cuda_runtime.h>
 #include <glog/logging.h>
@@ -249,14 +249,11 @@ void NicDiscovery::initGpuTopology() {
             << " NUMA " << gpuNumaNode_;
 }
 
-NicDiscovery::NicDiscovery(
-    int cudaDevice,
-    const std::vector<std::string>& ibHca)
-    : cudaDevice_(cudaDevice) {
-  if (!ibHca.empty()) {
-    ibHcaFilter_ = std::unordered_set<std::string>(ibHca.begin(), ibHca.end());
-    LOG(INFO) << "NicDiscovery: IB HCA filter with " << ibHcaFilter_.size()
-              << " entries";
+NicDiscovery::NicDiscovery(int cudaDevice, const std::string& ibHcaEnv)
+    : cudaDevice_(cudaDevice), ibHcaParser_(ibHcaEnv) {
+  if (!ibHcaParser_.empty()) {
+    LOG(INFO) << "NicDiscovery: IB HCA filter with "
+              << ibHcaParser_.entries().size() << " entries";
   }
   discover();
 }
@@ -273,8 +270,10 @@ void NicDiscovery::discover() {
   candidates_.clear();
 
   for (const auto& devName : devices) {
-    // Skip NICs not in the allowlist (if filter is set)
-    if (!ibHcaFilter_.empty() && ibHcaFilter_.count(devName) == 0) {
+    // Skip NICs that don't pass the HCA filter
+    if (!ibHcaParser_.matches(devName)) {
+      LOG(INFO) << "NicDiscovery: skipping NIC " << devName
+                << " due to IB HCA filter";
       continue;
     }
 
@@ -300,7 +299,7 @@ void NicDiscovery::discover() {
 
   if (candidates_.empty()) {
     std::string errMsg = "No suitable IB device found with active port";
-    if (!ibHcaFilter_.empty()) {
+    if (!ibHcaParser_.empty()) {
       errMsg +=
           " (IB HCA filter excluded all devices; check ibHca config value)";
     }
