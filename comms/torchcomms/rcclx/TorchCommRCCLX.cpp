@@ -87,11 +87,12 @@ TorchCommRCCLX::~TorchCommRCCLX() {
       }
       nccl_comm_ = nullptr;
     }
-  }
 
-  // We need to detach the memory hook in case finalize is not called,
-  // so that we don't encounter a memory corruption.
-  detachMemoryHook();
+    // Detach the memory hook since finalize was not called.
+    // Only needed when init completed (INITIALIZED), because
+    // attachMemoryHook is only called at the end of a successful init.
+    detachMemoryHook();
+  }
 }
 
 void TorchCommRCCLX::init(
