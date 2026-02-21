@@ -1,72 +1,53 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #pragma once
 
-#include <ATen/cuda/CUDAContext.h>
-#include <ATen/cuda/CUDAGraph.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <ATen/ATen.h>
+#include <c10/core/Device.h>
 #include <gtest/gtest.h>
+#include <memory>
+#include <tuple>
 #include <vector>
+#include "comms/torchcomms/tests/integration/cpp/GraphTestFixtures.hpp"
 #include "comms/torchcomms/tests/integration/cpp/TorchCommTestHelpers.h"
 
-class ReduceScatterTest
-    : public ::testing::TestWithParam<
-          std::tuple<int, at::ScalarType, torch::comms::ReduceOp>> {
- public:
-  ReduceScatterTest() : ReduceScatterTest(c10::DeviceType::CUDA) {}
-  explicit ReduceScatterTest(c10::DeviceType device_type)
-      : rank_(0), num_ranks_(0), device_type_(device_type) {}
+using ReduceScatterParams =
+    std::tuple<int, at::ScalarType, torch::comms::ReduceOp>;
 
-  // Test function declarations with parameters
-  void testSyncReduceScatter(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testSyncReduceScatterNoWork(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testAsyncReduceScatter(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testAsyncReduceScatterEarlyReset(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testReduceScatterInputDeleted(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testGraphReduceScatter(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-  void testGraphReduceScatterInputDeleted(
-      int count,
-      at::ScalarType dtype,
-      const torch::comms::ReduceOp& op);
-
+template <typename Fixture>
+class ReduceScatterTest : public Fixture {
  protected:
-  virtual std::unique_ptr<TorchCommTestWrapper> createWrapper();
+  using Fixture::device_type_;
+  using Fixture::num_ranks_;
+  using Fixture::rank_;
+  using Fixture::run;
+  using Fixture::torchcomm_;
 
-  virtual void SetUp() override;
+  void
+  testSync(int count, at::ScalarType dtype, const torch::comms::ReduceOp& op);
+  void testSyncNoWork(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void
+  testAsync(int count, at::ScalarType dtype, const torch::comms::ReduceOp& op);
+  void testAsyncEarlyReset(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
+  void testInputDeleted(
+      int count,
+      at::ScalarType dtype,
+      const torch::comms::ReduceOp& op);
 
-  virtual void TearDown() override;
-
-  std::unique_ptr<TorchCommTestWrapper> wrapper_;
-  std::shared_ptr<torch::comms::TorchComm> torchcomm_;
-  int rank_;
-  int num_ranks_;
-  c10::DeviceType device_type_;
-
-  static constexpr int num_replays = 4;
-
-  // Helper function declarations with parameters
   virtual std::vector<at::Tensor> createInputTensors(
       int count,
       at::ScalarType dtype);
+
   virtual at::Tensor createOutputTensor(int count, at::ScalarType dtype);
+
   int calculateExpectedResult(const torch::comms::ReduceOp& op);
+
   void verifyResults(
       const at::Tensor& output,
       const torch::comms::ReduceOp& op);

@@ -2,285 +2,152 @@
 
 #include "ReduceScatterSingleTest.hpp"
 
-#include <ATen/cuda/CUDAGraph.h>
-#include <c10/cuda/CUDAGuard.h>
 #include <gtest/gtest.h>
+#include <memory>
 #include "TorchCommTestHelpers.h"
 
-std::unique_ptr<TorchCommTestWrapper> ReduceScatterSingleTest::createWrapper() {
-  return std::make_unique<TorchCommTestWrapper>();
-}
-
-void ReduceScatterSingleTest::SetUp() {
-  wrapper_ = createWrapper();
-  torchcomm_ = wrapper_->getTorchComm();
-  rank_ = torchcomm_->getRank();
-  num_ranks_ = torchcomm_->getSize();
-  device_type_ = wrapper_->getDevice().type();
-}
-
-void ReduceScatterSingleTest::TearDown() {
-  // Explicitly reset the TorchComm object to ensure proper cleanup
-  torchcomm_.reset();
-  wrapper_.reset();
-}
-
 // Test function for synchronous reduce_scatter_single with work object
-void ReduceScatterSingleTest::testSyncReduceScatterSingle(
+template <typename Fixture>
+void ReduceScatterSingleTest<Fixture>::testSync(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message() << "Testing sync reduce_scatter_single with count="
-                           << count << " and dtype=" << getDtypeName(dtype)
-                           << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  // Create input and output tensors
   at::Tensor input = createInputTensor(count, dtype);
   at::Tensor output = createOutputTensor(count, dtype);
+  auto original_output = output.clone();
 
-  // Call reduce_scatter_single
-  auto work = torchcomm_->reduce_scatter_single(output, input, op, false);
-  work->wait();
-
-  // Verify the results
-  verifyResults(output, op);
+  auto execute = [&]() {
+    auto work = torchcomm_->reduce_scatter_single(output, input, op, false);
+    work->wait();
+  };
+  auto reset = [&]() { output.copy_(original_output); };
+  auto verify = [&]() { this->verifyResults(output, op); };
+  run(execute, reset, verify);
 }
 
 // Test function for synchronous reduce_scatter_single without work object
-void ReduceScatterSingleTest::testSyncReduceScatterSingleNoWork(
+template <typename Fixture>
+void ReduceScatterSingleTest<Fixture>::testSyncNoWork(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing sync reduce_scatter_single without work object with count="
-      << count << " and dtype=" << getDtypeName(dtype)
-      << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  // Create input and output tensors
   at::Tensor input = createInputTensor(count, dtype);
   at::Tensor output = createOutputTensor(count, dtype);
+  auto original_output = output.clone();
 
-  // Call reduce_scatter_single without keeping the work object
-  torchcomm_->reduce_scatter_single(output, input, op, false);
-
-  // Verify the results
-  verifyResults(output, op);
+  auto execute = [&]() {
+    torchcomm_->reduce_scatter_single(output, input, op, false);
+  };
+  auto reset = [&]() { output.copy_(original_output); };
+  auto verify = [&]() { this->verifyResults(output, op); };
+  run(execute, reset, verify);
 }
 
 // Test function for asynchronous reduce_scatter_single with wait
-void ReduceScatterSingleTest::testAsyncReduceScatterSingle(
+template <typename Fixture>
+void ReduceScatterSingleTest<Fixture>::testAsync(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message() << "Testing async reduce_scatter_single with count="
-                           << count << " and dtype=" << getDtypeName(dtype)
-                           << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  // Create input and output tensors
   at::Tensor input = createInputTensor(count, dtype);
   at::Tensor output = createOutputTensor(count, dtype);
+  auto original_output = output.clone();
 
-  // Call reduce_scatter_single
-  auto work = torchcomm_->reduce_scatter_single(output, input, op, true);
-
-  // Wait for the reduce_scatter_single to complete
-  work->wait();
-
-  // Verify the results
-  verifyResults(output, op);
+  auto execute = [&]() {
+    auto work = torchcomm_->reduce_scatter_single(output, input, op, true);
+    work->wait();
+  };
+  auto reset = [&]() { output.copy_(original_output); };
+  auto verify = [&]() { this->verifyResults(output, op); };
+  run(execute, reset, verify);
 }
 
 // Test function for asynchronous reduce_scatter_single with early reset
-void ReduceScatterSingleTest::testAsyncReduceScatterSingleEarlyReset(
+template <typename Fixture>
+void ReduceScatterSingleTest<Fixture>::testAsyncEarlyReset(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing async reduce_scatter_single with early reset with count="
-      << count << " and dtype=" << getDtypeName(dtype)
-      << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  // Create input and output tensors
   at::Tensor input = createInputTensor(count, dtype);
   at::Tensor output = createOutputTensor(count, dtype);
+  auto original_output = output.clone();
 
-  // Call reduce_scatter_single
-  auto work = torchcomm_->reduce_scatter_single(output, input, op, true);
-
-  // Wait for the work to complete before resetting
-  work->wait();
-
-  // Reset the work object
-  work.reset();
-
-  // Verify the results
-  verifyResults(output, op);
+  auto execute = [&]() {
+    auto work = torchcomm_->reduce_scatter_single(output, input, op, true);
+    work->wait();
+    work.reset();
+  };
+  auto reset = [&]() { output.copy_(original_output); };
+  auto verify = [&]() { this->verifyResults(output, op); };
+  run(execute, reset, verify);
 }
 
 // Test function for asynchronous reduce_scatter_single with input deleted after
 // enqueue
-void ReduceScatterSingleTest::testReduceScatterSingleInputDeleted(
+template <typename Fixture>
+void ReduceScatterSingleTest<Fixture>::testInputDeleted(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing async reduce_scatter_single with input deleted after enqueue with count="
-      << count << " and dtype=" << getDtypeName(dtype)
-      << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  // Create output tensor that persists throughout the test
   at::Tensor output = createOutputTensor(count, dtype);
+  auto original_output = output.clone();
+  auto input = std::make_shared<at::Tensor>(createInputTensor(count, dtype));
 
-  {
-    // Create input tensor in a limited scope
-    at::Tensor input = createInputTensor(count, dtype);
-
-    // Call reduce_scatter_single
-    torchcomm_->reduce_scatter_single(output, input, op, false);
-
-    // Input tensor goes out of scope here and gets deleted
-  }
-
-  // Verify the results
-  verifyResults(output, op);
-}
-
-// CUDA Graph test function for reduce_scatter_single
-void ReduceScatterSingleTest::testGraphReduceScatterSingle(
-    int count,
-    at::ScalarType dtype,
-    const torch::comms::ReduceOp& op) {
-  // Skip CUDA Graph tests when running on CPU
-  if (isRunningOnCPU()) {
-    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
-  }
-
-  SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing CUDA Graph reduce_scatter_single with count=" << count
-      << " and dtype=" << getDtypeName(dtype) << " and op=" << getOpName(op));
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
-
-  // Create input and output tensors AFTER setting non-default stream but BEFORE
-  // graph capture
-  at::Tensor input = createInputTensor(count, dtype);
-  at::Tensor output = createOutputTensor(count, dtype);
-  at::Tensor original_output = output.clone();
-
-  // Create PyTorch CUDA graph
-  at::cuda::CUDAGraph graph;
-
-  // Capture the reset + reduce_scatter_single operations in the graph
-  graph.capture_begin();
-
-  // Call reduce_scatter_single without keeping the work object
-  torchcomm_->reduce_scatter_single(output, input, op, false);
-
-  graph.capture_end();
-
-  // Replay the captured graph multiple times
-  for (int i = 0; i < num_replays; ++i) {
-    // Reset output buffer before graph replay
-    output.copy_(original_output);
-
-    graph.replay();
-
-    // Verify the results after each replay
-    verifyResults(output, op);
-  }
-}
-
-// CUDA Graph test function for reduce_scatter_single with input deleted after
-// graph creation
-void ReduceScatterSingleTest::testGraphReduceScatterSingleInputDeleted(
-    int count,
-    at::ScalarType dtype,
-    const torch::comms::ReduceOp& op) {
-  // Skip CUDA Graph tests when running on CPU
-  if (isRunningOnCPU()) {
-    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
-  }
-
-  SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing CUDA Graph reduce_scatter_single with input deleted after graph creation with count="
-      << count << " and dtype=" << getDtypeName(dtype)
-      << " and op=" << getOpName(op));
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
-
-  // Create output tensor that persists throughout the test
-  at::Tensor output = createOutputTensor(count, dtype);
-  at::Tensor original_output = output.clone();
-
-  // Create PyTorch CUDA graph
-  at::cuda::CUDAGraph graph;
-
-  {
-    // Create input tensor in a limited scope
-    at::Tensor input = createInputTensor(count, dtype);
-
-    // Capture the reset + reduce_scatter_single operations in the graph
-    graph.capture_begin();
-
-    // Call reduce_scatter_single without keeping the work object
-    torchcomm_->reduce_scatter_single(output, input, op, false);
-
-    graph.capture_end();
-
-    // Input tensor goes out of scope here and gets deleted
-  }
-
-  // Replay the captured graph multiple times even though input is deleted
-  for (int i = 0; i < num_replays; ++i) {
-    // Reset output buffer before graph replay
-    output.copy_(original_output);
-
-    graph.replay();
-
-    // Verify the results after each replay
-    verifyResults(output, op);
-  }
+  auto execute = [&]() {
+    torchcomm_->reduce_scatter_single(output, *input, op, false);
+  };
+  auto reset = [&]() { output.copy_(original_output); };
+  auto verify = [&]() { this->verifyResults(output, op); };
+  auto cleanup = [&]() { input.reset(); };
+  run(execute, reset, verify, cleanup);
 }
 
 // Helper function to create input tensor
-at::Tensor ReduceScatterSingleTest::createInputTensor(
+template <typename Fixture>
+at::Tensor ReduceScatterSingleTest<Fixture>::createInputTensor(
     int count,
     at::ScalarType dtype) {
-  // Create tensor directly on GPU with the specified dtype
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
   at::Tensor input = at::zeros({count * num_ranks_}, options);
 
-  // Create a tensor of rank values [1, 2, ..., num_ranks_]
-  auto ranks = at::arange(1, num_ranks_ + 1, options);
-
-  // For each rank, fill its section with its rank value
-  for (int r = 0; r < num_ranks_; r++) {
-    // Use slice operation to get the section for this rank
+  for (int r = 0; r < num_ranks_; ++r) {
     auto section = input.slice(0, r * count, (r + 1) * count);
-    // Fill the entire section with the rank value in one operation
-    section.fill_(ranks[r].item());
+    if (dtype == at::kFloat || dtype == at::kBFloat16 || dtype == at::kHalf ||
+        dtype == at::kDouble) {
+      section.fill_(static_cast<float>(r + 1));
+    } else if (dtype == at::kInt) {
+      section.fill_(static_cast<int>(r + 1));
+    } else if (dtype == at::kChar) {
+      section.fill_(static_cast<signed char>(r + 1));
+    }
   }
 
   return input;
 }
 
 // Helper function to create output tensor
-at::Tensor ReduceScatterSingleTest::createOutputTensor(
+template <typename Fixture>
+at::Tensor ReduceScatterSingleTest<Fixture>::createOutputTensor(
     int count,
     at::ScalarType dtype) {
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
@@ -288,7 +155,8 @@ at::Tensor ReduceScatterSingleTest::createOutputTensor(
 }
 
 // Helper function to verify results
-void ReduceScatterSingleTest::verifyResults(
+template <typename Fixture>
+void ReduceScatterSingleTest<Fixture>::verifyResults(
     const at::Tensor& output,
     const torch::comms::ReduceOp& op) {
   // Calculate expected value based on operation type
@@ -308,3 +176,10 @@ void ReduceScatterSingleTest::verifyResults(
   std::string description = "reduce_scatter_single with op " + getOpName(op);
   verifyTensorEquality(output.cpu(), expected_value, description);
 }
+
+template class ReduceScatterSingleTest<
+    EagerTestFixture<ReduceScatterSingleParams>>;
+template class ReduceScatterSingleTest<
+    GraphTestFixture<ReduceScatterSingleParams, 1>>;
+template class ReduceScatterSingleTest<
+    GraphTestFixture<ReduceScatterSingleParams, 2>>;

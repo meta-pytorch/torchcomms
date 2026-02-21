@@ -271,6 +271,11 @@ void populateNcclConfigFromHints(
       TC_LOG(INFO, nullptr)
           << "[comm=" << name
           << "] Setting config.ncclAllGatherAlgo=" << config.ncclAllGatherAlgo;
+    } else if (key == "lazySetupChannels" || key == "lazy_setup_channels") {
+      config.lazySetupChannels = std::stoi(val);
+      TC_LOG(INFO, nullptr)
+          << "[comm=" << name
+          << "] Setting config.lazySetupChannels=" << config.lazySetupChannels;
     } else if (key == "fastInitMode") {
       config.fastInitMode = std::stoi(val);
       TC_LOG(INFO, nullptr)

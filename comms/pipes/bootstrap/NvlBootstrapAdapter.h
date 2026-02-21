@@ -14,7 +14,7 @@ namespace comms::pipes {
  * NvlBootstrapAdapter - Bootstrap adapter for NVLink domain subgroup.
  *
  * Redirects allGather/barrier to their NvlDomain variants. Used by
- * MultiPeerTransportStates to give MultiPeerNvlTransport a bootstrap that
+ * MultiPeerTransport to give MultiPeerNvlTransport a bootstrap that
  * operates only on NVLink-reachable ranks (which may span multiple hosts
  * on MNNVL systems like GB200 NVL72).
  *

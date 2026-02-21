@@ -226,9 +226,18 @@ void TorchCommRCCL::timeoutWatchdog() noexcept {
     }
 
     // Check work objects for completion or timeout
+    //
+    // NOTE: garbageCollectWorkQueues may pop a completed work item whose
+    // destruction releases the last shared_ptr to this comm, triggering our
+    // destructor. In that case, the destructor sets shutdown_=true and
+    // detaches this thread. We must check shutdown_ immediately after to
+    // avoid accessing potentially destroyed member state.
 
     std::lock_guard<std::mutex> lock(work_queues_mutex_);
     garbageCollectWorkQueues();
+    if (shutdown_) {
+      break;
+    }
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {
       // Log the error and abort the process.  We cannot abort the NCCL

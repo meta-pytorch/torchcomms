@@ -186,7 +186,9 @@ DEVICE_ATTRIBUTE void updatePartitionCtx(AlgoContext& algoCtx) {
   size_t remainNumel = algoCtx.numElements - algoCtx.partitionOffset;
   if (remainNumel < totalTmpNumel) {
     algoCtx.partitionNumel = remainNumel;
-  } else if (remainNumel < totalTmpNumel + minPartitionNumel) {
+  } else if (
+      remainNumel > totalTmpNumel &&
+      remainNumel < totalTmpNumel + minPartitionNumel) {
     // ensure last partition can still be handled as multi-shard ring
     algoCtx.partitionNumel = remainNumel - minPartitionNumel;
   } else {

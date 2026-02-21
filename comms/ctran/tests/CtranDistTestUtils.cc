@@ -43,9 +43,8 @@ std::unique_ptr<c10d::TCPStore> createTcpStore(bool isServer) {
   const std::string masterAddr(masterAddrStr);
   c10d::TCPStoreOptions opts{
       .port = static_cast<uint16_t>(std::stoi(masterPortStr)),
-      .waitWorkers = false,
-      .useLibUV = true,
       .isServer = isServer,
+      .waitWorkers = false,
   };
 
   XLOG(INFO) << "TCPStore "

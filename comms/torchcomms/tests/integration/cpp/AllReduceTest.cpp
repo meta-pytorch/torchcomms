@@ -2,242 +2,118 @@
 
 #include "AllReduceTest.hpp"
 
-#include <ATen/cuda/CUDAGraph.h>
-#include <c10/cuda/CUDAGuard.h>
 #include <gtest/gtest.h>
+#include <memory>
 #include "TorchCommTestHelpers.h"
 
-std::unique_ptr<TorchCommTestWrapper> AllReduceTest::createWrapper() {
-  return std::make_unique<TorchCommTestWrapper>();
-}
-
-void AllReduceTest::SetUp() {
-  wrapper_ = createWrapper();
-  torchcomm_ = wrapper_->getTorchComm();
-  rank_ = torchcomm_->getRank();
-  num_ranks_ = torchcomm_->getSize();
-}
-
-void AllReduceTest::TearDown() {
-  // Explicitly reset the TorchComm object to ensure proper cleanup
-  torchcomm_.reset();
-  wrapper_.reset();
-}
-
 // Test function for synchronous all_reduce with work object
-void AllReduceTest::testSyncAllReduce(
+template <typename Fixture>
+void AllReduceTest<Fixture>::testSync(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message() << "Testing sync all_reduce with count=" << count
-                           << " and dtype=" << getDtypeName(dtype)
-                           << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  // Create input tensor with rank-specific values
   at::Tensor input = createInputTensor(count, dtype);
+  auto original = input.clone();
 
-  // Call all_reduce
-  auto work = torchcomm_->all_reduce(input, op, false);
-  work->wait();
-
-  // Verify the results
-  verifyResults(input, op);
+  auto execute = [&]() {
+    auto work = torchcomm_->all_reduce(input, op, false);
+    work->wait();
+  };
+  auto reset = [&]() { input.copy_(original); };
+  auto verify = [&]() { this->verifyResults(input, op); };
+  run(execute, reset, verify);
 }
 
 // Test function for synchronous all_reduce without work object
-void AllReduceTest::testSyncAllReduceNoWork(
+template <typename Fixture>
+void AllReduceTest<Fixture>::testSyncNoWork(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing sync all_reduce without work object with count=" << count
-      << " and dtype=" << getDtypeName(dtype) << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  // Create input tensor with rank-specific values
   at::Tensor input = createInputTensor(count, dtype);
+  auto original = input.clone();
 
-  // Call all_reduce without keeping the work object
-  torchcomm_->all_reduce(input, op, false);
-
-  // Verify the results
-  verifyResults(input, op);
+  auto execute = [&]() { torchcomm_->all_reduce(input, op, false); };
+  auto reset = [&]() { input.copy_(original); };
+  auto verify = [&]() { this->verifyResults(input, op); };
+  run(execute, reset, verify);
 }
 
 // Test function for asynchronous all_reduce with wait
-void AllReduceTest::testAsyncAllReduce(
+template <typename Fixture>
+void AllReduceTest<Fixture>::testAsync(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message() << "Testing async all_reduce with count=" << count
-                           << " and dtype=" << getDtypeName(dtype)
-                           << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  // Create input tensor with rank-specific values
   at::Tensor input = createInputTensor(count, dtype);
+  auto original = input.clone();
 
-  // Call all_reduce
-  auto work = torchcomm_->all_reduce(input, op, true);
-
-  // Wait for the all_reduce to complete
-  work->wait();
-
-  // Verify the results
-  verifyResults(input, op);
+  auto execute = [&]() {
+    auto work = torchcomm_->all_reduce(input, op, true);
+    work->wait();
+  };
+  auto reset = [&]() { input.copy_(original); };
+  auto verify = [&]() { this->verifyResults(input, op); };
+  run(execute, reset, verify);
 }
 
 // Test function for asynchronous all_reduce with early reset
-void AllReduceTest::testAsyncAllReduceEarlyReset(
+template <typename Fixture>
+void AllReduceTest<Fixture>::testAsyncEarlyReset(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing async all_reduce with early reset with count=" << count
-      << " and dtype=" << getDtypeName(dtype) << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  // Create input tensor with rank-specific values
   at::Tensor input = createInputTensor(count, dtype);
+  auto original = input.clone();
 
-  // Call all_reduce
-  auto work = torchcomm_->all_reduce(input, op, true);
-
-  // Wait for the work to complete before resetting
-  work->wait();
-
-  // Reset the work object
-  work.reset();
-
-  // Verify the results
-  verifyResults(input, op);
+  auto execute = [&]() {
+    auto work = torchcomm_->all_reduce(input, op, true);
+    work->wait();
+    work.reset();
+  };
+  auto reset = [&]() { input.copy_(original); };
+  auto verify = [&]() { this->verifyResults(input, op); };
+  run(execute, reset, verify);
 }
 
 // Test function for asynchronous all_reduce with input deleted after enqueue
-void AllReduceTest::testAllReduceInputDeleted(
+template <typename Fixture>
+void AllReduceTest<Fixture>::testInputDeleted(
     int count,
     at::ScalarType dtype,
     const torch::comms::ReduceOp& op) {
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing async all_reduce with input deleted after enqueue with count="
-      << count << " and dtype=" << getDtypeName(dtype)
-      << " and op=" << getOpName(op));
+      ::testing::Message() << "count=" << count << " dtype="
+                           << getDtypeName(dtype) << " op=" << getOpName(op));
 
-  {
-    // Create input tensor in a limited scope
-    at::Tensor input = createInputTensor(count, dtype);
+  auto input = std::make_shared<at::Tensor>(createInputTensor(count, dtype));
 
-    // Call all_reduce
-    torchcomm_->all_reduce(input, op, false);
-
-    // Input tensor goes out of scope here and gets deleted
-  }
-
-  // Note: For all_reduce, the result is stored in the input tensor which is now
-  // deleted This test validates that the operation completes without crashing
-}
-
-// CUDA Graph test function for all_reduce
-void AllReduceTest::testGraphAllReduce(
-    int count,
-    at::ScalarType dtype,
-    const torch::comms::ReduceOp& op) {
-  if (isRunningOnCPU()) {
-    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
-  }
-
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing CUDA Graph all_reduce with count="
-                           << count << " and dtype=" << getDtypeName(dtype)
-                           << " and op=" << getOpName(op));
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
-
-  // Create input tensor AFTER setting non-default stream but BEFORE graph
-  // capture
-  at::Tensor input = createInputTensor(count, dtype);
-  at::Tensor original_values = input.clone();
-
-  // Create PyTorch CUDA graph
-  at::cuda::CUDAGraph graph;
-
-  // Capture the reset + all_reduce operations in the graph
-  graph.capture_begin();
-
-  // Call all_reduce without keeping the work object
-  torchcomm_->all_reduce(input, op, false);
-
-  graph.capture_end();
-
-  // Replay the captured graph multiple times
-  for (int i = 0; i < num_replays; ++i) {
-    // Reset the output buffer before graph replay
-    input.copy_(original_values);
-
-    graph.replay();
-
-    // Verify the results after each replay
-    verifyResults(input, op);
-  }
-}
-
-// CUDA Graph test function for all_reduce with input deleted after graph
-// creation
-void AllReduceTest::testGraphAllReduceInputDeleted(
-    int count,
-    at::ScalarType dtype,
-    const torch::comms::ReduceOp& op) {
-  if (isRunningOnCPU()) {
-    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
-  }
-
-  SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing CUDA Graph all_reduce with input deleted after graph creation with count="
-      << count << " and dtype=" << getDtypeName(dtype)
-      << " and op=" << getOpName(op));
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
-
-  // Create PyTorch CUDA graph
-  at::cuda::CUDAGraph graph;
-
-  {
-    // Create input tensor in a limited scope
-    at::Tensor input = createInputTensor(count, dtype);
-
-    // Capture the reset + all_reduce operations in the graph
-    graph.capture_begin();
-
-    // Call all_reduce without keeping the work object
-    torchcomm_->all_reduce(input, op, false);
-
-    graph.capture_end();
-
-    // Input tensor goes out of scope here and gets deleted
-  }
-
-  // Replay the captured graph multiple times even though input is deleted
-  for (int i = 0; i < num_replays; ++i) {
-    graph.replay();
-
-    // Note: Cannot verify results since input tensor is deleted
-    // This test validates that the graph replay completes without crashing
-  }
+  auto execute = [&]() { torchcomm_->all_reduce(*input, op, false); };
+  auto cleanup = [&]() { input.reset(); };
+  run(execute, {}, {}, cleanup);
 }
 
 // Helper function to create input tensor
-at::Tensor AllReduceTest::createInputTensor(int count, at::ScalarType dtype) {
+template <typename Fixture>
+at::Tensor AllReduceTest<Fixture>::createInputTensor(
+    int count,
+    at::ScalarType dtype) {
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
   at::Tensor input;
   if (dtype == at::kFloat || dtype == at::kBFloat16 || dtype == at::kHalf ||
@@ -252,7 +128,9 @@ at::Tensor AllReduceTest::createInputTensor(int count, at::ScalarType dtype) {
 }
 
 // Helper function to create PreMul tensor
-at::Tensor AllReduceTest::createPreMulFactorTensor(at::ScalarType dtype) {
+template <typename Fixture>
+at::Tensor AllReduceTest<Fixture>::createPreMulFactorTensor(
+    at::ScalarType dtype) {
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
   at::Tensor factor;
   if (dtype == at::kFloat || dtype == at::kBFloat16 || dtype == at::kHalf ||
@@ -265,7 +143,8 @@ at::Tensor AllReduceTest::createPreMulFactorTensor(at::ScalarType dtype) {
 }
 
 // Helper function to calculate expected result
-double AllReduceTest::calculateExpectedResult(
+template <typename Fixture>
+double AllReduceTest<Fixture>::calculateExpectedResult(
     const torch::comms::ReduceOp& op) {
   if (op == torch::comms::ReduceOp::SUM) {
     return num_ranks_ * (num_ranks_ + 1) / 2;
@@ -281,13 +160,19 @@ double AllReduceTest::calculateExpectedResult(
 }
 
 // Helper function to verify results
-void AllReduceTest::verifyResults(
+template <typename Fixture>
+void AllReduceTest<Fixture>::verifyResults(
     const at::Tensor& input,
     const torch::comms::ReduceOp& op) {
-  // Calculate expected result
   double expected = calculateExpectedResult(op);
-
-  // Use verifyTensorEquality to compare input with expected tensor
   std::string description = "all_reduce with op " + getOpName(op);
   verifyTensorEquality(input.cpu(), expected, description);
 }
+
+template class AllReduceTest<EagerTestFixture<AllReduceParams>>;
+template class AllReduceTest<GraphTestFixture<AllReduceParams, 1>>;
+template class AllReduceTest<GraphTestFixture<AllReduceParams, 2>>;
+
+template class AllReduceTest<EagerTestFixture<PreMulSumParams>>;
+template class AllReduceTest<GraphTestFixture<PreMulSumParams, 1>>;
+template class AllReduceTest<GraphTestFixture<PreMulSumParams, 2>>;
