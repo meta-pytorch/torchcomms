@@ -3,51 +3,165 @@
 #include "AllGatherVTest.hpp"
 
 #include <gtest/gtest.h>
-#include <vector>
+#include <memory>
 #include "TorchCommTestHelpers.h"
 
-std::unique_ptr<TorchCommTestWrapper> AllGatherVTest::createWrapper() {
-  return std::make_unique<TorchCommTestWrapper>();
-}
-
-void AllGatherVTest::SetUp() {
-  wrapper_ = createWrapper();
-  torchcomm_ = wrapper_->getTorchComm();
-  rank_ = torchcomm_->getRank();
-  num_ranks_ = torchcomm_->getSize();
-}
-
-void AllGatherVTest::TearDown() {
-  // Explicitly reset the TorchComm object to ensure proper cleanup
-  torchcomm_.reset();
-  wrapper_.reset();
-}
-
 // Test function for synchronous all_gather_v with work object
-void AllGatherVTest::testSyncAllGatherV(int count, at::ScalarType dtype) {
+template <typename Fixture>
+void AllGatherVTest<Fixture>::testSync(int count, at::ScalarType dtype) {
   SCOPED_TRACE(
-      ::testing::Message() << "Testing sync all_gather_v with count=" << count
-                           << " and dtype=" << getDtypeName(dtype));
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
 
-  // Create input and output tensors
-  auto counts = std::vector<int>(num_ranks_, count);
+  auto counts = getCounts(count);
+  at::Tensor input = createInputTensor(counts[rank_], dtype);
+  std::vector<at::Tensor> outputs = createOutputTensors(counts, dtype);
+  std::vector<at::Tensor> original_outputs;
+  original_outputs.reserve(num_ranks_);
+  for (const auto& output : outputs) {
+    original_outputs.push_back(output.clone());
+  }
+
+  auto execute = [&]() {
+    auto work = torchcomm_->all_gather_v(outputs, input, false);
+    work->wait();
+  };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
+    }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  run(execute, reset, verify);
+}
+
+template <typename Fixture>
+void AllGatherVTest<Fixture>::testSyncNoWork(int count, at::ScalarType dtype) {
+  SCOPED_TRACE(
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
+
+  auto counts = getCounts(count);
+  at::Tensor input = createInputTensor(counts[rank_], dtype);
+  std::vector<at::Tensor> outputs = createOutputTensors(counts, dtype);
+  std::vector<at::Tensor> original_outputs;
+  original_outputs.reserve(num_ranks_);
+  for (const auto& output : outputs) {
+    original_outputs.push_back(output.clone());
+  }
+
+  auto execute = [&]() { torchcomm_->all_gather_v(outputs, input, false); };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
+    }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  run(execute, reset, verify);
+}
+
+template <typename Fixture>
+void AllGatherVTest<Fixture>::testAsync(int count, at::ScalarType dtype) {
+  SCOPED_TRACE(
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
+
+  auto counts = getCounts(count);
+  at::Tensor input = createInputTensor(counts[rank_], dtype);
+  std::vector<at::Tensor> outputs = createOutputTensors(counts, dtype);
+  std::vector<at::Tensor> original_outputs;
+  original_outputs.reserve(num_ranks_);
+  for (const auto& output : outputs) {
+    original_outputs.push_back(output.clone());
+  }
+
+  auto execute = [&]() {
+    auto work = torchcomm_->all_gather_v(outputs, input, true);
+    work->wait();
+  };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
+    }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  run(execute, reset, verify);
+}
+
+template <typename Fixture>
+void AllGatherVTest<Fixture>::testAsyncEarlyReset(
+    int count,
+    at::ScalarType dtype) {
+  SCOPED_TRACE(
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
+
+  auto counts = getCounts(count);
+  at::Tensor input = createInputTensor(counts[rank_], dtype);
+  std::vector<at::Tensor> outputs = createOutputTensors(counts, dtype);
+  std::vector<at::Tensor> original_outputs;
+  original_outputs.reserve(num_ranks_);
+  for (const auto& output : outputs) {
+    original_outputs.push_back(output.clone());
+  }
+
+  auto execute = [&]() {
+    auto work = torchcomm_->all_gather_v(outputs, input, true);
+    work->wait();
+    work.reset();
+  };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
+    }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  run(execute, reset, verify);
+}
+
+template <typename Fixture>
+void AllGatherVTest<Fixture>::testInputDeleted(
+    int count,
+    at::ScalarType dtype) {
+  SCOPED_TRACE(
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
+
+  auto counts = getCounts(count);
+  auto input =
+      std::make_shared<at::Tensor>(createInputTensor(counts[rank_], dtype));
+  std::vector<at::Tensor> outputs = createOutputTensors(counts, dtype);
+  std::vector<at::Tensor> original_outputs;
+  original_outputs.reserve(num_ranks_);
+  for (const auto& output : outputs) {
+    original_outputs.push_back(output.clone());
+  }
+
+  auto execute = [&]() { torchcomm_->all_gather_v(outputs, *input, false); };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
+    }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  auto cleanup = [&]() { input.reset(); };
+  run(execute, reset, verify, cleanup);
+}
+
+template <typename Fixture>
+std::vector<int> AllGatherVTest<Fixture>::getCounts(int count) {
+  std::vector<int> counts(num_ranks_);
   for (int i = 0; i < num_ranks_; i++) {
     counts[i] = count + i;
   }
-  at::Tensor input = createInputTensor(counts[rank_], dtype);
-  std::vector<at::Tensor> outputs =
-      createOutputTensors(std::move(counts), dtype);
-
-  // Call all_gather_v
-  auto work = torchcomm_->all_gather_v(outputs, input, false);
-  work->wait();
-
-  // Verify the results
-  verifyResults(outputs);
+  return counts;
 }
 
 // Helper function to create input tensor
-at::Tensor AllGatherVTest::createInputTensor(int count, at::ScalarType dtype) {
+template <typename Fixture>
+at::Tensor AllGatherVTest<Fixture>::createInputTensor(
+    int count,
+    at::ScalarType dtype) {
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
   at::Tensor input;
   if (dtype == at::kFloat || dtype == at::kHalf || dtype == at::kBFloat16) {
@@ -61,8 +175,9 @@ at::Tensor AllGatherVTest::createInputTensor(int count, at::ScalarType dtype) {
 }
 
 // Helper function to create output tensors
-std::vector<at::Tensor> AllGatherVTest::createOutputTensors(
-    std::vector<int> counts,
+template <typename Fixture>
+std::vector<at::Tensor> AllGatherVTest<Fixture>::createOutputTensors(
+    const std::vector<int>& counts,
     at::ScalarType dtype) {
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
   std::vector<at::Tensor> outputs(num_ranks_);
@@ -73,10 +188,15 @@ std::vector<at::Tensor> AllGatherVTest::createOutputTensors(
 }
 
 // Helper function to verify results
-void AllGatherVTest::verifyResults(const std::vector<at::Tensor>& outputs) {
+template <typename Fixture>
+void AllGatherVTest<Fixture>::verifyResults(
+    const std::vector<at::Tensor>& outputs) {
   for (int i = 0; i < num_ranks_; i++) {
-    // Use verifyTensorEquality to compare output with expected tensor
     std::string description = "rank " + std::to_string(i) + " tensor";
     verifyTensorEquality(outputs[i].cpu(), i + 1, description);
   }
 }
+
+template class AllGatherVTest<EagerTestFixture<AllGatherVParams>>;
+template class AllGatherVTest<GraphTestFixture<AllGatherVParams, 1>>;
+template class AllGatherVTest<GraphTestFixture<AllGatherVParams, 2>>;
