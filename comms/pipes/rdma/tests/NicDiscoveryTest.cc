@@ -2,7 +2,7 @@
 
 #include <gtest/gtest.h>
 
-#include "comms/pipes/NicDiscovery.h"
+#include "comms/pipes/rdma/NicDiscovery.h"
 
 namespace comms::pipes::tests {
 
