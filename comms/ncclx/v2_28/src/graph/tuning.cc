@@ -9,6 +9,7 @@
 #include "comm.h"
 #include "topo.h"
 #include "nccl_tuner.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 NCCL_PARAM(Nthreads, "NTHREADS", -2);
 NCCL_PARAM(Ll128Nthreads, "LL128_NTHREADS", -2);
@@ -223,6 +224,21 @@ NCCL_PARAM(Ll128C2c, "LL128_C2C", 1);
 ncclResult_t ncclTopoInitTunerConstants(struct ncclComm* comm) {
 
   comm->tunerConstants = ncclTunerConstantsDefaults;
+
+  if (!NCCL_TOPO_BOND_V228) {
+    // v2.27-like Blackwell tuning: double the per-channel bandwidths
+    comm->tunerConstants.perChMaxRingLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][0] = 2*36.7;
+    comm->tunerConstants.perChMaxRingLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][1] = 2*36.7;
+    comm->tunerConstants.perChMaxRingLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][2] = 2*36.7;
+
+    comm->tunerConstants.perChMaxTreeLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][0] = 2*36.7;
+    comm->tunerConstants.perChMaxTreeLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][1] = 2*36.7;
+    comm->tunerConstants.perChMaxTreeLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][2] = 2*29.0;
+
+    comm->tunerConstants.perChMaxTreeBws[NCCL_BLACKWELL_COMPCAP_IDX][0] = 2*38.7;
+    comm->tunerConstants.perChMaxTreeBws[NCCL_BLACKWELL_COMPCAP_IDX][1] = 2*41.4;
+    comm->tunerConstants.perChMaxTreeBws[NCCL_BLACKWELL_COMPCAP_IDX][2] = 2*36.0;
+  }
 
   return ncclSuccess;
 }
