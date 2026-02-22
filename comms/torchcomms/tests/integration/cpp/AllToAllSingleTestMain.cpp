@@ -3,47 +3,127 @@
 #include "AllToAllSingleTest.hpp"
 
 #include <gtest/gtest.h>
-#include <vector>
+#include "TorchCommTestHelpers.h"
 
-TEST_F(AllToAllSingleTest, AllTests) {
-  // Define parameter values directly in the test
-  std::vector<int> counts = {0, 4, 1024, 1024 * 1024};
-  std::vector<at::ScalarType> dtypes = {at::kFloat, at::kInt, at::kChar};
+using Eager = AllToAllSingleTest<EagerTestFixture<AllToAllSingleParams>>;
+using SingleGraph =
+    AllToAllSingleTest<GraphTestFixture<AllToAllSingleParams, 1>>;
+using MultiGraph =
+    AllToAllSingleTest<GraphTestFixture<AllToAllSingleParams, 2>>;
 
-  // Nested loops for all parameter combinations
-  for (int count : counts) {
-    for (at::ScalarType dtype : dtypes) {
-      // Create a descriptive test name for better test output
-      std::string testName =
-          "Count_" + std::to_string(count) + "_" + getDtypeName(dtype);
-
-      SCOPED_TRACE("Running tests with parameters: " + testName);
-
-      // Run all test functions with clear tracing, passing parameters directly
-      SCOPED_TRACE("Running testSyncAllToAllSingle");
-      testSyncAllToAllSingle(count, dtype);
-
-      SCOPED_TRACE("Running testSyncAllToAllSingleNoWork");
-      testSyncAllToAllSingleNoWork(count, dtype);
-
-      SCOPED_TRACE("Running testAsyncAllToAllSingle");
-      testAsyncAllToAllSingle(count, dtype);
-
-      SCOPED_TRACE("Running testAsyncAllToAllSingleEarlyReset");
-      testAsyncAllToAllSingleEarlyReset(count, dtype);
-
-      SCOPED_TRACE("Running testAllToAllSingleInputDeleted");
-      testAllToAllSingleInputDeleted(count, dtype);
-
-      // Run CUDA Graph tests
-      SCOPED_TRACE("Running testGraphAllToAllSingle");
-      testGraphAllToAllSingle(count, dtype);
-
-      SCOPED_TRACE("Running testGraphAllToAllSingleInputDeleted");
-      testGraphAllToAllSingleInputDeleted(count, dtype);
-    }
-  }
+TEST_P(Eager, Sync) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testSync(count, dtype);
 }
+
+TEST_P(Eager, SyncNoWork) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testSyncNoWork(count, dtype);
+}
+
+TEST_P(Eager, Async) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testAsync(count, dtype);
+}
+
+TEST_P(Eager, AsyncEarlyReset) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testAsyncEarlyReset(count, dtype);
+}
+
+TEST_P(Eager, InputDeleted) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testInputDeleted(count, dtype);
+}
+
+TEST_P(SingleGraph, Sync) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testSync(count, dtype);
+}
+
+TEST_P(SingleGraph, SyncNoWork) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testSyncNoWork(count, dtype);
+}
+
+TEST_P(SingleGraph, Async) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testAsync(count, dtype);
+}
+
+TEST_P(SingleGraph, InputDeleted) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testInputDeleted(count, dtype);
+}
+
+TEST_P(MultiGraph, Sync) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testSync(count, dtype);
+}
+
+TEST_P(MultiGraph, SyncNoWork) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testSyncNoWork(count, dtype);
+}
+
+TEST_P(MultiGraph, Async) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testAsync(count, dtype);
+}
+
+TEST_P(MultiGraph, InputDeleted) {
+  int count = std::get<0>(GetParam());
+  at::ScalarType dtype = std::get<1>(GetParam());
+  testInputDeleted(count, dtype);
+}
+
+auto allToAllSingleParamValues() {
+  return ::testing::Combine(
+      ::testing::Values(0, 4, 1024, 1024 * 1024),
+      ::testing::Values(at::kFloat, at::kInt, at::kChar));
+}
+
+auto allToAllSingleGraphParamValues() {
+  return ::testing::Combine(
+      ::testing::Values(4), ::testing::Values(at::kFloat));
+}
+
+auto allToAllSingleParamNamer(
+    const ::testing::TestParamInfo<AllToAllSingleParams>& info) {
+  int count = std::get<0>(info.param);
+  at::ScalarType dtype = std::get<1>(info.param);
+  return "Count_" + std::to_string(count) + "_" + getDtypeName(dtype);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllToAllSingle,
+    Eager,
+    allToAllSingleParamValues(),
+    allToAllSingleParamNamer);
+
+INSTANTIATE_TEST_SUITE_P(
+    AllToAllSingle,
+    SingleGraph,
+    allToAllSingleGraphParamValues(),
+    allToAllSingleParamNamer);
+
+INSTANTIATE_TEST_SUITE_P(
+    AllToAllSingle,
+    MultiGraph,
+    allToAllSingleGraphParamValues(),
+    allToAllSingleParamNamer);
 
 // This main function is provided by gtest
 int main(int argc, char** argv) {
