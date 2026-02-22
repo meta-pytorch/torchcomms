@@ -13,6 +13,8 @@ namespace torch::comms::test {
 void CudaMock::setupDefaultBehaviors() {
   // Device management - return success by default
   ON_CALL(*this, setDevice(_)).WillByDefault(Return(cudaSuccess));
+  ON_CALL(*this, getDevice(_))
+      .WillByDefault(DoAll(SetArgPointee<0>(0), Return(cudaSuccess)));
 
   ON_CALL(*this, getDeviceCount(_))
       .WillByDefault(DoAll(SetArgPointee<0>(1), Return(cudaSuccess)));
