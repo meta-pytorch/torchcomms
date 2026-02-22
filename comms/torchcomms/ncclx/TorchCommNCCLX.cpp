@@ -63,14 +63,16 @@ TorchCommNCCLX::TorchCommNCCLX()
       device_(at::kCUDA),
       split_counter_(0),
       init_state_(InitializationState::UNINITIALIZED),
-      shutdown_(false) {}
+      shutdown_(false),
+      graph_event_tracker_(this) {}
 
 TorchCommNCCLX::TorchCommNCCLX(const ncclComm_t nccl_comm)
     : nccl_comm_(nccl_comm),
       device_(at::kCUDA),
       split_counter_(0),
       init_state_(InitializationState::UNINITIALIZED),
-      shutdown_(false) {}
+      shutdown_(false),
+      graph_event_tracker_(this) {}
 
 TorchCommNCCLX::~TorchCommNCCLX() {
   if (init_state_ == InitializationState::INITIALIZED) {
@@ -311,6 +313,11 @@ void TorchCommNCCLX::finalize() {
   }
 
   TC_LOG(INFO, this) << "Joined timeout thread";
+
+  // Clear graph work entries after timeout thread has joined.
+  // Destroy owned ad-hoc events that were transferred from work objects.
+  graph_event_tracker_.destroyAll();
+
   // Wait for all pending work objects to complete and get final status
   auto work_status = workq_.finalize();
 
@@ -474,6 +481,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::send(
       name_, comm_size_, "send", dst, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,
@@ -519,6 +527,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::recv(
       name_, comm_size_, "recv", src, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout));
 
@@ -585,6 +594,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
       output_tensors);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
@@ -666,6 +676,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::broadcast(
 
   cudaStream_t stream = getOperationStream(async_op);
 
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,
@@ -711,6 +722,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_reduce(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,
@@ -759,6 +771,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
       name_, comm_size_, "reduce", root, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,
@@ -835,6 +848,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather(
 
   // Pass both input tensor and temp_tensor to createWork for refcounting
   // when async_op is true
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
@@ -903,6 +917,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,
@@ -976,6 +991,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
       name_, comm_size_, "all_gather_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,
@@ -1034,6 +1050,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
@@ -1119,6 +1136,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
@@ -1209,6 +1227,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,
@@ -1267,6 +1286,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
       name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,
@@ -1346,6 +1366,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
       name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,
@@ -1435,6 +1456,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
       output_tensor_list);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
@@ -1546,6 +1568,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
   }
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       options_.timeout,
@@ -1617,6 +1640,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
       output_tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       options_.timeout,
@@ -1724,6 +1748,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_exec(
       pReq->getStream() != std::nullopt,
       "cuda stream is not recorded at alltoallv_dedup_init before calling alltoallv_dedup_exec");
   auto stream = pReq->getStream().value();
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(stream, options_.timeout, input_tensor);
   // Keep the persistent request alive until last dedup work has completed and
   // cleaned up by CPU, because work->wait() doesn't let CPU wait for kernel
@@ -1785,6 +1810,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_combine(
       pReq->getStream() != std::nullopt,
       "cuda stream is not recorded at alltoallv_dedup_init before calling alltoallv_dedup_combine");
   auto stream = pReq->getStream().value();
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(stream, options_.timeout, input_tensor);
 
   // Record start event before NCCL operation
@@ -1819,6 +1845,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::barrier(
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
 
   cudaStream_t stream = getOperationStream(async_op);
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout));
 
@@ -1882,6 +1909,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::scatter(
   if (async_op && rank_ == root) {
     input_tensors = input_tensor_list;
   }
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = createWork(
       stream,
       getOperationTimeout(options.timeout, options_.timeout),
@@ -1985,6 +2013,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
   if (rank_ == root) {
     output_tensors = output_tensor_list;
   }
+  graph_event_tracker_.initOnGraphStart(stream);
   auto work = async_op
       ? createWork(
             stream,

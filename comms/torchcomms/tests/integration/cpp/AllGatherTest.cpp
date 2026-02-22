@@ -2,246 +2,153 @@
 
 #include "AllGatherTest.hpp"
 
-#include <ATen/cuda/CUDAGraph.h>
-#include <c10/cuda/CUDAGuard.h>
 #include <gtest/gtest.h>
-#include <vector>
+#include <memory>
 #include "TorchCommTestHelpers.h"
 
-std::unique_ptr<TorchCommTestWrapper> AllGatherTest::createWrapper() {
-  return std::make_unique<TorchCommTestWrapper>();
-}
-
-void AllGatherTest::SetUp() {
-  wrapper_ = createWrapper();
-  torchcomm_ = wrapper_->getTorchComm();
-  rank_ = torchcomm_->getRank();
-  num_ranks_ = torchcomm_->getSize();
-}
-
-void AllGatherTest::TearDown() {
-  // Explicitly reset the TorchComm object to ensure proper cleanup
-  torchcomm_.reset();
-  wrapper_.reset();
-}
-
 // Test function for synchronous all_gather with work object
-void AllGatherTest::testSyncAllGather(int count, at::ScalarType dtype) {
+template <typename Fixture>
+void AllGatherTest<Fixture>::testSync(int count, at::ScalarType dtype) {
   SCOPED_TRACE(
-      ::testing::Message() << "Testing sync all_gather with count=" << count
-                           << " and dtype=" << getDtypeName(dtype));
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
 
-  // Create input and output tensors
   at::Tensor input = createInputTensor(count, dtype);
   std::vector<at::Tensor> outputs = createOutputTensors(count, dtype);
+  std::vector<at::Tensor> original_outputs;
+  original_outputs.reserve(num_ranks_);
+  for (const auto& output : outputs) {
+    original_outputs.push_back(output.clone());
+  }
 
-  // Call all_gather
-  auto work = torchcomm_->all_gather(outputs, input, false);
-  work->wait();
-
-  // Verify the results
-  verifyResults(outputs);
+  auto execute = [&]() {
+    auto work = torchcomm_->all_gather(outputs, input, false);
+    work->wait();
+  };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
+    }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  run(execute, reset, verify);
 }
 
 // Test function for synchronous all_gather without work object
-void AllGatherTest::testSyncAllGatherNoWork(int count, at::ScalarType dtype) {
+template <typename Fixture>
+void AllGatherTest<Fixture>::testSyncNoWork(int count, at::ScalarType dtype) {
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing sync all_gather without work object with count=" << count
-      << " and dtype=" << getDtypeName(dtype));
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
 
-  // Create input and output tensors
   at::Tensor input = createInputTensor(count, dtype);
   std::vector<at::Tensor> outputs = createOutputTensors(count, dtype);
+  std::vector<at::Tensor> original_outputs;
+  original_outputs.reserve(num_ranks_);
+  for (const auto& output : outputs) {
+    original_outputs.push_back(output.clone());
+  }
 
-  // Call all_gather without keeping the work object
-  torchcomm_->all_gather(outputs, input, false);
-
-  // Verify the results
-  verifyResults(outputs);
+  auto execute = [&]() { torchcomm_->all_gather(outputs, input, false); };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
+    }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  run(execute, reset, verify);
 }
 
 // Test function for asynchronous all_gather with wait
-void AllGatherTest::testAsyncAllGather(int count, at::ScalarType dtype) {
+template <typename Fixture>
+void AllGatherTest<Fixture>::testAsync(int count, at::ScalarType dtype) {
   SCOPED_TRACE(
-      ::testing::Message() << "Testing async all_gather with count=" << count
-                           << " and dtype=" << getDtypeName(dtype));
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
 
-  // Create input and output tensors
   at::Tensor input = createInputTensor(count, dtype);
   std::vector<at::Tensor> outputs = createOutputTensors(count, dtype);
+  std::vector<at::Tensor> original_outputs;
+  original_outputs.reserve(num_ranks_);
+  for (const auto& output : outputs) {
+    original_outputs.push_back(output.clone());
+  }
 
-  // Call all_gather
-  auto work = torchcomm_->all_gather(outputs, input, true);
-
-  // Wait for the all_gather to complete
-  work->wait();
-
-  // Verify the results
-  verifyResults(outputs);
+  auto execute = [&]() {
+    auto work = torchcomm_->all_gather(outputs, input, true);
+    work->wait();
+  };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
+    }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  run(execute, reset, verify);
 }
 
 // Test function for asynchronous all_gather with early reset
-void AllGatherTest::testAsyncAllGatherEarlyReset(
+template <typename Fixture>
+void AllGatherTest<Fixture>::testAsyncEarlyReset(
     int count,
     at::ScalarType dtype) {
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing async all_gather with early reset with count=" << count
-      << " and dtype=" << getDtypeName(dtype));
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
 
-  // Create input and output tensors
   at::Tensor input = createInputTensor(count, dtype);
   std::vector<at::Tensor> outputs = createOutputTensors(count, dtype);
+  std::vector<at::Tensor> original_outputs;
+  original_outputs.reserve(num_ranks_);
+  for (const auto& output : outputs) {
+    original_outputs.push_back(output.clone());
+  }
 
-  // Call all_gather
-  auto work = torchcomm_->all_gather(outputs, input, true);
-
-  // Wait for the work to complete before resetting
-  work->wait();
-
-  // Reset the work object
-  work.reset();
-
-  // Verify the results
-  verifyResults(outputs);
+  auto execute = [&]() {
+    auto work = torchcomm_->all_gather(outputs, input, true);
+    work->wait();
+    work.reset();
+  };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
+    }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  run(execute, reset, verify);
 }
 
 // Test function for asynchronous all_gather with input deleted after enqueue
-void AllGatherTest::testAllGatherInputDeleted(int count, at::ScalarType dtype) {
+template <typename Fixture>
+void AllGatherTest<Fixture>::testInputDeleted(int count, at::ScalarType dtype) {
   SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing async all_gather with input deleted after enqueue with count="
-      << count << " and dtype=" << getDtypeName(dtype));
+      ::testing::Message() << "count=" << count
+                           << " dtype=" << getDtypeName(dtype));
 
-  // Create output tensors that persist throughout the test
-  std::vector<at::Tensor> outputs = createOutputTensors(count, dtype);
-
-  {
-    // Create input tensor in a limited scope
-    at::Tensor input = createInputTensor(count, dtype);
-
-    // Call all_gather
-    torchcomm_->all_gather(outputs, input, false);
-
-    // Input tensor goes out of scope here and gets deleted
-  }
-
-  // Verify the results
-  verifyResults(outputs);
-}
-
-// CUDA Graph test function for all_gather
-void AllGatherTest::testGraphAllGather(int count, at::ScalarType dtype) {
-  if (isRunningOnCPU()) {
-    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
-  }
-
-  SCOPED_TRACE(
-      ::testing::Message() << "Testing CUDA Graph all_gather with count="
-                           << count << " and dtype=" << getDtypeName(dtype));
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
-
-  // Create input and output tensors AFTER setting non-default stream but BEFORE
-  // graph capture
-  at::Tensor input = createInputTensor(count, dtype);
+  auto input = std::make_shared<at::Tensor>(createInputTensor(count, dtype));
   std::vector<at::Tensor> outputs = createOutputTensors(count, dtype);
   std::vector<at::Tensor> original_outputs;
-  original_outputs.reserve(outputs.size());
+  original_outputs.reserve(num_ranks_);
   for (const auto& output : outputs) {
     original_outputs.push_back(output.clone());
   }
 
-  // Create PyTorch CUDA graph
-  at::cuda::CUDAGraph graph;
-
-  // Capture the all_gather operation in the graph
-  graph.capture_begin();
-
-  torchcomm_->all_gather(outputs, input, false);
-
-  graph.capture_end();
-
-  // Replay the captured graph multiple times
-  for (int i = 0; i < num_replays; ++i) {
-    // Reset output tensors before each replay
-    for (size_t j = 0; j < outputs.size(); ++j) {
-      outputs[j].copy_(original_outputs[j]);
+  auto execute = [&]() { torchcomm_->all_gather(outputs, *input, false); };
+  auto reset = [&]() {
+    for (int i = 0; i < num_ranks_; i++) {
+      outputs[i].copy_(original_outputs[i]);
     }
-
-    graph.replay();
-
-    // Verify the results after each replay
-    verifyResults(outputs);
-  }
-}
-
-// CUDA Graph test function for all_gather with input deleted after graph
-// creation
-void AllGatherTest::testGraphAllGatherInputDeleted(
-    int count,
-    at::ScalarType dtype) {
-  if (isRunningOnCPU()) {
-    GTEST_SKIP() << "CUDA Graph tests are not supported on CPU";
-  }
-
-  SCOPED_TRACE(
-      ::testing::Message()
-      << "Testing CUDA Graph all_gather with input deleted after graph creation with count="
-      << count << " and dtype=" << getDtypeName(dtype));
-
-  // Create a non-default CUDA stream (required for CUDA graph capture)
-  at::cuda::CUDAStream stream = at::cuda::getStreamFromPool();
-
-  // Set the stream as current for graph capture
-  at::cuda::CUDAStreamGuard guard(stream);
-
-  // Create output tensors that persist throughout the test
-  std::vector<at::Tensor> outputs = createOutputTensors(count, dtype);
-  std::vector<at::Tensor> original_outputs;
-  original_outputs.reserve(outputs.size());
-  for (const auto& output : outputs) {
-    original_outputs.push_back(output.clone());
-  }
-
-  // Create PyTorch CUDA graph
-  at::cuda::CUDAGraph graph;
-
-  {
-    // Create input tensor in a limited scope
-    at::Tensor input = createInputTensor(count, dtype);
-
-    // Capture the all_gather operation in the graph
-    graph.capture_begin();
-
-    torchcomm_->all_gather(outputs, input, false);
-
-    graph.capture_end();
-
-    // Input tensor goes out of scope here and gets deleted
-  }
-
-  // Replay the captured graph multiple times even though input is deleted
-  for (int i = 0; i < num_replays; ++i) {
-    // Reset output tensors before each replay
-    for (size_t j = 0; j < outputs.size(); ++j) {
-      outputs[j].copy_(original_outputs[j]);
-    }
-
-    graph.replay();
-
-    // Verify the results after each replay
-    verifyResults(outputs);
-  }
+  };
+  auto verify = [&]() { verifyResults(outputs); };
+  auto cleanup = [&]() { input.reset(); };
+  run(execute, reset, verify, cleanup);
 }
 
 // Helper function to create input tensor
-at::Tensor AllGatherTest::createInputTensor(int count, at::ScalarType dtype) {
+template <typename Fixture>
+at::Tensor AllGatherTest<Fixture>::createInputTensor(
+    int count,
+    at::ScalarType dtype) {
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
   at::Tensor input;
   if (dtype == at::kFloat || dtype == at::kHalf || dtype == at::kBFloat16) {
@@ -255,7 +162,8 @@ at::Tensor AllGatherTest::createInputTensor(int count, at::ScalarType dtype) {
 }
 
 // Helper function to create output tensors
-std::vector<at::Tensor> AllGatherTest::createOutputTensors(
+template <typename Fixture>
+std::vector<at::Tensor> AllGatherTest<Fixture>::createOutputTensors(
     int count,
     at::ScalarType dtype) {
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
@@ -267,10 +175,15 @@ std::vector<at::Tensor> AllGatherTest::createOutputTensors(
 }
 
 // Helper function to verify results
-void AllGatherTest::verifyResults(const std::vector<at::Tensor>& outputs) {
+template <typename Fixture>
+void AllGatherTest<Fixture>::verifyResults(
+    const std::vector<at::Tensor>& outputs) {
   for (int i = 0; i < num_ranks_; i++) {
-    // Use verifyTensorEquality to compare output with expected tensor
     std::string description = "rank " + std::to_string(i) + " tensor";
     verifyTensorEquality(outputs[i].cpu(), i + 1, description);
   }
 }
+
+template class AllGatherTest<EagerTestFixture<AllGatherParams>>;
+template class AllGatherTest<GraphTestFixture<AllGatherParams, 1>>;
+template class AllGatherTest<GraphTestFixture<AllGatherParams, 2>>;

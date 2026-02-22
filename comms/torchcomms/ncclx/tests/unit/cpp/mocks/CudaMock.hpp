@@ -91,6 +91,16 @@ class CudaMock : public CudaApi {
       (override));
   MOCK_METHOD(
       cudaError_t,
+      userObjectRelease,
+      (cudaUserObject_t object, unsigned int count),
+      (override));
+  MOCK_METHOD(
+      cudaError_t,
+      launchHostFunc,
+      (cudaStream_t stream, cudaHostFn_t fn, void* userData),
+      (override));
+  MOCK_METHOD(
+      cudaError_t,
       streamGetCaptureInfo_v2,
       (cudaStream_t stream,
        cudaStreamCaptureStatus* captureStatus_out,
@@ -135,6 +145,11 @@ class CudaMock : public CudaApi {
       cudaError_t,
       eventRecord,
       (cudaEvent_t event, cudaStream_t stream),
+      (override));
+  MOCK_METHOD(
+      cudaError_t,
+      eventRecordWithFlags,
+      (cudaEvent_t event, cudaStream_t stream, unsigned int flags),
       (override));
   MOCK_METHOD(cudaError_t, eventQuery, (cudaEvent_t event), (override));
 

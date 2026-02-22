@@ -66,6 +66,10 @@ void CudaMock::setupDefaultBehaviors() {
   ON_CALL(*this, graphRetainUserObject(_, _, _, _))
       .WillByDefault(Return(cudaSuccess));
 
+  ON_CALL(*this, userObjectRelease(_, _)).WillByDefault(Return(cudaSuccess));
+
+  ON_CALL(*this, launchHostFunc(_, _, _)).WillByDefault(Return(cudaSuccess));
+
   ON_CALL(*this, streamGetCaptureInfo_v2(_, _, _, _, _, _))
       .WillByDefault(DoAll(
           SetArgPointee<1>(cudaStreamCaptureStatusNone),
@@ -102,6 +106,9 @@ void CudaMock::setupDefaultBehaviors() {
   ON_CALL(*this, eventDestroy(_)).WillByDefault(Return(cudaSuccess));
 
   ON_CALL(*this, eventRecord(_, _)).WillByDefault(Return(cudaSuccess));
+
+  ON_CALL(*this, eventRecordWithFlags(_, _, _))
+      .WillByDefault(Return(cudaSuccess));
 
   ON_CALL(*this, eventQuery(_)).WillByDefault(Return(cudaSuccess));
 
