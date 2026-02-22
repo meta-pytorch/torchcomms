@@ -19,6 +19,7 @@ class CudaMock : public CudaApi {
 
   // Device management
   MOCK_METHOD(cudaError_t, setDevice, (int device), (override));
+  MOCK_METHOD(cudaError_t, getDevice, (int* device), (override));
   MOCK_METHOD(
       cudaError_t,
       getDeviceProperties,
