@@ -2198,7 +2198,12 @@ void TorchCommNCCLX::register_address(
       nccl_comm_,
       nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle),
       "Failed to register memory with NCCLX");
-  memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+  // ncclCommRegister may return a NULL handle when registration is a no-op.
+  // Skip storing it so that deregister_address() does not later call
+  // ncclCommDeregister with a NULL handle.
+  if (handle != nullptr) {
+    memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+  }
 }
 
 void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {
