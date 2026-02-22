@@ -40,6 +40,7 @@ class CudaApi {
 
   // Device management
   [[nodiscard]] virtual cudaError_t setDevice(int device) = 0;
+  [[nodiscard]] virtual cudaError_t getDevice(int* device) = 0;
   [[nodiscard]] virtual cudaError_t getDeviceProperties(
       cudaDeviceProp* prop,
       int device) = 0;
@@ -136,6 +137,7 @@ class DefaultCudaApi : public CudaApi {
 
   // Device management
   [[nodiscard]] cudaError_t setDevice(int device) override;
+  [[nodiscard]] cudaError_t getDevice(int* device) override;
   [[nodiscard]] cudaError_t getDeviceProperties(
       cudaDeviceProp* prop,
       int device) override;

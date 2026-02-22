@@ -227,8 +227,10 @@ TEST_F(TorchCommNCCLXTest, InitializationFailsWithInvalidDeviceId) {
 
     // Mock CUDA API to be called with device ID 0, since the boostrap
     // logic will assign a device ID in this case based on the rank.
+    // setDevice is called 3 times: once in the bootstrap constructor,
+    // once in init() post-bootstrap, and once in the watchdog thread.
     EXPECT_CALL(*cuda_mock_, setDevice(0))
-        .Times(2)
+        .Times(3)
         .WillRepeatedly(Return(cudaSuccess));
     EXPECT_CALL(*nccl_mock_, commInitRankConfig(_, 2, _, 0, _))
         .WillOnce(DoAll(

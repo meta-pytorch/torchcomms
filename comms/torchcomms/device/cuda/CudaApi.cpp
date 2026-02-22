@@ -13,6 +13,10 @@ cudaError_t DefaultCudaApi::setDevice(int device) {
   return cudaSetDevice(device);
 }
 
+cudaError_t DefaultCudaApi::getDevice(int* device) {
+  return cudaGetDevice(device);
+}
+
 cudaError_t DefaultCudaApi::getDeviceProperties(
     cudaDeviceProp* prop,
     int device) {
