@@ -1,69 +1,62 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #pragma once
 
-#include <ATen/cuda/CUDAContext.h>
-#include <ATen/cuda/CUDAGraph.h>
-#include <c10/cuda/CUDAGuard.h>
+#include <ATen/ATen.h>
+#include <c10/core/Device.h>
 #include <gtest/gtest.h>
+#include <memory>
+#include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
+#include "comms/torchcomms/tests/integration/cpp/GraphTestFixtures.hpp"
 #include "comms/torchcomms/tests/integration/cpp/TorchCommTestHelpers.h"
 
-class AllToAllvSingleTest : public ::testing::Test {
- public:
-  AllToAllvSingleTest() : AllToAllvSingleTest(c10::DeviceType::CUDA) {}
-  explicit AllToAllvSingleTest(c10::DeviceType device_type)
-      : rank_(0), num_ranks_(0), device_type_(device_type) {}
+enum class AllToAllvSizePattern {
+  Uniform,
+  Variable,
+  ZeroSizes,
+  AllZero,
+  Asymmetric,
+};
 
-  // Test function declarations with parameters
-  void testSyncAllToAllvSingle(
-      const std::vector<uint64_t>& input_split_sizes,
-      const std::vector<uint64_t>& output_split_sizes,
+using AllToAllvSingleParams =
+    std::tuple<AllToAllvSizePattern, int, at::ScalarType>;
+
+template <typename Fixture>
+class AllToAllvSingleTest : public Fixture {
+ protected:
+  using Fixture::device_type_;
+  using Fixture::num_ranks_;
+  using Fixture::rank_;
+  using Fixture::run;
+  using Fixture::torchcomm_;
+
+  void testSync(AllToAllvSizePattern pattern, int count, at::ScalarType dtype);
+  void
+  testSyncNoWork(AllToAllvSizePattern pattern, int count, at::ScalarType dtype);
+  void testAsync(AllToAllvSizePattern pattern, int count, at::ScalarType dtype);
+  void testAsyncEarlyReset(
+      AllToAllvSizePattern pattern,
+      int count,
       at::ScalarType dtype);
-  void testSyncAllToAllvSingleNoWork(
-      const std::vector<uint64_t>& input_split_sizes,
-      const std::vector<uint64_t>& output_split_sizes,
+  void testInputDeleted(
+      AllToAllvSizePattern pattern,
+      int count,
       at::ScalarType dtype);
-  void testAsyncAllToAllvSingle(
-      const std::vector<uint64_t>& input_split_sizes,
-      const std::vector<uint64_t>& output_split_sizes,
+  void testMultiDimTensor(
+      AllToAllvSizePattern pattern,
+      int count,
       at::ScalarType dtype);
-  void testAsyncAllToAllvSingleEarlyReset(
-      const std::vector<uint64_t>& input_split_sizes,
-      const std::vector<uint64_t>& output_split_sizes,
-      at::ScalarType dtype);
-  void testAllToAllvSingleInputDeleted(
-      const std::vector<uint64_t>& input_split_sizes,
-      const std::vector<uint64_t>& output_split_sizes,
-      at::ScalarType dtype);
-  void testGraphAllToAllvSingle(
-      const std::vector<uint64_t>& input_split_sizes,
-      const std::vector<uint64_t>& output_split_sizes,
-      at::ScalarType dtype);
-  void testGraphAllToAllvSingleInputDeleted(
-      const std::vector<uint64_t>& input_split_sizes,
-      const std::vector<uint64_t>& output_split_sizes,
-      at::ScalarType dtype);
-  void testSyncAllToAllvSingleMultiDimTensor(
-      const std::vector<uint64_t>& input_split_sizes,
-      const std::vector<uint64_t>& output_split_sizes,
-      at::ScalarType dtype);
+
+ public:
+  static std::string getPatternName(AllToAllvSizePattern pattern);
 
  protected:
-  virtual std::unique_ptr<TorchCommTestWrapper> createWrapper();
-
-  virtual void SetUp() override;
-
-  virtual void TearDown() override;
-
-  std::unique_ptr<TorchCommTestWrapper> wrapper_;
-  std::shared_ptr<torch::comms::TorchComm> torchcomm_;
-  int rank_;
-  int num_ranks_;
-  c10::DeviceType device_type_;
-
-  static constexpr int num_replays = 4;
-
-  // Helper function declarations with parameters
+  std::pair<std::vector<uint64_t>, std::vector<uint64_t>> computeSplitSizes(
+      AllToAllvSizePattern pattern,
+      int count);
   virtual at::Tensor createInputTensor(
       const std::vector<uint64_t>& input_split_sizes,
       at::ScalarType dtype);
