@@ -312,11 +312,14 @@ commResult_t CtranGpe::Impl::submit(
 
     // Set the maximum dynamic shared memory size since CtranAlgoDeviceState
     // (~67KB) exceeds the default limit (48KB)
+    size_t sharedMemBytes = kernelConfig.dynamicSharedMemBytes > 0
+        ? kernelConfig.dynamicSharedMemBytes
+        : sizeof(CtranAlgoDeviceState);
     FB_CUDACHECKGOTO(
         cudaFuncSetAttribute(
             ncclKernel,
             cudaFuncAttributeMaxDynamicSharedMemorySize,
-            sizeof(CtranAlgoDeviceState)),
+            sharedMemBytes),
         res,
         fail);
     FB_CUDACHECKGOTO(
@@ -325,7 +328,7 @@ commResult_t CtranGpe::Impl::submit(
             grid,
             blocks,
             kernelArgs.data(),
-            sizeof(CtranAlgoDeviceState),
+            sharedMemBytes,
             kernelConfig.stream),
         res,
         fail);
