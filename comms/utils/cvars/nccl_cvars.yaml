@@ -2746,7 +2746,7 @@ cvars:
 
  - name        : NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE
    type        : uint64_t
-   default     : 8388608
+   default     : 0
    description : |-
      size in bytes of each chunk for temporary send and receive buffers used in
      NCCL CTRAN allreduce ring. The size of each temporary buffer is
@@ -2754,7 +2754,7 @@ cvars:
 
  - name        : NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS
    type        : uint32_t
-   default     : 4
+   default     : 0
    description : |-
      number of chunks allocated for temporary send and receive buffers used in
      NCCL CTRAN allreduce ring. The size of each temporary buffer is
@@ -2769,7 +2769,7 @@ cvars:
 
  - name        : NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS
    type        : int
-   default     : 8
+   default     : 0
    description : |-
      Maximum number of thread blocks used for the AllReduce kernel.
      We might use fewer thread blocks, if we can achieve max occupancy
@@ -2777,10 +2777,19 @@ cvars:
 
  - name        : NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE
    type        : int
-   default     : 512
+   default     : 0
    description : |-
      Number of threads in each thread block used for the AllReduce
-     kernel. Default -1 to use the recommended size by CUDA runtime.
+     kernel.
+
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP
+   type        : int
+   default     : 0
+   description : |-
+     Enable auto-tuning of AllReduceRing parameters based on message size.
+     When enabled, overrides MAX_NUM_THREAD_BLOCKS and pipeline parameters
+     with per-message-size optimal values. Set to 0 to use static CVAR
+     values instead.
 
  - name        : NCCL_CTRAN_ENABLE_FAULT_TOLERANCE
    type        : bool
