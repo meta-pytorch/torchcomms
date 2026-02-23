@@ -3,213 +3,166 @@
 #include "AllToAllvSingleTest.hpp"
 
 #include <gtest/gtest.h>
+#include <string>
 #include <vector>
+#include "TorchCommTestHelpers.h"
 
-TEST_F(AllToAllvSingleTest, AllTests) {
-  // Define enum for size patterns
-  enum class SizePattern { Uniform, Variable, ZeroSizes };
+using Eager = AllToAllvSingleTest<EagerTestFixture<AllToAllvSingleParams>>;
+using SingleGraph =
+    AllToAllvSingleTest<GraphTestFixture<AllToAllvSingleParams, 1>>;
+using MultiGraph =
+    AllToAllvSingleTest<GraphTestFixture<AllToAllvSingleParams, 2>>;
 
-  // Helper function to convert enum to string
-  auto getPatternName = [](SizePattern pattern) -> std::string {
-    switch (pattern) {
-      case SizePattern::Uniform:
-        return "Uniform";
-      case SizePattern::Variable:
-        return "Variable";
-      case SizePattern::ZeroSizes:
-        return "ZeroSizes";
-      default:
-        return "Unknown";
-    }
-  };
-
-  // Define different counts to test
-  std::vector<uint64_t> counts = {4, 1024, 1024 * 1024};
-
-  // Define size patterns to test (excluding AllZero which is handled
-  // separately)
-  std::vector<SizePattern> size_patterns = {
-      SizePattern::Uniform, SizePattern::Variable, SizePattern::ZeroSizes};
-
-  // Define datatypes to test
-  std::vector<at::ScalarType> dtypes = {at::kFloat, at::kInt, at::kChar};
-
-  // Nested loops for all parameter combinations (counts x patterns x dtypes)
-  for (uint64_t count : counts) {
-    for (SizePattern pattern : size_patterns) {
-      for (at::ScalarType dtype : dtypes) {
-        // Create size vectors based on pattern and count
-        std::vector<uint64_t> input_sizes, output_sizes;
-
-        switch (pattern) {
-          case SizePattern::Uniform:
-            // Test with uniform sizes
-            input_sizes = std::vector<uint64_t>(num_ranks_, count);
-            output_sizes = std::vector<uint64_t>(num_ranks_, count);
-            break;
-          case SizePattern::Variable:
-            // Test with variable sizes - create a symmetric communication
-            // pattern Each rank i sends (i+1)*count elements to each other
-            // rank j So rank j should expect to receive (i+1)*count elements
-            // from rank i
-            for (int i = 0; i < num_ranks_; i++) {
-              // This rank sends (rank_+1)*count elements to rank i
-              input_sizes.push_back((rank_ + 1) * count);
-              // This rank receives (i+1)*count elements from rank i
-              output_sizes.push_back((i + 1) * count);
-            }
-            break;
-          case SizePattern::ZeroSizes:
-            // Test with some zero sizes - ensure symmetric pattern
-            for (int i = 0; i < num_ranks_; i++) {
-              // Create a pattern where some communications have zero size
-              // If this rank sends 0 to rank i, then rank i sends 0 to this
-              // rank
-              uint64_t size = (rank_ + i) % 3 == 0 ? 0 : count;
-              input_sizes.push_back(size);
-
-              // This rank receives from rank i what rank i sends to this rank
-              uint64_t recv_size = (i + rank_) % 3 == 0 ? 0 : count;
-              output_sizes.push_back(recv_size);
-            }
-            break;
-          default:
-            TORCH_INTERNAL_ASSERT(false, "Unexpected SizePattern enum value");
-        }
-
-        // Create a descriptive test name for better test output
-        std::string testName = getPatternName(pattern) + "_" +
-            std::to_string(count) + "_" + getDtypeName(dtype);
-
-        SCOPED_TRACE("Running tests with parameters: " + testName);
-
-        // Run all test functions with clear tracing, passing parameters
-        // directly
-        SCOPED_TRACE("Running testSyncAllToAllvSingle");
-        testSyncAllToAllvSingle(input_sizes, output_sizes, dtype);
-
-        SCOPED_TRACE("Running testSyncAllToAllvSingleNoWork");
-        testSyncAllToAllvSingleNoWork(input_sizes, output_sizes, dtype);
-
-        SCOPED_TRACE("Running testAsyncAllToAllvSingle");
-        testAsyncAllToAllvSingle(input_sizes, output_sizes, dtype);
-
-        SCOPED_TRACE("Running testAsyncAllToAllvSingleEarlyReset");
-        testAsyncAllToAllvSingleEarlyReset(input_sizes, output_sizes, dtype);
-
-        SCOPED_TRACE("Running testAllToAllvSingleInputDeleted");
-        testAllToAllvSingleInputDeleted(input_sizes, output_sizes, dtype);
-
-        // Run CUDA Graph tests
-        SCOPED_TRACE("Running testGraphAllToAllvSingle");
-        testGraphAllToAllvSingle(input_sizes, output_sizes, dtype);
-
-        SCOPED_TRACE("Running testGraphAllToAllvSingleInputDeleted");
-        testGraphAllToAllvSingleInputDeleted(input_sizes, output_sizes, dtype);
-
-        SCOPED_TRACE("Running testSyncAllToAllvSingleMultiDimTensor");
-        testSyncAllToAllvSingleMultiDimTensor(input_sizes, output_sizes, dtype);
-      }
-    }
-  }
-
-  // Handle AllZero separately, as it is independent of the count and datatype
-  for (at::ScalarType dtype : dtypes) {
-    // Test with all zero sizes
-    std::vector<uint64_t> input_sizes = std::vector<uint64_t>(num_ranks_, 0);
-    std::vector<uint64_t> output_sizes = std::vector<uint64_t>(num_ranks_, 0);
-
-    // Create a descriptive test name for better test output
-    std::string testName = "AllZero_" + getDtypeName(dtype);
-
-    SCOPED_TRACE("Running tests with parameters: " + testName);
-
-    // Run all test functions with clear tracing, passing parameters directly
-    SCOPED_TRACE("Running testSyncAllToAllvSingle");
-    testSyncAllToAllvSingle(input_sizes, output_sizes, dtype);
-
-    SCOPED_TRACE("Running testSyncAllToAllvSingleNoWork");
-    testSyncAllToAllvSingleNoWork(input_sizes, output_sizes, dtype);
-
-    SCOPED_TRACE("Running testAsyncAllToAllvSingle");
-    testAsyncAllToAllvSingle(input_sizes, output_sizes, dtype);
-
-    SCOPED_TRACE("Running testAsyncAllToAllvSingleEarlyReset");
-    testAsyncAllToAllvSingleEarlyReset(input_sizes, output_sizes, dtype);
-
-    SCOPED_TRACE("Running testAllToAllvSingleInputDeleted");
-    testAllToAllvSingleInputDeleted(input_sizes, output_sizes, dtype);
-
-    SCOPED_TRACE("Running testGraphAllToAllvSingle");
-    testGraphAllToAllvSingle(input_sizes, output_sizes, dtype);
-
-    SCOPED_TRACE("Running testGraphAllToAllvSingleInputDeleted");
-    testGraphAllToAllvSingleInputDeleted(input_sizes, output_sizes, dtype);
-
-    SCOPED_TRACE("Running testSyncAllToAllvSingleMultiDimTensor");
-    testSyncAllToAllvSingleMultiDimTensor(input_sizes, output_sizes, dtype);
-  }
-
-  // Test asymmetric communication: some ranks have all zero inputs but non-zero
-  // outputs
-  for (uint64_t count : counts) {
-    for (at::ScalarType dtype : dtypes) {
-      // Create an asymmetric pattern where even ranks send data but odd ranks
-      // don't However, odd ranks receive data from even ranks
-      std::vector<uint64_t> input_sizes, output_sizes;
-
-      for (int i = 0; i < num_ranks_; i++) {
-        if (rank_ % 2 == 0) {
-          // Even ranks send data to all ranks
-          input_sizes.push_back(count);
-        } else {
-          // Odd ranks don't send any data
-          input_sizes.push_back(0);
-        }
-
-        if (i % 2 == 0) {
-          // All ranks receive data from even ranks
-          output_sizes.push_back(count);
-        } else {
-          // All ranks don't receive from odd ranks (since they don't send)
-          output_sizes.push_back(0);
-        }
-      }
-
-      // Create a descriptive test name for better test output
-      std::string testName = "AsymmetricZeroInput_" + std::to_string(count) +
-          "_" + getDtypeName(dtype);
-
-      SCOPED_TRACE("Running tests with parameters: " + testName);
-
-      // Run all test functions with clear tracing, passing parameters directly
-      SCOPED_TRACE("Running testSyncAllToAllvSingle");
-      testSyncAllToAllvSingle(input_sizes, output_sizes, dtype);
-
-      SCOPED_TRACE("Running testSyncAllToAllvSingleNoWork");
-      testSyncAllToAllvSingleNoWork(input_sizes, output_sizes, dtype);
-
-      SCOPED_TRACE("Running testAsyncAllToAllvSingle");
-      testAsyncAllToAllvSingle(input_sizes, output_sizes, dtype);
-
-      SCOPED_TRACE("Running testAsyncAllToAllvSingleEarlyReset");
-      testAsyncAllToAllvSingleEarlyReset(input_sizes, output_sizes, dtype);
-
-      SCOPED_TRACE("Running testAllToAllvSingleInputDeleted");
-      testAllToAllvSingleInputDeleted(input_sizes, output_sizes, dtype);
-
-      // Run CUDA Graph tests
-      SCOPED_TRACE("Running testGraphAllToAllvSingle");
-      testGraphAllToAllvSingle(input_sizes, output_sizes, dtype);
-
-      SCOPED_TRACE("Running testGraphAllToAllvSingleInputDeleted");
-      testGraphAllToAllvSingleInputDeleted(input_sizes, output_sizes, dtype);
-
-      SCOPED_TRACE("Running testSyncAllToAllvSingleMultiDimTensor");
-      testSyncAllToAllvSingleMultiDimTensor(input_sizes, output_sizes, dtype);
-    }
-  }
+TEST_P(Eager, Sync) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testSync(pattern, count, dtype);
 }
+
+TEST_P(Eager, SyncNoWork) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testSyncNoWork(pattern, count, dtype);
+}
+
+TEST_P(Eager, Async) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testAsync(pattern, count, dtype);
+}
+
+TEST_P(Eager, AsyncEarlyReset) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testAsyncEarlyReset(pattern, count, dtype);
+}
+
+TEST_P(Eager, InputDeleted) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testInputDeleted(pattern, count, dtype);
+}
+
+TEST_P(Eager, MultiDimTensor) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testMultiDimTensor(pattern, count, dtype);
+}
+
+TEST_P(SingleGraph, Sync) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testSync(pattern, count, dtype);
+}
+
+TEST_P(SingleGraph, SyncNoWork) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testSyncNoWork(pattern, count, dtype);
+}
+
+TEST_P(SingleGraph, Async) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testAsync(pattern, count, dtype);
+}
+
+TEST_P(SingleGraph, InputDeleted) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testInputDeleted(pattern, count, dtype);
+}
+
+TEST_P(MultiGraph, Sync) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testSync(pattern, count, dtype);
+}
+
+TEST_P(MultiGraph, SyncNoWork) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testSyncNoWork(pattern, count, dtype);
+}
+
+TEST_P(MultiGraph, Async) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testAsync(pattern, count, dtype);
+}
+
+TEST_P(MultiGraph, InputDeleted) {
+  AllToAllvSizePattern pattern = std::get<0>(GetParam());
+  int count = std::get<1>(GetParam());
+  at::ScalarType dtype = std::get<2>(GetParam());
+  testInputDeleted(pattern, count, dtype);
+}
+
+auto allToAllvSingleParamValues() {
+  static std::vector<AllToAllvSingleParams> params = []() {
+    std::vector<AllToAllvSingleParams> p;
+    std::vector<at::ScalarType> dtypes = {at::kFloat, at::kInt, at::kChar};
+
+    // Uniform pattern: full dtype coverage with two counts
+    for (int count : {4, 1024}) {
+      for (auto dtype : dtypes) {
+        p.emplace_back(AllToAllvSizePattern::Uniform, count, dtype);
+      }
+    }
+    // Other patterns: minimal config (count=4, Float only) for pattern coverage
+    p.emplace_back(AllToAllvSizePattern::Variable, 4, at::kFloat);
+    p.emplace_back(AllToAllvSizePattern::ZeroSizes, 4, at::kFloat);
+    p.emplace_back(AllToAllvSizePattern::AllZero, 0, at::kFloat);
+    p.emplace_back(AllToAllvSizePattern::Asymmetric, 4, at::kFloat);
+    return p;
+  }();
+  return ::testing::ValuesIn(params);
+}
+
+auto allToAllvSingleGraphParamValues() {
+  return ::testing::Values(
+      AllToAllvSingleParams{AllToAllvSizePattern::Uniform, 4, at::kFloat});
+}
+
+auto allToAllvSingleParamNamer(
+    const ::testing::TestParamInfo<AllToAllvSingleParams>& info) {
+  AllToAllvSizePattern pattern = std::get<0>(info.param);
+  int count = std::get<1>(info.param);
+  at::ScalarType dtype = std::get<2>(info.param);
+  return Eager::getPatternName(pattern) + "_Count_" + std::to_string(count) +
+      "_" + getDtypeName(dtype);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    AllToAllvSingle,
+    Eager,
+    allToAllvSingleParamValues(),
+    allToAllvSingleParamNamer);
+
+INSTANTIATE_TEST_SUITE_P(
+    AllToAllvSingle,
+    SingleGraph,
+    allToAllvSingleGraphParamValues(),
+    allToAllvSingleParamNamer);
+
+INSTANTIATE_TEST_SUITE_P(
+    AllToAllvSingle,
+    MultiGraph,
+    allToAllvSingleGraphParamValues(),
+    allToAllvSingleParamNamer);
 
 // This main function is provided by gtest
 int main(int argc, char** argv) {

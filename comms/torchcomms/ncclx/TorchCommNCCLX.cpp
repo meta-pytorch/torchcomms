@@ -2158,6 +2158,26 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   // Populate NCCL config from user-provided hints
   populateNcclConfigFromHints(config, options, commDesc);
 
+  // Verify the correct CUDA device is set before calling ncclCommSplit.
+  // NCCL expects the caller to have set the device matching the communicator.
+  {
+    int currentDevice = -1;
+    CUDA_CHECK(
+        cuda_api_,
+        cuda_api_->getDevice(&currentDevice),
+        "Failed to get current CUDA device in split");
+    if (currentDevice != device_.index()) {
+      TC_LOG(WARNING, this) << "CUDA device mismatch in split: expected "
+                            << device_.index() << " but current device is "
+                            << currentDevice << ". Setting to correct device.";
+      CUDA_CHECK(
+          cuda_api_,
+          cuda_api_->setDevice(device_.index()),
+          fmt::format(
+              "Failed to set CUDA device to {} in split", device_.index()));
+    }
+  }
+
   // Note: NCCL documentation states that commSplit should not be called while
   // operations are outstanding on the parent communicator. Callers are
   // responsible for ensuring all operations complete before calling split().
@@ -2198,7 +2218,12 @@ void TorchCommNCCLX::register_address(
       nccl_comm_,
       nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle),
       "Failed to register memory with NCCLX");
-  memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+  // ncclCommRegister may return a NULL handle when registration is a no-op.
+  // Skip storing it so that deregister_address() does not later call
+  // ncclCommDeregister with a NULL handle.
+  if (handle != nullptr) {
+    memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+  }
 }
 
 void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {

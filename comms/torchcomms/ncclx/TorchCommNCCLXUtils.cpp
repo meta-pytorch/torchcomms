@@ -199,6 +199,16 @@ void TorchCommNCCLX::checkGraphEvents() {
 void TorchCommNCCLX::timeoutWatchdog() noexcept {
   TC_LOG(INFO, this) << "Timeout thread starting for rank: " << rank_;
 
+  // New threads default to CUDA device 0.  Set the correct device before
+  // any CUDA runtime call to avoid creating an unwanted primary context on
+  // device 0 (each context costs ~534 MiB on H100).
+  CUDA_CHECK_IGNORE(
+      cuda_api_,
+      cuda_api_->setDevice(device_.index()),
+      fmt::format(
+          "Failed to set CUDA device to {} in timeout thread",
+          device_.index()));
+
   cudaStreamCaptureMode mode = cudaStreamCaptureModeThreadLocal;
   CUDA_CHECK_IGNORE(
       cuda_api_,
