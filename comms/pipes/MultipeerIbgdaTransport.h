@@ -91,6 +91,11 @@ struct MultipeerIbgdaTransportConfig {
   // See InfiniBand specification Volume 1, section 12.7.38.
   // Default is 7 (similar to NCCL_IB_RETRY_CNT).
   uint8_t retryCount{7};
+
+  // InfiniBand traffic class field (similar to NCCL_IB_TC).
+  // See InfiniBand specification Volume 1 or vendor documentation.
+  // Default is 224.
+  uint8_t trafficClass{224};
 };
 
 /**

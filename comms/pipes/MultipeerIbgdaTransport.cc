@@ -250,6 +250,9 @@ void MultipeerIbgdaTransport::openIbDevice() {
 
   err = doca_verbs_ah_attr_set_hop_limit(ahAttr_, kHopLimit);
   checkDocaError(err, "Failed to set hop limit");
+
+  err = doca_verbs_ah_attr_set_traffic_class(ahAttr_, config_.trafficClass);
+  checkDocaError(err, "Failed to set traffic class");
 }
 
 void MultipeerIbgdaTransport::allocateResources() {
