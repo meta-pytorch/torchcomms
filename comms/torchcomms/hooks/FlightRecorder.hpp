@@ -145,16 +145,15 @@ class DebugInfoWriter {
   static std::atomic<bool> hasWriterRegistered_;
 };
 
-template <typename EventType>
 class FlightRecorder {
  public:
-  static FlightRecorder<EventType>* get() {
+  static FlightRecorder* get() {
     // intentionally leak on exit
     // because this will hold python state that may get destructed
     auto max_entries = env_to_value("TORCHCOMM_FR_BUFFER_SIZE", 2000);
     auto capture_cpp_stack = env_to_value("TORCHCOMM_FR_CPP_STACK", false);
-    static FlightRecorder<EventType>* instance =
-        new FlightRecorder<EventType>(max_entries, capture_cpp_stack);
+    static FlightRecorder* instance =
+        new FlightRecorder(max_entries, capture_cpp_stack);
     return instance;
   }
   FlightRecorder(int64_t max_entries, bool capture_cpp_stack) {
@@ -185,8 +184,8 @@ class FlightRecorder {
     // we borrow pointers to start_ and end_ so we can query the state
     // on reporting. However, once the event is completed, the call
     // to `complete` will clear these.
-    EventType* start_{nullptr};
-    EventType* end_{nullptr};
+    c10::Event* start_{nullptr};
+    c10::Event* end_{nullptr};
 
     // timestamp when the entry was created, likely close to the time the work
     // was 'enqueued'- not necessarily started
@@ -216,8 +215,7 @@ class FlightRecorder {
     c10::SmallVector<int64_t, 8> sizes_{}; // flattened from inputs, outputs
     std::thread::id thread_id_{};
     std::string thread_name_{};
-    bool retired_{false}; // is this work entry no longer in the workMetaList_?
-                          // a retired but not completed event has timed out
+    bool retired_{false}; // a retired but not completed event has timed out
 
     // Returns the traceback of current entry, in string form.
     // Note: `getTraceback` invokes `torch::symbolize`, which may need to
@@ -234,8 +232,8 @@ class FlightRecorder {
       std::string profiling_name,
       const std::vector<at::Tensor>& inputs,
       const std::vector<at::Tensor>& outputs,
-      EventType* start,
-      EventType* end,
+      c10::Event* start,
+      c10::Event* end,
       std::chrono::milliseconds timeout_ms,
       std::shared_ptr<ProcessGroupStatus> pg_status);
 
@@ -401,7 +399,7 @@ class FlightRecorderHook {
   /**
    * Get the underlying FlightRecorder instance.
    */
-  FlightRecorder<c10::Event>* getRecorder() {
+  FlightRecorder* getRecorder() {
     return recorder_;
   }
 
@@ -415,7 +413,7 @@ class FlightRecorderHook {
 
   void onPostHook(const TorchComm::PostHookArgs& args);
 
-  FlightRecorder<c10::Event>* recorder_;
+  FlightRecorder* recorder_;
   bool owns_recorder_{false}; // True when using isolated instance
 
   // Track registered communicators with their handles for unregistration
