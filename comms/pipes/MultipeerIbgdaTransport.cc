@@ -436,9 +436,9 @@ void MultipeerIbgdaTransport::connectQp(
   checkDocaError(err, "Failed to set next state RTS");
   err = doca_verbs_qp_attr_set_sq_psn(qpAttr, 0);
   checkDocaError(err, "Failed to set SQ PSN");
-  err = doca_verbs_qp_attr_set_ack_timeout(qpAttr, 14);
+  err = doca_verbs_qp_attr_set_ack_timeout(qpAttr, config_.timeout);
   checkDocaError(err, "Failed to set ACK timeout");
-  err = doca_verbs_qp_attr_set_retry_cnt(qpAttr, 7);
+  err = doca_verbs_qp_attr_set_retry_cnt(qpAttr, config_.retryCount);
   checkDocaError(err, "Failed to set retry count");
   err = doca_verbs_qp_attr_set_rnr_retry(qpAttr, 1);
   checkDocaError(err, "Failed to set RNR retry");

@@ -62,6 +62,20 @@ struct MultipeerIbgdaTransportConfig {
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
   uint32_t qpDepth{128};
+
+  // InfiniBand Verbs Timeout for QP ACK timeout.
+  // Timeout is computed as 4.096 µs * 2^timeout.
+  // Increasing this value can help on very large networks (e.g., if
+  // ibv_poll_cq returns error 12). See InfiniBand specification Volume 1,
+  // section 12.7.34 (Local Ack Timeout).
+  // Valid values: 1-31. A value of 0 or >= 32 results in infinite timeout.
+  // Default is 20 (similar to NCCL_IB_TIMEOUT).
+  uint8_t timeout{20};
+
+  // InfiniBand retry count for QP transport errors.
+  // See InfiniBand specification Volume 1, section 12.7.38.
+  // Default is 7 (similar to NCCL_IB_RETRY_CNT).
+  uint8_t retryCount{7};
 };
 
 /**
