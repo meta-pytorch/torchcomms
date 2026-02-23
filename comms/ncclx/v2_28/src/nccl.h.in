@@ -909,7 +909,14 @@ ncclResult_t ncclCommDumpAll(std::unordered_map<std::string, std::unordered_map<
 #define NCCL_HAS_COMMS_TRACING_SERVICE_PORT
 ncclResult_t ncclCommsTracingServicePort(int& port);
 
+// NCCL_HAS_DUMP_ALGO_STAT controls whether dumpAlgoStat() is available.
+// By default, it is defined. To disable it (e.g., for adapters which may have
+// different ncclComm layout), compile with -DNCCL_HAS_DUMP_ALGO_STAT=0.
+#if !defined(NCCL_HAS_DUMP_ALGO_STAT)
 #define NCCL_HAS_DUMP_ALGO_STAT
+#elif NCCL_HAS_DUMP_ALGO_STAT == 0
+#undef NCCL_HAS_DUMP_ALGO_STAT
+#endif
 namespace ncclx::colltrace {
 
 // Dump collective algorithm statistics for a communicator.
