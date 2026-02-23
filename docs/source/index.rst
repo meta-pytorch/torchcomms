@@ -33,6 +33,13 @@ Browse the documentation and Examples
         Complete API documentation for all torchcomms classes,
         functions, and backends.
 
+    .. grid-item-card:: 🔗 Hooks
+        :link: hooks
+        :link-type: doc
+
+        Learn how to use hooks to monitor and debug collective
+        operations with FlightRecorderHook.
+
     .. grid-item-card:: 💻 Code Examples
         :link: https://github.com/meta-pytorch/torchcomms/tree/main/comms/torchcomms/examples
 
@@ -107,3 +114,4 @@ Create and manage process groups with ease:
 
    getting_started
    api
+   hooks

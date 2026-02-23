@@ -4,7 +4,7 @@
 
 from datetime import timedelta
 from enum import auto, Enum
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 class RedOpType(Enum):
     SUM = auto()
@@ -30,6 +30,54 @@ class ReduceOp:
     def PREMUL_SUM(factor: Any) -> ReduceOp: ...
     @property
     def type(self) -> RedOpType: ...
+
+class OpName(Enum):
+    """Collective operation name for hooks."""
+
+    send = auto()
+    recv = auto()
+    broadcast = auto()
+    all_reduce = auto()
+    reduce = auto()
+    all_gather = auto()
+    all_gather_v = auto()
+    all_gather_single = auto()
+    reduce_scatter = auto()
+    reduce_scatter_v = auto()
+    reduce_scatter_single = auto()
+    all_to_all_single = auto()
+    all_to_all_v_single = auto()
+    all_to_all = auto()
+    barrier = auto()
+    scatter = auto()
+    gather = auto()
+    split = auto()
+    new_window = auto()
+
+class RemovableHandle:
+    """Handle for removing a registered hook."""
+
+    def remove(self) -> None: ...
+
+class PreHookArgs:
+    """Arguments passed to pre-hook callbacks."""
+
+    @property
+    def name(self) -> OpName: ...
+    @property
+    def async_op(self) -> bool: ...
+    @property
+    def root(self) -> int: ...
+    @property
+    def op_id(self) -> int: ...
+
+class PostHookArgs:
+    """Arguments passed to post-hook callbacks."""
+
+    @property
+    def name(self) -> OpName: ...
+    @property
+    def op_id(self) -> int: ...
 
 class CommOptions:
     abort_process_on_timeout_or_error: bool
@@ -356,6 +404,13 @@ class TorchComm:
     def new_window(self, tensor: Any | None = None) -> TorchCommWindow: ...
     @property
     def mem_allocator(self) -> Any: ...
+    def register_pre_hook(
+        self, callback: Callable[[PreHookArgs], None]
+    ) -> RemovableHandle: ...
+    def register_post_hook(
+        self, callback: Callable[[PostHookArgs], None]
+    ) -> RemovableHandle: ...
+    def register_abort_hook(self, callback: Callable[[], None]) -> RemovableHandle: ...
 
 def new_comm(
     backend: str,
