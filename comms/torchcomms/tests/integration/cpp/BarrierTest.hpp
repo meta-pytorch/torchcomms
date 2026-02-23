@@ -1,34 +1,25 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
+
 #pragma once
 
-#include <ATen/cuda/CUDAContext.h>
-#include <ATen/cuda/CUDAGraph.h>
-#include <c10/cuda/CUDAGuard.h>
 #include <gtest/gtest.h>
+#include <tuple>
+#include "comms/torchcomms/tests/integration/cpp/GraphTestFixtures.hpp"
 #include "comms/torchcomms/tests/integration/cpp/TorchCommTestHelpers.h"
 
-class BarrierTest : public ::testing::Test {
- public:
-  BarrierTest() {}
+using BarrierParams = int;
 
-  // Test function declarations
-  void testSyncBarrier();
-  void testSyncBarrierNoWork();
-  void testAsyncBarrier();
-  void testAsyncBarrierEarlyReset();
-  void testGraphBarrier();
-
+template <typename Fixture>
+class BarrierTest : public Fixture {
  protected:
-  virtual std::unique_ptr<TorchCommTestWrapper> createWrapper();
+  using Fixture::device_type_;
+  using Fixture::num_ranks_;
+  using Fixture::rank_;
+  using Fixture::run;
+  using Fixture::torchcomm_;
 
-  virtual void SetUp() override;
-
-  virtual void TearDown() override;
-
-  std::unique_ptr<TorchCommTestWrapper> wrapper_;
-  std::shared_ptr<torch::comms::TorchComm> torchcomm_;
-  int rank_{};
-  int num_ranks_{};
-
-  static constexpr int num_replays = 4;
+  void testSync();
+  void testSyncNoWork();
+  void testAsync();
+  void testAsyncEarlyReset();
 };
