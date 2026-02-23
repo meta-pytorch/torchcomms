@@ -89,7 +89,7 @@ NCCLXCommsTracingServiceHandler::co_getComms(
       thriftErr.hcaName() = ibErr.hcaName;
       thriftErr.scaleupDomain() = ibErr.scaleupDomain;
       thriftErr.localHostname() = ibErr.localHostname;
-      response.ibErrors()->push_back(std::move(thriftErr));
+      response.ibErrors().ensure().push_back(std::move(thriftErr));
     }
     // Flush after reading so errors are only reported once
     ProcessGlobalErrorsUtil::clearIbCompletionErrors();
