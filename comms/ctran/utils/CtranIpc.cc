@@ -221,6 +221,9 @@ commResult_t ctran::utils::CtranIpcMem::tryLoad(
   if (memType_ == DevMemType::kCumem) {
     FB_COMMCHECK(this->tryLoadCuMem(ptr, len, supported));
   } else if (memType_ == DevMemType::kCudaMalloc) {
+#if defined(__HIP_PLATFORM_AMD__)
+    shouldSupportCudaMalloc = true;
+#endif
     if (!shouldSupportCudaMalloc) {
       supported = false;
       return commSuccess;
