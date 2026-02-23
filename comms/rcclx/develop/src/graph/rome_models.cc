@@ -2061,12 +2061,28 @@ ncclResult_t parseA2a8P(struct ncclTopoSystem* system, struct ncclTopoGraph* gra
     system->useRailOptimizedTrees = false;
     if (romeTopoModels[i].treeRail != nullptr && !rcclParamDisableRailTrees()) {
 
-      // If so, parse the lines in advanced
-      // These lines will be modified appropriately during ncclTopoPostset
-      NCCLCHECK(parseGraph(romeTopoModels[i].treeRail, system, graph, g8, nnets > 1 ? n : NULL, 0));
-      if (graph->nChannels) {
-        system->useRailOptimizedTrees = true;
-        return ncclSuccess;
+      // Rail-optimized trees assume all nodes have the same number of GPUs.
+      // With asymmetric topology (e.g., 8+8+4 GPUs across 3 nodes),
+      // connectRailOptimizedTrees produces inconsistent tree connections
+      // that cause bootstrap exchange deadlocks.  Skip rail-optimized
+      // trees when the topology is not symmetric.
+      int nGpusPerHost = system->nHosts > 0 ? system->nRanks / system->nHosts : 0;
+      bool symmetricTopo = (system->nHosts > 0 &&
+                            system->nRanks % system->nHosts == 0 &&
+                            system->nodes[GPU].count == nGpusPerHost);
+
+      if (!symmetricTopo) {
+        INFO(NCCL_GRAPH, "Skipping rail-optimized trees: asymmetric topology "
+             "(nRanks=%d, nHosts=%d, local GPUs=%d)",
+             system->nRanks, system->nHosts, system->nodes[GPU].count);
+      } else {
+        // If so, parse the lines in advanced
+        // These lines will be modified appropriately during ncclTopoPostset
+        NCCLCHECK(parseGraph(romeTopoModels[i].treeRail, system, graph, g8, nnets > 1 ? n : NULL, 0));
+        if (graph->nChannels) {
+          system->useRailOptimizedTrees = true;
+          return ncclSuccess;
+        }
       }
     }
 
