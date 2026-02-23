@@ -5,7 +5,7 @@
 # file by including `nccl_cvars.h` and use typed CVAR by its name.
 #
 # Developer Notes
-# - Execute `cd ~/fbsource/fbcode && buck2 run comms/utils/cvars:extractcvars` to auto generate cvar code
+# - Execute `cd ~/fbsource/fbcode && NCCL_CVARS_OUTPUT_DIR=comms/utils/cvars buck2 run comms/utils/cvars:extractcvars` to auto generate cvar code
 #
 cvars:
  - name        : NCCL_CVARS_LOG_INFO
