@@ -628,4 +628,175 @@ void testBarrierPeer(
   CUDACHECK_TEST(cudaGetLastError());
 }
 
+// =============================================================================
+// wait_signal_from() Basic Test
+// =============================================================================
+
+__global__ void waitSignalFromPeerKernel(
+    MultiPeerDeviceTransport& transport,
+    int peerRank,
+    int signalIdx,
+    bool isSignaler,
+    int* result) {
+  auto group = make_warp_group();
+
+  if (isSignaler) {
+    // Signal the peer's inbox
+    transport.signal_peer(group, peerRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+  } else {
+    // Wait for signal from the specific peer using wait_signal_from
+    transport.wait_signal_from(group, peerRank, signalIdx, CmpOp::CMP_GE, 1);
+    // Verify read_signal_from also returns the correct value
+    uint64_t val = transport.read_signal_from(peerRank, signalIdx);
+    if (val < 1) {
+      *result = 0;
+      return;
+    }
+  }
+
+  *result = 1;
+}
+
+void testWaitSignalFromPeer(
+    MultiPeerDeviceTransport& transport,
+    int peerRank,
+    int signalIdx,
+    bool isSignaler,
+    int* result) {
+  waitSignalFromPeerKernel<<<1, 32>>>(
+      transport, peerRank, signalIdx, isSignaler, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// wait_signal_from() Multi-Peer Isolation Test
+// =============================================================================
+
+__global__ void waitSignalFromMultiPeerIsolationKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result) {
+  auto group = make_warp_group();
+  int myRank = transport.rank();
+  int nRanks = transport.n_ranks();
+
+  if (myRank == targetRank) {
+    // Wait for signals from all peers, each with value = peerRank + 1
+    for (int r = 0; r < nRanks; ++r) {
+      if (r == myRank) {
+        continue;
+      }
+      uint64_t expectedValue = static_cast<uint64_t>(r + 1);
+      transport.wait_signal_from(
+          group, r, signalIdx, CmpOp::CMP_GE, expectedValue);
+      // Verify isolation: each peer's value is independent
+      uint64_t val = transport.read_signal_from(r, signalIdx);
+      if (val != expectedValue) {
+        *result = 0;
+        return;
+      }
+    }
+  } else {
+    // Signal the target rank with value = myRank + 1 using SIGNAL_SET
+    uint64_t signalValue = static_cast<uint64_t>(myRank + 1);
+    transport.signal_peer(
+        group, targetRank, signalIdx, SignalOp::SIGNAL_SET, signalValue);
+  }
+
+  *result = 1;
+}
+
+void testWaitSignalFromMultiPeerIsolation(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result) {
+  waitSignalFromMultiPeerIsolationKernel<<<1, 32>>>(
+      transport, targetRank, signalIdx, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// wait_signal() and wait_signal_from() Both Work Test
+// =============================================================================
+
+__global__ void waitSignalAndWaitSignalFromBothWorkKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result) {
+  auto group = make_warp_group();
+  int myRank = transport.rank();
+  int nRanks = transport.n_ranks();
+
+  if (myRank == targetRank) {
+    // Wait for accumulated signals from all (nRanks - 1) peers
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
+
+    // Also verify wait_signal_from succeeds for each individual peer
+    for (int r = 0; r < nRanks; ++r) {
+      if (r == myRank) {
+        continue;
+      }
+      transport.wait_signal_from(group, r, signalIdx, CmpOp::CMP_GE, 1);
+    }
+  } else {
+    // Signal the target rank with SIGNAL_ADD, 1
+    transport.signal_peer(
+        group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+  }
+
+  *result = 1;
+}
+
+void testWaitSignalAndWaitSignalFromBothWork(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result) {
+  waitSignalAndWaitSignalFromBothWorkKernel<<<1, 32>>>(
+      transport, targetRank, signalIdx, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
+// =============================================================================
+// Signal/Wait Test (BLOCK Scope - exercises fallback path)
+// =============================================================================
+
+__global__ void signalWaitBlockScopeKernel(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    bool isSignaler,
+    int* result) {
+  auto group = make_block_group(); // Uses SyncScope::BLOCK
+
+  if (isSignaler) {
+    transport.signal_peer(
+        group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    if (threadIdx.x == 0) {
+      *result = 1;
+    }
+  } else {
+    // This exercises the fallback path (non-WARP scope) in wait_signal()
+    transport.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+    if (threadIdx.x == 0) {
+      *result = 1;
+    }
+  }
+}
+
+void testSignalWaitBlockScope(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    bool isSignaler,
+    int* result) {
+  // Launch with 1 block of 128 threads (BLOCK scope = all 128 threads in block)
+  signalWaitBlockScopeKernel<<<1, 128>>>(
+      transport, targetRank, signalIdx, isSignaler, result);
+  CUDACHECK_TEST(cudaGetLastError());
+}
+
 } // namespace comms::pipes::test
