@@ -197,6 +197,12 @@ struct IbCompletionError {
   14: string localHostname;
 }
 
+struct CudaError {
+  1: i64 timestampMs;
+  2: string errorString;
+  3: i32 errorCode;
+}
+
 // NOTE: Keep in sync with commDump.cc
 // The field names must exactly match the json keys.
 // The values themselves are serialized json.
@@ -284,6 +290,7 @@ struct GetCommsResponse {
   5: i64 step;
   6: i64 stepStartTimeNs;
   7: optional list<IbCompletionError> ibErrors;
+  8: optional list<CudaError> cudaErrors;
 }
 
 // Implementors of this service expose tracing information about communications
