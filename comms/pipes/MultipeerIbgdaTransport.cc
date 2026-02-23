@@ -225,11 +225,16 @@ void MultipeerIbgdaTransport::openIbDevice() {
   }
 
   // Determine address type based on link layer
-  // For RoCE (Ethernet), use IPv6 (our hosts use RoCEv2 with IPv6-only)
-  doca_verbs_addr_type addrType =
-      (portAttr.link_layer == ibverbx::IBV_LINK_LAYER_INFINIBAND)
-      ? DOCA_VERBS_ADDR_TYPE_IB_NO_GRH
-      : DOCA_VERBS_ADDR_TYPE_IPv6;
+  // For InfiniBand, always use IB_NO_GRH. For RoCE (Ethernet), use the
+  // configured address family (similar to NCCL_IB_ADDR_FAMILY).
+  doca_verbs_addr_type addrType;
+  if (portAttr.link_layer == ibverbx::IBV_LINK_LAYER_INFINIBAND) {
+    addrType = DOCA_VERBS_ADDR_TYPE_IB_NO_GRH;
+  } else {
+    addrType = (config_.addressFamily == AddressFamily::IPV4)
+        ? DOCA_VERBS_ADDR_TYPE_IPv4
+        : DOCA_VERBS_ADDR_TYPE_IPv6;
+  }
 
   // Use reinterpret_cast for DOCA API which expects ::ibv_context*
   auto* rawContext = reinterpret_cast<::ibv_context*>(ibvDevice_->context());
