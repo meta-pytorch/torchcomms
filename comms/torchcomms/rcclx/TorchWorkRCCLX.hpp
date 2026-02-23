@@ -44,12 +44,10 @@ class TorchWorkRCCLX : public TorchWork {
 
   // Override virtual functions from TorchWork
   void wait() override;
-
-  // Check the status of the work object
-  WorkStatus checkStatus();
   std::chrono::milliseconds getTimeout() const override {
     return timeout_ms_;
   }
+  std::optional<float> getDuration() const override;
 
   // Test-only accessors to verify tensor storage behavior
   // Returns true if any tensors are stored in this work object

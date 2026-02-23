@@ -6,6 +6,7 @@
 #include <chrono>
 #include <functional>
 #include <future>
+#include <optional>
 
 namespace torch::comms {
 
@@ -49,6 +50,10 @@ class TorchWork : public c10::intrusive_ptr_target {
   virtual std::chrono::milliseconds getTimeout() const {
     return std::chrono::milliseconds::max();
   }
+
+  virtual std::optional<float> getDuration() const {
+    return std::nullopt;
+  };
 
   // Disable copy and move semantics
   TorchWork(const TorchWork&) = delete;
