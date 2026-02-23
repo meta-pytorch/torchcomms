@@ -25,6 +25,15 @@ struct MultipeerIbgdaDeviceTransport;
 namespace comms::pipes {
 
 /**
+ * IP address family for RoCE GID selection.
+ * Similar to NCCL_IB_ADDR_FAMILY.
+ */
+enum class AddressFamily {
+  IPV4, // IPv4
+  IPV6, // IPv6
+};
+
+/**
  * Configuration for MultipeerIbgdaTransport.
  *
  * IMPORTANT: All ranks must use identical configuration values.
@@ -36,6 +45,12 @@ struct MultipeerIbgdaTransportConfig {
   // Override GID index for RoCE.
   // If not set, auto-discovers a valid RoCEv2 GID.
   std::optional<int> gidIndex;
+
+  // IP address family for the InfiniBand GID (similar to NCCL_IB_ADDR_FAMILY).
+  // Used to determine the address type for RoCE connections when gidIndex is
+  // not explicitly set. Has no effect on InfiniBand (non-RoCE) links.
+  // Default is IPV6 (IPv6).
+  AddressFamily addressFamily{AddressFamily::IPV6};
 
   // NOTE: Data buffers are NOT managed by the transport.
   // Users must allocate their own buffers and call registerBuffer() +
