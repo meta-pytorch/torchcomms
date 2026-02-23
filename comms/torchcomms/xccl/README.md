@@ -53,12 +53,12 @@ def main():
 
     # Create a tensor with rank-specific data
     tensor = torch.full(
-        (1024,),
+        (4,),
         float(rank + 1),
         dtype=torch.float32,
         device=target_device
 
-    print(f"Rank {rank}: Before AllReduce: {tensor[0].item()}")
+    print(f"Rank {rank}: Before AllReduce: {tensor}")
 
     # Perform synchronous AllReduce (sum across all ranks)
     torchcomm.all_reduce(tensor, ReduceOp.SUM, async_op=False)
@@ -66,7 +66,7 @@ def main():
     # Synchronize device stream
     torch.accelerator.current_stream().synchronize()
 
-    print(f"Rank {rank}: After AllReduce: {tensor[0].item()}")
+    print(f"Rank {rank}: After AllReduce: {tensor}")
 
     # Cleanup
     torchcomm.finalize()
