@@ -48,11 +48,14 @@ void testDeviceWindowSignalConstruction(
     int signalCount,
     int* results) {
   int nPeers = nRanks - 1;
-  meta::comms::DeviceBuffer localInboxBuf(signalCount * sizeof(SignalState));
+  // Per-peer inbox model: localInbox has nPeers * signalCount entries
+  std::size_t localInboxSlots = static_cast<std::size_t>(nPeers) * signalCount;
+  meta::comms::DeviceBuffer localInboxBuf(
+      localInboxSlots * sizeof(SignalState));
   meta::comms::DeviceBuffer peerSignalsBuf(
       nPeers * sizeof(DeviceSpan<SignalState>));
 
-  auto localInbox = makeZeroedSpan<SignalState>(localInboxBuf, signalCount);
+  auto localInbox = makeZeroedSpan<SignalState>(localInboxBuf, localInboxSlots);
   auto peerSignals =
       makeZeroedSpan<DeviceSpan<SignalState>>(peerSignalsBuf, nPeers);
 

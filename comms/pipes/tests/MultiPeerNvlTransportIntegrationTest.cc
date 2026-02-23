@@ -1715,6 +1715,199 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
       isWriter);
 }
 
+// =============================================================================
+// wait_signal_from() Basic Per-Peer Signal/Wait Test
+// =============================================================================
+
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromPeer) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDefaultDataBufferSize,
+      .chunkSize = kDefaultChunkSize,
+      .pipelineDepth = kDefaultPipelineDepth,
+  };
+
+  auto [transport, wm, device] = createTransport(config);
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+  constexpr int kSignalIdx = 0;
+
+  DeviceBuffer resultBuffer(sizeof(int));
+  auto result_d = static_cast<int*>(resultBuffer.get());
+  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Rank 0 signals, Rank 1 waits using wait_signal_from
+  bool isSignaler = (globalRank == 0);
+  test::testWaitSignalFromPeer(
+      device, peerRank, kSignalIdx, isSignaler, result_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "wait_signal_from() failed on rank " << globalRank;
+
+  XLOGF(
+      INFO,
+      "Rank {}: WaitSignalFromPeer test completed (isSignaler={})",
+      globalRank,
+      isSignaler);
+}
+
+// =============================================================================
+// wait_signal_from() Multi-Peer Isolation Test
+// =============================================================================
+
+TEST_F(
+    MultiPeerNvlTransportIntegrationTestFixture,
+    WaitSignalFromMultiPeerIsolation) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires at least 2 ranks, got " << numRanks;
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDefaultDataBufferSize,
+      .chunkSize = kDefaultChunkSize,
+      .pipelineDepth = kDefaultPipelineDepth,
+  };
+
+  auto [transport, wm, device] = createTransport(config);
+
+  constexpr int kTargetRank = 0;
+  constexpr int kSignalIdx = 0;
+
+  DeviceBuffer resultBuffer(sizeof(int));
+  auto result_d = static_cast<int*>(resultBuffer.get());
+  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // All peers signal rank 0 with different values, rank 0 verifies isolation
+  test::testWaitSignalFromMultiPeerIsolation(
+      device, kTargetRank, kSignalIdx, result_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "WaitSignalFromMultiPeerIsolation failed on rank "
+                         << globalRank;
+
+  XLOGF(
+      INFO,
+      "Rank {}: WaitSignalFromMultiPeerIsolation test completed (targetRank={})",
+      globalRank,
+      kTargetRank);
+}
+
+// =============================================================================
+// wait_signal() and wait_signal_from() Both Work Test
+// =============================================================================
+
+TEST_F(
+    MultiPeerNvlTransportIntegrationTestFixture,
+    WaitSignalAndWaitSignalFromBothWork) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires at least 2 ranks, got " << numRanks;
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDefaultDataBufferSize,
+      .chunkSize = kDefaultChunkSize,
+      .pipelineDepth = kDefaultPipelineDepth,
+  };
+
+  auto [transport, wm, device] = createTransport(config);
+
+  constexpr int kTargetRank = 0;
+  constexpr int kSignalIdx = 0;
+
+  DeviceBuffer resultBuffer(sizeof(int));
+  auto result_d = static_cast<int*>(resultBuffer.get());
+  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // All peers signal rank 0, rank 0 verifies both accumulated and per-peer
+  test::testWaitSignalAndWaitSignalFromBothWork(
+      device, kTargetRank, kSignalIdx, result_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1)
+      << "WaitSignalAndWaitSignalFromBothWork failed on rank " << globalRank;
+
+  XLOGF(
+      INFO,
+      "Rank {}: WaitSignalAndWaitSignalFromBothWork test completed (targetRank={})",
+      globalRank,
+      kTargetRank);
+}
+
+// =============================================================================
+// Multi-GPU Signal/Wait Test (BLOCK Scope - fallback path coverage)
+// =============================================================================
+
+TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWaitBlockScope) {
+  if (numRanks != 2) {
+    GTEST_SKIP() << "Requires exactly 2 ranks, got " << numRanks;
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDefaultDataBufferSize,
+      .chunkSize = kDefaultChunkSize,
+      .pipelineDepth = kDefaultPipelineDepth,
+  };
+
+  auto [transport, wm, device] = createTransport(config);
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  DeviceBuffer resultBuffer(sizeof(int));
+  auto result_d = static_cast<int*>(resultBuffer.get());
+  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(int)));
+
+  // Rank 0 signals, Rank 1 waits
+  bool isSignaler = (globalRank == 0);
+
+  // Synchronize before starting
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // Uses BLOCK scope - exercises non-WARP fallback path in wait_signal()
+  test::testSignalWaitBlockScope(device, peerRank, 0, isSignaler, result_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  int result_h = 0;
+  CUDACHECK_TEST(
+      cudaMemcpy(&result_h, result_d, sizeof(int), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, 1) << "Signal/Wait (BLOCK scope) operation failed";
+
+  XLOGF(
+      INFO,
+      "Rank {}: Signal/Wait (BLOCK scope) test completed (isSignaler={})",
+      globalRank,
+      isSignaler);
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {
