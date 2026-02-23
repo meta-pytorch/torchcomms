@@ -216,7 +216,8 @@ TorchWorkNCCLX::WorkStatus TorchWorkNCCLX::checkStatus() {
 
     // Check if the operation has timed out
     if (elapsed_milliseconds > timeout_ms_) {
-      // Operation has timed out
+      TC_LOG(ERROR, comm_.get()) << "Operation timed out after "
+                                 << elapsed_milliseconds.count() << " ms";
       setStatus(WorkStatus::TIMEDOUT);
     }
   } else {
