@@ -96,6 +96,23 @@ struct MultipeerIbgdaTransportConfig {
   // See InfiniBand specification Volume 1 or vendor documentation.
   // Default is 224.
   uint8_t trafficClass{224};
+
+  // InfiniBand Service Level (similar to NCCL_IB_SL).
+  // See InfiniBand specification Volume 1, section 4.3.1.
+  // Default is 0.
+  uint8_t serviceLevel{0};
+
+  // Minimum RNR NAK Timer field value (similar to ibv_qp_attr.min_rnr_timer).
+  // Controls the delay before a receiver sends a RNR NAK.
+  // See InfiniBand specification Volume 1, Table 46.
+  // Default is 12 (matching NCCL IbvQpUtils).
+  uint8_t minRnrTimer{12};
+
+  // RNR retry count (similar to ibv_qp_attr.rnr_retry).
+  // Number of times to retry after receiving an RNR NAK.
+  // 7 means infinite retry.
+  // Default is 7 (matching NCCL IbvQpUtils).
+  uint8_t rnrRetry{7};
 };
 
 /**
@@ -118,8 +135,8 @@ struct IbgdaTransportExchInfo {
   // Local Identifier (for IB, not used in RoCE)
   uint16_t lid{0};
 
-  // Path MTU (4096 = IBV_MTU_4096)
-  uint32_t mtu{4096};
+  // Port active MTU. Used to negotiate path MTU: min(local, remote).
+  enum ibv_mtu mtu { IBV_MTU_4096 };
 };
 
 /**
@@ -153,6 +170,9 @@ struct IbgdaTransportExchInfoAll {
   uint16_t lid{0};
   uint64_t signalAddr{0};
   HostRKey signalRkey{0};
+
+  // Port active MTU.
+  enum ibv_mtu mtu { IBV_MTU_4096 };
 
   // Per-target-rank QPNs
   // qpnForRank[j] = QPN that this rank uses to connect to rank j
@@ -395,6 +415,7 @@ class MultipeerIbgdaTransport {
   std::string gpuPciBusId_;
   std::string nicDeviceName_;
   int gidIndex_{3}; // Default GID index
+  enum ibv_mtu localMtu_ { IBV_MTU_4096 };
 
   // Per-peer device transports (GPU accessible)
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
