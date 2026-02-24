@@ -95,6 +95,18 @@ NCCLXCommsTracingServiceHandler::co_getComms(
     ProcessGlobalErrorsUtil::clearIbCompletionErrors();
   }
 
+  {
+    auto globalState = ProcessGlobalErrorsUtil::getAllState();
+    for (const auto& cudaErr : globalState.cudaErrors) {
+      comms::CudaError thriftErr;
+      thriftErr.timestampMs() = cudaErr.timestampMs.count();
+      thriftErr.errorString() = cudaErr.errorString;
+      thriftErr.errorCode() = cudaErr.errorCode;
+      response.cudaErrors().ensure().push_back(std::move(thriftErr));
+    }
+    ProcessGlobalErrorsUtil::clearCudaErrors();
+  }
+
   co_return std::make_unique<comms::GetCommsResponse>(std::move(response));
 }
 

@@ -44,6 +44,12 @@ class ProcessGlobalErrorsUtil {
     std::string localHostname;
   };
 
+  struct CudaError {
+    std::chrono::milliseconds timestampMs{};
+    std::string errorString; // from cudaGetErrorString(err)
+    int errorCode{0}; // the raw cudaError_t value
+  };
+
   struct State {
     // Map of device name -> port -> error message
     std::unordered_map<std::string, std::unordered_map<int, NicError>> badNics;
@@ -51,6 +57,7 @@ class ProcessGlobalErrorsUtil {
     std::deque<IbCompletionError> ibCompletionErrors;
     std::string scaleupDomain;
     std::string hostname;
+    std::deque<CudaError> cudaErrors;
   };
 
   // Report an error on a NIC. If errorMessage is std::nullopt, then
@@ -77,6 +84,13 @@ class ProcessGlobalErrorsUtil {
 
   // Get cached scaleup domain (reads /etc/fbwhoami on first call)
   static std::string getScaleupDomain();
+
+  // Report a CUDA error
+  static void addCudaError(CudaError error);
+
+  // Clear all stored CUDA errors (called after reporting to avoid
+  // duplicate reporting)
+  static void clearCudaErrors();
 
   static State getAllState();
 };
