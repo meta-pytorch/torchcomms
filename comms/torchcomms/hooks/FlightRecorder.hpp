@@ -141,7 +141,9 @@ class DebugInfoWriter {
   bool enable_dynamic_filename_;
 
  private:
+  // NOLINTNEXTLINE(facebook-hte-NonPodStaticDeclaration)
   static std::unique_ptr<DebugInfoWriter> writer_;
+  // NOLINTNEXTLINE(facebook-hte-NonPodStaticDeclaration)
   static std::atomic<bool> hasWriterRegistered_;
 };
 
@@ -152,6 +154,7 @@ class FlightRecorder {
     // because this will hold python state that may get destructed
     auto max_entries = env_to_value("TORCHCOMM_FR_BUFFER_SIZE", 2000);
     auto capture_cpp_stack = env_to_value("TORCHCOMM_FR_CPP_STACK", false);
+    // NOLINTNEXTLINE(facebook-hte-InlinedStaticLocalVariableWarning)
     static FlightRecorder* instance =
         new FlightRecorder(max_entries, capture_cpp_stack);
     return instance;

@@ -80,6 +80,7 @@ class CachingAllocatorHook {
   }
 
   inline static std::unique_ptr<CachingAllocatorHookImpl> instance_ = nullptr;
+  // NOLINTNEXTLINE(facebook-hte-std::once_flag)
   inline static std::once_flag init_flag_;
 };
 
