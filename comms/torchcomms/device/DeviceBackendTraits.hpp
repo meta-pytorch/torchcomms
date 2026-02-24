@@ -17,7 +17,7 @@
 #include <memory>
 
 #include <nccl.h> // @manual=//comms/ncclx:nccl
-#include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl_device_api
+#include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl
 
 // Forward declarations
 namespace torch::comms {
