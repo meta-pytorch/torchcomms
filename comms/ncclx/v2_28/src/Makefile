@@ -119,39 +119,39 @@ ifeq ($(ENABLE_TCPDM),1)
 CXXFLAGS    += -DTCP_DEVMEM_AGENT
 THRIFT      ?= thrift1
 DEVMEM_DIR  := $(BASE_DIR)/comms/tcp_devmem
-THRIFT_FILE := $(DEVMEM_DIR)/devmgr/devmgr.thrift
-THRIFT_H    := $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_client.h
+THRIFT_FILE := $(DEVMEM_DIR)/devmgr/if/devmgr.thrift
+THRIFT_H    := $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_client.h
 
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgrAsyncClient.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_binary.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_compact.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_constants.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_data.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_metadata.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_types.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_types_binary.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_types_compact.cpp
-LIBSRCFILES += $(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_types_serialization.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgrAsyncClient.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr_processmap_binary.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr_processmap_compact.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_constants.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_data.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_metadata.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_binary.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_compact.cpp
+LIBSRCFILES += $(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_serialization.cpp
 
 $(THRIFT_H): $(THRIFT_FILE)
 	@printf "Generating  %-35s > %s\n" $(THRIFT_FILE) $(DEVMEM_DIR)/devmgr
-	$(THRIFT) --gen mstch_cpp2:include_prefix=$(DEVMEM_DIR)/devmgr -o $(DEVMEM_DIR)/devmgr $(THRIFT_FILE)
+	$(THRIFT) --gen mstch_cpp2:include_prefix=$(DEVMEM_DIR)/devmgr/if -o $(DEVMEM_DIR)/devmgr/if $(THRIFT_FILE)
 
 $(DEVMEM_DIR)/devmgr/devmgr_client.cc: $(THRIFT_H)
 $(DEVMEM_DIR)/transport.cc: $(THRIFT_H)
 
-$(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgrAsyncClient.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_binary.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/DevMgr_processmap_compact.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_constants.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_data.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_metadata.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_types.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_types_binary.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_types_compact.cpp: $(THRIFT_H)
-$(DEVMEM_DIR)/devmgr/gen-cpp2/devmgr_types_serialization.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgrAsyncClient.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr_processmap_binary.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/DevMgr_processmap_compact.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_constants.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_data.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_metadata.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_binary.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_compact.cpp: $(THRIFT_H)
+$(DEVMEM_DIR)/devmgr/if/gen-cpp2/devmgr_types_serialization.cpp: $(THRIFT_H)
 
 ## Include TCP Devmem transport files and dependencies
 LIBSRCFILES += $(wildcard ${BASE_DIR}/comms/ctran/backends/tcpdevmem/*.cc)
