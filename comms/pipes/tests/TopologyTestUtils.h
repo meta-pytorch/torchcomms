@@ -29,4 +29,20 @@ inline RankTopologyInfo make_rank_info(
   return info;
 }
 
+/// Helper: build a RankTopologyInfo with MNNVL fabric info.
+/// The 128-bit clusterUuid is set by writing `uuidVal` into both 64-bit halves.
+inline RankTopologyInfo make_mnnvl_rank_info(
+    const char* hostname,
+    int cudaDevice,
+    int64_t uuidVal,
+    unsigned int cliqueId) {
+  RankTopologyInfo info = make_rank_info(hostname, cudaDevice);
+  info.fabricInfo.available = true;
+  std::memcpy(info.fabricInfo.clusterUuid, &uuidVal, sizeof(uuidVal));
+  std::memcpy(
+      info.fabricInfo.clusterUuid + sizeof(uuidVal), &uuidVal, sizeof(uuidVal));
+  info.fabricInfo.cliqueId = cliqueId;
+  return info;
+}
+
 } // namespace comms::pipes::tests

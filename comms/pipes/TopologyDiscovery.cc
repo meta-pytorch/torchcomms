@@ -6,11 +6,15 @@
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
+#include <iomanip>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 
 #include <unistd.h>
 
 #include <cuda_runtime.h>
+#include <glog/logging.h>
 
 #include "comms/pipes/NvmlFabricInfo.h"
 
@@ -27,6 +31,18 @@ namespace {
           __FILE__ + ":" + std::to_string(__LINE__));                      \
     }                                                                      \
   } while (0)
+
+/// Format a 16-byte cluster UUID as "lower64.upper64" hex, matching NCCL's
+/// log format.
+std::string formatUuid(const char uuid[NvmlFabricInfo::kUuidLen]) {
+  uint64_t lo = 0;
+  uint64_t hi = 0;
+  std::memcpy(&lo, uuid, sizeof(lo));
+  std::memcpy(&hi, uuid + sizeof(lo), sizeof(hi));
+  std::ostringstream os;
+  os << std::hex << lo << "." << hi;
+  return os.str();
+}
 
 /// Default LocalInfoFn: gathers hostname, CUDA PCI bus ID, and NVML fabric
 /// info from real hardware.
@@ -69,7 +85,8 @@ TopologyDiscovery::TopologyDiscovery(
 TopologyResult TopologyDiscovery::classify(
     int myRank,
     int nRanks,
-    std::vector<RankTopologyInfo>& allInfo) {
+    std::vector<RankTopologyInfo>& allInfo,
+    const TopologyConfig& topoConfig) {
   TopologyResult result;
   if (myRank < 0 || myRank >= static_cast<int>(allInfo.size())) {
     throw std::runtime_error(
@@ -78,6 +95,56 @@ TopologyResult TopologyDiscovery::classify(
   }
   auto& myInfo = allInfo[myRank];
   const auto& peerAccessFn = peerAccessFn_;
+
+  // Handle MnnvlMode (following NCCL's NCCL_MNNVL_ENABLE semantics).
+  if (topoConfig.mnnvlMode == MnnvlMode::kDisabled) {
+    if (myInfo.fabricInfo.available) {
+      LOG(INFO) << "TopologyDiscovery: rank " << myRank
+                << " MNNVL disabled by config (MnnvlMode::kDisabled),"
+                << " ignoring available fabric info";
+    }
+    myInfo.fabricInfo.available = false;
+  } else if (topoConfig.mnnvlMode == MnnvlMode::kEnabled) {
+    if (!myInfo.fabricInfo.available) {
+      throw std::runtime_error(
+          "TopologyDiscovery: MnnvlMode::kEnabled but MNNVL fabric info is"
+          " not available on rank " +
+          std::to_string(myRank) +
+          ". Ensure the system supports Multi-Node NVLink and the Fabric"
+          " Manager is running.");
+    }
+  }
+  // MnnvlMode::kAuto — use fabric info if available, no error if not.
+
+  // Apply MNNVL overrides (following NCCL's NCCL_MNNVL_UUID and
+  // NCCL_MNNVL_CLIQUE_ID semantics). Only take effect when fabric info is
+  // available — on non-MNNVL hardware (H100 and earlier), these fields are
+  // irrelevant since NVLink connectivity is determined by same-host +
+  // cudaDeviceCanAccessPeer.
+  if (myInfo.fabricInfo.available) {
+    if (topoConfig.mnnvlUuid.has_value()) {
+      std::string oldUuid = formatUuid(myInfo.fabricInfo.clusterUuid);
+      int64_t uuid = topoConfig.mnnvlUuid.value();
+      static_assert(
+          sizeof(myInfo.fabricInfo.clusterUuid) >= 2 * sizeof(uuid),
+          "clusterUuid buffer must be at least 16 bytes");
+      std::memcpy(myInfo.fabricInfo.clusterUuid, &uuid, sizeof(uuid));
+      std::memcpy(
+          myInfo.fabricInfo.clusterUuid + sizeof(uuid), &uuid, sizeof(uuid));
+      LOG(INFO) << "TopologyDiscovery: rank " << myRank
+                << " overriding MNNVL cluster UUID from " << oldUuid << " to "
+                << formatUuid(myInfo.fabricInfo.clusterUuid);
+    }
+    if (topoConfig.mnnvlCliqueId.has_value()) {
+      unsigned int oldCliqueId = myInfo.fabricInfo.cliqueId;
+      myInfo.fabricInfo.cliqueId =
+          static_cast<unsigned int>(topoConfig.mnnvlCliqueId.value());
+      LOG(INFO) << "TopologyDiscovery: rank " << myRank
+                << " overriding MNNVL clique ID from 0x" << std::hex
+                << oldCliqueId << " to 0x" << myInfo.fabricInfo.cliqueId
+                << std::dec;
+    }
+  }
 
   std::vector<int> nvlGroupGlobalRanks;
   nvlGroupGlobalRanks.push_back(myRank);
@@ -140,7 +207,8 @@ TopologyResult TopologyDiscovery::discover(
     int myRank,
     int nRanks,
     int deviceId,
-    ctran::bootstrap::IBootstrap& bootstrap) {
+    ctran::bootstrap::IBootstrap& bootstrap,
+    const TopologyConfig& topoConfig) {
   std::vector<RankTopologyInfo> allInfo(nRanks);
 
   allInfo[myRank] = localInfoFn_(deviceId);
@@ -148,7 +216,7 @@ TopologyResult TopologyDiscovery::discover(
   bootstrap.allGather(allInfo.data(), sizeof(RankTopologyInfo), myRank, nRanks)
       .get();
 
-  return classify(myRank, nRanks, allInfo);
+  return classify(myRank, nRanks, allInfo, topoConfig);
 }
 
 } // namespace comms::pipes

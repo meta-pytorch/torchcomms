@@ -41,7 +41,8 @@ MultiPeerTransport::MultiPeerTransport(
       deviceId_(deviceId),
       bootstrap_(std::move(bootstrap)) {
   TopologyDiscovery topoDiscovery;
-  auto topo = topoDiscovery.discover(myRank_, nRanks_, deviceId_, *bootstrap_);
+  auto topo = topoDiscovery.discover(
+      myRank_, nRanks_, deviceId_, *bootstrap_, config.topoConfig);
   nvlPeerRanks_ = std::move(topo.nvlPeerRanks);
   globalToNvlLocal_ = std::move(topo.globalToNvlLocal);
 

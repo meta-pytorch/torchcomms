@@ -160,6 +160,188 @@ TEST(TopologyDiscoveryTest, DiscoverSingleRank) {
   EXPECT_EQ(result.globalToNvlLocal.at(0), 0);
 }
 
+// =============================================================================
+// MnnvlMode tests
+// =============================================================================
+
+// MnnvlMode::kDisabled suppresses fabric info, peers found via Tier 2.
+TEST(TopologyDiscoveryTest, MnnvlModeDisabled) {
+  constexpr const char* kHostname = "test-host-001";
+
+  constexpr int nRanks = 2;
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+  allInfo[0] = make_rank_info(kHostname, 0);
+  allInfo[1] = make_rank_info(kHostname, 1);
+
+  testing::MockBootstrap bootstrap;
+  expect_prefilled_all_gather(bootstrap, allInfo);
+
+  PeerAccessFn alwaysAccess = [](int, int) { return true; };
+  TopologyDiscovery topo(alwaysAccess, make_simple_local_info_fn(allInfo[0]));
+  TopologyConfig config{.mnnvlMode = MnnvlMode::kDisabled};
+  auto result = topo.discover(
+      /*myRank=*/0, nRanks, /*deviceId=*/0, bootstrap, config);
+
+  EXPECT_FALSE(result.fabricAvailable);
+  // Same-host peers still detected via Tier 2.
+  EXPECT_EQ(static_cast<int>(result.nvlPeerRanks.size()), 1);
+}
+
+// MnnvlMode::kEnabled throws when fabric info is not available.
+TEST(TopologyDiscoveryTest, MnnvlModeEnabledThrowsOnNonMnnvl) {
+  constexpr const char* kHostname = "test-host-001";
+
+  constexpr int nRanks = 1;
+  // Fabric info NOT available.
+  auto localInfo = make_rank_info(kHostname, 0);
+
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+  allInfo[0] = localInfo;
+
+  testing::MockBootstrap bootstrap;
+  expect_prefilled_all_gather(bootstrap, allInfo);
+
+  TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
+  TopologyConfig config{.mnnvlMode = MnnvlMode::kEnabled};
+  EXPECT_THROW(
+      topo.discover(/*myRank=*/0, nRanks, /*deviceId=*/0, bootstrap, config),
+      std::runtime_error);
+}
+
+// MnnvlMode::kEnabled succeeds when fabric info is available (mocked).
+TEST(TopologyDiscoveryTest, MnnvlModeEnabledSucceedsOnMnnvl) {
+  constexpr const char* kHostname = "test-host-001";
+  constexpr int64_t kUuid = 0xAAAABBBBCCCCDDDD;
+
+  constexpr int nRanks = 1;
+  auto localInfo = make_mnnvl_rank_info(kHostname, 0, kUuid, 1);
+
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+  allInfo[0] = localInfo;
+
+  testing::MockBootstrap bootstrap;
+  expect_prefilled_all_gather(bootstrap, allInfo);
+
+  TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
+  TopologyConfig config{.mnnvlMode = MnnvlMode::kEnabled};
+  auto result =
+      topo.discover(/*myRank=*/0, nRanks, /*deviceId=*/0, bootstrap, config);
+
+  EXPECT_TRUE(result.fabricAvailable);
+}
+
+// MnnvlMode::kAuto produces the same result as default config.
+TEST(TopologyDiscoveryTest, MnnvlModeAutoMatchesDefault) {
+  constexpr const char* kHostname = "test-host-001";
+
+  constexpr int nRanks = 2;
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+  allInfo[0] = make_rank_info(kHostname, 0);
+  allInfo[1] = make_rank_info(kHostname, 1);
+
+  PeerAccessFn alwaysAccess = [](int, int) { return true; };
+  auto localInfoFn = make_simple_local_info_fn(allInfo[0]);
+
+  testing::MockBootstrap bootstrap1;
+  expect_prefilled_all_gather(bootstrap1, allInfo);
+  TopologyDiscovery topo1(alwaysAccess, localInfoFn);
+  auto defaultResult =
+      topo1.discover(/*myRank=*/0, nRanks, /*deviceId=*/0, bootstrap1);
+
+  testing::MockBootstrap bootstrap2;
+  expect_prefilled_all_gather(bootstrap2, allInfo);
+  TopologyDiscovery topo2(alwaysAccess, localInfoFn);
+  TopologyConfig config{.mnnvlMode = MnnvlMode::kAuto};
+  auto autoResult =
+      topo2.discover(/*myRank=*/0, nRanks, /*deviceId=*/0, bootstrap2, config);
+
+  EXPECT_EQ(defaultResult.nvlPeerRanks, autoResult.nvlPeerRanks);
+  EXPECT_EQ(defaultResult.fabricAvailable, autoResult.fabricAvailable);
+}
+
+// =============================================================================
+// MNNVL override tests
+// =============================================================================
+
+// Verify clique ID override is reflected with mocked MNNVL fabric info.
+TEST(TopologyDiscoveryTest, CliqueIdOverride) {
+  constexpr const char* kHostname = "test-host-001";
+  constexpr int64_t kUuid = 0xAAAABBBBCCCCDDDD;
+
+  constexpr int nRanks = 1;
+  constexpr int kOverrideCliqueId = 42;
+  auto localInfo = make_mnnvl_rank_info(kHostname, 0, kUuid, 1);
+
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+  allInfo[0] = localInfo;
+
+  testing::MockBootstrap bootstrap;
+  expect_prefilled_all_gather(bootstrap, allInfo);
+
+  TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
+  TopologyConfig config{.mnnvlCliqueId = kOverrideCliqueId};
+  auto result =
+      topo.discover(/*myRank=*/0, nRanks, /*deviceId=*/0, bootstrap, config);
+
+  EXPECT_TRUE(result.fabricAvailable);
+  EXPECT_EQ(result.cliqueId, static_cast<unsigned int>(kOverrideCliqueId));
+}
+
+// Verify UUID override is reflected with mocked MNNVL fabric info.
+TEST(TopologyDiscoveryTest, UuidOverride) {
+  constexpr const char* kHostname = "test-host-001";
+  constexpr int64_t kOrigUuid = 0xAAAABBBBCCCCDDDD;
+
+  constexpr int nRanks = 1;
+  constexpr int64_t kOverrideUuid = 0xDEADBEEFCAFEBABE;
+  auto localInfo = make_mnnvl_rank_info(kHostname, 0, kOrigUuid, 1);
+
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+  allInfo[0] = localInfo;
+
+  testing::MockBootstrap bootstrap;
+  expect_prefilled_all_gather(bootstrap, allInfo);
+
+  TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
+  TopologyConfig config{.mnnvlUuid = kOverrideUuid};
+  auto result =
+      topo.discover(/*myRank=*/0, nRanks, /*deviceId=*/0, bootstrap, config);
+
+  EXPECT_TRUE(result.fabricAvailable);
+  int64_t lo = 0;
+  int64_t hi = 0;
+  std::memcpy(&lo, result.clusterUuid, sizeof(lo));
+  std::memcpy(&hi, result.clusterUuid + sizeof(lo), sizeof(hi));
+  EXPECT_EQ(lo, kOverrideUuid);
+  EXPECT_EQ(hi, kOverrideUuid);
+}
+
+// Verify kDisabled prevents overrides from taking effect.
+TEST(TopologyDiscoveryTest, DisabledModePreventsOverrides) {
+  constexpr const char* kHostname = "test-host-001";
+
+  constexpr int nRanks = 1;
+  auto localInfo = make_rank_info(kHostname, 0);
+
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+  allInfo[0] = localInfo;
+
+  testing::MockBootstrap bootstrap;
+  expect_prefilled_all_gather(bootstrap, allInfo);
+
+  TopologyDiscovery topo(PeerAccessFn{}, make_simple_local_info_fn(localInfo));
+  TopologyConfig config{
+      .mnnvlMode = MnnvlMode::kDisabled,
+      .mnnvlUuid = 0xFFFF,
+      .mnnvlCliqueId = 999,
+  };
+  auto result =
+      topo.discover(/*myRank=*/0, nRanks, /*deviceId=*/0, bootstrap, config);
+
+  EXPECT_FALSE(result.fabricAvailable);
+  EXPECT_EQ(result.cliqueId, 0u);
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {
