@@ -160,7 +160,7 @@ void AllToAllvSingleTest<Fixture>::testMultiDimTensor(
                            << " dtype=" << getDtypeName(dtype));
 
   auto split_sizes = computeSplitSizes(pattern, count);
-  std::vector<uint64_t> input_split_sizes = split_sizes.first;
+  const auto& input_split_sizes = split_sizes.first;
   std::vector<uint64_t> output_split_sizes = split_sizes.second;
 
   at::Tensor input = createInputTensor(input_split_sizes, dtype);
