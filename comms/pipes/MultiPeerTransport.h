@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -24,6 +25,10 @@ struct MultiPeerDeviceHandle;
 struct MultiPeerTransportConfig {
   MultiPeerNvlTransportConfig nvlConfig;
   MultipeerIbgdaTransportConfig ibgdaConfig;
+
+  // MNNVL topology overrides for UUID and clique ID.
+  // See TopologyConfig for field-level documentation.
+  TopologyConfig topoConfig;
 };
 
 /**
