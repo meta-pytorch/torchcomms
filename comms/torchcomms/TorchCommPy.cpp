@@ -1524,6 +1524,111 @@ Example:
           py::arg("tensor") = std::nullopt,
           py::call_guard<py::gil_scoped_release>())
 
+      // Persistent AllGather operations
+      .def(
+          "all_gather_p_init",
+          [](TorchComm& self,
+             at::Tensor& output,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            AllGatherPInitOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.all_gather_p_init(output, opts);
+          },
+          R"(
+Initialize a persistent AllGather operation.
+
+This is a SM free collective operation where the memory is pre-registered and uses 
+Copy Engine or DMA to move data from one rank to the other.
+
+Args:
+    output: Pre-allocated output tensor of size (world_size * input_size).
+    hints: Dictionary of string hints for backend-specific options.
+    timeout: Timeout for the operation.
+
+Returns:
+    An opaque handle to use with all_gather_p_exec and all_gather_p_free.
+
+Note:
+    Requires ``rcclx`` backend.
+
+Example:
+
+.. code-block:: python
+
+    # Initialize once
+    handle = comm.all_gather_p_init(output_tensor)
+
+    # Execute many times
+    for input_tensor in inputs:
+        work = comm.all_gather_p_exec(handle, input_tensor, async_op=True)
+        work.wait()
+
+    # Free when done
+    comm.all_gather_p_free(handle)
+
+          )",
+          py::arg("output"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "all_gather_p_exec",
+          [](TorchComm& self,
+             TorchCommBackend::AllGatherPHandle handle,
+             const at::Tensor& input,
+             bool async_op,
+             std::optional<std::unordered_map<std::string, std::string>> hints,
+             std::optional<std::chrono::milliseconds> timeout) {
+            AllGatherPExecOptions opts;
+            if (hints) {
+              opts.hints = *hints;
+            }
+            if (timeout) {
+              opts.timeout = *timeout;
+            }
+            return self.all_gather_p_exec(handle, input, async_op, opts);
+          },
+          R"(
+Execute a persistent AllGather operation.
+
+Args:
+    handle: Handle returned by all_gather_p_init.
+    input: Input tensor to gather from all ranks.
+    async_op: Whether to perform the operation asynchronously.
+    hints: Dictionary of string hints for backend-specific options.
+    timeout: Timeout for the operation.
+
+Returns:
+    TorchWork: Work object for synchronization.
+
+          )",
+          py::arg("handle"),
+          py::arg("input"),
+          py::arg("async_op"),
+          py::arg("hints") = std::nullopt,
+          py::arg("timeout") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+      .def(
+          "all_gather_p_free",
+          [](TorchComm& self, TorchCommBackend::AllGatherPHandle handle) {
+            self.all_gather_p_free(handle);
+          },
+          R"(
+Free a persistent AllGather handle.
+
+Args:
+    handle: Handle returned by all_gather_p_init.
+
+          )",
+          py::arg("handle"),
+          py::call_guard<py::gil_scoped_release>())
+
       // Communicator Management
       .def(
           "split",
