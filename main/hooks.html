@@ -1,0 +1,1165 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="./" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
+
+    <title>Hooks &#8212; meta-pytorch/torchcomms main documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="_static/pygments.css?v=03e43079" />
+    <link rel="stylesheet" type="text/css" href="_static/css/theme.css?v=047068a3" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=e14e8605" />
+    <link rel="stylesheet" type="text/css" href="_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="_static/custom.css?v=e14e8605" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="_static/documentation_options.js?v=a8da1a53"></script>
+    <script src="_static/doctools.js?v=888ff710"></script>
+    <script src="_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="_static/design-tabs.js?v=f930bc37"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'hooks';</script>
+    <link rel="canonical" href="https://meta-pytorch.org/torchcomms/main/hooks.html" />
+    <link rel="icon" href="_static/torchcomms-logo-favicon.png"/>
+    <link rel="index" title="Index" href="genindex.html" />
+    <link rel="search" title="Search" href="search.html" />
+    <link rel="prev" title="API Reference" href="api.html" />
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
+<script>
+  if (window.location.hostname === 'docs.pytorch.org' || window.location.hostname === 'docs-preview.pytorch.org') {
+    const script = document.createElement('script');
+    script.src = 'https://cmp.osano.com/16A0DbT9yDNIaQkvZ/31b1b91a-e0b6-47ea-bde2-7f2bd13dbe5c/osano.js?variant=one';
+    document.head.appendChild(script);
+  }
+</script>
+<script>
+  // Cookie banner for non-LF projects
+  document.addEventListener('DOMContentLoaded', function () {
+    // Hide cookie banner on local environments and LF owned docs
+    if (window.location.hostname === 'localhost' ||
+      window.location.hostname === '0.0.0.0' ||
+      window.location.hostname === '127.0.0.1' ||
+      window.location.hostname === 'docs.pytorch.org' ||
+      window.location.hostname === 'docs-preview.pytorch.org' ||
+      window.location.hostname.startsWith('192.168.')) {
+      const banner = document.querySelector('.cookie-banner-wrapper');
+      if (banner) {
+        banner.style.display = 'none';
+      }
+    }
+  });
+</script>
+<!-- Conditional CSS for header and footer height adjustment -->
+
+<style>
+  :root {
+    --header-height: 0px !important;
+    --header-height-desktop: 0px !important;
+  }
+</style>
+
+
+<style>
+  @media (min-width: 1100px) {
+    .site-footer {
+      height: 300px !important;
+    }
+  }
+</style>
+
+<link rel="stylesheet" type="text/css" href="_static/css/theme.css" crossorigin="anonymous">
+<script type="text/javascript" src="_static/js/theme.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400&display=swap" rel="stylesheet">
+<meta property="og:image" content="https://docs.pytorch.org/docs/stable/_static/img/pytorch_seo.png" />
+<link rel="stylesheet" href="_static/webfonts/all.min.css" crossorigin="anonymous">
+<meta http-equiv="Content-Security-Policy"
+  content="default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; style-src * 'unsafe-inline'; script-src * 'unsafe-inline' 'unsafe-eval' blob:;">
+<meta name="pytorch_project" content="torchcomms">
+<!-- Google Tag Manager (noscript) -->
+<noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-NPLPKN5G" height="0" width="0"
+    style="display:none;visibility:hidden"></iframe></noscript>
+<!-- End Google Tag Manager (noscript) -->
+<!-- Google Tag Manager -->
+<script>(function (w, d, s, l, i) {
+    w[l] = w[l] || []; w[l].push({
+      'gtm.start':
+        new Date().getTime(), event: 'gtm.js'
+    }); var f = d.getElementsByTagName(s)[0],
+      j = d.createElement(s), dl = l != 'dataLayer' ? '&l=' + l : ''; j.async = true; j.src =
+        'https://www.googletagmanager.com/gtm.js?id=' + i + dl; f.parentNode.insertBefore(j, f);
+    j.onload = function () {
+      window.dispatchEvent(new Event('gtm_loaded'));
+      console.log('GTM loaded successfully');
+    };
+  })(window, document, 'script', 'dataLayer', 'GTM-NPLPKN5G');
+</script>
+<!-- End Google Tag Manager -->
+<!-- Facebook Pixel Code -->
+<script>
+  !function (f, b, e, v, n, t, s) {
+    if (f.fbq) return; n = f.fbq = function () {
+      n.callMethod ?
+        n.callMethod.apply(n, arguments) : n.queue.push(arguments)
+    };
+    if (!f._fbq) f._fbq = n; n.push = n; n.loaded = !0; n.version = '2.0';
+    n.queue = []; t = b.createElement(e); t.async = !0;
+    t.src = v; s = b.getElementsByTagName(e)[0];
+    s.parentNode.insertBefore(t, s)
+  }(window, document, 'script',
+    'https://connect.facebook.net/en_US/fbevents.js');
+  fbq('init', '243028289693773');
+  fbq('track', 'PageView');
+</script>
+<script>
+  document.documentElement.setAttribute('data-version', 'v0.1.0');
+</script>
+<noscript>
+  <img height="1" width="1" src="https://www.facebook.com/tr?id=243028289693773&ev=PageView&noscript=1" />
+</noscript>
+<script>
+  function gtag() {
+    window.dataLayer.push(arguments);
+  }
+</script>
+<!-- End Facebook Pixel Code -->
+<!-- Repository configuration for tutorials -->
+
+<!-- Script to Fix scrolling -->
+<script>
+  document.addEventListener('DOMContentLoaded', function () {
+    // Fix anchor scrolling
+    document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+      anchor.addEventListener('click', function (e) {
+        e.preventDefault();
+        const targetId = this.getAttribute('href').substring(1);
+        const targetElement = document.getElementById(targetId);
+
+        if (targetElement) {
+          const headerHeight =
+            (document.querySelector('.header-holder') ? document.querySelector('.header-holder').offsetHeight : 0) +
+            (document.querySelector('.bd-header') ? document.querySelector('.bd-header').offsetHeight : 0) + 20;
+
+          const targetPosition = targetElement.getBoundingClientRect().top + window.pageYOffset - headerHeight;
+          window.scrollTo({
+            top: targetPosition,
+            behavior: 'smooth'
+          });
+
+          // Update URL hash without scrolling
+          history.pushState(null, null, '#' + targetId);
+        }
+      });
+    });
+  });
+</script>
+
+<script async src="https://cse.google.com/cse.js?cx=e65585f8c3ea1440e"></script>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+
+  </head>
+
+<body data-feedback-url="https://github.com/meta-pytorch/torchcomms" class="pytorch-body">
+  
+  
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="_static/logo-light.png" class="logo__image only-light" alt="meta-pytorch/torchcomms main documentation - Home"/>
+    <script>document.write(`<img src="_static/logo-dark.png" class="logo__image only-dark" alt="meta-pytorch/torchcomms main documentation - Home"/>`);</script>
+  
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api.html">
+    API Reference
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Hooks
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+      
+        <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+      
+        <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/torchcomms" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <div class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="getting_started.html">
+    Getting Started
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="api.html">
+    API Reference
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="#">
+    Hooks
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+  
+<form class="bd-search d-flex align-items-center"
+      action="search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+</div>
+        
+          <div class="navbar-item">
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://x.com/PyTorch" title="X" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-x-twitter fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">X</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/meta-pytorch/torchcomms" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://dev-discuss.pytorch.org/" title="Discourse" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-discourse fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">Discourse</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Section Navigation">
+  <p class="bd-links__title" role="heading" aria-level="1">Section Navigation</p>
+  <div class="bd-toc-item navbar-nav"></div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    <li class="breadcrumb-item active" aria-current="page">Hooks</li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+</div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+  
+<div id="searchbox"></div>
+  <article class="bd-article" id="pytorch-article">
+    <!-- Hidden breadcrumb schema for SEO only -->
+    <div style="display:none;" itemscope itemtype="https://schema.org/BreadcrumbList">
+      
+      <div itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+        <meta itemprop="name" content="Hooks">
+        <meta itemprop="position" content="1">
+      </div>
+    </div>
+
+    
+    
+
+    
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="hooks">
+<h1>Hooks<a class="headerlink" href="#hooks" title="Link to this heading">#</a></h1>
+<p>torchcomms provides a hooks mechanism that allows you to intercept and monitor
+collective operations. Hooks are useful for debugging, profiling, and
+implementing custom monitoring solutions.</p>
+<section id="hook-types">
+<h2>Hook Types<a class="headerlink" href="#hook-types" title="Link to this heading">#</a></h2>
+<p>torchcomms supports three types of hooks:</p>
+<dl class="simple">
+<dt><strong>Pre-hooks</strong></dt><dd><p>Called before each collective operation starts. Receives operation metadata
+including operation name, tensors, and a unique operation ID.</p>
+</dd>
+<dt><strong>Post-hooks</strong></dt><dd><p>Called after each collective operation completes. Receives the operation
+name, work object, and the same operation ID for correlation.</p>
+</dd>
+<dt><strong>Abort-hooks</strong></dt><dd><p>Called before the process aborts due to a collective timeout or failure.
+Useful for capturing debug information before termination.</p>
+</dd>
+</dl>
+</section>
+<section id="custom-hooks">
+<h2>Custom Hooks<a class="headerlink" href="#custom-hooks" title="Link to this heading">#</a></h2>
+<p>You can register custom hook callbacks directly on a communicator using the
+<code class="docutils literal notranslate"><span class="pre">register_pre_hook</span></code>, <code class="docutils literal notranslate"><span class="pre">register_post_hook</span></code>, and <code class="docutils literal notranslate"><span class="pre">register_abort_hook</span></code>
+methods. This allows you to implement custom monitoring, logging, or debugging
+logic.</p>
+<section id="registering-hooks">
+<h3>Registering Hooks<a class="headerlink" href="#registering-hooks" title="Link to this heading">#</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torchcomms</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms._comms</span><span class="w"> </span><span class="kn">import</span> <span class="n">OpName</span><span class="p">,</span> <span class="n">PreHookArgs</span><span class="p">,</span> <span class="n">PostHookArgs</span>
+
+<span class="c1"># Create a communicator</span>
+<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">&quot;cuda:0&quot;</span><span class="p">)</span>
+<span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;ncclx&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+
+<span class="c1"># Define hook callbacks</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">my_pre_hook</span><span class="p">(</span><span class="n">args</span><span class="p">:</span> <span class="n">PreHookArgs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Starting operation: </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> (op_id=</span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">op_id</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">my_post_hook</span><span class="p">(</span><span class="n">args</span><span class="p">:</span> <span class="n">PostHookArgs</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Completed operation: </span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">name</span><span class="si">}</span><span class="s2"> (op_id=</span><span class="si">{</span><span class="n">args</span><span class="o">.</span><span class="n">op_id</span><span class="si">}</span><span class="s2">)&quot;</span><span class="p">)</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">my_abort_hook</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Process is about to abort, saving debug info...&quot;</span><span class="p">)</span>
+
+<span class="c1"># Register hooks - each returns a RemovableHandle</span>
+<span class="n">pre_handle</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">register_pre_hook</span><span class="p">(</span><span class="n">my_pre_hook</span><span class="p">)</span>
+<span class="n">post_handle</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">register_post_hook</span><span class="p">(</span><span class="n">my_post_hook</span><span class="p">)</span>
+<span class="n">abort_handle</span> <span class="o">=</span> <span class="n">comm</span><span class="o">.</span><span class="n">register_abort_hook</span><span class="p">(</span><span class="n">my_abort_hook</span><span class="p">)</span>
+
+<span class="c1"># Run collective operations - hooks will be called</span>
+<span class="n">tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">comm</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">SUM</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+<span class="c1"># Unregister hooks when done</span>
+<span class="n">pre_handle</span><span class="o">.</span><span class="n">remove</span><span class="p">()</span>
+<span class="n">post_handle</span><span class="o">.</span><span class="n">remove</span><span class="p">()</span>
+<span class="n">abort_handle</span><span class="o">.</span><span class="n">remove</span><span class="p">()</span>
+
+<span class="n">comm</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+<section id="thread-safety-note">
+<h3>Thread Safety Note<a class="headerlink" href="#thread-safety-note" title="Link to this heading">#</a></h3>
+<p>Hooks are not thread-safe and must not be modified (registered or removed)
+while a collective operation is in progress. Register hooks before starting
+collective operations and remove them after all operations have completed.</p>
+</section>
+</section>
+<section id="flightrecorderhook">
+<h2>FlightRecorderHook<a class="headerlink" href="#flightrecorderhook" title="Link to this heading">#</a></h2>
+<p>The <code class="docutils literal notranslate"><span class="pre">FlightRecorderHook</span></code> is a built-in hook implementation that tracks all
+collective operations for debugging purposes. It records operation metadata,
+timing information, and completion status in a ring buffer.</p>
+<p>The output format matches the OSS FlightRecorder format from PyTorch’s
+distributed module, so traces can be analyzed using the same <code class="docutils literal notranslate"><span class="pre">fr_trace</span></code>
+analysis tools.</p>
+<section id="basic-usage">
+<h3>Basic Usage<a class="headerlink" href="#basic-usage" title="Link to this heading">#</a></h3>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">torch</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">torchcomms</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms.hooks</span><span class="w"> </span><span class="kn">import</span> <span class="n">FlightRecorderHook</span>
+
+<span class="c1"># Create a communicator</span>
+<span class="n">device</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">device</span><span class="p">(</span><span class="s2">&quot;cuda:0&quot;</span><span class="p">)</span>
+<span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;ncclx&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+
+<span class="c1"># Create and register a flight recorder hook</span>
+<span class="n">recorder</span> <span class="o">=</span> <span class="n">FlightRecorderHook</span><span class="p">(</span><span class="n">max_entries</span><span class="o">=</span><span class="mi">1024</span><span class="p">)</span>
+<span class="n">recorder</span><span class="o">.</span><span class="n">register_with_comm</span><span class="p">(</span><span class="n">comm</span><span class="p">)</span>
+
+<span class="c1"># Run some collective operations</span>
+<span class="n">tensor</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="mi">10</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">comm</span><span class="o">.</span><span class="n">all_reduce</span><span class="p">(</span><span class="n">tensor</span><span class="p">,</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">ReduceOp</span><span class="o">.</span><span class="n">SUM</span><span class="p">,</span> <span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="n">comm</span><span class="o">.</span><span class="n">barrier</span><span class="p">(</span><span class="n">async_op</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+
+<span class="c1"># Dump the recorded trace as JSON</span>
+<span class="n">json_trace</span> <span class="o">=</span> <span class="n">recorder</span><span class="o">.</span><span class="n">dump_json</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">json_trace</span><span class="p">)</span>
+
+<span class="c1"># Optionally dump to a file</span>
+<span class="n">recorder</span><span class="o">.</span><span class="n">dump_file</span><span class="p">(</span><span class="n">rank</span><span class="o">=</span><span class="n">comm</span><span class="o">.</span><span class="n">get_rank</span><span class="p">())</span>
+
+<span class="c1"># Unregister when done</span>
+<span class="n">recorder</span><span class="o">.</span><span class="n">unregister</span><span class="p">()</span>
+
+<span class="c1"># Finalize the communicator</span>
+<span class="n">comm</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</pre></div>
+</div>
+</section>
+<section id="environment-variables">
+<h3>Environment Variables<a class="headerlink" href="#environment-variables" title="Link to this heading">#</a></h3>
+<p>The FlightRecorderHook uses the following environment variable:</p>
+<dl class="simple">
+<dt><code class="docutils literal notranslate"><span class="pre">TORCHCOMM_FR_DUMP_TEMP_FILE</span></code></dt><dd><p>Controls the output location for <code class="docutils literal notranslate"><span class="pre">dump_file()</span></code>. Files are written as
+<code class="docutils literal notranslate"><span class="pre">&lt;prefix&gt;&lt;rank&gt;</span></code> where the prefix is the value of this variable.</p>
+</dd>
+</dl>
+</section>
+</section>
+<section id="api-reference">
+<h2>API Reference<a class="headerlink" href="#api-reference" title="Link to this heading">#</a></h2>
+<section id="module-torchcomms.hooks">
+<span id="hooks-module"></span><h3>Hooks Module<a class="headerlink" href="#module-torchcomms.hooks" title="Link to this heading">#</a></h3>
+<p>TorchComm hooks module for tracking collective operations.</p>
+<p>This module provides the FlightRecorderHook class for tracking all collective
+operations in flight for TorchComm communicators. The output format matches
+the OSS FlightRecorder format from PyTorch’s distributed module, so traces
+can be analyzed using the same fr_trace analysis tools.</p>
+<p class="rubric">Example</p>
+<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms</span><span class="w"> </span><span class="kn">import</span> <span class="n">hooks</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="kn">import</span><span class="w"> </span><span class="nn">torchcomms</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;nccl&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="s2">&quot;world&quot;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">recorder</span> <span class="o">=</span> <span class="n">hooks</span><span class="o">.</span><span class="n">FlightRecorderHook</span><span class="p">(</span><span class="n">max_entries</span><span class="o">=</span><span class="mi">1024</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">recorder</span><span class="o">.</span><span class="n">register_with_comm</span><span class="p">(</span><span class="n">comm</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="c1"># ... run some collectives ...</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">json_trace</span> <span class="o">=</span> <span class="n">recorder</span><span class="o">.</span><span class="n">dump_json</span><span class="p">()</span>
+</pre></div>
+</div>
+<dl class="py class">
+<dt class="sig sig-object py" id="torchcomms.hooks.FlightRecorderHook">
+<em class="property"><span class="pre">class</span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">torchcomms.hooks.</span></span><span class="sig-name descname"><span class="pre">FlightRecorderHook</span></span><a class="headerlink" href="#torchcomms.hooks.FlightRecorderHook" title="Link to this definition">#</a></dt>
+<dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">pybind11_object</span></code></p>
+<p>FlightRecorderHook tracks all collective operations in flight for TorchComm communicators.</p>
+<p>The output format matches the OSS FlightRecorder format from PyTorch’s
+distributed module, so traces can be analyzed using the same fr_trace
+analysis tools.</p>
+<p class="rubric">Example</p>
+<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="kn">from</span><span class="w"> </span><span class="nn">torchcomms</span><span class="w"> </span><span class="kn">import</span> <span class="n">fr</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">comm</span> <span class="o">=</span> <span class="n">torchcomms</span><span class="o">.</span><span class="n">new_comm</span><span class="p">(</span><span class="s2">&quot;nccl&quot;</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="s2">&quot;world&quot;</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">recorder</span> <span class="o">=</span> <span class="n">fr</span><span class="o">.</span><span class="n">FlightRecorderHook</span><span class="p">(</span><span class="n">max_entries</span><span class="o">=</span><span class="mi">1024</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">recorder</span><span class="o">.</span><span class="n">register_with_comm</span><span class="p">(</span><span class="n">comm</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="c1"># ... run some collectives ...</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">json_trace</span> <span class="o">=</span> <span class="n">recorder</span><span class="o">.</span><span class="n">dump_json</span><span class="p">()</span>
+</pre></div>
+</div>
+<p>For testing, use isolated=True to create a separate FlightRecorder instance
+that is not shared with other hooks:</p>
+<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">recorder</span> <span class="o">=</span> <span class="n">fr</span><span class="o">.</span><span class="n">FlightRecorderHook</span><span class="p">(</span><span class="n">max_entries</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">isolated</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</pre></div>
+</div>
+<dl class="py method">
+<dt class="sig sig-object py" id="torchcomms.hooks.FlightRecorderHook.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">self</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#torchcomms.hooks.FlightRecorderHook" title="torchcomms.hooks.FlightRecorderHook"><span class="pre">torchcomms.hooks.FlightRecorderHook</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">max_entries</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">SupportsInt</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">2048</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">isolated</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">False</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#torchcomms.hooks.FlightRecorderHook.__init__" title="Link to this definition">#</a></dt>
+<dd><p>Create a FlightRecorderHook with specified buffer size.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>max_entries</strong> – Maximum number of entries in the ring buffer.
+Older entries are overwritten when full.</p></li>
+<li><p><strong>isolated</strong> – If True, creates an isolated FlightRecorder instance
+for this hook instead of using the global singleton.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchcomms.hooks.FlightRecorderHook.dump_file">
+<span class="sig-name descname"><span class="pre">dump_file</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">self</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#torchcomms.hooks.FlightRecorderHook" title="torchcomms.hooks.FlightRecorderHook"><span class="pre">torchcomms.hooks.FlightRecorderHook</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">rank</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">SupportsInt</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_completed</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#torchcomms.hooks.FlightRecorderHook.dump_file" title="Link to this definition">#</a></dt>
+<dd><p>Dump the flight recorder trace and write it to a file.</p>
+<p>The output location is controlled by the TORCHCOMM_FR_DUMP_TEMP_FILE
+environment variable. Files are written as &lt;prefix&gt;&lt;rank&gt;.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>rank</strong> – The rank to use for the file name.</p></li>
+<li><p><strong>include_completed</strong> – If False, only dump entries that are not completed.</p></li>
+</ul>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchcomms.hooks.FlightRecorderHook.dump_json">
+<span class="sig-name descname"><span class="pre">dump_json</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">self</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#torchcomms.hooks.FlightRecorderHook" title="torchcomms.hooks.FlightRecorderHook"><span class="pre">torchcomms.hooks.FlightRecorderHook</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">include_completed</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><span class="pre">bool</span></span><span class="w"> </span><span class="o"><span class="pre">=</span></span><span class="w"> </span><span class="default_value"><span class="pre">True</span></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">str</span></span></span><a class="headerlink" href="#torchcomms.hooks.FlightRecorderHook.dump_json" title="Link to this definition">#</a></dt>
+<dd><p>Dump all entries as a JSON string in the OSS FlightRecorder format.</p>
+<p>This format is compatible with the fr_trace analyzer tools from
+torch.distributed.flight_recorder.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>include_completed</strong> – If False, only return entries that are not completed.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A JSON string containing the flight recorder trace.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchcomms.hooks.FlightRecorderHook.is_enabled">
+<span class="sig-name descname"><span class="pre">is_enabled</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">self</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#torchcomms.hooks.FlightRecorderHook" title="torchcomms.hooks.FlightRecorderHook"><span class="pre">torchcomms.hooks.FlightRecorderHook</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">bool</span></span></span><a class="headerlink" href="#torchcomms.hooks.FlightRecorderHook.is_enabled" title="Link to this definition">#</a></dt>
+<dd><p>Check if the hook has registered communicators.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchcomms.hooks.FlightRecorderHook.register_with_comm">
+<span class="sig-name descname"><span class="pre">register_with_comm</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">self</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#torchcomms.hooks.FlightRecorderHook" title="torchcomms.hooks.FlightRecorderHook"><span class="pre">torchcomms.hooks.FlightRecorderHook</span></a></span></em>, <em class="sig-param"><span class="n"><span class="pre">comm</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="api.html#torchcomms.TorchComm" title="torchcomms.TorchComm"><span class="pre">torchcomms.TorchComm</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#torchcomms.hooks.FlightRecorderHook.register_with_comm" title="Link to this definition">#</a></dt>
+<dd><p>Register this hook with a TorchComm communicator.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>comm</strong> – The communicator to register with.</p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchcomms.hooks.FlightRecorderHook.reset">
+<span class="sig-name descname"><span class="pre">reset</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">self</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#torchcomms.hooks.FlightRecorderHook" title="torchcomms.hooks.FlightRecorderHook"><span class="pre">torchcomms.hooks.FlightRecorderHook</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#torchcomms.hooks.FlightRecorderHook.reset" title="Link to this definition">#</a></dt>
+<dd><p>Clear all entries and reset sequence counters.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchcomms.hooks.FlightRecorderHook.size">
+<span class="sig-name descname"><span class="pre">size</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">self</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#torchcomms.hooks.FlightRecorderHook" title="torchcomms.hooks.FlightRecorderHook"><span class="pre">torchcomms.hooks.FlightRecorderHook</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">int</span></span></span><a class="headerlink" href="#torchcomms.hooks.FlightRecorderHook.size" title="Link to this definition">#</a></dt>
+<dd><p>Get the current number of entries.</p>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="torchcomms.hooks.FlightRecorderHook.unregister">
+<span class="sig-name descname"><span class="pre">unregister</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">self</span></span><span class="p"><span class="pre">:</span></span><span class="w"> </span><span class="n"><a class="reference internal" href="#torchcomms.hooks.FlightRecorderHook" title="torchcomms.hooks.FlightRecorderHook"><span class="pre">torchcomms.hooks.FlightRecorderHook</span></a></span></em><span class="sig-paren">)</span> <span class="sig-return"><span class="sig-return-icon">&#x2192;</span> <span class="sig-return-typehint"><span class="pre">None</span></span></span><a class="headerlink" href="#torchcomms.hooks.FlightRecorderHook.unregister" title="Link to this definition">#</a></dt>
+<dd><p>Unregister this hook from all communicators.</p>
+</dd></dl>
+
+</dd></dl>
+
+</section>
+</section>
+</section>
+
+
+                </article>
+              
+  </article>
+  
+              
+              
+                <footer class="bd-footer-article">
+                  <div class="footer-article-items footer-article__inner">
+  
+    <div class="footer-article-item">
+<div class="feedback">
+  
+<div class="rating">
+    Rate this Page
+    <div class="stars">
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="1" data-value="1">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="2" data-value="2">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="3" data-value="3">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="4" data-value="4">★</span>
+        
+        <span class="star" data-behavior="tutorial-rating" data-count="5" data-value="5">★</span>
+        
+    </div>
+</div>
+
+  <div class="feedback-send">
+    <button class="feedback-btn"
+            onclick="openGitHubIssue()"
+            data-bs-title="Create a GitHub Issue"
+            data-bs-placement="bottom"
+            data-bs-toggle="tooltip"
+            data-gtm="feedback-btn-click">Send Feedback
+    </button>
+  </div>
+</div>
+
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="api.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">API Reference</p>
+      </div>
+    </a>
+</div>
+
+<div class="footer-info">
+  <p class="copyright">
+    
+  </p>
+
+  <p class="theme-version">
+    Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+  </p>
+</div>
+</div>
+  
+</div>
+                </footer>
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="api.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">API Reference</p>
+      </div>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc">
+<div class="sidebar-secondary-items sidebar-secondary__inner">
+    
+       <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#hook-types">Hook Types</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#custom-hooks">Custom Hooks</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#registering-hooks">Registering Hooks</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#thread-safety-note">Thread Safety Note</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#flightrecorderhook">FlightRecorderHook</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-usage">Basic Usage</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#environment-variables">Environment Variables</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#api-reference">API Reference</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#module-torchcomms.hooks">Hooks Module</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcomms.hooks.FlightRecorderHook"><code class="docutils literal notranslate"><span class="pre">FlightRecorderHook</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcomms.hooks.FlightRecorderHook.__init__"><code class="docutils literal notranslate"><span class="pre">FlightRecorderHook.__init__()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcomms.hooks.FlightRecorderHook.dump_file"><code class="docutils literal notranslate"><span class="pre">FlightRecorderHook.dump_file()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcomms.hooks.FlightRecorderHook.dump_json"><code class="docutils literal notranslate"><span class="pre">FlightRecorderHook.dump_json()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcomms.hooks.FlightRecorderHook.is_enabled"><code class="docutils literal notranslate"><span class="pre">FlightRecorderHook.is_enabled()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcomms.hooks.FlightRecorderHook.register_with_comm"><code class="docutils literal notranslate"><span class="pre">FlightRecorderHook.register_with_comm()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcomms.hooks.FlightRecorderHook.reset"><code class="docutils literal notranslate"><span class="pre">FlightRecorderHook.reset()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcomms.hooks.FlightRecorderHook.size"><code class="docutils literal notranslate"><span class="pre">FlightRecorderHook.size()</span></code></a></li>
+<li class="toc-h5 nav-item toc-entry"><a class="reference internal nav-link" href="#torchcomms.hooks.FlightRecorderHook.unregister"><code class="docutils literal notranslate"><span class="pre">FlightRecorderHook.unregister()</span></code></a></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+  </nav></div>
+    
+
+
+
+
+</div>
+</div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  
+
+
+<style>
+.site-footer {
+    padding: 20px 40px;
+    height: 60px !important;
+}
+
+@media screen and (min-width: 768px) {
+    .site-footer {
+        padding: 20px 40px;
+    }
+}
+
+.site-footer .privacy-policy {
+    border-top: none;
+    margin-top: 0px;
+}
+
+.site-footer .privacy-policy .copyright {
+    padding-top: 0;
+}
+</style>
+
+
+<footer class="site-footer">
+
+    <div class="privacy-policy">
+      <div class="copyright">
+      
+        <p>
+           Copyright © 2025 Meta Platforms, Inc
+        </p>
+        
+      </div>
+    </div>
+
+
+  </div>
+</footer>
+
+<div class="cookie-banner-wrapper">
+  <div class="container">
+    <p class="gdpr-notice">To analyze traffic and optimize your experience, we serve cookies on this site. By clicking or navigating, you agree to allow our usage of cookies. As the current maintainers of this site, Facebook’s Cookies Policy applies. Learn more, including about available controls: <a href="https://www.facebook.com/policies/cookies/">Cookies Policy</a>.</p>
+    <img class="close-button" src="_static/img/pytorch-x.svg">
+  </div>
+</div>
+  
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025, torchcomms Contributors.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.2.6.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.15.4.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  <script type="application/ld+json">
+    {
+       "@context": "https://schema.org",
+       "@type": "Article",
+       "name": "Hooks",
+       "headline": "Hooks",
+       "description": "PyTorch Documentation. Explore PyTorch, an open-source machine learning library that accelerates the path from research prototyping to production deployment. Discover tutorials, API references, and guides to help you build and deploy deep learning models efficiently.",
+       "url": "/hooks.html",
+       "articleBody": "Hooks# torchcomms provides a hooks mechanism that allows you to intercept and monitor collective operations. Hooks are useful for debugging, profiling, and implementing custom monitoring solutions. Hook Types# torchcomms supports three types of hooks: Pre-hooksCalled before each collective operation starts. Receives operation metadata including operation name, tensors, and a unique operation ID. Post-hooksCalled after each collective operation completes. Receives the operation name, work object, and the same operation ID for correlation. Abort-hooksCalled before the process aborts due to a collective timeout or failure. Useful for capturing debug information before termination. Custom Hooks# You can register custom hook callbacks directly on a communicator using the register_pre_hook, register_post_hook, and register_abort_hook methods. This allows you to implement custom monitoring, logging, or debugging logic. Registering Hooks# import torch import torchcomms from torchcomms._comms import OpName, PreHookArgs, PostHookArgs # Create a communicator device = torch.device(\"cuda:0\") comm = torchcomms.new_comm(\"ncclx\", device) # Define hook callbacks def my_pre_hook(args: PreHookArgs) -\u003e None: print(f\"Starting operation: {args.name} (op_id={args.op_id})\") def my_post_hook(args: PostHookArgs) -\u003e None: print(f\"Completed operation: {args.name} (op_id={args.op_id})\") def my_abort_hook() -\u003e None: print(\"Process is about to abort, saving debug info...\") # Register hooks - each returns a RemovableHandle pre_handle = comm.register_pre_hook(my_pre_hook) post_handle = comm.register_post_hook(my_post_hook) abort_handle = comm.register_abort_hook(my_abort_hook) # Run collective operations - hooks will be called tensor = torch.ones(10, device=device) comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=False) # Unregister hooks when done pre_handle.remove() post_handle.remove() abort_handle.remove() comm.finalize() Thread Safety Note# Hooks are not thread-safe and must not be modified (registered or removed) while a collective operation is in progress. Register hooks before starting collective operations and remove them after all operations have completed. FlightRecorderHook# The FlightRecorderHook is a built-in hook implementation that tracks all collective operations for debugging purposes. It records operation metadata, timing information, and completion status in a ring buffer. The output format matches the OSS FlightRecorder format from PyTorch\u2019s distributed module, so traces can be analyzed using the same fr_trace analysis tools. Basic Usage# import torch import torchcomms from torchcomms.hooks import FlightRecorderHook # Create a communicator device = torch.device(\"cuda:0\") comm = torchcomms.new_comm(\"ncclx\", device) # Create and register a flight recorder hook recorder = FlightRecorderHook(max_entries=1024) recorder.register_with_comm(comm) # Run some collective operations tensor = torch.ones(10, device=device) comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=False) comm.barrier(async_op=False) # Dump the recorded trace as JSON json_trace = recorder.dump_json() print(json_trace) # Optionally dump to a file recorder.dump_file(rank=comm.get_rank()) # Unregister when done recorder.unregister() # Finalize the communicator comm.finalize() Environment Variables# The FlightRecorderHook uses the following environment variable: TORCHCOMM_FR_DUMP_TEMP_FILEControls the output location for dump_file(). Files are written as \u003cprefix\u003e\u003crank\u003e where the prefix is the value of this variable. API Reference# Hooks Module# TorchComm hooks module for tracking collective operations. This module provides the FlightRecorderHook class for tracking all collective operations in flight for TorchComm communicators. The output format matches the OSS FlightRecorder format from PyTorch\u2019s distributed module, so traces can be analyzed using the same fr_trace analysis tools. Example \u003e\u003e\u003e from torchcomms import hooks \u003e\u003e\u003e import torchcomms \u003e\u003e\u003e comm = torchcomms.new_comm(\"nccl\", device, \"world\") \u003e\u003e\u003e recorder = hooks.FlightRecorderHook(max_entries=1024) \u003e\u003e\u003e recorder.register_with_comm(comm) \u003e\u003e\u003e # ... run some collectives ... \u003e\u003e\u003e json_trace = recorder.dump_json() class torchcomms.hooks.FlightRecorderHook# Bases: pybind11_object FlightRecorderHook tracks all collective operations in flight for TorchComm communicators. The output format matches the OSS FlightRecorder format from PyTorch\u2019s distributed module, so traces can be analyzed using the same fr_trace analysis tools. Example \u003e\u003e\u003e from torchcomms import fr \u003e\u003e\u003e comm = torchcomms.new_comm(\"nccl\", device, \"world\") \u003e\u003e\u003e recorder = fr.FlightRecorderHook(max_entries=1024) \u003e\u003e\u003e recorder.register_with_comm(comm) \u003e\u003e\u003e # ... run some collectives ... \u003e\u003e\u003e json_trace = recorder.dump_json() For testing, use isolated=True to create a separate FlightRecorder instance that is not shared with other hooks: \u003e\u003e\u003e recorder = fr.FlightRecorderHook(max_entries=100, isolated=True) __init__(self: torchcomms.hooks.FlightRecorderHook, max_entries: SupportsInt = 2048, isolated: bool = False) \u2192 None# Create a FlightRecorderHook with specified buffer size. Parameters: max_entries \u2013 Maximum number of entries in the ring buffer. Older entries are overwritten when full. isolated \u2013 If True, creates an isolated FlightRecorder instance for this hook instead of using the global singleton. dump_file(self: torchcomms.hooks.FlightRecorderHook, rank: SupportsInt, include_completed: bool = True) \u2192 None# Dump the flight recorder trace and write it to a file. The output location is controlled by the TORCHCOMM_FR_DUMP_TEMP_FILE environment variable. Files are written as \u003cprefix\u003e\u003crank\u003e. Parameters: rank \u2013 The rank to use for the file name. include_completed \u2013 If False, only dump entries that are not completed. dump_json(self: torchcomms.hooks.FlightRecorderHook, include_completed: bool = True) \u2192 str# Dump all entries as a JSON string in the OSS FlightRecorder format. This format is compatible with the fr_trace analyzer tools from torch.distributed.flight_recorder. Parameters: include_completed \u2013 If False, only return entries that are not completed. Returns: A JSON string containing the flight recorder trace. is_enabled(self: torchcomms.hooks.FlightRecorderHook) \u2192 bool# Check if the hook has registered communicators. register_with_comm(self: torchcomms.hooks.FlightRecorderHook, comm: torchcomms.TorchComm) \u2192 None# Register this hook with a TorchComm communicator. Parameters: comm \u2013 The communicator to register with. reset(self: torchcomms.hooks.FlightRecorderHook) \u2192 None# Clear all entries and reset sequence counters. size(self: torchcomms.hooks.FlightRecorderHook) \u2192 int# Get the current number of entries. unregister(self: torchcomms.hooks.FlightRecorderHook) \u2192 None# Unregister this hook from all communicators.",
+       "author": {
+         "@type": "Organization",
+         "name": "PyTorch Contributors",
+         "url": "https://pytorch.org"
+       },
+       "image": "https://pytorch.org/docs/stable/_static/img/pytorch_seo.png",
+       "mainEntityOfPage": {
+         "@type": "WebPage",
+         "@id": "/hooks.html"
+       },
+       "datePublished": "2023-01-01T00:00:00Z",
+       "dateModified": "2023-01-01T00:00:00Z"
+     }
+ </script>
+  <script>
+    // Tutorials Call to action event tracking
+    $("[data-behavior='call-to-action-event']").on('click', function () {
+      fbq('trackCustom', "Download", {
+        tutorialTitle: $('h1:first').text(),
+        downloadLink: this.href,
+        tutorialLink: window.location.href,
+        downloadTitle: $(this).attr("data-response")
+      });
+      if (typeof gtag === 'function') {
+        gtag('event', 'click', {
+          'event_category': $(this).attr("data-response"),
+          'event_label': $("h1").first().text(),
+          'tutorial_link': window.location.href
+        });
+      }
+    });
+  </script>
+  
+  </body>
+</html>

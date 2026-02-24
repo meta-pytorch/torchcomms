@@ -306,6 +306,13 @@ window.addEventListener("load", () => mermaid.run());
   </a>
 </li>
 
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="hooks.html">
+    Hooks
+  </a>
+</li>
+
   </ul>
 </nav></div>
       
@@ -431,6 +438,13 @@ document.write(`
 <li class="nav-item ">
   <a class="nav-link nav-internal" href="api.html">
     API Reference
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="hooks.html">
+    Hooks
   </a>
 </li>
 
@@ -593,6 +607,8 @@ document.write(`
 </li>
         <li><a href="api.html#torchcomms.CommOptions.__init__">(torchcomms.CommOptions method)</a>
 </li>
+        <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook.__init__">(torchcomms.hooks.FlightRecorderHook method)</a>
+</li>
         <li><a href="api.html#torchcomms.P2POp.__init__">(torchcomms.P2POp method)</a>
 </li>
         <li><a href="api.html#torchcomms.ReduceOp.__init__">(torchcomms.ReduceOp method)</a>
@@ -674,9 +690,13 @@ document.write(`
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.TorchCommWindow.device">device (torchcomms.TorchCommWindow property)</a>
 </li>
+      <li><a href="api.html#torchcomms.TorchCommWindow.dtype">dtype (torchcomms.TorchCommWindow property)</a>
+</li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
-      <li><a href="api.html#torchcomms.TorchCommWindow.dtype">dtype (torchcomms.TorchCommWindow property)</a>
+      <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook.dump_file">dump_file() (torchcomms.hooks.FlightRecorderHook method)</a>
+</li>
+      <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook.dump_json">dump_json() (torchcomms.hooks.FlightRecorderHook method)</a>
 </li>
   </ul></td>
 </tr></table>
@@ -685,6 +705,10 @@ document.write(`
 <table style="width: 100%" class="indextable genindextable"><tr>
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.TorchComm.finalize">finalize() (torchcomms.TorchComm method)</a>
+</li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook">FlightRecorderHook (class in torchcomms.hooks)</a>
 </li>
   </ul></td>
 </tr></table>
@@ -738,9 +762,11 @@ document.write(`
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.device_mesh.init_device_mesh">init_device_mesh() (in module torchcomms.device_mesh)</a>
 </li>
+      <li><a href="api.html#torchcomms.TorchWork.is_completed">is_completed() (torchcomms.TorchWork method)</a>
+</li>
   </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
-      <li><a href="api.html#torchcomms.TorchWork.is_completed">is_completed() (torchcomms.TorchWork method)</a>
+      <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook.is_enabled">is_enabled() (torchcomms.hooks.FlightRecorderHook method)</a>
 </li>
       <li><a href="api.html#torchcomms.BatchSendRecv.issue">issue() (torchcomms.BatchSendRecv method)</a>
 </li>
@@ -767,6 +793,8 @@ document.write(`
         <li><a href="api.html#module-torchcomms">torchcomms</a>
 </li>
         <li><a href="api.html#module-torchcomms.device_mesh">torchcomms.device_mesh</a>
+</li>
+        <li><a href="hooks.html#module-torchcomms.hooks">torchcomms.hooks</a>
 </li>
         <li><a href="api.html#module-torchcomms.objcol">torchcomms.objcol</a>
 </li>
@@ -825,15 +853,25 @@ document.write(`
 </li>
       <li><a href="api.html#torchcomms.TorchComm.reduce">reduce() (torchcomms.TorchComm method)</a>
 </li>
-  </ul></td>
-  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.TorchComm.reduce_scatter">reduce_scatter() (torchcomms.TorchComm method)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchComm.reduce_scatter_single">reduce_scatter_single() (torchcomms.TorchComm method)</a>
 </li>
+  </ul></td>
+  <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.TorchComm.reduce_scatter_v">reduce_scatter_v() (torchcomms.TorchComm method)</a>
 </li>
       <li><a href="api.html#torchcomms.ReduceOp">ReduceOp (class in torchcomms)</a>
+</li>
+      <li><a href="api.html#torchcomms.TorchComm.register_abort_hook">register_abort_hook() (torchcomms.TorchComm method)</a>
+</li>
+      <li><a href="api.html#torchcomms.TorchComm.register_post_hook">register_post_hook() (torchcomms.TorchComm method)</a>
+</li>
+      <li><a href="api.html#torchcomms.TorchComm.register_pre_hook">register_pre_hook() (torchcomms.TorchComm method)</a>
+</li>
+      <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook.register_with_comm">register_with_comm() (torchcomms.hooks.FlightRecorderHook method)</a>
+</li>
+      <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook.reset">reset() (torchcomms.hooks.FlightRecorderHook method)</a>
 </li>
   </ul></td>
 </tr></table>
@@ -858,6 +896,8 @@ document.write(`
       <li><a href="api.html#torchcomms.TorchCommWindow.shape">shape (torchcomms.TorchCommWindow property)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchCommWindow.signal">signal() (torchcomms.TorchCommWindow method)</a>
+</li>
+      <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook.size">size() (torchcomms.hooks.FlightRecorderHook method)</a>
 </li>
       <li><a href="api.html#torchcomms.TorchComm.split">split() (torchcomms.TorchComm method)</a>
 </li>
@@ -904,6 +944,13 @@ document.write(`
 </li>
       </ul></li>
       <li>
+    torchcomms.hooks
+
+      <ul>
+        <li><a href="hooks.html#module-torchcomms.hooks">module</a>
+</li>
+      </ul></li>
+      <li>
     torchcomms.objcol
 
       <ul>
@@ -925,6 +972,10 @@ document.write(`
 
 <h2 id="U">U</h2>
 <table style="width: 100%" class="indextable genindextable"><tr>
+  <td style="width: 33%; vertical-align: top;"><ul>
+      <li><a href="hooks.html#torchcomms.hooks.FlightRecorderHook.unregister">unregister() (torchcomms.hooks.FlightRecorderHook method)</a>
+</li>
+  </ul></td>
   <td style="width: 33%; vertical-align: top;"><ul>
       <li><a href="api.html#torchcomms.TorchComm.unsafe_get_backend">unsafe_get_backend() (torchcomms.TorchComm method)</a>
 </li>
