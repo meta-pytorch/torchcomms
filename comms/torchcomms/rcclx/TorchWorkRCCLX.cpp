@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/rcclx/TorchWorkRCCLX.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
+#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/rcclx/TorchCommRCCLX.hpp"
 
 namespace torch::comms {
