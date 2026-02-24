@@ -409,9 +409,9 @@ TEST_F(GraphEventTrackerTest, DestroyAllCleansUpGraphEntryEvents) {
   std::vector<cudaEvent_t> destroyed_events;
   EXPECT_CALL(*cuda_mock_, eventDestroy(_))
       .WillRepeatedly(DoAll(
-          Invoke([&destroyed_events](cudaEvent_t event) {
+          [&destroyed_events](cudaEvent_t event) {
             destroyed_events.push_back(event);
-          }),
+          },
           Return(cudaSuccess)));
   EXPECT_CALL(*cuda_mock_, free(_)).WillOnce(Return(cudaSuccess));
   EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
@@ -763,9 +763,9 @@ TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
   std::vector<cudaEvent_t> destroyed_events;
   EXPECT_CALL(*cuda_mock_, eventDestroy(_))
       .WillRepeatedly(DoAll(
-          Invoke([&destroyed_events](cudaEvent_t event) {
+          [&destroyed_events](cudaEvent_t event) {
             destroyed_events.push_back(event);
-          }),
+          },
           Return(cudaSuccess)));
   EXPECT_CALL(*cuda_mock_, free(_)).WillOnce(Return(cudaSuccess));
   EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));

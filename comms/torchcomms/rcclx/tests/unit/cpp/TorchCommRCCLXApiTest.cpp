@@ -16,7 +16,7 @@ namespace torch::comms::test {
 class TorchcommRCCLXApiTest : public ::testing::Test {};
 
 TEST_F(TorchcommRCCLXApiTest, UnsupportedWindowApiTest) {
-  auto rcclx_api = std::make_unique<DefaultRcclxApi>();
+  std::unique_ptr<RcclxApi> rcclx_api = std::make_unique<DefaultRcclxApi>();
   ncclComm_t nccl_comm = nullptr;
   EXPECT_THROW(
       rcclx_api->winAllocate(0, nccl_comm, nullptr, nullptr, true, 0),

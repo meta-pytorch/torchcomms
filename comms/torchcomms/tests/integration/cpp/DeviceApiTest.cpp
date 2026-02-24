@@ -555,7 +555,7 @@ void DeviceApiTest::testGinAtomicAdd() {
 
   // Verify signal was reset to 0
   uint64_t* d_signal_out = nullptr;
-  cudaMalloc(&d_signal_out, sizeof(uint64_t));
+  ASSERT_EQ(cudaMalloc(&d_signal_out, sizeof(uint64_t)), cudaSuccess);
   {
     c10::cuda::CUDAStreamGuard guard(op_stream);
     torchcomms::device::test::launchDeviceReadSignalKernel(
@@ -652,7 +652,7 @@ void DeviceApiTest::testPerPeerSignal() {
 
   // Read signal value via kernel and verify on host
   uint64_t* d_out = nullptr;
-  cudaMalloc(&d_out, sizeof(uint64_t));
+  ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint64_t)), cudaSuccess);
   {
     c10::cuda::CUDAStreamGuard guard(op_stream);
     torchcomms::device::test::launchDeviceReadSignalKernel(
