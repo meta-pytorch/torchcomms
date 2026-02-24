@@ -165,12 +165,12 @@ TEST_F(
 
   auto preHandle =
       torchcomm->registerPreHook([&preHookCalls](TorchComm::PreHookArgs args) {
-        preHookCalls.push_back({args.name, args.op_id});
+        preHookCalls.emplace_back(args.name, args.op_id);
       });
 
   auto postHandle = torchcomm->registerPostHook(
       [&postHookCalls](TorchComm::PostHookArgs args) {
-        postHookCalls.push_back({args.name, args.op_id});
+        postHookCalls.emplace_back(args.name, args.op_id);
       });
 
   auto tensor = at::ones({2, 2}, at::kFloat);
