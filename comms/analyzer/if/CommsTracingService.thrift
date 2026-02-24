@@ -283,7 +283,7 @@ struct GetCommsResponse {
   // For inference, this is 0
   5: i64 step;
   6: i64 stepStartTimeNs;
-  7: list<IbCompletionError> ibErrors;
+  7: optional list<IbCompletionError> ibErrors;
 }
 
 // Implementors of this service expose tracing information about communications
