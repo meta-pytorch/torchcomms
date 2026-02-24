@@ -120,14 +120,16 @@ struct ThreadGroup {
         __syncthreads();
         break;
       case SyncScope::CLUSTER:
-#if __CUDA_ARCH__ >= 900
+#if __CUDA_ARCH__ >= 900 && !defined(__clang_llvm_bitcode_lib__)
       {
         cooperative_groups::cluster_group cluster =
             cooperative_groups::this_cluster();
         cluster.sync();
       }
 #else
-        // Fallback to block sync for older architectures
+        // Fallback to block sync for older architectures or clang bitcode path
+        // (cooperative_groups::cluster_group is not available in clang 19's
+        // CUDA headers; Triton kernels do not use cluster scope anyway)
         __syncthreads();
 #endif
       break;
