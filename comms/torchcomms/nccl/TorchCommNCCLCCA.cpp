@@ -13,6 +13,7 @@ void cachingAllocatorHookFn(
 
 CachingAllocatorHookImpl& CachingAllocatorHook::getInstance() {
   // Use std::call_once for thread-safe singleton initialization
+  // NOLINTNEXTLINE(facebook-hte-std::call_once)
   std::call_once(init_flag_, createInstance);
   return *instance_;
 }

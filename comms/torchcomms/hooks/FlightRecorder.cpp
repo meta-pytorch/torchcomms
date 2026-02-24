@@ -58,6 +58,7 @@ inline std::string pickle_str(const c10::IValue& v) {
 namespace {
 
 // Static registration of the torchcomms_fr_trace_json handler
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 c10d::control_plane::RegisterHandler torchcommsFrTraceJsonRegistration(
     "torchcomms_fr_trace_json",
     [](const c10d::control_plane::Request& req,
@@ -449,7 +450,7 @@ const c10::List<c10::IValue> FlightRecorder::getCollectiveTrace(
         }
         sizes.push_back(arg_sizes);
       }
-      return sizes;
+      return sizes; // NOLINT(clang-diagnostic-nrvo)
     };
 
     dict.insert(input_sizes_key, read_sizes(e.input_dims_));
@@ -600,7 +601,7 @@ std::string FlightRecorder::dump_json(
           }
           sizes.push_back(arg_sizes);
         }
-        return sizes;
+        return sizes; // NOLINT(clang-diagnostic-nrvo)
       };
       j[input_sizes_key_str] = read_sizes(e.input_dims_);
       std::vector<std::string> input_dtypes_strs;

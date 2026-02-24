@@ -18,6 +18,7 @@ class RemovableHandle {
   RemovableHandle& operator=(RemovableHandle&&) = delete;
 
   void remove() {
+    // NOLINTNEXTLINE(facebook-hte-std::call_once)
     std::call_once(once_, [this]() noexcept {
       callback_();
       callback_ = nullptr;
