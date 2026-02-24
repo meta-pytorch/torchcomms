@@ -382,6 +382,15 @@ __device__ __forceinline__ void st_release_sys_global(
  *   // After seeing flag, data is guaranteed visible due to fence+relaxed store
  */
 
+// Compiler-only barrier: prevents the compiler from reordering instructions
+// across this point. Emits no hardware instruction — zero runtime cost.
+// Use when you need ordering within a single thread's instruction stream
+// (e.g., between two put() calls) where the only adversary is compiler
+// reordering. GPU hardware does not reorder stores within a single thread.
+__device__ __forceinline__ void compiler_barrier() {
+  asm volatile("" ::: "memory");
+}
+
 __device__ __forceinline__ void threadfence() {
 #if defined(__CUDA_ARCH__) || defined(__HIP_ARCH__)
   __threadfence();

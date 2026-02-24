@@ -63,6 +63,18 @@ class DeviceApiTest : public ::testing::Test {
   // Device barrier test - validates world barrier (LSA + GIN)
   void testDeviceBarrier();
 
+  // Scope-aware put test - validates cooperative put with warp/block scope
+  void testDevicePutScoped(
+      int count,
+      at::ScalarType dtype,
+      torchcomms::device::CoopScope scope,
+      int num_threads);
+
+  // Scope-aware barrier test - validates cooperative barrier
+  void testDeviceBarrierScoped(
+      torchcomms::device::CoopScope scope,
+      int num_threads);
+
   // Member variables
   std::unique_ptr<TorchCommTestWrapper> wrapper_;
   std::shared_ptr<torch::comms::TorchComm> torchcomm_;

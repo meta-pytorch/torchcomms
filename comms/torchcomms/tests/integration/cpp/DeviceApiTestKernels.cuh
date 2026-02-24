@@ -109,4 +109,28 @@ void launchDeviceBarrierKernel(
     int barrier_id,
     cudaStream_t stream);
 
+// Launch scope-aware put kernel - all threads in the cooperative group
+// call put() together. num_threads must match the scope:
+//   - WARP:  32
+//   - BLOCK: 256 (or any block size)
+void launchDevicePutScopedKernel(
+    DeviceWindowNCCL* win,
+    RegisteredBufferNCCL src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream);
+
+// Launch scope-aware barrier kernel
+void launchDeviceBarrierScopedKernel(
+    DeviceWindowNCCL* win,
+    int barrier_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream);
+
 } // namespace torchcomms::device::test

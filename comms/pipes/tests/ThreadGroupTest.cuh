@@ -23,6 +23,25 @@ void testContiguousLocality(
     int blockSize,
     SyncScope scope);
 
+// Tests make_thread_solo() - where each thread forms its own group of size 1
+// Verifies:
+// - group_size == 1 for every thread
+// - thread_id_in_group == 0 for every thread (always the leader)
+// - is_leader() == true for every thread
+// - group_id == global_thread_index (unique per thread)
+// - total_groups == total thread count (numBlocks * blockSize)
+// - scope == SyncScope::THREAD
+// - sync() completes without deadlock (compiler barrier only, no hardware sync)
+void testThreadSoloGroup(
+    uint32_t* groupIds_d,
+    uint32_t* groupSizes_d,
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* isLeader_d,
+    uint32_t* syncResults_d,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
 // Tests make_block_group() - where all threads in a block form one group
 // Verifies:
 // - group_id == blockIdx.x

@@ -77,6 +77,78 @@ void testContiguousLocality(
 }
 
 // =============================================================================
+// Thread Solo Tests
+// =============================================================================
+
+__global__ void testThreadSoloGroupKernel(
+    uint32_t* groupIds,
+    uint32_t* groupSizes,
+    uint32_t* threadIdsInGroup,
+    uint32_t* isLeader,
+    uint32_t* syncResults,
+    uint32_t* errorCount) {
+  auto solo = make_thread_solo();
+
+  uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
+      threadIdx.z * blockDim.x * blockDim.y;
+  uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
+  uint32_t global_tid = blockIdx.x * threads_per_block + tid;
+  uint32_t total_threads = gridDim.x * threads_per_block;
+
+  // Verify group properties
+  if (solo.group_size != 1) {
+    atomicAdd(errorCount, 1);
+  }
+  if (solo.thread_id_in_group != 0) {
+    atomicAdd(errorCount, 1);
+  }
+  if (!solo.is_leader()) {
+    atomicAdd(errorCount, 1);
+  }
+  if (solo.group_id != global_tid) {
+    atomicAdd(errorCount, 1);
+  }
+  if (solo.total_groups != total_threads) {
+    atomicAdd(errorCount, 1);
+  }
+  if (solo.scope != SyncScope::THREAD) {
+    atomicAdd(errorCount, 1);
+  }
+
+  // Record properties for host-side verification
+  groupIds[global_tid] = solo.group_id;
+  groupSizes[global_tid] = solo.group_size;
+  threadIdsInGroup[global_tid] = solo.thread_id_in_group;
+  isLeader[global_tid] = solo.is_leader() ? 1u : 0u;
+
+  // Verify sync() completes (compiler barrier only — no hardware sync needed).
+  // Write a value before sync, call sync, then write a different value after.
+  // The fact that this completes without deadlock is the meaningful assertion.
+  syncResults[global_tid] = 0u;
+  solo.sync();
+  syncResults[global_tid] = 1u;
+}
+
+void testThreadSoloGroup(
+    uint32_t* groupIds_d,
+    uint32_t* groupSizes_d,
+    uint32_t* threadIdsInGroup_d,
+    uint32_t* isLeader_d,
+    uint32_t* syncResults_d,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testThreadSoloGroupKernel<<<numBlocks, blockSize>>>(
+      groupIds_d,
+      groupSizes_d,
+      threadIdsInGroup_d,
+      isLeader_d,
+      syncResults_d,
+      errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
 // Block Group Tests
 // =============================================================================
 
