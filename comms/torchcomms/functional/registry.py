@@ -1,4 +1,3 @@
-# pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 """Collective operation registration system for torchcomms."""

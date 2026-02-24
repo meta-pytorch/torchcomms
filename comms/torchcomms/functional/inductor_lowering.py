@@ -1,4 +1,3 @@
-# pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 """Inductor lowerings for torchcomms collective operations."""
