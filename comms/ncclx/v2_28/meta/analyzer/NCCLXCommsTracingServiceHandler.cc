@@ -12,6 +12,7 @@
 #include <thrift/lib/cpp2/protocol/Serializer.h>
 
 #include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
 #include "comms/utils/trainer/TrainerContext.h"
 #include "meta/RankUtil.h"
 
@@ -69,6 +70,43 @@ NCCLXCommsTracingServiceHandler::co_getComms(
     auto s = folly::toJson(obj);
     apache::thrift::SimpleJSONSerializer::deserialize(s, ncclParsedEntry);
   }
+
+  {
+    auto globalState = ProcessGlobalErrorsUtil::getAllState();
+    for (const auto& ibErr : globalState.ibCompletionErrors) {
+      comms::IbCompletionError thriftErr;
+      thriftErr.timestampMs() = ibErr.timestampMs.count();
+      thriftErr.peer() = ibErr.peer;
+      thriftErr.statusStr() = ibErr.statusStr;
+      thriftErr.status() = ibErr.status;
+      thriftErr.opcodeStr() = ibErr.opcodeStr;
+      thriftErr.opcode() = ibErr.opcode;
+      thriftErr.reqSize() = ibErr.reqSize;
+      thriftErr.vendorErr() = static_cast<int64_t>(ibErr.vendorErr);
+      thriftErr.reqType() = ibErr.reqType;
+      thriftErr.localGid() = ibErr.localGid;
+      thriftErr.remoteGid() = ibErr.remoteGid;
+      thriftErr.hcaName() = ibErr.hcaName;
+      thriftErr.scaleupDomain() = ibErr.scaleupDomain;
+      thriftErr.localHostname() = ibErr.localHostname;
+      response.ibErrors().ensure().push_back(std::move(thriftErr));
+    }
+    // Flush after reading so errors are only reported once
+    ProcessGlobalErrorsUtil::clearIbCompletionErrors();
+  }
+
+  {
+    auto globalState = ProcessGlobalErrorsUtil::getAllState();
+    for (const auto& cudaErr : globalState.cudaErrors) {
+      comms::CudaError thriftErr;
+      thriftErr.timestampMs() = cudaErr.timestampMs.count();
+      thriftErr.errorString() = cudaErr.errorString;
+      thriftErr.errorCode() = cudaErr.errorCode;
+      response.cudaErrors().ensure().push_back(std::move(thriftErr));
+    }
+    ProcessGlobalErrorsUtil::clearCudaErrors();
+  }
+
   co_return std::make_unique<comms::GetCommsResponse>(std::move(response));
 }
 

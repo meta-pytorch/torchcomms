@@ -81,14 +81,27 @@ namespace comms::pipes {
 #endif
 
 /**
- * DeviceWindowSignal - Device-side signal object with per-signal inbox
- * semantics
+ * DeviceWindowSignal - Device-side signal object with per-peer inbox semantics
  *
- * Implements NCCL-style "per-signal inbox" model for multi-peer signaling:
- * - Each rank has a single inbox buffer (local memory)
- * - All peers write to the SAME slot for a given signal_id
- * - Values accumulate: slot[signal_id] += value from each peer
- * - Inbox size = signalCount (one slot per signal)
+ * Implements a per-peer inbox model for multi-peer signaling:
+ * - Each rank has a local inbox with per-peer rows of signal slots
+ * - Each peer has its own row: inbox layout is [nPeers][signalCount]
+ * - signal_peer() writes to the sender's dedicated sub-slot in the target's
+ *   inbox (one NVLink write, no dual-write)
+ * - wait_signal_from() polls a specific peer's sub-slot (O(1))
+ * - wait_signal() sums across all per-peer sub-slots for accumulated semantics
+ * - Inbox size = nPeers * signalCount (one row per peer, signalCount slots
+ *   per row)
+ *
+ * INBOX LAYOUT:
+ * =============
+ *   [peer0_slot_0] [peer0_slot_1] ... [peer0_slot_{signalCount-1}]
+ *   [peer1_slot_0] [peer1_slot_1] ... [peer1_slot_{signalCount-1}]
+ *   ...
+ *   [peer_{nPeers-1}_slot_0] ... [peer_{nPeers-1}_slot_{signalCount-1}]
+ *
+ * Each SignalState is 128-byte aligned.
+ * Total = nPeers * signalCount * sizeof(SignalState) bytes.
  *
  * RANK-BASED API:
  * All peer-facing APIs use global rank in [0, nRanks), not peer index.
@@ -102,14 +115,20 @@ namespace comms::pipes {
  * This class implements the Signal semantics. We will later introduce
  * DeviceCounter for local completion tracking.
  *
- * SLOT MAPPING (NCCL-style):
- * All peers write to the same slot: slot = signal_id
- * Values accumulate from all peers who signal with the same signal_id.
+ * SLOT MAPPING:
+ * signal_peer(target, signal_id) writes to:
+ *   target.inbox[myPeerIndexOnTarget * signalCount + signal_id]
+ * wait_signal_from(source, signal_id) polls:
+ *   localInbox[sourcePeer * signalCount + signal_id]
+ * wait_signal(signal_id) sums localInbox[peer * signalCount + signal_id]
+ *   across all peers, polls until sum meets condition.
  *
  * WAIT SEMANTICS:
- * wait_signal() waits for the accumulated value in the inbox slot to reach
- * the expected threshold. With N peers each signaling value=1:
+ * wait_signal() sums across all per-peer sub-slots on read for accumulated
+ * semantics. With N peers each signaling value=1:
  *   wait_signal(group, signal_id, CMP_GE, N)  // Wait for all N peers
+ * wait_signal_from() polls a specific peer's sub-slot:
+ *   wait_signal_from(group, source_rank, signal_id, CMP_GE, 1)
  *
  * v1: Unicast writes (parallel writes to each peer)
  * v2 (future): Multi-mem multicast optimization
@@ -145,10 +164,10 @@ namespace comms::pipes {
  *   // Sender (rank 0) signals receiver (rank 1) that data is ready
  *   signal.signal_peer(group, 1, 0, SignalOp::SIGNAL_ADD, 1);
  *
- *   // Receiver (rank 1) waits for accumulated signals
- *   signal.wait_signal(group, 0, CmpOp::CMP_GE, 1);
+ *   // Receiver (rank 1) waits for signal from a specific peer
+ *   signal.wait_signal_from(group, 0, 0, CmpOp::CMP_GE, 1);
  *
- *   // Wait for signals from all N-1 peers (barrier-like)
+ *   // Receiver waits for accumulated signals from all peers (barrier-like)
  *   signal.wait_signal(group, 0, CmpOp::CMP_GE, nRanks - 1);
  */
 class DeviceWindowSignal {
@@ -156,13 +175,15 @@ class DeviceWindowSignal {
   __host__ __device__ DeviceWindowSignal() = default;
 
   /**
-   * Construct a DeviceWindowSignal with inbox semantics
+   * Construct a DeviceWindowSignal with per-peer inbox semantics
    *
    * @param myRank This rank's ID
    * @param nRanks Total number of ranks
    * @param signalCount Number of signal slots per peer
-   * @param localInbox This rank's inbox (local memory, size = signalCount)
-   * @param peerSignals Peers' inboxes (for remote writes)
+   * @param localInbox This rank's inbox (local memory,
+   *        size = nPeers * signalCount)
+   * @param peerSignals Peers' inboxes (for remote writes, each span points
+   *        to the sender's per-peer row in the target's inbox)
    */
   __host__ __device__ DeviceWindowSignal(
       int myRank,
@@ -208,7 +229,7 @@ class DeviceWindowSignal {
   /**
    * signal_all - Signal all peers (parallel unicast writes)
    *
-   * Writes to all peers' inboxes via NVLink.
+   * Writes to each peer's inbox at the sender's per-peer sub-slot via NVLink.
    * Uses thread-level parallelism: each thread signals different peers.
    * v1: Parallel unicast writes to each peer
    * v2 (future): Multi-mem multicast for efficiency
@@ -251,13 +272,15 @@ class DeviceWindowSignal {
   // ===========================================================================
 
   /**
-   * wait_signal - Wait for accumulated signal value
+   * wait_signal - Wait for accumulated signal value across all peers
    *
-   * Polls local inbox at the signal_id slot until the condition is met.
-   * Uses acquire semantics for memory ordering.
+   * Sums across all per-peer sub-slots for the given signal_id and polls
+   * until the sum meets the comparison condition. Uses acquire semantics
+   * for memory ordering.
    *
-   * In the per-signal inbox model, all peers write to the same slot, so
-   * the accumulated value represents the sum of all received signals.
+   * This provides backward-compatible accumulated semantics: with N peers
+   * each signaling value=1, wait_signal(group, id, CMP_GE, N) works as
+   * expected.
    *
    * @param group ThreadGroup for cooperative processing
    * @param signal_id Index of the signal slot (0 to signalCount-1)
@@ -272,7 +295,79 @@ class DeviceWindowSignal {
       uint64_t value,
       [[maybe_unused]] uint64_t timeout_ns = UINT64_MAX) {
     DEVICE_WINDOW_SIGNAL_CHECK_SIGNAL_ID(signal_id, signalCount_);
-    localInbox_[signal_id].wait_until(group, cmp, value);
+    int nPeers = nRanks_ - 1;
+
+#ifdef __CUDA_ARCH__
+    if (group.scope == SyncScope::WARP) {
+      // Optimized path: parallel load + warp shuffle reduction
+      while (true) {
+        // Parallel load: each thread loads subset of peers
+        uint64_t partial_sum = 0;
+        for (int peer = static_cast<int>(group.thread_id_in_group);
+             peer < nPeers;
+             peer += static_cast<int>(group.group_size)) {
+          int slot_index = peer * signalCount_ + signal_id;
+          partial_sum += localInbox_[slot_index].load();
+        }
+
+        // Warp reduction via shuffle
+#pragma unroll
+        for (unsigned offset = 16; offset > 0; offset /= 2) {
+          partial_sum += __shfl_down_sync(0xffffffff, partial_sum, offset);
+        }
+
+        // Broadcast result from thread 0 to ALL threads
+        uint64_t total_sum = __shfl_sync(0xffffffff, partial_sum, 0);
+
+        // All threads check condition together and exit together
+        if (compare(total_sum, cmp, value)) {
+          break;
+        }
+      }
+    } else
+#endif
+    {
+      // Fallback path: all threads poll (for BLOCK/CLUSTER/MULTIWARP scopes)
+      while (true) {
+        uint64_t sum = 0;
+        for (int peer = 0; peer < nPeers; ++peer) {
+          int slot_index = peer * signalCount_ + signal_id;
+          sum += localInbox_[slot_index].load();
+        }
+        if (compare(sum, cmp, value)) {
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * wait_signal_from - Wait for signal from a specific peer
+   *
+   * Polls the specific peer's sub-slot in the local inbox until the
+   * condition is met. Uses acquire semantics for memory ordering.
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param source_rank Global rank of the source peer in [0, nRanks),
+   *        must not be self
+   * @param signal_id Index of the signal slot (0 to signalCount-1)
+   * @param cmp Comparison operation (CMP_EQ, CMP_GE, etc.)
+   * @param value Value to compare against
+   * @param timeout_ns Optional timeout in nanoseconds (default: infinite)
+   */
+  __device__ __forceinline__ void wait_signal_from(
+      ThreadGroup& group,
+      int source_rank,
+      int signal_id,
+      CmpOp cmp,
+      uint64_t value,
+      [[maybe_unused]] uint64_t timeout_ns = UINT64_MAX) {
+    DEVICE_WINDOW_SIGNAL_CHECK_RANK(source_rank, nRanks_);
+    DEVICE_WINDOW_SIGNAL_CHECK_NOT_SELF(source_rank, myRank_);
+    DEVICE_WINDOW_SIGNAL_CHECK_SIGNAL_ID(signal_id, signalCount_);
+    int source_peer = rank_to_peer_index(source_rank);
+    int slot_index = source_peer * signalCount_ + signal_id;
+    localInbox_[slot_index].wait_until(group, cmp, value);
   }
 
   // ===========================================================================
@@ -280,14 +375,41 @@ class DeviceWindowSignal {
   // ===========================================================================
 
   /**
-   * read_signal - Read current signal value from a slot (non-blocking)
+   * read_signal - Read accumulated signal value from a slot (non-blocking)
+   *
+   * Sums across all per-peer sub-slots for the given signal_id.
+   * Consistent with wait_signal() semantics.
    *
    * @param signal_id Index of the signal slot
-   * @return Current accumulated signal value
+   * @return Current accumulated signal value (sum across all peers)
    */
   __device__ __forceinline__ uint64_t read_signal(int signal_id) {
     DEVICE_WINDOW_SIGNAL_CHECK_SIGNAL_ID(signal_id, signalCount_);
-    return localInbox_[signal_id].load();
+    int nPeers = nRanks_ - 1;
+    uint64_t sum = 0;
+    for (int peer = 0; peer < nPeers; ++peer) {
+      int slot_index = peer * signalCount_ + signal_id;
+      sum += localInbox_[slot_index].load();
+    }
+    return sum;
+  }
+
+  /**
+   * read_signal_from - Read signal value from a specific peer (non-blocking)
+   *
+   * @param source_rank Global rank of the source peer in [0, nRanks),
+   *        must not be self
+   * @param signal_id Index of the signal slot
+   * @return Current signal value from the specified peer
+   */
+  __device__ __forceinline__ uint64_t
+  read_signal_from(int source_rank, int signal_id) {
+    DEVICE_WINDOW_SIGNAL_CHECK_RANK(source_rank, nRanks_);
+    DEVICE_WINDOW_SIGNAL_CHECK_NOT_SELF(source_rank, myRank_);
+    DEVICE_WINDOW_SIGNAL_CHECK_SIGNAL_ID(signal_id, signalCount_);
+    int source_peer = rank_to_peer_index(source_rank);
+    int slot_index = source_peer * signalCount_ + signal_id;
+    return localInbox_[slot_index].load();
   }
 
   // ===========================================================================
@@ -312,6 +434,33 @@ class DeviceWindowSignal {
 
  private:
   /**
+   * compare - Helper for sum-based wait_signal() polling
+   *
+   * @param actual The computed sum value
+   * @param cmp Comparison operation
+   * @param expected The expected value to compare against
+   * @return true if the comparison is satisfied
+   */
+  __device__ __forceinline__ static bool
+  compare(uint64_t actual, CmpOp cmp, uint64_t expected) {
+    switch (cmp) {
+      case CmpOp::CMP_EQ:
+        return actual == expected;
+      case CmpOp::CMP_NE:
+        return actual != expected;
+      case CmpOp::CMP_GE:
+        return actual >= expected;
+      case CmpOp::CMP_GT:
+        return actual > expected;
+      case CmpOp::CMP_LE:
+        return actual <= expected;
+      case CmpOp::CMP_LT:
+        return actual < expected;
+    }
+    return false;
+  }
+
+  /**
    * rank_to_peer_index - Convert global rank to internal peer index
    *
    * Peer index excludes self: ranks below myRank_ map directly,
@@ -332,14 +481,16 @@ class DeviceWindowSignal {
 };
 
 /**
- * getSignalInboxBufferSize - Calculate buffer size for signal inbox
+ * getSignalInboxBufferSize - Calculate buffer size for per-peer signal inbox
  *
- * @param signalCount Number of signal slots
+ * @param signalCount Number of signal slots per peer
+ * @param nPeers Number of peers (nRanks - 1)
  * @return Size in bytes, aligned to 128-byte boundary
  */
 __host__ __device__ __forceinline__ std::size_t getSignalInboxBufferSize(
-    int signalCount) {
-  return getSignalBufferSize(signalCount);
+    int signalCount,
+    int nPeers) {
+  return getSignalBufferSize(nPeers * signalCount);
 }
 
 } // namespace comms::pipes

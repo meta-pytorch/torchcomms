@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "comms/ctran/ibverbx/Ibverbx.h"
+#include <infiniband/verbs.h>
 
 #include <doca_gpunetio_host.h>
 #include "comms/ctran/interfaces/IBootstrap.h"
@@ -25,6 +25,15 @@ struct MultipeerIbgdaDeviceTransport;
 namespace comms::pipes {
 
 /**
+ * IP address family for RoCE GID selection.
+ * Similar to NCCL_IB_ADDR_FAMILY.
+ */
+enum class AddressFamily {
+  IPV4, // IPv4
+  IPV6, // IPv6
+};
+
+/**
  * Configuration for MultipeerIbgdaTransport.
  *
  * IMPORTANT: All ranks must use identical configuration values.
@@ -36,6 +45,12 @@ struct MultipeerIbgdaTransportConfig {
   // Override GID index for RoCE.
   // If not set, auto-discovers a valid RoCEv2 GID.
   std::optional<int> gidIndex;
+
+  // IP address family for the InfiniBand GID (similar to NCCL_IB_ADDR_FAMILY).
+  // Used to determine the address type for RoCE connections when gidIndex is
+  // not explicitly set. Has no effect on InfiniBand (non-RoCE) links.
+  // Default is IPV6 (IPv6).
+  AddressFamily addressFamily{AddressFamily::IPV6};
 
   // NOTE: Data buffers are NOT managed by the transport.
   // Users must allocate their own buffers and call registerBuffer() +
@@ -62,6 +77,42 @@ struct MultipeerIbgdaTransportConfig {
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
   uint32_t qpDepth{128};
+
+  // InfiniBand Verbs Timeout for QP ACK timeout.
+  // Timeout is computed as 4.096 µs * 2^timeout.
+  // Increasing this value can help on very large networks (e.g., if
+  // ibv_poll_cq returns error 12). See InfiniBand specification Volume 1,
+  // section 12.7.34 (Local Ack Timeout).
+  // Valid values: 1-31. A value of 0 or >= 32 results in infinite timeout.
+  // Default is 20 (similar to NCCL_IB_TIMEOUT).
+  uint8_t timeout{20};
+
+  // InfiniBand retry count for QP transport errors.
+  // See InfiniBand specification Volume 1, section 12.7.38.
+  // Default is 7 (similar to NCCL_IB_RETRY_CNT).
+  uint8_t retryCount{7};
+
+  // InfiniBand traffic class field (similar to NCCL_IB_TC).
+  // See InfiniBand specification Volume 1 or vendor documentation.
+  // Default is 224.
+  uint8_t trafficClass{224};
+
+  // InfiniBand Service Level (similar to NCCL_IB_SL).
+  // See InfiniBand specification Volume 1, section 4.3.1.
+  // Default is 0.
+  uint8_t serviceLevel{0};
+
+  // Minimum RNR NAK Timer field value (similar to ibv_qp_attr.min_rnr_timer).
+  // Controls the delay before a receiver sends a RNR NAK.
+  // See InfiniBand specification Volume 1, Table 46.
+  // Default is 12 (matching NCCL IbvQpUtils).
+  uint8_t minRnrTimer{12};
+
+  // RNR retry count (similar to ibv_qp_attr.rnr_retry).
+  // Number of times to retry after receiving an RNR NAK.
+  // 7 means infinite retry.
+  // Default is 7 (matching NCCL IbvQpUtils).
+  uint8_t rnrRetry{7};
 };
 
 /**
@@ -84,8 +135,8 @@ struct IbgdaTransportExchInfo {
   // Local Identifier (for IB, not used in RoCE)
   uint16_t lid{0};
 
-  // Path MTU (4096 = IBV_MTU_4096)
-  uint32_t mtu{4096};
+  // Port active MTU. Used to negotiate path MTU: min(local, remote).
+  enum ibv_mtu mtu { IBV_MTU_4096 };
 };
 
 /**
@@ -119,6 +170,9 @@ struct IbgdaTransportExchInfoAll {
   uint16_t lid{0};
   uint64_t signalAddr{0};
   HostRKey signalRkey{0};
+
+  // Port active MTU.
+  enum ibv_mtu mtu { IBV_MTU_4096 };
 
   // Per-target-rank QPNs
   // qpnForRank[j] = QPN that this rank uses to connect to rank j
@@ -338,11 +392,11 @@ class MultipeerIbgdaTransport {
   // DOCA GPU context
   doca_gpu* docaGpu_{nullptr};
 
-  // IB verbs resources (ibverbx RAII wrappers)
-  std::optional<ibverbx::IbvDevice> ibvDevice_;
-  std::optional<ibverbx::IbvPd> ibvPd_;
+  // IB verbs resources (raw rdma-core)
+  ibv_context* ibvCtx_{nullptr};
+  ibv_pd* ibvPd_{nullptr};
   doca_verbs_ah_attr* ahAttr_{nullptr};
-  ibverbx::ibv_gid localGid_{};
+  union ibv_gid localGid_{};
 
   // High-level QPs (one per peer)
   std::vector<doca_gpu_verbs_qp_hl*> qpHlList_;
@@ -352,15 +406,16 @@ class MultipeerIbgdaTransport {
   std::size_t signalBufferSize_{0};
 
   // Memory regions for signal buffer
-  std::optional<ibverbx::IbvMr> signalMr_;
+  ibv_mr* signalMr_{nullptr};
 
-  // User-registered buffers (maps ptr -> IbvMr)
-  std::unordered_map<void*, ibverbx::IbvMr> registeredBuffers_;
+  // User-registered buffers (maps ptr -> ibv_mr*)
+  std::unordered_map<void*, ibv_mr*> registeredBuffers_;
 
   // GPU PCIe bus ID and NIC device name
   std::string gpuPciBusId_;
   std::string nicDeviceName_;
   int gidIndex_{3}; // Default GID index
+  enum ibv_mtu localMtu_ { IBV_MTU_4096 };
 
   // Per-peer device transports (GPU accessible)
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};

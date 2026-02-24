@@ -1,6 +1,8 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <algorithm>
 #include <chrono>
+#include <mutex>
 
 #include <cuda.h>
 #include <cuda_fp16.h>
@@ -15,6 +17,7 @@
 #include "comms/ctran/CtranComm.h"
 
 #include "comms/ctran/algos/AllReduce/AllReduceImpl.h"
+#include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -736,21 +739,64 @@ static commResult_t impl(
   return commSuccess;
 }
 
-commResult_t
-getNumBlocksAndThreads(int* numBlocks, int* numThreads, const void* func) {
-  // Allow user to customize thread block size if specified
+commResult_t getNumBlocksAndThreads(
+    int* numBlocks,
+    int* numThreads,
+    GpuArch* arch,
+    const void* func) {
   FB_CUDACHECK(cudaOccupancyMaxPotentialBlockSize(
       numBlocks,
       numThreads,
       func,
       0 /* dynamicSMemSize */,
       0 /* blockSizeLimit */));
-  if (*numBlocks > NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS) {
-    *numBlocks = NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS;
+
+  *arch = GpuArch::Default;
+  int cudaDev = 0;
+  FB_CUDACHECK(cudaGetDevice(&cudaDev));
+  int smMajor = 0;
+  FB_CUDACHECK(cudaDeviceGetAttribute(
+      &smMajor, cudaDevAttrComputeCapabilityMajor, cudaDev));
+  if (smMajor < 10) {
+    *arch = GpuArch::Hopper;
   }
-  if (*numThreads > NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE) {
-    *numThreads = NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE;
+
+  return commSuccess;
+}
+
+commResult_t getPipelineConfiguration(
+    size_t messageBytes,
+    int nRanks,
+    const void* func,
+    int* numBlocks,
+    int* numThreads,
+    size_t* pipelineNumChunks,
+    size_t* pipelineChunkSize,
+    bool log_decision) {
+  auto arch = ctran::allreduce::ring::GpuArch::Default;
+  int cudaOccupancyNumBlocks, cudaOccupancyBlockSize;
+  FB_COMMCHECK(
+      ctran::allreduce::ring::getNumBlocksAndThreads(
+          &cudaOccupancyNumBlocks, &cudaOccupancyBlockSize, &arch, func));
+
+  if (log_decision) {
+    static std::once_flag logFlag;
+    std::call_once(logFlag, [&] {
+      ctran::allreduce::ring::logAutoTuneDecisions(
+          nRanks, cudaOccupancyNumBlocks, cudaOccupancyBlockSize, arch);
+    });
   }
+
+  auto params = ctran::allreduce::ring::getAutoTunedParams(
+      messageBytes,
+      nRanks,
+      cudaOccupancyNumBlocks,
+      cudaOccupancyBlockSize,
+      arch);
+  *pipelineChunkSize = params.pipeline.chunkSize;
+  *pipelineNumChunks = params.pipeline.numChunks;
+  *numBlocks = params.block.numBlocks;
+  *numThreads = params.block.blockSize;
 
   return commSuccess;
 }
@@ -819,11 +865,23 @@ commResult_t ctranAllReduceRing(
           redOp));
   const void* func = typeToFunc.at(std::make_pair(datatype, redOp));
 
+  const size_t messageBytes = count * typeSize;
+
   int numBlocks = 0;
   int numThreads = 0;
+  size_t pipelineChunkSize = 0;
+  size_t pipelineNumChunks = 0;
+
   FB_COMMCHECK(
-      ctran::allreduce::ring::getNumBlocksAndThreads(
-          &numBlocks, &numThreads, func));
+      ctran::allreduce::ring::getPipelineConfiguration(
+          messageBytes,
+          nRanks,
+          func,
+          &numBlocks,
+          &numThreads,
+          &pipelineNumChunks,
+          &pipelineChunkSize,
+          /*log_decision=*/rank == 0));
 
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
 
@@ -851,14 +909,22 @@ commResult_t ctranAllReduceRing(
   hostResource->sendCopySync = gpeKernelSyncs[0];
   hostResource->recvRedCopySync = gpeKernelSyncs[1];
   hostResource->partitionSync = gpeKernelSyncs[2];
-  hostResource->chunkSize = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE;
-  hostResource->numChunks = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS;
+  hostResource->chunkSize = pipelineChunkSize;
+  hostResource->numChunks = pipelineNumChunks;
+
   std::tie(hostResource->tmpSendBuf, hostResource->tmpSendBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_SEND_BUF);
   std::tie(hostResource->tmpRecvBuf, hostResource->tmpRecvBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_RECV_BUF);
+  CLOGF(
+      DBG,
+      "AutoTune: {} blocks of {} threads, tmpbuf {} x {} chunks",
+      numBlocks,
+      numThreads,
+      hostResource->numChunks,
+      hostResource->chunkSize);
 
   auto* hostArgs = new ctran::allreduce::ring::HostArgs();
   op->allreduce.args = hostArgs;

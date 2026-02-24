@@ -5,11 +5,19 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
+import glob
 import json
 import os
+import pickle
+import tempfile
 import typing
 import unittest
 from datetime import timedelta
+
+# Set dynamic filename mode for DebugInfoWriter at module level.
+# This ensures the singleton is created with enable_dynamic_filename_=true
+# so env var TORCHCOMM_FR_DUMP_TEMP_FILE is re-read on each write.
+os.environ["TORCHCOMM_FR_DUMP_DYNAMIC_FILE_NAME"] = "1"
 
 import torch
 import torchcomms
@@ -21,6 +29,7 @@ from torch.distributed.flight_recorder.components.types import (
 )
 from torchcomms.hooks import FlightRecorderHook
 from torchcomms.objcol import all_gather_object
+from torchcomms.tests.integration.py.TorchCommTestHelpers import get_rank_and_size
 
 
 class TestFlightRecorderHook(unittest.TestCase):
@@ -690,6 +699,205 @@ class TestFlightRecorderHook(unittest.TestCase):
         self.assertFalse(recorder.is_enabled())
 
         comm.finalize()
+
+    def test_fr_dump_to_configured_file(self) -> None:
+        """Test that traces are dumped to configured files.
+
+        Verifies that dump_file writes valid trace data to the file path
+        configured via the TORCHCOMM_FR_DUMP_TEMP_FILE environment variable.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_comm_dump_file",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Perform some collective operations to generate entries
+        t = torch.rand(10, 10, device=device)
+        for _ in range(3):
+            comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        rank = comm.get_rank()
+
+        # Create a temporary directory and configure the dump file path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # When dynamic filename is enabled, the env var value is used
+            # directly as the full filename (no rank appended)
+            dump_file_path = os.path.join(tmpdir, f"fr_trace_{rank}")
+
+            # Save original env vars
+            original_dump_file = os.environ.get("TORCHCOMM_FR_DUMP_TEMP_FILE")
+            os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"] = dump_file_path
+
+            try:
+                # Dump the flight recorder trace to file
+                recorder.dump_file(rank)
+
+                # Verify the file was created
+                self.assertTrue(
+                    os.path.exists(dump_file_path),
+                    f"Expected trace file {dump_file_path} was not created",
+                )
+
+                # Read and parse the file contents (pickled format)
+                with open(dump_file_path, "rb") as f:
+                    data = pickle.load(f)
+
+                # Verify the trace structure
+                self.assertIn("version", data)
+                self.assertEqual(data["version"], "2.10")
+                self.assertIn("entries", data)
+
+                # Verify we have entries from our operations
+                entries = data.get("entries", [])
+                self.assertGreater(
+                    len(entries), 0, "Dumped trace should contain entries"
+                )
+
+                # Validate each entry format (pickle format may use tuples instead of lists)
+                for entry in entries:
+                    # Basic required fields check
+                    self.assertIn("record_id", entry)
+                    self.assertIn("pg_id", entry)
+                    self.assertIn("process_group", entry)
+                    self.assertIn("profiling_name", entry)
+                    self.assertIn("time_created_ns", entry)
+                    self.assertIn("state", entry)
+
+                    # Validate profiling_name is for all_reduce
+                    self.assertEqual(entry["profiling_name"], "nccl:all_reduce")
+
+            finally:
+                # Restore the original environment variables
+                if original_dump_file is not None:
+                    os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"] = original_dump_file
+                elif "TORCHCOMM_FR_DUMP_TEMP_FILE" in os.environ:
+                    del os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"]
+
+        recorder.unregister()
+        comm.finalize()
+
+    def test_fr_abort_hook_writes_traces_on_simulated_rank_failure(self) -> None:
+        """Test abort hook writes traces when simulating a rank failure with threads.
+
+        This test uses threads to simulate a rank crash:
+        - Each rank spawns a thread that runs a collective
+        - On rank 0, the thread exits early (simulating a crash)
+        - On other ranks, the collective times out waiting for rank 0
+        - The timeout triggers the abort hook, writing traces
+
+        Note: Uses abort_process_on_timeout_or_error=False so the process doesn't
+        actually exit, allowing us to verify the traces were written.
+        """
+        import threading
+
+        backend = os.environ["TEST_BACKEND"]
+
+        rank, size = get_rank_and_size()
+        if size < 2:
+            self.skipTest("This test requires at least 2 ranks")
+
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+
+        trace_dir = "/tmp/fr_thread_crash_test_traces"
+        os.makedirs(trace_dir, exist_ok=True)
+        expected_trace_file = os.path.join(trace_dir, f"fr_crash_trace_{rank}")
+
+        original_dump_file = os.environ.get("TORCHCOMM_FR_DUMP_TEMP_FILE")
+        os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"] = expected_trace_file
+
+        collective_exception: list[Exception] = []
+
+        def run_collective_in_thread(
+            comm: torchcomms.TorchComm,
+            should_exit_early: bool,
+        ) -> None:
+            """Run a collective in a thread, optionally exiting early to simulate crash."""
+            try:
+                t = torch.rand(10, 10, device=device)
+                if should_exit_early:
+                    return
+                comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+            except Exception as e:
+                collective_exception.append(e)
+
+        try:
+            comm = torchcomms.new_comm(
+                backend=backend,
+                device=device,
+                name="test_comm_thread_crash",
+                timeout=timedelta(milliseconds=2000),
+                abort_process_on_timeout_or_error=False,
+            )
+
+            recorder = FlightRecorderHook(max_entries=100, isolated=True)
+            recorder.register_with_comm(comm)
+
+            t = torch.rand(10, 10, device=device)
+            comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+            should_crash = rank == 0
+            collective_thread = threading.Thread(
+                target=run_collective_in_thread,
+                args=(comm, should_crash),
+                name=f"collective-thread-rank-{rank}",
+            )
+            collective_thread.start()
+            collective_thread.join(timeout=10)
+
+            if rank != 0:
+                self.assertGreater(
+                    len(collective_exception),
+                    0,
+                    "Non-rank-0 should have experienced a timeout/error",
+                )
+
+            recorder.dump_file(rank)
+
+            self.assertTrue(
+                os.path.exists(expected_trace_file),
+                f"Expected trace file {expected_trace_file} was not created",
+            )
+
+            with open(expected_trace_file, "rb") as f:
+                data = pickle.load(f)
+
+            self.assertIn("version", data)
+            self.assertEqual(data["version"], "2.10")
+            self.assertIn("entries", data)
+
+            entries = data.get("entries", [])
+            self.assertGreater(
+                len(entries),
+                0,
+                f"Trace file for rank {rank} should have entries",
+            )
+
+            has_all_reduce = any(
+                entry.get("profiling_name") == "nccl:all_reduce" for entry in entries
+            )
+            self.assertTrue(has_all_reduce, "Trace should contain all_reduce entry")
+
+            recorder.unregister()
+            comm.finalize()
+
+        finally:
+            if original_dump_file is not None:
+                os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"] = original_dump_file
+            elif "TORCHCOMM_FR_DUMP_TEMP_FILE" in os.environ:
+                del os.environ["TORCHCOMM_FR_DUMP_TEMP_FILE"]
+
+            for trace_file in glob.glob(f"{expected_trace_file}*"):
+                try:
+                    os.remove(trace_file)
+                except OSError:
+                    pass
 
 
 if __name__ == "__main__":

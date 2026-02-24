@@ -334,4 +334,79 @@ void testPutOperation(
     bool isWriter,
     int* result);
 
+/**
+ * Test kernel: wait_signal_from() basic per-peer signal/wait
+ *
+ * Rank 0 signals rank 1, rank 1 uses wait_signal_from(0, ...) to wait
+ * for the specific peer's signal. Verifies read_signal_from() as well.
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param peerRank The peer rank to signal/wait from
+ * @param signalIdx The signal slot index to use
+ * @param isSignaler If true, this rank signals; if false, waits
+ * @param result Output: 1 if successful
+ */
+void testWaitSignalFromPeer(
+    MultiPeerDeviceTransport& transport,
+    int peerRank,
+    int signalIdx,
+    bool isSignaler,
+    int* result);
+
+/**
+ * Test kernel: wait_signal_from() per-peer isolation
+ *
+ * All peers signal one target rank with different values using SIGNAL_SET.
+ * Target calls wait_signal_from() for each peer individually, verifying
+ * each peer's sub-slot has the correct independent value.
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param targetRank The rank that all peers signal and that verifies isolation
+ * @param signalIdx The signal slot index to use
+ * @param result Output: 1 if successful
+ */
+void testWaitSignalFromMultiPeerIsolation(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result);
+
+/**
+ * Test kernel: Both wait_signal() and wait_signal_from() work together
+ *
+ * All peers signal rank 0 with SIGNAL_ADD, 1. Rank 0 verifies:
+ * - wait_signal(signal_id, CMP_GE, nRanks-1) succeeds (accumulated sum)
+ * - wait_signal_from(peer, signal_id, CMP_GE, 1) succeeds for each peer
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param targetRank The rank that waits for all signals
+ * @param signalIdx The signal slot index to use
+ * @param result Output: 1 if successful
+ */
+void testWaitSignalAndWaitSignalFromBothWork(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    int* result);
+
+/**
+ * Test kernel: Signal/Wait using BLOCK scope (exercises fallback path)
+ *
+ * Same as testSignalWait but uses make_block_group() instead of
+ * make_warp_group() to exercise the non-WARP fallback code path in
+ * DeviceWindowSignal::wait_signal().
+ *
+ * @param transport The MultiPeerDeviceTransport to use
+ * @param targetRank The target rank to signal/wait from
+ * @param signalIdx The signal slot index to use
+ * @param isSignaler If true, this rank signals; if false, this rank waits
+ * @param result Output: 1 if successful, 0 if failed
+ */
+void testSignalWaitBlockScope(
+    MultiPeerDeviceTransport& transport,
+    int targetRank,
+    int signalIdx,
+    bool isSignaler,
+    int* result);
+
 } // namespace comms::pipes::test

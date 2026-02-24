@@ -180,6 +180,29 @@ struct ProcessGlobalErrors {
   2: list<ErrorAndStackTrace> errorAndStackTraces;
 }
 
+struct IbCompletionError {
+  1: i64 timestampMs;
+  2: string peer;
+  3: string statusStr;
+  4: i32 status;
+  5: string opcodeStr;
+  6: i32 opcode;
+  7: i32 reqSize;
+  8: i64 vendorErr;
+  9: string reqType;
+  10: string localGid;
+  11: string remoteGid;
+  12: string hcaName;
+  13: string scaleupDomain;
+  14: string localHostname;
+}
+
+struct CudaError {
+  1: i64 timestampMs;
+  2: string errorString;
+  3: i32 errorCode;
+}
+
 // NOTE: Keep in sync with commDump.cc
 // The field names must exactly match the json keys.
 // The values themselves are serialized json.
@@ -266,6 +289,8 @@ struct GetCommsResponse {
   // For inference, this is 0
   5: i64 step;
   6: i64 stepStartTimeNs;
+  7: optional list<IbCompletionError> ibErrors;
+  8: optional list<CudaError> cudaErrors;
 }
 
 // Implementors of this service expose tracing information about communications
