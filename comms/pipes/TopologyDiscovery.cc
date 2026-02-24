@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <stdexcept>
 
@@ -27,36 +28,56 @@ namespace {
     }                                                                      \
   } while (0)
 
-struct RankInfo {
-  char hostname[64];
-  int cudaDevice;
-  NvmlFabricInfo fabricInfo;
-};
+/// Default LocalInfoFn: gathers hostname, CUDA PCI bus ID, and NVML fabric
+/// info from real hardware.
+RankTopologyInfo default_local_info(int deviceId) {
+  RankTopologyInfo info{};
+  info.cudaDevice = deviceId;
+  if (gethostname(info.hostname, sizeof(info.hostname)) != 0) {
+    throw std::runtime_error(
+        std::string("gethostname failed: ") +
+        std::strerror(errno)); // NOLINT(facebook-hte-BadCall-strerror)
+  }
+  char busId[NvmlFabricInfo::kBusIdLen];
+  CUDA_CHECK(cudaDeviceGetPCIBusId(busId, NvmlFabricInfo::kBusIdLen, deviceId));
+  info.fabricInfo = NvmlFabricInfo::query(busId);
+  return info;
+}
+
+/// Default PeerAccessFn: queries cudaDeviceCanAccessPeer.
+bool default_peer_access(int deviceA, int deviceB) {
+  int canAccess = 0;
+  CUDA_CHECK(cudaDeviceCanAccessPeer(&canAccess, deviceA, deviceB));
+  return canAccess != 0;
+}
 
 } // namespace
 
-TopologyResult TopologyDiscovery::discover(
+TopologyDiscovery::TopologyDiscovery()
+    : peerAccessFn_(default_peer_access), localInfoFn_(default_local_info) {}
+
+TopologyDiscovery::TopologyDiscovery(PeerAccessFn peerAccessFn)
+    : peerAccessFn_(std::move(peerAccessFn)),
+      localInfoFn_(default_local_info) {}
+
+TopologyDiscovery::TopologyDiscovery(
+    PeerAccessFn peerAccessFn,
+    LocalInfoFn localInfoFn)
+    : peerAccessFn_(std::move(peerAccessFn)),
+      localInfoFn_(std::move(localInfoFn)) {}
+
+TopologyResult TopologyDiscovery::classify(
     int myRank,
     int nRanks,
-    int deviceId,
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap) {
+    std::vector<RankTopologyInfo>& allInfo) {
   TopologyResult result;
-
-  std::vector<RankInfo> allInfo(nRanks);
-  auto& myInfo = allInfo[myRank];
-
-  std::memset(&myInfo, 0, sizeof(RankInfo));
-  myInfo.cudaDevice = deviceId;
-  if (gethostname(myInfo.hostname, sizeof(myInfo.hostname)) != 0) {
+  if (myRank < 0 || myRank >= static_cast<int>(allInfo.size())) {
     throw std::runtime_error(
-        std::string("gethostname failed: ") + std::strerror(errno));
+        "TopologyDiscovery::classify: myRank " + std::to_string(myRank) +
+        " out of range [0, " + std::to_string(allInfo.size()) + ")");
   }
-
-  char busId[NvmlFabricInfo::kBusIdLen];
-  CUDA_CHECK(cudaDeviceGetPCIBusId(busId, NvmlFabricInfo::kBusIdLen, deviceId));
-  myInfo.fabricInfo = NvmlFabricInfo::query(busId);
-
-  bootstrap->allGather(allInfo.data(), sizeof(RankInfo), myRank, nRanks).get();
+  auto& myInfo = allInfo[myRank];
+  const auto& peerAccessFn = peerAccessFn_;
 
   std::vector<int> nvlGroupGlobalRanks;
   nvlGroupGlobalRanks.push_back(myRank);
@@ -78,14 +99,12 @@ TopologyResult TopologyDiscovery::discover(
       continue;
     }
 
-    // Tier 2: Same hostname → local cudaDeviceCanAccessPeer (H100).
-    if (std::strncmp(
+    // Tier 2: Same hostname + peer access check.
+    if (peerAccessFn &&
+        std::strncmp(
             myInfo.hostname, allInfo[r].hostname, sizeof(myInfo.hostname)) ==
-        0) {
-      int canAccess = 0;
-      CUDA_CHECK(cudaDeviceCanAccessPeer(
-          &canAccess, myInfo.cudaDevice, allInfo[r].cudaDevice));
-      if (canAccess) {
+            0) {
+      if (peerAccessFn(myInfo.cudaDevice, allInfo[r].cudaDevice)) {
         nvlGroupGlobalRanks.push_back(r);
         continue;
       }
@@ -115,6 +134,21 @@ TopologyResult TopologyDiscovery::discover(
   }
 
   return result;
+}
+
+TopologyResult TopologyDiscovery::discover(
+    int myRank,
+    int nRanks,
+    int deviceId,
+    ctran::bootstrap::IBootstrap& bootstrap) {
+  std::vector<RankTopologyInfo> allInfo(nRanks);
+
+  allInfo[myRank] = localInfoFn_(deviceId);
+
+  bootstrap.allGather(allInfo.data(), sizeof(RankTopologyInfo), myRank, nRanks)
+      .get();
+
+  return classify(myRank, nRanks, allInfo);
 }
 
 } // namespace comms::pipes
