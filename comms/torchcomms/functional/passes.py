@@ -97,7 +97,7 @@ def _replace_in_output_args(output_node, old_node, new_node):
     output_node.args = replace_in_structure(output_node.args)
 
 
-def strip_with_effects_pass(
+def strip_with_effects_pass(  # noqa: C901
     gm: torch.fx.GraphModule, example_inputs=None
 ) -> torch.fx.GraphModule:
     """Remove ``with_effects`` higher-order-op wrappers from torchcomms ops.
