@@ -231,7 +231,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   // Hooks
   struct PreHookArgs {
-    OpName name;
+    OpName name{};
     bool async_op{false};
     std::vector<at::Tensor>* input_tensors{nullptr};
     std::vector<at::Tensor>* output_tensors{nullptr};
