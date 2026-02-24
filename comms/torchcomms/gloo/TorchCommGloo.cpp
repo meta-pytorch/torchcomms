@@ -541,10 +541,10 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::batch_op_issue(
 
   // Prepare CPU copies of tensors and track recv operations for copy-back
   struct OpInfo {
-    BatchSendRecv::P2POp::OpType type;
+    BatchSendRecv::P2POp::OpType type{};
     at::Tensor original_tensor; // Original tensor (for copy-back)
     at::Tensor cpu_tensor; // CPU tensor for Gloo
-    int peer;
+    int peer{};
   };
   std::vector<OpInfo> op_infos;
   op_infos.reserve(ops.size());

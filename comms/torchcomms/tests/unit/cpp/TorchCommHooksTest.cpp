@@ -41,7 +41,7 @@ TEST_F(TorchCommHooksTest, PreAndPostHookCalledAfterRegistration) {
       });
 
   auto postHandle = torchcomm->registerPostHook(
-      [&postHookCalls](TorchComm::PostHookArgs args) {
+      [&postHookCalls](const TorchComm::PostHookArgs& args) {
         postHookCalls.push_back(args.name);
       });
 
@@ -68,8 +68,8 @@ TEST_F(TorchCommHooksTest, PreAndPostHookOpIdIncreases) {
         preOpIds.push_back(args.op_id);
       });
 
-  auto postHandle =
-      torchcomm->registerPostHook([&postOpIds](TorchComm::PostHookArgs args) {
+  auto postHandle = torchcomm->registerPostHook(
+      [&postOpIds](const TorchComm::PostHookArgs& args) {
         postOpIds.push_back(args.op_id);
       });
 
@@ -105,7 +105,9 @@ TEST_F(TorchCommHooksTest, PreAndPostHookNotCalledAfterRemoval) {
       [&preHookCallCount](TorchComm::PreHookArgs) { preHookCallCount++; });
 
   auto postHandle = torchcomm->registerPostHook(
-      [&postHookCallCount](TorchComm::PostHookArgs) { postHookCallCount++; });
+      [&postHookCallCount](const TorchComm::PostHookArgs&) {
+        postHookCallCount++;
+      });
 
   auto tensor = at::ones({2, 2}, at::kFloat);
   auto work = torchcomm->all_reduce(tensor, ReduceOp::SUM, true);
@@ -139,10 +141,14 @@ TEST_F(TorchCommHooksTest, MultiplePreAndPostHooksRegistered) {
       [&preHook2CallCount](TorchComm::PreHookArgs) { preHook2CallCount++; });
 
   auto postHandle1 = torchcomm->registerPostHook(
-      [&postHook1CallCount](TorchComm::PostHookArgs) { postHook1CallCount++; });
+      [&postHook1CallCount](const TorchComm::PostHookArgs&) {
+        postHook1CallCount++;
+      });
 
   auto postHandle2 = torchcomm->registerPostHook(
-      [&postHook2CallCount](TorchComm::PostHookArgs) { postHook2CallCount++; });
+      [&postHook2CallCount](const TorchComm::PostHookArgs&) {
+        postHook2CallCount++;
+      });
 
   auto tensor = at::ones({2, 2}, at::kFloat);
   torchcomm->all_reduce(tensor, ReduceOp::SUM, true);
@@ -165,12 +171,12 @@ TEST_F(
 
   auto preHandle =
       torchcomm->registerPreHook([&preHookCalls](TorchComm::PreHookArgs args) {
-        preHookCalls.push_back({args.name, args.op_id});
+        preHookCalls.emplace_back(args.name, args.op_id);
       });
 
   auto postHandle = torchcomm->registerPostHook(
-      [&postHookCalls](TorchComm::PostHookArgs args) {
-        postHookCalls.push_back({args.name, args.op_id});
+      [&postHookCalls](const TorchComm::PostHookArgs& args) {
+        postHookCalls.emplace_back(args.name, args.op_id);
       });
 
   auto tensor = at::ones({2, 2}, at::kFloat);
