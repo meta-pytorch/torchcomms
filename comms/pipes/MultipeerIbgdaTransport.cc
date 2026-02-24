@@ -24,6 +24,25 @@ namespace {
 constexpr int kDefaultGidIndex = 3; // Default GID index
 constexpr int kHopLimit = 255;
 
+// Convert ibv_mtu enum to doca_verbs_mtu_size enum.
+doca_verbs_mtu_size ibv_mtu_to_doca_mtu(enum ibv_mtu ibvMtu) {
+  switch (ibvMtu) {
+    case IBV_MTU_256:
+      return DOCA_VERBS_MTU_SIZE_256_BYTES;
+    case IBV_MTU_512:
+      return DOCA_VERBS_MTU_SIZE_512_BYTES;
+    case IBV_MTU_1024:
+      return DOCA_VERBS_MTU_SIZE_1K_BYTES;
+    case IBV_MTU_2048:
+      return DOCA_VERBS_MTU_SIZE_2K_BYTES;
+    case IBV_MTU_4096:
+      return DOCA_VERBS_MTU_SIZE_4K_BYTES;
+    default:
+      throw std::runtime_error(
+          "Invalid ibv_mtu value: " + std::to_string(ibvMtu));
+  }
+}
+
 // Convert DOCA error to string using lookup table
 // Values match the doca_error_t enum (0 = DOCA_SUCCESS through 31)
 const char* docaErrorToString(doca_error_t err) {
@@ -195,12 +214,16 @@ void MultipeerIbgdaTransport::openIbDevice() {
 
   LOG(INFO) << "MultipeerIbgdaTransport: port 1 state=" << portAttr.state
             << " link_layer=" << (int)portAttr.link_layer
-            << " (1=IB, 2=Ethernet)";
+            << " (1=IB, 2=Ethernet)"
+            << " active_mtu=" << portAttr.active_mtu;
 
   if (portAttr.state != IBV_PORT_ACTIVE) {
     throw std::runtime_error(
         "Port 1 is not active (state=" + std::to_string(portAttr.state) + ")");
   }
+
+  // Store local port MTU for negotiation during connectQp
+  localMtu_ = portAttr.active_mtu;
 
   // Determine address type based on link layer
   // For InfiniBand, always use IB_NO_GRH. For RoCE (Ethernet), use the
@@ -228,6 +251,9 @@ void MultipeerIbgdaTransport::openIbDevice() {
 
   err = doca_verbs_ah_attr_set_traffic_class(ahAttr_, config_.trafficClass);
   checkDocaError(err, "Failed to set traffic class");
+
+  err = doca_verbs_ah_attr_set_sl(ahAttr_, config_.serviceLevel);
+  checkDocaError(err, "Failed to set service level");
 }
 
 void MultipeerIbgdaTransport::allocateResources() {
@@ -385,7 +411,9 @@ void MultipeerIbgdaTransport::connectQp(
   // Transition to RTR state
   err = doca_verbs_qp_attr_set_next_state(qpAttr, DOCA_VERBS_QP_STATE_RTR);
   checkDocaError(err, "Failed to set next state RTR");
-  err = doca_verbs_qp_attr_set_path_mtu(qpAttr, DOCA_VERBS_MTU_SIZE_1K_BYTES);
+  // Negotiate path MTU: use the minimum of local and remote active MTU
+  auto negotiatedMtu = ibv_mtu_to_doca_mtu(std::min(localMtu_, peerInfo.mtu));
+  err = doca_verbs_qp_attr_set_path_mtu(qpAttr, negotiatedMtu);
   checkDocaError(err, "Failed to set MTU");
   err = doca_verbs_qp_attr_set_rq_psn(qpAttr, 0);
   checkDocaError(err, "Failed to set RQ PSN");
@@ -393,7 +421,7 @@ void MultipeerIbgdaTransport::connectQp(
   checkDocaError(err, "Failed to set dest QP number");
   err = doca_verbs_qp_attr_set_ah_attr(qpAttr, ahAttr_);
   checkDocaError(err, "Failed to set AH attributes");
-  err = doca_verbs_qp_attr_set_min_rnr_timer(qpAttr, 1);
+  err = doca_verbs_qp_attr_set_min_rnr_timer(qpAttr, config_.minRnrTimer);
   checkDocaError(err, "Failed to set min RNR timer");
 
   err = doca_verbs_qp_modify(
@@ -413,7 +441,7 @@ void MultipeerIbgdaTransport::connectQp(
   checkDocaError(err, "Failed to set ACK timeout");
   err = doca_verbs_qp_attr_set_retry_cnt(qpAttr, config_.retryCount);
   checkDocaError(err, "Failed to set retry count");
-  err = doca_verbs_qp_attr_set_rnr_retry(qpAttr, 1);
+  err = doca_verbs_qp_attr_set_rnr_retry(qpAttr, config_.rnrRetry);
   checkDocaError(err, "Failed to set RNR retry");
 
   err = doca_verbs_qp_modify(
@@ -553,6 +581,7 @@ void MultipeerIbgdaTransport::exchange() {
   myInfo.gidIndex = gidIndex_;
   myInfo.signalAddr = reinterpret_cast<uint64_t>(signalBuffer_);
   myInfo.signalRkey = HostRKey(signalMr_->rkey);
+  myInfo.mtu = localMtu_;
 
   // Query port for LID (IB only)
   ibv_port_attr exchPortAttr{};
@@ -604,6 +633,7 @@ void MultipeerIbgdaTransport::exchange() {
         sizeof(peerInfo.gid));
     peerExchInfo_[peerIndex].transport.gidIndex = peerInfo.gidIndex;
     peerExchInfo_[peerIndex].transport.lid = peerInfo.lid;
+    peerExchInfo_[peerIndex].transport.mtu = peerInfo.mtu;
 
     // Extract signal buffer info
     peerExchInfo_[peerIndex].signal.addr = peerInfo.signalAddr;
