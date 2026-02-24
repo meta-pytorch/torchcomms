@@ -445,7 +445,7 @@ const c10::List<c10::IValue> FlightRecorder::getCollectiveTrace(
       auto sizes = new_list();
       for (auto dim : dims) {
         auto arg_sizes = new_list();
-        for ([[maybe_unused]] auto i : c10::irange(dim)) {
+        for ([[maybe_unused]] auto j : c10::irange(dim)) {
           arg_sizes.push_back(*it++);
         }
         sizes.push_back(arg_sizes);
