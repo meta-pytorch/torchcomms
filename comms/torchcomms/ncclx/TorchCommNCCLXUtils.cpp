@@ -459,13 +459,10 @@ void TorchCommNCCLX::returnEvent(cudaEvent_t event) {
 }
 
 void TorchCommNCCLX::attachMemoryHook() {
-  TC_LOG(INFO, this) << "Attaching memory hook comm=" << this;
-  CachingAllocatorHook::getInstance().registerComm(this);
-}
-
-void TorchCommNCCLX::detachMemoryHook() {
-  TC_LOG(INFO, this) << "Detaching memory hook comm=" << this;
-  CachingAllocatorHook::getInstance().deregisterComm(this);
+  // Initialize the CachingAllocatorHook singleton.
+  // This attaches the CCA trace hook and registers any pre-existing
+  // allocations.
+  CachingAllocatorHook::getInstance();
 }
 
 } // namespace torch::comms
