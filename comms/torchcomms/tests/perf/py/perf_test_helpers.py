@@ -90,7 +90,7 @@ def create_tensor(
 
 
 def sync_device(device: torch.device) -> None:
-    """Synchronize the device stream if it's a CUDA device."""
+    """Synchronize the device stream if it's an accelerator device."""
     if torch.accelerator.is_available():
         torch.accelerator.synchronize()
 
