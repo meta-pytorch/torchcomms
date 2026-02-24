@@ -55,7 +55,7 @@ class TorchCommMethodVariable(VariableTracker):
         self.target_class = target_class
         self.op_info = op_info
 
-    def call_function(
+    def call_function(  # noqa: C901
         self,
         tx: "InstructionTranslator",
         args: Sequence[VariableTracker],
@@ -355,7 +355,7 @@ class AsyncWorkVariable(VariableTracker):
     # however, we can also use wait_tensor, which takes a single tensor, if the waited function
     # only takes a single mutable tensor as input. then we don't have to deal with the list semantics
     # of wait_tensors.
-    def _do_wait(self, tx: "InstructionTranslator") -> VariableTracker:
+    def _do_wait(self, tx: "InstructionTranslator") -> VariableTracker:  # noqa: C901
         from torch._dynamo.variables import TensorVariable
         from torch._dynamo.variables.builder import wrap_fx_proxy
         from torch._dynamo.variables.lists import BaseListVariable

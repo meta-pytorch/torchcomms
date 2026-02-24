@@ -340,7 +340,7 @@ class GraphTestBuilder:
         self._captures.append((stream, fn))
         return self
 
-    def _run(
+    def _run(  # noqa: C901
         self,
         inputs: list[torch.Tensor] | Callable[["GraphTestBuilder"], list[torch.Tensor]],
         expected: list[torch.Tensor]

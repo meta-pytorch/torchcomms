@@ -318,7 +318,7 @@ class CollectiveParamSchema:
         ]
 
     @staticmethod
-    def from_raw_specs(
+    def from_raw_specs(  # noqa: C901
         target_class: type,
         param_specs: list[ParamSpec],
     ) -> "CollectiveParamSchema":
