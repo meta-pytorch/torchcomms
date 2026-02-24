@@ -22,8 +22,8 @@ jobs:
       - name: Setup conda env
         uses: conda-incubator/setup-miniconda@v2
         with:
-          auto-update-conda: true
           miniconda-version: "latest"
+          conda-version: "25.11.1"
           activate-environment: test
           python-version: '3.10'
           auto-activate: false
@@ -45,7 +45,7 @@ jobs:
           set -eux
           conda install -y git
           conda install -y -c conda-forge glog==0.4.0 gflags fmt
-          pip install cmake
+          pip install cmake==3.31.6
           pip install -r docs/requirements.txt
           export USE_NCCL=0
           export USE_NCCLX=0
