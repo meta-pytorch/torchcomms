@@ -14,7 +14,7 @@ buck run @//mode/opt //comms/torchcomms/transport/benchmarks:rdma_transport_benc
 ```
 
 ## Reference Run
-```
+```text
 [...]port/benchmarks/RdmaTransportBench.cc     relative  time/iter   iters/s  bytes_per_second  message_size
 ============================================================================================================
 RdmaMemory_Register_Deregister(8192)                       54.54us    18.34K               NaN           NaN
