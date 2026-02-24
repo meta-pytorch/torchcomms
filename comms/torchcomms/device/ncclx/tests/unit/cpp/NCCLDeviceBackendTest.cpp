@@ -14,8 +14,9 @@
 //
 // Ownership Design:
 //   NCCLDeviceBackend::create_device_window() returns std::unique_ptr with a
-//   custom DeviceWindowDeleter. The deleter only calls cudaFree - the caller
-//   is responsible for calling ncclDevCommDestroy before destroying the ptr.
+//   custom DeviceWindowDeleter. The deleter frees device memory via CudaApi -
+//   the caller is responsible for calling ncclDevCommDestroy before destroying
+//   the ptr.
 //   Access dev_comm via unique_ptr::get_deleter().dev_comm.
 //
 // Note: This entire test file requires TORCHCOMMS_HAS_NCCL_DEVICE_API because
@@ -30,6 +31,7 @@
 
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
+#include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/tests/unit/cpp/mocks/NcclxMock.hpp"
 
 namespace torchcomms::device::test {
@@ -41,6 +43,7 @@ using ::testing::Return;
 using ::testing::SetArgPointee;
 using ::testing::StrictMock;
 
+using torch::comms::DefaultCudaApi;
 using torch::comms::test::NcclxMock;
 
 // =============================================================================
@@ -52,6 +55,7 @@ class NCCLDeviceBackendTest : public ::testing::Test {
   void SetUp() override {
     nccl_mock_ = std::make_shared<NiceMock<NcclxMock>>();
     nccl_mock_->setupDefaultBehaviors();
+    cuda_api_ = std::make_shared<DefaultCudaApi>();
     fake_nccl_comm_ = reinterpret_cast<ncclComm_t>(0x1000);
     fake_nccl_window_ = reinterpret_cast<ncclWindow_t>(0x2000);
     fake_base_ = reinterpret_cast<void*>(0x3000);
@@ -72,6 +76,7 @@ class NCCLDeviceBackendTest : public ::testing::Test {
   }
 
   std::shared_ptr<NiceMock<NcclxMock>> nccl_mock_;
+  std::shared_ptr<DefaultCudaApi> cuda_api_;
   ncclComm_t fake_nccl_comm_{nullptr};
   ncclWindow_t fake_nccl_window_{nullptr};
   void* fake_base_{nullptr};
@@ -92,6 +97,7 @@ TEST_F(
           NCCLDeviceBackend::create_device_window(
               nullptr,
               nccl_mock_.get(),
+              cuda_api_.get(),
               config,
               fake_nccl_window_,
               fake_base_,
@@ -117,6 +123,7 @@ TEST_F(
           NCCLDeviceBackend::create_device_window(
               fake_nccl_comm_,
               nullptr,
+              cuda_api_.get(),
               config,
               fake_nccl_window_,
               fake_base_,
@@ -131,11 +138,37 @@ TEST_F(
       std::runtime_error);
 }
 
+TEST_F(
+    NCCLDeviceBackendTest,
+    CreateDeviceWindowWithNullCudaApiThrowsException) {
+  auto config = createDefaultConfig();
+
+  EXPECT_THROW(
+      {
+        try {
+          NCCLDeviceBackend::create_device_window(
+              fake_nccl_comm_,
+              nccl_mock_.get(),
+              nullptr,
+              config,
+              fake_nccl_window_,
+              fake_base_,
+              1024);
+        } catch (const std::runtime_error& e) {
+          EXPECT_TRUE(
+              std::string(e.what()).find("CUDA API cannot be null") !=
+              std::string::npos);
+          throw;
+        }
+      },
+      std::runtime_error);
+}
+
 // =============================================================================
 // create_device_window() Tests - Success Path
-// NOTE: These tests require real CUDA hardware because create_device_window()
-// calls cudaMalloc/cudaMemcpy directly. They verify the code path when running
-// on actual GPU infrastructure via buck test.
+// NOTE: These tests require real CUDA hardware because DefaultCudaApi calls
+// cudaMalloc/cudaMemcpy. They verify the code path when running on actual GPU
+// infrastructure via buck test.
 // =============================================================================
 
 TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowSuccessReturnsValidStruct) {
@@ -150,6 +183,7 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowSuccessReturnsValidStruct) {
   auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
+      cuda_api_.get(),
       config,
       fake_nccl_window_,
       fake_base_,
@@ -167,7 +201,7 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowSuccessReturnsValidStruct) {
   EXPECT_EQ(deleter.nccl_api, nccl_mock_.get());
 
   // Copy device window back to host to verify contents
-  TorchCommDeviceWindow<NCCLDeviceBackend> host_copy;
+  TorchCommDeviceWindow<NCCLDeviceBackend> host_copy{};
   cudaError_t cuda_result = cudaMemcpy(
       &host_copy,
       device_window.get(),
@@ -198,7 +232,7 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
   config.comm_rank = 3;
   config.comm_size = 8;
 
-  ncclDevCommRequirements captured_reqs;
+  ncclDevCommRequirements captured_reqs{};
   EXPECT_CALL(*nccl_mock_, devCommCreate(fake_nccl_comm_, _, _))
       .WillOnce(DoAll(
           [&captured_reqs](
@@ -216,6 +250,7 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowConfigIsPassedCorrectly) {
   auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
+      cuda_api_.get(),
       config,
       fake_nccl_window_,
       fake_base_,
@@ -256,6 +291,7 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowStoresSignalBufferHandle) {
   auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
+      cuda_api_.get(),
       config,
       fake_nccl_window_,
       fake_base_,
@@ -264,7 +300,7 @@ TEST_F(NCCLDeviceBackendTest, CreateDeviceWindowStoresSignalBufferHandle) {
   ASSERT_NE(device_window, nullptr);
 
   // Copy device window back to host to verify signal_buffer_handle
-  TorchCommDeviceWindow<NCCLDeviceBackend> host_copy;
+  TorchCommDeviceWindow<NCCLDeviceBackend> host_copy{};
   cudaError_t cuda_result = cudaMemcpy(
       &host_copy,
       device_window.get(),
@@ -302,6 +338,7 @@ TEST_F(NCCLDeviceBackendTest, DevCommCreateFailureThrows) {
           NCCLDeviceBackend::create_device_window(
               fake_nccl_comm_,
               nccl_mock_.get(),
+              cuda_api_.get(),
               config,
               fake_nccl_window_,
               fake_base_,
@@ -331,6 +368,7 @@ TEST_F(NCCLDeviceBackendTest, DeviceWindowDeleterOnlyCudaFrees) {
   auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
+      cuda_api_.get(),
       config,
       fake_nccl_window_,
       fake_base_,
@@ -367,6 +405,7 @@ TEST_F(
   auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
+      cuda_api_.get(),
       config,
       fake_nccl_window_,
       fake_base_,
@@ -389,7 +428,7 @@ TEST_F(
 
 TEST_F(NCCLDeviceBackendTest, DeviceWindowDeleterWithNullPtrIsSafe) {
   NCCLDeviceBackend::DeviceWindowDeleter deleter(
-      fake_nccl_comm_, nccl_mock_.get(), ncclDevComm{});
+      fake_nccl_comm_, nccl_mock_.get(), cuda_api_.get(), ncclDevComm{});
   EXPECT_NO_THROW(deleter(nullptr));
 }
 
@@ -408,6 +447,7 @@ TEST_F(NCCLDeviceBackendTest, FullLifecycleCreateAndDestroy) {
   auto device_window = NCCLDeviceBackend::create_device_window(
       fake_nccl_comm_,
       nccl_mock_.get(),
+      cuda_api_.get(),
       config,
       fake_nccl_window_,
       fake_base_,
@@ -416,7 +456,7 @@ TEST_F(NCCLDeviceBackendTest, FullLifecycleCreateAndDestroy) {
   ASSERT_NE(device_window, nullptr);
 
   // Copy device window back to host to verify contents
-  TorchCommDeviceWindow<NCCLDeviceBackend> host_copy;
+  TorchCommDeviceWindow<NCCLDeviceBackend> host_copy{};
   cudaError_t cuda_result = cudaMemcpy(
       &host_copy,
       device_window.get(),
