@@ -316,12 +316,12 @@ class AsyncWorkVariable(VariableTracker):
     def __init__(
         self,
         tensor_vars: list[VariableTracker],
-        mutable_vars: list[VariableTracker] = [],
+        mutable_vars: list[VariableTracker] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.tensor_vars = tensor_vars
-        self.mutable_vars = mutable_vars
+        self.mutable_vars = mutable_vars if mutable_vars is not None else []
 
     def as_proxy(self) -> None:
         # AsyncWorkVariable doesn't have a direct graph representation.
