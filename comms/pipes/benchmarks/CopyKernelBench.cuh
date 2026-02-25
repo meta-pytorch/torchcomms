@@ -19,4 +19,38 @@ __global__ void copyKernel(
     int nRuns,
     SyncScope groupScope);
 
+__global__ void sequentialCopyKernel(
+    char* dst1,
+    char* dst2,
+    const char* src,
+    std::size_t nBytes,
+    int nRuns,
+    SyncScope groupScope);
+
+__global__ void dualDestCopyKernel(
+    char* dst1,
+    char* dst2,
+    const char* src,
+    std::size_t nBytes,
+    int nRuns,
+    SyncScope groupScope);
+
+__global__ void sequentialTriCopyKernel(
+    char* dst1,
+    char* dst2,
+    char* dst3,
+    const char* src,
+    std::size_t nBytes,
+    int nRuns,
+    SyncScope groupScope);
+
+__global__ void triDestCopyKernel(
+    char* dst1,
+    char* dst2,
+    char* dst3,
+    const char* src,
+    std::size_t nBytes,
+    int nRuns,
+    SyncScope groupScope);
+
 } // namespace comms::pipes::benchmark
