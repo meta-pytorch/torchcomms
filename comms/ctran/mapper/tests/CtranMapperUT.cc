@@ -28,9 +28,10 @@ class CtranMapperTest : public ::testing::Test {
   std::shared_ptr<ctran::RegCache> regCache{nullptr};
 
  protected:
+  SysEnvRAII topoEnv_{"NCCL_IGNORE_TOPO_LOAD_FAILURE", "true"};
+
   void SetUp() override {
     ncclCvarInit();
-    setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "true", 1);
 
     ctran::logGpuMemoryStats(cudaDev);
 
@@ -60,7 +61,7 @@ class CtranMapperTest : public ::testing::Test {
   }
 };
 TEST(CtranMapperUT, EnableBackendThroughCVARs) {
-  setenv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket", 1);
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket");
   ncclCvarInit();
   auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
@@ -73,7 +74,7 @@ TEST(CtranMapperUT, EnableBackendThroughCVARs) {
 }
 
 TEST(CtranMapperUT, EnableBackendThroughCVARsWithoutIB) {
-  setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "nvl, socket");
   ncclCvarInit();
   auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
@@ -86,7 +87,7 @@ TEST(CtranMapperUT, EnableBackendThroughCVARsWithoutIB) {
 TEST(CtranMapperUT, EnableBackendWithConfigUnset) {
   // Test that when config_.backends contains only UNSET, mapper falls back
   // to using NCCL_CTRAN_BACKENDS CVAR.
-  setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "nvl, socket");
   ncclCvarInit();
   auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
@@ -101,7 +102,7 @@ TEST(CtranMapperUT, EnableBackendWithConfigUnset) {
 TEST(CtranMapperUT, EnableBackendWithExplicitConfigOverride) {
   // Test that when config_.backends is explicitly set,
   // it overrides the NCCL_CTRAN_BACKENDS CVAR.
-  setenv("NCCL_CTRAN_BACKENDS", "nvl, socket", 1);
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "nvl, socket");
   ncclCvarInit();
   auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
@@ -116,7 +117,7 @@ TEST(CtranMapperUT, EnableBackendWithExplicitConfigOverride) {
 }
 
 TEST(CtranMapperUT, EnableBackendThroughCVARsWithTCPandIB) {
-  setenv("NCCL_CTRAN_BACKENDS", "nvl, ib, socket, tcpdm", 1);
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "nvl, ib, socket, tcpdm");
   ncclCvarInit();
   std::optional<std::exception> ex;
   try {
@@ -1282,10 +1283,11 @@ class CtranMapperTestDisjoint : public ::testing::Test {
   bool usedDisjointAllocation = false;
 
  protected:
+  SysEnvRAII ctranEnableEnv_{"NCCL_CTRAN_ENABLE", "1"};
+  SysEnvRAII topoEnv_{"NCCL_IGNORE_TOPO_LOAD_FAILURE", "true"};
+
   void SetUp() override {
-    setenv("NCCL_CTRAN_ENABLE", "1", 0);
     ncclCvarInit();
-    setenv("NCCL_IGNORE_TOPO_LOAD_FAILURE", "true", 1);
 
     ctran::logGpuMemoryStats(cudaDev);
 
@@ -1380,8 +1382,8 @@ TEST_F(CtranMapperTestDisjoint, dynamicReg) {
 // skip IpcRegCache::init() and allGatherIpcServerAddrs(). NVL backend should
 // still be created (for window-based operations).
 TEST(CtranMapperUT, IpcRegCacheDisabledSkipsSocketInit) {
-  setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "0", 1);
-  setenv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket", 1);
+  SysEnvRAII ipcEnv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "0");
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket");
   ncclCvarInit();
   auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
@@ -1398,17 +1400,13 @@ TEST(CtranMapperUT, IpcRegCacheDisabledSkipsSocketInit) {
   auto peerId = dummyComm->statex_->gPid(rank);
   EXPECT_EQ(
       ipcRegCache->getPeerIpcServerAddr(peerId, addr), commInvalidArgument);
-
-  // Restore default
-  setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 1);
-  ncclCvarInit();
 }
 
 // When NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET is true (default), the
 // mapper initializes IpcRegCache and populates the peer address map.
 TEST(CtranMapperUT, IpcRegCacheEnabledPopulatesPeerAddrs) {
-  setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 1);
-  setenv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket", 1);
+  SysEnvRAII ipcEnv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1");
+  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket");
   ncclCvarInit();
   auto commRAII = ctran::createDummyCtranComm();
   auto dummyComm = commRAII->ctranComm.get();
