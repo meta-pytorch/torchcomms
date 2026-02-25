@@ -783,7 +783,9 @@ void DebugInfoWriter::registerWriter(std::unique_ptr<DebugInfoWriter> writer) {
 std::unique_ptr<DebugInfoWriter> DebugInfoWriter::writer_ = nullptr;
 std::atomic<bool> DebugInfoWriter::hasWriterRegistered_(false);
 
-float getDurationFromEvent(c10::Event& startEvent, c10::Event& endEvent) {
+float getDurationFromEvent(
+    [[maybe_unused]] c10::Event& startEvent,
+    [[maybe_unused]] c10::Event& endEvent) {
   TORCH_CHECK(false, "getDuration not supported by c10::Event.");
 }
 
