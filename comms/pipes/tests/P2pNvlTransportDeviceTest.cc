@@ -7,6 +7,7 @@
 
 #include <vector>
 
+#include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/tests/P2pNvlTransportDeviceTest.cuh"
@@ -84,6 +85,301 @@ class P2pNvlTransportDeviceTwoGpuFixture : public ::testing::Test {
     cudaStreamDestroy(stream0_);
     cudaSetDevice(kGpu1);
     cudaStreamDestroy(stream1_);
+  }
+
+  /**
+   * Runs a loopback streaming test: GPU0 sends → GPU1 receives, verifies data.
+   * Handles all buffer allocation, transport setup, kernel launch, verify,
+   * cleanup.
+   */
+  void runStreamLoopbackTest(
+      std::size_t dataBufferSize,
+      std::size_t chunkSize,
+      std::size_t pipelineDepth,
+      std::size_t nbytes,
+      int numBlocks,
+      int blockSize) {
+    const std::size_t chunksPerStep =
+        (dataBufferSize + chunkSize - 1) / chunkSize;
+    const std::size_t numChunkStates = chunksPerStep * pipelineDepth;
+
+    // Allocate staging buffers and state buffers on GPU 1 (receiver)
+    // Remote-write pattern: sender writes to receiver's staging
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    char* stagingBuffer1;
+    CUDACHECK_TEST(cudaMalloc(&stagingBuffer1, dataBufferSize * pipelineDepth));
+    CUDACHECK_TEST(
+        cudaMemset(stagingBuffer1, 0, dataBufferSize * pipelineDepth));
+
+    ChunkState* stateBuffer1;
+    CUDACHECK_TEST(
+        cudaMalloc(&stateBuffer1, numChunkStates * sizeof(ChunkState)));
+    // Initialize chunk states to READY_TO_SEND (-1)
+    std::vector<ChunkState> initStates(numChunkStates);
+    CUDACHECK_TEST(cudaMemcpy(
+        stateBuffer1,
+        initStates.data(),
+        numChunkStates * sizeof(ChunkState),
+        cudaMemcpyHostToDevice));
+
+    // Allocate source buffer on GPU 0 and destination buffer on GPU 1
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    char* srcBuffer0;
+    CUDACHECK_TEST(cudaMalloc(&srcBuffer0, nbytes));
+    // Fill with test pattern
+    std::vector<char> srcPattern(nbytes);
+    for (std::size_t i = 0; i < nbytes; ++i) {
+      srcPattern[i] = static_cast<char>(i % 256);
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        srcBuffer0, srcPattern.data(), nbytes, cudaMemcpyHostToDevice));
+
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    char* dstBuffer1;
+    CUDACHECK_TEST(cudaMalloc(&dstBuffer1, nbytes));
+    CUDACHECK_TEST(cudaMemset(dstBuffer1, 0, nbytes));
+
+    // Create transport options
+    P2pNvlTransportOptions options{
+        .dataBufferSize = dataBufferSize,
+        .chunkSize = chunkSize,
+        .pipelineDepth = pipelineDepth,
+    };
+
+    // Transport on GPU 0 (sender): writes to GPU 1's staging
+    LocalState localState0{
+        .dataBuffer = nullptr,
+        .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    RemoteState remoteState0{
+        .dataBuffer = stagingBuffer1,
+        .stateBuffer = DeviceSpan<ChunkState>(
+            stateBuffer1, static_cast<uint32_t>(numChunkStates)),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    P2pNvlTransportDevice transport0(
+        kGpu0, kGpu1, options, localState0, remoteState0);
+
+    // Transport on GPU 1 (receiver): reads from its local staging
+    LocalState localState1{
+        .dataBuffer = stagingBuffer1,
+        .stateBuffer = DeviceSpan<ChunkState>(
+            stateBuffer1, static_cast<uint32_t>(numChunkStates)),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    RemoteState remoteState1{
+        .dataBuffer = nullptr,
+        .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    P2pNvlTransportDevice transport1(
+        kGpu1, kGpu0, options, localState1, remoteState1);
+
+    // Run the test
+    test::testRecvSendStreamLoopback(
+        transport0,
+        transport1,
+        srcBuffer0,
+        dstBuffer1,
+        nbytes,
+        numBlocks,
+        blockSize);
+
+    // Sync both GPUs
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    // Verify the data
+    std::vector<char> result(nbytes);
+    CUDACHECK_TEST(
+        cudaMemcpy(result.data(), dstBuffer1, nbytes, cudaMemcpyDeviceToHost));
+
+    for (std::size_t i = 0; i < nbytes; ++i) {
+      ASSERT_EQ(result[i], srcPattern[i])
+          << "Mismatch at byte " << i << ": expected "
+          << static_cast<int>(srcPattern[i]) << " got "
+          << static_cast<int>(result[i]);
+    }
+
+    // Cleanup
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(cudaFree(srcBuffer0));
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    CUDACHECK_TEST(cudaFree(stagingBuffer1));
+    CUDACHECK_TEST(cudaFree(stateBuffer1));
+    CUDACHECK_TEST(cudaFree(dstBuffer1));
+  }
+
+  /**
+   * Runs a forwarding streaming test: GPU0 → GPU1 (forward) → GPU0, verifies
+   * data. Handles all buffer allocation, transport setup, kernel launch,
+   * verify, cleanup.
+   */
+  void runStreamForwardingTest(
+      std::size_t dataBufferSize,
+      std::size_t chunkSize,
+      std::size_t pipelineDepth,
+      std::size_t nbytes,
+      int numBlocks,
+      int blockSize) {
+    const std::size_t chunksPerStep =
+        (dataBufferSize + chunkSize - 1) / chunkSize;
+    const std::size_t numChunkStates = chunksPerStep * pipelineDepth;
+
+    // --- Path A: GPU0 → GPU1 ---
+    // Staging + state on GPU1 (receiver-side for path A)
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    char* stagingA;
+    CUDACHECK_TEST(cudaMalloc(&stagingA, dataBufferSize * pipelineDepth));
+    CUDACHECK_TEST(cudaMemset(stagingA, 0, dataBufferSize * pipelineDepth));
+
+    ChunkState* stateA;
+    CUDACHECK_TEST(cudaMalloc(&stateA, numChunkStates * sizeof(ChunkState)));
+    std::vector<ChunkState> initStates(numChunkStates);
+    CUDACHECK_TEST(cudaMemcpy(
+        stateA,
+        initStates.data(),
+        numChunkStates * sizeof(ChunkState),
+        cudaMemcpyHostToDevice));
+
+    // --- Path B: GPU1 → GPU0 ---
+    // Staging + state on GPU0 (receiver-side for path B)
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    char* stagingB;
+    CUDACHECK_TEST(cudaMalloc(&stagingB, dataBufferSize * pipelineDepth));
+    CUDACHECK_TEST(cudaMemset(stagingB, 0, dataBufferSize * pipelineDepth));
+
+    ChunkState* stateB;
+    CUDACHECK_TEST(cudaMalloc(&stateB, numChunkStates * sizeof(ChunkState)));
+    CUDACHECK_TEST(cudaMemcpy(
+        stateB,
+        initStates.data(),
+        numChunkStates * sizeof(ChunkState),
+        cudaMemcpyHostToDevice));
+
+    // Source and destination buffers on GPU0
+    char* srcBuffer0;
+    CUDACHECK_TEST(cudaMalloc(&srcBuffer0, nbytes));
+    std::vector<char> srcPattern(nbytes);
+    for (std::size_t i = 0; i < nbytes; ++i) {
+      srcPattern[i] = static_cast<char>(i % 256);
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        srcBuffer0, srcPattern.data(), nbytes, cudaMemcpyHostToDevice));
+
+    char* dstBuffer0;
+    CUDACHECK_TEST(cudaMalloc(&dstBuffer0, nbytes));
+    CUDACHECK_TEST(cudaMemset(dstBuffer0, 0, nbytes));
+
+    P2pNvlTransportOptions options{
+        .dataBufferSize = dataBufferSize,
+        .chunkSize = chunkSize,
+        .pipelineDepth = pipelineDepth,
+    };
+
+    // Transport: GPU0 sender → GPU1 (writes to stagingA on GPU1)
+    LocalState localSend0to1{
+        .dataBuffer = nullptr,
+        .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    RemoteState remoteSend0to1{
+        .dataBuffer = stagingA,
+        .stateBuffer = DeviceSpan<ChunkState>(
+            stateA, static_cast<uint32_t>(numChunkStates)),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    P2pNvlTransportDevice transport_send_0to1(
+        kGpu0, kGpu1, options, localSend0to1, remoteSend0to1);
+
+    // Transport: GPU1 receiver from GPU0 (reads from stagingA on GPU1)
+    LocalState localRecv1from0{
+        .dataBuffer = stagingA,
+        .stateBuffer = DeviceSpan<ChunkState>(
+            stateA, static_cast<uint32_t>(numChunkStates)),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    RemoteState remoteRecv1from0{
+        .dataBuffer = nullptr,
+        .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    P2pNvlTransportDevice transport_recv_1from0(
+        kGpu1, kGpu0, options, localRecv1from0, remoteRecv1from0);
+
+    // Transport: GPU1 sender → GPU0 (writes to stagingB on GPU0)
+    LocalState localSend1to0{
+        .dataBuffer = nullptr,
+        .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    RemoteState remoteSend1to0{
+        .dataBuffer = stagingB,
+        .stateBuffer = DeviceSpan<ChunkState>(
+            stateB, static_cast<uint32_t>(numChunkStates)),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    P2pNvlTransportDevice transport_send_1to0(
+        kGpu1, kGpu0, options, localSend1to0, remoteSend1to0);
+
+    // Transport: GPU0 receiver from GPU1 (reads from stagingB on GPU0)
+    LocalState localRecv0from1{
+        .dataBuffer = stagingB,
+        .stateBuffer = DeviceSpan<ChunkState>(
+            stateB, static_cast<uint32_t>(numChunkStates)),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    RemoteState remoteRecv0from1{
+        .dataBuffer = nullptr,
+        .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+        .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+    };
+    P2pNvlTransportDevice transport_recv_0from1(
+        kGpu0, kGpu1, options, localRecv0from1, remoteRecv0from1);
+
+    // Run the forwarding test
+    test::testRecvSendStreamForwarding(
+        transport_send_0to1,
+        transport_recv_1from0,
+        transport_send_1to0,
+        transport_recv_0from1,
+        srcBuffer0,
+        dstBuffer0,
+        nbytes,
+        numBlocks,
+        blockSize);
+
+    // Sync both GPUs
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    // Verify the data
+    std::vector<char> result(nbytes);
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(
+        cudaMemcpy(result.data(), dstBuffer0, nbytes, cudaMemcpyDeviceToHost));
+
+    for (std::size_t i = 0; i < nbytes; ++i) {
+      ASSERT_EQ(result[i], srcPattern[i])
+          << "Mismatch at byte " << i << ": expected "
+          << static_cast<int>(srcPattern[i]) << " got "
+          << static_cast<int>(result[i]);
+    }
+
+    // Cleanup
+    CUDACHECK_TEST(cudaSetDevice(kGpu0));
+    CUDACHECK_TEST(cudaFree(srcBuffer0));
+    CUDACHECK_TEST(cudaFree(stagingB));
+    CUDACHECK_TEST(cudaFree(stateB));
+    CUDACHECK_TEST(cudaFree(dstBuffer0));
+    CUDACHECK_TEST(cudaSetDevice(kGpu1));
+    CUDACHECK_TEST(cudaFree(stagingA));
+    CUDACHECK_TEST(cudaFree(stateA));
   }
 };
 
@@ -798,6 +1094,195 @@ TEST_F(P2pNvlTransportDeviceTwoGpuFixture, DeviceSignalTwoGpuPingPong) {
   CUDACHECK_TEST(cudaFree(signalBuffer0));
   CUDACHECK_TEST(cudaSetDevice(kGpu1));
   CUDACHECK_TEST(cudaFree(signalBuffer1));
+}
+
+// =============================================================================
+// RecvStream/SendStream Tests
+// These test the streaming primitives for pipelined collectives
+// =============================================================================
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, RecvSendStreamBasicTransfer) {
+  // 4 warps, 4 chunks per step, 1:1 chunk-to-warp ratio, 2 full steps
+  runStreamLoopbackTest(
+      /*dataBufferSize=*/4 * 1024,
+      /*chunkSize=*/1024,
+      /*pipelineDepth=*/2,
+      /*nbytes=*/8 * 1024,
+      /*numBlocks=*/1,
+      /*blockSize=*/128);
+}
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, RecvSendStreamNonAlignedTransfer) {
+  // Partial step + partial chunk: 5000B with 4KB steps → step 1 has 904B
+  // (1 partial chunk). Exercises partial-step and partial-chunk size
+  // calculations in for_each_ready_chunk and for_each_slot.
+  runStreamLoopbackTest(
+      /*dataBufferSize=*/4 * 1024,
+      /*chunkSize=*/1024,
+      /*pipelineDepth=*/2,
+      /*nbytes=*/5000,
+      /*numBlocks=*/1,
+      /*blockSize=*/128);
+}
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, RecvSendStreamSingleWarpMultiChunk) {
+  // 1 warp processes 4 chunks sequentially (1:4 warp-to-chunk ratio).
+  // blockSize=32 → exactly 1 warp group; 4KB/1KB = 4 chunks per step.
+  runStreamLoopbackTest(
+      /*dataBufferSize=*/4 * 1024,
+      /*chunkSize=*/1024,
+      /*pipelineDepth=*/2,
+      /*nbytes=*/8 * 1024,
+      /*numBlocks=*/1,
+      /*blockSize=*/32);
+}
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, RecvSendStreamLargeTransfer) {
+  // 64KB / 4KB = 16 steps, pipelineDepth=2 → each slot reused 8 times.
+  // Exercises sustained pipeline recycling and ensures no state leaks.
+  runStreamLoopbackTest(
+      /*dataBufferSize=*/4 * 1024,
+      /*chunkSize=*/1024,
+      /*pipelineDepth=*/2,
+      /*nbytes=*/64 * 1024,
+      /*numBlocks=*/1,
+      /*blockSize=*/128);
+}
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, RecvSendStreamZeroBytes) {
+  // Test zero-byte transfer: loops should not execute, no chunks yielded.
+  // The kernels should complete immediately without hanging.
+  // Kept inline because buffer setup and verification differ from the
+  // standard loopback helper (sentinel pattern, small fixed-size buffers).
+
+  const std::size_t dataBufferSize = 4 * 1024; // 4KB
+  const std::size_t chunkSize = 1024; // 1KB
+  const std::size_t pipelineDepth = 2;
+  const std::size_t nbytes = 0; // Zero bytes
+
+  const std::size_t chunksPerStep =
+      (dataBufferSize + chunkSize - 1) / chunkSize;
+  const std::size_t numChunkStates = chunksPerStep * pipelineDepth;
+
+  // Allocate minimal buffers for transport setup
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  char* stagingBuffer1;
+  CUDACHECK_TEST(cudaMalloc(&stagingBuffer1, dataBufferSize * pipelineDepth));
+  CUDACHECK_TEST(cudaMemset(stagingBuffer1, 0, dataBufferSize * pipelineDepth));
+
+  ChunkState* stateBuffer1;
+  CUDACHECK_TEST(
+      cudaMalloc(&stateBuffer1, numChunkStates * sizeof(ChunkState)));
+  std::vector<ChunkState> initStates(numChunkStates);
+  CUDACHECK_TEST(cudaMemcpy(
+      stateBuffer1,
+      initStates.data(),
+      numChunkStates * sizeof(ChunkState),
+      cudaMemcpyHostToDevice));
+
+  // Allocate a small destination buffer to verify it's not modified
+  char* dstBuffer1;
+  CUDACHECK_TEST(cudaMalloc(&dstBuffer1, 16));
+  // Fill with sentinel value
+  CUDACHECK_TEST(cudaMemset(dstBuffer1, 0xAB, 16));
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  char* srcBuffer0;
+  CUDACHECK_TEST(cudaMalloc(&srcBuffer0, 16));
+  CUDACHECK_TEST(cudaMemset(srcBuffer0, 0xCD, 16));
+
+  P2pNvlTransportOptions options{
+      .dataBufferSize = dataBufferSize,
+      .chunkSize = chunkSize,
+      .pipelineDepth = pipelineDepth,
+  };
+
+  LocalState localState0{
+      .dataBuffer = nullptr,
+      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+  };
+  RemoteState remoteState0{
+      .dataBuffer = stagingBuffer1,
+      .stateBuffer = DeviceSpan<ChunkState>(stateBuffer1, numChunkStates),
+      .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+  };
+  P2pNvlTransportDevice transport0(
+      kGpu0, kGpu1, options, localState0, remoteState0);
+
+  LocalState localState1{
+      .dataBuffer = stagingBuffer1,
+      .stateBuffer = DeviceSpan<ChunkState>(stateBuffer1, numChunkStates),
+      .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+  };
+  RemoteState remoteState1{
+      .dataBuffer = nullptr,
+      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
+  };
+  P2pNvlTransportDevice transport1(
+      kGpu1, kGpu0, options, localState1, remoteState1);
+
+  const int numBlocks = 1;
+  const int blockSize = 128;
+
+  // This should complete immediately without hanging
+  test::testRecvSendStreamLoopback(
+      transport0,
+      transport1,
+      srcBuffer0,
+      dstBuffer1,
+      nbytes,
+      numBlocks,
+      blockSize);
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Verify destination buffer is unchanged (still sentinel value)
+  std::vector<char> result(16);
+  CUDACHECK_TEST(
+      cudaMemcpy(result.data(), dstBuffer1, 16, cudaMemcpyDeviceToHost));
+
+  for (int i = 0; i < 16; ++i) {
+    ASSERT_EQ(static_cast<unsigned char>(result[i]), 0xAB)
+        << "Zero-byte transfer should not modify destination buffer";
+  }
+
+  CUDACHECK_TEST(cudaSetDevice(kGpu0));
+  CUDACHECK_TEST(cudaFree(srcBuffer0));
+  CUDACHECK_TEST(cudaSetDevice(kGpu1));
+  CUDACHECK_TEST(cudaFree(stagingBuffer1));
+  CUDACHECK_TEST(cudaFree(stateBuffer1));
+  CUDACHECK_TEST(cudaFree(dstBuffer1));
+}
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, RecvSendStreamSlotForForwarding) {
+  // 3 full steps via ring: GPU0 → GPU1 (forward) → GPU0.
+  // Exercises slot_for/commit_slot forwarding API and pipeline slot reuse
+  // (step 2 reuses slot 0).
+  runStreamForwardingTest(
+      /*dataBufferSize=*/4 * 1024,
+      /*chunkSize=*/1024,
+      /*pipelineDepth=*/2,
+      /*nbytes=*/12 * 1024,
+      /*numBlocks=*/1,
+      /*blockSize=*/128);
+}
+
+TEST_F(P2pNvlTransportDeviceTwoGpuFixture, RecvSendStreamNonAlignedForwarding) {
+  // Forwarding with partial chunks: 5000B → step 1 has 904B (1 partial
+  // chunk). The intermediate rank's slot_for() reverse-maps the partial
+  // chunk and commit_slot() handles the partial size.
+  runStreamForwardingTest(
+      /*dataBufferSize=*/4 * 1024,
+      /*chunkSize=*/1024,
+      /*pipelineDepth=*/2,
+      /*nbytes=*/5000,
+      /*numBlocks=*/1,
+      /*blockSize=*/128);
 }
 
 } // namespace comms::pipes

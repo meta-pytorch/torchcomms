@@ -847,22 +847,23 @@ class P2pNvlTransportDevice {
 
     // Distribute chunks across all groups using for_each_item_contiguous
     // Each group processes its assigned contiguous range of chunks
-    std::size_t chunkBytes = 0;
+    std::size_t totalBytesWritten = 0;
     group.for_each_item_contiguous(numChunks, [&](uint32_t chunkIdx) {
       const std::size_t chunkOffset = chunkIdx * alignedChunkSize;
-      chunkBytes += (chunkOffset + alignedChunkSize <= nbytes)
-          ? alignedChunkSize
-          : nbytes - chunkOffset;
+      const std::size_t currentChunkBytes =
+          (chunkOffset + alignedChunkSize <= nbytes) ? alignedChunkSize
+                                                     : nbytes - chunkOffset;
 
-      if (chunkBytes > 0) {
+      if (currentChunkBytes > 0) {
         memcpy_vectorized(
             dst_d + chunkOffset, // dst_base
             src_d + chunkOffset, // src_base
-            chunkBytes, // chunk_bytes
+            currentChunkBytes, // chunk_bytes
             group);
       }
+      totalBytesWritten += currentChunkBytes;
     });
-    return chunkBytes;
+    return totalBytesWritten;
 #endif
     return 0;
   }
@@ -958,6 +959,356 @@ class P2pNvlTransportDevice {
     group.sync();
   }
 
+  // ===========================================================================
+  // Transport Configuration Accessors
+  // ===========================================================================
+
+  /**
+   * chunk_size - Get the configured chunk size for this transport.
+   */
+  __host__ __device__ __forceinline__ std::size_t chunk_size() const {
+    return options_.chunkSize;
+  }
+
+  /**
+   * data_buffer_size - Get the configured data buffer size for this transport.
+   */
+  __host__ __device__ __forceinline__ std::size_t data_buffer_size() const {
+    return options_.dataBufferSize;
+  }
+
+  /**
+   * pipeline_depth - Get the configured pipeline depth for this transport.
+   */
+  __host__ __device__ __forceinline__ std::size_t pipeline_depth() const {
+    return options_.pipelineDepth;
+  }
+
+  __device__ __forceinline__ char* local_data_buffer() const {
+    return localState_.dataBuffer;
+  }
+
+  __device__ __forceinline__ ChunkState* local_state_buffer() const {
+    return localState_.stateBuffer.data();
+  }
+
+  __device__ __forceinline__ char* remote_data_buffer() const {
+    return remoteState_.dataBuffer;
+  }
+
+  __device__ __forceinline__ ChunkState* remote_state_buffer() const {
+    return remoteState_.stateBuffer.data();
+  }
+
+  // ===========================================================================
+  // Streaming Primitives API
+  // ===========================================================================
+  // The streaming API provides reusable primitives for pipelined collectives.
+  // RecvStream yields chunks as they become ready; SendStream provides slots
+  // for sending. These can be composed to build intermediate rank logic for
+  // broadcast, reduce, all-to-all, etc.
+  // ===========================================================================
+
+  /**
+   * StagingChunkView - Read-only view of a ready chunk in the staging buffer
+   *
+   * Yielded by RecvStream::for_each_ready_chunk(). The caller can read from
+   * `data` and use `offset`/`size` to determine where to copy.
+   *
+   * MEMORY SEMANTICS:
+   * - `data` points to local staging buffer (receiver's memory)
+   * - Data is visible with acquire semantics (predecessor's writes are visible)
+   * - Valid only within the callback scope; auto-released after callback
+   *   returns
+   *
+   * LIFETIME:
+   * - The staging buffer slot is released when the callback returns
+   * - Do NOT store `data` pointer beyond the callback scope
+   */
+  struct StagingChunkView {
+    const char* data; // Pointer into staging buffer (read-only)
+    std::size_t offset; // Offset within the full message (always chunk-aligned)
+    std::size_t size; // Chunk size in bytes (may be < chunkSize for last chunk)
+  };
+
+  /**
+   * SendSlotView - Writable view of a staging slot for sending
+   *
+   * Obtained from SendStream::slot_for() or yielded by
+   * SendStream::for_each_slot(). The caller writes data to `data`, then calls
+   * commit_slot() to signal the receiver.
+   *
+   * MEMORY SEMANTICS:
+   * - `data` points to REMOTE staging buffer (receiver's memory via NVLink)
+   * - Writes go over NVLink to receiver's local memory
+   * - commit_slot() provides release semantics (writes visible to receiver)
+   *
+   * INTERNAL STATE:
+   * - stepId_ and stateIndex_ are used by commit_slot() to signal the correct
+   *   ChunkState
+   * - These are opaque to the caller
+   */
+  struct SendSlotView {
+    char* data; // Writable pointer into remote staging buffer
+    std::size_t offset; // Offset within the full message
+    std::size_t size; // Chunk size in bytes
+
+    // Internal state for commit_slot() - do not access directly
+    std::size_t stepId_; // Step ID for ready_to_recv signaling
+    std::size_t stateIndex_; // Index into stateBuffer for commit_slot
+
+    __device__ __forceinline__ SendSlotView(
+        char* data,
+        std::size_t offset,
+        std::size_t size,
+        std::size_t stepId,
+        std::size_t stateIndex)
+        : data(data),
+          offset(offset),
+          size(size),
+          stepId_(stepId),
+          stateIndex_(stateIndex) {}
+  };
+
+  // Forward declarations for streaming primitives
+  class RecvStream;
+  class SendStream;
+
+  /**
+   * RecvStream - Streaming receive iterator for pipelined transfers
+   *
+   * Iterates over all chunks assigned to this warp group, yielding each chunk
+   * as it becomes ready. The caller processes each chunk via a callback, then
+   * the staging slot is automatically released.
+   *
+   * MEMORY ORDERING:
+   * - Acquire semantics before yielding chunk (predecessor's writes are
+   *   visible)
+   * - Release semantics after callback returns (slot freed for predecessor
+   *   reuse)
+   *
+   * BUFFER ASYMMETRY:
+   * - RecvStream reads from LOCAL staging buffer (receiver's memory)
+   * - Predecessor wrote to this buffer via NVLink (remote write pattern)
+   * - This allows fast local reads without NVLink latency
+   *
+   * CALLBACK CONTRACT:
+   * - Callback MUST NOT exit early without completing its work
+   * - Callback MUST call commit_slot() on any SendStream slots acquired
+   * - If callback fails, the pipeline will hang (no automatic cleanup)
+   *
+   * SIGNAL ORDERING:
+   * - RecvStream releases predecessor's slot AFTER callback returns
+   * - This matches NCCL's postPeer ordering (signal successor, then free
+   *   predecessor)
+   * - Safe for unidirectional ring topologies
+   */
+  class RecvStream {
+   public:
+    /**
+     * for_each_ready_chunk - Iterate over all ready chunks
+     *
+     * For each chunk assigned to this warp group:
+     * 1. Blocks until predecessor signals chunk ready (acquire semantics)
+     * 2. Yields StagingChunkView to callback
+     * 3. After callback returns, releases staging slot (release semantics)
+     *
+     * @param group ThreadGroup for cooperative processing
+     * @param func Callback invoked for each ready chunk: void(StagingChunkView)
+     */
+    template <typename Func>
+    __device__ __forceinline__ void for_each_ready_chunk(
+        ThreadGroup& group,
+        Func&& func);
+
+   private:
+    friend class P2pNvlTransportDevice;
+
+    char* dataBuffer_; // Local staging buffer (receiver reads from here)
+    ChunkState* stateBuffer_; // Array of per-chunk synchronization flags
+    std::size_t nbytes_; // Total bytes to receive
+    std::size_t dataBufferSize_; // Size of one pipeline slot
+    std::size_t chunkSize_; // Size of each chunk
+    std::size_t pipelineDepth_; // Number of slots
+    std::size_t chunksPerStep_; // dataBufferSize / chunkSize (chunks per slot)
+    std::size_t totalSteps_; // nbytes / dataBufferSize (total iterations)
+    uint32_t callIndex_;
+    Timeout timeout_;
+
+    __device__ __forceinline__ RecvStream(
+        char* dataBuffer,
+        ChunkState* stateBuffer,
+        std::size_t nbytes,
+        std::size_t dataBufferSize,
+        std::size_t chunkSize,
+        std::size_t pipelineDepth,
+        uint32_t callIndex,
+        const Timeout& timeout)
+        : dataBuffer_(dataBuffer),
+          stateBuffer_(stateBuffer),
+          nbytes_(nbytes),
+          dataBufferSize_(dataBufferSize),
+          chunkSize_(chunkSize),
+          pipelineDepth_(pipelineDepth),
+          chunksPerStep_((dataBufferSize + chunkSize - 1) / chunkSize),
+          totalSteps_((nbytes + dataBufferSize - 1) / dataBufferSize),
+          callIndex_(callIndex),
+          timeout_(timeout) {}
+  };
+
+  /**
+   * SendStream - Streaming send iterator for pipelined transfers
+   *
+   * Provides two APIs for different use cases:
+   *
+   * 1. CALLBACK API (for_each_slot): For root rank that drives its own
+   *    iteration. Iterates over all staging slots, waits for each to be free,
+   *    yields to callback, then AUTO-SIGNALS receiver after callback returns.
+   *
+   * 2. POSITIONAL API (slot_for + commit_slot): For intermediate ranks called
+   *    inside RecvStream's callback. Maps a received chunk's offset to the
+   *    corresponding send staging slot. REQUIRES MANUAL commit_slot() call.
+   *
+   * MEMORY ORDERING:
+   * - slot_for() waits with acquire semantics (successor freed the slot)
+   * - commit_slot() signals with release semantics (writes visible to
+   *   successor)
+   *
+   * BUFFER ASYMMETRY:
+   * - SendStream writes to REMOTE staging buffer (receiver's memory via
+   *   NVLink)
+   * - This is the "remote write" pattern: receiver reads from local memory
+   *   (fast)
+   */
+  class SendStream {
+   public:
+    // --- Callback API (for root rank — drives its own iteration) ---
+    // AUTO-COMMITS after callback returns
+
+    /**
+     * for_each_slot - Iterate over all staging slots
+     *
+     * For each slot assigned to this warp group:
+     * 1. Waits for slot to be free (successor consumed previous data)
+     * 2. Yields SendSlotView to callback (caller writes data)
+     * 3. After callback returns, AUTO-SIGNALS receiver (data ready)
+     *
+     * NOTE: Do NOT call commit_slot() inside this callback - it auto-commits.
+     *
+     * @param group ThreadGroup for cooperative processing
+     * @param func Callback invoked for each slot: void(SendSlotView)
+     */
+    template <typename Func>
+    __device__ __forceinline__ void for_each_slot(
+        ThreadGroup& group,
+        Func&& func);
+
+    // --- Positional API (for intermediate rank — called inside RecvStream)
+    // --- REQUIRES MANUAL commit_slot() call
+
+    /**
+     * slot_for - Get send slot corresponding to a received chunk
+     *
+     * Reverse-maps recv_chunk.offset to the corresponding send staging slot.
+     * Waits for the slot to be free before returning.
+     *
+     * IMPORTANT: Assumes recv and send transports have matching configs.
+     *
+     * @param group ThreadGroup for cooperative processing
+     * @param recv_chunk The received chunk (from RecvStream)
+     * @return SendSlotView pointing to the corresponding send staging buffer
+     */
+    __device__ __forceinline__ SendSlotView
+    slot_for(ThreadGroup& group, const StagingChunkView& recv_chunk);
+
+    /**
+     * commit_slot - Signal receiver that data is ready
+     *
+     * MUST be called after writing data to slot.data when using slot_for().
+     * Do NOT call when using for_each_slot() (it auto-commits).
+     *
+     * @param group ThreadGroup for cooperative processing
+     * @param slot The slot returned by slot_for()
+     */
+    __device__ __forceinline__ void commit_slot(
+        ThreadGroup& group,
+        const SendSlotView& slot);
+
+   private:
+    friend class P2pNvlTransportDevice;
+
+    char* dataBuffer_; // Remote staging buffer (receiver's memory via NVLink)
+    ChunkState* stateBuffer_; // Array of per-chunk synchronization flags
+    std::size_t nbytes_; // Total bytes to receive
+    std::size_t dataBufferSize_; // Size of one pipeline slot
+    std::size_t chunkSize_; // Size of each chunk
+    std::size_t pipelineDepth_; // Number of slots
+    std::size_t chunksPerStep_; // dataBufferSize / chunkSize (chunks per slot)
+    std::size_t totalSteps_; // nbytes / dataBufferSize (total iterations)
+    uint32_t callIndex_;
+    Timeout timeout_;
+
+    __device__ __forceinline__ SendStream(
+        char* dataBuffer,
+        ChunkState* stateBuffer,
+        std::size_t nbytes,
+        std::size_t dataBufferSize,
+        std::size_t chunkSize,
+        std::size_t pipelineDepth,
+        uint32_t callIndex,
+        const Timeout& timeout)
+        : dataBuffer_(dataBuffer),
+          stateBuffer_(stateBuffer),
+          nbytes_(nbytes),
+          dataBufferSize_(dataBufferSize),
+          chunkSize_(chunkSize),
+          pipelineDepth_(pipelineDepth),
+          chunksPerStep_((dataBufferSize + chunkSize - 1) / chunkSize),
+          totalSteps_((nbytes + dataBufferSize - 1) / dataBufferSize),
+          callIndex_(callIndex),
+          timeout_(timeout) {}
+  };
+
+  /**
+   * recv_stream - Create a RecvStream for streaming receive
+   *
+   * Creates a RecvStream that yields chunks as they become ready from the
+   * predecessor. Use for intermediate ranks that need to process chunks
+   * as they arrive.
+   *
+   * NOTE: The caller is responsible for calling timeout.start() before
+   * creating the stream if timeout enforcement is desired.
+   *
+   * @param nbytes Total number of bytes to receive
+   * @param call_index Call index for disambiguating multiple calls (default 0)
+   * @param timeout Timeout configuration (default none)
+   * @return RecvStream for iterating over ready chunks
+   */
+  __device__ __forceinline__ RecvStream recv_stream(
+      std::size_t nbytes,
+      uint32_t call_index = 0,
+      const Timeout& timeout = Timeout()) const;
+
+  /**
+   * send_stream - Create a SendStream for streaming send
+   *
+   * Creates a SendStream for sending chunks to the successor. Use for root
+   * rank (with for_each_slot) or intermediate ranks (with slot_for +
+   * commit_slot).
+   *
+   * NOTE: The caller is responsible for calling timeout.start() before
+   * creating the stream if timeout enforcement is desired.
+   *
+   * @param nbytes Total number of bytes to send
+   * @param call_index Call index for disambiguating multiple calls (default 0)
+   * @param timeout Timeout configuration (default none)
+   * @return SendStream for iterating over or accessing send slots
+   */
+  __device__ __forceinline__ SendStream send_stream(
+      std::size_t nbytes,
+      uint32_t call_index = 0,
+      const Timeout& timeout = Timeout()) const;
+
  private:
   const int myRank_{-1};
   const int peerRank_{-1};
@@ -965,5 +1316,242 @@ class P2pNvlTransportDevice {
   LocalState localState_;
   RemoteState remoteState_;
 };
+
+// =============================================================================
+// Streaming Primitives Implementation
+// =============================================================================
+
+template <typename Func>
+__device__ __forceinline__ void
+P2pNvlTransportDevice::RecvStream::for_each_ready_chunk(
+    ThreadGroup& group,
+    Func&& func) {
+#ifdef __CUDA_ARCH__
+  // Cross-step deferred signaling optimization:
+  // With pipelineDepth >= 2, we defer SIGNAL-2 (ready_to_send, which frees
+  // the predecessor's staging slot) from step N until after WAIT-1 of step
+  // N+1. This removes SIGNAL-2 from the critical path between steps:
+  //   Before: func(N) -> SIGNAL-2(N) -> WAIT-1(N+1) -> func(N+1)
+  //   After:  func(N) -> WAIT-1(N+1) -> SIGNAL-2(N) -> func(N+1)
+  // Safe because the predecessor reuses slot N%pd at step N+pd, and we
+  // release it at step N+1 — leaving pd-1 steps of slack.
+  // Falls back to immediate release when pipelineDepth == 1.
+  const bool deferRelease = (pipelineDepth_ >= 2);
+
+  for (std::size_t stepId = 0; stepId < totalSteps_; ++stepId) {
+    const std::size_t pipelineIdx = stepId % pipelineDepth_;
+    const std::size_t stepOffset = stepId * dataBufferSize_;
+    const std::size_t stepBytes = (stepOffset + dataBufferSize_ <= nbytes_)
+        ? dataBufferSize_ // Full step
+        : nbytes_ - stepOffset; // Partial (last step)
+    const std::size_t numChunks = (stepBytes + chunkSize_ - 1) / chunkSize_;
+    const std::size_t stateOffset = pipelineIdx * chunksPerStep_;
+    const std::size_t stagingOffset = pipelineIdx * dataBufferSize_;
+
+    // Compute previous step info for deferred release
+    std::size_t prevStateOffset = 0;
+    std::size_t prevNumChunks = 0;
+    if (deferRelease && stepId > 0) {
+      const std::size_t prevPipelineIdx = (stepId - 1) % pipelineDepth_;
+      prevStateOffset = prevPipelineIdx * chunksPerStep_;
+      const std::size_t prevStepOffset = (stepId - 1) * dataBufferSize_;
+      const std::size_t prevStepBytes =
+          (prevStepOffset + dataBufferSize_ <= nbytes_)
+          ? dataBufferSize_
+          : nbytes_ - prevStepOffset;
+      prevNumChunks = (prevStepBytes + chunkSize_ - 1) / chunkSize_;
+    }
+
+    // Iterate over max(numChunks, prevNumChunks) to ensure all previous
+    // step's chunks get released even if the current step has fewer chunks
+    // (can happen for the last step when nbytes is not a multiple of
+    // dataBufferSize)
+    const std::size_t iterChunks = (deferRelease && stepId > 0)
+        ? (numChunks > prevNumChunks ? numChunks : prevNumChunks)
+        : numChunks;
+
+    // Each warp gets assigned a contiguous range of chunks
+    group.for_each_item_contiguous(iterChunks, [&](uint32_t chunkIdx) {
+      const bool hasCurrentChunk = (chunkIdx < numChunks);
+      const std::size_t chunkOffset = chunkIdx * chunkSize_;
+      const std::size_t chunkBytes = hasCurrentChunk
+          ? ((chunkOffset + chunkSize_ <= stepBytes) ? chunkSize_
+                                                     : stepBytes - chunkOffset)
+          : 0;
+
+      // WAIT-1: Wait for predecessor's data (acquire semantics)
+      if (hasCurrentChunk && chunkBytes > 0) {
+        ChunkState& state = stateBuffer_[stateOffset + chunkIdx];
+        state.wait_ready_to_recv(group, stepId, callIndex_, timeout_);
+      }
+
+      // Deferred SIGNAL-2: release previous step's staging slot AFTER
+      // waiting for current step's data, overlapping with the wait
+      if (deferRelease && stepId > 0 && chunkIdx < prevNumChunks) {
+        stateBuffer_[prevStateOffset + chunkIdx].ready_to_send(group);
+      }
+
+      // Yield chunk to callback
+      if (hasCurrentChunk && chunkBytes > 0) {
+        StagingChunkView view{
+            dataBuffer_ + stagingOffset + chunkOffset, // Data pointer
+            stepOffset + chunkOffset, // Offset (in full message)
+            chunkBytes}; // Chunk size
+        func(view);
+      }
+
+      // Immediate release when deferred signaling is disabled (pd == 1)
+      if (!deferRelease && hasCurrentChunk && chunkBytes > 0) {
+        stateBuffer_[stateOffset + chunkIdx].ready_to_send(group);
+      }
+    });
+  }
+
+  // Release the last step's staging slots (deferred from the final iteration)
+  if (deferRelease && totalSteps_ > 0) {
+    const std::size_t lastStepId = totalSteps_ - 1;
+    const std::size_t lastPipelineIdx = lastStepId % pipelineDepth_;
+    const std::size_t lastStepOffset = lastStepId * dataBufferSize_;
+    const std::size_t lastStepBytes =
+        (lastStepOffset + dataBufferSize_ <= nbytes_)
+        ? dataBufferSize_
+        : nbytes_ - lastStepOffset;
+    const std::size_t lastNumChunks =
+        (lastStepBytes + chunkSize_ - 1) / chunkSize_;
+    const std::size_t lastStateOffset = lastPipelineIdx * chunksPerStep_;
+
+    group.for_each_item_contiguous(lastNumChunks, [&](uint32_t chunkIdx) {
+      stateBuffer_[lastStateOffset + chunkIdx].ready_to_send(group);
+    });
+  }
+#endif
+}
+
+template <typename Func>
+__device__ __forceinline__ void
+P2pNvlTransportDevice::SendStream::for_each_slot(
+    ThreadGroup& group,
+    Func&& func) {
+#ifdef __CUDA_ARCH__
+  for (std::size_t stepId = 0; stepId < totalSteps_; ++stepId) {
+    const std::size_t pipelineIdx = stepId % pipelineDepth_;
+    const std::size_t stepOffset = stepId * dataBufferSize_;
+    const std::size_t stepBytes = (stepOffset + dataBufferSize_ <= nbytes_)
+        ? dataBufferSize_ // Full step
+        : nbytes_ - stepOffset; // Partial (last step)
+    const std::size_t numChunks = (stepBytes + chunkSize_ - 1) / chunkSize_;
+    const std::size_t stateOffset = pipelineIdx * chunksPerStep_;
+    const std::size_t stagingOffset = pipelineIdx * dataBufferSize_;
+
+    group.for_each_item_contiguous(numChunks, [&](uint32_t chunkIdx) {
+      const std::size_t chunkOffset = chunkIdx * chunkSize_;
+      const std::size_t chunkBytes = (chunkOffset + chunkSize_ <= stepBytes)
+          ? chunkSize_
+          : stepBytes - chunkOffset;
+
+      if (chunkBytes == 0) {
+        return;
+      }
+
+      ChunkState& state = stateBuffer_[stateOffset + chunkIdx];
+
+      // Wait for slot to be free (acquire semantics)
+      state.wait_ready_to_send(group, timeout_);
+
+      // Yield slot to callback
+      SendSlotView slot{
+          dataBuffer_ + stagingOffset + chunkOffset,
+          stepOffset + chunkOffset,
+          chunkBytes,
+          stepId,
+          stateOffset + chunkIdx};
+      func(slot);
+
+      // AUTO-SIGNAL receiver (release semantics)
+      state.ready_to_recv(group, stepId, callIndex_);
+    });
+  }
+#endif
+}
+
+__device__ __forceinline__ P2pNvlTransportDevice::SendSlotView
+P2pNvlTransportDevice::SendStream::slot_for(
+    ThreadGroup& group,
+    const StagingChunkView& recv_chunk) {
+#ifdef __CUDA_ARCH__
+  // Reverse-map offset → step and pipeline slot
+  const std::size_t stepId = recv_chunk.offset / dataBufferSize_;
+  const std::size_t pipelineIdx = stepId % pipelineDepth_;
+  const std::size_t offsetInStep = recv_chunk.offset - stepId * dataBufferSize_;
+  const std::size_t chunkIdx = offsetInStep / chunkSize_;
+  const std::size_t stateOffset = pipelineIdx * chunksPerStep_;
+  const std::size_t stagingOffset = pipelineIdx * dataBufferSize_;
+  const std::size_t stateIndex = stateOffset + chunkIdx;
+
+  ChunkState& state = stateBuffer_[stateIndex];
+
+  // Wait for slot to be free (acquire semantics)
+  state.wait_ready_to_send(group, timeout_);
+
+  return SendSlotView{
+      dataBuffer_ + stagingOffset + offsetInStep,
+      recv_chunk.offset,
+      recv_chunk.size,
+      stepId,
+      stateIndex};
+#else
+  return SendSlotView{nullptr, 0, 0, 0, 0};
+#endif
+}
+
+__device__ __forceinline__ void P2pNvlTransportDevice::SendStream::commit_slot(
+    ThreadGroup& group,
+    const SendSlotView& slot) {
+#ifdef __CUDA_ARCH__
+  ChunkState& state = stateBuffer_[slot.stateIndex_];
+  // Signal receiver: data ready (release semantics)
+  state.ready_to_recv(group, slot.stepId_, callIndex_);
+#endif
+}
+
+__device__ __forceinline__ P2pNvlTransportDevice::RecvStream
+P2pNvlTransportDevice::recv_stream(
+    std::size_t nbytes,
+    uint32_t call_index,
+    const Timeout& timeout) const {
+#ifdef __CUDA_ARCH__
+  return RecvStream{
+      localState_.dataBuffer,
+      localState_.stateBuffer.data(),
+      nbytes,
+      options_.dataBufferSize,
+      options_.chunkSize,
+      options_.pipelineDepth,
+      call_index,
+      timeout};
+#else
+  return RecvStream{nullptr, nullptr, 0, 0, 0, 0, 0, Timeout{}};
+#endif
+}
+
+__device__ __forceinline__ P2pNvlTransportDevice::SendStream
+P2pNvlTransportDevice::send_stream(
+    std::size_t nbytes,
+    uint32_t call_index,
+    const Timeout& timeout) const {
+#ifdef __CUDA_ARCH__
+  return SendStream{
+      remoteState_.dataBuffer,
+      remoteState_.stateBuffer.data(),
+      nbytes,
+      options_.dataBufferSize,
+      options_.chunkSize,
+      options_.pipelineDepth,
+      call_index,
+      timeout};
+#else
+  return SendStream{nullptr, nullptr, 0, 0, 0, 0, 0, Timeout{}};
+#endif
+}
 
 } // namespace comms::pipes
