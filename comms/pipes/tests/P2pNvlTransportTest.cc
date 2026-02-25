@@ -2548,6 +2548,83 @@ INSTANTIATE_TEST_SUITE_P(
             .name = "DiffMisalign_1_9_100Bytes"}),
     putUnalignedParamName);
 
+// Regression test for multi-chunk accumulation bug
+// Tests that put() correctly handles multiple chunks per thread group.
+// The bug caused chunkBytes to accumulate across iterations, leading to
+// buffer overflows and data corruption.
+TEST_F(P2pNvlTransportTestFixture, PutMultiChunkAccumulationRegression) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  // Parameters chosen to trigger multi-chunk per group:
+  // numBlocks=4, blockSize=128 -> total_groups=16
+  // nbytes=257 -> numChunks=17, so groups process 2 chunks each
+  const size_t nbytes = 257;
+  const size_t paddedSize = nbytes + 64; // Extra space to detect overflow
+  const char sentinelValue = static_cast<char>(0xDE);
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = paddedSize,
+      .chunkSize = 1,
+      .pipelineDepth = 1,
+  };
+
+  TransportTestHelper helper(globalRank, numRanks, localRank, config);
+  auto p2p = helper.getDevice();
+
+  char* localSrc = p2p.getLocalState().dataBuffer;
+  char* remoteDst = p2p.getRemoteState().dataBuffer;
+  const uint64_t signal_id = 0;
+
+  if (globalRank == 0) {
+    // Fill with sequential pattern [0, 1, 2, ..., nbytes-1]
+    std::vector<char> pattern(paddedSize, sentinelValue);
+    for (size_t i = 0; i < nbytes; ++i) {
+      pattern[i] = static_cast<char>(i % 256);
+    }
+    CUDACHECK_TEST(cudaMemcpy(
+        localSrc, pattern.data(), paddedSize, cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testPutWithSignal(
+        p2p, remoteDst, localSrc, signal_id, nbytes, 4, 128);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+  } else {
+    // Fill destination with sentinel to detect any writes
+    CUDACHECK_TEST(cudaMemset(localSrc, sentinelValue, paddedSize));
+
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    test::testWait(p2p, CmpOp::CMP_GE, signal_id, nbytes, 4, 128);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    // Verify sequential pattern
+    std::vector<char> result(paddedSize);
+    CUDACHECK_TEST(cudaMemcpy(
+        result.data(), localSrc, paddedSize, cudaMemcpyDeviceToHost));
+
+    // Check data bytes have correct pattern
+    for (size_t i = 0; i < nbytes; ++i) {
+      EXPECT_EQ(
+          static_cast<unsigned char>(result[i]),
+          static_cast<unsigned char>(i % 256))
+          << "Data mismatch at byte " << i << " - accumulation bug detected";
+    }
+
+    // Check sentinel bytes are untouched (no overflow)
+    for (size_t i = nbytes; i < paddedSize; ++i) {
+      EXPECT_EQ(
+          static_cast<unsigned char>(result[i]),
+          static_cast<unsigned char>(sentinelValue))
+          << "Buffer overflow detected at byte " << i;
+    }
+  }
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char* argv[]) {
