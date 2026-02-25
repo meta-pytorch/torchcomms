@@ -406,10 +406,12 @@ void TorchCommNCCLX::finalize() {
 }
 
 void TorchCommNCCLX::abortNcclComm() {
-  // Call abort hooks before aborting to allow users to capture debug info
-  TC_LOG(INFO, this) << "Calling abort hooks before aborting.";
+  // Both runAbortHooks and detachMemoryHook must run before commAbort:
+  // - Abort hooks may need to inspect the live NCCL comm for debug info.
+  // - detachMemoryHook deregisters this comm from CachingAllocator so that
+  //   subsequent alloc/free callbacks do not reference a destroyed comm.
+  TC_LOG(INFO, this) << "Calling abort hooks before commAbort.";
   runAbortHooks();
-
   detachMemoryHook();
   if (nccl_comm_) {
     NCCLX_CHECK(
@@ -418,10 +420,6 @@ void TorchCommNCCLX::abortNcclComm() {
         nccl_api_->commAbort(nccl_comm_),
         "NCCLX Abort failed");
     nccl_comm_ = nullptr;
-  }
-  if (options_.abort_process_on_timeout_or_error) {
-    TC_LOG(ERROR, this) << "Aborting process due to timeout";
-    abort();
   }
 }
 

@@ -13,8 +13,8 @@ TorchCommNCCLXPersistentRequest::TorchCommNCCLXPersistentRequest(
     : comm_(std::move(comm)), hdl_(hdl), stream_(stream) {}
 
 TorchCommNCCLXPersistentRequest::~TorchCommNCCLXPersistentRequest() noexcept {
-  // TorchComm should have aborted process if commAbort is called (see
-  // TorchCommNCCLX::abortNcclComm).
+  // After commAbort, pFree may fail; NCCLX_CHECK_IGNORE handles this
+  // gracefully.
   auto nccl_api = comm_->getNcclApi();
   NCCLX_CHECK_IGNORE(nccl_api, nccl_api->pFree(hdl_), "NCCLX pFree failed");
   TC_LOG(INFO, nullptr) << "Finalized persistent request";
