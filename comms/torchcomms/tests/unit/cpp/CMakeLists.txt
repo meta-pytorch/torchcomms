@@ -75,3 +75,89 @@ add_test(NAME TorchCommFactoryTest COMMAND TorchCommFactoryTest)
 set_tests_properties(TorchCommFactoryTest PROPERTIES
     ENVIRONMENT "DUMMY_TEST_BACKEND_LIB_PATH=$<TARGET_FILE:dummy_test_backend>"
 )
+
+if(USE_XCCL)
+    file(GLOB TORCHCOMMS_XCCL_SOURCES "${ROOT}/comms/torchcomms/xccl/*.cpp")
+    list(REMOVE_ITEM TORCHCOMMS_XCCL_SOURCES "${ROOT}/comms/torchcomms/xccl/TorchCommXCCLPy.cpp")
+    file(GLOB TORCHCOMMS_XPU_API_SOURCE "${ROOT}/comms/torchcomms/device/xpu/XpuApi.cpp")
+    
+    # Common XCCL test libraries and source files
+    set(XCCL_TEST_SOURCES
+        ${TORCHCOMMS_XCCL_SOURCES}
+        ${TORCHCOMMS_XPU_API_SOURCE}
+        ${ROOT}/comms/torchcomms/xccl/tests/unit/cpp/TorchCommXCCLTestBase.cpp
+    )
+    
+    if(USE_SYSTEM_LIBS)
+        set(TEST_EXTRA_LIBS "-lglog" "-lgflags" "-lfmt" "-lunwind")
+    else()
+        set(TEST_EXTRA_LIBS "-l:libglog.a" "-l:libgflags.a" "-l:libfmt.a" "-lunwind")
+    endif()
+
+    # 1. Queue Test
+    add_executable(TorchWorkXCCLQueueTest
+        ${ROOT}/comms/torchcomms/xccl/tests/unit/cpp/TorchWorkXCCLQueueTest.cpp
+        ${XCCL_TEST_SOURCES}
+    )
+    target_include_directories(TorchWorkXCCLQueueTest PRIVATE
+        ${ROOT}
+        ${CONDA_INCLUDE}
+        $ENV{CCL_ROOT}/include
+    )
+    target_compile_features(TorchWorkXCCLQueueTest PRIVATE cxx_std_20)
+    target_link_libraries(TorchWorkXCCLQueueTest PRIVATE
+        torchcomms
+        ${TORCH_LIBRARIES}
+        $ENV{CCL_ROOT}/lib/libccl.so.2
+        GTest::gtest_main
+        GTest::gmock
+        ${TEST_EXTRA_LIBS}
+    )
+    add_test(NAME TorchWorkXCCLQueueTest COMMAND TorchWorkXCCLQueueTest)
+    gtest_discover_tests(TorchWorkXCCLQueueTest)
+
+    # 2. Bootstrap Test
+    add_executable(TorchCommXCCLBootstrapTest
+        ${ROOT}/comms/torchcomms/xccl/tests/unit/cpp/TorchCommXCCLBootstrapTest.cpp
+        ${XCCL_TEST_SOURCES}
+    )
+    target_include_directories(TorchCommXCCLBootstrapTest PRIVATE
+        ${ROOT}
+        ${CONDA_INCLUDE}
+        $ENV{CCL_ROOT}/include
+    )
+    target_compile_features(TorchCommXCCLBootstrapTest PRIVATE cxx_std_20)
+    target_link_libraries(TorchCommXCCLBootstrapTest PRIVATE
+        torchcomms
+        ${TORCH_LIBRARIES}
+        $ENV{CCL_ROOT}/lib/libccl.so.2
+        GTest::gtest_main
+        GTest::gmock
+        ${TEST_EXTRA_LIBS}
+    )
+    add_test(NAME TorchCommXCCLBootstrapTest COMMAND TorchCommXCCLBootstrapTest)
+    gtest_discover_tests(TorchCommXCCLBootstrapTest)
+
+    # 3. Main Collectives Test
+    add_executable(TorchCommXCCLTest
+        ${ROOT}/comms/torchcomms/xccl/tests/unit/cpp/TorchCommXCCLTest.cpp
+        ${XCCL_TEST_SOURCES}
+    )
+    target_include_directories(TorchCommXCCLTest PRIVATE
+        ${ROOT}
+        ${CONDA_INCLUDE}
+        $ENV{CCL_ROOT}/include
+    )
+    target_compile_features(TorchCommXCCLTest PRIVATE cxx_std_20)
+    target_link_libraries(TorchCommXCCLTest PRIVATE
+        torchcomms
+        ${TORCH_LIBRARIES}
+        $ENV{CCL_ROOT}/lib/libccl.so.2
+        GTest::gtest_main
+        GTest::gmock
+        ${TEST_EXTRA_LIBS}
+    )
+    add_test(NAME TorchCommXCCLTest COMMAND TorchCommXCCLTest)
+    gtest_discover_tests(TorchCommXCCLTest)
+
+endif()
