@@ -115,9 +115,13 @@ INSTANTIATE_TEST_SUITE_P(
         // Different thread count
         CopyChunkVectorizedParams{2, 128, 8192, 0, 0},
         // Edge case: single warp
-        CopyChunkVectorizedParams{1, 32, 2048, 0, 0}));
+        CopyChunkVectorizedParams{1, 32, 2048, 0, 0},
+        // Unaligned destination offset (forces byte-level fallback)
+        CopyChunkVectorizedParams{1, 256, 4096, 3, 0},
+        // Unaligned source offset (forces byte-level fallback)
+        CopyChunkVectorizedParams{1, 256, 4096, 0, 5}));
 
-// --- Dual-destination tests for memcpy_vectorized_dual_dest ---
+// --- Dual-destination tests for memcpy_vectorized_multi_dest<2> ---
 
 struct CopyChunkVectorizedDualDestParams {
   int numBlocks;
@@ -133,9 +137,10 @@ class CopyUtilsTestDualDestParameterized
       public ::testing::WithParamInterface<CopyChunkVectorizedDualDestParams> {
 };
 
-// Test memcpy_vectorized_dual_dest() which reads source data once and writes
-// to two destinations simultaneously. Verifies both destinations match the
-// source byte-for-byte across various sizes, alignments, and thread configs.
+// Test memcpy_vectorized_multi_dest<2>() which reads source data once and
+// writes to two destinations simultaneously. Verifies both destinations match
+// the source byte-for-byte across various sizes, alignments, and thread
+// configs.
 TEST_P(CopyUtilsTestDualDestParameterized, CopyChunkVectorizedDualDest) {
   const auto& params = GetParam();
   const std::size_t maxOffset =
@@ -221,5 +226,202 @@ INSTANTIATE_TEST_SUITE_P(
         CopyChunkVectorizedDualDestParams{1, 256, 15, 0, 0, 0},
         // Zero-byte copy (no-op boundary condition)
         CopyChunkVectorizedDualDestParams{1, 256, 0, 0, 0, 0}));
+
+// --- Multi-destination tests for memcpy_vectorized_multi_dest (N=1) ---
+
+class CopyUtilsTestMultiDest1Parameterized
+    : public CopyUtilsTestFixture,
+      public ::testing::WithParamInterface<CopyChunkVectorizedParams> {};
+
+// Test memcpy_vectorized_multi_dest<1>() which is the degenerate single-dest
+// case. Verifies the multi_dest generalization works correctly for N=1.
+TEST_P(CopyUtilsTestMultiDest1Parameterized, CopyChunkVectorizedMultiDest1) {
+  const auto& params = GetParam();
+  const std::size_t bufferSize =
+      params.nBytes + std::max(params.dstOffset, params.srcOffset);
+
+  DeviceBuffer srcBuffer(bufferSize);
+  DeviceBuffer dstBuffer(bufferSize);
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto src_d = static_cast<char*>(srcBuffer.get());
+  auto dst_d = static_cast<char*>(dstBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  std::vector<char> src_h(bufferSize);
+  for (std::size_t i = 0; i < bufferSize; i++) {
+    src_h[i] = static_cast<char>(i % 256);
+  }
+
+  CUDACHECK_TEST(
+      cudaMemcpy(src_d, src_h.data(), bufferSize, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(dst_d, 0, bufferSize));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  testCopyChunkVectorizedMultiDest1(
+      dst_d + params.dstOffset,
+      src_d + params.srcOffset,
+      params.nBytes,
+      errorCount_d,
+      params.numBlocks,
+      params.numThreads);
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(errorCount_h, 0)
+      << "Multi-dest(N=1) copy failed with " << errorCount_h << " mismatches"
+      << " (numBlocks=" << params.numBlocks
+      << ", numThreads=" << params.numThreads << ", nBytes=" << params.nBytes
+      << ", dstOffset=" << params.dstOffset
+      << ", srcOffset=" << params.srcOffset << ")";
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CopyUtilsMultiDest1Tests,
+    CopyUtilsTestMultiDest1Parameterized,
+    ::testing::Values(
+        // Basic aligned case: 4KB, no offsets
+        CopyChunkVectorizedParams{1, 256, 4096, 0, 0},
+        // Unaligned size (not multiple of 64 bytes)
+        CopyChunkVectorizedParams{1, 256, 4097, 0, 0},
+        // Small size (less than warp size * vector size)
+        CopyChunkVectorizedParams{1, 32, 128, 0, 0},
+        // Large size with multiple blocks
+        CopyChunkVectorizedParams{4, 256, 65536, 0, 0},
+        // Non-zero destination offset (16-byte aligned for uint4)
+        CopyChunkVectorizedParams{1, 256, 4096, 64, 0},
+        // Non-zero source offset (16-byte aligned for uint4)
+        CopyChunkVectorizedParams{1, 256, 4096, 0, 128},
+        // Both offsets non-zero (16-byte aligned for uint4)
+        CopyChunkVectorizedParams{1, 256, 4096, 32, 48},
+        // Different thread count
+        CopyChunkVectorizedParams{2, 128, 8192, 0, 0},
+        // Single warp
+        CopyChunkVectorizedParams{1, 32, 2048, 0, 0},
+        // Unaligned destination offset (forces byte-level fallback)
+        CopyChunkVectorizedParams{1, 256, 4096, 3, 0},
+        // Unaligned source offset (forces byte-level fallback)
+        CopyChunkVectorizedParams{1, 256, 4096, 0, 5},
+        // Zero-byte copy (no-op boundary condition)
+        CopyChunkVectorizedParams{1, 256, 0, 0, 0}));
+
+// --- Multi-destination tests for memcpy_vectorized_multi_dest (N=3) ---
+
+struct CopyChunkVectorizedMultiDest3Params {
+  int numBlocks;
+  int numThreads;
+  std::size_t nBytes;
+  std::size_t dst1Offset;
+  std::size_t dst2Offset;
+  std::size_t dst3Offset;
+  std::size_t srcOffset;
+};
+
+class CopyUtilsTestMultiDest3Parameterized
+    : public CopyUtilsTestFixture,
+      public ::testing::WithParamInterface<
+          CopyChunkVectorizedMultiDest3Params> {};
+
+// Test memcpy_vectorized_multi_dest<3>() which verifies the generalization
+// beyond N=2. All three destinations should match the source byte-for-byte.
+TEST_P(CopyUtilsTestMultiDest3Parameterized, CopyChunkVectorizedMultiDest3) {
+  const auto& params = GetParam();
+  const std::size_t maxOffset = std::max(
+      {params.dst1Offset,
+       params.dst2Offset,
+       params.dst3Offset,
+       params.srcOffset});
+  const std::size_t bufferSize = params.nBytes + maxOffset;
+
+  DeviceBuffer srcBuffer(bufferSize);
+  DeviceBuffer dst1Buffer(bufferSize);
+  DeviceBuffer dst2Buffer(bufferSize);
+  DeviceBuffer dst3Buffer(bufferSize);
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto src_d = static_cast<char*>(srcBuffer.get());
+  auto dst1_d = static_cast<char*>(dst1Buffer.get());
+  auto dst2_d = static_cast<char*>(dst2Buffer.get());
+  auto dst3_d = static_cast<char*>(dst3Buffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  std::vector<char> src_h(bufferSize);
+  for (std::size_t i = 0; i < bufferSize; i++) {
+    src_h[i] = static_cast<char>(i % 256);
+  }
+
+  CUDACHECK_TEST(
+      cudaMemcpy(src_d, src_h.data(), bufferSize, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(dst1_d, 0, bufferSize));
+  CUDACHECK_TEST(cudaMemset(dst2_d, 0, bufferSize));
+  CUDACHECK_TEST(cudaMemset(dst3_d, 0, bufferSize));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  testCopyChunkVectorizedMultiDest3(
+      dst1_d + params.dst1Offset,
+      dst2_d + params.dst2Offset,
+      dst3_d + params.dst3Offset,
+      src_d + params.srcOffset,
+      params.nBytes,
+      errorCount_d,
+      params.numBlocks,
+      params.numThreads);
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(errorCount_h, 0)
+      << "Multi-dest(N=3) copy failed with " << errorCount_h << " mismatches"
+      << " (numBlocks=" << params.numBlocks
+      << ", numThreads=" << params.numThreads << ", nBytes=" << params.nBytes
+      << ", dst1Offset=" << params.dst1Offset
+      << ", dst2Offset=" << params.dst2Offset
+      << ", dst3Offset=" << params.dst3Offset
+      << ", srcOffset=" << params.srcOffset << ")";
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    CopyUtilsMultiDest3Tests,
+    CopyUtilsTestMultiDest3Parameterized,
+    ::testing::Values(
+        // Basic aligned case: 4KB, no offsets
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4096, 0, 0, 0, 0},
+        // Unaligned size (not multiple of 64 bytes)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4097, 0, 0, 0, 0},
+        // Small size (less than warp size * vector size)
+        CopyChunkVectorizedMultiDest3Params{1, 32, 128, 0, 0, 0, 0},
+        // Large size with multiple blocks
+        CopyChunkVectorizedMultiDest3Params{4, 256, 65536, 0, 0, 0, 0},
+        // dst1 offset only (16-byte aligned)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4096, 64, 0, 0, 0},
+        // dst2 offset only (16-byte aligned)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4096, 0, 64, 0, 0},
+        // dst3 offset only (16-byte aligned)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4096, 0, 0, 64, 0},
+        // src offset only (16-byte aligned)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4096, 0, 0, 0, 128},
+        // All four offsets non-zero (16-byte aligned)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4096, 32, 48, 64, 80},
+        // Different thread count
+        CopyChunkVectorizedMultiDest3Params{2, 128, 8192, 0, 0, 0, 0},
+        // Single warp
+        CopyChunkVectorizedMultiDest3Params{1, 32, 2048, 0, 0, 0, 0},
+        // dst1 unaligned (forces byte-level fallback path)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4096, 3, 0, 0, 0},
+        // dst3 unaligned (forces byte-level fallback path)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4096, 0, 0, 7, 0},
+        // src unaligned (forces byte-level fallback path)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 4096, 0, 0, 0, 5},
+        // Tiny copy (< 16 bytes, smaller than single uint4)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 15, 0, 0, 0, 0},
+        // Zero-byte copy (no-op boundary condition)
+        CopyChunkVectorizedMultiDest3Params{1, 256, 0, 0, 0, 0, 0}));
 
 } // namespace comms::pipes::test
