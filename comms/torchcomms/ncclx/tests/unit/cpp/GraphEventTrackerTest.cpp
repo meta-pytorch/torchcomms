@@ -274,6 +274,7 @@ TEST_F(GraphEventTrackerTest, CheckAllReturnsOKWhenNoEntries) {
   setupEventsForWork(*comm, 1);
   auto work = comm->send(tensor, 1, true);
 
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
   std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
   WorkEvent& we = work_events_[0];
@@ -353,6 +354,7 @@ TEST_F(GraphEventTrackerTest, ReplayCounterResetsTimer) {
   std::atomic<bool> stop_replays{false};
   std::thread replay_thread([&]() {
     while (!stop_replays.load()) {
+      // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
       if (!stop_replays.load()) {
         captured_replay_fn(captured_replay_data);
@@ -360,6 +362,7 @@ TEST_F(GraphEventTrackerTest, ReplayCounterResetsTimer) {
     }
   });
 
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
   std::this_thread::sleep_for(std::chrono::milliseconds(800));
 
   stop_replays.store(true);
@@ -368,6 +371,7 @@ TEST_F(GraphEventTrackerTest, ReplayCounterResetsTimer) {
   ON_CALL(*cuda_mock_, eventQuery(events.end))
       .WillByDefault(Return(cudaSuccess));
 
+  // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
   std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
   ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
@@ -405,9 +409,9 @@ TEST_F(GraphEventTrackerTest, DestroyAllCleansUpGraphEntryEvents) {
   std::vector<cudaEvent_t> destroyed_events;
   EXPECT_CALL(*cuda_mock_, eventDestroy(_))
       .WillRepeatedly(DoAll(
-          Invoke([&destroyed_events](cudaEvent_t event) {
+          [&destroyed_events](cudaEvent_t event) {
             destroyed_events.push_back(event);
-          }),
+          },
           Return(cudaSuccess)));
   EXPECT_CALL(*cuda_mock_, free(_)).WillOnce(Return(cudaSuccess));
   EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));
@@ -759,9 +763,9 @@ TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
   std::vector<cudaEvent_t> destroyed_events;
   EXPECT_CALL(*cuda_mock_, eventDestroy(_))
       .WillRepeatedly(DoAll(
-          Invoke([&destroyed_events](cudaEvent_t event) {
+          [&destroyed_events](cudaEvent_t event) {
             destroyed_events.push_back(event);
-          }),
+          },
           Return(cudaSuccess)));
   EXPECT_CALL(*cuda_mock_, free(_)).WillOnce(Return(cudaSuccess));
   EXPECT_CALL(*cuda_mock_, streamDestroy(_)).WillOnce(Return(cudaSuccess));

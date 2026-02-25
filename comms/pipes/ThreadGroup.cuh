@@ -20,11 +20,12 @@ namespace comms::pipes {
  * 2. Selecting which factory function to use when creating ThreadGroups
  *
  * Available scopes:
- * - WARP: 32 threads per group (finest granularity, uses __syncwarp)
+ * - THREAD:    Single thread per group (no-op sync, finest granularity)
+ * - WARP:      32 threads per group (uses __syncwarp)
  * - MULTIWARP: 128 threads per group (4 warps, uses named barriers)
- * - BLOCK: All threads in a block form one group (uses __syncthreads)
- * - CLUSTER: All threads in a cluster form one group (uses cluster
- * barriers)
+ * - BLOCK:     All threads in a block form one group (uses __syncthreads)
+ * - CLUSTER:   All threads in a cluster form one group (uses cluster
+ *              barriers)
  *
  * Usage example:
  *   __global__ void myKernel(SyncScope scope) {
@@ -32,7 +33,7 @@ namespace comms::pipes {
  *     // ...
  *   }
  */
-enum class SyncScope { WARP, MULTIWARP, BLOCK, CLUSTER };
+enum class SyncScope { THREAD, WARP, MULTIWARP, BLOCK, CLUSTER };
 
 /**
  * ThreadGroup - Abstraction for cooperative thread group operations
@@ -88,6 +89,15 @@ struct ThreadGroup {
   __device__ inline void sync() {
 #ifdef __CUDA_ARCH__
     switch (scope) {
+      case SyncScope::THREAD:
+        // Single-thread group: emit a compiler barrier to prevent reordering
+        // across this sync point. No hardware instruction needed since there
+        // is only one thread, but the compiler must not hoist or sink memory
+        // operations across sync() — matching the invariant that sync()
+        // establishes a happens-before boundary within a thread's instruction
+        // stream.
+        asm volatile("" ::: "memory");
+        break;
       case SyncScope::WARP:
         __syncwarp();
         break;
@@ -110,14 +120,16 @@ struct ThreadGroup {
         __syncthreads();
         break;
       case SyncScope::CLUSTER:
-#if __CUDA_ARCH__ >= 900
+#if __CUDA_ARCH__ >= 900 && !defined(__clang_llvm_bitcode_lib__)
       {
         cooperative_groups::cluster_group cluster =
             cooperative_groups::this_cluster();
         cluster.sync();
       }
 #else
-        // Fallback to block sync for older architectures
+        // Fallback to block sync for older architectures or clang bitcode path
+        // (cooperative_groups::cluster_group is not available in clang 19's
+        // CUDA headers; Triton kernels do not use cluster scope anyway)
         __syncthreads();
 #endif
       break;
@@ -514,6 +526,36 @@ __device__ inline PartitionResult ThreadGroup::partition_interleaved(
   return PartitionResult{};
 }
 
+/**
+ * make_thread_solo - Create a single-thread ThreadGroup for this thread
+ *
+ * Each thread forms its own group of size 1. sync() is a no-op.
+ * Use when an operation must execute on a single thread at a time,
+ * or when composing with scope-dispatch code that needs a THREAD scope group.
+ *
+ * Unlike warp/block groups, thread_id_in_group is always 0 (this thread is
+ * always the leader). group_id and total_groups are based on the global
+ * thread index and count respectively.
+ */
+__device__ inline ThreadGroup make_thread_solo() {
+#ifdef __CUDA_ARCH__
+  uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
+      threadIdx.z * blockDim.x * blockDim.y;
+  uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
+  uint32_t global_tid = blockIdx.x * threads_per_block + tid;
+  uint32_t total_threads = gridDim.x * threads_per_block;
+
+  return ThreadGroup{
+      .thread_id_in_group = 0,
+      .group_size = 1,
+      .group_id = global_tid,
+      .total_groups = total_threads,
+      .scope = SyncScope::THREAD};
+#else
+  return ThreadGroup{};
+#endif
+}
+
 __device__ inline ThreadGroup make_warp_group() {
 #ifdef __CUDA_ARCH__
   uint32_t warps_per_block = blockDim.x / comms::device::kWarpSize;
@@ -687,9 +729,11 @@ __device__ inline ThreadGroup make_multiwarp_group() {
  *
  * Convenience function that dispatches to the appropriate factory function
  * based on the scope parameter:
- *   - SyncScope::WARP → make_warp_group()
+ *   - SyncScope::THREAD    → make_thread_solo() (no-op sync, size 1)
+ *   - SyncScope::WARP      → make_warp_group()
  *   - SyncScope::MULTIWARP → make_multiwarp_group()
- *   - SyncScope::BLOCK → make_block_group()
+ *   - SyncScope::BLOCK     → make_block_group()
+ *   - SyncScope::CLUSTER   → make_cluster_group()
  *
  * @param scope The desired thread grouping strategy
  * @return ThreadGroup configured for the specified scope
@@ -705,6 +749,8 @@ __device__ inline ThreadGroup make_multiwarp_group() {
 __device__ inline ThreadGroup make_thread_group(SyncScope scope) {
 #ifdef __CUDA_ARCH__
   switch (scope) {
+    case SyncScope::THREAD:
+      return make_thread_solo();
     case SyncScope::WARP:
       return make_warp_group();
     case SyncScope::MULTIWARP:

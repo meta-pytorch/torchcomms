@@ -555,7 +555,7 @@ void DeviceApiTest::testGinAtomicAdd() {
 
   // Verify signal was reset to 0
   uint64_t* d_signal_out = nullptr;
-  cudaMalloc(&d_signal_out, sizeof(uint64_t));
+  ASSERT_EQ(cudaMalloc(&d_signal_out, sizeof(uint64_t)), cudaSuccess);
   {
     c10::cuda::CUDAStreamGuard guard(op_stream);
     torchcomms::device::test::launchDeviceReadSignalKernel(
@@ -652,7 +652,7 @@ void DeviceApiTest::testPerPeerSignal() {
 
   // Read signal value via kernel and verify on host
   uint64_t* d_out = nullptr;
-  cudaMalloc(&d_out, sizeof(uint64_t));
+  ASSERT_EQ(cudaMalloc(&d_out, sizeof(uint64_t)), cudaSuccess);
   {
     c10::cuda::CUDAStreamGuard guard(op_stream);
     torchcomms::device::test::launchDeviceReadSignalKernel(
@@ -847,4 +847,208 @@ void DeviceApiTest::testDeviceBarrier() {
 
 TEST_F(DeviceApiTest, DeviceBarrier) {
   testDeviceBarrier();
+}
+
+// =============================================================================
+// Scope-Aware Put Tests
+// =============================================================================
+// Validates that put() with CoopScope::WARP and CoopScope::BLOCK produces
+// correct results. Uses the same ring pattern as testDevicePut but with
+// cooperative kernels launched with the appropriate thread count.
+
+void DeviceApiTest::testDevicePutScoped(
+    int count,
+    at::ScalarType dtype,
+    torchcomms::device::CoopScope scope,
+    int num_threads) {
+  std::string scope_name =
+      (scope == torchcomms::device::CoopScope::WARP) ? "WARP" : "BLOCK";
+  SCOPED_TRACE(
+      ::testing::Message() << "Testing Scoped Put (" << scope_name
+                           << ", threads=" << num_threads << ") with count="
+                           << count << " and dtype=" << getDtypeName(dtype));
+
+  auto put_stream = at::cuda::getStreamFromPool(false, device_index_);
+  auto wait_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(dtype).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({count * num_ranks_}, options);
+  at::Tensor src_tensor = at::zeros({count}, options);
+  src_tensor.fill_(static_cast<float>(rank_ + 1));
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
+  ASSERT_NE(win, nullptr) << "Window should be TorchCommWindowNCCLXGin";
+
+  int signal_count = num_ranks_;
+  auto* dev_win = win->get_device_window(signal_count, -1, 1);
+  EXPECT_NE(dev_win, nullptr) << "Device window pointer should not be null";
+
+  auto src_buf = win->register_local_buffer(src_tensor);
+  ASSERT_NE(src_buf.base_ptr, nullptr);
+  ASSERT_NE(src_buf.backend_window, nullptr);
+
+  int dst_rank = (rank_ + 1) % num_ranks_;
+  int src_rank = (rank_ - 1 + num_ranks_) % num_ranks_;
+  constexpr int kSignalId = 0;
+
+  size_t elem_size = win_tensor.element_size();
+  size_t bytes = count * elem_size;
+  size_t src_offset = 0;
+  size_t dst_offset = rank_ * bytes;
+
+  // Launch scoped put kernel
+  {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchDevicePutScopedKernel(
+        dev_win,
+        src_buf,
+        src_offset,
+        dst_offset,
+        bytes,
+        dst_rank,
+        kSignalId,
+        scope,
+        num_threads,
+        put_stream.stream());
+  }
+
+  // Wait for signal (thread scope is fine for the wait side)
+  {
+    c10::cuda::CUDAStreamGuard guard(wait_stream);
+    torchcomms::device::test::launchDeviceWaitSignalKernel(
+        dev_win, kSignalId, 1, wait_stream.stream());
+  }
+
+  put_stream.synchronize();
+  wait_stream.synchronize();
+
+  // Verify data
+  at::Tensor result_slice = win_tensor.index(
+      {at::indexing::Slice(src_rank * count, (src_rank + 1) * count)});
+  at::Tensor result_cpu = result_slice.cpu();
+
+  auto cpu_options = at::TensorOptions().dtype(dtype).device(at::kCPU);
+  at::Tensor expected_cpu = at::zeros({count}, cpu_options);
+  expected_cpu.fill_(static_cast<float>(src_rank + 1));
+
+  bool equal = at::allclose(result_cpu, expected_cpu);
+  ASSERT_TRUE(equal) << "Scoped put (" << scope_name
+                     << ") data mismatch: expected value " << (src_rank + 1)
+                     << " from rank " << src_rank
+                     << ", got first element: " << result_cpu[0].item<float>();
+
+  // Reset signals
+  {
+    c10::cuda::CUDAStreamGuard guard(put_stream);
+    torchcomms::device::test::launchDeviceResetSignalKernel(
+        dev_win, kSignalId, put_stream.stream());
+  }
+  put_stream.synchronize();
+
+  win->deregister_local_buffer(src_buf);
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(DeviceApiTest, DevicePutWarpScope) {
+  testDevicePutScoped(
+      1024, at::kFloat, torchcomms::device::CoopScope::WARP, 32);
+}
+
+TEST_F(DeviceApiTest, DevicePutBlockScope) {
+  testDevicePutScoped(
+      1024, at::kFloat, torchcomms::device::CoopScope::BLOCK, 256);
+}
+
+// =============================================================================
+// Scope-Aware Barrier Tests
+// =============================================================================
+
+void DeviceApiTest::testDeviceBarrierScoped(
+    torchcomms::device::CoopScope scope,
+    int num_threads) {
+  std::string scope_name =
+      (scope == torchcomms::device::CoopScope::WARP) ? "WARP" : "BLOCK";
+  SCOPED_TRACE(
+      ::testing::Message() << "Testing Scoped Barrier (" << scope_name
+                           << ", threads=" << num_threads << ")");
+
+  auto op_stream = at::cuda::getStreamFromPool(false, device_index_);
+
+  auto mem_pool = std::make_unique<at::cuda::MemPool>(
+      std::static_pointer_cast<c10::cuda::CUDACachingAllocator::CUDAAllocator>(
+          allocator_));
+  c10::cuda::CUDACachingAllocator::beginAllocateToPool(
+      mem_pool->device(), mem_pool->id(), [](cudaStream_t) { return true; });
+
+  auto options =
+      at::TensorOptions().dtype(at::kLong).device(at::kCUDA, device_index_);
+  at::Tensor win_tensor = at::zeros({1}, options);
+
+  c10::cuda::CUDACachingAllocator::endAllocateToPool(
+      mem_pool->device(), mem_pool->id());
+
+  torchcomm_->barrier(false);
+  auto base_win = torchcomm_->new_window();
+  base_win->tensor_register(win_tensor);
+  torchcomm_->barrier(false);
+
+  auto* win =
+      dynamic_cast<torch::comms::TorchCommWindowNCCLXGin*>(base_win.get());
+  ASSERT_NE(win, nullptr);
+
+  int barrier_count = 2;
+  auto* dev_win = win->get_device_window(-1, -1, barrier_count);
+  ASSERT_NE(dev_win, nullptr);
+
+  constexpr int kBarrierId = 0;
+
+  // First barrier
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceBarrierScopedKernel(
+        dev_win, kBarrierId, scope, num_threads, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  // Second barrier to verify reusability
+  {
+    c10::cuda::CUDAStreamGuard guard(op_stream);
+    torchcomms::device::test::launchDeviceBarrierScopedKernel(
+        dev_win, kBarrierId + 1, scope, num_threads, op_stream.stream());
+  }
+  op_stream.synchronize();
+
+  base_win->tensor_deregister();
+  base_win.reset();
+  mem_pool.reset();
+
+  torchcomm_->barrier(false);
+}
+
+TEST_F(DeviceApiTest, DeviceBarrierWarpScope) {
+  testDeviceBarrierScoped(torchcomms::device::CoopScope::WARP, 32);
+}
+
+TEST_F(DeviceApiTest, DeviceBarrierBlockScope) {
+  testDeviceBarrierScoped(torchcomms::device::CoopScope::BLOCK, 256);
 }

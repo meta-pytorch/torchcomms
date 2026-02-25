@@ -101,12 +101,12 @@ DEFINE_CONSTANT(thread_name_key, "thread_name")
 #undef DEFINE_CONSTANT
 
 // Whether to include stack trace in the Flight Recorder trace (default true)
-static const std::vector<std::string> TORCH_INCLUDE_STACK_TRACE = {
+inline const std::vector<std::string> TORCH_INCLUDE_STACK_TRACE = {
     "TORCH_INCLUDE_STACK_TRACE"};
 
 // Whether to include only active collectives in the Flight Recorder trace
 // (default false)
-static const std::vector<std::string> TORCH_INCLUDE_ONLY_ACTIVE = {
+inline const std::vector<std::string> TORCH_INCLUDE_ONLY_ACTIVE = {
     "TORCH_INCLUDE_ONLY_ACTIVE"};
 
 // Write NCCL debug info to local disk or any storage users define.
@@ -141,7 +141,9 @@ class DebugInfoWriter {
   bool enable_dynamic_filename_;
 
  private:
+  // NOLINTNEXTLINE(facebook-hte-NonPodStaticDeclaration)
   static std::unique_ptr<DebugInfoWriter> writer_;
+  // NOLINTNEXTLINE(facebook-hte-NonPodStaticDeclaration)
   static std::atomic<bool> hasWriterRegistered_;
 };
 
@@ -150,10 +152,12 @@ class FlightRecorder {
   static FlightRecorder* get() {
     // intentionally leak on exit
     // because this will hold python state that may get destructed
-    auto max_entries = env_to_value("TORCHCOMM_FR_BUFFER_SIZE", 2000);
-    auto capture_cpp_stack = env_to_value("TORCHCOMM_FR_CPP_STACK", false);
-    static FlightRecorder* instance =
-        new FlightRecorder(max_entries, capture_cpp_stack);
+    // NOLINTNEXTLINE(facebook-hte-InlinedStaticLocalVariableWarning)
+    static FlightRecorder* instance = [] {
+      auto max_entries = env_to_value("TORCHCOMM_FR_BUFFER_SIZE", 2000);
+      auto capture_cpp_stack = env_to_value("TORCHCOMM_FR_CPP_STACK", false);
+      return new FlightRecorder(max_entries, capture_cpp_stack);
+    }();
     return instance;
   }
   FlightRecorder(int64_t max_entries, bool capture_cpp_stack) {
@@ -349,9 +353,11 @@ class FlightRecorderHook {
 
   ~FlightRecorderHook();
 
-  // Disable copy
+  // Disable copy and move
   FlightRecorderHook(const FlightRecorderHook&) = delete;
+  FlightRecorderHook(FlightRecorderHook&&) = delete;
   FlightRecorderHook& operator=(const FlightRecorderHook&) = delete;
+  FlightRecorderHook& operator=(FlightRecorderHook&&) = delete;
 
   /**
    * Register this hook with a TorchComm communicator.

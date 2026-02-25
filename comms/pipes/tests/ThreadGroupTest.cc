@@ -285,6 +285,113 @@ TEST_F(ThreadGroupTestFixture, BlockGroupContiguousLocality) {
 }
 
 // =============================================================================
+// Thread Solo Tests
+// =============================================================================
+
+// Test: make_thread_solo creates a correct single-thread ThreadGroup
+// Verifies:
+// - group_size == 1 for every thread
+// - thread_id_in_group == 0 for every thread (each thread is always its own
+//   leader)
+// - is_leader() == true for every thread
+// - group_id == global thread index (unique per thread across all blocks)
+// - total_groups == total thread count (numBlocks * blockSize)
+// - scope == SyncScope::THREAD
+// - sync() completes without deadlock (compiler barrier only)
+TEST_F(ThreadGroupTestFixture, ThreadSoloGroupProperties) {
+  const int numBlocks = 4;
+  const int blockSize = 256;
+  const uint32_t totalThreads = numBlocks * blockSize;
+
+  DeviceBuffer groupIdsBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer groupSizesBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer threadIdsBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer isLeaderBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer syncResultsBuffer(totalThreads * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto groupIds_d = static_cast<uint32_t*>(groupIdsBuffer.get());
+  auto groupSizes_d = static_cast<uint32_t*>(groupSizesBuffer.get());
+  auto threadIds_d = static_cast<uint32_t*>(threadIdsBuffer.get());
+  auto isLeader_d = static_cast<uint32_t*>(isLeaderBuffer.get());
+  auto syncResults_d = static_cast<uint32_t*>(syncResultsBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(cudaMemset(groupIds_d, 0xFF, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(
+      cudaMemset(groupSizes_d, 0xFF, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(
+      cudaMemset(threadIds_d, 0xFF, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(isLeader_d, 0xFF, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(syncResults_d, 0, totalThreads * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  test::testThreadSoloGroup(
+      groupIds_d,
+      groupSizes_d,
+      threadIds_d,
+      isLeader_d,
+      syncResults_d,
+      errorCount_d,
+      numBlocks,
+      blockSize);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Device-side checks passed
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0)
+      << "make_thread_solo should produce correct group properties on-device";
+
+  // Copy results to host for detailed verification
+  std::vector<uint32_t> groupIds_h(totalThreads);
+  std::vector<uint32_t> groupSizes_h(totalThreads);
+  std::vector<uint32_t> threadIds_h(totalThreads);
+  std::vector<uint32_t> isLeader_h(totalThreads);
+  std::vector<uint32_t> syncResults_h(totalThreads);
+
+  CUDACHECK_TEST(cudaMemcpy(
+      groupIds_h.data(),
+      groupIds_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      groupSizes_h.data(),
+      groupSizes_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      threadIds_h.data(),
+      threadIds_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      isLeader_h.data(),
+      isLeader_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      syncResults_h.data(),
+      syncResults_d,
+      totalThreads * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  for (uint32_t i = 0; i < totalThreads; i++) {
+    EXPECT_EQ(groupIds_h[i], i)
+        << "Thread " << i << ": group_id should equal global thread index";
+    EXPECT_EQ(groupSizes_h[i], 1u)
+        << "Thread " << i << ": group_size should be 1";
+    EXPECT_EQ(threadIds_h[i], 0u)
+        << "Thread " << i << ": thread_id_in_group should be 0";
+    EXPECT_EQ(isLeader_h[i], 1u)
+        << "Thread " << i << ": is_leader() should be true";
+    EXPECT_EQ(syncResults_h[i], 1u)
+        << "Thread " << i << ": sync() should complete without deadlock";
+  }
+}
+
+// =============================================================================
 // Partition Tests (Parameterized for WARP and TILE)
 // =============================================================================
 

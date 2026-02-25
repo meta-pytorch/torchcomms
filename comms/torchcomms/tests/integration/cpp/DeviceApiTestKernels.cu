@@ -126,7 +126,6 @@ __global__ void deviceGinAtomicAddKernel(
         ncclCoopThread{});
 
     // Signal the destination rank using resource buffer signal.
-    // This also flushes all pending GIN WQEs (including the atomicAdd above).
     // QP ordering guarantees the atomicAdd arrives before the signal.
     win->signal(dst_rank, signal_id, SignalOp::ADD, 1);
   }
@@ -264,6 +263,69 @@ void launchDeviceBarrierKernel(
     int barrier_id,
     cudaStream_t stream) {
   deviceBarrierKernel<<<1, 1, 0, stream>>>(win, barrier_id);
+}
+
+// =============================================================================
+// Scope-Aware Put Test Kernel
+// =============================================================================
+// Validates put() with CoopScope parameter. All threads in the cooperative
+// group call put() together. The kernel launch config must match the scope:
+//   - WARP:  <<<1, 32>>>
+//   - BLOCK: <<<1, 256>>>
+
+__global__ void devicePutScopedKernel(
+    DeviceWindowNCCL* win,
+    RegisteredBufferNCCL src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    CoopScope scope) {
+  // All threads in the cooperative group call put together
+  if (blockIdx.x == 0) {
+    win->put(
+        dst_offset, src_buf, src_offset, dst_rank, bytes, signal_id, -1, scope);
+    win->flush(scope);
+  }
+}
+
+void launchDevicePutScopedKernel(
+    DeviceWindowNCCL* win,
+    RegisteredBufferNCCL src_buf,
+    size_t src_offset,
+    size_t dst_offset,
+    size_t bytes,
+    int dst_rank,
+    int signal_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  devicePutScopedKernel<<<1, num_threads, 0, stream>>>(
+      win, src_buf, src_offset, dst_offset, bytes, dst_rank, signal_id, scope);
+}
+
+// =============================================================================
+// Scope-Aware Barrier Test Kernel
+// =============================================================================
+
+__global__ void deviceBarrierScopedKernel(
+    DeviceWindowNCCL* win,
+    int barrier_id,
+    CoopScope scope) {
+  if (blockIdx.x == 0) {
+    win->barrier(barrier_id, scope);
+  }
+}
+
+void launchDeviceBarrierScopedKernel(
+    DeviceWindowNCCL* win,
+    int barrier_id,
+    CoopScope scope,
+    int num_threads,
+    cudaStream_t stream) {
+  deviceBarrierScopedKernel<<<1, num_threads, 0, stream>>>(
+      win, barrier_id, scope);
 }
 
 } // namespace torchcomms::device::test

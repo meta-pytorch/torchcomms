@@ -4,9 +4,9 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
+#include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
 
-#include <cuda_runtime.h>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -22,7 +22,8 @@ void NCCLDeviceBackend::DeviceWindowDeleter::operator()(
   // Only free the device memory - caller is responsible for calling
   // ncclDevCommDestroy using the dev_comm stored in this deleter
   if (ptr != nullptr) {
-    cudaFree(ptr);
+    CUDA_CHECK_IGNORE(
+        cuda_api, cuda_api->free(ptr), "Failed to free device window");
   }
 }
 
@@ -33,6 +34,7 @@ void NCCLDeviceBackend::DeviceWindowDeleter::operator()(
 NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
     ncclComm_t nccl_comm,
     torch::comms::NcclxApi* nccl_api,
+    torch::comms::CudaApi* cuda_api,
     const DeviceBackendConfig& config,
     Window host_window,
     void* base,
@@ -44,6 +46,10 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
   if (nccl_api == nullptr) {
     throw std::runtime_error(
         "[NCCLDeviceBackend::create_device_window]: NCCL API cannot be null");
+  }
+  if (cuda_api == nullptr) {
+    throw std::runtime_error(
+        "[NCCLDeviceBackend::create_device_window]: CUDA API cannot be null");
   }
   if (base == nullptr && size > 0) {
     throw std::runtime_error(
@@ -109,36 +115,44 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
 
   // Allocate device memory for the window struct
   TorchCommDeviceWindow<NCCLDeviceBackend>* device_ptr = nullptr;
-  cudaError_t cuda_result =
-      cudaMalloc(&device_ptr, sizeof(TorchCommDeviceWindow<NCCLDeviceBackend>));
+  cudaError_t cuda_result = cuda_api->malloc(
+      reinterpret_cast<void**>(&device_ptr),
+      sizeof(TorchCommDeviceWindow<NCCLDeviceBackend>));
   if (cuda_result != cudaSuccess) {
     // Cleanup ncclDevComm before throwing
     nccl_api->devCommDestroy(nccl_comm, &nccl_dev_comm);
     throw std::runtime_error(
         "[NCCLDeviceBackend::create_device_window]: Failed to allocate device memory for window. "
         "CUDA error: " +
-        std::string(cudaGetErrorString(cuda_result)));
+        std::string(cuda_api->getErrorString(cuda_result)));
   }
 
   // Copy the window struct to device memory
-  cuda_result = cudaMemcpy(
+  // device_ptr is non-null here (cuda_api->malloc succeeded above)
+  // NOLINTNEXTLINE(facebook-hte-NullableDereference,facebook-security-vulnerable-memcpy)
+  cuda_result = cuda_api->memcpy(
       device_ptr,
       &host_dev_window,
       sizeof(TorchCommDeviceWindow<NCCLDeviceBackend>),
       cudaMemcpyHostToDevice);
   if (cuda_result != cudaSuccess) {
     // Cleanup on error
-    cudaFree(device_ptr);
+    // NOLINTNEXTLINE(facebook-hte-NullableDereference)
+    CUDA_CHECK_IGNORE(
+        cuda_api,
+        cuda_api->free(device_ptr),
+        "Failed to free device window during error cleanup");
     nccl_api->devCommDestroy(nccl_comm, &nccl_dev_comm);
     throw std::runtime_error(
         "[NCCLDeviceBackend::create_device_window]: Failed to copy window to device memory. "
         "CUDA error: " +
-        std::string(cudaGetErrorString(cuda_result)));
+        std::string(cuda_api->getErrorString(cuda_result)));
   }
 
-  // Create custom deleter that stores nccl_comm, nccl_api, and dev_comm
-  // The caller accesses dev_comm via get_deleter() for ncclDevCommDestroy
-  DeviceWindowDeleter deleter(nccl_comm, nccl_api, nccl_dev_comm);
+  // Create custom deleter that stores nccl_comm, nccl_api, cuda_api, and
+  // dev_comm. The caller accesses dev_comm via get_deleter() for
+  // ncclDevCommDestroy.
+  DeviceWindowDeleter deleter(nccl_comm, nccl_api, cuda_api, nccl_dev_comm);
 
   return Ptr(device_ptr, deleter);
 }

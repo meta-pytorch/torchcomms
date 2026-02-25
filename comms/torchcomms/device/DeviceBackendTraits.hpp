@@ -17,10 +17,11 @@
 #include <memory>
 
 #include <nccl.h> // @manual=//comms/ncclx:nccl
-#include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl_device_api
+#include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl
 
 // Forward declarations
 namespace torch::comms {
+class CudaApi;
 class NcclxApi;
 } // namespace torch::comms
 
@@ -60,20 +61,25 @@ struct NCCLDeviceBackend {
   // It stores the dev_comm on the host side to avoid needing cudaMemcpy
   // from device memory during destruction.
   //
-  // The deleter only calls cudaFree. The caller is responsible for calling
-  // ncclDevCommDestroy before the unique_ptr is destroyed. Access the
-  // dev_comm via unique_ptr::get_deleter().dev_comm.
+  // The deleter calls cudaFree via CudaApi. The caller is responsible for
+  // calling ncclDevCommDestroy before the unique_ptr is destroyed. Access
+  // the dev_comm via unique_ptr::get_deleter().dev_comm.
   struct DeviceWindowDeleter {
     ncclComm_t nccl_comm{nullptr};
     torch::comms::NcclxApi* nccl_api{nullptr};
+    torch::comms::CudaApi* cuda_api{nullptr};
     Comm dev_comm{};
 
     DeviceWindowDeleter() = default;
     DeviceWindowDeleter(
         ncclComm_t comm,
         torch::comms::NcclxApi* api,
+        torch::comms::CudaApi* cuda_api,
         Comm dev_comm_val)
-        : nccl_comm(comm), nccl_api(api), dev_comm(dev_comm_val) {}
+        : nccl_comm(comm),
+          nccl_api(api),
+          cuda_api(cuda_api),
+          dev_comm(dev_comm_val) {}
 
     void operator()(TorchCommDeviceWindow<NCCLDeviceBackend>* ptr) const;
   };
@@ -96,6 +102,7 @@ struct NCCLDeviceBackend {
   // Parameters:
   //   - nccl_comm: Host NCCL communicator (must not be null)
   //   - nccl_api: NCCL API abstraction (must not be null)
+  //   - cuda_api: CUDA API abstraction (must not be null)
   //   - config: Device backend configuration
   //   - host_window: Host-side NCCL window handle
   //   - base: Window base pointer (can be null only if size is 0)
@@ -103,6 +110,7 @@ struct NCCLDeviceBackend {
   static Ptr create_device_window(
       ncclComm_t nccl_comm,
       torch::comms::NcclxApi* nccl_api,
+      torch::comms::CudaApi* cuda_api,
       const DeviceBackendConfig& config,
       Window host_window,
       void* base,

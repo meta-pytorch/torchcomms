@@ -5,20 +5,18 @@
 #include <ATen/hip/HIPContext.h> // @manual
 #ifdef HIPIFY_V2
 #include <c10/hip/HIPCachingAllocator.h> // @manual
-using c10::cuda::CUDACachingAllocator::attachAllocatorTraceTracker;
-using c10::cuda::CUDACachingAllocator::snapshot;
-using c10::cuda::CUDACachingAllocator::TraceEntry;
 #else
 #include <ATen/hip/impl/HIPCachingAllocatorMasqueradingAsCUDA.h> // @manual
-using c10::cuda::CUDACachingAllocator::attachAllocatorTraceTracker;
-using c10::cuda::CUDACachingAllocator::snapshot;
-using c10::cuda::CUDACachingAllocator::TraceEntry;
 #endif
 #include <memory>
 #include <mutex>
 #include "comms/torchcomms/rcclx/TorchCommRCCLX.hpp"
 
 namespace torch::comms {
+
+using c10::cuda::CUDACachingAllocator::attachAllocatorTraceTracker;
+using c10::cuda::CUDACachingAllocator::snapshot;
+using c10::cuda::CUDACachingAllocator::TraceEntry;
 
 class CachingAllocatorHookImpl {
  public:
@@ -82,6 +80,7 @@ class CachingAllocatorHook {
   }
 
   inline static std::unique_ptr<CachingAllocatorHookImpl> instance_ = nullptr;
+  // NOLINTNEXTLINE(facebook-hte-std::once_flag)
   inline static std::once_flag init_flag_;
 };
 

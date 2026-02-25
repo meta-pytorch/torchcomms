@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 """Unit tests for wait_tensors proxy propagation in Dynamo tracing.
@@ -74,7 +73,7 @@ def _find_nodes_by_name_pattern(gm, pattern: str) -> list:
     return nodes
 
 
-def _check_node_in_output_path(gm, target_node) -> bool:
+def _check_node_in_output_path(gm, target_node) -> bool:  # noqa: C901
     """Check if target_node is in the data flow path to the output."""
     output_sources = _get_graph_output_sources(gm)
 

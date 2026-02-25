@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# pyre-unsafe
 
 """
 Dynamo integration for torchcomms.
@@ -55,7 +54,7 @@ class TorchCommMethodVariable(VariableTracker):
         self.target_class = target_class
         self.op_info = op_info
 
-    def call_function(
+    def call_function(  # noqa: C901
         self,
         tx: "InstructionTranslator",
         args: Sequence[VariableTracker],
@@ -316,12 +315,12 @@ class AsyncWorkVariable(VariableTracker):
     def __init__(
         self,
         tensor_vars: list[VariableTracker],
-        mutable_vars: list[VariableTracker] = [],
+        mutable_vars: list[VariableTracker] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self.tensor_vars = tensor_vars
-        self.mutable_vars = mutable_vars
+        self.mutable_vars = mutable_vars if mutable_vars is not None else []
 
     def as_proxy(self) -> None:
         # AsyncWorkVariable doesn't have a direct graph representation.
@@ -355,7 +354,7 @@ class AsyncWorkVariable(VariableTracker):
     # however, we can also use wait_tensor, which takes a single tensor, if the waited function
     # only takes a single mutable tensor as input. then we don't have to deal with the list semantics
     # of wait_tensors.
-    def _do_wait(self, tx: "InstructionTranslator") -> VariableTracker:
+    def _do_wait(self, tx: "InstructionTranslator") -> VariableTracker:  # noqa: C901
         from torch._dynamo.variables import TensorVariable
         from torch._dynamo.variables.builder import wrap_fx_proxy
         from torch._dynamo.variables.lists import BaseListVariable

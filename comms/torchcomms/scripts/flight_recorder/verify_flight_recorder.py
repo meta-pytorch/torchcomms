@@ -40,7 +40,7 @@ import time
 from datetime import timedelta
 
 import torch
-from torch.distributed.debug import start_debug_server, stop_debug_server
+from torch.distributed.debug import start_debug_server
 from torchcomms import new_comm, ReduceOp
 from torchcomms.hooks import FlightRecorderHook
 

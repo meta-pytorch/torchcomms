@@ -1,4 +1,3 @@
-# pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 """Functional collectives implementation for torchcomms."""
@@ -22,7 +21,7 @@ except RuntimeError:
     # Already registered (e.g., in forked process)
     lib = None
 
-if lib is not None:
+if lib is not None:  # noqa: C901
     # Maps tensor data_ptr to work handle for async collectives
     _TENSOR_TO_WORK: dict[int, object] = {}
 

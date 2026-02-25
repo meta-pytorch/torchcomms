@@ -161,7 +161,7 @@ class TorchCommBackend {
   // Window & One-sided Operations, not required for all backends, so we added
   // default implementation here
   virtual std::shared_ptr<TorchCommWindow> new_window(
-      const std::optional<at::Tensor>& tensor = std::nullopt) {
+      [[maybe_unused]] const std::optional<at::Tensor>& tensor = std::nullopt) {
     throw std::logic_error(
         "[TorchCommBackend]: new_window not implemented for communicator:" +
         std::string(getCommName()));

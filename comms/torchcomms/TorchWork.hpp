@@ -81,6 +81,7 @@ class TorchWork : public c10::intrusive_ptr_target {
 
   void runCallback() {
     if (callback_) {
+      // NOLINTNEXTLINE(facebook-hte-std::call_once)
       std::call_once(callback_once_, [this]() {
         callback_();
         callback_ = nullptr;

@@ -58,6 +58,7 @@ inline std::string pickle_str(const c10::IValue& v) {
 namespace {
 
 // Static registration of the torchcomms_fr_trace_json handler
+// NOLINTNEXTLINE(facebook-avoid-non-const-global-variables)
 c10d::control_plane::RegisterHandler torchcommsFrTraceJsonRegistration(
     "torchcomms_fr_trace_json",
     [](const c10d::control_plane::Request& req,
@@ -444,12 +445,12 @@ const c10::List<c10::IValue> FlightRecorder::getCollectiveTrace(
       auto sizes = new_list();
       for (auto dim : dims) {
         auto arg_sizes = new_list();
-        for ([[maybe_unused]] auto i : c10::irange(dim)) {
+        for ([[maybe_unused]] auto j : c10::irange(dim)) {
           arg_sizes.push_back(*it++);
         }
         sizes.push_back(arg_sizes);
       }
-      return sizes;
+      return sizes; // NOLINT(clang-diagnostic-nrvo)
     };
 
     dict.insert(input_sizes_key, read_sizes(e.input_dims_));
@@ -600,7 +601,7 @@ std::string FlightRecorder::dump_json(
           }
           sizes.push_back(arg_sizes);
         }
-        return sizes;
+        return sizes; // NOLINT(clang-diagnostic-nrvo)
       };
       j[input_sizes_key_str] = read_sizes(e.input_dims_);
       std::vector<std::string> input_dtypes_strs;
@@ -782,7 +783,9 @@ void DebugInfoWriter::registerWriter(std::unique_ptr<DebugInfoWriter> writer) {
 std::unique_ptr<DebugInfoWriter> DebugInfoWriter::writer_ = nullptr;
 std::atomic<bool> DebugInfoWriter::hasWriterRegistered_(false);
 
-float getDurationFromEvent(c10::Event& startEvent, c10::Event& endEvent) {
+float getDurationFromEvent(
+    [[maybe_unused]] c10::Event& startEvent,
+    [[maybe_unused]] c10::Event& endEvent) {
   TORCH_CHECK(false, "getDuration not supported by c10::Event.");
 }
 

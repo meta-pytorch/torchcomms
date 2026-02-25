@@ -1,4 +1,3 @@
-# pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 """Collective operation registration system for torchcomms."""
@@ -148,7 +147,7 @@ def _expand_backward_grads(
     return full_grads
 
 
-def _wrap_backward_fn(
+def _wrap_backward_fn(  # noqa: C901
     backward_fn: Callable,
     schema: CollectiveParamSchema,
 ) -> Callable:
@@ -245,7 +244,7 @@ def _wrap_backward_fn(
     return wrapped_backward
 
 
-def _generate_lib_ops(lib: Any) -> None:
+def _generate_lib_ops(lib: Any) -> None:  # noqa: C901
     """Generate torch.library op definitions for all registered collectives.
 
     For ops with mutable inputs, registers both:
@@ -651,8 +650,6 @@ def _generate_lib_ops(lib: Any) -> None:
 
                 def _create_fake_impl(captured_meta_kernel, captured_schema):
                     def _fake_impl(fake_mode, func, *args, **kwargs):
-                        # First arg is the opaque object - get device directly from it
-                        obj = args[0]
                         with in_kernel_invocation_manager(fake_mode):
                             result = captured_meta_kernel(*args, **kwargs)
 
@@ -726,7 +723,7 @@ def _generate_lib_ops(lib: Any) -> None:
         logger.info(f"Registered ops for {base_op_name}")
 
 
-def _register_lowerings() -> None:
+def _register_lowerings() -> None:  # noqa: C901
     """Register inductor lowerings for all registered collectives."""
     try:
         from torch._inductor import ir
@@ -752,7 +749,7 @@ def _register_lowerings() -> None:
                 def _lowering(*args):
                     from torch._inductor.virtualized import V
 
-                    logger.info(f"Lowering torchcomms.{op_name} with {len(args)} args")
+                    logger.info(f"Lowering torchcomms.{op_name} with {len(args)} args")  # noqa: B023
 
                     # Parse args using schema
                     parsed = lowering_schema.parse_lib_args(args)
@@ -900,7 +897,7 @@ def _register_lowerings() -> None:
             logger.warning(f"Failed to register lowering for {op_name}: {e}")
 
 
-def _patch_eager_methods() -> None:
+def _patch_eager_methods() -> None:  # noqa: C901
     """Patch TorchComm methods to dispatch to functional ops for tracing and autograd.
 
     This patches the native eager API (e.g., comm.all_reduce(tensor, op)) to dispatch
@@ -1005,7 +1002,6 @@ def _register_effectful_ops() -> None:
     - Functionalization then converts inplace to functional inside the wrapper
     - The effect ordering is preserved throughout
     """
-    global _EFFECTFUL_HANDLES
     try:
         from torch._higher_order_ops.effects import _get_effect, _register_effectful_op
         from torch._library.effects import EffectType

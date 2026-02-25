@@ -59,11 +59,17 @@ endif()
 # Check if NCCL Device API headers are available (requires NCCLX 2.28+)
 # This enables the device API for GPU-initiated networking (GIN) support
 if(EXISTS "${NCCLX_INCLUDE}/nccl_device/core.h")
-    message(STATUS "NCCL Device API headers found, building with device API support")
+    message(STATUS
+        "NCCL Device API headers found,"
+        " building with device API support")
     set(TORCHCOMMS_HAS_NCCL_DEVICE_API ON)
-    file(GLOB TORCHCOMMS_DEVICE_NCCLX_SOURCE "comms/torchcomms/device/ncclx/*.cpp")
+    file(GLOB TORCHCOMMS_DEVICE_NCCLX_SOURCE
+        "comms/torchcomms/device/ncclx/*.cpp")
 else()
-    message(STATUS "NCCL Device API headers NOT found (requires NCCLX 2.28+), building without device API support")
+    message(STATUS
+        "NCCL Device API headers NOT found"
+        " (requires NCCLX 2.28+),"
+        " building without device API support")
     set(TORCHCOMMS_HAS_NCCL_DEVICE_API OFF)
     set(TORCHCOMMS_DEVICE_NCCLX_SOURCE "")
 endif()
@@ -90,7 +96,8 @@ target_compile_features(torchcomms_comms_ncclx PRIVATE cxx_std_20)
 
 # Add device API compile definition if headers are available
 if(TORCHCOMMS_HAS_NCCL_DEVICE_API)
-    target_compile_definitions(torchcomms_comms_ncclx PRIVATE TORCHCOMMS_HAS_NCCL_DEVICE_API=1)
+    target_compile_definitions(torchcomms_comms_ncclx
+        PRIVATE TORCHCOMMS_HAS_NCCL_DEVICE_API=1)
 endif()
 
 target_link_directories(torchcomms_comms_ncclx PRIVATE ${CONDA_LIB})

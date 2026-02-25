@@ -67,6 +67,7 @@ class TorchCommWindowNCCLX : public TorchCommWindow {
   ~TorchCommWindowNCCLX() noexcept override;
 
   TorchCommWindowNCCLX(const TorchCommWindowNCCLX& other) = delete;
+  TorchCommWindowNCCLX(TorchCommWindowNCCLX&& other) = delete;
   TorchCommWindowNCCLX& operator=(const TorchCommWindowNCCLX& other) = delete;
   TorchCommWindowNCCLX& operator=(TorchCommWindowNCCLX&& other) noexcept =
       delete;
