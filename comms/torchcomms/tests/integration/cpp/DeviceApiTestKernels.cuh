@@ -10,6 +10,7 @@
 // The full device implementations (ncclGin usage, etc.) are only in the
 // .cu file which is compiled by nvcc.
 
+// NOLINTNEXTLINE(clang-diagnostic-pragma-once-outside-header)
 #pragma once
 
 #include <cuda_runtime.h>

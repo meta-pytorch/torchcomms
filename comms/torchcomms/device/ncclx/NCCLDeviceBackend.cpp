@@ -121,6 +121,8 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
   }
 
   // Copy the window struct to device memory
+  // device_ptr is non-null here (cudaMalloc succeeded above)
+  // NOLINTNEXTLINE(facebook-hte-NullableDereference)
   cuda_result = cudaMemcpy(
       device_ptr,
       &host_dev_window,
@@ -128,6 +130,7 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
       cudaMemcpyHostToDevice);
   if (cuda_result != cudaSuccess) {
     // Cleanup on error
+    // NOLINTNEXTLINE(facebook-hte-NullableDereference)
     cudaFree(device_ptr);
     nccl_api->devCommDestroy(nccl_comm, &nccl_dev_comm);
     throw std::runtime_error(

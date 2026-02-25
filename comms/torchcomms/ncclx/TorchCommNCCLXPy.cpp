@@ -393,8 +393,10 @@ Example:
              int64_t backend_window) {
             // Reconstruct RegisteredBuffer from tuple components
             TorchCommWindowNCCLXGin::DeviceRegisteredBuffer buf;
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
             buf.base_ptr = reinterpret_cast<void*>(base_ptr);
             buf.size = static_cast<size_t>(size);
+            // NOLINTNEXTLINE(performance-no-int-to-ptr)
             buf.backend_window = reinterpret_cast<void*>(backend_window);
             self.deregister_local_buffer(buf);
           },

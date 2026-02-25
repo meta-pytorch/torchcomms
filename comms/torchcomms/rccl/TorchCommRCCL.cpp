@@ -73,7 +73,7 @@ TorchCommRCCL::~TorchCommRCCL() {
       if (std::this_thread::get_id() != timeout_thread_.get_id()) {
         timeout_thread_.join();
       } else {
-        timeout_thread_.detach();
+        timeout_thread_.detach(); // NOLINT(facebook-hte-BadCall-detach)
       }
     }
 
