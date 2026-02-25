@@ -1716,7 +1716,7 @@ cvars:
 
  - name        : NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET
    type        : bool
-   default     : true
+   default     : false
    description : |-
      Enable the IpcRegCache async socket server and peer address exchange for
      NVL remote memory release notifications. When disabled, the NVL backend
