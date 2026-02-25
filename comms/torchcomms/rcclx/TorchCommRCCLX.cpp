@@ -8,7 +8,10 @@
 #include <string>
 
 #include <ATen/hip/HIPContext.h> // @manual=//caffe2:ATen-custom-hip
+#include <ATen/hip/impl/HIPAllocatorMasqueradingAsCUDA.h>
+#include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <fmt/core.h>
+#include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
@@ -1678,6 +1681,98 @@ c10::intrusive_ptr<TorchWork> TorchCommRCCLX::gather(
   return work;
 }
 
+TorchCommBackend::AllGatherPHandle TorchCommRCCLX::all_gather_p_init(
+    at::Tensor& output,
+    const AllGatherPInitOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(output);
+
+  // Calculate max receive count (total elements in output) and buffer size
+  size_t maxRecvCount = output.numel();
+  size_t bufferSize = maxRecvCount * output.element_size();
+
+  // Register the output buffer with NCCL before calling allGatherInit
+  // AllGatherP requires pre-registered memory
+  void* dataPtr = output.data_ptr();
+  void* regHandle = nullptr;
+
+  // Check if already registered, if not register it
+  auto it = memoryRegistrationHandles_.find(dataPtr);
+  if (it == memoryRegistrationHandles_.end()) {
+    RCCLX_CHECK(
+        rcclx_api_,
+        nccl_comm_,
+        rcclx_api_->commRegister(nccl_comm_, dataPtr, bufferSize, &regHandle),
+        "RCCLX commRegister failed for AllGatherP output buffer");
+    memoryRegistrationHandles_.emplace(dataPtr, RegistrationHandle(regHandle));
+  }
+
+  // Convert hints from options
+  RcclxHints rcclxHints;
+  for (const auto& [key, value] : options.hints) {
+    rcclxHints[key] = value;
+  }
+
+  void* request = nullptr;
+
+  RCCLX_CHECK(
+      rcclx_api_,
+      nccl_comm_,
+      rcclx_api_->allGatherInit(
+          dataPtr,
+          maxRecvCount,
+          rcclxHints,
+          getNcclDataType(output),
+          nccl_comm_,
+          internal_stream_,
+          &request),
+      "RCCLX allGatherInit failed");
+
+  return request;
+}
+
+c10::intrusive_ptr<TorchWork> TorchCommRCCLX::all_gather_p_exec(
+    AllGatherPHandle handle,
+    const at::Tensor& input,
+    bool async_op,
+    const AllGatherPExecOptions& options) {
+  checkInitialized();
+  checkAndAbortIfTimedOutOrError();
+  ensureTensorContiguous(input);
+
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_gather_p_exec", rank_, {input}, {});
+
+  hipStream_t stream = getOperationStream(async_op);
+  auto work = createWork(
+      stream, getOperationTimeout(options.timeout, options_.timeout), {input});
+
+  work->recordStart("all_gather_p_exec");
+
+  RCCLX_CHECK(
+      rcclx_api_,
+      nccl_comm_,
+      rcclx_api_->allGatherExec(
+          input.data_ptr(), input.numel(), getNcclDataType(input), handle),
+      "RCCLX allGatherExec failed");
+
+  work->recordEnd();
+
+  enqueueWork(work, stream);
+
+  return work;
+}
+
+void TorchCommRCCLX::all_gather_p_free(AllGatherPHandle handle) {
+  if (handle == nullptr) {
+    return;
+  }
+
+  RCCLX_CHECK_IGNORE(
+      rcclx_api_, rcclx_api_->pFree(handle), "RCCLX pFree failed");
+}
+
 std::shared_ptr<TorchCommBackend> TorchCommRCCLX::split(
     const std::vector<int>& ranks,
     const std::string& name,
@@ -1826,6 +1921,47 @@ class RCCLXRegistration {
     torch::comms::TorchCommFactory::get().register_backend("rcclx", []() {
       return std::make_shared<torch::comms::TorchCommRCCLX>();
     });
+
+    // Register allocator factory with its own rcclx_api instance
+    torch::comms::TorchCommFactory::get().register_allocator_factory(
+        "rcclx", []() {
+          // Create rcclx_api for this allocator (captured in lambdas below)
+          std::shared_ptr<torch::comms::RcclxApi> rcclx_api =
+              std::make_shared<torch::comms::DefaultRcclxApi>();
+
+          static auto rcclx_allocator =
+              torch::cuda::CUDAPluggableAllocator::createCustomAllocator(
+                  // alloc_fn
+                  [rcclx_api](size_t size, int device, hipStream_t stream) {
+                    at::hip::OptionalHIPGuardMasqueradingAsCUDA gpuGuard(
+                        device);
+                    void* ptr = nullptr;
+                    ncclResult_t result = rcclx_api->memAlloc(&ptr, size);
+                    TORCH_CHECK(
+                        result == ncclSuccess,
+                        "ncclMemAlloc failed: ",
+                        rcclx_api->getErrorString(result));
+                    LOG(INFO)
+                        << "RCCL mem allocator: allocated " << ptr << " with "
+                        << size << " bytes in stream " << stream;
+                    return ptr;
+                  },
+                  // free_fn
+                  [rcclx_api](
+                      void* ptr, size_t size, int device, hipStream_t stream) {
+                    LOG(INFO)
+                        << "RCCL mem allocator: freeing " << ptr << " with "
+                        << size << " bytes in stream " << stream;
+                    at::hip::OptionalHIPGuardMasqueradingAsCUDA gpuGuard(
+                        device);
+                    ncclResult_t result = rcclx_api->memFree(ptr);
+                    TORCH_CHECK(
+                        result == ncclSuccess,
+                        "ncclMemFree failed: ",
+                        rcclx_api->getErrorString(result));
+                  });
+          return std::static_pointer_cast<c10::Allocator>(rcclx_allocator);
+        });
   }
 };
 
