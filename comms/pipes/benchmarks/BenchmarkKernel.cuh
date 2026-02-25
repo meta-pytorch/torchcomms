@@ -99,4 +99,20 @@ __global__ void p2pRecvMultiple(
     DeviceSpan<std::size_t> chunkSizes,
     SyncScope groupScope = SyncScope::WARP);
 
+// Stream send kernel - uses SendStream::for_each_slot API
+__global__ void p2pStreamSend(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    SyncScope groupScope = SyncScope::WARP,
+    Timeout timeout = Timeout());
+
+// Stream recv kernel - uses RecvStream::for_each_ready_chunk API
+__global__ void p2pStreamRecv(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    SyncScope groupScope = SyncScope::WARP,
+    Timeout timeout = Timeout());
+
 } // namespace comms::pipes::benchmark
