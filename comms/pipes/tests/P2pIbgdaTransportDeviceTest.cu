@@ -2,6 +2,7 @@
 
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/P2pIbgdaTransportDevice.cuh"
+#include "comms/pipes/TimeoutUtils.h"
 #include "comms/pipes/tests/Checks.h"
 #include "comms/pipes/tests/P2pIbgdaTransportDeviceTest.cuh"
 
@@ -618,6 +619,80 @@ void runTestBroadcast64DoubleSafety(bool* d_success) {
 
 void runTestPutGroupPartitioningBlock(bool* d_success) {
   testPutGroupPartitioningBlock<<<4, 256>>>(d_success);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// wait_signal timeout test kernels
+// =============================================================================
+
+// Kernel that calls wait_signal with a short timeout on a signal that will
+// never satisfy the condition. Should trigger __trap() via timeout.
+__global__ void testWaitSignalTimeout(
+    uint64_t* d_signalBuf,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    Timeout timeout) {
+  // Start the timeout timer
+  timeout.start();
+
+  P2pIbgdaTransportDevice transport(nullptr, localBuf, remoteBuf, 1);
+
+  // Signal buffer is pre-set to 0 by host.
+  // Waiting for GE 999 will never succeed, so timeout should fire.
+  transport.wait_signal(0, IbgdaCmpOp::GE, 999, timeout);
+}
+
+// Kernel that calls wait_signal with a long timeout on a signal that is
+// already satisfied. Should return immediately without trapping.
+__global__ void testWaitSignalNoTimeout(
+    uint64_t* d_signalBuf,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    Timeout timeout,
+    bool* success) {
+  // Start the timeout timer
+  timeout.start();
+
+  P2pIbgdaTransportDevice transport(nullptr, localBuf, remoteBuf, 1);
+
+  // Signal buffer is pre-set to 42 by host.
+  // Waiting for GE 42 will succeed immediately, no timeout.
+  transport.wait_signal(0, IbgdaCmpOp::GE, 42, timeout);
+
+  *success = true;
+}
+
+// =============================================================================
+// wait_signal timeout test wrapper functions
+// =============================================================================
+
+void runTestWaitSignalTimeout(
+    uint64_t* d_signalBuf,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    int device,
+    uint32_t timeout_ms) {
+  Timeout timeout = makeTimeout(timeout_ms, device);
+
+  // Intentionally unchecked - we expect the kernel to trap
+  // NOLINTNEXTLINE(facebook-cuda-safe-kernel-call-check)
+  testWaitSignalTimeout<<<1, 1>>>(d_signalBuf, localBuf, remoteBuf, timeout);
+  // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+  cudaDeviceSynchronize();
+}
+
+void runTestWaitSignalNoTimeout(
+    uint64_t* d_signalBuf,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    int device,
+    uint32_t timeout_ms,
+    bool* d_success) {
+  Timeout timeout = makeTimeout(timeout_ms, device);
+
+  testWaitSignalNoTimeout<<<1, 1>>>(
+      d_signalBuf, localBuf, remoteBuf, timeout, d_success);
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
