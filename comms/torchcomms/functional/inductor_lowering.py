@@ -10,7 +10,7 @@ import torch
 
 logger = logging.getLogger(__name__)
 
-try:
+try:  # noqa: C901
     from torch._inductor import ir
     from torch._inductor.lowering import register_lowering
 

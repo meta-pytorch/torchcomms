@@ -65,7 +65,7 @@ class FullgraphCompileTest(unittest.TestCase):
         self.num_ranks = self.torchcomm.get_size()
         self.device = self.torchcomm.get_device()
 
-    def _create_graph_logging_backend(self, test_name: str):
+    def _create_graph_logging_backend(self, test_name: str):  # noqa: C901
         """
         Create a custom backend that captures and logs the compiled graph.
 
