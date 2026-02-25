@@ -917,8 +917,21 @@ TEST_F(AutoTuneCVAROverrideTest, AllFourOverrides) {
   EXPECT_EQ(at.block.blockSize, 256);
 }
 
+// ============================================================================
+// AutoTuned Invariants
+// ============================================================================
+
+class AutoTuneInvariantTest : public ::testing::Test {
+ protected:
+  static constexpr int kMaxOcc = 64;
+  static constexpr int kDefThreads = 512;
+  static constexpr int kNRanks = 8;
+  // Use a message size large enough that auto-tune produces non-trivial values.
+  static constexpr size_t kMsg = 64 * MB;
+};
+
 // Pipeline BDP invariant: chunkSize * numChunks <= maxBDP for all configs.
-TEST_F(AutoTuneCVAROverrideTest, BDPInvariant) {
+TEST_F(AutoTuneInvariantTest, TotalChunkSizeRespectBDP) {
   const size_t maxBDPs[] = {
       256 * KB,
       512 * KB,
@@ -946,7 +959,7 @@ TEST_F(AutoTuneCVAROverrideTest, BDPInvariant) {
 }
 
 // Spot-check that small maxBDP values correctly reduce pipeline chunks.
-TEST_F(AutoTuneCVAROverrideTest, SmallMaxBDP_ChunksReduced) {
+TEST_F(AutoTuneInvariantTest, SmallMaxBDP_ChunksReduced) {
   {
     MaxBDPOverride o(256 * KB);
     auto at = getAutoTunedParams(1 * MB, kNRanks, kMaxOcc, kDefThreads);
@@ -964,7 +977,7 @@ TEST_F(AutoTuneCVAROverrideTest, SmallMaxBDP_ChunksReduced) {
 // maxOccupancyBlocks clamps block count; blockSize clamped by defaultThreads.
 // Hopper tiers have explicit blockSize values (384, 512) that can exceed
 // defaultThreads, exercising the std::min(blockSize, defaultThreads) path.
-TEST_F(AutoTuneCVAROverrideTest, MaxOccupancyClampWithBlockSize) {
+TEST_F(AutoTuneInvariantTest, MaxOccupancyClampWithBlockSize) {
   MaxBDPOverride bdp(128 * MB);
   const auto arch = GpuArch::Hopper;
 
@@ -1006,7 +1019,7 @@ TEST_F(AutoTuneCVAROverrideTest, MaxOccupancyClampWithBlockSize) {
 // inputs match the nearest pow2 (roundToNearestPow2 snaps internally).
 // Probes 7 points per boundary: pow2(n), pow2(n)+1, mid-1, mid, mid+1,
 // pow2(n+1)-1, pow2(n+1).
-TEST_F(AutoTuneCVAROverrideTest, NonPow2MessageSizes) {
+TEST_F(AutoTuneInvariantTest, NonPow2MessageSizes) {
   MaxBDPOverride bdp(128 * MB);
 
   // clang-format off
