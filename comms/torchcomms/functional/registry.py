@@ -651,8 +651,6 @@ def _generate_lib_ops(lib: Any) -> None:  # noqa: C901
 
                 def _create_fake_impl(captured_meta_kernel, captured_schema):
                     def _fake_impl(fake_mode, func, *args, **kwargs):
-                        # First arg is the opaque object - get device directly from it
-                        obj = args[0]
                         with in_kernel_invocation_manager(fake_mode):
                             result = captured_meta_kernel(*args, **kwargs)
 
@@ -1005,7 +1003,6 @@ def _register_effectful_ops() -> None:
     - Functionalization then converts inplace to functional inside the wrapper
     - The effect ordering is preserved throughout
     """
-    global _EFFECTFUL_HANDLES
     try:
         from torch._higher_order_ops.effects import _get_effect, _register_effectful_op
         from torch._library.effects import EffectType
