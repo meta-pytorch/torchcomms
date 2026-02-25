@@ -42,6 +42,7 @@ AutoTuneParams getAutoTunedParams(
     int nRanks,
     int maxOccupancyBlocks,
     int defaultThreads,
+    size_t typeSize,
     GpuArch arch = GpuArch::Default);
 
 // Log of auto-tune decisions for pow2 message sizes from 1KB to 32GB.
@@ -49,6 +50,7 @@ void logAutoTuneDecisions(
     int nRanks,
     int maxOccupancyBlocks,
     int defaultThreads,
+    size_t typeSize,
     GpuArch arch = GpuArch::Default);
 
 } // namespace ctran::allreduce::ring

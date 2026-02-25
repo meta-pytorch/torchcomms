@@ -772,7 +772,8 @@ commResult_t getPipelineConfiguration(
     int* numThreads,
     size_t* pipelineNumChunks,
     size_t* pipelineChunkSize,
-    bool log_decision) {
+    bool log_decision,
+    size_t typeSize) {
   auto arch = ctran::allreduce::ring::GpuArch::Default;
   int cudaOccupancyNumBlocks, cudaOccupancyBlockSize;
   FB_COMMCHECK(
@@ -783,7 +784,11 @@ commResult_t getPipelineConfiguration(
     static std::once_flag logFlag;
     std::call_once(logFlag, [&] {
       ctran::allreduce::ring::logAutoTuneDecisions(
-          nRanks, cudaOccupancyNumBlocks, cudaOccupancyBlockSize, arch);
+          nRanks,
+          cudaOccupancyNumBlocks,
+          cudaOccupancyBlockSize,
+          typeSize,
+          arch);
     });
   }
 
@@ -792,6 +797,7 @@ commResult_t getPipelineConfiguration(
       nRanks,
       cudaOccupancyNumBlocks,
       cudaOccupancyBlockSize,
+      typeSize,
       arch);
   *pipelineChunkSize = params.pipeline.chunkSize;
   *pipelineNumChunks = params.pipeline.numChunks;
@@ -881,7 +887,8 @@ commResult_t ctranAllReduceRing(
           &numThreads,
           &pipelineNumChunks,
           &pipelineChunkSize,
-          /*log_decision=*/rank == 0));
+          /*log_decision=*/rank == 0,
+          typeSize));
 
   FB_COMMCHECK(comm->ctran_->algo->initTmpBufs());
 
