@@ -74,7 +74,7 @@ PYBIND11_MODULE(_comms, m) {
       .def("__copy__", [](const ReduceOp& self) { return self; })
       .def(
           "__deepcopy__",
-          [](const ReduceOp& self, py::dict memo) {
+          [](const ReduceOp& self, const py::dict& memo) {
             auto self_obj = py::cast(self);
             auto self_id =
                 py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
@@ -280,7 +280,8 @@ Post-hooks are called after each collective operation completes.
           [](const std::shared_ptr<TorchCommWindow>& self) { return self; })
       .def(
           "__deepcopy__",
-          [](const std::shared_ptr<TorchCommWindow>& self, py::dict memo) {
+          [](const std::shared_ptr<TorchCommWindow>& self,
+             const py::dict& memo) {
             auto self_obj = py::cast(self);
             auto self_id =
                 py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
@@ -786,7 +787,7 @@ Args:
           [](const std::shared_ptr<TorchComm>& self) { return self; })
       .def(
           "__deepcopy__",
-          [](const std::shared_ptr<TorchComm>& self, py::dict memo) {
+          [](const std::shared_ptr<TorchComm>& self, const py::dict& memo) {
             auto self_obj = py::cast(self);
             auto self_id =
                 py::cast(reinterpret_cast<uintptr_t>(self_obj.ptr()));
@@ -1464,7 +1465,7 @@ Args:
       // window operations
       .def(
           "new_window",
-          [](TorchComm& self, std::optional<at::Tensor> tensor) {
+          [](TorchComm& self, const std::optional<at::Tensor>& tensor) {
             return self.new_window(tensor);
           },
           R"(

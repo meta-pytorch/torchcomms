@@ -233,12 +233,12 @@ class TorchCommDeviceWindow {
 
   typename Backend::Comm comm_; // e.g., ncclDevComm
   typename Backend::Window window_; // e.g., ncclWindow_t
-  void* base_; // Local window base pointer
-  size_t size_; // Window size in bytes
-  int rank_;
-  int num_ranks_;
-  uint32_t
-      signal_buffer_handle_; // Resource buffer handle for per-peer signal slots
+  void* base_{}; // Local window base pointer
+  size_t size_{}; // Window size in bytes
+  int rank_{};
+  int num_ranks_{};
+  uint32_t signal_buffer_handle_{}; // Resource buffer handle for per-peer
+                                    // signal slots
 };
 
 // Type alias (also defined in backend-specific headers for convenience)
