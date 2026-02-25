@@ -75,13 +75,24 @@ CtranMapper::CtranMapper(CtranComm* comm) {
       statex->rank(),
       statex->nRanks()};
 
-  // Initialize IpcRegCache singleton (idempotent - only initializes once)
-  ctran::IpcRegCache::getInstance()->init();
-
   this->comm = comm;
 
-  // AllGather IPC server addresses after comm is set
-  FB_COMMCHECKTHROW_EX(allGatherIpcServerAddrs(), comm->logMetaData_);
+  if (NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-MAPPER: IpcRegCache socket server enabled, initializing");
+    // Initialize IpcRegCache singleton (idempotent - only initializes once)
+    ctran::IpcRegCache::getInstance()->init();
+
+    // AllGather IPC server addresses after comm is set
+    FB_COMMCHECKTHROW_EX(allGatherIpcServerAddrs(), comm->logMetaData_);
+  } else {
+    CLOGF_SUBSYS(
+        INFO,
+        INIT,
+        "CTRAN-MAPPER: IpcRegCache socket server disabled via NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET=0, skipping init");
+  }
 
   auto backendsToEnable = getToEnableBackends(comm->config_.backends);
 
