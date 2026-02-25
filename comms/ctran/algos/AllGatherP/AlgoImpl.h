@@ -65,5 +65,6 @@ class AlgoImpl {
   Resource resource_;
   CtranComm* comm_{nullptr};
   cudaStream_t stream_{nullptr};
+  std::vector<cudaStream_t> ceStreams_;
 };
 } // namespace ctran::allgatherp
