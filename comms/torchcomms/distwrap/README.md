@@ -13,7 +13,7 @@ their associated torchcomms instances.
 
 ## Architecture
 
-```
+```text
 +-------------------------------------------------------------------------+
 |                           User Code                                     |
 |         from torchcomms import distwrap as dist                         |
