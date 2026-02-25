@@ -163,6 +163,8 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           ncclComm_,
           stream_));
     }
+    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    bootstrap->barrierAll();
 
     // Benchmark
     CUDA_CHECK(cudaEventRecord(start.get(), stream_));
