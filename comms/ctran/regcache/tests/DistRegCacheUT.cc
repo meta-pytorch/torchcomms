@@ -26,6 +26,7 @@ class DistRegCacheTest : public NcclxBaseTest {
 
   void SetUp() override {
     setenv("NCCL_CTRAN_ENABLE", "1", 1);
+    setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 1);
     setenv("NCCL_FASTINIT_MODE", "ring_hybrid", 1);
     NcclxBaseTest::SetUp();
 
