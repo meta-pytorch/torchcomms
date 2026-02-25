@@ -1714,6 +1714,15 @@ cvars:
      Usage: If the config is "ib, nvl, socket", the backend tries to enable
      ib first. If the ib initialization fails, the backend will enable socket.
 
+ - name        : NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET
+   type        : bool
+   default     : true
+   description : |-
+     Enable the IpcRegCache async socket server and peer address exchange for
+     NVL remote memory release notifications. When disabled, the NVL backend
+     still works for window-based operations (which use the IB/Socket control
+     channel).
+
  - name        : NCCL_CTRAN_PROFILING_REPORT_COUNT
    type        : int
    default     : 100
