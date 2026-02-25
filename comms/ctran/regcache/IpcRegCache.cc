@@ -478,6 +478,20 @@ commResult_t ctran::IpcRegCache::remReleaseMem(
   // Get all peers that imported this ipcRegElem
   auto exportedPeerIds = exportRegCache_.wlock()->remove(ipcRegElem);
 
+  if (exportedPeerIds.empty()) {
+    return commSuccess;
+  }
+
+  // If peers have imported this memory but the async socket is disabled,
+  // we cannot notify them to release. This is a fatal inconsistency.
+  if (!NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+    CLOGF(
+        FATAL,
+        "CTRAN-REGCACHE: ipcRegElem was exported to {} peers but "
+        "NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET is disabled",
+        exportedPeerIds.size());
+  }
+
   for (const auto& peerId : exportedPeerIds) {
     folly::SocketAddress peerAddr;
     FB_COMMCHECK(getPeerIpcServerAddr(peerId, peerAddr));
