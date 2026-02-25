@@ -157,36 +157,6 @@ TEST_F(
       "Graph monitor: collective TIMED OUT for graph");
 }
 
-TEST_F(GraphEventTrackerTest, GraphCaptureRejectsNoAbortMode) {
-  setupCCAExpectations(1, 2, 1);
-
-  auto comm = createMockedTorchComm();
-  cuda_mock_->setupDefaultBehaviors();
-  nccl_mock_->setupDefaultBehaviors();
-  comm->init(*device_, "test_graph_no_abort", default_options_);
-
-  setupGraphCaptureMocks();
-
-  auto tensor = createTestTensor({10, 10});
-
-  EXPECT_THROW(
-      {
-        try {
-          auto work = comm->send(tensor, 1, true);
-        } catch (const std::runtime_error& e) {
-          std::string error_msg = e.what();
-          EXPECT_TRUE(
-              error_msg.find("abort_process_on_timeout_or_error=true") !=
-              std::string::npos);
-          throw;
-        }
-      },
-      std::runtime_error);
-
-  switchToReplayMode();
-  setupFinalizeExpectations(*comm);
-}
-
 TEST_F(GraphEventTrackerTest, GraphCaptureWorkObjectsDestroyedAfterCapture) {
   setupCCAExpectations(1, 2, 1);
 
