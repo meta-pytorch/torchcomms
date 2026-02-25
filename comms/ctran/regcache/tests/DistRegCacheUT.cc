@@ -332,8 +332,8 @@ TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
       EXPECT_EQ(IpcDesc.desc.range, ipcMemSize);
       EXPECT_EQ(IpcDesc.desc.numSegments, 1);
       EXPECT_GT(IpcDesc.desc.segments[0].range, 0);
-      ipcRegCache->notifyRemoteIpcExport(
-          myId, peerServerAddrs[peer], IpcDesc, &exportReqs[peer - 1]);
+      COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
+          myId, peerServerAddrs[peer], IpcDesc, &exportReqs[peer - 1]));
     }
     mapper->barrier();
     for (auto it = exportReqs.begin(); it != exportReqs.end(); it++) {
@@ -342,8 +342,8 @@ TEST_F(DistRegCacheTest, ExportReleaseMemCb) {
     // Send release message to all other ranks
     std::vector<ctran::regcache::IpcReqCb> releaseReqs(numRanks - 1);
     for (int peer = 1; peer < numRanks; peer++) {
-      ipcRegCache->notifyRemoteIpcRelease(
-          myId, peerServerAddrs[peer], ipcRegElem, &releaseReqs[peer - 1]);
+      COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcRelease(
+          myId, peerServerAddrs[peer], ipcRegElem, &releaseReqs[peer - 1]));
     }
     mapper->barrier();
     for (auto it = releaseReqs.begin(); it != releaseReqs.end(); it++) {
@@ -398,8 +398,8 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
     ctran::regcache::IpcRegElem* ipcRegElem1 =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
     COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem1, peerId, IpcDesc));
-    ipcRegCache->notifyRemoteIpcExport(
-        myId, peerServerAddrs[peer], IpcDesc, &reqs[0]);
+    COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
+        myId, peerServerAddrs[peer], IpcDesc, &reqs[0]));
     COMMCHECK_TEST(mapper->deregMem(segHdl, true));
     // second register and export
     COMMCHECK_TEST(
@@ -407,8 +407,8 @@ TEST_F(DistRegCacheTest, ExportMultiMem) {
     ctran::regcache::IpcRegElem* ipcRegElem2 =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regHdl->ipcRegElem);
     COMMCHECK_TEST(ipcRegCache->exportMem(data, ipcRegElem2, peerId, IpcDesc));
-    ipcRegCache->notifyRemoteIpcExport(
-        myId, peerServerAddrs[peer], IpcDesc, &reqs[1]);
+    COMMCHECK_TEST(ipcRegCache->notifyRemoteIpcExport(
+        myId, peerServerAddrs[peer], IpcDesc, &reqs[1]));
     for (auto it = reqs.begin(); it != reqs.end(); it++) {
       while (it->completed.load() == false) {
       }
