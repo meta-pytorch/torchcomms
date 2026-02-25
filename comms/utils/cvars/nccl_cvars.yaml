@@ -2816,7 +2816,7 @@ cvars:
 
  - name        : MCCL_SCUBA_ENABLED
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Enable MCCL Scuba structured logging. When enabled, MCCL will log
      events to dedicated MCCL Scuba tables for observability and debugging.
