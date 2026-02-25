@@ -26,4 +26,22 @@ void testCopyChunkVectorizedDualDest(
     int numBlocks,
     int blockSize);
 
+void testCopyChunkVectorizedMultiDest1(
+    char* dst_d,
+    const char* src_d,
+    std::size_t chunk_bytes,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
+void testCopyChunkVectorizedMultiDest3(
+    char* dst1_d,
+    char* dst2_d,
+    char* dst3_d,
+    const char* src_d,
+    std::size_t chunk_bytes,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
 } // namespace comms::pipes::test
