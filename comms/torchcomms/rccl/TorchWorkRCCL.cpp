@@ -2,6 +2,7 @@
 
 #include "comms/torchcomms/rccl/TorchWorkRCCL.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
+#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rccl/TorchCommRCCL.hpp"
 
