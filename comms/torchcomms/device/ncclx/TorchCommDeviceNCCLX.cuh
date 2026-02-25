@@ -31,7 +31,7 @@
 #include <cuda_runtime.h>
 
 #include <nccl_device.h> // @manual=//comms/ncclx:nccl
-#include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl_device_api
+#include <nccl_device/impl/comm__types.h> // @manual=//comms/ncclx:nccl
 
 #include "comms/common/AtomicUtils.cuh"
 #include "comms/pipes/CopyUtils.cuh"
