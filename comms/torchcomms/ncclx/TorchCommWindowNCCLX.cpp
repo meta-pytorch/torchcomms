@@ -431,6 +431,7 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
   device_window_ = Backend::create_device_window(
       nccl_comm_,
       nccl_api_,
+      torch_comm_->getCudaApi(),
       config,
       nccl_orig_win_,
       buf_tensor_.has_value() ? buf_tensor_->data_ptr() : nullptr,
