@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# pyre-unsafe
 
 """
 Dynamo integration for torchcomms.

@@ -1,4 +1,3 @@
-# pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 """Parameter parsing and schema definitions for collective operations."""

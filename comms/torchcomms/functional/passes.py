@@ -1,5 +1,4 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
-# pyre-unsafe
 
 """
 FX graph passes for torchcomms.

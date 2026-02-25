@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 """Unit tests for wait_tensors proxy propagation in Dynamo tracing.
