@@ -320,6 +320,332 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalNonAdaptiveBasic) {
 }
 
 // =============================================================================
+// Group-Level Put/Signal Basic Test - Verifies group-collaborative RDMA
+// transfer
+// =============================================================================
+
+TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  // 64KB total, split across 32 lanes = 2KB per lane
+  const std::size_t nbytes = 64 * 1024;
+  const int numBlocks = 1;
+  const int blockSize = 32; // kWarpSize (1 warp)
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const uint8_t testPattern = 0x47; // 'G' for group
+
+  try {
+    auto transport = createTransport();
+
+    // Allocate and register user-owned data buffer
+    DeviceBuffer dataBuffer(nbytes);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+
+    // Collectively exchange buffer info to get remote buffer handles
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    // Get peer transport for explicit peer selection
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+
+    if (globalRank == 0) {
+      // Rank 0: Sender
+      // Fill local buffer with test pattern
+      test::fillBufferWithPattern(
+          localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Perform group-collaborative RDMA put with signal
+      test::testPutSignalGroup(
+          peerTransportPtr,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          0, // signal id
+          1, // signal value
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    } else {
+      // Rank 1: Receiver
+      // Clear local buffer
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Wait for signal from sender
+      test::testWaitSignal(
+          peerTransportPtr,
+          0, // signal id
+          IbgdaCmpOp::GE, // comparison operation
+          1, // expected signal
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Verify received data
+      DeviceBuffer errorCountBuf(sizeof(int));
+      auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+
+      test::verifyBufferPattern(
+          localDataBuf.ptr,
+          nbytes,
+          testPattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+
+      EXPECT_EQ(h_errorCount, 0) << "Rank " << globalRank << ": Found "
+                                 << h_errorCount << " byte mismatches out of "
+                                 << nbytes << " bytes (group put_signal)";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  XLOGF(INFO, "Rank {}: PutSignalGroupBasic test completed", globalRank);
+}
+
+// =============================================================================
+// Multi-Warp Group Put/Signal Test - Multiple warps each put_signal_group
+// independently
+// =============================================================================
+
+TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  // Use an irregular size that is NOT evenly divisible by the number of warps
+  // (16) or by the warp size (32), to exercise remainder handling in both the
+  // test kernel's per-group chunking and put_signal_group's per-thread
+  // chunking. 65000 / 16 warps = 4062 rem 8; 4062 / 32 threads = 126 rem 30
+  const std::size_t nbytes = 65000;
+  const int numBlocks = 4;
+  const int blockSize = 128; // 4 warps per block → 16 warps total
+  const int numWarps = numBlocks * (blockSize / 32);
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const uint8_t testPattern = 0x4D; // 'M' for multi-warp
+
+  try {
+    auto transport = createTransport();
+
+    // Allocate and register user-owned data buffer
+    DeviceBuffer dataBuffer(nbytes);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+
+    // Collectively exchange buffer info to get remote buffer handles
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    // Get peer transport for explicit peer selection
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+
+    if (globalRank == 0) {
+      // Rank 0: Sender
+      // Fill local buffer with test pattern
+      test::fillBufferWithPattern(
+          localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Each warp calls put_signal_group on its chunk with signalVal=1
+      // Total accumulated signal = 16 warps × 1 = 16
+      test::testPutSignalGroupMultiWarp(
+          peerTransportPtr,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          0, // signal id
+          1, // signal value per warp
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    } else {
+      // Rank 1: Receiver
+      // Clear local buffer
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Wait for accumulated signal from all warps (16 × 1 = 16)
+      test::testWaitSignal(
+          peerTransportPtr,
+          0, // signal id
+          IbgdaCmpOp::GE, // comparison operation
+          numWarps, // expected signal: 16 warps × signalVal 1
+          1, // numBlocks for wait kernel
+          32); // blockSize for wait kernel
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Verify received data
+      DeviceBuffer errorCountBuf(sizeof(int));
+      auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+
+      test::verifyBufferPattern(
+          localDataBuf.ptr,
+          nbytes,
+          testPattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+
+      EXPECT_EQ(h_errorCount, 0)
+          << "Rank " << globalRank << ": Found " << h_errorCount
+          << " byte mismatches out of " << nbytes
+          << " bytes (multi-warp put_signal_group)";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  XLOGF(INFO, "Rank {}: PutSignalGroupMultiWarp test completed", globalRank);
+}
+
+// =============================================================================
+// Block-Scope Group Put/Signal Test - Multiple blocks each put_signal_group
+// independently
+// =============================================================================
+
+TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  // Use an irregular size that is NOT evenly divisible by the number of blocks
+  // (4) or by the block size (256), to exercise remainder handling in both the
+  // test kernel's per-group chunking and put_signal_group's per-thread
+  // chunking. 65003 / 4 blocks = 16250 rem 3; 16253 / 256 threads = 63 rem 125
+  const std::size_t nbytes = 65003;
+  const int numBlocks = 4;
+  const int blockSize = 256; // block-scope groups
+  const int peerRank = (globalRank == 0) ? 1 : 0;
+  const uint8_t testPattern = 0x62; // 'b' for block
+
+  try {
+    auto transport = createTransport();
+
+    // Allocate and register user-owned data buffer
+    DeviceBuffer dataBuffer(nbytes);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+
+    // Collectively exchange buffer info to get remote buffer handles
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    // Get peer transport for explicit peer selection
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+
+    if (globalRank == 0) {
+      // Rank 0: Sender
+      // Fill local buffer with test pattern
+      test::fillBufferWithPattern(
+          localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Each block calls put_signal_group on its chunk with signalVal=1
+      // Total accumulated signal = 4 blocks × 1 = 4
+      test::testPutSignalGroupBlock(
+          peerTransportPtr,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          0, // signal id
+          1, // signal value per block
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    } else {
+      // Rank 1: Receiver
+      // Clear local buffer
+      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Wait for accumulated signal from all blocks (4 × 1 = 4)
+      test::testWaitSignal(
+          peerTransportPtr,
+          0, // signal id
+          IbgdaCmpOp::GE, // comparison operation
+          numBlocks, // expected signal: 4 blocks × signalVal 1
+          1, // numBlocks for wait kernel
+          32); // blockSize for wait kernel
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Verify received data
+      DeviceBuffer errorCountBuf(sizeof(int));
+      auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
+      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
+
+      test::verifyBufferPattern(
+          localDataBuf.ptr,
+          nbytes,
+          testPattern,
+          d_errorCount,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      int h_errorCount = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
+
+      EXPECT_EQ(h_errorCount, 0)
+          << "Rank " << globalRank << ": Found " << h_errorCount
+          << " byte mismatches out of " << nbytes
+          << " bytes (block-scope put_signal_group)";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+
+  XLOGF(INFO, "Rank {}: PutSignalGroupBlock test completed", globalRank);
+}
+
+// =============================================================================
 // Multiple Transfers Test - Tests repeated put_signal operations
 // =============================================================================
 

@@ -122,4 +122,37 @@ void runTestWaitSignalMultipleSlots(
     int numSignals,
     bool* d_success);
 
+// =============================================================================
+// Group-level API tests
+// These tests verify the put_group and put_signal_group APIs that accept a
+// ThreadGroup, partition a single data chunk across group threads, and have the
+// leader issue the signal.
+// =============================================================================
+
+// Test put_group data partitioning across warp lanes.
+// Verifies that each lane computes the correct offset and chunk size.
+void runTestPutGroupPartitioning(bool* d_success);
+
+// Test put_signal_group signal broadcast.
+// Verifies that the leader issues the signal and broadcasts the ticket
+// to all lanes via broadcast_64.
+void runTestPutSignalGroupBroadcast(bool* d_success);
+
+// =============================================================================
+// broadcast_64 tests for non-warp scopes
+// =============================================================================
+
+// Test broadcast_64 with BLOCK scope (<<<4, 256>>>)
+void runTestBroadcast64Block(bool* d_success);
+
+// Test broadcast_64 with MULTIWARP scope (<<<2, 512>>>)
+void runTestBroadcast64Multiwarp(bool* d_success);
+
+// Test double-broadcast safety: two consecutive broadcasts with different
+// values should not race (verifies the double-sync pattern)
+void runTestBroadcast64DoubleSafety(bool* d_success);
+
+// Test put_group partitioning logic with block-sized groups
+void runTestPutGroupPartitioningBlock(bool* d_success);
+
 } // namespace comms::pipes::tests

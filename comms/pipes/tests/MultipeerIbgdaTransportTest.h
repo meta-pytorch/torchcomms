@@ -17,6 +17,79 @@ class P2pIbgdaTransportDevice;
 namespace comms::pipes::test {
 
 /**
+ * Test kernel: Group-collaborative put_signal (adaptive-routing safe)
+ *
+ * Uses the public put_signal_group() API with a warp-sized ThreadGroup.
+ * The group partitions the data across lanes and the leader issues
+ * a fenced signal.
+ *
+ * @param deviceTransportPtr Pointer to P2pIbgdaTransportDevice in device memory
+ * @param localBuf Local source buffer (with lkey)
+ * @param remoteBuf Remote destination buffer (with rkey)
+ * @param nbytes Total bytes to transfer (split across group lanes)
+ * @param signalId Signal slot index
+ * @param signalVal Signal value to send
+ */
+void testPutSignalGroup(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: Multi-warp group-collaborative put_signal
+ *
+ * Multiple warps each independently call put_signal_group() on their own
+ * chunk of data. Each warp signals with signalVal, so the total accumulated
+ * signal is (numWarps * signalVal) via atomic fetch-add.
+ *
+ * @param deviceTransportPtr Pointer to P2pIbgdaTransportDevice in device memory
+ * @param localBuf Local source buffer (with lkey)
+ * @param remoteBuf Remote destination buffer (with rkey)
+ * @param nbytes Total bytes to transfer (split across warps)
+ * @param signalId Signal slot index
+ * @param signalVal Signal value per warp
+ */
+void testPutSignalGroupMultiWarp(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: Block-scope group-collaborative put_signal
+ *
+ * Multiple blocks each independently call put_signal_group() with
+ * block-scope groups on their own chunk of data. Each block signals
+ * with signalVal, so the total accumulated signal is
+ * (numBlocks * signalVal) via atomic fetch-add.
+ *
+ * @param deviceTransportPtr Pointer to P2pIbgdaTransportDevice in device memory
+ * @param localBuf Local source buffer (with lkey)
+ * @param remoteBuf Remote destination buffer (with rkey)
+ * @param nbytes Total bytes to transfer (split across blocks)
+ * @param signalId Signal slot index
+ * @param signalVal Signal value per block
+ */
+void testPutSignalGroupBlock(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Send data via put_signal_non_adaptive
  *
  * Uses the fused put+signal operation (single compound WQE) instead of
