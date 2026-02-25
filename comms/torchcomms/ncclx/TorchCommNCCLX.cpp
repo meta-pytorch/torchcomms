@@ -115,10 +115,6 @@ TorchCommNCCLX::~TorchCommNCCLX() {
       nccl_comm_ = nullptr;
     }
   }
-
-  // We need to detach the memory hook in case finalize is not called,
-  // so that we don't encounter a memory corruption.
-  detachMemoryHook();
 }
 
 void TorchCommNCCLX::init(
@@ -275,7 +271,8 @@ void TorchCommNCCLX::init(
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommNCCLX::timeoutWatchdog, this);
 
-  // Register comm with CachingAllocator
+  // Attach memory hook to register pre-existing allocations and capture future
+  // ones
   attachMemoryHook();
 
   // Mark initialization as complete only after all steps succeed
@@ -394,8 +391,6 @@ void TorchCommNCCLX::finalize() {
   // Note: If abortNcclComm() was called, nccl_comm_ is already nullptr and this
   // is skipped. We must not call commDestroy after commAbort per NCCL docs.
   if (nccl_comm_) {
-    detachMemoryHook();
-    // Deregister comm from the CachingAllocator
     NCCLX_CHECK(
         nccl_api_,
         nccl_comm_,
@@ -409,8 +404,6 @@ void TorchCommNCCLX::abortNcclComm() {
   // Call abort hooks before aborting to allow users to capture debug info
   TC_LOG(INFO, this) << "Calling abort hooks before aborting.";
   runAbortHooks();
-
-  detachMemoryHook();
   if (nccl_comm_) {
     NCCLX_CHECK(
         nccl_api_,
@@ -2202,51 +2195,29 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   return new_torchcomm;
 }
 
-void TorchCommNCCLX::register_address(
-    const TorchCommNCCLX::AddressWithLen& addr) {
-  // We got a register after we got rid of the comm. Is this a fatal error?
-  if (nccl_comm_ == nullptr) {
-    return;
-  }
-
-  if (memoryRegistrationHandles_.contains(addr.addr)) {
-    throw std::runtime_error("Memory already registered with NCCLX");
-  }
-  void* handle = nullptr;
-  NCCLX_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->commRegister(nccl_comm_, addr.addr, addr.len, &handle),
-      "Failed to register memory with NCCLX");
-  // ncclCommRegister may return a NULL handle when registration is a no-op.
-  // Skip storing it so that deregister_address() does not later call
-  // ncclCommDeregister with a NULL handle.
-  if (handle != nullptr) {
-    memoryRegistrationHandles_.emplace(addr.addr, RegistrationHandle(handle));
+void TorchCommNCCLX::global_register_address(
+    const TorchCommNCCLX::AddressWithLen& addr,
+    NcclxApi* nccl_api) {
+  ncclResult_t result = nccl_api->globalRegisterWithPtr(addr.addr, addr.len);
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "Failed to globally register memory with NCCL. "
+        "Memory registration requires ctran to be enabled "
+        "(see NCCL_CTRAN_REGISTER). Error: " +
+        std::string(nccl_api->getErrorString(result)));
   }
 }
 
-void TorchCommNCCLX::deregister_address(const TorchCommNCCLX::Address& addr) {
-  // We got a deregister after we got rid of the comm. Is this a fatal error?
-  if (nccl_comm_ == nullptr) {
-    return;
+void TorchCommNCCLX::global_deregister_address(
+    const TorchCommNCCLX::AddressWithLen& addr,
+    NcclxApi* nccl_api) {
+  ncclResult_t result = nccl_api->globalDeregisterWithPtr(addr.addr, addr.len);
+
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "Failed to globally deregister memory with NCCL: " +
+        std::string(nccl_api->getErrorString(result)));
   }
-
-  auto it = memoryRegistrationHandles_.find(addr.addr);
-  if (it == memoryRegistrationHandles_.end()) {
-    // it's possible that the memory was registered for a different comm,
-    // however failed registration for this comm.
-    return;
-  }
-
-  void* handle = it->second.regHandle;
-  NCCLX_CHECK(
-      nccl_api_,
-      nccl_comm_,
-      nccl_api_->commDeregister(nccl_comm_, handle),
-      "Failed to deregister memory with NCCLX");
-
-  memoryRegistrationHandles_.erase(it);
 }
 
 namespace {
