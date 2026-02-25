@@ -144,11 +144,11 @@ std::vector<at::Tensor> ReduceScatterVTest<Fixture>::createInputTensors(
     const std::vector<int>& counts,
     at::ScalarType dtype) {
   auto options = at::TensorOptions().dtype(dtype).device(device_type_);
-  int numRanks = counts.size();
+  size_t numRanks = counts.size();
   std::vector<at::Tensor> input_tensors;
   input_tensors.reserve(numRanks);
 
-  for (int r = 0; r < numRanks; r++) {
+  for (size_t r = 0; r < numRanks; r++) {
     // Each tensor has rank-specific values
     at::Tensor tensor;
     if (dtype == at::kFloat || dtype == at::kBFloat16 || dtype == at::kHalf ||
