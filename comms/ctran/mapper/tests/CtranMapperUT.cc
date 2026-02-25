@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
@@ -1373,4 +1374,52 @@ TEST_F(CtranMapperTestDisjoint, dynamicReg) {
   EXPECT_EQ(snapshot.totalNumReg, 1);
   EXPECT_EQ(snapshot.totalNumDereg, 1);
   EXPECT_EQ(snapshot.totalNumDynamicReg, 1);
+}
+
+// When NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET is false, the mapper should
+// skip IpcRegCache::init() and allGatherIpcServerAddrs(). NVL backend should
+// still be created (for window-based operations).
+TEST(CtranMapperUT, IpcRegCacheDisabledSkipsSocketInit) {
+  setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "0", 1);
+  setenv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket", 1);
+  ncclCvarInit();
+  auto commRAII = ctran::createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm.get();
+  auto mapper = std::make_unique<CtranMapper>(dummyComm);
+  auto rank = dummyComm->statex_->rank();
+
+  // NVL backend should still be available (for window operations)
+  EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
+
+  // IpcRegCache singleton peer address map should be empty since
+  // allGatherIpcServerAddrs() was skipped
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  folly::SocketAddress addr;
+  auto peerId = dummyComm->statex_->gPid(rank);
+  EXPECT_EQ(
+      ipcRegCache->getPeerIpcServerAddr(peerId, addr), commInvalidArgument);
+
+  // Restore default
+  setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 1);
+  ncclCvarInit();
+}
+
+// When NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET is true (default), the
+// mapper initializes IpcRegCache and populates the peer address map.
+TEST(CtranMapperUT, IpcRegCacheEnabledPopulatesPeerAddrs) {
+  setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 1);
+  setenv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket", 1);
+  ncclCvarInit();
+  auto commRAII = ctran::createDummyCtranComm();
+  auto dummyComm = commRAII->ctranComm.get();
+  auto mapper = std::make_unique<CtranMapper>(dummyComm);
+  auto rank = dummyComm->statex_->rank();
+
+  // IpcRegCache should have our own peer address populated
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  folly::SocketAddress addr;
+  auto peerId = dummyComm->statex_->gPid(rank);
+  EXPECT_EQ(ipcRegCache->getPeerIpcServerAddr(peerId, addr), commSuccess);
+  // The address should be non-empty (socket server was initialized)
+  EXPECT_NE(addr.getPort(), 0);
 }
