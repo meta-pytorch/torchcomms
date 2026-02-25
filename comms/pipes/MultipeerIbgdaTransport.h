@@ -373,6 +373,7 @@ class MultipeerIbgdaTransport {
   void allocateResources();
   void registerMemory();
   void createQps();
+  void cleanup();
   void connectQp(
       doca_gpu_verbs_qp_hl* qpHl,
       const IbgdaTransportExchInfo& peerInfo);

@@ -213,8 +213,13 @@ TopologyResult TopologyDiscovery::discover(
 
   allInfo[myRank] = localInfoFn_(deviceId);
 
-  bootstrap.allGather(allInfo.data(), sizeof(RankTopologyInfo), myRank, nRanks)
-      .get();
+  auto result =
+      bootstrap
+          .allGather(allInfo.data(), sizeof(RankTopologyInfo), myRank, nRanks)
+          .get();
+  if (result != 0) {
+    throw std::runtime_error("TopologyDiscovery::discover allGather failed");
+  }
 
   return classify(myRank, nRanks, allInfo, topoConfig);
 }

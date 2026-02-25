@@ -387,71 +387,75 @@ void MultipeerIbgdaTransport::connectQp(
     throw std::runtime_error("Failed to create QP attributes: qpAttr is null");
   }
 
-  // Transition to INIT state
-  err = doca_verbs_qp_attr_set_next_state(qpAttr, DOCA_VERBS_QP_STATE_INIT);
-  checkDocaError(err, "Failed to set next state INIT");
-  err = doca_verbs_qp_attr_set_allow_remote_write(qpAttr, 1);
-  checkDocaError(err, "Failed to set allow remote write");
-  err = doca_verbs_qp_attr_set_allow_remote_read(qpAttr, 1);
-  checkDocaError(err, "Failed to set allow remote read");
-  err = doca_verbs_qp_attr_set_allow_remote_atomic(
-      qpAttr, DOCA_VERBS_QP_ATOMIC_MODE_IB_SPEC);
-  checkDocaError(err, "Failed to set allow remote atomic");
-  err = doca_verbs_qp_attr_set_port_num(qpAttr, 1);
-  checkDocaError(err, "Failed to set port number");
+  try {
+    // Transition to INIT state
+    err = doca_verbs_qp_attr_set_next_state(qpAttr, DOCA_VERBS_QP_STATE_INIT);
+    checkDocaError(err, "Failed to set next state INIT");
+    err = doca_verbs_qp_attr_set_allow_remote_write(qpAttr, 1);
+    checkDocaError(err, "Failed to set allow remote write");
+    err = doca_verbs_qp_attr_set_allow_remote_read(qpAttr, 1);
+    checkDocaError(err, "Failed to set allow remote read");
+    err = doca_verbs_qp_attr_set_allow_remote_atomic(
+        qpAttr, DOCA_VERBS_QP_ATOMIC_MODE_IB_SPEC);
+    checkDocaError(err, "Failed to set allow remote atomic");
+    err = doca_verbs_qp_attr_set_port_num(qpAttr, 1);
+    checkDocaError(err, "Failed to set port number");
 
-  err = doca_verbs_qp_modify(
-      qpHl->qp,
-      qpAttr,
-      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE |
-          DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_READ | DOCA_VERBS_QP_ATTR_PKEY_INDEX |
-          DOCA_VERBS_QP_ATTR_PORT_NUM);
-  checkDocaError(err, "Failed to modify QP to INIT");
+    err = doca_verbs_qp_modify(
+        qpHl->qp,
+        qpAttr,
+        DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_WRITE |
+            DOCA_VERBS_QP_ATTR_ALLOW_REMOTE_READ |
+            DOCA_VERBS_QP_ATTR_PKEY_INDEX | DOCA_VERBS_QP_ATTR_PORT_NUM);
+    checkDocaError(err, "Failed to modify QP to INIT");
 
-  // Transition to RTR state
-  err = doca_verbs_qp_attr_set_next_state(qpAttr, DOCA_VERBS_QP_STATE_RTR);
-  checkDocaError(err, "Failed to set next state RTR");
-  // Negotiate path MTU: use the minimum of local and remote active MTU
-  auto negotiatedMtu = ibv_mtu_to_doca_mtu(std::min(localMtu_, peerInfo.mtu));
-  err = doca_verbs_qp_attr_set_path_mtu(qpAttr, negotiatedMtu);
-  checkDocaError(err, "Failed to set MTU");
-  err = doca_verbs_qp_attr_set_rq_psn(qpAttr, 0);
-  checkDocaError(err, "Failed to set RQ PSN");
-  err = doca_verbs_qp_attr_set_dest_qp_num(qpAttr, peerInfo.qpn);
-  checkDocaError(err, "Failed to set dest QP number");
-  err = doca_verbs_qp_attr_set_ah_attr(qpAttr, ahAttr_);
-  checkDocaError(err, "Failed to set AH attributes");
-  err = doca_verbs_qp_attr_set_min_rnr_timer(qpAttr, config_.minRnrTimer);
-  checkDocaError(err, "Failed to set min RNR timer");
+    // Transition to RTR state
+    err = doca_verbs_qp_attr_set_next_state(qpAttr, DOCA_VERBS_QP_STATE_RTR);
+    checkDocaError(err, "Failed to set next state RTR");
+    // Negotiate path MTU: use the minimum of local and remote active MTU
+    auto negotiatedMtu = ibv_mtu_to_doca_mtu(std::min(localMtu_, peerInfo.mtu));
+    err = doca_verbs_qp_attr_set_path_mtu(qpAttr, negotiatedMtu);
+    checkDocaError(err, "Failed to set MTU");
+    err = doca_verbs_qp_attr_set_rq_psn(qpAttr, 0);
+    checkDocaError(err, "Failed to set RQ PSN");
+    err = doca_verbs_qp_attr_set_dest_qp_num(qpAttr, peerInfo.qpn);
+    checkDocaError(err, "Failed to set dest QP number");
+    err = doca_verbs_qp_attr_set_ah_attr(qpAttr, ahAttr_);
+    checkDocaError(err, "Failed to set AH attributes");
+    err = doca_verbs_qp_attr_set_min_rnr_timer(qpAttr, config_.minRnrTimer);
+    checkDocaError(err, "Failed to set min RNR timer");
 
-  err = doca_verbs_qp_modify(
-      qpHl->qp,
-      qpAttr,
-      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_RQ_PSN |
-          DOCA_VERBS_QP_ATTR_DEST_QP_NUM | DOCA_VERBS_QP_ATTR_PATH_MTU |
-          DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER);
-  checkDocaError(err, "Failed to modify QP to RTR");
+    err = doca_verbs_qp_modify(
+        qpHl->qp,
+        qpAttr,
+        DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_RQ_PSN |
+            DOCA_VERBS_QP_ATTR_DEST_QP_NUM | DOCA_VERBS_QP_ATTR_PATH_MTU |
+            DOCA_VERBS_QP_ATTR_AH_ATTR | DOCA_VERBS_QP_ATTR_MIN_RNR_TIMER);
+    checkDocaError(err, "Failed to modify QP to RTR");
 
-  // Transition to RTS state
-  err = doca_verbs_qp_attr_set_next_state(qpAttr, DOCA_VERBS_QP_STATE_RTS);
-  checkDocaError(err, "Failed to set next state RTS");
-  err = doca_verbs_qp_attr_set_sq_psn(qpAttr, 0);
-  checkDocaError(err, "Failed to set SQ PSN");
-  err = doca_verbs_qp_attr_set_ack_timeout(qpAttr, config_.timeout);
-  checkDocaError(err, "Failed to set ACK timeout");
-  err = doca_verbs_qp_attr_set_retry_cnt(qpAttr, config_.retryCount);
-  checkDocaError(err, "Failed to set retry count");
-  err = doca_verbs_qp_attr_set_rnr_retry(qpAttr, config_.rnrRetry);
-  checkDocaError(err, "Failed to set RNR retry");
+    // Transition to RTS state
+    err = doca_verbs_qp_attr_set_next_state(qpAttr, DOCA_VERBS_QP_STATE_RTS);
+    checkDocaError(err, "Failed to set next state RTS");
+    err = doca_verbs_qp_attr_set_sq_psn(qpAttr, 0);
+    checkDocaError(err, "Failed to set SQ PSN");
+    err = doca_verbs_qp_attr_set_ack_timeout(qpAttr, config_.timeout);
+    checkDocaError(err, "Failed to set ACK timeout");
+    err = doca_verbs_qp_attr_set_retry_cnt(qpAttr, config_.retryCount);
+    checkDocaError(err, "Failed to set retry count");
+    err = doca_verbs_qp_attr_set_rnr_retry(qpAttr, config_.rnrRetry);
+    checkDocaError(err, "Failed to set RNR retry");
 
-  err = doca_verbs_qp_modify(
-      qpHl->qp,
-      qpAttr,
-      DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_SQ_PSN |
-          DOCA_VERBS_QP_ATTR_ACK_TIMEOUT | DOCA_VERBS_QP_ATTR_RETRY_CNT |
-          DOCA_VERBS_QP_ATTR_RNR_RETRY);
-  checkDocaError(err, "Failed to modify QP to RTS");
-
+    err = doca_verbs_qp_modify(
+        qpHl->qp,
+        qpAttr,
+        DOCA_VERBS_QP_ATTR_NEXT_STATE | DOCA_VERBS_QP_ATTR_SQ_PSN |
+            DOCA_VERBS_QP_ATTR_ACK_TIMEOUT | DOCA_VERBS_QP_ATTR_RETRY_CNT |
+            DOCA_VERBS_QP_ATTR_RNR_RETRY);
+    checkDocaError(err, "Failed to modify QP to RTS");
+  } catch (const std::runtime_error&) {
+    doca_verbs_qp_attr_destroy(qpAttr);
+    throw;
+  }
   doca_verbs_qp_attr_destroy(qpAttr);
 
   LOG(INFO) << "MultipeerIbgdaTransport: connected QP to remote qpn="
@@ -487,29 +491,41 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     throw std::invalid_argument("signalCount must be > 0");
   }
 
-  // Initialize DOCA GPU context
-  initDocaGpu();
+  try {
+    // Initialize DOCA GPU context
+    initDocaGpu();
 
-  // Open IB device and create PD
-  openIbDevice();
+    // Open IB device and create PD
+    openIbDevice();
 
-  // Allocate GPU memory
-  allocateResources();
+    // Allocate GPU memory
+    allocateResources();
 
-  // Register memory for RDMA
-  registerMemory();
+    // Register memory for RDMA
+    registerMemory();
 
-  // Create high-level QPs
-  createQps();
+    // Create high-level QPs
+    createQps();
+  } catch (const std::exception&) {
+    // Destructor won't run for a partially-constructed object, so clean up
+    // all resources allocated by the init methods above.
+    cleanup();
+    throw;
+  }
 
   LOG(INFO) << "MultipeerIbgdaTransport: rank " << myRank_ << "/" << nRanks_
             << " initialized on GPU " << gpuPciBusId_;
 }
 
 MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
+  cleanup();
+}
+
+void MultipeerIbgdaTransport::cleanup() {
   // Free GPU transport memory
   if (peerTransportsGpu_ != nullptr) {
     freeDeviceTransportsOnGpu(peerTransportsGpu_);
+    peerTransportsGpu_ = nullptr;
   }
 
   // Destroy high-level QPs
@@ -518,6 +534,7 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
       doca_gpu_verbs_destroy_qp_hl(qpHl);
     }
   }
+  qpHlList_.clear();
 
   // Destroy user buffer MRs
   for (auto& [_, mr] : registeredBuffers_) {
@@ -534,11 +551,13 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
   // Free signal buffer (transport-managed)
   if (signalBuffer_ != nullptr) {
     doca_gpu_mem_free(docaGpu_, signalBuffer_);
+    signalBuffer_ = nullptr;
   }
 
   // Destroy AH attributes
   if (ahAttr_ != nullptr) {
     doca_verbs_ah_attr_destroy(ahAttr_);
+    ahAttr_ = nullptr;
   }
 
   // Destroy PD
@@ -556,6 +575,7 @@ MultipeerIbgdaTransport::~MultipeerIbgdaTransport() {
   // Destroy DOCA GPU context
   if (docaGpu_ != nullptr) {
     doca_gpu_destroy(docaGpu_);
+    docaGpu_ = nullptr;
   }
 }
 
