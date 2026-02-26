@@ -93,7 +93,11 @@ getAutoTunedPipeline(size_t messageBytes, int nRanks, GpuArch arch) {
   while (partitionMessageBytes > maxBDP) {
     partitionMessageBytes /= 2;
   }
-  size_t numChunks = pipelineDepth * static_cast<size_t>(nRanks);
+  // Round nRanks up to nearest pow2 so that chunkSize (partitionMessageBytes /
+  // numChunks) is always a power-of-2, guaranteeing typeSize alignment and
+  // exact BDP fit. For pow2 ranks (the common case) this is a no-op.
+  size_t numChunks =
+      pipelineDepth * roundToNearestPow2(static_cast<size_t>(nRanks));
   size_t chunkSize = partitionMessageBytes / numChunks;
   chunkSize = std::clamp(chunkSize, kMinChunkSize, kMaxChunkSize);
   numChunks =
@@ -157,6 +161,7 @@ AutoTuneParams getAutoTunedParams(
     int nRanks,
     int maxOccupancyBlocks,
     int defaultThreads,
+    size_t typeSize,
     GpuArch arch) {
   auto p = getAutoTunedPipeline(messageBytes, nRanks, arch);
   if (NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_NUM_CHUNKS > 0) {
@@ -164,6 +169,17 @@ AutoTuneParams getAutoTunedParams(
   }
   if (NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE > 0) {
     p.chunkSize = NCCL_CTRAN_ALLREDUCE_RING_TMPBUF_CHUNK_SIZE;
+  }
+
+  // Align chunkSize down to a multiple of typeSize. The pipeline computes
+  // chunkSize via byte-level division which may not be typeSize-aligned
+  // for non-power-of-2 rank counts, causing misaligned tmpbuf access.
+  size_t alignedChunkSize =
+      std::max(p.chunkSize / typeSize, size_t{1}) * typeSize;
+  if (alignedChunkSize != p.chunkSize) {
+    p.chunkSize = alignedChunkSize;
+    p.numChunks =
+        std::max((messageBytes + p.chunkSize - 1) / p.chunkSize, size_t{1});
   }
 
   auto bp = getAutoTunedBlockParams(
@@ -182,6 +198,7 @@ void logAutoTuneDecisions(
     int nRanks,
     int maxOccupancyBlocks,
     int defaultThreads,
+    size_t typeSize,
     GpuArch arch) {
   static_assert(
       sizeof(size_t) >= 8, "logAutoTuneDecisions assumes 64-bit size_t");
@@ -190,7 +207,7 @@ void logAutoTuneDecisions(
   for (int i = 0; i <= kPow2MaxExponent; i++) {
     const size_t sz = (1ULL << i) * kKB;
     const auto at = getAutoTunedParams(
-        sz, nRanks, maxOccupancyBlocks, defaultThreads, arch);
+        sz, nRanks, maxOccupancyBlocks, defaultThreads, typeSize, arch);
     CLOGF(
         DBG,
         "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",
@@ -204,7 +221,7 @@ void logAutoTuneDecisions(
       const size_t szNext = (1ULL << (i + 1)) * kKB;
       const size_t mid = (sz + szNext) / 2;
       const auto mat = getAutoTunedParams(
-          mid, nRanks, maxOccupancyBlocks, defaultThreads, arch);
+          mid, nRanks, maxOccupancyBlocks, defaultThreads, typeSize, arch);
       CLOGF(
           DBG,
           "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",

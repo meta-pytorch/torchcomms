@@ -1,5 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <algorithm>
+#include <bit>
+#include <set>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
@@ -96,7 +101,8 @@ void verifyAutoTune(
     int defThreads,
     GpuArch arch = GpuArch::Default) {
   for (const auto& c : cases) {
-    auto at = getAutoTunedParams(c.msgBytes, nRanks, maxOcc, defThreads, arch);
+    auto at =
+        getAutoTunedParams(c.msgBytes, nRanks, maxOcc, defThreads, 1, arch);
     EXPECT_EQ(at.block.numBlocks, c.blocks)
         << "blocks mismatch at msg=" << c.msgBytes;
     EXPECT_EQ(at.block.blockSize, c.threads)
@@ -794,7 +800,7 @@ TEST_F(AutoTuneCVAROverrideTest, ChunkSizeOnly) {
   MaxBDPOverride bdp(128 * MB);
   ChunkSizeOverride cs(1 * MB);
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads);
+  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads, 1);
   EXPECT_EQ(at.pipeline.chunkSize, 1 * MB);
   // numChunks is still auto-tuned (not overridden)
   EXPECT_GT(at.pipeline.numChunks, 0u);
@@ -805,7 +811,7 @@ TEST_F(AutoTuneCVAROverrideTest, NumChunksOnly) {
   MaxBDPOverride bdp(128 * MB);
   NumChunksOverride nc(4);
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads);
+  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads, 1);
   EXPECT_EQ(at.pipeline.numChunks, 4u);
   // chunkSize is still auto-tuned
   EXPECT_GT(at.pipeline.chunkSize, 0u);
@@ -817,7 +823,7 @@ TEST_F(AutoTuneCVAROverrideTest, ChunkSizeAndNumChunks) {
   ChunkSizeOverride cs(2 * MB);
   NumChunksOverride nc(8);
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads);
+  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads, 1);
   EXPECT_EQ(at.pipeline.chunkSize, 2 * MB);
   EXPECT_EQ(at.pipeline.numChunks, 8u);
 }
@@ -828,7 +834,7 @@ TEST_F(AutoTuneCVAROverrideTest, BlockOverrides) {
   NumBlocksOverride nb(3);
   BlockSizeOverride bs(384);
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads);
+  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads, 1);
   EXPECT_EQ(at.block.numBlocks, 3);
   EXPECT_EQ(at.block.blockSize, 384);
 }
@@ -854,7 +860,7 @@ TEST_F(AutoTuneCVAROverrideTest, ChunkSizeAffectsBlockParams) {
 
   for (const auto& c : cases) {
     ChunkSizeOverride cs(c.chunkSize);
-    auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads);
+    auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads, 1);
     EXPECT_EQ(at.block.numBlocks, c.expectedBlocks)
         << "chunkSize=" << c.chunkSize;
   }
@@ -883,7 +889,7 @@ TEST_F(AutoTuneCVAROverrideTest, ChunkSizeAffectsBlockParamsHopper) {
 
   for (const auto& c : cases) {
     ChunkSizeOverride cs(c.chunkSize);
-    auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads, arch);
+    auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads, 1, arch);
     EXPECT_EQ(at.block.numBlocks, c.expectedBlocks)
         << "chunkSize=" << c.chunkSize;
     EXPECT_EQ(at.block.blockSize, c.expectedBlockSize)
@@ -897,7 +903,7 @@ TEST_F(AutoTuneCVAROverrideTest, BlockOverrideTakesPriorityOverChunkDerived) {
   ChunkSizeOverride cs(1 * MB); // would auto-tune to 8 blocks on Default
   NumBlocksOverride nb(2); // explicit override wins
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads);
+  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads, 1);
   EXPECT_EQ(at.pipeline.chunkSize, 1 * MB);
   EXPECT_EQ(at.block.numBlocks, 2);
 }
@@ -910,7 +916,7 @@ TEST_F(AutoTuneCVAROverrideTest, AllFourOverrides) {
   NumBlocksOverride nb(4);
   BlockSizeOverride bs(256);
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads);
+  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOcc, kDefThreads, 1);
   EXPECT_EQ(at.pipeline.chunkSize, 512 * KB);
   EXPECT_EQ(at.pipeline.numChunks, 16u);
   EXPECT_EQ(at.block.numBlocks, 4);
@@ -930,45 +936,17 @@ class AutoTuneInvariantTest : public ::testing::Test {
   static constexpr size_t kMsg = 64 * MB;
 };
 
-// Pipeline BDP invariant: chunkSize * numChunks <= maxBDP for all configs.
-TEST_F(AutoTuneInvariantTest, TotalChunkSizeRespectBDP) {
-  const size_t maxBDPs[] = {
-      256 * KB,
-      512 * KB,
-      1 * MB,
-      2 * MB,
-      4 * MB,
-      8 * MB,
-      16 * MB,
-      32 * MB,
-      64 * MB,
-      128 * MB};
-
-  size_t msg = 1 * KB;
-  while (msg <= 64 * GB) {
-    for (auto maxBDP : maxBDPs) {
-      MaxBDPOverride o(maxBDP);
-      auto at = getAutoTunedParams(msg, kNRanks, kMaxOcc, kDefThreads);
-      EXPECT_LE(at.pipeline.chunkSize * at.pipeline.numChunks, maxBDP)
-          << "BDP violated: msg=" << msg << " maxBDP=" << maxBDP
-          << " chunkSize=" << at.pipeline.chunkSize
-          << " numChunks=" << at.pipeline.numChunks;
-    }
-    msg *= 2;
-  }
-}
-
 // Spot-check that small maxBDP values correctly reduce pipeline chunks.
 TEST_F(AutoTuneInvariantTest, SmallMaxBDP_ChunksReduced) {
   {
     MaxBDPOverride o(256 * KB);
-    auto at = getAutoTunedParams(1 * MB, kNRanks, kMaxOcc, kDefThreads);
+    auto at = getAutoTunedParams(1 * MB, kNRanks, kMaxOcc, kDefThreads, 1);
     EXPECT_EQ(at.pipeline.chunkSize, 16 * KB);
     EXPECT_EQ(at.pipeline.numChunks, 16u);
   }
   {
     MaxBDPOverride o(512 * KB);
-    auto at = getAutoTunedParams(1 * MB, kNRanks, kMaxOcc, kDefThreads);
+    auto at = getAutoTunedParams(1 * MB, kNRanks, kMaxOcc, kDefThreads, 1);
     EXPECT_EQ(at.pipeline.chunkSize, 32 * KB);
     EXPECT_EQ(at.pipeline.numChunks, 16u);
   }
@@ -988,11 +966,16 @@ TEST_F(AutoTuneInvariantTest, MaxOccupancyClampWithBlockSize) {
     ChunkSizeOverride cs(8 * KB);
     // Verify unclamped tier values are larger (clamping is meaningful)
     auto unclamped = getAutoTunedParams(
-        kMsg, kNRanks, /*maxOccupancyBlocks=*/kMaxOcc, kDefThreads, arch);
+        kMsg, kNRanks, /*maxOccupancyBlocks=*/kMaxOcc, kDefThreads, 1, arch);
     ASSERT_GE(unclamped.block.blockSize, 256);
 
     auto at = getAutoTunedParams(
-        kMsg, kNRanks, /*maxOccupancyBlocks=*/1, /*defaultThreads=*/256, arch);
+        kMsg,
+        kNRanks,
+        /*maxOccupancyBlocks=*/1,
+        /*defaultThreads=*/256,
+        1,
+        arch);
     EXPECT_EQ(at.block.numBlocks, 1);
     EXPECT_EQ(at.block.blockSize, 256); // clamped from 384
   }
@@ -1004,71 +987,212 @@ TEST_F(AutoTuneInvariantTest, MaxOccupancyClampWithBlockSize) {
     ChunkSizeOverride cs(1 * MB);
     // Verify unclamped tier values are larger (clamping is meaningful)
     auto unclamped = getAutoTunedParams(
-        kMsg, kNRanks, /*maxOccupancyBlocks=*/kMaxOcc, kDefThreads, arch);
+        kMsg, kNRanks, /*maxOccupancyBlocks=*/kMaxOcc, kDefThreads, 1, arch);
     ASSERT_GE(unclamped.block.numBlocks, 2);
     ASSERT_GE(unclamped.block.blockSize, 256);
 
     auto at = getAutoTunedParams(
-        kMsg, kNRanks, /*maxOccupancyBlocks=*/2, /*defaultThreads=*/256, arch);
+        kMsg,
+        kNRanks,
+        /*maxOccupancyBlocks=*/2,
+        /*defaultThreads=*/256,
+        1,
+        arch);
     EXPECT_EQ(at.block.numBlocks, 2); // clamped from 4
     EXPECT_EQ(at.block.blockSize, 256); // clamped from 512
   }
 }
 
-// Non-pow2 message sizes: verifies that auto-tune decisions for non-pow2
-// inputs match the nearest pow2 (roundToNearestPow2 snaps internally).
-// Probes 7 points per boundary: pow2(n), pow2(n)+1, mid-1, mid, mid+1,
-// pow2(n+1)-1, pow2(n+1).
-TEST_F(AutoTuneInvariantTest, NonPow2MessageSizes) {
-  MaxBDPOverride bdp(128 * MB);
+// Build basePoints for probes.
+// For each consecutive pair (p, pNext), generates 7 probe points:
+//   p, p+1, mid-1, mid, mid+1, pNext-1, pNext
+// where mid = (p + pNext) / 2.
+template <typename T>
+std::vector<T> buildProbes(const std::vector<T>& basePoints) {
+  std::set<T> probes;
+  for (size_t i = 0; i < basePoints.size(); ++i) {
+    T p = basePoints[i];
+    if (i + 1 < basePoints.size()) {
+      T pNext = basePoints[i + 1];
+      T mid = static_cast<T>((p + pNext) / 2);
+      // clang-format off
+      probes.insert(p);          // exact p
+      probes.insert(p + 1);      // just above p
+      probes.insert(mid - 1);     // just below midpoint
+      probes.insert(mid);         // exact midpoint
+      probes.insert(mid + 1);     // just above midpoint
+      probes.insert(pNext - 1);  // just below pNext
+      probes.insert(pNext);      // exact pNext
+      // clang-format on
+    } else {
+      probes.insert(p);
+    }
+  }
 
-  // clang-format off
-  const size_t pow2Sizes[] = {
-      8 * KB,   // block tier boundary
-      64 * KB,  // block tier boundary
-      256 * KB, // pipeline chunking region
-      1 * MB,   // pipeline depth transition
-      16 * MB,  // large message region
-      32 * MB,  // pipeline depth change
-  };
-  // clang-format on
+  // Filter out zero/negative values that arise from offset arithmetic.
+  std::vector<T> result;
+  for (auto v : probes) {
+    if (v > 0) {
+      result.push_back(v);
+    }
+  }
+  return result;
+}
 
-  for (auto p2 : pow2Sizes) {
-    const size_t p2next = p2 * 2;
-    const size_t mid = (p2 + p2next) / 2;
+// Generate BDP base points.
+// buildProbes then adds boundary probes around each consecutive pair.
+std::vector<size_t> bdpBasePoints() {
+  std::vector<size_t> base;
+  for (size_t b = 256 * KB; b <= 128 * MB; b *= 2) {
+    base.push_back(b);
+  }
+  return base;
+}
 
-    struct Probe {
-      size_t msg;
-      size_t expectedPow2;
-    };
-    // clang-format off
-    const Probe probes[] = {
-        {p2,         p2},      // exact pow2(n)
-        {p2 + 1,     p2},      // just above, rounds down
-        {mid - 1,    p2},      // just below midpoint, rounds down
-        {mid,        p2next},  // exact midpoint, ties round up
-        {mid + 1,    p2next},  // just above midpoint, rounds up
-        {p2next - 1, p2next},  // just below pow2(n+1), rounds up
-        {p2next,     p2next},  // exact pow2(n+1)
-    };
-    // clang-format on
+// Generate rank base points.
+// buildProbes then adds boundary probes around each consecutive pair.
+std::vector<int> rankBasePoints() {
+  std::vector<int> base;
+  for (int r = 2; r <= 8; ++r) {
+    base.push_back(r);
+  }
+  for (int p = 16; p <= 128; p *= 2) {
+    base.push_back(p);
+  }
+  return base;
+}
 
-    for (const auto& pr : probes) {
-      auto actual = getAutoTunedParams(pr.msg, kNRanks, kMaxOcc, kDefThreads);
-      auto expected =
-          getAutoTunedParams(pr.expectedPow2, kNRanks, kMaxOcc, kDefThreads);
-      EXPECT_EQ(actual.pipeline.chunkSize, expected.pipeline.chunkSize)
-          << "chunkSize: msg=" << pr.msg
-          << " expected pow2=" << pr.expectedPow2;
-      EXPECT_EQ(actual.pipeline.numChunks, expected.pipeline.numChunks)
-          << "numChunks: msg=" << pr.msg
-          << " expected pow2=" << pr.expectedPow2;
-      EXPECT_EQ(actual.block.numBlocks, expected.block.numBlocks)
-          << "numBlocks: msg=" << pr.msg
-          << " expected pow2=" << pr.expectedPow2;
-      EXPECT_EQ(actual.block.blockSize, expected.block.blockSize)
-          << "blockSize: msg=" << pr.msg
-          << " expected pow2=" << pr.expectedPow2;
+// Generate message-size base points.
+// buildProbes then adds boundary probes around each consecutive pair.
+std::vector<size_t> msgBytesBasePoints() {
+  std::vector<size_t> base;
+  for (size_t p = 1; p <= 64 * GB; p *= 2) {
+    base.push_back(p);
+  }
+  return base;
+}
+
+// Mirror of roundToNearestPow2 from AllReduceRingAutoTune.cc for test
+// verification. Rounds n to the nearest power of 2; ties round up.
+size_t roundToNearestPow2(size_t n) {
+  if (n <= 1) {
+    return 1;
+  }
+  if (std::has_single_bit(n)) {
+    return n;
+  }
+  int bits = std::countl_zero(n);
+  size_t lo = size_t{1} << (sizeof(size_t) * 8 - 1 - bits);
+  size_t hi = lo << 1;
+  return (n - lo < hi - n) ? lo : hi;
+}
+
+// Verify non-pow2 msgBytes produces same tuning decision as nearest pow2.
+void checkPow2Equivalence(
+    size_t msgBytes,
+    int nRanks,
+    int maxOcc,
+    int defThreads,
+    size_t maxBDP) {
+  auto at = getAutoTunedParams(msgBytes, nRanks, maxOcc, defThreads, 1);
+  size_t pow2Msg = roundToNearestPow2(msgBytes);
+  auto atPow2 = getAutoTunedParams(pow2Msg, nRanks, maxOcc, defThreads, 1);
+  EXPECT_EQ(at.pipeline.chunkSize, atPow2.pipeline.chunkSize)
+      << "pow2 mismatch chunkSize: msgBytes=" << msgBytes << " pow2=" << pow2Msg
+      << " ranks=" << nRanks << " maxBDP=" << maxBDP;
+  EXPECT_EQ(at.pipeline.numChunks, atPow2.pipeline.numChunks)
+      << "pow2 mismatch numChunks: msgBytes=" << msgBytes << " pow2=" << pow2Msg
+      << " ranks=" << nRanks << " maxBDP=" << maxBDP;
+  EXPECT_EQ(at.block.numBlocks, atPow2.block.numBlocks)
+      << "pow2 mismatch numBlocks: msgBytes=" << msgBytes << " pow2=" << pow2Msg
+      << " ranks=" << nRanks << " maxBDP=" << maxBDP;
+  EXPECT_EQ(at.block.blockSize, atPow2.block.blockSize)
+      << "pow2 mismatch blockSize: msgBytes=" << msgBytes << " pow2=" << pow2Msg
+      << " ranks=" << nRanks << " maxBDP=" << maxBDP;
+}
+
+// Verify chunkSize * numChunks <= maxBDP and basic sanity.
+void checkBDPBudget(
+    size_t msgBytes,
+    int nRanks,
+    int maxOcc,
+    int defThreads,
+    size_t maxBDP) {
+  auto at = getAutoTunedParams(msgBytes, nRanks, maxOcc, defThreads, 1);
+  EXPECT_GT(at.pipeline.chunkSize, 0u)
+      << "chunkSize=0: msgBytes=" << msgBytes << " ranks=" << nRanks
+      << " maxBDP=" << maxBDP;
+  EXPECT_GT(at.pipeline.numChunks, 0u)
+      << "numChunks=0: msgBytes=" << msgBytes << " ranks=" << nRanks
+      << " maxBDP=" << maxBDP;
+  EXPECT_LE(at.pipeline.chunkSize * at.pipeline.numChunks, maxBDP)
+      << "BDP violated: msgBytes=" << msgBytes << " ranks=" << nRanks
+      << " maxBDP=" << maxBDP << " chunkSize=" << at.pipeline.chunkSize
+      << " numChunks=" << at.pipeline.numChunks;
+  EXPECT_GT(at.block.numBlocks, 0)
+      << "numBlocks=0: msgBytes=" << msgBytes << " ranks=" << nRanks
+      << " maxBDP=" << maxBDP;
+  EXPECT_GT(at.block.blockSize, 0)
+      << "blockSize=0: msgBytes=" << msgBytes << " ranks=" << nRanks
+      << " maxBDP=" << maxBDP;
+}
+
+// Verify chunkSize is aligned to each typeSize in {1, 2, 4, 8},
+// and 16-byte aligned for vectorized device access when large enough.
+void checkChunkAlignment(
+    size_t msgBytes,
+    int nRanks,
+    int maxOcc,
+    int defThreads,
+    size_t maxBDP) {
+  constexpr size_t typeSizes[] = {1, 2, 4, 8};
+  for (auto typeSize : typeSizes) {
+    if (msgBytes < typeSize) {
+      continue;
+    }
+    auto at =
+        getAutoTunedParams(msgBytes, nRanks, maxOcc, defThreads, typeSize);
+    EXPECT_EQ(at.pipeline.chunkSize % typeSize, 0u)
+        << "Not aligned: msgBytes=" << msgBytes << " ranks=" << nRanks
+        << " typeSize=" << typeSize << " maxBDP=" << maxBDP
+        << " chunkSize=" << at.pipeline.chunkSize;
+    EXPECT_GE(at.pipeline.chunkSize, typeSize)
+        << "chunkSize < typeSize: msgBytes=" << msgBytes << " ranks=" << nRanks
+        << " typeSize=" << typeSize << " maxBDP=" << maxBDP
+        << " chunkSize=" << at.pipeline.chunkSize;
+  }
+
+  // 16B alignment for vectorized load/store, only meaningful when
+  // chunkSize can be >= 16.
+  if (msgBytes >= static_cast<size_t>(nRanks) * 16) {
+    auto at = getAutoTunedParams(msgBytes, nRanks, maxOcc, defThreads, 1);
+    EXPECT_EQ(at.pipeline.chunkSize % 16, 0u)
+        << "Not 16B aligned: msgBytes=" << msgBytes << " ranks=" << nRanks
+        << " maxBDP=" << maxBDP << " chunkSize=" << at.pipeline.chunkSize;
+  }
+}
+
+// Combined invariant checks over the full (maxBDP, nRanks, msgBytes) space.
+// For each combination we verify:
+//   1. Non-pow2 msgBytes produces same tuning as nearest pow2
+//   2. chunkSize * numChunks <= maxBDP (BDP budget respected)
+//   3. chunkSize aligned to typeSize {1,2,4,8} and 16B for vectorized access
+TEST_F(AutoTuneInvariantTest, CombinedInvariants) {
+  const auto rankProbes = buildProbes(rankBasePoints());
+  const auto maxBDPs = bdpBasePoints();
+  const auto msgBytesProbes = buildProbes(msgBytesBasePoints());
+
+  for (auto maxBDP : maxBDPs) {
+    MaxBDPOverride o(maxBDP);
+    for (auto nRanks : rankProbes) {
+      if (nRanks < 2) {
+        continue;
+      }
+      for (auto msgBytes : msgBytesProbes) {
+        checkPow2Equivalence(msgBytes, nRanks, kMaxOcc, kDefThreads, maxBDP);
+        checkBDPBudget(msgBytes, nRanks, kMaxOcc, kDefThreads, maxBDP);
+        checkChunkAlignment(msgBytes, nRanks, kMaxOcc, kDefThreads, maxBDP);
+      }
     }
   }
 }
