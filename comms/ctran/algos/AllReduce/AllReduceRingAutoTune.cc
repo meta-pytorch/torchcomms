@@ -108,7 +108,7 @@ getAutoTunedPipeline(size_t messageBytes, int nRanks, GpuArch arch) {
 
 BlockParams getAutoTunedBlockParams(
     size_t chunkSize,
-    int maxOccupancyBlocks,
+    int maxOccupancyNumBlocks,
     int defaultThreads,
     GpuArch arch) {
   // Lookup table: {exclusive chunkSize upper bound, numBlocks, blockSize}.
@@ -146,7 +146,7 @@ BlockParams getAutoTunedBlockParams(
     if (chunkSize < tiers[i].upTo) {
       int blockSize = tiers[i].blockSize ? tiers[i].blockSize : defaultThreads;
       return {
-          std::min(tiers[i].numBlocks, maxOccupancyBlocks),
+          std::min(tiers[i].numBlocks, maxOccupancyNumBlocks),
           std::min(blockSize, defaultThreads)};
     }
   }
@@ -159,7 +159,7 @@ BlockParams getAutoTunedBlockParams(
 AutoTuneParams getAutoTunedParams(
     size_t messageBytes,
     int nRanks,
-    int maxOccupancyBlocks,
+    int maxOccupancyNumBlocks,
     int defaultThreads,
     size_t typeSize,
     GpuArch arch) {
@@ -183,8 +183,9 @@ AutoTuneParams getAutoTunedParams(
   }
 
   auto bp = getAutoTunedBlockParams(
-      p.chunkSize, maxOccupancyBlocks, defaultThreads, arch);
-  if (NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS > 0) {
+      p.chunkSize, maxOccupancyNumBlocks, defaultThreads, arch);
+  if (NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS > 0 &&
+      bp.numBlocks > NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS) {
     bp.numBlocks = NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS;
   }
   if (NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE > 0) {
@@ -196,7 +197,7 @@ AutoTuneParams getAutoTunedParams(
 
 void logAutoTuneDecisions(
     int nRanks,
-    int maxOccupancyBlocks,
+    int maxOccupancyNumBlocks,
     int defaultThreads,
     size_t typeSize,
     GpuArch arch) {
@@ -207,7 +208,7 @@ void logAutoTuneDecisions(
   for (int i = 0; i <= kPow2MaxExponent; i++) {
     const size_t sz = (1ULL << i) * kKB;
     const auto at = getAutoTunedParams(
-        sz, nRanks, maxOccupancyBlocks, defaultThreads, typeSize, arch);
+        sz, nRanks, maxOccupancyNumBlocks, defaultThreads, typeSize, arch);
     CLOGF(
         DBG,
         "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",
@@ -221,7 +222,7 @@ void logAutoTuneDecisions(
       const size_t szNext = (1ULL << (i + 1)) * kKB;
       const size_t mid = (sz + szNext) / 2;
       const auto mat = getAutoTunedParams(
-          mid, nRanks, maxOccupancyBlocks, defaultThreads, typeSize, arch);
+          mid, nRanks, maxOccupancyNumBlocks, defaultThreads, typeSize, arch);
       CLOGF(
           DBG,
           "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",
