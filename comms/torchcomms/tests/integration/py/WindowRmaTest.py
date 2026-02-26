@@ -15,6 +15,24 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import (
 )
 
 
+def _should_skip_rma_test():
+    """Check if RMA tests should be skipped.
+
+    RMA window ops require the ncclx backend with CTran enabled.
+    Returns (should_skip, reason) where should_skip is a bool and reason is the
+    skip message (only meaningful when should_skip is True).
+    """
+    if os.getenv("TEST_BACKEND", "").lower() != "ncclx":
+        return True, "RMA window ops require ncclx backend"
+    # Match NCCL's env2bool: y/yes/t/true/1 are truthy (case-insensitive)
+    if os.getenv("NCCL_CTRAN_ENABLE", "").lower() not in ("1", "y", "yes", "t", "true"):
+        return True, "RMA window ops require ctran (NCCL_CTRAN_ENABLE not set)"
+    return False, ""
+
+
+_rma_skip, _rma_skip_reason = _should_skip_rma_test()
+
+
 class WindowRmaTest(unittest.TestCase):
     """Test class for Window RMA operations in TorchComm."""
 
@@ -176,10 +194,7 @@ class WindowRmaTest(unittest.TestCase):
         del win
         del pool
 
-    @unittest.skipIf(
-        os.getenv("RUN_RMA_TEST", "").lower() not in ("1", "true"),
-        "RMA tests require NCCLX backend with CTran enabled (RUN_RMA_TEST=true)",
-    )
+    @unittest.skipIf(_rma_skip, _rma_skip_reason)
     def test_all_tests(self):
         """Run all tests with all parameter combinations."""
         counts = [4, 1024, 1024 * 1024]
@@ -212,10 +227,7 @@ class WindowRmaTest(unittest.TestCase):
             print("Running _map_remote_tensor_device_agnostic_test")
             self._map_remote_tensor_device_agnostic_test(count, dtype)
 
-    @unittest.skipIf(
-        os.getenv("RUN_RMA_TEST", "").lower() not in ("1", "true"),
-        "RMA tests require NCCLX backend with CTran enabled (RUN_RMA_TEST=true)",
-    )
+    @unittest.skipIf(_rma_skip, _rma_skip_reason)
     def test_new_window_with_tensor(self):
         """Test that new_window() accepts an optional tensor argument.
 
