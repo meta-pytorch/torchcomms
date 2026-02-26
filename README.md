@@ -290,7 +290,7 @@ Here is the same example as above, but with asynchronous `AllReduce`:
 import torch
 from torchcomms import new_comm, ReduceOp
 
-# Use the correct device and backend for TorchComms initilizations
+# Use the correct device and backend for TorchComms initialization
 device = torch.device("<device>") # cuda, xpu, etc
 torchcomm = new_comm("<backend>", device, name="main_comm") # nccl, ncclx, rccl, xccl, etc
 

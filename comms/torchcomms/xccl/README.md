@@ -56,7 +56,7 @@ def main():
         (4,),
         float(rank + 1),
         dtype=torch.float32,
-        device=target_device
+        device=target_device)
 
     print(f"Rank {rank}: Before AllReduce: {tensor}")
 
