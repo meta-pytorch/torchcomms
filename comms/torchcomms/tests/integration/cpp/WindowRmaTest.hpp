@@ -25,8 +25,6 @@ class WindowRmaTest : public ::testing::TestWithParam<
   // Test function for new_window with optional tensor argument
   void testWindowPutWithTensorInNewWindow(int count, at::ScalarType dtype);
 
-  bool checkIfSkip();
-
  protected:
   std::unique_ptr<TorchCommTestWrapper> createWrapper();
   void SetUp() override;

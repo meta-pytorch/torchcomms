@@ -2,7 +2,6 @@
 #include "WindowRmaTest.hpp"
 
 #include <gtest/gtest.h>
-#include <algorithm>
 #include "TorchCommTestHelpers.h"
 #include "comms/torchcomms/TorchComm.hpp"
 
@@ -13,8 +12,9 @@ std::unique_ptr<TorchCommTestWrapper> WindowRmaTest::createWrapper() {
 // Called before EACH test run - create fresh instance per test
 void WindowRmaTest::SetUp() {
   // Check skip condition FIRST, before any initialization
-  if (checkIfSkip()) {
-    GTEST_SKIP() << "Skipping RMA tests (RUN_RMA_TEST not set)";
+  const auto skipReason = shouldSkipRmaTest();
+  if (!skipReason.empty()) {
+    GTEST_SKIP() << skipReason;
   }
 
   wrapper_ = createWrapper();
@@ -31,22 +31,6 @@ void WindowRmaTest::SetUp() {
 void WindowRmaTest::TearDown() {
   torchcomm_.reset();
   wrapper_.reset();
-}
-
-bool WindowRmaTest::checkIfSkip() {
-  // Check RUN_RMA_TEST env var (set by BUCK for NCCLX + CTran configurations)
-  const char* rma_env = getenv("RUN_RMA_TEST");
-  if (!rma_env) {
-    return true; // skip if not set
-  }
-  std::string rma_val(rma_env);
-  std::transform(rma_val.begin(), rma_val.end(), rma_val.begin(), ::tolower);
-  if (rma_val != "1" && rma_val != "true") {
-    return true; // skip if not enabled
-  }
-
-  // RUN_RMA_TEST is set, don't skip
-  return false;
 }
 
 // Test function for basic window allocation & put
@@ -302,8 +286,9 @@ INSTANTIATE_TEST_SUITE_P(
 
 // Test for new_window with optional tensor argument
 TEST_F(WindowRmaTest, WindowPutWithTensorInNewWindow) {
-  if (checkIfSkip()) {
-    GTEST_SKIP() << "Skipping RMA tests (RUN_RMA_TEST not set)";
+  const auto skipReason = shouldSkipRmaTest();
+  if (!skipReason.empty()) {
+    GTEST_SKIP() << skipReason;
   }
 
   // Test with a subset of counts and dtypes

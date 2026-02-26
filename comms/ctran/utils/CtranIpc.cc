@@ -221,6 +221,13 @@ commResult_t ctran::utils::CtranIpcMem::tryLoad(
   if (memType_ == DevMemType::kCumem) {
     FB_COMMCHECK(this->tryLoadCuMem(ptr, len, supported));
   } else if (memType_ == DevMemType::kCudaMalloc) {
+#if defined(__HIP_PLATFORM_AMD__)
+    // TODO(liuke): Follow up on AMD ROCm cuMem support and migrate to Ctran
+    // window-based collectives for safer IPC buffer management. Using
+    // cudaMalloc IPC for persistent buffers is risky without explicit control
+    // over remote release ordering before local cudaFree.
+    shouldSupportCudaMalloc = true;
+#endif
     if (!shouldSupportCudaMalloc) {
       supported = false;
       return commSuccess;

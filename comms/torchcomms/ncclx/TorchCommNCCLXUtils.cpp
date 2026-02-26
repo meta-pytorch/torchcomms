@@ -379,14 +379,6 @@ void TorchCommNCCLX::enqueueWork(
     c10::intrusive_ptr<TorchWorkNCCLX> work,
     cudaStream_t stream) {
   if (getGraphCaptureMode()) {
-    // Graph replay timeouts are unrecoverable — there is no way to halt a
-    // replaying graph. The only safe response is abort().
-    if (!options_.abort_process_on_timeout_or_error) {
-      throw std::runtime_error(
-          "CUDA graph capture requires abort_process_on_timeout_or_error=true. "
-          "Graph replay timeouts are unrecoverable and must abort the process.");
-    }
-
     // Transfer start/end event ownership to the tracker.
     // Work object is NOT stored — it will be destroyed when the caller's
     // intrusive_ptr goes out of scope, destroying ad-hoc sync_event_.

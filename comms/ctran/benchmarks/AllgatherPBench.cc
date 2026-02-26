@@ -3,6 +3,7 @@
 #include <folly/init/Init.h>
 #include <gflags/gflags.h>
 #include <nccl.h>
+#include <algorithm>
 #include <chrono>
 #include <iomanip>
 #include <iostream>
@@ -97,12 +98,19 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
     typeSize_ = commTypeSize(dt_);
 
     // Initialize NCCL communicator for baseline benchmarking
+    // Use bootstrap allGather to broadcast ncclUniqueId to all ranks
     ncclUniqueId ncclId;
     if (globalRank == 0) {
       NCCLCHECK_TEST(ncclGetUniqueId(&ncclId));
     }
-    // Broadcast NCCL unique ID to all ranks
-    MPI_Bcast(&ncclId, sizeof(ncclId), MPI_BYTE, 0, MPI_COMM_WORLD);
+    std::vector<char> idBuf(numRanks * sizeof(ncclId));
+    memcpy(idBuf.data() + globalRank * sizeof(ncclId), &ncclId, sizeof(ncclId));
+    auto rc =
+        ctranComm_->bootstrap_
+            ->allGather(idBuf.data(), sizeof(ncclId), globalRank, numRanks)
+            .get();
+    EXPECT_EQ(rc, 0) << "Bootstrap allGather for ncclUniqueId failed";
+    memcpy(&ncclId, idBuf.data(), sizeof(ncclId));
 
     // Initialize NCCL communicator
     CUDACHECK_TEST(cudaSetDevice(localRank));
@@ -188,12 +196,29 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
         std::chrono::duration<double, std::milli>(end - start).count();
     double avgTime = totalTimeMs / FLAGS_bench_iters;
 
-    // Allreduce timing measurements across all ranks
-    double minTime, maxTime, avgTimeAllRanks;
-    MPI_Allreduce(&avgTime, &minTime, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-    MPI_Allreduce(&avgTime, &maxTime, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(
-        &avgTime, &avgTimeAllRanks, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    // Allreduce timing measurements across all ranks using bootstrap allGather
+    std::vector<double> allAvgTimes(numRanks);
+    {
+      std::vector<char> buf(numRanks * sizeof(double));
+      memcpy(
+          buf.data() + globalRank * sizeof(double), &avgTime, sizeof(double));
+      auto rc =
+          ctranComm_->bootstrap_
+              ->allGather(buf.data(), sizeof(double), globalRank, numRanks)
+              .get();
+      EXPECT_EQ(rc, 0) << "Bootstrap allGather for timing failed";
+      for (int i = 0; i < numRanks; ++i) {
+        memcpy(
+            &allAvgTimes[i], buf.data() + i * sizeof(double), sizeof(double));
+      }
+    }
+
+    double minTime = *std::min_element(allAvgTimes.begin(), allAvgTimes.end());
+    double maxTime = *std::max_element(allAvgTimes.begin(), allAvgTimes.end());
+    double avgTimeAllRanks = 0.0;
+    for (double t : allAvgTimes) {
+      avgTimeAllRanks += t;
+    }
     avgTimeAllRanks /= numRanks;
 
     double algoBw, busBw;
@@ -258,12 +283,29 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
         std::chrono::duration<double, std::milli>(end - start).count();
     double avgTime = totalTimeMs / FLAGS_bench_iters;
 
-    // Allreduce timing measurements across all ranks
-    double minTime, maxTime, avgTimeAllRanks;
-    MPI_Allreduce(&avgTime, &minTime, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-    MPI_Allreduce(&avgTime, &maxTime, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(
-        &avgTime, &avgTimeAllRanks, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    // Allreduce timing measurements across all ranks using bootstrap allGather
+    std::vector<double> allAvgTimes(numRanks);
+    {
+      std::vector<char> buf(numRanks * sizeof(double));
+      memcpy(
+          buf.data() + globalRank * sizeof(double), &avgTime, sizeof(double));
+      auto rc =
+          ctranComm_->bootstrap_
+              ->allGather(buf.data(), sizeof(double), globalRank, numRanks)
+              .get();
+      EXPECT_EQ(rc, 0) << "Bootstrap allGather for timing failed";
+      for (int i = 0; i < numRanks; ++i) {
+        memcpy(
+            &allAvgTimes[i], buf.data() + i * sizeof(double), sizeof(double));
+      }
+    }
+
+    double minTime = *std::min_element(allAvgTimes.begin(), allAvgTimes.end());
+    double maxTime = *std::max_element(allAvgTimes.begin(), allAvgTimes.end());
+    double avgTimeAllRanks = 0.0;
+    for (double t : allAvgTimes) {
+      avgTimeAllRanks += t;
+    }
     avgTimeAllRanks /= numRanks;
 
     double algoBw, busBw;
@@ -399,7 +441,7 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
       // Wait for async init to complete
       CUDACHECK_TEST(cudaStreamSynchronize(stream_));
       CUDACHECK_TEST(cudaDeviceSynchronize());
-      MPI_Barrier(MPI_COMM_WORLD);
+      ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
     }
 
     // Run benchmarks for all sizes using the same persistent request
@@ -419,7 +461,7 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
         BenchmarkResult result = benchmarkAllgatherPWithRequest(
             count, "AllGatherP_Direct", request, sendbuf, recvbuf);
         printResult(result);
-        MPI_Barrier(MPI_COMM_WORLD);
+        ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
 
       // Benchmark AllgatherP Pipeline (reuses same request)
@@ -430,14 +472,14 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
         BenchmarkResult result = benchmarkAllgatherPWithRequest(
             count, "AllGatherP_Pipeline", request, sendbuf, recvbuf);
         printResult(result);
-        MPI_Barrier(MPI_COMM_WORLD);
+        ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
 
       // Benchmark NCCL baseline
       if (FLAGS_algo == "nccl" || FLAGS_algo == "all") {
         BenchmarkResult result = benchmarkNcclAllgather(count);
         printResult(result);
-        MPI_Barrier(MPI_COMM_WORLD);
+        ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
       }
 
       if (globalRank == 0) {
@@ -452,7 +494,7 @@ class AllgatherPBenchmark : public ctran::CtranDistTestFixture {
 
       CUDACHECK_TEST(cudaStreamSynchronize(stream_));
       CUDACHECK_TEST(cudaDeviceSynchronize());
-      MPI_Barrier(MPI_COMM_WORLD);
+      ctranComm_->bootstrap_->barrier(globalRank, numRanks).get();
     }
 
     // Deregister memory ONCE

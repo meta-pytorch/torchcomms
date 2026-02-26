@@ -800,6 +800,8 @@ set(CTRAN_FILES
   comms/ctran/algos/AllReduce/AllReduceRing.cuh
   comms/ctran/algos/AllReduce/AllReduceShm.cu
   comms/ctran/algos/AllReduce/AllReduceShm.cuh
+  comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h
+  comms/ctran/algos/CtranAlgoConsts.h
   comms/ctran/algos/AllReduce/Types.h
   comms/ctran/algos/AllToAll/AllToAll.cc
   comms/ctran/algos/AllToAll/AllToAll.cuh
