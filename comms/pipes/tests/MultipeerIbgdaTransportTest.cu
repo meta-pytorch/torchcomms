@@ -42,6 +42,128 @@ void testPutSignalNonAdaptive(
 }
 
 // =============================================================================
+// Kernel: Group-collaborative put with signal (adaptive-routing safe)
+// =============================================================================
+
+__global__ void putSignalGroupKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal) {
+  auto group = make_warp_group();
+
+  auto work = transport->put_signal_group_local(
+      group, localBuf, remoteBuf, nbytes, signalId, signalVal);
+
+  // Leader waits for completion
+  if (group.is_leader()) {
+    transport->wait_local(work);
+  }
+}
+
+void testPutSignalGroup(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize) {
+  putSignalGroupKernel<<<numBlocks, blockSize>>>(
+      deviceTransportPtr, localBuf, remoteBuf, nbytes, signalId, signalVal);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+// =============================================================================
+// Kernel: Multi-warp group-collaborative put with signal
+// Multiple warps use put_signal_group_global on shared global data
+// =============================================================================
+
+__global__ void putSignalGroupMultiWarpKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal) {
+  auto group = make_warp_group();
+
+  // put_signal_group_global partitions data across groups, then across threads
+  auto work = transport->put_signal_group_global(
+      group, localBuf, remoteBuf, nbytes, signalId, signalVal);
+
+  if (group.is_leader()) {
+    transport->wait_local(work);
+  }
+}
+
+void testPutSignalGroupMultiWarp(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize) {
+  putSignalGroupMultiWarpKernel<<<numBlocks, blockSize>>>(
+      deviceTransportPtr, localBuf, remoteBuf, nbytes, signalId, signalVal);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+// =============================================================================
+// Kernel: Block-scope group-collaborative put with signal
+// Multiple blocks use put_signal_group_global on shared global data
+// =============================================================================
+
+__global__ void putSignalGroupBlockKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal) {
+  auto group = make_block_group();
+
+  // put_signal_group_global partitions data across groups, then across threads
+  auto work = transport->put_signal_group_global(
+      group, localBuf, remoteBuf, nbytes, signalId, signalVal);
+
+  if (group.is_leader()) {
+    transport->wait_local(work);
+  }
+}
+
+void testPutSignalGroupBlock(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal,
+    int numBlocks,
+    int blockSize) {
+  putSignalGroupBlockKernel<<<numBlocks, blockSize>>>(
+      deviceTransportPtr, localBuf, remoteBuf, nbytes, signalId, signalVal);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+// =============================================================================
 // Kernel: Put with signal
 // =============================================================================
 

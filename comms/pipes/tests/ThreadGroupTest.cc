@@ -15,9 +15,6 @@ using meta::comms::DeviceBuffer;
 
 namespace comms::pipes {
 
-// Multiwarp size constant (4 warps = 128 threads)
-constexpr uint32_t kMultiwarpSize = 4 * comms::device::kWarpSize;
-
 class ThreadGroupTestFixture : public ::testing::Test {
  protected:
   void SetUp() override {

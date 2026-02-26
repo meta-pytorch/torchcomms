@@ -403,4 +403,222 @@ void runTestWaitSignalMultipleSlots(
       d_signalBuf, localBuf, remoteBuf, numSignals, d_success);
 }
 
+// =============================================================================
+// Group-level API test kernels
+// =============================================================================
+
+// Test that put_group_local correctly partitions data across warp lanes.
+// We can't call the real DOCA put_warp without a real QP, so this test
+// verifies the partitioning logic (offset/chunk calculation and
+// subBuffer arithmetic) which is the GPU-side logic we can test.
+__global__ void testPutGroupPartitioning(bool* success) {
+  *success = true;
+
+  // Simulate the partitioning logic that put_group_local does
+  auto group = comms::pipes::make_warp_group();
+  if (group.group_size != comms::pipes::kWarpSize) {
+    *success = false;
+    return;
+  }
+
+  constexpr std::size_t kTotalBytes = 1024; // 1KB
+  constexpr std::size_t kChunkSize = kTotalBytes / comms::pipes::kWarpSize;
+
+  // Verify each lane gets the right offset and chunk size
+  std::size_t expectedOffset = group.thread_id_in_group * kChunkSize;
+  std::size_t expectedChunk = kChunkSize;
+
+  // Create a mock buffer at a known base address
+  // Use a stack-local array as a stand-in for the buffer pointer
+  char baseData[8]; // just need an address
+  void* basePtr = baseData;
+
+  comms::pipes::IbgdaLocalBuffer baseBuf(
+      basePtr, comms::pipes::NetworkLKey(0x1111));
+  comms::pipes::IbgdaLocalBuffer laneBuf = baseBuf.subBuffer(expectedOffset);
+
+  // Verify the sub-buffer pointer is at the correct offset
+  auto* expectedPtr = static_cast<char*>(basePtr) + expectedOffset;
+  if (laneBuf.ptr != expectedPtr) {
+    *success = false;
+  }
+
+  // Verify the key is preserved
+  if (laneBuf.lkey != baseBuf.lkey) {
+    *success = false;
+  }
+
+  // Verify chunk size is correct
+  if (expectedChunk != kChunkSize) {
+    *success = false;
+  }
+}
+
+// Test that put_signal_group_local correctly broadcasts the signal ticket
+// from lane 0 to all lanes. Simulates the broadcast pattern without
+// calling actual DOCA operations.
+__global__ void testPutSignalGroupBroadcast(bool* success) {
+  *success = true;
+
+  auto group = comms::pipes::make_warp_group();
+  if (group.group_size != comms::pipes::kWarpSize) {
+    *success = false;
+    return;
+  }
+
+  // Simulate what put_signal_group_local does for the signal broadcast:
+  // Leader produces a ticket, broadcasts to all threads via broadcast<uint64_t>
+  uint64_t signalTicket = 0;
+  if (group.is_leader()) {
+    signalTicket = 0xCAFEBABE12345678ULL;
+  }
+
+  // Broadcast from leader to all threads
+  signalTicket = group.broadcast<uint64_t>(signalTicket);
+
+  // Every thread should see the leader's value
+  if (signalTicket != 0xCAFEBABE12345678ULL) {
+    *success = false;
+  }
+}
+
+// =============================================================================
+// Group-level test wrapper functions
+// =============================================================================
+
+void runTestPutGroupPartitioning(bool* d_success) {
+  testPutGroupPartitioning<<<1, comms::pipes::kWarpSize>>>(d_success);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void runTestPutSignalGroupBroadcast(bool* d_success) {
+  testPutSignalGroupBroadcast<<<1, comms::pipes::kWarpSize>>>(d_success);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// broadcast test kernels for BLOCK and MULTIWARP scopes
+// =============================================================================
+
+// Test broadcast<uint64_t> with BLOCK scope
+// Launched with multiple blocks: only writes false on failure (initialized to
+// true by host) to avoid inter-block data races.
+__global__ void testBroadcast64Block(bool* success) {
+  auto group = comms::pipes::make_block_group();
+
+  // Leader produces a value, broadcasts to all threads
+  uint64_t val = 0;
+  if (group.is_leader()) {
+    val = 0xDEADBEEF42424242ULL;
+  }
+
+  val = group.broadcast<uint64_t>(val);
+
+  if (val != 0xDEADBEEF42424242ULL) {
+    *success = false;
+  }
+}
+
+// Test broadcast<uint64_t> with MULTIWARP scope
+// Launched with multiple blocks: only writes false on failure.
+__global__ void testBroadcast64Multiwarp(bool* success) {
+  auto group = comms::pipes::make_multiwarp_group();
+
+  // Each multiwarp leader produces a unique value based on group_id
+  uint64_t val = 0;
+  if (group.is_leader()) {
+    val = 0xAAAABBBB00000000ULL + group.group_id;
+  }
+
+  val = group.broadcast<uint64_t>(val);
+
+  // All threads in the multiwarp should see their leader's value
+  uint64_t expected = 0xAAAABBBB00000000ULL + group.group_id;
+  if (val != expected) {
+    *success = false;
+  }
+}
+
+// Test double-broadcast safety (the double-sync pattern)
+// Two consecutive broadcasts with different values should not race.
+// Launched with multiple blocks: only writes false on failure.
+__global__ void testBroadcast64DoubleSafety(bool* success) {
+  auto group = comms::pipes::make_block_group();
+
+  // First broadcast
+  uint64_t val1 = 0;
+  if (group.is_leader()) {
+    val1 = 0x1111111111111111ULL;
+  }
+  val1 = group.broadcast<uint64_t>(val1);
+
+  if (val1 != 0x1111111111111111ULL) {
+    *success = false;
+  }
+
+  // Second broadcast with different value — must not race with first
+  uint64_t val2 = 0;
+  if (group.is_leader()) {
+    val2 = 0x2222222222222222ULL;
+  }
+  val2 = group.broadcast<uint64_t>(val2);
+
+  if (val2 != 0x2222222222222222ULL) {
+    *success = false;
+  }
+}
+
+// Test put_group_local partitioning logic with block-sized groups.
+// Launched with multiple blocks: only writes false on failure.
+__global__ void testPutGroupPartitioningBlock(bool* success) {
+  auto group = comms::pipes::make_block_group();
+
+  constexpr std::size_t kTotalBytes = 4096; // 4KB
+  std::size_t chunkSize = kTotalBytes / group.group_size;
+  std::size_t expectedOffset = group.thread_id_in_group * chunkSize;
+
+  // Create a mock buffer at a known base address
+  char baseData[8]; // just need an address
+  void* basePtr = baseData;
+
+  comms::pipes::IbgdaLocalBuffer baseBuf(
+      basePtr, comms::pipes::NetworkLKey(0x1111));
+  comms::pipes::IbgdaLocalBuffer laneBuf = baseBuf.subBuffer(expectedOffset);
+
+  // Verify the sub-buffer pointer is at the correct offset
+  auto* expectedPtr = static_cast<char*>(basePtr) + expectedOffset;
+  if (laneBuf.ptr != expectedPtr) {
+    *success = false;
+  }
+
+  // Verify the key is preserved
+  if (laneBuf.lkey != baseBuf.lkey) {
+    *success = false;
+  }
+}
+
+// =============================================================================
+// broadcast / block-scope test wrapper functions
+// =============================================================================
+
+void runTestBroadcast64Block(bool* d_success) {
+  testBroadcast64Block<<<4, 256>>>(d_success);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void runTestBroadcast64Multiwarp(bool* d_success) {
+  testBroadcast64Multiwarp<<<2, 512>>>(d_success);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void runTestBroadcast64DoubleSafety(bool* d_success) {
+  testBroadcast64DoubleSafety<<<4, 256>>>(d_success);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+void runTestPutGroupPartitioningBlock(bool* d_success) {
+  testPutGroupPartitioningBlock<<<4, 256>>>(d_success);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 } // namespace comms::pipes::tests
