@@ -2800,6 +2800,18 @@ cvars:
      with per-message-size optimal values. Set to 0 to use static CVAR
      values instead.
 
+ - name        : NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE
+   type        : int64_t
+   default     : 4194304
+   description : |-
+     Maximum message size in bytes for bi-directional AllGather optimization
+     in AllReduceRing. Bi-directional AG sends data in both directions
+     simultaneously during the AllGather phase, reducing total steps.
+     Set to 0 to disable bi-directional AG entirely.
+     Set to -1 to enable for all message sizes.
+     Set to a positive value to enable only for messages up to that size
+     (default: 4194304 bytes / 4MB).
+
  - name        : NCCL_CTRAN_ENABLE_FAULT_TOLERANCE
    type        : bool
    default     : False
