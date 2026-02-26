@@ -116,6 +116,10 @@ class CtranAlgo {
     RING_TMP_SEND_BUF,
     RING_TMP_RECV_BUF,
 
+    // Reverse direction buffers for bi-directional AllGather in Ring AllReduce
+    RING_TMP_SEND_BUF_REV,
+    RING_TMP_RECV_BUF_REV,
+
     NUM_TMPBUFS,
   };
 

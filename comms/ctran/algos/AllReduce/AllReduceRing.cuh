@@ -69,8 +69,8 @@ __device__ __forceinline__ void _progressRecv(
   const int tmpFwdChunkId = isRecvFwd_ ? getTmpChunkId(algoCtx, fwdRound) : -1;
 
   // Update data from last step in ReduceScatter
-  const bool updateData =
-      !isRecvFwd_ || opStep.step >= algoCtx.numSteps / 2 - 1;
+  const int rsSteps = algoCtx.nRanks - 1;
+  const bool updateData = !isRecvFwd_ || opStep.step >= rsSteps - 1;
 
   T* recv_data = getBufAtByteOffset<T>(args.recvbuff, roundArgs.dataOffset);
   const T* send_data =
@@ -195,6 +195,90 @@ __device__ __forceinline__ void _progressSend(
   opUpdateDone<Op::kSendCopy>(algoCtx);
 }
 
+template <typename T, commRedOp_t RedOp, bool EnableBidirAg>
+__device__ __forceinline__ void _progressRevSend(
+    [[maybe_unused]] ctran::allreduce::ring::KernArgs& args,
+    [[maybe_unused]] AlgoContext& algoCtx) {
+  if constexpr (!EnableBidirAg) {
+    return;
+  }
+  OpRound& opRound = algoCtx.opRounds[Op::kRevSendCopy];
+  int round = opRound.done;
+  if (round >= opRound.totalRounds) {
+    return;
+  }
+  if (!checkPost(args.revSendCopySync, blockIdx.x, round)) {
+    return;
+  }
+
+  const OpStep& opStep = opRound.doneStep;
+  const int tmpChunkId = getTmpChunkId(algoCtx, round);
+  const RoundArgs roundArgs =
+      getRevRoundArgs<Op::kRevSendCopy>(algoCtx, round, opStep);
+
+  // Copy rank's reduced shard from recvbuff to tmpSendBufRev
+  const T* recv_data =
+      getBufAtByteOffset<T>(args.recvbuff, roundArgs.dataOffset);
+  T* tmpSendBufRev =
+      getBufAtByteOffset<T>(args.tmpSendBufRev, tmpChunkId * args.chunkSize);
+
+  ctranKernCopy<T>(
+      recv_data, tmpSendBufRev, roundArgs.numel, blockIdx.x, gridDim.x);
+
+  complete(args.revSendCopySync, blockIdx.x, round);
+  opUpdateDone<Op::kRevSendCopy>(algoCtx);
+}
+
+template <typename T, commRedOp_t RedOp, bool EnableBidirAg>
+__device__ __forceinline__ void _progressRevRecv(
+    [[maybe_unused]] ctran::allreduce::ring::KernArgs& args,
+    [[maybe_unused]] AlgoContext& algoCtx) {
+  if constexpr (!EnableBidirAg) {
+    return;
+  }
+  OpRound& opRound = algoCtx.opRounds[Op::kRevRecvCopy];
+  int round = opRound.done;
+  if (round >= opRound.totalRounds) {
+    return;
+  }
+  if (!checkPost(args.revRecvCopySync, blockIdx.x, round)) {
+    return;
+  }
+
+  const OpStep& opStep = opRound.doneStep;
+  const int tmpChunkId = getTmpChunkId(algoCtx, round);
+  const RoundArgs roundArgs =
+      getRevRoundArgs<Op::kRevRecvCopy>(algoCtx, round, opStep);
+
+  const bool isRevFwd = isRevRecvFwd(algoCtx, opStep.step);
+  // Forwarded data goes to tmpSendBufRev at offset after initial rev send
+  // rounds (analogous to forward direction's getRecvFwdSendRound)
+  const int firstRevSendRounds = algoCtx.opRounds[Op::kRevSendCopy].totalRounds;
+  const int tmpFwdChunkId =
+      isRevFwd ? getTmpChunkId(algoCtx, firstRevSendRounds + round) : -1;
+
+  T* recv_data = getBufAtByteOffset<T>(args.recvbuff, roundArgs.dataOffset);
+  const T* tmpRecvBufRev =
+      getBufAtByteOffset<T>(args.tmpRecvBufRev, tmpChunkId * args.chunkSize);
+  T* tmpSendBufRev =
+      getBufAtByteOffset<T>(args.tmpSendBufRev, tmpFwdChunkId * args.chunkSize);
+
+  if (isRevFwd) {
+    // Copy to both forward send buffer and output
+    ctranKernCopy<T>(
+        tmpRecvBufRev, tmpSendBufRev, roundArgs.numel, blockIdx.x, gridDim.x);
+    ctranKernCopy<T>(
+        tmpRecvBufRev, recv_data, roundArgs.numel, blockIdx.x, gridDim.x);
+  } else {
+    // Last reverse step: copy to output only
+    ctranKernCopy<T>(
+        tmpRecvBufRev, recv_data, roundArgs.numel, blockIdx.x, gridDim.x);
+  }
+
+  complete(args.revRecvCopySync, blockIdx.x, round);
+  opUpdateDone<Op::kRevRecvCopy>(algoCtx);
+}
+
 #define KERNEL_ABORT()                                         \
   do {                                                         \
     if (ctran::device::KernelTestHostAbortBlock(kernelFlag)) { \
@@ -202,11 +286,12 @@ __device__ __forceinline__ void _progressSend(
     }                                                          \
   } while (0);
 
+template <bool EnableBidirAg>
 __device__ __forceinline__ void updatePartitionCtxDevice(
     const ctran::allreduce::ring::KernArgs& args,
     AlgoContext& algoCtx) {
   // update local context
-  updatePartitionCtx(algoCtx);
+  updatePartitionCtx<EnableBidirAg>(algoCtx);
 
   if (algoCtx.partition > 0) {
     // wait host to reach start of the next partition.
@@ -216,7 +301,7 @@ __device__ __forceinline__ void updatePartitionCtxDevice(
   }
 }
 
-template <typename T, commRedOp_t RedOp>
+template <typename T, commRedOp_t RedOp, bool EnableBidirAg>
 __device__ void algoFn(ctran::allreduce::ring::KernArgs& args) {
   // Setup algorithm context
   AlgoContext algoCtx = {
@@ -230,18 +315,32 @@ __device__ void algoFn(ctran::allreduce::ring::KernArgs& args) {
   setupAlgoCtxImpl(algoCtx);
 
   while (algoCtx.partitionOffset < algoCtx.numElements) {
-    updatePartitionCtxDevice(args, algoCtx);
+    updatePartitionCtxDevice<EnableBidirAg>(args, algoCtx);
     KERNEL_ABORT();
     CTRAN_DEV_TRACE(
         ALGO_CXT_LOG_FMT_DEVICE, ALGO_CXT_LOG_FIELDS(algoCtx, gridDim.x));
 
     // Algorithm main loop
-    while (algoCtx.opRounds[Op::kSendCopy].done <
-               algoCtx.opRounds[Op::kSendCopy].totalRounds ||
-           algoCtx.opRounds[Op::kRecvRedCopy].done <
-               algoCtx.opRounds[Op::kRecvRedCopy].totalRounds) {
+    // When EnableBidirAg is false, reverse direction rounds are always 0
+    auto notDone = [&]() {
+      bool fwdNotDone = algoCtx.opRounds[Op::kSendCopy].done <
+              algoCtx.opRounds[Op::kSendCopy].totalRounds ||
+          algoCtx.opRounds[Op::kRecvRedCopy].done <
+              algoCtx.opRounds[Op::kRecvRedCopy].totalRounds;
+      if constexpr (EnableBidirAg) {
+        return fwdNotDone ||
+            algoCtx.opRounds[Op::kRevSendCopy].done <
+            algoCtx.opRounds[Op::kRevSendCopy].totalRounds ||
+            algoCtx.opRounds[Op::kRevRecvCopy].done <
+            algoCtx.opRounds[Op::kRevRecvCopy].totalRounds;
+      }
+      return fwdNotDone;
+    };
+    while (notDone()) {
       _progressSend<T, RedOp>(args, algoCtx);
       _progressRecv<T, RedOp>(args, algoCtx);
+      _progressRevSend<T, RedOp, EnableBidirAg>(args, algoCtx);
+      _progressRevRecv<T, RedOp, EnableBidirAg>(args, algoCtx);
       KERNEL_ABORT();
     }
 
@@ -251,7 +350,10 @@ __device__ void algoFn(ctran::allreduce::ring::KernArgs& args) {
 
 } // namespace ctran::allreduce::ring
 
-template <typename T, commRedOp_t RedOp>
+// EnableBidirAg template parameter:
+// - true: bi-directional AllGather with reverse direction (default)
+// - false: standard single-direction AG (lower register usage)
+template <typename T, commRedOp_t RedOp, bool EnableBidirAg>
 __global__ void ncclKernelAllReduceCtranRing(
     int* flag,
     CtranAlgoDeviceState* devState,
@@ -268,7 +370,7 @@ __global__ void ncclKernelAllReduceCtranRing(
   }
 
   // Run algorithm main body
-  ctran::allreduce::ring::algoFn<T, RedOp>(args);
+  ctran::allreduce::ring::algoFn<T, RedOp, EnableBidirAg>(args);
 
   // This sync threads ensure that every thread in the block has completed using
   // the flag status before resetting it by thread 0 below.
@@ -280,8 +382,21 @@ __global__ void ncclKernelAllReduceCtranRing(
   }
 }
 
-#define DECL_CTRAN_ALLREDUCERING_KERN(T, RedOp)                    \
-  template __global__ void ncclKernelAllReduceCtranRing<T, RedOp>( \
-      int* flag,                                                   \
-      CtranAlgoDeviceState* devState,                              \
+// Instantiation macro for bi-directional AG kernel
+#define DECL_CTRAN_ALLREDUCERING_KERN_BIDIR(T, RedOp)                    \
+  template __global__ void ncclKernelAllReduceCtranRing<T, RedOp, true>( \
+      int* flag,                                                         \
+      CtranAlgoDeviceState* devState,                                    \
       ctran::allreduce::ring::KernArgs args);
+
+// Instantiation macro for simple kernel (no bidir AG, lower register usage)
+#define DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE(T, RedOp)                    \
+  template __global__ void ncclKernelAllReduceCtranRing<T, RedOp, false>( \
+      int* flag,                                                          \
+      CtranAlgoDeviceState* devState,                                     \
+      ctran::allreduce::ring::KernArgs args);
+
+// Combined macro to instantiate both kernel variants
+#define DECL_CTRAN_ALLREDUCERING_KERN(T, RedOp) \
+  DECL_CTRAN_ALLREDUCERING_KERN_BIDIR(T, RedOp) \
+  DECL_CTRAN_ALLREDUCERING_KERN_SIMPLE(T, RedOp)
