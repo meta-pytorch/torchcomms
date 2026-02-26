@@ -275,12 +275,16 @@ class RegCache {
   // This allows registration without requiring a communicator.
   // Backends are initialized from NCCL_CTRAN_BACKENDS cvar in init().
   // If forceReg is true, registration happens even in async/lazy mode.
-  commResult_t
-  globalRegister(const void* buf, size_t len, bool forceReg = false);
+  // deviceId is optional: if not assigned, infer it from getCudaDevFromPtr()
+  commResult_t globalRegister(
+      const void* buf,
+      size_t len,
+      bool forceReg = false,
+      int deviceId = -1);
 
   // Global deregistration using pointer lookup.
   // Frees cached segments and their associated registrations.
-  commResult_t globalDeregister(const void* buf, size_t len);
+  commResult_t globalDeregister(const void* buf, size_t len, int deviceId = -1);
 
   // Thread-safe functions to cache a buffer range into the global cache.
   // This function uses pinRange to discover all physical segments underlying

@@ -290,20 +290,27 @@ commResult_t ctran::RegCache::destroy() {
   return commSuccess;
 }
 
-commResult_t
-ctran::RegCache::globalRegister(const void* buf, size_t len, bool forceReg) {
+commResult_t ctran::RegCache::globalRegister(
+    const void* buf,
+    size_t len,
+    bool forceReg,
+    int deviceId) {
   if (buf == nullptr || len == 0) {
     return commSuccess;
   }
 
-  // Auto-detect cudaDev from buffer pointer.
-  // For CPU tensors (malloc'd memory), getCudaDevFromPtr may fail.
-  // In that case, fall back to current device like CtranMapper does.
   int cudaDev = 0;
-  commResult_t devResult = getCudaDevFromPtr(buf, cudaDev);
-  if (devResult != commSuccess) {
-    // Fall back to current CUDA device for CPU memory
-    FB_CUDACHECK(cudaGetDevice(&cudaDev));
+  if (deviceId != -1) {
+    cudaDev = deviceId;
+  } else {
+    // Auto-detect cudaDev from buffer pointer.
+    // For CPU tensors (malloc'd memory), getCudaDevFromPtr may fail.
+    // In that case, fall back to current device like CtranMapper does.
+    commResult_t devResult = getCudaDevFromPtr(buf, cudaDev);
+    if (devResult != commSuccess) {
+      // Fall back to current CUDA device for CPU memory
+      FB_CUDACHECK(cudaGetDevice(&cudaDev));
+    }
   }
 
   // Cache the segments first
@@ -339,19 +346,24 @@ ctran::RegCache::globalRegister(const void* buf, size_t len, bool forceReg) {
   return commSuccess;
 }
 
-commResult_t ctran::RegCache::globalDeregister(const void* buf, size_t len) {
+commResult_t
+ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
   if (buf == nullptr || len == 0) {
     return commSuccess;
   }
 
-  // Auto-detect cudaDev from buffer pointer.
-  // For CPU tensors (malloc'd memory), getCudaDevFromPtr may fail.
-  // In that case, fall back to current device like globalRegister does.
   int cudaDev = 0;
-  commResult_t devResult = getCudaDevFromPtr(buf, cudaDev);
-  if (devResult != commSuccess) {
-    // Fall back to current CUDA device for CPU memory
-    FB_CUDACHECK(cudaGetDevice(&cudaDev));
+  if (deviceId != -1) {
+    cudaDev = deviceId;
+  } else {
+    // Auto-detect cudaDev from buffer pointer.
+    // For CPU tensors (malloc'd memory), getCudaDevFromPtr may fail.
+    // In that case, fall back to current device like globalRegister does.
+    commResult_t devResult = getCudaDevFromPtr(buf, cudaDev);
+    if (devResult != commSuccess) {
+      // Fall back to current CUDA device for CPU memory
+      FB_CUDACHECK(cudaGetDevice(&cudaDev));
+    }
   }
 
   auto timerBegin = std::chrono::steady_clock::now();
