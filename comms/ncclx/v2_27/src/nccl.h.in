@@ -45,6 +45,7 @@ extern "C" {
 #define NCCL_COMM_DUMP
 #define NCCL_COMM_GET_UNIQUE_HASH
 #define NCCL_COLLTRACE_CUDA_GRAPH_COMPATIBLE
+#define NCCL_REDUCE_SCATTER_QUANTIZE_SUPPORTED
 
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
@@ -535,6 +536,38 @@ ncclResult_t  ncclReduceScatter(const void* sendbuff, void* recvbuff,
 ncclResult_t pncclReduceScatter(const void* sendbuff, void* recvbuff,
     size_t recvcount, ncclDataType_t datatype, ncclRedOp_t op, ncclComm_t comm,
     cudaStream_t stream);
+
+/*
+ * Reduce-Scatter with stochastic rounding.
+ *
+ * See ncclReduceScatter for how reduce scatter works in general. Data would
+ * be rounded using stochastic rounding to BF16, transported to a peer, reduce
+ * with the peer's existing data in FP32, repeat, until the algorithm finishes
+ * execution.
+ *
+ * More generically, the flow is:
+ * I = InputType, T = Transport Type
+ * ----> I (---> T ---------> T -----> FP32)repeat -----> I
+ * Input   SR     Transport    Reduce            SR? + Output
+ *
+ * Notes:
+ * Due to how PAT algorithm works, We will do multiple rounds of rounding. The
+ * random number used for the rounding of each element would be
+ * Philox(seed, element_id + num_elements * current_round_number), so we will
+ * not be reusing the same random numbers.
+ *
+ * Limitations:
+ * inputType: must be FP32, this will be the type of input/output
+ * transportType: must be BF16, provided to make extension easier.
+ * op: Only supports ncclSum and ncclAvg operations.
+ * seedPtr: must be a GPU MEMORY pointer. The pointer must outlive the collective.
+ * algo: Since Ring + SR doesn't make sense, we only support PAT algorithm.
+ *       If PAT is disabled, you will get an error during scheduling the
+ *       collective.
+ */
+ncclResult_t  ncclReduceScatterQuantize(const void* sendbuff, void* recvbuff,
+    size_t recvcount, ncclDataType_t inputType, ncclDataType_t transportType,
+    ncclRedOp_t op, uint64_t* seedPtr, ncclComm_t comm, cudaStream_t stream);
 
 /*
  * All-Gather
