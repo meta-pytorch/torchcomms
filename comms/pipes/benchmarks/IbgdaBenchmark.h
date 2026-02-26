@@ -15,6 +15,26 @@ class P2pIbgdaTransportDevice;
 namespace comms::pipes::benchmark {
 
 /**
+ * Single-shot launchers for correctness verification.
+ * Each launches exactly one put_signal + wait_local, no warmup, no loop.
+ */
+void launchIbgdaPutSignalSingle(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    cudaStream_t stream);
+
+void launchIbgdaPutSignalNonAdaptiveSingle(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    cudaStream_t stream);
+
+/**
  * Launch batched kernel: Multiple put+wait_local iterations in a single kernel
  *
  * This avoids per-operation kernel launch overhead and uses GPU cycle counters
