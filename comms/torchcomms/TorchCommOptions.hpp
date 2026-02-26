@@ -180,4 +180,20 @@ class WaitSignalOptions {
   WaitSignalOptions() : timeout(kNoTimeout) {}
 };
 
+class AllGatherPInitOptions {
+ public:
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout;
+
+  AllGatherPInitOptions() : timeout(kNoTimeout) {}
+};
+
+class AllGatherPExecOptions {
+ public:
+  std::unordered_map<std::string, std::string> hints;
+  std::chrono::milliseconds timeout;
+
+  AllGatherPExecOptions() : timeout(kNoTimeout) {}
+};
+
 } // namespace torch::comms

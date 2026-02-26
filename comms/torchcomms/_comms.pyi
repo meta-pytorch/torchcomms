@@ -167,6 +167,19 @@ class GatherOptions:
     timeout: timedelta
     hints: Dict[str, str]
 
+class AllGatherPInitOptions:
+    def __init__(self) -> None: ...
+    timeout: timedelta
+    hints: Dict[str, str]
+
+class AllGatherPExecOptions:
+    def __init__(self) -> None: ...
+    timeout: timedelta
+    hints: Dict[str, str]
+
+# Opaque handle type for persistent AllGather
+AllGatherPHandle = Any
+
 class TorchWork:
     def is_completed(self) -> bool: ...
     def wait(self) -> None: ...
@@ -402,6 +415,24 @@ class TorchComm:
     ) -> TorchComm: ...
     def batch_op_create(self) -> BatchSendRecv: ...
     def new_window(self, tensor: Any | None = None) -> TorchCommWindow: ...
+    def all_gather_p_init(
+        self,
+        output: Any,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> AllGatherPHandle: ...
+    def all_gather_p_exec(
+        self,
+        handle: AllGatherPHandle,
+        input: Any,
+        async_op: bool,
+        hints: Dict[str, str] | None = None,
+        timeout: timedelta | None = None,
+    ) -> TorchWork: ...
+    def all_gather_p_free(
+        self,
+        handle: AllGatherPHandle,
+    ) -> None: ...
     @property
     def mem_allocator(self) -> Any: ...
     def register_pre_hook(
