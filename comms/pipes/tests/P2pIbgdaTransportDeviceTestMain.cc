@@ -36,7 +36,7 @@ class P2pIbgdaTransportDeviceTestFixture : public ::testing::Test {
     DeviceBuffer successBuf(sizeof(bool));
     auto* d_success = static_cast<bool*>(successBuf.get());
 
-    bool initSuccess = false;
+    bool initSuccess = true;
     CUDACHECK_TEST(cudaMemcpy(
         d_success, &initSuccess, sizeof(bool), cudaMemcpyHostToDevice));
 
@@ -90,7 +90,7 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, NumSignalsDefault) {
   DeviceBuffer successBuf(sizeof(bool));
   auto* d_success = static_cast<bool*>(successBuf.get());
 
-  bool initSuccess = false;
+  bool initSuccess = true;
   CUDACHECK_TEST(cudaMemcpy(
       d_success, &initSuccess, sizeof(bool), cudaMemcpyHostToDevice));
 
@@ -434,6 +434,52 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalMaxValue) {
     runTestWaitSignalEQ(
         d_signalBuf, localBuf, remoteBuf, targetValue, d_success);
   });
+}
+
+// =============================================================================
+// Group-Level API Tests
+// These tests verify put_group_local and put_signal_group_local partitioning
+// and broadcast logic. Actual RDMA operations require a real DOCA QP, so
+// these tests focus on the GPU-side logic: data partitioning, sub-buffer
+// offset calculation, and signal ticket broadcast.
+// =============================================================================
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, PutGroupPartitioning) {
+  // Test that put_group_local correctly partitions data across warp lanes
+  runAndVerify([](bool* d_success) { runTestPutGroupPartitioning(d_success); });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, PutSignalGroupBroadcast) {
+  // Test that put_signal_group_local broadcasts the signal ticket from leader
+  // to all lanes
+  runAndVerify(
+      [](bool* d_success) { runTestPutSignalGroupBroadcast(d_success); });
+}
+
+// =============================================================================
+// broadcast Tests for non-warp scopes
+// =============================================================================
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, Broadcast64Block) {
+  // Test broadcast<uint64_t> with BLOCK scope
+  runAndVerify([](bool* d_success) { runTestBroadcast64Block(d_success); });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, Broadcast64Multiwarp) {
+  // Test broadcast<uint64_t> with MULTIWARP scope
+  runAndVerify([](bool* d_success) { runTestBroadcast64Multiwarp(d_success); });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, Broadcast64DoubleSafety) {
+  // Test that two consecutive broadcasts with different values don't race
+  runAndVerify(
+      [](bool* d_success) { runTestBroadcast64DoubleSafety(d_success); });
+}
+
+TEST_F(P2pIbgdaTransportDeviceTestFixture, PutGroupPartitioningBlock) {
+  // Test put_group_local partitioning logic with block-sized groups
+  runAndVerify(
+      [](bool* d_success) { runTestPutGroupPartitioningBlock(d_success); });
 }
 
 } // namespace comms::pipes::tests

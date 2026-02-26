@@ -12,6 +12,14 @@
 
 namespace comms::pipes {
 
+using comms::device::kWarpSize;
+
+constexpr uint32_t kMultiwarpSize = 4 * kWarpSize;
+
+// Hardware supports max 16 named barriers per block, limiting the number
+// of multiwarps per block to 16 (i.e., max block size = 16 * 128 = 2048).
+constexpr uint32_t kMaxMultiwarpsPerBlock = 2048 / kMultiwarpSize;
+
 /**
  * SyncScope - Defines the synchronization and grouping scope for ThreadGroup
  *
@@ -104,13 +112,9 @@ struct ThreadGroup {
       case SyncScope::MULTIWARP: {
         // Multiwarp = 4 warps = 128 threads
         // Uses named barriers for synchronization within a multiwarp
-        constexpr uint32_t kMultiwarpSize =
-            4 * comms::device::kWarpSize; // 128 threads
         uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
             threadIdx.z * blockDim.x * blockDim.y;
         uint32_t barrierId = tid / kMultiwarpSize;
-        // Hardware supports max 16 named barriers per block
-        // This limits block size to 16 * 128 = 2048 threads
         asm volatile("bar.sync %0, %1;"
                      :
                      : "r"(barrierId), "r"(kMultiwarpSize));
@@ -143,6 +147,70 @@ struct ThreadGroup {
 
   __device__ inline bool is_global_leader() const {
     return is_leader() && group_id == 0;
+  }
+
+  /**
+   * broadcast - Broadcast a value from the group leader to all
+   *             threads in the group
+   *
+   * Supports uint32_t and uint64_t types.
+   *
+   * Uses the most efficient mechanism for each scope:
+   * - WARP: warp shuffle (register-level, no shared memory)
+   * - MULTIWARP: shared memory indexed by multiwarp ID
+   * - BLOCK: single shared memory location
+   * - CLUSTER: not supported (traps)
+   *
+   * Double sync pattern prevents race when broadcast is called multiple
+   * times in succession: the second sync ensures all threads have read the
+   * value before the leader can overwrite it in a subsequent call.
+   *
+   * NOTE: The __shared__ variables use fixed names (__tg_broadcast_scratch,
+   * __tg_broadcast_block) because CUDA deduplicates __shared__ variables in
+   * inline functions by name, not by call site. Multiple calls to this
+   * function from the same kernel correctly share the same __shared__ storage.
+   *
+   * @param val The value to broadcast (only leader's value is used)
+   * @return The leader's value, received by all threads
+   */
+  template <typename T>
+  __device__ inline T broadcast(T val) {
+#ifdef __CUDA_ARCH__
+    switch (scope) {
+      case SyncScope::WARP:
+        return shfl(val, 0);
+      case SyncScope::MULTIWARP: {
+        // Always use uint64_t shared memory so that broadcast<uint32_t> and
+        // broadcast<uint64_t> share the same __shared__ allocation (CUDA
+        // deduplicates by name).
+        __shared__ uint64_t __tg_broadcast_scratch[kMaxMultiwarpsPerBlock];
+        uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
+            threadIdx.z * blockDim.x * blockDim.y;
+        uint32_t scratch_idx = tid / kMultiwarpSize;
+        if (is_leader()) {
+          __tg_broadcast_scratch[scratch_idx] = static_cast<uint64_t>(val);
+        }
+        sync();
+        T result = static_cast<T>(__tg_broadcast_scratch[scratch_idx]);
+        sync(); // Prevent leader overwriting before all threads read
+        return result;
+      }
+      case SyncScope::BLOCK: {
+        __shared__ uint64_t __tg_broadcast_block;
+        if (is_leader()) {
+          __tg_broadcast_block = static_cast<uint64_t>(val);
+        }
+        sync();
+        T result = static_cast<T>(__tg_broadcast_block);
+        sync(); // Prevent leader overwriting before all threads read
+        return result;
+      }
+      case SyncScope::CLUSTER:
+        printf("ThreadGroup::broadcast: CLUSTER scope not yet supported\n");
+        __trap();
+    }
+#endif
+    return val;
   }
 
   /**
@@ -230,6 +298,33 @@ struct ThreadGroup {
       DeviceSpan<const uint32_t> weights) const;
   __device__ inline struct PartitionResult partition_interleaved(
       uint32_t num_partitions) const;
+
+ private:
+#ifdef __CUDACC__
+  __device__ static __forceinline__ uint32_t
+  shfl(uint32_t val, unsigned srcLane) {
+#ifdef __HIP_PLATFORM_AMD__
+    return __shfl(static_cast<int>(val), srcLane, kWarpSize);
+#else
+    return __shfl_sync(0xFFFFFFFFU, val, srcLane);
+#endif
+  }
+
+  __device__ static __forceinline__ uint64_t
+  shfl(uint64_t val, unsigned srcLane) {
+#ifdef __HIP_PLATFORM_AMD__
+    return static_cast<uint64_t>(
+        __shfl(static_cast<long long>(val), srcLane, kWarpSize));
+#else
+    constexpr unsigned kFullWarpMask = 0xFFFFFFFFU;
+    uint32_t low = static_cast<uint32_t>(val);
+    uint32_t high = static_cast<uint32_t>(val >> 32);
+    low = __shfl_sync(kFullWarpMask, low, srcLane);
+    high = __shfl_sync(kFullWarpMask, high, srcLane);
+    return (static_cast<uint64_t>(high) << 32) | low;
+#endif
+  }
+#endif // __CUDACC__
 };
 
 /**
@@ -699,8 +794,6 @@ __device__ inline ThreadGroup make_block_group() {
 // multiwarp.
 __device__ inline ThreadGroup make_multiwarp_group() {
 #ifdef __CUDA_ARCH__
-  constexpr uint32_t kMultiwarpSize =
-      4 * comms::device::kWarpSize; // 128 threads
   uint32_t threads_per_block = blockDim.x * blockDim.y * blockDim.z;
   uint32_t tid = threadIdx.x + threadIdx.y * blockDim.x +
       threadIdx.z * blockDim.x * blockDim.y;
