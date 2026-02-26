@@ -115,8 +115,8 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
   }
 
   // Run put_signal_non_adaptive + wait_local benchmark using batched kernel
-  // Returns bandwidth, excludes kernel launch overhead
-  float runPutSignalNonAdaptiveBenchmark(
+  // Populates latencyUs, excludes kernel launch overhead
+  void runPutSignalNonAdaptiveBenchmark(
       P2pIbgdaTransportDevice* deviceTransportPtr,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
@@ -138,10 +138,10 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
           kIbgdaBatchIters,
           d_totalCycles,
           stream_);
-      CUDA_CHECK(cudaStreamSynchronize(stream_));
+      CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
 
       unsigned long long totalCycles;
-      CUDA_CHECK(cudaMemcpy(
+      CUDA_CHECK_VOID(cudaMemcpy(
           &totalCycles,
           d_totalCycles,
           sizeof(unsigned long long),
@@ -151,15 +151,11 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
     }
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Unidirectional bandwidth
-    float bandwidth_GBps = (config.nBytes / 1e9f) / (latencyUs / 1e6f);
-    return bandwidth_GBps;
   }
 
   // Run put_signal (adaptive-safe) + wait_local benchmark using batched kernel
-  // Returns bandwidth, excludes kernel launch overhead
-  float runPutSignalBenchmark(
+  // Populates latencyUs, excludes kernel launch overhead
+  void runPutSignalBenchmark(
       P2pIbgdaTransportDevice* deviceTransportPtr,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
@@ -181,10 +177,10 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
           kIbgdaBatchIters,
           d_totalCycles,
           stream_);
-      CUDA_CHECK(cudaStreamSynchronize(stream_));
+      CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
 
       unsigned long long totalCycles;
-      CUDA_CHECK(cudaMemcpy(
+      CUDA_CHECK_VOID(cudaMemcpy(
           &totalCycles,
           d_totalCycles,
           sizeof(unsigned long long),
@@ -194,10 +190,6 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
     }
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Unidirectional bandwidth
-    float bandwidth_GBps = (config.nBytes / 1e9f) / (latencyUs / 1e6f);
-    return bandwidth_GBps;
   }
 
   void printResultsTable(
@@ -264,6 +256,67 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
 
   cudaStream_t stream_{};
   float clockRateGHz_{0.0f};
+
+  // Verify that a put_signal method correctly transfers data to the remote
+  // peer. Fills the sender's buffer with fillPattern, zeros the receiver's
+  // buffer, runs exactly one put_signal, then checks the receiver's buffer.
+  template <typename LaunchFn>
+  void verifyPutDataCorrectness(
+      LaunchFn launchFn,
+      P2pIbgdaTransportDevice* deviceTransportPtr,
+      void* localBufferPtr,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      uint8_t fillPattern,
+      const std::string& methodName) {
+    constexpr int kSignalId = 0;
+
+    // Sender: fill source buffer with pattern
+    // Receiver: zero destination buffer
+    if (globalRank == 0) {
+      CUDA_CHECK_VOID(cudaMemset(localBufferPtr, fillPattern, nbytes));
+    } else {
+      CUDA_CHECK_VOID(cudaMemset(localBufferPtr, 0, nbytes));
+    }
+    CUDA_CHECK_VOID(cudaDeviceSynchronize());
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Sender: exactly one put_signal (no warmup, no loop)
+    if (globalRank == 0) {
+      launchFn(
+          deviceTransportPtr, localBuf, remoteBuf, nbytes, kSignalId, stream_);
+      CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+    // Receiver: verify data arrived correctly
+    if (globalRank == 1) {
+      std::vector<uint8_t> hostBuf(nbytes);
+      CUDA_CHECK_VOID(cudaMemcpy(
+          hostBuf.data(), localBufferPtr, nbytes, cudaMemcpyDeviceToHost));
+      bool correct = true;
+      for (std::size_t i = 0; i < nbytes; i++) {
+        if (hostBuf[i] != fillPattern) {
+          XLOGF(
+              ERR,
+              "{}: data mismatch at byte {}: expected 0x{:02X}, got 0x{:02X}",
+              methodName,
+              i,
+              fillPattern,
+              hostBuf[i]);
+          correct = false;
+          break;
+        }
+      }
+      EXPECT_TRUE(correct) << methodName
+                           << ": put data correctness check failed";
+      if (correct) {
+        XLOGF(INFO, "{}: data correctness OK ({} bytes)", methodName, nbytes);
+      }
+    }
+    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+  }
 };
 
 TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
@@ -545,7 +598,10 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
   }
 }
 
-// Benchmark comparing put_signal (adaptive-safe) vs put_signal_non_adaptive
+// 2-way comparison: put_signal vs put_signal_non_adaptive
+// put_signal            = put + signal_with_fence     (NIC-level fence,
+// adaptive safe) put_signal_non_adaptive = fused put_signal WQE      (no fence,
+// NOT adaptive safe)
 TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -554,8 +610,10 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
-  // Test a subset of sizes for comparison
+  // Test a range of sizes for comparison
   std::vector<IbgdaBenchmarkConfig> configs;
+  configs.push_back(
+      {.nBytes = 8, .numBlocks = 1, .numThreads = 32, .name = "8B"});
   configs.push_back(
       {.nBytes = 64, .numBlocks = 1, .numThreads = 32, .name = "64B"});
   configs.push_back(
@@ -600,50 +658,70 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
     unsigned long long* d_totalCycles;
     CUDA_CHECK_VOID(cudaMalloc(&d_totalCycles, sizeof(unsigned long long)));
 
+    // --- Data correctness verification (before performance measurement) ---
+    for (std::size_t ci = 0; ci < configs.size(); ci++) {
+      auto& cfg = configs[ci];
+      // Different base pattern per size, offset by method index
+      uint8_t basePattern = static_cast<uint8_t>((ci + 1) * 3);
+
+      if (globalRank == 0) {
+        XLOGF(INFO, "Verifying put data correctness ({})...", cfg.name);
+      }
+
+      verifyPutDataCorrectness(
+          launchIbgdaPutSignalSingle,
+          deviceTransportPtr,
+          dataBuffer.get(),
+          localDataBuf,
+          remoteDataBuf,
+          cfg.nBytes,
+          static_cast<uint8_t>(basePattern + 1),
+          "put_signal [" + cfg.name + "]");
+
+      verifyPutDataCorrectness(
+          launchIbgdaPutSignalNonAdaptiveSingle,
+          deviceTransportPtr,
+          dataBuffer.get(),
+          localDataBuf,
+          remoteDataBuf,
+          cfg.nBytes,
+          static_cast<uint8_t>(basePattern + 2),
+          "put_signal_non_adaptive [" + cfg.name + "]");
+    }
+
     if (globalRank == 0) {
       XLOGF(
           INFO,
           "\n================================================================================");
-      XLOGF(INFO, "        put_signal vs put_signal_non_adaptive Comparison");
-      XLOGF(
-          INFO, "        (Using batched kernels - no kernel launch overhead)");
+      XLOGF(INFO, "    put_signal vs put_signal_non_adaptive");
+      XLOGF(INFO, "    (Using batched kernels - no kernel launch overhead)");
       XLOGF(
           INFO,
           "================================================================================");
       XLOGF(
           INFO,
-          "{:>10} {:>15} {:>15} {:>15} {:>15}",
+          "{:>10} {:>18} {:>18}",
           "Size",
-          "Adaptive BW",
-          "NonAdapt BW",
-          "Adapt Lat",
-          "NonAdapt Lat");
-      XLOGF(
-          INFO,
-          "{:>10} {:>15} {:>15} {:>15} {:>15}",
-          "",
-          "(GB/s)",
-          "(GB/s)",
-          "(us)",
-          "(us)");
+          "Fence Lat (us)",
+          "NonAdapt Lat (us)");
       XLOGF(
           INFO,
           "--------------------------------------------------------------------------------");
     }
 
     for (const auto& config : configs) {
-      float adaptiveLatency = 0.0f;
+      float fenceLatency = 0.0f;
       float nonAdaptiveLatency = 0.0f;
 
-      float adaptiveBw = runPutSignalBenchmark(
+      runPutSignalBenchmark(
           deviceTransportPtr,
           localDataBuf,
           remoteDataBuf,
           config,
           d_totalCycles,
-          adaptiveLatency);
+          fenceLatency);
 
-      float nonAdaptiveBw = runPutSignalNonAdaptiveBenchmark(
+      runPutSignalNonAdaptiveBenchmark(
           deviceTransportPtr,
           localDataBuf,
           remoteDataBuf,
@@ -654,11 +732,9 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
       if (globalRank == 0) {
         XLOGF(
             INFO,
-            "{:>10} {:>15.2f} {:>15.2f} {:>15.1f} {:>15.1f}",
+            "{:>10} {:>18.2f} {:>18.2f}",
             config.name,
-            adaptiveBw,
-            nonAdaptiveBw,
-            adaptiveLatency,
+            fenceLatency,
             nonAdaptiveLatency);
       }
     }
@@ -667,14 +743,18 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
       XLOGF(
           INFO,
           "================================================================================");
-      XLOGF(INFO, "Adaptive = put_signal (safe for adaptive routing networks)");
       XLOGF(
           INFO,
-          "NonAdaptive = put_signal_non_adaptive (faster, but unsafe with adaptive routing)");
+          "Fence    = put_signal              (put + signal_with_fence, NIC-level fence, adaptive safe)");
+      XLOGF(
+          INFO,
+          "NonAdapt = put_signal_non_adaptive (fused put_signal WQE, no fence, NOT adaptive safe)");
       XLOGF(
           INFO,
           "================================================================================\n");
     }
+
+    CUDA_CHECK_VOID(cudaFree(d_totalCycles));
 
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();

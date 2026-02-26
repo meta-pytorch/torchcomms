@@ -2,6 +2,7 @@
 
 #include "comms/pipes/IbgdaBuffer.h"
 #include "comms/pipes/P2pIbgdaTransportDevice.cuh"
+#include "comms/pipes/tests/Checks.h"
 #include "comms/pipes/tests/P2pIbgdaTransportDeviceTest.cuh"
 
 namespace comms::pipes::tests {

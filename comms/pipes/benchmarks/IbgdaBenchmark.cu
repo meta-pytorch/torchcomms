@@ -8,6 +8,39 @@
 
 namespace comms::pipes::benchmark {
 
+// Single-shot kernel implementations for correctness verification.
+// Each kernel does exactly one put_signal + wait_local, no warmup, no loop.
+
+__global__ void ibgdaPutSignalWaitLocalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    auto work =
+        transport->put_signal(localBuf, remoteBuf, nbytes, signalId, signalVal);
+    transport->wait_local(work);
+  }
+}
+
+__global__ void ibgdaPutSignalNonAdaptiveWaitLocalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    auto work = transport->put_signal_non_adaptive(
+        localBuf, remoteBuf, nbytes, signalId, signalVal);
+    transport->wait_local(work);
+  }
+}
+
 // Batched kernel implementations - these run multiple iterations in a single
 // kernel launch to exclude kernel launch overhead and use GPU cycle counters
 // for accurate timing.
@@ -129,6 +162,42 @@ __global__ void ibgdaSignalOnlyBatchKernel(
 }
 
 // Launch wrapper implementations
+
+// Single-shot launchers for correctness verification (exactly 1 put_signal)
+
+void launchIbgdaPutSignalSingle(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    cudaStream_t stream) {
+  ibgdaPutSignalWaitLocalKernel<<<1, 32, 0, stream>>>(
+      transport, localBuf, remoteBuf, nbytes, signalId, 1);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+void launchIbgdaPutSignalNonAdaptiveSingle(
+    P2pIbgdaTransportDevice* transport,
+    const IbgdaLocalBuffer& localBuf,
+    const IbgdaRemoteBuffer& remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    cudaStream_t stream) {
+  ibgdaPutSignalNonAdaptiveWaitLocalKernel<<<1, 32, 0, stream>>>(
+      transport, localBuf, remoteBuf, nbytes, signalId, 1);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+// Batched launchers for performance measurement
 
 void launchIbgdaPutWaitLocalBatch(
     P2pIbgdaTransportDevice* transport,
