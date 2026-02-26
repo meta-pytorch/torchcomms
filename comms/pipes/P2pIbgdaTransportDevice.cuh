@@ -53,10 +53,12 @@ struct IbgdaWork {
  *
  * EXECUTION SCOPE:
  * ================
- * Operations default to thread-level scope where each thread posts its own
- * RDMA operation.
- * TODO: For large transfers, consider using warp-level scope where
- * all threads in a warp collaborate on a single operation.
+ * Thread-Level APIs:
+ *   put(), put_signal(), put_signal_non_adaptive(),
+ *   signal(), signal_with_fence(), wait_local()
+ *   - Each thread posts its own independent RDMA operation
+ *   - Supports multi-chunk transfers (size >
+ * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE)
  */
 class P2pIbgdaTransportDevice {
  public:
@@ -91,23 +93,26 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * put_signal - RDMA Write with atomic signal (adaptive routing safe)
+   * put_signal - RDMA Write with fenced atomic signal (adaptive routing safe)
    *
-   * Performs an RDMA Write from local buffer to remote buffer, waits for
-   * local completion, then sends an atomic fetch-add to the remote signal
-   * buffer at signal_id. This two-phase approach ensures correct ordering
-   * on networks with adaptive routing, where data and signal packets may
-   * take different paths and arrive out of order.
+   * Performs an RDMA Write from local buffer to remote buffer, followed by
+   * an atomic fetch-add on the remote signal buffer at signal_id with the
+   * IBV_SEND_FENCE flag set on the signal's WQE. The fence flag instructs
+   * the NIC to complete all prior WQEs (the data write) before processing
+   * the signal WQE, providing adaptive-routing safety without GPU-side CQ
+   * polling overhead — the fence is handled entirely in NIC hardware.
    *
    * MEMORY ORDERING:
-   * The wait_local() between put and signal ensures the data write has
-   * been delivered to the remote NIC before the signal is sent, providing
-   * correct "release" semantics even with adaptive routing.
+   * The IBV_SEND_FENCE flag (DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_FENCE) on the
+   * signal WQE ensures the NIC does not begin processing the atomic signal
+   * until all prior posted WQEs have completed. This is a NIC-level
+   * ordering guarantee that avoids the need for GPU-side CQ polling.
    *
    * PERFORMANCE NOTE:
-   * This is slower than put_signal_non_adaptive() due to the synchronization
-   * point. Use put_signal_non_adaptive() for networks with deterministic
-   * routing or when the NIC guarantees ordering between compound operations.
+   * This avoids the GPU-side CQ polling overhead of wait_local(), making it
+   * faster than the old put + wait_local + signal approach while maintaining
+   * the same correctness guarantees. Use put_signal_non_adaptive() only for
+   * networks with deterministic routing where no fence is needed.
    *
    * @param localBuf Source buffer in local GPU memory
    * @param remoteBuf Destination buffer in remote GPU memory
@@ -124,9 +129,8 @@ class P2pIbgdaTransportDevice {
       int signalId,
       uint64_t signalVal) {
     checkSignalId(signalId, "put_signal");
-    IbgdaWork putWork = put(localBuf, remoteBuf, nbytes);
-    wait_local(putWork);
-    return signal(signalId, signalVal);
+    put(localBuf, remoteBuf, nbytes);
+    return signal_with_fence(signalId, signalVal);
   }
 
   /**
@@ -205,7 +209,6 @@ class P2pIbgdaTransportDevice {
    *
    * @return IbgdaWork for tracking local completion via wait_local()
    */
-
   __device__ IbgdaWork
   put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
@@ -229,7 +232,7 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * signal - Send atomic signal only (non-blocking)
+   * signal - Send atomic signal only
    *
    * Performs an atomic operation on the remote signal buffer at the
    * specified signal_id. Useful for pure synchronization.
@@ -271,6 +274,70 @@ class P2pIbgdaTransportDevice {
         qp_, remoteSignalAddr, localSignalAddr, signalVal, &ticket);
 
     return IbgdaWork(ticket);
+  }
+
+  /**
+   * signal_with_fence - Send atomic signal with NIC-level fence
+   *
+   * Performs an atomic fetch-add on the remote signal buffer at the
+   * specified signal_id, with the IBV_SEND_FENCE flag set on the WQE.
+   * The fence flag instructs the NIC to complete all prior posted WQEs
+   * before processing this atomic operation.
+   *
+   * This provides the same ordering guarantee as wait_local() + signal()
+   * but avoids the GPU-side CQ polling overhead. The fence is handled
+   * entirely by the NIC hardware.
+   *
+   * @param signalId Index into the signal buffer array
+   * @param signalVal Value to use for the atomic operation
+   *
+   * @return IbgdaWork for tracking local completion via wait_local()
+   */
+  __device__ IbgdaWork signal_with_fence(int signalId, uint64_t signalVal) {
+    checkSignalId(signalId, "signal_with_fence");
+
+    doca_gpu_dev_verbs_ticket_t ticket;
+
+    doca_gpu_dev_verbs_addr localSignalAddr = {
+        .addr = reinterpret_cast<uint64_t>(getLocalSignalPtr(signalId)),
+        .key = localSignalBuf_.lkey.value};
+    doca_gpu_dev_verbs_addr remoteSignalAddr = {
+        .addr = reinterpret_cast<uint64_t>(getRemoteSignalPtr(signalId)),
+        .key = remoteSignalBuf_.rkey.value};
+
+    // Reserve a WQE slot and prepare an atomic fetch-add with fence flag
+    uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp_, 1);
+
+    struct doca_gpu_dev_verbs_wqe* wqe_ptr =
+        doca_gpu_dev_verbs_get_wqe_ptr(qp_, wqe_idx);
+
+    // Use FENCE flag: NIC will complete all prior WQEs before this one
+    doca_gpu_dev_verbs_wqe_prepare_atomic(
+        qp_,
+        wqe_ptr,
+        static_cast<uint16_t>(wqe_idx),
+        DOCA_GPUNETIO_IB_MLX5_OPCODE_ATOMIC_FA,
+        static_cast<doca_gpu_dev_verbs_wqe_ctrl_flags>(
+            DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE |
+            DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_FENCE),
+        remoteSignalAddr.addr,
+        remoteSignalAddr.key,
+        localSignalAddr.addr,
+        localSignalAddr.key,
+        sizeof(uint64_t),
+        signalVal,
+        0);
+
+    doca_gpu_dev_verbs_mark_wqes_ready<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp_, wqe_idx, wqe_idx);
+
+    doca_gpu_dev_verbs_submit<
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp_, wqe_idx + 1);
+
+    return IbgdaWork(wqe_idx);
   }
 
   /**
