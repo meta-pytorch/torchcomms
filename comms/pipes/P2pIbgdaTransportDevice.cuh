@@ -9,7 +9,7 @@
 
 #include "comms/pipes/DocaVerbsUtils.cuh"
 #include "comms/pipes/IbgdaBuffer.h"
-#include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/Timeout.cuh"
 
 namespace comms::pipes {
 
@@ -588,11 +588,25 @@ class P2pIbgdaTransportDevice {
    * condition is satisfied. This provides "acquire" semantics - once the
    * signal is seen, all prior remote writes are visible.
    *
+   * An optional Timeout parameter controls how long to wait before trapping.
+   * The default Timeout() (disabled) waits indefinitely with zero overhead.
+   * When enabled, the timeout adds one well-predicted branch per spin
+   * iteration. On expiry, prints a diagnostic message and calls __trap().
+   *
+   * IMPORTANT: The caller must call timeout.start() before calling this
+   * method. The Timeout object captures the GPU clock at start() and
+   * checks against the precomputed deadline in each spin iteration.
+   *
    * @param signalId Index into the signal buffer array
    * @param cmp Comparison operation to use
    * @param value Value to compare against
+   * @param timeout Timeout config (default: disabled, infinite wait)
    */
-  __device__ void wait_signal(int signalId, IbgdaCmpOp cmp, uint64_t value) {
+  __device__ void wait_signal(
+      int signalId,
+      IbgdaCmpOp cmp,
+      uint64_t value,
+      const Timeout& timeout = Timeout()) {
     checkSignalId(signalId, "wait_signal");
     volatile uint64_t* sig =
         reinterpret_cast<volatile uint64_t*>(getLocalSignalPtr(signalId));
@@ -600,26 +614,62 @@ class P2pIbgdaTransportDevice {
     switch (cmp) {
       case IbgdaCmpOp::EQ:
         while (*sig != value) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "wait_signal(EQ): signalId=%d, expected=%llu, current=%llu",
+              signalId,
+              static_cast<unsigned long long>(value),
+              static_cast<unsigned long long>(*sig));
         }
         break;
       case IbgdaCmpOp::NE:
         while (*sig == value) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "wait_signal(NE): signalId=%d, unwanted=%llu, current=%llu",
+              signalId,
+              static_cast<unsigned long long>(value),
+              static_cast<unsigned long long>(*sig));
         }
         break;
       case IbgdaCmpOp::LT:
         while (*sig >= value) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "wait_signal(LT): signalId=%d, threshold=%llu, current=%llu",
+              signalId,
+              static_cast<unsigned long long>(value),
+              static_cast<unsigned long long>(*sig));
         }
         break;
       case IbgdaCmpOp::LE:
         while (*sig > value) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "wait_signal(LE): signalId=%d, threshold=%llu, current=%llu",
+              signalId,
+              static_cast<unsigned long long>(value),
+              static_cast<unsigned long long>(*sig));
         }
         break;
       case IbgdaCmpOp::GT:
         while (*sig <= value) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "wait_signal(GT): signalId=%d, threshold=%llu, current=%llu",
+              signalId,
+              static_cast<unsigned long long>(value),
+              static_cast<unsigned long long>(*sig));
         }
         break;
       case IbgdaCmpOp::GE:
         while (*sig < value) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "wait_signal(GE): signalId=%d, expected>=%llu, current=%llu",
+              signalId,
+              static_cast<unsigned long long>(value),
+              static_cast<unsigned long long>(*sig));
         }
         break;
     }

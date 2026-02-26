@@ -155,4 +155,28 @@ void runTestBroadcast64DoubleSafety(bool* d_success);
 // Test put_group_local partitioning logic with block-sized groups
 void runTestPutGroupPartitioningBlock(bool* d_success);
 
+// =============================================================================
+// wait_signal timeout tests
+// These tests verify that the Timeout parameter on wait_signal works correctly.
+// =============================================================================
+
+// Test that wait_signal traps when timeout expires (signal never satisfies
+// condition). After calling this, check cudaGetLastError() for trap error.
+void runTestWaitSignalTimeout(
+    uint64_t* d_signalBuf,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    int device,
+    uint32_t timeout_ms);
+
+// Test that wait_signal completes normally when signal is already satisfied
+// even when timeout is enabled (positive test case).
+void runTestWaitSignalNoTimeout(
+    uint64_t* d_signalBuf,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    int device,
+    uint32_t timeout_ms,
+    bool* d_success);
+
 } // namespace comms::pipes::tests

@@ -482,6 +482,86 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, PutGroupPartitioningBlock) {
       [](bool* d_success) { runTestPutGroupPartitioningBlock(d_success); });
 }
 
+// =============================================================================
+// wait_signal Timeout Tests
+// Verify that the Timeout parameter on wait_signal correctly traps when the
+// timeout expires and does not interfere when the signal is already satisfied.
+// =============================================================================
+
+// Test fixture for timeout trap tests that resets the device after each test
+// to clear __trap() state.
+class P2pIbgdaWaitSignalTimeoutTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    CUDACHECK_TEST(cudaSetDevice(0));
+  }
+
+  void TearDown() override {
+    // Reset device to clear any trap state
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaDeviceReset();
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaSetDevice(0);
+    // NOLINTNEXTLINE(facebook-cuda-safe-api-call-check)
+    cudaGetLastError(); // Clear any pending errors
+  }
+
+  bool isExpectedTrapError(cudaError_t err) {
+    return err == cudaErrorIllegalInstruction || err == cudaErrorAssert ||
+        err == cudaErrorLaunchFailure;
+  }
+};
+
+TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalTimeoutTraps) {
+  // Set up a signal buffer with value 0, then wait for GE 999 with a
+  // short timeout. The signal will never satisfy GE 999, so the timeout
+  // should fire and __trap().
+  DeviceBuffer signalBuf(sizeof(uint64_t));
+  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
+
+  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
+  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
+
+  // 10ms timeout - should trigger quickly
+  runTestWaitSignalTimeout(d_signalBuf, localBuf, remoteBuf, 0, 10);
+
+  cudaError_t err = cudaGetLastError();
+  EXPECT_TRUE(isExpectedTrapError(err))
+      << "Expected trap error from wait_signal timeout, got: "
+      << cudaGetErrorString(err);
+}
+
+TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalNoTimeoutWhenSatisfied) {
+  // Set up a signal buffer with value 42, then wait for GE 42 with a
+  // timeout enabled. The signal already satisfies GE 42, so wait_signal
+  // should return immediately without trapping.
+  DeviceBuffer signalBuf(sizeof(uint64_t));
+  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
+  const uint64_t signalValue = 42;
+  CUDACHECK_TEST(cudaMemcpy(
+      d_signalBuf, &signalValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
+
+  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
+  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
+
+  DeviceBuffer successBuf(sizeof(bool));
+  auto* d_success = static_cast<bool*>(successBuf.get());
+  bool initSuccess = false;
+  CUDACHECK_TEST(cudaMemcpy(
+      d_success, &initSuccess, sizeof(bool), cudaMemcpyHostToDevice));
+
+  // 1000ms timeout - kernel should complete well before this
+  runTestWaitSignalNoTimeout(
+      d_signalBuf, localBuf, remoteBuf, 0, 1000, d_success);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  bool success = false;
+  CUDACHECK_TEST(
+      cudaMemcpy(&success, d_success, sizeof(bool), cudaMemcpyDeviceToHost));
+  EXPECT_TRUE(success);
+}
+
 } // namespace comms::pipes::tests
 
 int main(int argc, char** argv) {
