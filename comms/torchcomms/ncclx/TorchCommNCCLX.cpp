@@ -270,6 +270,12 @@ void TorchCommNCCLX::init(
       nccl_api_->commCount(nccl_comm_, &comm_size_),
       "NCCLX Count failed");
 
+  // Initialize ranks if not already set (e.g., by split)
+  if (ranks_.empty()) {
+    ranks_.resize(comm_size_);
+    std::iota(ranks_.begin(), ranks_.end(), 0);
+  }
+
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
@@ -445,6 +451,11 @@ int TorchCommNCCLX::getSize() const {
       nccl_api_->commCount(nccl_comm_, &comm_size),
       "NCCLX Count failed");
   return comm_size;
+}
+
+std::vector<int> TorchCommNCCLX::getRanks() const {
+  checkInitialized();
+  return ranks_;
 }
 
 std::string_view TorchCommNCCLX::getBackendName() const {
@@ -2195,6 +2206,14 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
       std::shared_ptr<TorchCommNCCLX>(new TorchCommNCCLX(new_comm));
   new_torchcomm->nccl_api_ = nccl_api_;
   new_torchcomm->cuda_api_ = cuda_api_;
+
+  // Set the global ranks for the new communicator by mapping through the
+  // parent's rank list
+  new_torchcomm->ranks_.reserve(ranks.size());
+  for (int rank : ranks) {
+    new_torchcomm->ranks_.push_back(ranks_[rank]);
+  }
+
   new_torchcomm->init(device_, commDesc, options);
 
   return new_torchcomm;

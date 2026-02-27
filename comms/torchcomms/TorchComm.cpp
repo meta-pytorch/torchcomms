@@ -33,6 +33,10 @@ int TorchComm::getSize() const {
   return impl_->getSize();
 }
 
+std::vector<int> TorchComm::getRanks() const {
+  return impl_->getRanks();
+}
+
 std::string_view TorchComm::getCommName() const {
   return impl_->getCommName();
 }
