@@ -247,7 +247,39 @@ Pre-hooks are called before each collective operation starts.
       .def_readonly(
           "op_id",
           &TorchComm::PreHookArgs::op_id,
-          "Unique operation ID for correlation with post-hook");
+          "Unique operation ID for correlation with post-hook")
+      .def_property_readonly(
+          "input_tensor",
+          [](const TorchComm::PreHookArgs& self) -> py::object {
+            if (self.input_tensor)
+              return py::cast(*self.input_tensor);
+            return py::none();
+          },
+          "Input tensor for the operation, or None if not applicable")
+      .def_property_readonly(
+          "output_tensor",
+          [](const TorchComm::PreHookArgs& self) -> py::object {
+            if (self.output_tensor)
+              return py::cast(*self.output_tensor);
+            return py::none();
+          },
+          "Output tensor for the operation, or None if not applicable")
+      .def_property_readonly(
+          "input_tensors",
+          [](const TorchComm::PreHookArgs& self) -> py::object {
+            if (self.input_tensors)
+              return py::cast(*self.input_tensors);
+            return py::none();
+          },
+          "Input tensor list for the operation, or None if not applicable")
+      .def_property_readonly(
+          "output_tensors",
+          [](const TorchComm::PreHookArgs& self) -> py::object {
+            if (self.output_tensors)
+              return py::cast(*self.output_tensors);
+            return py::none();
+          },
+          "Output tensor list for the operation, or None if not applicable");
 
   // Bind PostHookArgs struct for post-hook callbacks
   py::class_<TorchComm::PostHookArgs>(
