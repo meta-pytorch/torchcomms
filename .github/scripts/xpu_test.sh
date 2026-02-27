@@ -1,7 +1,7 @@
 #!/bin/bash
 set -ex
 # Install oneAPI DLE
-ONEAPI_URL="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/9065c156-58ab-41b0-bbee-9b0e229ffca5/intel-deep-learning-essentials-2025.3.1.15_offline.sh"
+ONEAPI_URL="https://registrationcenter-download.intel.com/akdlm/IRC_NAS/b3e6c1bf-a6d5-4580-8b1d-80cbfd38c8af/intel-deep-learning-essentials-2025.3.2.36_offline.sh"
 wget -qO /tmp/intel-deep-learning-essentials.sh ${ONEAPI_URL}
 chmod +x /tmp/intel-deep-learning-essentials.sh
 /tmp/intel-deep-learning-essentials.sh -a --silent --eula accept
