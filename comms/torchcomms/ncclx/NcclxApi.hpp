@@ -107,6 +107,12 @@ class NcclxApi {
       ncclComm_t comm,
       void* handle) = 0;
 
+  // Pointer-based memory registration (global - does not require comm)
+  // cudaDev is auto-detected from the buffer pointer.
+  virtual ncclResult_t globalRegisterWithPtr(void* buffer, size_t size) = 0;
+
+  virtual ncclResult_t globalDeregisterWithPtr(void* buffer, size_t size) = 0;
+
   // Point-to-point operations
   [[nodiscard]] virtual ncclResult_t send(
       const void* sendbuff,
@@ -363,6 +369,10 @@ class DefaultNcclxApi : public NcclxApi {
 
   [[nodiscard]] ncclResult_t commDeregister(ncclComm_t comm, void* handle)
       override;
+
+  ncclResult_t globalRegisterWithPtr(void* buffer, size_t size) override;
+
+  ncclResult_t globalDeregisterWithPtr(void* buffer, size_t size) override;
 
   // Point-to-point operations
   [[nodiscard]] ncclResult_t send(
