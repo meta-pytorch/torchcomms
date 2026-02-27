@@ -1994,6 +1994,15 @@ cvars:
      compCtran - Compression-based communication using IB Control message exchange
      bsCompCtran - Compression-based communication with NCCL socket bootstrapping
 
+ - name        : NCCL_ALLTOALLV_P_ALGO
+   type        : enum
+   default     : orig
+   choices     : orig, ctran
+   description : |-
+     The algorithm to use for AllToAllv communication
+     orig - Copy-based communication
+     ctran - Ctran-based communication
+
  - name        : NCCL_RMA_ALGO
    type        : enum
    default     : ctran

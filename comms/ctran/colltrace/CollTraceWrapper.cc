@@ -251,6 +251,14 @@ CollectiveMetadata getCollectiveMetadata(
           .opCount = opCount,
       };
     }
+    case KernelConfig::KernelType::ALLTOALLVP: {
+      // TODO: Add more info for alltoallvp
+      return CollectiveMetadata{
+          .opName = "AllToAllvP",
+          .algoName = kernelConfig.algoName,
+          .opCount = opCount,
+      };
+    }
     case KernelConfig::KernelType::BROADCAST: {
       auto broadcastArgs = kernelConfig.args.collective.broadcast;
       return CollectiveMetadata{

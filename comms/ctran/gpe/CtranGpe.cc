@@ -105,6 +105,16 @@ OpElem::OpElem(
       new (&this->alltoallv.rdispls) std::vector<size_t>;
       this->alltoallv.rdispls.resize(comm_->statex_->nRanks());
       break;
+    case ALLTOALLVP:
+      new (&this->alltoallvP.sendcounts) std::vector<size_t>;
+      this->alltoallvP.sendcounts.resize(comm_->statex_->nRanks());
+      new (&this->alltoallvP.sdispls) std::vector<size_t>;
+      this->alltoallvP.sdispls.resize(comm_->statex_->nRanks());
+      new (&this->alltoallvP.recvcounts) std::vector<size_t>;
+      this->alltoallvP.recvcounts.resize(comm_->statex_->nRanks());
+      new (&this->alltoallvP.rdispls) std::vector<size_t>;
+      this->alltoallvP.rdispls.resize(comm_->statex_->nRanks());
+      break;
     case ALLTOALLV_DYNAMIC_SPLIT:
       this->send.kElem = nullptr;
       break;
@@ -156,6 +166,12 @@ OpElem::~OpElem() {
       this->alltoallv.sdispls.~vector();
       this->alltoallv.recvcounts.~vector();
       this->alltoallv.rdispls.~vector();
+      break;
+    case ALLTOALLVP:
+      this->alltoallvP.sendcounts.~vector();
+      this->alltoallvP.sdispls.~vector();
+      this->alltoallvP.recvcounts.~vector();
+      this->alltoallvP.rdispls.~vector();
       break;
     case ALLTOALL_DEDUP:
       for (auto& pair : this->alltoall_dedup.bcastElemMap) {

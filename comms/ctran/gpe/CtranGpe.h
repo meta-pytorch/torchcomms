@@ -52,6 +52,7 @@ struct OpElem {
     ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P,
     ALLTOALL_DEDUP,
     ALLTOALLV_DEDUP,
+    ALLTOALLVP,
     BROADCAST,
     REDUCESCATTER,
     PUTNOTIFY,
@@ -191,6 +192,19 @@ struct OpElem {
       void* perfTracer;
     } alltoallv_dedup_exec;
     struct {
+      // persistent
+      void* pArgs;
+      // non-persistent
+      size_t count;
+      const void* sendbuff;
+      std::vector<size_t> sendcounts;
+      std::vector<size_t> sdispls;
+      void* recvbuff;
+      std::vector<size_t> recvcounts;
+      std::vector<size_t> rdispls;
+      commDataType_t datatype;
+    } alltoallvP;
+    struct {
       const void* sendbuff;
       void* recvbuff;
       size_t count;
@@ -294,6 +308,7 @@ struct KernelConfig {
     SENDRECV_P2P,
     ALLTOALL,
     ALLTOALLV,
+    ALLTOALLVP,
     ALLTOALLV_DYNAMIC,
     ALLTOALLV_DYNAMIC_SPLIT,
     ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG,

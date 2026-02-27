@@ -428,6 +428,53 @@ class CtranMapper {
       std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
       CtranMapperBackend backend = CtranMapperBackend::UNSET);
 
+  /* Blocking alltoall control messages among ranks of the mapper associated
+   * communicator specified in ranks. It returns after sent and received all
+   * control messages.
+   * Unlike allGatherCtrl where each rank sends the same buffer to all peers,
+   * allToAllCtrl allows each rank to send a different buffer to each peer.
+   * Input argument:
+   *   - bufs: vector of local buffers, one for each rank. bufs[peer] is the
+   *           buffer to be shared with peer rank.
+   *   - hdls: vector of handles for the local buffers, one for each rank.
+   *           hdls[peer] is the handle for bufs[peer].
+   *   - ranks: the ranks to be used for the AllToAll exchange
+   *   - backend: the backend to be used for data transfer. If not specified,
+   *              use internal default based on peer rank and memory type.
+   * Output arguments:
+   *   - remoteBufs: the received remote buffers from all ranks.
+   * remoteBufs[peer] is the buffer address that peer sent to this rank.
+   *   - remoteAccessKeys: the received remote access keys from all ranks
+   */
+  commResult_t allToAllCtrl(
+      const std::vector<void*>& bufs,
+      const std::vector<void*>& hdls,
+      const std::vector<int>& ranks,
+      std::vector<void*>& remoteBufs,
+      std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+
+  /* Blocking alltoall control messages among all ranks of the mapper
+   * associated communicator. This is a wrapper of allToAllCtrl on all ranks.
+   * Input argument:
+   *   - bufs: vector of local buffers, one for each rank. bufs[peer] is the
+   *           buffer to be shared with peer rank.
+   *   - hdls: vector of handles for the local buffers, one for each rank.
+   *           hdls[peer] is the handle for bufs[peer].
+   *   - backend: the backend to be used for data transfer. If not specified,
+   *              use internal default based on peer rank and memory type.
+   * Output arguments:
+   *   - remoteBufs: the received remote buffers from all ranks.
+   * remoteBufs[peer] is the buffer address that peer sent to this rank.
+   *   - remoteAccessKeys: the received remote access keys from all ranks
+   */
+  commResult_t allToAllCtrl(
+      const std::vector<void*>& bufs,
+      const std::vector<void*>& hdls,
+      std::vector<void*>& remoteBufs,
+      std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+      CtranMapperBackend backend = CtranMapperBackend::UNSET);
+
   /* Convenient wrapper of isendCtrl/irecvCtrl to post a blocking barrier among
    * all local ranks of the mapper associated communicator.
    */
@@ -506,7 +553,7 @@ class CtranMapper {
       void* dbuf,
       std::size_t len,
       int peerRank,
-      CtranMapperConfig config,
+      const CtranMapperConfig& config,
       CtranMapperRequest* req) {
     return iputImpl<PerfConfig>(sbuf, dbuf, len, peerRank, config, req);
   }
