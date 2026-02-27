@@ -44,7 +44,7 @@
 #include "meta/comms-monitor/CommsMonitor.h"
 #include "meta/commstate/FactoryCommStateX.h"
 #include "meta/ctran-integration/BaselineBootstrap.h"
-#include "meta/ctran-integration/BaselineConfig.h"
+#include "meta/hints/CommHintConfig.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/EventsScubaUtil.h"

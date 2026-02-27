@@ -1,4 +1,4 @@
-#include "meta/ctran-integration/BaselineConfig.h" // @manual
+#include "meta/hints/CommHintConfig.h" // @manual
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "meta/hints/GlobalHints.h" // @manual
 
