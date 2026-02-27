@@ -545,8 +545,65 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
     const std::vector<int>& ranks,
     const std::string& name,
     const CommOptions& options) {
-  throw std::runtime_error(
-      "XCCL split is not supported now and will be added later");
+  checkAndAbortIfTimedOutOrError();
+  std::unordered_set<int> rank_seen;
+  for (int rank : ranks) {
+    if (rank < 0 || rank >= comm_size_) {
+      throw std::runtime_error(
+          "Invalid rank " + std::to_string(rank) +
+          " in ranks. Valid ranks are 0 to " + std::to_string(comm_size_ - 1));
+    }
+    if (rank_seen.find(rank) != rank_seen.end()) {
+      throw std::runtime_error(
+          "Rank " + std::to_string(rank) + " appears multiple times in ranks");
+    }
+    rank_seen.insert(rank);
+  }
+
+  int color;
+  int new_rank; // Rank within the new communicator
+
+  if (ranks.empty()) {
+    color = ONECCL_SPLIT_NOCOLOR;
+    new_rank = INT_MAX; // Will not participate in new communicator and oneCCL
+                        // not accept -1
+  } else {
+    // Check if current rank is in the non-empty list
+    auto it = std::find(ranks.begin(), ranks.end(), rank_);
+    if (it == ranks.end()) {
+      // Current rank is not in the non-empty list - this is an error
+      throw std::runtime_error(
+          "Current rank " + std::to_string(rank_) +
+          " is not included in the provided ranks list");
+    }
+    // Set color to the lowest rank in the group and calculate new rank
+    color = *std::min_element(ranks.begin(), ranks.end());
+    new_rank = static_cast<int>(std::distance(ranks.begin(), it));
+  }
+
+  // Create a new XCCL communicator
+  onecclComm_t new_comm;
+  onecclConfig_t config = ONECCL_CONFIG_INITIALIZER;
+
+  populateXcclConfigFromHints(config, options, name);
+
+  onecclResult_t result =
+      xccl_api_->commSplit(xccl_comm_, color, new_rank, &new_comm, &config);
+  if (result != onecclSuccess) {
+    throw XCCLException(*xccl_api_, "XCCL split failed", result);
+  }
+
+  // If color was ONECCL_SPLIT_NOCOLOR, oneCCL returns nullptr in new_comm
+  if (color == ONECCL_SPLIT_NOCOLOR || new_comm == nullptr) {
+    return nullptr;
+  }
+
+  auto new_torchcomm =
+      std::shared_ptr<TorchCommXCCL>(new TorchCommXCCL(new_comm));
+  new_torchcomm->xccl_api_ = xccl_api_;
+  new_torchcomm->xpu_api_ = xpu_api_;
+  new_torchcomm->init(device_, name, options);
+  return new_torchcomm;
 }
 
 XCCLException::XCCLException(
