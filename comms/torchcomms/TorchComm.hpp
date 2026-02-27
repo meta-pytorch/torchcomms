@@ -106,6 +106,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   void finalize();
   int getRank() const;
   int getSize() const;
+  std::vector<int> getRanks() const;
   std::string_view getCommName() const;
 
   // Point-to-Point Operations

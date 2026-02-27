@@ -310,6 +310,15 @@ int TorchCommXCCL::getSize() const {
   return comm_size;
 }
 
+std::vector<int> TorchCommXCCL::getRanks() const {
+  int size = getSize();
+  std::vector<int> ranks(size);
+  for (int i = 0; i < size; ++i) {
+    ranks[i] = i;
+  }
+  return ranks;
+}
+
 std::string_view TorchCommXCCL::getBackendName() const {
   return kBackendName;
 }

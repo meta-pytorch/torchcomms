@@ -4,6 +4,7 @@
 #include <comms/torchcomms/TorchCommFactory.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
+#include <numeric>
 
 namespace torch::comms {
 
@@ -82,6 +83,12 @@ int TorchCommDummy::getRank() const {
 
 int TorchCommDummy::getSize() const {
   return size_;
+}
+
+std::vector<int> TorchCommDummy::getRanks() const {
+  std::vector<int> ranks(size_);
+  std::iota(ranks.begin(), ranks.end(), 0);
+  return ranks;
 }
 
 std::string_view TorchCommDummy::getCommName() const {

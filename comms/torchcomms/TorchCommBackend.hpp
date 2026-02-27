@@ -41,6 +41,7 @@ class TorchCommBackend {
   virtual void finalize() = 0;
   virtual int getRank() const = 0;
   virtual int getSize() const = 0;
+  virtual std::vector<int> getRanks() const = 0;
 
   // Name of the backend impl that's the same for all instances of a backend.
   virtual std::string_view getBackendName() const = 0;
