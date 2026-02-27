@@ -201,6 +201,8 @@ struct CudaError {
   1: i64 timestampMs;
   2: string errorString;
   3: i32 errorCode;
+  4: string scaleupDomain;
+  5: string localHostname;
 }
 
 // NOTE: Keep in sync with commDump.cc
