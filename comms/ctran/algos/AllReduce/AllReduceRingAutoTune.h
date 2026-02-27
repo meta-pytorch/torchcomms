@@ -36,13 +36,13 @@ struct AutoTuneParams {
 // CVAR overrides (applied after auto-tune, highest priority):
 //   TMPBUF_CHUNK_SIZE, TMPBUF_NUM_CHUNKS override pipeline params.
 //   MAX_NUM_THREAD_BLOCKS caps numBlocks (upper bound, does not inflate).
-//   THREAD_BLOCK_SIZE overrides blockSize unconditionally.
+//   THREAD_BLOCK_SIZE overrides blockSize (throws if > max occupancy).
 //   Chunk size override feeds into block params computation.
 AutoTuneParams getAutoTunedParams(
     size_t messageBytes,
     int nRanks,
     int maxOccupancyNumBlocks,
-    int defaultThreads,
+    int maxOccupancyBlockSize,
     size_t typeSize,
     GpuArch arch = GpuArch::Default);
 
@@ -50,7 +50,7 @@ AutoTuneParams getAutoTunedParams(
 void logAutoTuneDecisions(
     int nRanks,
     int maxOccupancyNumBlocks,
-    int defaultThreads,
+    int maxOccupancyBlockSize,
     size_t typeSize,
     GpuArch arch = GpuArch::Default);
 

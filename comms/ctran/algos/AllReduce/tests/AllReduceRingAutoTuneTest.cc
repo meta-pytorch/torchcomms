@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <set>
+#include <stdexcept>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -98,11 +99,11 @@ void verifyAutoTune(
     const AutoTuneExpected (&cases)[N],
     int nRanks,
     int maxOccNumBlocks,
-    int defThreads,
+    int maxOccBlockSize,
     GpuArch arch = GpuArch::Default) {
   for (const auto& c : cases) {
     auto at = getAutoTunedParams(
-        c.msgBytes, nRanks, maxOccNumBlocks, defThreads, 1, arch);
+        c.msgBytes, nRanks, maxOccNumBlocks, maxOccBlockSize, 1, arch);
     EXPECT_EQ(at.block.numBlocks, c.blocks)
         << "blocks mismatch at msg=" << c.msgBytes;
     EXPECT_EQ(at.block.blockSize, c.threads)
@@ -118,7 +119,7 @@ TEST(AutoTuneCombinedDefault, MaxBDP16M_8Ranks) {
   MaxBDPOverride o(16 * MB);
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
 
   // clang-format off
   const AutoTuneExpected cases[] = {
@@ -152,14 +153,14 @@ TEST(AutoTuneCombinedDefault, MaxBDP16M_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
 }
 
 TEST(AutoTuneCombinedDefault, MaxBDP32M_8Ranks) {
   MaxBDPOverride o(32 * MB);
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
 
   // clang-format off
   const AutoTuneExpected cases[] = {
@@ -193,14 +194,14 @@ TEST(AutoTuneCombinedDefault, MaxBDP32M_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
 }
 
 TEST(AutoTuneCombinedDefault, MaxBDP64M_8Ranks) {
   MaxBDPOverride o(64 * MB);
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
 
   // clang-format off
   const AutoTuneExpected cases[] = {
@@ -234,14 +235,14 @@ TEST(AutoTuneCombinedDefault, MaxBDP64M_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
 }
 
 TEST(AutoTuneCombinedDefault, MaxBDP128M_8Ranks) {
   MaxBDPOverride o(128 * MB);
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
 
   // clang-format off
   const AutoTuneExpected cases[] = {
@@ -275,7 +276,7 @@ TEST(AutoTuneCombinedDefault, MaxBDP128M_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
 }
 
 // ============================================================================
@@ -286,7 +287,7 @@ TEST(AutoTuneCombinedHopper, MaxBDP16M_8Ranks) {
   MaxBDPOverride o(16 * MB);
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
   const auto arch = GpuArch::Hopper;
 
   // clang-format off
@@ -321,14 +322,14 @@ TEST(AutoTuneCombinedHopper, MaxBDP16M_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads, arch);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize, arch);
 }
 
 TEST(AutoTuneCombinedHopper, MaxBDP32M_8Ranks) {
   MaxBDPOverride o(32 * MB);
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
   const auto arch = GpuArch::Hopper;
 
   // clang-format off
@@ -363,14 +364,14 @@ TEST(AutoTuneCombinedHopper, MaxBDP32M_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads, arch);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize, arch);
 }
 
 TEST(AutoTuneCombinedHopper, MaxBDP64M_8Ranks) {
   MaxBDPOverride o(64 * MB);
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
   const auto arch = GpuArch::Hopper;
 
   // clang-format off
@@ -405,14 +406,14 @@ TEST(AutoTuneCombinedHopper, MaxBDP64M_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads, arch);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize, arch);
 }
 
 TEST(AutoTuneCombinedHopper, MaxBDP128M_8Ranks) {
   MaxBDPOverride o(128 * MB);
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
   const auto arch = GpuArch::Hopper;
 
   // clang-format off
@@ -447,7 +448,7 @@ TEST(AutoTuneCombinedHopper, MaxBDP128M_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads, arch);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize, arch);
 }
 
 // ============================================================================
@@ -457,7 +458,7 @@ TEST(AutoTuneCombinedHopper, MaxBDP128M_8Ranks) {
 TEST(AutoTuneDefaultRankSweep, DefaultBDP_8Ranks) {
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
 
   // clang-format off
   const AutoTuneExpected cases[] = {
@@ -491,13 +492,13 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
 }
 
 TEST(AutoTuneDefaultRankSweep, DefaultBDP_16Ranks) {
   const int nRanks = 16;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
 
   // clang-format off
   const AutoTuneExpected cases[] = {
@@ -531,13 +532,13 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_16Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
 }
 
 TEST(AutoTuneDefaultRankSweep, DefaultBDP_32Ranks) {
   const int nRanks = 32;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
 
   // clang-format off
   const AutoTuneExpected cases[] = {
@@ -571,13 +572,13 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_32Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
 }
 
 TEST(AutoTuneDefaultRankSweep, DefaultBDP_64Ranks) {
   const int nRanks = 64;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
 
   // clang-format off
   const AutoTuneExpected cases[] = {
@@ -611,7 +612,7 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_64Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize);
 }
 
 // ============================================================================
@@ -621,7 +622,7 @@ TEST(AutoTuneDefaultRankSweep, DefaultBDP_64Ranks) {
 TEST(AutoTuneHopperRankSweep, DefaultBDP_8Ranks) {
   const int nRanks = 8;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
   const auto arch = GpuArch::Hopper;
 
   // clang-format off
@@ -656,13 +657,13 @@ TEST(AutoTuneHopperRankSweep, DefaultBDP_8Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads, arch);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize, arch);
 }
 
 TEST(AutoTuneHopperRankSweep, DefaultBDP_16Ranks) {
   const int nRanks = 16;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
   const auto arch = GpuArch::Hopper;
 
   // clang-format off
@@ -697,13 +698,13 @@ TEST(AutoTuneHopperRankSweep, DefaultBDP_16Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads, arch);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize, arch);
 }
 
 TEST(AutoTuneHopperRankSweep, DefaultBDP_32Ranks) {
   const int nRanks = 32;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
   const auto arch = GpuArch::Hopper;
 
   // clang-format off
@@ -738,13 +739,13 @@ TEST(AutoTuneHopperRankSweep, DefaultBDP_32Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads, arch);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize, arch);
 }
 
 TEST(AutoTuneHopperRankSweep, DefaultBDP_64Ranks) {
   const int nRanks = 64;
   const int maxOccNumBlocks = 64;
-  const int defThreads = 512;
+  const int maxOccBlockSize = 512;
   const auto arch = GpuArch::Hopper;
 
   // clang-format off
@@ -779,7 +780,7 @@ TEST(AutoTuneHopperRankSweep, DefaultBDP_64Ranks) {
   };
   // clang-format on
 
-  verifyAutoTune(cases, nRanks, maxOccNumBlocks, defThreads, arch);
+  verifyAutoTune(cases, nRanks, maxOccNumBlocks, maxOccBlockSize, arch);
 }
 
 // ============================================================================
@@ -789,7 +790,7 @@ TEST(AutoTuneHopperRankSweep, DefaultBDP_64Ranks) {
 class AutoTuneCVAROverrideTest : public ::testing::Test {
  protected:
   static constexpr int kMaxOccNumBlocks = 64;
-  static constexpr int kDefThreads = 512;
+  static constexpr int kMaxOccBlockSize = 512;
   static constexpr int kNRanks = 8;
   // Use a message size large enough that auto-tune produces non-trivial values.
   static constexpr size_t kMsg = 64 * MB;
@@ -800,7 +801,8 @@ TEST_F(AutoTuneCVAROverrideTest, ChunkSizeOnly) {
   MaxBDPOverride bdp(128 * MB);
   ChunkSizeOverride cs(1 * MB);
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+  auto at =
+      getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
   EXPECT_EQ(at.pipeline.chunkSize, 1 * MB);
   // numChunks is still auto-tuned (not overridden)
   EXPECT_GT(at.pipeline.numChunks, 0u);
@@ -811,7 +813,8 @@ TEST_F(AutoTuneCVAROverrideTest, NumChunksOnly) {
   MaxBDPOverride bdp(128 * MB);
   NumChunksOverride nc(4);
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+  auto at =
+      getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
   EXPECT_EQ(at.pipeline.numChunks, 4u);
   // chunkSize is still auto-tuned
   EXPECT_GT(at.pipeline.chunkSize, 0u);
@@ -823,48 +826,59 @@ TEST_F(AutoTuneCVAROverrideTest, ChunkSizeAndNumChunks) {
   ChunkSizeOverride cs(2 * MB);
   NumChunksOverride nc(8);
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+  auto at =
+      getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
   EXPECT_EQ(at.pipeline.chunkSize, 2 * MB);
   EXPECT_EQ(at.pipeline.numChunks, 8u);
 }
 
-// Block CVARs override auto-tuned block params.
-// numBlocks CVAR acts as an upper-bound cap (does not inflate).
-// blockSize CVAR is an unconditional override.
+// Block CVARs act as upper-bound caps (do not inflate past auto-tune).
 TEST_F(AutoTuneCVAROverrideTest, BlockOverrides) {
   MaxBDPOverride bdp(128 * MB);
 
-  // Case 1: CVAR < auto-tuned numBlocks → caps down.
+  // numBlocks: CVAR < auto-tuned → caps down.
   // 64MB Default → auto-tune gives 8 blocks; CVAR caps to 3.
   {
     NumBlocksOverride nb(3);
     BlockSizeOverride bs(384);
-    auto at =
-        getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
     EXPECT_EQ(at.block.numBlocks, 3);
-    EXPECT_EQ(at.block.blockSize, 384);
   }
 
-  // Case 2: CVAR > auto-tuned numBlocks → auto-tuned value preserved.
-  // Use a small chunkSize to get 1 auto-tuned block, set CVAR to 16.
+  // numBlocks: CVAR > auto-tuned → auto-tuned value preserved.
   {
     ChunkSizeOverride cs(4 * KB); // Default tier <8K → 1 block
     NumBlocksOverride nb(16);
-    auto at =
-        getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
     EXPECT_EQ(at.block.numBlocks, 1); // not inflated to 16
   }
 
-  // Case 3: CVAR > maxOccupancyNumBlocks → maxOccupancy still respected.
-  // Large chunkSize auto-tunes to 8 blocks, maxOccNumBlocks=3 clamps to 3.
-  // CVAR=5 is above maxOccNumBlocks but below unclamped auto-tune; must not
-  // inflate past maxOccupancy.
+  // numBlocks: CVAR > maxOccupancyNumBlocks → maxOccupancy still respected.
   {
     constexpr int lowMaxOccNumBlocks = 3;
     NumBlocksOverride nb(5);
-    auto at =
-        getAutoTunedParams(kMsg, kNRanks, lowMaxOccNumBlocks, kDefThreads, 1);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, lowMaxOccNumBlocks, kMaxOccBlockSize, 1);
     EXPECT_LE(at.block.numBlocks, lowMaxOccNumBlocks);
+  }
+
+  // blockSize: CVAR <= maxOccupancyBlockSize → overrides blockSize.
+  {
+    BlockSizeOverride bs(384);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
+    EXPECT_EQ(at.block.blockSize, 384);
+  }
+
+  // blockSize: CVAR > maxOccupancyBlockSize → throws InvalidArgument.
+  {
+    BlockSizeOverride bs(1024);
+    EXPECT_THROW(
+        getAutoTunedParams(
+            kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1),
+        std::invalid_argument);
   }
 }
 
@@ -889,8 +903,8 @@ TEST_F(AutoTuneCVAROverrideTest, ChunkSizeAffectsBlockParams) {
 
   for (const auto& c : cases) {
     ChunkSizeOverride cs(c.chunkSize);
-    auto at =
-        getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
     EXPECT_EQ(at.block.numBlocks, c.expectedBlocks)
         << "chunkSize=" << c.chunkSize;
   }
@@ -920,7 +934,7 @@ TEST_F(AutoTuneCVAROverrideTest, ChunkSizeAffectsBlockParamsHopper) {
   for (const auto& c : cases) {
     ChunkSizeOverride cs(c.chunkSize);
     auto at = getAutoTunedParams(
-        kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1, arch);
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1, arch);
     EXPECT_EQ(at.block.numBlocks, c.expectedBlocks)
         << "chunkSize=" << c.chunkSize;
     EXPECT_EQ(at.block.blockSize, c.expectedBlockSize)
@@ -939,8 +953,8 @@ TEST_F(AutoTuneCVAROverrideTest, BlockOverrideTakesPriorityOverChunkDerived) {
   {
     ChunkSizeOverride cs(1 * MB);
     NumBlocksOverride nb(2);
-    auto at =
-        getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
     EXPECT_EQ(at.pipeline.chunkSize, 1 * MB);
     EXPECT_EQ(at.block.numBlocks, 2);
   }
@@ -951,8 +965,8 @@ TEST_F(AutoTuneCVAROverrideTest, BlockOverrideTakesPriorityOverChunkDerived) {
   {
     ChunkSizeOverride cs(4 * KB);
     NumBlocksOverride nb(4);
-    auto at =
-        getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+    auto at = getAutoTunedParams(
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
     EXPECT_EQ(at.pipeline.chunkSize, 4 * KB);
     EXPECT_EQ(at.block.numBlocks, 1);
   }
@@ -966,7 +980,8 @@ TEST_F(AutoTuneCVAROverrideTest, AllFourOverrides) {
   NumBlocksOverride nb(4);
   BlockSizeOverride bs(256);
 
-  auto at = getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+  auto at =
+      getAutoTunedParams(kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
   EXPECT_EQ(at.pipeline.chunkSize, 512 * KB);
   EXPECT_EQ(at.pipeline.numChunks, 16u);
   EXPECT_EQ(at.block.numBlocks, 4);
@@ -980,7 +995,7 @@ TEST_F(AutoTuneCVAROverrideTest, AllFourOverrides) {
 class AutoTuneInvariantTest : public ::testing::Test {
  protected:
   static constexpr int kMaxOccNumBlocks = 64;
-  static constexpr int kDefThreads = 512;
+  static constexpr int kMaxOccBlockSize = 512;
   static constexpr int kNRanks = 8;
   // Use a message size large enough that auto-tune produces non-trivial values.
   static constexpr size_t kMsg = 64 * MB;
@@ -990,48 +1005,43 @@ class AutoTuneInvariantTest : public ::testing::Test {
 TEST_F(AutoTuneInvariantTest, SmallMaxBDP_ChunksReduced) {
   {
     MaxBDPOverride o(256 * KB);
-    auto at =
-        getAutoTunedParams(1 * MB, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+    auto at = getAutoTunedParams(
+        1 * MB, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
     EXPECT_EQ(at.pipeline.chunkSize, 16 * KB);
     EXPECT_EQ(at.pipeline.numChunks, 16u);
   }
   {
     MaxBDPOverride o(512 * KB);
-    auto at =
-        getAutoTunedParams(1 * MB, kNRanks, kMaxOccNumBlocks, kDefThreads, 1);
+    auto at = getAutoTunedParams(
+        1 * MB, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1);
     EXPECT_EQ(at.pipeline.chunkSize, 32 * KB);
     EXPECT_EQ(at.pipeline.numChunks, 16u);
   }
 }
 
 // maxOccupancyNumBlocks clamps block count; blockSize clamped by
-// defaultThreads. Hopper tiers have explicit blockSize values (384, 512) that
-// can exceed defaultThreads, exercising the std::min(blockSize, defaultThreads)
-// path.
+// maxOccupancyBlockSize. Hopper tiers have explicit blockSize values (384, 512)
+// that can exceed maxOccupancyBlockSize, exercising the std::min(blockSize,
+// maxOccupancyBlockSize) path.
 TEST_F(AutoTuneInvariantTest, MaxOccupancyClampWithBlockSize) {
   MaxBDPOverride bdp(128 * MB);
   const auto arch = GpuArch::Hopper;
 
   // Hopper tier: chunkSize < 16K -> {1 block, 384 threads}
-  // With defaultThreads=256, blockSize should clamp to 256.
+  // With maxOccupancyBlockSize=256, blockSize should clamp to 256.
   // With maxOccupancyNumBlocks=1, numBlocks stays 1 (no clamp needed).
   {
     ChunkSizeOverride cs(8 * KB);
     // Verify unclamped tier values are larger (clamping is meaningful)
     auto unclamped = getAutoTunedParams(
-        kMsg,
-        kNRanks,
-        /*maxOccupancyNumBlocks=*/kMaxOccNumBlocks,
-        kDefThreads,
-        1,
-        arch);
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1, arch);
     ASSERT_GE(unclamped.block.blockSize, 256);
 
     auto at = getAutoTunedParams(
         kMsg,
         kNRanks,
         /*maxOccupancyNumBlocks=*/1,
-        /*defaultThreads=*/256,
+        /*maxOccupancyBlockSize=*/256,
         1,
         arch);
     EXPECT_EQ(at.block.numBlocks, 1);
@@ -1039,18 +1049,13 @@ TEST_F(AutoTuneInvariantTest, MaxOccupancyClampWithBlockSize) {
   }
 
   // Hopper tier: chunkSize >= 512K -> {4 blocks, 512 threads}
-  // With defaultThreads=256, blockSize should clamp to 256.
+  // With maxOccupancyBlockSize=256, blockSize should clamp to 256.
   // With maxOccupancyNumBlocks=2, numBlocks should clamp to 2.
   {
     ChunkSizeOverride cs(1 * MB);
     // Verify unclamped tier values are larger (clamping is meaningful)
     auto unclamped = getAutoTunedParams(
-        kMsg,
-        kNRanks,
-        /*maxOccupancyNumBlocks=*/kMaxOccNumBlocks,
-        kDefThreads,
-        1,
-        arch);
+        kMsg, kNRanks, kMaxOccNumBlocks, kMaxOccBlockSize, 1, arch);
     ASSERT_GE(unclamped.block.numBlocks, 2);
     ASSERT_GE(unclamped.block.blockSize, 256);
 
@@ -1058,7 +1063,7 @@ TEST_F(AutoTuneInvariantTest, MaxOccupancyClampWithBlockSize) {
         kMsg,
         kNRanks,
         /*maxOccupancyNumBlocks=*/2,
-        /*defaultThreads=*/256,
+        /*maxOccupancyBlockSize=*/256,
         1,
         arch);
     EXPECT_EQ(at.block.numBlocks, 2); // clamped from 4
@@ -1155,13 +1160,13 @@ void checkPow2Equivalence(
     size_t msgBytes,
     int nRanks,
     int maxOccNumBlocks,
-    int defThreads,
+    int maxOccBlockSize,
     size_t maxBDP) {
   auto at =
-      getAutoTunedParams(msgBytes, nRanks, maxOccNumBlocks, defThreads, 1);
+      getAutoTunedParams(msgBytes, nRanks, maxOccNumBlocks, maxOccBlockSize, 1);
   size_t pow2Msg = roundToNearestPow2(msgBytes);
   auto atPow2 =
-      getAutoTunedParams(pow2Msg, nRanks, maxOccNumBlocks, defThreads, 1);
+      getAutoTunedParams(pow2Msg, nRanks, maxOccNumBlocks, maxOccBlockSize, 1);
   EXPECT_EQ(at.pipeline.chunkSize, atPow2.pipeline.chunkSize)
       << "pow2 mismatch chunkSize: msgBytes=" << msgBytes << " pow2=" << pow2Msg
       << " ranks=" << nRanks << " maxBDP=" << maxBDP;
@@ -1181,10 +1186,10 @@ void checkBDPBudget(
     size_t msgBytes,
     int nRanks,
     int maxOccNumBlocks,
-    int defThreads,
+    int maxOccBlockSize,
     size_t maxBDP) {
   auto at =
-      getAutoTunedParams(msgBytes, nRanks, maxOccNumBlocks, defThreads, 1);
+      getAutoTunedParams(msgBytes, nRanks, maxOccNumBlocks, maxOccBlockSize, 1);
   EXPECT_GT(at.pipeline.chunkSize, 0u)
       << "chunkSize=0: msgBytes=" << msgBytes << " ranks=" << nRanks
       << " maxBDP=" << maxBDP;
@@ -1209,7 +1214,7 @@ void checkChunkAlignment(
     size_t msgBytes,
     int nRanks,
     int maxOccNumBlocks,
-    int defThreads,
+    int maxOccBlockSize,
     size_t maxBDP) {
   constexpr size_t typeSizes[] = {1, 2, 4, 8};
   for (auto typeSize : typeSizes) {
@@ -1217,7 +1222,7 @@ void checkChunkAlignment(
       continue;
     }
     auto at = getAutoTunedParams(
-        msgBytes, nRanks, maxOccNumBlocks, defThreads, typeSize);
+        msgBytes, nRanks, maxOccNumBlocks, maxOccBlockSize, typeSize);
     EXPECT_EQ(at.pipeline.chunkSize % typeSize, 0u)
         << "Not aligned: msgBytes=" << msgBytes << " ranks=" << nRanks
         << " typeSize=" << typeSize << " maxBDP=" << maxBDP
@@ -1231,8 +1236,8 @@ void checkChunkAlignment(
   // 16B alignment for vectorized load/store, only meaningful when
   // chunkSize can be >= 16.
   if (msgBytes >= static_cast<size_t>(nRanks) * 16) {
-    auto at =
-        getAutoTunedParams(msgBytes, nRanks, maxOccNumBlocks, defThreads, 1);
+    auto at = getAutoTunedParams(
+        msgBytes, nRanks, maxOccNumBlocks, maxOccBlockSize, 1);
     EXPECT_EQ(at.pipeline.chunkSize % 16, 0u)
         << "Not 16B aligned: msgBytes=" << msgBytes << " ranks=" << nRanks
         << " maxBDP=" << maxBDP << " chunkSize=" << at.pipeline.chunkSize;
@@ -1257,10 +1262,11 @@ TEST_F(AutoTuneInvariantTest, CombinedInvariants) {
       }
       for (auto msgBytes : msgBytesProbes) {
         checkPow2Equivalence(
-            msgBytes, nRanks, kMaxOccNumBlocks, kDefThreads, maxBDP);
-        checkBDPBudget(msgBytes, nRanks, kMaxOccNumBlocks, kDefThreads, maxBDP);
+            msgBytes, nRanks, kMaxOccNumBlocks, kMaxOccBlockSize, maxBDP);
+        checkBDPBudget(
+            msgBytes, nRanks, kMaxOccNumBlocks, kMaxOccBlockSize, maxBDP);
         checkChunkAlignment(
-            msgBytes, nRanks, kMaxOccNumBlocks, kDefThreads, maxBDP);
+            msgBytes, nRanks, kMaxOccNumBlocks, kMaxOccBlockSize, maxBDP);
       }
     }
   }
