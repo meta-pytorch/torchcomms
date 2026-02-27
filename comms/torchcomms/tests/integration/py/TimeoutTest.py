@@ -40,12 +40,11 @@ def _run_eager_timeout_scenario() -> None:
         device,
         name="eager_timeout_subprocess_comm",
         abort_process_on_timeout_or_error=True,
-        timeout=timedelta(milliseconds=1),
     )
 
     if rank == 0:
         time.sleep(10)
-    comm.barrier(async_op=False)
+    comm.barrier(async_op=False, timeout=timedelta(milliseconds=1))
     torch.cuda.synchronize()
 
     # Should not reach here — process should have been aborted
@@ -66,7 +65,6 @@ def _run_eager_timeout_after_success_scenario() -> None:
         device,
         name="eager_timeout_after_success_subprocess_comm",
         abort_process_on_timeout_or_error=True,
-        timeout=timedelta(milliseconds=1),
     )
 
     # First barrier: all ranks participate, should succeed.
@@ -76,7 +74,7 @@ def _run_eager_timeout_after_success_scenario() -> None:
     # Second barrier: rank 0 delays, causing timeout on other ranks.
     if rank == 0:
         time.sleep(10)
-    comm.barrier(async_op=False)
+    comm.barrier(async_op=False, timeout=timedelta(milliseconds=1))
     torch.cuda.synchronize()
 
     # Should not reach here — process should have been aborted

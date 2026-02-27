@@ -80,8 +80,30 @@ class FatalStateTestMixin:
                         proc.args, proc.returncode, stdout, stderr
                     )
                 except subprocess.TimeoutExpired:
+                    # Kill all and collect output before raising
+                    for p in procs:
+                        if p.poll() is None:
+                            p.kill()
+                    for j, p in enumerate(procs):
+                        if results[j] is None:
+                            try:
+                                so, se = p.communicate(timeout=5)
+                            except (subprocess.TimeoutExpired, ValueError):
+                                so, se = b"", b""
+                            results[j] = subprocess.CompletedProcess(
+                                p.args, p.returncode or -9, so, se
+                            )
+                    # Dump all collected stderr for debugging
+                    dump = []
+                    for j, r in enumerate(results):
+                        if r is not None and r.stderr:
+                            dump.append(
+                                f"--- rank {j} stderr ---\n"
+                                + r.stderr.decode(errors="replace")
+                            )
                     raise AssertionError(
-                        f"Subprocess rank {i} timed out after {timeout}s."
+                        f"Subprocess rank {i} timed out after {timeout}s.\n"
+                        + "\n".join(dump)
                     )
         finally:
             for proc in procs:
