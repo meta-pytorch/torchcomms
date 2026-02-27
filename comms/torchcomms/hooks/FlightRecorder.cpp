@@ -795,6 +795,9 @@ float getDurationFromEvent(
 
 FlightRecorderHook::FlightRecorderHook(size_t max_entries, bool isolated) {
   if (isolated) {
+    // Reset global op_id generator so this isolated instance gets
+    // op_ids starting from 0. This ensures tests don't share op_ids.
+    ::torch::comms::resetGlobalOpIdGenerator();
     recorder_ = new FlightRecorder(max_entries, true);
     owns_recorder_ = true;
   } else {
@@ -932,6 +935,21 @@ void FlightRecorderHook::onPostHook(const TorchComm::PostHookArgs& args) {
     return;
   }
   recorder_->retire_id(args.op_id, false);
+
+  // Handle split operations - register the new communicator with flight
+  // recorder
+  if (args.name == OpName::split) {
+    if (auto new_comm = args.new_comm.lock()) {
+      splitHook(new_comm);
+    }
+  }
+}
+
+void FlightRecorderHook::splitHook(std::shared_ptr<TorchComm> new_comm) {
+  if (!enabled_ || !new_comm) {
+    return;
+  }
+  registerWithComm(std::move(new_comm));
 }
 
 std::string FlightRecorderHook::dump_json(bool include_completed) const {

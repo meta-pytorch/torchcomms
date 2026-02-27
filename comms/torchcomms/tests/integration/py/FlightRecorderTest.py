@@ -588,7 +588,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
         # Dump and verify entries
-        json_str = recorder.dump_json()
+        json_str = recorder.dump_json(True)
         data = json.loads(json_str)
         entries = data.get("entries", [])
 
@@ -634,7 +634,7 @@ class TestFlightRecorderHook(unittest.TestCase):
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
         # Dump and verify entries
-        json_str = recorder.dump_json()
+        json_str = recorder.dump_json(True)
         data = json.loads(json_str)
         entries = data.get("entries", [])
 
@@ -949,6 +949,173 @@ class TestFlightRecorderHook(unittest.TestCase):
                     os.remove(trace_file)
                 except OSError:
                     pass
+
+    def test_split_hook_registers_new_comm(self) -> None:
+        """Test that splitHook automatically registers the new communicator.
+
+        Verifies that when a communicator is split, the FlightRecorderHook
+        automatically registers the new communicator via splitHook, allowing
+        operations on the split communicator to be tracked.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_split_hook",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Get all ranks for the split
+        all_ranks = list(range(comm.get_size()))
+
+        # Split the communicator - this should trigger splitHook
+        split_comm = comm.split(all_ranks, "split_child")
+
+        # Perform an operation on the parent communicator
+        t_parent = torch.rand(10, 10, device=device)
+        comm.all_reduce(t_parent, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Perform an operation on the split communicator
+        # This should be tracked because splitHook registered it
+        t_child = torch.rand(5, 5, device=device)
+        split_comm.all_reduce(t_child, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Dump and verify entries (include_completed=True to see completed ops)
+        json_str = recorder.dump_json(True)
+        data = json.loads(json_str)
+        entries = data.get("entries", [])
+
+        # We expect at least 3 entries:
+        # 1. nccl:split (from the split operation)
+        # 2. nccl:all_reduce (from parent communicator)
+        # 3. nccl:all_reduce (from split communicator)
+        self.assertGreaterEqual(
+            len(entries), 3, "Should have entries for split and both all_reduce ops"
+        )
+
+        # Verify split operation is recorded
+        split_entries = [e for e in entries if e["profiling_name"] == "nccl:split"]
+        self.assertGreater(
+            len(split_entries), 0, "Should have recorded the split operation"
+        )
+
+        # Verify all_reduce operations are recorded (at least 2 - one from each comm)
+        all_reduce_entries = [
+            e for e in entries if e["profiling_name"] == "nccl:all_reduce"
+        ]
+        self.assertGreaterEqual(
+            len(all_reduce_entries),
+            2,
+            "Should have all_reduce entries from both parent and child communicators",
+        )
+
+        # Verify entries have different process_group names
+        # Parent should be "test_split_hook" and child should include "split_child"
+        pg_names = set()
+        for entry in entries:
+            if "process_group" in entry and len(entry["process_group"]) >= 1:
+                pg_names.add(entry["process_group"][0])
+
+        self.assertGreater(
+            len(pg_names),
+            1,
+            "Should have entries from multiple process groups (parent and child)",
+        )
+
+        # Validate all entry formats
+        for entry in entries:
+            self._validate_entry_format(entry)
+
+        # Clean up
+        split_comm.finalize()
+        recorder.unregister()
+        comm.finalize()
+
+    def test_split_hook_multiple_levels(self) -> None:
+        """Test that splitHook works correctly with multi-level splits.
+
+        Verifies that when a split communicator is further split, the
+        FlightRecorderHook correctly registers all levels of split communicators.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_multi_split",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Get all ranks
+        all_ranks = list(range(comm.get_size()))
+
+        # First level split
+        level1_comm = comm.split(all_ranks, "level1")
+
+        # Second level split from the first split
+        level2_comm = level1_comm.split(all_ranks, "level2")
+
+        # Perform operations at each level
+        t = torch.rand(10, 10, device=device)
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+        level1_comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+        level2_comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Dump and verify entries (include_completed=True to see completed ops)
+        json_str = recorder.dump_json(True)
+        data = json.loads(json_str)
+        entries = data.get("entries", [])
+
+        # We expect at least 5 entries:
+        # 2 splits + 3 all_reduce operations
+        self.assertGreaterEqual(
+            len(entries), 5, "Should have entries for 2 splits and 3 all_reduce ops"
+        )
+
+        # Verify split operations are recorded
+        split_entries = [e for e in entries if e["profiling_name"] == "nccl:split"]
+        self.assertEqual(
+            len(split_entries), 2, "Should have recorded both split operations"
+        )
+
+        # Verify all_reduce operations are recorded from all three communicators
+        all_reduce_entries = [
+            e for e in entries if e["profiling_name"] == "nccl:all_reduce"
+        ]
+        self.assertGreaterEqual(
+            len(all_reduce_entries),
+            3,
+            "Should have all_reduce entries from all three communicators",
+        )
+
+        # Verify we have entries from multiple process groups
+        pg_names = set()
+        for entry in entries:
+            if "process_group" in entry and len(entry["process_group"]) >= 1:
+                pg_names.add(entry["process_group"][0])
+
+        self.assertGreaterEqual(
+            len(pg_names),
+            3,
+            "Should have entries from 3 different process groups (root, level1, level2)",
+        )
+
+        # Validate all entry formats
+        for entry in entries:
+            self._validate_entry_format(entry)
+
+        # Clean up
+        level2_comm.finalize()
+        level1_comm.finalize()
+        recorder.unregister()
+        comm.finalize()
 
 
 if __name__ == "__main__":
