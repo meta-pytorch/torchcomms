@@ -112,6 +112,14 @@ ncclResult_t DefaultNcclxApi::globalDeregisterWithPtr(
   return ncclGlobalDeregisterWithPtr(buffer, size);
 }
 
+ncclResult_t DefaultNcclxApi::registerAll() {
+  return ncclRegisterAll();
+}
+
+ncclResult_t DefaultNcclxApi::deregisterAll() {
+  return ncclDeregisterAll();
+}
+
 ncclResult_t DefaultNcclxApi::send(
     const void* sendbuff,
     size_t count,

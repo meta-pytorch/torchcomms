@@ -2194,6 +2194,36 @@ std::shared_ptr<TorchCommBackend> TorchCommNCCLX::split(
   return new_torchcomm;
 }
 
+namespace {
+// Shared NcclxApi instance for global registration operations.
+// These operations don't require a communicator, so we use a single
+// shared instance rather than requiring one from the caller.
+NcclxApi& getGlobalNcclxApi() {
+  static DefaultNcclxApi instance;
+  return instance;
+}
+} // namespace
+
+void TorchCommNCCLX::registerAll() {
+  auto& nccl_api = getGlobalNcclxApi();
+  ncclResult_t result = nccl_api.registerAll();
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "Failed to register all cached memory segments: " +
+        std::string(nccl_api.getErrorString(result)));
+  }
+}
+
+void TorchCommNCCLX::deregisterAll() {
+  auto& nccl_api = getGlobalNcclxApi();
+  ncclResult_t result = nccl_api.deregisterAll();
+  if (result != ncclSuccess) {
+    throw std::runtime_error(
+        "Failed to deregister all cached memory segments: " +
+        std::string(nccl_api.getErrorString(result)));
+  }
+}
+
 void TorchCommNCCLX::global_register_address(
     const TorchCommNCCLX::AddressWithLen& addr,
     NcclxApi* nccl_api) {
@@ -2210,7 +2240,6 @@ void TorchCommNCCLX::global_deregister_address(
     const TorchCommNCCLX::AddressWithLen& addr,
     NcclxApi* nccl_api) {
   ncclResult_t result = nccl_api->globalDeregisterWithPtr(addr.addr, addr.len);
-
   if (result != ncclSuccess) {
     LOG(WARNING) << "[TC] Failed to globally deregister memory with NCCL (addr="
                  << addr.addr << ", len=" << addr.len
@@ -2228,14 +2257,14 @@ class NCCLXRegistration {
 
     // Register allocator factory with its own nccl_api instance
     TorchCommFactory::get().register_allocator_factory("ncclx", []() {
-      // Create nccl_api for this allocator (captured in lambdas below)
-      auto nccl_api = std::make_shared<DefaultNcclxApi>();
+      // Create nccl_api for this allocator (used by lambdas below)
+      static auto nccl_api = std::make_shared<DefaultNcclxApi>();
 
       static std::shared_ptr<c10::cuda::CUDACachingAllocator::CUDAAllocator>
           ncclx_allocator =
               torch::cuda::CUDAPluggableAllocator::createCustomAllocator(
                   // alloc_fn
-                  [nccl_api](size_t size, int device, cudaStream_t stream) {
+                  [](size_t size, int device, cudaStream_t stream) {
                     at::cuda::OptionalCUDAGuard gpuGuard(device);
                     void* ptr = nullptr;
                     ncclResult_t result = nccl_api->memAlloc(&ptr, size);
@@ -2249,8 +2278,7 @@ class NCCLXRegistration {
                     return ptr;
                   },
                   // free_fn
-                  [nccl_api](
-                      void* ptr, size_t size, int device, cudaStream_t stream) {
+                  [](void* ptr, size_t size, int device, cudaStream_t stream) {
                     LOG(INFO)
                         << "NCCL mem allocator: freeing " << ptr << " with "
                         << size << " bytes in stream " << stream;

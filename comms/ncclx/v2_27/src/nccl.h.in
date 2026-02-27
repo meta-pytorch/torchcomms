@@ -310,6 +310,23 @@ ncclResult_t pncclCommUserRank(const ncclComm_t comm, int* rank);
 ncclResult_t  ncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
 ncclResult_t pncclCommRegister(const ncclComm_t comm, void* buff, size_t size, void** handle);
 
+/* Register all cached memory segments. The function discovers all physical
+ * segments in the cache, groups adjacent segments into contiguous memory
+ * regions, and registers each contiguous region separately.
+ *
+ * This does not assume segments are contiguous - it finds all contiguous
+ * regions and creates one registration per region */
+ncclResult_t  ncclRegisterAll(void);
+ncclResult_t pncclRegisterAll(void);
+
+/* Deregister all non-dynamic registration elements from the global cache.
+ * This removes all registrations that were created via ncclRegisterAll() or
+ * ncclCommRegister(), but does NOT remove the cached segments themselves
+ * (they can be re-registered later). Dynamic registrations are not affected.
+ */
+ncclResult_t  ncclDeregisterAll(void);
+ncclResult_t pncclDeregisterAll(void);
+
 /* [DEPRECATED] Handle-based deregistration.
  * Prefer ncclGlobalDeregisterWithPtr for new code. */
 ncclResult_t  ncclCommDeregister(const ncclComm_t comm, void* handle);

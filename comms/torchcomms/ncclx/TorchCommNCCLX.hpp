@@ -250,6 +250,12 @@ class TorchCommNCCLX : public TorchCommBackend,
     cuda_api_ = std::move(api);
   }
 
+  // Register all cached memory segments in contiguous memory registrations.
+  void registerAll();
+
+  // Deregister all registrations from the global cache.
+  void deregisterAll();
+
   const CommOptions& getOptions() const override {
     return options_;
   }
