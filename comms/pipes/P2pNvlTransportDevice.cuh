@@ -847,10 +847,10 @@ class P2pNvlTransportDevice {
 
     // Distribute chunks across all groups using for_each_item_contiguous
     // Each group processes its assigned contiguous range of chunks
-    std::size_t chunkBytes = 0;
+    std::size_t totalBytesWritten = 0;
     group.for_each_item_contiguous(numChunks, [&](uint32_t chunkIdx) {
       const std::size_t chunkOffset = chunkIdx * alignedChunkSize;
-      chunkBytes += (chunkOffset + alignedChunkSize <= nbytes)
+      const std::size_t chunkBytes = (chunkOffset + alignedChunkSize <= nbytes)
           ? alignedChunkSize
           : nbytes - chunkOffset;
 
@@ -860,9 +860,10 @@ class P2pNvlTransportDevice {
             src_d + chunkOffset, // src_base
             chunkBytes, // chunk_bytes
             group);
+        totalBytesWritten += chunkBytes;
       }
     });
-    return chunkBytes;
+    return totalBytesWritten;
 #endif
     return 0;
   }

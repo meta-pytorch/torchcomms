@@ -281,7 +281,7 @@ class FlightRecorder {
   /**
    * Get the current number of entries.
    */
-  size_t size();
+  size_t size() const;
 
  private:
   // Returns the entry with the given id and reset_epoch, if it exists.
@@ -314,7 +314,7 @@ class FlightRecorder {
 
   bool enabled_ = false;
   bool capture_cpp_stack_ = false;
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::vector<Entry> entries_;
   size_t max_entries_ = 0;
   size_t id_ = 0;

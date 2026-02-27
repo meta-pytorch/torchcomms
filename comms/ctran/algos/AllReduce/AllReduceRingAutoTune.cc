@@ -6,6 +6,7 @@
 #include <bit>
 #include <cstddef>
 #include <iterator>
+#include <stdexcept>
 
 #include <fmt/format.h>
 
@@ -109,10 +110,10 @@ getAutoTunedPipeline(size_t messageBytes, int nRanks, GpuArch arch) {
 BlockParams getAutoTunedBlockParams(
     size_t chunkSize,
     int maxOccupancyNumBlocks,
-    int defaultThreads,
+    int maxOccupancyBlockSize,
     GpuArch arch) {
   // Lookup table: {exclusive chunkSize upper bound, numBlocks, blockSize}.
-  // blockSize == 0 means use defaultThreads (Default arch pass-through).
+  // blockSize == 0 means use maxOccupancyBlockSize (Default arch pass-through).
   struct Tier {
     size_t upTo;
     int numBlocks;
@@ -144,10 +145,11 @@ BlockParams getAutoTunedBlockParams(
 
   for (size_t i = 0; i < nTiers; ++i) {
     if (chunkSize < tiers[i].upTo) {
-      int blockSize = tiers[i].blockSize ? tiers[i].blockSize : defaultThreads;
+      int blockSize =
+          tiers[i].blockSize ? tiers[i].blockSize : maxOccupancyBlockSize;
       return {
           std::min(tiers[i].numBlocks, maxOccupancyNumBlocks),
-          std::min(blockSize, defaultThreads)};
+          std::min(blockSize, maxOccupancyBlockSize)};
     }
   }
   // Unreachable: kMax sentinel guarantees a match
@@ -160,7 +162,7 @@ AutoTuneParams getAutoTunedParams(
     size_t messageBytes,
     int nRanks,
     int maxOccupancyNumBlocks,
-    int defaultThreads,
+    int maxOccupancyBlockSize,
     size_t typeSize,
     GpuArch arch) {
   auto p = getAutoTunedPipeline(messageBytes, nRanks, arch);
@@ -183,12 +185,20 @@ AutoTuneParams getAutoTunedParams(
   }
 
   auto bp = getAutoTunedBlockParams(
-      p.chunkSize, maxOccupancyNumBlocks, defaultThreads, arch);
+      p.chunkSize, maxOccupancyNumBlocks, maxOccupancyBlockSize, arch);
   if (NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS > 0 &&
       bp.numBlocks > NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS) {
     bp.numBlocks = NCCL_CTRAN_ALLREDUCE_RING_MAX_NUM_THREAD_BLOCKS;
   }
   if (NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE > 0) {
+    if (NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE > maxOccupancyBlockSize) {
+      throw std::invalid_argument(
+          fmt::format(
+              "NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE ({}) exceeds "
+              "max occupancy block size ({})",
+              NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE,
+              maxOccupancyBlockSize));
+    }
     bp.blockSize = NCCL_CTRAN_ALLREDUCE_RING_THREAD_BLOCK_SIZE;
   }
 
@@ -198,7 +208,7 @@ AutoTuneParams getAutoTunedParams(
 void logAutoTuneDecisions(
     int nRanks,
     int maxOccupancyNumBlocks,
-    int defaultThreads,
+    int maxOccupancyBlockSize,
     size_t typeSize,
     GpuArch arch) {
   static_assert(
@@ -208,7 +218,12 @@ void logAutoTuneDecisions(
   for (int i = 0; i <= kPow2MaxExponent; i++) {
     const size_t sz = (1ULL << i) * kKB;
     const auto at = getAutoTunedParams(
-        sz, nRanks, maxOccupancyNumBlocks, defaultThreads, typeSize, arch);
+        sz,
+        nRanks,
+        maxOccupancyNumBlocks,
+        maxOccupancyBlockSize,
+        typeSize,
+        arch);
     CLOGF(
         DBG,
         "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",
@@ -222,7 +237,12 @@ void logAutoTuneDecisions(
       const size_t szNext = (1ULL << (i + 1)) * kKB;
       const size_t mid = (sz + szNext) / 2;
       const auto mat = getAutoTunedParams(
-          mid, nRanks, maxOccupancyNumBlocks, defaultThreads, typeSize, arch);
+          mid,
+          nRanks,
+          maxOccupancyNumBlocks,
+          maxOccupancyBlockSize,
+          typeSize,
+          arch);
       CLOGF(
           DBG,
           "AutoTune ranks {}, msg {}B: blocks {}, chunks {} x {}B",

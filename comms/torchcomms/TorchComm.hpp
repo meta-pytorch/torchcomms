@@ -229,6 +229,21 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   std::shared_ptr<TorchCommWindow> new_window(
       const std::optional<at::Tensor>& tensor = std::nullopt);
 
+  // Persistent AllGather operations
+  using AllGatherPHandle = TorchCommBackend::AllGatherPHandle;
+
+  AllGatherPHandle all_gather_p_init(
+      at::Tensor& output,
+      const AllGatherPInitOptions& options = {});
+
+  c10::intrusive_ptr<TorchWork> all_gather_p_exec(
+      AllGatherPHandle handle,
+      const at::Tensor& input,
+      bool async_op,
+      const AllGatherPExecOptions& options = {});
+
+  void all_gather_p_free(AllGatherPHandle handle);
+
   // Hooks
   struct PreHookArgs {
     OpName name{};

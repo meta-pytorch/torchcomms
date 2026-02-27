@@ -827,6 +827,13 @@ commResult_t CtranAlgo::initTmpBufs() {
   segmentManager.insert(TmpbufType::RING_TMP_SEND_BUF, ringBufSize);
   segmentManager.insert(TmpbufType::RING_TMP_RECV_BUF, ringBufSize);
 
+  // Reverse direction buffers for bi-directional AllGather (use same size as
+  // forward). Only allocate if bidir AG is not explicitly disabled.
+  if (NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE != 0) {
+    segmentManager.insert(TmpbufType::RING_TMP_SEND_BUF_REV, ringBufSize);
+    segmentManager.insert(TmpbufType::RING_TMP_RECV_BUF_REV, ringBufSize);
+  }
+
   // request slab buffer from memory pool
   if (comm_->memCache_) {
     std::stringstream ss;

@@ -690,9 +690,9 @@ std::string FlightRecorder::dump(
   return pickle_str(result);
 }
 
-size_t FlightRecorder::size() {
+size_t FlightRecorder::size() const {
   std::lock_guard<std::mutex> guard(mutex_);
-  return entries_.size();
+  return id_;
 }
 
 void DebugInfoWriter::write(const std::string& trace) {

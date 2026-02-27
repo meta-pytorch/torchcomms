@@ -541,7 +541,6 @@ __global__ void testMultiwarpSyncKernel(
 
   // Phase 2: Each thread verifies all threads in its multiwarp wrote their
   // values
-  constexpr uint32_t kMultiwarpSize = 128;
   uint32_t multiwarpStart = (tid / kMultiwarpSize) * kMultiwarpSize;
 
   for (uint32_t i = 0; i < kMultiwarpSize; i++) {

@@ -15,7 +15,31 @@ namespace comms::pipes::test {
 
 // Internal kernel declarations - only visible to CUDA compilation units
 
+__global__ void putSignalGroupKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal);
+
 __global__ void putSignalNonAdaptiveKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal);
+
+__global__ void putSignalGroupMultiWarpKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localBuf,
+    IbgdaRemoteBuffer remoteBuf,
+    std::size_t nbytes,
+    int signalId,
+    uint64_t signalVal);
+
+__global__ void putSignalGroupBlockKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,

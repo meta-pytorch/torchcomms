@@ -67,6 +67,56 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.reset()
         self.assertEqual(recorder.size(), 0)
 
+    def test_size_across_reset(self) -> None:
+        """Test that size() correctly returns 0 after reset.
+
+        This verifies that size() returns the number of entries in the
+        current epoch, not the total entries in the underlying buffer.
+        """
+        backend = os.environ["TEST_BACKEND"]
+        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
+        comm = torchcomms.new_comm(
+            backend=backend,
+            device=device,
+            name="test_size_reset",
+            timeout=timedelta(seconds=300),
+        )
+
+        recorder = FlightRecorderHook(max_entries=100, isolated=True)
+        recorder.register_with_comm(comm)
+
+        # Initially size should be 0
+        self.assertEqual(recorder.size(), 0)
+
+        # Run a collective operation
+        t = torch.rand(10, 10, device=device)
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Size should be 1 after one operation
+        self.assertEqual(recorder.size(), 1)
+
+        # Run another operation
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Size should be 2 after two operations
+        self.assertEqual(recorder.size(), 2)
+
+        # Reset the recorder
+        recorder.reset()
+
+        # Size should be 0 after reset
+        self.assertEqual(recorder.size(), 0)
+
+        # Run one more operation
+        comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
+
+        # Size should be 1 again after reset and one operation
+        self.assertEqual(recorder.size(), 1)
+
+        # Clean up
+        recorder.unregister()
+        comm.finalize()
+
     def _validate_entry_format(self, entry: dict) -> None:
         """Validate that an entry matches the OSS FlightRecorder format.
 
