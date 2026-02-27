@@ -25,9 +25,84 @@
 #include "comms/utils/cvars/nccl_cvars.h"
 #include "comms/utils/logger/LogUtils.h"
 
-CTRAN_DATATYPE_REDOP_TO_FUNC_MAPPER(typeToFunc, ncclKernelAllReduceCtranRing);
+// Helper macro for 3-arg template kernel function map entries
+#define CTRAN_RING_REDOP_FUNCMAP(dtype, type, bidir)               \
+  {std::make_pair(dtype, commSum),                                 \
+   reinterpret_cast<const void*>(                                  \
+       &ncclKernelAllReduceCtranRing<type, commSum, bidir>)},      \
+      {std::make_pair(dtype, commProd),                            \
+       reinterpret_cast<const void*>(                              \
+           &ncclKernelAllReduceCtranRing<type, commProd, bidir>)}, \
+      {std::make_pair(dtype, commAvg),                             \
+       reinterpret_cast<const void*>(                              \
+           &ncclKernelAllReduceCtranRing<type, commAvg, bidir>)},  \
+      {std::make_pair(dtype, commMax),                             \
+       reinterpret_cast<const void*>(                              \
+           &ncclKernelAllReduceCtranRing<type, commMax, bidir>)},  \
+  {                                                                \
+    std::make_pair(dtype, commMin),                                \
+        reinterpret_cast<const void*>(                             \
+            &ncclKernelAllReduceCtranRing<type, commMin, bidir>)   \
+  }
+
+// Bi-directional AG kernel map (EnableBidirAg=true)
+static const std::unordered_map<
+    std::pair<commDataType_t, commRedOp_t>,
+    const void*,
+    CtranPairHash>
+    typeToFuncBidir = {
+        CTRAN_RING_REDOP_FUNCMAP(commInt8, int8_t, true),
+        CTRAN_RING_REDOP_FUNCMAP(commUint8, uint8_t, true),
+        CTRAN_RING_REDOP_FUNCMAP(commInt32, int32_t, true),
+        CTRAN_RING_REDOP_FUNCMAP(commUint32, uint32_t, true),
+        CTRAN_RING_REDOP_FUNCMAP(commInt64, int64_t, true),
+        CTRAN_RING_REDOP_FUNCMAP(commUint64, uint64_t, true),
+        CTRAN_RING_REDOP_FUNCMAP(commFloat16, half, true),
+        CTRAN_RING_REDOP_FUNCMAP(commFloat32, float, true),
+        CTRAN_RING_REDOP_FUNCMAP(commFloat64, double, true),
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+        CTRAN_RING_REDOP_FUNCMAP(commBfloat16, __nv_bfloat16, true),
+#endif
+};
+
+// Simple kernel map (EnableBidirAg=false, lower register usage)
+static const std::unordered_map<
+    std::pair<commDataType_t, commRedOp_t>,
+    const void*,
+    CtranPairHash>
+    typeToFuncSimple = {
+        CTRAN_RING_REDOP_FUNCMAP(commInt8, int8_t, false),
+        CTRAN_RING_REDOP_FUNCMAP(commUint8, uint8_t, false),
+        CTRAN_RING_REDOP_FUNCMAP(commInt32, int32_t, false),
+        CTRAN_RING_REDOP_FUNCMAP(commUint32, uint32_t, false),
+        CTRAN_RING_REDOP_FUNCMAP(commInt64, int64_t, false),
+        CTRAN_RING_REDOP_FUNCMAP(commUint64, uint64_t, false),
+        CTRAN_RING_REDOP_FUNCMAP(commFloat16, half, false),
+        CTRAN_RING_REDOP_FUNCMAP(commFloat32, float, false),
+        CTRAN_RING_REDOP_FUNCMAP(commFloat64, double, false),
+#if defined(__CUDA_BF16_TYPES_EXIST__)
+        CTRAN_RING_REDOP_FUNCMAP(commBfloat16, __nv_bfloat16, false),
+#endif
+};
 
 namespace ctran::allreduce::ring {
+
+// Check if bi-directional AllGather should be enabled based on CVAR and
+// message size.
+// Returns true if bidir AG should be used, false for simple kernel.
+inline bool shouldEnableBidirAg(size_t messageBytes) {
+  int64_t maxSize = NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE;
+  if (maxSize == 0) {
+    // Explicitly disabled
+    return false;
+  }
+  if (maxSize < 0) {
+    // -1 means enable for all sizes
+    return true;
+  }
+  // Enable only for messages up to maxSize
+  return messageBytes <= static_cast<size_t>(maxSize);
+}
 
 struct HostArgs {
   int32_t rank{-1};
@@ -39,12 +114,22 @@ struct HostArgs {
   unsigned int numBlocks{0};
   unsigned int numThreads{0};
 
-  // Remote receive buffer on right
+  // Enable bi-directional AllGather optimization
+  bool enableBidirAg{true};
+
+  // Forward: remote receive buffer on right
   void* rightRemBuf{nullptr};
   CtranMapperRemoteAccessKey rightRemKey;
 
-  // Local receive buffer notify from left
+  // Forward: receive notifications from left
   std::unique_ptr<CtranMapperNotify> leftNotify{nullptr};
+
+  // Reverse: remote receive buffer on left (left neighbor's tmpRecvBufRev)
+  void* leftRemBufRev{nullptr};
+  CtranMapperRemoteAccessKey leftRemKeyRev;
+
+  // Reverse: receive notifications from right
+  std::unique_ptr<CtranMapperNotify> rightNotify{nullptr};
 };
 struct HostResource {
   CtranComm* comm{nullptr};
@@ -59,6 +144,14 @@ struct HostResource {
   void* tmpSendBufHdl{nullptr};
   void* tmpRecvBuf{nullptr};
   void* tmpRecvBufHdl{nullptr};
+
+  // Reverse direction
+  ctran::algos::GpeKernelSync* revSendCopySync{nullptr};
+  ctran::algos::GpeKernelSync* revRecvCopySync{nullptr};
+  void* tmpSendBufRev{nullptr};
+  void* tmpSendBufRevHdl{nullptr};
+  void* tmpRecvBufRev{nullptr};
+  void* tmpRecvBufRevHdl{nullptr};
 };
 
 namespace {
@@ -539,6 +632,303 @@ inline void progressRecv(
   }
 }
 
+// ===== Reverse direction progress functions for bi-directional AllGather =====
+
+inline void prePostRevRecvRemRecvBuf(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revBufSyncRResps) {
+  int totalRounds = algoCtx.opRounds[Op::kRevSendTrans].totalRounds;
+  if (totalRounds == 0)
+    return;
+
+  // Pre-post recvCtrls to receive postRecvBuf sync from left neighbor
+  revBufSyncRResps.resize(totalRounds);
+  for (int round = 0; round < totalRounds; round++) {
+    CtranMapperRequest* req;
+    FB_COMMCHECKTHROW_EX(
+        resource.comm->ctran_->mapper->irecvCtrl(args.leftRank, &req),
+        resource.comm->logMetaData_);
+    revBufSyncRResps.at(round).reset(req);
+  }
+}
+
+inline bool progressRevSendCheckSendBuf(const AlgoContext& algoCtx) {
+  int round = algoCtx.opRounds[Op::kRevSendCopy].post;
+  if (round < algoCtx.numChunks)
+    return true;
+  int prevRound = round - algoCtx.numChunks;
+  return algoCtx.opRounds[Op::kRevSendTrans].done > prevRound;
+}
+
+inline void progressRevSendPostCopyKern(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx) {
+  int round = algoCtx.opRounds[Op::kRevSendCopy].post;
+  resource.revSendCopySync->post(round);
+}
+
+inline bool progressRevSendCheckCopyKern(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx) {
+  int round = algoCtx.opRounds[Op::kRevSendCopy].done;
+  return resource.revSendCopySync->isComplete(round);
+}
+
+inline bool progressRevSendCheckRemRecvBuf(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revBufSyncRResps) {
+  int round = algoCtx.opRounds[Op::kRevSendTrans].post;
+  int prevRound = round - algoCtx.numChunks;
+  if (prevRound < 0)
+    return true;
+
+  auto& resp = revBufSyncRResps.at(prevRound);
+  FB_CHECKTHROW_EX(
+      resp != nullptr,
+      resource.comm->logMetaData_,
+      fmt::format(
+          "revBufSyncRResps is not initialized at round {}", prevRound));
+  bool isComplete = false;
+  FB_COMMCHECKTHROW_EX(
+      resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
+      resource.comm->logMetaData_);
+  return isComplete;
+}
+
+inline void progressRevSendPostTrans(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revDataSResps) {
+  int round = algoCtx.opRounds[Op::kRevSendTrans].post;
+  auto& opStep = algoCtx.opRounds[Op::kRevSendTrans].postStep;
+
+  int tmpChunkId = getTmpChunkId(algoCtx, round);
+  auto chunkArg = getRevRoundArgs<Op::kRevSendTrans>(algoCtx, round, opStep);
+  FB_CHECKTHROW_EX(
+      chunkArg.numel > 0,
+      resource.comm->logMetaData_,
+      "Unexpected empty chunk in rev send");
+
+  // iput to left neighbor's tmpRecvBufRev
+  char* tmpRemoteRecvBufRev = reinterpret_cast<char*>(args.leftRemBufRev) +
+      tmpChunkId * algoCtx.chunkSize;
+  char* tmpSendBufRev = reinterpret_cast<char*>(resource.tmpSendBufRev) +
+      tmpChunkId * algoCtx.chunkSize;
+
+  static thread_local auto allReduceConfig =
+      resource.comm->ctran_->algo->getCollToVcConfig(CollType::ALLREDUCE);
+
+  CtranMapperRequest* req;
+  FB_COMMCHECKTHROW_EX(
+      resource.comm->ctran_->mapper->iput(
+          tmpSendBufRev,
+          tmpRemoteRecvBufRev,
+          chunkArg.numel * algoCtx.typeSize,
+          args.leftRank,
+          CtranMapperConfig{
+              .memHdl_ = resource.tmpSendBufRevHdl,
+              .remoteAccessKey_ = args.leftRemKeyRev,
+              .notify_ = true,
+              .ibConfig_ = allReduceConfig},
+          &req),
+      resource.comm->logMetaData_);
+  revDataSResps.at(round).reset(req);
+}
+
+inline void progressRevSendCheckTrans(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    AlgoContext& algoCtx,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revDataSResps) {
+  int startRound = algoCtx.opRounds[Op::kRevSendTrans].done;
+  int lastRound = algoCtx.opRounds[Op::kRevSendTrans].post;
+  for (int r = startRound; r < lastRound; r++) {
+    auto& resp = revDataSResps.at(r);
+    if (resp) {
+      bool isComplete = false;
+      FB_COMMCHECKTHROW_EX(
+          resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
+          resource.comm->logMetaData_);
+      if (isComplete) {
+        opUpdateDone<Op::kRevSendTrans>(algoCtx);
+      }
+    }
+  }
+}
+
+inline bool progressRevRecvCheckTrans(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx) {
+  bool done = false;
+  FB_COMMCHECKTHROW_EX(
+      resource.comm->ctran_->mapper->checkNotify(args.rightNotify.get(), &done),
+      resource.comm->logMetaData_);
+  return done;
+}
+
+inline void progressRevRecvPostFlush(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    AlgoContext& algoCtx,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revFlushResps) {
+  int round = algoCtx.opRounds[Op::kRevRecvFlush].post;
+  int tmpChunkId = getTmpChunkId(algoCtx, round);
+  char* tmpRecvBufRev = reinterpret_cast<char*>(resource.tmpRecvBufRev) +
+      tmpChunkId * algoCtx.chunkSize;
+
+  CtranMapperRequest* req = nullptr;
+  FB_COMMCHECKTHROW_EX(
+      resource.comm->ctran_->mapper->iflush(
+          tmpRecvBufRev, resource.tmpRecvBufRevHdl, &req),
+      resource.comm->logMetaData_);
+  revFlushResps.at(round).reset(req);
+}
+
+inline bool progressRevRecvCheckFlush(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    AlgoContext& algoCtx,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revFlushResps) {
+  int round = algoCtx.opRounds[Op::kRevRecvFlush].done;
+  auto& resp = revFlushResps.at(round);
+  FB_CHECKTHROW_EX(
+      resp != nullptr,
+      resource.comm->logMetaData_,
+      fmt::format("Rev flush resp is not initialized at round {}", round));
+  bool isComplete = false;
+  FB_COMMCHECKTHROW_EX(
+      resource.comm->ctran_->mapper->testRequest(resp.get(), &isComplete),
+      resource.comm->logMetaData_);
+  return isComplete;
+}
+
+inline bool progressRevRecvCheckSendBuf(const AlgoContext& algoCtx) {
+  int round = algoCtx.opRounds[Op::kRevRecvCopy].post;
+  int step = algoCtx.opRounds[Op::kRevRecvCopy].postStep.step;
+  if (!isRevRecvFwd(algoCtx, step))
+    return true;
+
+  // The rev recv copy also copies to tmpSendBufRev for forwarding.
+  // The corresponding send round is firstRevShardChunks + round.
+  int firstRevShardChunks = algoCtx.opRounds[Op::kRevSendCopy].totalRounds;
+  int fwdRound = firstRevShardChunks + round;
+  int prevRound = fwdRound - algoCtx.numChunks;
+  return algoCtx.opRounds[Op::kRevSendTrans].done > prevRound;
+}
+
+inline void progressRevRecvPostCopyKern(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx) {
+  int round = algoCtx.opRounds[Op::kRevRecvCopy].post;
+  resource.revRecvCopySync->post(round);
+}
+
+inline bool progressRevRecvCheckCopyKern(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx) {
+  int round = algoCtx.opRounds[Op::kRevRecvCopy].done;
+  return resource.revRecvCopySync->isComplete(round);
+}
+
+inline void progressRevRecvPostRecvBuf(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    const AlgoContext& algoCtx,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revBufSyncSResps) {
+  int round = algoCtx.opRounds[Op::kRevRecvCopy].done;
+
+  CtranMapperRequest* req;
+  FB_COMMCHECKTHROW_EX(
+      resource.comm->ctran_->mapper->isendCtrl(args.rightRank, &req),
+      resource.comm->logMetaData_);
+  revBufSyncSResps.at(round).reset(req);
+}
+
+inline void progressRevSend(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    AlgoContext& algoCtx,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revDataSResps,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revBufSyncRResps) {
+  if (algoCtx.numRevAgSteps == 0)
+    return;
+
+  if (opReadyToPost<Op::kRevSendCopy>(algoCtx) &&
+      progressRevSendCheckSendBuf(algoCtx)) {
+    progressRevSendPostCopyKern(args, resource, algoCtx);
+    opUpdatePost<Op::kRevSendCopy>(algoCtx);
+  }
+
+  if (opHasPosted<Op::kRevSendCopy>(algoCtx) &&
+      progressRevSendCheckCopyKern(args, resource, algoCtx)) {
+    opUpdateDone<Op::kRevSendCopy>(algoCtx);
+  }
+
+  if (opReadyToPost<Op::kRevSendTrans>(algoCtx)) {
+    if (progressRevSendCheckRemRecvBuf(
+            args, resource, algoCtx, revBufSyncRResps)) {
+      progressRevSendPostTrans(args, resource, algoCtx, revDataSResps);
+      opUpdatePost<Op::kRevSendTrans>(algoCtx);
+    }
+  }
+
+  progressRevSendCheckTrans(args, resource, algoCtx, revDataSResps);
+}
+
+inline void progressRevRecv(
+    const ctran::allreduce::ring::HostArgs& args,
+    ctran::allreduce::ring::HostResource& resource,
+    AlgoContext& algoCtx,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revBufSyncSResps,
+    std::vector<std::unique_ptr<CtranMapperRequest>>& revFlushResps) {
+  if (algoCtx.numRevAgSteps == 0)
+    return;
+
+  if (opReadyToPost<Op::kRevRecvTrans>(algoCtx) &&
+      progressRevRecvCheckTrans(args, resource, algoCtx)) {
+    opUpdatePost<Op::kRevRecvTrans>(algoCtx);
+    opUpdateDone<Op::kRevRecvTrans>(algoCtx);
+  }
+
+  if (opReadyToPost<Op::kRevRecvFlush>(algoCtx)) {
+    progressRevRecvPostFlush(args, resource, algoCtx, revFlushResps);
+    opUpdatePost<Op::kRevRecvFlush>(algoCtx);
+  }
+
+  if (opHasPosted<Op::kRevRecvFlush>(algoCtx)) {
+    if (progressRevRecvCheckFlush(args, resource, algoCtx, revFlushResps)) {
+      opUpdateDone<Op::kRevRecvFlush>(algoCtx);
+    }
+  }
+
+  if (opReadyToPost<Op::kRevRecvCopy>(algoCtx)) {
+    int step = algoCtx.opRounds[Op::kRevRecvCopy].postStep.step;
+    if (!isRevRecvFwd(algoCtx, step) || progressRevRecvCheckSendBuf(algoCtx)) {
+      progressRevRecvPostCopyKern(args, resource, algoCtx);
+      opUpdatePost<Op::kRevRecvCopy>(algoCtx);
+    }
+  }
+
+  if (opHasPosted<Op::kRevRecvCopy>(algoCtx)) {
+    if (progressRevRecvCheckCopyKern(args, resource, algoCtx)) {
+      progressRevRecvPostRecvBuf(args, resource, algoCtx, revBufSyncSResps);
+      opUpdateDone<Op::kRevRecvCopy>(algoCtx);
+    }
+  }
+}
+
+// ===== End reverse direction progress functions =====
+
 inline int waitAllResps(
     std::vector<std::unique_ptr<CtranMapperRequest>>& reqs,
     CtranComm* comm,
@@ -558,7 +948,11 @@ inline void updatePartitionCtxHost(
     const ctran::allreduce::ring::HostArgs& args,
     ctran::allreduce::ring::HostResource& resource,
     AlgoContext& algoCtx) {
-  updatePartitionCtx(algoCtx);
+  if (args.enableBidirAg) {
+    updatePartitionCtx<true>(algoCtx);
+  } else {
+    updatePartitionCtx<false>(algoCtx);
+  }
   if (algoCtx.partition > 0) {
     // Sync with kernel to start the new partition if not the first one.
     resource.partitionSync->post(algoCtx.partition);
@@ -569,12 +963,15 @@ inline void exchangePeerTmpBufs(
     CtranComm* comm,
     ctran::allreduce::ring::HostArgs& args) {
   // complete resource setup for ones needing the EpochLock
+  // Capture both right (for forward) and left (for reverse) remote buf info
   if (comm->statex_->rank() % 2 == 0) {
     std::tie(args.rightRemBuf, args.rightRemKey) =
         comm->ctran_->algo->getRemoteTmpBufInfo(args.rightRank);
-    comm->ctran_->algo->getRemoteTmpBufInfo(args.leftRank);
+    std::tie(args.leftRemBufRev, args.leftRemKeyRev) =
+        comm->ctran_->algo->getRemoteTmpBufInfo(args.leftRank);
   } else {
-    comm->ctran_->algo->getRemoteTmpBufInfo(args.leftRank);
+    std::tie(args.leftRemBufRev, args.leftRemKeyRev) =
+        comm->ctran_->algo->getRemoteTmpBufInfo(args.leftRank);
     std::tie(args.rightRemBuf, args.rightRemKey) =
         comm->ctran_->algo->getRemoteTmpBufInfo(args.rightRank);
   }
@@ -586,6 +983,7 @@ inline commResult_t completeHostResourceSetup(
     ctran::allreduce::ring::HostResource& resource) {
   exchangePeerTmpBufs(comm, args);
 
+  // Forward: notifications from left on tmpRecvBuf
   args.leftNotify.reset(new CtranMapperNotify());
   FB_COMMCHECK(comm->ctran_->mapper->initNotify(
       args.leftRank, resource.tmpRecvBufHdl, args.leftNotify.get()));
@@ -593,6 +991,16 @@ inline commResult_t completeHostResourceSetup(
   size_t offsetRingTmpRecv = comm->ctran_->algo->getTmpBufOffset(
       CtranAlgo::TmpbufType::RING_TMP_RECV_BUF);
   args.rightRemBuf = (char*)args.rightRemBuf + offsetRingTmpRecv;
+
+  // Reverse: notifications from right on tmpRecvBufRev
+  args.rightNotify.reset(new CtranMapperNotify());
+  FB_COMMCHECK(comm->ctran_->mapper->initNotify(
+      args.rightRank, resource.tmpRecvBufRevHdl, args.rightNotify.get()));
+
+  // Point leftRemBufRev to left neighbor's tmpRecvBufRev segment
+  size_t offsetRingTmpRecvRev = comm->ctran_->algo->getTmpBufOffset(
+      CtranAlgo::TmpbufType::RING_TMP_RECV_BUF_REV);
+  args.leftRemBufRev = (char*)args.leftRemBufRev + offsetRingTmpRecvRev;
 
   return commSuccess;
 }
@@ -635,21 +1043,18 @@ static commResult_t impl(
   };
   setupAlgoCtxImpl(algoCtx);
 
+  // Forward direction request vectors
   std::vector<std::unique_ptr<CtranMapperRequest>> dataSResps;
-  // - Responses for sync control send to left neighbor. Need wait for a
-  // previous response to finish when want to post the same recvBuf chunk.
   std::vector<std::unique_ptr<CtranMapperRequest>> bufSyncSResps;
-  // - Responses for sync control recv from right neighbor. Need wait for a
-  // previous recvCtrl to finish when want to post irecvCtrl for the same
-  // remote recvBuf chunk.
   std::vector<std::unique_ptr<CtranMapperRequest>> bufSyncRResps;
-  // - Responses for local flush received data.
   std::vector<std::unique_ptr<CtranMapperRequest>> flushResps;
 
-  // Split data into 1~N partitions, each partition is up to chunkSize *
-  // numChunks * contextSize bytes. For each partition, we perform a
-  // ReduceScatter phase and an AllGather phase to complete the transfer before
-  // we move to next partition.
+  // Reverse direction request vectors
+  std::vector<std::unique_ptr<CtranMapperRequest>> revDataSResps;
+  std::vector<std::unique_ptr<CtranMapperRequest>> revBufSyncSResps;
+  std::vector<std::unique_ptr<CtranMapperRequest>> revBufSyncRResps;
+  std::vector<std::unique_ptr<CtranMapperRequest>> revFlushResps;
+
   while (algoCtx.partitionOffset < algoCtx.numElements) {
     updatePartitionCtxHost(args, resource, algoCtx);
     CLOGF_TRACE(
@@ -660,23 +1065,35 @@ static commResult_t impl(
     int totalSendTrans = algoCtx.opRounds[Op::kSendTrans].totalRounds;
     int totalRecvTrans = algoCtx.opRounds[Op::kRecvTrans].totalRounds;
     dataSResps.resize(totalSendTrans);
-    // - Responses for sync control send to left neighbor. Need wait for a
-    // previous response to finish when want to post the same recvBuf chunk.
     bufSyncSResps.resize(totalRecvTrans);
-    // - Responses for sync control recv from right neighbor. Need wait for a
-    // previous recvCtrl to finish when want to post irecvCtrl for the same
-    // remote recvBuf chunk.
     bufSyncRResps.resize(totalSendTrans);
-    // - Responses for local flush received data.
     flushResps.resize(totalRecvTrans);
 
-    prePostRecvRemRecvBuf(args, resource, algoCtx, bufSyncRResps);
+    int totalRevSendTrans = algoCtx.opRounds[Op::kRevSendTrans].totalRounds;
+    int totalRevRecvTrans = algoCtx.opRounds[Op::kRevRecvTrans].totalRounds;
+    revDataSResps.resize(totalRevSendTrans);
+    revBufSyncSResps.resize(totalRevRecvTrans);
+    revBufSyncRResps.resize(totalRevSendTrans);
+    revFlushResps.resize(totalRevRecvTrans);
 
-    // Ring main loop
-    while (algoCtx.opRounds[Op::kSendTrans].done <
-               algoCtx.opRounds[Op::kSendTrans].totalRounds ||
-           algoCtx.opRounds[Op::kRecvRedCopy].done <
-               algoCtx.opRounds[Op::kRecvRedCopy].totalRounds) {
+    prePostRecvRemRecvBuf(args, resource, algoCtx, bufSyncRResps);
+    prePostRevRecvRemRecvBuf(args, resource, algoCtx, revBufSyncRResps);
+
+    // Ring main loop: forward + reverse directions
+    auto fwdNotDone = [&]() {
+      return algoCtx.opRounds[Op::kSendTrans].done <
+          algoCtx.opRounds[Op::kSendTrans].totalRounds ||
+          algoCtx.opRounds[Op::kRecvRedCopy].done <
+          algoCtx.opRounds[Op::kRecvRedCopy].totalRounds;
+    };
+    auto revNotDone = [&]() {
+      return algoCtx.opRounds[Op::kRevSendTrans].done <
+          algoCtx.opRounds[Op::kRevSendTrans].totalRounds ||
+          algoCtx.opRounds[Op::kRevRecvCopy].done <
+          algoCtx.opRounds[Op::kRevRecvCopy].totalRounds;
+    };
+
+    while (fwdNotDone() || revNotDone()) {
       if (op->allreduce.datatype == commInt8 ||
           op->allreduce.datatype == commChar ||
           op->allreduce.datatype == commUint8 ||
@@ -698,35 +1115,26 @@ static commResult_t impl(
             commInvalidArgument);
       }
       progressSend(args, resource, algoCtx, dataSResps, bufSyncRResps);
-      HOST_ABORT();
       progressRecv(args, resource, algoCtx, bufSyncSResps, flushResps);
+      progressRevSend(args, resource, algoCtx, revDataSResps, revBufSyncRResps);
+      progressRevRecv(args, resource, algoCtx, revBufSyncSResps, revFlushResps);
       HOST_ABORT();
     }
 
     // Release any remaining resps before moving to next partition
-    int numDataSResps = waitAllResps(dataSResps, comm, "wait final dataSResps");
-    int numSyncSResps =
-        waitAllResps(bufSyncSResps, comm, "wait final bufSyncSResps");
-    int numSyncRResps =
-        waitAllResps(bufSyncRResps, comm, "wait final bufSyncRResps");
+    waitAllResps(dataSResps, comm, "wait final dataSResps");
+    waitAllResps(bufSyncSResps, comm, "wait final bufSyncSResps");
+    waitAllResps(bufSyncRResps, comm, "wait final bufSyncRResps");
+    waitAllResps(revDataSResps, comm, "wait final revDataSResps");
+    waitAllResps(revBufSyncSResps, comm, "wait final revBufSyncSResps");
+    waitAllResps(revBufSyncRResps, comm, "wait final revBufSyncRResps");
 
-    CLOGF_TRACE(
-        COLL,
-        "Partition {} offset {} numel {} finished with {} syncSResps {} syncRResps {} dataSResps",
-        algoCtx.partition,
-        algoCtx.partitionOffset,
-        algoCtx.partitionNumel,
-        numSyncSResps,
-        numSyncRResps,
-        numDataSResps);
-
-    // Reset flags for next partition to reuse.
-    // Kernel will wait for partitionSync update before checking the sync flags
-    // for the next partition.
+    // Reset flags for next partition to reuse
     resource.sendCopySync->resetStatus();
     resource.recvRedCopySync->resetStatus();
+    resource.revSendCopySync->resetStatus();
+    resource.revRecvCopySync->resetStatus();
 
-    // update local context
     updatePartitionDone(algoCtx);
     HOST_ABORT();
   } // end of partition loop
@@ -735,6 +1143,8 @@ static commResult_t impl(
   resource.sendCopySync->reset();
   resource.recvRedCopySync->reset();
   resource.partitionSync->reset();
+  resource.revSendCopySync->reset();
+  resource.revRecvCopySync->reset();
 
   return commSuccess;
 }
@@ -862,6 +1272,13 @@ commResult_t ctranAllReduceRing(
   std::vector<std::unique_ptr<struct OpElem>> opGroup;
   std::unique_ptr<struct OpElem> op;
 
+  const size_t messageBytes = count * typeSize;
+
+  // Select kernel based on bi-directional AG CVAR and message size
+  const bool enableBidirAg =
+      ctran::allreduce::ring::shouldEnableBidirAg(messageBytes);
+  const auto& typeToFunc = enableBidirAg ? typeToFuncBidir : typeToFuncSimple;
+
   FB_CHECKTHROW_EX(
       typeToFunc.contains(std::make_pair(datatype, redOp)),
       comm->logMetaData_,
@@ -870,8 +1287,6 @@ commResult_t ctranAllReduceRing(
           datatype,
           redOp));
   const void* func = typeToFunc.at(std::make_pair(datatype, redOp));
-
-  const size_t messageBytes = count * typeSize;
 
   int numBlocks = 0;
   int numThreads = 0;
@@ -906,7 +1321,9 @@ commResult_t ctranAllReduceRing(
   op->allreduce.resource = hostResource;
   hostResource->comm = comm;
   std::vector<ctran::algos::GpeKernelSync*> gpeKernelSyncs;
-  constexpr size_t kAllReduceRingNumSyncs = 3;
+  // 3 forward (sendCopy, recvRedCopy, partition) + 2 reverse (revSendCopy,
+  // revRecvCopy)
+  constexpr size_t kAllReduceRingNumSyncs = 5;
   FB_COMMCHECK(comm->ctran_->gpe->allocGpeKernelSyncs(
       kAllReduceRingNumSyncs, numBlocks, gpeKernelSyncs));
   FB_CHECKTHROW_EX(
@@ -916,6 +1333,8 @@ commResult_t ctranAllReduceRing(
   hostResource->sendCopySync = gpeKernelSyncs[0];
   hostResource->recvRedCopySync = gpeKernelSyncs[1];
   hostResource->partitionSync = gpeKernelSyncs[2];
+  hostResource->revSendCopySync = gpeKernelSyncs[3];
+  hostResource->revRecvCopySync = gpeKernelSyncs[4];
   hostResource->chunkSize = pipelineChunkSize;
   hostResource->numChunks = pipelineNumChunks;
 
@@ -925,13 +1344,20 @@ commResult_t ctranAllReduceRing(
   std::tie(hostResource->tmpRecvBuf, hostResource->tmpRecvBufHdl) =
       comm->ctran_->algo->getTmpBufInfo(
           CtranAlgo::TmpbufType::RING_TMP_RECV_BUF);
+  std::tie(hostResource->tmpSendBufRev, hostResource->tmpSendBufRevHdl) =
+      comm->ctran_->algo->getTmpBufInfo(
+          CtranAlgo::TmpbufType::RING_TMP_SEND_BUF_REV);
+  std::tie(hostResource->tmpRecvBufRev, hostResource->tmpRecvBufRevHdl) =
+      comm->ctran_->algo->getTmpBufInfo(
+          CtranAlgo::TmpbufType::RING_TMP_RECV_BUF_REV);
   CLOGF(
       DBG,
-      "AutoTune: {} blocks of {} threads, tmpbuf {} x {} chunks",
+      "AutoTune: {} blocks of {} threads, tmpbuf {} x {} chunks, bidirAg={}",
       numBlocks,
       numThreads,
       hostResource->numChunks,
-      hostResource->chunkSize);
+      hostResource->chunkSize,
+      enableBidirAg);
 
   auto* hostArgs = new ctran::allreduce::ring::HostArgs();
   op->allreduce.args = hostArgs;
@@ -941,6 +1367,7 @@ commResult_t ctranAllReduceRing(
   hostArgs->minShardSize = NCCL_CTRAN_ALLREDUCE_RING_MIN_SHARD_SIZE;
   hostArgs->numBlocks = numBlocks;
   hostArgs->numThreads = numThreads;
+  hostArgs->enableBidirAg = enableBidirAg;
   // rightRemBuf, rightRemKey, leftNotify init from gpe thread for EpochLock
 
   opGroup.push_back(std::move(op));
@@ -968,6 +1395,10 @@ commResult_t ctranAllReduceRing(
       .partitionSync = hostResource->partitionSync,
       .tmpSendBuf = hostResource->tmpSendBuf,
       .tmpRecvBuf = hostResource->tmpRecvBuf,
+      .revSendCopySync = hostResource->revSendCopySync,
+      .revRecvCopySync = hostResource->revRecvCopySync,
+      .tmpSendBufRev = hostResource->tmpSendBufRev,
+      .tmpRecvBufRev = hostResource->tmpRecvBufRev,
   };
   // Used only in gpe->submit, copied as a Kernel Launch Arg.
   config.algoArgs = &kernArgs;

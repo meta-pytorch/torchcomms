@@ -439,6 +439,91 @@ INSTANTIATE_TEST_SUITE_P(
     testingValuesRing,
     getTestName);
 
+// =============================================================================
+// Bi-directional AllGather tests for Ring algorithm
+// These tests explicitly enable/disable bi-directional AG optimization to
+// ensure both code paths are exercised separately.
+// =============================================================================
+
+// Test fixture with bi-directional AG explicitly disabled (simple kernel path)
+class CtranAllReduceRingBidirAgDisabledTestFp32
+    : public CtranAllReduceTest<float>,
+      public ::testing::WithParamInterface<
+          std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {
+ public:
+  void SetUp() override {
+    // Disable bi-directional AG optimization
+    setenv("NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE", "0", 1);
+    ncclCvarInit();
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_P(CtranAllReduceRingBidirAgDisabledTestFp32, AllReduceRingNoBidirFp32) {
+  const auto& [count, inplace, op, memType] = GetParam();
+  beginTest(
+      ctranAllReduceRing,
+      NCCL_ALLREDUCE_ALGO::ctring,
+      count,
+      inplace,
+      op,
+      memType);
+}
+
+// Test fixture with bi-directional AG explicitly enabled for all sizes
+class CtranAllReduceRingBidirAgEnabledTestFp32
+    : public CtranAllReduceTest<float>,
+      public ::testing::WithParamInterface<
+          std::tuple<size_t, TestInPlaceType, commRedOp_t, MemAllocType>> {
+ public:
+  void SetUp() override {
+    // Enable bi-directional AG optimization for all message sizes
+    setenv("NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE", "-1", 1);
+    ncclCvarInit();
+    CtranAllReduceTest::SetUp();
+  }
+};
+
+TEST_P(CtranAllReduceRingBidirAgEnabledTestFp32, AllReduceRingBidirFp32) {
+  const auto& [count, inplace, op, memType] = GetParam();
+  beginTest(
+      ctranAllReduceRing,
+      NCCL_ALLREDUCE_ALGO::ctring,
+      count,
+      inplace,
+      op,
+      memType);
+}
+
+// Test values covering various message sizes to exercise bidir AG code paths
+auto testingValuesBidirAg = ::testing::Values(
+    // Small messages (within default 4MB threshold)
+    std::make_tuple(1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(8192, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024, kTestOutOfPlace, commSum, kMemNcclMemAlloc),
+    // In-place variants
+    std::make_tuple(1024, kTestInPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(8192, kTestInPlace, commSum, kMemNcclMemAlloc),
+    std::make_tuple(1024 * 1024, kTestInPlace, commSum, kMemNcclMemAlloc),
+    // Different reduction operations
+    std::make_tuple(8192, kTestOutOfPlace, commMax, kMemNcclMemAlloc),
+    std::make_tuple(8192, kTestOutOfPlace, commMin, kMemNcclMemAlloc),
+    std::make_tuple(8192, kTestOutOfPlace, commAvg, kMemNcclMemAlloc));
+
+// Tests for bi-directional AG disabled (simple kernel)
+INSTANTIATE_TEST_SUITE_P(
+    CtranTestBidirAgDisabled,
+    CtranAllReduceRingBidirAgDisabledTestFp32,
+    testingValuesBidirAg,
+    getTestName);
+
+// Tests for bi-directional AG enabled for all sizes
+INSTANTIATE_TEST_SUITE_P(
+    CtranTestBidirAgEnabled,
+    CtranAllReduceRingBidirAgEnabledTestFp32,
+    testingValuesBidirAg,
+    getTestName);
+
 #endif
 
 class CtranAllReduceIbTest : public CtranAllReduceTest<uint64_t> {

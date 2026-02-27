@@ -28,6 +28,12 @@ struct KernArgs {
 
   void* tmpSendBuf;
   void* tmpRecvBuf;
+
+  // Reverse direction (bi-directional AllGather)
+  ctran::algos::GpeKernelSync* revSendCopySync;
+  ctran::algos::GpeKernelSync* revRecvCopySync;
+  void* tmpSendBufRev;
+  void* tmpRecvBufRev;
 };
 
 // used by e.g. NanChecker and Trace
@@ -41,6 +47,8 @@ enum Phase {
 enum Op {
   kSendCopy,
   kRecvRedCopy,
+  kRevSendCopy,
+  kRevRecvCopy,
   kMaxNumOp,
 };
 #else
@@ -50,6 +58,11 @@ enum Op {
   kRecvTrans,
   kRecvFlush,
   kRecvRedCopy,
+  kRevSendCopy,
+  kRevSendTrans,
+  kRevRecvTrans,
+  kRevRecvFlush,
+  kRevRecvCopy,
   kMaxNumOp,
 };
 #endif
@@ -124,6 +137,12 @@ struct AlgoContext {
   int totalSendRounds;
   int totalRecvRounds;
 
+  // Bi-directional AllGather: reverse direction distributes shards left
+  int numFwdAgSteps; // ceil((nRanks-1)/2) forward AG steps
+  int numRevAgSteps; // floor((nRanks-1)/2) reverse AG steps
+  int revSendDataShardIdx; // rank (same base as forward; shift handles +1)
+  int revRecvDataShardIdx; // rightRank (receives from right in reverse)
+
   // Track starting round per partition for tracing purpose
   int partitionStartSendRounds;
   int partitionStartRecvRounds;
@@ -168,6 +187,31 @@ DEVICE_ATTRIBUTE int getStepShardIdx(
   }
 }
 
+// Reverse direction shard index for bi-directional AllGather.
+// Data flows counter-clockwise (left): rank sends to leftRank.
+// revStep is 0-based within the reverse AG phase.
+//
+// Forward direction uses shift = N - step (decreasing shard index per step).
+// Reverse direction uses shift = revStep + 1 (increasing shard index per step)
+// because data rotates in the opposite direction. The +1 accounts for the fact
+// that after RS, rank r owns shard (r+1)%N (the last RS recv step reduces
+// shard (leftRank + 2) % N = (rank + 1) % N).
+template <Op op>
+DEVICE_ATTRIBUTE int getRevStepShardIdx(
+    const AlgoContext& algoCtx,
+    const int revStep) {
+  int shift = (revStep + 1) % algoCtx.numShards;
+  if (op == Op::kRevSendCopy
+#ifndef __CUDA_ARCH__
+      || op == Op::kRevSendTrans
+#endif
+  ) {
+    return (algoCtx.revSendDataShardIdx + shift) % algoCtx.numShards;
+  } else {
+    return (algoCtx.revRecvDataShardIdx + shift) % algoCtx.numShards;
+  }
+}
+
 DEVICE_ATTRIBUTE int countChunksPerShard(
     const AlgoContext& algoCtx,
     const int shardId) {
@@ -176,6 +220,10 @@ DEVICE_ATTRIBUTE int countChunksPerShard(
   return (getShardNumel(shardId, algoCtx) + chunkNumel - 1) / chunkNumel;
 }
 
+// Template parameter EnableBidirAg controls bi-directional AllGather:
+// - true: Use bidir AG with reverse direction (reduced steps)
+// - false: Use standard single-direction AG (original 2*(N-1) steps)
+template <bool EnableBidirAg = true>
 DEVICE_ATTRIBUTE void updatePartitionCtx(AlgoContext& algoCtx) {
   size_t numelPerChunk = algoCtx.chunkSize / algoCtx.typeSize;
   size_t minPartitionNumel =
@@ -198,26 +246,37 @@ DEVICE_ATTRIBUTE void updatePartitionCtx(AlgoContext& algoCtx) {
   algoCtx.numShards = algoCtx.nRanks;
   algoCtx.shardNumel = algoCtx.partitionNumel / algoCtx.numShards;
 
-  // Initialize counters updated per step
-  // - Two phases, each requires nRanks - 1 steps
-  algoCtx.numSteps = algoCtx.nRanks * 2 - 2;
+  // Bi-directional AllGather step counts
+  int rsSteps = algoCtx.nRanks - 1;
+  if constexpr (EnableBidirAg) {
+    algoCtx.numFwdAgSteps = (rsSteps + 1) / 2; // ceil((N-1)/2)
+    algoCtx.numRevAgSteps = rsSteps / 2; // floor((N-1)/2)
+  } else {
+    // Standard single-direction AG: all AG steps go forward
+    algoCtx.numFwdAgSteps = rsSteps;
+    algoCtx.numRevAgSteps = 0;
+  }
 
-  algoCtx.opRounds[Op::kSendCopy] = {};
-  algoCtx.opRounds[Op::kRecvRedCopy] = {};
-#ifndef __CUDA_ARCH__
-  algoCtx.opRounds[Op::kSendTrans] = {};
-  algoCtx.opRounds[Op::kRecvTrans] = {};
-  algoCtx.opRounds[Op::kRecvFlush] = {};
-#endif
+  // Forward direction: RS steps + forward AG steps
+  algoCtx.numSteps = rsSteps + algoCtx.numFwdAgSteps;
+
+  // Initialize all op round counters
+  for (int i = 0; i < Op::kMaxNumOp; i++) {
+    algoCtx.opRounds[i] = {};
+  }
 
   size_t totalSendRounds = 0;
   size_t totalRecvRounds = 0;
 
   algoCtx.sendDataShardIdx = algoCtx.rank;
   algoCtx.recvDataShardIdx = algoCtx.leftRank;
+  // Reverse direction uses same base convention as forward (rank/rightRank).
+  // The +1 offset to reach the actual reduced shard is handled by the shift
+  // formula in getRevStepShardIdx.
+  algoCtx.revSendDataShardIdx = algoCtx.rank;
+  algoCtx.revRecvDataShardIdx = algoCtx.rightRank;
 
-  // - Count number of total rounds of send and recv.
-  // Each rank progresses both send and recv in each step.
+  // Count forward direction rounds (RS + forward AG)
   for (int step = 0; step < algoCtx.numSteps; step++) {
     totalSendRounds += countChunksPerShard(
         algoCtx, getStepShardIdx<Op::kSendCopy>(algoCtx, step));
@@ -226,8 +285,6 @@ DEVICE_ATTRIBUTE void updatePartitionCtx(AlgoContext& algoCtx) {
   }
 
   // Set first step
-  // Only the first step requires separate sendCopy, future steps are handled in
-  // previous step's kRecvRedCopy op.
   algoCtx.opRounds[Op::kSendCopy].ready =
       countChunksPerShard(algoCtx, algoCtx.sendDataShardIdx);
   algoCtx.opRounds[Op::kSendCopy].totalRounds =
@@ -237,8 +294,6 @@ DEVICE_ATTRIBUTE void updatePartitionCtx(AlgoContext& algoCtx) {
 
   algoCtx.opRounds[Op::kRecvRedCopy].totalRounds = totalRecvRounds;
 #ifndef __CUDA_ARCH__
-  // RecvTrans doesn't depend on any previous step on receiver side and natually
-  // blocked by sender side send
   algoCtx.opRounds[Op::kRecvTrans].ready = -1;
   algoCtx.opRounds[Op::kSendTrans].totalRounds = totalSendRounds;
   algoCtx.opRounds[Op::kRecvTrans].totalRounds = totalRecvRounds;
@@ -247,6 +302,44 @@ DEVICE_ATTRIBUTE void updatePartitionCtx(AlgoContext& algoCtx) {
 
   algoCtx.totalSendRounds = totalSendRounds;
   algoCtx.totalRecvRounds = totalRecvRounds;
+
+  // Reverse direction rounds for bi-directional AllGather
+  // Skip entirely when bidir AG is disabled
+  if constexpr (EnableBidirAg) {
+    size_t totalRevSendRounds = 0;
+    size_t totalRevRecvRounds = 0;
+    for (int revStep = 0; revStep < algoCtx.numRevAgSteps; revStep++) {
+      totalRevSendRounds += countChunksPerShard(
+          algoCtx, getRevStepShardIdx<Op::kRevSendCopy>(algoCtx, revStep));
+      totalRevRecvRounds += countChunksPerShard(
+          algoCtx, getRevStepShardIdx<Op::kRevRecvCopy>(algoCtx, revStep));
+    }
+
+    // RevSendCopy: first step copies rank's reduced shard to tmpSendBufRev.
+    // On host side, ready starts at 0 and is released when RS finishes (the
+    // reduced shard is written to recvbuff). On device side, ready can be set
+    // immediately since the kernel only acts when the host posts via
+    // GpeKernelSync.
+    if (algoCtx.numRevAgSteps > 0) {
+      int firstRevShardChunks = countChunksPerShard(
+          algoCtx, getRevStepShardIdx<Op::kRevSendCopy>(algoCtx, 0));
+#ifdef __CUDA_ARCH__
+      algoCtx.opRounds[Op::kRevSendCopy].ready = firstRevShardChunks;
+#else
+      algoCtx.opRounds[Op::kRevSendCopy].ready = 0;
+#endif
+      algoCtx.opRounds[Op::kRevSendCopy].totalRounds = firstRevShardChunks;
+    }
+    algoCtx.opRounds[Op::kRevRecvCopy].totalRounds = totalRevRecvRounds;
+#ifndef __CUDA_ARCH__
+    if (algoCtx.numRevAgSteps > 0) {
+      algoCtx.opRounds[Op::kRevRecvTrans].ready = -1;
+    }
+    algoCtx.opRounds[Op::kRevSendTrans].totalRounds = totalRevSendRounds;
+    algoCtx.opRounds[Op::kRevRecvTrans].totalRounds = totalRevRecvRounds;
+    algoCtx.opRounds[Op::kRevRecvFlush].totalRounds = totalRevRecvRounds;
+#endif
+  }
 }
 
 DEVICE_ATTRIBUTE void updatePartitionDone(AlgoContext& algoCtx) {
@@ -273,7 +366,8 @@ DEVICE_ATTRIBUTE void setupAlgoCtxImpl(AlgoContext& algoCtx) {
 }
 
 DEVICE_ATTRIBUTE Phase getPhase(const AlgoContext& algoCtx, int step) {
-  if (step < algoCtx.numSteps / 2) {
+  int rsSteps = algoCtx.nRanks - 1;
+  if (step < rsSteps) {
     return Phase::kReduceScatter;
   } else {
     return Phase::kAllGather;
@@ -336,10 +430,53 @@ DEVICE_ATTRIBUTE int getRecvFwdSendRound(
   return algoCtx.firstStepNumRounds + recvRound;
 }
 
+// Reverse direction: forward if not the last reverse AG step
+DEVICE_ATTRIBUTE bool isRevRecvFwd(
+    const AlgoContext& algoCtx,
+    int revRecvStep) {
+  return revRecvStep < algoCtx.numRevAgSteps - 1;
+}
+
+// Compute RoundArgs for a reverse direction op at given revStep
+template <Op op>
+DEVICE_ATTRIBUTE RoundArgs getRevRoundArgs(
+    const AlgoContext& algoCtx,
+    const int round,
+    const OpStep& opStep) {
+  struct RoundArgs args = {0, 0, 0, 0, 0};
+  int shardId = getRevStepShardIdx<op>(algoCtx, opStep.step);
+  size_t shardNumel = getShardNumel(shardId, algoCtx);
+  size_t chunkNumel = algoCtx.chunkSize / algoCtx.typeSize;
+  int roundInStep = round - opStep.startRound;
+  if ((roundInStep + 1) * chunkNumel <= shardNumel) {
+    args.numel = chunkNumel;
+  } else {
+    args.numel = shardNumel - chunkNumel * roundInStep;
+  }
+  args.shardId = shardId;
+  args.shardDataChunkId = roundInStep;
+  args.dataOffsetElem = algoCtx.partitionOffset + shardId * algoCtx.shardNumel +
+      roundInStep * chunkNumel;
+  args.dataOffset = args.dataOffsetElem * algoCtx.typeSize;
+  return args;
+}
+
 template <Op op>
 DEVICE_ATTRIBUTE void
 opUpdateStep(AlgoContext& algoCtx, int round, OpStep& opStep) {
-  int shardId = getStepShardIdx<op>(algoCtx, opStep.step);
+  // Use reverse shard index for reverse ops
+  int shardId;
+  if constexpr (
+      op == Op::kRevSendCopy || op == Op::kRevRecvCopy
+#ifndef __CUDA_ARCH__
+      || op == Op::kRevSendTrans || op == Op::kRevRecvTrans ||
+      op == Op::kRevRecvFlush
+#endif
+  ) {
+    shardId = getRevStepShardIdx<op>(algoCtx, opStep.step);
+  } else {
+    shardId = getStepShardIdx<op>(algoCtx, opStep.step);
+  }
   int numChunks = countChunksPerShard(algoCtx, shardId);
   // Update step if all rounds in current step has finished
   if (round - opStep.startRound == numChunks) {
@@ -354,6 +491,11 @@ inline bool opReadyToPost(const AlgoContext& algoCtx) {
   // posted to network. It avoids out-of-order chunk.
   if (op == Op::kRecvRedCopy &&
       algoCtx.opRounds[Op::kSendTrans].postStep.step == 0) {
+    return false;
+  }
+  // Similarly, hold revRecvCopy until first reverse send step has posted
+  if (op == Op::kRevRecvCopy &&
+      algoCtx.opRounds[Op::kRevSendTrans].postStep.step == 0) {
     return false;
   }
   return (algoCtx.opRounds[op].post < algoCtx.opRounds[op].ready ||
@@ -394,6 +536,29 @@ DEVICE_ATTRIBUTE void opUpdateDone(AlgoContext& algoCtx) {
       break;
     case Op::kRecvRedCopy:
       algoCtx.opRounds[Op::kSendTrans].ready++;
+      // Release reverse send when RS completes (rank's shard is fully
+      // reduced in recvbuff). doneStep.step advances to nRanks-1 when all
+      // rounds of the last RS step finish.
+      if (algoCtx.numRevAgSteps > 0 &&
+          algoCtx.opRounds[Op::kRecvRedCopy].doneStep.step >=
+              algoCtx.nRanks - 1 &&
+          algoCtx.opRounds[Op::kRevSendCopy].ready == 0) {
+        algoCtx.opRounds[Op::kRevSendCopy].ready =
+            algoCtx.opRounds[Op::kRevSendCopy].totalRounds;
+      }
+      break;
+    // Reverse direction dependencies
+    case Op::kRevSendCopy:
+      algoCtx.opRounds[Op::kRevSendTrans].ready++;
+      break;
+    case Op::kRevRecvTrans:
+      algoCtx.opRounds[Op::kRevRecvFlush].ready++;
+      break;
+    case Op::kRevRecvFlush:
+      algoCtx.opRounds[Op::kRevRecvCopy].ready++;
+      break;
+    case Op::kRevRecvCopy:
+      algoCtx.opRounds[Op::kRevSendTrans].ready++;
       break;
     default:
       break;
@@ -403,7 +568,10 @@ DEVICE_ATTRIBUTE void opUpdateDone(AlgoContext& algoCtx) {
 
 } // namespace ctran::allreduce::ring
 
-template <typename T, commRedOp_t RedOp>
+// EnableBidirAg template parameter:
+// - true: bi-directional AllGather with reverse direction
+// - false: standard single-direction AG (lower register usage)
+template <typename T, commRedOp_t RedOp, bool EnableBidirAg>
 __global__ void ncclKernelAllReduceCtranRing(
     int* flag,
     CtranAlgoDeviceState* devState,
