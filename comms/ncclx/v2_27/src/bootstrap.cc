@@ -70,7 +70,7 @@ static int rootIdFromRank(int rank, int nRanks, int nRoots) {
   else
     return (rank - D) / rpr + rmr;
 }
-// return the number of child for a root, root will be periodized
+// return the number of children for a root, root will be periodized
 static int nRankFromRoot(int root, int nRanks, int nRoots) {
   int ir = BOOTSTRAP_PID(root, nRoots);
   int rmr = nRanks % nRoots; // rank mod root
@@ -78,7 +78,7 @@ static int nRankFromRoot(int root, int nRanks, int nRoots) {
   return rpr + ((ir < rmr) ? 1 : 0);
 }
 // return the local id of a given rank for a given root
-// root will be periodize, rank will not
+// root will be periodized, rank will not
 static int localIdFromRoot(int rank, int root, int nRanks, int nRoots) {
   int ir = BOOTSTRAP_PID(root, nRoots);
   return rank - firstRankFromRoot(ir, nRanks, nRoots);
@@ -528,7 +528,7 @@ static ncclResult_t socketRingConnect(ncclSocketAddress* addr, struct ncclSocket
   return ncclSuccess;
 }
 static ncclResult_t ringAllInfo(struct ncclComm* comm, struct bootstrapState* state,
-                                union ncclSocketAddress* peerAddresss,
+                                union ncclSocketAddress* peerAddresses,
                                 union ncclSocketAddress* peerProxy, uint64_t* peerUDS,
                                 struct rasRankInit* rasRanks) {
   ncclResult_t res = ncclSuccess;
@@ -543,8 +543,8 @@ static ncclResult_t ringAllInfo(struct ncclComm* comm, struct bootstrapState* st
 
   NCCLCHECK(ncclCalloc(&ringData, nRanks));
   // pack
-  if (peerAddresss)
-    memcpy(&(ringData[rank].peerAddress), peerAddresss + rank, sizeof(union ncclSocketAddress));
+  if (peerAddresses)
+    memcpy(&(ringData[rank].peerAddress), peerAddresses + rank, sizeof(union ncclSocketAddress));
   if (peerProxy)
     memcpy(&(ringData[rank].peerProxy), peerProxy + rank, sizeof(union ncclSocketAddress));
   if (peerUDS)
@@ -557,8 +557,8 @@ static ncclResult_t ringAllInfo(struct ncclComm* comm, struct bootstrapState* st
 
   // unpack
   for (int irank = 0; irank < nRanks; ++irank) {
-    if (peerAddresss)
-      memcpy(peerAddresss + irank, &(ringData[irank].peerAddress), sizeof(union ncclSocketAddress));
+    if (peerAddresses)
+      memcpy(peerAddresses + irank, &(ringData[irank].peerAddress), sizeof(union ncclSocketAddress));
     if (peerProxy)
       memcpy(peerProxy + irank, &(ringData[irank].peerProxy), sizeof(union ncclSocketAddress));
     if (peerUDS)
@@ -690,11 +690,11 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_TOTAL]);
   bool skipFormRingViaTcpStore = (nHandles != 1) && NCCL_SKIP_TCPFORM_RING;
   if (isFastInitRingMode(state->fastInitMode) && !skipFormRingViaTcpStore) {
-    INFO(NCCL_INIT, "rank %d nHandles %d, fast-init mode: ring-hybrid, use formRingViaTcpStore to form boostrap ring", rank, nHandles);
+    INFO(NCCL_INIT, "rank %d nHandles %d, fast-init mode: ring-hybrid, use formRingViaTcpStore to form bootstrap ring", rank, nHandles);
     // (meta) fast path to form ring via tcpstore
     NCCLCHECK(formRingViaTcpStore(state, comm));
   } else {
-    INFO(NCCL_INIT, "rank %d nHandles %d fast-init mode: %d, use baseline logic to form boostrap ring", rank, nHandles, static_cast<int>(NCCL_FASTINIT_MODE));
+    INFO(NCCL_INIT, "rank %d nHandles %d fast-init mode: %d, use baseline logic to form bootstrap ring", rank, nHandles, static_cast<int>(NCCL_FASTINIT_MODE));
     // (nvidia) baseline path to form ring via root
     // fill up the info
     info.nranks = nranks;
@@ -708,7 +708,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
       NCCLCHECK(state->net->listen(STATE_LISTEN(state, net.dev), STATE_LISTEN(state, net.handle), &STATE_LISTEN(state, net.comm)));
       memcpy(info.connectInfo.handle, STATE_LISTEN(state, net.handle), NCCL_NET_HANDLE_MAXSIZE);
     } else {
-      // create socket for ring neightbor to contact mee
+      // create socket for ring neighbor to contact me
       NCCLCHECK(createListenSocket(comm, comm->magic, &STATE_LISTEN(state, socket), &info.connectInfo.addr, ncclSocketTypeBootstrap));
     }
     // Create socket for root to contact me using the root's magic
@@ -768,7 +768,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm) {
   }
 
   // AllGather all listen handlers
-  // in case of failure, those resources will be free'd when calling bootstrapDestroy, so we can return immediatly
+  // in case of failure, those resources will be free'd when calling bootstrapDestroy, so we can return immediately
   NCCLCHECK(ncclCalloc(&state->peerProxyAddresses, nranks));
   NCCLCHECK(ncclCalloc(&proxySocket, 1));
   NCCLCHECKGOTO(createListenSocket(comm, comm->magic, proxySocket, state->peerProxyAddresses + rank, ncclSocketTypeProxy), result, fail);
@@ -859,7 +859,7 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
     NCCLCHECKGOTO(state->net->listen(STATE_LISTEN(state, net.dev), STATE_LISTEN(state, net.handle), &STATE_LISTEN(state, net.comm)), ret, fail);
     memcpy(info.handle, STATE_LISTEN(state, net.handle), NCCL_NET_HANDLE_MAXSIZE);
   } else {
-    // create socket for ring neightbor to contact mee
+    // create socket for ring neighbor to contact me
     NCCLCHECK(createListenSocket(comm, comm->magic, &STATE_LISTEN(state, socket), &info.addr, ncclSocketTypeBootstrap));
   }
   // create a socket for others to reach out (P2P)
@@ -1099,14 +1099,13 @@ ncclResult_t ncclxBidirRingAllGather(struct ncclSocket* prevSocket, struct ncclS
   auto contextMyrank = EventsScubaUtil::StickyContextGuard(ScubaContextKeys::rank, fmt::format("{}", rank));
 
   /* Simple ring based AllGather but bi-directional. At each step a process
-  * will do send and receive data to both of its peers. At each step i, we
-    * step i, we
-    * - send data of (rank + i) to previous peer
-    * - send data of (rank - i) to next peer
-    * - receive data of (rank - i - 1) from previous peer
-    * - receive data of (rank + i + 1) from next peer
-    * With this we conclude AllGather in N/2 steps.
-    */
+   * will do send and receive data to both of its peers. At each step i, we
+   * - send data of (rank + i) to previous peer
+   * - send data of (rank - i) to next peer
+   * - receive data of (rank - i - 1) from previous peer
+   * - receive data of (rank + i + 1) from next peer
+   * With this we conclude AllGather in N/2 steps.
+   */
 
   auto forwardLoop = [&]() {
     for (int i=0; i < (nranks / 2); i++) {
