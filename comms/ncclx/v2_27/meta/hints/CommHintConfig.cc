@@ -11,4 +11,11 @@ const std::string getCommUseCtranConfig() {
       HintKeys::kCommUseCtran,
       getTypedGlobalHint<bool>(HintKeys::kCommUseCtran).value_or(false));
 }
+
+const std::string getCommNoLocalConfig() {
+  return fmt::format(
+      "GlobalHint {}={}",
+      HintKeys::kCommNoLocal,
+      getTypedGlobalHint<bool>(HintKeys::kCommNoLocal).value_or(false));
+}
 } // namespace ncclx

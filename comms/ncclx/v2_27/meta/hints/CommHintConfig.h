@@ -8,5 +8,10 @@ inline const bool commUseCtran() {
   return NCCL_CTRAN_ENABLE || useCtranHint.value_or(false);
 }
 
+inline bool commNoLocal() {
+  return getTypedGlobalHint<bool>(HintKeys::kCommNoLocal).value_or(false);
+}
+
 const std::string getCommUseCtranConfig();
+const std::string getCommNoLocalConfig();
 } // namespace ncclx
