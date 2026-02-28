@@ -113,6 +113,41 @@ commResult_t CtranComm::finalize() {
   return commSuccess;
 }
 
+CtranComm::CtranComm(std::shared_ptr<Abort> abort, ctranConfig commConfig)
+    : config_(commConfig), abort_(abort) {
+  asyncErr_ =
+      std::make_shared<AsyncError>(NCCL_CTRAN_ABORT_ON_ERROR, "CtranComm");
+  if (!abort_) {
+    throw ctran::utils::Exception("abort must not be empty", commInternalError);
+  }
+  // Default points to internal opCount
+  opCount_ = &ctranOpCount_;
+}
+
+void CtranComm::destroy() {
+  // All smart pointers are automatically de-initialized, but we want to
+  // ensure they do so in a specific order. Therefore, we manually handle
+  // their de-initialization here.
+  ctran_.reset();
+  bootstrap_.reset();
+  collTrace_.reset();
+  colltraceNew_.reset();
+  statex_.reset();
+  // NOTE: memCache needs to be destroyed after transportProxy_ to release
+  // all buffers
+  memCache_.reset();
+
+  this->logMetaData_.commDesc.clear();
+  this->logMetaData_.commDesc.shrink_to_fit();
+}
+
+CtranComm::~CtranComm() {
+  this->destroy();
+}
+
+CtranComm::CtranComm(CtranComm&&) = default;
+CtranComm& CtranComm::operator=(CtranComm&&) = default;
+
 commResult_t ctranFinalize(CtranComm* comm) {
   if (comm) {
     return comm->finalize();
