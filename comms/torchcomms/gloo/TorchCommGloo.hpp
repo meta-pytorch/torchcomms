@@ -39,6 +39,7 @@ class TorchCommGloo : public TorchCommBackend,
   void finalize() override;
   int getRank() const override;
   int getSize() const override;
+  std::vector<int> getRanks() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
 
@@ -190,6 +191,7 @@ class TorchCommGloo : public TorchCommBackend,
   at::Device device_;
   int comm_size_{-1};
   int rank_{-1};
+  std::vector<int> ranks_; // Global ranks in this communicator
   CommOptions options_;
   enum class InitializationState {
     UNINITIALIZED,

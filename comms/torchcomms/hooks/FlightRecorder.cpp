@@ -819,10 +819,13 @@ void FlightRecorderHook::registerWithComm(std::shared_ptr<TorchComm> comm) {
   std::string pg_desc(comm->getBackend());
 
   auto pgName = std::make_tuple(comm_name, pg_desc);
+  // Get ranks from the communicator - for split comms this will be the
+  // global ranks from the parent
+  auto comm_ranks = comm->getRanks();
   std::vector<uint64_t> pg_ranks;
-  pg_ranks.reserve(comm->getSize());
-  for (auto i = 0; i < comm->getSize(); i++) {
-    pg_ranks.push_back(i);
+  pg_ranks.reserve(comm_ranks.size());
+  for (int rank : comm_ranks) {
+    pg_ranks.push_back(static_cast<uint64_t>(rank));
   }
   recorder_->record_pg_ranks(pgName, pg_ranks);
 

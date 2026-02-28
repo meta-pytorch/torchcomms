@@ -327,6 +327,12 @@ void TorchCommGloo::init(
     comm_size_ = comm_size;
   }
 
+  // Initialize ranks if not already set (e.g., by split)
+  if (ranks_.empty()) {
+    ranks_.resize(comm_size_);
+    std::iota(ranks_.begin(), ranks_.end(), 0);
+  }
+
   ::gloo::transport::tcp::attr attr;
   attr.hostname = env_to_value<std::string>("TORCHCOMM_GLOO_HOSTNAME", "");
   attr.iface = env_to_value<std::string>("TORCHCOMM_GLOO_INTERFACE", "");
@@ -382,6 +388,10 @@ int TorchCommGloo::getRank() const {
 
 int TorchCommGloo::getSize() const {
   return comm_size_;
+}
+
+std::vector<int> TorchCommGloo::getRanks() const {
+  return ranks_;
 }
 
 std::string_view TorchCommGloo::getBackendName() const {
@@ -1644,6 +1654,13 @@ std::shared_ptr<TorchCommBackend> TorchCommGloo::split(
 
   new_torchcomm->rank_ = new_rank;
   new_torchcomm->comm_size_ = new_size;
+
+  // Set the global ranks for the new communicator by mapping through the
+  // parent's rank list
+  new_torchcomm->ranks_.reserve(ranks.size());
+  for (int rank : ranks) {
+    new_torchcomm->ranks_.push_back(ranks_[rank]);
+  }
 
   auto new_name = fmt::format("{}_{}", name, color);
   auto split_id = splitCounter_++;
