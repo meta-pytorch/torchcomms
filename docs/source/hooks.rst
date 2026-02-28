@@ -131,6 +131,48 @@ The FlightRecorderHook uses the following environment variable:
     Controls the output location for ``dump_file()``. Files are written as
     ``<prefix><rank>`` where the prefix is the value of this variable.
 
+NanCheckHook
+------------
+
+The ``NanCheckHook`` detects NaN values in tensors before collective
+operations run, using the ``c10d::check_for_nan`` dispatched op which works
+on both CPU and CUDA tensors. It handles both single-tensor operations
+(e.g., ``all_reduce``) and multi-tensor operations (e.g., ``all_to_all``).
+
+This is particularly useful for debugging numerical corruption that may
+originate on a single host. Without this hook, a NaN produced by one rank's
+local computation silently enters a collective (such as ``all_reduce``) and
+pollutes the results on every other rank, making the root cause extremely
+difficult to track down. By checking tensors *before* the collective runs,
+``NanCheckHook`` identifies the offending rank and operation immediately,
+before the corruption has a chance to propagate across the job.
+
+Basic Usage
+^^^^^^^^^^^
+
+.. code-block:: python
+
+    import torch
+    import torchcomms
+    from torchcomms.hooks import NanCheckHook
+
+    # Create a communicator
+    device = torch.device("cuda:0")
+    comm = torchcomms.new_comm("ncclx", device)
+
+    # Create and register the NaN check hook
+    nan_check = NanCheckHook()
+    nan_check.register_with_comm(comm)
+
+    # This will raise RuntimeError if tensor contains NaN
+    tensor = torch.ones(10, device=device)
+    comm.all_reduce(tensor, torchcomms.ReduceOp.SUM, async_op=False)
+
+    # Unregister when done
+    nan_check.unregister()
+
+    comm.finalize()
+
 API Reference
 -------------
 
