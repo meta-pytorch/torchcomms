@@ -4,7 +4,9 @@
 #include <memory>
 
 #include "comm.h"
+#include "device.h"
 
+#include "comms/analyzer/if/gen-cpp2/CommsTracingService_types.h"
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
 #include "comms/utils/commSpecs.h"
@@ -12,10 +14,12 @@
 #include "meta/colltrace/ProxyTrace.h"
 
 namespace ncclx::comms_monitor {
+::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm);
 
 struct NcclCommMonitorInfo {
   CommLogData logMetaData;
   ncclx::CommStateX commState;
+  ::comms::CommsTopologyInfo topoInfo;
   // This one will be deprecated soon.
   std::shared_ptr<CollTrace> collTrace;
   std::shared_ptr<colltrace::MapperTrace> mapperTrace;

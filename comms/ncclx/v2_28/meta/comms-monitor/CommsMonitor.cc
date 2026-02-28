@@ -15,7 +15,49 @@ namespace ncclx::comms_monitor {
 
 namespace {
 struct CommsMonitorSingletonTag {};
+
+std::vector<int64_t> getVectorRingFromArray(int nRanks, int* ring) {
+  std::vector<int64_t> ringVec;
+  ringVec.reserve(nRanks);
+  for (int i = 0; i < nRanks; i++) {
+    ringVec.push_back(ring[i]);
+  }
+  return ringVec;
+}
+
 } // namespace
+
+::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm) {
+  ::comms::CommsTopologyInfo thriftTopoInfo;
+  thriftTopoInfo.nChannels() = comm->nChannels;
+  thriftTopoInfo.commDesc() = comm->config.commDesc;
+  std::vector<std::vector<int64_t>> rings(comm->nChannels);
+  std::vector<::comms::TopoTreeNodeInfo> trees(comm->nChannels);
+  for (int i = 0; i < comm->nChannels; i++) {
+    auto& channel = comm->channels[i];
+    // Only acquire ring information from comm rank 0
+    if (comm->rank == 0) {
+      if (comm->lazySetupChannels && comm->nChannels != comm->nChannelsReady) {
+        rings[i] = getVectorRingFromArray(
+            comm->nRanks, comm->rings.value().data() + i * comm->nRanks);
+      } else {
+        rings[i] = getVectorRingFromArray(comm->nRanks, channel.ring.userRanks);
+      }
+    }
+    ::comms::TopoTreeNodeInfo curTreeNodeInfo;
+    curTreeNodeInfo.rank() = comm->rank;
+    curTreeNodeInfo.parentNode() = channel.tree.up;
+    std::vector<int64_t> childNodes(NCCL_MAX_TREE_ARITY);
+    for (int i = 0; i < NCCL_MAX_TREE_ARITY; i++) {
+      childNodes[i] = channel.tree.down[i];
+    }
+    curTreeNodeInfo.childrenNodes() = std::move(childNodes);
+    trees[i] = curTreeNodeInfo;
+  }
+  thriftTopoInfo.rings() = std::move(rings);
+  thriftTopoInfo.treeInfos() = std::move(trees);
+  return thriftTopoInfo;
+}
 
 folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
     commsMonitorSingleton{};
@@ -35,6 +77,7 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
   return NcclCommMonitorInfo{
       .logMetaData = comm->logMetaData,
       .commState = ncclx::CommStateX{*comm->ctranComm_->statex_},
+      .topoInfo = getTopoInfoFromNcclComm(comm),
       .collTrace = comm->collTrace,
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,

@@ -189,6 +189,26 @@ TEST_F(CommDumpTest, SingleComm) {
   EXPECT_EQ(dump.count("PT_pastColls"), 1);
   EXPECT_EQ(dump.count("PT_activeOps"), 1);
 
+  // Check if commsTopoInfo field exists and is valid JSON
+  EXPECT_EQ(dump.count("commsTopoInfo"), 1);
+  if (dump.count("commsTopoInfo")) {
+    EXPECT_NO_THROW(folly::parseJson(dump["commsTopoInfo"]));
+    auto topoInfoObj = folly::parseJson(dump["commsTopoInfo"]);
+    EXPECT_TRUE(topoInfoObj.count("nChannels"));
+    EXPECT_TRUE(topoInfoObj.count("rings"));
+    EXPECT_TRUE(topoInfoObj.count("treeInfos"));
+    // Verify nChannels is non-negative
+    EXPECT_GE(topoInfoObj["nChannels"].asInt(), 0);
+    // Verify rings is an array
+    EXPECT_TRUE(topoInfoObj["rings"].isArray());
+    // Verify treeInfos is an array
+    EXPECT_TRUE(topoInfoObj["treeInfos"].isArray());
+    // Both rings and treeInfos should have same size as nChannels
+    EXPECT_EQ(topoInfoObj["rings"].size(), topoInfoObj["nChannels"].asInt());
+    EXPECT_EQ(
+        topoInfoObj["treeInfos"].size(), topoInfoObj["nChannels"].asInt());
+  }
+
   if (comm->rank == 1 && VERBOSE) {
     for (auto& it : dump) {
       printf("%s: %s\n", it.first.c_str(), it.second.c_str());
@@ -1085,6 +1105,26 @@ TEST_F(CommDumpTest, DumpAfterCollNewCollTraceWithCommsMonitor) {
     XLOG(DBG1) << "Entered PT_activeOps if statement";
     auto ptActiveOpsObjs = folly::parseJson(dump["PT_activeOps"]);
     EXPECT_EQ(ptActiveOpsObjs.size(), 0);
+  }
+
+  // Check if ncclTopoInfo field exists and is valid JSON
+  EXPECT_EQ(dump.count("ncclTopoInfo"), 1);
+  if (dump.count("ncclTopoInfo")) {
+    EXPECT_NO_THROW(folly::parseJson(dump["ncclTopoInfo"]));
+    auto topoInfoObj = folly::parseJson(dump["ncclTopoInfo"]);
+    EXPECT_TRUE(topoInfoObj.count("nChannels"));
+    EXPECT_TRUE(topoInfoObj.count("rings"));
+    EXPECT_TRUE(topoInfoObj.count("treeInfos"));
+    // Verify nChannels is non-negative
+    EXPECT_GE(topoInfoObj["nChannels"].asInt(), 0);
+    // Verify rings is an array
+    EXPECT_TRUE(topoInfoObj["rings"].isArray());
+    // Verify treeInfos is an array
+    EXPECT_TRUE(topoInfoObj["treeInfos"].isArray());
+    // Both rings and treeInfos should have same size as nChannels
+    EXPECT_EQ(topoInfoObj["rings"].size(), topoInfoObj["nChannels"].asInt());
+    EXPECT_EQ(
+        topoInfoObj["treeInfos"].size(), topoInfoObj["nChannels"].asInt());
   }
 }
 

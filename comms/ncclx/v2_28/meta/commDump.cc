@@ -7,9 +7,8 @@
 #include <folly/json/dynamic.h>
 #include <folly/json/json.h>
 
+#include <thrift/lib/cpp2/protocol/Serializer.h>
 #include "comm.h"
-#include "nccl.h"
-
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/utils/StrUtils.h"
 #include "comms/utils/colltrace/CollTraceInterface.h"
@@ -21,6 +20,7 @@
 #include "meta/colltrace/ProxyTrace.h"
 #include "meta/commDump.h"
 #include "meta/comms-monitor/CommsMonitor.h"
+#include "nccl.h"
 
 using meta::comms::colltrace::CommDumpPlugin;
 
@@ -210,6 +210,14 @@ std::unordered_map<std::string, std::string> commDumpByMonitorInfo(
   } else {
     XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
   }
+  auto topoInfoStr =
+      apache::thrift::SimpleJSONSerializer::serialize<std::string>(
+          info.topoInfo);
+  XLOG(INFO) << "topoInfoStr: " << topoInfoStr;
+  map["commsTopoInfo"] =
+      apache::thrift::SimpleJSONSerializer::serialize<std::string>(
+          info.topoInfo);
+
   dumpProcessGlobalErrors(map);
   return map;
 }
@@ -258,6 +266,15 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
     } else {
       XLOGF(DBG2, "CommDump: MAPPERTRACE is disabled. No trace to dump");
     }
+
+    auto topoInfoStr =
+        apache::thrift::SimpleJSONSerializer::serialize<std::string>(
+            ncclx::comms_monitor::getTopoInfoFromNcclComm(comm));
+    XLOG(INFO) << "topoInfoStr: " << topoInfoStr;
+
+    map["commsTopoInfo"] =
+        apache::thrift::SimpleJSONSerializer::serialize<std::string>(
+            ncclx::comms_monitor::getTopoInfoFromNcclComm(comm));
   }
   dumpProcessGlobalErrors(map);
 
