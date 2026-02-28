@@ -299,6 +299,9 @@ ncclResult_t ncclTasksRegAndEnqueue(struct ncclComm* comm) {
     }
     ncclRegisterCollBuffers(comm, task, regBufSend, regBufRecv, &planner->collCleanupQueue, &regNeedConnect);
 
+    // NCCLX specific changes
+    devWork.quantizeRandomSeedPtr = task->quantizeRandomSeedPtr; // [NCCLX-Deq]
+
     devWork.sendbuff = (void*)task->sendbuff;
     devWork.recvbuff = (void*)task->recvbuff;
     devWork.sendbuffOffset = task->sendbuffOffset;
@@ -497,6 +500,10 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
 
     if (task->algorithm == NCCL_ALGO_NVLS_TREE || task->algorithm == NCCL_ALGO_NVLS) {
       struct ncclDevWorkColl devWork = {};
+
+      // NCCLX specific changes
+      devWork.quantizeRandomSeedPtr = task->quantizeRandomSeedPtr;
+
       devWork.sendbuff = (void*)task->sendbuff;
       devWork.recvbuff = (void*)task->recvbuff;
       devWork.sendbuffOffset = task->sendbuffOffset;
@@ -1811,6 +1818,12 @@ static ncclResult_t updateCollCostTable(
   }
 
   for (int a=0; a<NCCL_NUM_ALGORITHMS; a++) {
+    // NCCLX Specific: ReduceScatterQuantize currently only supports PAT. All
+    // other algorithms are ignored.
+    // TODO: Switch to Min's infoExt approach.
+    if (info->quantizeRandomSeedPtr != nullptr && a != NCCL_ALGO_PAT) {
+      continue;
+    }
     if ((a == NCCL_ALGO_COLLNET_DIRECT || a == NCCL_ALGO_COLLNET_CHAIN) && collNetSupport != 1) continue;
     // CollNetDirect is only supported for up to 8 local GPUs
     if (a == NCCL_ALGO_COLLNET_DIRECT && comm->maxLocalRanks > NCCL_MAX_DIRECT_ARITY+1) continue;
@@ -1820,6 +1833,13 @@ static ncclResult_t updateCollCostTable(
     if (a == NCCL_ALGO_PAT && info->func == ncclFuncReduceScatter
         && (info->opDev.op == ncclDevPreMulSum || info->opDev.op == ncclDevSumPostDiv)) continue;
     for (int p=0; p<NCCL_NUM_PROTOCOLS; p++) {
+      // NCCLX Specific: ReduceScatterQuantize currently only supports Simple. All
+      // other protocols are ignored.
+      // TODO: Switch to Min's infoExt approach.
+      if (info->quantizeRandomSeedPtr != nullptr && p != NCCL_PROTO_SIMPLE) {
+        continue;
+      }
+
       NCCLCHECK(ncclTopoGetAlgoTime(comm, info->func, a, p, nBytes, numPipeOps, &table[a][p]));
       // Relegate fp8 reduction trees of sufficient depth that they incur precision loss
       // to be least preferred.
@@ -2420,6 +2440,11 @@ static ncclResult_t taskAppend(struct ncclComm* comm, struct ncclInfo* info) {
       t->chunkSteps = info->chunkSteps;
       t->sliceSteps = info->sliceSteps;
       t->eActivationMask = __atomic_load_n(&ncclProfilerEventMask, __ATOMIC_RELAXED);
+
+      // NCCLX specific fields
+      t->quantizeRandomSeedPtr = info->randomSeed;
+      // For non-quant ops, we will juse use the input/output datatype
+      t->transportType = info->transportType.value_or(t->datatype);
 
       planner->nTasksColl += 1;
       ncclTaskCollSorterInsert(&planner->collSorter, t, t->trafficBytes);

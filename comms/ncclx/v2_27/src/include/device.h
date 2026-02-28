@@ -309,6 +309,11 @@ struct alignas(16) ncclDevWorkColl {
     } collnet;
   };
   uint64_t redOpArg;
+
+  // [NCCLX-QuantizedColl]
+  // NCCLX: non-nullptr indicated this collective uses quantized transport (FP32->BF16->FP32)
+  // When set, it is a device pointer to the quantized data.
+  uint64_t* quantizeRandomSeedPtr{nullptr};
 };
 
 

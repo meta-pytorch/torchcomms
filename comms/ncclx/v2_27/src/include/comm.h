@@ -239,6 +239,14 @@ struct ncclTaskColl {
   int eActivationMask;
   void* eventHandle;
   uint8_t nChannels;
+
+  // NCCLX specific fields
+  // Random seed pointer for quantized collectives (stochastic rounding)
+  uint64_t* quantizeRandomSeedPtr;
+  // The type we should use for transport. This will be the same as the
+  // datatype for non-quantized collectives, and will be the quantized
+  // datatype for quantized collectives.
+  ncclDataType_t transportType;
 };
 struct ncclTaskP2p {
   struct ncclTaskP2p* next;
