@@ -933,6 +933,63 @@ commResult_t CtranMapper::allGatherCtrl(
   return commSuccess;
 }
 
+commResult_t CtranMapper::allToAllCtrl(
+    const std::vector<void*>& bufs,
+    const std::vector<void*>& hdls,
+    std::vector<void*>& remoteBufs,
+    std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+    CtranMapperBackend backend) {
+  const int nRanks = comm->statex_->nRanks();
+  std::vector<int> ranks(nRanks);
+  for (int i = 0; i < nRanks; i++) {
+    ranks[i] = i;
+  }
+  return this->allToAllCtrl(
+      bufs, hdls, ranks, remoteBufs, remoteAccessKeys, backend);
+}
+
+commResult_t CtranMapper::allToAllCtrl(
+    const std::vector<void*>& bufs,
+    const std::vector<void*>& hdls,
+    const std::vector<int>& ranks,
+    std::vector<void*>& remoteBufs,
+    std::vector<struct CtranMapperRemoteAccessKey>& remoteAccessKeys,
+    CtranMapperBackend backend) {
+  const int rank = comm->statex_->rank();
+
+  // Skip if rank is not in the ranks list
+  if (std::find(ranks.begin(), ranks.end(), rank) == ranks.end()) {
+    return commSuccess;
+  }
+
+  std::vector<CtranMapperRequest> reqs(ranks.size() * 2);
+  auto numReqs = 0;
+  // If rank is in the ranks list, exchange with all others
+  for (auto peer : ranks) {
+    // Direct fill rank itself's buf
+    if (rank == peer) {
+      remoteBufs[peer] = bufs[peer];
+      remoteAccessKeys[peer].backend = CtranMapperBackend::UNSET;
+      continue;
+    }
+
+    // Exchange with other ranks: each rank sends its own buffer to peer
+    // and receives peer's buffer
+    FB_COMMCHECK(irecvCtrlImpl(
+        &remoteBufs[peer], &remoteAccessKeys[peer], peer, &reqs[numReqs++]));
+    FB_COMMCHECK(
+        isendCtrlImpl(bufs[peer], hdls[peer], peer, &reqs[numReqs++], backend));
+  }
+
+  // TODO: completes all send and recv requests for now. May expose requests to
+  // algorithm for more flexible completion control
+  for (auto i = 0; i < numReqs; i++) {
+    FB_COMMCHECK(waitRequest(&reqs[i]));
+  }
+
+  return commSuccess;
+}
+
 commResult_t CtranMapper::barrier() {
   const auto& statex = comm->statex_;
   const int nRanks = statex->nRanks();
