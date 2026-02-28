@@ -21,13 +21,16 @@ struct HintKeys {
   // NOTE: torch eager init mode is required; otherwise, the hint to
   // communicator mapping may be incorrect
   static constexpr std::string_view kCommUseCtran = "ncclx.comm.useCtran";
+  // disable local (P2P and SHM) transports at communicator creation time
+  static constexpr std::string_view kCommNoLocal = "ncclx.comm.nolocal";
 };
 
-constexpr std::array<std::string_view, 4> kHintKeysArray = {
+constexpr std::array<std::string_view, 5> kHintKeysArray = {
     HintKeys::kCollTraceCrashOnAsyncError,
     HintKeys::kCollTraceCrashOnTimeout,
     HintKeys::kCollTraceTimeoutMs,
-    HintKeys::kCommUseCtran};
+    HintKeys::kCommUseCtran,
+    HintKeys::kCommNoLocal};
 
 using GlobalSetHintHook =
     std::function<void(const std::string& key, const std::string& val)>;
