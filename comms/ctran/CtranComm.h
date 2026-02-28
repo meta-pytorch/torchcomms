@@ -37,6 +37,9 @@ struct ncclComm;
 namespace ncclx::memory {
 class memCacheAllocator;
 }
+namespace comms::pipes {
+class MultiPeerTransport;
+}
 
 using ctran::utils::Abort;
 using ctran::utils::AsyncError;
@@ -147,6 +150,9 @@ class CtranComm {
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
+#if defined(ENABLE_PIPES)
+  std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
+#endif // defined(ENABLE_PIPES)
 
  private:
   // TODO: define proper constructor to make CtranComm be independent of
