@@ -53,7 +53,8 @@ std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm) {
       std::vector<int>(), /* commRanksToWorldRanks */
       comm->config.commDesc);
 
-  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
+  if (comm->noLocal_ ||
+      NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::nolocal) {
     // Fake topology with nLocalRanks=1
     _CommStateX->initRankTopologyNolocal();
   } else if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
@@ -67,8 +68,9 @@ std::unique_ptr<CommStateX> createCommStateXFromNcclComm(void* _comm) {
 
   INFO(
       NCCL_INIT | NCCL_GRAPH,
-      "CommStateX: initialize from ncclComm with %s",
-      topoNameMap[NCCL_COMM_STATE_DEBUG_TOPO].c_str());
+      "CommStateX: set rankTopology with %s%s",
+      topoNameMap[NCCL_COMM_STATE_DEBUG_TOPO].c_str(),
+      comm->noLocal_ ? " (noLocal hint)" : "");
 
   return _CommStateX;
 }
@@ -146,7 +148,11 @@ ncclResult_t initCtranCommStatexFromNcclComm(
   }
 
   try {
-    ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
+    if (ncclComm->noLocal_) {
+      ctranComm->statex_->initRankTopologyNolocal();
+    } else {
+      ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
+    }
 
     NCCLCHECK(initNvlFabricTopologies(ncclComm, ctranComm));
 

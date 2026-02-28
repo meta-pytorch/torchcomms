@@ -25,14 +25,17 @@ struct HintKeys {
   // Format: "<redop>:<algo>" e.g., "avg:patavg"
   static constexpr std::string_view kCommAlgoReduceScatter =
       "ncclx.comm.algo_reducescatter";
+  // disable local (P2P and SHM) transports at communicator creation time
+  static constexpr std::string_view kCommNoLocal = "ncclx.comm.nolocal";
 };
 
-constexpr std::array<std::string_view, 5> kHintKeysArray = {
+constexpr std::array<std::string_view, 6> kHintKeysArray = {
     HintKeys::kCollTraceCrashOnAsyncError,
     HintKeys::kCollTraceCrashOnTimeout,
     HintKeys::kCollTraceTimeoutMs,
     HintKeys::kCommUseCtran,
-    HintKeys::kCommAlgoReduceScatter};
+    HintKeys::kCommAlgoReduceScatter,
+    HintKeys::kCommNoLocal};
 
 using GlobalSetHintHook =
     std::function<void(const std::string& key, const std::string& val)>;
