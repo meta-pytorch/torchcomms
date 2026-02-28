@@ -37,6 +37,9 @@ struct ncclComm;
 namespace ncclx::memory {
 class memCacheAllocator;
 }
+namespace comms::pipes {
+class MultiPeerTransport;
+}
 
 using ctran::utils::Abort;
 using ctran::utils::AsyncError;
@@ -49,17 +52,7 @@ class CtranComm {
   explicit CtranComm(
       std::shared_ptr<Abort> abort =
           ctran::utils::createAbort(/*enabled=*/false),
-      ctranConfig commConfig = ctranConfig{})
-      : config_(commConfig), abort_(abort) {
-    asyncErr_ =
-        std::make_shared<AsyncError>(NCCL_CTRAN_ABORT_ON_ERROR, "CtranComm");
-    if (!abort_) {
-      throw ctran::utils::Exception(
-          "abort must not be empty", commInternalError);
-    }
-    // Default points to internal opCount
-    opCount_ = &ctranOpCount_;
-  }
+      ctranConfig commConfig = ctranConfig{});
 
   // The MemCache allocator is destroyed in a different time than all
   // other Ctran resources. To accommodate this, we split the CtranComm
@@ -67,26 +60,9 @@ class CtranComm {
   // resources except for MemCache. The second part is moved to the
   // destructor, where it is safe to destroy MemCache and reset its
   // reference.
-  void destroy() {
-    // All smart pointers are automatically de-initialized, but we want to
-    // ensure they do so in a specific order. Therefore, we manually handle
-    // their de-initialization here.
-    ctran_.reset();
-    bootstrap_.reset();
-    collTrace_.reset();
-    colltraceNew_.reset();
-    statex_.reset();
-    // NOTE: memCache needs to be destroyed after transportProxy_ to release
-    // all buffers
-    memCache_.reset();
+  void destroy();
 
-    this->logMetaData_.commDesc.clear();
-    this->logMetaData_.commDesc.shrink_to_fit();
-  }
-
-  ~CtranComm() {
-    this->destroy();
-  }
+  ~CtranComm();
 
   // Finalize any outstanding communication associated with the CtranComm
   // instance. Any resource release would be handled in later call to
@@ -174,6 +150,9 @@ class CtranComm {
   std::shared_ptr<meta::comms::colltrace::ICollTrace> colltraceNew_;
   std::shared_ptr<ncclx::memory::memCacheAllocator> memCache_;
   std::unique_ptr<ncclx::CommStateX> statex_;
+#if defined(ENABLE_PIPES)
+  std::unique_ptr<comms::pipes::MultiPeerTransport> multiPeerTransport_;
+#endif // defined(ENABLE_PIPES)
 
  private:
   // TODO: define proper constructor to make CtranComm be independent of
@@ -184,8 +163,8 @@ class CtranComm {
   // refactoring we will remove ncclx fields from ncclx and will initialize
   // them on CtranComm. Until then only factory method should be used to
   // initialize CtranComm.
-  CtranComm(CtranComm&&) = default;
-  CtranComm& operator=(CtranComm&&) = default;
+  CtranComm(CtranComm&&);
+  CtranComm& operator=(CtranComm&&);
   CtranComm(const CtranComm&) = delete;
   CtranComm& operator=(const CtranComm&) = delete;
 
