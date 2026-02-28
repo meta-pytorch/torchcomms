@@ -15,7 +15,51 @@ namespace ncclx::comms_monitor {
 
 namespace {
 struct CommsMonitorSingletonTag {};
+
+std::vector<int64_t> getVectorRingFromArray(int nRanks, int* ring) {
+  std::vector<int64_t> ringVec;
+  ringVec.reserve(nRanks);
+  for (int i = 0; i < nRanks; i++) {
+    ringVec.push_back(ring[i]);
+  }
+  return ringVec;
+}
+
 } // namespace
+
+::comms::CommsTopologyInfo getTopoInfoFromNcclComm(ncclComm_t comm) {
+  std::vector<std::vector<int64_t>> rings(comm->nChannels);
+  std::vector<::comms::TopoTreeNodeInfo> trees(comm->nChannels);
+  for (int i = 0; i < comm->nChannels; i++) {
+    auto& channel = comm->channels[i];
+    if (comm->lazySetupChannels && comm->nChannels != comm->nChannelsReady) {
+      rings[i] = getVectorRingFromArray(
+          comm->nRanks, comm->rings.value().data() + i * comm->nRanks);
+    } else {
+      rings[i] = getVectorRingFromArray(comm->nRanks, channel.ring.userRanks);
+    }
+    ::comms::TopoTreeNodeInfo curTreeNodeInfo;
+    // TODO: Verify if parent node of root node is -1
+    curTreeNodeInfo.parentNode() = channel.tree.up;
+    std::vector<int64_t> childNodes(NCCL_MAX_TREE_ARITY);
+    for (int j = 0; j < NCCL_MAX_TREE_ARITY; j++) {
+      childNodes[j] = channel.tree.down[j];
+    }
+    curTreeNodeInfo.childrenNodes() = std::move(childNodes);
+    curTreeNodeInfo.rank() = comm->rank;
+    trees[i] = curTreeNodeInfo;
+  }
+
+  ::comms::CommsTopologyInfo thriftTopoInfo;
+  thriftTopoInfo.nChannels() = comm->nChannels;
+  thriftTopoInfo.rings() = std::move(rings);
+  thriftTopoInfo.treeInfos() = std::move(trees);
+  thriftTopoInfo.commDesc() = comm->config.commDesc;
+  thriftTopoInfo.globalRank() = comm->rank;
+  thriftTopoInfo.localRank() = comm->localRank;
+
+  return thriftTopoInfo;
+}
 
 folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
     commsMonitorSingleton{};
@@ -35,6 +79,7 @@ folly::Singleton<CommsMonitor, CommsMonitorSingletonTag>
   return NcclCommMonitorInfo{
       .logMetaData = comm->logMetaData,
       .commState = ncclx::CommStateX{*comm->ctranComm_->statex_},
+      .topoInfo = getTopoInfoFromNcclComm(comm),
       .collTrace = comm->collTrace,
       .mapperTrace = mapperTrace,
       .proxyTrace = proxyTrace,
