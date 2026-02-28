@@ -21,6 +21,11 @@ inline const bool commUsePatAvg() {
   return algoHint.has_value() && algoHint.value() == "avg:patavg";
 }
 
+inline bool commNoLocal() {
+  return getTypedGlobalHint<bool>(HintKeys::kCommNoLocal).value_or(false);
+}
+
 const std::string getCommUseCtranConfig();
 const std::string getCommUsePatAvgConfig();
+const std::string getCommNoLocalConfig();
 } // namespace ncclx

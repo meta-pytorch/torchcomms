@@ -20,4 +20,11 @@ const std::string getCommUsePatAvgConfig() {
       HintKeys::kCommAlgoReduceScatter,
       hintVal.value_or("(not set)"));
 }
+
+const std::string getCommNoLocalConfig() {
+  return fmt::format(
+      "GlobalHint {}={}",
+      HintKeys::kCommNoLocal,
+      getTypedGlobalHint<bool>(HintKeys::kCommNoLocal).value_or(false));
+}
 } // namespace ncclx
