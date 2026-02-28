@@ -102,6 +102,8 @@ NCCLXCommsTracingServiceHandler::co_getComms(
       thriftErr.timestampMs() = cudaErr.timestampMs.count();
       thriftErr.errorString() = cudaErr.errorString;
       thriftErr.errorCode() = cudaErr.errorCode;
+      thriftErr.scaleupDomain() = cudaErr.scaleupDomain;
+      thriftErr.localHostname() = cudaErr.localHostname;
       response.cudaErrors().ensure().push_back(std::move(thriftErr));
     }
     ProcessGlobalErrorsUtil::clearCudaErrors();

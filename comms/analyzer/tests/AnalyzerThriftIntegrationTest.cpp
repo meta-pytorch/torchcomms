@@ -75,11 +75,15 @@ std::string peerStringForRank(int64_t rank) {
 ::comms::CudaError makeCudaError(
     int64_t timestampMs,
     const std::string& errorString = "CUDA_ERROR_ECC_UNCORRECTABLE",
-    int32_t errorCode = 214) {
+    int32_t errorCode = 214,
+    const std::string& scaleupDomain = "",
+    const std::string& localHostname = "") {
   ::comms::CudaError error;
   error.timestampMs() = timestampMs;
   error.errorString() = errorString;
   error.errorCode() = errorCode;
+  error.scaleupDomain() = scaleupDomain;
+  error.localHostname() = localHostname;
   return error;
 }
 
@@ -307,7 +311,11 @@ TEST_F(
           kNumRanks,
           {},
           {makeCudaError(
-              1000, "CUDA_ERROR_NVLINK_UNCORRECTABLE", /*errorCode=*/72)}),
+              1000,
+              "CUDA_ERROR_NVLINK_UNCORRECTABLE",
+              /*errorCode=*/72,
+              "scaleup_domain_0",
+              hostnameForRank(0))}),
       makeResponse(1, kNumRanks),
   });
 
@@ -322,6 +330,56 @@ TEST_F(
   ASSERT_TRUE(verdict.cudaErrorResult.has_value());
   EXPECT_TRUE(verdict.cudaErrorResult->hasNvlinkUncorrectableError);
   EXPECT_EQ(verdict.cudaErrorResult->earliestNvlinkErrorRank, 0);
+  EXPECT_EQ(
+      verdict.cudaErrorResult->earliestErrorScaleupDomain, "scaleup_domain_0");
+  EXPECT_EQ(
+      verdict.cudaErrorResult->earliestErrorLocalHostname, hostnameForRank(0));
+}
+
+TEST_F(
+    AnalyzerThriftIntegrationTest,
+    NvlinkErrorMultiRankTracksEarliestScaleupDomain) {
+  FLAGS_nccl_analyzer_enable_cuda_error_analyzer = true;
+  constexpr int kNumRanks = 2;
+
+  auto responses = startAndFetch({
+      // Rank 0: NVLink error at t=2000 (later), scaleup_domain_a
+      makeResponse(
+          0,
+          kNumRanks,
+          {},
+          {makeCudaError(
+              2000,
+              "CUDA_ERROR_NVLINK_UNCORRECTABLE",
+              72,
+              "scaleup_domain_a",
+              hostnameForRank(0))}),
+      // Rank 1: NVLink error at t=1000 (earlier), scaleup_domain_b
+      makeResponse(
+          1,
+          kNumRanks,
+          {},
+          {makeCudaError(
+              1000,
+              "CUDA_ERROR_NVLINK_UNCORRECTABLE",
+              72,
+              "scaleup_domain_b",
+              hostnameForRank(1))}),
+  });
+
+  auto [result, verdict] = analyzeResponses(responses);
+
+  EXPECT_TRUE(result.analyzerVerdictType.count(
+      AnalyzerVerdict::VerdictType::CUDA_NVLINK_UNCORRECTABLE_ERROR));
+
+  ASSERT_TRUE(verdict.cudaErrorResult.has_value());
+  // Earliest NVLink error is rank 1
+  EXPECT_EQ(verdict.cudaErrorResult->earliestNvlinkErrorRank, 1);
+  // Metadata should come from rank 1 (the earliest NVLink error)
+  EXPECT_EQ(
+      verdict.cudaErrorResult->earliestErrorScaleupDomain, "scaleup_domain_b");
+  EXPECT_EQ(
+      verdict.cudaErrorResult->earliestErrorLocalHostname, hostnameForRank(1));
 }
 
 TEST_F(AnalyzerThriftIntegrationTest, NoErrorsProducesNoErrorVerdict) {

@@ -48,6 +48,8 @@ class ProcessGlobalErrorsUtil {
     std::chrono::milliseconds timestampMs{};
     std::string errorString; // from cudaGetErrorString(err)
     int errorCode{0}; // the raw cudaError_t value
+    std::string scaleupDomain;
+    std::string localHostname;
   };
 
   struct State {
