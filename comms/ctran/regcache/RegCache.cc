@@ -180,13 +180,6 @@ ctran::regcache::Snapshot ctran::regcache::Profiler::getSnapshot() const {
 }
 
 void ctran::RegCache::init() {
-  // Acquire a reference to CtranIbSingleton to establish dependency ordering.
-  // By holding this shared_ptr, we ensure that CtranIbSingleton is destroyed
-  // AFTER RegCache during program shutdown, preventing use-after-free when
-  // RegCache::destroy() calls CtranIb::deregMem().
-  ibSingleton_ = CtranIbSingleton::getInstance();
-  CHECK_VALID_IB_SINGLETON(ibSingleton_);
-
   // Initialize global backends from environment variable.
   // The NCCL_CTRAN_BACKENDS cvar is already parsed at cvar initialization time.
   // This allows registration to work without requiring a communicator.
@@ -216,6 +209,17 @@ void ctran::RegCache::init() {
       static_cast<bool>(globalBackends_[CommBackend::NVL]),
       static_cast<bool>(globalBackends_[CommBackend::SOCKET]),
       static_cast<bool>(globalBackends_[CommBackend::TCPDM]));
+
+  // Acquire a reference to CtranIbSingleton to establish dependency ordering,
+  // but only when IB backend is configured. By holding this shared_ptr, we
+  // ensure that CtranIbSingleton is destroyed AFTER RegCache during program
+  // shutdown, preventing use-after-free when RegCache::destroy() calls
+  // CtranIb::deregMem(). When IB is not configured, no IB registrations will
+  // exist, so the lifetime dependency is not needed.
+  if (globalBackends_[CommBackend::IB]) {
+    ibSingleton_ = CtranIbSingleton::getInstance();
+    CHECK_VALID_IB_SINGLETON(ibSingleton_);
+  }
 
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
       !asyncRegThread_.joinable()) {
