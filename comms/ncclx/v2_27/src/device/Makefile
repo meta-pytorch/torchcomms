@@ -122,9 +122,8 @@ SRCS += ${BASE_DIR}/comms/ctran/algos/DevShmState.cu
 SRCS += all_reduce_sparse_block.cu
 
 -include $(OBJDIR)/gensrc/ctran_rules.mk
-SRCS += $(CTRAN_GEN_SRCS)
 
-LIB_OBJS = $(patsubst %, $(OBJDIR)/%.o, $(SRCS)) $(LIB_OBJS_GEN) $(LIB_OBJS_SYM_GEN)
+LIB_OBJS = $(patsubst %, $(OBJDIR)/%.o, $(SRCS)) $(LIB_OBJS_GEN) $(LIB_OBJS_SYM_GEN) $(CTRAN_LIB_OBJS)
 
 $(OBJDIR)/%.o: % $(OBJDIR)/%.d
 	$(call COMPILE,$@,$<)
