@@ -17,6 +17,10 @@
 
 namespace torch::comms {
 
+// Reset the global op_id generator. Used when creating isolated
+// FlightRecorder instances to ensure each test gets a fresh op_id space.
+void resetGlobalOpIdGenerator();
+
 // Forward declarations
 class TorchWork;
 class TorchCommNCCLX;
@@ -106,6 +110,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   void finalize();
   int getRank() const;
   int getSize() const;
+  std::vector<int> getRanks() const;
   std::string_view getCommName() const;
 
   // Point-to-Point Operations
@@ -322,8 +327,6 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
   int64_t nextHookId_ = 0;
   std::unordered_map<int64_t, PreHook> preHooks_;
   std::unordered_map<int64_t, PostHook> postHooks_;
-  // Counter for generating unique operation IDs
-  std::atomic<size_t> nextOpId_{0};
 };
 
 // Constructor that creates the appropriate backend implementation

@@ -409,6 +409,13 @@ class FlightRecorderHook {
     return recorder_;
   }
 
+  /**
+   * Hook called when a communicator is split.
+   * Registers the new communicator with the flight recorder.
+   * @param new_comm The newly created communicator from the split operation.
+   */
+  void splitHook(std::shared_ptr<TorchComm> new_comm);
+
  private:
   // Hook callback
   void onPreHook(
