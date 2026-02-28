@@ -9,6 +9,7 @@
 #include <numeric>
 
 #include "comms/ctran/ibverbx/Ibverbx.h"
+#include "comms/ctran/utils/Exception.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -153,7 +154,8 @@ void changeVirtualQpStateToRts(
   }
 
   if (numRemoteDevices == 0) {
-    throw std::runtime_error("Remote card has no valid GIDs");
+    throw ctran::utils::Exception(
+        "Remote card has no valid GIDs", commInternalError);
   }
 
   // Get references to physical QPs and notify QP
@@ -179,8 +181,9 @@ void changeVirtualQpStateToRts(
           &qpAttr,
           IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
       if (!result) {
-        throw std::runtime_error(
-            fmt::format("Failed to modify QP {} to INIT state", i));
+        throw ctran::utils::Exception(
+            fmt::format("Failed to modify QP {} to INIT state", i),
+            commSystemError);
       }
     }
 
@@ -193,8 +196,9 @@ void changeVirtualQpStateToRts(
           IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
               IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
       if (!result) {
-        throw std::runtime_error(
-            fmt::format("Failed to modify QP {} to RTR state", i));
+        throw ctran::utils::Exception(
+            fmt::format("Failed to modify QP {} to RTR state", i),
+            commSystemError);
       }
     }
 
@@ -206,8 +210,9 @@ void changeVirtualQpStateToRts(
           IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
               IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
       if (!result) {
-        throw std::runtime_error(
-            fmt::format("Failed to modify QP {} to RTS state", i));
+        throw ctran::utils::Exception(
+            fmt::format("Failed to modify QP {} to RTS state", i),
+            commSystemError);
       }
     }
   }
@@ -224,7 +229,8 @@ void changeVirtualQpStateToRts(
         &qpAttr,
         IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS);
     if (!result) {
-      throw std::runtime_error("Failed to modify notify QP to INIT state");
+      throw ctran::utils::Exception(
+          "Failed to modify notify QP to INIT state", commSystemError);
     }
   }
 
@@ -237,7 +243,8 @@ void changeVirtualQpStateToRts(
         IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN |
             IBV_QP_RQ_PSN | IBV_QP_MAX_DEST_RD_ATOMIC | IBV_QP_MIN_RNR_TIMER);
     if (!result) {
-      throw std::runtime_error("Failed to modify notify QP to RTR state");
+      throw ctran::utils::Exception(
+          "Failed to modify notify QP to RTR state", commSystemError);
     }
   }
 
@@ -249,7 +256,8 @@ void changeVirtualQpStateToRts(
         IBV_QP_STATE | IBV_QP_TIMEOUT | IBV_QP_RETRY_CNT | IBV_QP_RNR_RETRY |
             IBV_QP_SQ_PSN | IBV_QP_MAX_QP_RD_ATOMIC);
     if (!result) {
-      throw std::runtime_error("Failed to modify notify QP to RTS state");
+      throw ctran::utils::Exception(
+          "Failed to modify notify QP to RTS state", commSystemError);
     }
   }
 }
