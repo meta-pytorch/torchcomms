@@ -102,6 +102,24 @@ ncclResult_t DefaultNcclxApi::commDeregister(ncclComm_t comm, void* handle) {
   return ncclCommDeregister(comm, handle);
 }
 
+ncclResult_t DefaultNcclxApi::globalRegisterWithPtr(void* buffer, size_t size) {
+  return ncclGlobalRegisterWithPtr(buffer, size);
+}
+
+ncclResult_t DefaultNcclxApi::globalDeregisterWithPtr(
+    void* buffer,
+    size_t size) {
+  return ncclGlobalDeregisterWithPtr(buffer, size);
+}
+
+ncclResult_t DefaultNcclxApi::registerAll() {
+  return ncclRegisterAll();
+}
+
+ncclResult_t DefaultNcclxApi::deregisterAll() {
+  return ncclDeregisterAll();
+}
+
 ncclResult_t DefaultNcclxApi::send(
     const void* sendbuff,
     size_t count,

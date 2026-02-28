@@ -250,6 +250,12 @@ class TorchCommNCCLX : public TorchCommBackend,
     cuda_api_ = std::move(api);
   }
 
+  // Register all cached memory segments in contiguous memory registrations.
+  void registerAll();
+
+  // Deregister all registrations from the global cache.
+  void deregisterAll();
+
   const CommOptions& getOptions() const override {
     return options_;
   }
@@ -270,6 +276,13 @@ class TorchCommNCCLX : public TorchCommBackend,
     TIMEOUT,
   };
 
+  std::atomic<CommState> comm_state_{
+      CommState::NORMAL}; // State of the communicator
+
+  cudaEvent_t
+      dependency_event_{}; // Pre-allocated event for stream dependencies
+
+ public:
   struct Address {
     void* addr;
   };
@@ -279,14 +292,17 @@ class TorchCommNCCLX : public TorchCommBackend,
     size_t len;
   };
 
-  std::atomic<CommState> comm_state_{
-      CommState::NORMAL}; // State of the communicator
+  // Global pointer-based registration that doesn't require a comm instance.
+  // Used by CachingAllocatorHook for pre-comm memory registration.
+  // The caller provides the NcclxApi to use for the registration.
+  static void global_register_address(
+      const AddressWithLen& addr,
+      NcclxApi* nccl_api);
+  static void global_deregister_address(
+      const AddressWithLen& addr,
+      NcclxApi* nccl_api);
 
-  cudaEvent_t
-      dependency_event_{}; // Pre-allocated event for stream dependencies
-
-  void register_address(const AddressWithLen& addr);
-  void deregister_address(const Address& addr);
+ protected:
   ncclDataType_t getNcclDataType(const at::Tensor& tensor);
   ncclDataType_t getNcclDataType(const at::ScalarType scalar_type);
 
@@ -402,8 +418,8 @@ class TorchCommNCCLX : public TorchCommBackend,
   bool getGraphCaptureMode();
   void ensureTensorContiguous(const at::Tensor& tensor);
 
+  // Initialize the CachingAllocatorHook singleton
   void attachMemoryHook();
-  void detachMemoryHook();
 
   // Member variables
   ncclComm_t nccl_comm_{};
