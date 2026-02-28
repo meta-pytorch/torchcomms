@@ -73,6 +73,8 @@ void CommStateX::initRankTopologyNolocal() {
     rankState.nLocalRanks = 1;
     rankState.localRankToRanks.assign(1, r);
     const std::string nolocalHost("nolocal_node_" + std::to_string(r));
+    rankState.host = nolocalHost;
+    rankState.pid = r;
     hostToRanks_[nolocalHost].emplace_back(r);
     nodeRanks_[rankState.nodeId].emplace_back(rankState.rank);
   }
@@ -94,6 +96,8 @@ void CommStateX::initRankTopologyVnode(const int nLocalRanks) {
     }
     const std::string vNodeHost(
         "vnode_node_" + std::to_string(rankState.nodeId));
+    rankState.host = vNodeHost;
+    rankState.pid = r;
     hostToRanks_[vNodeHost].emplace_back(r);
     nodeRanks_[rankState.nodeId].emplace_back(r);
   }
