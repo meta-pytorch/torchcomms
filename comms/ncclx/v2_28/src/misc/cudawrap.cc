@@ -261,7 +261,7 @@ static ncclResult_t cudaPfnFuncLoader(void) {
 }
 #endif
 
-static std::once_flag initOnceFlag;
+static pthread_once_t initOnceControl = PTHREAD_ONCE_INIT;
 static ncclResult_t initResult;
 
 static void initOnceFunc() {
@@ -277,6 +277,9 @@ static void initOnceFunc() {
 
   CUDACHECKGOTO(cudaDriverGetVersion(&driverVersion), ret, error);
   INFO(NCCL_INIT, "cudaDriverVersion %d", driverVersion);
+#ifdef CUDART_VERSION
+  WARN("ncclx 2.28: CUDART_VERSION %d", CUDART_VERSION);
+#endif
 
   if (driverVersion < CUDA_DRIVER_MIN_VERSION) {
     // WARN("CUDA Driver version found is %d. Minimum requirement is %d", driverVersion, CUDA_DRIVER_MIN_VERSION);
@@ -314,7 +317,7 @@ error:
 }
 
 ncclResult_t ncclCudaLibraryInit() {
-  std::call_once(initOnceFlag, initOnceFunc);
+  pthread_once(&initOnceControl, initOnceFunc);
   auto res = ctran::utils::commCudaLibraryInit();
   if (res != commSuccess){
     return ncclSystemError;
