@@ -9,7 +9,7 @@
 
 #include "comm.h"
 #include "comms/testinfra/TestsDistUtils.h"
-#include "meta/ctran-integration/BaselineConfig.h" // @manual
+#include "meta/hints/CommHintConfig.h" // @manual
 #include "meta/hints/GlobalHints.h" // @manual
 #include "nccl.h"
 
