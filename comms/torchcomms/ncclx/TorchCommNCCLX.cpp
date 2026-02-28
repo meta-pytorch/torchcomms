@@ -1572,8 +1572,14 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       options_.timeout,
       async_op
           ? std::vector<
-                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank, output_tensor_ptrs}
+                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank}
           : std::vector<at::Tensor>{});
+
+  // Save the CPU pointer tensor to keep it alive for the lifetime of the work
+  // object. output_tensor_ptrs is a CPU tensor holding raw pointers to the
+  // output tensors and must remain valid during async operations and graph
+  // replay. The output_tensor_list (GPU tensors) is kept alive by the caller.
+  work->setCPUTensors({output_tensor_ptrs});
 
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_dispatch");

@@ -112,6 +112,17 @@ void GraphEventTracker::addEntry(TorchWorkNCCLX* work) {
       work->start_event_, work->end_event_, work->timeout_ms_);
   work->start_event_ = nullptr;
   work->end_event_ = nullptr;
+
+  // Transfer CPU tensors from the work object to the graph state.
+  // These tensors (e.g., CPU pointer tensors used by alltoallv_dynamic_dispatch
+  // operations) must remain alive for the graph's lifetime to avoid
+  // use-after-free during graph replay.
+  auto& cpu_tensors = it->second.cpu_tensors;
+  cpu_tensors.insert(
+      cpu_tensors.end(),
+      std::make_move_iterator(work->cpuTensors_.begin()),
+      std::make_move_iterator(work->cpuTensors_.end()));
+  work->cpuTensors_.clear();
 }
 
 // Queries a CUDA event and returns CheckResult::ERROR on unexpected CUDA

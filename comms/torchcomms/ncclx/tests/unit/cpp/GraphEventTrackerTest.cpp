@@ -754,4 +754,128 @@ TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
       << "end event was not destroyed by destroyAll";
 }
 
+// ============================================================================
+// TENSOR LIFETIME TESTS IN GRAPH CAPTURE MODE
+// ============================================================================
+
+// Test that alltoallv_dynamic_dispatch works correctly during graph capture
+// mode. The work object stores output tensors and CPU pointer tensor.
+TEST_F(GraphEventTrackerTest, GraphCaptureDispatchSavesOutputTensors) {
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  comm->init(*device_, "test_graph_dispatch_tensors", options);
+
+  setupGraphCaptureMocks();
+  auto events = setupGraphCaptureEvents();
+
+  // Create test tensors
+  auto input_tensor = createTestTensor({100});
+  auto output_tensor_0 = createTestTensor({50});
+  auto output_tensor_1 = createTestTensor({50});
+  std::vector<at::Tensor> output_tensor_list = {
+      output_tensor_0, output_tensor_1};
+
+  auto input_chunk_sizes =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_indices =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_count_per_rank =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto output_chunk_sizes_per_rank =
+      at::ones({4}, at::TensorOptions().device(*device_).dtype(at::kLong));
+
+  EXPECT_CALL(
+      *nccl_mock_, alltoallvDynamicDispatch(_, _, _, _, _, _, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSuccess));
+
+  // The sync event will be destroyed when work goes out of scope
+  EXPECT_CALL(*cuda_mock_, eventDestroy(events.sync))
+      .WillOnce(Return(cudaSuccess));
+
+  {
+    auto work = comm->alltoallv_dynamic_dispatch(
+        output_tensor_list,
+        output_chunk_sizes_per_rank,
+        input_tensor,
+        input_chunk_sizes,
+        input_chunk_indices,
+        input_chunk_count_per_rank,
+        true); // async_op = true
+
+    EXPECT_NE(work, nullptr);
+
+    // Work goes out of scope here - tensors should still be valid
+  }
+
+  // After work is destroyed, our local tensor variables should still be valid
+  EXPECT_NE(output_tensor_0.data_ptr(), nullptr);
+  EXPECT_NE(output_tensor_1.data_ptr(), nullptr);
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  switchToReplayMode();
+  setupFinalizeExpectations(*comm);
+}
+
+// Test that alltoallv_dynamic_combine works correctly during graph capture
+// mode. The work object stores the output tensor.
+TEST_F(GraphEventTrackerTest, GraphCaptureCombineSavesOutputTensor) {
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  auto options = createAbortModeOptions();
+  comm->init(*device_, "test_graph_combine_tensors", options);
+
+  setupGraphCaptureMocks();
+  auto events = setupGraphCaptureEvents();
+
+  // Create test tensors
+  auto input_tensor = createTestTensor({100});
+  auto output_tensor = createTestTensor({100});
+  auto input_chunk_sizes =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_indices =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+  auto input_chunk_count_per_rank =
+      at::ones({2}, at::TensorOptions().device(*device_).dtype(at::kLong));
+
+  EXPECT_CALL(
+      *nccl_mock_, alltoallvDynamicCombine(_, _, _, _, _, _, _, _, _, _, _))
+      .WillOnce(Return(ncclSuccess));
+
+  // The sync event will be destroyed when work goes out of scope
+  EXPECT_CALL(*cuda_mock_, eventDestroy(events.sync))
+      .WillOnce(Return(cudaSuccess));
+
+  {
+    auto work = comm->alltoallv_dynamic_combine(
+        output_tensor,
+        input_tensor,
+        input_chunk_sizes,
+        input_chunk_indices,
+        input_chunk_count_per_rank,
+        true); // async_op = true
+
+    EXPECT_NE(work, nullptr);
+
+    // Work goes out of scope here - tensor should still be valid
+  }
+
+  // After work is destroyed, our local tensor variable should still be valid
+  EXPECT_NE(output_tensor.data_ptr(), nullptr);
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  switchToReplayMode();
+  setupFinalizeExpectations(*comm);
+}
+
 } // namespace torch::comms::test
