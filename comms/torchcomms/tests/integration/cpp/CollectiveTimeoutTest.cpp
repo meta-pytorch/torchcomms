@@ -2,6 +2,7 @@
 
 #include "CollectiveTimeoutTest.hpp"
 
+#include <cstdlib>
 #include <functional>
 #include <vector>
 
@@ -287,6 +288,15 @@ void CollectiveTimeoutTest::testTimeout(
     const ExecMode mode) {
   if (mode != ExecMode::kEager && isRunningOnCPU()) {
     GTEST_SKIP() << "CUDA Graph timeout tests not supported on CPU";
+  }
+  // Graph mode timeout detection requires GraphEventTracker (ncclx only).
+  // TODO: Port GraphEventTracker to nccl to enable graph timeout tests.
+  if (mode != ExecMode::kEager) {
+    const char* backend = std::getenv("TEST_BACKEND");
+    if (!backend || std::string(backend) != "ncclx") {
+      GTEST_SKIP()
+          << "Graph mode timeout requires GraphEventTracker (ncclx only)";
+    }
   }
 
   // Expected exit behavior per rank:

@@ -8,6 +8,8 @@
 //   childBody builds an ops vector and calls helper_.exec(mode, ops).
 //   exec() handles eager vs graph mode dispatch transparently.
 
+// TODO: Port GraphEventTracker from ncclx to nccl for graph mode timeout.
+
 #include <gtest/gtest.h>
 #include "CollectiveTimeoutTest.hpp"
 
