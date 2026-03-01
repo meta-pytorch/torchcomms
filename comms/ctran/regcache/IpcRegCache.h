@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <folly/Hash.h>
 #include <folly/SocketAddress.h>
@@ -158,6 +159,20 @@ class IpcRegCache {
       const regcache::IpcDesc& ipcDesc,
       regcache::IpcReqCb* reqCb);
 
+  // Register an IpcExportClient with the registry. The client will be
+  // called by releaseFromAllClients when memory is globally freed.
+  // Must be matched with a deregisterExportClient call before the client
+  // is destroyed.
+  void registerExportClient(regcache::IpcExportClient* client);
+
+  // Deregister an IpcExportClient from the registry.
+  void deregisterExportClient(regcache::IpcExportClient* client);
+
+  // Iterate all registered IpcExportClients and call remReleaseMem on each
+  // for the given regElem. Used by globalDeregister when PyTorch frees
+  // the underlying memory.
+  commResult_t releaseFromAllClients(regcache::RegElem* regElem);
+
  private:
   // Internal implementation for importing and caching remote NVL memory.
   commResult_t importRemMemImpl(
@@ -203,6 +218,11 @@ class IpcRegCache {
 
   // Monotonically increasing unique ID counter for IPC registrations
   static std::atomic<uint32_t> nextUniqueId_;
+
+  // Registry of active IpcExportClients. globalDeregister iterates this
+  // to notify all communicators when memory is freed.
+  folly::Synchronized<std::unordered_set<regcache::IpcExportClient*>>
+      exportClientRegistry_;
 };
 
 } // namespace ctran

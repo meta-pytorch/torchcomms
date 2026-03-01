@@ -434,3 +434,27 @@ void ctran::IpcRegCache::stopAsyncSocket() {
 
   asyncServerSocket_.reset();
 }
+
+void ctran::IpcRegCache::registerExportClient(
+    ctran::regcache::IpcExportClient* client) {
+  exportClientRegistry_.wlock()->insert(client);
+}
+
+void ctran::IpcRegCache::deregisterExportClient(
+    ctran::regcache::IpcExportClient* client) {
+  exportClientRegistry_.wlock()->erase(client);
+}
+
+commResult_t ctran::IpcRegCache::releaseFromAllClients(
+    ctran::regcache::RegElem* regElem) {
+  // Hold the read lock for the entire iteration to prevent a client from
+  // being destroyed while we're calling remReleaseMem on it. The mapper
+  // destructor calls deregisterExportClient (which takes a write lock),
+  // so it will block until we finish iterating.
+  auto lockedRegistry = exportClientRegistry_.rlock();
+  for (auto* client : *lockedRegistry) {
+    FB_COMMCHECK(client->remReleaseMem(regElem));
+  }
+
+  return commSuccess;
+}

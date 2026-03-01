@@ -632,7 +632,7 @@ TEST_F(RegCacheTest, HoldsCtranIbSingletonReference) {
 // Test multiple deregAll/regAll cycles to verify no resource leaks or
 // corruption. This simulates a workload that periodically re-registers
 // memory (e.g., for BAR1 memory management).
-TEST_F(RegCacheTest, DISABLED_MultipleDeregAllRegAllCycles) {
+TEST_F(RegCacheTest, MultipleDeregAllRegAllCycles) {
   constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB
   constexpr int numSegments = 2;
   constexpr int numCycles = 5;
@@ -694,14 +694,14 @@ TEST_F(RegCacheTest, RegAllWithNoSegmentsReturnsSuccess) {
 }
 
 // Test deregAll with no registrations returns success (edge case)
-TEST_F(RegCacheTest, DISABLED_DeregAllWithNoRegistrationsReturnsSuccess) {
+TEST_F(RegCacheTest, DeregAllWithNoRegistrationsReturnsSuccess) {
   // deregAll should succeed (no-op)
   EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
 }
 
 // Test getContiguousRegions logic: single segment forms one region
 // This indirectly tests getContiguousRegions through regAll
-TEST_F(RegCacheTest, DISABLED_GetContiguousRegionsSingleSegment) {
+TEST_F(RegCacheTest, GetContiguousRegionsSingleSegment) {
   size_t bufSize = 8192;
   void* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
@@ -736,7 +736,7 @@ TEST_F(RegCacheTest, DISABLED_GetContiguousRegionsSingleSegment) {
 // Test getContiguousRegions logic: multiple contiguous segments form one region
 // This tests that adjacent segments (where end addr == next start addr) are
 // grouped together
-TEST_F(RegCacheTest, DISABLED_GetContiguousRegionsMultipleContiguousSegments) {
+TEST_F(RegCacheTest, GetContiguousRegionsMultipleContiguousSegments) {
   constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB per segment
   constexpr int numSegments = 4;
   std::vector<size_t> segSizes(numSegments, segmentSize);
@@ -783,7 +783,7 @@ TEST_F(RegCacheTest, DISABLED_GetContiguousRegionsMultipleContiguousSegments) {
 // Test regAll handles multiple non-contiguous memory regions correctly.
 // This ensures that regAll creates separate registrations for each
 // contiguous region, not one giant registration spanning gaps.
-TEST_F(RegCacheTest, DISABLED_RegAllHandlesNonContiguousRegions) {
+TEST_F(RegCacheTest, RegAllHandlesNonContiguousRegions) {
   // Allocate three disjoint buffers. Cache only buf1 and buf3, using buf2
   // as a spacer to guarantee buf1 and buf3 are non-contiguous in memory.
   constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB
@@ -951,6 +951,92 @@ TEST_F(RegCacheTest, IpcRemRegElemReleaseUnknown) {
   EXPECT_NE(
       ipcRegCache->releaseRemReg("nonexistent_peer", nullptr, 999),
       commSuccess);
+}
+
+// Mock IpcExportClient for testing the registry in IpcRegCache.
+class MockIpcExportClient : public ctran::regcache::IpcExportClient {
+ public:
+  std::vector<ctran::regcache::RegElem*> releasedElems;
+
+  commResult_t remReleaseMem(ctran::regcache::RegElem* regElem) override {
+    releasedElems.push_back(regElem);
+    return commSuccess;
+  }
+};
+
+// Test IpcExportClient registry: register, releaseFromAllClients, deregister.
+TEST_F(RegCacheTest, IpcExportClientRegistry) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  MockIpcExportClient client1;
+  MockIpcExportClient client2;
+
+  ipcRegCache->registerExportClient(&client1);
+  ipcRegCache->registerExportClient(&client2);
+
+  auto* dummyElem = reinterpret_cast<ctran::regcache::RegElem*>(0xABCD);
+
+  // releaseFromAllClients should call remReleaseMem on both clients
+  EXPECT_EQ(ipcRegCache->releaseFromAllClients(dummyElem), commSuccess);
+  EXPECT_EQ(client1.releasedElems.size(), 1);
+  EXPECT_EQ(client1.releasedElems[0], dummyElem);
+  EXPECT_EQ(client2.releasedElems.size(), 1);
+  EXPECT_EQ(client2.releasedElems[0], dummyElem);
+
+  // Deregister client1, call again — only client2 should be called
+  ipcRegCache->deregisterExportClient(&client1);
+
+  auto* dummyElem2 = reinterpret_cast<ctran::regcache::RegElem*>(0xBCDE);
+  EXPECT_EQ(ipcRegCache->releaseFromAllClients(dummyElem2), commSuccess);
+  EXPECT_EQ(client1.releasedElems.size(), 1); // unchanged
+  EXPECT_EQ(client2.releasedElems.size(), 2);
+  EXPECT_EQ(client2.releasedElems[1], dummyElem2);
+
+  // Deregister client2 — no clients left
+  ipcRegCache->deregisterExportClient(&client2);
+
+  auto* dummyElem3 = reinterpret_cast<ctran::regcache::RegElem*>(0xCDEF);
+  EXPECT_EQ(ipcRegCache->releaseFromAllClients(dummyElem3), commSuccess);
+  EXPECT_EQ(client1.releasedElems.size(), 1); // unchanged
+  EXPECT_EQ(client2.releasedElems.size(), 2); // unchanged
+}
+
+// Test that double-registering the same client doesn't cause duplicate calls.
+TEST_F(RegCacheTest, IpcExportClientRegistryDuplicateRegister) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  MockIpcExportClient client;
+  ipcRegCache->registerExportClient(&client);
+  ipcRegCache->registerExportClient(&client); // duplicate
+
+  auto* dummyElem = reinterpret_cast<ctran::regcache::RegElem*>(0xAAAA);
+  EXPECT_EQ(ipcRegCache->releaseFromAllClients(dummyElem), commSuccess);
+
+  // Should only be called once since it's a set
+  EXPECT_EQ(client.releasedElems.size(), 1);
+
+  ipcRegCache->deregisterExportClient(&client);
+}
+
+// Test that deregistering a client that was never registered is a no-op.
+TEST_F(RegCacheTest, IpcExportClientRegistryDeregisterUnknown) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  MockIpcExportClient client;
+  // Should not crash or fail
+  ipcRegCache->deregisterExportClient(&client);
+}
+
+// Test IpcRemRegElem refcount: verify initial refcount is 1.
+TEST_F(RegCacheTest, IpcRemRegElemRefCountInitial) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  // getNumRemReg returns 0 for unknown peer
+  EXPECT_EQ(ipcRegCache->getNumRemReg("test_peer_refcount"), 0);
 }
 
 int main(int argc, char* argv[]) {

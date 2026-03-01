@@ -352,9 +352,6 @@ commResult_t ctran::RegCache::globalRegister(
 
 commResult_t
 ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
-  CLOGF(ERR, "globalDeregister is disabled while remReleaseMem is moved.");
-  return commInternalError;
-
   if (buf == nullptr || len == 0) {
     return commSuccess;
   }
@@ -380,21 +377,13 @@ ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
   std::vector<ctran::regcache::RegElem*> regElems;
   FB_COMMCHECK(lookupSegmentsForBuffer(buf, len, cudaDev, segHdls, regElems));
 
-  // Call remReleaseMem on ipcRegElems before freeing segments.
-  // This notifies remote peers to release their imported NVL memory.
-  // Like the mapper path, we use fire-and-forget semantics - the async socket
-  // sends will complete in the background. We don't wait for completion since
-  // the mapper also clears postedCbCtrlReqs_ without waiting at destruction.
-  // TODO: verify this is correct and that we shouldn't be waiting for the
-  // requests to finish.
+  // Call releaseFromAllClients on regElems before freeing segments.
+  // This iterates all registered IpcExportClients (mappers) and notifies
+  // remote peers to release their imported NVL memory.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  std::string localPeerId = ipcRegCache->getLocalPeerId();
-  std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedReqs;
   for (auto& regElem : regElems) {
-    auto ipcRegElem =
-        reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
-    if (ipcRegElem != nullptr) {
-      // FIXME: call mapper function to release remote memory
+    if (regElem->ipcRegElem != nullptr) {
+      FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem));
     }
   }
 
@@ -1357,9 +1346,6 @@ commResult_t ctran::RegCache::regAll() {
 // Global API: Deregister all non-dynamic registration elements.
 // This removes all registrations but keeps cached segments intact.
 commResult_t ctran::RegCache::deregAll() {
-  CLOGF(ERR, "deregAll is disabled while remReleaseMem is moved.");
-  return commInternalError;
-
   auto regCache = ctran::RegCache::getInstance();
   if (!regCache) {
     CLOGF(ERR, "deregAll: RegCache instance not available");
@@ -1411,18 +1397,13 @@ commResult_t ctran::RegCache::deregAll() {
     }
   }
 
-  // Call remReleaseMem on ipcRegElems before deregistering.
-  // This notifies remote peers to release their imported NVL memory.
-  // Like the mapper path, we use fire-and-forget semantics - the async socket
-  // sends will complete in the background.
+  // Call releaseFromAllClients on regElems before deregistering.
+  // This iterates all registered IpcExportClients (mappers) and notifies
+  // remote peers to release their imported NVL memory.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  std::string localPeerId = ipcRegCache->getLocalPeerId();
-  std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedReqs;
   for (auto& regElem : toDeregister) {
-    auto ipcRegElem =
-        reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
-    if (ipcRegElem != nullptr) {
-      // FIXME: call mapper function to release remote memory
+    if (regElem->ipcRegElem != nullptr) {
+      FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem.get()));
     }
   }
 

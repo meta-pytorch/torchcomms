@@ -168,5 +168,22 @@ struct IpcReqCb {
   explicit IpcReqCb(IpcReqType t, const std::string& id) : req(t, id) {}
 };
 
+// Forward declaration for RegElem (defined in RegCache.h)
+struct RegElem;
+
+// Abstract interface for any object that exports IPC memory and needs
+// to send remReleaseMem when memory is globally freed. Implementers
+// (e.g., CtranMapper) register with IpcRegCache so that globalDeregister
+// can iterate all active exporters.
+class IpcExportClient {
+ public:
+  virtual ~IpcExportClient() = default;
+
+  // Called by IpcRegCache::releaseFromAllClients when memory is globally freed.
+  // The implementer should look up the regElem in its own export cache,
+  // send release to the appropriate peers, and clean up.
+  virtual commResult_t remReleaseMem(RegElem* regElem) = 0;
+};
+
 } // namespace regcache
 } // namespace ctran

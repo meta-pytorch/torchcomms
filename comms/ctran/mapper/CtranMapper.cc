@@ -85,6 +85,10 @@ CtranMapper::CtranMapper(CtranComm* comm) {
     // Initialize IpcRegCache singleton (idempotent - only initializes once)
     ctran::IpcRegCache::getInstance()->init();
 
+    // Register this mapper as an IpcExportClient so globalDeregister
+    // can iterate all active mappers to send remote releases.
+    ctran::IpcRegCache::getInstance()->registerExportClient(this);
+
     // AllGather IPC server addresses after comm is set
     FB_COMMCHECKTHROW_EX(allGatherIpcServerAddrs(), comm->logMetaData_);
   } else {
@@ -406,6 +410,13 @@ CtranMapper::~CtranMapper() {
   setAtDestruction();
 
   this->reportProfiling(true);
+
+  // Deregister from IpcRegCache so globalDeregister won't call this mapper
+  // after it's destroyed.
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  if (ipcRegCache) {
+    ipcRegCache->deregisterExportClient(this);
+  }
 
   // Release any pending IPC release requests;
   // intentionally avoid progress polling in destructor to ensure it is never
