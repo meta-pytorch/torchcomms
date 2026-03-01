@@ -15,7 +15,6 @@ TorchWorkXCCL::TorchWorkXCCL(
       comm_(std::move(comm)),
       stream_(stream),
       timeout_ms_(timeout_ms),
-      state_(WorkStatus::NOT_STARTED),
       tracing_(std::move(tracing)) {
   // If not in graph capture mode, create the events for start and end
   // recording
@@ -48,11 +47,11 @@ void TorchWorkXCCL::recordEnd() {
       "Failed to record end event");
 }
 
-TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
+TorchWork::WorkStatus TorchWorkXCCL::checkStatus() {
   // If already marked as completed, return COMPLETED
-  if (state_ == WorkStatus::COMPLETED || state_ == WorkStatus::ERROR ||
-      state_ == WorkStatus::TIMEDOUT) {
-    return state_;
+  if (status() == WorkStatus::COMPLETED || status() == WorkStatus::ERROR ||
+      status() == WorkStatus::TIMEDOUT) {
+    return status();
   }
 
   // Step 1: If start_completed_time_ doesn't have a value yet, query the start
@@ -63,7 +62,7 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
     if (start_status == XPU_SUCCESS) {
       // Start event has completed, store the current time
       start_completed_time_ = std::chrono::steady_clock::now();
-      state_ = WorkStatus::INPROGRESS;
+      setStatus(WorkStatus::INPROGRESS);
     } else if (
         start_status != XPU_ERROR_NOT_READY &&
         start_status != XPU_ERROR_UNSUPPORTED) {
@@ -71,11 +70,11 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
       TC_LOG(ERROR) << "XPU error during start event query: "
                     << comm_->getXpuApi()->getErrorString(start_status) << " ("
                     << start_status << ")";
-      state_ = WorkStatus::ERROR;
+      setStatus(WorkStatus::ERROR);
     }
   }
-  if (state_ == WorkStatus::NOT_STARTED || state_ == WorkStatus::ERROR) {
-    return state_;
+  if (status() == WorkStatus::NOT_STARTED || status() == WorkStatus::ERROR) {
+    return status();
   }
 
   // Step 2: If we get here, start event has completed, so query the end event
@@ -83,11 +82,13 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
 
   if (end_status == XPU_SUCCESS) {
     // End event has completed, mark the work as completed
-    state_ = WorkStatus::COMPLETED;
+    setStatus(WorkStatus::COMPLETED);
 
     // Release the input tensors to keep the lifetime of the tensors short
     inputTensors_.clear();
-  } else if (end_status == XPU_ERROR_NOT_READY) {
+  } else if (
+      end_status == XPU_ERROR_NOT_READY ||
+      end_status == XPU_ERROR_UNSUPPORTED) {
     // End event has not completed yet, check for timeout
     auto current_time = std::chrono::steady_clock::now();
     auto elapsed_milliseconds =
@@ -97,21 +98,21 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCL::checkStatus() {
     // Check if the operation has timed out
     if (elapsed_milliseconds > timeout_ms_) {
       // Operation has timed out
-      state_ = WorkStatus::TIMEDOUT;
+      setStatus(WorkStatus::TIMEDOUT);
     }
   } else {
     // Some other error occurred with the end event
     TC_LOG(ERROR) << "XPU error during end event query: "
                   << comm_->getXpuApi()->getErrorString(end_status) << " ("
                   << end_status << ")";
-    state_ = WorkStatus::ERROR;
+    setStatus(WorkStatus::ERROR);
   }
-  return state_;
+  return status();
 }
 
 void TorchWorkXCCL::wait() {
   // If already completed, return immediately
-  WorkStatus local_state = state_;
+  WorkStatus local_state = status();
   if (local_state == WorkStatus::COMPLETED ||
       local_state == WorkStatus::ERROR || local_state == WorkStatus::TIMEDOUT) {
     return;
@@ -130,5 +131,11 @@ void TorchWorkXCCL::wait() {
       comm_->getXpuApi(),
       comm_->getXpuApi()->streamWaitEvent(current_stream, end_event_, 0),
       "Failed to make stream wait for event");
+
+  // End event has completed from the perspective of the current stream,
+  // mark the work as completed
+  setStatus(WorkStatus::COMPLETED);
+  // Release the input tensors to keep the lifetime of the tensors short
+  inputTensors_.clear();
 }
 } // namespace torch::comms

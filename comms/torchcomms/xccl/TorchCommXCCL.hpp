@@ -178,6 +178,7 @@ class TorchCommXCCL : public TorchCommBackend,
 
   // Friend access for TorchCommXCCL
   friend class TorchWorkXCCL;
+  friend class TorchWorkXCCLQueueCommTest;
 
   // Getter for XPU API (for friend classes)
   XpuApi* getXpuApi() const {
@@ -227,6 +228,11 @@ class TorchCommXCCL : public TorchCommBackend,
       xpuStream_t stream,
       std::chrono::milliseconds timeout,
       const std::vector<at::Tensor>& inputTensors);
+
+  // Work tracking per stream
+  TorchWorkXCCLQueue workq_;
+
+  std::optional<xpuEvent_t> dependency_event_; // Pre-allocated event for stream dependencies
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -281,8 +287,6 @@ class TorchCommXCCL : public TorchCommBackend,
   CommOptions options_;
   size_t max_event_pool_size_{};
   std::optional<xpuStream_t> internal_stream_; // Initialized in init()
-  std::optional<xpuEvent_t>
-      dependency_event_; // Pre-allocated event for stream dependencies
   void* barrier_buffer_{}; // Pre-allocated XPU buffer for barrier operations
   enum class InitializationState {
     UNINITIALIZED,
@@ -299,9 +303,6 @@ class TorchCommXCCL : public TorchCommBackend,
   // Event pool management
   std::queue<xpuEvent_t> event_pool_;
   std::mutex event_pool_mutex_;
-
-  // Work tracking per stream
-  TorchWorkXCCLQueue workq_;
 
   // Timeout monitoring
   std::thread timeout_thread_;
