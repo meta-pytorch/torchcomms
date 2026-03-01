@@ -73,6 +73,10 @@ struct IpcRegElem {
 
 struct IpcRemRegElem {
   ctran::utils::CtranIpcRemMem ipcRemMem;
+  // Reference count for how many communicators have imported this memory.
+  // Starts at 1 on first import, incremented on subsequent cache hits.
+  // Only freed when refCount reaches 0.
+  std::atomic<int> refCount{1};
 
  public:
   IpcRemRegElem(
@@ -82,7 +86,10 @@ struct IpcRemRegElem {
       : ipcRemMem(ipcDesc, cudaDev, logMetaData, "IPC RemRegElem") {};
 
   std::string toString() const {
-    return ipcRemMem.toString();
+    return fmt::format(
+        "{} refCount: {}",
+        ipcRemMem.toString(),
+        refCount.load(std::memory_order_relaxed));
   }
 };
 
