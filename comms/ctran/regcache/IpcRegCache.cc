@@ -115,7 +115,15 @@ commResult_t ctran::IpcRegCache::importRemMemImpl(
   if (peerIt != lockedMap->end()) {
     auto keyIt = peerIt->second.find(key);
     if (keyIt != peerIt->second.end()) {
+      keyIt->second->refCount.fetch_add(1, std::memory_order_relaxed);
       *mappedBase = keyIt->second->ipcRemMem.getBase();
+      CLOGF_TRACE(
+          COLL,
+          "CTRAN-REGCACHE: IPC remote registration cache hit peer:base:uid=<{}:{}:{}>, refCount now {}",
+          peerId,
+          reinterpret_cast<void*>(base),
+          ipcDesc.uid,
+          keyIt->second->refCount.load(std::memory_order_relaxed));
       return commSuccess;
     }
   }
@@ -167,13 +175,27 @@ commResult_t ctran::IpcRegCache::releaseRemReg(
     return ErrorStackTraceUtil::log(commInternalError);
   }
 
+  auto& elem = (*lockedMap)[peerId][key];
+  int prevCount = elem->refCount.fetch_sub(1, std::memory_order_acq_rel);
+  if (prevCount > 1) {
+    CLOGF_TRACE(
+        COLL,
+        "CTRAN-REGCACHE: decremented refCount for IPC remote registration "
+        "peer:base:uid=<{}:{}:{}>, refCount now {}",
+        peerId,
+        basePtr,
+        uid,
+        prevCount - 1);
+    return commSuccess;
+  }
+
   CLOGF_TRACE(
       COLL,
       "CTRAN-REGCACHE: remove IPC remote registration from cache peer:base:uid=<{}:{}:{}> : {}",
       peerId,
       basePtr,
       uid,
-      (*lockedMap)[peerId][key]->toString());
+      elem->toString());
 
   try {
     (*lockedMap)[peerId].erase(key);
