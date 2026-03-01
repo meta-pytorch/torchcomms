@@ -7,8 +7,8 @@
 #include <memory>
 
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
-#include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -1223,35 +1223,35 @@ TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
   EXPECT_EQ(rkey3.toString(), "backend=UNKNOWN");
 }
 
-TEST_F(CtranMapperTest, IpcExportCache) {
-  std::unique_ptr<ctran::regcache::IpcExportCache> cache =
-      std::make_unique<ctran::regcache::IpcExportCache>();
-  ctran::regcache::IpcRegElem* dummyRegElem0 =
-      reinterpret_cast<ctran::regcache::IpcRegElem*>(0x12345);
-  const std::vector<std::string> peers = {"peer0", "peer1", "peer2", "peer3"};
+TEST_F(CtranMapperTest, ExportRegCache) {
+  std::unique_ptr<ctran::ExportRegCache> cache =
+      std::make_unique<ctran::ExportRegCache>();
+  const ctran::regcache::RegElem* dummyRegElem0 =
+      reinterpret_cast<ctran::regcache::RegElem*>(0x12345);
+  const std::vector<int> peers = {0, 1, 2, 3};
 
-  for (const auto& peer : peers) {
+  for (auto peer : peers) {
     cache->record(dummyRegElem0, peer);
   }
 
-  // Expect dump gives full copy of the cache
+  // Except dump gives full copy of the cache
   const auto dump = cache->dump();
   EXPECT_EQ(dump.size(), 1);
   auto it = dump.begin();
   EXPECT_EQ(it->first, dummyRegElem0);
   EXPECT_EQ(it->second.size(), peers.size());
 
-  ctran::regcache::IpcRegElem* dummyRegElem1 =
-      reinterpret_cast<ctran::regcache::IpcRegElem*>(0x12346);
+  const ctran::regcache::RegElem* dummyRegElem1 =
+      reinterpret_cast<ctran::regcache::RegElem*>(0x12346);
 
-  // Expect return empty set for non-existing regElem
+  // Expect return empty vector for non-existing regElem
   auto cachedPeers = cache->remove(dummyRegElem1);
   EXPECT_EQ(cachedPeers.size(), 0);
 
   // Expect return cached peers for existing regElem
   cachedPeers = cache->remove(dummyRegElem0);
   EXPECT_EQ(cachedPeers.size(), peers.size());
-  for (const auto& peer : peers) {
+  for (auto peer : peers) {
     EXPECT_EQ(cachedPeers.count(peer), 1);
   }
 

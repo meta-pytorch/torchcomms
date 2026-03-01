@@ -2,7 +2,6 @@
 #pragma once
 
 #include <atomic>
-#include <deque>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -56,7 +55,7 @@ class IpcRegCache {
   // Output arguments:
   //   - ipcRelease: the IpcRelease struct to be populated and sent to remote
   //                 rank.
-  static void releaseMemReq(
+  static void remReleaseMem(
       void* ipcRegElem,
       ctran::regcache::IpcRelease& ipcRelease);
 
@@ -94,13 +93,11 @@ class IpcRegCache {
   // Input arguments:
   //   - buf: local buffer to export
   //   - ipcRegElem: local IPC registration element
-  //   - peerId: ID of the peer to export to (for tracking exports)
   // Output arguments:
   //   - ipcDesc: IPC descriptor to be populated and sent to remote peer
   inline commResult_t exportMem(
       const void* buf,
       void* ipcRegElem,
-      const std::string& peerId,
       ctran::regcache::IpcDesc& ipcDesc) {
     if (ipcRegElem == nullptr) {
       CLOGF(ERR, "CTRAN-REGCACHE: ipcRegElem is nullptr in exportMem");
@@ -114,10 +111,6 @@ class IpcRegCache {
     ipcDesc.offset = reinterpret_cast<size_t>(buf) -
         reinterpret_cast<size_t>(ipcMem->getBase());
     ipcDesc.uid = reg->uid;
-
-    // Record the export for tracking
-    exportRegCache_.wlock()->record(reg, peerId);
-
     return commSuccess;
   }
 
@@ -178,27 +171,6 @@ class IpcRegCache {
       const regcache::IpcDesc& ipcDesc,
       regcache::IpcReqCb* reqCb);
 
-  // Release memory exported via IPC by notifying all peers that imported it.
-  // Returns the set of peerIds that were notified.
-  // Input arguments:
-  //   - myId: the local peer ID (gPid)
-  //   - ipcRegElem: the local IPC registration element
-  // Output arguments:
-  //   - postedReqs: deque to store posted callback requests
-  commResult_t remReleaseMem(
-      const std::string& myId,
-      regcache::IpcRegElem* ipcRegElem,
-      std::deque<std::unique_ptr<regcache::IpcReqCb>>& postedReqs);
-
-  // Remove ipcRegElem from export cache and return the exported peerIds.
-  // Used when the caller needs to handle remote release separately.
-  std::unordered_set<std::string> removeExport(
-      regcache::IpcRegElem* ipcRegElem);
-
-  // Dump exported registration cache, for testing only
-  std::unordered_map<regcache::IpcRegElem*, std::unordered_set<std::string>>
-  dumpExportRegCache() const;
-
  private:
   // Internal implementation for importing and caching remote NVL memory.
   commResult_t importRemMemImpl(
@@ -247,12 +219,6 @@ class IpcRegCache {
   // communicators.
   folly::Synchronized<folly::F14FastMap<std::string, folly::SocketAddress>>
       peerIpcServerAddrs_;
-
-  // Record remote peers that each ipcRegElem has been exported to.
-  // For each peer, we will send RELEASE_MEM notification at deregMem.
-  // Protected by Synchronized for concurrent access from multiple
-  // communicators.
-  folly::Synchronized<ctran::regcache::IpcExportCache> exportRegCache_;
 
   // Monotonically increasing unique ID counter for IPC registrations
   static std::atomic<uint32_t> nextUniqueId_;
