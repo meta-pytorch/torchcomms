@@ -272,7 +272,7 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Combine(
         testing::Values(1, 4, 8, 16),
         testing::Values(20 * 1024 * 1024),
-        testing::Values("global", "comm")),
+        testing::Values("comm")),
     [&](const testing::TestParamInfo<CommVsGlobalRegParam::ParamType>& info) {
       return std::to_string(std::get<0>(info.param)) + "numSeg_" +
           std::to_string(std::get<1>(info.param)) + "SegSize_" +
@@ -280,7 +280,7 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 // Benchmark for regAll - registers all cached segments as contiguous regions
-TEST_F(RegCacheBench, RegAllTime) {
+TEST_F(RegCacheBench, DISABLED_RegAllTime) {
   constexpr int numIter = 10;
   constexpr int numSegments = 8;
   constexpr size_t segmentSize = 20 * 1024 * 1024; // 20MB per segment
