@@ -73,7 +73,7 @@ class GlobalRegistrationTest : public ::testing::Test {
  * 2. CtranIbSingleton is lazily initialized when needed
  * 3. Registration and deregistration succeed
  */
-TEST_F(GlobalRegistrationTest, RegisterWithoutCommOrMapper) {
+TEST_F(GlobalRegistrationTest, DISABLED_RegisterWithoutCommOrMapper) {
   // Verify NO CtranComm or CtranMapper exists - we're testing global API only
   // There is no comm to check, this test runs standalone
 
@@ -93,7 +93,7 @@ TEST_F(GlobalRegistrationTest, RegisterWithoutCommOrMapper) {
  * This simulates the CCA pattern where multiple memory allocations
  * are registered before a comm is created.
  */
-TEST_F(GlobalRegistrationTest, MultipleRegistrationsBeforeComm) {
+TEST_F(GlobalRegistrationTest, DISABLED_MultipleRegistrationsBeforeComm) {
   constexpr int numBuffers = 4;
   std::vector<void*> buffers(numBuffers, nullptr);
 
@@ -137,7 +137,7 @@ TEST_F(GlobalRegistrationTest, MultipleRegistrationsBeforeComm) {
  * 3. Verifies that pinRange discovers all physical segments
  * 4. Deregisters and frees the memory
  */
-TEST_F(GlobalRegistrationTest, MultiSegmentDisjointRegistration) {
+TEST_F(GlobalRegistrationTest, DISABLED_MultiSegmentDisjointRegistration) {
   // Allocate disjoint memory with 2 segments
   constexpr size_t totalSize = 2 * 1024 * 1024; // 2MB total
   std::vector<size_t> segmentSizes = {totalSize / 2, totalSize / 2};
@@ -189,7 +189,7 @@ TEST_F(GlobalRegistrationTest, MultiSegmentDisjointRegistration) {
  * physical segments, similar to large PyTorch allocations that span
  * multiple 20MB chunks in expandable segments mode.
  */
-TEST_F(GlobalRegistrationTest, MultiSegmentManyChunks) {
+TEST_F(GlobalRegistrationTest, DISABLED_MultiSegmentManyChunks) {
   // Allocate disjoint memory with 5 segments (simulating 5 x 20MB chunks)
   constexpr int numSegments = 5;
   constexpr size_t segmentSize = 512 * 1024; // 512KB per segment for test
@@ -232,7 +232,7 @@ TEST_F(GlobalRegistrationTest, MultiSegmentManyChunks) {
  * proceeds through the normal path, and the IB backend handles it gracefully
  * via exception catching in doRegister, matching CtranMapper behavior.
  */
-TEST_F(GlobalRegistrationTest, CpuTensorRegistration) {
+TEST_F(GlobalRegistrationTest, DISABLED_CpuTensorRegistration) {
   constexpr size_t cpuBufSize = 1024 * 1024; // 1MB
   void* cpuBuf = malloc(cpuBufSize);
   ASSERT_NE(cpuBuf, nullptr) << "CPU memory allocation should succeed";

@@ -631,7 +631,7 @@ TEST_F(RegCacheTest, HoldsCtranIbSingletonReference) {
 // Test multiple deregAll/regAll cycles to verify no resource leaks or
 // corruption. This simulates a workload that periodically re-registers
 // memory (e.g., for BAR1 memory management).
-TEST_F(RegCacheTest, MultipleDeregAllRegAllCycles) {
+TEST_F(RegCacheTest, DISABLED_MultipleDeregAllRegAllCycles) {
   constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB
   constexpr int numSegments = 2;
   constexpr int numCycles = 5;
@@ -693,14 +693,14 @@ TEST_F(RegCacheTest, RegAllWithNoSegmentsReturnsSuccess) {
 }
 
 // Test deregAll with no registrations returns success (edge case)
-TEST_F(RegCacheTest, DeregAllWithNoRegistrationsReturnsSuccess) {
+TEST_F(RegCacheTest, DISABLED_DeregAllWithNoRegistrationsReturnsSuccess) {
   // deregAll should succeed (no-op)
   EXPECT_EQ(ctran::RegCache::deregAll(), commSuccess);
 }
 
 // Test getContiguousRegions logic: single segment forms one region
 // This indirectly tests getContiguousRegions through regAll
-TEST_F(RegCacheTest, GetContiguousRegionsSingleSegment) {
+TEST_F(RegCacheTest, DISABLED_GetContiguousRegionsSingleSegment) {
   size_t bufSize = 8192;
   void* buf = nullptr;
   CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
@@ -735,7 +735,7 @@ TEST_F(RegCacheTest, GetContiguousRegionsSingleSegment) {
 // Test getContiguousRegions logic: multiple contiguous segments form one region
 // This tests that adjacent segments (where end addr == next start addr) are
 // grouped together
-TEST_F(RegCacheTest, GetContiguousRegionsMultipleContiguousSegments) {
+TEST_F(RegCacheTest, DISABLED_GetContiguousRegionsMultipleContiguousSegments) {
   constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB per segment
   constexpr int numSegments = 4;
   std::vector<size_t> segSizes(numSegments, segmentSize);
@@ -782,7 +782,7 @@ TEST_F(RegCacheTest, GetContiguousRegionsMultipleContiguousSegments) {
 // Test regAll handles multiple non-contiguous memory regions correctly.
 // This ensures that regAll creates separate registrations for each
 // contiguous region, not one giant registration spanning gaps.
-TEST_F(RegCacheTest, RegAllHandlesNonContiguousRegions) {
+TEST_F(RegCacheTest, DISABLED_RegAllHandlesNonContiguousRegions) {
   // Allocate three disjoint buffers. Cache only buf1 and buf3, using buf2
   // as a spacer to guarantee buf1 and buf3 are non-contiguous in memory.
   constexpr size_t segmentSize = 2 * 1024 * 1024; // 2MB

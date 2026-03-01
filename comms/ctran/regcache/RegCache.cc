@@ -352,6 +352,9 @@ commResult_t ctran::RegCache::globalRegister(
 
 commResult_t
 ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
+  CLOGF(ERR, "globalDeregister is disabled while remReleaseMem is moved.");
+  return commInternalError;
+
   if (buf == nullptr || len == 0) {
     return commSuccess;
   }
@@ -391,8 +394,7 @@ ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
     auto ipcRegElem =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
     if (ipcRegElem != nullptr) {
-      FB_COMMCHECK(
-          ipcRegCache->remReleaseMem(localPeerId, ipcRegElem, postedReqs));
+      // FIXME: call mapper function to release remote memory
     }
   }
 
@@ -1355,6 +1357,9 @@ commResult_t ctran::RegCache::regAll() {
 // Global API: Deregister all non-dynamic registration elements.
 // This removes all registrations but keeps cached segments intact.
 commResult_t ctran::RegCache::deregAll() {
+  CLOGF(ERR, "deregAll is disabled while remReleaseMem is moved.");
+  return commInternalError;
+
   auto regCache = ctran::RegCache::getInstance();
   if (!regCache) {
     CLOGF(ERR, "deregAll: RegCache instance not available");
@@ -1417,8 +1422,7 @@ commResult_t ctran::RegCache::deregAll() {
     auto ipcRegElem =
         reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
     if (ipcRegElem != nullptr) {
-      FB_COMMCHECK(
-          ipcRegCache->remReleaseMem(localPeerId, ipcRegElem, postedReqs));
+      // FIXME: call mapper function to release remote memory
     }
   }
 
