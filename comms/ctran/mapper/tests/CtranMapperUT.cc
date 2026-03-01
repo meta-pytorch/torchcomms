@@ -1261,6 +1261,54 @@ TEST_F(CtranMapperTest, ExportRegCache) {
   EXPECT_EQ(dump1.size(), 0);
 }
 
+// Test ExportRegCache with multiple RegElems exported to overlapping peers.
+// Simulates the scenario where two different memory regions are exported to
+// partially overlapping sets of peers.
+TEST_F(CtranMapperTest, ExportRegCacheMultipleElems) {
+  ctran::ExportRegCache cache;
+  auto* elem0 = reinterpret_cast<ctran::regcache::RegElem*>(0x1000);
+  auto* elem1 = reinterpret_cast<ctran::regcache::RegElem*>(0x2000);
+
+  // elem0 exported to peers {0, 1, 2}
+  cache.record(elem0, 0);
+  cache.record(elem0, 1);
+  cache.record(elem0, 2);
+
+  // elem1 exported to peers {1, 2, 3}
+  cache.record(elem1, 1);
+  cache.record(elem1, 2);
+  cache.record(elem1, 3);
+
+  EXPECT_EQ(cache.dump().size(), 2);
+
+  // Remove elem0 — should only return elem0's peers
+  auto peers0 = cache.remove(elem0);
+  const std::unordered_set<int> expected0 = {0, 1, 2};
+  EXPECT_EQ(peers0, expected0);
+  EXPECT_EQ(cache.dump().size(), 1);
+
+  // Remove elem1 — should only return elem1's peers
+  auto peers1 = cache.remove(elem1);
+  const std::unordered_set<int> expected1 = {1, 2, 3};
+  EXPECT_EQ(peers1, expected1);
+  EXPECT_EQ(cache.dump().size(), 0);
+}
+
+// Test ExportRegCache deduplication: recording the same peer twice for the
+// same regElem should not create duplicate entries.
+TEST_F(CtranMapperTest, ExportRegCacheDuplicatePeer) {
+  ctran::ExportRegCache cache;
+  auto* elem = reinterpret_cast<ctran::regcache::RegElem*>(0x3000);
+
+  cache.record(elem, 5);
+  cache.record(elem, 5);
+  cache.record(elem, 5);
+
+  auto peers = cache.remove(elem);
+  EXPECT_EQ(peers.size(), 1);
+  EXPECT_EQ(peers.count(5), 1);
+}
+
 class CtranMapperTestDisjoint : public ::testing::Test {
  public:
   std::unique_ptr<ctran::TestCtranCommRAII> commRAII_;

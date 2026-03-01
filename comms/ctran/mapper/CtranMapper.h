@@ -41,7 +41,7 @@ class CtranMapperImpl;
 
 const std::string getReqTypeStr(CtranMapperRequest::ReqType type);
 
-class CtranMapper {
+class CtranMapper : public ctran::regcache::IpcExportClient {
  public:
   CtranMapper(CtranComm* comm);
   ~CtranMapper();
@@ -1923,7 +1923,10 @@ class CtranMapper {
     return commSuccess;
   }
 
-  commResult_t remReleaseMem(ctran::regcache::RegElem* regElem);
+  // IpcExportClient interface: release exports for the given RegElem.
+  // Called both directly (comm destroy path) and by IpcRegCache registry
+  // (global memory free path).
+  commResult_t remReleaseMem(ctran::regcache::RegElem* regElem) override;
 
   bool atDestruction{false};
 
