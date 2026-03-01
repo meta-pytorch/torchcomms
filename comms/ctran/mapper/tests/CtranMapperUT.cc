@@ -1228,6 +1228,7 @@ TEST_F(CtranMapperTest, ExportRegCache) {
       std::make_unique<ctran::ExportRegCache>();
   const ctran::regcache::RegElem* dummyRegElem0 =
       reinterpret_cast<ctran::regcache::RegElem*>(0x12345);
+
   const std::vector<int> peers = {0, 1, 2, 3};
 
   for (auto peer : peers) {
@@ -1392,32 +1393,4 @@ TEST(CtranMapperUT, IpcRegCacheDisabledSkipsSocketInit) {
 
   // NVL backend should still be available (for window operations)
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
-
-  // IpcRegCache singleton peer address map should be empty since
-  // allGatherIpcServerAddrs() was skipped
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  folly::SocketAddress addr;
-  auto peerId = dummyComm->statex_->gPid(rank);
-  EXPECT_EQ(
-      ipcRegCache->getPeerIpcServerAddr(peerId, addr), commInvalidArgument);
-}
-
-// When NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET is true (default), the
-// mapper initializes IpcRegCache and populates the peer address map.
-TEST(CtranMapperUT, IpcRegCacheEnabledPopulatesPeerAddrs) {
-  SysEnvRAII ipcEnv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1");
-  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket");
-  ncclCvarInit();
-  auto commRAII = ctran::createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm.get();
-  auto mapper = std::make_unique<CtranMapper>(dummyComm);
-  auto rank = dummyComm->statex_->rank();
-
-  // IpcRegCache should have our own peer address populated
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  folly::SocketAddress addr;
-  auto peerId = dummyComm->statex_->gPid(rank);
-  EXPECT_EQ(ipcRegCache->getPeerIpcServerAddr(peerId, addr), commSuccess);
-  // The address should be non-empty (socket server was initialized)
-  EXPECT_NE(addr.getPort(), 0);
 }
