@@ -34,6 +34,9 @@ void CtranDistBaseTest::SetUp() {
   setenv("NCCL_CTRAN_ENABLE", "1", 0);
   setenv("NCCL_COLLTRACE", "trace", 0);
   setenv("NCCL_CTRAN_IB_EPOCH_LOCK_ENFORCE_CHECK", "true", 0);
+  // Enable async socket for IPC regcache. This is needed when NVL backend
+  // exports IPC handles to peers.
+  setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 0);
 
   // Create single tcpStore and commWorld shared by all tests running in
   // this test suite.
