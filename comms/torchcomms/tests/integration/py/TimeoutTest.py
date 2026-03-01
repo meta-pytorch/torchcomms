@@ -2,6 +2,8 @@
 # pyre-unsafe
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
+# TORCHCOMM_TEST_SINGLE_PARENT = True  # For GitHub CI: run with nproc_per_node=1
+
 import os
 import time
 import unittest
@@ -40,12 +42,11 @@ def _run_eager_timeout_scenario() -> None:
         device,
         name="eager_timeout_subprocess_comm",
         abort_process_on_timeout_or_error=True,
-        timeout=timedelta(milliseconds=1),
     )
 
     if rank == 0:
         time.sleep(10)
-    comm.barrier(async_op=False)
+    comm.barrier(async_op=False, timeout=timedelta(milliseconds=1))
     torch.cuda.synchronize()
 
     # Should not reach here — process should have been aborted
@@ -66,7 +67,6 @@ def _run_eager_timeout_after_success_scenario() -> None:
         device,
         name="eager_timeout_after_success_subprocess_comm",
         abort_process_on_timeout_or_error=True,
-        timeout=timedelta(milliseconds=1),
     )
 
     # First barrier: all ranks participate, should succeed.
@@ -76,7 +76,7 @@ def _run_eager_timeout_after_success_scenario() -> None:
     # Second barrier: rank 0 delays, causing timeout on other ranks.
     if rank == 0:
         time.sleep(10)
-    comm.barrier(async_op=False)
+    comm.barrier(async_op=False, timeout=timedelta(milliseconds=1))
     torch.cuda.synchronize()
 
     # Should not reach here — process should have been aborted
@@ -160,6 +160,65 @@ def _run_graph_timeout_after_success_scenario() -> None:
     comm.finalize()
 
 
+def _run_eager_short_timeout_success_scenario() -> None:
+    """Eager all_reduce with short timeout completes successfully."""
+
+    backend = os.environ.get("TEST_BACKEND", "")
+    rank, _ = get_rank_and_size()
+    device_count = torch.cuda.device_count()
+    device = torch.device("cuda", rank % device_count)
+    torch.cuda.set_device(device)
+
+    comm = torchcomms.new_comm(
+        backend,
+        device,
+        name="eager_short_timeout_success_subprocess_comm",
+        abort_process_on_timeout_or_error=True,
+        timeout=timedelta(seconds=2),
+    )
+    try:
+        inp = torch.ones(10, 10, device=device)
+        comm.all_reduce(inp, torchcomms.ReduceOp.SUM, async_op=False)
+        torch.cuda.synchronize()
+        expected = torch.ones(10, 10, device=device) * comm.get_size()
+        torch.testing.assert_close(inp, expected)
+    finally:
+        comm.finalize()
+
+
+def _run_graph_short_timeout_success_scenario() -> None:
+    """Graph replay without artificial delay completes without timeout."""
+
+    class _Context(CudaGraphTestBase, unittest.TestCase):
+        def runTest(self):
+            pass
+
+    ctx = _Context("runTest")
+    ctx.setUp()
+    try:
+        for async_op in [False, True]:
+
+            def capture(b: GraphTestBuilder, _async: bool = async_op) -> None:
+                _wait(
+                    b.comms[0].all_reduce(
+                        b.inputs[0], torchcomms.ReduceOp.SUM, async_op=_async
+                    )
+                )
+
+            def make_inputs(b: GraphTestBuilder) -> list[torch.Tensor]:
+                return [torch.ones(10, 10, device=ctx.device)]
+
+            def make_expected(b: GraphTestBuilder) -> list[torch.Tensor]:
+                return [b.inputs[0] * b.comms[0].get_size()]
+
+            GraphTestBuilder(ctx).add_capture(capture).run_serial(
+                inputs=make_inputs,
+                expected=make_expected,
+            )
+    finally:
+        ctx.tearDown()
+
+
 # Early exit for subprocess mode: when re-invoked with a sentinel env var,
 # run the scenario and exit before the test runner discovers any test classes.
 if os.environ.get("_TORCHCOMM_RUN_EAGER_TIMEOUT"):
@@ -178,27 +237,39 @@ if os.environ.get("_TORCHCOMM_RUN_GRAPH_TIMEOUT_AFTER_SUCCESS"):
     _run_graph_timeout_after_success_scenario()
     os._exit(1)
 
+if os.environ.get("_TORCHCOMM_RUN_EAGER_SHORT_TIMEOUT_SUCCESS"):
+    _run_eager_short_timeout_success_scenario()
+    os._exit(0)
 
-class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
-    """Tests timeout detection, abort behavior, and false timeout prevention."""
+if os.environ.get("_TORCHCOMM_RUN_GRAPH_SHORT_TIMEOUT_SUCCESS"):
+    _run_graph_short_timeout_success_scenario()
+    os._exit(0)
+
+
+class TestTimeout(FatalStateTestMixin, unittest.TestCase):
+    """Tests timeout detection, abort behavior, and short timeout success verification."""
 
     def _run_abort_timeout_test(self, sentinel_var: str, expected_stderr: str) -> None:
         """Common logic for all subprocess abort-timeout tests.
 
-        Syncs parent ranks via barrier, spawns subprocess with sentinel,
-        and asserts abort (non-rank-0) or failure (rank-0).
+        Spawns world_size subprocesses with sentinel, and asserts abort
+        (non-rank-0) or failure (rank-0).
         """
-        with self.create_comms(1):
-            pass
+        results = self.run_subprocesses(sentinel_var)
+        for rank, result in enumerate(results):
+            if rank != 0:
+                self.assert_subprocess_aborted(result, expected_stderr)
+            else:
+                self.assert_subprocess_failed(result)
 
-        env = self.make_subprocess_env(sentinel_var)
-        result = self.run_subprocess(env)
+    def _run_short_timeout_success_test(self, sentinel_var: str) -> None:
+        """Common logic for short-timeout-success tests.
 
-        rank, _ = get_rank_and_size()
-        if rank != 0:
-            self.assert_subprocess_aborted(result, expected_stderr)
-        else:
-            self.assert_subprocess_failed(result)
+        Spawns world_size subprocesses and asserts all succeeded.
+        """
+        results = self.run_subprocesses(sentinel_var)
+        for result in results:
+            self.assert_subprocess_succeeded(result)
 
     # pyre-ignore[56]
     @skip_unless_ncclx
@@ -238,54 +309,19 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
 
     # pyre-ignore[56]
     @skip_unless_ncclx
-    def test_eager_no_false_timeout(self) -> None:
-        """Normal eager collective with short timeout completes without false timeout."""
-        comm = torchcomms.new_comm(
-            self.backend,
-            self.device,
-            name="test_eager_no_false_timeout_comm",
-            abort_process_on_timeout_or_error=True,
-            timeout=timedelta(seconds=2),
+    def test_eager_short_timeout_success(self) -> None:
+        """Normal eager collective with short timeout completes successfully."""
+        self._run_short_timeout_success_test(
+            "_TORCHCOMM_RUN_EAGER_SHORT_TIMEOUT_SUCCESS"
         )
-        try:
-            inp = torch.ones(10, 10, device=self.device)
-            comm.all_reduce(inp, torchcomms.ReduceOp.SUM, async_op=False)
-            torch.cuda.synchronize()
-            expected = torch.ones(10, 10, device=self.device) * comm.get_size()
-            torch.testing.assert_close(inp, expected)
-        finally:
-            comm.finalize()
 
     # pyre-ignore[56]
     @skip_unless_ncclx
-    def test_graph_no_false_timeout(self) -> None:
+    def test_graph_short_timeout_success(self) -> None:
         """Graph replay without artificial delay should complete without timeout."""
-        for async_op in [False, True]:
-            with self.subTest(async_op=async_op):
-
-                def make_inputs(b: GraphTestBuilder) -> list[torch.Tensor]:
-                    return [torch.ones(10, 10, device=self.device)]
-
-                def make_expected(b: GraphTestBuilder) -> list[torch.Tensor]:
-                    return [b.inputs[0] * b.comms[0].get_size()]
-
-                def assert_graph(b: GraphTestBuilder) -> None:
-                    info = b.graph_infos[0]
-                    ar_kernels = info.kernels_with_name("AllReduce")
-                    self.assertEqual(len(ar_kernels), 1)
-
-                def capture(b: GraphTestBuilder, _async: bool = async_op) -> None:
-                    _wait(
-                        b.comms[0].all_reduce(
-                            b.inputs[0], torchcomms.ReduceOp.SUM, async_op=_async
-                        )
-                    )
-
-                GraphTestBuilder(self).add_capture(capture).run_serial(
-                    inputs=make_inputs,
-                    expected=make_expected,
-                    graph_assertions=assert_graph,
-                )
+        self._run_short_timeout_success_test(
+            "_TORCHCOMM_RUN_GRAPH_SHORT_TIMEOUT_SUCCESS"
+        )
 
 
 if __name__ == "__main__":

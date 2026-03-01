@@ -6,6 +6,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 
 
 class FatalStateTestMixin:
@@ -15,7 +16,7 @@ class FatalStateTestMixin:
     env var, using FileStore-based bootstrap to avoid TCPStore port races.
     """
 
-    def make_subprocess_env(self, sentinel_var: str) -> dict:
+    def make_subprocess_env(self, sentinel_var: str, rank: int | None = None) -> dict:
         """Build env for subprocess with FileStore bootstrap.
 
         Sets sentinel_var="1", configures TORCHCOMM_STORE_PATH for FileStore,
@@ -41,29 +42,84 @@ class FatalStateTestMixin:
         env["TORCHCOMM_STORE_PATH"] = store_path
         env["MASTER_ADDR"] = "127.0.0.1"
         env["MASTER_PORT"] = str(int(parent_port) + 1000)
+        if rank is not None:
+            env["RANK"] = str(rank)
+            env["LOCAL_RANK"] = str(rank)
         return env
 
-    def run_subprocess(
-        self, env: dict, timeout: int = 120
-    ) -> subprocess.CompletedProcess:
-        """Re-invoke current test binary with modified env.
+    def run_subprocesses(
+        self, sentinel_var: str, timeout: int = 120
+    ) -> list[subprocess.CompletedProcess]:
+        """Spawn world_size children in parallel and collect results.
 
-        Calls subprocess.run([sys.executable, sys.argv[0]], ...).
-        Fails the test on TimeoutExpired.
+        Each child gets RANK=i via make_subprocess_env(sentinel_var, rank=i).
+        On timeout, kills all remaining processes and fails the test.
         """
-        try:
-            return subprocess.run(
+        world_size = int(os.environ.get("WORLD_SIZE", "8"))
+        procs: list[subprocess.Popen] = []
+        for i in range(world_size):
+            env = self.make_subprocess_env(sentinel_var, rank=i)
+            proc = subprocess.Popen(
                 [sys.executable, sys.argv[0]],
                 env=env,
-                timeout=timeout,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
             )
-        except subprocess.TimeoutExpired as e:
-            raise AssertionError(
-                f"Subprocess timed out after {timeout}s.\n"
-                f"stdout: {(e.stdout or b'').decode(errors='replace')}\n"
-                f"stderr: {(e.stderr or b'').decode(errors='replace')}"
-            )
+            procs.append(proc)
+
+        deadline = time.monotonic() + timeout
+        results: list[subprocess.CompletedProcess | None] = [
+            None for _ in range(world_size)
+        ]
+        try:
+            for i, proc in enumerate(procs):
+                remaining = max(0.1, deadline - time.monotonic())
+                try:
+                    stdout, stderr = proc.communicate(timeout=remaining)
+                    results[i] = subprocess.CompletedProcess(
+                        proc.args, proc.returncode, stdout, stderr
+                    )
+                except subprocess.TimeoutExpired:
+                    # Kill all and collect output before raising
+                    for p in procs:
+                        if p.poll() is None:
+                            p.kill()
+                    for j, p in enumerate(procs):
+                        if results[j] is None:
+                            try:
+                                so, se = p.communicate(timeout=5)
+                            except (subprocess.TimeoutExpired, ValueError):
+                                so, se = b"", b""
+                            results[j] = subprocess.CompletedProcess(
+                                p.args, p.returncode or -9, so, se
+                            )
+                    # Dump all collected stderr for debugging
+                    dump = []
+                    for j, r in enumerate(results):
+                        if r is not None and r.stderr:
+                            dump.append(
+                                f"--- rank {j} stderr ---\n"
+                                + r.stderr.decode(errors="replace")
+                            )
+                    raise AssertionError(
+                        f"Subprocess rank {i} timed out after {timeout}s.\n"
+                        + "\n".join(dump)
+                    )
+        finally:
+            for proc in procs:
+                if proc.poll() is None:
+                    proc.kill()
+            for i, proc in enumerate(procs):
+                if results[i] is None:
+                    try:
+                        stdout, stderr = proc.communicate(timeout=5)
+                    except (subprocess.TimeoutExpired, ValueError):
+                        stdout, stderr = b"", b""
+                    results[i] = subprocess.CompletedProcess(
+                        proc.args, proc.returncode or -9, stdout, stderr
+                    )
+
+        return results  # type: ignore[return-value]
 
     def assert_subprocess_aborted(
         self,
@@ -86,6 +142,16 @@ class FatalStateTestMixin:
                 result.stderr.decode(errors="replace"),
                 "Expected message not found in subprocess stderr.",
             )
+
+    def assert_subprocess_succeeded(self, result: subprocess.CompletedProcess) -> None:
+        """Assert subprocess exited successfully (returncode 0)."""
+        # pyre-ignore[16]: unittest.TestCase.assertEqual
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"Expected success (returncode 0), got {result.returncode}.\n"
+            f"stderr: {result.stderr.decode(errors='replace')}",
+        )
 
     def assert_subprocess_failed(self, result: subprocess.CompletedProcess) -> None:
         """Assert subprocess exited with non-zero (for asymmetric rank scenarios)."""
