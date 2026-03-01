@@ -48,7 +48,7 @@ void ctran::IpcRegCache::deregMem(void* ipcRegElem) {
   delete reg;
 }
 
-void ctran::IpcRegCache::releaseMemReq(
+void ctran::IpcRegCache::remReleaseMem(
     void* ipcRegElem,
     ctran::regcache::IpcRelease& ipcRelease) {
   auto reg = reinterpret_cast<ctran::regcache::IpcRegElem*>(ipcRegElem);
@@ -272,7 +272,7 @@ commResult_t ctran::IpcRegCache::notifyRemoteIpcRelease(
   reqCb->req =
       ctran::regcache::IpcReq(ctran::regcache::IpcReqType::kRelease, myId);
   reqCb->completed.store(false);
-  releaseMemReq(ipcRegElem, reqCb->req.release);
+  remReleaseMem(ipcRegElem, reqCb->req.release);
 
   CLOGF_TRACE(
       COLL,
@@ -450,68 +450,4 @@ void ctran::IpcRegCache::stopAsyncSocket() {
   }
 
   asyncServerSocket_.reset();
-}
-
-// IpcExportCache method implementations
-std::unordered_set<std::string> ctran::regcache::IpcExportCache::remove(
-    IpcRegElem* ipcRegElem) {
-  std::unordered_set<std::string> peerIds;
-  auto it = map_.find(ipcRegElem);
-  if (it != map_.end()) {
-    peerIds = it->second;
-    map_.erase(it);
-  }
-  return peerIds;
-}
-
-std::
-    unordered_map<ctran::regcache::IpcRegElem*, std::unordered_set<std::string>>
-    ctran::regcache::IpcExportCache::dump() const {
-  return map_;
-}
-
-// IpcRegCache::remReleaseMem implementation
-commResult_t ctran::IpcRegCache::remReleaseMem(
-    const std::string& myId,
-    regcache::IpcRegElem* ipcRegElem,
-    std::deque<std::unique_ptr<regcache::IpcReqCb>>& postedReqs) {
-  // Get all peers that imported this ipcRegElem
-  auto exportedPeerIds = exportRegCache_.wlock()->remove(ipcRegElem);
-
-  if (exportedPeerIds.empty()) {
-    return commSuccess;
-  }
-
-  // If peers have imported this memory but the async socket is disabled,
-  // we cannot notify them to release. This is a fatal inconsistency.
-  if (!NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
-    CLOGF(
-        FATAL,
-        "CTRAN-REGCACHE: ipcRegElem was exported to {} peers but "
-        "NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET is disabled",
-        exportedPeerIds.size());
-  }
-
-  for (const auto& peerId : exportedPeerIds) {
-    folly::SocketAddress peerAddr;
-    FB_COMMCHECK(getPeerIpcServerAddr(peerId, peerAddr));
-    auto req = std::make_unique<regcache::IpcReqCb>();
-    FB_COMMCHECK(notifyRemoteIpcRelease(myId, peerAddr, ipcRegElem, req.get()));
-
-    CLOGF_TRACE(COLL, "CTRAN-REGCACHE: Posted IPC release to peer {}", peerId);
-    postedReqs.push_back(std::move(req));
-  }
-
-  return commSuccess;
-}
-
-std::unordered_set<std::string> ctran::IpcRegCache::removeExport(
-    regcache::IpcRegElem* ipcRegElem) {
-  return exportRegCache_.wlock()->remove(ipcRegElem);
-}
-
-std::
-    unordered_map<ctran::regcache::IpcRegElem*, std::unordered_set<std::string>>
-    ctran::IpcRegCache::dumpExportRegCache() const {
-  return exportRegCache_.rlock()->dump();
 }

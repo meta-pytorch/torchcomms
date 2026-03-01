@@ -4,8 +4,6 @@
 #include <fmt/core.h>
 #include <cstring>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 
 #include <folly/Synchronized.h>
 #include "comms/ctran/utils/CtranIpc.h"
@@ -161,26 +159,6 @@ struct IpcReqCb {
 
   IpcReqCb() = default;
   explicit IpcReqCb(IpcReqType t, const std::string& id) : req(t, id) {}
-};
-
-// Class to cache exported IpcRegElems and track which peers they are exported
-// to. Moved from mapper to centralize IPC export tracking.
-class IpcExportCache {
- private:
-  std::unordered_map<IpcRegElem*, std::unordered_set<std::string>> map_;
-
- public:
-  // Record the ipcRegElem and the peerId to export to.
-  inline void record(IpcRegElem* ipcRegElem, const std::string& peerId) {
-    map_[ipcRegElem].insert(peerId);
-  }
-
-  // Remove the specified ipcRegElem from cache. Return the exported peerIds set
-  // if the ipcRegElem has been exported. Otherwise, empty set is returned.
-  std::unordered_set<std::string> remove(IpcRegElem* ipcRegElem);
-
-  // Dump a full copy of the cache map; used for testing only
-  std::unordered_map<IpcRegElem*, std::unordered_set<std::string>> dump() const;
 };
 
 } // namespace regcache

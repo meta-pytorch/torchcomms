@@ -16,6 +16,7 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/gpe/CtranGpeDev.h"
+#include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 #include "comms/ctran/profiler/Profiler.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
@@ -888,6 +889,10 @@ class CtranMapper {
     }
   }
 
+  // Dump exported registration cache, for testing only
+  std::unordered_map<ctran::regcache::RegElem*, std::unordered_set<int>>
+  dumpExportRegCache() const;
+
  protected:
   template <typename PerfConfig = DefaultPerfCollConfig>
   inline commResult_t progress() {
@@ -1081,12 +1086,12 @@ class CtranMapper {
 
     if (backend == CtranMapperBackend::NVL) {
       msg.setType(ControlMsgType::NVL_EXPORT_MEM);
-      const std::string peerId = comm->statex_->gPid(rank);
       FB_COMMCHECK(
           ctran::IpcRegCache::getInstance()->exportMem(
-              buf, regElem->ipcRegElem, peerId, msg.ipcDesc));
+              buf, regElem->ipcRegElem, msg.ipcDesc));
 
-      // Export tracking now happens inside IpcRegCache::exportMem
+      // Record the exported remote rank to notify at deregistration
+      exportRegCache_.wlock()->record(regElem, rank);
 
     } else if (backend == CtranMapperBackend::IB) {
       FB_COMMCHECK(CtranIb::exportMem(buf, regElem->ibRegElem, msg));
@@ -1941,6 +1946,13 @@ class CtranMapper {
   // AllGather IPC server addresses from all ranks via bootstrap and update
   // IpcRegCache with the gathered addresses.
   commResult_t allGatherIpcServerAddrs();
+
+  // Record remote ranks that each ipcRegElem has exported to.
+  // - For each remote rank, the local rank will send RELEASE_MEM ctrlmsg to
+  //   the remote rank at deregMem.
+  // - The export cache is maintained per communicator in order to ensure a
+  //   valid backend to send RELEASE_MEM ctrlmsg.
+  folly::Synchronized<ctran::ExportRegCache> exportRegCache_;
 
   CtranComm* comm{nullptr};
 };
