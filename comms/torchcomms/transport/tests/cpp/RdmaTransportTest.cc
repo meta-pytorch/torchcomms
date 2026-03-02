@@ -444,6 +444,20 @@ TEST_F(RdmaMemoryTest, MoveOnlySemantics) {
   EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
 }
 
+TEST_F(RdmaMemoryTest, CacheRegConstruction) {
+  RdmaMemory memory(buffer_, bufferSize_, cudaDev_, true /* cacheReg */);
+
+  EXPECT_EQ(memory.getDevice(), cudaDev_);
+  EXPECT_NE(memory.localKey(), nullptr);
+  EXPECT_FALSE(memory.remoteKey().empty());
+  EXPECT_TRUE(memory.contains(buffer_, bufferSize_));
+
+  // Views should work the same as non-cached
+  auto view = memory.createView();
+  EXPECT_EQ(view.data(), buffer_);
+  EXPECT_EQ(view.size(), bufferSize_);
+}
+
 TEST_F(RdmaTransportTest, ServerClientDataTransferWrite) {
   // Promise/future pairs for exchanging URLs between threads
   auto [urlPromise0, urlFuture0] = folly::makePromiseContract<std::string>();
