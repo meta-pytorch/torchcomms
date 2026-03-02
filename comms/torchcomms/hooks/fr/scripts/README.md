@@ -106,4 +106,4 @@ for group in db.groups:
 ## See Also
 
 - [PyTorch Flight Recorder Documentation](https://pytorch.org/docs/stable/distributed.html#flight-recorder)
-- [FlightRecorderTest.py](../../torchcomms/tests/integration/py/FlightRecorderTest.py) - Unit tests with more examples
+- [FlightRecorderTest.py](../tests/py/FlightRecorderTest.py) - Unit tests with more examples
