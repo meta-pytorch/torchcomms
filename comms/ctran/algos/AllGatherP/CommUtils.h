@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include <iostream>
+#include <vector>
 #include "comms/ctran/CtranComm.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -59,7 +60,10 @@ inline commResult_t nvlCeBcast(
     nvlBarrier(comm, stream);
   }
 
-  auto mapper = comm->ctran_->mapper.get();
+  const size_t numOps = nLocalRanks - 1;
+  std::vector<void*> dsts(numOps);
+  std::vector<void*> srcs(numOps);
+  std::vector<size_t> sizes(numOps);
 
   // Copy data to other local ranks, each rank starts with the next rank as peer
   // and shift by 1 to avoid all-to-one incast traffic
@@ -67,22 +71,43 @@ inline commResult_t nvlCeBcast(
     const auto localPeer = (localRank + r) % nLocalRanks;
     const auto peer = statex->localRankToRank(localPeer);
 
-    // FIXME: the location doesn't seem correct
-    if (pArgs.remoteAccessKeys[peer].backend == CtranMapperBackend::NVL) {
-      auto recvPtr = getPtr(pArgs.remoteRecvBuffs[peer], recvOffset);
-      CLOGF_TRACE(
-          COLL,
-          "Rank {} CE copy to peer {}, sendBuff {} -> recvBuff {} ({} + recvOffset {}), sendSize {}",
-          rank,
-          peer,
-          sendBuff,
-          recvPtr,
-          pArgs.remoteRecvBuffs[peer],
-          recvOffset,
-          sendSize);
-      FB_COMMCHECK(mapper->icopy(recvPtr, sendBuff, sendSize, stream));
+    if (pArgs.remoteAccessKeys[peer].backend != CtranMapperBackend::NVL) {
+      FB_ERRORRETURN(
+          commInvalidArgument,
+          "Peer {} has non-NVL backend in nvlCeBcast",
+          peer);
     }
+
+    auto recvPtr = getPtr(pArgs.remoteRecvBuffs[peer], recvOffset);
+    CLOGF_TRACE(
+        COLL,
+        "Rank {} CE copy to peer {}, sendBuff {} -> recvBuff {} ({} + recvOffset {}), sendSize {}",
+        rank,
+        peer,
+        sendBuff,
+        recvPtr,
+        pArgs.remoteRecvBuffs[peer],
+        recvOffset,
+        sendSize);
+    dsts.at(r - 1) = recvPtr;
+    srcs.at(r - 1) = const_cast<void*>(sendBuff);
+    sizes.at(r - 1) = sendSize;
   }
+
+#if CUDART_VERSION >= 13000
+  cudaMemcpyAttributes attr = {};
+  attr.srcAccessOrder = cudaMemcpySrcAccessOrderStream;
+  attr.flags = cudaMemcpyFlagPreferOverlapWithCompute;
+
+  FB_CUDACHECK(cudaMemcpyBatchAsync(
+      dsts.data(), srcs.data(), sizes.data(), numOps, attr, stream));
+#else
+  auto mapper = comm->ctran_->mapper.get();
+  for (size_t i = 0; i < numOps; i++) {
+    FB_COMMCHECK(mapper->icopy(dsts[i], srcs[i], sizes[i], stream));
+  }
+#endif
+
   return commSuccess;
 }
 
