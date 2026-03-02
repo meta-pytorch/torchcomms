@@ -54,8 +54,8 @@ class DeviceMeshTest(unittest.TestCase):
         dist.all_reduce(t, group=group)
 
         # Device-aware synchronization
-        if device.type == "cuda":
-            torch.cuda.synchronize()
+        if torch.accelerator.is_available():
+            torch.accelerator.synchronize()
         # No synchronization needed for CPU
 
         self.assertEqual(t[0].item(), comm.get_size())
@@ -63,7 +63,7 @@ class DeviceMeshTest(unittest.TestCase):
         comm.finalize()
 
     @unittest.skipIf(
-        torch.cuda.device_count() < 4, "Skipping non GPU situations for now"
+        torch.accelerator.device_count() < 4, "Skipping non GPU situations for now"
     )
     def test_2_d_parallel(self) -> None:
         backend = os.environ["TEST_BACKEND"]
@@ -132,8 +132,8 @@ class DeviceMeshTest(unittest.TestCase):
             dist.all_reduce(t, group=sub_group)
 
             # Device-aware synchronization
-            if device.type == "cuda":
-                torch.cuda.synchronize()
+            if torch.accelerator.is_available():
+                torch.accelerator.synchronize()
             # No synchronization needed for CPU
 
             self.assertEqual(t[0].item(), sub_comm.get_size())
@@ -151,8 +151,8 @@ class DeviceMeshTest(unittest.TestCase):
         dist.all_reduce(t, group=sub_group)
 
         # Device-aware synchronization
-        if device.type == "cuda":
-            torch.cuda.synchronize()
+        if torch.accelerator.is_available():
+            torch.accelerator.synchronize()
         # No synchronization needed for CPU
 
         self.assertEqual(t[0].item(), sub_comm.get_size())
@@ -209,7 +209,7 @@ class DeviceMeshTest(unittest.TestCase):
         return flatten_ranks_per_dim
 
     @unittest.skipIf(
-        torch.cuda.device_count() < 8 or not HAS_MESH_LAYOUT,
+        torch.accelerator.device_count() < 8 or not HAS_MESH_LAYOUT,
         "Skipping non GPU situations for now",
     )
     def test_n_d_parallel(self) -> None:
@@ -293,7 +293,7 @@ class DeviceMeshTest(unittest.TestCase):
         comm.finalize()
 
     @unittest.skipIf(
-        torch.cuda.device_count() < 4,
+        torch.accelerator.device_count() < 4,
         "Skipping not enough GPUs situations for now",
     )
     def test_backend_wrapper_split_group(self) -> None:
@@ -355,8 +355,8 @@ class DeviceMeshTest(unittest.TestCase):
         direct_split_comm.all_reduce(duplicate_t, ReduceOp.SUM, False)
 
         # Device-aware synchronization
-        if device.type == "cuda":
-            torch.cuda.synchronize()
+        if torch.accelerator.is_available():
+            torch.accelerator.synchronize()
 
         # Verify the all_reduce result
         torch.testing.assert_close(t, duplicate_t)
