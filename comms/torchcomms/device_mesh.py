@@ -24,7 +24,8 @@ from typing import Any, cast, Optional
 import torch
 import torch.distributed as dist
 from torch.distributed.device_mesh import _mesh_resources
-from torchcomms._comms import _BackendWrapper, _get_store, new_comm, TorchComm
+from torchcomms import new_comm, TorchComm
+from torchcomms._comms import _BackendWrapper, _get_store
 
 try:
     from torch.distributed.distributed_c10d import GroupName

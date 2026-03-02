@@ -8,7 +8,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup, TCPStore
-from torchcomms._comms import new_comm, TorchComm
+from torchcomms import new_comm, TorchComm
 from torchcomms.distwrap.fallback import fallback_split_group_new_group
 from torchcomms.distwrap.pginfo import (
     pg_info_assert_registered,
