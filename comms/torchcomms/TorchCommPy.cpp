@@ -844,6 +844,19 @@ guarantees. Users depending on get_backend_impl should expect their code to
 break as interfaces change.
           )",
           py::call_guard<py::gil_scoped_release>())
+      .def(
+          "unsafe_get_backend",
+          [](TorchComm& self) {
+            PyErr_WarnEx(
+                PyExc_DeprecationWarning,
+                "unsafe_get_backend() is deprecated, "
+                "use get_backend_impl() instead.",
+                1);
+            return self.getBackendImpl();
+          },
+          R"(
+Deprecated: Use get_backend_impl() instead.
+          )")
 
       // Point-to-Point Operations
       .def(
