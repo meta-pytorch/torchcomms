@@ -251,6 +251,8 @@ TEST_F(GlobalRegistrationTest, CpuTensorRegistration) {
   ASSERT_NE(regCache, nullptr);
   EXPECT_TRUE(regCache->isRegistered(cpuBuf, cpuBufSize))
       << "CPU buffer should be found by searchRegElem after registration";
+  auto* ibRegHdl = regCache->searchIbRegElem(cpuBuf, cpuBufSize);
+  EXPECT_NE(ibRegHdl, nullptr);
 
   // Deregistration of CPU memory should also succeed gracefully
   result = ctran::globalDeregisterWithPtr(cpuBuf, cpuBufSize);

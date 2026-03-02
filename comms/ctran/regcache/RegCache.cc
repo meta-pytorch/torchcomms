@@ -577,6 +577,14 @@ bool ctran::RegCache::isRegistered(const void* ptr, const size_t len) {
   return regHdl != nullptr;
 }
 
+void* ctran::RegCache::searchIbRegElem(const void* ptr, const size_t len) {
+  auto* regElem = searchRegElem(ptr, len);
+  if (regElem == nullptr || regElem->ibRegElem == nullptr) {
+    return nullptr;
+  }
+  return regElem->ibRegElem;
+}
+
 std::vector<void*> ctran::RegCache::getSegments() const {
   return segmentsAvl_.rlock()->getAllElems();
 }
