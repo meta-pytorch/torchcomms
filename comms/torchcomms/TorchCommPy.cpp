@@ -833,14 +833,14 @@ Args:
           "Get communicator backend name",
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "unsafe_get_backend",
-          &TorchComm::unsafeGetBackend,
+          "get_backend_impl",
+          &TorchComm::getBackendImpl,
           R"(
 Get communicator backend implementation.
 
 WARNING: This is intended as an escape hatch for experimentation and
 development. Direct backend access provides no backwards compatibility
-guarantees. Users depending on unsafe_get_backend should expect their code to
+guarantees. Users depending on get_backend_impl should expect their code to
 break as interfaces change.
           )",
           py::call_guard<py::gil_scoped_release>())
@@ -1685,7 +1685,7 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       // Hook registration methods
       .def(
           "register_pre_hook",
-          [](TorchComm& self, py::function callback) {
+          [](TorchComm& self, const py::function& callback) {
             auto hook = [callback](TorchComm::PreHookArgs args) {
               py::gil_scoped_acquire acquire;
               callback(args);
@@ -1718,8 +1718,8 @@ Note:
           py::arg("callback"))
       .def(
           "register_post_hook",
-          [](TorchComm& self, py::function callback) {
-            auto hook = [callback](TorchComm::PostHookArgs args) {
+          [](TorchComm& self, const py::function& callback) {
+            auto hook = [callback](const TorchComm::PostHookArgs& args) {
               py::gil_scoped_acquire acquire;
               callback(args);
             };
@@ -1752,7 +1752,7 @@ Note:
           py::arg("callback"))
       .def(
           "register_abort_hook",
-          [](TorchComm& self, py::function callback) {
+          [](TorchComm& self, const py::function& callback) {
             auto hook = [callback]() {
               py::gil_scoped_acquire acquire;
               callback();
