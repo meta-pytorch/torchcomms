@@ -90,15 +90,19 @@ PYBIND11_MODULE(_transport, m) {
       .def("size", &RdmaMemory::MutableView::size);
 
   py::class_<RdmaMemory, std::shared_ptr<RdmaMemory>>(m, "RdmaMemory")
-      .def(py::init([](const at::Tensor& tensor) {
-        TORCH_CHECK(
-            tensor.is_contiguous(),
-            "RdmaMemory currently requires a contiguous tensor");
-        // If CPU memory is passed, use device 0 for NIC discovery
-        const auto device = tensor.get_device() < 0 ? 0 : tensor.get_device();
-        return std::make_shared<RdmaMemory>(
-            tensor.data_ptr(), tensor.nbytes(), device);
-      }))
+      .def(
+          py::init([](const at::Tensor& tensor, bool cacheReg) {
+            TORCH_CHECK(
+                tensor.is_contiguous(),
+                "RdmaMemory currently requires a contiguous tensor");
+            // If CPU memory is passed, use device 0 for NIC discovery
+            const auto device =
+                tensor.get_device() < 0 ? 0 : tensor.get_device();
+            return std::make_shared<RdmaMemory>(
+                tensor.data_ptr(), tensor.nbytes(), device, cacheReg);
+          }),
+          py::arg("tensor"),
+          py::arg("cache_reg") = false)
       .def(
           "to_view",
           [](RdmaMemory& self,
