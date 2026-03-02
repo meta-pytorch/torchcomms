@@ -9,7 +9,7 @@ asynchronous collective operations in torchcomms.
 from typing import Any, Union
 
 import torch
-from torchcomms._comms import TorchWork
+from torchcomms import TorchWork
 
 
 class _OnceWaitWork:

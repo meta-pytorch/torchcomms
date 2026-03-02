@@ -7,7 +7,7 @@ from typing import Any
 import torch
 import torch.distributed as dist
 from torch.distributed import ProcessGroup
-from torchcomms._comms import TorchComm
+from torchcomms import TorchComm
 from torchcomms.distwrap.pginfo import pg_info_get_data, pg_info_set_data
 
 

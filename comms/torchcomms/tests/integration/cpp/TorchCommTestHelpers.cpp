@@ -5,6 +5,7 @@
 
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 using namespace torch::comms;
 
@@ -130,7 +131,7 @@ c10::intrusive_ptr<c10d::Store> createStore() {
   static int next_store_id = 0;
   next_store_id += 1;
 
-  return StoreManager::get().getStore(
+  return StoreManager::get().createPrefixedStore(
       "comms_test",
       fmt::format("store_{}", next_store_id),
       std::chrono::milliseconds(60000));

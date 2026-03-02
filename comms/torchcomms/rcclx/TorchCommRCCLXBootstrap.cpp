@@ -8,8 +8,8 @@
 
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
-#include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/rcclx/TorchCommRCCLX.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
 
@@ -134,7 +134,7 @@ ncclUniqueId TorchCommRCCLXBootstrap::exchangeUniqueIdStore() {
 
 ncclUniqueId TorchCommRCCLXBootstrap::exchangeUniqueIdTCPStore(
     std::string_view name) {
-  store_ = StoreManager::get().getStore(
+  store_ = StoreManager::get().createPrefixedStore(
       TorchCommRCCLX::kBackendName, name, timeout_);
   created_internal_store_ = true;
 
