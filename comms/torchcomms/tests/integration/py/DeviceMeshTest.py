@@ -11,12 +11,12 @@ import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 import torchcomms
 from torchcomms import ReduceOp
-from torchcomms._comms import _create_prefixed_store
 from torchcomms.device_mesh import (
     _create_torchcomm_process_group,
     _flatten_with_comm,
     init_device_mesh,
 )
+from torchcomms.tests.integration.py.TorchCommTestHelpers import create_store
 
 try:
     from torch.distributed._mesh_layout import _MeshLayout
@@ -303,7 +303,7 @@ class DeviceMeshTest(unittest.TestCase):
 
         # Create a TorchComm communicator
         comm = torchcomms.new_comm(backend, device, name="comms_test_split_group")
-        store = _create_prefixed_store("torchcomm", "store_dist_test")
+        store = create_store()
         pg = _create_torchcomm_process_group(
             comm, "comms_test_split_group", prefix_store=store
         )
