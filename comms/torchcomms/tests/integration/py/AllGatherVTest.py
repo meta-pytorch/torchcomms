@@ -39,8 +39,8 @@ class AllGatherVTest(unittest.TestCase):
         self.wrapper = None
 
     @unittest.skipIf(
-        os.getenv("TEST_BACKEND") != "ncclx",
-        "Skipping all_gather_v test for non-NCCLX backend",
+        os.getenv("TEST_BACKEND") not in ["ncclx", "xccl"],
+        f"Skipping all_gather_v test for {os.getenv('TEST_BACKEND')} backend",
     )
     def _sync_all_gather_v(self, count, dtype):
         """Test synchronous all_gather_v with work object."""
@@ -103,8 +103,8 @@ class AllGatherVTest(unittest.TestCase):
                 )
 
     @unittest.skipIf(
-        os.getenv("TEST_BACKEND") != "ncclx",
-        "Skipping all_gather_v test for non-NCCLX backends",
+        os.getenv("TEST_BACKEND") not in ["ncclx", "xccl"],
+        f"Skipping all_gather_v test for {os.getenv('TEST_BACKEND')} backend",
     )
     def test_sync_all_gather_v(self):
         """Test synchronous all_gather with work object."""

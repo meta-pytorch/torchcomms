@@ -13,6 +13,8 @@ xpu_result_t DefaultXpuApi::setDevice(int device) {
     ::c10::xpu::set_device(device);
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to set XPU device to " << device << ": "
+                  << e.what();
     return XPU_ERROR_INVALID_VALUE;
   }
 }
@@ -57,6 +59,8 @@ xpu_result_t DefaultXpuApi::getDeviceProperties(
 
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to get XPU device properties for device " << device
+                  << ": " << e.what();
     return XPU_ERROR_INVALID_VALUE;
   }
 }
@@ -80,6 +84,7 @@ xpu_result_t DefaultXpuApi::memGetInfo(size_t* free, size_t* total) {
 
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to get XPU memory info: " << e.what();
     return XPU_ERROR_INVALID_VALUE;
   }
 }
@@ -93,23 +98,27 @@ xpu_result_t DefaultXpuApi::getDeviceCount(int* count) {
     *count = ::c10::xpu::device_count();
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to get XPU device count: " << e.what();
     return XPU_ERROR_INVALID_VALUE;
   }
 }
 
 xpu_result_t DefaultXpuApi::streamCreateWithPriority(
     xpuStream_t& stream,
-    unsigned int flags,
+    [[maybe_unused]] unsigned int flags,
     int priority) {
   try {
     stream = ::c10::xpu::getStreamFromPool(priority);
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to create XPU stream with priority " << priority
+                  << ": " << e.what();
     return XPU_ERROR_INVALID_VALUE;
   }
 }
 
-xpu_result_t DefaultXpuApi::streamDestroy(const xpuStream_t& stream) {
+xpu_result_t DefaultXpuApi::streamDestroy(
+    [[maybe_unused]] const xpuStream_t& stream) {
   // Stream is managed by PyTorch, nothing to do
   return XPU_SUCCESS;
 }
@@ -117,11 +126,12 @@ xpu_result_t DefaultXpuApi::streamDestroy(const xpuStream_t& stream) {
 xpu_result_t DefaultXpuApi::streamWaitEvent(
     const xpuStream_t& stream,
     xpuEvent_t& event,
-    unsigned int flags) {
+    [[maybe_unused]] unsigned int flags) {
   try {
     event.block(stream);
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to make XPU stream wait on event: " << e.what();
     return XPU_ERROR_INVALID_HANDLE;
   }
 }
@@ -135,12 +145,15 @@ xpu_result_t DefaultXpuApi::streamSynchronize(const xpuStream_t& stream) {
     stream.queue().wait_and_throw();
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to synchronize XPU stream: " << e.what();
     return XPU_ERROR_INVALID_HANDLE;
   }
 }
 
+// Remove [[maybe_unused]] and implement this function once stream capture is
+// supported.
 xpu_result_t DefaultXpuApi::streamIsCapturing(
-    const xpuStream_t& stream,
+    [[maybe_unused]] const xpuStream_t& stream,
     xpuStreamCaptureStatus* pCaptureStatus) {
   if (!pCaptureStatus) {
     return XPU_ERROR_INVALID_VALUE;
@@ -148,11 +161,13 @@ xpu_result_t DefaultXpuApi::streamIsCapturing(
 
   // XPU/SYCL doesn't support stream capture
   *pCaptureStatus = xpuStreamCaptureStatusNone;
-  return XPU_SUCCESS;
+  return XPU_ERROR_UNSUPPORTED;
 }
 
+// Remove [[maybe_unused]] and implement this function once stream capture is
+// supported.
 xpu_result_t DefaultXpuApi::streamGetCaptureInfo(
-    const xpuStream_t& stream,
+    [[maybe_unused]] const xpuStream_t& stream,
     xpuStreamCaptureStatus* pCaptureStatus,
     unsigned long long* pId) {
   if (!pCaptureStatus) {
@@ -163,7 +178,7 @@ xpu_result_t DefaultXpuApi::streamGetCaptureInfo(
   if (pId) {
     *pId = 0;
   }
-  return XPU_SUCCESS;
+  return XPU_ERROR_UNSUPPORTED;
 }
 
 xpu_result_t DefaultXpuApi::malloc(void** devPtr, size_t size) {
@@ -190,6 +205,8 @@ xpu_result_t DefaultXpuApi::malloc(void** devPtr, size_t size) {
 
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to allocate " << size
+                  << " bytes on XPU: " << e.what();
     return XPU_ERROR_OUT_OF_MEMORY;
   }
 }
@@ -204,6 +221,7 @@ xpu_result_t DefaultXpuApi::free(void* devPtr) {
     sycl::free(devPtr, ctx);
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to free XPU memory: " << e.what();
     return XPU_ERROR_INVALID_VALUE;
   }
 }
@@ -225,6 +243,8 @@ xpu_result_t DefaultXpuApi::memcpyAsync(
     stream.queue().memcpy(dst, src, count);
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to perform asynchronous memory copy on XPU: "
+                  << e.what();
     return XPU_ERROR_INVALID_VALUE;
   }
 }
@@ -234,6 +254,7 @@ xpu_result_t DefaultXpuApi::eventCreate(xpuEvent_t& event) {
     event = ::at::xpu::XPUEvent(false); // No timing
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to create XPU event: " << e.what();
     return XPU_ERROR_INVALID_VALUE;
   }
 }
@@ -246,11 +267,14 @@ xpu_result_t DefaultXpuApi::eventCreateWithFlags(
     event = ::at::xpu::XPUEvent(enable_timing);
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to create XPU event with flags " << flags << ": "
+                  << e.what();
     return XPU_ERROR_INVALID_VALUE;
   }
 }
 
-xpu_result_t DefaultXpuApi::eventDestroy(const xpuEvent_t& event) {
+xpu_result_t DefaultXpuApi::eventDestroy(
+    [[maybe_unused]] const xpuEvent_t& event) {
   // Event is RAII, nothing to do
   return XPU_SUCCESS;
 }
@@ -262,6 +286,7 @@ xpu_result_t DefaultXpuApi::eventRecord(
     event.record(stream);
     return XPU_SUCCESS;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to record XPU event: " << e.what();
     return XPU_ERROR_INVALID_HANDLE;
   }
 }
@@ -271,37 +296,42 @@ xpu_result_t DefaultXpuApi::eventQuery(const xpuEvent_t& event) {
     bool is_complete = event.query();
     return is_complete ? XPU_SUCCESS : XPU_ERROR_NOT_READY;
   } catch (const std::exception& e) {
+    TC_LOG(ERROR) << "Failed to query XPU event: " << e.what();
     return XPU_ERROR_INVALID_HANDLE;
   }
 }
 
 // Graph Operations (Unsupported)
 xpu_result_t DefaultXpuApi::userObjectCreate(
-    xpuUserObject_t* object_out,
-    void* ptr,
-    xpuHostFn_t destroy,
-    unsigned int initialRefcount,
-    unsigned int flags) {
+    [[maybe_unused]] xpuUserObject_t* object_out,
+    [[maybe_unused]] void* ptr,
+    [[maybe_unused]] xpuHostFn_t destroy,
+    [[maybe_unused]] unsigned int initialRefcount,
+    [[maybe_unused]] unsigned int flags) {
   // XPU/SYCL doesn't support user objects
   return XPU_ERROR_UNSUPPORTED;
 }
 
+// Remove [[maybe_unused]] and implement this function once graph support is
+// available.
 xpu_result_t DefaultXpuApi::graphRetainUserObject(
-    xpuGraph_t graph,
-    xpuUserObject_t object,
-    unsigned int count,
-    unsigned int flags) {
+    [[maybe_unused]] xpuGraph_t graph,
+    [[maybe_unused]] xpuUserObject_t object,
+    [[maybe_unused]] unsigned int count,
+    [[maybe_unused]] unsigned int flags) {
   // Currently, XPU/SYCL doesn't support graphs
   return XPU_ERROR_UNSUPPORTED;
 }
 
+// Remove [[maybe_unused]] and implement this function once graph support is
+// available.
 xpu_result_t DefaultXpuApi::streamGetCaptureInfo_v2(
-    const xpuStream_t& stream,
-    xpuStreamCaptureStatus* captureStatus_out,
-    unsigned long long* id_out,
-    xpuGraph_t* graph_out,
-    const xpuGraphNode_t** dependencies_out,
-    size_t* numDependencies_out) {
+    [[maybe_unused]] const xpuStream_t& stream,
+    [[maybe_unused]] xpuStreamCaptureStatus* captureStatus_out,
+    [[maybe_unused]] unsigned long long* id_out,
+    [[maybe_unused]] xpuGraph_t* graph_out,
+    [[maybe_unused]] const xpuGraphNode_t** dependencies_out,
+    [[maybe_unused]] size_t* numDependencies_out) {
   // Currently, XPU/SYCL doesn't support graphs
   return XPU_ERROR_UNSUPPORTED;
 }

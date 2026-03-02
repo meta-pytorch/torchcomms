@@ -67,7 +67,7 @@ class TPCommTest(unittest.TestCase):
                 )
 
     @unittest.skipIf(
-        torch.cuda.device_count() < 2, "Skipping non GPU situations for now"
+        torch.accelerator.device_count() < 2, "Skipping non GPU situations for now"
     )
     def test_training(self) -> None:
         backend = os.environ["TEST_BACKEND"]

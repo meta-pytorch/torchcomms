@@ -80,6 +80,7 @@ torchcomms supports several communication backends out of the box:
 * **RCCLX**: Meta's enhanced RCCL implementation with additional optimizations
 * **NCCL**: NVIDIA's Collective Communications Library for multi-GPU communication
 * **RCCL**: AMD ROCm Collective Communications Library for AMD GPUs
+* **XCCL**: Intel's Collective Communications Library for Intel GPUs
 * **Gloo**: Facebook's collective communications library for both CPU and GPU
 
 Comprehensive Collective Operations
