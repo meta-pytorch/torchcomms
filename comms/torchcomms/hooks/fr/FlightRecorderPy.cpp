@@ -1,20 +1,16 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/torchcomms/hooks/FlightRecorderPy.h"
-
 #include <pybind11/chrono.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <torch/csrc/utils/pybind.h>
 
-#include "comms/torchcomms/hooks/FlightRecorder.hpp"
+#include "comms/torchcomms/hooks/fr/FlightRecorder.hpp"
 
 namespace py = pybind11;
 using namespace torch::comms::fr;
 
-namespace torch::comms::fr {
-
-void initFlightRecorderPyBindings(py::module_& m) {
+PYBIND11_MODULE(_fr, m) {
   // Bind FlightRecorderHook class
   py::class_<FlightRecorderHook, std::shared_ptr<FlightRecorderHook>>(
       m,
@@ -27,7 +23,7 @@ distributed module, so traces can be analyzed using the same fr_trace
 analysis tools.
 
 Example:
-    >>> from torchcomms import fr
+    >>> from torchcomms.hooks import fr
     >>> comm = torchcomms.new_comm("nccl", device, "world")
     >>> recorder = fr.FlightRecorderHook(max_entries=1024)
     >>> recorder.register_with_comm(comm)
@@ -118,5 +114,3 @@ that is not shared with other hooks:
           py::arg("include_completed") = true,
           py::call_guard<py::gil_scoped_release>());
 }
-
-} // namespace torch::comms::fr

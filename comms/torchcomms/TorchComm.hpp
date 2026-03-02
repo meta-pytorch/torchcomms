@@ -8,6 +8,7 @@
 #include <comms/torchcomms/RemovableHandle.hpp>
 #include <comms/torchcomms/TorchCommBackend.hpp>
 #include <comms/torchcomms/TorchCommBatch.hpp>
+#include <comms/torchcomms/TorchCommHooks.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
 #include <comms/torchcomms/TorchCommUtils.hpp>
@@ -18,77 +19,8 @@
 namespace torch::comms {
 
 // Forward declarations
-class TorchWork;
 class TorchCommNCCLX;
 class TorchWin;
-
-// Enum for collective operation names
-enum class OpName {
-  send,
-  recv,
-  broadcast,
-  all_reduce,
-  reduce,
-  all_gather,
-  all_gather_v,
-  all_gather_single,
-  reduce_scatter,
-  reduce_scatter_v,
-  reduce_scatter_single,
-  all_to_all_single,
-  all_to_all_v_single,
-  all_to_all,
-  barrier,
-  scatter,
-  gather,
-  split,
-  new_window,
-};
-
-// Convert OpName enum to string
-constexpr std::string_view toString(OpName name) {
-  switch (name) {
-    case OpName::send:
-      return "send";
-    case OpName::recv:
-      return "recv";
-    case OpName::broadcast:
-      return "broadcast";
-    case OpName::all_reduce:
-      return "all_reduce";
-    case OpName::reduce:
-      return "reduce";
-    case OpName::all_gather:
-      return "all_gather";
-    case OpName::all_gather_v:
-      return "all_gather_v";
-    case OpName::all_gather_single:
-      return "all_gather_single";
-    case OpName::reduce_scatter:
-      return "reduce_scatter";
-    case OpName::reduce_scatter_v:
-      return "reduce_scatter_v";
-    case OpName::reduce_scatter_single:
-      return "reduce_scatter_single";
-    case OpName::all_to_all_single:
-      return "all_to_all_single";
-    case OpName::all_to_all_v_single:
-      return "all_to_all_v_single";
-    case OpName::all_to_all:
-      return "all_to_all";
-    case OpName::barrier:
-      return "barrier";
-    case OpName::scatter:
-      return "scatter";
-    case OpName::gather:
-      return "gather";
-    case OpName::split:
-      return "split";
-    case OpName::new_window:
-      return "new_window";
-  }
-  return "unknown";
-}
 
 /**
  * TorchComm - Main communication abstraction for TorchComms.
@@ -222,7 +154,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
     return backend_;
   }
 
-  std::shared_ptr<TorchCommBackend> unsafeGetBackend() const {
+  std::shared_ptr<TorchCommBackend> getBackendImpl() const {
     return impl_;
   }
 
@@ -244,43 +176,17 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   void all_gather_p_free(AllGatherPHandle handle);
 
-  // Hooks
-  struct PreHookArgs {
-    OpName name{};
-    bool async_op{false};
-    std::vector<at::Tensor>* input_tensors{nullptr};
-    std::vector<at::Tensor>* output_tensors{nullptr};
-    const at::Tensor* input_tensor{nullptr};
-    const at::Tensor* output_tensor{nullptr};
-    int root{-1};
-    // For all_to_all_v_single
-    const std::vector<uint64_t>* output_split_sizes{nullptr};
-    const std::vector<uint64_t>* input_split_sizes{nullptr};
-    // For split
-    const std::vector<int>* ranks{nullptr};
-    const std::string* split_name{nullptr};
-    // Unique operation ID to correlate pre-hook and post-hook calls
-    size_t op_id{0};
-  };
-  using PreHook = std::function<void(PreHookArgs)>;
-  struct PostHookArgs {
-    OpName name;
-    std::optional<c10::weak_intrusive_ptr<TorchWork>> work{};
-    std::weak_ptr<TorchComm> new_comm{};
-    std::weak_ptr<TorchCommWindow> new_window{};
-    // Unique operation ID to correlate pre-hook and post-hook calls
-    size_t op_id{0};
-  };
-  using PostHook = std::function<void(PostHookArgs)>;
+  // Hook types (defined in TorchCommHooks.hpp; aliased for backward compat)
+  using PreHookArgs = ::torch::comms::PreHookArgs;
+  using PostHookArgs = ::torch::comms::PostHookArgs;
+  using PreHook = ::torch::comms::PreHook;
+  using PostHook = ::torch::comms::PostHook;
+  using AbortHook = ::torch::comms::AbortHook;
 
-  // These are not thread safe and must not be modified while a collective is
-  // in progress.
+  // Hook registration (not thread-safe; must not be called while a collective
+  // is in progress)
   std::unique_ptr<RemovableHandle> registerPreHook(PreHook preHook);
   std::unique_ptr<RemovableHandle> registerPostHook(PostHook postHook);
-
-  // Abort hook - called before aborting when a collective times out or fails.
-  // This allows users to capture debug information before the abort.
-  using AbortHook = TorchCommBackend::AbortHook;
   std::unique_ptr<RemovableHandle> registerAbortHook(AbortHook hook);
 
   // Disable copy and move semantics
@@ -295,11 +201,6 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       at::Device device,
       const std::string& name,
       const CommOptions& options);
-
- protected:
-  std::shared_ptr<TorchCommBackend> getBackendImpl() const {
-    return impl_;
-  }
 
  private:
   // constructor for split communicators
