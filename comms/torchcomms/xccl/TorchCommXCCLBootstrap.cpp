@@ -2,8 +2,8 @@
 #include <ATen/xpu/XPUContext.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include <exception>
-#include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/StoreManager.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
