@@ -144,7 +144,7 @@ c10::intrusive_ptr<c10::ivalue::Future> WorkWrapper::getFuture() {
 BackendWrapper::BackendWrapper(std::shared_ptr<TorchComm> comm)
     : Backend(comm->getRank(), comm->getSize()),
       comm_(comm),
-      backend_(comm->unsafeGetBackend()),
+      backend_(comm->getBackendImpl()),
       options_(c10::make_intrusive<Options>()) {}
 
 c10::intrusive_ptr<c10d::Work> BackendWrapper::broadcast(
