@@ -6,6 +6,7 @@
 
 #include <fmt/core.h>
 #include "comms/ctran/backends/ib/CtranIb.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/CudaWrap.h"
 #include "comms/ctran/utils/LogInit.h"
@@ -31,10 +32,22 @@ void initEnvironment() {
 
 namespace torch::comms {
 
-RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev)
-    : buf_(buf), len_(len), cudaDev_(cudaDev) {
+RdmaMemory::RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg)
+    : buf_(buf), len_(len), cudaDev_(cudaDev), cacheReg_(cacheReg) {
   initEnvironment();
-  FB_COMMCHECKTHROW(CtranIb::regMem(buf_, len_, cudaDev_, &regHdl_));
+  if (cacheReg_) {
+    // Hold a shared_ptr to ensure RegCache lifetime while RdmaMemory is in
+    // scope
+    regCache_ = ctran::RegCache::getInstance();
+    FB_COMMCHECKTHROW(
+        regCache_->globalRegister(buf_, len_, true /* forceReg */, cudaDev_));
+    regHdl_ = regCache_->searchIbRegElem(buf_, len_);
+    if (regHdl_ == nullptr) {
+      throw std::runtime_error("Failed to fetch the IB regHdl from regCache");
+    }
+  } else {
+    FB_COMMCHECKTHROW(CtranIb::regMem(buf_, len_, cudaDev_, &regHdl_));
+  }
   remoteKey_ = CtranIb::getRemoteAccessKey(regHdl_).toString();
 }
 
@@ -43,17 +56,26 @@ RdmaMemory::RdmaMemory(RdmaMemory&& other) noexcept
       len_(other.len_),
       cudaDev_(other.cudaDev_),
       regHdl_(other.regHdl_),
-      remoteKey_(std::move(other.remoteKey_)) {
+      remoteKey_(std::move(other.remoteKey_)),
+      cacheReg_(other.cacheReg_),
+      regCache_(std::move(other.regCache_)) {
   // Properly invalidate the moved-from object to prevent double-free
   // and ensure the object is in a valid but unspecified state
   other.buf_ = nullptr;
   other.len_ = 0;
   other.cudaDev_ = -1;
   other.regHdl_ = nullptr;
+  other.cacheReg_ = false;
   // Note: remoteKey_ is already moved, leaving other.remoteKey_ empty
 }
 
 RdmaMemory::~RdmaMemory() noexcept {
+  if (cacheReg_) {
+    // RegCache destructor handles deregistration; regCache_ shared_ptr
+    // release ensures RegCache outlives this RdmaMemory.
+    FB_COMMCHECKTHROW(regCache_->globalDeregister(buf_, len_));
+    return;
+  }
   if (remoteKey_.size() > 0 && regHdl_) {
     FB_COMMCHECKIGNORE(CtranIb::deregMem(regHdl_));
   }
