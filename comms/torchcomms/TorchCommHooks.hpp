@@ -43,7 +43,7 @@ enum class OpName {
 };
 
 // Convert OpName enum to string
-constexpr std::string_view toString(OpName name) {
+constexpr std::string_view opToString(OpName name) {
   switch (name) {
     case OpName::send:
       return "send";
