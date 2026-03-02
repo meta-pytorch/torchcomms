@@ -136,7 +136,7 @@ void TorchCommNCCLXBootstrap::createStore(std::string_view name) {
     if (!is_tcp_store_enabled) {
       throw std::runtime_error("No way to exchange unique ID");
     }
-    store_ = StoreManager::get().getStore(
+    store_ = StoreManager::get().createPrefixedStore(
         TorchCommNCCLX::kBackendName, name, timeout_);
     created_internal_store_ = true;
   }

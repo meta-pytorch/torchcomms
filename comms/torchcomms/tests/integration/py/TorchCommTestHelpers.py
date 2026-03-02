@@ -7,7 +7,7 @@ from typing import Tuple, Union
 
 import torch
 from torchcomms import new_comm, RedOpType
-from torchcomms._comms import _get_store
+from torchcomms._comms import _create_prefixed_store
 
 
 def get_dtype_name(dtype):
@@ -114,7 +114,7 @@ def create_store():
 
     global NEXT_STORE_ID
     NEXT_STORE_ID += 1
-    return _get_store("my_backend", f"test_comm_{NEXT_STORE_ID}")
+    return _create_prefixed_store("my_backend", f"test_comm_{NEXT_STORE_ID}")
 
 
 def verify_tensor_equality(

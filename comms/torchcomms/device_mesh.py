@@ -25,7 +25,7 @@ import torch
 import torch.distributed as dist
 from torch.distributed.device_mesh import _mesh_resources
 from torchcomms import new_comm, TorchComm
-from torchcomms._comms import _BackendWrapper, _get_store
+from torchcomms._comms import _BackendWrapper, _create_prefixed_store
 
 try:
     from torch.distributed.distributed_c10d import GroupName
@@ -100,7 +100,7 @@ def _create_torchcomm_process_group(
 
 def _get_store_for_pg() -> dist.Store:
     if not hasattr(_get_store_for_pg, "_store"):
-        _get_store_for_pg._store = _get_store(  # pyre-ignore[16]
+        _get_store_for_pg._store = _create_prefixed_store(  # pyre-ignore[16]
             "torchcomm", "store_dist"
         )
     return _get_store_for_pg._store
