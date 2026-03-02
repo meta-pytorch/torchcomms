@@ -9,7 +9,7 @@
 #include <c10/util/FileSystem.h>
 #include <comms/torchcomms/RemovableHandle.hpp>
 #include <comms/torchcomms/TorchComm.hpp>
-#include <comms/torchcomms/TorchCommUtils.hpp>
+#include <comms/torchcomms/utils/Utils.hpp>
 #include <torch/csrc/profiler/combined_traceback.h>
 #include <chrono>
 #include <mutex>
