@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 #include "comms/torchcomms/utils/StoreManager.hpp"
 
-#include <comms/torchcomms/TorchCommLogging.hpp>
+#include <comms/torchcomms/utils/Logging.hpp>
 #include <torch/csrc/distributed/c10d/FileStore.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual=//caffe2:torch-cpp-cpu

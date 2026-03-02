@@ -4,7 +4,7 @@
 #include <c10/xpu/XPUStream.h>
 #include <sstream>
 #include <stdexcept>
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 namespace torch::comms {
 
