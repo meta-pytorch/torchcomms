@@ -3,6 +3,7 @@
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranComm.h"
+#include "comms/ctran/CtranPipes.h"
 #include "comms/ctran/algos/CtranAlgo.h"
 #include "comms/ctran/gpe/CtranGpe.h"
 #include "comms/ctran/mapper/CtranMapper.h"
@@ -14,6 +15,10 @@
 
 // Import "commGroupDepth" from CommGroupUtils.h
 #include "comms/ctran/utils/CommGroupUtils.h"
+
+#if defined(ENABLE_PIPES)
+#include "comms/pipes/MultiPeerTransport.h"
+#endif // defined(ENABLE_PIPES)
 
 Ctran::Ctran(CtranComm* comm) : comm_(comm) {
   ctran::logging::initCtranLogging();
@@ -98,6 +103,12 @@ commResult_t ctranInit(CtranComm* comm) {
     CLOGF(ERR, "Ctran initialization failed: {}", e.what());
     return commInternalError;
   }
+
+  auto res = ctranInitializePipes(comm);
+  if (res != commSuccess) {
+    return res;
+  }
+
   initEvent.lapAndRecord("CtranInit COMPLETE");
   return commSuccess;
 }
@@ -129,6 +140,11 @@ void CtranComm::destroy() {
   // ensure they do so in a specific order. Therefore, we manually handle
   // their de-initialization here.
   ctran_.reset();
+#if defined(ENABLE_PIPES)
+  // Must be destroyed before bootstrap_ since multiPeerTransport_ holds a
+  // non-owning reference to it.
+  multiPeerTransport_.reset();
+#endif // defined(ENABLE_PIPES)
   bootstrap_.reset();
   collTrace_.reset();
   colltraceNew_.reset();

@@ -1701,6 +1701,62 @@ cvars:
    description : |-
      Fails at collective scheduling time if the buffer is not pre-registered by user.
 
+ - name        : NCCL_CTRAN_USE_PIPES
+   type        : bool
+   default     : false
+   description : |-
+     Enable Pipes MultiPeerTransport for Ctran. When enabled, Ctran will
+     initialize MultiPeerTransport which provides unified NVLink and IBGDA
+     transport for P2P communication.
+
+ - name        : NCCL_CTRAN_PIPES_NVL_CHUNK_SIZE
+   type        : uint64_t
+   default     : 524288
+   description : |-
+     Chunk size in bytes for NVL transport in Pipes MultiPeerTransport.
+     Controls the granularity of parallel copy operations over NVLink.
+
+ - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
+   type        : uint64_t
+   default     : 128
+   description : |-
+     Queue pair depth (number of outstanding WQEs per peer) for IBGDA
+     transport in Pipes MultiPeerTransport. Higher values allow more
+     pipelining but use more memory.
+
+ - name        : NCCL_CTRAN_IBGDA_SIGNAL_COUNT
+   type        : uint64_t
+   default     : 1
+   description : |-
+     Number of signal slots per peer for IBGDA transport in Pipes
+     MultiPeerTransport. Each slot is a 64-bit counter used for
+     signaling between peers.
+
+ - name        : NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE
+   type        : uint64_t
+   default     : 0
+   description : |-
+     Per-peer data buffer size in bytes for IBGDA transport in Pipes
+     MultiPeerTransport. This determines the maximum transfer size per
+     put_signal call. A value of 0 means no transport-managed data
+     buffer (users must register their own via registerBuffer).
+
+ - name        : NCCL_CTRAN_IBGDA_MIN_RNR_TIMER
+   type        : uint64_t
+   default     : 12
+   description : |-
+     Minimum RNR NAK Timer field value for IBGDA transport in Pipes
+     MultiPeerTransport. Controls the delay before a receiver sends
+     a RNR NAK. See InfiniBand specification Volume 1, Table 46.
+
+ - name        : NCCL_CTRAN_IBGDA_RNR_RETRY
+   type        : uint64_t
+   default     : 7
+   description : |-
+     RNR retry count for IBGDA transport in Pipes MultiPeerTransport.
+     Number of times to retry after receiving an RNR NAK.
+     7 means infinite retry.
+
  - name        : NCCL_CTRAN_BACKENDS
    type        : enumlist
    default     : ib, nvl, socket
