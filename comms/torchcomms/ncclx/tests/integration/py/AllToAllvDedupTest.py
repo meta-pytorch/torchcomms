@@ -56,7 +56,7 @@ class AllToAllvDedupDispatchTest(unittest.TestCase):
         self.device = self.torchcomm.get_device()
 
         # Get the NCCLX backend for NCCLX-specific APIs
-        self.ncclx_backend = self.torchcomm.unsafe_get_backend()
+        self.ncclx_backend = self.torchcomm.get_backend_impl()
 
     def tearDown(self):
         """Clean up after each test."""

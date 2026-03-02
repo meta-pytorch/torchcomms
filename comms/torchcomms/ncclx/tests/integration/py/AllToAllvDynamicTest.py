@@ -79,7 +79,7 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         self.device = self.torchcomm.get_device()
 
         # Get the NCCLX backend for NCCLX-specific APIs
-        self.ncclx_backend = self.torchcomm.unsafe_get_backend()
+        self.ncclx_backend = self.torchcomm.get_backend_impl()
 
     def tearDown(self):
         """Clean up after each test."""
@@ -387,7 +387,7 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         torch.manual_seed(42)
         rank = sub_torchcomm.get_rank()
         comm_size = sub_torchcomm.get_size()
-        backend = sub_torchcomm.unsafe_get_backend()
+        backend = sub_torchcomm.get_backend_impl()
         assert ETP == 1 or TP == ETP, "Test cases only support ETP=1 or ETP==TP for now"
         TP2EP = TP // ETP
         NUM_LOCAL_EXPERTS = E // comm_size // TP2EP

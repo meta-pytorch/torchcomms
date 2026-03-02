@@ -24,7 +24,7 @@ class TestFactory(unittest.TestCase):
 
         comm = torchcomms.new_comm("gloo", torch.device("cpu"), "my_comm")
         comm.finalize()
-        backend = comm.unsafe_get_backend()
+        backend = comm.get_backend_impl()
         print(backend)
 
         from torchcomms._comms_gloo import TorchCommGloo

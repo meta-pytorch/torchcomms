@@ -19,7 +19,7 @@ void AllToAllvDynamicTest::SetUp() {
   num_ranks_ = torchcomm_->getSize();
 
   // Get the backend and cast to TorchCommNCCLX for NCCLX-specific APIs
-  auto backend = torchcomm_->unsafeGetBackend();
+  auto backend = torchcomm_->getBackendImpl();
   ncclx_comm_ =
       std::dynamic_pointer_cast<torch::comms::TorchCommNCCLX>(backend);
   ASSERT_NE(ncclx_comm_, nullptr)

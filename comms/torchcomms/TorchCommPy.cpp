@@ -833,14 +833,14 @@ Args:
           "Get communicator backend name",
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "unsafe_get_backend",
-          &TorchComm::unsafeGetBackend,
+          "get_backend_impl",
+          &TorchComm::getBackendImpl,
           R"(
 Get communicator backend implementation.
 
 WARNING: This is intended as an escape hatch for experimentation and
 development. Direct backend access provides no backwards compatibility
-guarantees. Users depending on unsafe_get_backend should expect their code to
+guarantees. Users depending on get_backend_impl should expect their code to
 break as interfaces change.
           )",
           py::call_guard<py::gil_scoped_release>())

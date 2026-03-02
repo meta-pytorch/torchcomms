@@ -222,7 +222,7 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
     return backend_;
   }
 
-  std::shared_ptr<TorchCommBackend> unsafeGetBackend() const {
+  std::shared_ptr<TorchCommBackend> getBackendImpl() const {
     return impl_;
   }
 
@@ -295,11 +295,6 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
       at::Device device,
       const std::string& name,
       const CommOptions& options);
-
- protected:
-  std::shared_ptr<TorchCommBackend> getBackendImpl() const {
-    return impl_;
-  }
 
  private:
   // constructor for split communicators
