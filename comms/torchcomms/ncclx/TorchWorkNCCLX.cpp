@@ -4,8 +4,8 @@
 #include <ATen/ThreadLocalState.h>
 #include <ATen/cuda/CUDAContext.h>
 #include "TorchCommNCCLX.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 namespace torch::comms {
 

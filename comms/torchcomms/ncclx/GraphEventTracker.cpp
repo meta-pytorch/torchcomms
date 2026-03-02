@@ -7,9 +7,9 @@
 
 #include <folly/ScopeGuard.h>
 
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchWorkNCCLX.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 namespace {
 

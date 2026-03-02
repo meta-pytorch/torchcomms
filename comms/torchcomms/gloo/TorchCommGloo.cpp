@@ -25,12 +25,12 @@
 #include <gloo/transport/unbound_buffer.h>
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual
 
-#include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
-#include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/gloo/GlooStore.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/StoreManager.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
 
@@ -346,7 +346,7 @@ void TorchCommGloo::init(
 
   auto store = options.store;
   if (!store) {
-    store = StoreManager::get().getStore(
+    store = StoreManager::get().createPrefixedStore(
         TorchCommGloo::kBackendName, name, options.timeout);
   }
 

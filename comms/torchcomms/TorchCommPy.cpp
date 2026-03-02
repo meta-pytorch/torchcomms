@@ -9,10 +9,9 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include "comms/torchcomms/BackendWrapper.hpp"
-#include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
-#include "comms/torchcomms/hooks/FlightRecorderPy.h"
+#include "comms/torchcomms/utils/StoreManager.hpp"
 
 namespace py = pybind11;
 using namespace torch::comms;
@@ -833,17 +832,30 @@ Args:
           "Get communicator backend name",
           py::call_guard<py::gil_scoped_release>())
       .def(
-          "unsafe_get_backend",
-          &TorchComm::unsafeGetBackend,
+          "get_backend_impl",
+          &TorchComm::getBackendImpl,
           R"(
 Get communicator backend implementation.
 
 WARNING: This is intended as an escape hatch for experimentation and
 development. Direct backend access provides no backwards compatibility
-guarantees. Users depending on unsafe_get_backend should expect their code to
+guarantees. Users depending on get_backend_impl should expect their code to
 break as interfaces change.
           )",
           py::call_guard<py::gil_scoped_release>())
+      .def(
+          "unsafe_get_backend",
+          [](TorchComm& self) {
+            PyErr_WarnEx(
+                PyExc_DeprecationWarning,
+                "unsafe_get_backend() is deprecated, "
+                "use get_backend_impl() instead.",
+                1);
+            return self.getBackendImpl();
+          },
+          R"(
+Deprecated: Use get_backend_impl() instead.
+          )")
 
       // Point-to-Point Operations
       .def(
@@ -1685,7 +1697,7 @@ Raises: RuntimeError if the ranks list is non-empty and the current rank is not 
       // Hook registration methods
       .def(
           "register_pre_hook",
-          [](TorchComm& self, py::function callback) {
+          [](TorchComm& self, const py::function& callback) {
             auto hook = [callback](TorchComm::PreHookArgs args) {
               py::gil_scoped_acquire acquire;
               callback(args);
@@ -1718,8 +1730,8 @@ Note:
           py::arg("callback"))
       .def(
           "register_post_hook",
-          [](TorchComm& self, py::function callback) {
-            auto hook = [callback](TorchComm::PostHookArgs args) {
+          [](TorchComm& self, const py::function& callback) {
+            auto hook = [callback](const TorchComm::PostHookArgs& args) {
               py::gil_scoped_acquire acquire;
               callback(args);
             };
@@ -1752,7 +1764,7 @@ Note:
           py::arg("callback"))
       .def(
           "register_abort_hook",
-          [](TorchComm& self, py::function callback) {
+          [](TorchComm& self, const py::function& callback) {
             auto hook = [callback]() {
               py::gil_scoped_acquire acquire;
               callback();
@@ -1835,11 +1847,12 @@ Args:
       m, "_BackendWrapperOptions");
 
   m.def(
-      "_get_store",
+      "_create_prefixed_store",
       [](const std::string& backend_name,
          const std::string& name,
          std::chrono::milliseconds timeout) {
-        return StoreManager::get().getStore(backend_name, name, timeout);
+        return StoreManager::get().createPrefixedStore(
+            backend_name, name, timeout);
       },
       R"(
       Return a new store object that's unique to the given backend and
@@ -1868,8 +1881,4 @@ Args:
       )",
       py::arg("backend"),
       py::call_guard<py::gil_scoped_release>());
-
-  // Add Flight Recorder submodule
-  auto hooks_submodule = m.def_submodule("hooks", "TorchComm module for hooks");
-  torch::comms::fr::initFlightRecorderPyBindings(hooks_submodule);
 }

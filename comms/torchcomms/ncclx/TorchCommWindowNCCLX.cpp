@@ -4,8 +4,8 @@
 
 #include <fmt/core.h>
 
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 #ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"

@@ -3,7 +3,7 @@
 #include "TorchCommNCCLXPersistentRequest.hpp"
 #include "NcclxApi.hpp"
 #include "TorchCommNCCLX.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 namespace torch::comms {
 TorchCommNCCLXPersistentRequest::TorchCommNCCLXPersistentRequest(
