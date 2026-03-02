@@ -136,8 +136,8 @@ onecclUniqueId TorchCommXCCLBootstrap::exchangeUniqueIdStore() {
 
 onecclUniqueId TorchCommXCCLBootstrap::exchangeUniqueIdTCPStore(
     std::string_view name) {
-  store_ =
-      StoreManager::get().getStore(TorchCommXCCL::kBackendName, name, timeout_);
+  store_ = StoreManager::get().createPrefixedStore(
+      TorchCommXCCL::kBackendName, name, timeout_);
   created_internal_store_ = true;
 
   return exchangeUniqueIdStore();

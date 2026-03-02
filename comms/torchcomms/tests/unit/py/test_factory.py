@@ -8,7 +8,7 @@ import unittest
 
 import torch
 import torchcomms
-from torchcomms._comms import _get_store
+from torchcomms._comms import _create_prefixed_store
 
 
 class TestFactory(unittest.TestCase):
@@ -40,8 +40,8 @@ class TestFactory(unittest.TestCase):
         _, path = tempfile.mkstemp()
         os.environ["TORCHCOMM_STORE_PATH"] = path
 
-        _get_store("custom_backend", "name")
+        _create_prefixed_store("custom_backend", "name")
         with self.assertRaisesRegex(
             RuntimeError, r"Store prefix has been reused.*custom_backend.*name"
         ):
-            _get_store("custom_backend", "name")
+            _create_prefixed_store("custom_backend", "name")
