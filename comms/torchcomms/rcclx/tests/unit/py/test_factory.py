@@ -21,7 +21,7 @@ class TestFactory(unittest.TestCase):
 
         comm = torchcomms.new_comm("rcclx", torch.device("hip"), name="my_comm")
         comm.finalize()
-        backend = comm.unsafe_get_backend()
+        backend = comm.get_backend_impl()
         print(backend)
 
         from torchcomms._comms_rcclx import TorchCommRCCLX
