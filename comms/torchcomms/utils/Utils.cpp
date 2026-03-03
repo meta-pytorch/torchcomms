@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/torchcomms/TorchCommUtils.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 #include <algorithm>
 #include <sstream>
 #include <stdexcept>

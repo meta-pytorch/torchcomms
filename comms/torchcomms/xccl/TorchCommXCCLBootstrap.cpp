@@ -4,7 +4,7 @@
 #include <exception>
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
-#include "comms/torchcomms/TorchCommUtils.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
 namespace torch::comms {

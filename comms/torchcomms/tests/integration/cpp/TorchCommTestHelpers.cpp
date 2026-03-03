@@ -5,6 +5,7 @@
 
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 using namespace torch::comms;
 

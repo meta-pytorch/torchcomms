@@ -16,6 +16,7 @@
 #include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCLBootstrap.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
 

@@ -6,6 +6,7 @@
 #include <string>
 #include "comms/torchcomms/TorchCommFactory.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
 
 namespace torch::comms {

@@ -1,7 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/TorchCommOptions.hpp"
-#include "comms/torchcomms/TorchCommUtils.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
 
