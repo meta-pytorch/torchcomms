@@ -114,7 +114,9 @@ class GraphEventTracker {
   void cleanupReleasedGraphs();
 
   struct GraphState {
-    std::vector<GraphWork> entries;
+    // Entries grouped by stream — collectives are only ordered within a stream,
+    // so per-stream grouping enables early-exit optimization in checkAll().
+    std::unordered_map<cudaStream_t, std::vector<GraphWork>> stream_entries;
     SharedCallbackState* shared_{nullptr};
     // CPU tensors that must be kept alive for the graph's lifetime.
     // This includes CPU pointer tensors used by alltoallv_dynamic_dispatch
