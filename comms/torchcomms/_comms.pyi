@@ -409,7 +409,7 @@ class TorchComm:
     ) -> TorchWork: ...
     def split(
         self,
-        rank_groups: List[List[int]],
+        ranks: List[int],
         name: str,
         hints: Dict[str, str] | None = None,
         timeout: timedelta | None = None,

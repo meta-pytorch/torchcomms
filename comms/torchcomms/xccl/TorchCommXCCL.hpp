@@ -64,6 +64,7 @@ class TorchCommXCCL : public TorchCommBackend,
   void finalize() override;
   int getRank() const override;
   int getSize() const override;
+  std::vector<int> getRanks() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
 

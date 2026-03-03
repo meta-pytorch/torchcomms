@@ -80,6 +80,27 @@ TEST_F(SplitTest, MultipleSplitsSameRanks) {
   testMultipleSplitsSameRanks();
 }
 
+TEST_F(SplitTest, GetRanksRoot) {
+  SCOPED_TRACE(
+      ::testing::Message()
+      << "Testing getRanks() returns sequential ranks for root communicator");
+  testGetRanksRoot();
+}
+
+TEST_F(SplitTest, GetRanksAfterSplit) {
+  SCOPED_TRACE(
+      ::testing::Message()
+      << "Testing getRanks() returns correct global ranks after split");
+  testGetRanksAfterSplit();
+}
+
+TEST_F(SplitTest, GetRanksMultiLevelSplit) {
+  SCOPED_TRACE(
+      ::testing::Message()
+      << "Testing getRanks() returns correct global ranks through multi-level splits");
+  testGetRanksMultiLevelSplit();
+}
+
 // This main function is provided by gtest
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);

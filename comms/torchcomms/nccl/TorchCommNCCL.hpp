@@ -86,6 +86,7 @@ class TorchCommNCCL : public TorchCommBackend,
   void finalize() override;
   int getRank() const override;
   int getSize() const override;
+  std::vector<int> getRanks() const override;
   std::string_view getBackendName() const override;
   std::string_view getCommName() const override;
 
@@ -370,6 +371,7 @@ class TorchCommNCCL : public TorchCommBackend,
   at::Device device_;
   int comm_size_{};
   int rank_{};
+  std::vector<int> ranks_; // Global ranks in this communicator
   CommOptions options_;
   size_t max_event_pool_size_{};
   cudaStream_t internal_stream_{};

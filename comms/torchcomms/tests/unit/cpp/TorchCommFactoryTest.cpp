@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <cstdlib>
+#include <vector>
 
 namespace torch::comms {
 
@@ -46,6 +47,7 @@ TEST_F(TorchCommBackendFactoryTest, CreateGenericBackend) {
   // Test basic functionality
   EXPECT_EQ(backend->getRank(), 0);
   EXPECT_EQ(backend->getSize(), 1);
+  EXPECT_EQ(backend->getRanks(), std::vector<int>{0});
   EXPECT_EQ(backend->getDevice().type(), at::kCPU);
   EXPECT_EQ(backend->getBackendName(), "dummy");
 }
@@ -101,6 +103,7 @@ TEST_F(TorchCommBackendFactoryTest, GenericBackendSplit) {
 
   EXPECT_EQ(split_backend->getRank(), 0);
   EXPECT_EQ(split_backend->getSize(), 1);
+  EXPECT_EQ(split_backend->getRanks(), std::vector<int>{0});
   ASSERT_EQ(split_backend->getBackendName(), "dummy");
 }
 
@@ -161,6 +164,7 @@ TEST_F(TorchCommBackendFactoryTest, NewCommIntegration) {
   // Test torchcomm functionality
   EXPECT_EQ(torchcomm->getRank(), 0);
   EXPECT_EQ(torchcomm->getSize(), 1);
+  EXPECT_EQ(torchcomm->getRanks(), std::vector<int>{0});
   EXPECT_EQ(torchcomm->getBackend(), kBackendName);
   EXPECT_EQ(torchcomm->getDevice().type(), at::kCPU);
 

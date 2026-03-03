@@ -478,3 +478,155 @@ void SplitTest::testMultipleSplitsSameRanks() {
   split_comm_2->finalize();
   split_comm_3->finalize();
 }
+
+void SplitTest::testGetRanksRoot() {
+  // Test getRanks() on the root communicator
+  // Should return sequential ranks [0, 1, 2, ..., size-1]
+  std::vector<int> ranks = torchcomm_->getRanks();
+
+  // Verify size matches getSize()
+  EXPECT_EQ(static_cast<int>(ranks.size()), num_ranks_)
+      << "getRanks() should return a vector of size equal to getSize()";
+
+  // Verify ranks are sequential starting from 0
+  std::vector<int> expected_ranks;
+  expected_ranks.reserve(num_ranks_);
+  for (int i = 0; i < num_ranks_; i++) {
+    expected_ranks.push_back(i);
+  }
+  EXPECT_EQ(ranks, expected_ranks)
+      << "Root communicator getRanks() should return sequential ranks [0, 1, ..., size-1]";
+}
+
+void SplitTest::testGetRanksAfterSplit() {
+  // Test getRanks() after split returns the correct global ranks from parent
+  // Split with non-contiguous ranks (even ranks only)
+  bool rank_in_group = (rank_ % 2 == 0);
+  std::vector<int> split_ranks;
+
+  if (rank_in_group) {
+    for (int i = 0; i < num_ranks_; i += 2) {
+      split_ranks.push_back(i);
+    }
+  }
+
+  std::shared_ptr<torch::comms::TorchComm> child_comm =
+      torchcomm_->split(split_ranks, "getRanks_test_comm");
+
+  if (rank_in_group) {
+    ASSERT_TRUE(child_comm != nullptr)
+        << "Expected child communicator for even rank " << rank_;
+
+    // getRanks() on child should return the original global ranks
+    std::vector<int> child_ranks = child_comm->getRanks();
+
+    // Expected: the even ranks from the parent [0, 2, 4, ...]
+    std::vector<int> expected_ranks;
+    for (int i = 0; i < num_ranks_; i += 2) {
+      expected_ranks.push_back(i);
+    }
+
+    EXPECT_EQ(child_ranks, expected_ranks)
+        << "Child communicator getRanks() should return global ranks from parent";
+
+    // Verify size matches
+    EXPECT_EQ(static_cast<int>(child_ranks.size()), child_comm->getSize())
+        << "getRanks() size should match getSize()";
+
+    child_comm->finalize();
+  } else {
+    EXPECT_TRUE(child_comm == nullptr)
+        << "Odd rank " << rank_ << " should not have a child communicator";
+  }
+}
+
+void SplitTest::testGetRanksMultiLevelSplit() {
+  // Test getRanks() with multi-level splits
+  // First split: take first half of ranks
+  // Second split: take first half of the child
+  // Verify getRanks() returns correct global ranks at each level
+
+  int first_split_size = num_ranks_ / 2;
+  if (first_split_size == 0) {
+    first_split_size = 1;
+  }
+
+  bool rank_in_first_level = (rank_ < first_split_size);
+  std::vector<int> first_level_ranks;
+
+  if (rank_in_first_level) {
+    for (int i = 0; i < first_split_size; i++) {
+      first_level_ranks.push_back(i);
+    }
+  }
+
+  std::shared_ptr<torch::comms::TorchComm> first_level_comm =
+      torchcomm_->split(first_level_ranks, "first_level_getRanks_comm");
+
+  if (!rank_in_first_level) {
+    EXPECT_TRUE(first_level_comm == nullptr)
+        << "Rank " << rank_
+        << " should not have a first-level child communicator";
+    return;
+  }
+
+  ASSERT_TRUE(first_level_comm != nullptr)
+      << "Expected first-level communicator for rank " << rank_;
+
+  // Verify first level getRanks()
+  std::vector<int> first_level_ranks_result = first_level_comm->getRanks();
+  EXPECT_EQ(first_level_ranks_result, first_level_ranks)
+      << "First level getRanks() should return global ranks [0, 1, ..., "
+      << (first_split_size - 1) << "]";
+
+  // Second level split: take first half of first level
+  int first_level_rank = first_level_comm->getRank();
+  int first_level_size = first_level_comm->getSize();
+
+  int second_split_size = first_level_size / 2;
+  if (second_split_size == 0) {
+    second_split_size = 1;
+  }
+
+  bool rank_in_second_level = (first_level_rank < second_split_size);
+  std::vector<int> second_level_ranks;
+
+  if (rank_in_second_level) {
+    for (int i = 0; i < second_split_size; i++) {
+      second_level_ranks.push_back(i);
+    }
+  }
+
+  std::shared_ptr<torch::comms::TorchComm> second_level_comm =
+      first_level_comm->split(second_level_ranks, "second_level_getRanks_comm");
+
+  if (!rank_in_second_level) {
+    EXPECT_TRUE(second_level_comm == nullptr)
+        << "First-level rank " << first_level_rank
+        << " should not have a second-level child communicator";
+    first_level_comm->finalize();
+    return;
+  }
+
+  ASSERT_TRUE(second_level_comm != nullptr)
+      << "Expected second-level communicator for first-level rank "
+      << first_level_rank;
+
+  // Verify second level getRanks() - should return global ranks from root
+  // The second level contains ranks [0, 1, ..., second_split_size-1] from first
+  // level which maps to global ranks [0, 1, ..., second_split_size-1]
+  std::vector<int> second_level_ranks_result = second_level_comm->getRanks();
+
+  std::vector<int> expected_global_ranks;
+  expected_global_ranks.reserve(second_split_size);
+  for (int i = 0; i < second_split_size; i++) {
+    // Map through first_level_ranks to get global ranks
+    expected_global_ranks.push_back(first_level_ranks[i]);
+  }
+
+  EXPECT_EQ(second_level_ranks_result, expected_global_ranks)
+      << "Second level getRanks() should return global ranks mapped through parent";
+
+  second_level_comm->finalize();
+  first_level_comm->finalize();
+}
