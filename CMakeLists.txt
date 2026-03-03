@@ -64,11 +64,13 @@ file(GLOB TORCHCOMMS_SOURCES "comms/torchcomms/*.cpp")
 file(GLOB TORCHCOMMS_PYTHON_SOURCES "comms/torchcomms/*Py.cpp")
 file(GLOB HOOKS_SOURCES "comms/torchcomms/hooks/*.cpp")
 file(GLOB HOOKS_PYTHON_SOURCES "comms/torchcomms/hooks/*Py.cpp")
+file(GLOB UTILS_SOURCES "comms/torchcomms/utils/*.cpp")
 
 list(REMOVE_ITEM TORCHCOMMS_SOURCES ${TORCHCOMMS_PYTHON_SOURCES})
 list(REMOVE_ITEM HOOKS_SOURCES ${HOOKS_PYTHON_SOURCES})
 
 list(APPEND TORCHCOMMS_SOURCES ${HOOKS_SOURCES})
+list(APPEND TORCHCOMMS_SOURCES ${UTILS_SOURCES})
 list(APPEND TORCHCOMMS_PYTHON_SOURCES ${HOOKS_PYTHON_SOURCES})
 
 # Set include directories
@@ -165,6 +167,7 @@ endif()
 if (USE_TRANSPORT)
     include(comms/torchcomms/transport/CMakeLists.txt)
 endif()
+include(comms/torchcomms/hooks/fr/CMakeLists.txt)
 
 # Install targets to Python package structure
 install(TARGETS torchcomms

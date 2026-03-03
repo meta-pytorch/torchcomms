@@ -1,6 +1,7 @@
 #include "comms/torchcomms/xccl/TorchWorkXCCL.hpp"
 #include <ATen/xpu/XPUContext.h>
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/TorchCommTracing.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
 namespace torch::comms {
@@ -9,14 +10,12 @@ TorchWorkXCCL::TorchWorkXCCL(
     std::shared_ptr<TorchCommXCCL> comm,
     xpuStream_t stream,
     std::chrono::milliseconds timeout_ms,
-    const std::vector<at::Tensor>& inputTensors,
-    std::shared_ptr<TorchCommTracing> tracing)
+    const std::vector<at::Tensor>& inputTensors)
     : inputTensors_(inputTensors),
       comm_(std::move(comm)),
       stream_(stream),
       timeout_ms_(timeout_ms),
-      state_(WorkStatus::NOT_STARTED),
-      tracing_(std::move(tracing)) {
+      state_(WorkStatus::NOT_STARTED) {
   // If not in graph capture mode, create the events for start and end
   // recording
   start_event_ = comm_->getEvent();
@@ -117,7 +116,11 @@ void TorchWorkXCCL::wait() {
     return;
   }
 
-  tracing_->recordEvent("wait");
+  TorchCommTracingGuard tracingGuard(
+      std::string(comm_->getCommName()),
+      comm_->getSize(),
+      "wait",
+      comm_->getRank());
 
   // Get the current stream using the device from the comm object
   xpuStream_t current_stream =

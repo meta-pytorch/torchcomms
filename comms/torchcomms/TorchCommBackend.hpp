@@ -6,9 +6,9 @@
 #include <c10/core/Device.h>
 #include <c10/util/intrusive_ptr.h>
 #include <comms/torchcomms/TorchCommBatch.hpp>
+#include <comms/torchcomms/TorchCommHooks.hpp>
 #include <comms/torchcomms/TorchCommOptions.hpp>
 #include <comms/torchcomms/TorchCommTypes.hpp>
-#include <comms/torchcomms/TorchCommUtils.hpp>
 #include <comms/torchcomms/TorchCommWindow.hpp>
 #include <comms/torchcomms/TorchWork.hpp>
 #include <memory>
@@ -167,10 +167,9 @@ class TorchCommBackend {
         std::string(getCommName()));
   }
 
-  // Abort hook support - called before aborting when a collective times out or
-  // fails. This allows users to capture debug information before the abort.
+  // Abort hook support (AbortHook defined in TorchCommHooks.hpp)
+  // Called before aborting when a collective times out or fails.
   // Multiple hooks can be registered and will be called in order.
-  using AbortHook = std::function<void()>;
 
   virtual void registerAbortHook(int64_t hookId, AbortHook hook) {
     abortHooks_.emplace(hookId, std::move(hook));

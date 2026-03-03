@@ -3,10 +3,7 @@
 """Functional collectives implementation for torchcomms."""
 
 import torch
-from torchcomms import Timeout
-
-# Import TorchComm, TorchCommWindow, and BatchSendRecv
-from torchcomms._comms import BatchSendRecv, ReduceOp, TorchComm, TorchCommWindow
+from torchcomms import BatchSendRecv, ReduceOp, Timeout, TorchComm, TorchCommWindow
 from torchcomms.functional.async_tensor import (
     _are_we_tracing,
     _maybe_wrap_tensor,

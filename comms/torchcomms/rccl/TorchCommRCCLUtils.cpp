@@ -5,7 +5,7 @@
 
 #include <stdexcept>
 #include <string>
-#include "comms/torchcomms/TorchCommLogging.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp"
+#include "comms/torchcomms/utils/Logging.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp"
 #include "rccl.h" // @manual
 
 namespace torch::comms {

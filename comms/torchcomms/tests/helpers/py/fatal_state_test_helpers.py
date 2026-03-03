@@ -35,9 +35,9 @@ class FatalStateTestMixin:
             pass
         # TORCHCOMM_STORE_PATH makes StoreManager create a FileStore instead
         # of a TCPStore. MASTER_ADDR/MASTER_PORT must still be set because
-        # the NCCLX bootstrap's createStore() guards on their presence before
-        # calling StoreManager — but they won't be used for actual store
-        # creation when TORCHCOMM_STORE_PATH is set.
+        # the NCCLX bootstrap guards on their presence before calling
+        # StoreManager::get().createPrefixedStore() — but they won't be used for actual
+        # store creation when TORCHCOMM_STORE_PATH is set.
         env["TORCHCOMM_STORE_PATH"] = store_path
         env["MASTER_ADDR"] = "127.0.0.1"
         env["MASTER_PORT"] = str(int(parent_port) + 1000)

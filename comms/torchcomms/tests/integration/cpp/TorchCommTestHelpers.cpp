@@ -3,8 +3,9 @@
 #include "comms/torchcomms/tests/integration/cpp/TorchCommTestHelpers.h"
 #include "torch/csrc/distributed/c10d/TCPStore.hpp" // @manual=//caffe2:torch-cpp-cpu
 
-#include "comms/torchcomms/StoreManager.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual=//caffe2:torch-cpp-cpu
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 using namespace torch::comms;
 
@@ -127,13 +128,27 @@ std::tuple<int, int> getRankAndSize() {
 c10::intrusive_ptr<c10d::Store> createStore() {
   configureManualRankSize();
 
+  static c10::intrusive_ptr<c10d::Store> root;
+  if (!root) {
+    auto [rank, comm_size] = query_ranksize();
+    (void)comm_size;
+    const char* host = std::getenv("MASTER_ADDR");
+    TORCH_INTERNAL_ASSERT(host, "MASTER_ADDR env is not set");
+    int port = std::stoi(std::getenv("MASTER_PORT"));
+    c10d::TCPStoreOptions opts;
+    opts.port = port;
+    opts.isServer = (rank == 0);
+    opts.waitWorkers = false;
+    opts.useLibUV = true;
+    opts.timeout = std::chrono::milliseconds(60000);
+    root = c10::make_intrusive<c10d::TCPStore>(std::string{host}, opts);
+  }
+
   static int next_store_id = 0;
   next_store_id += 1;
 
-  return StoreManager::get().getStore(
-      "comms_test",
-      fmt::format("store_{}", next_store_id),
-      std::chrono::milliseconds(60000));
+  return c10::make_intrusive<c10d::PrefixStore>(
+      fmt::format("comms_test_{}", next_store_id), root->clone());
 }
 
 void destroyStore(

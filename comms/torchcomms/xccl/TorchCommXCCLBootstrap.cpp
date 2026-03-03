@@ -2,9 +2,9 @@
 #include <ATen/xpu/XPUContext.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include <exception>
-#include "comms/torchcomms/StoreManager.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
-#include "comms/torchcomms/TorchCommUtils.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/StoreManager.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
 namespace torch::comms {
@@ -136,8 +136,8 @@ onecclUniqueId TorchCommXCCLBootstrap::exchangeUniqueIdStore() {
 
 onecclUniqueId TorchCommXCCLBootstrap::exchangeUniqueIdTCPStore(
     std::string_view name) {
-  store_ =
-      StoreManager::get().getStore(TorchCommXCCL::kBackendName, name, timeout_);
+  store_ = StoreManager::get().createPrefixedStore(
+      TorchCommXCCL::kBackendName, name, timeout_);
   created_internal_store_ = true;
 
   return exchangeUniqueIdStore();

@@ -2,7 +2,7 @@
 #include <oneapi/ccl.hpp>
 #include <stdexcept>
 #include <string>
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
 namespace torch::comms {
@@ -254,7 +254,7 @@ c10::intrusive_ptr<TorchWorkXCCL> TorchCommXCCL::createWork(
     const std::vector<at::Tensor>& inputTensors) {
   // Only create the work object without enqueuing it
   auto work = c10::make_intrusive<TorchWorkXCCL>(
-      shared_from_this(), stream, timeout, inputTensors, tracing_);
+      shared_from_this(), stream, timeout, inputTensors);
   return work;
 }
 

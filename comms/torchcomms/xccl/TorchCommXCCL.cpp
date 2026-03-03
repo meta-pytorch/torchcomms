@@ -5,7 +5,9 @@
 #include <stdexcept>
 #include <string>
 #include "comms/torchcomms/TorchCommFactory.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/TorchCommTracing.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
 
 namespace torch::comms {
@@ -179,8 +181,7 @@ void TorchCommXCCL::init(
     throw std::runtime_error("XCCL Count failed");
   }
 
-  tracing_ = std::make_shared<TorchCommTracing>(name, comm_size_, rank_);
-  tracing_->recordEvent("init");
+  TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommXCCL::timeoutWatchdog, this);
@@ -375,7 +376,8 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  tracing_->recordEventWithInputOutput("all_reduce", rank_, {tensor}, {tensor});
+  TorchCommTracingGuard tracingGuard(
+      name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   xpuStream_t stream = getOperationStream(async_op);
   auto work = createWork(

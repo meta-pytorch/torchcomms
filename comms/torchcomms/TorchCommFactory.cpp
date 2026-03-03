@@ -5,7 +5,7 @@
 #include <dlfcn.h>
 
 #include "comms/torchcomms/TorchComm.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 namespace torch::comms {
 
