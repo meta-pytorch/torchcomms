@@ -8,8 +8,8 @@
 #include <torch/csrc/utils/pybind.h>
 
 #include "comms/torchcomms/BackendWrapper.hpp"
-#include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchComm.hpp"
+#include "comms/torchcomms/utils/StoreManager.hpp"
 
 namespace py = pybind11;
 using namespace torch::comms;
