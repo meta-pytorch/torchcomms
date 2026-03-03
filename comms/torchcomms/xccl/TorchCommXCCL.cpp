@@ -211,21 +211,25 @@ void TorchCommXCCL::finalize() {
   // Wait for all pending work objects to complete and get final status
   auto work_status = workq_.finalize();
 
-  if (work_status == TorchWorkXCCL::WorkStatus::NOT_STARTED ||
-      work_status == TorchWorkXCCL::WorkStatus::INPROGRESS) {
+  if (work_status == TorchWork::WorkStatus::NOT_STARTED ||
+      work_status == TorchWork::WorkStatus::INPROGRESS) {
     throw std::runtime_error(
         "WorkQ finalize returned in progress or not started state");
   }
 
   // Update comm_state_ based on the work status
-  if (work_status == TorchWorkXCCL::WorkStatus::TIMEDOUT) {
+  if (work_status == TorchWork::WorkStatus::TIMEDOUT) {
     comm_state_ = CommState::TIMEOUT;
     abortXcclComm();
     throw std::runtime_error("Work timed out during finalize");
-  } else if (work_status == TorchWorkXCCL::WorkStatus::ERROR) {
+  } else if (work_status == TorchWork::WorkStatus::ERROR) {
     comm_state_ = CommState::ERROR;
-    onecclResult_t asyncErr;
-    xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+    onecclResult_t asyncErr = onecclSystemError;
+    onecclResult_t res = xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+    if (res != onecclSuccess) {
+      TC_LOG(WARNING) << "commGetAsyncError returned " << res;
+      asyncErr = res;
+    }
     XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
     abortXcclComm();
     throw xcclException;
@@ -279,11 +283,14 @@ void TorchCommXCCL::finalize() {
 
 void TorchCommXCCL::abortXcclComm() {
   if (xccl_comm_) {
-    xccl_api_->commAbort(xccl_comm_);
+    onecclResult_t res = xccl_api_->commAbort(xccl_comm_);
+    if (res != onecclSuccess) {
+      TC_LOG(WARNING) << "commAbort returned " << res;
+    }
     xccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
-    TC_LOG(ERROR) << "Aborting process due to timeout";
+    TC_LOG(ERROR) << "Aborting process due to error or timeout";
     abort();
   }
 }
@@ -377,6 +384,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
 
   tracing_->recordEventWithInputOutput("all_reduce", rank_, {tensor}, {tensor});
 
+  // oneCCL bug skips premul sum if comm_size is 1, so handle it here
+  // We do this before getOperationStream so that the internal stream
+  // waits for this operation to complete if async_op is true.
+  // TODO: remove this workaround when oneCCL bug is fixed
+  if (comm_size_ == 1) {
+    preReduce(tensor, op);
+  }
+
   xpuStream_t stream = getOperationStream(async_op);
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout), {tensor});
@@ -393,19 +408,17 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
     return work;
   }
 
-  // oneCCL bug skips premul sum if comm_size is 1, so handle it here
-  // TODO: remove this workaround when oneCCL bug is fixed
-  if (comm_size_ == 1) {
-    preReduce(tensor, op);
-  }
-
   const auto dataType = getXcclDataType(tensor);
+  // If we already pre-reduced (comm_size_ == 1), we don't want XCCL to
+  // do it again if they ever fix the bug, so just pass SUM.
+  const ReduceOp& effective_op = (comm_size_ == 1 && op.type() == ReduceOp::RedOpType::PREMUL_SUM) ? ReduceOp::SUM : op;
+  
   onecclResult_t result = xccl_api_->allReduce(
       tensor.data_ptr(),
       tensor.data_ptr(), // In-place operation
       tensor.numel(),
       dataType,
-      getXcclReduceOp(op, xccl_comm_, dataType),
+      getXcclReduceOp(effective_op, xccl_comm_, dataType),
       xccl_comm_,
       stream);
 

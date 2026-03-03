@@ -2,11 +2,11 @@
 
 namespace torch::comms {
 
-TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::garbageCollect(
+TorchWork::WorkStatus TorchWorkXCCLQueue::garbageCollect(
     bool isMainThread) {
   std::lock_guard<std::recursive_mutex> lock(work_queues_mutex_);
 
-  TorchWorkXCCL::WorkStatus last_status = TorchWorkXCCL::WorkStatus::COMPLETED;
+  TorchWork::WorkStatus overall_status = TorchWork::WorkStatus::COMPLETED;
 
   // Keep popping completed elements until we hit an in-progress element
   // or the queue is empty
@@ -20,21 +20,23 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::garbageCollect(
       auto work = work_queue.front();
 
       // Use the checkStatus function to determine the work status
-      TorchWorkXCCL::WorkStatus status = work->checkStatus();
-      last_status = status;
+      TorchWork::WorkStatus status = work->checkStatus();
 
-      if (status == TorchWorkXCCL::WorkStatus::COMPLETED) {
+      if (status == TorchWork::WorkStatus::COMPLETED) {
         // Work is completed, remove it from the work queue
         work_queue.pop();
         completed_work_queue_.push_back(work);
         // Continue to the next element in the queue
       } else if (
-          status == TorchWorkXCCL::WorkStatus::TIMEDOUT ||
-          status == TorchWorkXCCL::WorkStatus::ERROR) {
+          status == TorchWork::WorkStatus::TIMEDOUT ||
+          status == TorchWork::WorkStatus::ERROR) {
         // Return the error status immediately
         return status;
       } else {
         // NOT_STARTED or INPROGRESS - stop processing this queue
+        if (overall_status == TorchWork::WorkStatus::COMPLETED) {
+            overall_status = status;
+        }
         break;
       }
     }
@@ -52,10 +54,10 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::garbageCollect(
     completed_work_queue_.clear();
   }
 
-  return last_status;
+  return overall_status;
 }
 
-TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::finalize() {
+TorchWork::WorkStatus TorchWorkXCCLQueue::finalize() {
   // Because this function is typically called after the timeout thread has
   // already joined, we might not need to lock here.  But doing the lock anyway,
   // as defensive programming, just in case someone moves the thread join order
@@ -65,12 +67,12 @@ TorchWorkXCCL::WorkStatus TorchWorkXCCLQueue::finalize() {
 
   // Initialize the status to COMPLETED to cover the case where the queue is
   // empty
-  TorchWorkXCCL::WorkStatus status = TorchWorkXCCL::WorkStatus::COMPLETED;
+  TorchWork::WorkStatus status = TorchWork::WorkStatus::COMPLETED;
   while (!stream_work_queues_.empty()) {
     status = garbageCollect(true);
-    if (status == TorchWorkXCCL::WorkStatus::ERROR ||
-        status == TorchWorkXCCL::WorkStatus::TIMEDOUT ||
-        status == TorchWorkXCCL::WorkStatus::COMPLETED) {
+    if (status == TorchWork::WorkStatus::ERROR ||
+        status == TorchWork::WorkStatus::TIMEDOUT ||
+        status == TorchWork::WorkStatus::COMPLETED) {
       break;
     }
   }

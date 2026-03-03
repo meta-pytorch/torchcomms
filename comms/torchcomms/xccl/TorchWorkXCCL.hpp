@@ -20,15 +20,6 @@ class TorchCommXCCL;
 
 class TorchWorkXCCL : public TorchWork {
  public:
-  // Status of a work object
-  enum class WorkStatus {
-    NOT_STARTED, // Work has not started yet
-    INPROGRESS, // Work is still in progress,
-    COMPLETED, // Work has completed successfully
-    TIMEDOUT, // Work has timed out
-    ERROR // Work has encountered an error
-  };
-
   TorchWorkXCCL(
       std::shared_ptr<TorchCommXCCL> comm,
       xpuStream_t stream,
@@ -69,9 +60,6 @@ class TorchWorkXCCL : public TorchWork {
 
   std::chrono::milliseconds timeout_ms_;
 
-  // state machine variables. TODO: convert to state machine later
-  std::atomic<WorkStatus> state_;
-
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;
   std::shared_ptr<TorchCommTracing> tracing_;
 };
@@ -81,11 +69,16 @@ class TorchWorkXCCLQueue {
   TorchWorkXCCLQueue() = default;
   ~TorchWorkXCCLQueue() = default;
 
-  TorchWorkXCCL::WorkStatus garbageCollect(bool isMainThread);
+  TorchWork::WorkStatus garbageCollect(bool isMainThread);
   // Finalize function can only be called from the main thread
-  TorchWorkXCCL::WorkStatus finalize();
+  TorchWork::WorkStatus finalize();
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
 
+  std::unordered_map<xpuStream_t, std::queue<c10::intrusive_ptr<TorchWorkXCCL>>>& getStreamWorkQueues() {
+    return stream_work_queues_;
+  }
+
+  friend class TorchWorkXCCLQueueCommTest;
  private:
   std::unordered_map<xpuStream_t, std::queue<c10::intrusive_ptr<TorchWorkXCCL>>>
       stream_work_queues_;
