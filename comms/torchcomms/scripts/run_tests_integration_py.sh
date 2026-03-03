@@ -9,9 +9,18 @@ set -ex
 
 cd "$(dirname "$0")/../tests/integration/py"
 
+NUM_GPUS=$(python3 -c "import torch; print(max(1, torch.cuda.device_count()))")
+
 run_tests () {
     for file in *Test.py; do
-        torchrun --nnodes 1 --nproc_per_node 4 "$file" --verbose
+        # TORCHCOMM_TEST_SINGLE_PARENT marker means the test manages its own
+        # subprocesses and must be launched as a single process.
+        if grep -q "TORCHCOMM_TEST_SINGLE_PARENT" "$file"; then
+            nproc=1
+        else
+            nproc="$NUM_GPUS"
+        fi
+        torchrun --nnodes 1 --nproc_per_node "$nproc" "$file" --verbose
     done
 }
 
