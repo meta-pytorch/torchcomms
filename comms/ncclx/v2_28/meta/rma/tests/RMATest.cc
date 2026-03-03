@@ -139,15 +139,16 @@ TEST_P(MultiWindowTestParam, multiWindow) {
     int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
     for (auto iter = 0; iter < kNumIters; iter++) {
-      NCCLCHECK_TEST(ncclPutSignal(
-          localbuf + numElements * statex->rank(),
-          numElements,
-          ncclInt32,
-          nextPeer,
-          numElements * statex->rank(),
-          win,
-          put_stream));
-      NCCLCHECK_TEST(ncclWaitSignal(prevPeer, win, wait_stream));
+      NCCLCHECK_TEST(
+          ncclx::ncclPutSignal(
+              localbuf + numElements * statex->rank(),
+              numElements,
+              ncclInt32,
+              nextPeer,
+              numElements * statex->rank(),
+              win,
+              put_stream));
+      NCCLCHECK_TEST(ncclx::ncclWaitSignal(prevPeer, win, wait_stream));
     }
     // Barrier to ensure all peers have finished put
     this->barrier(comm, main_stream);
@@ -245,15 +246,16 @@ TEST_P(RMATestParam, winPutWait) {
   int prevPeer = (this->globalRank + this->numRanks - 1) % this->numRanks;
 
   for (auto iter = 0; iter < kNumIters; iter++) {
-    NCCLCHECK_TEST(ncclPutSignal(
-        localBuf,
-        kNumElements,
-        ncclInt32,
-        nextPeer,
-        kNumElements * statex->rank(),
-        win,
-        put_stream));
-    NCCLCHECK_TEST(ncclWaitSignal(prevPeer, win, wait_stream));
+    NCCLCHECK_TEST(
+        ncclx::ncclPutSignal(
+            localBuf,
+            kNumElements,
+            ncclInt32,
+            nextPeer,
+            kNumElements * statex->rank(),
+            win,
+            put_stream));
+    NCCLCHECK_TEST(ncclx::ncclWaitSignal(prevPeer, win, wait_stream));
     if (iter == 0) {
       // Skip first iteration to avoid any warmup overhead
       CUDACHECK_TEST(cudaEventRecord(start_event, put_stream));
@@ -368,14 +370,15 @@ TEST_P(RMATestParam, winPutOnly) {
 
   for (auto iter = 0; iter < kNumIters; iter++) {
     // Put data to next peer at offset of kNumElements * rank
-    NCCLCHECK_TEST(ncclPut(
-        localBuf,
-        kNumElements,
-        ncclInt32,
-        nextPeer,
-        kNumElements * rank,
-        win,
-        put_stream));
+    NCCLCHECK_TEST(
+        ncclx::ncclPut(
+            localBuf,
+            kNumElements,
+            ncclInt32,
+            nextPeer,
+            kNumElements * rank,
+            win,
+            put_stream));
   }
 
   // A couple of all-reduce after RMA tests
@@ -465,14 +468,15 @@ TEST_P(RMATestParam, winGet) {
 
   for (auto iter = 0; iter < kNumIters; iter++) {
     // Put data to next peer at offset of kNumElements * rank
-    NCCLCHECK_TEST(ncclGet(
-        localBuf,
-        kNumElements * rank,
-        kNumElements,
-        ncclInt32,
-        nextPeer,
-        win,
-        get_stream));
+    NCCLCHECK_TEST(
+        ncclx::ncclGet(
+            localBuf,
+            kNumElements * rank,
+            kNumElements,
+            ncclInt32,
+            nextPeer,
+            win,
+            get_stream));
   }
 
   // A couple of all-reduce after RMA tests
