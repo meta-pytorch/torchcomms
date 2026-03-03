@@ -307,7 +307,7 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
 
   NCCLCHECKGOTO(
       ncclStrongStreamAcquire(
-          ncclCudaGraphNone(),
+          ncclCudaGraphNone(comm->config.graphUsageMode),
           &comm->sharedRes->deviceStream,
           /*concurrent=*/false,
           &deviceStream),
@@ -347,7 +347,7 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
 
 exit:
   NCCLCHECK(ncclStrongStreamRelease(
-      ncclCudaGraphNone(),
+      ncclCudaGraphNone(comm->config.graphUsageMode),
       &comm->sharedRes->deviceStream,
       /*concurrent=*/false));
   NCCLCHECK(ncclStrongStreamSynchronize(&comm->sharedRes->deviceStream));
