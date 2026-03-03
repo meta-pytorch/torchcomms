@@ -24,8 +24,8 @@ using c10::hip::HIPCachingAllocator::TraceEntry;
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 
 #include "comms/torchcomms/TorchCommFactory.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/rcclx/TorchCommRCCLXBootstrap.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "rccl.h" // @manual
 

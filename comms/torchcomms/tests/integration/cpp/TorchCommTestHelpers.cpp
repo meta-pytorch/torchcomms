@@ -4,7 +4,7 @@
 #include "torch/csrc/distributed/c10d/TCPStore.hpp" // @manual=//caffe2:torch-cpp-cpu
 
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual=//caffe2:torch-cpp-cpu
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 
 using namespace torch::comms;

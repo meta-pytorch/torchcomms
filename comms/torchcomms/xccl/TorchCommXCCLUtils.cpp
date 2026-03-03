@@ -2,7 +2,7 @@
 #include <oneapi/ccl.hpp>
 #include <stdexcept>
 #include <string>
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
 namespace torch::comms {
