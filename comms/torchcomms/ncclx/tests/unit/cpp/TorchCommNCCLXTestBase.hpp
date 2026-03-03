@@ -94,11 +94,6 @@ class TorchCommNCCLXTest : public ::testing::Test {
   // Helper method to create a TorchCommNCCLX with mocked APIs
   std::shared_ptr<TestTorchCommNCCLX> createMockedTorchComm();
 
-  void setupCCAExpectations(
-      int times_register,
-      int times_deregister,
-      int times_clear);
-
   void setupNormalDestruction(TestTorchCommNCCLX& torchcomm, int times = 1);
 
   // Helper method to create a tensor for testing

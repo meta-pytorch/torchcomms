@@ -8,7 +8,6 @@ class TorchCommWindowNCCLXTest : public TorchCommNCCLXTest {};
 
 TEST_F(TorchCommWindowNCCLXTest, windowPutExceedWindowSize) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -50,7 +49,6 @@ TEST_F(TorchCommWindowNCCLXTest, windowPutExceedWindowSize) {
 
 TEST_F(TorchCommWindowNCCLXTest, windowRegisterWithInvalidTensor) {
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -91,9 +89,6 @@ TEST_F(TorchCommWindowNCCLXTest, windowRegisterWithInvalidTensor) {
 TEST_F(
     TorchCommNCCLXTest,
     WindowOperationsWithoutInitializationThrowException) {
-  // Setup CCA expectations - no init calls
-  setupCCAExpectations(0, 1, 1);
-
   auto comm = createMockedTorchComm();
 
   // Initialize and then finalize the communicator
@@ -123,9 +118,6 @@ TEST_F(
 }
 
 TEST_F(TorchCommWindowNCCLXTest, WindowOperationsAfterFinalizeThrowException) {
-  // Setup CCA expectations - init and finalize calls
-  setupCCAExpectations(1, 2, 1);
-
   auto comm = createMockedTorchComm();
 
   // Initialize and then finalize the communicator
@@ -183,7 +175,6 @@ TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowWithoutTensorRegisterThrows) {
   // Without tensor_register(), get_device_window() would fail.
 
   setupRankAndSize(0, 2);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -232,7 +223,6 @@ TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowReturnsConsistentValue) {
   //   3. The device window struct is in GPU memory (cudaMalloc)
 
   setupRankAndSize(0, 8);
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
@@ -275,7 +265,6 @@ TEST_F(TorchCommWindowNCCLXTest, GetDeviceWindowDefaultParameters) {
   // signal/counter per peer.
 
   setupRankAndSize(0, 8); // rank 0 of 8 (use rank 0 for proper mock setup)
-  setupCCAExpectations(1, 2, 1);
   auto comm = createMockedTorchComm();
 
   cuda_mock_->setupDefaultBehaviors();
