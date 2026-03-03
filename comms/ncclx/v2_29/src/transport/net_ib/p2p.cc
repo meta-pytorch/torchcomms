@@ -10,6 +10,9 @@
 #include "compiler.h"
 #include "p2p_resiliency.h"
 
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/ProcessGlobalErrorsUtil.h"
+
 enum ncclIbRequestMatchingScheme {
   BY_INDEX=0,
   BY_ID=1,
@@ -648,10 +651,26 @@ static ncclResult_t ncclIbLogCompletionWithError(struct ncclIbNetCommBase* commB
   ncclSocketGetAddr(&commBase->sock, &addr);
   ncclSocketToString(&addr, sockStr);
   char *hcaName = devBase->pd->context->device->name;
-  WARN("NET/IB: Got completion from peer %s with status=%s(%d) opcode=%s(%d) vendor_err=%u %s%s%s%s hca %s",
+  WARN_WITH_SCUBA("NET/IB: Got completion from peer %s with status=%s(%d) opcode=%s(%d) vendor_err=%u %s%s%s%s hca %s",
       sockStr, ibvWcStatusStr(wc->status), wc->status,
       ibvWcOpcodeStr(wc->opcode), wc->opcode, wc->vendor_err,
       localGidStr ?  " localGid ":"", localGidString, remoteGidStr ? " remoteGids":"", remoteGidString, hcaName);
+  if (NCCL_PROCESS_GLOBAL_ERRORS_MAX_STACK_TRACES > 0) {
+    ProcessGlobalErrorsUtil::IbCompletionError ibErr{
+        .peer = std::string(sockStr),
+        .statusStr = std::string(ibvWcStatusStr(wc->status)),
+        .status = wc->status,
+        .opcodeStr = std::string(ibvWcOpcodeStr(wc->opcode)),
+        .opcode = wc->opcode,
+        .vendorErr = wc->vendor_err,
+        .localGid = localGidStr ? std::string(localGidString) : "",
+        .remoteGid = remoteGidStr ? std::string(remoteGidString) : "",
+        .hcaName = std::string(hcaName),
+        .scaleupDomain = ProcessGlobalErrorsUtil::getScaleupDomain(),
+        .localHostname = ProcessGlobalErrorsUtil::getHostname(),
+    };
+    ProcessGlobalErrorsUtil::addIbCompletionError(std::move(ibErr));
+  }
   return ncclSuccess;
 }
 

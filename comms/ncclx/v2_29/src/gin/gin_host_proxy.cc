@@ -357,7 +357,7 @@ ncclResult_t ncclGinProxyCreateContext(struct ncclComm *comm, void *collComm, in
   // Allocate the counters on the GPU or CPU depending on GDR
   NCCLCHECK(allocMemCPUAccessible(&proxyCtx->counters, &proxyCtx->countersDev,
                                   nCounters * nContexts, CU_MEMHOSTALLOC_WRITECOMBINED,
-                                  &proxyCtx->countersGdrHandle, comm->memManager));
+                                  &proxyCtx->countersGdrHandle, comm->memManager, comm->logMetaData));
   proxyCtx->nCountersPerContext = nCounters;
 
   // Allocate the signals on the GPU and then register the memory region with the GIN plugin.
@@ -365,7 +365,7 @@ ncclResult_t ncclGinProxyCreateContext(struct ncclComm *comm, void *collComm, in
   // signals.
   size_t signalsBufSize = nSignals * nContexts * sizeof(uint64_t);
   NCCLCHECK(ncclCuMemAlloc((void **)&proxyCtx->signalsDev, &proxyCtx->signalsCumemhandle,
-                           CU_MEM_HANDLE_TYPE_NONE, signalsBufSize, comm->memManager));
+                           CU_MEM_HANDLE_TYPE_NONE, signalsBufSize, comm->memManager, "ncclGinProxyCreateContext"));
   CUDACHECK(cudaMemset(proxyCtx->signalsDev, 0, signalsBufSize));
   NCCLCHECK(ncclGinProxyRegMrSym(ginComm, proxyCtx, proxyCtx->signalsDev, signalsBufSize,
                                  NCCL_PTR_CUDA, NCCL_NET_MR_FLAG_FORCE_SO,
@@ -397,9 +397,9 @@ ncclResult_t ncclGinProxyCreateContext(struct ncclComm *comm, void *collComm, in
     // Allocate the GFD queues, CIs, counters, signals and test/wait variables on the either the CPU
     // or GPU.
     NCCLCHECK(allocMemCPUAccessible(&hostGpuCtx->queues, &devGpuCtx_h->queues, queuesLength, 0, NULL,
-                                    comm->memManager, true /*forceHost*/));
+                                    comm->memManager, comm->logMetaData, true /*forceHost*/));
     NCCLCHECK(allocMemCPUAccessible(&hostGpuCtx->cis, &devGpuCtx_h->cis, comm->nRanks,
-                                    CU_MEMHOSTALLOC_WRITECOMBINED, &hostGpuCtx->cisGdrHandle, comm->memManager));
+                                    CU_MEMHOSTALLOC_WRITECOMBINED, &hostGpuCtx->cisGdrHandle, comm->memManager, comm->logMetaData));
   }
 
   ncclGinProxyGpuCtx_t *devGpuCtx_d = NULL;

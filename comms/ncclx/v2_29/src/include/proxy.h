@@ -21,6 +21,8 @@
 #include <mutex>
 #include <condition_variable>
 
+#include "meta/colltrace/ProxyTrace.h"
+
 typedef enum : uint8_t {
   ncclPatternRing,
   ncclPatternRingTwice,
@@ -115,6 +117,9 @@ struct ncclProxyOp {
   uint64_t workCounter;
 
   struct ncclProxyOp *enqNext;
+
+  // NCCLX - ProxyTrace
+  struct ProxyTraceArgs traceArgs;
 };
 
 struct ncclProxySubArgs;
@@ -167,6 +172,9 @@ struct ncclProxySubArgs {
 
   void* recvRequestsCache[NCCL_STEPS];
   int recvRequestsSubCount;
+
+  // NCCLX - ProxyTrace
+  struct ProxyTraceArgs traceArgs;
 };
 
 struct ncclProxyArgs {
@@ -354,6 +362,8 @@ struct ncclProxyState {
   struct ncclIpcSocket peerIpcSock; // cuMEM API support (UDS)
   uint64_t *peerAddressesUDS; // cuMem API support (UDS)
 
+  uint64_t commHash; // Hash of the comm that created this proxy
+
   // Progress thread
   struct ncclProxyProgressState progressState;
 
@@ -367,6 +377,12 @@ struct ncclProxyState {
 
   // Queue of expected responses from the proxy
   struct ncclExpectedProxyResponse* expectedResponses;
+
+  // reference back to communicator used for logging purpose
+  ncclComm* owner{nullptr};
+
+  // NCCLX - ProxyTrace
+  std::shared_ptr<ProxyTrace> trace{nullptr};
 };
 
 enum proxyConnectState {
@@ -397,6 +413,9 @@ struct ncclProxyConnection {
   struct ncclCollNetSharedRes* collNet;
   int needsProxyProgress;
   struct ncclIntruQueue<struct proxyMemHandle, &proxyMemHandle::next> proxyMemHandleQueue;
+  int channelId;
+  int connIndex;
+  int peerRank;
 };
 
 typedef ncclResult_t (*threadFunc_t)(struct ncclProxyArgs*);

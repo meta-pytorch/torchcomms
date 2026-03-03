@@ -21,6 +21,17 @@
 #include "utils.h"
 #include "env.h"
 
+#include <cstdio>
+#include <vector>
+#include <sstream>
+#include <folly/logging/LogLevel.h>
+#include <folly/logging/LogStreamProcessor.h>
+#include <folly/logging/xlog.h>
+
+#include "comms/utils/logger/LogUtils.h"
+#include "comms/utils/logger/LoggingFormat.h"
+#include "comms/ctran/utils/ErrorStackTraceUtil.h"
+
 #define NCCL_DEBUG_RESET_TRIGGERED (-2)
 
 int ncclDebugLevel = -1;
@@ -38,8 +49,6 @@ FILE *ncclDebugFile = stdout;
 static std::mutex ncclDebugMutex;
 static std::chrono::steady_clock::time_point ncclEpoch;
 static bool ncclWarnSetDebugInfo = false;
-
-static thread_local int tid = -1;
 
 typedef const char* (*ncclGetEnvFunc_t)(const char*);
 
@@ -63,8 +72,14 @@ static ncclResult_t getHostNameForLog(char* hostname, int maxlen, const char del
 
 // This function must be called with ncclDebugLock locked!
 static void ncclDebugInit() {
-  ncclGetEnvFunc_t getEnvFunc = ncclEnvPluginInitialized() ? ncclGetEnv : (ncclGetEnvFunc_t)std::getenv;
-  const char* nccl_debug = getEnvFunc("NCCL_DEBUG");
+  // FIXME[max7255]: upstream has decent code there
+  bool envPluginInitialized = ncclEnvPluginInitialized();
+  const char* nccl_debug;
+  if (envPluginInitialized) {
+    nccl_debug = ncclGetEnv("NCCL_DEBUG");
+  } else {
+    nccl_debug = getenv("NCCL_DEBUG");
+  }
   int tempNcclDebugLevel = -1;
   uint64_t tempNcclDebugMask = NCCL_INIT | NCCL_BOOTSTRAP | NCCL_ENV; // Default debug sub-system mask
   if (ncclDebugLevel == NCCL_DEBUG_RESET_TRIGGERED && ncclDebugFile != stdout) {
@@ -91,7 +106,12 @@ static void ncclDebugInit() {
    * This can be a comma separated list such as INIT,COLL
    * or ^INIT,COLL etc
    */
-  const char* ncclDebugSubsysEnv = getEnvFunc("NCCL_DEBUG_SUBSYS");
+  const char* ncclDebugSubsysEnv;
+  if (envPluginInitialized) {
+    ncclDebugSubsysEnv = ncclGetEnv("NCCL_DEBUG_SUBSYS");
+  } else {
+    ncclDebugSubsysEnv = getenv("NCCL_DEBUG_SUBSYS");
+  }
   if (ncclDebugSubsysEnv != NULL) {
     int invert = 0;
     if (ncclDebugSubsysEnv[0] == '^') { invert = 1; ncclDebugSubsysEnv++; }
@@ -143,7 +163,12 @@ static void ncclDebugInit() {
     free(ncclDebugSubsys);
   }
 
-  const char* ncclWarnSetDebugInfoEnv = getEnvFunc("NCCL_WARN_ENABLE_DEBUG_INFO");
+  const char* ncclWarnSetDebugInfoEnv;
+  if (envPluginInitialized) {
+    ncclWarnSetDebugInfoEnv = ncclGetEnv("NCCL_WARN_ENABLE_DEBUG_INFO");
+  } else {
+    ncclWarnSetDebugInfoEnv = getenv("NCCL_WARN_ENABLE_DEBUG_INFO");
+  }
   if (ncclWarnSetDebugInfoEnv != NULL && strlen(ncclWarnSetDebugInfoEnv) > 0) {
     int64_t value;
     errno = 0;
@@ -153,7 +178,12 @@ static void ncclDebugInit() {
   }
 
   // Determine which debug levels will have timestamps.
-  const char* timestamps = getEnvFunc("NCCL_DEBUG_TIMESTAMP_LEVELS");
+  const char* timestamps;
+  if (envPluginInitialized) {
+    timestamps = ncclGetEnv("NCCL_DEBUG_TIMESTAMP_LEVELS");
+  } else {
+    timestamps = getenv("NCCL_DEBUG_TIMESTAMP_LEVELS");
+  }
   if (timestamps == nullptr) {
     ncclDebugTimestampLevels = (1<<NCCL_LOG_WARN);
   } else {
@@ -189,7 +219,12 @@ static void ncclDebugInit() {
   }
 
   // Store a copy of the timestamp format with space for the subseconds, if used.
-  const char* tsFormat = getEnvFunc("NCCL_DEBUG_TIMESTAMP_FORMAT");
+  const char* tsFormat;
+  if (envPluginInitialized) {
+    tsFormat = ncclGetEnv("NCCL_DEBUG_TIMESTAMP_FORMAT");
+  } else {
+    tsFormat = getenv("NCCL_DEBUG_TIMESTAMP_FORMAT");
+  }
   if (tsFormat == nullptr) tsFormat = "[%F %T] ";
   ncclDebugTimestampSubsecondsStart = -1;
   // Find where the subseconds are in the format.
@@ -242,7 +277,12 @@ static void ncclDebugInit() {
    * then create the debug file. But don't bother unless the
    * NCCL_DEBUG level is > VERSION
    */
-  const char* ncclDebugFileEnv = getEnvFunc("NCCL_DEBUG_FILE");
+  const char* ncclDebugFileEnv;
+  if (envPluginInitialized) {
+    ncclDebugFileEnv = ncclGetEnv("NCCL_DEBUG_FILE");
+  } else {
+    ncclDebugFileEnv = getenv("NCCL_DEBUG_FILE");
+  }
   if (tempNcclDebugLevel > NCCL_LOG_VERSION && ncclDebugFileEnv != NULL) {
     int c = 0;
     char debugFn[PATH_MAX+1] = "";
@@ -288,6 +328,10 @@ static void ncclDebugInit() {
 
   ncclEpoch = std::chrono::steady_clock::now();
   ncclDebugMask = tempNcclDebugMask;
+
+  // NCCLX -> Enable CTRAN subsystems logging as per NCCL_DEBUG_SUBSYS
+  meta::comms::logger::setSubSystemMask(ncclDebugMask);
+
   COMPILER_ATOMIC_STORE(&ncclDebugLevel, tempNcclDebugLevel, std::memory_order_release);
 }
 
@@ -296,12 +340,12 @@ static void ncclDebugInit() {
  * they can share the debugging mechanisms and output files
  */
 void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *filefunc, int line, const char *fmt, ...) {
-  int gotLevel = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire);
+  int gotLevel = __atomic_load_n(&ncclDebugLevel, __ATOMIC_ACQUIRE);
 
-  if (ncclDebugNoWarn != 0 && level == NCCL_LOG_WARN) { level = NCCL_LOG_INFO; flags = ncclDebugNoWarn; }
+  if (ncclDebugNoWarn != 0 && (level == NCCL_LOG_WARN || level == NCCL_LOG_ERROR)) { level = NCCL_LOG_INFO; flags = ncclDebugNoWarn; }
 
   // Save the last error (WARN) as a human readable string
-  if (level == NCCL_LOG_WARN) {
+  if (level == NCCL_LOG_WARN || level == NCCL_LOG_ERROR) {
     std::lock_guard<std::mutex> lock(ncclDebugMutex);
     va_list vargs;
     va_start(vargs, fmt);
@@ -313,99 +357,52 @@ void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file
     return;
   }
 
-  std::lock_guard<std::mutex> lock(ncclDebugMutex);
-  if (ncclDebugLevel < 0)
-    ncclDebugInit();
-  if (ncclDebugLevel < level || ((flags & ncclDebugMask) == 0)) {
-    return;
-  }
-
-  if (tid == -1) {
-    tid = ncclOsGetTid();
-  }
-
-  char buffer[1024];
-  size_t len = 0;
-
-  // WARNs come with an extra newline at the beginning.
-  if (level == NCCL_LOG_WARN) {
-    buffer[len++] = '\n';
-  };
-
-  // Add the timestamp to the buffer if they are turned on for this level.
-  if (ncclDebugTimestampLevels & (1<<level)) {
-    if (ncclDebugTimestampFormat[0] != '\0') {
-      struct timespec ts;
-      clockRealtime(&ts);
-      time_t nowTimeT = ts.tv_sec;
-      long nowNs = ts.tv_nsec;
-      std::tm nowTm;
-      ncclOsLocaltime(&nowTimeT, &nowTm);
-
-      // Add the subseconds portion if it is part of the format.
-      char localTimestampFormat[sizeof(ncclDebugTimestampFormat)];
-      const char* pformat = ncclDebugTimestampFormat;
-      if (ncclDebugTimestampSubsecondsStart != -1) {
-        pformat = localTimestampFormat;   // Need to use the local version which has subseconds
-        memcpy(localTimestampFormat, ncclDebugTimestampFormat, ncclDebugTimestampSubsecondsStart);
-        snprintf(localTimestampFormat + ncclDebugTimestampSubsecondsStart,
-                 ncclDebugTimestampSubsecondDigits+1,
-                 "%0*ld", ncclDebugTimestampSubsecondDigits,
-                 nowNs / (1000000000L/ncclDebugTimestampMaxSubseconds));
-        strcpy(    localTimestampFormat+ncclDebugTimestampSubsecondsStart+ncclDebugTimestampSubsecondDigits,
-               ncclDebugTimestampFormat+ncclDebugTimestampSubsecondsStart+ncclDebugTimestampSubsecondDigits);
-      }
-
-      // Format the time. If it runs out of space, fall back on a simpler format.
-      int adv = std::strftime(buffer+len, sizeof(buffer)-len, pformat, &nowTm);
-      if (adv==0 && ncclDebugTimestampFormat[0] != '\0') {
-        // Ran out of space. Fall back on the default. This should never fail.
-        adv = std::strftime(buffer+len, sizeof(buffer)-len, "[%F %T] ", &nowTm);
-      }
-      len += adv;
+  {
+    std::lock_guard<std::mutex> lock(ncclDebugMutex);
+    if (ncclDebugLevel < 0) {
+      ncclDebugInit();
+    }
+    if (ncclDebugLevel < level || ((flags & ncclDebugMask) == 0)) {
+      return;
     }
   }
-  len = std::min(len, sizeof(buffer)-1);  // prevent overflows
 
-  // Add hostname, pid and tid portion of the log line.
-  if (level != NCCL_LOG_VERSION) {
-    len += snprintf(buffer+len, sizeof(buffer)-len, "%s:%d:%d ", hostname, pid, tid);
-    len = std::min(len, sizeof(buffer)-1);  // prevent overflows
-  }
-
-  int cudaDev = 0;
-  if (!(level == NCCL_LOG_TRACE && flags == NCCL_CALL)) {
-    (void)cudaGetDevice(&cudaDev);
-  }
-
-  // Add level specific formatting. The format string from the call site is incorporated into this prefix.
+  std::stringstream logStream;
+  auto logLevel = folly::LogLevel::INFO;
   if (level == NCCL_LOG_WARN) {
-    len += snprintf(buffer+len, sizeof(buffer)-len, "[%d] %s:%d NCCL WARN %s\n", cudaDev, filefunc, line, fmt);
-    if (ncclWarnSetDebugInfo) COMPILER_ATOMIC_STORE(&ncclDebugLevel, NCCL_LOG_INFO, std::memory_order_release);
-  } else if (level == NCCL_LOG_INFO) {
-    len += snprintf(buffer+len, sizeof(buffer)-len, "[%d] NCCL INFO %s\n", cudaDev, fmt);
-  } else if (level == NCCL_LOG_TRACE && flags == NCCL_CALL) {
-    len += snprintf(buffer+len, sizeof(buffer)-len, "NCCL CALL %s\n", fmt);
+    logLevel = folly::LogLevel::WARN;
+  } else if (level == NCCL_LOG_INFO || level == NCCL_LOG_VERSION) {
+    logLevel = folly::LogLevel::INFO;
   } else if (level == NCCL_LOG_TRACE) {
-    auto delta = std::chrono::steady_clock::now() - ncclEpoch;
-    double timestamp = std::chrono::duration_cast<std::chrono::duration<double>>(delta).count()*1000;
-    len += snprintf(buffer+len, sizeof(buffer)-len, "[%d] %f %s:%d NCCL TRACE %s\n", cudaDev, timestamp, filefunc, line, fmt);
-  } else {
-    len += snprintf(buffer+len, sizeof(buffer)-len, "%s\n", fmt);
+    logLevel = folly::LogLevel::DBG;
+  } else if (level == NCCL_LOG_ERROR) {
+    logLevel = folly::LogLevel::ERR;
   }
 
-  // If the prefixed format string overflows, make sure it is still terminated with a newline.
-  if (len > sizeof(buffer)-1) {
-    // snprintf already placed a \0 at sizeof(buffer)-1
-    buffer[sizeof(buffer)-2] = '\n';
-  }
-
-  // Add the message as given by the call site.
-  // The call site's format string has been incorporated into `buffer` along with our prefix.
+  size_t logLen = 0;
   va_list vargs;
   va_start(vargs, fmt);
-  (void) vfprintf(ncclDebugFile, buffer, vargs);
+  logLen += std::vsnprintf(nullptr, 0, fmt, vargs);
   va_end(vargs);
+
+  std::vector<char> buffer(logLen + 1); // +1 for null terminator
+  va_start(vargs, fmt);
+  // vsnprintf copy at most buf_size - 1 characters
+  std::vsnprintf(buffer.data(), buffer.size(), fmt, vargs);
+  va_end(vargs);
+  logStream << buffer.data();
+
+  auto logStr = logStream.str();
+  // logging to specified stdout/stderr/file
+  folly::LogStreamProcessor(
+    XLOG_GET_CATEGORY(),
+    logLevel,
+    filefunc,
+    line,
+    "",
+    folly::LogStreamProcessor::AppendType::APPEND)
+        .stream()
+    << logStr;
 }
 
 // Non-deprecated version for internal use.
@@ -451,4 +448,92 @@ void ncclSetThreadName(std::thread& thread, const char *fmt, ...) {
   va_end(vargs);
   pthread_setname_np(thread.native_handle(), threadName);
 #endif
+}
+
+void ncclSetMyThreadLoggingName(std::string_view name) {
+  meta::comms::logger::initThreadMetaData(name);
+}
+
+void ncclMetaDebugLogWithScuba(ncclDebugLogLevel level, unsigned long flags, const char *file, const char *func, int line, const char *fmt, ...) {
+  char buffer[256];
+  va_list vargs;
+  va_start(vargs, fmt);
+  (void) vsnprintf(buffer, sizeof(buffer), fmt, vargs);
+  va_end(vargs);
+  ::meta::comms::logger::appendErrorToStack(std::string{buffer});
+  ErrorStackTraceUtil::logErrorMessage(std::string{buffer});
+  ncclMetaDebugLog(level, flags, file, func, line, "%s", buffer);
+}
+
+/* Meta's logging function with separate file and func parameters.
+ * Used by the VERSION, WARN, ERR, INFO, TRACE_CALL, and TRACE macros.
+ * Unlike ncclDebugLog (which combines file/func into filefunc for OFI plugin
+ * compatibility), this passes file and func separately to LogStreamProcessor
+ * so that folly can correctly resolve log levels and categories.
+ */
+
+void ncclMetaDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file, const char *func, int line, const char *fmt, ...) {
+  int gotLevel = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire);
+
+  if (ncclDebugNoWarn != 0 && (level == NCCL_LOG_WARN || level == NCCL_LOG_ERROR)) { level = NCCL_LOG_INFO; flags = ncclDebugNoWarn; }
+
+  // Save the last error (WARN) as a human readable string
+  if (level == NCCL_LOG_WARN || level == NCCL_LOG_ERROR) {
+    std::lock_guard<std::mutex> lock(ncclDebugMutex);
+    va_list vargs;
+    va_start(vargs, fmt);
+    (void) vsnprintf(ncclLastError, sizeof(ncclLastError), fmt, vargs);
+    va_end(vargs);
+  }
+
+  if (gotLevel >= 0 && (gotLevel < level || (flags & ncclDebugMask) == 0)) {
+    return;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(ncclDebugMutex);
+    if (ncclDebugLevel < 0) {
+      ncclDebugInit();
+    }
+    if (ncclDebugLevel < level || ((flags & ncclDebugMask) == 0)) {
+      return;
+    }
+  }
+
+  std::stringstream logStream;
+  auto logLevel = folly::LogLevel::INFO;
+  if (level == NCCL_LOG_WARN) {
+    logLevel = folly::LogLevel::WARN;
+  } else if (level == NCCL_LOG_INFO || level == NCCL_LOG_VERSION) {
+    logLevel = folly::LogLevel::INFO;
+  } else if (level == NCCL_LOG_TRACE) {
+    logLevel = folly::LogLevel::DBG;
+  } else if (level == NCCL_LOG_ERROR) {
+    logLevel = folly::LogLevel::ERR;
+  }
+
+  size_t logLen = 0;
+  va_list vargs;
+  va_start(vargs, fmt);
+  logLen += std::vsnprintf(nullptr, 0, fmt, vargs);
+  va_end(vargs);
+
+  std::vector<char> buffer(logLen + 1); // +1 for null terminator
+  va_start(vargs, fmt);
+  // vsnprintf copy at most buf_size - 1 characters
+  std::vsnprintf(buffer.data(), buffer.size(), fmt, vargs);
+  va_end(vargs);
+  logStream << buffer.data();
+
+  auto logStr = logStream.str();
+  // logging to specified stdout/stderr/file
+  folly::LogStreamProcessor(
+    XLOG_GET_CATEGORY(),
+    logLevel,
+    file,
+    line,
+    func,
+    folly::LogStreamProcessor::AppendType::APPEND)
+        .stream()
+    << logStr;
 }

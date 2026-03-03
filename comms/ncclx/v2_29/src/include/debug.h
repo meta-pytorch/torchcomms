@@ -23,12 +23,21 @@ extern FILE *ncclDebugFile;
 
 void ncclDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *filefunc, int line, const char *fmt, ...) __attribute__ ((format (printf, 5, 6)));
 
+void ncclMetaDebugLog(ncclDebugLogLevel level, unsigned long flags, const char *file, const char *func, int line, const char *fmt, ...) __attribute__ ((format (printf, 6, 7)));
+
+void ncclMetaDebugLogWithScuba(ncclDebugLogLevel level, unsigned long flags, const char *file, const char *func, int line, const char *fmt, ...) __attribute__ ((format (printf, 6, 7)));
+
 // Let code temporarily downgrade WARN into INFO
 extern thread_local int ncclDebugNoWarn;
 extern char ncclLastError[];
 
-#define VERSION(...) ncclDebugLog(NCCL_LOG_VERSION, NCCL_ALL, __FILE__, __LINE__, __VA_ARGS__)
-#define WARN(...) ncclDebugLog(NCCL_LOG_WARN, NCCL_ALL, __FILE__, __LINE__, __VA_ARGS__)
+#define VERSION(...) ncclMetaDebugLog(NCCL_LOG_VERSION, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
+#define WARN(...) ncclMetaDebugLog(NCCL_LOG_WARN, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
+#define ERR(...) ncclMetaDebugLog(NCCL_LOG_ERROR, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
+
+#define WARN_WITH_SCUBA(...) ncclMetaDebugLogWithScuba(NCCL_LOG_WARN, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
+#define ERR_WITH_SCUBA(...) ncclMetaDebugLogWithScuba(NCCL_LOG_ERROR, NCCL_ALL, __FILE__, __func__, __LINE__, __VA_ARGS__)
+
 
 #define NOWARN(EXPR, FLAGS) \
   do { \
@@ -42,14 +51,14 @@ extern char ncclLastError[];
     do{ \
         int level = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire); \
         if((level >= NCCL_LOG_INFO && ((unsigned long)(FLAGS) & ncclDebugMask)) || (level < 0)) \
-            ncclDebugLog(NCCL_LOG_INFO, (unsigned long)(FLAGS), __func__, __LINE__, __VA_ARGS__); \
+            ncclMetaDebugLog(NCCL_LOG_INFO, (unsigned long)(FLAGS), __FILE__, __func__, __LINE__, __VA_ARGS__); \
     } while(0)
 
 #define TRACE_CALL(...) \
     do { \
         int level = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire); \
         if((level >= NCCL_LOG_TRACE && (NCCL_CALL & ncclDebugMask)) || (level < 0)) { \
-            ncclDebugLog(NCCL_LOG_TRACE, NCCL_CALL, __func__, __LINE__, __VA_ARGS__); \
+            ncclMetaDebugLog(NCCL_LOG_TRACE, NCCL_CALL, __FILE__, __func__, __LINE__, __VA_ARGS__); \
         } \
     } while (0)
 
@@ -58,7 +67,7 @@ extern char ncclLastError[];
     do { \
         int level = COMPILER_ATOMIC_LOAD(&ncclDebugLevel, std::memory_order_acquire); \
         if ((level >= NCCL_LOG_TRACE && ((unsigned long)(FLAGS) & ncclDebugMask)) || (level < 0)) { \
-            ncclDebugLog(NCCL_LOG_TRACE, (unsigned long)(FLAGS), __func__, __LINE__, __VA_ARGS__); \
+            ncclMetaDebugLog(NCCL_LOG_TRACE, (unsigned long)(FLAGS), __FILE__, __func__, __LINE__, __VA_ARGS__); \
         } \
     } while (0)
 #else
@@ -68,5 +77,40 @@ extern char ncclLastError[];
 void ncclSetThreadName(std::thread& thread, const char *fmt, ...);
 
 void ncclResetDebugInit();
+
+void ncclSetMyThreadLoggingName(std::string_view name);
+
+#define NCCL_NAMED_THREAD_START(threadName)       \
+  do {                                            \
+    ncclSetMyThreadLoggingName(threadName);       \
+    INFO(                                         \
+        NCCL_INIT,                                \
+        "[NCCL THREAD] Starting %s thread at %s", \
+        threadName,                               \
+        __func__);                                \
+  } while (0);
+
+#define NCCL_NAMED_THREAD_START(threadName)       \
+  do {                                            \
+    ncclSetMyThreadLoggingName(threadName);       \
+    INFO(                                         \
+        NCCL_INIT,                                \
+        "[NCCL THREAD] Starting %s thread at %s", \
+        threadName,                               \
+        __func__);                                \
+  } while (0);
+
+#define NCCL_NAMED_THREAD_START_EXT(threadName, rank, commHash, commDesc)              \
+  do {                                                                                 \
+    ncclSetMyThreadLoggingName(threadName);                                            \
+    INFO(                                                                              \
+        NCCL_INIT,                                                                     \
+        "[NCCL THREAD] Starting %s thread for rank %d commHash %lx commDesc %s at %s", \
+        threadName,                                                                    \
+        rank,                                                                          \
+        commHash,                                                                      \
+        commDesc.c_str(),                                                              \
+        __func__);                                                                     \
+  } while (0);
 
 #endif

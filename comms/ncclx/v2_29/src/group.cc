@@ -19,6 +19,14 @@
 #include "rma/rma.h"
 #include "argcheck.h"
 
+#include "comms/ctran/Ctran.h"
+#include "meta/transport/transportExt.h"
+#include "meta/transport/transportConnect.h"
+#include "meta/transport/transportProxy.h"
+#include "comms/utils/logger/EventsScubaUtil.h"
+#include "comms/ctran/utils/Utils.h"
+#include "meta/wrapper/MetaFactory.h"
+
 #define GROUP_MAX_RECLAIM_STEPS 10
 
 thread_local int ncclGroupDepth = 0; // depth of ncclGroupStart nesting
@@ -141,6 +149,11 @@ ncclResult_t ncclP2PPreconnectFunc(struct ncclAsyncJob* job_) {
   struct ncclComm* comm = job->comm;
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (!job_->isThreadMain && ncclOsCpuCount(comm->cpuAffinity)) ncclOsSetAffinity(comm->cpuAffinity);
+  // setup channels if needed before setup transport
+  if (comm->lazySetupChannels &&
+      comm->nChannelsReady < comm->planner.nMaxChannelsNeedInit) {
+    NCCLCHECK(ncclx::setupChannels(comm, comm->planner.nMaxChannelsNeedInit));
+  }
   NCCLCHECK(ncclTransportP2pSetup(comm, NULL, 1));
   return ncclSuccess;
 }
@@ -210,6 +223,11 @@ ncclResult_t ncclCollPreconnectFunc(struct ncclAsyncJob* job_) {
 
   if (!job_->isThreadMain) CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (!job_->isThreadMain && ncclOsCpuCount(comm->cpuAffinity)) ncclOsSetAffinity(comm->cpuAffinity);
+  // setup channels if needed before setup transport
+  if (comm->lazySetupChannels &&
+      comm->nChannelsReady < comm->planner.nMaxChannelsNeedInit) {
+    NCCLCHECKGOTO(ncclx::setupChannels(comm, comm->planner.nMaxChannelsNeedInit), ret, fail);
+  }
   NCCLCHECKGOTO(ncclCollPreconnect(comm, job->algoNeedConnect), ret, fail);
 
 exit:
@@ -341,6 +359,12 @@ static ncclResult_t doLaunches(struct ncclComm* head) {
             } else {
               NCCLCHECKGOTO(ncclLaunchKernel(comm, plan), result, failure);
             }
+            INFO(NCCL_COLL, "comm %s %p opCount %ld launched kernel for plan %p",  ctran::utils::parseCommDesc(comm->config.commDesc), comm, comm->opCount, plan);
+            // NOTE: bump up opCount right after launching kernel as this field is dedicated to track number of kernels
+            // including both p2p and collective kernels, no matter proxyOp existance.
+            // Known limitation: It won't be updated properly under cuda graph replay since it is not captured by the graph.
+            // But it is sufficient to unblock log based debugging in eager mode.
+            comm->opCount++;
           }
           // Barrier reduction input indicates if we require further rounds.
           if (useBarrier) ncclCommIntraBarrierIn(comm, comm->planner.unlaunchedPlansHead != nullptr ? 1 : 0);
@@ -757,6 +781,8 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
   }
 
   if ((--ncclGroupDepth) > 0) goto exit;
+
+  NCCLCHECKGOTO(metaCommToNccl(ctranGroupEndHook()), ret, fail);
 
   if ((ret = ncclGroupError) != ncclSuccess) goto fail;
 

@@ -58,6 +58,7 @@ struct FuncMinMax {
 
 template<typename T> struct FuncPreMulSum;
 template<typename T> struct FuncSumPostDiv;
+template<typename T> struct FuncPatSumPostDiv;  // [META:PAT_AVG] Defined in meta/device/FuncPatSumPostDiv.cuh
 
 ////////////////////////////////////////////////////////////////////////////////
 // Trait class for handling the reduction argument.
@@ -261,7 +262,7 @@ struct Apply_Cast<float ,__nv_bfloat16, /*EltPerPack=*/2> {
   template<> \
   struct Apply_Cast<A, B, EltPerPack> { \
     __device__ __forceinline__ static BytePack<sizeof(B)*EltPerPack> cast(BytePack<sizeof(A)*EltPerPack> a) { \
-      return toPack(VecB(fromPack<VecA>(a))); \
+      return toPack((VecB)(fromPack<VecA>(a))); \
     } \
   }; \
   template<> \
@@ -820,6 +821,12 @@ struct Apply_PostOp<FuncSumPostDiv<T>, /*EltPerPack=*/1> {
     return toPack<T>(fn.divide(fromPack<T>(a)));
   }
 };
+
+////////////////////////////////////////////////////////////////////////////////
+// [META:PAT_AVG] FuncPatSumPostDiv - Native AVG support for PAT algorithm
+// Type definition and trait specializations (RedOpArg, Apply_Reduce,
+// Apply_PostOp) are in the included file.
+#include "meta/device/FuncPatSumPostDiv.cuh"
 
 ////////////////////////////////////////////////////////////////////////////////
 // Apply_LoadMultimem

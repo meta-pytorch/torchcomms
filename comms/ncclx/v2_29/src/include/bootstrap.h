@@ -11,12 +11,64 @@
 #include "nccl.h"
 #include "comm.h"
 
+#include "comms/utils/commSpecs.h"
+
 struct ncclBootstrapHandle {
   uint64_t magic;
   union ncclSocketAddress addr;
   int nRanks; // number of existing ranks
 };
 static_assert(sizeof(struct ncclBootstrapHandle) <= sizeof(ncclUniqueId), "Bootstrap handle is too large to fit inside NCCL unique ID");
+
+struct unexConn {
+  int peer;
+  int tag;
+  struct ncclSocket sock;
+  struct unexConn* next;
+};
+
+struct bootstrapRing_t {
+  union {
+    struct {
+      void *sendComm, *recvComm;
+      ncclNetDeviceHandle_t *sendDevHandle, *recvDevHandle;
+    } net;
+    struct {
+      struct ncclSocket recv;
+      struct ncclSocket send;
+    } socket;
+  };
+};
+struct bootstrapListen_t {
+  struct ncclSocket peerSocket; // socket for peers to contact me in P2P
+  union {
+    struct {
+      int dev;
+      void* comm;
+      char handle[NCCL_NET_HANDLE_MAXSIZE];
+    } net;
+    struct ncclSocket socket; // socket to be used for the ring
+  };
+};
+
+struct bootstrapState {
+  struct bootstrapRing_t ring;
+  struct bootstrapListen_t listen;
+  ncclNet_t* net;
+  uint64_t* peerProxyAddressesUDS;
+  union ncclSocketAddress* peerProxyAddresses;
+  union ncclSocketAddress* peerP2pAddresses;
+  struct unexConn* unexpectedConnections;
+  int cudaDev;
+  int rank;
+  int nranks;
+  uint64_t magic;
+  volatile uint32_t* abortFlag;
+
+  // Reference to CommLogData to object to facilicate logging
+  struct CommLogData *logMetaDataPtr{nullptr};
+  int fastInitMode{NCCL_FAST_INIT_MODE_DEFAULT};
+};
 
 ncclResult_t bootstrapNetInit();
 ncclResult_t bootstrapCreateRoot(struct ncclBootstrapHandle* handle, bool idFromEnv);

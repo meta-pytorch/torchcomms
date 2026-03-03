@@ -13,6 +13,8 @@
 #include "rings.h"
 #include "topo.h"
 
+#include "comms/utils/cvars/nccl_cvars.h"
+
 /******************************************************************/
 /********************* Internode connection ***********************/
 /******************************************************************/
@@ -506,7 +508,7 @@ ncclResult_t ncclTopoPostset(struct ncclComm* comm, int* firstRanks, int* treePa
   }
 
   // Create rings array and check all is fine
-  NCCLCHECKGOTO(ncclBuildRings(nChannels, rings, comm->rank, comm->nRanks, ringPrev, ringNext), ret, fail);
+  NCCLCHECK(ncclBuildRings(nChannels, rings, comm->rank, comm->nRanks, ringPrev, ringNext));
 
 exit:
   if (ringRecv) free(ringRecv);

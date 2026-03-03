@@ -21,6 +21,8 @@
 #define TRANSPORT_COLLNET 3
 #define TRANSPORT_PROFILER 4
 
+constexpr auto kMaxHostNameLen = 127; // Extra byte for NULL
+
 #include "proxy.h"
 #include "comm.h"
 #include "bootstrap.h"
@@ -59,9 +61,12 @@ struct ncclPeerInfo {
   bool crossNicSupport;
   bool rmaPluginAvailable;
   bool cuMemGdrSupport;
+  char hostname[kMaxHostNameLen+1];
+  int rackSerial;
 };
 
-#define CONNECT_SIZE 256
+// [META]: increase size from 256 to 288 to accommodate for NCCLX's new fields
+#define CONNECT_SIZE 288
 #define NCCL_MAX_PAGE_SIZE (512L * 1024L * 1024L)
 #define NCCL_REC_PAGE_SIZE (2L * 1024L * 1024L)
 struct ncclConnect {
@@ -129,7 +134,7 @@ struct ncclTransport {
   struct ncclTransportComm recv;
 };
 
-ncclResult_t ncclTransportP2pConnect(struct ncclComm* comm, int channelId, int nrecv, int* peerRecv, int nsend, int* peerSend, int connIndex);
+ncclResult_t ncclTransportP2pConnect(struct ncclComm* comm, int channelId, int nrecv, int* peerRecv, int nsend, int* peerSend, int connIndex, connectionSummary* summary = nullptr);
 ncclResult_t ncclTransportP2pSetup(struct ncclComm* comm, struct ncclTopoGraph* graph, int connIndex);
 ncclResult_t ncclTransportCheckP2pType(struct ncclComm* comm, bool* isAllDirectP2p, bool* directMode, bool* isAllCudaP2p);
 bool ncclP2pUsesMemcpy();

@@ -16,6 +16,8 @@
 #include <poll.h>
 #include "os.h"
 
+#include <string>
+
 #define MAX_IFS 16
 #define MAX_IF_NAME_SIZE 16
 #define SOCKET_NAME_MAXLEN (NI_MAXHOST+NI_MAXSERV)
@@ -90,7 +92,7 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
 ncclResult_t ncclSocketListen(struct ncclSocket* sock);
 ncclResult_t ncclSocketGetAddr(struct ncclSocket* sock, union ncclSocketAddress* addr);
 // Connect to sock->addr. sock->socketDescriptor is set after a successful call.
-ncclResult_t ncclSocketConnect(struct ncclSocket* sock);
+ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName = nullptr);
 // Return socket connection state.
 ncclResult_t ncclSocketReady(struct ncclSocket* sock, int *running);
 // Accept an incoming connection from listenSock->socketDescriptor and keep the file descriptor in sock->socketDescriptor, with the remote side IP/port in sock->addr.
@@ -110,6 +112,8 @@ ncclResult_t ncclSocketSendRecv(struct ncclSocket* sendSock, void* sendPtr, int 
 ncclResult_t ncclSocketMultiOp(struct ncclSocketOp* ops, int numOps);
 ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int* closed, bool blocking);
 ncclResult_t ncclSocketShutdown(struct ncclSocket* sock, int how);
+
+std::string ncclSocketToIPv6String(union ncclSocketAddress *addr);
 ncclResult_t ncclSocketClose(struct ncclSocket* sock, bool wait = false);
 uint16_t ncclSocketToPort(union ncclSocketAddress *addr);
 #endif

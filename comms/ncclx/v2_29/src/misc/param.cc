@@ -23,6 +23,36 @@
 #include <unordered_set>
 #include "os.h"
 
+#include "comms/utils/logger/Logger.h"
+#include "comms/utils/logger/LoggingFormat.h"
+#include "meta/analyzer/NCCLXCommsTracingServiceUtil.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/colltrace/CollTraceFunc.h"
+#include "meta/colltrace/CollTraceLegacyHandle.h"
+#include "comms/ctran/colltrace/CollTraceWrapper.h"
+#include "comms/utils/cvars/nccl_baseline_adapter.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/InitFolly.h"
+
+#include "meta/algoconf/AlgoConfig.h"
+#include "cuda_runtime_api.h"
+
+using namespace meta::comms::colltrace;
+
+void initLegacyColltraceForCtran() {
+  setCollTraceLegacyHandleFunc(
+      [](CtranComm* comm,
+         const std::vector<std::unique_ptr<OpElem>>& opElems,
+         const KernelConfig& kernelConfig,
+         const bool isLegacy) -> std::unique_ptr<ICollTraceHandle> {
+        return std::make_unique<CollTraceLegacyHandle>(
+            comm,
+            ncclx::colltrace::collTraceAquireEventCtran(
+                comm, opElems, kernelConfig, isLegacy),
+            CollTraceLegacyHandle::HandleType::ctran);
+      });
+}
+
 const char* userHomeDir() {
   struct passwd *pwUser = getpwuid(getuid());
   return pwUser == NULL ? NULL : pwUser->pw_dir;
@@ -74,67 +104,55 @@ static void initEnvFunc() {
 
 void initEnv() {
   static std::once_flag once;
-  std::call_once(once, initEnvFunc);
-}
+  std::call_once(once, [] {
+    meta::comms::initFolly();
+    ncclCvarInit();
+    initEnvFunc();
+    initNcclLogger();
+    initLegacyColltraceForCtran();
+    ncclx::NCCLXCommsTracingServiceUtil::startService();
+    ncclx::algoconf::setupGlobalHints();
+  });
 
-static std::unordered_set<std::string> noCacheSet;
-static bool noCacheAll = false;
-
-static void ncclGetEnvNoCacheOnce() {
-  const char* envNoCache = ncclGetEnv("NCCL_NO_CACHE");
-  if (envNoCache == NULL || strlen(envNoCache) == 0) return;
-
-  char* copy = strdup(envNoCache);
-  char* token = strtok(copy, ",");
-  while (token != NULL) {
-    if (strcmp(token, "ALL") == 0) {
-      noCacheAll = true;
-      break;
-    } else {
-      noCacheSet.insert(token);
-    }
-    token = strtok(NULL, ",");
-  }
-  free(copy);
-}
-
-static void ncclGetCachePolicy(char const* env, int8_t* noCache) {
-  *noCache = (noCacheAll || noCacheSet.count(env) > 0) ? /*noCache*/ 1 : /*cache*/ 0;
-  if (*noCache) INFO(NCCL_ENV, "Disabling caching for environment variable %s.", env);
 }
 
 int64_t ncclLoadParam(char const* env, int64_t deftVal, int64_t uninitialized, int64_t* cache, int8_t* noCache) {
-  static std::once_flag once;
-  std::call_once(once, ncclGetEnvNoCacheOnce);
-
-  static std::mutex mutex;
-  std::lock_guard<std::mutex> lock(mutex);
-
-  // noCache is only load/stored within the mutex, no need for atomic
-  if (*noCache == /*uninitialized*/ -1) ncclGetCachePolicy(env, noCache);
-
-  if (COMPILER_ATOMIC_LOAD(cache, std::memory_order_relaxed) != uninitialized) return COMPILER_ATOMIC_LOAD(cache, std::memory_order_relaxed);
-
-  // Read the environment variable
-  const char* str = ncclGetEnv(env);
-  int64_t value = deftVal;
-
-  if (str && strlen(str) > 0) {
-    errno = 0;
-    value = strtoll(str, nullptr, 0);
-    if (errno) {
-      value = deftVal;
-      INFO(NCCL_ALL, "Invalid value %s for %s, using default %lld.", str, env, (long long)deftVal);
-    } else {
-      INFO(NCCL_ENV, "%s set by environment to %lld.", env, (long long)value);
-    }
-  }
-
-  if (*noCache == /*cache*/ 0) COMPILER_ATOMIC_STORE(cache, value, std::memory_order_relaxed);
-  return value;
+  // Ignore *noCache argument value for now
+  // ncclx cvars adapter always behave like *noCache was set to 0
+  return nccl_baseline_adapter::ncclLoadParam(env, deftVal, uninitialized, cache);
 }
 
-const char* ncclGetEnv(const char* name) {
+const char* ncclGetEnvStr(std::string_view name) {
   ncclInitEnv();
-  return ncclEnvPluginGetEnv(name);
+  return nccl_baseline_adapter::ncclGetEnvImpl(name.data());
+}
+
+void initNcclLogger() {
+  NcclLogger::init(NcclLoggerInitConfig{
+    .contextName = "comms.ncclx",
+    .logPrefix = "NCCL",
+    .logFilePath = meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+    .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
+        meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
+    .threadContextFn = []() {
+      int cudaDev = -1;
+      cudaGetDevice(&cudaDev);
+      return cudaDev;
+    }});
+    // Init logging for NCCL header inside meta directory.
+    // This is due to the buck2 behavior of copying the header files to the
+    // buck-out directory.
+    // For logging in src/include headers, they are using NCCL logging
+    // (INFO/WARN/ERROR) which will inherit the loggging category from debug.cc
+    NcclLogger::init(NcclLoggerInitConfig{
+      .contextName = "meta",
+      .logPrefix = "NCCL",
+      .logFilePath = meta::comms::logger::parseDebugFile(NCCL_DEBUG_FILE.c_str()),
+      .logLevel = meta::comms::logger::loggerLevelToFollyLogLevel(
+          meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
+      .threadContextFn = []() {
+        int cudaDev = -1;
+        cudaGetDevice(&cudaDev);
+        return cudaDev;
+      }});
 }

@@ -20,6 +20,27 @@
 #include <thread>
 #include <chrono>
 
+#include <folly/SocketAddress.h>
+#include <folly/stop_watch.h>
+#include <future>
+
+#include "comms/utils/commSpecs.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/EventsScubaUtil.h"
+#include "meta/tcpstore/TCPStore.h"
+
+
+#include <folly/SocketAddress.h>
+#include <folly/stop_watch.h>
+#include <future>
+
+#include "comms/utils/commSpecs.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "comms/utils/logger/EventsScubaUtil.h"
+#include "comms/utils/logger/Logger.h"
+#include "meta/tcpstore/TCPStore.h"
+#include <fstream>
+
 #define BOOTSTRAP_N_CHECK_ABORT           10000
 #define BOOTSTRAP_TAG_CONNECT             (0x1 << 31)
 #define BOOTSTRAP_TAG_ALLGATHER           (0x1 << 30)
@@ -485,51 +506,6 @@ ncclResult_t bcastGrowHandle(struct ncclBootstrapHandle* handle, struct ncclComm
   return ncclSuccess;
 }
 
-struct unexConn {
-  int peer;
-  int tag;
-  struct ncclSocket sock;
-  struct unexConn* next;
-};
-
-struct bootstrapRing_t {
-  union {
-    struct {
-      void *sendComm, *recvComm;
-      ncclNetDeviceHandle_t *sendDevHandle, *recvDevHandle;
-    } net;
-    struct {
-      struct ncclSocket recv;
-      struct ncclSocket send;
-    } socket;
-  };
-};
-struct bootstrapListen_t {
-  struct ncclSocket peerSocket; // socket for peers to contact me in P2P
-  union {
-    struct {
-      int dev;
-      void* comm;
-      char handle[NCCL_NET_HANDLE_MAXSIZE];
-    } net;
-    struct ncclSocket socket; // socket to be used for the ring
-  };
-};
-
-struct bootstrapState {
-  struct bootstrapRing_t ring;
-  struct bootstrapListen_t listen;
-  ncclNet_t* net;
-  uint64_t* peerProxyAddressesUDS;
-  union ncclSocketAddress* peerProxyAddresses;
-  union ncclSocketAddress* peerP2pAddresses;
-  struct unexConn* unexpectedConnections;
-  int cudaDev;
-  int rank;
-  int nranks;
-  uint64_t magic;
-  volatile uint32_t* abortFlag;
-};
 #define STATE_RING(s, f) (s->ring.f)
 #define STATE_LISTEN(s, f) (s->listen.f)
 
@@ -681,7 +657,79 @@ fail:
 NCCL_PARAM(StaggerRate, "UID_STAGGER_RATE", 7000);
 NCCL_PARAM(StaggerThreshold, "UID_STAGGER_THRESHOLD", 256);
 
-NCCL_PARAM(RasEnable, "RAS_ENABLE", 1);
+NCCL_PARAM(RasEnable, "RAS_ENABLE", 0);
+
+static constexpr std::string_view kTcpStoreAddrKeyPrefix = "bootstrapAddr-"; /* tcpstore key prefix */
+
+ncclResult_t formRingViaTcpStore(bootstrapState* state, ncclComm* comm) {
+  auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
+  sampleGuardBegin.sample().setCommunicatorMetadata(comm? &comm->logMetaData: nullptr);
+  NcclScubaEvent scubaEvent(&comm->logMetaData);
+  const int rank = comm->rank;
+  const int nRanks = comm->nRanks;
+  INFO(NCCL_INIT, "rank %d formRingViaTcpStore start ...", rank);
+
+  // create tcp-store client
+  CHECKABORT(NCCL_MASTER_PORT > 0, "FATAL: MASTER_PORT must be set under fast-init mode");
+  CHECKABORT(NCCL_MASTER_ADDR != "", "FATAL: MASTER_ADDR must be set under fast-init mode");
+
+  ncclx::tcpstore::TCPStoreOptions opts;
+  opts.port = NCCL_MASTER_PORT;
+  opts.isServer = false;
+  opts.timeout = std::chrono::seconds(NCCL_TCPSTORE_IO_TIMEOUT); // client I/O timeout
+  auto storeClient = std::make_unique<ncclx::tcpstore::TCPStore>(NCCL_MASTER_ADDR, opts);
+  INFO(NCCL_INIT, "rank %d tcpstore: connects to server <%s:%d>", rank, NCCL_MASTER_ADDR.c_str(), opts.port);
+  scubaEvent.lapAndRecord("formRingViaTcpStore Create-TcpStore");
+
+  // listen on my <ip:port>
+  bootstrapNetInit();
+  ncclSocketAddress listenSockAddr;
+  NCCLCHECK(ncclSocketInit(&STATE_LISTEN(state, socket), &bootstrapNetIfAddr, comm->magic, ncclSocketTypeBootstrap, comm->abortFlag));
+  NCCLCHECK(ncclSocketListen(&STATE_LISTEN(state, socket)));
+  NCCLCHECK(ncclSocketGetAddr(&STATE_LISTEN(state, socket), &listenSockAddr));
+
+  folly::SocketAddress myFollyAddr;
+  myFollyAddr.setFromSockaddr(reinterpret_cast<sockaddr*>(&listenSockAddr), sizeof(listenSockAddr));
+  INFO(NCCL_INIT, "rank %d listen on %s: %s", rank, bootstrapNetIfName, myFollyAddr.describe().c_str());
+
+  const std::string kKeyPrefix = std::string(kTcpStoreAddrKeyPrefix) + comm->config.commDesc + "-";
+
+  // put my-rank's listenSockAddr e.g <rank0, info.extAddressListen>
+  std::string myKey = kKeyPrefix + std::to_string(rank);
+  std::vector<uint8_t> myVal(sizeof(ncclSocketAddress));
+  memcpy(myVal.data(), &listenSockAddr, sizeof(ncclSocketAddress));
+  storeClient->set(myKey, myVal);
+  scubaEvent.lapAndRecord("formRingViaTcpStore Set-My-Key");
+  INFO(NCCL_INIT, "Store set rank=%d key=%s val=%s", rank, myKey.c_str(), folly::hexlify(myVal).c_str());
+
+  // get my-next-rank's listenSockAddr
+  ncclSocketAddress nextSockAddr;
+  int nextRank = (rank + 1) % nRanks;
+
+  std::string nextKey = kKeyPrefix + std::to_string(nextRank);
+  auto nextVal = storeClient->get(nextKey);
+  memcpy(&nextSockAddr, nextVal.data(), sizeof(ncclSocketAddress));
+  scubaEvent.lapAndRecord("formRingViaTcpStore Get-SendSocket-Key");
+  INFO(NCCL_INIT, "Store get rank=%d key=%s val=%s by myRank=%d", nextRank, nextKey.c_str(), folly::hexlify(nextVal).c_str(), rank);
+
+  folly::SocketAddress nextFollyAddr;
+  nextFollyAddr.setFromSockaddr(reinterpret_cast<sockaddr*>(&nextSockAddr), sizeof(nextSockAddr));
+  INFO(NCCL_INIT, "rank %d will connect next-rank at %s", rank, nextFollyAddr.describe().c_str());
+
+  // form bootstrap ring
+  // connect to next rank
+  NCCLCHECK(ncclSocketInit(&STATE_RING(state, socket.send), &nextSockAddr, comm->magic, ncclSocketTypeBootstrap, comm->abortFlag));
+  NCCLCHECK(ncclSocketConnect(&STATE_RING(state, socket.send)));
+  scubaEvent.lapAndRecord("formRingViaTcpStore Connect-SendSocket");
+
+  // Accept the connect request from the previous rank in the AllGather ring
+  NCCLCHECK(ncclSocketInit(&STATE_RING(state, socket.recv)));
+  NCCLCHECK(ncclSocketAccept(&STATE_RING(state, socket.recv), &STATE_LISTEN(state, socket)));
+  scubaEvent.lapAndRecord("formRingViaTcpStore Accept-RecvSocket");
+
+  INFO(NCCL_INIT, "rank %d tcpstore: bootstrap ring connected.", comm->rank);
+  return ncclSuccess;
+}
 
 ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, struct ncclComm* parent) {
   ncclResult_t result = ncclSuccess;
@@ -704,6 +752,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
   state->cudaDev = comm->cudaDev;
   state->abortFlag = comm->abortFlag;
   state->net = comm->ncclNet;
+  state->fastInitMode = comm->config.fastInitMode;
   comm->bootstrap = state;
 
   // Set magic: for grow existing ranks, receive from coordinator; otherwise use handle magic.
@@ -720,6 +769,13 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
   TRACE(NCCL_BOOTSTRAP, "rank %d nranks %d", rank, nranks);
 
   BOOTSTRAP_PROF_OPEN(timers[BOOTSTRAP_INIT_TIME_TOTAL]);
+  bool skipFormRingViaTcpStore = (nHandles != 1) && NCCL_SKIP_TCPFORM_RING;
+  if (isFastInitRingMode(state->fastInitMode) && !skipFormRingViaTcpStore) {
+    INFO(NCCL_INIT, "rank %d nHandles %d, fast-init mode: ring-hybrid, use formRingViaTcpStore to form boostrap ring", rank, nHandles);
+    // (meta) fast path to form ring via tcpstore
+    NCCLCHECK(formRingViaTcpStore(state, comm));
+  // FIXME[max7255]: indentation looks a bit weird here..
+  } else {
   // fill up the info
   info.nranks = nranks;
   info.nroots = nHandles;
@@ -813,6 +869,7 @@ ncclResult_t bootstrapInit(int nHandles, void* handles, struct ncclComm* comm, s
   } else {
     NCCLCHECK(socketRingConnect(&nextPeer.addr, &STATE_RING(state, socket.send), &STATE_LISTEN(state, socket), &STATE_RING(state, socket.recv), comm->magic, state->abortFlag));
   }
+  }
 
   // AllGather all listen handlers
   // in case of failure, those resources will be free'd when calling bootstrapDestroy, so we can return immediatly
@@ -891,6 +948,7 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
   state->cudaDev = comm->cudaDev;
   state->abortFlag = comm->abortFlag;
   state->net = comm->ncclNet;
+  state->fastInitMode = comm->config.fastInitMode;
   comm->bootstrap = state;
   comm->magic = state->magic = magic;
 
@@ -898,7 +956,7 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
   next = parentRanks[(rank + 1) % nranks];
 
   // create a handle for the others to reach out to me
-  if (ncclParamBootstrapNetEnable()) {
+  if (!isFastInitRingMode(state->fastInitMode) && ncclParamBootstrapNetEnable()) {
     NCCLCHECKGOTO(netGetDevice(rank, comm, &STATE_LISTEN(state, net.dev)), ret, fail);
     NCCLCHECKGOTO(state->net->listen(comm->netContext, STATE_LISTEN(state, net.dev), STATE_LISTEN(state, net.handle), &STATE_LISTEN(state, net.comm)), ret, fail);
     memcpy(info.handle, STATE_LISTEN(state, net.handle), NCCL_NET_HANDLE_MAXSIZE);
@@ -918,7 +976,7 @@ ncclResult_t bootstrapSplit(uint64_t magic, struct ncclComm* comm, struct ncclCo
   // Get addr from next rank using the parent's connections
   NCCLCHECKGOTO(bootstrapSend(parent->bootstrap, prev, BOOTSTRAP_TAG_COMMSPLIT, &info, sizeof(union ringConnectInfo)), ret, fail);
   NCCLCHECKGOTO(bootstrapRecv(parent->bootstrap, next, BOOTSTRAP_TAG_COMMSPLIT, &nextPeer, sizeof(union ringConnectInfo)), ret, fail);
-  if (ncclParamBootstrapNetEnable()) {
+  if (!isFastInitRingMode(state->fastInitMode) && ncclParamBootstrapNetEnable()) {
     NCCLCHECKGOTO(netRingConnect(comm->netContext, state->net, &state->listen, nextPeer.handle,
                                  &STATE_RING(state, net.sendComm), &STATE_RING(state, net.sendDevHandle),
                                  &STATE_RING(state, net.recvComm), &STATE_RING(state, net.recvDevHandle), state->abortFlag),
@@ -1156,6 +1214,7 @@ static ncclResult_t socketRingAllGather(struct ncclSocket* nextSock, struct nccl
 exit:
   return res;
 }
+
 ncclResult_t bootstrapAllGather(void* commState, void* allData, int size) {
   ncclResult_t res = ncclSuccess;
   struct bootstrapState* state = (struct bootstrapState*)commState;
@@ -1276,7 +1335,7 @@ ncclResult_t bootstrapClose(void* commState) {
       return ncclInternalError;
     }
   }
-  if (ncclParamBootstrapNetEnable()) {
+  if (!isFastInitRingMode(state->fastInitMode) && ncclParamBootstrapNetEnable()) {
     NCCLCHECK(state->net->closeSend(STATE_RING(state, net.sendComm)));
     NCCLCHECK(state->net->closeRecv(STATE_RING(state, net.recvComm)));
     NCCLCHECK(state->net->closeListen(STATE_LISTEN(state, net.comm)));

@@ -403,6 +403,7 @@ static constexpr int PatUsed = 0x1,
 
 struct ncclPatStep {
   int recvDim, sendDim, recvOffset, sendOffset, stepOffset, postRecv, postSend, nelem, last, flags;
+  bool isFinalWrite;  // [META:PAT_AVG] True if final write for a chunk (apply division for AVG)
   size_t inpIx, outIx;
 };
 
@@ -541,6 +542,7 @@ public:
     ps->nelem = nelem;
     ps->outIx = offset;
     ps->stepOffset = stepOffset;
+    ps->isFinalWrite = false;  // [META:PAT_AVG] for label last step
     int skip = 0;
     if (a >= lastA) {
       skip = 1;
@@ -640,6 +642,7 @@ public:
     } else if (phase == 4) {
       ps->recvDim = 0;
       ps->sendDim = -1;
+      ps->isFinalWrite = true;  // [META:PAT_AVG] last step, apply division for PAT AVG in patReduce
       ps->inpIx = rank * count + offset;
       ps->recvOffset = ((aggFactor-1)%postFreq) * nelem;
       ps->sendOffset = -1;

@@ -9,6 +9,7 @@
 #define NCCL_GDRWRAP_H_
 
 #include "nccl.h"
+#include "comm.h"
 #include "alloc.h"
 #include <stdint.h> // for standard [u]intX_t types
 #include <stdio.h>
@@ -186,7 +187,9 @@ error:
 }
 
 template <typename T>
-static ncclResult_t ncclGdrCudaCalloc(T** ptr, T** devPtr, size_t nelem, void** gdrHandle, struct ncclMemManager* manager) {
+static ncclResult_t ncclGdrCudaCalloc(T** ptr, T** devPtr, size_t nelem, void** gdrHandle,
+                                      struct ncclMemManager* manager,
+                                      const struct CommLogData& logMetaData) {
   gdr_info_t info;
   size_t mapSize;
   gdr_mh_t mh;
@@ -198,6 +201,7 @@ static ncclResult_t ncclGdrCudaCalloc(T** ptr, T** devPtr, size_t nelem, void** 
   // GDRCOPY Pinned buffer has to be a minimum of a GPU_PAGE_SIZE
   ALIGN_SIZE(mapSize, GPU_PAGE_SIZE);
   // GDRCOPY Pinned buffer has to be GPU_PAGE_SIZE aligned too
+  memLogMetaData = logMetaData;
   NCCLCHECK(ncclCudaCalloc(&devMem, mapSize+GPU_PAGE_SIZE-1, manager));
   uint64_t alignedAddr = (((uint64_t) devMem) + GPU_PAGE_OFFSET) & GPU_PAGE_MASK;
   size_t align = alignedAddr - (uint64_t)devMem;
@@ -251,9 +255,9 @@ static ncclResult_t ncclGdrCudaFree(void* gdrHandle, struct ncclMemManager* mana
 // Helper: Allocate memory accessible from CPU (either GDR or host memory)
 template <typename T>
 static ncclResult_t allocMemCPUAccessible(T **ptr, T **devPtr, size_t nelem, int host_flags,
-                                          void **gdrHandle, struct ncclMemManager* manager, bool forceHost = false) {
+                                          void **gdrHandle, struct ncclMemManager* manager, struct CommLogData &logdata, bool forceHost = false) {
   if (ncclGdrCopy && !forceHost) {
-    NCCLCHECK(ncclGdrCudaCalloc(ptr, devPtr, nelem, gdrHandle, manager));
+    NCCLCHECK(ncclGdrCudaCalloc(ptr, devPtr, nelem, gdrHandle, manager, logdata));
   } else {
     NCCLCHECK(ncclCuMemHostAlloc((void **)ptr, NULL, nelem * sizeof(T)));
     memset((void *)*ptr, 0, nelem * sizeof(T));

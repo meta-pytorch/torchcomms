@@ -12,6 +12,7 @@
 #include "collectives.h"
 #include "core.h"
 #include "utils.h"
+#include "meta/algoconf/InfoExt.h"
 
 // Used to pass NCCL call information between functions
 struct ncclInfo {
@@ -38,6 +39,8 @@ struct ncclInfo {
   // WaitSignal descriptors
   int nDesc;
   ncclWaitSignalDesc_t* signalDescs;
+  // [META:INFO_EXT] Extension for per-comm algorithm/protocol override
+  std::optional<ncclx::algoconf::ncclInfoExt> ext;
 };
 
 #endif

@@ -7,6 +7,8 @@
 
 #include "core.h"
 
+#include "comms/ctran/utils/Checks.h"
+
 void dumpLine(int* values, int nranks, const char* prefix) {
   constexpr int line_length = 128;
   char line[line_length];

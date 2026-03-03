@@ -42,7 +42,7 @@ static ncclResult_t selectTransport(struct ncclComm* comm, struct ncclTopoGraph*
   return ncclSystemError;
 }
 
-ncclResult_t ncclTransportP2pConnect(struct ncclComm* comm, int channelId, int nrecv, int* peerRecv, int nsend, int* peerSend, int connIndex) {
+ncclResult_t ncclTransportP2pConnect(struct ncclComm* comm, int channelId, int nrecv, int* peerRecv, int nsend, int* peerSend, int connIndex, connectionSummary* summary) {
   TRACE(NCCL_INIT, "nsend %d nrecv %d", nsend, nrecv);
   struct ncclChannel* channel = &comm->channels[channelId];
   uint64_t mask = 1ULL << channel->id;
@@ -50,11 +50,27 @@ ncclResult_t ncclTransportP2pConnect(struct ncclComm* comm, int channelId, int n
     int peer = peerRecv[i];
     if (peer == -1 || peer >= comm->nRanks || peer == comm->rank || channel->peers[peer]->recv[connIndex].connected) continue;
     comm->connectRecv[peer] |= mask;
+    if (summary != nullptr) {
+      if (comm->rankToNode[comm->rank] == comm->rankToNode[peer]) {
+        summary->intraRecv += 1;
+      }
+      else {
+        summary->interRecv += 1;
+      }
+    }
   }
   for (int i=0; i<nsend; i++) {
     int peer = peerSend[i];
     if (peer == -1 || peer >= comm->nRanks || peer == comm->rank || channel->peers[peer]->send[connIndex].connected) continue;
     comm->connectSend[peer] |= mask;
+    if (summary != nullptr) {
+      if (comm->rankToNode[comm->rank] == comm->rankToNode[peer]) {
+        summary->intraSend += 1;
+      }
+      else {
+        summary->interSend += 1;
+      }
+    }
   }
   return ncclSuccess;
 }

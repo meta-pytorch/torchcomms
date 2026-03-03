@@ -78,7 +78,7 @@ static ncclResult_t shmCanConnect(int* ret, struct ncclComm* comm, struct ncclTo
   *ret = 0;
   initCeOperation();
 
-  if (ncclParamShmDisable() == 1) return ncclSuccess;
+  if (ncclParamShmDisable() == 1 || comm->noLocal_) return ncclSuccess;
 
   int useNet = 0;
   NCCLCHECK(ncclTopoCheckNet(comm->topo, info1->rank, info2->rank, &useNet));
@@ -256,6 +256,7 @@ static ncclResult_t shmSendProxyConnect(struct ncclProxyConnection* connection, 
   proxyInfo->shmFifo = reqInfo->shmFifo;
   proxyInfo->sendMem = reqInfo->sendMem;
   proxyInfo->recvMem = reqInfo->recvMem;
+  memLogMetaData = proxyState->owner->logMetaData;
   NCCLCHECKGOTO(ncclCudaCalloc(&proxyInfo->devFifo, proxyState->buffSizes[NCCL_PROTO_SIMPLE], proxyState->memManager), ret, fail);
   NCCLCHECKGOTO(ncclCudaHostCalloc(&proxyInfo->ceRecvMem, 1), ret, fail);
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&proxyInfo->stream, cudaStreamNonBlocking), ret, fail);
@@ -286,6 +287,7 @@ static ncclResult_t shmRecvProxyConnect(struct ncclProxyConnection* connection, 
   proxyInfo->shmFifo = reqInfo->shmFifo;
   proxyInfo->sendMem = reqInfo->sendMem;
   proxyInfo->recvMem = reqInfo->recvMem;
+  memLogMetaData = proxyState->owner->logMetaData;
   NCCLCHECKGOTO(ncclCudaCalloc(&proxyInfo->devFifo, proxyState->buffSizes[NCCL_PROTO_SIMPLE], proxyState->memManager), ret, fail);
   NCCLCHECKGOTO(ncclCudaHostCalloc(&proxyInfo->ceRecvMem, 1), ret, fail);
   CUDACHECKGOTO(cudaStreamCreateWithFlags(&proxyInfo->stream, cudaStreamNonBlocking), ret, fail);

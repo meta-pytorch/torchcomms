@@ -17,6 +17,8 @@
 #include <time.h>
 #include <atomic>
 
+#include "comms/utils/cvars/nccl_cvars.h"
+
 NCCL_PARAM(RetryCnt, "SOCKET_RETRY_CNT", 34);
 NCCL_PARAM(RetryTimeOut, "SOCKET_RETRY_SLEEP_MSEC", 100);
 NCCL_PARAM(PollTimeOut, "SOCKET_POLL_TIMEOUT_MSEC", 0);
@@ -41,6 +43,8 @@ static ncclResult_t socketProgress(int op, struct ncclSocket* sock, void* ptr, i
 }
 
 static ncclResult_t socketWait(int op, struct ncclSocket* sock, void* ptr, int size, int* offset) {
+  // FIXME[max7255]: skipping ncclx patch, ensure ncclParamPollTimeOut > 0
+  // for NCCL_FASTINIT_MODE != NCCL_FASTINIT_MODE::none
   while (*offset < size) {
     NCCLCHECK(socketProgress(op, sock, ptr, size, offset));
     // If we have more data to read or write, use the poll system call to wait
@@ -172,6 +176,7 @@ ncclResult_t ncclFindInterfaces(char* ifNames, union ncclSocketAddress *ifAddrs,
   *nIfs = 0;
   if (env && strlen(env) > 1) {
     INFO(NCCL_ENV, "NCCL_SOCKET_IFNAME set by environment to %s", env);
+
     // Specified by user : find or fail
     if (shownIfName++ == 0) INFO(NCCL_NET, "NCCL_SOCKET_IFNAME set to %s", env);
     NCCLCHECK(ncclOsFindInterfaces(env, ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
@@ -190,12 +195,12 @@ ncclResult_t ncclFindInterfaces(char* ifNames, union ncclSocketAddress *ifAddrs,
         NCCLCHECK(ncclFindInterfaceMatchSubnet(ifNames, ifAddrs, &idAddr, ifNameMaxSize, nIfs));
       }
     }
+    // FIXME[max7255]: we dropped virbr for some reason
     // Then look for anything else (but not docker,lo, or virtual)
-    if (*nIfs == 0) NCCLCHECK(ncclOsFindInterfaces("^docker,lo,virbr", ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
+    if (*nIfs == 0) NCCLCHECK(ncclOsFindInterfaces("^docker,lo", ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
     // Finally look for docker, then lo.
     if (*nIfs == 0) NCCLCHECK(ncclOsFindInterfaces("docker", ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
     if (*nIfs == 0) NCCLCHECK(ncclOsFindInterfaces("lo", ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
-    if (*nIfs == 0) NCCLCHECK(ncclOsFindInterfaces("virbr", ifNames, ifAddrs, sock_family, ifNameMaxSize, maxIfs, nIfs));
   }
   return ncclSuccess;
 }
@@ -272,7 +277,12 @@ ncclResult_t ncclSocketGetAddrFromString(union ncclSocketAddress* ua, const char
 
     struct sockaddr_in6& sin6 = ua->sin6;
     sin6.sin6_family = AF_INET6;                       // IPv6
-    inet_pton(AF_INET6, ip_str, &(sin6.sin6_addr));    // IP address
+
+    if (inet_pton(AF_INET6, ip_str, &(sin6.sin6_addr)) != 1) {     // IP address
+      WARN("Net : error encountered when converting IPv6 address");
+      return ncclInvalidArgument;
+    }
+
     sin6.sin6_port = htons(port);                      // port
     sin6.sin6_flowinfo = 0;                            // needed by IPv6, but possibly obsolete
     sin6.sin6_scope_id = global_scope ? 0 : if_nametoindex(if_name);  // 0 if global scope; intf index if link scope
@@ -412,7 +422,7 @@ ncclResult_t ncclSocketReady(struct ncclSocket* sock, int *running) {
   return ncclSuccess;
 }
 
-ncclResult_t ncclSocketConnect(struct ncclSocket* sock) {
+ncclResult_t ncclSocketConnect(struct ncclSocket* sock, const char* localIfName) {
 #ifdef ENABLE_TRACE
   char line[SOCKET_NAME_MAXLEN+1];
 #endif
@@ -432,6 +442,17 @@ ncclResult_t ncclSocketConnect(struct ncclSocket* sock) {
     return ncclInternalError;
   }
   TRACE(NCCL_INIT|NCCL_NET,"Connecting to socket %s", ncclSocketToString(&sock->addr, line));
+
+  if (!NCCL_CLIENT_SOCKET_IFNAME.empty() && localIfName == nullptr) {
+    localIfName = NCCL_CLIENT_SOCKET_IFNAME.c_str();
+  }
+  // bind client socket to specified interface
+  if (localIfName != nullptr) {
+    ifreq ifr;
+    strncpy(ifr.ifr_name, localIfName, sizeof(ifr.ifr_name));
+    SYSCHECK(setsockopt(sock->socketDescriptor, SOL_SOCKET, SO_BINDTODEVICE, (void*)&ifr.ifr_name, sizeof(ifr)), "setsockopt");
+    INFO(NCCL_INIT, "ncclSocketConnect bind to interface %s", localIfName);
+  }
 
   sock->state = ncclSocketStateConnecting;
   sock->finalizeCounter = 0;
@@ -536,13 +557,26 @@ ncclResult_t ncclSocketInit(struct ncclSocket* sock, const union ncclSocketAddre
     if (family != AF_INET && family != AF_INET6) {
       char line[SOCKET_NAME_MAXLEN+1];
       WARN("ncclSocketInit: connecting to address %s with family %d is neither AF_INET(%d) nor AF_INET6(%d)",
-          ncclSocketToString(&sock->addr, line), family, AF_INET, AF_INET6);
+           ncclSocketToString(&sock->addr, line), family, AF_INET, AF_INET6);
+
+      WARN("You might set TORCH_NCCL_BCAST_UNIQUEID=0 to enable fast init feature, in ncclx 2.29 you will have ncclSocketInit errors. "
+           "We have deprecated NCCL_FASTINIT_MODE; set NCCL_FASTINIT_MODE=none and TORCH_NCCL_BCAST_UNIQUEID=1 to bootstrap NCCL");
       ret = ncclInternalError;
       goto exit;
     }
     sock->salen = (family == AF_INET) ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6);
     // in case of error, we close the descriptor before returning as it's unclear if the caller has to use ncclSocketClose for cleanup
     NCCLCHECKGOTO(ncclOsSocketResetFd(sock), ret, fail);
+    if (NCCL_SOCKET_TOS_CONFIG != -1) {
+    // referenced D77281608
+      if (family == AF_INET6) {
+        // For IPv6 set the traffic class field
+        SYSCHECK(setsockopt(sock->socketDescriptor, IPPROTO_IPV6, IPV6_TCLASS, (char*)&NCCL_SOCKET_TOS_CONFIG, sizeof(int)), "setsockopt");
+      } else {
+        // For IPv4 set the TOS field
+        SYSCHECK(setsockopt(sock->socketDescriptor, IPPROTO_IP, IP_TOS, (char*)&NCCL_SOCKET_TOS_CONFIG, sizeof(int)), "setsockopt");
+      }
+    }
   } else {
     memset(&sock->addr, 0, sizeof(union ncclSocketAddress));
   }
@@ -671,4 +705,12 @@ ncclResult_t ncclSocketTryRecv(struct ncclSocket* sock, void* ptr, int size, int
     }
   }
   return ncclSuccess;
+}
+
+std::string ncclSocketToIPv6String(union ncclSocketAddress *addr) {
+  struct sockaddr *saddr = &addr->sa;
+  char host[NI_MAXHOST];
+  int flag = NI_NUMERICHOST;
+  (void) getnameinfo(saddr, sizeof(union ncclSocketAddress), host, NI_MAXHOST, NULL, 0, flag);
+  return {host};
 }

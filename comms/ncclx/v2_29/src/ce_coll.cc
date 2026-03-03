@@ -68,8 +68,8 @@ ncclResult_t ncclCeFinalize(struct ncclComm* comm) {
 
   // Clean up CE resources - continue cleanup even on errors to avoid leaks
   // Note: both functions handle null safely
-  NCCLCHECKIGNORE(ncclCommWindowDeregister(comm, comm->ceColl.ceSyncWin ? comm->ceColl.ceSyncWin->vidmem : nullptr), ret);
-  NCCLCHECKIGNORE(ncclMemFree(comm->ceColl.baseUCSymReadyPtr), ret);
+  NCCLCHECKIGNORE(ncclCommWindowDeregister(comm, comm->ceColl.ceSyncWin ? comm->ceColl.ceSyncWin->vidmem : nullptr));
+  NCCLCHECKIGNORE(ncclMemFree(comm->ceColl.baseUCSymReadyPtr));
 
   comm->ceColl.baseUCSymReadyPtr = nullptr;
   comm->ceColl.baseUCSymComplPtr = nullptr;

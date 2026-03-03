@@ -13,6 +13,7 @@
 #include "channel.h"
 #include "transport.h"
 #include "device.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 // Pre-compute GPU->NIC, GPU->GPU and NIC->GPU paths
 
@@ -218,22 +219,56 @@ static void ncclTopoRemovePaths(struct ncclTopoSystem* system) {
 }
 
 static const int levelsOldToNew[] = { PATH_LOC, PATH_PIX, PATH_PXB, PATH_PHB, PATH_SYS, PATH_SYS };
-ncclResult_t ncclGetLevel(int* level, const char* disableEnv, const char* levelEnv) {
+ncclResult_t ncclGetNetGdrLevel(int* level) {
   if (*level == -1) {
     int l = -1;
-    if (disableEnv) {
-      const char* str = ncclGetEnv(disableEnv);
-      if (str) {
-        int disable = strtol(str, NULL, 0);
-        if (disable == 1) l = PATH_LOC;
-        if (l >= 0) INFO(NCCL_ALL, "%s set by environment to %d", disableEnv, disable);
+    const char* str = ncclGetEnv("NCCL_NET_GDR_LEVEL");
+    if (str) {
+      for (int i=0; i<=PATH_SYS; i++) {
+        if (strcmp(str, topoPathTypeStr[i]) == 0) {
+          l = i;
+          break;
+        }
+      }
+      // Old style numbering
+      // levelsOldToNew to is an array with each index corresponding to the
+      // "old level" int, and each value mapping to the correct value defined in topo.h
+      // maxOldLevel is a quick check to handle out of bounds (based on the length of levelsOldToNew)
+      if (l == -1 && str[0] >= '0' && str[0] <= '9') {
+        int oldLevel = strtol(str, NULL, 0);
+        const int maxOldLevel = sizeof(levelsOldToNew)/sizeof(int) - 1;
+        if (oldLevel > maxOldLevel) {
+          oldLevel = maxOldLevel;
+        }
+        l = levelsOldToNew[oldLevel];
+      }
+      if (l >= 0) {
+        INFO(NCCL_ALL, "NCCL_NET_GDR_LEVEL set by environment to %s", topoPathTypeStr[l]);
+      }
+    }
+    *level = l >= 0 ? l : -2;
+  }
+  return ncclSuccess;
+}
+
+ncclResult_t ncclGetTopoUserP2pLevel(int* level) {
+  if (*level == -1) {
+    int l = -1;
+    const char* p2pDisableStr = ncclGetEnv("NCCL_P2P_DISABLE");
+    if (p2pDisableStr) {
+      int disable = strtol(p2pDisableStr, NULL, 0);
+      if (disable == 1) {
+        l = PATH_LOC;
+      }
+      if (l >= 0) {
+        INFO(NCCL_ALL, "NCCL_P2P_DISABLE set by environment to %d", disable);
       }
     }
     if (l == -1) {
-      const char* str = ncclGetEnv(levelEnv);
-      if (str) {
+      const char* p2pLevelStr = ncclGetEnv("NCCL_P2P_LEVEL");
+      if (p2pLevelStr) {
         for (int i=0; i<=PATH_SYS; i++) {
-          if (strcmp(str, topoPathTypeStr[i]) == 0) {
+          if (strcmp(p2pLevelStr, topoPathTypeStr[i]) == 0) {
             l = i;
             break;
           }
@@ -242,13 +277,17 @@ ncclResult_t ncclGetLevel(int* level, const char* disableEnv, const char* levelE
         // levelsOldToNew to is an array with each index corresponding to the
         // "old level" int, and each value mapping to the correct value defined in topo.h
         // maxOldLevel is a quick check to handle out of bounds (based on the length of levelsOldToNew)
-        if (l == -1 && str[0] >= '0' && str[0] <= '9') {
-          int oldLevel = strtol(str, NULL, 0);
+        if (l == -1 && p2pLevelStr[0] >= '0' && p2pLevelStr[0] <= '9') {
+          int oldLevel = strtol(p2pLevelStr, NULL, 0);
           const int maxOldLevel = sizeof(levelsOldToNew)/sizeof(int) - 1;
-          if (oldLevel > maxOldLevel) oldLevel = maxOldLevel;
+          if (oldLevel > maxOldLevel) {
+            oldLevel = maxOldLevel;
+          }
           l = levelsOldToNew[oldLevel];
         }
-        if (l >= 0) INFO(NCCL_ALL, "%s set by environment to %s", levelEnv, topoPathTypeStr[l]);
+        if (l >= 0) {
+          INFO(NCCL_ALL, "NCCL_P2P_LEVEL set by environment to %s", topoPathTypeStr[l]);
+        }
       }
     }
     *level = l >= 0 ? l : -2;
@@ -264,7 +303,7 @@ static int ncclTopoUserP2pLevel = -1; // Initially "uninitialized".  When initia
 // of the "level" argument is left unchanged.
 ncclResult_t ncclGetUserP2pLevel(int* level) {
   if (ncclTopoUserP2pLevel == -1)
-    NCCLCHECK(ncclGetLevel(&ncclTopoUserP2pLevel, "NCCL_P2P_DISABLE", "NCCL_P2P_LEVEL"));
+    NCCLCHECK(ncclGetTopoUserP2pLevel(&ncclTopoUserP2pLevel));
   if (ncclTopoUserP2pLevel != -2)
     *level = ncclTopoUserP2pLevel;
   return ncclSuccess;
@@ -332,6 +371,20 @@ ncclResult_t ncclTopoCheckP2p(struct ncclComm* comm, struct ncclTopoSystem* syst
 
   // Compute the PCI distance and compare with the p2pLevel.
   if (path->type <= p2pLevel) *p2p = 1;
+
+  // Check if multi-NVLink P2P is disabled and handle rack serial matching
+  if (NCCL_MNNVL_TRUNK_DISABLE && mnnvl) {
+    INFO(NCCL_GRAPH, "NCCL_MNNVL_TRUNK_DISABLE enabled");
+
+    // Only check rack serials if comm and rackSerials are available
+    if (comm->peerInfo[rank1].rackSerial && comm->peerInfo[rank2].rackSerial) {
+      *p2p = (comm->peerInfo[rank1].rackSerial == comm->peerInfo[rank2].rackSerial);
+      INFO(NCCL_GRAPH, "P2P is set to %d based on rack serial match/unmatch rank1: %d rank2: %d rackSerial1: %d rackSerial2: %d", *p2p, rank1, rank2, comm->peerInfo[rank1].rackSerial, comm->peerInfo[rank2].rackSerial);
+
+    } else {
+      WARN("No rack serial information available, skipping rack serial check");
+    }
+  }
 
   // NCCL_IGNORE_DISABLED_P2P=2 is used by unit tests that don't want to
   // validate against NVML at all since they are pretending to be on other hw.
@@ -458,7 +511,7 @@ ncclResult_t ncclTopoCheckGdr(struct ncclTopoSystem* system, int rank, int64_t n
 
   // Check if we are close enough that it makes sense to enable GDR
   int netGdrLevel = ncclParamNetGdrC2c() ? PATH_P2C : PATH_PXB;
-  NCCLCHECK(ncclGetLevel(&ncclTopoUserGdrLevel, NULL, "NCCL_NET_GDR_LEVEL"));
+  NCCLCHECK(ncclGetNetGdrLevel(&ncclTopoUserGdrLevel));
   if (ncclTopoUserGdrLevel != -2) netGdrLevel = ncclTopoUserGdrLevel;
   int distance = gpu->paths[NET][n].type;
   if (distance == PATH_PXN) {
@@ -815,7 +868,11 @@ ncclResult_t ncclTopoTrimSystem(struct ncclTopoSystem* system, struct ncclComm* 
     NCCLCHECKGOTO(ncclTopoRemoveNode(system, GPU, g), ret, fail);
   }
 
-  system->inter = system->nodes[GPU].count == comm->nRanks ? 0 : 1;
+  if (!NCCL_TOPO_BOND_V228) {
+    system->inter = system->nodes[NET].count;
+  } else {
+    system->inter = system->nodes[GPU].count == comm->nRanks ? 0 : 1;
+  }
 exit:
   free(domains);
   if (ids) free(ids);
@@ -907,8 +964,12 @@ ncclResult_t ncclTopoComputeP2pChannels(struct ncclComm* comm) {
     comm->p2pnChannelsPerPeer = std::min(comm->p2pnChannels, comm->p2pnChannelsPerPeer);
   }
 
+  // Only init channels now if lazySetupChannels is disabled.
+  // Otherwise, they will be delayed until needed
+  if (!comm->lazySetupChannels) {
   // Init channels that weren't used so far
-  for (int c=comm->nChannels; c<comm->p2pnChannels; c++) NCCLCHECK(initChannel(comm, c));
+    for (int c=comm->nChannels; c<comm->p2pnChannels; c++) NCCLCHECK(initChannel(comm, c));
+  }
 
   return ncclSuccess;
 }
@@ -951,7 +1012,7 @@ ncclResult_t ncclTopoGetGpuMaxPath(struct ncclTopoSystem* system, int type, int*
     if (paths == NULL) continue;
     for (int j=0; j<system->nodes[type].count; j++) {
       if (type == GPU && i == j) continue;
-      maxPath = std::max(maxPath, paths[j].type);
+      maxPath = std::min(std::max(maxPath, paths[j].type), PATH_NET);
     }
   }
   *max = maxPath;

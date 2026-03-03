@@ -20,6 +20,7 @@ RDMA_CORE ?= 0
 NET_PROFILER ?= 0
 MLX5DV ?= 0
 MAX_EXT_NET_PLUGINS ?= 0
+NCCL_FP8 ?= 0
 EMIT_LLVM_IR ?= 0
 
 NVCC ?= $(CUDA_HOME)/bin/nvcc
@@ -69,15 +70,10 @@ else
 endif
 $(info NVCC_GENCODE is ${NVCC_GENCODE})
 
-# CUDA 13.0 requires c++17
-ifeq ($(shell test "0$(CUDA_MAJOR)" -ge 13; echo $$?),0)
-  CXXSTD ?= -std=c++17
-else
-  CXXSTD ?= -std=c++14
-endif
+CXXSTD ?= -std=c++17
 
 CXXFLAGS   := -DCUDA_MAJOR=$(CUDA_MAJOR) -DCUDA_MINOR=$(CUDA_MINOR) -fPIC -fvisibility=hidden \
-              -Wall -Wno-unused-function -Wno-sign-compare $(CXXSTD) -Wvla \
+              -Wall -Wno-unused-function -Wno-sign-compare -std=c++2a -Wvla \
               -I $(CUDA_INC) -I $(CUDA_INC)/cccl \
               $(CXXFLAGS)
 # Maxrregcount needs to be set accordingly to NCCL_MAX_NTHREADS (otherwise it will cause kernel launch errors)
@@ -85,7 +81,7 @@ CXXFLAGS   := -DCUDA_MAJOR=$(CUDA_MAJOR) -DCUDA_MINOR=$(CUDA_MINOR) -fPIC -fvisi
 # We would not have to set this if we used __launch_bounds__, but this only works on kernels, not on functions.
 NVCUFLAGS  := -ccbin $(CXX) $(NVCC_GENCODE) $(CXXSTD) --expt-extended-lambda -Xptxas -maxrregcount=96 -Xfatbin -compress-all
 # Use addprefix so that we can specify more than one path
-NVLDFLAGS  := -L${CUDA_LIB} -lcudart -lrt
+NVLDFLAGS  := -L${CUDA_LIB} -lcudart -lrt -lstdc++fs
 
 NVCUFLAGS_SYM :=
 

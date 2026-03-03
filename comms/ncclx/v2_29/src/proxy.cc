@@ -26,6 +26,9 @@
 #include <algorithm>
 #include <mutex>
 
+#include "meta/colltrace/ProxyTraceFunc.h"
+#include "comms/utils/logger/EventsScubaUtil.h"
+
 #define NCCL_MAX_PROXY_CONNECTIONS (NCCL_MAX_LOCAL_RANKS+1)
 
 enum { proxyRecv=0, proxySend=1 };
@@ -366,6 +369,8 @@ static ncclResult_t ncclProxyOpToArgs(struct ncclProxyOp* op, struct ncclProxyAr
     WARN("Proxy append out of bounds");
     return ncclInternalError;
   }
+  PROXY_TRACE_OP_TO_SUBARGS(sub, op);
+
   //memset(sub, 0, sizeof(struct ncclProxySubArgs));
   sub->connection = op->connection;
   sub->channelId = op->channelId;
@@ -1014,7 +1019,6 @@ ncclResult_t ncclProxyStart(struct ncclComm* comm) {
     ops->nextOps = ops->nextOpsEnd = -1;
     ops->count = 0;
   }
-  comm->opCount++;
   TIME_STOP(1);
   return ncclSuccess;
 }
@@ -1862,6 +1866,7 @@ ncclResult_t ncclProxyInit(struct ncclComm* comm, struct ncclSocket* sock, union
   comm->proxyState->peerAddresses = peerAddresses;
   comm->proxyState->peerAddressesUDS = peerAddressesUDS;
   comm->proxyState->netAttr = NCCL_NET_ATTR_INIT;
+  NCCLCHECK(ncclx::colltrace::proxyTraceInit(comm->proxyState, comm));
 
   // UDS support
   NCCLCHECK(ncclIpcSocketInit(&comm->proxyState->ipcSock, comm->rank, peerAddressesUDS[comm->rank], comm->abortFlag));
@@ -1893,6 +1898,7 @@ ncclResult_t ncclProxyCreate(struct ncclComm* comm) {
     proxyState->collNetContext = comm->collNetContext;
     proxyState->profilerContext = comm->profilerContext;
     proxyState->directMode = comm->directMode;
+    proxyState->commHash = comm->commHash;
     memcpy(proxyState->buffSizes, comm->buffSizes, sizeof(comm->buffSizes));
 
     comm->proxyState->thread = std::thread(ncclProxyService, comm->proxyState);
@@ -1903,6 +1909,7 @@ ncclResult_t ncclProxyCreate(struct ncclComm* comm) {
     comm->proxyState->threadUDS = std::thread(ncclProxyServiceUDS, comm->proxyState);
     ncclSetThreadName(comm->proxyState->threadUDS, "NCCL UDS Service %2d", comm->cudaDev);
   }
+  proxyState->owner = comm;
   return ncclSuccess;
 }
 
@@ -1952,6 +1959,8 @@ ncclResult_t ncclProxyStop(struct ncclComm* comm) {
 
 ncclResult_t ncclProxyDestroy(struct ncclComm* comm) {
   struct ncclProxyState* sharedProxyState = comm->sharedRes->proxyState;
+
+  NCCLCHECK(ncclx::colltrace::proxyTraceDestroy(sharedProxyState));
 
   if (sharedProxyState) {
     assert(sharedProxyState->refCount == 0);

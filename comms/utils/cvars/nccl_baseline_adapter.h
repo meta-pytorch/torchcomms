@@ -14,7 +14,7 @@ namespace nccl_baseline_adapter {
 /**
  *  @brief Load a numeric/integer-based CVAR.
  */
-void ncclLoadParam(
+int64_t ncclLoadParam(
     char const* env,
     int64_t deftVal,
     int64_t uninitialized,
