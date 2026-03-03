@@ -155,6 +155,7 @@ extras_require = {
 
 ext_modules = [
     CMakeExtension("torchcomms._comms"),
+    CMakeExtension("torchcomms.hooks.fr._fr"),
 ]
 
 if USE_NCCL:
