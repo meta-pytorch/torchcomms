@@ -13,6 +13,8 @@
 #include "checks.h"
 #include "compiler.h"
 
+#include "comms/ctran/utils/ErrorStackTraceUtil.h"
+
 // Is cuMem API usage enabled
 extern int ncclCuMemEnable();
 extern int ncclCuMemHostEnable();
@@ -152,6 +154,10 @@ inline ncclResult_t ncclCudaDriverVersion(int* driver) {
   *driver = version;
   return ncclSuccess;
 }
+
+// NCCLX - API
+bool ncclGetCuMemSysSupported();
+
 
 ncclResult_t ncclCuStreamBatchMemOp(cudaStream_t stream, unsigned int numOps, CUstreamBatchMemOpParams* batchParams);
 

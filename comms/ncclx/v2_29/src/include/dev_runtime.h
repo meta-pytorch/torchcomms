@@ -29,6 +29,22 @@ struct ncclDevrWindow {
   struct ncclDevrWindow* next; // next for intrusive map
   struct ncclComm* comm; // comm for intrusive map window <> comm look up
 };
+
+// Local-only window for source buffers (non-collective registration).
+// Uses parent's PD but skips rkey allGather. Can only be used as source for put.
+// NOTE: The first 5 fields (memory through winFlags) must match ncclDevrWindow
+// layout so that winFlags can be checked to distinguish window types.
+struct ncclDevrLocalWindow {
+  void* memory;      // nullptr for local-only windows (no ncclDevrMemory)
+  void* userPtr;
+  size_t size;
+  size_t bigOffset;  // 0 for local-only windows (no big VA space mapping)
+  int winFlags;      // Must be at same offset as ncclDevrWindow::winFlags
+  void* localRegHandle;
+  struct ncclWindow_vidmem* vidmem;
+  void* ginHostWins[NCCL_GIN_MAX_CONNECTIONS];
+  ncclGinWindow_t ginDevWins[NCCL_GIN_MAX_CONNECTIONS];
+};
 struct ncclDevrWindowSorted;
 struct ncclDevrTeam;
 

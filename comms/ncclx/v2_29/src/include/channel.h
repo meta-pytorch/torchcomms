@@ -17,6 +17,8 @@ ncclResult_t initNvlsChannel(struct ncclComm* comm, int channelId, struct ncclCo
 ncclResult_t initCollnetChannel(struct ncclComm* comm, int channelId, struct ncclComm* parent, bool share);
 ncclResult_t freeChannel(struct ncclChannel* channel, int nRanks, int collnetNRanks, int nvlsNRanks, struct ncclComm* comm);
 
+ncclResult_t setupChannel(struct ncclComm* comm, int channelId, int rank, int nranks, int* ringRanks);
+
 inline uint8_t ncclP2pChannelBaseForRound(struct ncclComm* comm, int p2pRound) {
   int base;
   if (comm->nNodes > 1) {

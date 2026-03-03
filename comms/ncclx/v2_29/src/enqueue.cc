@@ -26,6 +26,15 @@
 #include <cassert>
 #include <cfloat> // FLT_MAX
 
+#include "meta/wrapper/MetaFactory.h"
+#include "meta/transport/transportConnect.h"
+#include "meta/transport/transportProxy.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+#include "meta/algoconf/InfoExtOverride.h"
+#include "meta/colltrace/CollTraceFunc.h"
+#include "meta/colltrace/ProxyTraceFunc.h"
+#include "comms/utils/logger/EventsScubaUtil.h"
+
 NCCL_PARAM(L1SharedMemoryCarveout, "L1_SHARED_MEMORY_CARVEOUT", 0);
 NCCL_PARAM(AllgathervEnable, "ALLGATHERV_ENABLE", 1);
 NCCL_PARAM(SymCeThreshold, "SYM_CE_THRESHOLD", 8*1024*1024);
@@ -109,6 +118,7 @@ ncclResult_t ncclAddProxyOpIfNeeded(struct ncclComm* comm, struct ncclKernelPlan
   if (needed) {
     struct ncclProxyOp* q = ncclMemoryPoolAlloc<struct ncclProxyOp>(&comm->memPool_ncclProxyOp, &comm->memPermanent);
     *q = *op; // C++ struct assignment
+    ncclx::colltrace::proxyTraceInfoCopy(*q, comm);
     ncclIntruQueueEnqueue(&comm->planner.wipPlan.channels[op->channelId].proxyOpQueue, q);
   }
   return ncclSuccess;
@@ -433,7 +443,17 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
         aggEnd = aggEnd->next;
       }
 
-      NCCLCHECK(ncclGetAlgoInfo(comm, &agg, collNetSupport, nvlsSupport, nTasksPerChannel, simInfo));
+      // [META:INFO_EXT] Handle optional algorithm override for the collective
+      // task and bypass normal getAlgoInfo
+      // Algorithm override may fail with ncclInvalidUsage if grouped ops
+      // (see infoExtOverride). We error rather than
+      // implictly fallback because this is unexpected usage and should fix callsite.
+      if (agg.ext.has_value()) {
+        const auto isGrouped = (aggBeg->next != nullptr);
+        NCCLCHECK(ncclx::algoconf::infoExtOverride(&agg, isGrouped));
+      } else {
+        NCCLCHECK(ncclGetAlgoInfo(comm, &agg, collNetSupport, nvlsSupport, nTasksPerChannel, simInfo));
+      }
       agg.devFuncId = ncclDevFuncId(agg.func, agg.opDev.op, agg.datatype, agg.algorithm, agg.protocol);
 
       int isCollnet=0, isNvls=0;
@@ -457,6 +477,10 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
         aggBeg->nMaxChannels = agg.nMaxChannels;
         aggBeg->nWarps = agg.nWarps;
         aggBeg->devFuncId = agg.devFuncId;
+        // [META:INFO_EXT] Copy opDev if override was applied
+        if (agg.ext.has_value()) {
+          aggBeg->opDev = agg.opDev;
+        }
         aggBeg->isCollnet = isCollnet;
         aggBeg->isNvls = isNvls;
         ncclIntruQueueEnqueue(&collBins[isCollnet][isNvls], aggBeg);
@@ -487,7 +511,14 @@ ncclResult_t ncclPrepareTasks(struct ncclComm* comm, bool* algoNeedConnect, bool
     bool regNeedConnect = true;
     ncclRegisterCollNvlsBuffers(comm, task, regBufSend, regBufRecv, &planner->collCleanupQueue, &regNeedConnect);
 
-    if (comm->runtimeConn && comm->initAlgoChannels[task->algorithm] == false) {
+    // If NCCLX lazy channel setup is enabled and applicable, mark algos and
+    // number of channels need to be setup later in ncclCollPreconnectFunc for
+    // collectives. Otherwise, fallback to baseline runtime connection logic
+    if (comm->lazySetupChannels && ncclx::algoCanLazySetupChannel(comm, task)) {
+      *needConnect = ncclx::algoNeedConnect(comm, task);
+      algoNeedConnect[task->algorithm] |= *needConnect;
+    } else if (
+        comm->runtimeConn && comm->initAlgoChannels[task->algorithm] == false) {
       if (task->algorithm == NCCL_ALGO_NVLS_TREE && comm->initAlgoChannels[NCCL_ALGO_NVLS] == false && regNeedConnect == true) {
         comm->initAlgoChannels[NCCL_ALGO_NVLS] = true;
         algoNeedConnect[NCCL_ALGO_NVLS] = true;
@@ -629,6 +660,7 @@ static ncclResult_t scheduleCollTasksToPlan(
       uint32_t chunkSize, directFlags=0;
       NCCLCHECK(calcCollChunking(comm, task, nChannels, globalBytesPerElement*task->count, &chunkSize, &directFlags, &proxyOp));
       devWork->channelLo = 0;
+        ncclx::colltrace::proxyTraceAddBasicInfo(proxyOp, nChannels, proxyOp.task.coll->func);
       devWork->channelHi = nChannels-1;
       devWork->collnet.count = task->count;
       devWork->collnet.chunkCount = chunkSize/ncclTypeSize(task->datatype);
@@ -760,6 +792,7 @@ static ncclResult_t scheduleCollTasksToPlan(
         proxyOp->ringAlgo = NULL;
         if (proxyOp->reg && task->algorithm == NCCL_ALGO_RING && (task->recvNetHandles[c] || task->sendNetHandles[c])) {
           if (task->func == ncclFuncAllGather) {
+        ncclx::colltrace::proxyTraceAddBasicInfo(*proxyOp, nMaxChannels[kind], proxyOp->task.coll->func);
             proxyOp->ringAlgo = new RingAGAlgorithm(task->sendbuff, task->recvbuff, comm->nRanks, comm->channels[c].ring.userRanks, proxyOp->chunkSteps, proxyOp->sliceSteps, proxyOp->chunkSize, proxyOp->sliceSize, proxyOp->loopOffset, proxyOp->channelSize, elementSize, task->count * elementSize, task->sendNetHandles[c], task->recvNetHandles[c], task->srecvNetHandles[c]);
           } else if (task->func == ncclFuncAllReduce) {
             proxyOp->ringAlgo = new RingARAlgorithm(task->sendbuff, task->recvbuff, comm->nRanks, comm->channels[c].ring.index, proxyOp->chunkSteps, proxyOp->sliceSteps, proxyOp->chunkSize, proxyOp->sliceSize, proxyOp->loopOffset, proxyOp->channelSize, elementSize, task->sendNetHandles[c], task->recvNetHandles[c], task->srecvNetHandles[c]);
@@ -1009,6 +1042,8 @@ static ncclResult_t addP2pToPlan(
     op->task.p2p = p2pTasks[dir];
     op->rank = comm->rank;
     op->eActivationMask = p2pTasks[dir] ? p2pTasks[dir]->eActivationMask : 0;
+
+    ncclx::colltrace::proxyTraceAddBasicInfo(*op, nChannels[dir], static_cast<ncclFunc_t>(op->coll));
     // The following are modified per channel part in addWorkToChannels():
     // op->buffer, op->nbytes, op->nsteps = ...;
   }
@@ -1691,6 +1726,9 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
     CU_LAUNCH_PARAM_BUFFER_SIZE, &plan->kernelArgsSize,
     CU_LAUNCH_PARAM_END
   };
+  // CollTrace Injected code here
+  auto colltraceHandle = ncclx::colltrace::collTraceBaselineGetHandle(plan, launchStream);
+
 
   int driverVersion;
   NCCLCHECKGOTO(ncclCudaDriverVersion(&driverVersion), ret, do_return);
@@ -1763,11 +1801,15 @@ ncclResult_t ncclLaunchKernel(struct ncclComm* comm, struct ncclKernelPlan* plan
     launchConfig.attrs = launchAttrs;
     launchConfig.numAttrs = attrs;
     launchConfig.hStream = launchStream;
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::BeforeEnqueueKernel);
     CUCHECKGOTO(cuLaunchKernelEx(&launchConfig, fn, nullptr, extra), ret, do_return);
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::AfterEnqueueKernel);
   #endif
   } else {
     // Standard kernel launch
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::BeforeEnqueueKernel);
     CUCHECKGOTO(cuLaunchKernel(fn, grid.x, grid.y, grid.z, block.x, block.y, block.z, smem, launchStream, nullptr, extra), ret, do_return);
+    colltraceHandle->trigger(meta::comms::colltrace::CollTraceHandleTriggerState::AfterEnqueueKernel);
   }
 
 do_return:
@@ -2537,6 +2579,11 @@ static ncclResult_t p2pTaskAppend(
       uint8_t base = ncclP2pChannelBaseForRound(comm, round);
       for (int c=0; c < comm->p2pnChannelsPerPeer; c++) {
         int channelId = ncclP2pChannelForPart(comm->p2pnChannels, base, c);
+        /* if lazy setup is enabled, mark the channel as needing setup if
+          * peerInfo is not initilized on the assigned channelId */
+        if (comm->lazySetupChannels && !comm->channels[channelId].peers) {
+          ncclx::p2pNeedConnect(comm, peer, channelId, isSendNotRecv);
+        } else {
         if (isSendNotRecv) {
           if (comm->channels[channelId].peers[peer]->send[1].hasSeen == 0) { // P2P uses only 1 connector
             // the send/recv connector is shared among split shared comms. We need to set hasSeen to
@@ -2554,6 +2601,7 @@ static ncclResult_t p2pTaskAppend(
             comm->connectRecv[peer] |= (1ULL<<channelId);
             ncclGroupCommPreconnect(comm);
           }
+        }
         }
       }
     }
@@ -2618,6 +2666,8 @@ static ncclResult_t collTaskAppend(
   t->opDev = opDev; // C++ struct assignment
   t->chunkSteps = info->chunkSteps;
   t->sliceSteps = info->sliceSteps;
+  // [META:INFO_EXT] Copy ext to task to be handled in ncclPrepareTasks
+  t->ext = info->ext;
   t->eActivationMask = ncclProfilerApiState.eActivationMask;
   t->groupApiEventHandle = ncclProfilerApiState.groupApiEventHandle;
   t->collApiEventHandle = ncclProfilerApiState.collApiEventHandle;

@@ -21,12 +21,21 @@ MANIFEST := $(OBJDIR)/manifest
 DEVGLUE_OBJ  := $(OBJDIR)/device_glue.o
 
 INCFLAGS  = -I. -I.. -I$(BUILDDIR)/include -I../include -I../include/plugin
+INCFLAGS += -I../../
+
+INCFLAGS  += -I$(BASE_DIR)
+INCFLAGS  += -I$(CONDA_INCLUDE_DIR)
 NVCUFLAGS += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
 CXXFLAGS  += $(INCFLAGS)
 
 NVCUFLAGS_SYM += -ccbin $(CXX) $(CXXSTD) --expt-extended-lambda -Xptxas -maxrregcount=128 -Xfatbin -compress-all
 NVCUFLAGS_SYM += $(INCFLAGS) --compiler-options "-fPIC -fvisibility=hidden"
 #NVCUFLAGS_SYM += --ptx
+
+ifneq ($(ENABLE_TCPDM),1)
+NVCUFLAGS += --compiler-options "-DCTRAN_DISABLE_TCPDM"
+NVCUFLAGS_SYM += --compiler-options "-DCTRAN_DISABLE_TCPDM"
+endif
 
 SAY = @bash -c 'path="$$2"; [[ "$$(realpath "$$2")" =~ ^$(subst .,\.,$(abspath $(NCCLDIR)))/(.*)$$ ]] && path="$${BASH_REMATCH[1]}"; printf "%-15s %s\n" "$$1" "$$path"' SAY
 
@@ -78,7 +87,9 @@ $(OBJDIR)/gensrc: generate.py
 	  (bar='!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'; \
 	   printf "\n$${bar}\nERROR: Building NCCL requires a Python 3 installation invokable as 'python3'.\n$${bar}\n\n" 1>&2; \
 	   exit 1)) \
-	&& ./generate.py $@ "$(ONLY_FUNCS)"
+	&& ./generate.py $@ "$(ONLY_FUNCS)" \
+	&& ${BASE_DIR}/comms/ctran/algos/genctran.py $@/ctran \
+	&& mv $@/ctran/* $@
 
 $(OBJDIR)/gensrc/symmetric: $(OBJDIR)/gensrc symmetric/generate.py
 	@mkdir -p $@
@@ -97,6 +108,28 @@ $(OBJDIR)/gensrc/symmetric/rules.mk: $(OBJDIR)/gensrc/symmetric ;
 # "gensrc/symmetric/rules.mk" populates $(LIB_OBJS_SYM_GEN)
 
 SRCS = common.cu onerank.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAll/AllToAllPImpl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRing.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGather/AllGatherRecDbl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllReduce/AllReduceShm.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/DirectImpl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/PipelineImpl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllGatherP/AllGatherP.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAllvDedup/PrepareImpl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/AllToAllvDedup/ExecImpl.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/Broadcast/Broadcast.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecv.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecvStagedCopy.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/SendRecv/SendRecvP2p.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/Barrier.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/Checksum.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/PutSignal.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/RMA/Get.cu
+SRCS += ${BASE_DIR}/comms/ctran/algos/DevShmState.cu
+SRCS += all_reduce_sparse_block.cu
+
+-include $(OBJDIR)/gensrc/ctran_rules.mk
+SRCS += $(CTRAN_GEN_SRCS)
 
 LIB_OBJS = $(patsubst %, $(OBJDIR)/%.o, $(SRCS)) $(LIB_OBJS_GEN) $(LIB_OBJS_SYM_GEN)
 

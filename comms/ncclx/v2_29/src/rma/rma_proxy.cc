@@ -183,7 +183,7 @@ ncclResult_t ncclRmaProxyCreateContext(struct ncclComm *comm, void *collComm, nc
   // Enforcing strong ordering on the signals mr is vital to ensure ordering between puts and signals.
   size_t signalsBufSize = (comm->nRanks + 1) * sizeof(uint64_t);
   NCCLCHECK(ncclCuMemAlloc((void **)&rmaProxyCtx->signalsDev, &rmaProxyCtx->signalsCumemhandle,
-                           CU_MEM_HANDLE_TYPE_NONE, signalsBufSize, comm->memManager));
+                           CU_MEM_HANDLE_TYPE_NONE, signalsBufSize, comm->memManager, "ncclRmaProxyCreateContext"));
   CUDACHECK(cudaMemset(rmaProxyCtx->signalsDev, 0, signalsBufSize));
   NCCLCHECK(ncclRmaProxyRegMrSym(ginComm, rmaProxyCtx->ginCollComm, rmaProxyCtx->props, rmaProxyCtx->signalsDev, signalsBufSize,
                                  NCCL_PTR_CUDA, NCCL_NET_MR_FLAG_FORCE_SO,
@@ -195,11 +195,11 @@ ncclResult_t ncclRmaProxyCreateContext(struct ncclComm *comm, void *collComm, nc
   // Allocate the sequence numbers for the per-rank network function descriptors
   // These are allocated as CPU-accessible memory (either GDR or host memory)
   NCCLCHECK(allocMemCPUAccessible(&rmaProxyCtx->opSeqs, &rmaProxyCtx->opSeqsDev,
-                                  comm->nRanks, 0, &rmaProxyCtx->opSeqsGdrHandle, comm->memManager));
+                                  comm->nRanks, 0, &rmaProxyCtx->opSeqsGdrHandle, comm->memManager, comm->logMetaData));
   NCCLCHECK(allocMemCPUAccessible(&rmaProxyCtx->readySeqs, &rmaProxyCtx->readySeqsDev,
-                                  comm->nRanks, 0, &rmaProxyCtx->readySeqsGdrHandle, comm->memManager));
+                                  comm->nRanks, 0, &rmaProxyCtx->readySeqsGdrHandle, comm->memManager, comm->logMetaData));
   NCCLCHECK(allocMemCPUAccessible(&rmaProxyCtx->doneSeqs, &rmaProxyCtx->doneSeqsDev,
-                                  comm->nRanks, 0, &rmaProxyCtx->doneSeqsGdrHandle, comm->memManager));
+                                  comm->nRanks, 0, &rmaProxyCtx->doneSeqsGdrHandle, comm->memManager, comm->logMetaData));
 
   // Sanitize and set up the lock-free circular buffer queue size
   uint64_t queueSize = ncclParamRmaProxyQueueSize();

@@ -38,6 +38,8 @@ uint64_t getPidHash();
 uint64_t hashCombine(uint64_t baseHash, uint64_t value);
 ncclResult_t getRandomData(void* buffer, size_t bytes);
 
+bool isFastInitRingMode(int fastInitMode);
+
 struct netIf {
   char prefix[64];
   int port;

@@ -26,6 +26,29 @@
 #include "argcheck.h"
 #include "mem_manager.h"
 
+#include <optional>
+
+#include "comms/ctran/CtranComm.h"
+#include "comms/utils/colltrace/AlgoStats.h"
+#include "comms/utils/colltrace/CollTraceInterface.h"
+#include "comms/ctran/memory/SlabAllocator.h"
+#include "meta/algoconf/InfoExt.h"
+#include "comms/ctran/memory/memCacheAllocator.h"
+#include "comms/utils/commSpecs.h"
+
+// Forward declarations of ncclx classes to avoid circular dependencies
+class ICtran;
+namespace ctran::bootstrap {
+class IBootstrap;
+} // namespace ctran::bootstrap
+class CollTrace;
+namespace ncclx {
+class CommStateX;
+} // namespace ncclx
+namespace ncclx::transport {
+class TransportProxy;
+} // namespace ncclx::transport
+
 #if CUDART_VERSION < 9000
 struct cudaLaunchParams {
   void *func;
@@ -225,6 +248,8 @@ struct ncclTaskColl {
   void* collApiEventHandle;
   void* eventHandle;
   uint8_t nChannels;
+  // [META:INFO_EXT] Extension for per-comm algorithm/protocol override
+  std::optional<ncclx::algoconf::ncclInfoExt> ext;
 };
 
 
@@ -247,6 +272,8 @@ struct ncclTaskBcast {
   void* collApiEventHandle;
   void* eventHandle;
   uint8_t nChannels;
+  // [META:INFO_EXT] Extension for per-comm algorithm/protocol override
+  std::optional<ncclx::algoconf::ncclInfoExt> ext;
 };
 
 struct ncclTaskP2p {
@@ -345,6 +372,14 @@ struct ncclKernelPlan {
   void* groupApiEventHandle;
   void* kernelLaunchEventHandle;
   void* groupEventHandle;
+
+  // Pointer of a hashmap to store the connection information of peers
+  // the usage is in transportConnect.cc
+  std::shared_ptr<void> peerReconnInfoMap{nullptr};
+  // buffer keys used in plan, used to reserve and release buffers
+  std::vector<std::string> bufKeys;
+  // pointer to be used to synchronize with the kernel for the current plan
+  uint64_t* channelsReadyPtr{nullptr};
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -494,6 +529,10 @@ struct ncclKernelPlanner {
   struct ncclIntruQueue<struct ncclKernelPlan, &ncclKernelPlan::next> planQueue;
   // First of the unlaunched kernels in `planQueue`
   struct ncclKernelPlan* unlaunchedPlansHead;
+  // track number of channels that need to be initialized in current plann
+  int nMaxChannelsNeedInit{0};
+  // track number of channels each algorithm needs to connect in current plan
+  std::array<int, NCCL_NUM_ALGORITHMS> algoMaxChannelsNeedConnect{0};
 };
 
 #define NCCL_MAGIC 0x0280028002800280 // Nickel atomic number is 28.
@@ -554,6 +593,21 @@ struct ncclComm {
   bool runtimeConn; // if dynamic connection is supported
   bool directMode; // if any process manages more than one local rank
   int cuMemSupport;
+
+  // NCCLX supports storing channel metadata on the pinned host memory
+  // See the description of NCCL_CHANNEL_METADATA_LOCATION for details
+  bool channelMetadataOnHost{false};
+  // if channels can/will be setup lazily for this communicator
+  bool lazySetupChannels{false};
+  // number of channels that are initialized and ready for use
+  int nChannelsReady{0};
+  // number of channels that are connected for each algorithm
+  std::array<int, NCCL_NUM_ALGORITHMS> algoConnectedChannels{0};
+  // metadata to be used for initializing channels lazily if enabled
+  std::optional<struct ncclKernelCommAndChannels*> devCommAndChans{std::nullopt};
+  std::optional<std::vector<int>> rings{std::nullopt};
+  // Slab Allocator for baseline initChannel metadata allocation
+  std::unique_ptr<ncclx::memory::SlabAllocator> slabAllocator{nullptr};
 
   uint64_t magic; // Magic number for all network communication. Not a security key -- only goal is to detect mismatches.
 
@@ -766,14 +820,52 @@ struct ncclComm {
 
   struct ncclDevrState devrState; // The symmetric runtime state
   struct ncclSymkState symkState; // The symmetric kernels state (built on previous)
+  int* rackSerials{nullptr};
+
+  /**
+   * NCCLX specific state
+   */
+  struct CommLogData logMetaData;
+  std::shared_ptr<CollTrace> collTrace;
+  std::shared_ptr<meta::comms::colltrace::ICollTrace> newCollTrace;
+  std::unique_ptr<meta::comms::colltrace::AlgoStats> algoStats;
+  std::shared_ptr<ctran::bootstrap::IBootstrap> ctranBootstrap;
+  std::shared_ptr<ncclx::memory::memCacheAllocator> memCache{nullptr};
+  std::vector<std::string> connSetupBufKeys;
+  std::shared_ptr<ncclx::transport::TransportProxy> transportProxy_;
+
+  // This is the only bridge between ctran and baseline code
+  bool useCtran_{false}; // Ctran per-communicator control; set at init entry functions
+  std::unique_ptr<CtranComm> ctranComm_;
+
+  // [META:PAT_AVG] per-communicator control; set at init entry functions
+  // When enabled, forces PAT algorithm with ncclDevPatSumPostDiv for ReduceScatter with ncclAvg
+  bool usePatAvg_{false};
+
+  // Disable local transports (P2P and SHM); forces NET for all connections
+  bool noLocal_{false};
 
   struct ncclMemManager* memManager;  // Memory manager
 
   uint64_t endMagic;
 };
 
-static_assert(offsetof(struct ncclComm, startMagic) == 0, "startMagic must be the first field of ncclComm");
-static_assert(offsetof(struct ncclComm, endMagic) == sizeof(struct ncclComm) - sizeof(uint64_t), "endMagic must be the last field of ncclComm");
+// record how many interNode/intraNode connections are made in one ncclTransportP2pConnect call
+struct connectionSummary {
+  int intraSend = 0;
+  int intraRecv = 0;
+  int interSend = 0;
+  int interRecv = 0;
+
+  std::string toString() {
+    std::ostringstream oss;
+    oss << "intraSends: " <<  intraSend << " intraRecvs: " << intraRecv << " interSends: " << interSend << " interRecvs: " << interRecv;
+    return oss.str();
+  }
+};
+
+// static_assert(offsetof(struct ncclComm, startMagic) == 0, "startMagic must be the first field of ncclComm");
+// static_assert(offsetof(struct ncclComm, endMagic) == sizeof(struct ncclComm) - sizeof(uint64_t), "endMagic must be the last field of ncclComm");
 
 enum ncclLaunchMode {
   ncclLaunchModeInvalid=0,
@@ -883,4 +975,9 @@ static inline ncclRedOp_t ncclUserRedOpMangle(ncclComm *comm, ncclRedOp_t op) {
 ncclResult_t ncclCommEnsureReady(ncclComm_t comm);
 ncclResult_t ncclCommSetAsyncError(ncclComm_t comm, ncclResult_t nextState);
 
+// Check whether we should skip NCCL internal resource destory (i.e.,
+// ncclCommAbort has been called with COMM_ABORT_SCOPE
+// == none or job). This allows any destructors automatically triggered by
+// process termination to skip resource cleanup and leak check.
+bool skipDestroy();
 #endif

@@ -11,7 +11,13 @@
 
 NCCL_PARAM(MultiSegmentRegister, "MULTI_SEGMENT_REGISTER", 1);
 
+#include "meta/transport/transportConnect.h"
+
 ncclResult_t ncclTransportRingConnect(struct ncclComm* comm) {
+  if (comm && comm->lazySetupChannels) {
+    return ncclx::transportRingConnect(
+        comm, comm->planner.algoMaxChannelsNeedConnect[NCCL_ALGO_RING]);
+  }
   struct ringConnInfo {
     bool useNetPXN;
     bool useGdr;
@@ -47,6 +53,10 @@ fail:
 }
 
 ncclResult_t ncclTransportTreeConnect(struct ncclComm* comm) {
+  if (comm && comm->lazySetupChannels) {
+    return ncclx::transportTreeConnect(
+        comm, comm->planner.algoMaxChannelsNeedConnect[NCCL_ALGO_TREE]);
+  }
   ncclResult_t ret = ncclSuccess;
   if (comm && comm->nRanks > 1) {
     // Connect Trees
@@ -65,6 +75,9 @@ fail:
 }
 
 ncclResult_t ncclTransportPatConnect(struct ncclComm* comm) {
+  if (comm && comm->lazySetupChannels) {
+    return ncclx::transportPatConnect(comm, comm->planner.algoMaxChannelsNeedConnect[NCCL_ALGO_PAT]);
+  }
   ncclResult_t ret = ncclSuccess;
   if (comm && comm->nRanks > 1) {
     for (int mask=1; mask<comm->nRanks; mask<<=1) {

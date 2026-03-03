@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+cmake_minimum_required(VERSION 3.25) # ipp6 is using 3.28
 
 # Version information
 # Read makefiles/version.mk file

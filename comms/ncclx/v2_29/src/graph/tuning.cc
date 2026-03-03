@@ -10,6 +10,7 @@
 #include "comm.h"
 #include "topo.h"
 #include "nccl_tuner.h"
+#include "comms/utils/cvars/nccl_cvars.h"
 
 NCCL_PARAM(Nthreads, "NTHREADS", -2);
 NCCL_PARAM(Ll128Nthreads, "LL128_NTHREADS", -2);
@@ -225,6 +226,21 @@ ncclResult_t ncclTopoInitTunerConstants(struct ncclComm* comm) {
 
   comm->tunerConstants = ncclTunerConstantsDefaults;
 
+  if (!NCCL_TOPO_BOND_V228) {
+    // v2.27-like Blackwell tuning: double the per-channel bandwidths
+    comm->tunerConstants.perChMaxRingLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][0] = 2*36.7;
+    comm->tunerConstants.perChMaxRingLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][1] = 2*36.7;
+    comm->tunerConstants.perChMaxRingLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][2] = 2*36.7;
+
+    comm->tunerConstants.perChMaxTreeLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][0] = 2*36.7;
+    comm->tunerConstants.perChMaxTreeLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][1] = 2*36.7;
+    comm->tunerConstants.perChMaxTreeLL128Bws[NCCL_BLACKWELL_COMPCAP_IDX][2] = 2*29.0;
+
+    comm->tunerConstants.perChMaxTreeBws[NCCL_BLACKWELL_COMPCAP_IDX][0] = 2*38.7;
+    comm->tunerConstants.perChMaxTreeBws[NCCL_BLACKWELL_COMPCAP_IDX][1] = 2*41.4;
+    comm->tunerConstants.perChMaxTreeBws[NCCL_BLACKWELL_COMPCAP_IDX][2] = 2*36.0;
+  }
+
   return ncclSuccess;
 }
 
@@ -237,7 +253,9 @@ ncclResult_t ncclTopoTuneModel(struct ncclComm* comm, int minCompCap, int maxCom
   comm->maxThreads[NCCL_ALGO_COLLNET_DIRECT][NCCL_PROTO_SIMPLE] =
     comm->maxThreads[NCCL_ALGO_COLLNET_CHAIN][NCCL_PROTO_SIMPLE] =
     comm->maxThreads[NCCL_ALGO_NVLS][NCCL_PROTO_SIMPLE] =
-    comm->maxThreads[NCCL_ALGO_NVLS_TREE][NCCL_PROTO_SIMPLE] = NCCL_MAX_NTHREADS;
+    comm->maxThreads[NCCL_ALGO_NVLS_TREE][NCCL_PROTO_SIMPLE] =
+    // [META:PAT] Initialize PAT maxThreads so channel-reduction logic works
+    comm->maxThreads[NCCL_ALGO_PAT][NCCL_PROTO_SIMPLE] = NCCL_MAX_NTHREADS;
   comm->maxThreads[NCCL_ALGO_RING][NCCL_PROTO_LL] = comm->maxThreads[NCCL_ALGO_TREE][NCCL_PROTO_LL] =
     getNthreads("NCCL_NTHREADS", ncclParamNthreads(), 2*WARP_SIZE, NCCL_LL_MAX_NTHREADS, NCCL_LL_MAX_NTHREADS);
   comm->maxThreads[NCCL_ALGO_RING][NCCL_PROTO_LL128] = comm->maxThreads[NCCL_ALGO_TREE][NCCL_PROTO_LL128] =

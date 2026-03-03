@@ -25,6 +25,7 @@
 #include "doca_gpunetio_host.h"
 #include "nccl_device/gin/gdaki/gin_gdaki_device_host_common.h"
 #include "../gin.h"
+#include "checks.h"
 
 #define DOCACHECK(call)                                       \
   do {                                                        \
@@ -174,7 +175,7 @@ class GdakiHostGPUMemHandle {
     EQCHECK(this->host_buf, nullptr);
 
     NCCLCHECK(ncclCuMemAlloc((void **)&this->gpu_buf, &this->cumemhandle, CU_MEM_HANDLE_TYPE_NONE,
-                             num_elements * sizeof(T), nullptr));
+                             num_elements * sizeof(T), nullptr, "GdakiHostGPUMemHandle"));
 
     this->num_elements = num_elements;
 
@@ -226,7 +227,7 @@ class GdakiGlobalGPUBufferTable {
 
   ncclResult_t allocate(unsigned int num_elements, unsigned int num_ranks) {
     NCCLCHECK(ncclCuMemAlloc((void **)&this->gpu_ptr, &this->cumemhandle, CU_MEM_HANDLE_TYPE_NONE,
-                             num_elements * sizeof(T), nullptr));
+                             num_elements * sizeof(T), nullptr, "GdakiGlobalGPUBufferTable"));
     CUDACHECK(cudaMemset(this->gpu_ptr, 0, num_elements * sizeof(T)));
     NCCLCHECK(this->rkeys_hd_mhandle.allocate(num_ranks));
 
@@ -699,7 +700,7 @@ retry_create_qp_group_hl:
   }
 
   NCCLCHECKGOTO(ncclCuMemAlloc((void **)&sink_buffer, &sink_buffer_mhandle, CU_MEM_HANDLE_TYPE_NONE,
-                               sizeof(uint64_t), nullptr),
+                               sizeof(uint64_t), nullptr, "ncclGinGdakiCreateContext"),
                 status, out);
 
   NCCLCHECKGOTO(gdakiRegMr(&sink_buffer_mr, gdaki_ctx->ib_pd, sink_buffer, sizeof(uint64_t),
@@ -992,6 +993,66 @@ ncclResult_t ncclGinGdakiDeregMrSym(void *collComm, void *mhandle) {
 
   return ncclSuccess;
 }
+
+// Local-only MR registration - NO allGather, only lkey, rkeys=NULL
+// Used for source buffers that don't need to be accessed by remote peers.
+// The resulting handle can only be used as a source buffer for RDMA writes.
+ncclResult_t ncclGinGdakiRegMrLocal(void *collComm, void *data, size_t size, int type,
+                                    void **mhandle, void **ginHandle) {
+  struct ncclGinIbCollComm *cComm = (struct ncclGinIbCollComm *)collComm;
+  struct gdaki_context *gdaki_ctx = (struct gdaki_context *)cComm->ginCtx;
+  struct ibv_mr *mr = nullptr;
+
+  // Allocate device-side handle (no rkeys array needed for local-only registration)
+  GdakiHostGPUMemHandle<struct ncclGinGdakiMemHandle> *gdaki_mhandle_hd_mhandle =
+    new GdakiHostGPUMemHandle<struct ncclGinGdakiMemHandle>(1);
+
+  struct gdaki_mem_handle *gdaki_mhandle = nullptr;
+  gdaki_mhandle = (struct gdaki_mem_handle *)calloc(1, sizeof(*gdaki_mhandle));
+  EQCHECK(gdaki_mhandle, nullptr);
+
+  // Local IB memory registration - uses parent's ib_pd (shared via ginState)
+  // Only need LOCAL_WRITE and REMOTE_READ for source buffers
+  NCCLCHECK(gdakiRegMr(&mr, gdaki_ctx->ib_pd, data, size,
+                       IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ));
+
+  // NO allGather - this is the key difference from regMrSym
+  // Populate handle with lkey only, rkeys = NULL (cannot be used as destination)
+  gdaki_mhandle_hd_mhandle->host_buf->rkeys = nullptr;
+  gdaki_mhandle_hd_mhandle->host_buf->lkey = htobe32(mr->lkey);
+  NCCLCHECK(gdaki_mhandle_hd_mhandle->copy_h_to_d());
+
+  gdaki_mhandle->type = type;
+  gdaki_mhandle->mr = mr;
+  gdaki_mhandle->gdaki_mhandle_hd_mhandle = gdaki_mhandle_hd_mhandle;
+  gdaki_mhandle->rkeys_hd_mhandle = nullptr;  // No rkeys for local-only registration
+
+  INFO(NCCL_NET, "[%d] Local MR registered: data=%p, size=%zu, lkey(be32)=%#x",
+       cComm->rank, data, size, htobe32(mr->lkey));
+
+  *mhandle = (void *)gdaki_mhandle;
+  *ginHandle = (void *)gdaki_mhandle_hd_mhandle->gpu_buf;
+
+  return ncclSuccess;
+}
+
+ncclResult_t ncclGinGdakiDeregMrLocal(void *collComm, void *mhandle) {
+  struct ncclGinIbCollComm *cComm = (struct ncclGinIbCollComm *)collComm;
+  struct gdaki_mem_handle *gdaki_mhandle = (struct gdaki_mem_handle *)mhandle;
+  struct ibv_mr *mr = gdaki_mhandle->mr;
+
+  INFO(NCCL_NET, "[%d] Unregistering local MR: lkey(be32)=%#x", cComm->rank, htobe32(mr->lkey));
+
+  NCCLCHECK(wrap_ibv_dereg_mr(mr));
+
+  delete gdaki_mhandle->gdaki_mhandle_hd_mhandle;
+  // Note: rkeys_hd_mhandle is nullptr for local-only registrations, no need to delete
+
+  memset(gdaki_mhandle, 0, sizeof(*gdaki_mhandle));
+  free(gdaki_mhandle);
+
+  return ncclSuccess;
+ }
 
 ncclResult_t ncclGinGdakiProgress(void *collComm) {
   struct ncclGinIbCollComm *cComm = (struct ncclGinIbCollComm *)collComm;

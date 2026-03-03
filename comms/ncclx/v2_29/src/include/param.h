@@ -10,15 +10,34 @@
 
 #include <stdint.h>
 #include "compiler.h"
+#include <string_view>
+#include "comms/utils/cvars/nccl_cvars.h"
 
 const char* userHomeDir();
 void setEnvFile(const char* fileName);
 void initEnv();
-const char *ncclGetEnv(const char *name);
+const char* ncclGetEnvStr(std::string_view name);
+
+#define ncclGetEnv(name)                                                                                                                     \
+  (([]() -> const char* {                                                                                                                    \
+    static_assert(                                                                                                                           \
+        ncclx::isCvarRegistered(name),                                                                                                       \
+        "Unregistered CVAR \"" name                                                                                                          \
+        "\". Please add this CVAR to \"fbcode/comms/utils/cvars/nccl_cvars.yaml\", regenerate the nccl_cvars.(h|cc) files, and recompile."); \
+    return ncclGetEnvStr(name);                                                                                                              \
+  })())
+
+void ncclLoadParam(
+    char const* env,
+    int64_t deftVal,
+    int64_t uninitialized,
+    int64_t* cache);
 
 int64_t ncclLoadParam(char const* env, int64_t deftVal, int64_t uninitialized, int64_t* cache, int8_t* noCache);
 
 #define NCCL_PARAM(name, env, deftVal) \
+  static_assert(ncclx::isCvarRegistered("NCCL_" env), \
+      "Unregistered CVAR \"NCCL_" env "\". Please add this CVAR to \"fbcode/comms/utils/cvars/nccl_cvars.yaml\", regenerate the nccl_cvars.(h|cc) files, and recompile."); \
   int64_t ncclParam##name() { \
     constexpr int64_t uninitialized = INT64_MIN; \
     static int8_t noCache = /*uninitialized*/ -1; \
@@ -29,5 +48,7 @@ int64_t ncclLoadParam(char const* env, int64_t deftVal, int64_t uninitialized, i
     } \
     return cache; \
   }
+
+void initNcclLogger();
 
 #endif

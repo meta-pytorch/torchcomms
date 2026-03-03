@@ -16,6 +16,10 @@
 #include "transport.h"
 #include "register_inline.h"
 
+#include "comms/utils/logger/Logger.h"
+#include "comms/ctran/memory/Utils.h"
+#include "comms/utils/cvars/nccl_cvars.h"
+
 #if CUDART_VERSION >= 12010
 
 struct graphRegData {
@@ -273,6 +277,12 @@ static ncclResult_t nvlsAllocateMem(struct ncclComm* comm, const CUmemAccessDesc
   CUDACHECKGOTO(cudaMemset(*ucptr, 0, ucsize), ret, fail3);
   // Track NVLS buffer as persistent memory
   NCCLCHECKGOTO(ncclMemTrack(comm->memManager, *ucptr, ucsize, *ucHandle, ncclCuMemHandleType, ncclMemPersist), ret, fail3);
+  logMemoryEvent(
+    comm->logMetaData,
+    "nvlsAllocateMem",
+    "cuMemCreate",
+    reinterpret_cast<uintptr_t>(*ucptr),
+    size);
 
   // intra-node barrier to mitigate the possible hang in cuMulticastBindMem during abort
   NCCLCHECKGOTO(bootstrapIntraNodeBarrier(comm->bootstrap, comm->localRankToRank, comm->localRank, comm->localRanks, comm->localRankToRank[0]), ret, fail3);
