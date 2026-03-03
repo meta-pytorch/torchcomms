@@ -254,7 +254,7 @@ c10::intrusive_ptr<TorchWorkXCCL> TorchCommXCCL::createWork(
     const std::vector<at::Tensor>& inputTensors) {
   // Only create the work object without enqueuing it
   auto work = c10::make_intrusive<TorchWorkXCCL>(
-      shared_from_this(), stream, timeout, inputTensors, tracing_);
+      shared_from_this(), stream, timeout, inputTensors);
   return work;
 }
 
