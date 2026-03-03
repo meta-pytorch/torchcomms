@@ -11,7 +11,7 @@ import torch.distributed as dist
 import torch.distributed.distributed_c10d as c10d
 import torchcomms
 from torchcomms import ReduceOp
-from torchcomms._comms import _get_store
+from torchcomms._internal import _get_store
 from torchcomms.device_mesh import (
     _create_torchcomm_process_group,
     _flatten_with_comm,

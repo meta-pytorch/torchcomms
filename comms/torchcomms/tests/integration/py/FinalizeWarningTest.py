@@ -14,7 +14,7 @@ import unittest
 
 import torch
 from torchcomms import new_comm
-from torchcomms._comms import _get_store
+from torchcomms._internal import _get_store
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     get_rank_and_size,
     maybe_set_rank_envs,
