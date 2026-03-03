@@ -1039,6 +1039,57 @@ TEST_F(RegCacheTest, IpcRemRegElemRefCountInitial) {
   EXPECT_EQ(ipcRegCache->getNumRemReg("test_peer_refcount"), 0);
 }
 
+// Test that forceFree bypasses refcount and always frees the segment
+TEST_F(RegCacheTest, FreeSegmentForceFreeBypassesRefCount) {
+  size_t bufSize = 8192;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  // Cache the segment twice to get refcount=2
+  std::vector<ctran::regcache::Segment*> segments1;
+  std::vector<void*> segHdls1;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments1, segHdls1),
+      commSuccess);
+  EXPECT_EQ(segments1.size(), 1);
+
+  std::vector<ctran::regcache::Segment*> segments2;
+  std::vector<void*> segHdls2;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments2, segHdls2),
+      commSuccess);
+  EXPECT_EQ(segments1[0], segments2[0]); // same segment, refcount=2
+
+  // Without forceFree, first free should NOT actually free (refcount > 0)
+  bool freed = false;
+  bool ncclManaged = false;
+  std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElems;
+  EXPECT_EQ(
+      regCache->freeSegment(segHdls1[0], freed, ncclManaged, regElems, false),
+      commSuccess);
+  EXPECT_FALSE(freed);
+
+  // Re-cache to restore refcount to 2
+  std::vector<ctran::regcache::Segment*> segments3;
+  std::vector<void*> segHdls3;
+  EXPECT_EQ(
+      regCache->cacheSegment(
+          buf, bufSize, cudaDev, false, 0, segments3, segHdls3),
+      commSuccess);
+
+  // With forceFree=true, should free even though refcount > 1
+  freed = false;
+  regElems.clear();
+  EXPECT_EQ(
+      regCache->freeSegment(segHdls3[0], freed, ncclManaged, regElems, true),
+      commSuccess);
+  EXPECT_TRUE(freed);
+
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
