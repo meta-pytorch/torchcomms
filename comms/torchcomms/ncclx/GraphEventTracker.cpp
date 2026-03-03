@@ -106,9 +106,9 @@ void GraphEventTracker::maybeInitGraphState(
 void GraphEventTracker::addEntry(TorchWorkNCCLX* work) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Transfer start/end event ownership from the work object
+  // Transfer start/end event ownership from the work object, grouped by stream.
   auto [it, inserted] = graphs_.try_emplace(current_graph_id_);
-  it->second.entries.emplace_back(
+  it->second.stream_entries[work->stream_].emplace_back(
       work->start_event_, work->end_event_, work->timeout_ms_);
   work->start_event_ = nullptr;
   work->end_event_ = nullptr;
@@ -176,46 +176,59 @@ GraphEventTracker::CheckResult GraphEventTracker::checkAll() {
     uint64_t current_replay =
         graph_state.shared_->replay_counter.load(std::memory_order_acquire);
 
-    for (size_t i = 0; i < graph_state.entries.size(); ++i) {
-      auto& entry = graph_state.entries[i];
+    // Collectives are ordered per stream — within each stream, if collective i
+    // has not completed, collective i+1 cannot have started. This allows us to
+    // skip all subsequent collectives on the same stream once we find the first
+    // incomplete one.
+    for (auto& [stream, entries] : graph_state.stream_entries) {
+      for (size_t i = 0; i < entries.size(); ++i) {
+        auto& entry = entries[i];
 
-      // Detect new replay — reset timer to avoid false timeout spanning
-      // multiple replays
-      if (current_replay != entry.last_seen_replay) {
-        entry.start_completed_time.reset();
-        entry.last_seen_replay = current_replay;
-      }
-
-      cudaError_t start_status, end_status;
-      EVENT_QUERY_CHECK(
-          api->eventQuery(entry.start_event),
-          start_status,
-          "start event query");
-      EVENT_QUERY_CHECK(
-          api->eventQuery(entry.end_event), end_status, "end event query");
-
-      if (end_status == cudaSuccess) {
-        // Collective completed or no replay in progress
-        entry.start_completed_time.reset();
-      } else if (start_status == cudaSuccess) {
-        // Collective in progress — start or continue timing
-        if (!entry.start_completed_time.has_value()) {
-          entry.start_completed_time = std::chrono::steady_clock::now();
+        // Detect new replay — reset timer to avoid false timeout spanning
+        // multiple replays
+        if (current_replay != entry.last_seen_replay) {
+          entry.start_completed_time.reset();
+          entry.last_seen_replay = current_replay;
         }
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() -
-            entry.start_completed_time.value());
-        if (entry.timeout.count() >= 0 && elapsed > entry.timeout) {
-          TC_LOG(ERROR, comm_)
-              << "Graph monitor: collective TIMED OUT for graph " << graph_id
-              << " collective " << i << " on rank " << comm_->getRank()
-              << " - elapsed " << elapsed.count() << "ms > timeout "
-              << entry.timeout.count() << "ms";
-          return CheckResult::TIMEOUT;
+
+        cudaError_t start_status, end_status;
+        EVENT_QUERY_CHECK(
+            api->eventQuery(entry.start_event),
+            start_status,
+            "start event query");
+        EVENT_QUERY_CHECK(
+            api->eventQuery(entry.end_event), end_status, "end event query");
+
+        if (end_status == cudaSuccess) {
+          // Collective completed or no replay in progress
+          entry.start_completed_time.reset();
+          continue;
         }
-      } else {
-        // Both notReady — replay started but haven't reached this collective
-        entry.start_completed_time.reset();
+
+        // end is notReady — this is the first incomplete collective on this
+        // stream. All subsequent collectives on this stream cannot have
+        // started, so we can skip them.
+        if (start_status == cudaSuccess) {
+          // Collective in progress — start or continue timing
+          if (!entry.start_completed_time.has_value()) {
+            entry.start_completed_time = std::chrono::steady_clock::now();
+          }
+          auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() -
+              entry.start_completed_time.value());
+          if (entry.timeout.count() >= 0 && elapsed > entry.timeout) {
+            TC_LOG(ERROR, comm_)
+                << "Graph monitor: collective TIMED OUT for graph " << graph_id
+                << " collective " << i << " on rank " << comm_->getRank()
+                << " - elapsed " << elapsed.count() << "ms > timeout "
+                << entry.timeout.count() << "ms";
+            return CheckResult::TIMEOUT;
+          }
+        } else {
+          // Both notReady — replay hasn't reached this collective yet
+          entry.start_completed_time.reset();
+        }
+        break;
       }
     }
   }
@@ -228,8 +241,10 @@ void GraphEventTracker::cleanupReleasedGraphs() {
   CudaApi* api = comm_->getCudaApi();
   for (auto it = graphs_.begin(); it != graphs_.end();) {
     if (it->second.shared_->released.load(std::memory_order_relaxed)) {
-      for (auto& entry : it->second.entries) {
-        entry.destroyEvents(api);
+      for (auto& [stream, entries] : it->second.stream_entries) {
+        for (auto& entry : entries) {
+          entry.destroyEvents(api);
+        }
       }
       it = graphs_.erase(it);
     } else {
@@ -242,8 +257,10 @@ void GraphEventTracker::destroyAll() {
   CudaApi* api = comm_->getCudaApi();
   std::lock_guard<std::mutex> lock(mutex_);
   for (auto& [graph_id, graph_state] : graphs_) {
-    for (auto& entry : graph_state.entries) {
-      entry.destroyEvents(api);
+    for (auto& [stream, entries] : graph_state.stream_entries) {
+      for (auto& entry : entries) {
+        entry.destroyEvents(api);
+      }
     }
   }
   graphs_.clear();
