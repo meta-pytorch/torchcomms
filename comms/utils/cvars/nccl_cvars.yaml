@@ -2963,3 +2963,367 @@ cvars:
    type        : int
    default     : 8
    description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-p2p-schedule-group-size
+
+ - name        : NCCL_IPC_USE_ABSTRACT_SOCKET
+   type        : int
+   default     : 1
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-ipc-use-abstract-socket
+
+ - name        : NCCL_SYM_NOWIN_ENABLE
+   type        : int
+   default     : 0
+   description : |-
+     Controls whether symmetric LL (Low-Latency) kernels are allowed to run on
+     buffers that are not registered in symmetric memory windows (i.e., with
+     winRegType == ncclSymSendNonregRecvNonreg). When disabled (0, the default),
+     if the scheduler selects a symmetric LL kernel but the send and receive
+     buffers are not window-registered, NCCL queries the legacy cost model and
+     falls back to a legacy kernel unless the legacy model also selects the LL
+     protocol. When enabled (1), this fallback check is bypassed, allowing
+     symmetric LL kernels to proceed even with non-registered buffers. This
+     preference is overridden if the user has already forced a specific symmetric
+     kernel via NCCL_SYM_KERNEL, or if both buffers are registered (in which case
+     symmetric kernels always proceed without fallback).
+
+ - name        : NCCL_SOCKET_POLL_TIMEOUT_MSEC
+   type        : int
+   default     : 100
+   description : https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/env.html#nccl-socket-poll-timeout-msec
+
+ - name        : NCCL_MULTI_SEGMENT_REGISTER
+   type        : int
+   default     : 1
+   description : |-
+     Controls whether NCCL allows registration of user buffers that span multiple
+     CUDA virtual memory segments (i.e., buffers backed by multiple physical
+     allocations mapped into a contiguous virtual address range). When enabled (1,
+     the default), multi-segment buffers are registered for zero-copy transport
+     across Net, NVLS, and P2P paths. When disabled (0), any buffer spanning more
+     than one segment is silently skipped for registration, falling back to staged
+     copy paths. This is relevant for workloads using CUDA VMM (Virtual Memory
+     Management) APIs where allocations may comprise multiple physical segments.
+     The flag acts as a safety valve to disable multi-segment registration if it
+     causes issues.
+
+ - name        : NCCL_RMA_PROXY_DUMP_SIGNAL
+   type        : int
+   default     : -1
+   description : |-
+     Specifies a POSIX signal number that, when sent to the process, triggers a
+     dump of the RMA (Remote Memory Access) proxy state for debugging purposes.
+     When set to a valid signal number (e.g., 10 for SIGUSR1), the RMA proxy
+     progress thread registers a signal handler that prints comprehensive
+     diagnostic information about the proxy state to stdout, including per-rank
+     sequence numbers, queue indices, pending and in-progress descriptors. The
+     default value of -1 means no signal handler is registered and this debugging
+     facility is disabled. This is a diagnostic tool for troubleshooting RMA proxy
+     hangs or performance issues.
+
+ - name        : NCCL_RMA_PROXY_QUEUE_SIZE
+   type        : int
+   default     : -1
+   description : |-
+     Controls the size of the lock-free circular buffer queue used by the RMA
+     proxy for pending network operation descriptors, on a per-peer basis. The
+     default value of -1 means the queue size is automatically set to
+     NCCL_NET_MAX_REQUESTS * props.maxRecvs (the maximum number of outstanding
+     network requests). The value must be a power of two, at least 1, and no
+     greater than the maximum outstanding requests; if any constraint is violated,
+     the value falls back to the automatic default. A smaller queue reduces memory
+     usage but may limit concurrency, while a larger queue allows more outstanding
+     operations between the GPU and the network proxy thread.
+
+ - name        : NCCL_P2P_PER_CHANNEL_NET_BW
+   type        : int
+   default     : -1
+   description : |-
+     Specifies the assumed per-channel network bandwidth in GB/s used to calculate
+     the number of network channels for P2P (point-to-point) communication with
+     remote peers. When NCCL determines the channel count for cross-node P2P
+     operations, it divides the total available network bandwidth by this value to
+     decide how many channels are needed to saturate the link. A lower value causes
+     more channels to be allocated (potentially improving throughput on
+     high-bandwidth networks), while a higher value reduces the channel count. The
+     computed channel count is bounded below by the number of NICs available to the
+     GPU. The default of -1 resolves internally to 14 GB/s, roughly corresponding
+     to a single HDR InfiniBand port.
+
+ - name        : NCCL_ENABLE_VERSION_CHECK
+   type        : int
+   default     : -1
+   description : |-
+     Controls whether NCCL validates that the compile-time NCCL version is
+     compatible with the runtime library version when applications call device
+     communicator APIs (ncclCommQueryProperties, ncclDevCommCreate). When enabled
+     (resolves to 1 by default), NCCL checks that the version the application was
+     compiled against does not exceed the runtime library version and is not below
+     a minimum supported version, returning ncclInvalidUsage on mismatch. Setting
+     this to 0 disables all version validation, which can be useful for development
+     or testing scenarios where version mismatches are intentional. The check
+     prevents subtle ABI incompatibilities that could cause crashes or data
+     corruption.
+
+ - name        : NCCL_ALLGATHERV_ENABLE
+   type        : int
+   default     : 1
+   description : |-
+     Controls whether NCCL transparently converts Broadcast collective operations
+     into AllGatherV (variable-length AllGather) operations at enqueue time. When
+     enabled (1, the default) and collective coalescing is not active, any
+     Broadcast call is internally re-implemented as an AllGatherV, which can be
+     more efficient on certain topologies by distributing the work across all ranks
+     rather than having a single root send to all peers. The conversion
+     reinterprets the count as bytes and routes the task through the broadcast
+     queue scheduler instead of the standard collective sorter. Setting this to 0
+     preserves the original Broadcast implementation.
+
+ - name        : NCCL_SYM_CE_THRESHOLD
+   type        : int
+   default     : 8388608
+   description : |-
+     Sets the minimum data size threshold (in elements) above which AllGather
+     operations are offloaded to the CUDA Copy Engine (CE) instead of using SM
+     (Streaming Multiprocessor) kernels, on Blackwell-generation GPUs (compute
+     capability >= 100) with direct NVLink connectivity and symmetric memory
+     support. The default value is 8388608 (8 MB). Below this threshold, the
+     standard SM-based collective kernel is used. The Copy Engine path is
+     advantageous for large transfers because it frees up SM resources for
+     computation while the data movement proceeds asynchronously via dedicated
+     hardware copy engines. Increasing this value makes CE usage less aggressive;
+     decreasing it allows CE offload for smaller transfers.
+
+ - name        : NCCL_P2P_EPOCH_ENABLE
+   type        : int
+   default     : 1
+   description : |-
+     Controls whether P2P (point-to-point) operations are separated into distinct
+     device work batches based on their epoch identifier. When enabled (1, the
+     default), P2P operations with different epoch values are forced into separate
+     work batches, ensuring that operations from different scheduling epochs are
+     not fused together on the device. This enforces ordering and prevents
+     potential hangs that could occur if operations from different logical phases
+     were combined. When disabled (0), the epoch boundary is ignored during batch
+     formation, allowing more aggressive batching at the risk of cross-epoch
+     fusion. Other batch-splitting rules (max ops per batch, no duplicate rounds,
+     same group constraint) remain in effect regardless.
+
+ - name        : NCCL_NUM_RMA_CTX
+   type        : int
+   default     : -2147483648
+   description : |-
+     Controls the number of RMA (Remote Memory Access) contexts allocated per
+     communicator. The default value of -2147483648 (INT_MIN) is a sentinel meaning
+     "not configured," which resolves to 1 internally. Each RMA context corresponds
+     to a task queue in the kernel planner, a Copy Engine context for GPU-initiated
+     transfers, and a virtual RMA proxy context that maps round-robin to physical
+     GIN communicator connections. Setting this to a higher value allows more
+     concurrent RMA operations to be scheduled and executed in parallel across
+     different contexts. Setting to 0 or a negative value (other than the sentinel)
+     disables RMA functionality entirely. Must be positive and is overridable via
+     the ncclConfig_t programmatic API.
+
+ - name        : NCCL_GDAKI_USE_RELIABLE_DB
+   type        : int
+   default     : 0
+   description : |-
+     Controls the doorbell record (DBR) mode for GPU-Direct Async Kernel-Initiated
+     (GDAKI) queue pair creation in the GIN InfiniBand transport. When set to 0
+     (default), the standard valid doorbell mode (VALID_DBR) is used. When set to
+     1, it attempts hardware-bypassed doorbell mode (NO_DBR_HW), falling back to
+     software-emulated no-doorbell mode (NO_DBR_SW_EMULATED) if hardware support is
+     unavailable. When set to 2, it enables a three-tier fallback: first hardware
+     no-doorbell, then software-emulated no-doorbell, and finally the standard
+     valid doorbell if neither works. This tunes the reliability and performance
+     characteristics of GPU-initiated RDMA operations via DOCA GPUNetIO. Possible
+     values: 0, 1, 2.
+
+ - name        : NCCL_DISABLE_MEM_MANAGER
+   type        : int
+   default     : 1
+   description : |-
+     Controls NCCL baseline own memory manager. 0: enable, 1: disable
+
+ - name        : NCCL_GIN_PLUGIN_REF_COUNT
+   type        : int
+   default     : 0
+   description : |-
+     Sets the initial reference count for GIN (GPU-Initiated Network) plugin shared
+     libraries. Each communicator that uses a GIN plugin increments this counter on
+     assignment and decrements it during finalization. The plugin's shared library
+     is only unloaded (via dlclose) when the reference count reaches zero. By
+     setting a non-zero initial value, the plugin library can be kept loaded in
+     memory even after all communicators have finalized, which prevents expensive
+     re-loading if new communicators will be created later. This is useful for
+     long-running applications that create and destroy communicators repeatedly.
+
+ - name        : NCCL_IB_DEVICE_PCI_ORDER
+   type        : int
+   default     : 1
+   description : |-
+     Controls whether InfiniBand devices are sorted by PCI bus address during
+     initialization. When enabled (1, the default), after all IB devices are
+     discovered, they are sorted by their full PCI path converted to an integer,
+     ensuring deterministic and consistent device ordering across all nodes in the
+     cluster regardless of the kernel's device enumeration order. This sorting
+     occurs before assigning real port IDs and creating virtual devices. Disabling
+     this (0) leaves devices in their kernel-discovered order, which may vary
+     across nodes and lead to topology mismatches. Consistent ordering is important
+     for correct rail-optimized network configurations.
+
+ - name        : NCCL_IB_RECEIVER_SIDE_MATCHING_SCHEME
+   type        : int
+   default     : 0
+   description : |-
+     Selects how the IB transport matches incoming RDMA completions to outstanding
+     receive requests. The default value 0 (BY_INDEX) uses the work request ID
+     (wr_id) from the completion to index directly into the receive request array,
+     while the immediate data field carries the message size. Setting it to 1
+     (BY_ID) switches to an ID-based scheme where the sender embeds the request ID
+     in the RDMA Write's immediate data, and the receiver uses that ID (modulo max
+     requests) to look up the corresponding receive request. The ID-based scheme
+     can be more resilient when receive work requests are not consumed in strict
+     order, at the cost of losing inline size information in immediate data.
+     Possible values: 0 (BY_INDEX), 1 (BY_ID).
+
+ - name        : NCCL_IB_PREPOST_RECEIVE_WORK_REQUESTS
+   type        : int
+   default     : 0
+   description : |-
+     Controls whether IB receive work requests are pre-posted at connection time
+     rather than posted on-demand during each receive operation. The default is 0
+     (on-demand posting). When set to 1, during connection setup,
+     NET_IB_MAX_REQUESTS receive work requests are pre-posted to each QP, and upon
+     each completion a new receive work request is immediately re-posted to
+     replenish the pool. This reduces latency on the receive path by eliminating
+     the need to post a work request at receive time. When IB resiliency mode is
+     active (NCCL_IB_RESILIENCY_PORT_FAILOVER != 0), pre-posting is forced on
+     regardless of this setting, as it is required for correct error recovery.
+
+ - name        : NCCL_GIN_PLUGIN
+   type        : string
+   default     : ""
+   description : |-
+     Specifies the shared library name(s) for external GIN (GPU-Initiated Network)
+     plugins to load. Accepts a comma-separated list of shared library names (e.g.,
+     "libcustom-gin.so,libfallback-gin.so"). If not set, the default plugin
+     "libnccl-gin.so" is used. Setting it to "none" (case-insensitive) disables
+     loading any external GIN plugin, leaving only the built-in internal IB GIN
+     plugin available. Plugins are attempted in order: the first one that
+     successfully loads, initializes, and finds devices is assigned to the
+     communicator, and remaining plugins are disabled. The internal GIN IB plugin
+     is always registered as a fallback regardless of this setting.
+
+ - name        : NCCL_GIN_NCONNECTIONS
+   type        : int
+   default     : -2
+   description : |-
+     Overrides the number of GIN (GPU-Initiated Network) connections
+     (communicators) established during GIN initialization. The default value of -2
+     is a sentinel meaning "not set," in which case the connection count defaults
+     to the number of local GIN-capable network devices detected by topology
+     discovery. When set to any other integer value, it directly controls the GIN
+     communicator count. The value is capped at NCCL_GIN_MAX_CONNECTIONS and then
+     globally reduced to the minimum across all ranks via an AllGather, ensuring
+     all ranks agree on the connection count. More connections can improve bandwidth
+     by utilizing more NIC ports but consume more resources.
+
+ - name        : NCCL_SYM_GIN_KERNELS_ENABLE
+   type        : int
+   default     : 1
+   description : |-
+     Controls whether GIN (Global Interconnect Network) symmetric kernels are
+     enabled for multi-node collective operations. When enabled (1, the default),
+     NCCL allocates GIN inbox, outbox, and rail signal resources during symmetric
+     kernel initialization, and includes GIN kernel variants (such as
+     ReduceScatter_RailA2A and AllGather_RailRing) in the kernel selection mask.
+     GIN kernels are only relevant in multi-node scenarios where the LSA team size
+     is smaller than the total communicator size. When disabled (0), all GIN kernel
+     variants are masked out and their resources are not allocated, forcing fallback
+     to LSA-only kernel variants.
+
+ - name        : NCCL_IB_RESILIENCY_PORT_FAILOVER_PROBE_DELAY
+   type        : int
+   default     : 10
+   description : |-
+     Specifies the delay in milliseconds that NCCL waits after detecting an
+     InfiniBand send error before posting an RDMA Read probe to check whether the
+     failed request's data actually reached the remote side. If insufficient time
+     has elapsed since the error, the probe is deferred. The default of 10
+     milliseconds provides a brief settling period before attempting error recovery
+     via the probe mechanism. This parameter is only meaningful when IB port
+     failover resiliency is enabled (NCCL_IB_RESILIENCY_PORT_FAILOVER != 0).
+
+ - name        : NCCL_IB_RESILIENCY_PORT_FAILOVER_MAX_ATTEMPTS
+   type        : int
+   default     : 1
+   description : |-
+     Sets the maximum number of RDMA Read probe attempts that NCCL will make for a
+     single failed InfiniBand send request before giving up and declaring a fatal
+     remote error (ncclRemoteError). Each failed send request tracks its own
+     attempt counter, and when this counter exceeds the configured maximum, no
+     further probes are posted and the error is propagated. With the default value
+     of 1, NCCL attempts at most one probe per failed request before declaring the
+     failure unrecoverable. Increasing this value allows more retry opportunities
+     but may delay error detection. This parameter is only meaningful when IB port
+     failover resiliency is enabled (NCCL_IB_RESILIENCY_PORT_FAILOVER != 0).
+
+ - name        : NCCL_IB_RESILIENCY_PORT_FAILOVER
+   type        : int
+   default     : 0
+   description : |-
+     Master enable/disable switch for InfiniBand port failover resiliency in NCCL.
+     When set to 0 (the default), no resiliency context is allocated and all IB
+     error recovery and port failover logic is disabled. When set to any non-zero
+     value, NCCL allocates resiliency contexts for both send and receive
+     communicators, enabling runtime detection of IB errors (such as
+     IBV_WC_WR_FLUSH_ERR and IBV_WC_RETRY_EXC_ERR), automatic QP replacement to
+     failover from a failed IB device to a functional one, and RDMA Read probing
+     to verify whether in-flight data reached the remote side. This is the gating
+     flag for the entire IB resiliency subsystem; the PROBE_DELAY and MAX_ATTEMPTS
+     parameters are only meaningful when this is enabled.
+
+ - name        : NCCL_LSA_TEAM_SIZE
+   type        : int
+   default     : 0
+   description : |-
+     Sets the requested size of LSA (Local Symmetric Addressing) teams, which are
+     groups of consecutive ranks that can communicate using fast intra-node
+     symmetric memory operations. The value is combined with actual node sizes via
+     GCD (greatest common divisor) operations to ensure the final team size evenly
+     divides every node's rank count and represents a contiguous set of ranks. The
+     default value of 0 causes the GCD computation to yield a natural team size
+     matching the physical node topology (since gcd(0, n) = n). The computed team
+     size determines how ranks are partitioned and directly affects which symmetric
+     kernel variants are chosen: GIN kernels for multi-node communication (LSA team
+     < total ranks) and LSA-only kernels for intra-team operations.
+
+ - name        : NCCL_GIN_EXCLUSIVE_CONTEXTS
+   type        : int
+   default     : -1
+   description : |-
+     Controls whether GIN (GPU-Initiated Network) contexts are allocated in
+     exclusive or shared mode during device communicator creation. The default
+     value of -1 means "defer to the programmatic request" via the
+     ncclDevCommRequirements structure. When set to 1 (exclusive mode), GIN
+     contexts are allocated from a dedicated exclusive pool and the requested count
+     must not exceed the number of unallocated exclusive contexts, or an
+     ncclInvalidArgument error is returned. When set to 0 (shared mode), contexts
+     are shared and capped to the available shared pool size. This environment
+     variable acts as an override that takes precedence over any programmatic
+     setting, allowing operators to force exclusive or shared GIN context
+     allocation at the environment level.
+
+ - name        : NCCL_CHECK_MODE
+   type        : string
+   default     : ""
+   description : |-
+     Controls the level of runtime argument and pointer validation performed by
+     NCCL during collective operations. When unset (default), no extra validation
+     is performed for maximum performance. Setting it to "DEBUG_LOCAL" enables local
+     CUDA device pointer checks on all send/receive buffers before launching
+     collectives, catching invalid or host-memory pointers early (replaces
+     deprecated NCCL_CHECK_POINTERS). Setting it to "DEBUG_GLOBAL" enables all
+     local checks plus global cross-rank consistency validation, where collective
+     arguments are checked symmetrically across all ranks to detect mismatched
+     buffer addresses, counts, or operation types. Possible values: ""
+     (default/disabled), "DEBUG_LOCAL", "DEBUG_GLOBAL".
