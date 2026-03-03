@@ -6,7 +6,7 @@ import unittest
 
 import torch
 import torchcomms
-from torchcomms._comms import OpName, PostHookArgs, PreHookArgs, RemovableHandle
+from torchcomms import OpName, PostHookArgs, PreHookArgs, RemovableHandle
 
 
 class TestHooks(unittest.TestCase):

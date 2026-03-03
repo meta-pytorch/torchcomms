@@ -2,9 +2,9 @@
 
 #include "comms/torchcomms/nccl/TorchWorkNCCL.hpp"
 #include <ATen/cuda/CUDAContext.h>
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 namespace torch::comms {
 

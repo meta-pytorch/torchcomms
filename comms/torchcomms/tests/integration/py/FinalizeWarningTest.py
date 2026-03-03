@@ -14,17 +14,11 @@ import unittest
 
 import torch
 from torchcomms import new_comm
-from torchcomms._comms import _get_store
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+    create_store,
     get_rank_and_size,
     maybe_set_rank_envs,
 )
-
-
-def create_store():
-    """Create a TCPStore object for coordination."""
-    maybe_set_rank_envs()
-    return _get_store("my_backend", "finalize_warning_test")
 
 
 class FinalizeWarningTest(unittest.TestCase):
@@ -106,7 +100,7 @@ class FinalizeWarningTest(unittest.TestCase):
 
         # Perform another operation to verify the process is still healthy
         # Create a new comm to verify the process can still function
-        store2 = _get_store("my_backend", "finalize_warning_test_2")
+        store2 = create_store()
         comm2 = new_comm(
             backend,
             device,

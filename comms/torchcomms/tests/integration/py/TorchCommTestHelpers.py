@@ -6,8 +6,8 @@ import os
 from typing import Tuple, Union
 
 import torch
+from torch.distributed import PrefixStore, TCPStore
 from torchcomms import new_comm, RedOpType
-from torchcomms._comms import _get_store
 
 
 def get_dtype_name(dtype):
@@ -105,16 +105,28 @@ def maybe_set_rank_envs():
         del os.environ["TORCHCOMM_BOOTSTRAP_RANKSIZE_QUERY_METHOD"]
 
 
+_root_store = None
 NEXT_STORE_ID = 0
 
 
 def create_store():
-    """Create a TCPStore object for coordination."""
+    """Create a PrefixStore for test coordination."""
     maybe_set_rank_envs()
 
-    global NEXT_STORE_ID
+    global _root_store, NEXT_STORE_ID
+    if _root_store is None:
+        rank, _ = get_rank_and_size()
+        host = os.environ["MASTER_ADDR"]
+        port = int(os.environ["MASTER_PORT"])
+        _root_store = TCPStore(
+            host_name=host,
+            port=port,
+            is_master=(rank == 0),
+            wait_for_workers=False,
+        )
+
     NEXT_STORE_ID += 1
-    return _get_store("my_backend", f"test_comm_{NEXT_STORE_ID}")
+    return PrefixStore(f"test_comm_{NEXT_STORE_ID}", _root_store)
 
 
 def verify_tensor_equality(
