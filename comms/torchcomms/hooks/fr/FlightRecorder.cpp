@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/torchcomms/hooks/FlightRecorder.hpp"
+#include "comms/torchcomms/hooks/fr/FlightRecorder.hpp"
 
 #include <c10/util/ApproximateClock.h>
 #include <c10/util/WaitCounter.h>
