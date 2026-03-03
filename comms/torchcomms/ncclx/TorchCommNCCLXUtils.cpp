@@ -325,11 +325,8 @@ void TorchCommNCCLX::checkAndAbortIfTimedOutOrError() {
   // First, check work queue status
   checkWorkQueue();
 
-  // Also check graph event tracker so the calling thread can
-  // synchronously detect graph timeouts
-  if (comm_state_ == CommState::NORMAL) {
-    checkGraphEvents();
-  }
+  // Graph timeout detection is handled by the watchdog thread at
+  // graph_timeout_check_interval_ms, so no synchronous check is needed here.
 
   if (comm_state_ == CommState::TIMEOUT) {
     abortNcclComm();
