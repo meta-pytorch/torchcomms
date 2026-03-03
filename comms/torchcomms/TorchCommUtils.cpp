@@ -25,6 +25,41 @@ std::string trim_whitespace(std::string_view str) {
   auto end = str.find_last_not_of(" \t\n\r\f\v");
   return std::string(str.substr(start, end - start + 1));
 }
+
+// Note: PALS does not provide an env variable for size, like `PALS_SIZE`.
+// We just check it if supplied in the future. We try to query size from other
+// env vars that may be set in a PALS environment, such as PMI_SIZE, WORLD_SIZE,
+// etc.
+// TODO: replace with the correct PALS env var for size once it is available.
+int query_pals_size() {
+  int size = -1;
+
+  size = env_to_value<int>("PALS_SIZE", -1);
+  if (size > 0) {
+    return size;
+  }
+
+  // MPICH sets PMI_SIZE in its environment.
+  size = env_to_value<int>("PMI_SIZE", -1);
+  if (size > 0) {
+    return size;
+  }
+
+  // OpenMPI sets OMPI_COMM_WORLD_SIZE in its environment.
+  size = env_to_value<int>("OMPI_COMM_WORLD_SIZE", -1);
+  if (size > 0) {
+    return size;
+  }
+
+  // Try WORLD_SIZE as a last resort
+  size = env_to_value<int>("WORLD_SIZE", -1);
+  if (size > 0) {
+    return size;
+  }
+
+  return -1;
+}
+
 } // namespace
 
 bool string_to_bool(std::string_view str) {
@@ -103,6 +138,7 @@ std::pair<int, int> query_ranksize() {
   const std::string kRanksizeQueryMethodAuto = "auto";
   const std::string kRanksizeQueryMethodTorchrun = "torchrun";
   const std::string kRanksizeQueryMethodMPI = "mpi";
+  const std::string kRanksizeQueryMethodPALS = "pals";
   const std::string& kRanksizeQueryMethodDefault = kRanksizeQueryMethodAuto;
 
   // Get the ranksize query method from environment variable
@@ -131,7 +167,7 @@ std::pair<int, int> query_ranksize() {
     // Read from TORCHCOMM_RANK and TORCHCOMM_SIZE environment variables
     rank = env_to_value<int>("TORCHCOMM_RANK", -1);
     comm_size = env_to_value<int>("TORCHCOMM_SIZE", -1);
-    if (rank != -1 && comm_size != -1) {
+    if (rank > -1 && comm_size > 0) {
       return true;
     }
 
@@ -141,14 +177,24 @@ std::pair<int, int> query_ranksize() {
       // See if we are in an OpenMPI environment
       rank = env_to_value<int>("OMPI_COMM_WORLD_RANK", -1);
       comm_size = env_to_value<int>("OMPI_COMM_WORLD_SIZE", -1);
-      if (rank != -1 && comm_size != -1) {
+      if (rank > -1 && comm_size > 0) {
         return true;
       }
 
       // See if we are in an MPICH environment
       rank = env_to_value<int>("PMI_RANK", -1);
       comm_size = env_to_value<int>("PMI_SIZE", -1);
-      if (rank != -1 && comm_size != -1) {
+      if (rank > -1 && comm_size > 0) {
+        return true;
+      }
+    }
+
+    // See if we are in a PALS environment
+    if (ranksize_query_method == kRanksizeQueryMethodAuto ||
+        ranksize_query_method == kRanksizeQueryMethodPALS) {
+      rank = env_to_value<int>("PALS_RANKID", -1);
+      comm_size = query_pals_size();
+      if (rank > -1 && comm_size > 0) {
         return true;
       }
     }
@@ -158,7 +204,7 @@ std::pair<int, int> query_ranksize() {
         ranksize_query_method == kRanksizeQueryMethodTorchrun) {
       rank = env_to_value<int>("RANK", -1);
       comm_size = env_to_value<int>("WORLD_SIZE", -1);
-      if (rank != -1 && comm_size != -1) {
+      if (rank > -1 && comm_size > 0) {
         return true;
       }
     }
@@ -170,7 +216,7 @@ std::pair<int, int> query_ranksize() {
     throw std::runtime_error(
         "Unable to determine rank and size from environment variables. "
         "Please set TORCHCOMM_RANK and TORCHCOMM_SIZE, or ensure you are "
-        "running in a supported environment (Torchrun or MPI).");
+        "running in a supported environment (Torchrun, MPI, or PALS).");
   }
 
   return std::make_pair(rank, comm_size);

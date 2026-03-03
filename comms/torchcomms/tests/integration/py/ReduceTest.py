@@ -9,6 +9,7 @@ import unittest
 import torch
 from torchcomms import ReduceOp
 from torchcomms.tests.integration.py.TorchCommTestHelpers import (
+    filter_int8_overflow_cases,
     get_dtype_name,
     get_op_name,
     TorchCommTestWrapper,
@@ -23,6 +24,12 @@ class ReduceTest(unittest.TestCase):
     dtypes = [torch.float, torch.int, torch.int8]
     ops = [ReduceOp.SUM, ReduceOp.MAX, ReduceOp.AVG]
     num_replays = 4
+
+    def get_test_cases(self):
+        # Create all test parameters
+        normal_test_cases = list(itertools.product(self.counts, self.dtypes, self.ops))
+        # Max ranks for int8 is 15 because sum(1..16) = 136 which overflows int8 (>127)
+        return filter_int8_overflow_cases(normal_test_cases, self.num_ranks, 15)
 
     def get_wrapper(self):
         return TorchCommTestWrapper()
@@ -266,31 +273,31 @@ class ReduceTest(unittest.TestCase):
 
     def test_sync_reduce(self):
         """Test synchronous reduce with work object."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._sync_reduce(count, dtype, op)
 
     def test_sync_reduce_no_work(self):
         """Test synchronous reduce without work object."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._sync_reduce_no_work(count, dtype, op)
 
     def test_async_reduce(self):
         """Test asynchronous reduce with wait."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._async_reduce(count, dtype, op)
 
     def test_async_reduce_early_reset(self):
         """Test asynchronous reduce with early reset."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._async_reduce_early_reset(count, dtype, op)
 
     def test_reduce_input_deleted(self):
         """Test asynchronous reduce with input deleted after enqueue."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._reduce_input_deleted(count, dtype, op)
 
@@ -299,7 +306,7 @@ class ReduceTest(unittest.TestCase):
     )
     def test_graph_reduce(self):
         """Test CUDA Graph reduce."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._graph_reduce(count, dtype, op)
 
@@ -308,7 +315,7 @@ class ReduceTest(unittest.TestCase):
     )
     def test_graph_reduce_input_deleted(self):
         """Test CUDA Graph reduce with input deleted after graph creation."""
-        for count, dtype, op in itertools.product(self.counts, self.dtypes, self.ops):
+        for count, dtype, op in self.get_test_cases():
             with self.subTest(count=count, dtype=dtype, op=op):
                 self._graph_reduce_input_deleted(count, dtype, op)
 
