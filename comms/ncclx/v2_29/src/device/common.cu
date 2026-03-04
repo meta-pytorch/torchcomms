@@ -9,7 +9,8 @@
 #include "collectives.h"
 #include "common.h"
 #include "nccl_device.h"
-#include "comm.h"
+#include "checks.h"
+#include "sym_kernels.h"
 
 __shared__ ncclShmemData ncclShmem;
 #if __CUDA_ARCH__ < 700
@@ -45,7 +46,7 @@ __global__ void ncclDevKernelGinResetSignalsAndCounters(ncclDevComm devComm) {
   }
 }
 
-ncclResult_t ncclGinResetSignalsAndCounters(struct ncclComm* comm, ncclDevComm_t const* devComm) {
+ncclResult_t ncclGinResetSignalsAndCounters(int cudaDev, ncclDevComm_t const* devComm) {
   int deviceWork = std::max(devComm->ginSignalCount, devComm->ginCounterCount);
 
   if (deviceWork == 0) {
@@ -53,7 +54,7 @@ ncclResult_t ncclGinResetSignalsAndCounters(struct ncclComm* comm, ncclDevComm_t
   }
 
   // Ensure we run on the comm's device (important when called from async reclaim thread)
-  CUDACHECK(cudaSetDevice(comm->cudaDev));
+  CUDACHECK(cudaSetDevice(cudaDev));
 
   dim3 grid(1);
   dim3 block(ncclSymkMaxThreads);

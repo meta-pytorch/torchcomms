@@ -1650,7 +1650,7 @@ ncclResult_t ncclDevCommDestroy(
   NCCLCHECK(PtrCheck(devComm, __func__, "devComm"));
   struct ncclDevrState* devr = &comm->devrState;
   if (devr->ginEnabled) {
-    NCCLCHECK(ncclGinResetSignalsAndCounters(comm, devComm));
+    NCCLCHECK(ncclGinResetSignalsAndCounters(comm->cudaDev, devComm));
 
     ncclGinFreeSignalsCounters(comm,
       devComm->ginSignalBase, devComm->ginSignalCount,
