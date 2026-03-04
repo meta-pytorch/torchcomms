@@ -153,4 +153,34 @@ __global__ void p2pRecvMultiple(
   p2p.recv_multiple(group, dstBuff, chunkSizes);
 }
 
+__global__ void p2pStreamSend(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    SyncScope groupScope,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_thread_group(groupScope);
+  char* src = reinterpret_cast<char*>(srcBuff);
+  auto send = p2p.send_stream(nBytes, 0, timeout);
+  send.for_each_slot(group, [&](auto slot) {
+    memcpy_vectorized(slot.data, src + slot.offset, slot.size, group);
+  });
+}
+
+__global__ void p2pStreamRecv(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    SyncScope groupScope,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_thread_group(groupScope);
+  char* dst = reinterpret_cast<char*>(dstBuff);
+  auto recv = p2p.recv_stream(nBytes, 0, timeout);
+  recv.for_each_ready_chunk(group, [&](auto chunk) {
+    memcpy_vectorized(dst + chunk.offset, chunk.data, chunk.size, group);
+  });
+}
+
 } // namespace comms::pipes::benchmark
