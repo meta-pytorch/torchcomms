@@ -646,6 +646,6 @@ inline int ncclDevFuncId(int coll, int devRedOp, int type, int algo, int proto) 
 
 inline int ncclDevFuncId_P2p() { return ncclDevFuncRowToId[0]; }
 
-ncclResult_t ncclGinResetSignalsAndCounters(struct ncclComm* comm, ncclDevComm_t const* devComm);
+ncclResult_t ncclGinResetSignalsAndCounters(int cudaDev, ncclDevComm_t const* devComm);
 
 #endif
