@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cuda_runtime.h>
+#include <array>
 #include <cstddef>
 
 #include "comms/pipes/ThreadGroup.cuh"
@@ -106,103 +107,165 @@ __device__ __forceinline__ void memcpy_vectorized(
 }
 
 /**
- * memcpy_vectorized_dual_dest_aligned - Dual-destination vectorized memory copy
+ * memcpy_vectorized_multi_dest_aligned - Multi-destination vectorized memory
+ * copy
  *
- * Reads each element from src once, then stores to both dst1 and dst2.
- * Eliminates the extra HBM read that occurs when doing two sequential copies
- * (src->dst1 then dst1->dst2). Same striding pattern as
- * memcpy_vectorized_aligned.
+ * Reads each element from src once, then stores to all N destination buffers.
+ * Eliminates the (N-1) extra HBM reads that occur when doing N sequential
+ * copies. Same striding pattern as memcpy_vectorized_aligned.
  *
+ * REQUIREMENTS:
+ * =============
+ * - All destination pointers and the source pointer must be aligned to
+ *   sizeof(VecType)
+ * - Destination buffers must not alias each other or the source buffer
+ * - N must be >= 1 (enforced by static_assert)
+ *
+ * PERFORMANCE NOTES:
+ * ==================
+ * - For N=1, prefer memcpy_vectorized_aligned which has full __restrict__
+ *   qualifier coverage
+ * - __restrict__ is applied to src_p only; the load-store separation pattern
+ *   (all loads complete before any stores) provides the key optimization
+ *   regardless
+ *
+ * @tparam N Number of destination buffers (must be >= 1)
  * @tparam VecType Vector type for loads/stores (typically uint4 = 16 bytes)
  * @tparam kUnroll Unroll factor (default 8)
- * @param dst1_p First destination buffer pointer
- * @param dst2_p Second destination buffer pointer
+ * @param dst_ps Array of N destination buffer pointers
  * @param src_p Source buffer pointer
  * @param nelems Number of elements of VecType to copy
  * @param group ThreadGroup for cooperative copy (all threads participate)
+ *
+ * N BOUNDS:
+ * =========
+ * - N is limited to 8 maximum to avoid excessive register pressure (each
+ *   destination requires kUnroll additional store instructions per iteration)
  */
-template <typename VecType, int kUnroll = 8>
-__device__ __forceinline__ void memcpy_vectorized_dual_dest_aligned(
-    VecType* dst1_p,
-    VecType* dst2_p,
-    const VecType* src_p,
+template <std::size_t N, typename VecType, int kUnroll = 8>
+__device__ __forceinline__ void memcpy_vectorized_multi_dest_aligned(
+    const std::array<VecType*, N>& dst_ps,
+    const VecType* __restrict__ src_p,
     std::size_t nelems,
     const ThreadGroup& group) {
+  static_assert(
+      N > 0 && N <= 8, "N must be between 1 and 8 (register pressure)");
 #ifdef __CUDA_ARCH__
+  // std::array<T,N> is layout-compatible with T[N]; cast to raw pointer for
+  // CUDA device code (std::array member functions are not __device__-qualified)
+  VecType* const* dst = reinterpret_cast<VecType* const*>(&dst_ps);
+
   const std::size_t kLoopStride = group.group_size * kUnroll;
   const std::size_t numVecsAligned = (nelems / kLoopStride) * kLoopStride;
-  VecType* __restrict__ dst1 = dst1_p;
-  VecType* __restrict__ dst2 = dst2_p;
-  const VecType* __restrict__ src = src_p;
 
+  // Main loop: coalesced strided access pattern
   for (std::size_t i = group.thread_id_in_group; i < numVecsAligned;
        i += kLoopStride) {
+    // Phase 1: Load kUnroll elements from src into registers
     VecType v[kUnroll];
 #pragma unroll
     for (int j = 0; j < kUnroll; ++j) {
-      v[j] = src[i + j * group.group_size];
+      v[j] = src_p[i + j * group.group_size];
     }
+    // Phase 2: Store to each of N destinations
 #pragma unroll
-    for (int j = 0; j < kUnroll; ++j) {
-      dst1[i + j * group.group_size] = v[j];
-    }
+    for (std::size_t d = 0; d < N; ++d) {
 #pragma unroll
-    for (int j = 0; j < kUnroll; ++j) {
-      dst2[i + j * group.group_size] = v[j];
+      for (int j = 0; j < kUnroll; ++j) {
+        dst[d][i + j * group.group_size] = v[j];
+      }
     }
   }
 
+  // Remainder: elements not fitting in full kLoopStride groups
   for (std::size_t i = numVecsAligned + group.thread_id_in_group; i < nelems;
        i += group.group_size) {
-    VecType v = src[i];
-    dst1[i] = v;
-    dst2[i] = v;
+    VecType v = src_p[i];
+#pragma unroll
+    for (std::size_t d = 0; d < N; ++d) {
+      dst[d][i] = v;
+    }
   }
 #endif // __CUDA_ARCH__
 }
 
 /**
- * memcpy_vectorized_dual_dest - Byte-level dual-destination vectorized copy
+ * memcpy_vectorized_multi_dest - Byte-level multi-destination vectorized copy
  *
- * Copies len bytes from src to both dst1 and dst2 with a single source read.
- * Checks alignment of all three pointers to select vectorized (uint4) or
+ * Copies len bytes from src to all N destination buffers with a single source
+ * read. Checks alignment of all (N+1) pointers to select vectorized (uint4) or
  * byte-level path.
  *
+ * @tparam N Number of destination buffers (must be >= 1)
  * @tparam kUnroll Unroll factor (default 8)
- * @param dst1 First destination buffer
- * @param dst2 Second destination buffer
+ * @param dsts Array of N destination buffer pointers
  * @param src Source buffer
  * @param len Number of bytes to copy
  * @param group ThreadGroup for cooperative copy
  */
-template <int kUnroll = 8>
-__device__ __forceinline__ void memcpy_vectorized_dual_dest(
-    char* dst1,
-    char* dst2,
+template <std::size_t N, int kUnroll = 8>
+__device__ __forceinline__ void memcpy_vectorized_multi_dest(
+    const std::array<char*, N>& dsts,
     const char* src,
     std::size_t len,
     const ThreadGroup& group) {
+  static_assert(
+      N > 0 && N <= 8, "N must be between 1 and 8 (register pressure)");
 #ifdef __CUDA_ARCH__
   constexpr std::size_t kAlignment = sizeof(uint4);
-  if ((uintptr_t)dst1 % kAlignment == 0 && (uintptr_t)dst2 % kAlignment == 0 &&
-      (uintptr_t)src % kAlignment == 0) {
+
+  // std::array<T,N> is layout-compatible with T[N]; cast to raw pointer for
+  // CUDA device code (std::array member functions are not __device__-qualified)
+  char* const* dsts_raw = reinterpret_cast<char* const*>(&dsts);
+
+  // Check alignment of all N destinations + source
+  // Use bitwise AND to avoid branch divergence in the unrolled loop
+  bool all_aligned = ((uintptr_t)src % kAlignment == 0);
+#pragma unroll
+  for (std::size_t d = 0; d < N; ++d) {
+    all_aligned = all_aligned & ((uintptr_t)dsts_raw[d] % kAlignment == 0);
+  }
+
+  // Local copies for pointer adjustment after aligned section
+  char* local_dsts[N];
+#pragma unroll
+  for (std::size_t d = 0; d < N; ++d) {
+    local_dsts[d] = dsts_raw[d];
+  }
+  const char* local_src = src;
+
+  if (all_aligned) {
     const std::size_t nelems = len / kAlignment;
-    uint4* __restrict__ dst1_p = reinterpret_cast<uint4*>(dst1);
-    uint4* __restrict__ dst2_p = reinterpret_cast<uint4*>(dst2);
-    const uint4* __restrict__ src_p = reinterpret_cast<const uint4*>(src);
-    memcpy_vectorized_dual_dest_aligned<uint4, kUnroll>(
-        dst1_p, dst2_p, src_p, nelems, group);
+    uint4* uint4_dsts[N];
+#pragma unroll
+    for (std::size_t d = 0; d < N; ++d) {
+      uint4_dsts[d] = reinterpret_cast<uint4*>(local_dsts[d]);
+    }
+    const uint4* __restrict__ src_p = reinterpret_cast<const uint4*>(local_src);
+
+    memcpy_vectorized_multi_dest_aligned<N, uint4, kUnroll>(
+        reinterpret_cast<const std::array<uint4*, N>&>(uint4_dsts),
+        src_p,
+        nelems,
+        group);
+
     len -= nelems * kAlignment;
     if (len == 0) {
       return;
     }
-    dst1 = reinterpret_cast<char*>(dst1_p + nelems);
-    dst2 = reinterpret_cast<char*>(dst2_p + nelems);
-    src = reinterpret_cast<const char*>(src_p + nelems);
+    // Adjust pointers for remainder bytes
+#pragma unroll
+    for (std::size_t d = 0; d < N; ++d) {
+      local_dsts[d] = reinterpret_cast<char*>(uint4_dsts[d] + nelems);
+    }
+    local_src = reinterpret_cast<const char*>(src_p + nelems);
   }
 
-  memcpy_vectorized_dual_dest_aligned<char, kUnroll>(
-      dst1, dst2, src, len, group);
+  memcpy_vectorized_multi_dest_aligned<N, char, kUnroll>(
+      reinterpret_cast<const std::array<char*, N>&>(local_dsts),
+      local_src,
+      len,
+      group);
 #endif // __CUDA_ARCH__
 }
 
