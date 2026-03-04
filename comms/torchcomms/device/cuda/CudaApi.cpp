@@ -138,6 +138,15 @@ cudaError_t DefaultCudaApi::threadExchangeStreamCaptureMode(
   return cudaThreadExchangeStreamCaptureMode(mode);
 }
 
+cudaError_t DefaultCudaApi::streamUpdateCaptureDependencies(
+    cudaStream_t stream,
+    cudaGraphNode_t* dependencies,
+    size_t numDependencies,
+    unsigned int flags) {
+  return cudaStreamUpdateCaptureDependencies(
+      stream, dependencies, numDependencies, flags);
+}
+
 cudaError_t DefaultCudaApi::malloc(void** devPtr, size_t size) {
   return cudaMalloc(devPtr, size);
 }

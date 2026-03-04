@@ -311,6 +311,7 @@ class TorchCommNCCLX : public TorchCommBackend,
   void enqueueWork(
       c10::intrusive_ptr<TorchWorkNCCLX> work,
       cudaStream_t stream);
+
   cudaStream_t getInternalStream() const {
     return internal_stream_;
   }

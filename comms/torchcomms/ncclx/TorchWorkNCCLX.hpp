@@ -114,17 +114,10 @@ class TorchWorkNCCLX : public TorchWork {
   // recorded after the NCCL operation completes. In eager mode, it is also
   // used as the join point for work.wait(). In graph mode, it is recorded
   // with cudaEventRecordExternal (host-queryable for watchdog timeout
-  // detection) and ownership is transferred to GraphWorkEntry.
+  // detection). addEntry() copies both event pointers to GraphEventTracker
+  // and nulls start_event_ to signal the transfer. end_event_ is retained
+  // for use in wait().
   cudaEvent_t end_event_{};
-  // Stream synchronization event for graph mode only. Recorded with regular
-  // cudaEventRecord to serve as a valid join point for work.wait()
-  // (cudaStreamWaitEvent). nullptr in eager mode.
-  //
-  // In graph mode, all three events (start, end, sync) are ad-hoc created
-  // (NOT from the event pool). start_event_ and end_event_ ownership is
-  // transferred to GraphWorkEntry in enqueueWork(), which sets them to
-  // nullptr. sync_event_ is destroyed in the work destructor.
-  cudaEvent_t sync_event_{};
   cudaStream_t stream_; // stream is not owned by this class
 
   // Whether this work was created during CUDA graph capture. Controls

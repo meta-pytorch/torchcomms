@@ -96,6 +96,11 @@ class CudaApi {
       size_t* numDependencies_out) = 0;
   [[nodiscard]] virtual cudaError_t threadExchangeStreamCaptureMode(
       enum cudaStreamCaptureMode* mode) = 0;
+  [[nodiscard]] virtual cudaError_t streamUpdateCaptureDependencies(
+      cudaStream_t stream,
+      cudaGraphNode_t* dependencies,
+      size_t numDependencies,
+      unsigned int flags) = 0;
 
   // Memory management
   [[nodiscard]] virtual cudaError_t malloc(void** devPtr, size_t size) = 0;
@@ -193,6 +198,11 @@ class DefaultCudaApi : public CudaApi {
       size_t* numDependencies_out) override;
   [[nodiscard]] cudaError_t threadExchangeStreamCaptureMode(
       enum cudaStreamCaptureMode* mode) override;
+  [[nodiscard]] cudaError_t streamUpdateCaptureDependencies(
+      cudaStream_t stream,
+      cudaGraphNode_t* dependencies,
+      size_t numDependencies,
+      unsigned int flags) override;
 
   // Memory management
   [[nodiscard]] cudaError_t malloc(void** devPtr, size_t size) override;

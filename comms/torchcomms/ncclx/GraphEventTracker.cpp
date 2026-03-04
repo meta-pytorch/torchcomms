@@ -108,12 +108,14 @@ void GraphEventTracker::maybeInitGraphState(
 void GraphEventTracker::addEntry(TorchWorkNCCLX* work) {
   std::lock_guard<std::mutex> lock(mutex_);
 
-  // Transfer start/end event ownership from the work object, grouped by stream.
+  // Copy start/end event pointers to GraphWork for timeout monitoring.
+  // Ownership transfers to GraphEventTracker — it destroys the events
+  // when the graph is released. Null start_event_ to signal the transfer
+  // (releaseEvents checks this). Keep end_event_ for use in wait().
   auto [it, inserted] = graphs_.try_emplace(current_graph_id_);
   it->second.stream_entries[work->stream_].emplace_back(
       work->start_event_, work->end_event_, work->timeout_ms_);
   work->start_event_ = nullptr;
-  work->end_event_ = nullptr;
 
   // Transfer CPU tensors from the work object to the graph state.
   // These tensors (e.g., CPU pointer tensors used by alltoallv_dynamic_dispatch

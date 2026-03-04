@@ -400,7 +400,7 @@ void TorchCommNCCLX::enqueueWork(
   if (getGraphCaptureMode()) {
     // Transfer start/end event ownership to the tracker.
     // Work object is NOT stored — it will be destroyed when the caller's
-    // intrusive_ptr goes out of scope, destroying ad-hoc sync_event_.
+    // intrusive_ptr goes out of scope.
     graph_event_tracker_.addEntry(work.get());
   } else {
     // Add work to stream's queue after events have been recorded

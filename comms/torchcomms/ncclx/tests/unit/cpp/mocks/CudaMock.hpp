@@ -115,6 +115,14 @@ class CudaMock : public CudaApi {
       threadExchangeStreamCaptureMode,
       (enum cudaStreamCaptureMode * mode),
       (override));
+  MOCK_METHOD(
+      cudaError_t,
+      streamUpdateCaptureDependencies,
+      (cudaStream_t stream,
+       cudaGraphNode_t* dependencies,
+       size_t numDependencies,
+       unsigned int flags),
+      (override));
 
   // Memory management
   MOCK_METHOD(cudaError_t, malloc, (void** devPtr, size_t size), (override));

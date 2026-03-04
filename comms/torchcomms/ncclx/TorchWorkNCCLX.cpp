@@ -11,11 +11,10 @@ namespace torch::comms {
 
 void TorchWorkNCCLX::initEvents() {
   if (graph_capture_mode_) {
-    // Ad-hoc create all three events — NOT from the event pool.
-    // start_event_ and end_event_ ownership will be transferred to
-    // GraphWork in enqueueWork(). sync_event_ is destroyed in dtor.
-    // TODO: sync_event_ is only needed for async_op=true; skip creation
-    // for synchronous operations where the work runs on the current stream.
+    // start_event_ and end_event_ are only created when timeout monitoring
+    // is enabled — lifetime ownership is transferred to GraphWork in
+    // enqueueWork(), although we will still hold a reference to end_event_ for
+    // usage in wait()
     CUDA_CHECK(
         comm_->getCudaApi(),
         comm_->getCudaApi()->eventCreateWithFlags(
@@ -26,11 +25,6 @@ void TorchWorkNCCLX::initEvents() {
         comm_->getCudaApi()->eventCreateWithFlags(
             &end_event_, cudaEventDisableTiming),
         "Failed to create end event for graph capture");
-    CUDA_CHECK(
-        comm_->getCudaApi(),
-        comm_->getCudaApi()->eventCreateWithFlags(
-            &sync_event_, cudaEventDisableTiming),
-        "Failed to create sync event for graph capture");
   } else {
     start_event_ = comm_->getEvent();
     end_event_ = comm_->getEvent();
@@ -39,18 +33,12 @@ void TorchWorkNCCLX::initEvents() {
 
 void TorchWorkNCCLX::releaseEvents() {
   if (graph_capture_mode_) {
-    // In graph mode: start_event_ and end_event_ were ad-hoc created and
-    // should have been transferred to the GraphWorkEntry (set to nullptr).
-    // If transfer didn't happen (error path), destroy them.
-    // sync_event_ is always ad-hoc and always destroyed here.
-    if (start_event_) {
+    // graph mode: start_event_ is nulled by addEntry() when events are
+    // transferred to GraphEventTracker. if non-null, transfer of ownership
+    // hasn't happened — destroy both events here.
+    if (start_event_ && end_event_) {
       (void)comm_->getCudaApi()->eventDestroy(start_event_);
-    }
-    if (end_event_) {
       (void)comm_->getCudaApi()->eventDestroy(end_event_);
-    }
-    if (sync_event_) {
-      (void)comm_->getCudaApi()->eventDestroy(sync_event_);
     }
   } else {
     // Non-graph mode: both start and end events are from the pool.
@@ -144,22 +132,16 @@ void TorchWorkNCCLX::recordStart(std::string_view coll_name) {
 void TorchWorkNCCLX::recordEnd() {
   // During graph capture, end_event_ is recorded with cudaEventRecordExternal
   // so it remains host-queryable during graph replay for watchdog timeout
-  // detection. sync_event_ is recorded with regular cudaEventRecord to serve
-  // as a valid join point for work.wait() (cudaStreamWaitEvent).
+  // detection.
   //
   // In eager mode, end_event_ is recorded with regular cudaEventRecord and
   // serves as both the completion detection event and the join point.
-  // sync_event_ is nullptr.
   if (graph_capture_mode_) {
     CUDA_CHECK(
         comm_->getCudaApi(),
         comm_->getCudaApi()->eventRecordWithFlags(
             end_event_, stream_, cudaEventRecordExternal),
         "Failed to record end event");
-    CUDA_CHECK(
-        comm_->getCudaApi(),
-        comm_->getCudaApi()->eventRecord(sync_event_, stream_),
-        "Failed to record sync event");
   } else {
     CUDA_CHECK(
         comm_->getCudaApi(),
@@ -245,17 +227,26 @@ void TorchWorkNCCLX::wait() {
       "wait",
       comm_->getRank());
 
-  // Get the current stream using the device from the comm object
   cudaStream_t current_stream =
       comm_->getCudaApi()->getCurrentCUDAStream(comm_->device_.index());
 
-  // Add a dependency from the work's stream to the current stream.
-  // In graph mode, use sync_event_ (the regular-recorded join point).
-  // In eager mode, use end_event_ (sync_event_ is nullptr).
-  cudaEvent_t wait_event = sync_event_ ? sync_event_ : end_event_;
+  if (graph_capture_mode_) {
+    // Clear stream_'s tracked fork so the fork/join checker
+    // at capture_end() doesn't see unjoined explicit EVENT_RECORD_EXT
+    // nodes. The streamWaitEvent below creates the actual graph edge.
+    CUDA_CHECK(
+        comm_->getCudaApi(),
+        comm_->getCudaApi()->streamUpdateCaptureDependencies(
+            stream_, nullptr, 0, cudaStreamSetCaptureDependencies),
+        "Failed to clear stream_'s capture dependencies");
+  }
+
   CUDA_CHECK(
       comm_->getCudaApi(),
-      comm_->getCudaApi()->streamWaitEvent(current_stream, wait_event, 0),
+      comm_->getCudaApi()->streamWaitEvent(
+          current_stream,
+          end_event_,
+          graph_capture_mode_ ? cudaEventWaitExternal : 0x00),
       "Failed to make stream wait for event");
 
   // Release tensor references. The CUDA caching allocator manages stream
