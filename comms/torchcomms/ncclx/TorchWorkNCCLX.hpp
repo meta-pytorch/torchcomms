@@ -125,6 +125,13 @@ class TorchWorkNCCLX : public TorchWork {
   // in non-graph mode, start_event_ and end_event_ are from the pool.
   bool graph_capture_mode_{false};
 
+  // Whether graph timeout detection is active for this work. True only when
+  // graph_capture_mode_ is true AND the comm has graph timeout detection
+  // enabled. When false in graph mode, start_event_ is not created and
+  // end_event_ uses regular cudaEventRecord instead of cudaEventRecordExternal,
+  // eliminating the per-collective event overhead.
+  bool graph_timeout_detection_{false};
+
   std::chrono::milliseconds timeout_ms_;
 
   std::optional<std::chrono::steady_clock::time_point> start_completed_time_;

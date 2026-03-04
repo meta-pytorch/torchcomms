@@ -11,20 +11,29 @@ namespace torch::comms {
 
 void TorchWorkNCCLX::initEvents() {
   if (graph_capture_mode_) {
-    // start_event_ and end_event_ are only created when timeout monitoring
-    // is enabled — lifetime ownership is transferred to GraphWork in
-    // enqueueWork(), although we will still hold a reference to end_event_ for
-    // usage in wait()
-    CUDA_CHECK(
-        comm_->getCudaApi(),
-        comm_->getCudaApi()->eventCreateWithFlags(
-            &start_event_, cudaEventDisableTiming),
-        "Failed to create start event for graph capture");
-    CUDA_CHECK(
-        comm_->getCudaApi(),
-        comm_->getCudaApi()->eventCreateWithFlags(
-            &end_event_, cudaEventDisableTiming),
-        "Failed to create end event for graph capture");
+    if (graph_timeout_detection_) {
+      // Both start and end events are created for timeout monitoring.
+      // Lifetime ownership is transferred to GraphWork in enqueueWork(),
+      // although we will still hold a reference to end_event_ for wait().
+      CUDA_CHECK(
+          comm_->getCudaApi(),
+          comm_->getCudaApi()->eventCreateWithFlags(
+              &start_event_, cudaEventDisableTiming),
+          "Failed to create start event for graph capture");
+      CUDA_CHECK(
+          comm_->getCudaApi(),
+          comm_->getCudaApi()->eventCreateWithFlags(
+              &end_event_, cudaEventDisableTiming),
+          "Failed to create end event for graph capture");
+    } else {
+      // Only end_event_ is needed for stream join in wait().
+      // start_event_ remains nullptr — no timeout monitoring overhead.
+      CUDA_CHECK(
+          comm_->getCudaApi(),
+          comm_->getCudaApi()->eventCreateWithFlags(
+              &end_event_, cudaEventDisableTiming),
+          "Failed to create end event for graph capture");
+    }
   } else {
     start_event_ = comm_->getEvent();
     end_event_ = comm_->getEvent();
@@ -33,12 +42,19 @@ void TorchWorkNCCLX::initEvents() {
 
 void TorchWorkNCCLX::releaseEvents() {
   if (graph_capture_mode_) {
-    // graph mode: start_event_ is nulled by addEntry() when events are
-    // transferred to GraphEventTracker. if non-null, transfer of ownership
-    // hasn't happened — destroy both events here.
-    if (start_event_ && end_event_) {
-      (void)comm_->getCudaApi()->eventDestroy(start_event_);
-      (void)comm_->getCudaApi()->eventDestroy(end_event_);
+    if (graph_timeout_detection_) {
+      // start_event_ is nulled by addEntry() when events are transferred
+      // to GraphEventTracker. if non-null, transfer of ownership hasn't
+      // happened — destroy both events here.
+      if (start_event_ && end_event_) {
+        (void)comm_->getCudaApi()->eventDestroy(start_event_);
+        (void)comm_->getCudaApi()->eventDestroy(end_event_);
+      }
+    } else {
+      // Only end_event_ was created (start_event_ is nullptr).
+      if (end_event_) {
+        (void)comm_->getCudaApi()->eventDestroy(end_event_);
+      }
     }
   } else {
     // Non-graph mode: both start and end events are from the pool.
@@ -61,6 +77,8 @@ TorchWorkNCCLX::TorchWorkNCCLX(
       stream_(stream),
       timeout_ms_(timeout_ms) {
   graph_capture_mode_ = comm_->getGraphCaptureMode();
+  graph_timeout_detection_ =
+      graph_capture_mode_ && comm_->configs_.enable_graph_timeout_detection_;
   initEvents();
 }
 
@@ -74,6 +92,8 @@ TorchWorkNCCLX::TorchWorkNCCLX(
       stream_(stream),
       timeout_ms_(timeout_ms) {
   graph_capture_mode_ = comm_->getGraphCaptureMode();
+  graph_timeout_detection_ =
+      graph_capture_mode_ && comm_->configs_.enable_graph_timeout_detection_;
   initEvents();
 }
 
@@ -112,31 +132,31 @@ void TorchWorkNCCLX::recordFunctionStart(std::string_view coll_name) {
 void TorchWorkNCCLX::recordStart(std::string_view coll_name) {
   recordFunctionStart(coll_name);
 
-  if (comm_->getGraphCaptureMode()) {
+  if (graph_timeout_detection_) {
     // Use cudaEventRecordExternal so start_event_ remains host-queryable
     // during graph replay (for watchdog timeout detection).
-    // start_event_ is not used as a graph join point, so this is safe.
     CUDA_CHECK(
         comm_->getCudaApi(),
         comm_->getCudaApi()->eventRecordWithFlags(
             start_event_, stream_, cudaEventRecordExternal),
         "Failed to record start event");
-  } else {
+  } else if (!graph_capture_mode_) {
+    // Eager mode: regular event recording for work queue timeout detection.
     CUDA_CHECK(
         comm_->getCudaApi(),
         comm_->getCudaApi()->eventRecord(start_event_, stream_),
         "Failed to record start event");
   }
+  // In graph mode without timeout detection, start_event_ is nullptr — skip.
 }
 
 void TorchWorkNCCLX::recordEnd() {
-  // During graph capture, end_event_ is recorded with cudaEventRecordExternal
-  // so it remains host-queryable during graph replay for watchdog timeout
-  // detection.
-  //
-  // In eager mode, end_event_ is recorded with regular cudaEventRecord and
-  // serves as both the completion detection event and the join point.
-  if (graph_capture_mode_) {
+  // When graph timeout detection is active, record with cudaEventRecordExternal
+  // so the event remains host-queryable during graph replay.
+  // Otherwise (eager mode or graph mode without timeout detection), use regular
+  // cudaEventRecord — sufficient for stream join in wait() and for eager-mode
+  // work queue timeout detection.
+  if (graph_timeout_detection_) {
     CUDA_CHECK(
         comm_->getCudaApi(),
         comm_->getCudaApi()->eventRecordWithFlags(
@@ -230,7 +250,7 @@ void TorchWorkNCCLX::wait() {
   cudaStream_t current_stream =
       comm_->getCudaApi()->getCurrentCUDAStream(comm_->device_.index());
 
-  if (graph_capture_mode_) {
+  if (graph_timeout_detection_) {
     // Clear stream_'s tracked fork so the fork/join checker
     // at capture_end() doesn't see unjoined explicit EVENT_RECORD_EXT
     // nodes. The streamWaitEvent below creates the actual graph edge.

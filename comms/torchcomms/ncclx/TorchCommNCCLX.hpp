@@ -47,6 +47,12 @@ constexpr bool kDefaultEnableCudaGraphSupport = true;
 // while still detecting timeouts promptly.
 constexpr size_t kDefaultGraphTimeoutCheckIntervalMs = 1000;
 
+// Whether to enable timeout detection for graph-captured collectives. When
+// disabled, start_event_ is not created and end_event_ uses regular
+// cudaEventRecord (not cudaEventRecordExternal), eliminating the per-collective
+// event overhead in CUDA graphs while still supporting stream joins in wait().
+constexpr bool kDefaultEnableGraphTimeoutDetection = true;
+
 class TorchCommNCCLX : public TorchCommBackend,
                        public std::enable_shared_from_this<TorchCommNCCLX> {
  public:
@@ -426,6 +432,7 @@ class TorchCommNCCLX : public TorchCommBackend,
     bool enable_cuda_graph_support_{kDefaultEnableCudaGraphSupport};
     size_t graph_timeout_check_interval_ms_{
         kDefaultGraphTimeoutCheckIntervalMs};
+    bool enable_graph_timeout_detection_{kDefaultEnableGraphTimeoutDetection};
   };
   Configs configs_;
 

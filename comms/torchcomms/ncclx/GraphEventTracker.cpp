@@ -33,6 +33,11 @@ void GraphEventTracker::initOnGraphStart(cudaStream_t stream) {
     return;
   }
 
+  // Skip graph event tracking when timeout detection is disabled
+  if (!comm_->configs_.enable_graph_timeout_detection_) {
+    return;
+  }
+
   CudaApi* api = comm_->getCudaApi();
 
   // Get CUDA stream capture info

@@ -35,6 +35,8 @@ constexpr std::string_view kHintEnableCudaGraphSupport =
     "torchcomm::ncclx::enable_cuda_graph_support";
 constexpr std::string_view kHintGraphTimeoutCheckIntervalMs =
     "torchcomm::ncclx::graph_timeout_check_interval_ms";
+constexpr std::string_view kHintEnableGraphTimeoutDetection =
+    "torchcomm::ncclx::enable_graph_timeout_detection";
 
 // Helper function to validate that metadata tensors are int64_t (torch.int64)
 void validateInt64Dtype(const at::Tensor& tensor, std::string_view name) {
@@ -185,6 +187,12 @@ void TorchCommNCCLX::init(
     if (key.starts_with(kHintPrefix)) {
       if (key == kHintHighPriorityStream) {
         high_priority_stream_ = string_to_bool(val);
+      } else if (
+          key == kHintMaxEventPoolSize ||
+          key == kHintGarbageCollectIntervalMs ||
+          key == kHintEnableCudaGraphSupport ||
+          key == kHintEnableGraphTimeoutDetection) {
+        // Processed below
       } else {
         throw std::runtime_error("Unrecognized hint " + key);
       }
@@ -255,6 +263,13 @@ void TorchCommNCCLX::init(
   if (options_.hints.contains(kHintGraphTimeoutCheckIntervalMsKey)) {
     configs_.graph_timeout_check_interval_ms_ =
         std::stoull(options_.hints.at(kHintGraphTimeoutCheckIntervalMsKey));
+  }
+
+  const auto kHintEnableGraphTimeoutDetectionKey =
+      std::string(kHintEnableGraphTimeoutDetection);
+  if (options_.hints.contains(kHintEnableGraphTimeoutDetectionKey)) {
+    configs_.enable_graph_timeout_detection_ =
+        string_to_bool(options_.hints.at(kHintEnableGraphTimeoutDetectionKey));
   }
 
   // Give up our internal reference to the store object here.  The caller
