@@ -3,6 +3,7 @@
 #pragma once
 
 #include <iomanip>
+#include <optional>
 #include <sstream>
 #include <string>
 
@@ -20,6 +21,10 @@ struct BenchmarkConfig {
   std::size_t chunkSize = 512 * 1024; // 512KB default
   SyncScope groupScope = SyncScope::WARP; // Thread group scope for parallelism
   bool spreadClusterLaunch = false; // Use spread cluster kernel launch
+  std::optional<std::size_t> sendChunkSize =
+      std::nullopt; // Asymmetric send chunk size (nullopt = symmetric)
+  std::optional<std::size_t> recvChunkSize =
+      std::nullopt; // Asymmetric recv chunk size (nullopt = symmetric)
   std::string name;
 };
 
@@ -30,6 +35,8 @@ struct BenchmarkResult {
   std::size_t stagingBufferSize{};
   std::size_t pipelineDepth{};
   std::size_t chunkSize{};
+  std::optional<std::size_t> sendChunkSize{};
+  std::optional<std::size_t> recvChunkSize{};
   int numBlocks{};
   int numThreads{};
   float ncclBandwidth{};

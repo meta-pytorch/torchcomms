@@ -160,6 +160,41 @@ struct alignas(128) ChunkState {
   __device__ __forceinline__ void ready_to_send(ThreadGroup& group);
 
   /**
+   * release_to_send - Release buffer WITHOUT group synchronization
+   *
+   * Performs only the release-store to transition state to READY_TO_SEND,
+   * without calling group.sync(). For use in batched release patterns where
+   * a single group.sync() fences multiple release-stores.
+   *
+   * PRECONDITIONS (caller must guarantee):
+   *   1. group.sync() was called after all prior memory operations
+   *   2. Only the leader thread calls this (group.is_leader() == true)
+   */
+  __device__ __forceinline__ void release_to_send();
+
+  /**
+   * release_to_recv - Signal data ready WITHOUT group synchronization
+   *
+   * Performs only the call_index write and release-store to transition state
+   * to READY_TO_RECV, without calling group.sync(). For use in batched
+   * release patterns where a single group.sync() fences multiple
+   * release-stores.
+   *
+   * Writes call_index_ before the release-store of value_, matching the
+   * ordering of ready_to_recv().
+   *
+   * PRECONDITIONS (caller must guarantee):
+   *   1. group.sync() was called after all prior memory operations
+   *   2. Only the leader thread calls this (group.is_leader() == true)
+   *
+   * @param stepId The step identifier for this data
+   * @param call_index Call index for multi-call disambiguation
+   */
+  __device__ __forceinline__ void release_to_recv(
+      std::size_t stepId,
+      uint32_t call_index);
+
+  /**
    * write_metadata - Write metadata fields (leader only)
    *
    * @param group ThreadGroup for cooperative processing
@@ -268,6 +303,19 @@ __device__ __forceinline__ void ChunkState::ready_to_send(ThreadGroup& group) {
   if (group.is_leader()) {
     store(READY_TO_SEND);
   }
+}
+
+__device__ __forceinline__ void ChunkState::release_to_send() {
+  store(READY_TO_SEND);
+}
+
+__device__ __forceinline__ void ChunkState::release_to_recv(
+    std::size_t stepId,
+    uint32_t call_index) {
+  // Write call_index BEFORE release-store of value_.
+  // This ensures receiver sees call_index after acquire-load of value_.
+  call_index_ = call_index;
+  store(static_cast<int32_t>(stepId));
 }
 
 __device__ __forceinline__ void ChunkState::write_metadata(
