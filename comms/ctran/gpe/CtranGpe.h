@@ -325,6 +325,9 @@ struct KernelConfig {
   const uint64_t opCount;
   bool isDevice{true};
 
+  // Dynamic shared memory size override. 0 = use sizeof(CtranAlgoDeviceState).
+  size_t dynamicSharedMemBytes{0};
+
   // Experimental: allows one-sided communications, waitSignal and
   // multiWaitSignal, to run in parallel with other kernels when
   // launched on a single GPE thread.
