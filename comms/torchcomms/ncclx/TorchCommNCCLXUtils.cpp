@@ -215,20 +215,33 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
       cuda_api_->threadExchangeStreamCaptureMode(&mode),
       "Failed to swap capture mode for timeout thread");
 
+  long gc_remaining_ms =
+      static_cast<long>(configs_.garbage_collect_interval_ms_);
+  long timeout_remaining_ms =
+      static_cast<long>(configs_.graph_timeout_check_interval_ms_);
+
   while (!shutdown_) {
+    long sleep_ms = std::min(gc_remaining_ms, timeout_remaining_ms);
+
     {
       std::unique_lock<std::mutex> lock(timeout_mutex_);
       // Wait for a shorter interval to check work objects periodically
       // Wake up either after some time or immediately if shutdown is requested
-      timeout_cv_.wait_for(
-          lock,
-          std::chrono::milliseconds(configs_.garbage_collect_interval_ms_),
-          [this]() { return shutdown_.load(); });
+      auto before = std::chrono::steady_clock::now();
+      timeout_cv_.wait_for(lock, std::chrono::milliseconds(sleep_ms), [this]() {
+        return shutdown_.load();
+      });
 
       // If we're shutting down, exit the loop
       if (shutdown_) {
         break;
       }
+
+      auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - before)
+                            .count();
+      gc_remaining_ms -= elapsed_ms;
+      timeout_remaining_ms -= elapsed_ms;
     }
 
     // Check work objects for completion or timeout
@@ -246,9 +259,18 @@ void TorchCommNCCLX::timeoutWatchdog() noexcept {
       break;
     }
 
+    if (gc_remaining_ms <= 0) {
+      gc_remaining_ms =
+          static_cast<long>(configs_.garbage_collect_interval_ms_);
+    }
+
     // Check graph replay work entries; skip if already in error or timeout
-    if (comm_state_ == CommState::NORMAL) {
-      checkGraphEvents();
+    if (timeout_remaining_ms <= 0) {
+      if (comm_state_ == CommState::NORMAL) {
+        checkGraphEvents();
+      }
+      timeout_remaining_ms =
+          static_cast<long>(configs_.graph_timeout_check_interval_ms_);
     }
 
     if (comm_state_ != CommState::NORMAL &&

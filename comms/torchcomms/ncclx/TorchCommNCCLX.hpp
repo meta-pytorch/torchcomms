@@ -41,6 +41,12 @@ constexpr size_t kDefaultGarbageCollectIntervalMs = 100;
 // events are tracked during graph capture for timeout detection during replay.
 constexpr bool kDefaultEnableCudaGraphSupport = true;
 
+// Interval in milliseconds between graph replay timeout checks. Graph timeout
+// detection does not need to run as frequently as garbage collection since
+// timeouts are typically in the seconds range. 1000ms keeps CPU overhead low
+// while still detecting timeouts promptly.
+constexpr size_t kDefaultGraphTimeoutCheckIntervalMs = 1000;
+
 class TorchCommNCCLX : public TorchCommBackend,
                        public std::enable_shared_from_this<TorchCommNCCLX> {
  public:
@@ -417,6 +423,8 @@ class TorchCommNCCLX : public TorchCommBackend,
     size_t max_event_pool_size_{kDefaultMaxEventPoolSize};
     size_t garbage_collect_interval_ms_{kDefaultGarbageCollectIntervalMs};
     bool enable_cuda_graph_support_{kDefaultEnableCudaGraphSupport};
+    size_t graph_timeout_check_interval_ms_{
+        kDefaultGraphTimeoutCheckIntervalMs};
   };
   Configs configs_;
 
