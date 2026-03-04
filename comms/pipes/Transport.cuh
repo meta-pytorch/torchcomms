@@ -31,7 +31,11 @@ class P2pIbgdaTransportDevice;
  * Transport type tag for discriminated union.
  * Used to identify which transport type is active in the Transport union.
  */
-enum class TransportType : uint8_t { SELF, P2P_NVL, P2P_IBGDA };
+enum class TransportType : uint8_t {
+  SELF,
+  P2P_NVL,
+  P2P_IBGDA,
+};
 
 /**
  * Polymorphic transport wrapper using tagged union.
@@ -75,7 +79,6 @@ struct Transport {
   /** Constructor for P2pIbgdaTransportDevice (non-owning pointer) */
   __host__ __device__ explicit Transport(P2pIbgdaTransportDevice* p)
       : type(TransportType::P2P_IBGDA), p2p_ibgda(p) {}
-
   /**
    * Delete copy constructor and copy assignment.
    * Transport objects contain device pointers and IPC handles that should not
