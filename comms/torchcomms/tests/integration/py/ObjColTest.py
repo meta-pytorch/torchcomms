@@ -15,6 +15,8 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import TorchCommTestWr
 def report_error():
     try:
         yield
+    except unittest.SkipTest:
+        raise
     except Exception as e:
         import traceback
 
@@ -88,6 +90,9 @@ class ObjColTest(unittest.TestCase):
     @report_error()
     def test_send_recv_object_list(self) -> None:
         """Test point-to-point object list communication."""
+        if self.num_ranks < 2:
+            self.skipTest("This test requires at least 2 ranks.")
+
         sender_rank = 0
         receiver_rank = 1
 

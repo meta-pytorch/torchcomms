@@ -129,6 +129,11 @@ static void initCeOperation();
 ncclResult_t p2pCanConnect(int* ret, struct ncclComm* comm, struct ncclTopoGraph* graph, struct ncclPeerInfo* info1, struct ncclPeerInfo* info2) {
   initCeOperation();
 
+  if (comm->noLocal_) {
+    *ret = 0;
+    return ncclSuccess;
+  }
+
   // Check topology / p2p level.
   int intermediateRank;
   NCCLCHECK(ncclTopoCheckP2p(comm, comm->topo, info1->rank, info2->rank, ret, NULL, &intermediateRank));

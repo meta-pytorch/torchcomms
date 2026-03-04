@@ -19,6 +19,10 @@
 // Forward declaration
 class CtranIb;
 
+namespace ctran {
+class RegCache;
+} // namespace ctran
+
 namespace torch::comms {
 
 /*
@@ -128,7 +132,17 @@ class RdmaMemory : folly::MoveOnly {
     }
   };
 
-  RdmaMemory(const void* buf, size_t len, int cudaDev);
+  /**
+   * Construct an RdmaMemory object and register the buffer with the IB device.
+   *
+   * @param buf Pointer to the memory buffer to register
+   * @param len Length of the memory buffer in bytes
+   * @param cudaDev CUDA device ID associated with this memory buffer
+   * @param cacheReg Whether to cache the IB registration of the memory buffer.
+   *        When true, the registration is cached in regCache. Useful if the
+   *        same buffer is used to construct RdmaMemory for multiple times
+   */
+  RdmaMemory(const void* buf, size_t len, int cudaDev, bool cacheReg = false);
   RdmaMemory(RdmaMemory&& other) noexcept;
   RdmaMemory& operator=(RdmaMemory&& other) = delete;
   ~RdmaMemory() noexcept;
@@ -226,6 +240,8 @@ class RdmaMemory : folly::MoveOnly {
 
   void* regHdl_{nullptr};
   std::string remoteKey_;
+  bool cacheReg_{false};
+  std::shared_ptr<ctran::RegCache> regCache_;
 };
 
 /**

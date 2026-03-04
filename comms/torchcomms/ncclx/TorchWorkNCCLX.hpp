@@ -68,6 +68,13 @@ class TorchWorkNCCLX : public TorchWork {
     persistent_request_ = std::move(request);
   }
 
+  // Set CPU tensors that need to be kept alive for the lifetime of this
+  // work object. Used for CPU tensors (e.g., pointer arrays) that must outlive
+  // the async operation, especially during CUDA graph replay.
+  void setCPUTensors(std::vector<at::Tensor> tensors) {
+    cpuTensors_ = std::move(tensors);
+  }
+
  protected:
   void recordStart(std::string_view coll_name);
   void recordEnd();
@@ -90,6 +97,13 @@ class TorchWorkNCCLX : public TorchWork {
   // can avoid allocating space for a vector of tensors.
   std::vector<at::Tensor> inputTensors_;
   at::Tensor inputTensor_;
+
+  // CPU tensors that need to be kept alive for the lifetime of this
+  // work object. Unlike inputTensors_ which are cleared in wait(), these
+  // tensors remain alive until the work object is destroyed. This is used
+  // for CPU tensors (e.g., pointer arrays) that must outlive the async
+  // operation, especially during CUDA graph replay.
+  std::vector<at::Tensor> cpuTensors_;
 
   void initEvents();
   void releaseEvents();

@@ -74,7 +74,7 @@ static ncclResult_t shmCanConnect(int* ret, struct ncclComm* comm, struct ncclTo
   *ret = 0;
   initCeOperation();
 
-  if (NCCL_SHM_DISABLE == 1) return ncclSuccess;
+  if (NCCL_SHM_DISABLE == 1 || comm->noLocal_) return ncclSuccess;
 
   int useNet = 0;
   NCCLCHECK(ncclTopoCheckNet(comm->topo, info1->rank, info2->rank, &useNet));

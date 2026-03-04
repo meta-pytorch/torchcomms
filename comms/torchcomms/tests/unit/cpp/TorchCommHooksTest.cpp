@@ -213,7 +213,7 @@ TEST_F(TorchCommHooksTest, AbortHookNotCalledAfterRemoval) {
   ASSERT_NE(torchcomm, nullptr);
 
   auto backend =
-      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->unsafeGetBackend());
+      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   int abortHookCallCount = 0;
@@ -238,7 +238,7 @@ TEST_F(TorchCommHooksTest, AbortHookInvoked) {
   ASSERT_NE(torchcomm, nullptr);
 
   auto backend =
-      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->unsafeGetBackend());
+      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   int abortHookCallCount = 0;
@@ -264,7 +264,7 @@ TEST_F(TorchCommHooksTest, MultipleAbortHooksInvoked) {
   ASSERT_NE(torchcomm, nullptr);
 
   auto backend =
-      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->unsafeGetBackend());
+      std::dynamic_pointer_cast<TorchCommDummy>(torchcomm->getBackendImpl());
   ASSERT_NE(backend, nullptr);
 
   int hook1CallCount = 0;

@@ -79,7 +79,7 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         self.device = self.torchcomm.get_device()
 
         # Get the NCCLX backend for NCCLX-specific APIs
-        self.ncclx_backend = self.torchcomm.unsafe_get_backend()
+        self.ncclx_backend = self.torchcomm.get_backend_impl()
 
     def tearDown(self):
         """Clean up after each test."""
@@ -387,7 +387,7 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
         torch.manual_seed(42)
         rank = sub_torchcomm.get_rank()
         comm_size = sub_torchcomm.get_size()
-        backend = sub_torchcomm.unsafe_get_backend()
+        backend = sub_torchcomm.get_backend_impl()
         assert ETP == 1 or TP == ETP, "Test cases only support ETP=1 or ETP==TP for now"
         TP2EP = TP // ETP
         NUM_LOCAL_EXPERTS = E // comm_size // TP2EP
@@ -456,24 +456,30 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
                 D,
                 False,
             )
-        if use_cudagraph:
-            g.replay()
-        if ETP == TP:
-            torch.testing.assert_close(
-                combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
-            )
-        else:
-            expected_vals = []
-            output_vals = []
-            input_split_sizes_list = input_split_sizes.tolist()
-            split_vals = original_input_tensor.split(input_split_sizes_list)
-            split_output_vals = combine_output_tensor.split(input_split_sizes_list)
-            for i in dispatch_indices_list:
-                expected_vals.append(split_vals[i])
-                output_vals.append(split_output_vals[i])
-            expected_vals = torch.cat(expected_vals)
-            output_vals = torch.cat(output_vals)
-            torch.testing.assert_close(output_vals, expected_vals, rtol=0.0, atol=0.0)
+        # Replay multiple times to verify tensor lifetime (tensors saved via
+        # setRetainedTensors must remain valid across all replays)
+        num_replays = 3 if use_cudagraph else 1
+        for _ in range(num_replays):
+            if use_cudagraph:
+                g.replay()
+            if ETP == TP:
+                torch.testing.assert_close(
+                    combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
+                )
+            else:
+                expected_vals = []
+                output_vals = []
+                input_split_sizes_list = input_split_sizes.tolist()
+                split_vals = original_input_tensor.split(input_split_sizes_list)
+                split_output_vals = combine_output_tensor.split(input_split_sizes_list)
+                for i in dispatch_indices_list:
+                    expected_vals.append(split_vals[i])
+                    output_vals.append(split_output_vals[i])
+                expected_vals = torch.cat(expected_vals)
+                output_vals = torch.cat(output_vals)
+                torch.testing.assert_close(
+                    output_vals, expected_vals, rtol=0.0, atol=0.0
+                )
         g.reset()
         del g
 
@@ -564,11 +570,15 @@ class AllToAllvDynamicDispatchTest(unittest.TestCase):
                 D,
                 False,
             )
-        if use_cudagraph:
-            g.replay()
-        torch.testing.assert_close(
-            combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
-        )
+        # Replay multiple times to verify tensor lifetime (tensors saved via
+        # setRetainedTensors must remain valid across all replays)
+        num_replays = 3 if use_cudagraph else 1
+        for _ in range(num_replays):
+            if use_cudagraph:
+                g.replay()
+            torch.testing.assert_close(
+                combine_output_tensor, original_input_tensor, rtol=0.0, atol=0.0
+            )
         g.reset()
         del g
 

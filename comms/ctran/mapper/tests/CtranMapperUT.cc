@@ -7,8 +7,8 @@
 #include <memory>
 
 #include "comms/ctran/mapper/CtranMapper.h"
+#include "comms/ctran/mapper/CtranMapperImpl.h"
 #include "comms/ctran/regcache/IpcRegCache.h"
-#include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -1223,41 +1223,90 @@ TEST_F(CtranMapperTest, RemoteAccessKeyToString) {
   EXPECT_EQ(rkey3.toString(), "backend=UNKNOWN");
 }
 
-TEST_F(CtranMapperTest, IpcExportCache) {
-  std::unique_ptr<ctran::regcache::IpcExportCache> cache =
-      std::make_unique<ctran::regcache::IpcExportCache>();
-  ctran::regcache::IpcRegElem* dummyRegElem0 =
-      reinterpret_cast<ctran::regcache::IpcRegElem*>(0x12345);
-  const std::vector<std::string> peers = {"peer0", "peer1", "peer2", "peer3"};
+TEST_F(CtranMapperTest, ExportRegCache) {
+  std::unique_ptr<ctran::ExportRegCache> cache =
+      std::make_unique<ctran::ExportRegCache>();
+  const ctran::regcache::RegElem* dummyRegElem0 =
+      reinterpret_cast<ctran::regcache::RegElem*>(0x12345);
 
-  for (const auto& peer : peers) {
+  const std::vector<int> peers = {0, 1, 2, 3};
+
+  for (auto peer : peers) {
     cache->record(dummyRegElem0, peer);
   }
 
-  // Expect dump gives full copy of the cache
+  // Except dump gives full copy of the cache
   const auto dump = cache->dump();
   EXPECT_EQ(dump.size(), 1);
   auto it = dump.begin();
   EXPECT_EQ(it->first, dummyRegElem0);
   EXPECT_EQ(it->second.size(), peers.size());
 
-  ctran::regcache::IpcRegElem* dummyRegElem1 =
-      reinterpret_cast<ctran::regcache::IpcRegElem*>(0x12346);
+  const ctran::regcache::RegElem* dummyRegElem1 =
+      reinterpret_cast<ctran::regcache::RegElem*>(0x12346);
 
-  // Expect return empty set for non-existing regElem
+  // Expect return empty vector for non-existing regElem
   auto cachedPeers = cache->remove(dummyRegElem1);
   EXPECT_EQ(cachedPeers.size(), 0);
 
   // Expect return cached peers for existing regElem
   cachedPeers = cache->remove(dummyRegElem0);
   EXPECT_EQ(cachedPeers.size(), peers.size());
-  for (const auto& peer : peers) {
+  for (auto peer : peers) {
     EXPECT_EQ(cachedPeers.count(peer), 1);
   }
 
   // Expect empty dump after remove
   const auto dump1 = cache->dump();
   EXPECT_EQ(dump1.size(), 0);
+}
+
+// Test ExportRegCache with multiple RegElems exported to overlapping peers.
+// Simulates the scenario where two different memory regions are exported to
+// partially overlapping sets of peers.
+TEST_F(CtranMapperTest, ExportRegCacheMultipleElems) {
+  ctran::ExportRegCache cache;
+  auto* elem0 = reinterpret_cast<ctran::regcache::RegElem*>(0x1000);
+  auto* elem1 = reinterpret_cast<ctran::regcache::RegElem*>(0x2000);
+
+  // elem0 exported to peers {0, 1, 2}
+  cache.record(elem0, 0);
+  cache.record(elem0, 1);
+  cache.record(elem0, 2);
+
+  // elem1 exported to peers {1, 2, 3}
+  cache.record(elem1, 1);
+  cache.record(elem1, 2);
+  cache.record(elem1, 3);
+
+  EXPECT_EQ(cache.dump().size(), 2);
+
+  // Remove elem0 — should only return elem0's peers
+  auto peers0 = cache.remove(elem0);
+  const std::unordered_set<int> expected0 = {0, 1, 2};
+  EXPECT_EQ(peers0, expected0);
+  EXPECT_EQ(cache.dump().size(), 1);
+
+  // Remove elem1 — should only return elem1's peers
+  auto peers1 = cache.remove(elem1);
+  const std::unordered_set<int> expected1 = {1, 2, 3};
+  EXPECT_EQ(peers1, expected1);
+  EXPECT_EQ(cache.dump().size(), 0);
+}
+
+// Test ExportRegCache deduplication: recording the same peer twice for the
+// same regElem should not create duplicate entries.
+TEST_F(CtranMapperTest, ExportRegCacheDuplicatePeer) {
+  ctran::ExportRegCache cache;
+  auto* elem = reinterpret_cast<ctran::regcache::RegElem*>(0x3000);
+
+  cache.record(elem, 5);
+  cache.record(elem, 5);
+  cache.record(elem, 5);
+
+  auto peers = cache.remove(elem);
+  EXPECT_EQ(peers.size(), 1);
+  EXPECT_EQ(peers.count(5), 1);
 }
 
 class CtranMapperTestDisjoint : public ::testing::Test {
@@ -1392,32 +1441,4 @@ TEST(CtranMapperUT, IpcRegCacheDisabledSkipsSocketInit) {
 
   // NVL backend should still be available (for window operations)
   EXPECT_TRUE(mapper->hasBackend(rank, CtranMapperBackend::NVL));
-
-  // IpcRegCache singleton peer address map should be empty since
-  // allGatherIpcServerAddrs() was skipped
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  folly::SocketAddress addr;
-  auto peerId = dummyComm->statex_->gPid(rank);
-  EXPECT_EQ(
-      ipcRegCache->getPeerIpcServerAddr(peerId, addr), commInvalidArgument);
-}
-
-// When NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET is true (default), the
-// mapper initializes IpcRegCache and populates the peer address map.
-TEST(CtranMapperUT, IpcRegCacheEnabledPopulatesPeerAddrs) {
-  SysEnvRAII ipcEnv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1");
-  SysEnvRAII backendsEnv("NCCL_CTRAN_BACKENDS", "ib, nvl, socket");
-  ncclCvarInit();
-  auto commRAII = ctran::createDummyCtranComm();
-  auto dummyComm = commRAII->ctranComm.get();
-  auto mapper = std::make_unique<CtranMapper>(dummyComm);
-  auto rank = dummyComm->statex_->rank();
-
-  // IpcRegCache should have our own peer address populated
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  folly::SocketAddress addr;
-  auto peerId = dummyComm->statex_->gPid(rank);
-  EXPECT_EQ(ipcRegCache->getPeerIpcServerAddr(peerId, addr), commSuccess);
-  // The address should be non-empty (socket server was initialized)
-  EXPECT_NE(addr.getPort(), 0);
 }

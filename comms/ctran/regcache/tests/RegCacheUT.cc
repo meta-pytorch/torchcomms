@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "comms/ctran/backends/ib/CtranIbSingleton.h"
+#include "comms/ctran/regcache/IpcRegCache.h"
 #include "comms/ctran/regcache/RegCache.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
@@ -867,6 +868,175 @@ TEST_F(RegCacheTest, RegAllHandlesNonContiguousRegions) {
   COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf1, segSizes));
   COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf2, segSizes));
   COMMCHECK_TEST(ctran::commMemFreeDisjoint(buf3, segSizes));
+}
+
+// Test IpcRemRegElem refcount behavior through the IpcRegCache import/release
+// API. Verifies that:
+// 1. First import creates an entry with refCount=1
+// 2. Second import of same memory increments refCount to 2
+// 3. First release decrements refCount to 1 (keeps cached)
+// 4. Second release decrements refCount to 0 (frees the entry)
+TEST_F(RegCacheTest, IpcRemRegElemRefCount) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  ipcRegCache->init();
+
+  // Allocate and register a buffer for IPC export
+  size_t bufSize = 4096;
+  void* buf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, bufSize));
+
+  void* ipcRegElem = nullptr;
+  EXPECT_EQ(
+      ctran::IpcRegCache::regMem(buf, bufSize, cudaDev, &ipcRegElem),
+      commSuccess);
+
+  // If IPC registration is not supported (e.g., no NVLink), skip
+  if (ipcRegElem == nullptr) {
+    CUDACHECK_TEST(cudaFree(buf));
+    GTEST_SKIP() << "IPC memory not supported on this device, skipping";
+  }
+
+  // Export the memory to get an IPC descriptor
+  ctran::regcache::IpcDesc ipcDesc;
+  EXPECT_EQ(ipcRegCache->exportMem(buf, ipcRegElem, ipcDesc), commSuccess);
+
+  const std::string peerId = "test_refcount_peer";
+
+  // First import — should create entry, refCount=1
+  void* importedBuf1 = nullptr;
+  ctran::regcache::IpcRemHandle remKey1;
+  EXPECT_EQ(
+      ipcRegCache->importMem(peerId, ipcDesc, cudaDev, &importedBuf1, &remKey1),
+      commSuccess);
+  EXPECT_NE(importedBuf1, nullptr);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+
+  // Second import of same memory — should hit cache, refCount=2
+  void* importedBuf2 = nullptr;
+  ctran::regcache::IpcRemHandle remKey2;
+  EXPECT_EQ(
+      ipcRegCache->importMem(peerId, ipcDesc, cudaDev, &importedBuf2, &remKey2),
+      commSuccess);
+  // Should return same base address (cached)
+  EXPECT_EQ(importedBuf1, importedBuf2);
+  // Still one entry in the map (refCount incremented, not a new entry)
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+
+  // First release — refCount goes 2→1, entry should remain
+  EXPECT_EQ(
+      ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid),
+      commSuccess);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 1);
+
+  // Second release — refCount goes 1→0, entry should be freed
+  EXPECT_EQ(
+      ipcRegCache->releaseRemReg(peerId, ipcDesc.desc.base, ipcDesc.uid),
+      commSuccess);
+  EXPECT_EQ(ipcRegCache->getNumRemReg(peerId), 0);
+
+  // Cleanup
+  ctran::IpcRegCache::deregMem(ipcRegElem);
+  CUDACHECK_TEST(cudaFree(buf));
+}
+
+// Test that releasing an IpcRemRegElem that has already been fully released
+// returns an error (unknown registration).
+TEST_F(RegCacheTest, IpcRemRegElemReleaseUnknown) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+  ipcRegCache->init();
+
+  // Releasing a non-existent registration should return error
+  EXPECT_NE(
+      ipcRegCache->releaseRemReg("nonexistent_peer", nullptr, 999),
+      commSuccess);
+}
+
+// Mock IpcExportClient for testing the registry in IpcRegCache.
+class MockIpcExportClient : public ctran::regcache::IpcExportClient {
+ public:
+  std::vector<ctran::regcache::RegElem*> releasedElems;
+
+  commResult_t remReleaseMem(ctran::regcache::RegElem* regElem) override {
+    releasedElems.push_back(regElem);
+    return commSuccess;
+  }
+};
+
+// Test IpcExportClient registry: register, releaseFromAllClients, deregister.
+TEST_F(RegCacheTest, IpcExportClientRegistry) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  MockIpcExportClient client1;
+  MockIpcExportClient client2;
+
+  ipcRegCache->registerExportClient(&client1);
+  ipcRegCache->registerExportClient(&client2);
+
+  auto* dummyElem = reinterpret_cast<ctran::regcache::RegElem*>(0xABCD);
+
+  // releaseFromAllClients should call remReleaseMem on both clients
+  EXPECT_EQ(ipcRegCache->releaseFromAllClients(dummyElem), commSuccess);
+  EXPECT_EQ(client1.releasedElems.size(), 1);
+  EXPECT_EQ(client1.releasedElems[0], dummyElem);
+  EXPECT_EQ(client2.releasedElems.size(), 1);
+  EXPECT_EQ(client2.releasedElems[0], dummyElem);
+
+  // Deregister client1, call again — only client2 should be called
+  ipcRegCache->deregisterExportClient(&client1);
+
+  auto* dummyElem2 = reinterpret_cast<ctran::regcache::RegElem*>(0xBCDE);
+  EXPECT_EQ(ipcRegCache->releaseFromAllClients(dummyElem2), commSuccess);
+  EXPECT_EQ(client1.releasedElems.size(), 1); // unchanged
+  EXPECT_EQ(client2.releasedElems.size(), 2);
+  EXPECT_EQ(client2.releasedElems[1], dummyElem2);
+
+  // Deregister client2 — no clients left
+  ipcRegCache->deregisterExportClient(&client2);
+
+  auto* dummyElem3 = reinterpret_cast<ctran::regcache::RegElem*>(0xCDEF);
+  EXPECT_EQ(ipcRegCache->releaseFromAllClients(dummyElem3), commSuccess);
+  EXPECT_EQ(client1.releasedElems.size(), 1); // unchanged
+  EXPECT_EQ(client2.releasedElems.size(), 2); // unchanged
+}
+
+// Test that double-registering the same client doesn't cause duplicate calls.
+TEST_F(RegCacheTest, IpcExportClientRegistryDuplicateRegister) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  MockIpcExportClient client;
+  ipcRegCache->registerExportClient(&client);
+  ipcRegCache->registerExportClient(&client); // duplicate
+
+  auto* dummyElem = reinterpret_cast<ctran::regcache::RegElem*>(0xAAAA);
+  EXPECT_EQ(ipcRegCache->releaseFromAllClients(dummyElem), commSuccess);
+
+  // Should only be called once since it's a set
+  EXPECT_EQ(client.releasedElems.size(), 1);
+
+  ipcRegCache->deregisterExportClient(&client);
+}
+
+// Test that deregistering a client that was never registered is a no-op.
+TEST_F(RegCacheTest, IpcExportClientRegistryDeregisterUnknown) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  MockIpcExportClient client;
+  // Should not crash or fail
+  ipcRegCache->deregisterExportClient(&client);
+}
+
+// Test IpcRemRegElem refcount: verify initial refcount is 1.
+TEST_F(RegCacheTest, IpcRemRegElemRefCountInitial) {
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  ASSERT_NE(ipcRegCache, nullptr);
+
+  // getNumRemReg returns 0 for unknown peer
+  EXPECT_EQ(ipcRegCache->getNumRemReg("test_peer_refcount"), 0);
 }
 
 int main(int argc, char* argv[]) {

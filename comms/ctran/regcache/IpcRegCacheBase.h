@@ -4,8 +4,6 @@
 #include <fmt/core.h>
 #include <cstring>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 
 #include <folly/Synchronized.h>
 #include "comms/ctran/utils/CtranIpc.h"
@@ -75,6 +73,10 @@ struct IpcRegElem {
 
 struct IpcRemRegElem {
   ctran::utils::CtranIpcRemMem ipcRemMem;
+  // Reference count for how many communicators have imported this memory.
+  // Starts at 1 on first import, incremented on subsequent cache hits.
+  // Only freed when refCount reaches 0.
+  std::atomic<int> refCount{1};
 
  public:
   IpcRemRegElem(
@@ -84,7 +86,10 @@ struct IpcRemRegElem {
       : ipcRemMem(ipcDesc, cudaDev, logMetaData, "IPC RemRegElem") {};
 
   std::string toString() const {
-    return ipcRemMem.toString();
+    return fmt::format(
+        "{} refCount: {}",
+        ipcRemMem.toString(),
+        refCount.load(std::memory_order_relaxed));
   }
 };
 
@@ -163,24 +168,21 @@ struct IpcReqCb {
   explicit IpcReqCb(IpcReqType t, const std::string& id) : req(t, id) {}
 };
 
-// Class to cache exported IpcRegElems and track which peers they are exported
-// to. Moved from mapper to centralize IPC export tracking.
-class IpcExportCache {
- private:
-  std::unordered_map<IpcRegElem*, std::unordered_set<std::string>> map_;
+// Forward declaration for RegElem (defined in RegCache.h)
+struct RegElem;
 
+// Abstract interface for any object that exports IPC memory and needs
+// to send remReleaseMem when memory is globally freed. Implementers
+// (e.g., CtranMapper) register with IpcRegCache so that globalDeregister
+// can iterate all active exporters.
+class IpcExportClient {
  public:
-  // Record the ipcRegElem and the peerId to export to.
-  inline void record(IpcRegElem* ipcRegElem, const std::string& peerId) {
-    map_[ipcRegElem].insert(peerId);
-  }
+  virtual ~IpcExportClient() = default;
 
-  // Remove the specified ipcRegElem from cache. Return the exported peerIds set
-  // if the ipcRegElem has been exported. Otherwise, empty set is returned.
-  std::unordered_set<std::string> remove(IpcRegElem* ipcRegElem);
-
-  // Dump a full copy of the cache map; used for testing only
-  std::unordered_map<IpcRegElem*, std::unordered_set<std::string>> dump() const;
+  // Called by IpcRegCache::releaseFromAllClients when memory is globally freed.
+  // The implementer should look up the regElem in its own export cache,
+  // send release to the appropriate peers, and clean up.
+  virtual commResult_t remReleaseMem(RegElem* regElem) = 0;
 };
 
 } // namespace regcache

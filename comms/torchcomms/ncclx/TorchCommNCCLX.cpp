@@ -33,6 +33,8 @@ constexpr std::string_view kHintGarbageCollectIntervalMs =
     "torchcomm::ncclx::garbage_collect_interval_ms";
 constexpr std::string_view kHintEnableCudaGraphSupport =
     "torchcomm::ncclx::enable_cuda_graph_support";
+constexpr std::string_view kHintGraphTimeoutCheckIntervalMs =
+    "torchcomm::ncclx::graph_timeout_check_interval_ms";
 
 // Helper function to validate that metadata tensors are int64_t (torch.int64)
 void validateInt64Dtype(const at::Tensor& tensor, std::string_view name) {
@@ -246,6 +248,13 @@ void TorchCommNCCLX::init(
   if (options_.hints.contains(kHintEnableCudaGraphSupportKey)) {
     configs_.enable_cuda_graph_support_ =
         string_to_bool(options_.hints.at(kHintEnableCudaGraphSupportKey));
+  }
+
+  const auto kHintGraphTimeoutCheckIntervalMsKey =
+      std::string(kHintGraphTimeoutCheckIntervalMs);
+  if (options_.hints.contains(kHintGraphTimeoutCheckIntervalMsKey)) {
+    configs_.graph_timeout_check_interval_ms_ =
+        std::stoull(options_.hints.at(kHintGraphTimeoutCheckIntervalMsKey));
   }
 
   // Give up our internal reference to the store object here.  The caller
@@ -1572,8 +1581,14 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
       options_.timeout,
       async_op
           ? std::vector<
-                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank, output_tensor_ptrs}
+                at::Tensor>{input_tensor, input_chunk_sizes, input_chunk_indices, input_chunk_count_per_rank}
           : std::vector<at::Tensor>{});
+
+  // Save the CPU pointer tensor to keep it alive for the lifetime of the work
+  // object. output_tensor_ptrs is a CPU tensor holding raw pointers to the
+  // output tensors and must remain valid during async operations and graph
+  // replay. The output_tensor_list (GPU tensors) is kept alive by the caller.
+  work->setCPUTensors({output_tensor_ptrs});
 
   // Record start event before NCCL operation
   work->recordStart("alltoallv_dynamic_dispatch");

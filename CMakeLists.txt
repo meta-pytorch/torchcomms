@@ -165,6 +165,7 @@ endif()
 if (USE_TRANSPORT)
     include(comms/torchcomms/transport/CMakeLists.txt)
 endif()
+include(comms/torchcomms/hooks/fr/CMakeLists.txt)
 
 # Install targets to Python package structure
 install(TARGETS torchcomms

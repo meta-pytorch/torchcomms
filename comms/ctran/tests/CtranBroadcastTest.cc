@@ -27,6 +27,7 @@ class CtranBroadcastTest : public CtranIntraProcessFixture,
   static constexpr size_t kBufferNElem = kBufferSize / kTypeSize;
 
   void SetUp() override {
+    setenv("NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET", "1", 1);
     CtranIntraProcessFixture::SetUp();
   }
 

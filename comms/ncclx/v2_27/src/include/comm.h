@@ -703,6 +703,9 @@ struct ncclComm {
   bool useCtran_{false}; // Ctran per-communicator control; set at init entry functions
   std::unique_ptr<CtranComm> ctranComm_;
 
+  // Disable local transports (P2P and SHM); forces NET for all connections
+  bool noLocal_{false};
+
   uint64_t endMagic;
 };
 

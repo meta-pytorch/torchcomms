@@ -11,6 +11,8 @@
 
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 
+#include <ATen/ATen.h>
+
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
 
 namespace torch::comms {
@@ -112,8 +114,15 @@ class GraphEventTracker {
   void cleanupReleasedGraphs();
 
   struct GraphState {
-    std::vector<GraphWork> entries;
+    // Entries grouped by stream — collectives are only ordered within a stream,
+    // so per-stream grouping enables early-exit optimization in checkAll().
+    std::unordered_map<cudaStream_t, std::vector<GraphWork>> stream_entries;
     SharedCallbackState* shared_{nullptr};
+    // CPU tensors that must be kept alive for the graph's lifetime.
+    // This includes CPU pointer tensors used by alltoallv_dynamic_dispatch
+    // operations. These tensors are moved from work objects during graph
+    // capture and remain valid until the graph is destroyed.
+    std::vector<at::Tensor> cpu_tensors;
   };
 
   TorchCommNCCLX* comm_; // raw pointer — parent owns this tracker

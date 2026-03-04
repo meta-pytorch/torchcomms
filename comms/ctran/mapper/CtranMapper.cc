@@ -85,6 +85,10 @@ CtranMapper::CtranMapper(CtranComm* comm) {
     // Initialize IpcRegCache singleton (idempotent - only initializes once)
     ctran::IpcRegCache::getInstance()->init();
 
+    // Register this mapper as an IpcExportClient so globalDeregister
+    // can iterate all active mappers to send remote releases.
+    ctran::IpcRegCache::getInstance()->registerExportClient(this);
+
     // AllGather IPC server addresses after comm is set
     FB_COMMCHECKTHROW_EX(allGatherIpcServerAddrs(), comm->logMetaData_);
   } else {
@@ -407,6 +411,13 @@ CtranMapper::~CtranMapper() {
 
   this->reportProfiling(true);
 
+  // Deregister from IpcRegCache so globalDeregister won't call this mapper
+  // after it's destroyed.
+  auto ipcRegCache = ctran::IpcRegCache::getInstance();
+  if (ipcRegCache) {
+    ipcRegCache->deregisterExportClient(this);
+  }
+
   // Release any pending IPC release requests;
   // intentionally avoid progress polling in destructor to ensure it is never
   // blocked.
@@ -434,31 +445,13 @@ commResult_t CtranMapper::epochUnlock() {
 commResult_t CtranMapper::allGatherIpcServerAddrs() {
   const int nRanks = comm->statex_->nRanks();
   const int myRank = comm->statex_->rank();
-  std::vector<sockaddr_storage> peerAddrs(nRanks);
+  peerIpcServerAddrs_.resize(nRanks);
 
   ctran::IpcRegCache::getInstance()->getServerAddr().getAddress(
-      &peerAddrs[myRank]);
+      &peerIpcServerAddrs_[myRank]);
   auto resFuture = comm->bootstrap_->allGather(
-      peerAddrs.data(), sizeof(sockaddr_storage), myRank, nRanks);
+      peerIpcServerAddrs_.data(), sizeof(sockaddr_storage), myRank, nRanks);
   FB_COMMCHECK(static_cast<commResult_t>(std::move(resFuture).get()));
-
-  // Update IpcRegCache with gathered peer addresses, keyed by gPid
-  auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  for (int rank = 0; rank < nRanks; ++rank) {
-    // If bootstrap allGather fails or server address is unspecified, skip it
-    if (peerAddrs[rank].ss_family == AF_UNSPEC) {
-      CLOGF_SUBSYS(
-          WARN,
-          INIT,
-          "CTRAN-MAPPER: IPC server address is unspecified for rank {}",
-          rank);
-      continue;
-    }
-    const std::string peerId = comm->statex_->gPid(rank);
-    folly::SocketAddress addr;
-    addr.setFromSockaddr(reinterpret_cast<const sockaddr*>(&peerAddrs[rank]));
-    FB_COMMCHECK(ipcRegCache->setPeerIpcServerAddr(peerId, addr));
-  }
 
   CLOGF_SUBSYS(
       INFO,
@@ -468,18 +461,55 @@ commResult_t CtranMapper::allGatherIpcServerAddrs() {
   return commSuccess;
 }
 
+folly::SocketAddress CtranMapper::getPeerIpcServerAddr(int rank) const {
+  folly::SocketAddress addr;
+  addr.setFromSockaddr(
+      reinterpret_cast<const sockaddr*>(&peerIpcServerAddrs_[rank]));
+  return addr;
+}
+
 commResult_t CtranMapper::remReleaseMem(ctran::regcache::RegElem* regElem) {
-  // Notify remote peer to release previous imported memory via NVL backend.
+  // Notify remote rank to release previous imported memory via NVL backend.
   // Shouldn't skip it even at destruction, since imported memory is stored in
   // IpcRegCache singleton and not cleared at mapper destruction
+  auto exportedNvlRanks = exportRegCache_.wlock()->remove(regElem);
 
-  // Delegate to IpcRegCache for IPC-based remote release
-  auto ipcRegElem =
-      reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
-  if (ipcRegElem != nullptr) {
+  if (exportedNvlRanks.empty()) {
+    return commSuccess;
+  }
+
+  // If peers have imported this memory but the async socket is disabled,
+  // we cannot notify them to release. This is a fatal inconsistency.
+  if (!NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET) {
+    CLOGF(
+        FATAL,
+        "CTRAN-REGCACHE: ipcRegElem was exported to {} peers but "
+        "NCCL_CTRAN_IPC_REGCACHE_ENABLE_ASYNC_SOCKET is disabled",
+        exportedNvlRanks.size());
+  }
+
+  for (auto peerRank : exportedNvlRanks) {
+    // Warning: the remote rank may release the memory after the next import,
+    // becase exportMem msgs are transferred over CtranIB&CtranSocket while
+    // releaseMem msgs are transferred over AsyncSocket. To prevent the remote
+    // rank from misusing a previously imported&cached but invalid segment, we
+    // add version ID to each exported segment
+
+    folly::SocketAddress peerAddr = getPeerIpcServerAddr(peerRank);
+    std::unique_ptr<regcache::IpcReqCb> req =
+        std::make_unique<regcache::IpcReqCb>();
     FB_COMMCHECK(
-        ctran::IpcRegCache::getInstance()->remReleaseMem(
-            comm->statex_->gPid(), ipcRegElem, this->postedCbCtrlReqs_));
+        ctran::IpcRegCache::getInstance()->notifyRemoteIpcRelease(
+            comm->statex_->gPid(),
+            peerAddr,
+            reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem),
+            req.get()));
+
+    CLOGF_TRACE(COLL, "CTRAN-MAPPER: Posted IPC release to rank {}", peerRank);
+
+    // IPC release requests will be checked in progress and erased at
+    // completion. Mapper needs to free up all requests at destruction.
+    this->postedCbCtrlReqs_.push_back(std::move(req));
   }
 
   return commSuccess;
@@ -588,15 +618,11 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
       FB_COMMCHECK(remReleaseMem(regElem));
     }
   } else {
-    // Skip remote release, just remove the regElems from IpcRegCache export
-    // cache. The caller is responsible to release all remote registration
-    // (e.g., in winFree)
+    // Skip remote release, just remove the regElems from local exportRegCache_.
+    // The caller is responsible to release all remote registration (e.g., in
+    // winFree)
     for (auto& regElem : regElems) {
-      auto ipcRegElem =
-          reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
-      if (ipcRegElem != nullptr) {
-        ctran::IpcRegCache::getInstance()->removeExport(ipcRegElem);
-      }
+      exportRegCache_.wlock()->remove(regElem);
     }
   }
 
@@ -987,6 +1013,11 @@ commResult_t CtranMapper::intraBarrier() {
     FB_COMMCHECK(waitRequest(&req));
   }
   return commSuccess;
+}
+
+std::unordered_map<ctran::regcache::RegElem*, std::unordered_set<int>>
+CtranMapper::dumpExportRegCache() const {
+  return exportRegCache_.rlock()->dump();
 }
 
 std::string CtranMapperNotify::toString() const {

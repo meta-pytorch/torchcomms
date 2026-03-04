@@ -73,7 +73,7 @@ def alltoallv_dedup_init(
             f"alltoallv_dedup_init requires ncclx backend, got {backend_name}"
         )
 
-    ncclx_backend = tc.unsafe_get_backend()
+    ncclx_backend = tc.get_backend_impl()
     return ncclx_backend.alltoallv_dedup_init(
         num_tokens, token_size, topk_k, experts_per_rank, dtype, async_op
     )
@@ -102,7 +102,7 @@ def alltoallv_dedup_exec(
             f"alltoallv_dedup_exec requires ncclx backend, got {backend_name}"
         )
 
-    ncclx_backend = tc.unsafe_get_backend()
+    ncclx_backend = tc.get_backend_impl()
     return ncclx_backend.alltoallv_dedup_exec(
         output_tensor,
         recv_block_ids,
@@ -145,7 +145,7 @@ def alltoallv_dynamic_dispatch(
             f"alltoallv_dynamic_dispatch requires ncclx backend, got {backend_name}"
         )
 
-    ncclx_backend = tc.unsafe_get_backend()
+    ncclx_backend = tc.get_backend_impl()
     return ncclx_backend.alltoallv_dynamic_dispatch(
         output_tensors,
         output_split_sizes,
@@ -183,7 +183,7 @@ def alltoallv_dynamic_combine(
             f"alltoallv_dynamic_combine requires ncclx backend, got {backend_name}"
         )
 
-    ncclx_backend = tc.unsafe_get_backend()
+    ncclx_backend = tc.get_backend_impl()
     ncclx_backend.alltoallv_dynamic_combine(
         output_tensor,
         input_tensor,

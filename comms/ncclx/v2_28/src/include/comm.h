@@ -744,6 +744,9 @@ struct ncclComm {
   // When enabled, forces PAT algorithm with ncclDevPatSumPostDiv for ReduceScatter with ncclAvg
   bool usePatAvg_{false};
 
+  // Disable local transports (P2P and SHM); forces NET for all connections
+  bool noLocal_{false};
+
   uint64_t endMagic;
 };
 

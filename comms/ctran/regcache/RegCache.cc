@@ -180,13 +180,6 @@ ctran::regcache::Snapshot ctran::regcache::Profiler::getSnapshot() const {
 }
 
 void ctran::RegCache::init() {
-  // Acquire a reference to CtranIbSingleton to establish dependency ordering.
-  // By holding this shared_ptr, we ensure that CtranIbSingleton is destroyed
-  // AFTER RegCache during program shutdown, preventing use-after-free when
-  // RegCache::destroy() calls CtranIb::deregMem().
-  ibSingleton_ = CtranIbSingleton::getInstance();
-  CHECK_VALID_IB_SINGLETON(ibSingleton_);
-
   // Initialize global backends from environment variable.
   // The NCCL_CTRAN_BACKENDS cvar is already parsed at cvar initialization time.
   // This allows registration to work without requiring a communicator.
@@ -216,6 +209,17 @@ void ctran::RegCache::init() {
       static_cast<bool>(globalBackends_[CommBackend::NVL]),
       static_cast<bool>(globalBackends_[CommBackend::SOCKET]),
       static_cast<bool>(globalBackends_[CommBackend::TCPDM]));
+
+  // Acquire a reference to CtranIbSingleton to establish dependency ordering,
+  // but only when IB backend is configured. By holding this shared_ptr, we
+  // ensure that CtranIbSingleton is destroyed AFTER RegCache during program
+  // shutdown, preventing use-after-free when RegCache::destroy() calls
+  // CtranIb::deregMem(). When IB is not configured, no IB registrations will
+  // exist, so the lifetime dependency is not needed.
+  if (globalBackends_[CommBackend::IB]) {
+    ibSingleton_ = CtranIbSingleton::getInstance();
+    CHECK_VALID_IB_SINGLETON(ibSingleton_);
+  }
 
   if (NCCL_CTRAN_REGISTER == NCCL_CTRAN_REGISTER::async &&
       !asyncRegThread_.joinable()) {
@@ -373,22 +377,13 @@ ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
   std::vector<ctran::regcache::RegElem*> regElems;
   FB_COMMCHECK(lookupSegmentsForBuffer(buf, len, cudaDev, segHdls, regElems));
 
-  // Call remReleaseMem on ipcRegElems before freeing segments.
-  // This notifies remote peers to release their imported NVL memory.
-  // Like the mapper path, we use fire-and-forget semantics - the async socket
-  // sends will complete in the background. We don't wait for completion since
-  // the mapper also clears postedCbCtrlReqs_ without waiting at destruction.
-  // TODO: verify this is correct and that we shouldn't be waiting for the
-  // requests to finish.
+  // Call releaseFromAllClients on regElems before freeing segments.
+  // This iterates all registered IpcExportClients (mappers) and notifies
+  // remote peers to release their imported NVL memory.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  std::string localPeerId = ipcRegCache->getLocalPeerId();
-  std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedReqs;
   for (auto& regElem : regElems) {
-    auto ipcRegElem =
-        reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
-    if (ipcRegElem != nullptr) {
-      FB_COMMCHECK(
-          ipcRegCache->remReleaseMem(localPeerId, ipcRegElem, postedReqs));
+    if (regElem->ipcRegElem != nullptr) {
+      FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem));
     }
   }
 
@@ -580,6 +575,14 @@ bool ctran::RegCache::isRegistered(const void* ptr, const size_t len) {
   // Find range in regElemsMaps
   auto regHdl = searchRegElem(ptr, len);
   return regHdl != nullptr;
+}
+
+void* ctran::RegCache::searchIbRegElem(const void* ptr, const size_t len) {
+  auto* regElem = searchRegElem(ptr, len);
+  if (regElem == nullptr || regElem->ibRegElem == nullptr) {
+    return nullptr;
+  }
+  return regElem->ibRegElem;
 }
 
 std::vector<void*> ctran::RegCache::getSegments() const {
@@ -1402,19 +1405,13 @@ commResult_t ctran::RegCache::deregAll() {
     }
   }
 
-  // Call remReleaseMem on ipcRegElems before deregistering.
-  // This notifies remote peers to release their imported NVL memory.
-  // Like the mapper path, we use fire-and-forget semantics - the async socket
-  // sends will complete in the background.
+  // Call releaseFromAllClients on regElems before deregistering.
+  // This iterates all registered IpcExportClients (mappers) and notifies
+  // remote peers to release their imported NVL memory.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
-  std::string localPeerId = ipcRegCache->getLocalPeerId();
-  std::deque<std::unique_ptr<ctran::regcache::IpcReqCb>> postedReqs;
   for (auto& regElem : toDeregister) {
-    auto ipcRegElem =
-        reinterpret_cast<ctran::regcache::IpcRegElem*>(regElem->ipcRegElem);
-    if (ipcRegElem != nullptr) {
-      FB_COMMCHECK(
-          ipcRegCache->remReleaseMem(localPeerId, ipcRegElem, postedReqs));
+    if (regElem->ipcRegElem != nullptr) {
+      FB_COMMCHECK(ipcRegCache->releaseFromAllClients(regElem.get()));
     }
   }
 

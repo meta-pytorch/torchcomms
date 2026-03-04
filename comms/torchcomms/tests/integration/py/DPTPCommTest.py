@@ -96,7 +96,7 @@ class MLPStack(nn.Sequential):
 
 class DPTPCommTest(unittest.TestCase):
     @unittest.skipIf(
-        torch.cuda.device_count() < 4, "Skipping non GPU situations for now"
+        torch.accelerator.device_count() < 4, "Skipping non GPU situations for now"
     )
     def test_training(self) -> None:
         backend = os.environ["TEST_BACKEND"]
@@ -154,7 +154,7 @@ class DPTPCommTest(unittest.TestCase):
         mlp_dim = 16
         LR = 1e-4
         torch.manual_seed(42)
-        model = MLPStack(mlp_dim).to(torch.device("cuda"))
+        model = MLPStack(mlp_dim).to(device)
 
         ref_model = copy.deepcopy(model).to(device)
         model.parallelize(
@@ -181,7 +181,7 @@ class DPTPCommTest(unittest.TestCase):
                 _optim.step()
             assert torch.allclose(losses[0], losses[1], atol=1e-7, rtol=1e-5)
         # Somehow if not sync here, calling finalize will see abort reason.
-        torch.cuda.synchronize()
+        torch.accelerator.synchronize()
         tp_comm.finalize()
         dp_comm.finalize()
         comm.finalize()

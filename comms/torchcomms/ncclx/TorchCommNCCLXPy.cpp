@@ -23,6 +23,23 @@ PYBIND11_MODULE(_comms_ncclx, m) {
 
   py::class_<TorchCommNCCLX, std::shared_ptr<TorchCommNCCLX>>(
       m, "TorchCommNCCLX")
+#ifdef TORCHCOMMS_HAS_NCCL_DEVICE_API
+      .def(
+          "new_window",
+          [](TorchCommNCCLX& self, const std::optional<at::Tensor>& tensor) {
+            auto base = self.new_window(tensor);
+            auto ncclx_window =
+                std::dynamic_pointer_cast<TorchCommWindowNCCLXGin>(base);
+            if (!ncclx_window) {
+              throw std::runtime_error(
+                  "new_window() did not return a TorchCommWindowNCCLXGin. "
+                  "This is an internal error.");
+            }
+            return ncclx_window;
+          },
+          py::arg("tensor") = std::nullopt,
+          py::call_guard<py::gil_scoped_release>())
+#endif
       .def(
           "alltoallv_dynamic_dispatch",
           [](TorchCommNCCLX& self,
@@ -421,71 +438,5 @@ Example:
           py::arg("backend_window"),
           py::call_guard<py::gil_scoped_release>());
 
-  // Helper function to cast a base TorchCommWindow to TorchCommWindowNCCLXGin
-  // This function has two overloads:
-  // 1. If already a TorchCommWindowNCCLXGin, return as-is
-  // 2. If a base TorchCommWindow, downcast to TorchCommWindowNCCLXGin
-  m.def(
-      "cast_to_ncclx_window",
-      [](std::shared_ptr<TorchCommWindowNCCLXGin> ncclx_window) {
-        // Already the right type, just return it
-        return ncclx_window;
-      },
-      R"(
-Cast a TorchCommWindow to TorchCommWindowNCCLXGin for device API access.
-
-If the window is already a TorchCommWindowNCCLXGin, returns it as-is.
-If the window is a base TorchCommWindow, attempts to downcast it.
-
-Args:
-    base_window: A TorchCommWindow or TorchCommWindowNCCLXGin from comm.new_window().
-
-Returns:
-    TorchCommWindowNCCLXGin: The window with device API methods available.
-
-Raises:
-    RuntimeError: If the window is not backed by NCCLX.
-)",
-      py::arg("base_window"),
-      py::call_guard<py::gil_scoped_release>());
-
-  // Second overload for base TorchCommWindow type
-  m.def(
-      "cast_to_ncclx_window",
-      [](std::shared_ptr<TorchCommWindow> base_window) {
-        auto ncclx_window =
-            std::dynamic_pointer_cast<TorchCommWindowNCCLXGin>(base_window);
-        if (!ncclx_window) {
-          throw std::runtime_error(
-              "Window is not a TorchCommWindowNCCLXGin. "
-              "Device API requires NCCLX backend.");
-        }
-        return ncclx_window;
-      },
-      R"(
-Cast a base TorchCommWindow to TorchCommWindowNCCLXGin for device API access.
-
-This is needed because comm.new_window() returns the base TorchCommWindow type,
-but device API methods (get_device_window, get_nccl_window) are only available
-on TorchCommWindowNCCLXGin.
-
-Args:
-    base_window: A TorchCommWindow obtained from comm.new_window().
-
-Returns:
-    TorchCommWindowNCCLXGin: The same window with device API methods available.
-
-Raises:
-    RuntimeError: If the window is not backed by NCCLX.
-
-Example:
-    >>> from torchcomms._comms_ncclx import cast_to_ncclx_window
-    >>> window = comm.new_window()
-    >>> window.tensor_register(buffer)
-    >>> ncclx_window = cast_to_ncclx_window(window)
-    >>> dev_win_ptr = ncclx_window.get_device_window(signal_count=8)
-)",
-      py::arg("base_window"),
-      py::call_guard<py::gil_scoped_release>());
 #endif
 }

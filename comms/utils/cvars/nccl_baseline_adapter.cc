@@ -24,26 +24,26 @@
       __VA_ARGS__);
 
 namespace nccl_baseline_adapter {
-void ncclLoadParam(
+int64_t ncclLoadParam(
     char const* env,
     int64_t deftVal,
     int64_t uninitialized,
     int64_t* cache) {
   static std::mutex mutex;
   std::lock_guard<std::mutex> lock(mutex);
-  if (__atomic_load_n(cache, __ATOMIC_RELAXED) != uninitialized) {
+  int64_t int64Value = __atomic_load_n(cache, __ATOMIC_RELAXED);
+  if (int64Value != uninitialized) {
     // If the value is already initialized, return immediately.
-    return;
+    return int64Value;
   }
 
   auto it_int64 = ncclx::env_int64_values.find(env);
-  int64_t int64Value;
   if (it_int64 != ncclx::env_int64_values.end()) {
     int64Value = *it_int64->second;
     NCCL_ADAPTER_INFO(
         "{} set by int64_t CVAR map to {}.", env, (long long)int64Value);
     __atomic_store_n(cache, int64Value, __ATOMIC_RELAXED);
-    return;
+    return int64Value;
   }
 
   auto it_int = ncclx::env_int_values.find(env);
@@ -53,7 +53,7 @@ void ncclLoadParam(
     NCCL_ADAPTER_INFO(
         "{} set by integer CVAR map to {}.", env, (long long)intValue);
     __atomic_store_n(cache, static_cast<int64_t>(intValue), __ATOMIC_RELAXED);
-    return;
+    return intValue;
   }
 
   auto it_bool = ncclx::env_bool_values.find(env);
@@ -63,7 +63,7 @@ void ncclLoadParam(
     NCCL_ADAPTER_INFO(
         "{} set by bool CVAR map to {}.", env, (long long)boolValue);
     __atomic_store_n(cache, static_cast<int64_t>(boolValue), __ATOMIC_RELAXED);
-    return;
+    return (int64_t)boolValue;
   }
 
   // We first try to get the value from the string values map.
@@ -77,7 +77,7 @@ void ncclLoadParam(
         env,
         (long long)deftVal);
     __atomic_store_n(cache, deftVal, __ATOMIC_RELAXED);
-    return;
+    return deftVal;
   }
 
   const std::basic_string<char>* s = it_str->second;
@@ -100,6 +100,7 @@ void ncclLoadParam(
   }
 
   __atomic_store_n(cache, value, __ATOMIC_RELAXED);
+  return value;
 }
 
 const char* ncclGetEnvImpl(const char* name) {

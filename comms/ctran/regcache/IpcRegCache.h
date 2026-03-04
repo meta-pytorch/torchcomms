@@ -2,15 +2,14 @@
 #pragma once
 
 #include <atomic>
-#include <deque>
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <folly/Hash.h>
 #include <folly/SocketAddress.h>
 #include <folly/Synchronized.h>
-#include <folly/container/F14Map.h>
 #include <folly/io/async/ScopedEventBaseThread.h>
 
 #include "comms/ctran/bootstrap/AsyncSocket.h"
@@ -56,7 +55,7 @@ class IpcRegCache {
   // Output arguments:
   //   - ipcRelease: the IpcRelease struct to be populated and sent to remote
   //                 rank.
-  static void releaseMemReq(
+  static void remReleaseMem(
       void* ipcRegElem,
       ctran::regcache::IpcRelease& ipcRelease);
 
@@ -94,13 +93,11 @@ class IpcRegCache {
   // Input arguments:
   //   - buf: local buffer to export
   //   - ipcRegElem: local IPC registration element
-  //   - peerId: ID of the peer to export to (for tracking exports)
   // Output arguments:
   //   - ipcDesc: IPC descriptor to be populated and sent to remote peer
   inline commResult_t exportMem(
       const void* buf,
       void* ipcRegElem,
-      const std::string& peerId,
       ctran::regcache::IpcDesc& ipcDesc) {
     if (ipcRegElem == nullptr) {
       CLOGF(ERR, "CTRAN-REGCACHE: ipcRegElem is nullptr in exportMem");
@@ -114,10 +111,6 @@ class IpcRegCache {
     ipcDesc.offset = reinterpret_cast<size_t>(buf) -
         reinterpret_cast<size_t>(ipcMem->getBase());
     ipcDesc.uid = reg->uid;
-
-    // Record the export for tracking
-    exportRegCache_.wlock()->record(reg, peerId);
-
     return commSuccess;
   }
 
@@ -141,18 +134,6 @@ class IpcRegCache {
   inline std::string getLocalPeerId() const {
     return localPeerId_;
   }
-
-  // Set peer's IPC server address by peer ID (gPid).
-  commResult_t setPeerIpcServerAddr(
-      const std::string& peerId,
-      const folly::SocketAddress& addr);
-
-  // Get peer's IPC server address by peer ID (gPid).
-  // Output argument:
-  //   - addr: the socket address for the peer with the given gPid.
-  commResult_t getPeerIpcServerAddr(
-      const std::string& peerId,
-      folly::SocketAddress& addr) const;
 
   // Notify remote peers to release their imported NVL memory.
   // Output argument:
@@ -178,26 +159,19 @@ class IpcRegCache {
       const regcache::IpcDesc& ipcDesc,
       regcache::IpcReqCb* reqCb);
 
-  // Release memory exported via IPC by notifying all peers that imported it.
-  // Returns the set of peerIds that were notified.
-  // Input arguments:
-  //   - myId: the local peer ID (gPid)
-  //   - ipcRegElem: the local IPC registration element
-  // Output arguments:
-  //   - postedReqs: deque to store posted callback requests
-  commResult_t remReleaseMem(
-      const std::string& myId,
-      regcache::IpcRegElem* ipcRegElem,
-      std::deque<std::unique_ptr<regcache::IpcReqCb>>& postedReqs);
+  // Register an IpcExportClient with the registry. The client will be
+  // called by releaseFromAllClients when memory is globally freed.
+  // Must be matched with a deregisterExportClient call before the client
+  // is destroyed.
+  void registerExportClient(regcache::IpcExportClient* client);
 
-  // Remove ipcRegElem from export cache and return the exported peerIds.
-  // Used when the caller needs to handle remote release separately.
-  std::unordered_set<std::string> removeExport(
-      regcache::IpcRegElem* ipcRegElem);
+  // Deregister an IpcExportClient from the registry.
+  void deregisterExportClient(regcache::IpcExportClient* client);
 
-  // Dump exported registration cache, for testing only
-  std::unordered_map<regcache::IpcRegElem*, std::unordered_set<std::string>>
-  dumpExportRegCache() const;
+  // Iterate all registered IpcExportClients and call remReleaseMem on each
+  // for the given regElem. Used by globalDeregister when PyTorch frees
+  // the underlying memory.
+  commResult_t releaseFromAllClients(regcache::RegElem* regElem);
 
  private:
   // Internal implementation for importing and caching remote NVL memory.
@@ -242,20 +216,13 @@ class IpcRegCache {
   // Local peer ID (hostname:pid) for this process, used in IPC communications.
   std::string localPeerId_;
 
-  // Peer IPC server addresses for async socket communication, keyed by gPid.
-  // Protected by Synchronized for concurrent access from multiple
-  // communicators.
-  folly::Synchronized<folly::F14FastMap<std::string, folly::SocketAddress>>
-      peerIpcServerAddrs_;
-
-  // Record remote peers that each ipcRegElem has been exported to.
-  // For each peer, we will send RELEASE_MEM notification at deregMem.
-  // Protected by Synchronized for concurrent access from multiple
-  // communicators.
-  folly::Synchronized<ctran::regcache::IpcExportCache> exportRegCache_;
-
   // Monotonically increasing unique ID counter for IPC registrations
   static std::atomic<uint32_t> nextUniqueId_;
+
+  // Registry of active IpcExportClients. globalDeregister iterates this
+  // to notify all communicators when memory is freed.
+  folly::Synchronized<std::unordered_set<regcache::IpcExportClient*>>
+      exportClientRegistry_;
 };
 
 } // namespace ctran
