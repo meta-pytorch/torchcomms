@@ -176,6 +176,18 @@ class TorchComm : public std::enable_shared_from_this<TorchComm> {
 
   void all_gather_p_free(AllGatherPHandle handle);
 
+  // Fault Tolerance API
+
+  /**
+   * Get the initialization handle for this communicator.
+   * In dynamic regime, this handle encodes information required by the backend
+   * to complete the initialization process via reconfigure().
+   *
+   * @return An InitHandle containing the initialization URL/handle.
+   * @throws std::runtime_error if not implemented by the backend.
+   */
+  InitHandle getInitHandle() const;
+
   // Hook types (defined in TorchCommHooks.hpp; aliased for backward compat)
   using PreHookArgs = ::torch::comms::PreHookArgs;
   using PostHookArgs = ::torch::comms::PostHookArgs;

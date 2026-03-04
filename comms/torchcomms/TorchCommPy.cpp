@@ -856,6 +856,22 @@ break as interfaces change.
           R"(
 Deprecated: Use get_backend_impl() instead.
           )")
+      .def(
+          "get_init_handle",
+          &TorchComm::getInitHandle,
+          R"(
+Get the initialization handle for this communicator.
+
+In dynamic regime, this handle encodes information required by the backend
+to complete the initialization process via reconfigure().
+
+Returns:
+    An InitHandle string.
+
+Raises:
+    RuntimeError: If not implemented by the backend.
+          )",
+          py::call_guard<py::gil_scoped_release>())
 
       // Point-to-Point Operations
       .def(
