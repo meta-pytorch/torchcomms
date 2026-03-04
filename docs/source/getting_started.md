@@ -56,7 +56,7 @@ pip install --pre torch torchcomms --index-url https://download.pytorch.org/whl/
 
 ### Building from Source
 
-#### Prerequisites
+#### Build Prerequisites
 
 - CMake 3.22 or higher
 - Ninja 1.10 or higher

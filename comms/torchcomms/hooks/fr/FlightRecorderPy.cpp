@@ -31,7 +31,9 @@ Example:
     >>> json_trace = recorder.dump_json()
 
 For testing, use isolated=True to create a separate FlightRecorder instance
-that is not shared with other hooks:
+that is not shared with other hooks.
+
+Example:
     >>> recorder = fr.FlightRecorderHook(max_entries=100, isolated=True)
       )")
       .def(
