@@ -2146,11 +2146,7 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
   checkAndAbortIfTimedOutOrError();
   std::unordered_set<int> rank_seen;
   for (int rank : ranks) {
-    if (rank < 0 || rank >= comm_size_) {
-      throw std::runtime_error(
-          "Invalid rank " + std::to_string(rank) +
-          " in ranks. Valid ranks are 0 to " + std::to_string(comm_size_ - 1));
-    }
+    checkRankRange(rank);
     if (rank_seen.find(rank) != rank_seen.end()) {
       throw std::runtime_error(
           "Rank " + std::to_string(rank) + " appears multiple times in ranks");
