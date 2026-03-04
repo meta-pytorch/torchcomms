@@ -411,6 +411,18 @@ CtranMapper::~CtranMapper() {
 
   this->reportProfiling(true);
 
+  // Release all remote IPC registrations tracked by this mapper.
+  // This sends kRelease to remote peers so they can decrement their refCounts
+  // and eventually unmap CUDA IPC memory. Must happen BEFORE
+  // deregisterExportClient so the mapper is still in the client list during
+  // cleanup.
+  {
+    auto entries = exportRegCache_.rlock()->dump();
+    for (auto& [regElem, _] : entries) {
+      remReleaseMem(regElem);
+    }
+  }
+
   // Deregister from IpcRegCache so globalDeregister won't call this mapper
   // after it's destroyed.
   auto ipcRegCache = ctran::IpcRegCache::getInstance();
