@@ -12,9 +12,15 @@
 namespace torch::comms::test {
 
 void TorchCommNCCLXTest::SetUp() {
+  // Create fresh mocks for each test
+  cuda_mock_ = std::make_shared<NiceMock<CudaMock>>();
+  nccl_mock_ = std::make_shared<NiceMock<NcclxMock>>();
+
   // Force the global instance to be created on the CPU device
   auto hook_mock = std::make_unique<CachingAllocatorHookMock>();
   hook_mock->setupDefaultBehaviors();
+  // Set the NcclxApi on the hook for global registration tests
+  hook_mock->setNcclApi(nccl_mock_);
 
   mock_hook_ = hook_mock.get();
   CachingAllocatorHook::setInstance(std::move(hook_mock));
@@ -31,10 +37,6 @@ void TorchCommNCCLXTest::SetUp() {
   default_options_.abort_process_on_timeout_or_error = false;
   default_options_.store = store_;
 
-  // Create fresh mocks for each test
-  cuda_mock_ = std::make_shared<NiceMock<CudaMock>>();
-  nccl_mock_ = std::make_shared<NiceMock<NcclxMock>>();
-
   // Set up environment variables for different test scenarios
   // Default: rank 0, size 2
   setupRankAndSize(0, 2);
@@ -46,9 +48,6 @@ void TorchCommNCCLXTest::TearDown() {
   unsetenv("TORCHCOMM_SIZE");
   unsetenv("TORCHCOMM_ABORT_ON_ERROR");
   unsetenv("TORCHCOMM_TIMEOUT_SECONDS");
-
-  // Clear the instance data
-  CachingAllocatorHook::getInstance().clear();
 
   // Reset the instance to null to release the mock object
   CachingAllocatorHook::setInstance(nullptr);
@@ -109,20 +108,6 @@ TorchCommNCCLXTest::createMockedTorchComm() {
   comm->setNcclApi(nccl_mock_);
 
   return comm;
-}
-
-void TorchCommNCCLXTest::setupCCAExpectations(
-    int times_register,
-    int times_deregister,
-    int times_clear) {
-  // Expect a registration call during init
-  EXPECT_CALL(*mock_hook_, registerComm(_)).Times(times_register);
-
-  // Expect a deregistration call during finalize, destruction or abort
-  EXPECT_CALL(*mock_hook_, deregisterComm(_)).Times(times_deregister);
-
-  // Expect a clear call during destruction
-  EXPECT_CALL(*mock_hook_, clear()).Times(times_clear);
 }
 
 void TorchCommNCCLXTest::setupNormalDestruction(

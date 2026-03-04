@@ -393,7 +393,7 @@ ctran::RegCache::globalDeregister(const void* buf, size_t len, int deviceId) {
     bool freed = false;
     bool ncclManaged = false;
     std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElemsFreed;
-    FB_COMMCHECK(freeSegment(segHdl, freed, ncclManaged, regElemsFreed));
+    FB_COMMCHECK(freeSegment(segHdl, freed, ncclManaged, regElemsFreed, true));
 
     if (freed) {
       totalSegmentsFreed++;
@@ -986,7 +986,8 @@ commResult_t ctran::RegCache::freeSegment(
     void* segHdl,
     bool& freed,
     bool& ncclManaged,
-    std::vector<std::unique_ptr<ctran::regcache::RegElem>>& regElems) {
+    std::vector<std::unique_ptr<ctran::regcache::RegElem>>& regElems,
+    bool forceFree) {
   ctran::regcache::Segment* segment = nullptr;
   {
     // Global lock:
@@ -1013,8 +1014,10 @@ commResult_t ctran::RegCache::freeSegment(
 
     ncclManaged = segment->ncclManaged;
 
-    // Ask for free. False if still in use, then no-op and return
-    if (!segment->askFree()) {
+    // Ask for free. False if still in use, then no-op and return.
+    // When forceFree is true (e.g. globalDeregister), skip the refCount check
+    // because the underlying physical memory is about to be freed.
+    if (!forceFree && !segment->askFree()) {
       return commSuccess;
     }
 

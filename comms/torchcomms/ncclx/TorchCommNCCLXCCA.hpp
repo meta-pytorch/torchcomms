@@ -6,6 +6,7 @@
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <memory>
 #include <mutex>
+#include "comms/torchcomms/ncclx/NcclxApi.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 
 namespace torch::comms {
@@ -15,35 +16,28 @@ class CachingAllocatorHookImpl {
   virtual ~CachingAllocatorHookImpl() = default;
   virtual void regDeregMem(
       const c10::cuda::CUDACachingAllocator::TraceEntry& te);
-  virtual void registerComm(TorchCommNCCLX* comm);
-  virtual void deregisterComm(TorchCommNCCLX* comm);
   virtual void registerMemPreHook();
-  virtual void clear();
-
-  virtual bool isCommRegistered(TorchCommNCCLX* comm);
 
   // For testing purposes.
-  bool isMemRegisteredCalled();
+  virtual bool isMemPreHookRegistered();
 
- private:
-  std::mutex mutex_;
+  // Set the NcclxApi to use for registration. For testing.
+  void setNcclApi(std::shared_ptr<NcclxApi> api) {
+    nccl_api_ = std::move(api);
+  }
 
-  struct MemInfo {
-    size_t len;
-    int32_t device;
+  NcclxApi* getNcclApi() const {
+    return nccl_api_.get();
+  }
 
-    MemInfo(size_t l, int32_t d) : len(l), device(d) {}
-  };
-
-  // Map of registered memory addresses to their sizes and device
-  std::unordered_map<void*, MemInfo> registeredMemMap_;
-  // Set of registered communicators. TorchComms, manages it's membership inside
-  // this set.
-  std::set<TorchCommNCCLX*> registeredComms_;
-
+ protected:
   // Flag to indicate if the memory pre hook is registered. (For testing
   // purposes)
   bool mem_pre_hook_registered_ = false;
+
+  // NcclxApi used for global registration operations.
+  // Initialized to DefaultNcclxApi by default.
+  std::shared_ptr<NcclxApi> nccl_api_ = std::make_shared<DefaultNcclxApi>();
 };
 
 class DefaultCachingAllocatorHookImpl : public CachingAllocatorHookImpl {
