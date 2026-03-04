@@ -58,7 +58,7 @@ jobs:
         run: |
           set -eux
           conda activate test
-          make html SPHINXOPTS="-WT --keep-going" || echo "Build completed with warnings/errors"
+          make html SPHINXOPTS="-WT --keep-going"
       - name: Remove noindex meta tag from docs
         working-directory: docs/build/html
         run: |
