@@ -82,6 +82,9 @@ void CudaMock::setupDefaultBehaviors() {
   ON_CALL(*this, threadExchangeStreamCaptureMode(_))
       .WillByDefault(Return(cudaSuccess));
 
+  ON_CALL(*this, streamUpdateCaptureDependencies(_, _, _, _))
+      .WillByDefault(Return(cudaSuccess));
+
   // Memory management - return success by default
   ON_CALL(*this, malloc(_, _))
       .WillByDefault(DoAll(

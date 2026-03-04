@@ -11,62 +11,70 @@ mechanism. The `GraphEventTracker` class provides this functionality.
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│                      TorchCommNCCLX                             │
+│                        TorchCommNCCLX                           │
 │                                                                 │
-│  ┌──────────────────────┐    ┌──────────────────────────────┐  │
-│  │    Event Pool         │    │    Timeout Watchdog Thread    │  │
-│  │  (eager mode only)    │    │                              │  │
-│  │  getEvent()/          │    │  checkWorkQueue()            │  │
-│  │  returnEvent()        │    │    → eager work FIFO GC      │  │
-│  └──────────┬───────────┘    │                              │  │
-│             │                │  checkGraphEvents()           │  │
-│             │                │    → graph_event_tracker_     │  │
-│             │                │      .checkAll()              │  │
-│             │                └──────────────────────────────┘  │
-│             │                                                   │
-│  ┌──────────▼───────────────────────────────────────────────┐  │
-│  │                   TorchWorkNCCLX                          │  │
+│  ┌────────────────────────┐    ┌─────────────────────────────┐  │
+│  │ Event Pool             │    │ Timeout Watchdog Thread     │  │
+│  │ (eager mode)           │    │                             │  │
+│  │ getEvent()/            │    │ checkWorkQueue()            │  │
+│  │ returnEvent()          │    │   → eager work FIFO GC      │  │
+│  └───────────┬────────────┘    │                             │  │
+│              │                 │ checkGraphEvents()          │  │
+│              │                 │   → graph_event_tracker_    │  │
+│              │                 │     .checkAll()             │  │
+│              │                 └─────────────────────────────┘  │
+│              │                                                  │
+│  ┌───────────▼───────────────────────────────────────────────┐  │
+│  │ TorchWorkNCCLX                                            │  │
 │  │                                                           │  │
-│  │  start_event_  — start detection (pool / ad-hoc)          │  │
-│  │  end_event_    — completion detection (pool / ad-hoc)     │  │
-│  │  sync_event_   — stream join, graph only (nullptr eager)  │  │
+│  │ start_event_ — start detection (pool / ad-hoc)            │  │
+│  │ end_event_   — completion detection (pool / ad-hoc)       │  │
 │  │                                                           │  │
-│  │  initEvents() / releaseEvents() — lifecycle management    │  │
+│  │ initEvents() / releaseEvents() — lifecycle management     │  │
 │  └───────────────────────────────────────────────────────────┘  │
 │                                                                 │
-│  ┌─────────────────────────┐  ┌─────────────────────────────┐  │
-│  │  TorchWorkNCCLXQueue    │  │  GraphEventTracker           │  │
-│  │  (eager mode)           │  │  (graph mode)                │  │
-│  │                         │  │                               │  │
-│  │  Per-stream FIFO of     │  │  Per-graph GraphState:        │  │
-│  │  intrusive_ptr<Work>    │  │    vector<GraphWork>          │  │
-│  │                         │  │    atomic replay_counter      │  │
-│  │                         │  │                               │  │
-│  │  GC: pop when done      │  │  Cleanup via cudaUserObject   │  │
-│  │  Work dtor returns      │  │  Replay detect via host node  │  │
-│  │  events to pool         │  │                               │  │
-│  └─────────────────────────┘  └─────────────────────────────┘  │
+│  ┌─────────────────────────┐  ┌──────────────────────────────┐  │
+│  │ TorchWorkNCCLXQueue     │  │ GraphEventTracker            │  │
+│  │ (eager mode)            │  │ (graph mode)                 │  │
+│  │                         │  │                              │  │
+│  │ Per-stream FIFO of      │  │ Per-graph GraphState:        │  │
+│  │ intrusive_ptr<Work>     │  │   vector<GraphWork>          │  │
+│  │                         │  │   atomic replay_counter      │  │
+│  │                         │  │                              │  │
+│  │ GC: pop when done       │  │ Cleanup via cudaUserObject   │  │
+│  │ Work dtor returns       │  │ Replay detect via host node  │  │
+│  │ events to pool          │  │                              │  │
+│  └─────────────────────────┘  └──────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Event Design
 
-### Why Three Events in Graph Mode
+### Events in Graph Mode
 
 CUDA graph capture records `cudaEventRecord` calls as graph nodes. Regular-recorded
 events become opaque during replay and cannot be queried from the host. To enable
 host-side timeout detection, we use `cudaEventRecordExternal` for start/end events,
 which creates EVENT_RECORD nodes that remain host-queryable during replay.
 
-However, externally-recorded events are NOT recognized by `cudaStreamWaitEvent` as
-valid stream join points (`cudaErrorStreamCaptureUnjoined`). So we need a third event
-(`sync_event_`) recorded with regular `cudaEventRecord` purely for `work.wait()`.
+The `cudaEventRecordExternal` calls create explicit graph nodes on `internal_stream_`
+(s1). These explicit nodes cause CUDA's fork/join checker to consider s1 as "active"
+at `capture_end()`. To resolve this, `work.wait()` during graph capture performs a
+two-step join:
+
+1. `cudaStreamUpdateCaptureDependencies(s1, nullptr, 0, SET)` — clears s1's tracked
+   fork state so the fork/join checker no longer considers it active.
+2. `cudaStreamWaitEvent(s0, end_event_)` — creates a graph edge from s1's
+   EVENT_RECORD_EXT node to s0, ensuring proper execution ordering during replay.
+
+The next collective's `getOperationStream()` re-forks s1 from s0 as usual. All
+async ops must be waited during graph capture to avoid
+`cudaErrorStreamCaptureUnjoined` (error 904).
 
 | Event | Recording API | Purpose | Eager | Graph |
 |-------|--------------|---------|-------|-------|
 | `start_event_` | Eager: `cudaEventRecord` / Graph: `cudaEventRecordExternal` | Detect collective start | Pool | Ad-hoc, transferred to GraphWork |
 | `end_event_` | Eager: `cudaEventRecord` / Graph: `cudaEventRecordExternal` | Detect collective end, timeout detection | Pool | Ad-hoc, transferred to GraphWork |
-| `sync_event_` | `cudaEventRecord` (regular) | Stream join for `work.wait()` | N/A (nullptr) | Ad-hoc, destroyed in Work dtor |
 
 ### Event Lifecycle
 
@@ -77,14 +85,69 @@ Pool.get() → Work ctor → record → watchdog query → GC → Work dtor → 
 
 **Graph mode:** Ad-hoc events, persistent across replays.
 ```text
-Capture:  cudaEventCreate → Work ctor → record (External) → enqueueWork
-          → transfer start/end to GraphWork → Work dtor (destroys sync_event_ only)
+Capture:  cudaEventCreate (start/end) → Work ctor → record
+          → enqueueWork → copy event ptrs to GraphWork
+          → work.wait() → SET(s1, empty) + streamWaitEvent(s0, end_event_)
 
 Replay:   GPU replays EVENT_RECORD_EXT nodes → watchdog queries → timeout check
 
 Cleanup:  Graph destruction → cudaUserObject callback sets released flag
           → watchdog checkAll() → cleanupReleasedGraphs() → destroyEvents()
 ```
+
+## Stream Join Mechanism
+
+### Problem
+
+TorchCommNCCLX runs collectives on the internal stream `stream_` (s1), which is
+forked from the user stream (s0) via `getOperationStream()`. The
+`cudaEventRecordExternal` calls for `start_event_` and `end_event_` create explicit
+`EVENT_RECORD` graph nodes on s1. If s1 is not joined back to s0 before
+`cudaStreamEndCapture`, CUDA
+detects the unjoined fork and returns `cudaErrorStreamCaptureUnjoined` (error 904).
+
+We've previously avoided this by only using regular `cudaEventRecord` (which
+don't materialize to explicit graph nodes). A forked stream with only implicit
+nodes is transparent to the fork/join checker, thus we don't run into the error.
+
+### Solution
+
+When `work.wait()` is called during graph capture, it performs a two-step join:
+
+```text
+Per collective during graph capture:
+
+  getOperationStream()
+    eventRecord(dep_event, s0)       ← fork: s0 records, s1 waits
+    streamWaitEvent(s1, dep_event)
+
+  NCCL collective on s1
+  cudaEventRecordExternal(start_event_, s1)   ← explicit node on s1
+  cudaEventRecordExternal(end_event_, s1)     ← explicit node on s1
+
+  enqueueWork()
+    copy event ptrs to GraphEventTracker (for timeout monitoring)
+
+  ... user compute on s0 can overlap with collective ...
+
+  work.wait()
+    streamUpdateCaptureDependencies( ← clear s1's tracked fork
+        s1, {}, SET)
+    streamWaitEvent(s0, end_event_)  ← graph edge: s0 depends on s1
+```
+
+The `SET(empty)` clears s1's tracked tail nodes so the fork/join checker at
+`capture_end()` no longer considers s1 as having unjoined work. Clearing the
+tracked deps does NOT remove the EVENT_RECORD_EXT graph nodes — they remain in
+the graph. The `streamWaitEvent` creates the actual graph edge from the
+EVENT_RECORD_EXT node to s0, ensuring correct execution ordering during replay.
+
+This preserves async overlap: user compute on s0 between `enqueueWork()` and
+`work.wait()` is not blocked by the collective. The join happens at the natural
+synchronization point — the same place eager mode joins via `streamWaitEvent`.
+
+**Important**: All async ops must be waited during graph capture. Unwaited ops
+leave s1 unjoined, causing error 904 at `capture_end()`.
 
 ## GraphEventTracker Timeout Logic
 

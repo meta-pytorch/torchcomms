@@ -398,10 +398,14 @@ void TorchCommNCCLX::enqueueWork(
     c10::intrusive_ptr<TorchWorkNCCLX> work,
     cudaStream_t stream) {
   if (getGraphCaptureMode()) {
-    // Transfer start/end event ownership to the tracker.
-    // Work object is NOT stored — it will be destroyed when the caller's
-    // intrusive_ptr goes out of scope, destroying ad-hoc sync_event_.
-    graph_event_tracker_.addEntry(work.get());
+    if (configs_.enable_graph_timeout_detection_) {
+      // Transfer start/end event ownership to the tracker.
+      // Work object is NOT stored — it will be destroyed when the caller's
+      // intrusive_ptr goes out of scope.
+      graph_event_tracker_.addEntry(work.get());
+    }
+    // When timeout detection is disabled, skip tracker enrollment.
+    // Work will be destroyed when the caller's intrusive_ptr goes out of scope.
   } else {
     // Add work to stream's queue after events have been recorded
     workq_.enqueueWork(std::move(work), stream);

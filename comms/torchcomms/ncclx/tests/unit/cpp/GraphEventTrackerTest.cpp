@@ -12,7 +12,6 @@ class GraphEventTrackerTest : public TorchCommNCCLXTest {
   struct GraphEvents {
     cudaEvent_t start = reinterpret_cast<cudaEvent_t>(0xA001);
     cudaEvent_t end = reinterpret_cast<cudaEvent_t>(0xA002);
-    cudaEvent_t sync = reinterpret_cast<cudaEvent_t>(0xA003);
   };
 
   CommOptions createAbortModeOptions(
@@ -52,7 +51,6 @@ class GraphEventTrackerTest : public TorchCommNCCLXTest {
     EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
         .WillOnce(DoAll(SetArgPointee<0>(events.start), Return(cudaSuccess)))
         .WillOnce(DoAll(SetArgPointee<0>(events.end), Return(cudaSuccess)))
-        .WillOnce(DoAll(SetArgPointee<0>(events.sync), Return(cudaSuccess)))
         .WillRepeatedly(DoAll(
             SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA100)),
             Return(cudaSuccess)));
@@ -168,12 +166,9 @@ TEST_F(GraphEventTrackerTest, GraphCaptureWorkObjectsDestroyedAfterCapture) {
   comm->init(*device_, "test_graph_work_destroyed", options);
 
   setupGraphCaptureMocks();
-  auto events = setupGraphCaptureEvents();
+  setupGraphCaptureEvents();
 
   auto tensor = createTestTensor({10, 10});
-
-  EXPECT_CALL(*cuda_mock_, eventDestroy(events.sync))
-      .WillOnce(Return(cudaSuccess));
 
   {
     auto work = comm->send(tensor, 1, true);
@@ -365,9 +360,6 @@ TEST_F(GraphEventTrackerTest, DestroyAllCleansUpGraphEntryEvents) {
 
   auto tensor = createTestTensor({10, 10});
 
-  EXPECT_CALL(*cuda_mock_, eventDestroy(events.sync))
-      .WillOnce(Return(cudaSuccess));
-
   {
     auto work = comm->send(tensor, 1, true);
   }
@@ -414,21 +406,17 @@ TEST_F(GraphEventTrackerTest, MultipleCollectivesInSameGraphCleanedUp) {
 
   setupGraphCaptureMocks();
 
-  // Two collectives: each creates 3 events (start, end, sync)
+  // Two collectives: each creates 2 events (start, end)
   cudaEvent_t start1 = reinterpret_cast<cudaEvent_t>(0xA001);
   cudaEvent_t end1 = reinterpret_cast<cudaEvent_t>(0xA002);
-  cudaEvent_t sync1 = reinterpret_cast<cudaEvent_t>(0xA003);
-  cudaEvent_t start2 = reinterpret_cast<cudaEvent_t>(0xA004);
-  cudaEvent_t end2 = reinterpret_cast<cudaEvent_t>(0xA005);
-  cudaEvent_t sync2 = reinterpret_cast<cudaEvent_t>(0xA006);
+  cudaEvent_t start2 = reinterpret_cast<cudaEvent_t>(0xA003);
+  cudaEvent_t end2 = reinterpret_cast<cudaEvent_t>(0xA004);
 
   EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
       .WillOnce(DoAll(SetArgPointee<0>(start1), Return(cudaSuccess)))
       .WillOnce(DoAll(SetArgPointee<0>(end1), Return(cudaSuccess)))
-      .WillOnce(DoAll(SetArgPointee<0>(sync1), Return(cudaSuccess)))
       .WillOnce(DoAll(SetArgPointee<0>(start2), Return(cudaSuccess)))
       .WillOnce(DoAll(SetArgPointee<0>(end2), Return(cudaSuccess)))
-      .WillOnce(DoAll(SetArgPointee<0>(sync2), Return(cudaSuccess)))
       .WillRepeatedly(DoAll(
           SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA100)),
           Return(cudaSuccess)));
@@ -600,10 +588,8 @@ TEST_F(GraphEventTrackerTest, MultipleGraphsOnlyReleasedOneCleanedUp) {
 
   cudaEvent_t start1 = reinterpret_cast<cudaEvent_t>(0xC001);
   cudaEvent_t end1 = reinterpret_cast<cudaEvent_t>(0xC002);
-  cudaEvent_t sync1 = reinterpret_cast<cudaEvent_t>(0xC003);
   cudaEvent_t start2 = reinterpret_cast<cudaEvent_t>(0xC004);
   cudaEvent_t end2 = reinterpret_cast<cudaEvent_t>(0xC005);
-  cudaEvent_t sync2 = reinterpret_cast<cudaEvent_t>(0xC006);
 
   void* cleanup_data_1 = nullptr;
   cudaHostFn_t cleanup_fn_1 = nullptr;
@@ -613,7 +599,6 @@ TEST_F(GraphEventTrackerTest, MultipleGraphsOnlyReleasedOneCleanedUp) {
   EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
       .WillOnce(DoAll(SetArgPointee<0>(start1), Return(cudaSuccess)))
       .WillOnce(DoAll(SetArgPointee<0>(end1), Return(cudaSuccess)))
-      .WillOnce(DoAll(SetArgPointee<0>(sync1), Return(cudaSuccess)))
       .WillRepeatedly(DoAll(
           SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA100)),
           Return(cudaSuccess)));
@@ -646,7 +631,6 @@ TEST_F(GraphEventTrackerTest, MultipleGraphsOnlyReleasedOneCleanedUp) {
   EXPECT_CALL(*cuda_mock_, eventCreateWithFlags(_, _))
       .WillOnce(DoAll(SetArgPointee<0>(start2), Return(cudaSuccess)))
       .WillOnce(DoAll(SetArgPointee<0>(end2), Return(cudaSuccess)))
-      .WillOnce(DoAll(SetArgPointee<0>(sync2), Return(cudaSuccess)))
       .WillRepeatedly(DoAll(
           SetArgPointee<0>(reinterpret_cast<cudaEvent_t>(0xA100)),
           Return(cudaSuccess)));
@@ -771,7 +755,7 @@ TEST_F(GraphEventTrackerTest, GraphCaptureDispatchSavesOutputTensors) {
   comm->init(*device_, "test_graph_dispatch_tensors", options);
 
   setupGraphCaptureMocks();
-  auto events = setupGraphCaptureEvents();
+  setupGraphCaptureEvents();
 
   // Create test tensors
   auto input_tensor = createTestTensor({100});
@@ -792,10 +776,6 @@ TEST_F(GraphEventTrackerTest, GraphCaptureDispatchSavesOutputTensors) {
   EXPECT_CALL(
       *nccl_mock_, alltoallvDynamicDispatch(_, _, _, _, _, _, _, _, _, _, _, _))
       .WillOnce(Return(ncclSuccess));
-
-  // The sync event will be destroyed when work goes out of scope
-  EXPECT_CALL(*cuda_mock_, eventDestroy(events.sync))
-      .WillOnce(Return(cudaSuccess));
 
   {
     auto work = comm->alltoallv_dynamic_dispatch(
@@ -835,7 +815,7 @@ TEST_F(GraphEventTrackerTest, GraphCaptureCombineSavesOutputTensor) {
   comm->init(*device_, "test_graph_combine_tensors", options);
 
   setupGraphCaptureMocks();
-  auto events = setupGraphCaptureEvents();
+  setupGraphCaptureEvents();
 
   // Create test tensors
   auto input_tensor = createTestTensor({100});
@@ -850,10 +830,6 @@ TEST_F(GraphEventTrackerTest, GraphCaptureCombineSavesOutputTensor) {
   EXPECT_CALL(
       *nccl_mock_, alltoallvDynamicCombine(_, _, _, _, _, _, _, _, _, _, _))
       .WillOnce(Return(ncclSuccess));
-
-  // The sync event will be destroyed when work goes out of scope
-  EXPECT_CALL(*cuda_mock_, eventDestroy(events.sync))
-      .WillOnce(Return(cudaSuccess));
 
   {
     auto work = comm->alltoallv_dynamic_combine(
@@ -871,6 +847,61 @@ TEST_F(GraphEventTrackerTest, GraphCaptureCombineSavesOutputTensor) {
 
   // After work is destroyed, our local tensor variable should still be valid
   EXPECT_NE(output_tensor.data_ptr(), nullptr);
+
+  ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
+
+  switchToReplayMode();
+  setupFinalizeExpectations(*comm);
+}
+
+// Verify that work.wait() clears internal_stream_'s tracked fork via
+// streamUpdateCaptureDependencies(SET empty) and joins via streamWaitEvent
+// on end_event_ during graph capture.
+TEST_F(GraphEventTrackerTest, WaitJoinsInternalToUserStream) {
+  setupCCAExpectations(1, 2, 1);
+
+  auto comm = createMockedTorchComm();
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  // Use distinct stream addresses so we can verify which stream each call uses
+  cudaStream_t user_stream = reinterpret_cast<cudaStream_t>(0x100);
+  cudaStream_t internal_stream = reinterpret_cast<cudaStream_t>(0x200);
+
+  ON_CALL(*cuda_mock_, getCurrentCUDAStream(_))
+      .WillByDefault(Return(user_stream));
+  ON_CALL(*cuda_mock_, streamCreateWithPriority(_, _, _))
+      .WillByDefault(
+          DoAll(SetArgPointee<0>(internal_stream), Return(cudaSuccess)));
+
+  auto options = createAbortModeOptions();
+  comm->init(*device_, "test_wait_join", options);
+
+  setupGraphCaptureMocks();
+  auto events = setupGraphCaptureEvents();
+  setupEventRecordMocks();
+
+  // Expect work.wait() to: SET s1 deps to empty, then streamWaitEvent on
+  // end_event_.
+  EXPECT_CALL(
+      *cuda_mock_,
+      streamUpdateCaptureDependencies(
+          internal_stream, nullptr, 0, cudaStreamSetCaptureDependencies))
+      .Times(1)
+      .WillOnce(Return(cudaSuccess));
+  EXPECT_CALL(*cuda_mock_, streamWaitEvent(user_stream, events.end, 0))
+      .Times(1)
+      .WillOnce(Return(cudaSuccess));
+  // Allow other streamWaitEvent calls (e.g., getOperationStream fork)
+  EXPECT_CALL(*cuda_mock_, streamWaitEvent(::testing::Ne(user_stream), _, _))
+      .WillRepeatedly(Return(cudaSuccess));
+
+  auto tensor = createTestTensor({10, 10});
+
+  {
+    auto work = comm->send(tensor, 1, true);
+    work->wait();
+  }
 
   ::testing::Mock::VerifyAndClearExpectations(cuda_mock_.get());
 
