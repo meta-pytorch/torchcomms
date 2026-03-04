@@ -43,6 +43,7 @@ USE_XCCL = flag_enabled("USE_XCCL", False)
 IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
 # Transport is CUDA-only; disable by default on ROCm but allow explicit opt-in.
 USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
+USE_TRITON = flag_enabled("USE_TRITON", False)
 
 requirement_path = os.path.join(ROOT, "requirements.txt")
 try:
@@ -130,6 +131,7 @@ class build_ext(build_ext_orig):
             f"-DUSE_RCCLX={flag_str(USE_RCCLX)}",
             f"-DUSE_XCCL={flag_str(USE_XCCL)}",
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
+            f"-DUSE_TRITON={flag_str(USE_TRITON)}",
         ]
         build_args = ["--", "-j"]
 
@@ -192,6 +194,9 @@ setup(
     version=get_version(),
     packages=find_packages("comms"),
     package_dir={"": "comms"},
+    package_data={
+        "torchcomms.triton.fb": ["*.bc"],
+    },
     entry_points={
         "torchcomms.backends": [
             "nccl = torchcomms._comms_nccl",
