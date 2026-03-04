@@ -557,6 +557,11 @@ void TorchComm::all_gather_p_free(AllGatherPHandle handle) {
   impl_->all_gather_p_free(handle);
 }
 
+// Fault Tolerance API
+InitHandle TorchComm::getInitHandle() const {
+  return impl_->getInitHandle();
+}
+
 // Communicator Management
 std::shared_ptr<TorchComm> TorchComm::split(
     const std::vector<int>& ranks,
