@@ -50,10 +50,6 @@ class ParamSpec:
         return self.is_tensor() or self.is_tensor_list()
 
 
-# Mapping from opaque type name to class, populated during registration
-_TYPE_NAME_TO_CLASS: dict[str, type] = {}
-
-
 @dataclass
 class ParsedArgs:
     """Parsed arguments for collective operations.
@@ -382,7 +378,6 @@ class CollectiveParamSchema:
         if not is_opaque_type(target_class):
             register_opaque_type(target_class, typ="reference")
         opaque_type_name = get_opaque_type_name(target_class)
-        _TYPE_NAME_TO_CLASS[opaque_type_name] = target_class
 
         # Process param specs to convert types
         processed_specs = []
@@ -402,7 +397,6 @@ class CollectiveParamSchema:
                 if not is_opaque_type(spec.torch_type):
                     register_opaque_type(spec.torch_type, typ="reference")
                 type_name = get_opaque_type_name(spec.torch_type)
-                _TYPE_NAME_TO_CLASS[type_name] = spec.torch_type
                 processed_specs.append(
                     ParamSpec(
                         spec.name,
@@ -425,7 +419,6 @@ class CollectiveParamSchema:
                             if not is_opaque_type(inner_type):
                                 register_opaque_type(inner_type, typ="reference")
                             type_name = get_opaque_type_name(inner_type)
-                            _TYPE_NAME_TO_CLASS[type_name] = inner_type
                             processed_specs.append(
                                 ParamSpec(
                                     spec.name,

@@ -11,16 +11,23 @@ from torchcomms.functional.async_tensor import (
     _wrap_result_with_registered_work,
     FakeWork,
 )
-from torchcomms.functional.param_parsing import (
-    _TYPE_NAME_TO_CLASS,
-    CollectiveParamSchema,
-    ParamSpec,
-)
+from torchcomms.functional.param_parsing import CollectiveParamSchema, ParamSpec
 
 
 logger = logging.getLogger(__name__)
 
 _REGISTERED_COLLECTIVES: dict[str, dict[str, Any]] = {}
+_METHOD_TO_OP: dict[tuple[type, str], dict[str, Any]] = {}
+
+
+def get_registered_method_metadata(
+    cls: type, method_name: str
+) -> dict[str, Any] | None:
+    """Look up registered collective metadata for a (class, method) pair.
+
+    Returns the op info dict if the method is a registered collective, else None.
+    """
+    return _METHOD_TO_OP.get((cls, method_name))
 
 
 def _pack_result(results: list) -> Any:
@@ -76,6 +83,22 @@ def register_collective(
         "setup_context_fn": setup_context_fn,
     }
     _REGISTERED_COLLECTIVES[op_name] = collective_info
+
+    _METHOD_TO_OP[(target_class, name)] = {
+        "op_name": op_name,
+        **collective_info,
+    }
+
+    # Register the method as an INLINED member on the opaque type so that
+    # FakeScriptObject allows attribute access during backward/inductor.
+    from torch._library.opaque_object import (
+        get_opaque_obj_info,
+        MemberType,
+    )
+
+    info = get_opaque_obj_info(target_class)
+    if info is not None and name not in info.members:
+        info.members[name] = MemberType.INLINED
 
     logger.info(
         f"Registered collective: {op_name} (method={name}, "
@@ -1041,10 +1064,6 @@ def _register_effectful_ops() -> None:
 
 def finalize_registration(lib: Any) -> None:
     """Finalize registration of all collectives."""
-    from torchcomms.functional.dynamo import (
-        _patch_dynamo_for_opaque_methods,
-        register_with_dynamo,
-    )
     from torchcomms.functional.inductor_lowering import register_torchcomms_lowerings
 
     logger.info(
@@ -1052,12 +1071,7 @@ def finalize_registration(lib: Any) -> None:
     )
     _generate_lib_ops(lib)
     _register_effectful_ops()
-    _patch_dynamo_for_opaque_methods(
-        _REGISTERED_COLLECTIVES,
-        _TYPE_NAME_TO_CLASS,
-    )
     register_torchcomms_lowerings()
-    register_with_dynamo()
 
     # Patch eager methods for tracing and autograd support
     _patch_eager_methods()
