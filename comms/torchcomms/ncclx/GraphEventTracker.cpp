@@ -65,7 +65,9 @@ void GraphEventTracker::maybeInitGraphState(
     return;
   }
   auto& state = it->second;
+
   CudaApi* api = comm_->getCudaApi();
+  state.api_ = api;
 
   SharedCallbackState* shared = allocateCallbackState();
   state.shared_ = shared;
@@ -237,15 +239,21 @@ GraphEventTracker::CheckResult GraphEventTracker::checkAll() {
 
 #undef EVENT_QUERY_CHECK
 
+GraphState::~GraphState() {
+  if (api_ == nullptr) {
+    return;
+  }
+
+  for (auto& [_, entries] : stream_entries) {
+    for (auto& entry : entries) {
+      entry.destroyEvents(api_);
+    }
+  }
+}
+
 void GraphEventTracker::cleanupReleasedGraphs() {
-  CudaApi* api = comm_->getCudaApi();
   for (auto it = graphs_.begin(); it != graphs_.end();) {
     if (it->second.shared_->released.load(std::memory_order_relaxed)) {
-      for (auto& [stream, entries] : it->second.stream_entries) {
-        for (auto& entry : entries) {
-          entry.destroyEvents(api);
-        }
-      }
       it = graphs_.erase(it);
     } else {
       ++it;
@@ -254,27 +262,19 @@ void GraphEventTracker::cleanupReleasedGraphs() {
 }
 
 void GraphEventTracker::destroyAll() {
-  CudaApi* api = comm_->getCudaApi();
   std::lock_guard<std::mutex> lock(mutex_);
-  for (auto& [graph_id, graph_state] : graphs_) {
-    for (auto& [stream, entries] : graph_state.stream_entries) {
-      for (auto& entry : entries) {
-        entry.destroyEvents(api);
-      }
-    }
-  }
   graphs_.clear();
 }
 
 // Static callback — fires on each graph replay to increment counter
 void CUDART_CB GraphEventTracker::replayCallback(void* userData) {
-  auto* counter = static_cast<std::atomic<uint64_t>*>(userData);
-  counter->fetch_add(1, std::memory_order_release);
+  static_cast<std::atomic_uint64_t*>(userData)->fetch_add(
+      1, std::memory_order_release);
 }
 
 // Static callback — fires when graph is destroyed to set released flag
 void CUDART_CB GraphEventTracker::cleanupCallback(void* userData) {
-  static_cast<std::atomic<bool>*>(userData)->store(
+  static_cast<std::atomic_bool*>(userData)->store(
       true, std::memory_order_relaxed);
 }
 

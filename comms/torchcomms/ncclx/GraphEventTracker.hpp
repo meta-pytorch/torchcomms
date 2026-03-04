@@ -44,8 +44,25 @@ struct GraphWork {
 // automatically released when prcoess exits, so graph destruction and comm
 // finalization can occur in any order.
 struct SharedCallbackState {
-  std::atomic<uint64_t> replay_counter{0};
-  std::atomic<bool> released{false};
+  std::atomic_uint64_t replay_counter{0};
+  std::atomic_bool released{false};
+};
+
+// Per-graph state. Owns the CUDA events / dependency tensors
+// for all captured collectives; RAII destruction for
+// automatic cleanup on erase/clear.
+struct GraphState {
+  // Entries grouped by stream — collectives are only ordered within a stream,
+  // so per-stream grouping enables early-exit optimization in checkAll().
+  std::unordered_map<cudaStream_t, std::vector<GraphWork>> stream_entries;
+  SharedCallbackState* shared_{nullptr};
+  CudaApi* api_{nullptr};
+  // CPU tensors that must be kept alive for the graph's lifetime.
+  // This includes CPU pointer tensors used by alltoallv_dynamic_dispatch
+  // operations. These tensors are moved from work objects during graph
+  // capture and remain valid until the graph is destroyed.
+  std::vector<at::Tensor> cpu_tensors;
+  ~GraphState();
 };
 
 // Monitors graph-captured collectives for timeout/error after graph launch.
@@ -112,18 +129,6 @@ class GraphEventTracker {
       unsigned long long graph_id,
       cudaGraph_t graph);
   void cleanupReleasedGraphs();
-
-  struct GraphState {
-    // Entries grouped by stream — collectives are only ordered within a stream,
-    // so per-stream grouping enables early-exit optimization in checkAll().
-    std::unordered_map<cudaStream_t, std::vector<GraphWork>> stream_entries;
-    SharedCallbackState* shared_{nullptr};
-    // CPU tensors that must be kept alive for the graph's lifetime.
-    // This includes CPU pointer tensors used by alltoallv_dynamic_dispatch
-    // operations. These tensors are moved from work objects during graph
-    // capture and remain valid until the graph is destroyed.
-    std::vector<at::Tensor> cpu_tensors;
-  };
 
   TorchCommNCCLX* comm_; // raw pointer — parent owns this tracker
   std::mutex mutex_;
