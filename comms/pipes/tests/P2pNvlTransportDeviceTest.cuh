@@ -81,4 +81,63 @@ void testRawWaitSignal(
 // Read the signal value (for verification)
 void testReadSignal(SignalState* signal_d, uint64_t* result_d);
 
+// =============================================================================
+// RecvStream/SendStream test helpers
+// These test the streaming primitives for pipelined collectives
+// =============================================================================
+
+/**
+ * Test RecvStream/SendStream loopback transfer.
+ *
+ * Uses two transports in a loopback configuration where transport0 sends
+ * to transport1. The sender uses SendStream::for_each_slot() and the
+ * receiver uses RecvStream::for_each_ready_chunk().
+ *
+ * @param transport0 Sender transport (writes to transport1's staging)
+ * @param transport1 Receiver transport (reads from its own staging)
+ * @param srcBuffer0 Source buffer on GPU 0
+ * @param dstBuffer1 Destination buffer on GPU 1
+ * @param nbytes Number of bytes to transfer
+ * @param numBlocks Number of blocks to launch
+ * @param blockSize Threads per block
+ */
+void testRecvSendStreamLoopback(
+    P2pNvlTransportDevice transport0,
+    P2pNvlTransportDevice transport1,
+    char* srcBuffer0,
+    char* dstBuffer1,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test RecvStream/SendStream forwarding through an intermediate rank.
+ *
+ * Uses a ring topology: GPU0 (sender) → GPU1 (intermediate) → GPU0 (receiver).
+ * The intermediate rank uses the positional API (slot_for + commit_slot) to
+ * forward each received chunk to the next hop.
+ *
+ * @param transport_send_0to1 Sender transport on GPU0 (writes to GPU1 staging)
+ * @param transport_recv_1from0 Receiver transport on GPU1 (reads from GPU1
+ * staging)
+ * @param transport_send_1to0 Sender transport on GPU1 (writes to GPU0 staging)
+ * @param transport_recv_0from1 Receiver transport on GPU0 (reads from GPU0
+ * staging)
+ * @param srcBuffer0 Source buffer on GPU 0
+ * @param dstBuffer0 Destination buffer on GPU 0
+ * @param nbytes Number of bytes to transfer
+ * @param numBlocks Number of blocks to launch
+ * @param blockSize Threads per block
+ */
+void testRecvSendStreamForwarding(
+    P2pNvlTransportDevice transport_send_0to1,
+    P2pNvlTransportDevice transport_recv_1from0,
+    P2pNvlTransportDevice transport_send_1to0,
+    P2pNvlTransportDevice transport_recv_0from1,
+    char* srcBuffer0,
+    char* dstBuffer0,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize);
+
 } // namespace comms::pipes::test
