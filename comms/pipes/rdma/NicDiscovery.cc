@@ -3,7 +3,7 @@
 #include "comms/pipes/rdma/NicDiscovery.h"
 
 #include <cuda_runtime.h>
-#include <glog/logging.h>
+#include <spdlog/spdlog.h>
 #include <unistd.h>
 
 #include <dirent.h>
@@ -245,15 +245,19 @@ void NicDiscovery::initGpuTopology() {
     numaFile >> gpuNumaNode_;
   }
 
-  LOG(INFO) << "NicDiscovery: GPU " << cudaDevice_ << " PCIe " << gpuPciBusId_
-            << " NUMA " << gpuNumaNode_;
+  spdlog::info(
+      "NicDiscovery: GPU {} PCIe {} NUMA {}",
+      cudaDevice_,
+      gpuPciBusId_,
+      gpuNumaNode_);
 }
 
 NicDiscovery::NicDiscovery(int cudaDevice, const std::string& ibHcaEnv)
     : cudaDevice_(cudaDevice), ibHcaParser_(ibHcaEnv) {
   if (!ibHcaParser_.empty()) {
-    LOG(INFO) << "NicDiscovery: IB HCA filter with "
-              << ibHcaParser_.entries().size() << " entries";
+    spdlog::info(
+        "NicDiscovery: IB HCA filter with {} entries",
+        ibHcaParser_.entries().size());
   }
   discover();
 }
@@ -272,8 +276,8 @@ void NicDiscovery::discover() {
   for (const auto& devName : devices) {
     // Skip NICs that don't pass the HCA filter
     if (!ibHcaParser_.matches(devName)) {
-      LOG(INFO) << "NicDiscovery: skipping NIC " << devName
-                << " due to IB HCA filter";
+      spdlog::info(
+          "NicDiscovery: skipping NIC {} due to IB HCA filter", devName);
       continue;
     }
 
@@ -289,9 +293,14 @@ void NicDiscovery::discover() {
     int nicNuma = getNumaNodeForIbDev(devName.c_str());
     auto [pathType, nhops] = computePathType(nicPcie, nicNuma);
 
-    LOG(INFO) << "NicDiscovery: NIC " << devName << " PCIe=" << nicPcie
-              << " NUMA=" << nicNuma << " path=" << pathTypeToString(pathType)
-              << " nhops=" << nhops << " bandwidth=" << bandwidth << " Gb/s";
+    spdlog::info(
+        "NicDiscovery: NIC {} PCIe={} NUMA={} path={} nhops={} bandwidth={} Gb/s",
+        devName,
+        nicPcie,
+        nicNuma,
+        pathTypeToString(pathType),
+        nhops,
+        bandwidth);
 
     candidates_.push_back(
         NicCandidate{devName, nicPcie, pathType, bandwidth, nicNuma, nhops});
@@ -318,19 +327,26 @@ void NicDiscovery::discover() {
       });
 
   // Log sorted candidates for debugging
-  LOG(INFO) << "NicDiscovery: NIC candidates after sorting:";
+  spdlog::info("NicDiscovery: NIC candidates after sorting:");
   for (size_t i = 0; i < candidates_.size(); i++) {
-    LOG(INFO) << "  [" << i << "] " << candidates_[i].name
-              << " path=" << pathTypeToString(candidates_[i].pathType)
-              << " bandwidth=" << candidates_[i].bandwidthGbps << " Gb/s"
-              << " nhops=" << candidates_[i].nhops;
+    spdlog::info(
+        "  [{}] {} path={} bandwidth={} Gb/s nhops={}",
+        i,
+        candidates_[i].name,
+        pathTypeToString(candidates_[i].pathType),
+        candidates_[i].bandwidthGbps,
+        candidates_[i].nhops);
   }
 
   const NicCandidate& best = candidates_[0];
-  LOG(INFO) << "NicDiscovery: best candidate NIC " << best.name << " for GPU "
-            << gpuPciBusId_ << " (path=" << pathTypeToString(best.pathType)
-            << ", bandwidth=" << best.bandwidthGbps << " Gb/s)"
-            << " (numa=" << best.numaNode << ", nhops=" << best.nhops << ")";
+  spdlog::info(
+      "NicDiscovery: best candidate NIC {} for GPU {} (path={}, bandwidth={} Gb/s) (numa={}, nhops={})",
+      best.name,
+      gpuPciBusId_,
+      pathTypeToString(best.pathType),
+      best.bandwidthGbps,
+      best.numaNode,
+      best.nhops);
 }
 
 } // namespace comms::pipes
