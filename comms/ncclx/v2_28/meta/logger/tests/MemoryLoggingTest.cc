@@ -26,6 +26,9 @@
 #include "comm.h" // @manual
 #include "debug.h" // @manual
 #include "nccl.h" // @manual
+#include "transport.h" // @manual
+
+#include <sstream>
 
 class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
  public:
@@ -155,9 +158,15 @@ class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
     if (!connector->connected) {
       return;
     }
+    ASSERT_NE(connector->proxyConn.connection, nullptr)
+        << "Connected connector has null proxyConn.connection";
     bool shared = connector->conn.shared;
     int tpLocalRank = connector->proxyConn.tpLocalRank;
-    std::string setupMethod = isSameNode ? "ProxySetup" : "ProxyConnect";
+    // Determine actual transport: P2P transport uses "ProxySetup" callsite,
+    // NET transport uses "ProxyConnect" callsite
+    bool isP2pTransport = connector->proxyConn.connection &&
+        connector->proxyConn.connection->transport == TRANSPORT_P2P;
+    std::string setupMethod = isP2pTransport ? "ProxySetup" : "ProxyConnect";
     bool isP2pWrite = isSend && (connector->conn.flags & NCCL_P2P_WRITE);
     // Only Net p2p buffers are shared currently
     if (shared) {
@@ -172,7 +181,12 @@ class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
     } else if ((isSameNode || !p2pOnly) && !isP2pWrite) {
       expectedCallsites.push_back(
           ncclx::memory::genKey(
-              setupMethod, isSameNode, isSend, channelId, connIndex, peerRank));
+              setupMethod,
+              isP2pTransport,
+              isSend,
+              channelId,
+              connIndex,
+              peerRank));
     }
   }
 

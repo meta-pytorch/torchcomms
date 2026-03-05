@@ -26,6 +26,7 @@
 #include "comm.h" // @manual
 #include "debug.h" // @manual
 #include "nccl.h" // @manual
+#include "transport.h" // @manual
 
 class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
  public:
@@ -155,9 +156,15 @@ class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
     if (!connector->connected) {
       return;
     }
+    ASSERT_NE(connector->proxyConn.connection, nullptr)
+        << "Connected connector has null proxyConn.connection";
     bool shared = connector->conn.shared;
     int tpLocalRank = connector->proxyConn.tpLocalRank;
-    std::string setupMethod = isSameNode ? "ProxySetup" : "ProxyConnect";
+    // Determine actual transport: P2P transport uses "ProxySetup" callsite,
+    // NET transport uses "ProxyConnect" callsite
+    bool isP2pTransport = connector->proxyConn.connection &&
+        connector->proxyConn.connection->transport == TRANSPORT_P2P;
+    std::string setupMethod = isP2pTransport ? "ProxySetup" : "ProxyConnect";
     bool isP2pWrite = isSend && (connector->conn.flags & NCCL_P2P_WRITE);
     // Only Net p2p buffers are shared currently
     if (shared) {
@@ -172,7 +179,12 @@ class MemoryLoggingTestFixture : public NcclxBaseTestFixture {
     } else if ((isSameNode || !p2pOnly) && !isP2pWrite) {
       expectedCallsites.push_back(
           ncclx::memory::genKey(
-              setupMethod, isSameNode, isSend, channelId, connIndex, peerRank));
+              setupMethod,
+              isP2pTransport,
+              isSend,
+              channelId,
+              connIndex,
+              peerRank));
     }
   }
 
@@ -247,8 +259,8 @@ TEST_P(MemoryLoggingTestFixture, ncclInternalBufferLogTest) {
   // First comm creation as well as first kernel launch has some extra memory
   // usage (https://fburl.com/code/rxjvjads), use second comm
   // creation/collective for testing
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&comm, numRanks, ncclUid, globalRank, nullptr));
+  comm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
   std::cout << "Rank " << this->globalRank << " finished init, run AR"
             << std::endl;
   size_t count = 1 << 10; // 1K elements
@@ -349,8 +361,8 @@ TEST_P(MemoryLoggingTestFixture, userBufferLoggingTest) {
 
   auto logFileName = initLogger();
   EXPECT_EQ(NCCL_COMM_WORLD, nullptr);
-  NCCLCHECK_TEST(
-      ncclCommInitRankConfig(&comm, numRanks, ncclUid, globalRank, nullptr));
+  comm = createNcclComm(
+      globalRank, numRanks, localRank, false, nullptr, server.get());
 
   /* mapper registration logic */
   void *buf = nullptr, *segHdl = nullptr;
