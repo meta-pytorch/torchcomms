@@ -76,7 +76,7 @@ class WindowMemory {
   WindowMemory(
       int myRank,
       int nRanks,
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const WindowMemoryConfig& config,
       MemSharingMode memSharingMode = GpuMemHandler::detectBestMode());
 
@@ -182,7 +182,7 @@ class WindowMemory {
 
   const int myRank_{-1};
   const int nRanks_{-1};
-  std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap_;
+  std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   const WindowMemoryConfig config_;
   const MemSharingMode memSharingMode_;
 

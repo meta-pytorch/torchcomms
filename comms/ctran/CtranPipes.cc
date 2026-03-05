@@ -18,9 +18,9 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
     // Create a non-owning shared_ptr wrapper for bootstrap.
     // SAFETY: multiPeerTransport_ must be destroyed before bootstrap_ in
     // CtranComm::destroy() to avoid dangling reference.
-    auto bootstrapPtr = std::shared_ptr<ctran::bootstrap::IBootstrap>(
+    auto bootstrapPtr = std::shared_ptr<meta::comms::IBootstrap>(
         comm->bootstrap_.get(),
-        [](ctran::bootstrap::IBootstrap*) {}); // no-op deleter
+        [](meta::comms::IBootstrap*) {}); // no-op deleter
 
     comms::pipes::MultiPeerTransportConfig config{};
 

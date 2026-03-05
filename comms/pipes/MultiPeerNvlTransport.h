@@ -4,6 +4,7 @@
 
 #include <memory>
 
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/Transport.cuh"
@@ -110,7 +111,7 @@ class MultiPeerNvlTransport {
   MultiPeerNvlTransport(
       int myRank,
       int nRanks,
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig);
 
   /**
@@ -238,7 +239,7 @@ class MultiPeerNvlTransport {
 
   const int myRank_{-1};
   const int nRanks_{-1};
-  std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap_;
+  std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
   const MultiPeerNvlTransportConfig config_;
 
   // GpuMemHandler-based memory for data, state, and signal buffers

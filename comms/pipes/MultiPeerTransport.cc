@@ -34,7 +34,7 @@ MultiPeerTransport::MultiPeerTransport(
     int myRank,
     int nRanks,
     int deviceId,
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultiPeerTransportConfig& config)
     : myRank_(myRank),
       nRanks_(nRanks),

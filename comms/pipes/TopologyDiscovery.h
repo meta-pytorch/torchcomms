@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include "comms/ctran/interfaces/IBootstrap.h"
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/NvmlFabricInfo.h"
 #include "comms/pipes/Transport.cuh"
 
@@ -202,7 +202,7 @@ class TopologyDiscovery {
       int myRank,
       int nRanks,
       int deviceId,
-      ctran::bootstrap::IBootstrap& bootstrap,
+      meta::comms::IBootstrap& bootstrap,
       const TopologyConfig& topoConfig = {});
 
   /**

@@ -207,7 +207,7 @@ TopologyResult TopologyDiscovery::discover(
     int myRank,
     int nRanks,
     int deviceId,
-    ctran::bootstrap::IBootstrap& bootstrap,
+    meta::comms::IBootstrap& bootstrap,
     const TopologyConfig& topoConfig) {
   std::vector<RankTopologyInfo> allInfo(nRanks);
 

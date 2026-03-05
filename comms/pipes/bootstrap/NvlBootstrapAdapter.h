@@ -6,7 +6,7 @@
 #include <utility>
 #include <vector>
 
-#include "comms/ctran/interfaces/IBootstrap.h"
+#include "comms/common/bootstrap/IBootstrap.h"
 
 namespace comms::pipes {
 
@@ -27,7 +27,7 @@ namespace comms::pipes {
  * local rank indices [0, nvlNRanks) while the underlying bootstrap
  * coordinates using global communicator ranks.
  */
-class NvlBootstrapAdapter : public ctran::bootstrap::IBootstrap {
+class NvlBootstrapAdapter : public meta::comms::IBootstrap {
  public:
   /**
    * @param underlying          The global bootstrap instance.
@@ -36,7 +36,7 @@ class NvlBootstrapAdapter : public ctran::bootstrap::IBootstrap {
    *                            (including self).
    */
   NvlBootstrapAdapter(
-      std::shared_ptr<ctran::bootstrap::IBootstrap> underlying,
+      std::shared_ptr<meta::comms::IBootstrap> underlying,
       std::vector<int> localRankToCommRank)
       : underlying_(std::move(underlying)),
         localRankToCommRank_(std::move(localRankToCommRank)) {}
@@ -78,7 +78,7 @@ class NvlBootstrapAdapter : public ctran::bootstrap::IBootstrap {
   }
 
  private:
-  std::shared_ptr<ctran::bootstrap::IBootstrap> underlying_;
+  std::shared_ptr<meta::comms::IBootstrap> underlying_;
   std::vector<int> localRankToCommRank_;
 };
 

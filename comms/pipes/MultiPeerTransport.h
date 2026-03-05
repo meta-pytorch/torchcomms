@@ -9,7 +9,7 @@
 
 #include <cuda_runtime.h>
 
-#include "comms/ctran/interfaces/IBootstrap.h"
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/MultipeerIbgdaTransport.h"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
@@ -58,7 +58,7 @@ class MultiPeerTransport {
       int myRank,
       int nRanks,
       int deviceId,
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const MultiPeerTransportConfig& config);
 
   ~MultiPeerTransport();
@@ -217,7 +217,7 @@ class MultiPeerTransport {
   const int myRank_;
   const int nRanks_;
   const int deviceId_;
-  std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap_;
+  std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
 
   // --- Topology (populated in constructor) ---
   std::vector<int> nvlPeerRanks_;
@@ -230,7 +230,7 @@ class MultiPeerTransport {
   int nvlNRanks_{0};
 
   // --- Sub-transports ---
-  std::shared_ptr<ctran::bootstrap::IBootstrap> nvlBootstrapAdapter_;
+  std::shared_ptr<meta::comms::IBootstrap> nvlBootstrapAdapter_;
   std::unique_ptr<MultiPeerNvlTransport> nvlTransport_;
   std::unique_ptr<MultipeerIbgdaTransport> ibgdaTransport_;
 

@@ -1028,7 +1028,7 @@ set(CTRAN_FILES
   comms/ctran/ibverbx/Mlx5core.h
   comms/ctran/ibverbx/Mlx5dv.cc
   comms/ctran/ibverbx/Mlx5dv.h
-  comms/ctran/interfaces/IBootstrap.h
+  comms/common/bootstrap/IBootstrap.h
   comms/ctran/interfaces/ICtran.h
   comms/ctran/mapper/CtranMapper.cc
   comms/ctran/mapper/CtranMapper.h
@@ -1186,6 +1186,7 @@ set(COMMON_FILES
   comms/pipes/window/DeviceWindowSignal.cuh
   comms/pipes/window/WindowMemory.cc
   comms/pipes/window/WindowMemory.h
+  comms/common/bootstrap/IBootstrap.h
   comms/utils/checks.h
   comms/utils/colltrace/AlgoStats.cc
   comms/utils/colltrace/AlgoStats.h
