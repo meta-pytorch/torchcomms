@@ -1,6 +1,7 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
 #include <gtest/gtest.h>
+#include <spdlog/spdlog.h>
 
 #include "comms/pipes/rdma/NicDiscovery.h"
 
@@ -47,6 +48,45 @@ TEST(NicDiscoveryTest, NicCandidateDefaultConstruction) {
   EXPECT_EQ(candidate.bandwidthGbps, 0);
   EXPECT_EQ(candidate.numaNode, -1);
   EXPECT_EQ(candidate.nhops, -1);
+}
+
+// =============================================================================
+// CPU-Anchored Discovery Tests
+// =============================================================================
+
+TEST(NicDiscoveryTest, CpuAnchoredDiscovery) {
+  int numaNode = getCurrentNumaNode();
+  ASSERT_GE(numaNode, 0) << "Failed to get NUMA node for test";
+
+  try {
+    CpuNicDiscovery discovery(numaNode);
+    EXPECT_EQ(discovery.getAnchorNumaNode(), numaNode);
+
+    const auto& candidates = discovery.getCandidates();
+    EXPECT_FALSE(candidates.empty());
+    spdlog::info(
+        "CpuAnchoredDiscovery: anchor NUMA={}, discovered {} NICs:",
+        discovery.getAnchorNumaNode(),
+        candidates.size());
+    for (size_t i = 0; i < candidates.size(); i++) {
+      spdlog::info(
+          "  [{}] {} path={} bandwidth={} Gb/s numa={} nhops={}",
+          i,
+          candidates[i].name,
+          pathTypeToString(candidates[i].pathType),
+          candidates[i].bandwidthGbps,
+          candidates[i].numaNode,
+          candidates[i].nhops);
+    }
+  } catch (const std::runtime_error& e) {
+    spdlog::info(
+        "CpuAnchoredDiscovery: no IB devices in test env: {}", e.what());
+  }
+}
+
+TEST(NicDiscoveryTest, CpuAnchoredInvalidNumaNode) {
+  // NUMA node 9999 should not exist on any real system.
+  EXPECT_THROW(CpuNicDiscovery(9999), std::invalid_argument);
 }
 
 } // namespace comms::pipes::tests

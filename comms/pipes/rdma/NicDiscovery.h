@@ -47,6 +47,13 @@ inline const char* pathTypeToString(PathType pt) {
 }
 
 /**
+ * Get the NUMA node of the calling thread via getcpu(2) syscall.
+ *
+ * @return NUMA node number, or -1 on failure
+ */
+int getCurrentNumaNode();
+
+/**
  * NIC candidate information for topology-aware selection.
  */
 struct NicCandidate {
@@ -59,33 +66,23 @@ struct NicCandidate {
 };
 
 /**
- * NicDiscovery - Topology-aware RDMA NIC selection for GPUs.
+ * NicDiscovery - Base class for topology-aware RDMA NIC selection.
  *
- * Discovers and selects the best RDMA NIC for a given GPU based on
- * PCIe topology analysis (prefers closest NIC to GPU).
+ * Discovers and selects the best RDMA NIC based on PCIe/NUMA topology
+ * analysis. Subclasses define the topology ranking strategy:
  *
- * Usage:
- *   NicDiscovery discovery(0);  // Discovery happens in constructor
- *   const auto& candidates = discovery.getCandidates();
- *   std::string nicName = candidates[0].name;  // Best NIC first
+ *   // GPU-anchored: fine-grained PCIe topology ranking
+ *   GpuNicDiscovery discovery(0);
+ *
+ *   // CPU-anchored: NUMA affinity ranking
+ *   CpuNicDiscovery discovery(getCurrentNumaNode());
  *
  * This class only discovers and ranks NICs - it does not manage
  * any ibv_context*. The caller should open the selected device.
  */
 class NicDiscovery {
  public:
-  /**
-   * Constructor - performs NIC discovery for the given CUDA device.
-   *
-   * Discovery runs immediately, selecting the best NIC based on
-   * PCIe topology. After construction, call getCandidates()
-   * to retrieve the ranked NIC list.
-   *
-   * @param cudaDevice CUDA device index for GPU topology analysis
-   * @param ibHcaEnv NCCL_IB_HCA-style filter string (empty = no filtering)
-   * @throws std::runtime_error if no suitable NIC found
-   */
-  explicit NicDiscovery(int cudaDevice, const std::string& ibHcaEnv = {});
+  virtual ~NicDiscovery() = default;
 
   /**
    * Get all discovered NIC candidates, sorted best-to-worst.
@@ -95,17 +92,12 @@ class NicDiscovery {
   }
 
   /**
-   * Get the GPU's PCIe bus ID string.
+   * Get the anchor's NUMA node.
+   * For GPU-anchored: the GPU's NUMA node.
+   * For CPU-anchored: the NUMA node passed to the constructor.
    */
-  const std::string& getGpuPciBusId() const {
-    return gpuPciBusId_;
-  }
-
-  /**
-   * Get the GPU's NUMA node.
-   */
-  int getGpuNumaNode() const {
-    return gpuNumaNode_;
+  int getAnchorNumaNode() const {
+    return anchorNumaNode_;
   }
 
   // Static utility functions
@@ -115,11 +107,6 @@ class NicDiscovery {
    * CUDA returns uppercase (e.g., "0000:1B:00.0") but sysfs uses lowercase.
    */
   static std::string normalizePcieAddress(const std::string& pciBusId);
-
-  /**
-   * Get PCIe bus ID string from CUDA device.
-   */
-  static std::string getCudaPciBusId(int cudaDevice);
 
   /**
    * Get NUMA node for a PCIe device.
@@ -145,16 +132,12 @@ class NicDiscovery {
    */
   static std::string getPcieForIbDev(const char* devName);
 
- private:
-  // CUDA device index
-  int cudaDevice_;
+ protected:
+  // Protected constructor — only subclasses construct.
+  explicit NicDiscovery(const std::string& ibHcaEnv);
 
-  // GPU topology info (lazily initialized by initGpuTopology())
-  std::string gpuPciBusId_;
-  std::string gpuPcieNormalized_;
-  std::vector<std::string> gpuAncestorChain_;
-  std::unordered_set<std::string> gpuAncestors_;
-  int gpuNumaNode_{-1};
+  // Anchor NUMA node (GPU's NUMA for GPU-anchored, pass-in for CPU)
+  int anchorNumaNode_{-1};
 
   // IB HCA filter (empty = no filtering)
   IbHcaParser ibHcaParser_;
@@ -162,12 +145,102 @@ class NicDiscovery {
   // Discovered candidates (populated during discovery)
   std::vector<NicCandidate> candidates_;
 
-  // Private helpers
+  /**
+   * Discover and rank NICs. Called by subclass constructors after
+   * subclass-specific initialization is complete.
+   */
   void discover();
+
+  /**
+   * Compute the path type between the anchor device and a NIC.
+   * Subclasses override to implement their ranking strategy.
+   *
+   * @param nicPcie NIC's PCIe bus ID
+   * @param nicNuma NIC's NUMA node
+   * @return (PathType, hop count) pair
+   */
+  virtual std::pair<PathType, int> computePathType(
+      const std::string& nicPcie,
+      int nicNuma) const = 0;
+
+  /**
+   * Return a description of the anchor for log messages.
+   * E.g., "GPU 0000:1B:00.0" or "CPU NUMA 0".
+   */
+  virtual std::string anchorDescription() const = 0;
+};
+
+/**
+ * GpuNicDiscovery - GPU-anchored NIC selection using PCIe topology.
+ *
+ * Ranks NICs by PCIe ancestor walk from the CUDA GPU device,
+ * producing fine-grained path types (PIX/PXB/PHB/NODE/SYS).
+ */
+class GpuNicDiscovery : public NicDiscovery {
+ public:
+  /**
+   * Create a GPU-anchored NIC discovery.
+   *
+   * @param cudaDevice CUDA device index
+   * @param ibHcaEnv NCCL_IB_HCA-style filter string (empty = no filtering)
+   * @throws std::runtime_error if no suitable NIC found
+   */
+  explicit GpuNicDiscovery(int cudaDevice, const std::string& ibHcaEnv = {});
+
+  /**
+   * Get the anchor GPU's PCIe bus ID string.
+   */
+  const std::string& getAnchorPciBusId() const {
+    return anchorPciBusId_;
+  }
+
+  /**
+   * Get PCIe bus ID string from CUDA device.
+   */
+  static std::string getCudaPciBusId(int cudaDevice);
+
+ private:
   void initGpuTopology();
+
   std::pair<PathType, int> computePathType(
       const std::string& nicPcie,
-      int nicNuma) const;
+      int nicNuma) const override;
+
+  std::string anchorDescription() const override;
+
+  int cudaDevice_;
+  std::string anchorPciBusId_;
+  std::vector<std::string> anchorAncestorChain_;
+  std::unordered_set<std::string> anchorAncestors_;
+};
+
+/**
+ * CpuNicDiscovery - CPU-anchored NIC selection using NUMA affinity.
+ *
+ * Ranks NICs by NUMA affinity to the given node (NODE for same-NUMA,
+ * SYS for cross-NUMA). No CUDA dependency.
+ */
+class CpuNicDiscovery : public NicDiscovery {
+ public:
+  /**
+   * Create a CPU-anchored NIC discovery.
+   *
+   * The NUMA node is validated against sysfs; throws
+   * std::invalid_argument if the node does not exist.
+   *
+   * @param numaNode NUMA node to anchor on
+   * @param ibHcaEnv NCCL_IB_HCA-style filter string (empty = no filtering)
+   * @throws std::runtime_error if no suitable NIC found
+   * @throws std::invalid_argument if numaNode is invalid
+   */
+  explicit CpuNicDiscovery(int numaNode, const std::string& ibHcaEnv = {});
+
+ private:
+  std::pair<PathType, int> computePathType(
+      const std::string& nicPcie,
+      int nicNuma) const override;
+
+  std::string anchorDescription() const override;
 };
 
 } // namespace comms::pipes
