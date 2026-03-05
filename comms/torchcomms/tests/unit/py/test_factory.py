@@ -8,7 +8,7 @@ import unittest
 
 import torch
 import torchcomms
-from torchcomms._comms import _get_store
+from torchcomms._store_manager import _get_store
 
 
 class TestFactory(unittest.TestCase):
