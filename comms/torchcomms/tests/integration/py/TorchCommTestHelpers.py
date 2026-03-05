@@ -7,7 +7,7 @@ from typing import List, Tuple, Union
 
 import torch
 from torchcomms import new_comm, RedOpType, ReduceOp
-from torchcomms._comms import _get_store
+from torchcomms._store_manager import _get_store
 
 
 def get_dtype_name(dtype):

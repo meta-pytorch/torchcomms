@@ -10,7 +10,7 @@ from typing import Any
 
 import torch
 from torch.monitor import _WaitCounter
-from torchcomms._comms import TorchComm
+from torchcomms import TorchComm
 
 
 class _Serialization:
