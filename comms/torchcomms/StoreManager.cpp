@@ -46,7 +46,7 @@ StoreManager& StoreManager::get() {
   return storeManager;
 }
 
-c10::intrusive_ptr<c10d::Store> StoreManager::getStore(
+c10::intrusive_ptr<c10d::Store> StoreManager::createPrefixedStore(
     std::string_view backendName,
     std::string_view commName,
     std::chrono::milliseconds timeout) {
