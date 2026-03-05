@@ -153,4 +153,51 @@ __global__ void p2pRecvMultiple(
   p2p.recv_multiple(group, dstBuff, chunkSizes);
 }
 
+__global__ void p2pLl128Send(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    int64_t flagValue,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_warp_group();
+  p2p.ll128_send(
+      group, static_cast<const char*>(srcBuff), nBytes, flagValue, timeout);
+}
+
+__global__ void p2pLl128Recv(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    int64_t flagValue,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_warp_group();
+  p2p.ll128_recv(
+      group, static_cast<char*>(dstBuff), nBytes, flagValue, timeout);
+}
+
+__global__ void p2pLl128Bidirectional(
+    P2pNvlTransportDevice p2p,
+    void* sendBuff,
+    void* recvBuff,
+    std::size_t nBytes,
+    int64_t flagValue,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_warp_group();
+  auto [partition_id, subgroup] = group.partition_interleaved(2);
+  if (partition_id == 0) {
+    p2p.ll128_send(
+        subgroup,
+        static_cast<const char*>(sendBuff),
+        nBytes,
+        flagValue,
+        timeout);
+  } else {
+    p2p.ll128_recv(
+        subgroup, static_cast<char*>(recvBuff), nBytes, flagValue, timeout);
+  }
+}
+
 } // namespace comms::pipes::benchmark
