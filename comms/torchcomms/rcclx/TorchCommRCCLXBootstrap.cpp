@@ -8,8 +8,8 @@
 
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
-#include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/rcclx/TorchCommRCCLX.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
 
