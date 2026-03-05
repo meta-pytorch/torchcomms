@@ -154,4 +154,65 @@ void testReadSignal(SignalState* signal_d, uint64_t* result_d) {
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
+// =============================================================================
+// LL128 transport send/recv test kernels
+// =============================================================================
+
+__global__ void testLl128SendKernel(
+    P2pNvlTransportDevice p2p,
+    const char* src,
+    size_t nbytes,
+    int64_t flag_value) {
+  auto group = make_warp_group();
+  Timeout timeout;
+  timeout.start();
+  p2p.ll128_send(group, src, nbytes, flag_value, timeout);
+}
+
+__global__ void testLl128RecvKernel(
+    P2pNvlTransportDevice p2p,
+    char* dst,
+    size_t nbytes,
+    int64_t flag_value) {
+  auto group = make_warp_group();
+  Timeout timeout;
+  timeout.start();
+  p2p.ll128_recv(group, dst, nbytes, flag_value, timeout);
+}
+
+void testLl128SendRecv(
+    P2pNvlTransportDevice sender,
+    P2pNvlTransportDevice receiver,
+    const char* src_d,
+    char* dst_d,
+    size_t nbytes,
+    int numBlocks,
+    int blockSize) {
+  constexpr int64_t flag_value = 1;
+
+  cudaStream_t send_stream, recv_stream;
+
+  // Sender on GPU 0
+  PIPES_CUDA_CHECK(cudaSetDevice(0));
+  PIPES_CUDA_CHECK(cudaStreamCreate(&send_stream));
+  testLl128SendKernel<<<numBlocks, blockSize, 0, send_stream>>>(
+      sender, src_d, nbytes, flag_value);
+  PIPES_KERNEL_LAUNCH_CHECK();
+
+  // Receiver on GPU 1
+  PIPES_CUDA_CHECK(cudaSetDevice(1));
+  PIPES_CUDA_CHECK(cudaStreamCreate(&recv_stream));
+  testLl128RecvKernel<<<numBlocks, blockSize, 0, recv_stream>>>(
+      receiver, dst_d, nbytes, flag_value);
+  PIPES_KERNEL_LAUNCH_CHECK();
+
+  // Wait for both to complete and destroy streams
+  PIPES_CUDA_CHECK(cudaSetDevice(0));
+  PIPES_CUDA_CHECK(cudaStreamSynchronize(send_stream));
+  PIPES_CUDA_CHECK(cudaStreamDestroy(send_stream));
+  PIPES_CUDA_CHECK(cudaSetDevice(1));
+  PIPES_CUDA_CHECK(cudaStreamSynchronize(recv_stream));
+  PIPES_CUDA_CHECK(cudaStreamDestroy(recv_stream));
+}
+
 } // namespace comms::pipes::test
