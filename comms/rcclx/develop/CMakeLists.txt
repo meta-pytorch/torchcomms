@@ -795,13 +795,13 @@ set(CTRAN_FILES
   comms/ctran/algos/AllReduce/AllReduceNetTypes.h
   comms/ctran/algos/AllReduce/AllReduceResourceImpl.cc
   comms/ctran/algos/AllReduce/AllReduceResourceImpl.h
+  comms/ctran/algos/AllReduce/AllReduceRingAutoTune.cc
+  comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h
   comms/ctran/algos/AllReduce/AllReduceRing.cc
   comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh
   comms/ctran/algos/AllReduce/AllReduceRing.cuh
   comms/ctran/algos/AllReduce/AllReduceShm.cu
   comms/ctran/algos/AllReduce/AllReduceShm.cuh
-  comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h
-  comms/ctran/algos/CtranAlgoConsts.h
   comms/ctran/algos/AllReduce/Types.h
   comms/ctran/algos/AllToAll/AllToAll.cc
   comms/ctran/algos/AllToAll/AllToAll.cuh
@@ -882,6 +882,7 @@ set(CTRAN_FILES
   comms/ctran/algos/common/SpscP2pSync.h
   comms/ctran/algos/CtranAlgoArgDev.h
   comms/ctran/algos/CtranAlgo.cc
+  comms/ctran/algos/CtranAlgoConsts.h
   comms/ctran/algos/CtranAlgoDev.h
   comms/ctran/algos/CtranAlgo.h
   comms/ctran/algos/CudaGraphUtilsImpl.cc
@@ -981,6 +982,8 @@ set(CTRAN_FILES
   comms/ctran/CtranExImpl.h
   comms/ctran/CtranExRequest.cc
   comms/ctran/Ctran.h
+  comms/ctran/CtranPipes.cc
+  comms/ctran/CtranPipes.h
   comms/ctran/gpe/CtranChecksum.h
   comms/ctran/gpe/CtranGpe.cc
   comms/ctran/gpe/CtranGpeDev.h
@@ -1141,6 +1144,7 @@ set(COMMON_FILES
   comms/common/algorithms/reduce_scatter/reduce_scatter_dda.cuh
   comms/common/AtomicUtils.cuh
   comms/common/BitOps.cuh
+  comms/common/bootstrap/IBootstrap.h
   comms/common/CudaWrap.h
   comms/common/DeviceConstants.cuh
   comms/common/IpcGpuBarrier.cu
@@ -1148,6 +1152,8 @@ set(COMMON_FILES
   comms/common/IpcMemHandler.cc
   comms/common/IpcMemHandler.h
   comms/pipes/BarrierState.cuh
+  comms/pipes/bootstrap/NvlBootstrapAdapter.h
+  comms/pipes/Checks.h
   comms/pipes/ChunkState.cuh
   comms/pipes/collectives/AllGather.cuh
   comms/pipes/collectives/AllToAllv.cu
@@ -1164,6 +1170,7 @@ set(COMMON_FILES
   comms/pipes/GpuMemHandler.cc
   comms/pipes/GpuMemHandler.h
 # comms/pipes/IbgdaBuffer.h # manual
+  comms/pipes/MultiPeerDeviceHandle.cuh
   comms/pipes/MultiPeerDeviceTransport.cuh
 # comms/pipes/MultipeerIbgdaDeviceTransport.cuh # manual
 # comms/pipes/MultipeerIbgdaTransport.cc # manual
@@ -1172,21 +1179,28 @@ set(COMMON_FILES
 # comms/pipes/MultipeerIbgdaTransport.h # manual
   comms/pipes/MultiPeerNvlTransport.cc
   comms/pipes/MultiPeerNvlTransport.h
+# comms/pipes/MultiPeerTransport.cc # manual
+# comms/pipes/MultiPeerTransport.h # manual
+  comms/pipes/NvmlFabricInfo.h
 # comms/pipes/P2pIbgdaTransportDevice.cuh # manual
   comms/pipes/P2pNvlTransportDevice.cuh
   comms/pipes/P2pSelfTransportDevice.cuh
+  comms/pipes/rdma/IbHcaParser.cc
+  comms/pipes/rdma/IbHcaParser.h
+  comms/pipes/rdma/NicDiscovery.cc
+  comms/pipes/rdma/NicDiscovery.h
   comms/pipes/SignalState.cuh
   comms/pipes/ThreadGroup.cuh
   comms/pipes/Timeout.cuh
   comms/pipes/TimeoutUtils.h
+  comms/pipes/TopologyDiscovery.cc
+  comms/pipes/TopologyDiscovery.h
   comms/pipes/Transport.cuh
-  comms/pipes/tests/Checks.h # manual
   comms/pipes/window/DeviceWindowBarrier.cuh
   comms/pipes/window/DeviceWindowMemory.cuh
   comms/pipes/window/DeviceWindowSignal.cuh
   comms/pipes/window/WindowMemory.cc
   comms/pipes/window/WindowMemory.h
-  comms/common/bootstrap/IBootstrap.h
   comms/utils/checks.h
   comms/utils/colltrace/AlgoStats.cc
   comms/utils/colltrace/AlgoStats.h
@@ -1236,6 +1250,8 @@ set(COMMON_FILES
   comms/utils/EnvUtils.h
   comms/utils/InitFolly.cc
   comms/utils/InitFolly.h
+  comms/utils/kernels/rng/philox_rng.cuh
+  comms/utils/kernels/stochastic_rounding/stochastic_rounding.cuh
   comms/utils/logger/alloc.cc
   comms/utils/logger/alloc.h
   comms/utils/logger/BackendTopologyUtil.cc
