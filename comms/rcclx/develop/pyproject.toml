@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rcclx_trainer_context"
+version = "0.1.0"
+description = "RCCLX trainer context for AMD GPUs"
+readme = "README.md"
+requires-python = ">=3.8"
+
+[tool.setuptools]
+packages = []
