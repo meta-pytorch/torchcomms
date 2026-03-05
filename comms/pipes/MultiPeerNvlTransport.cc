@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
+#include "comms/pipes/ll128/Ll128Packet.cuh"
 #include "comms/pipes/window/DeviceWindowMemory.cuh"
 #include "comms/pipes/window/DeviceWindowSignal.cuh"
 #include "comms/pipes/window/WindowMemory.h"
@@ -84,6 +85,20 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
       signalInitStates.data(),
       totalSignalBufferSize,
       cudaMemcpyDefault));
+
+  // Conditionally allocate LL128 buffers
+  if (config_.ll128BufferSize > 0) {
+    perPeerLl128BufferSize_ = config_.ll128BufferSize;
+    std::size_t totalLl128Size = perPeerLl128BufferSize_ * (nRanks_ - 1);
+    ll128BufferHandler_ = std::make_unique<GpuMemHandler>(
+        bootstrap_, myRank_, nRanks_, totalLl128Size, memSharingMode_);
+
+    // Initialize all LL128 packet flags to kLl128ReadyToWrite (-1).
+    // cudaMemset(0xFF) sets all bytes to 0xFF = -1 in two's complement.
+    // Data payload bytes are also 0xFF but get overwritten before first read.
+    auto* ll128Ptr = ll128BufferHandler_->getLocalDeviceMemPtr();
+    CUDA_CHECK(cudaMemset(ll128Ptr, kLl128MemsetInitByte, totalLl128Size));
+  }
 }
 
 void MultiPeerNvlTransport::exchange() {
@@ -91,6 +106,9 @@ void MultiPeerNvlTransport::exchange() {
   dataBufferHandler_->exchangeMemPtrs();
   stateBufferHandler_->exchangeMemPtrs();
   signalBufferHandler_->exchangeMemPtrs();
+  if (ll128BufferHandler_) {
+    ll128BufferHandler_->exchangeMemPtrs();
+  }
 }
 
 P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
@@ -150,6 +168,20 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
   auto* localStatePtr =
       static_cast<char*>(stateBufferHandler_->getLocalDeviceMemPtr());
 
+  // Compute LL128 buffer pointers (nullptr when LL128 is disabled)
+  Ll128Packet* localLl128 = nullptr;
+  Ll128Packet* remoteLl128 = nullptr;
+  if (ll128BufferHandler_) {
+    auto* localLl128Ptr =
+        static_cast<char*>(ll128BufferHandler_->getLocalDeviceMemPtr());
+    localLl128 = reinterpret_cast<Ll128Packet*>(
+        localLl128Ptr + localPeerIndex * perPeerLl128BufferSize_);
+    auto* remoteLl128Ptr =
+        static_cast<char*>(ll128BufferHandler_->getPeerDeviceMemPtr(peerRank));
+    remoteLl128 = reinterpret_cast<Ll128Packet*>(
+        remoteLl128Ptr + remotePeerIndex * perPeerLl128BufferSize_);
+  }
+
   LocalState localState{
       .dataBuffer = localDataPtr + localDataBufferOffset,
       .stateBuffer = DeviceSpan<ChunkState>(
@@ -160,6 +192,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
           reinterpret_cast<SignalState*>(
               localSignalPtr + localSignalBufferOffset),
           config_.p2pSignalCount),
+      .ll128Buffer = localLl128,
   };
 
   auto* remoteDataPtr =
@@ -179,6 +212,7 @@ P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
           reinterpret_cast<SignalState*>(
               remoteSignalPtr + remoteSignalBufferOffset),
           config_.p2pSignalCount),
+      .ll128Buffer = remoteLl128,
   };
 
   return P2pNvlTransportDevice(
