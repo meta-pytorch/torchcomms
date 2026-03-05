@@ -99,4 +99,34 @@ __global__ void p2pRecvMultiple(
     DeviceSpan<std::size_t> chunkSizes,
     SyncScope groupScope = SyncScope::WARP);
 
+// =============================================================================
+// LL128 benchmark kernels - warp-based LL128 protocol with inline flag
+// signaling
+// =============================================================================
+
+// LL128 send kernel
+__global__ void p2pLl128Send(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    int64_t flagValue,
+    Timeout timeout = Timeout());
+
+// LL128 recv kernel
+__global__ void p2pLl128Recv(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    int64_t flagValue,
+    Timeout timeout = Timeout());
+
+// LL128 bidirectional kernel - half warps send, half recv
+__global__ void p2pLl128Bidirectional(
+    P2pNvlTransportDevice p2p,
+    void* sendBuff,
+    void* recvBuff,
+    std::size_t nBytes,
+    int64_t flagValue,
+    Timeout timeout = Timeout());
+
 } // namespace comms::pipes::benchmark
