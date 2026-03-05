@@ -346,7 +346,7 @@ void TorchCommGloo::init(
 
   auto store = options.store;
   if (!store) {
-    store = StoreManager::get().getStore(
+    store = StoreManager::get().createPrefixedStore(
         TorchCommGloo::kBackendName, name, options.timeout);
   }
 

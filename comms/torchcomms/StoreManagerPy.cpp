@@ -13,11 +13,12 @@ using namespace torch::comms;
 
 PYBIND11_MODULE(_store_manager, m) {
   m.def(
-      "_get_store",
+      "_create_prefixed_store",
       [](const std::string& backend_name,
          const std::string& name,
          std::chrono::milliseconds timeout) {
-        return StoreManager::get().getStore(backend_name, name, timeout);
+        return StoreManager::get().createPrefixedStore(
+            backend_name, name, timeout);
       },
       R"(
       Return a new store object that's unique to the given backend and
