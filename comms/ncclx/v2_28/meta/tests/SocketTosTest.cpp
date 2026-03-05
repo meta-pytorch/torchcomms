@@ -22,7 +22,6 @@ class SocketSetTosTest : public ::testing::Test {
 
 TEST_F(SocketSetTosTest, TestOverrideTOS) {
   const int kExpectedTos = 96;
-  EnvRAII<int> tosConfigGuard(NCCL_SOCKET_TOS_CONFIG, kExpectedTos);
   struct ncclSocket sock{};
   union ncclSocketAddress addr{};
   char bootstrapNetIfName[MAX_IF_NAME_SIZE + 1];
@@ -32,6 +31,10 @@ TEST_F(SocketSetTosTest, TestOverrideTOS) {
           bootstrapNetIfName, &addr, MAX_IF_NAME_SIZE, 1, &numIfs),
       ncclSuccess);
   EXPECT_GT(numIfs, 0);
+  // Set TOS config AFTER ncclFindInterfaces to avoid CVAR re-initialization
+  // overwriting the value (ncclFindInterfaces triggers env plugin loading
+  // which re-reads CVARs from environment variables)
+  EnvRAII<int> tosConfigGuard(NCCL_SOCKET_TOS_CONFIG, kExpectedTos);
   EXPECT_EQ(
       ncclSocketInit(&sock, &addr, 0 /* magic */, ncclSocketTypeBootstrap),
       ncclSuccess);
