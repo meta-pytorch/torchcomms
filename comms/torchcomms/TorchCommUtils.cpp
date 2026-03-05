@@ -32,9 +32,7 @@ std::string trim_whitespace(std::string_view str) {
 // etc.
 // TODO: replace with the correct PALS env var for size once it is available.
 int query_pals_size() {
-  int size = -1;
-
-  size = env_to_value<int>("PALS_SIZE", -1);
+  int size = env_to_value<int>("PALS_SIZE", -1);
   if (size > 0) {
     return size;
   }
