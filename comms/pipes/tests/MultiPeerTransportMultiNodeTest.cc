@@ -112,7 +112,7 @@ class MultiPeerTransportMultiNodeFixture : public MpiBaseTestFixture {
                 .dataBufferSize = 256 * 1024,
                 .chunkSize = 512,
                 .pipelineDepth = 4,
-                .signalCount = 4,
+                .p2pSignalCount = 4,
             },
         .ibgdaConfig =
             {

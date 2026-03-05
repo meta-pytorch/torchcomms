@@ -29,6 +29,18 @@ class BaselineBootstrap : public ::ctran::bootstrap::IBootstrap {
       int localNranks,
       std::vector<int> localRankToCommRank) override;
 
+  virtual folly::SemiFuture<int> allGatherNvlDomain(
+      void* buf,
+      int len,
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) override;
+
+  virtual folly::SemiFuture<int> barrierNvlDomain(
+      int nvlLocalRank,
+      int nvlNranks,
+      std::vector<int> nvlRankToCommRank) override;
+
   virtual folly::SemiFuture<int> send(void* buf, int len, int peer, int tag)
       override;
 

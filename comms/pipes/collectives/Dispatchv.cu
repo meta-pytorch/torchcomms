@@ -3,8 +3,8 @@
 #include "comms/pipes/collectives/Dispatchv.cuh"
 #include "comms/pipes/collectives/Dispatchv.h"
 
+#include "comms/pipes/Checks.h"
 #include "comms/pipes/ThreadGroup.cuh"
-#include "comms/pipes/tests/Checks.h"
 
 namespace comms::pipes {
 
