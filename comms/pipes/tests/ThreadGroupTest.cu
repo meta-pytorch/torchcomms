@@ -76,10 +76,6 @@ void testContiguousLocality(
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 
-// =============================================================================
-// Thread Solo Tests
-// =============================================================================
-
 __global__ void testThreadSoloGroupKernel(
     uint32_t* groupIds,
     uint32_t* groupSizes,
@@ -145,6 +141,61 @@ void testThreadSoloGroup(
       isLeader_d,
       syncResults_d,
       errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// Strided Locality Tests
+// =============================================================================
+
+template <SyncScope Scope>
+__global__ void testStridedLocalityKernel(
+    uint32_t* groupIds,
+    uint32_t numItems,
+    uint32_t* errorCount) {
+  auto group = make_thread_group(Scope);
+
+  group.for_each_item_strided(numItems, [&](uint32_t item_id) {
+    if (item_id >= numItems) {
+      atomicAdd(errorCount, 1);
+      return;
+    }
+
+    groupIds[item_id] = group.group_id;
+  });
+
+  __syncthreads();
+
+  if (group.is_global_leader()) {
+    for (uint32_t item_id = 0; item_id < numItems; item_id++) {
+      uint32_t expected_group_id = item_id % group.total_groups;
+      if (groupIds[item_id] != expected_group_id) {
+        atomicAdd(errorCount, 1);
+      }
+    }
+  }
+}
+
+void testStridedLocality(
+    uint32_t* groupIds_d,
+    uint32_t numItems,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize,
+    SyncScope scope) {
+  if (scope == SyncScope::WARP) {
+    testStridedLocalityKernel<SyncScope::WARP>
+        <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
+  } else if (scope == SyncScope::MULTIWARP) {
+    testStridedLocalityKernel<SyncScope::MULTIWARP>
+        <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
+  } else if (scope == SyncScope::BLOCK) {
+    testStridedLocalityKernel<SyncScope::BLOCK>
+        <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
+  } else {
+    testStridedLocalityKernel<SyncScope::CLUSTER>
+        <<<numBlocks, blockSize>>>(groupIds_d, numItems, errorCount_d);
+  }
   PIPES_KERNEL_LAUNCH_CHECK();
 }
 

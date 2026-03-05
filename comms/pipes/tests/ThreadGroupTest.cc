@@ -202,6 +202,166 @@ INSTANTIATE_TEST_SUITE_P(
     });
 
 // =============================================================================
+// Strided Locality Tests
+// =============================================================================
+
+struct StridedTestParams {
+  uint32_t numItems;
+  SyncScope scope;
+  std::string description;
+  std::string testName;
+};
+
+class ThreadGroupStridedTest
+    : public ThreadGroupTestFixture,
+      public ::testing::WithParamInterface<StridedTestParams> {};
+
+// Test: for_each_item_strided correctness and determinism
+// Verifies that:
+// 1. Each work item is processed exactly once (no duplicates, no skips)
+// 2. Each group processes items in strided fashion
+// 3. Item K is ALWAYS assigned to group (K % total_groups)
+// 4. This mapping is deterministic regardless of total_items
+//
+// Why this matters:
+// - ROUND-ROBIN pattern ensures consistent chunk-to-group mapping
+// - Useful when groups maintain local state for specific chunks
+// - e.g., ChunkState tracking where each group "owns" certain chunks
+//
+// Test setup:
+// - Configurable number of work items (even or uneven distribution)
+// - 8 blocks × 256 threads/block = 2048 threads total
+// - For warps: 2048 threads / 32 = 64 warps
+//
+// Verification method:
+// - Each group writes its group_id to all work items it processes
+// - CPU verifies that item K is assigned to group (K % total_groups)
+TEST_P(ThreadGroupStridedTest, ForEachItemStridedLocality) {
+  const auto& params = GetParam();
+  const uint32_t numItems = params.numItems;
+  const int numBlocks = 8;
+  const int blockSize = 256;
+
+  DeviceBuffer groupIdsBuffer(numItems * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto groupIds_d = static_cast<uint32_t*>(groupIdsBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(cudaMemset(groupIds_d, 0, numItems * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  test::testStridedLocality(
+      groupIds_d, numItems, errorCount_d, numBlocks, blockSize, params.scope);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(errorCount_h, 0)
+      << "Round-robin pattern should assign item K to group (K % total_groups) ("
+      << params.description << ")";
+
+  std::vector<uint32_t> groupIds_h(numItems);
+  CUDACHECK_TEST(cudaMemcpy(
+      groupIds_h.data(),
+      groupIds_d,
+      numItems * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  uint32_t totalGroups;
+  if (params.scope == SyncScope::WARP) {
+    const uint32_t warpsPerBlock = blockSize / comms::device::kWarpSize;
+    totalGroups = numBlocks * warpsPerBlock;
+  } else if (params.scope == SyncScope::MULTIWARP) {
+    const uint32_t multiwarpsPerBlock = blockSize / kMultiwarpSize;
+    totalGroups = numBlocks * multiwarpsPerBlock;
+  } else {
+    totalGroups = numBlocks;
+  }
+
+  for (uint32_t item_id = 0; item_id < numItems; item_id++) {
+    uint32_t expected_group_id = item_id % totalGroups;
+    EXPECT_EQ(groupIds_h[item_id], expected_group_id)
+        << "Work item " << item_id << " should be assigned to group "
+        << expected_group_id << " but was assigned to " << groupIds_h[item_id]
+        << " (" << params.description << ")";
+  }
+
+  // Verify each group processes the expected number of items
+  std::vector<uint32_t> itemsPerGroup(totalGroups, 0);
+  for (uint32_t item_id = 0; item_id < numItems; item_id++) {
+    itemsPerGroup[groupIds_h[item_id]]++;
+  }
+
+  for (uint32_t group_id = 0; group_id < totalGroups; group_id++) {
+    // Expected items: ceil((numItems - group_id) / totalGroups) if group_id <
+    // numItems
+    uint32_t expectedItems =
+        (numItems + totalGroups - 1 - group_id) / totalGroups;
+    if (group_id >= numItems) {
+      expectedItems = 0;
+    }
+    EXPECT_EQ(itemsPerGroup[group_id], expectedItems)
+        << "Group " << group_id << " should process " << expectedItems
+        << " items but processed " << itemsPerGroup[group_id] << " ("
+        << params.description << ")";
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StridedDistributions,
+    ThreadGroupStridedTest,
+    ::testing::Values(
+        StridedTestParams{
+            .numItems = 2048,
+            .scope = SyncScope::WARP,
+            .description = "WARP: even distribution (2048 items, 64 warps)",
+            .testName = "Warp_EvenCase"},
+        StridedTestParams{
+            .numItems = 2040,
+            .scope = SyncScope::WARP,
+            .description = "WARP: uneven distribution (2040 items, 64 warps)",
+            .testName = "Warp_UnevenCase"},
+        StridedTestParams{
+            .numItems = 1024,
+            .scope = SyncScope::BLOCK,
+            .description = "BLOCK: even distribution (1024 items, 8 blocks)",
+            .testName = "Block_EvenCase"},
+        StridedTestParams{
+            .numItems = 1000,
+            .scope = SyncScope::BLOCK,
+            .description = "BLOCK: uneven distribution (1000 items, 8 blocks)",
+            .testName = "Block_UnevenCase"},
+        StridedTestParams{
+            .numItems = 1024,
+            .scope = SyncScope::MULTIWARP,
+            .description =
+                "MULTIWARP: even distribution (1024 items, 16 multiwarps)",
+            .testName = "Multiwarp_EvenCase"},
+        StridedTestParams{
+            .numItems = 1000,
+            .scope = SyncScope::MULTIWARP,
+            .description =
+                "MULTIWARP: uneven distribution (1000 items, 16 multiwarps)",
+            .testName = "Multiwarp_UnevenCase"},
+        StridedTestParams{
+            .numItems = 1024,
+            .scope = SyncScope::CLUSTER,
+            .description = "CLUSTER: even distribution (1024 items, 8 blocks)",
+            .testName = "Cluster_EvenCase"},
+        StridedTestParams{
+            .numItems = 1000,
+            .scope = SyncScope::CLUSTER,
+            .description =
+                "CLUSTER: uneven distribution (1000 items, 8 blocks)",
+            .testName = "Cluster_UnevenCase"}),
+    [](const ::testing::TestParamInfo<StridedTestParams>& info) {
+      return info.param.testName;
+    });
+
+// =============================================================================
 // Block Group Tests
 // =============================================================================
 
