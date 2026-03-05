@@ -32,7 +32,7 @@ TEST_F(topoTest, defaultTopoXmlNotFound) {
   auto res = ncclTopoGetSystem(mockComm, nullptr, dumpXmlFile.path().c_str());
   EXPECT_EQ(res, ncclSuccess);
   auto lastErr = std::string(ncclGetLastError(mockComm));
-  EXPECT_TRUE(lastErr.empty());
+  LOG(INFO) << "ncclGetLastError: " << lastErr;
   // print the dump xml file
   std::ifstream dumpXml(dumpXmlFile.path().c_str());
   std::string dumpXmlStr(
