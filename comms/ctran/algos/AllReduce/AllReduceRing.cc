@@ -20,6 +20,7 @@
 #include "comms/ctran/algos/AllReduce/AllReduceRingAutoTune.h"
 #include "comms/ctran/algos/AllReduce/AllReduceRingCommon.cuh"
 #include "comms/ctran/algos/CtranAlgo.h"
+#include "comms/ctran/algos/CtranAlgoConsts.h"
 #include "comms/ctran/mapper/CtranMapper.h"
 #include "comms/utils/commSpecs.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -90,14 +91,34 @@ namespace ctran::allreduce::ring {
 // Check if bi-directional AllGather should be enabled based on CVAR and
 // message size.
 // Returns true if bidir AG should be used, false for simple kernel.
+//
+// CVAR values:
+//   0  = disabled
+//  -1  = enabled for all sizes
+//  -2  = auto-tune per GPU architecture (GB200: 128MB, H100: 4MB)
+//  >0  = enabled for messages up to that size in bytes
 inline bool shouldEnableBidirAg(size_t messageBytes) {
   int64_t maxSize = NCCL_CTRAN_ALLREDUCE_RING_BIDIR_AG_MAX_SIZE;
   if (maxSize == 0) {
     // Explicitly disabled
     return false;
   }
+  if (maxSize == -1) {
+    // Enable for all sizes
+    return true;
+  }
+  if (maxSize == -2) {
+    // Auto-tune: select threshold based on GPU architecture
+    int cudaDev = 0;
+    cudaGetDevice(&cudaDev);
+    int smMajor = 0;
+    cudaDeviceGetAttribute(
+        &smMajor, cudaDevAttrComputeCapabilityMajor, cudaDev);
+    maxSize = (smMajor < 10) ? static_cast<int64_t>(kHopperBidirAgMaxSize)
+                             : static_cast<int64_t>(kDefaultBidirAgMaxSize);
+  }
   if (maxSize < 0) {
-    // -1 means enable for all sizes
+    // Any other negative value: treat as enabled for all sizes
     return true;
   }
   // Enable only for messages up to maxSize
