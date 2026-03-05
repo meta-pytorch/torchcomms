@@ -52,6 +52,11 @@ namespace comms::pipes {
  * @param remote_ll128_buf  Pointer to receiver's LL128 packet buffer
  * @param flag_value   Step identifier (positive) for flag signaling
  * @param timeout   Timeout for flag polling
+ * @param poll_ready  When true (default), poll for READY_TO_WRITE before each
+ *                    batch. Set to false for single-step callers (e.g.,
+ *                    AllToAllv) where each packet slot is used exactly once per
+ *                    call and the buffer is pre-initialized/ACK'd between
+ * calls. Multi-step callers that reuse buffer slots MUST leave this true.
  */
 __device__ __forceinline__ void ll128_send(
     const ThreadGroup& group,
@@ -59,7 +64,8 @@ __device__ __forceinline__ void ll128_send(
     size_t nbytes,
     Ll128Packet* remote_ll128_buf,
     int64_t flag_value,
-    const Timeout& timeout) {
+    const Timeout& timeout,
+    bool poll_ready = true) {
 #ifdef __CUDA_ARCH__
   auto warp = group.to_warp_group();
 
@@ -90,20 +96,29 @@ __device__ __forceinline__ void ll128_send(
     const size_t pkt_idx = base + group_idx;
     const bool packet_active = pkt_idx < total_packets;
 
-    // --- Poll: wait for remote flag == kLl128ReadyToWrite ---
-    if (packet_active) {
-      Ll128Packet& remote_pkt = remote_ll128_buf[pkt_idx];
-      while (remote_pkt.load_flag() != kLl128ReadyToWrite) {
-        TIMEOUT_TRAP_IF_EXPIRED(
-            timeout,
-            warp,
-            "ll128_send: waiting for READY_TO_WRITE on packet %llu (current=%lld)",
-            (unsigned long long)pkt_idx,
-            (long long)remote_pkt.load_flag());
+    // --- Poll: only flag-owning thread (lane 7) polls remote readiness ---
+    // Reduces NVLink polling traffic by 8x: 1 reader per packet instead of 8
+    // redundant readers. Other threads skip and converge at warp.sync().
+    //
+    // Skipped when poll_ready=false: single-step callers (e.g., AllToAllv with
+    // kStepId=1) use each packet slot exactly once per call. The buffer is
+    // initialized to READY_TO_WRITE and ACK'd back before the next kernel
+    // launch, so polling is redundant. This eliminates 1 NVLink volatile load
+    // + 1 warp.sync() per batch on the send path.
+    if (poll_ready) {
+      if (packet_active && lane_in_group == 7) {
+        Ll128Packet& remote_pkt = remote_ll128_buf[pkt_idx];
+        while (remote_pkt.load_flag() != kLl128ReadyToWrite) {
+          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+              timeout,
+              "ll128_send: waiting for READY_TO_WRITE on packet %llu (current=%lld)",
+              (unsigned long long)pkt_idx,
+              (long long)remote_pkt.load_flag());
+        }
       }
-    }
 
-    warp.sync();
+      warp.sync();
+    }
 
     // --- Write: volatile-store 16B per thread ---
     if (packet_active) {
@@ -150,6 +165,7 @@ __device__ __forceinline__ void ll128_send(
   (void)remote_ll128_buf;
   (void)flag_value;
   (void)timeout;
+  (void)poll_ready;
 #endif
 }
 
@@ -202,13 +218,13 @@ __device__ __forceinline__ void ll128_recv(
     const size_t pkt_idx = base + group_idx;
     const bool packet_active = pkt_idx < total_packets;
 
-    // --- Poll: wait for local flag == flag_value ---
-    if (packet_active) {
+    // --- Poll: only flag-owning thread (lane 7) polls local readiness ---
+    // Reduces L2 cache pressure by 8x: 1 reader per packet instead of 8.
+    if (packet_active && lane_in_group == 7) {
       Ll128Packet& local_pkt = local_ll128_buf[pkt_idx];
       while (local_pkt.load_flag() != flag_value) {
-        TIMEOUT_TRAP_IF_EXPIRED(
+        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
             timeout,
-            warp,
             "ll128_recv: waiting for flag_value=%lld on packet %llu (current=%lld)",
             (long long)flag_value,
             (unsigned long long)pkt_idx,
@@ -254,10 +270,15 @@ __device__ __forceinline__ void ll128_recv(
             *reinterpret_cast<uint64_t*>(payload_dst) = v0;
           }
         }
-
-        // ACK: write flag = kLl128ReadyToWrite
-        local_pkt.ack();
       }
+    }
+
+    // Batched ACK: ensure all 4 packets' data is consumed before ACKing.
+    // The sender sees ACKs in batches of 4, reducing poll stalls when
+    // reusing buffer slots. 4x reduction in ACK-to-poll feedback latency.
+    warp.sync();
+    if (packet_active && lane_in_group == 7) {
+      local_ll128_buf[pkt_idx].ack();
     }
   }
 #else
@@ -322,13 +343,12 @@ __device__ __forceinline__ void ll128_forward(
     const size_t pkt_idx = base + group_idx;
     const bool packet_active = pkt_idx < total_packets;
 
-    // --- Phase 1: Poll local — wait for predecessor's data ---
-    if (packet_active) {
+    // --- Phase 1: Poll local — only flag-owning thread (lane 7) polls ---
+    if (packet_active && lane_in_group == 7) {
       Ll128Packet& local_pkt = local_ll128_buf[pkt_idx];
       while (local_pkt.load_flag() != flag_value) {
-        TIMEOUT_TRAP_IF_EXPIRED(
+        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
             timeout,
-            warp,
             "ll128_forward: waiting for flag_value=%lld on packet %llu (current=%lld)",
             (long long)flag_value,
             (unsigned long long)pkt_idx,
@@ -345,12 +365,14 @@ __device__ __forceinline__ void ll128_forward(
       volatile uint64_t* local_slot =
           ll128_slot_ptr(local_ll128_buf[pkt_idx], lane_in_group);
       comms::device::load128_volatile_global(local_slot, v0, v1);
+    }
 
+    // Only flag-owning thread polls remote readiness
+    if (packet_active && lane_in_group == 7) {
       Ll128Packet& remote_pkt = remote_ll128_buf[pkt_idx];
       while (remote_pkt.load_flag() != kLl128ReadyToWrite) {
-        TIMEOUT_TRAP_IF_EXPIRED(
+        TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
             timeout,
-            warp,
             "ll128_forward: waiting for READY_TO_WRITE on remote packet %llu (current=%lld)",
             (unsigned long long)pkt_idx,
             (long long)remote_pkt.load_flag());
@@ -396,10 +418,14 @@ __device__ __forceinline__ void ll128_forward(
             *reinterpret_cast<uint64_t*>(payload_dst) = v0;
           }
         }
-
-        // ACK predecessor: write flag = kLl128ReadyToWrite
-        local_ll128_buf[pkt_idx].ack();
       }
+    }
+
+    // Batched ACK predecessor: ensure all 4 packets are forwarded and
+    // copied before ACKing. 4x reduction in per-packet feedback traffic.
+    warp.sync();
+    if (packet_active && lane_in_group == 7) {
+      local_ll128_buf[pkt_idx].ack();
     }
   }
 #else

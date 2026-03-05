@@ -9,6 +9,7 @@
 #include "comms/pipes/benchmarks/BenchmarkKernel.cuh"
 #include "comms/pipes/benchmarks/BenchmarkMacros.h"
 #include "comms/pipes/benchmarks/P2pNvlBenchmarkUtils.h"
+#include "comms/pipes/ll128/Ll128AutoTune.cuh"
 #include "comms/pipes/ll128/Ll128Packet.cuh"
 #include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
@@ -36,6 +37,27 @@ struct Ll128Config {
 // Threshold above which Simple gets its own transport with optimal chunking
 constexpr std::size_t kSimpleChunkThreshold = 8 * 1024;
 constexpr std::size_t kSimpleChunkSize = 8 * 1024;
+
+// Message sizes used by auto-tuned benchmarks (both uni- and bidirectional).
+static const std::vector<std::size_t> kAutoTuneMessageSizes = {
+    64,
+    256,
+    1024,
+    2 * 1024,
+    4 * 1024,
+    8 * 1024,
+    16 * 1024,
+    32 * 1024,
+    64 * 1024,
+    128 * 1024,
+    256 * 1024,
+    512 * 1024,
+    1024 * 1024,
+    2 * 1024 * 1024,
+    4 * 1024 * 1024,
+    8 * 1024 * 1024,
+    16 * 1024 * 1024,
+};
 
 // Result struct for 3-way comparison (NCCL vs Simple vs LL128)
 struct Ll128BenchmarkResult {
@@ -495,6 +517,206 @@ class P2pLl128BenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     return bw;
   }
 
+  void run_unidirectional_sweep(
+      int peerRank,
+      const std::vector<Ll128Config>& configs,
+      const std::string& title) {
+    std::vector<Ll128BenchmarkResult> results;
+
+    for (const auto& cfg : configs) {
+      Ll128BenchmarkResult result;
+      result.testName = cfg.name;
+      result.messageSize = cfg.nBytes;
+      result.numBlocks = cfg.numBlocks;
+      result.numThreads = cfg.numThreads;
+
+      result.ncclBandwidth =
+          runNcclBenchmarkCached(cfg.nBytes, result.ncclTime);
+
+      if (cfg.nBytes <= kSimpleChunkThreshold) {
+        comms::pipes::MultiPeerNvlTransportConfig p2pConfig{
+            .dataBufferSize = cfg.nBytes,
+            .chunkSize = cfg.nBytes,
+            .pipelineDepth = 2,
+            .ll128BufferSize = comms::pipes::ll128_buffer_size(cfg.nBytes),
+        };
+
+        comms::pipes::MultiPeerNvlTransport transport(
+            globalRank, worldSize, bootstrap, p2pConfig);
+        transport.exchange();
+
+        auto p2p = transport.getP2pTransportDevice(peerRank);
+
+        BenchmarkConfig benchConfig{
+            .nBytes = cfg.nBytes,
+            .stagedBufferSize = cfg.nBytes,
+            .numBlocks = cfg.numBlocks,
+            .numThreads = cfg.numThreads,
+            .pipelineDepth = 2,
+            .chunkSize = cfg.nBytes,
+            .name = cfg.name,
+        };
+
+        result.simpleBandwidth =
+            runSimpleBenchmark(p2p, benchConfig, result.simpleTime);
+        result.ll128Bandwidth =
+            runLl128Benchmark(p2p, benchConfig, result.ll128Time);
+      } else {
+        comms::pipes::MultiPeerNvlTransportConfig ll128Config{
+            .dataBufferSize = cfg.nBytes,
+            .chunkSize = cfg.nBytes,
+            .pipelineDepth = 2,
+            .ll128BufferSize = comms::pipes::ll128_buffer_size(cfg.nBytes),
+        };
+        comms::pipes::MultiPeerNvlTransport ll128Transport(
+            globalRank, worldSize, bootstrap, ll128Config);
+        ll128Transport.exchange();
+
+        comms::pipes::MultiPeerNvlTransportConfig simpleConfig{
+            .dataBufferSize = cfg.nBytes,
+            .chunkSize = kSimpleChunkSize,
+            .pipelineDepth = 2,
+        };
+        comms::pipes::MultiPeerNvlTransport simpleTransport(
+            globalRank, worldSize, bootstrap, simpleConfig);
+        simpleTransport.exchange();
+
+        auto ll128P2p = ll128Transport.getP2pTransportDevice(peerRank);
+        auto simpleP2p = simpleTransport.getP2pTransportDevice(peerRank);
+
+        BenchmarkConfig simpleBenchConfig{
+            .nBytes = cfg.nBytes,
+            .stagedBufferSize = cfg.nBytes,
+            .numBlocks = cfg.numBlocks,
+            .numThreads = cfg.numThreads,
+            .pipelineDepth = 2,
+            .chunkSize = kSimpleChunkSize,
+            .groupScope = SyncScope::BLOCK,
+            .name = cfg.name,
+        };
+
+        BenchmarkConfig ll128BenchConfig{
+            .nBytes = cfg.nBytes,
+            .stagedBufferSize = cfg.nBytes,
+            .numBlocks = cfg.numBlocks,
+            .numThreads = cfg.numThreads,
+            .pipelineDepth = 2,
+            .chunkSize = cfg.nBytes,
+            .name = cfg.name,
+        };
+
+        result.simpleBandwidth =
+            runSimpleBenchmark(simpleP2p, simpleBenchConfig, result.simpleTime);
+        result.ll128Bandwidth =
+            runLl128Benchmark(ll128P2p, ll128BenchConfig, result.ll128Time);
+      }
+
+      results.push_back(result);
+    }
+
+    printResultsTable(results, title);
+  }
+
+  void run_bidirectional_sweep(
+      int peerRank,
+      const std::vector<Ll128Config>& configs,
+      const std::string& title) {
+    std::vector<Ll128BenchmarkResult> results;
+
+    for (const auto& cfg : configs) {
+      Ll128BenchmarkResult result;
+      result.testName = cfg.name;
+      result.messageSize = cfg.nBytes;
+      result.numBlocks = cfg.numBlocks;
+      result.numThreads = cfg.numThreads;
+
+      result.ncclBandwidth =
+          runNcclBidirectionalBenchmarkCached(cfg.nBytes, result.ncclTime);
+
+      if (cfg.nBytes <= kSimpleChunkThreshold) {
+        comms::pipes::MultiPeerNvlTransportConfig p2pConfig{
+            .dataBufferSize = cfg.nBytes,
+            .chunkSize = cfg.nBytes,
+            .pipelineDepth = 2,
+            .ll128BufferSize = comms::pipes::ll128_buffer_size(cfg.nBytes),
+        };
+
+        comms::pipes::MultiPeerNvlTransport transport(
+            globalRank, worldSize, bootstrap, p2pConfig);
+        transport.exchange();
+
+        auto p2p = transport.getP2pTransportDevice(peerRank);
+
+        BenchmarkConfig benchConfig{
+            .nBytes = cfg.nBytes,
+            .stagedBufferSize = cfg.nBytes,
+            .numBlocks = cfg.numBlocks,
+            .numThreads = cfg.numThreads,
+            .pipelineDepth = 2,
+            .chunkSize = cfg.nBytes,
+            .name = cfg.name,
+        };
+
+        result.simpleBandwidth = runSimpleBidirectionalBenchmark(
+            p2p, benchConfig, result.simpleTime);
+        result.ll128Bandwidth =
+            runLl128BidirectionalBenchmark(p2p, benchConfig, result.ll128Time);
+      } else {
+        comms::pipes::MultiPeerNvlTransportConfig ll128Config{
+            .dataBufferSize = cfg.nBytes,
+            .chunkSize = cfg.nBytes,
+            .pipelineDepth = 2,
+            .ll128BufferSize = comms::pipes::ll128_buffer_size(cfg.nBytes),
+        };
+        comms::pipes::MultiPeerNvlTransport ll128Transport(
+            globalRank, worldSize, bootstrap, ll128Config);
+        ll128Transport.exchange();
+
+        comms::pipes::MultiPeerNvlTransportConfig simpleConfig{
+            .dataBufferSize = cfg.nBytes,
+            .chunkSize = kSimpleChunkSize,
+            .pipelineDepth = 2,
+        };
+        comms::pipes::MultiPeerNvlTransport simpleTransport(
+            globalRank, worldSize, bootstrap, simpleConfig);
+        simpleTransport.exchange();
+
+        auto ll128P2p = ll128Transport.getP2pTransportDevice(peerRank);
+        auto simpleP2p = simpleTransport.getP2pTransportDevice(peerRank);
+
+        BenchmarkConfig simpleBenchConfig{
+            .nBytes = cfg.nBytes,
+            .stagedBufferSize = cfg.nBytes,
+            .numBlocks = cfg.numBlocks,
+            .numThreads = cfg.numThreads,
+            .pipelineDepth = 2,
+            .chunkSize = kSimpleChunkSize,
+            .groupScope = SyncScope::BLOCK,
+            .name = cfg.name,
+        };
+
+        BenchmarkConfig ll128BenchConfig{
+            .nBytes = cfg.nBytes,
+            .stagedBufferSize = cfg.nBytes,
+            .numBlocks = cfg.numBlocks,
+            .numThreads = cfg.numThreads,
+            .pipelineDepth = 2,
+            .chunkSize = cfg.nBytes,
+            .name = cfg.name,
+        };
+
+        result.simpleBandwidth = runSimpleBidirectionalBenchmark(
+            simpleP2p, simpleBenchConfig, result.simpleTime);
+        result.ll128Bandwidth = runLl128BidirectionalBenchmark(
+            ll128P2p, ll128BenchConfig, result.ll128Time);
+      }
+
+      results.push_back(result);
+    }
+
+    printResultsTable(results, title);
+  }
+
   ncclComm_t ncclComm_{};
   cudaStream_t stream_{};
   std::unordered_map<std::size_t, std::pair<float, float>> ncclCache_;
@@ -519,132 +741,93 @@ TEST_F(P2pLl128BenchmarkFixture, UnidirectionalBenchmark) {
       {2 * 1024, 1, 128, "LL128_2KB"},
       {3 * 1024, 1, 128, "LL128_3KB"},
       {4 * 1024, 1, 128, "LL128_4KB"},
+      // 256-thread variants for small messages (validate Recommendation 2)
+      {64, 1, 256, "LL128_64B_256t"},
+      {128, 1, 256, "LL128_128B_256t"},
+      {256, 1, 256, "LL128_256B_256t"},
+      {512, 1, 256, "LL128_512B_256t"},
+      {1024, 1, 256, "LL128_1KB_256t"},
+      {2 * 1024, 1, 256, "LL128_2KB_256t"},
+      {3 * 1024, 1, 256, "LL128_3KB_256t"},
+      {4 * 1024, 1, 256, "LL128_4KB_256t"},
       // Crossover region
       {5 * 1024, 1, 128, "LL128_5KB"},
       {6 * 1024, 1, 128, "LL128_6KB"},
       {8 * 1024, 1, 128, "LL128_8KB"},
-      // Medium/large messages
-      {16 * 1024, 1, 128, "LL128_16KB"},
-      {32 * 1024, 2, 128, "LL128_32KB"},
-      {64 * 1024, 4, 128, "LL128_64KB"},
-      {128 * 1024, 4, 128, "LL128_128KB"},
-      {256 * 1024, 8, 128, "LL128_256KB"},
-      // Thread-count and block-count sweep
-      {32 * 1024, 2, 256, "LL128_32KB_256t"},
+      // Medium/large messages (256 threads default for ≥16KB)
+      {16 * 1024, 1, 256, "LL128_16KB"},
+      {32 * 1024, 2, 256, "LL128_32KB"},
+      {64 * 1024, 4, 256, "LL128_64KB"},
+      {128 * 1024, 4, 256, "LL128_128KB"},
+      {256 * 1024, 8, 256, "LL128_256KB"},
+      // Block-count sweep
       {32 * 1024, 4, 128, "LL128_32KB_4b"},
-      {64 * 1024, 4, 256, "LL128_64KB_256t"},
       {64 * 1024, 8, 128, "LL128_64KB_8b"},
       {128 * 1024, 8, 128, "LL128_128KB_8b"},
-      {128 * 1024, 8, 256, "LL128_128KB_256t"},
-      {256 * 1024, 8, 256, "LL128_256KB_256t"},
+      {128 * 1024, 8, 256, "LL128_128KB_8b256t"},
       {256 * 1024, 16, 128, "LL128_256KB_16b"},
       // Max warp configs
       {128 * 1024, 16, 256, "LL128_128KB_max"},
+      {128 * 1024, 32, 256, "LL128_128KB_32b"},
       {256 * 1024, 16, 256, "LL128_256KB_max"},
+      {256 * 1024, 32, 256, "LL128_256KB_32b"},
+      // Priority 1: Explore scaling ceiling (64b configs)
+      {128 * 1024, 64, 256, "LL128_128KB_64b"},
+      {256 * 1024, 64, 256, "LL128_256KB_64b"},
+      {512 * 1024, 32, 256, "LL128_512KB_32b"},
+      {512 * 1024, 64, 256, "LL128_512KB_64b"},
+      // Priority 2: Close the 8-16KB gap with multi-block configs
+      {8 * 1024, 2, 128, "LL128_8KB_2b"},
+      {8 * 1024, 2, 256, "LL128_8KB_2b256t"},
+      {16 * 1024, 2, 256, "LL128_16KB_2b"},
+      {16 * 1024, 4, 256, "LL128_16KB_4b"},
+      // Priority 3: Close the 32-64KB gap with higher block counts
+      {32 * 1024, 8, 256, "LL128_32KB_8b"}, // 64 warps, ~4 pkts/warp
+      {32 * 1024, 16, 256, "LL128_32KB_16b"}, // 128 warps, ~2 pkts/warp
+      {64 * 1024, 16, 256, "LL128_64KB_16b"}, // 128 warps, ~4 pkts/warp
+      {64 * 1024, 32, 256, "LL128_64KB_32b"}, // 256 warps, ~2 pkts/warp
+      // Priority 4: Explore ceiling at 512KB+ and 1MB
+      {512 * 1024, 128, 256, "LL128_512KB_128b"}, // 1024 warps, ~4 pkts/warp
+      {1024 * 1024, 64, 256, "LL128_1MB_64b"}, // 512 warps, ~17 pkts/warp
+      {1024 * 1024, 128, 256, "LL128_1MB_128b"}, // 1024 warps, ~9 pkts/warp
+      // Round 4 Priority 1: Explore 32-64KB ceiling (~1 pkt/warp regime)
+      {32 * 1024, 32, 256, "LL128_32KB_32b"}, // 256 warps, ~1 pkt/warp
+      {64 * 1024, 64, 256, "LL128_64KB_64b"}, // 512 warps, ~1 pkt/warp
+      // Round 4 Priority 2: 128KB 128b and 2MB scaling
+      {128 * 1024, 128, 256, "LL128_128KB_128b"}, // 1024 warps
+      {2 * 1024 * 1024, 128, 256, "LL128_2MB_128b"}, // verify ll128_buffer_size
+      // Round 5 Priority 1: Close large-message parallelism gap (reach ~2
+      // pkts/warp)
+      {256 * 1024, 128, 256, "LL128_256KB_128b"}, // 1024w, ~2 pkts/warp
+      {512 * 1024, 256, 256, "LL128_512KB_256b"}, // 2048w, ~2 pkts/warp
+      {1024 * 1024, 256, 256, "LL128_1MB_256b"}, // 2048w, ~4 pkts/warp
+      {1024 * 1024, 512, 256, "LL128_1MB_512b"}, // 4096w, ~2 pkts/warp
+      // Round 5 Priority 2: Validate auto-tuning formula at small sizes
+      {8 * 1024, 4, 256, "LL128_8KB_4b"}, // formula predicts ~4 blocks optimal
+      {16 * 1024,
+       8,
+       256,
+       "LL128_16KB_8b"}, // formula predicts ~8 blocks optimal
+      // Round 5 Priority 3: 2MB higher blocks + 4MB exploration
+      {2 * 1024 * 1024, 256, 256, "LL128_2MB_256b"}, // ~8 pkts/warp
+      {2 * 1024 * 1024, 512, 256, "LL128_2MB_512b"}, // ~4 pkts/warp
+      {4 * 1024 * 1024, 256, 256, "LL128_4MB_256b"}, // verify ll128_buffer_size
+      {4 * 1024 * 1024, 512, 256, "LL128_4MB_512b"}, // verify ll128_buffer_size
+      // Round 7: High-block-count unidirectional for large messages
+      {2 * 1024 * 1024, 1024, 256, "LL128_2MB_1024b"},
+      {4 * 1024 * 1024, 1024, 256, "LL128_4MB_1024b"},
+      // Round 8: Validate 4KB auto-tune + extend sweep to 8MB/16MB
+      {4 * 1024, 2, 256, "LL128_4KB_2b"},
+      {8 * 1024 * 1024, 512, 256, "LL128_8MB_512b"},
+      {8 * 1024 * 1024, 1024, 256, "LL128_8MB_1024b"},
+      {16 * 1024 * 1024, 512, 256, "LL128_16MB_512b"},
+      {16 * 1024 * 1024, 1024, 256, "LL128_16MB_1024b"},
   };
 
-  std::vector<Ll128BenchmarkResult> results;
-
-  for (const auto& cfg : configs) {
-    Ll128BenchmarkResult result;
-    result.testName = cfg.name;
-    result.messageSize = cfg.nBytes;
-    result.numBlocks = cfg.numBlocks;
-    result.numThreads = cfg.numThreads;
-
-    // Run NCCL benchmark (cached for sweep configs at the same size)
-    result.ncclBandwidth = runNcclBenchmarkCached(cfg.nBytes, result.ncclTime);
-
-    if (cfg.nBytes <= kSimpleChunkThreshold) {
-      // Small messages: single transport works for both Simple and LL128
-      comms::pipes::MultiPeerNvlTransportConfig p2pConfig{
-          .dataBufferSize = cfg.nBytes,
-          .chunkSize = cfg.nBytes,
-          .pipelineDepth = 2,
-          .ll128BufferSize = comms::pipes::ll128_buffer_size(cfg.nBytes),
-      };
-
-      comms::pipes::MultiPeerNvlTransport transport(
-          globalRank, worldSize, bootstrap, p2pConfig);
-      transport.exchange();
-
-      auto p2p = transport.getP2pTransportDevice(peerRank);
-
-      BenchmarkConfig benchConfig{
-          .nBytes = cfg.nBytes,
-          .stagedBufferSize = cfg.nBytes,
-          .numBlocks = cfg.numBlocks,
-          .numThreads = cfg.numThreads,
-          .pipelineDepth = 2,
-          .chunkSize = cfg.nBytes,
-          .name = cfg.name,
-      };
-
-      result.simpleBandwidth =
-          runSimpleBenchmark(p2p, benchConfig, result.simpleTime);
-      result.ll128Bandwidth =
-          runLl128Benchmark(p2p, benchConfig, result.ll128Time);
-    } else {
-      // Large messages: separate transports for fair Simple comparison.
-      // LL128 transport uses ll128BufferSize; Simple transport uses optimal
-      // chunking with BLOCK scope for better pipelining.
-
-      // LL128 transport (created first — exchange() order must match)
-      comms::pipes::MultiPeerNvlTransportConfig ll128Config{
-          .dataBufferSize = cfg.nBytes,
-          .chunkSize = cfg.nBytes,
-          .pipelineDepth = 2,
-          .ll128BufferSize = comms::pipes::ll128_buffer_size(cfg.nBytes),
-      };
-      comms::pipes::MultiPeerNvlTransport ll128Transport(
-          globalRank, worldSize, bootstrap, ll128Config);
-      ll128Transport.exchange();
-
-      // Simple transport with optimal chunking
-      comms::pipes::MultiPeerNvlTransportConfig simpleConfig{
-          .dataBufferSize = cfg.nBytes,
-          .chunkSize = kSimpleChunkSize,
-          .pipelineDepth = 2,
-      };
-      comms::pipes::MultiPeerNvlTransport simpleTransport(
-          globalRank, worldSize, bootstrap, simpleConfig);
-      simpleTransport.exchange();
-
-      auto ll128P2p = ll128Transport.getP2pTransportDevice(peerRank);
-      auto simpleP2p = simpleTransport.getP2pTransportDevice(peerRank);
-
-      BenchmarkConfig simpleBenchConfig{
-          .nBytes = cfg.nBytes,
-          .stagedBufferSize = cfg.nBytes,
-          .numBlocks = cfg.numBlocks,
-          .numThreads = cfg.numThreads,
-          .pipelineDepth = 2,
-          .chunkSize = kSimpleChunkSize,
-          .groupScope = SyncScope::BLOCK,
-          .name = cfg.name,
-      };
-
-      BenchmarkConfig ll128BenchConfig{
-          .nBytes = cfg.nBytes,
-          .stagedBufferSize = cfg.nBytes,
-          .numBlocks = cfg.numBlocks,
-          .numThreads = cfg.numThreads,
-          .pipelineDepth = 2,
-          .chunkSize = cfg.nBytes,
-          .name = cfg.name,
-      };
-
-      result.simpleBandwidth =
-          runSimpleBenchmark(simpleP2p, simpleBenchConfig, result.simpleTime);
-      result.ll128Bandwidth =
-          runLl128Benchmark(ll128P2p, ll128BenchConfig, result.ll128Time);
-    }
-
-    results.push_back(result);
-  }
-
-  printResultsTable(
-      results, "NCCL vs Simple vs LL128 UNIDIRECTIONAL Benchmark Results");
+  run_unidirectional_sweep(
+      peerRank,
+      configs,
+      "NCCL vs Simple vs LL128 UNIDIRECTIONAL Benchmark Results");
 }
 
 TEST_F(P2pLl128BenchmarkFixture, BidirectionalBenchmark) {
@@ -664,124 +847,147 @@ TEST_F(P2pLl128BenchmarkFixture, BidirectionalBenchmark) {
       {1024, 1, 128, "Bidir_1KB"},
       {2 * 1024, 1, 128, "Bidir_2KB"},
       {4 * 1024, 1, 128, "Bidir_4KB"},
+      // 256-thread variants for small messages (validate Recommendation 2)
+      {64, 1, 256, "Bidir_64B_256t"},
+      {128, 1, 256, "Bidir_128B_256t"},
+      {256, 1, 256, "Bidir_256B_256t"},
+      {512, 1, 256, "Bidir_512B_256t"},
+      {1024, 1, 256, "Bidir_1KB_256t"},
+      {2 * 1024, 1, 256, "Bidir_2KB_256t"},
+      {4 * 1024, 1, 256, "Bidir_4KB_256t"},
       // Crossover region
       {5 * 1024, 1, 128, "Bidir_5KB"},
       {6 * 1024, 1, 128, "Bidir_6KB"},
       {8 * 1024, 1, 128, "Bidir_8KB"},
-      // Medium/large messages
-      {32 * 1024, 2, 128, "Bidir_32KB"},
-      {64 * 1024, 4, 128, "Bidir_64KB"},
-      {128 * 1024, 4, 128, "Bidir_128KB"},
-      {256 * 1024, 8, 128, "Bidir_256KB"},
+      // Medium/large messages (256 threads default for ≥16KB)
+      {32 * 1024, 2, 256, "Bidir_32KB"},
+      {64 * 1024, 4, 256, "Bidir_64KB"},
+      {128 * 1024, 4, 256, "Bidir_128KB"},
+      {256 * 1024, 8, 256, "Bidir_256KB"},
       // More blocks (partition_interleaved halves warps per direction)
       {32 * 1024, 4, 128, "Bidir_32KB_4b"},
       {64 * 1024, 8, 128, "Bidir_64KB_8b"},
       {128 * 1024, 8, 128, "Bidir_128KB_8b"},
       {256 * 1024, 16, 128, "Bidir_256KB_16b"},
-      // 256-thread bidirectional sweep
+      // 256-thread bidirectional sweep (more blocks)
       {32 * 1024, 4, 256, "Bidir_32KB_256t"},
       {64 * 1024, 8, 256, "Bidir_64KB_256t"},
       {128 * 1024, 8, 256, "Bidir_128KB_256t"},
       {256 * 1024, 16, 256, "Bidir_256KB_256t"},
+      // Max warp configs
+      {128 * 1024, 16, 256, "Bidir_128KB_max"},
+      {256 * 1024, 32, 256, "Bidir_256KB_max"},
+      // Priority 1: Explore scaling ceiling
+      {128 * 1024, 32, 256, "Bidir_128KB_32b"},
+      {256 * 1024, 64, 256, "Bidir_256KB_64b"},
+      // Priority 2: Close 4-8KB bidir crossover gap
+      {4 * 1024, 2, 256, "Bidir_4KB_2b"},
+      {8 * 1024, 2, 256, "Bidir_8KB_2b"},
+      // Priority 3: Close 32-64KB bidir gap
+      {32 * 1024, 8, 256, "Bidir_32KB_8b"},
+      {64 * 1024, 16, 256, "Bidir_64KB_16b"},
+      // Priority 4: Bidir 512KB and 1MB coverage
+      {512 * 1024, 32, 256, "Bidir_512KB_32b"},
+      {512 * 1024, 64, 256, "Bidir_512KB_64b"},
+      {1024 * 1024, 64, 256, "Bidir_1MB_64b"},
+      {1024 * 1024, 128, 256, "Bidir_1MB_128b"},
+      // Round 4 Priority 1: Close bidir 5-6KB and 16KB gaps
+      {5 * 1024, 2, 256, "Bidir_5KB_2b"},
+      {6 * 1024, 2, 256, "Bidir_6KB_2b"},
+      {16 * 1024, 4, 256, "Bidir_16KB_4b"},
+      // Round 4 Priority 1: Complete 32-64KB bidir block-count sweep
+      {32 * 1024, 16, 256, "Bidir_32KB_16b"},
+      {32 * 1024, 32, 256, "Bidir_32KB_32b"},
+      {64 * 1024, 32, 256, "Bidir_64KB_32b"},
+      {64 * 1024, 64, 256, "Bidir_64KB_64b"},
+      // Round 4 Priority 2: 128KB ceiling and larger message scaling
+      {128 * 1024, 64, 256, "Bidir_128KB_64b"},
+      {128 * 1024, 128, 256, "Bidir_128KB_128b"},
+      {512 * 1024, 128, 256, "Bidir_512KB_128b"},
+      {2 * 1024 * 1024, 128, 256, "Bidir_2MB_128b"}, // verify ll128_buffer_size
+      // Round 5 Priority 1: Close large-message parallelism gap (reach ~2
+      // pkts/warp)
+      {256 * 1024, 128, 256, "Bidir_256KB_128b"}, // 1024w, ~2 pkts/warp
+      {256 * 1024, 256, 256, "Bidir_256KB_256b"}, // 2048w, past ceiling
+      {512 * 1024, 256, 256, "Bidir_512KB_256b"}, // 2048w, ~2 pkts/warp
+      {1024 * 1024, 256, 256, "Bidir_1MB_256b"}, // 2048w, ~4 pkts/warp
+      {1024 * 1024, 512, 256, "Bidir_1MB_512b"}, // 4096w, ~2 pkts/warp
+      // Round 5 Priority 2: Validate auto-tuning formula at small sizes
+      {8 * 1024, 4, 256, "Bidir_8KB_4b"}, // formula predicts ~4 blocks optimal
+      {16 * 1024,
+       8,
+       256,
+       "Bidir_16KB_8b"}, // formula predicts ~8 blocks optimal
+      // Round 5 Priority 3: 2MB higher blocks + 4MB exploration
+      {2 * 1024 * 1024, 256, 256, "Bidir_2MB_256b"}, // ~8 pkts/warp
+      {2 * 1024 * 1024, 512, 256, "Bidir_2MB_512b"}, // ~4 pkts/warp
+      {4 * 1024 * 1024, 256, 256, "Bidir_4MB_256b"}, // verify ll128_buffer_size
+      {4 * 1024 * 1024, 512, 256, "Bidir_4MB_512b"}, // verify ll128_buffer_size
+      // Round 5 Priority 4: Bidir ceiling confirmation
+      {32 * 1024, 64, 256, "Bidir_32KB_64b"}, // 32 per dir — past uni peak
+      {64 * 1024, 128, 256, "Bidir_64KB_128b"}, // 64 per dir — past uni peak
+      // Round 7: High-block-count bidirectional for large messages
+      {2 * 1024 * 1024, 1024, 256, "Bidir_2MB_1024b"},
+      {4 * 1024 * 1024, 1024, 256, "Bidir_4MB_1024b"},
+      // Round 8: Validate 1MB/1024b cascade + extend sweep to 8MB/16MB
+      {1024 * 1024, 1024, 256, "Bidir_1MB_1024b"},
+      {8 * 1024 * 1024, 512, 256, "Bidir_8MB_512b"},
+      {8 * 1024 * 1024, 1024, 256, "Bidir_8MB_1024b"},
+      {16 * 1024 * 1024, 512, 256, "Bidir_16MB_512b"},
+      {16 * 1024 * 1024, 1024, 256, "Bidir_16MB_1024b"},
+      // Round 9: Close bidir sweep coverage gaps
+      {4 * 1024, 4, 256, "Bidir_4KB_4b"}, // validate ATBi_4KB auto-tune
+      {8 * 1024, 8, 256, "Bidir_8KB_8b"}, // validate ATBi_8KB auto-tune
+      {512 * 1024,
+       512,
+       256,
+       "Bidir_512KB_512b"}, // validate ATBi_512KB (peak ratio)
   };
 
-  std::vector<Ll128BenchmarkResult> results;
+  run_bidirectional_sweep(
+      peerRank,
+      configs,
+      "NCCL vs Simple vs LL128 BIDIRECTIONAL Benchmark Results");
+}
 
-  for (const auto& cfg : configs) {
-    Ll128BenchmarkResult result;
-    result.testName = cfg.name;
-    result.messageSize = cfg.nBytes;
-    result.numBlocks = cfg.numBlocks;
-    result.numThreads = cfg.numThreads;
-
-    result.ncclBandwidth =
-        runNcclBidirectionalBenchmarkCached(cfg.nBytes, result.ncclTime);
-
-    if (cfg.nBytes <= kSimpleChunkThreshold) {
-      comms::pipes::MultiPeerNvlTransportConfig p2pConfig{
-          .dataBufferSize = cfg.nBytes,
-          .chunkSize = cfg.nBytes,
-          .pipelineDepth = 2,
-          .ll128BufferSize = comms::pipes::ll128_buffer_size(cfg.nBytes),
-      };
-
-      comms::pipes::MultiPeerNvlTransport transport(
-          globalRank, worldSize, bootstrap, p2pConfig);
-      transport.exchange();
-
-      auto p2p = transport.getP2pTransportDevice(peerRank);
-
-      BenchmarkConfig benchConfig{
-          .nBytes = cfg.nBytes,
-          .stagedBufferSize = cfg.nBytes,
-          .numBlocks = cfg.numBlocks,
-          .numThreads = cfg.numThreads,
-          .pipelineDepth = 2,
-          .chunkSize = cfg.nBytes,
-          .name = cfg.name,
-      };
-
-      result.simpleBandwidth =
-          runSimpleBidirectionalBenchmark(p2p, benchConfig, result.simpleTime);
-      result.ll128Bandwidth =
-          runLl128BidirectionalBenchmark(p2p, benchConfig, result.ll128Time);
-    } else {
-      // LL128 transport (created first — exchange() order must match)
-      comms::pipes::MultiPeerNvlTransportConfig ll128Config{
-          .dataBufferSize = cfg.nBytes,
-          .chunkSize = cfg.nBytes,
-          .pipelineDepth = 2,
-          .ll128BufferSize = comms::pipes::ll128_buffer_size(cfg.nBytes),
-      };
-      comms::pipes::MultiPeerNvlTransport ll128Transport(
-          globalRank, worldSize, bootstrap, ll128Config);
-      ll128Transport.exchange();
-
-      // Simple transport with optimal chunking
-      comms::pipes::MultiPeerNvlTransportConfig simpleConfig{
-          .dataBufferSize = cfg.nBytes,
-          .chunkSize = kSimpleChunkSize,
-          .pipelineDepth = 2,
-      };
-      comms::pipes::MultiPeerNvlTransport simpleTransport(
-          globalRank, worldSize, bootstrap, simpleConfig);
-      simpleTransport.exchange();
-
-      auto ll128P2p = ll128Transport.getP2pTransportDevice(peerRank);
-      auto simpleP2p = simpleTransport.getP2pTransportDevice(peerRank);
-
-      BenchmarkConfig simpleBenchConfig{
-          .nBytes = cfg.nBytes,
-          .stagedBufferSize = cfg.nBytes,
-          .numBlocks = cfg.numBlocks,
-          .numThreads = cfg.numThreads,
-          .pipelineDepth = 2,
-          .chunkSize = kSimpleChunkSize,
-          .groupScope = SyncScope::BLOCK,
-          .name = cfg.name,
-      };
-
-      BenchmarkConfig ll128BenchConfig{
-          .nBytes = cfg.nBytes,
-          .stagedBufferSize = cfg.nBytes,
-          .numBlocks = cfg.numBlocks,
-          .numThreads = cfg.numThreads,
-          .pipelineDepth = 2,
-          .chunkSize = cfg.nBytes,
-          .name = cfg.name,
-      };
-
-      result.simpleBandwidth = runSimpleBidirectionalBenchmark(
-          simpleP2p, simpleBenchConfig, result.simpleTime);
-      result.ll128Bandwidth = runLl128BidirectionalBenchmark(
-          ll128P2p, ll128BenchConfig, result.ll128Time);
-    }
-
-    results.push_back(result);
+TEST_F(P2pLl128BenchmarkFixture, AutoTunedBenchmark) {
+  if (worldSize != 2) {
+    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    return;
   }
 
-  printResultsTable(
-      results, "NCCL vs Simple vs LL128 BIDIRECTIONAL Benchmark Results");
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  std::vector<Ll128Config> configs;
+  for (auto nBytes : kAutoTuneMessageSizes) {
+    auto cfg = comms::pipes::ll128_auto_tune(nBytes);
+    configs.push_back(
+        {nBytes, cfg.numBlocks, cfg.numThreads, "AT_" + formatSize(nBytes)});
+  }
+
+  run_unidirectional_sweep(
+      peerRank, configs, "LL128 AUTO-TUNED Configuration Benchmark Results");
+}
+
+TEST_F(P2pLl128BenchmarkFixture, AutoTunedBidirectionalBenchmark) {
+  if (worldSize != 2) {
+    XLOGF(DBG1, "Skipping test: requires exactly 2 ranks, got {}", worldSize);
+    return;
+  }
+
+  int peerRank = (globalRank == 0) ? 1 : 0;
+
+  std::vector<Ll128Config> configs;
+  for (auto nBytes : kAutoTuneMessageSizes) {
+    auto cfg = comms::pipes::ll128_auto_tune_bidirectional(nBytes);
+    configs.push_back(
+        {nBytes, cfg.numBlocks, cfg.numThreads, "ATBi_" + formatSize(nBytes)});
+  }
+
+  run_bidirectional_sweep(
+      peerRank,
+      configs,
+      "LL128 AUTO-TUNED BIDIRECTIONAL Configuration Benchmark Results");
 }
 
 } // namespace comms::pipes::benchmark

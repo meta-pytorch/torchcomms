@@ -65,6 +65,53 @@ class Ll128OpsTestFixture : public ::testing::Test {
     }
   }
 
+  /// Run single-shot forward test: pre-populate local LL128 buffer from host,
+  /// call forward, verify dst payload and remote LL128 buffer flags.
+  void
+  run_forward_test(size_t nbytes, int num_blocks = 1, int block_size = 256) {
+    auto pattern = make_pattern(nbytes);
+    size_t ll128BufSize = ll128_buffer_size(nbytes);
+
+    DeviceBuffer dstBuffer(nbytes);
+    DeviceBuffer localLl128Buffer(ll128BufSize);
+    DeviceBuffer remoteLl128Buffer(ll128BufSize);
+
+    auto* dst_d = static_cast<char*>(dstBuffer.get());
+    auto* local_ll128 = static_cast<Ll128Packet*>(localLl128Buffer.get());
+    auto* remote_ll128 = static_cast<Ll128Packet*>(remoteLl128Buffer.get());
+
+    auto packed = pack_ll128_host(pattern, /*flag_value=*/1);
+    CUDACHECK_TEST(cudaMemcpy(
+        local_ll128, packed.data(), ll128BufSize, cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
+
+    test::test_ll128_forward(
+        dst_d, nbytes, local_ll128, remote_ll128, num_blocks, block_size);
+
+    // Verify dst payload matches source
+    std::vector<char> result(nbytes);
+    CUDACHECK_TEST(
+        cudaMemcpy(result.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
+    for (size_t i = 0; i < nbytes; ++i) {
+      ASSERT_EQ(result[i], pattern[i]) << "Forward: dst mismatch at byte " << i;
+    }
+
+    // Verify remote LL128 buffer flags are flag_value=1
+    std::vector<char> remote_host(ll128BufSize);
+    CUDACHECK_TEST(cudaMemcpy(
+        remote_host.data(),
+        remote_ll128,
+        ll128BufSize,
+        cudaMemcpyDeviceToHost));
+    size_t num_packets = ll128_num_packets(nbytes);
+    for (size_t p = 0; p < num_packets; ++p) {
+      int64_t flag = *reinterpret_cast<int64_t*>(
+          remote_host.data() + p * kLl128PacketSize + kLl128FlagOffset);
+      EXPECT_EQ(flag, 1) << "Remote packet " << p
+                         << " flag should be flag_value=1";
+    }
+  }
+
   /// Pack user data into LL128 packet format on the host, setting flags to
   /// flag_value. This simulates what a predecessor send would produce.
   std::vector<char> pack_ll128_host(
@@ -147,75 +194,131 @@ TEST_F(Ll128OpsTestFixture, SendRecv_MultiBlock_64KB) {
 // Forward — populate local LL128 from host, call forward, verify dst + remote
 // =============================================================================
 
+TEST_F(Ll128OpsTestFixture, Forward_112Bytes) {
+  run_forward_test(112);
+}
+
 TEST_F(Ll128OpsTestFixture, Forward_4KB) {
+  run_forward_test(4096);
+}
+
+TEST_F(Ll128OpsTestFixture, Forward_64KB) {
+  run_forward_test(65536);
+}
+
+TEST_F(Ll128OpsTestFixture, Forward_MultiBlock_64KB) {
+  run_forward_test(65536, /*num_blocks=*/8, /*block_size=*/256);
+}
+
+// =============================================================================
+// Forward — multi-step send→forward→recv pipeline
+// =============================================================================
+
+TEST_F(Ll128OpsTestFixture, Forward_MultiStep) {
   const size_t nbytes = 4096;
+  const int num_steps = 10;
   auto pattern = make_pattern(nbytes);
 
   size_t ll128BufSize = ll128_buffer_size(nbytes);
-  DeviceBuffer dstBuffer(nbytes);
-  DeviceBuffer localLl128Buffer(ll128BufSize);
-  DeviceBuffer remoteLl128Buffer(ll128BufSize);
+  DeviceBuffer srcBuffer(nbytes);
+  DeviceBuffer fwdDstBuffer(nbytes);
+  DeviceBuffer recvDstBuffer(nbytes);
+  DeviceBuffer ll128BufA(ll128BufSize);
+  DeviceBuffer ll128BufB(ll128BufSize);
 
-  auto* dst_d = static_cast<char*>(dstBuffer.get());
-  auto* local_ll128 = static_cast<Ll128Packet*>(localLl128Buffer.get());
-  auto* remote_ll128 = static_cast<Ll128Packet*>(remoteLl128Buffer.get());
+  auto* src_d = static_cast<char*>(srcBuffer.get());
+  auto* fwd_dst_d = static_cast<char*>(fwdDstBuffer.get());
+  auto* recv_dst_d = static_cast<char*>(recvDstBuffer.get());
+  auto* ll128_buf_a = static_cast<Ll128Packet*>(ll128BufA.get());
+  auto* ll128_buf_b = static_cast<Ll128Packet*>(ll128BufB.get());
 
-  // Pack payload into LL128 format with flag_value=1
-  auto packed = pack_ll128_host(pattern, /*flag_value=*/1);
-  CUDACHECK_TEST(cudaMemcpy(
-      local_ll128, packed.data(), ll128BufSize, cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
-
-  test::test_ll128_forward(dst_d, nbytes, local_ll128, remote_ll128, 1, 256);
-
-  // Verify dst has the correct payload
-  std::vector<char> result(nbytes);
   CUDACHECK_TEST(
-      cudaMemcpy(result.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
+      cudaMemcpy(src_d, pattern.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(fwd_dst_d, 0, nbytes));
+  CUDACHECK_TEST(cudaMemset(recv_dst_d, 0, nbytes));
 
+  test::test_ll128_multi_step_forward(
+      src_d,
+      fwd_dst_d,
+      recv_dst_d,
+      nbytes,
+      ll128_buf_a,
+      ll128_buf_b,
+      /*start_flag_value=*/1,
+      num_steps,
+      /*num_blocks=*/1,
+      /*block_size=*/256);
+
+  // Verify forwarder's local copy matches source
+  std::vector<char> fwd_result(nbytes);
+  CUDACHECK_TEST(
+      cudaMemcpy(fwd_result.data(), fwd_dst_d, nbytes, cudaMemcpyDeviceToHost));
   for (size_t i = 0; i < nbytes; ++i) {
-    ASSERT_EQ(result[i], pattern[i]) << "Forward: dst mismatch at byte " << i;
+    ASSERT_EQ(fwd_result[i], pattern[i])
+        << "Forward_MultiStep: fwd_dst mismatch at byte " << i;
   }
 
-  // Verify remote_ll128 has data with flag_value=1 flags
-  std::vector<char> remote_host(ll128BufSize);
+  // Verify receiver's output matches source
+  std::vector<char> recv_result(nbytes);
   CUDACHECK_TEST(cudaMemcpy(
-      remote_host.data(), remote_ll128, ll128BufSize, cudaMemcpyDeviceToHost));
-  size_t num_packets = ll128_num_packets(nbytes);
-  for (size_t p = 0; p < num_packets; ++p) {
-    int64_t flag = *reinterpret_cast<int64_t*>(
-        remote_host.data() + p * kLl128PacketSize + kLl128FlagOffset);
-    EXPECT_EQ(flag, 1) << "Remote packet " << p
-                       << " flag should be flag_value=1";
+      recv_result.data(), recv_dst_d, nbytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < nbytes; ++i) {
+    ASSERT_EQ(recv_result[i], pattern[i])
+        << "Forward_MultiStep: recv_dst mismatch at byte " << i;
   }
 }
 
-TEST_F(Ll128OpsTestFixture, Forward_112Bytes) {
-  const size_t nbytes = 112;
+TEST_F(Ll128OpsTestFixture, Forward_MultiStep_MultiBlock) {
+  const size_t nbytes = 65536;
+  const int num_steps = 10;
   auto pattern = make_pattern(nbytes);
 
   size_t ll128BufSize = ll128_buffer_size(nbytes);
-  DeviceBuffer dstBuffer(nbytes);
-  DeviceBuffer localLl128Buffer(ll128BufSize);
-  DeviceBuffer remoteLl128Buffer(ll128BufSize);
+  DeviceBuffer srcBuffer(nbytes);
+  DeviceBuffer fwdDstBuffer(nbytes);
+  DeviceBuffer recvDstBuffer(nbytes);
+  DeviceBuffer ll128BufA(ll128BufSize);
+  DeviceBuffer ll128BufB(ll128BufSize);
 
-  auto* dst_d = static_cast<char*>(dstBuffer.get());
-  auto* local_ll128 = static_cast<Ll128Packet*>(localLl128Buffer.get());
-  auto* remote_ll128 = static_cast<Ll128Packet*>(remoteLl128Buffer.get());
+  auto* src_d = static_cast<char*>(srcBuffer.get());
+  auto* fwd_dst_d = static_cast<char*>(fwdDstBuffer.get());
+  auto* recv_dst_d = static_cast<char*>(recvDstBuffer.get());
+  auto* ll128_buf_a = static_cast<Ll128Packet*>(ll128BufA.get());
+  auto* ll128_buf_b = static_cast<Ll128Packet*>(ll128BufB.get());
 
-  auto packed = pack_ll128_host(pattern, 1);
-  CUDACHECK_TEST(cudaMemcpy(
-      local_ll128, packed.data(), ll128BufSize, cudaMemcpyHostToDevice));
-  CUDACHECK_TEST(cudaMemset(dst_d, 0, nbytes));
-
-  test::test_ll128_forward(dst_d, nbytes, local_ll128, remote_ll128, 1, 256);
-
-  std::vector<char> result(nbytes);
   CUDACHECK_TEST(
-      cudaMemcpy(result.data(), dst_d, nbytes, cudaMemcpyDeviceToHost));
+      cudaMemcpy(src_d, pattern.data(), nbytes, cudaMemcpyHostToDevice));
+  CUDACHECK_TEST(cudaMemset(fwd_dst_d, 0, nbytes));
+  CUDACHECK_TEST(cudaMemset(recv_dst_d, 0, nbytes));
 
+  test::test_ll128_multi_step_forward(
+      src_d,
+      fwd_dst_d,
+      recv_dst_d,
+      nbytes,
+      ll128_buf_a,
+      ll128_buf_b,
+      /*start_flag_value=*/1,
+      num_steps,
+      /*num_blocks=*/3,
+      /*block_size=*/256);
+
+  // Verify forwarder's local copy matches source
+  std::vector<char> fwd_result(nbytes);
+  CUDACHECK_TEST(
+      cudaMemcpy(fwd_result.data(), fwd_dst_d, nbytes, cudaMemcpyDeviceToHost));
   for (size_t i = 0; i < nbytes; ++i) {
-    ASSERT_EQ(result[i], pattern[i]) << "Forward: dst mismatch at byte " << i;
+    ASSERT_EQ(fwd_result[i], pattern[i])
+        << "Forward_MultiStep_MultiBlock: fwd_dst mismatch at byte " << i;
+  }
+
+  // Verify receiver's output matches source
+  std::vector<char> recv_result(nbytes);
+  CUDACHECK_TEST(cudaMemcpy(
+      recv_result.data(), recv_dst_d, nbytes, cudaMemcpyDeviceToHost));
+  for (size_t i = 0; i < nbytes; ++i) {
+    ASSERT_EQ(recv_result[i], pattern[i])
+        << "Forward_MultiStep_MultiBlock: recv_dst mismatch at byte " << i;
   }
 }
 

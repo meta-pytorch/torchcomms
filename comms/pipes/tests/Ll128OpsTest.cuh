@@ -30,6 +30,22 @@ void test_ll128_forward(
     int num_blocks,
     int block_size);
 
+/// Test LL128 multi-step send→forward→recv pipeline.
+/// Sender writes to ll128_buf_a, forwarder reads from ll128_buf_a and
+/// forwards to ll128_buf_b (copying to fwd_dst), receiver reads from
+/// ll128_buf_b to recv_dst.
+void test_ll128_multi_step_forward(
+    const char* src_d,
+    char* fwd_dst_d,
+    char* recv_dst_d,
+    size_t nbytes,
+    comms::pipes::Ll128Packet* ll128_buf_a,
+    comms::pipes::Ll128Packet* ll128_buf_b,
+    int64_t start_flag_value,
+    int num_steps,
+    int num_blocks,
+    int block_size);
+
 /// Test LL128 multi-step send/recv: performs num_steps send/recv iterations
 /// on the same buffer with incrementing flag values.
 void test_ll128_multi_step_send_recv(
