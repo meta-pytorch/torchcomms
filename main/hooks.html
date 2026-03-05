@@ -8,6 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="generator" content="Docutils 0.18.1: http://docutils.sourceforge.net/" />
 
+    <meta property="article:modified_time" content="2026-02-24T05:41:04+00:00" />
     <title>Hooks &#8212; meta-pytorch/torchcomms main documentation</title>
   
   
@@ -52,6 +53,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+    <meta name="docbuild:last-update" content="Feb 24, 2026"/>
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/list.js/2.3.1/list.min.js"></script>
 <script>
@@ -188,6 +190,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
+    <meta name="docbuild:last-update" content="Feb 24, 2026"/>
 
   </head>
 
@@ -773,9 +776,9 @@ analysis tools.</p>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">json_trace</span> <span class="o">=</span> <span class="n">recorder</span><span class="o">.</span><span class="n">dump_json</span><span class="p">()</span>
 </pre></div>
 </div>
-<p>For testing, use isolated=True to create a separate FlightRecorder instance
+<p>For testing, use <code class="docutils literal notranslate"><span class="pre">isolated=True</span></code> to create a separate FlightRecorder instance
 that is not shared with other hooks:</p>
-<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">recorder</span> <span class="o">=</span> <span class="n">fr</span><span class="o">.</span><span class="n">FlightRecorderHook</span><span class="p">(</span><span class="n">max_entries</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">isolated</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">recorder</span> <span class="o">=</span> <span class="n">fr</span><span class="o">.</span><span class="n">FlightRecorderHook</span><span class="p">(</span><span class="n">max_entries</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">isolated</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
 </div>
 <dl class="py method">
@@ -996,6 +999,30 @@ torch.distributed.flight_recorder.</p>
 </li>
 </ul>
   </nav></div>
+    
+       <div class="sidebar-secondary-item">
+
+  
+  <div class="tocsection editthispage">
+    <a href="https://github.com/pytorch/meta-pytorch/torchcomms/edit/main/docs/source/hooks.rst">
+      <i class="fa-solid fa-pencil"></i>
+      
+      
+        
+          Edit on GitHub
+        
+      
+    </a>
+  </div>
+</div>
+    
+       <div class="sidebar-secondary-item">
+    <div class="tocsection sourcelink">
+      <a href="_sources/hooks.rst.txt">
+        <i class="fa-solid fa-file-lines"></i> Show Source
+      </a>
+    </div>
+</div>
     
 
 
