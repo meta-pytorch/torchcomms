@@ -14,7 +14,7 @@ namespace comms::pipes {
 WindowMemory::WindowMemory(
     int myRank,
     int nRanks,
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const WindowMemoryConfig& config,
     MemSharingMode memSharingMode)
     : myRank_(myRank),

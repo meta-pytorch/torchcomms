@@ -475,7 +475,7 @@ int MultipeerIbgdaTransport::peerIndexToRank(int peerIndex) const {
 MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     int myRank,
     int nRanks,
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultipeerIbgdaTransportConfig& config)
     : myRank_(myRank),
       nRanks_(nRanks),

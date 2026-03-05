@@ -6,12 +6,12 @@
 
 #include <gmock/gmock.h>
 
-#include "comms/ctran/interfaces/IBootstrap.h"
+#include "comms/common/bootstrap/IBootstrap.h"
 
 namespace comms::pipes::testing {
 
 /// GMock-based mock of IBootstrap for unit testing.
-class MockBootstrap : public ctran::bootstrap::IBootstrap {
+class MockBootstrap : public meta::comms::IBootstrap {
  public:
   MOCK_METHOD(
       folly::SemiFuture<int>,
