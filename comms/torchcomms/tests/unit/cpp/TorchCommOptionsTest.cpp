@@ -3,7 +3,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
-#include "comms/torchcomms/TorchCommUtils.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 
 using ::testing::_;
 using ::testing::DoAll;
