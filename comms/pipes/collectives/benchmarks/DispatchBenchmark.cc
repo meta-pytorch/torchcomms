@@ -15,10 +15,10 @@
 
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/MultiPeerNvlTransport.h"
-#include "comms/pipes/P2pSelfTransportDevice.cuh"
 #include "comms/pipes/Transport.cuh"
 #include "comms/pipes/collectives/Dispatchv.h"
 #include "comms/testinfra/BenchmarkTestFixture.h"
+#include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
@@ -194,32 +194,8 @@ class DispatchBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
         globalRank, nranks, bootstrap, transportConfig);
     transport.exchange();
 
-    // Create transport array on device
-    std::size_t transportsSize = nranks * sizeof(Transport);
-    std::vector<char> transportsHostBuffer(transportsSize);
-    for (int rank = 0; rank < nranks; rank++) {
-      Transport* slot = reinterpret_cast<Transport*>(
-          transportsHostBuffer.data() + rank * sizeof(Transport));
-      if (rank == globalRank) {
-        new (slot) Transport(P2pSelfTransportDevice());
-      } else {
-        new (slot) Transport(transport.getP2pTransportDevice(rank));
-      }
-    }
-
-    DeviceBuffer transportsDevice(transportsSize);
-    CUDA_CHECK(cudaMemcpy(
-        transportsDevice.get(),
-        transportsHostBuffer.data(),
-        transportsSize,
-        cudaMemcpyHostToDevice));
-
-    // Destroy host Transport objects
-    for (int rank = 0; rank < nranks; rank++) {
-      Transport* slot = reinterpret_cast<Transport*>(
-          transportsHostBuffer.data() + rank * sizeof(Transport));
-      slot->~Transport();
-    }
+    // Use preallocated transport array from MultiPeerNvlTransport
+    DeviceSpan<Transport> transports(transport.getTransportsArray(), nranks);
 
     // Benchmark timing
     CudaEvent start, stop;
@@ -235,8 +211,7 @@ class DispatchBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           DeviceSpan<std::size_t>(
               static_cast<std::size_t*>(outputChunkSizesPerRankDevice.get()),
               nranks * totalChunks),
-          DeviceSpan<Transport>(
-              static_cast<Transport*>(transportsDevice.get()), nranks),
+          transports,
           globalRank,
           sendBuffer.get(),
           DeviceSpan<const std::size_t>(
@@ -265,8 +240,7 @@ class DispatchBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           DeviceSpan<std::size_t>(
               static_cast<std::size_t*>(outputChunkSizesPerRankDevice.get()),
               nranks * totalChunks),
-          DeviceSpan<Transport>(
-              static_cast<Transport*>(transportsDevice.get()), nranks),
+          transports,
           globalRank,
           sendBuffer.get(),
           DeviceSpan<const std::size_t>(
@@ -400,32 +374,8 @@ class DispatchBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
         globalRank, nranks, bootstrap, transportConfig);
     transport.exchange();
 
-    // Create transport array on device
-    std::size_t transportsSize = nranks * sizeof(Transport);
-    std::vector<char> transportsHostBuffer(transportsSize);
-    for (int rank = 0; rank < nranks; rank++) {
-      Transport* slot = reinterpret_cast<Transport*>(
-          transportsHostBuffer.data() + rank * sizeof(Transport));
-      if (rank == globalRank) {
-        new (slot) Transport(P2pSelfTransportDevice());
-      } else {
-        new (slot) Transport(transport.getP2pTransportDevice(rank));
-      }
-    }
-
-    DeviceBuffer transportsDevice(transportsSize);
-    CUDA_CHECK(cudaMemcpy(
-        transportsDevice.get(),
-        transportsHostBuffer.data(),
-        transportsSize,
-        cudaMemcpyHostToDevice));
-
-    // Destroy host Transport objects
-    for (int rank = 0; rank < nranks; rank++) {
-      Transport* slot = reinterpret_cast<Transport*>(
-          transportsHostBuffer.data() + rank * sizeof(Transport));
-      slot->~Transport();
-    }
+    // Use preallocated transport array from MultiPeerNvlTransport
+    DeviceSpan<Transport> transports(transport.getTransportsArray(), nranks);
 
     // Benchmark timing
     CudaEvent start, stop;
@@ -441,8 +391,7 @@ class DispatchBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           DeviceSpan<std::size_t>(
               static_cast<std::size_t*>(outputChunkSizesPerRankDevice.get()),
               nranks * nranks),
-          DeviceSpan<Transport>(
-              static_cast<Transport*>(transportsDevice.get()), nranks),
+          transports,
           globalRank,
           sendBuffer.get(),
           DeviceSpan<const std::size_t>(
@@ -470,8 +419,7 @@ class DispatchBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
           DeviceSpan<std::size_t>(
               static_cast<std::size_t*>(outputChunkSizesPerRankDevice.get()),
               nranks * nranks),
-          DeviceSpan<Transport>(
-              static_cast<Transport*>(transportsDevice.get()), nranks),
+          transports,
           globalRank,
           sendBuffer.get(),
           DeviceSpan<const std::size_t>(
