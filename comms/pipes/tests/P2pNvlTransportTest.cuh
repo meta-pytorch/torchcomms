@@ -19,7 +19,7 @@ enum class GroupType {
 };
 
 void testSend(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* src_d,
     size_t nbytes,
     int numBlocks,
@@ -29,7 +29,7 @@ void testSend(
     cudaStream_t stream = nullptr);
 
 void testRecv(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_d,
     size_t nbytes,
     int numBlocks,
@@ -40,7 +40,7 @@ void testRecv(
 
 // Multiple sequential sends within a single kernel
 void testMultiSend(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* src_d,
     size_t nbytes,
     int numSends,
@@ -51,7 +51,7 @@ void testMultiSend(
 
 // Multiple sequential recvs within a single kernel
 void testMultiRecv(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_d,
     size_t nbytes,
     int numRecvs,
@@ -62,7 +62,7 @@ void testMultiRecv(
 
 // Send then recv within a single kernel (for pipelined bidirectional)
 void testSendRecv(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* send_d,
     void* recv_d,
     size_t nbytes,
@@ -73,7 +73,7 @@ void testSendRecv(
 
 // Recv then send within a single kernel (paired with testSendRecv)
 void testRecvSend(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* recv_d,
     void* send_d,
     size_t nbytes,
@@ -85,7 +85,7 @@ void testRecvSend(
 // Weighted partition send/recv - partitions groups according to weights
 // sendWeight:recvWeight controls the ratio of groups assigned to send vs recv
 void testWeightedSendRecv(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* send_d,
     void* recv_d,
     size_t nbytes,
@@ -98,7 +98,7 @@ void testWeightedSendRecv(
 // Weighted partition recv/send - partitions groups according to weights
 // recvWeight:sendWeight controls the ratio of groups assigned to recv vs send
 void testWeightedRecvSend(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* recv_d,
     void* send_d,
     size_t nbytes,
@@ -111,7 +111,7 @@ void testWeightedRecvSend(
 // Test put() - one-sided direct memory write to peer GPU and signal peer
 // Unlike send()/recv(), put() writes directly to dst_d without staging buffers
 void testPutWithSignal(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     char* dst_d, // Destination on peer GPU (must be NVLink-accessible)
     const char* src_d, // Source on local GPU
     uint64_t signal_id,
@@ -122,7 +122,7 @@ void testPutWithSignal(
 
 // Test wait() - one-sided wait for peer to write to dst_d and signal
 void testWait(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     CmpOp op,
     uint64_t signal_id,
     uint64_t expected,

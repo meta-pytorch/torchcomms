@@ -14,7 +14,7 @@ using comms::pipes::P2pNvlTransportDevice;
 
 // Test send_multiple: sends selected chunks from input buffer
 void testSendMultiple(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     const void* src_d,
     const size_t* chunk_sizes_d,
     size_t chunk_sizes_count,
@@ -25,7 +25,7 @@ void testSendMultiple(
 
 // Test recv_multiple: receives chunks into output buffer
 void testRecvMultiple(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     void* dst_d,
     size_t* chunk_sizes_d,
     size_t chunk_sizes_count,
