@@ -638,4 +638,108 @@ __global__ void testBlockClusterSyncKernel(
   }
 }
 
+// =============================================================================
+// to_warp_group() Tests
+// =============================================================================
+
+template <SyncScope Scope>
+__global__ void testToWarpGroupKernel(
+    uint32_t* groupIds,
+    uint32_t* totalGroupsOut,
+    uint32_t* errorCount) {
+  auto group = make_thread_group(Scope);
+  auto warp = group.to_warp_group();
+
+  uint32_t lane_id = threadIdx.x % kWarpSize;
+
+  // Device-side validation for every thread
+  if (warp.thread_id_in_group != lane_id) {
+    atomicAdd(errorCount, 1);
+  }
+  if (warp.group_size != kWarpSize) {
+    atomicAdd(errorCount, 1);
+  }
+  if (warp.scope != SyncScope::WARP) {
+    atomicAdd(errorCount, 1);
+  }
+
+  // Warp leaders write group_id and total_groups
+  if (warp.is_leader()) {
+    groupIds[warp.group_id] = warp.group_id;
+    totalGroupsOut[warp.group_id] = warp.total_groups;
+  }
+}
+
+void testToWarpGroup(
+    uint32_t* groupIds_d,
+    uint32_t* totalGroupsOut_d,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize,
+    SyncScope scope) {
+  if (scope == SyncScope::WARP) {
+    testToWarpGroupKernel<SyncScope::WARP>
+        <<<numBlocks, blockSize>>>(groupIds_d, totalGroupsOut_d, errorCount_d);
+  } else if (scope == SyncScope::BLOCK) {
+    testToWarpGroupKernel<SyncScope::BLOCK>
+        <<<numBlocks, blockSize>>>(groupIds_d, totalGroupsOut_d, errorCount_d);
+  } else if (scope == SyncScope::MULTIWARP) {
+    testToWarpGroupKernel<SyncScope::MULTIWARP>
+        <<<numBlocks, blockSize>>>(groupIds_d, totalGroupsOut_d, errorCount_d);
+  }
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
+// =============================================================================
+// partition() then to_warp_group() Tests
+// =============================================================================
+
+__global__ void testPartitionThenToWarpGroupKernel(
+    uint32_t* warpGroupIds,
+    uint32_t* warpTotalGroups,
+    uint32_t* partitionIds,
+    uint32_t numPartitions,
+    uint32_t* errorCount) {
+  auto block = make_block_group();
+  auto [partition_id, subgroup] = block.partition(numPartitions);
+  auto warp = subgroup.to_warp_group();
+
+  // Device-side validation for every thread
+  if (warp.scope != SyncScope::WARP) {
+    atomicAdd(errorCount, 1);
+  }
+  if (warp.group_size != kWarpSize) {
+    atomicAdd(errorCount, 1);
+  }
+
+  // Compute global warp index for output buffer indexing
+  uint32_t warps_per_block = blockDim.x / kWarpSize;
+  uint32_t warp_in_block = threadIdx.x / kWarpSize;
+  uint32_t global_warp = blockIdx.x * warps_per_block + warp_in_block;
+
+  // Warp leaders write results
+  if (warp.is_leader()) {
+    warpGroupIds[global_warp] = warp.group_id;
+    warpTotalGroups[global_warp] = warp.total_groups;
+    partitionIds[global_warp] = partition_id;
+  }
+}
+
+void testPartitionThenToWarpGroup(
+    uint32_t* warpGroupIds_d,
+    uint32_t* warpTotalGroups_d,
+    uint32_t* partitionIds_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize) {
+  testPartitionThenToWarpGroupKernel<<<numBlocks, blockSize>>>(
+      warpGroupIds_d,
+      warpTotalGroups_d,
+      partitionIds_d,
+      numPartitions,
+      errorCount_d);
+  PIPES_KERNEL_LAUNCH_CHECK();
+}
+
 } // namespace comms::pipes::test

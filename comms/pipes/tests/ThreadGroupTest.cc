@@ -2142,6 +2142,283 @@ INSTANTIATE_TEST_SUITE_P(
       return info.param.testName;
     });
 
+// =============================================================================
+// to_warp_group() Tests
+// =============================================================================
+
+struct ToWarpGroupTestParams {
+  int numBlocks;
+  int blockSize;
+  SyncScope scope;
+  std::string testName;
+};
+
+class ThreadGroupToWarpGroupTest
+    : public ThreadGroupTestFixture,
+      public ::testing::WithParamInterface<ToWarpGroupTestParams> {};
+
+TEST_P(ThreadGroupToWarpGroupTest, ToWarpGroupBasicConversion) {
+  const auto& params = GetParam();
+  const uint32_t totalWarps =
+      params.numBlocks * (params.blockSize / comms::device::kWarpSize);
+
+  DeviceBuffer groupIdsBuffer(totalWarps * sizeof(uint32_t));
+  DeviceBuffer totalGroupsOutBuffer(totalWarps * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto groupIds_d = static_cast<uint32_t*>(groupIdsBuffer.get());
+  auto totalGroupsOut_d = static_cast<uint32_t*>(totalGroupsOutBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  CUDACHECK_TEST(cudaMemset(groupIds_d, 0xFF, totalWarps * sizeof(uint32_t)));
+  CUDACHECK_TEST(
+      cudaMemset(totalGroupsOut_d, 0xFF, totalWarps * sizeof(uint32_t)));
+  CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+  test::testToWarpGroup(
+      groupIds_d,
+      totalGroupsOut_d,
+      errorCount_d,
+      params.numBlocks,
+      params.blockSize,
+      params.scope);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  uint32_t errorCount_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+  EXPECT_EQ(errorCount_h, 0)
+      << "to_warp_group() should produce correct thread_id_in_group, "
+         "group_size, and scope";
+
+  std::vector<uint32_t> groupIds_h(totalWarps);
+  std::vector<uint32_t> totalGroupsOut_h(totalWarps);
+
+  CUDACHECK_TEST(cudaMemcpy(
+      groupIds_h.data(),
+      groupIds_d,
+      totalWarps * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      totalGroupsOut_h.data(),
+      totalGroupsOut_d,
+      totalWarps * sizeof(uint32_t),
+      cudaMemcpyDeviceToHost));
+
+  for (uint32_t w = 0; w < totalWarps; w++) {
+    EXPECT_EQ(groupIds_h[w], w)
+        << "Warp " << w << " should have group_id == " << w;
+    EXPECT_EQ(totalGroupsOut_h[w], totalWarps)
+        << "Warp " << w << " should have total_groups == " << totalWarps;
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    ToWarpGroupConfigs,
+    ThreadGroupToWarpGroupTest,
+    ::testing::Values(
+        ToWarpGroupTestParams{
+            .numBlocks = 4,
+            .blockSize = 256,
+            .scope = SyncScope::WARP,
+            .testName = "Warp_Idempotent"},
+        ToWarpGroupTestParams{
+            .numBlocks = 4,
+            .blockSize = 256,
+            .scope = SyncScope::BLOCK,
+            .testName = "Block_256threads"},
+        ToWarpGroupTestParams{
+            .numBlocks = 8,
+            .blockSize = 128,
+            .scope = SyncScope::BLOCK,
+            .testName = "Block_128threads"},
+        ToWarpGroupTestParams{
+            .numBlocks = 4,
+            .blockSize = 32,
+            .scope = SyncScope::BLOCK,
+            .testName = "Block_32threads"},
+        ToWarpGroupTestParams{
+            .numBlocks = 4,
+            .blockSize = 256,
+            .scope = SyncScope::MULTIWARP,
+            .testName = "Multiwarp_256threads"},
+        ToWarpGroupTestParams{
+            .numBlocks = 2,
+            .blockSize = 512,
+            .scope = SyncScope::BLOCK,
+            .testName = "Block_512threads"},
+        ToWarpGroupTestParams{
+            .numBlocks = 2,
+            .blockSize = 512,
+            .scope = SyncScope::MULTIWARP,
+            .testName = "Multiwarp_512threads"}),
+    [](const ::testing::TestParamInfo<ToWarpGroupTestParams>& info) {
+      return info.param.testName;
+    });
+
+// =============================================================================
+// partition() then to_warp_group() Tests
+// =============================================================================
+
+TEST_F(ThreadGroupTestFixture, PartitionThenToWarpGroup) {
+  const int numBlocks = 4;
+  const int blockSize = 256;
+  const uint32_t warps_per_block = blockSize / comms::device::kWarpSize;
+  const uint32_t totalWarps = numBlocks * warps_per_block;
+
+  DeviceBuffer warpGroupIdsBuffer(totalWarps * sizeof(uint32_t));
+  DeviceBuffer warpTotalGroupsBuffer(totalWarps * sizeof(uint32_t));
+  DeviceBuffer partitionIdsBuffer(totalWarps * sizeof(uint32_t));
+  DeviceBuffer errorCountBuffer(sizeof(uint32_t));
+
+  auto warpGroupIds_d = static_cast<uint32_t*>(warpGroupIdsBuffer.get());
+  auto warpTotalGroups_d = static_cast<uint32_t*>(warpTotalGroupsBuffer.get());
+  auto partitionIds_d = static_cast<uint32_t*>(partitionIdsBuffer.get());
+  auto errorCount_d = static_cast<uint32_t*>(errorCountBuffer.get());
+
+  // Sub-case A: numPartitions=2
+  // Partition 0 gets blocks 0,1; partition 1 gets blocks 2,3
+  // Each partition: 2 blocks * 8 warps/block = 16 warps
+  {
+    SCOPED_TRACE("sub-case A: numPartitions=2");
+
+    CUDACHECK_TEST(
+        cudaMemset(warpGroupIds_d, 0xFF, totalWarps * sizeof(uint32_t)));
+    CUDACHECK_TEST(
+        cudaMemset(warpTotalGroups_d, 0xFF, totalWarps * sizeof(uint32_t)));
+    CUDACHECK_TEST(
+        cudaMemset(partitionIds_d, 0xFF, totalWarps * sizeof(uint32_t)));
+    CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+    const uint32_t numPartitions = 2;
+    test::testPartitionThenToWarpGroup(
+        warpGroupIds_d,
+        warpTotalGroups_d,
+        partitionIds_d,
+        numPartitions,
+        errorCount_d,
+        numBlocks,
+        blockSize);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    uint32_t errorCount_h = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(errorCount_h, 0)
+        << "partition then to_warp_group should not produce errors";
+
+    std::vector<uint32_t> warpGroupIds_h(totalWarps);
+    std::vector<uint32_t> warpTotalGroups_h(totalWarps);
+    std::vector<uint32_t> partitionIds_h(totalWarps);
+
+    CUDACHECK_TEST(cudaMemcpy(
+        warpGroupIds_h.data(),
+        warpGroupIds_d,
+        totalWarps * sizeof(uint32_t),
+        cudaMemcpyDeviceToHost));
+    CUDACHECK_TEST(cudaMemcpy(
+        warpTotalGroups_h.data(),
+        warpTotalGroups_d,
+        totalWarps * sizeof(uint32_t),
+        cudaMemcpyDeviceToHost));
+    CUDACHECK_TEST(cudaMemcpy(
+        partitionIds_h.data(),
+        partitionIds_d,
+        totalWarps * sizeof(uint32_t),
+        cudaMemcpyDeviceToHost));
+
+    // With 4 blocks and 2 partitions (even split):
+    // Partition 0 gets blocks 0,1 (warps 0-15), partition 1 gets blocks 2,3
+    // (warps 16-31)
+    // Each partition has 2 blocks * 8 warps/block = 16 warps
+    const uint32_t blocks_per_partition = numBlocks / numPartitions;
+    const uint32_t warps_per_partition = blocks_per_partition * warps_per_block;
+
+    for (uint32_t gw = 0; gw < totalWarps; gw++) {
+      uint32_t block_id = gw / warps_per_block;
+      uint32_t expected_pid = block_id / blocks_per_partition;
+
+      EXPECT_EQ(partitionIds_h[gw], expected_pid)
+          << "Global warp " << gw << " should be in partition " << expected_pid;
+      EXPECT_EQ(warpTotalGroups_h[gw], warps_per_partition)
+          << "Global warp " << gw
+          << " should have total_groups == " << warps_per_partition;
+      EXPECT_LT(warpGroupIds_h[gw], warps_per_partition)
+          << "Global warp " << gw << " should have group_id in [0, "
+          << warps_per_partition << ")";
+    }
+  }
+
+  // Sub-case B: numPartitions=4
+  // 1 block per partition = 8 warps per partition
+  {
+    SCOPED_TRACE("sub-case B: numPartitions=4");
+
+    CUDACHECK_TEST(
+        cudaMemset(warpGroupIds_d, 0xFF, totalWarps * sizeof(uint32_t)));
+    CUDACHECK_TEST(
+        cudaMemset(warpTotalGroups_d, 0xFF, totalWarps * sizeof(uint32_t)));
+    CUDACHECK_TEST(
+        cudaMemset(partitionIds_d, 0xFF, totalWarps * sizeof(uint32_t)));
+    CUDACHECK_TEST(cudaMemset(errorCount_d, 0, sizeof(uint32_t)));
+
+    const uint32_t numPartitions = 4;
+    test::testPartitionThenToWarpGroup(
+        warpGroupIds_d,
+        warpTotalGroups_d,
+        partitionIds_d,
+        numPartitions,
+        errorCount_d,
+        numBlocks,
+        blockSize);
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    uint32_t errorCount_h = 0;
+    CUDACHECK_TEST(cudaMemcpy(
+        &errorCount_h, errorCount_d, sizeof(uint32_t), cudaMemcpyDeviceToHost));
+    EXPECT_EQ(errorCount_h, 0)
+        << "partition then to_warp_group should not produce errors";
+
+    std::vector<uint32_t> warpGroupIds_h(totalWarps);
+    std::vector<uint32_t> warpTotalGroups_h(totalWarps);
+    std::vector<uint32_t> partitionIds_h(totalWarps);
+
+    CUDACHECK_TEST(cudaMemcpy(
+        warpGroupIds_h.data(),
+        warpGroupIds_d,
+        totalWarps * sizeof(uint32_t),
+        cudaMemcpyDeviceToHost));
+    CUDACHECK_TEST(cudaMemcpy(
+        warpTotalGroups_h.data(),
+        warpTotalGroups_d,
+        totalWarps * sizeof(uint32_t),
+        cudaMemcpyDeviceToHost));
+    CUDACHECK_TEST(cudaMemcpy(
+        partitionIds_h.data(),
+        partitionIds_d,
+        totalWarps * sizeof(uint32_t),
+        cudaMemcpyDeviceToHost));
+
+    // With 4 blocks and 4 partitions:
+    // 1 block per partition = 8 warps per partition
+    const uint32_t warps_per_partition = warps_per_block; // 8
+
+    for (uint32_t gw = 0; gw < totalWarps; gw++) {
+      uint32_t block_id = gw / warps_per_block;
+      uint32_t expected_pid = block_id;
+
+      EXPECT_EQ(partitionIds_h[gw], expected_pid)
+          << "Global warp " << gw << " should be in partition " << expected_pid;
+      EXPECT_EQ(warpTotalGroups_h[gw], warps_per_partition)
+          << "Global warp " << gw
+          << " should have total_groups == " << warps_per_partition;
+      EXPECT_LT(warpGroupIds_h[gw], warps_per_partition)
+          << "Global warp " << gw << " should have group_id in [0, "
+          << warps_per_partition << ")";
+    }
+  }
+}
+
 } // namespace comms::pipes
 
 int main(int argc, char* argv[]) {
