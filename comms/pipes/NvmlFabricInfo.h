@@ -2,6 +2,7 @@
 
 #pragma once
 
+#include <cstdio>
 #include <cstring>
 
 #include <dlfcn.h>
@@ -130,10 +131,25 @@ inline NvmlFabricInfo NvmlFabricInfo::query(const char* busId) {
   NvmlGpuFabricInfoV fabricInfo{};
   fabricInfo.version = kNvmlGpuFabricInfoV2;
   if (nvmlApi.getGpuFabricInfoV(nvmlDev, &fabricInfo) == NVML_SUCCESS &&
-      fabricInfo.state == NVML_GPU_FABRIC_STATE_COMPLETED) {
-    std::memcpy(info.clusterUuid, fabricInfo.clusterUuid, kUuidLen);
-    info.cliqueId = fabricInfo.cliqueId;
-    info.available = true;
+      fabricInfo.state == NVML_GPU_FABRIC_STATE_COMPLETED &&
+      fabricInfo.status == NVML_SUCCESS) {
+    // Only report as available if the UUID is non-zero. On non-MNNVL
+    // hardware (e.g. H100), NVML can return success + completed with an
+    // all-zero UUID, meaning the GPU is not in any NVLink fabric domain.
+    unsigned char zeros[kUuidLen]{};
+    if (std::memcmp(fabricInfo.clusterUuid, zeros, kUuidLen) != 0) {
+      std::memcpy(info.clusterUuid, fabricInfo.clusterUuid, kUuidLen);
+      info.cliqueId = fabricInfo.cliqueId;
+      info.available = true;
+    } else {
+      std::fprintf(
+          stderr,
+          "NvmlFabricInfo: NVML returned success with completed state "
+          "but all-zero clusterUuid for %s (cliqueId=%u); treating as "
+          "no fabric\n",
+          busId,
+          fabricInfo.cliqueId);
+    }
   }
 
   return info;
