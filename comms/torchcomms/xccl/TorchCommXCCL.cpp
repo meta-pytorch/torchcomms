@@ -2147,7 +2147,7 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
   std::unordered_set<int> rank_seen;
   for (int rank : ranks) {
     checkRankRange(rank);
-    if (rank_seen.find(rank) != rank_seen.end()) {
+    if (rank_seen.find(rank) != rank_seen.end()) [[unlikely]] {
       throw std::runtime_error(
           "Rank " + std::to_string(rank) + " appears multiple times in ranks");
     }
@@ -2164,7 +2164,7 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
   } else {
     // Check if current rank is in the non-empty list
     auto it = std::find(ranks.begin(), ranks.end(), rank_);
-    if (it == ranks.end()) {
+    if (it == ranks.end()) [[unlikely]] {
       // Current rank is not in the non-empty list - this is an error
       throw std::runtime_error(
           "Current rank " + std::to_string(rank_) +
@@ -2183,7 +2183,7 @@ std::shared_ptr<TorchCommBackend> TorchCommXCCL::split(
 
   onecclResult_t result =
       xccl_api_->commSplit(xccl_comm_, color, new_rank, &new_comm, &config);
-  if (result != onecclSuccess) {
+  if (result != onecclSuccess) [[unlikely]] {
     throw XCCLException(*xccl_api_, "XCCL split failed", result);
   }
 
