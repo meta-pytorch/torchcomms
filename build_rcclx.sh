@@ -6,7 +6,12 @@ set -x
 function do_cmake_build() {
   local source_dir="$1"
   local extra_flags="$2"
+  local ninja_bin
+  ninja_bin="$(which ninja)"
   cmake -G Ninja \
+    -DCMAKE_MAKE_PROGRAM="$ninja_bin" \
+    -DCMAKE_C_COMPILER="${CC:-$(which gcc)}" \
+    -DCMAKE_CXX_COMPILER="${CXX:-$(which g++)}" \
     -DCMAKE_PREFIX_PATH="$CMAKE_PREFIX_PATH" \
     -DCMAKE_INSTALL_PREFIX="$CMAKE_PREFIX_PATH" \
     -DCMAKE_MODULE_PATH="$CMAKE_PREFIX_PATH" \
