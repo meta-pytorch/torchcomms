@@ -1270,7 +1270,7 @@ ncclResult_t ncclCommWindowRegister(ncclComm_t comm, void* buff, size_t size, nc
     return ncclInvalidArgument;
   }
 
-  if (!comm->symmetricSupport) {
+  if (!comm->symmetricSupport && !ncclParamLocalRegister()) {
     return ncclSuccess;
   }
 
