@@ -815,6 +815,71 @@ ncclResult_t  ncclWinFree(ncclComm_t comm, ncclWindow_t win);
 __attribute__((deprecated("Use ncclCommWindowDeregister instead")))
 ncclResult_t pncclWinFree(ncclComm_t comm, ncclWindow_t win);
 
+/*
+ * One-side put operation from a local buffer to a remote peer's pre-allocated
+ * and registered buffer within a NCCL window.
+ */
+ncclResult_t ncclPutSignal(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+ncclResult_t pncclPutSignal(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+/*
+ * One-side put operation from a local buffer to a remote peer's pre-allocated
+ * and registered buffer within a NCCL window. Without signaling.
+ */
+ ncclResult_t ncclPut(
+    const void* originBuff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t targetDisp,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+/*
+ * One-side get operation from a remote peer's pre-allocated and registered buffer
+ * to a local buffer within a NCCL window. Without signaling.
+ */
+ ncclResult_t ncclGet(
+    void* targetBuff,
+    size_t targetDisp,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
+
+/*
+ * Wait for a signal from remote peer to complete the put operation.
+ */
+ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
+ncclResult_t pncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
+
+/*
+ * Wait for a signal given the local signal displacement, the signal value, and the comparison op.
+ */
+
+ncclResult_t ncclSignal(
+    size_t signalDisp,
+    uint64_t signalVal,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream
+);
+
 /* Return the unique hash of the communicator.
  * For all ranks in a given communicator, this hash will be the same.
  */
@@ -863,69 +928,6 @@ void dumpAlgoStat(ncclComm_t comm, std::unordered_map<std::string, std::unordere
 } // namespace ncclx::colltrace
 
 namespace ncclx {
-
-/*
- * Window-based RMA API (NCCLX extension)
- *
- * These functions use the window-based model with ncclWindow_t handles.
- * They are placed in the ncclx namespace to avoid conflicts with the
- * comm-based baseline API above.
- */
-
-/*
- * One-side put operation from a local buffer to a remote peer's pre-allocated
- * and registered buffer within a NCCL window.
- */
-ncclResult_t ncclPutSignal(
-    const void* originBuff,
-    size_t count,
-    ncclDataType_t datatype,
-    int peer,
-    size_t targetDisp,
-    ncclWindow_t win,
-    cudaStream_t stream);
-
-/*
- * One-side put operation from a local buffer to a remote peer's pre-allocated
- * and registered buffer within a NCCL window. Without signaling.
- */
-ncclResult_t ncclPut(
-    const void* originBuff,
-    size_t count,
-    ncclDataType_t datatype,
-    int peer,
-    size_t targetDisp,
-    ncclWindow_t win,
-    cudaStream_t stream);
-
-/*
- * One-side get operation from a remote peer's pre-allocated and registered buffer
- * to a local buffer within a NCCL window. Without signaling.
- */
-ncclResult_t ncclGet(
-    void* targetBuff,
-    size_t targetDisp,
-    size_t count,
-    ncclDataType_t datatype,
-    int peer,
-    ncclWindow_t win,
-    cudaStream_t stream);
-
-/*
- * Wait for a signal from remote peer to complete the put operation.
- */
-ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
-
-/*
- * Signal a remote peer given the local signal displacement and value.
- */
-ncclResult_t ncclSignal(
-    size_t signalDisp,
-    uint64_t signalVal,
-    int peer,
-    ncclWindow_t win,
-    cudaStream_t stream
-);
 
 /*
  * All-To-Allv Dynamic
