@@ -403,7 +403,7 @@ ncclResult_t DefaultNcclxApi::winPut(
     NcclxWindow win,
     cudaStream_t stream) {
   std::lock_guard<std::mutex> lock(api_mutex_);
-  return ncclx::ncclPut(
+  return ncclPut(
       originBuff, count, datatype, peer, targetOffsetNelems, win, stream);
 };
 
@@ -419,13 +419,13 @@ ncclResult_t DefaultNcclxApi::winSharedQuery(
 ncclResult_t
 DefaultNcclxApi::winSignal(int peer, NcclxWindow win, cudaStream_t stream) {
   std::lock_guard<std::mutex> lock(api_mutex_);
-  return ncclx::ncclSignal(peer, 0, peer, win, stream);
+  return ncclSignal(peer, 0, peer, win, stream);
 }
 
 ncclResult_t
 DefaultNcclxApi::winWaitSignal(int peer, NcclxWindow win, cudaStream_t stream) {
   std::lock_guard<std::mutex> lock(api_mutex_);
-  return ncclx::ncclWaitSignal(peer, win, stream);
+  return ncclWaitSignal(peer, win, stream);
 }
 
 ncclResult_t DefaultNcclxApi::winGetAttributes(
