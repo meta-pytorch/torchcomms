@@ -48,6 +48,11 @@ class RCCLException : public std::exception {
 #define RCCL_CHECK(rccl_api, nccl_comm, call, err_str)            \
   do {                                                            \
     ncclResult_t status = call;                                   \
+    /* Workaround: RCCL 2.27.7 on MI300X sets a sticky            \
+       hipErrorNotSupported (801) after certain operations that   \
+       hipDeviceSynchronize does not clear. Clear it here so      \
+       subsequent GPU operations are not poisoned. */             \
+    (void)hipGetLastError();                                      \
     if (status != ncclSuccess) {                                  \
       throw RCCLException(*rccl_api, err_str, status, nccl_comm); \
     }                                                             \
