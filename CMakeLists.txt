@@ -14,6 +14,7 @@ option(USE_RCCLX "Whether to build RCCLX or not" OFF)
 option(USE_XCCL "Whether to build XCCL or not" OFF)
 option(USE_TRANSPORT "Whether to build TRANSPORT or not" ON)
 option(USE_TRITON "Whether to build Triton device bitcode or not" OFF)
+option(USE_PIPES "Whether to link against libpipes.so for dispatch/combine" OFF)
 option(BUILD_TESTS "Whether to build tests or not" OFF)
 message(STATUS "  USE_NCCL : ${USE_NCCL}")
 message(STATUS "  USE_NCCLX : ${USE_NCCLX}")
@@ -23,6 +24,7 @@ message(STATUS "  USE_RCCLX  : ${USE_RCCLX}")
 message(STATUS "  USE_XCCL  : ${USE_XCCL}")
 message(STATUS "  USE_TRANSPORT  : ${USE_TRANSPORT}")
 message(STATUS "  USE_TRITON     : ${USE_TRITON}")
+message(STATUS "  USE_PIPES      : ${USE_PIPES}")
 message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 
 if(NOT DEFINED ENV{TORCH_CUDA_ARCH_LIST})
@@ -223,6 +225,23 @@ if (USE_TRITON)
     include(comms/torchcomms/triton/CMakeLists.txt)
 endif()
 include(comms/torchcomms/hooks/fr/CMakeLists.txt)
+
+# --- Pipes (optional: device API headers + libpipes.so) ---
+if (USE_PIPES)
+    # Existence check only -- pipes is header-only for
+    # torchcomms (no linking needed). The ncclx backend
+    # includes pipes device headers (CopyUtils.cuh etc.)
+    # but does not call into libpipes.so at link time;
+    # all pipes functionality is invoked at runtime by
+    # MCCL which links libpipes.so directly.
+    find_library(PIPES_LIBRARY pipes PATHS ${CONDA_LIB} REQUIRED)
+    message(STATUS "Found libpipes.so: ${PIPES_LIBRARY}")
+
+    # Make pipes headers available to the ncclx target (for CopyUtils.cuh etc.)
+    if(TARGET torchcomms_comms_ncclx)
+        target_compile_definitions(torchcomms_comms_ncclx PRIVATE USE_PIPES=1)
+    endif()
+endif()
 
 # Install targets to Python package structure
 install(TARGETS torchcomms
