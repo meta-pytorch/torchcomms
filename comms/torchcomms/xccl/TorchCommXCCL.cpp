@@ -95,6 +95,92 @@ static std::pair<T, ReduceOp> getMaybeScaledInputsAndNewOp(
   return {input, op};
 }
 
+static void copyFlattenedTensorToTensors(
+    const at::Tensor& flattened_tensor,
+    const std::vector<at::Tensor>& tensors,
+    const std::shared_ptr<XpuApi>& xpu_api,
+    const xpuStream_t& stream) {
+  if (!xpu_api) [[unlikely]] {
+    throw std::runtime_error("xpu_api must be provided");
+  }
+  if (tensors.empty()) [[unlikely]] {
+    throw std::runtime_error("tensors list is empty");
+  }
+  const auto numel = tensors[0].numel();
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    if (tensors[i].numel() != numel) [[unlikely]] {
+      throw std::runtime_error(
+          "All tensors must have the same number of elements");
+    }
+  }
+  if (static_cast<size_t>(flattened_tensor.numel()) != tensors.size() * numel)
+      [[unlikely]] {
+    throw std::runtime_error(
+        "Flattened tensor size does not match the total number of elements in tensors");
+  }
+
+  const size_t slice_bytes = numel * tensors[0].element_size();
+  const char* src_base = static_cast<const char*>(flattened_tensor.data_ptr());
+
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    char* dst_ptr = static_cast<char*>(tensors[i].data_ptr());
+    const char* src_ptr = src_base + i * slice_bytes;
+    XPU_CHECK(
+        xpu_api,
+        xpu_api->memcpyAsync(dst_ptr, src_ptr, slice_bytes, stream),
+        "memcpyAsync failed while unflattening tensor at index " +
+            std::to_string(i));
+  }
+}
+
+static at::Tensor createFlattenedTensor(
+    const std::vector<at::Tensor>& tensors,
+    const xpuStream_t& stream,
+    bool copy_data = false,
+    const std::shared_ptr<XpuApi>& xpu_api = nullptr) {
+  if (copy_data && !xpu_api) [[unlikely]] {
+    throw std::runtime_error("xpu_api must be provided when copy_data=true");
+  }
+  if (tensors.empty()) [[unlikely]] {
+    throw std::runtime_error("tensors list is empty");
+  }
+  const auto numel = tensors[0].numel();
+  const auto sizes = tensors[0].sizes();
+  for (size_t i = 0; i < tensors.size(); ++i) {
+    if (tensors[i].numel() != numel) [[unlikely]] {
+      throw std::runtime_error(
+          "All tensors must have the same number of elements");
+    }
+    if (tensors[i].sizes() != sizes) [[unlikely]] {
+      throw std::runtime_error("All tensors must have the same shape");
+    }
+  }
+
+  c10::StreamGuard guard(stream);
+
+  const auto& t = tensors[0];
+  auto shape = t.sizes().vec();
+  shape.insert(shape.begin(), static_cast<int64_t>(tensors.size()));
+
+  at::Tensor flattened_tensor = at::empty(shape, t.options());
+
+  if (copy_data && xpu_api) {
+    const size_t slice_bytes = numel * tensors[0].element_size();
+    char* dst_base = static_cast<char*>(flattened_tensor.data_ptr());
+    for (size_t i = 0; i < tensors.size(); ++i) {
+      const char* src_ptr = static_cast<const char*>(tensors[i].data_ptr());
+      char* dst_ptr = dst_base + i * slice_bytes;
+      XPU_CHECK(
+          xpu_api,
+          xpu_api->memcpyAsync(dst_ptr, src_ptr, slice_bytes, stream),
+          "memcpyAsync failed while flattening tensor at index " +
+              std::to_string(i));
+    }
+  }
+
+  return flattened_tensor;
+}
+
 onecclResult_t XCCLException::getResult() const {
   return result_;
 }
@@ -912,40 +998,22 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather(
     return work;
   }
 
-  onecclResult_t result = xccl_api_->groupStart();
-  if (result != onecclSuccess) [[unlikely]] {
+  at::Tensor output_flattened = createFlattenedTensor(tensor_list, stream);
+
+  onecclResult_t result = xccl_api_->allGather(
+      tensor.data_ptr(),
+      output_flattened.data_ptr(),
+      tensor.numel(),
+      getXcclDataType(tensor),
+      xccl_comm_,
+      stream);
+
+  if (result != onecclSuccess) {
     throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in all_gather", result);
+        *xccl_api_, "XCCL allGather failed in all_gather", result);
   }
 
-  // Use multiple broadcast operations for all_gather
-  for (int i = 0; i < comm_size_; ++i) {
-    result = xccl_api_->broadcast(
-        tensor.data_ptr(),
-        tensor_list[i].data_ptr(),
-        tensor.numel(),
-        getXcclDataType(tensor_list[i]),
-        i,
-        xccl_comm_,
-        stream);
-    if (result != onecclSuccess) [[unlikely]] {
-      onecclResult_t result_cleanup =
-          xccl_api_->groupEnd(); // clean up group before throwing
-      if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR)
-            << "XCCL groupEnd failed during error cleanup after broadcast failure in all_gather: "
-            << xccl_api_->getErrorString(result_cleanup);
-      }
-      throw XCCLException(
-          *xccl_api_, "XCCL broadcast failed in all_gather", result);
-    }
-  }
-
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in all_gather", result);
-  }
+  copyFlattenedTensorToTensors(output_flattened, tensor_list, xpu_api_, stream);
 
   work->recordEnd();
 
@@ -1168,47 +1236,23 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
   const auto [maybe_scaled_input_list, maybe_new_op] =
       getMaybeScaledInputsAndNewOp(input_list, op, stream);
 
-  onecclResult_t result = xccl_api_->groupStart();
+  at::Tensor input_flattened = createFlattenedTensor(
+      maybe_scaled_input_list, stream, /*copy_data */ true, xpu_api_);
+
+  const auto data_type = getXcclDataType(output);
+
+  onecclResult_t result = xccl_api_->reduceScatter(
+      input_flattened.data_ptr(),
+      output.data_ptr(),
+      output.numel(),
+      data_type,
+      getXcclReduceOp(maybe_new_op, xccl_comm_, data_type),
+      xccl_comm_,
+      stream);
+
   if (result != onecclSuccess) [[unlikely]] {
     throw XCCLException(
-        *xccl_api_, "XCCL groupStart failed in reduce_scatter", result);
-  }
-
-  for (int peer = 0; peer < comm_size_; ++peer) {
-    const auto dtype = getXcclDataType(maybe_scaled_input_list[peer]);
-    // We should only need to use output.data_ptr() but we get a hang in oneCCL
-    // when output is empty (nullptr). So we use input_tensor.data_ptr() for all
-    // non-root ranks.
-    void* out_ptr = (peer == rank_) ? output.data_ptr()
-                                    : maybe_scaled_input_list[peer].data_ptr();
-
-    result = xccl_api_->reduce(
-        maybe_scaled_input_list[peer].data_ptr(),
-        out_ptr,
-        maybe_scaled_input_list[peer].numel(),
-        dtype,
-        getXcclReduceOp(maybe_new_op, xccl_comm_, dtype),
-        peer,
-        xccl_comm_,
-        stream);
-
-    if (result != onecclSuccess) [[unlikely]] {
-      onecclResult_t result_cleanup =
-          xccl_api_->groupEnd(); // clean up group before throwing
-      if (result_cleanup != onecclSuccess) {
-        TC_LOG(ERROR)
-            << "XCCL groupEnd failed during error cleanup after reduce failure: "
-            << xccl_api_->getErrorString(result_cleanup);
-      }
-      throw XCCLException(
-          *xccl_api_, "XCCL reduce failed in reduce_scatter", result);
-    }
-  }
-
-  result = xccl_api_->groupEnd();
-  if (result != onecclSuccess) [[unlikely]] {
-    throw XCCLException(
-        *xccl_api_, "XCCL groupEnd failed in reduce_scatter", result);
+        *xccl_api_, "XCCL reduceScatter failed in reduce_scatter", result);
   }
 
   if (op == ReduceOp::RedOpType::AVG) {
