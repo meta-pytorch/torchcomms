@@ -78,6 +78,10 @@ NCCLDeviceBackend::Ptr NCCLDeviceBackend::create_device_window(
   // Set up ncclDevCommRequirements with GIN enabled using designated
   // initializers
   ncclDevCommRequirements reqs = {
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 29, 7)
+      .magic = NCCL_API_MAGIC,
+      .version = NCCL_VERSION_CODE,
+#endif
       .resourceRequirementsList =
           (signal_buffer_size > 0) ? &signal_resource_reqs : nullptr,
       .teamRequirementsList = nullptr,
