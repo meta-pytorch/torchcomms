@@ -291,6 +291,64 @@ struct ThreadGroup {
 #endif
   }
 
+  /**
+   * for_each_item_strided - Distribute work items using STRIDED
+   * assignment
+   *
+   * WHAT IT DOES:
+   * Assigns work items to thread-groups in a strided fashion.
+   * Group K processes items: K, K + total_groups, K + 2*total_groups, ...
+   * All threads in the group execute the lambda for each assigned work item.
+   *
+   * WHY STRIDED:
+   * This ensures that within a kernel, the same chunk/item is ALWAYS assigned
+   * to the same group. This is useful when groups maintain local state for
+   * specific chunks (e.g., ChunkState tracking). Unlike contiguous assignment
+   * where item-to-group mapping depends on total_items, strided provides
+   * a deterministic mapping: item K is always assigned to group (K %
+   * total_groups).
+   *
+   * MAPPING FORMULA:
+   * Group K processes items: {K + i * total_groups | i = 0, 1, 2, ...}
+   *
+   * EXAMPLE (2040 work items, 32 groups):
+   * =====================================
+   *
+   * Assignment:
+   *   Group 0:  [0, 32, 64, ..., 2016]      (64 items)
+   *   Group 1:  [1, 33, 65, ..., 2017]      (64 items)
+   *   ...
+   *   Group 7:  [7, 39, 71, ..., 2023]      (64 items)
+   *   Group 8:  [8, 40, 72, ..., 2024]      (63 items)  <- fewer items
+   *   ...
+   *   Group 31: [31, 63, 95, ..., 2015]     (63 items)
+   *
+   * COMPARISON WITH CONTIGUOUS:
+   * ===========================
+   *
+   * CONTIGUOUS (for_each_item_contiguous):
+   *   Group 0 → [0..63]   Group 1 → [64..127]
+   *   Item-to-group assignment depends on total_items
+   *
+   * STRIDED (this method):
+   *   Group 0 → [0,32,64,...]   Group 1 → [1,33,65,...]
+   *   Item K is ALWAYS assigned to Group (K % total_groups)
+   *
+   * @param total_items Total number of work items to distribute
+   * @param func Lambda: void(uint32_t item_id) - executed by all threads
+   */
+  template <typename Func>
+  __device__ inline void for_each_item_strided(
+      uint32_t total_items,
+      Func&& func) {
+#ifdef __CUDA_ARCH__
+    for (uint32_t item_id = group_id; item_id < total_items;
+         item_id += total_groups) {
+      func(item_id);
+    }
+#endif
+  }
+
   // Partition methods declared here, defined after PartitionResult
   __device__ inline struct PartitionResult partition(
       uint32_t num_partitions) const;
@@ -568,7 +626,7 @@ __device__ inline PartitionResult ThreadGroup::partition(
  * partition_interleaved - Interleaved partitioning (odd/even for 2 partitions)
  *
  * Unlike partition() which creates contiguous partitions (0-15, 16-31),
- * partition_interleaved distributes groups in a round-robin fashion:
+ * partition_interleaved distributes groups in a strided fashion:
  * - Partition 0: groups 0, 2, 4, 6, ... (even groups)
  * - Partition 1: groups 1, 3, 5, 7, ... (odd groups)
  *
