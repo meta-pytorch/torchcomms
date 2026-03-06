@@ -110,7 +110,7 @@ void testWeightedPartition(
     int blockSize,
     SyncScope scope);
 
-// Tests partition_interleaved(num_partitions) - round-robin partition
+// Tests partition_interleaved(num_partitions) - interleaved partition
 // Verifies:
 // - Each group gets partition_id = group_id % num_partitions
 // - subgroup.group_id is renumbered as group_id / num_partitions

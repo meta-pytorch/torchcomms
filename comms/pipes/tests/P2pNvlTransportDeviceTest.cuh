@@ -25,7 +25,7 @@ enum class GroupType {
 
 // Signal operation on a single transport (signals to its remote state)
 void testDeviceSignal(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t signalId,
     SignalOp op,
     uint64_t value,
@@ -35,7 +35,7 @@ void testDeviceSignal(
 
 // Wait operation on a single transport (waits on its local state)
 void testDeviceWaitSignal(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t signalId,
     CmpOp op,
     uint64_t value,
@@ -45,7 +45,7 @@ void testDeviceWaitSignal(
 
 // Signal then wait within a single kernel
 void testDeviceSignalThenWait(
-    P2pNvlTransportDevice p2p,
+    P2pNvlTransportDevice* p2p,
     uint64_t signalId,
     SignalOp signalOp,
     uint64_t signalValue,

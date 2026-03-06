@@ -22,22 +22,25 @@ using namespace meta::comms;
 
 namespace comms::pipes::tests {
 
-// Parameters for transfer size tests: (nbytes, dataBufferSize, chunkSize, name)
+// Parameters for transfer size tests: (nbytes, dataBufferSize, chunkSize, name,
+// useDualStateBuffer, useCudaGraph)
 struct TransferSizeParams {
   size_t nbytes;
   size_t dataBufferSize;
   size_t chunkSize;
+  bool useDualStateBuffer;
   bool useCudaGraph;
   std::string name;
 };
 
 // Parameters for group type tests: (groupType, numBlocks, blockSize,
-// blocksPerGroup, name)
+// blocksPerGroup, useDualStateBuffer, useCudaGraph, name)
 struct GroupTypeParams {
   test::GroupType groupType;
   int numBlocks;
   int blockSize;
   int blocksPerGroup;
+  bool useDualStateBuffer;
   bool useCudaGraph;
   std::string name;
 };
@@ -385,17 +388,19 @@ TEST_P(TransferSizeTestFixture, SendRecv) {
   const auto& params = GetParam();
   XLOGF(
       INFO,
-      "Running transfer size test: {} (nbytes={}, bufferSize={}, chunkSize={}, cudaGraph={})",
+      "Running transfer size test: {} (nbytes={}, bufferSize={}, chunkSize={}, dualState={}, cudaGraph={})",
       params.name,
       params.nbytes,
       params.dataBufferSize,
       params.chunkSize,
+      params.useDualStateBuffer,
       params.useCudaGraph);
 
   MultiPeerNvlTransportConfig config{
       .dataBufferSize = params.dataBufferSize,
       .chunkSize = params.chunkSize,
       .pipelineDepth = 4,
+      .useDualStateBuffer = params.useDualStateBuffer,
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
@@ -424,151 +429,174 @@ INSTANTIATE_TEST_SUITE_P(
     TransferSizeVariations,
     TransferSizeTestFixture,
     ::testing::Values(
+        // ===== SINGLE STATE BUFFER MODE (default) =====
         // Small transfer: nbytes < chunkSize
         TransferSizeParams{
             .nbytes = 512,
             .dataBufferSize = 4096,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "SmallTransfer_LessThanChunk"},
+            .name = "SmallTransfer_LessThanChunk_SingleState"},
         TransferSizeParams{
             .nbytes = 512,
             .dataBufferSize = 4096,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "SmallTransfer_LessThanChunk"},
+            .name = "SmallTransfer_LessThanChunk_SingleState"},
         // Single chunk: nbytes == chunkSize
         TransferSizeParams{
             .nbytes = 1024,
             .dataBufferSize = 4096,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "SingleChunk_ExactMatch"},
+            .name = "SingleChunk_ExactMatch_SingleState"},
         TransferSizeParams{
             .nbytes = 1024,
             .dataBufferSize = 4096,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "SingleChunk_ExactMatch"},
+            .name = "SingleChunk_ExactMatch_SingleState"},
         // Transfer not aligned to chunk size
         TransferSizeParams{
             .nbytes = 1000,
             .dataBufferSize = 4096,
             .chunkSize = 256,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "UnalignedToChunk"},
+            .name = "UnalignedToChunk_SingleState"},
         TransferSizeParams{
             .nbytes = 1000,
             .dataBufferSize = 4096,
             .chunkSize = 256,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "UnalignedToChunk"},
+            .name = "UnalignedToChunk_SingleState"},
         // Transfer not aligned to vector size (16 bytes)
         TransferSizeParams{
             .nbytes = 1000,
             .dataBufferSize = 4096,
             .chunkSize = 256,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "NonVectorAligned_1000bytes"},
+            .name = "NonVectorAligned_1000bytes_SingleState"},
         TransferSizeParams{
             .nbytes = 1000,
             .dataBufferSize = 4096,
             .chunkSize = 256,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "NonVectorAligned_1000bytes"},
+            .name = "NonVectorAligned_1000bytes_SingleState"},
         // Another non-vector-aligned size
         TransferSizeParams{
             .nbytes = 100,
             .dataBufferSize = 1024,
             .chunkSize = 64,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "NonVectorAligned_100bytes"},
+            .name = "NonVectorAligned_100bytes_SingleState"},
         TransferSizeParams{
             .nbytes = 100,
             .dataBufferSize = 1024,
             .chunkSize = 64,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "NonVectorAligned_100bytes"},
+            .name = "NonVectorAligned_100bytes_SingleState"},
         // Transfer exactly equals buffer size (single step)
         TransferSizeParams{
             .nbytes = 4096,
             .dataBufferSize = 4096,
             .chunkSize = 256,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "ExactBufferSize"},
+            .name = "ExactBufferSize_SingleState"},
         TransferSizeParams{
             .nbytes = 4096,
             .dataBufferSize = 4096,
             .chunkSize = 256,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "ExactBufferSize"},
+            .name = "ExactBufferSize_SingleState"},
         // Multiple steps: transfer > buffer size
         TransferSizeParams{
             .nbytes = 16 * 1024,
             .dataBufferSize = 4096,
             .chunkSize = 256,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "MultipleSteps_4x"},
+            .name = "MultipleSteps_4x_SingleState"},
         TransferSizeParams{
             .nbytes = 16 * 1024,
             .dataBufferSize = 4096,
             .chunkSize = 256,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "MultipleSteps_4x"},
+            .name = "MultipleSteps_4x_SingleState"},
         // Large transfer with multiple steps
         TransferSizeParams{
             .nbytes = 4 * 1024 * 1024,
             .dataBufferSize = 1024 * 1024,
             .chunkSize = 4096,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "LargeMultiStep_4MB"},
+            .name = "LargeMultiStep_4MB_SingleState"},
         TransferSizeParams{
             .nbytes = 4 * 1024 * 1024,
             .dataBufferSize = 1024 * 1024,
             .chunkSize = 4096,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "LargeMultiStep_4MB"},
+            .name = "LargeMultiStep_4MB_SingleState"},
         // Very large transfer (64MB with 8MB buffer = 8 steps)
         TransferSizeParams{
             .nbytes = 64 * 1024 * 1024,
             .dataBufferSize = 8 * 1024 * 1024,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "VeryLargeMultiStep_64MB"},
+            .name = "VeryLargeMultiStep_64MB_SingleState"},
         TransferSizeParams{
             .nbytes = 64 * 1024 * 1024,
             .dataBufferSize = 8 * 1024 * 1024,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "VeryLargeMultiStep_64MB"},
+            .name = "VeryLargeMultiStep_64MB_SingleState"},
         // Edge case: stepBytes exactly divisible by chunkSize (no partial
         // chunk) Tests that we don't process any 0-byte chunks
         TransferSizeParams{
             .nbytes = 4096,
             .dataBufferSize = 4096,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "ExactChunkBoundary_4Chunks"},
+            .name = "ExactChunkBoundary_4Chunks_SingleState"},
         TransferSizeParams{
             .nbytes = 4096,
             .dataBufferSize = 4096,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "ExactChunkBoundary_4Chunks"},
+            .name = "ExactChunkBoundary_4Chunks_SingleState"},
         // Edge case: last chunk has minimal bytes (1 byte remainder)
         // stepBytes=4097, chunkSize=1024 → 5 chunks, last chunk = 1 byte
         TransferSizeParams{
             .nbytes = 4097,
             .dataBufferSize = 8192,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "MinimalLastChunk_1Byte"},
+            .name = "MinimalLastChunk_1Byte_SingleState"},
         TransferSizeParams{
             .nbytes = 4097,
             .dataBufferSize = 8192,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "MinimalLastChunk_1Byte"},
+            .name = "MinimalLastChunk_1Byte_SingleState"},
         // Edge case: multiple steps where each step ends exactly on chunk
         // boundary 8KB transfer, 4KB buffer, 1KB chunks → 2 steps × 4 chunks
         // each
@@ -576,28 +604,124 @@ INSTANTIATE_TEST_SUITE_P(
             .nbytes = 8 * 1024,
             .dataBufferSize = 4 * 1024,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "MultiStep_ExactChunkBoundaries"},
+            .name = "MultiStep_ExactChunkBoundaries_SingleState"},
         TransferSizeParams{
             .nbytes = 8 * 1024,
             .dataBufferSize = 4 * 1024,
             .chunkSize = 1024,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "MultiStep_ExactChunkBoundaries"},
+            .name = "MultiStep_ExactChunkBoundaries_SingleState"},
         // Edge case: chunkSize larger than stepBytes
         // Forces single chunk per step with partial fill
         TransferSizeParams{
             .nbytes = 2048,
             .dataBufferSize = 1024,
             .chunkSize = 2048,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "ChunkLargerThanStep"},
+            .name = "ChunkLargerThanStep_SingleState"},
         TransferSizeParams{
             .nbytes = 2048,
             .dataBufferSize = 1024,
             .chunkSize = 2048,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "ChunkLargerThanStep"}),
+            .name = "ChunkLargerThanStep_SingleState"},
+
+        // ===== DUAL STATE BUFFER MODE =====
+        // Small transfer: nbytes < chunkSize
+        TransferSizeParams{
+            .nbytes = 512,
+            .dataBufferSize = 4096,
+            .chunkSize = 1024,
+            .useDualStateBuffer = true,
+            .useCudaGraph = false,
+            .name = "SmallTransfer_LessThanChunk_DualState"},
+        TransferSizeParams{
+            .nbytes = 512,
+            .dataBufferSize = 4096,
+            .chunkSize = 1024,
+            .useDualStateBuffer = true,
+            .useCudaGraph = true,
+            .name = "SmallTransfer_LessThanChunk_DualState"},
+        // Single chunk: nbytes == chunkSize
+        TransferSizeParams{
+            .nbytes = 1024,
+            .dataBufferSize = 4096,
+            .chunkSize = 1024,
+            .useDualStateBuffer = true,
+            .useCudaGraph = false,
+            .name = "SingleChunk_ExactMatch_DualState"},
+        TransferSizeParams{
+            .nbytes = 1024,
+            .dataBufferSize = 4096,
+            .chunkSize = 1024,
+            .useDualStateBuffer = true,
+            .useCudaGraph = true,
+            .name = "SingleChunk_ExactMatch_DualState"},
+        // Transfer not aligned to chunk size
+        TransferSizeParams{
+            .nbytes = 1000,
+            .dataBufferSize = 4096,
+            .chunkSize = 256,
+            .useDualStateBuffer = true,
+            .useCudaGraph = false,
+            .name = "UnalignedToChunk_DualState"},
+        TransferSizeParams{
+            .nbytes = 1000,
+            .dataBufferSize = 4096,
+            .chunkSize = 256,
+            .useDualStateBuffer = true,
+            .useCudaGraph = true,
+            .name = "UnalignedToChunk_DualState"},
+        // Multiple steps: transfer > buffer size
+        TransferSizeParams{
+            .nbytes = 16 * 1024,
+            .dataBufferSize = 4096,
+            .chunkSize = 256,
+            .useDualStateBuffer = true,
+            .useCudaGraph = false,
+            .name = "MultipleSteps_4x_DualState"},
+        TransferSizeParams{
+            .nbytes = 16 * 1024,
+            .dataBufferSize = 4096,
+            .chunkSize = 256,
+            .useDualStateBuffer = true,
+            .useCudaGraph = true,
+            .name = "MultipleSteps_4x_DualState"},
+        // Large transfer with multiple steps
+        TransferSizeParams{
+            .nbytes = 4 * 1024 * 1024,
+            .dataBufferSize = 1024 * 1024,
+            .chunkSize = 4096,
+            .useDualStateBuffer = true,
+            .useCudaGraph = false,
+            .name = "LargeMultiStep_4MB_DualState"},
+        TransferSizeParams{
+            .nbytes = 4 * 1024 * 1024,
+            .dataBufferSize = 1024 * 1024,
+            .chunkSize = 4096,
+            .useDualStateBuffer = true,
+            .useCudaGraph = true,
+            .name = "LargeMultiStep_4MB_DualState"},
+        // Very large transfer (64MB with 8MB buffer = 8 steps)
+        TransferSizeParams{
+            .nbytes = 64 * 1024 * 1024,
+            .dataBufferSize = 8 * 1024 * 1024,
+            .chunkSize = 1024,
+            .useDualStateBuffer = true,
+            .useCudaGraph = false,
+            .name = "VeryLargeMultiStep_64MB_DualState"},
+        TransferSizeParams{
+            .nbytes = 64 * 1024 * 1024,
+            .dataBufferSize = 8 * 1024 * 1024,
+            .chunkSize = 1024,
+            .useDualStateBuffer = true,
+            .useCudaGraph = true,
+            .name = "VeryLargeMultiStep_64MB_DualState"}),
     transferSizeParamName);
 
 // =============================================================================
@@ -623,10 +747,11 @@ TEST_P(GroupTypeTestFixture, SendRecv) {
   const auto& params = GetParam();
   XLOGF(
       INFO,
-      "Running group type test: {} (numBlocks={}, blockSize={}, cudaGraph={})",
+      "Running group type test: {} (numBlocks={}, blockSize={}, dualState={}, cudaGraph={})",
       params.name,
       params.numBlocks,
       params.blockSize,
+      params.useDualStateBuffer,
       params.useCudaGraph);
 
   const size_t dataBufferSize = 1024 * 1024; // 1MB staging buffer
@@ -635,6 +760,7 @@ TEST_P(GroupTypeTestFixture, SendRecv) {
       .dataBufferSize = dataBufferSize,
       .chunkSize = 1024,
       .pipelineDepth = 4,
+      .useDualStateBuffer = params.useDualStateBuffer,
   };
 
   TransportTestHelper helper(globalRank, numRanks, localRank, config);
@@ -660,78 +786,117 @@ INSTANTIATE_TEST_SUITE_P(
     GroupTypeVariations,
     GroupTypeTestFixture,
     ::testing::Values(
+        // ===== SINGLE STATE BUFFER MODE (default) =====
         // Warp-based groups (32 threads per group)
         GroupTypeParams{
             .groupType = test::GroupType::WARP,
             .numBlocks = 4,
             .blockSize = 128,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "Warp_4Blocks_128Threads"},
+            .name = "Warp_4Blocks_128Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::WARP,
             .numBlocks = 4,
             .blockSize = 128,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "Warp_4Blocks_128Threads"},
+            .name = "Warp_4Blocks_128Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::WARP,
             .numBlocks = 8,
             .blockSize = 256,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "Warp_8Blocks_256Threads"},
+            .name = "Warp_8Blocks_256Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::WARP,
             .numBlocks = 8,
             .blockSize = 256,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "Warp_8Blocks_256Threads"},
+            .name = "Warp_8Blocks_256Threads_SingleState"},
         // Block-based groups (all threads in block form one group)
         GroupTypeParams{
             .groupType = test::GroupType::BLOCK,
             .numBlocks = 4,
             .blockSize = 128,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "Block_4Groups_128Threads"},
+            .name = "Block_4Groups_128Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::BLOCK,
             .numBlocks = 4,
             .blockSize = 128,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "Block_4Groups_128Threads"},
+            .name = "Block_4Groups_128Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::BLOCK,
             .numBlocks = 8,
             .blockSize = 256,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "Block_8Groups_256Threads"},
+            .name = "Block_8Groups_256Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::BLOCK,
             .numBlocks = 8,
             .blockSize = 256,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "Block_8Groups_256Threads"},
+            .name = "Block_8Groups_256Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::BLOCK,
             .numBlocks = 2,
             .blockSize = 512,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = false,
-            .name = "Block_2Groups_512Threads"},
+            .name = "Block_2Groups_512Threads_SingleState"},
         GroupTypeParams{
             .groupType = test::GroupType::BLOCK,
             .numBlocks = 2,
             .blockSize = 512,
             .blocksPerGroup = 1,
+            .useDualStateBuffer = false,
             .useCudaGraph = true,
-            .name = "Block_2Groups_512Threads"}),
+            .name = "Block_2Groups_512Threads_SingleState"},
+
+        // ===== DUAL STATE BUFFER MODE =====
+        // Warp-based groups (32 threads per group)
+        GroupTypeParams{
+            .groupType = test::GroupType::WARP,
+            .numBlocks = 4,
+            .blockSize = 128,
+            .blocksPerGroup = 1,
+            .useDualStateBuffer = true,
+            .useCudaGraph = false,
+            .name = "Warp_4Blocks_128Threads_DualState"},
+        GroupTypeParams{
+            .groupType = test::GroupType::WARP,
+            .numBlocks = 8,
+            .blockSize = 256,
+            .blocksPerGroup = 1,
+            .useDualStateBuffer = true,
+            .useCudaGraph = false,
+            .name = "Warp_8Blocks_256Threads_DualState"},
+        // Block-based groups (all threads in block form one group)
+        GroupTypeParams{
+            .groupType = test::GroupType::BLOCK,
+            .numBlocks = 4,
+            .blockSize = 128,
+            .blocksPerGroup = 1,
+            .useDualStateBuffer = true,
+            .useCudaGraph = false,
+            .name = "Block_4Groups_128Threads_DualState"}),
     groupTypeParamName);
 
 // =============================================================================
@@ -941,7 +1106,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiSendInKernel) {
 
   const size_t dataBufferSize = 512 * 1024; // 512KB staging buffer
   const size_t nbytesPerSend = 256 * 1024; // 256KB per send
-  const int numSends = 4;
+  const int numSends = 16;
   const size_t totalBytes = nbytesPerSend * numSends;
 
   MultiPeerNvlTransportConfig config{
@@ -975,6 +1140,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiSendInKernel) {
     test::testMultiSend(
         p2p, src_d, nbytesPerSend, numSends, numBlocks, blockSize);
     CUDACHECK_TEST(cudaDeviceSynchronize());
+    std::cout << "Rank 0: MultiSendInKernel test completed" << std::endl;
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   } else {
     CUDACHECK_TEST(cudaMemset(dst_d, 0, totalBytes));
@@ -983,6 +1149,7 @@ TEST_F(P2pNvlTransportTestFixture, MultiSendInKernel) {
     test::testMultiRecv(
         p2p, dst_d, nbytesPerSend, numSends, numBlocks, blockSize);
     CUDACHECK_TEST(cudaDeviceSynchronize());
+    std::cout << "Rank 1: MultiRecvKernel test completed" << std::endl;
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     // Verify each segment

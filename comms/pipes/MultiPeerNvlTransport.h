@@ -46,6 +46,38 @@ struct MultiPeerNvlTransportConfig {
   // This is separate from WindowMemoryConfig.signalCount (inbox model).
   // Typical: 1-num of blocks for most workloads.
   std::size_t p2pSignalCount{1};
+
+  // If true, use dual chunk state buffers (one on each side) for local polling
+  // on both sender and receiver. If false (default), use single chunk state
+  // buffer on receiver side only.
+  //
+  // Single State Mode (default):
+  //   - 1 ChunkState per chunk, stored on receiver side
+  //   - Sender polls over NVLink (slower), receiver polls locally (faster)
+  //   - Lower memory usage
+  //
+  // Dual State Mode:
+  //   - 2 ChunkStates per chunk: receiverState (for data-ready signal),
+  //     senderState (for ready-to-send signal)
+  //   - Both sender and receiver poll locally (faster on both sides)
+  //   - Higher memory usage, better performance for high-throughput workloads
+  //
+  // DUAL STATE MODE - STATE MACHINE:
+  //   Sender: poll local senderState for READY_TO_SEND → send data →
+  //           mark local senderState as UNREADY → signal receiver's
+  //           receiverState
+  //   Receiver: poll local receiverState for stepId → read data →
+  //           mark local receiverState as UNREADY → signal sender's senderState
+  //                                                  as READY_TO_SEND
+  //
+  // DUAL STATE MODE - STRIDED CHUNK ASSIGNMENT REQUIREMENT:
+  //   Dual state mode MUST use for_each_item_strided for chunk
+  //   distribution. The UNREADY state uses plain write + group.sync() for
+  //   efficiency (st.release.gpu is too slow). This write is only visible
+  //   within the same thread group. Strided ensures chunk K is ALWAYS
+  //   assigned to group (K % total_groups), making the unready write visible
+  //   after group.sync().
+  bool useDualStateBuffer{false};
 };
 
 /**
