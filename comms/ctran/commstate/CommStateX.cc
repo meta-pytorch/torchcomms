@@ -154,6 +154,21 @@ void CommStateX::setNvlFabricTopos(
   }
   nvlFabricCliqueEnabled_ = nvlFabricEnabled_ && NCCL_MNNVL_CLIQUE_SIZE > 0 &&
       NCCL_MNNVL_DETERMINISTIC_COLLECTIVE_ENABLE;
+
+  // When vnode debug topo is active, force clique mode to create virtual
+  // NVL domain partitions of the requested size
+  if (NCCL_COMM_STATE_DEBUG_TOPO == NCCL_COMM_STATE_DEBUG_TOPO::vnode) {
+    nvlFabricCliqueEnabled_ = true;
+    const int vnodeNLocalRanks = NCCL_COMM_STATE_DEBUG_TOPO_VNODE_NLOCALRANKS;
+    for (auto& topo : nvlFabricTopos_) {
+      topo.cliqueId = topo.rank / vnodeNLocalRanks;
+    }
+    XLOGF(
+        INFO,
+        "CommStateX: vnode override NVL fabric clique with nLocalRanks={}",
+        vnodeNLocalRanks);
+  }
+
   std::unordered_map<std::string, int> clusterIdToNvlDomainIndex;
   // cliqueIds might not be contiguous, within the same communicator.
   // CliqueIndex is contiguous fron 0 to nCliqueIds - 1.
@@ -195,6 +210,7 @@ void CommStateX::setNvlFabricTopos(
       }
     }
   }
+
   // another loop to update the other stats of nvlFabricRankStates_
   for (int i = 0; i < nRanks_; i++) {
     if (nvlFabricTopos_.at(i).supportNvlFabric) {
