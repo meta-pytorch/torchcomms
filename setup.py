@@ -44,6 +44,7 @@ IS_ROCM = hasattr(torch.version, "hip") and torch.version.hip is not None
 # Transport is CUDA-only; disable by default on ROCm but allow explicit opt-in.
 USE_TRANSPORT = flag_enabled("USE_TRANSPORT", not IS_ROCM)
 USE_TRITON = flag_enabled("USE_TRITON", False)
+USE_PIPES = flag_enabled("USE_PIPES", False)
 
 requirement_path = os.path.join(ROOT, "requirements.txt")
 try:
@@ -132,6 +133,7 @@ class build_ext(build_ext_orig):
             f"-DUSE_XCCL={flag_str(USE_XCCL)}",
             f"-DUSE_TRANSPORT={flag_str(USE_TRANSPORT)}",
             f"-DUSE_TRITON={flag_str(USE_TRITON)}",
+            f"-DUSE_PIPES={flag_str(USE_PIPES)}",
         ]
         build_args = ["--", "-j"]
 
