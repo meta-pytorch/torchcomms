@@ -129,6 +129,7 @@ class GraphTestFixture : public TorchCommsTestBase<Params> {
         }
         graphs[g]->replay();
         if (verify) {
+          stream_->synchronize();
           verify();
         }
       }
