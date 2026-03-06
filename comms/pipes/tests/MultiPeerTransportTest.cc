@@ -114,7 +114,8 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeSucceeds) {
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-// Verify host-side NVL transport accessor returns valid objects after exchange.
+// Verify host-side NVL transport accessor returns valid device pointer after
+// exchange.
 TEST_F(MultiPeerTransportTestFixture, HostNvlAccessor) {
   if (numRanks < 2) {
     GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
@@ -124,13 +125,13 @@ TEST_F(MultiPeerTransportTestFixture, HostNvlAccessor) {
   states->exchange();
 
   int peerRank = (globalRank == 0) ? 1 : 0;
-  auto p2p = states->get_p2p_nvl_transport_device(peerRank);
+  auto* p2p = states->get_p2p_nvl_transport_device(peerRank);
 
-  // The returned device should have valid local/remote state pointers
-  EXPECT_NE(p2p.getLocalState().dataBuffer, nullptr)
-      << "Rank " << globalRank << ": NVL local data buffer is null";
-  EXPECT_NE(p2p.getRemoteState().dataBuffer, nullptr)
-      << "Rank " << globalRank << ": NVL remote data buffer is null";
+  // The returned pointer points to device memory inside the Transport array.
+  // We can only verify it's non-null here; actual functionality is tested
+  // by device-side tests (P2pNvlTransportTest, AllToAllvTest, etc.).
+  EXPECT_NE(p2p, nullptr) << "Rank " << globalRank
+                          << ": NVL transport device pointer is null";
 
   MPI_Barrier(MPI_COMM_WORLD);
 }

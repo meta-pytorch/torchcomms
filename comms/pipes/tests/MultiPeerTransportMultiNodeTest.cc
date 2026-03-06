@@ -224,13 +224,14 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
   states->exchange();
 
   // NVL peer accessor — always has at least same-node peers.
+  // The returned pointers point to device memory inside the Transport array.
+  // We can only verify they're non-null here; device-side tests verify
+  // functionality.
   ASSERT_FALSE(states->nvl_peer_ranks().empty());
   for (int r : states->nvl_peer_ranks()) {
-    auto p2p = states->get_p2p_nvl_transport_device(r);
-    EXPECT_NE(p2p.getLocalState().dataBuffer, nullptr)
-        << "NVL local data buffer null for peer " << r;
-    EXPECT_NE(p2p.getRemoteState().dataBuffer, nullptr)
-        << "NVL remote data buffer null for peer " << r;
+    auto* p2p = states->get_p2p_nvl_transport_device(r);
+    EXPECT_NE(p2p, nullptr)
+        << "NVL transport device pointer null for peer " << r;
   }
 
   // IBGDA is universal — accessor works for ALL non-self peers.
