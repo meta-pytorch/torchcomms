@@ -644,8 +644,8 @@ commResult_t CtranMapper::deregMem(void* segHdl, const bool skipRemRelease) {
   //   also deregisters all associated registrations.
   // - Ownership of registrations are transferred to the last communicator to
   //   release remote registration.
-  // - If the segment no longer exists in cache, likely double dereg.
-  //   ncclInvaidUsage is returned.
+  // - If the segment no longer exists in cache (e.g. already freed by
+  //   globalDeregister), this is a no-op.
   bool freed = false, ncclManaged = false;
   std::vector<std::unique_ptr<ctran::regcache::RegElem>> regElemsFreed;
   FB_COMMCHECK(
