@@ -230,6 +230,36 @@ createDCILargeSq(ibverbx::IbvPd& pd, ibverbx::IbvCq& cq, int sqDepth) {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: create DCI with configurable SQ depth and streams enabled
+// ---------------------------------------------------------------------------
+folly::Expected<ibverbx::IbvQp, ibverbx::Error> createDCILargeSqWithStreams(
+    ibverbx::IbvPd& pd,
+    ibverbx::IbvCq& cq,
+    int sqDepth,
+    uint8_t logNumConcurrent,
+    uint8_t logNumErrored = 0) {
+  ibverbx::ibv_qp_init_attr_ex initAttr{};
+  ibverbx::mlx5dv_qp_init_attr dvInitAttr{};
+
+  initAttr.qp_type = ibverbx::IBV_QPT_DRIVER;
+  initAttr.send_cq = cq.cq();
+  initAttr.recv_cq = cq.cq();
+  initAttr.comp_mask = ibverbx::IBV_QP_INIT_ATTR_PD;
+  initAttr.cap.max_send_wr = sqDepth;
+  initAttr.cap.max_send_sge = 1;
+  initAttr.comp_mask |= ibverbx::IBV_QP_INIT_ATTR_SEND_OPS_FLAGS;
+  initAttr.send_ops_flags = ibverbx::IBV_QP_EX_WITH_RDMA_WRITE;
+
+  dvInitAttr.comp_mask = ibverbx::MLX5DV_QP_INIT_ATTR_MASK_DC |
+      ibverbx::MLX5DV_QP_INIT_ATTR_MASK_DCI_STREAMS;
+  dvInitAttr.dc_init_attr.dc_type = ibverbx::MLX5DV_DCTYPE_DCI;
+  dvInitAttr.dc_init_attr.dci_streams.log_num_concurent = logNumConcurrent;
+  dvInitAttr.dc_init_attr.dci_streams.log_num_errored = logNumErrored;
+
+  return pd.createDcQp(&initAttr, &dvInitAttr);
+}
+
+// ---------------------------------------------------------------------------
 // Helper: busy-spin poll on raw CQ
 // ---------------------------------------------------------------------------
 bool pollCqBusySpin(
@@ -290,6 +320,28 @@ int postDcRdmaWrite(
   ibverbx::ibvSymbols.ibv_internal_wr_set_sge_list(exQp, 1, &sge);
   ibverbx::ibvSymbols.mlx5dv_internal_wr_set_dc_addr(
       dvQp, ah.ah(), target.dctNum, DC_KEY);
+  return ibverbx::ibvSymbols.ibv_internal_wr_complete(exQp);
+}
+
+// ---------------------------------------------------------------------------
+// Helper: post DC RDMA write with stream_id via extended QP API
+// ---------------------------------------------------------------------------
+int postDcRdmaWriteStream(
+    ibverbx::ibv_qp_ex* exQp,
+    mlx5dv_qp_ex* dvQp,
+    ibverbx::IbvAh& ah,
+    const DcBusinessCard& target,
+    ibverbx::ibv_sge& sge,
+    uint64_t wrId,
+    uint16_t streamId) {
+  ibverbx::ibvSymbols.ibv_internal_wr_start(exQp);
+  exQp->wr_id = wrId;
+  exQp->wr_flags = ibverbx::IBV_SEND_SIGNALED;
+  ibverbx::ibvSymbols.ibv_internal_wr_rdma_write(
+      exQp, target.rkey, target.remoteAddr);
+  ibverbx::ibvSymbols.ibv_internal_wr_set_sge_list(exQp, 1, &sge);
+  ibverbx::ibvSymbols.mlx5dv_internal_wr_set_dc_addr_stream(
+      dvQp, ah.ah(), target.dctNum, DC_KEY, streamId);
   return ibverbx::ibvSymbols.ibv_internal_wr_complete(exQp);
 }
 
@@ -766,11 +818,20 @@ static void dcMultiDciCore(
     size_t msgSize,
     int numDcis,
     folly::UserCounters& counters,
-    const char* benchName) {
+    const char* benchName,
+    uint8_t logNumConcurrentStreams = 0) {
   if (!checkDcAvailable()) {
     counters["skipped"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
     return;
   }
+
+  bool useStreams = logNumConcurrentStreams > 0;
+  if (useStreams &&
+      !ibverbx::ibvSymbols.mlx5dv_internal_wr_set_dc_addr_stream) {
+    counters["skipped"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+  int numStreamsPerDci = useStreams ? (1 << logNumConcurrentStreams) : 0;
 
   int numReceivers = static_cast<int>(numPeers) - 1;
   if (numReceivers < 1) {
@@ -809,9 +870,19 @@ static void dcMultiDciCore(
   };
   std::vector<DciState> dcis(numDcis);
   for (int d = 0; d < numDcis; ++d) {
-    auto dciResult = createDCILargeSq(*sender.pd, *sender.cq, kDciSqDepth);
+    auto dciResult = useStreams
+        ? createDCILargeSqWithStreams(
+              *sender.pd, *sender.cq, kDciSqDepth, logNumConcurrentStreams)
+        : createDCILargeSq(*sender.pd, *sender.cq, kDciSqDepth);
     if (!dciResult) {
-      counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+      if (useStreams) {
+        // Streams not supported on this HW
+        counters["skipped"] =
+            folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+      } else {
+        counters["error"] =
+            folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+      }
       return;
     }
     dcis[d].qp = std::make_unique<ibverbx::IbvQp>(std::move(*dciResult));
@@ -910,13 +981,23 @@ static void dcMultiDciCore(
       int b = std::min(rem, batch);
       for (int j = 0; j < b; ++j) {
         int d = idx % numDcis;
-        if (postDcRdmaWrite(
-                dcis[d].exQp,
-                dcis[d].dvQp,
-                *ahs[idx],
-                recvCards[idx],
-                sge,
-                idx) != 0) {
+        int ret = useStreams
+            ? postDcRdmaWriteStream(
+                  dcis[d].exQp,
+                  dcis[d].dvQp,
+                  *ahs[idx],
+                  recvCards[idx],
+                  sge,
+                  idx,
+                  static_cast<uint16_t>(idx % numStreamsPerDci))
+            : postDcRdmaWrite(
+                  dcis[d].exQp,
+                  dcis[d].dvQp,
+                  *ahs[idx],
+                  recvCards[idx],
+                  sge,
+                  idx);
+        if (ret != 0) {
           counters["error"] =
               folly::UserMetric(1, folly::UserMetric::Type::METRIC);
           return;
@@ -946,13 +1027,23 @@ static void dcMultiDciCore(
       auto postStart = std::chrono::high_resolution_clock::now();
       for (int j = 0; j < thisBatch; ++j) {
         int d = idx % numDcis;
-        if (postDcRdmaWrite(
-                dcis[d].exQp,
-                dcis[d].dvQp,
-                *ahs[idx],
-                recvCards[idx],
-                sge,
-                idx) != 0) {
+        int ret = useStreams
+            ? postDcRdmaWriteStream(
+                  dcis[d].exQp,
+                  dcis[d].dvQp,
+                  *ahs[idx],
+                  recvCards[idx],
+                  sge,
+                  idx,
+                  static_cast<uint16_t>(idx % numStreamsPerDci))
+            : postDcRdmaWrite(
+                  dcis[d].exQp,
+                  dcis[d].dvQp,
+                  *ahs[idx],
+                  recvCards[idx],
+                  sge,
+                  idx);
+        if (ret != 0) {
           counters["error"] =
               folly::UserMetric(1, folly::UserMetric::Type::METRIC);
           return;
@@ -1039,6 +1130,21 @@ dcMultiDci16(uint32_t iters, size_t numPeers, folly::UserCounters& counters) {
       "dcMultiDci_16");
 }
 
+// Wrappers: multi-DCI with streams (4 concurrent streams per DCI)
+static void dcMultiDci4Streams4(
+    uint32_t iters,
+    size_t numPeers,
+    folly::UserCounters& counters) {
+  dcMultiDciCore(
+      iters,
+      numPeers,
+      kTotalInputSize / numPeers,
+      4,
+      counters,
+      "dcMultiDci4_streams4",
+      2); // log2(4) = 2
+}
+
 // Wrapper: message size sweep with 4 DCIs at N=2048
 static void dcMultiDci4MsgSweep(
     uint32_t iters,
@@ -1046,6 +1152,275 @@ static void dcMultiDci4MsgSweep(
     folly::UserCounters& counters) {
   dcMultiDciCore(
       iters, kMsgSweepNumPeers, msgSize, 4, counters, "dcMultiDci4MsgSweep");
+}
+
+// ---------------------------------------------------------------------------
+// DC Streams Scalability Benchmark
+//
+// Uses a single DCI with DCI Streams enabled. Each receiver is assigned a
+// unique stream_id, so the NIC can process writes to different targets
+// concurrently within the single DCI. Compares whether stream-level
+// concurrency provides similar benefits to having multiple DCIs.
+// ---------------------------------------------------------------------------
+static void dcStreamsScalabilityCore(
+    uint32_t iters,
+    size_t numPeers,
+    size_t msgSize,
+    uint8_t logNumConcurrent,
+    folly::UserCounters& counters,
+    const char* benchName) {
+  if (!checkDcAvailable()) {
+    counters["skipped"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+
+  if (!ibverbx::ibvSymbols.mlx5dv_internal_wr_set_dc_addr_stream) {
+    counters["skipped"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+
+  int numReceivers = static_cast<int>(numPeers) - 1;
+  if (numReceivers < 1) {
+    counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+
+  // Setup shared resources on two devices
+  SharedResources sender, receiver;
+  if (!sender.init(g_dcCapableDevices[0]) ||
+      !receiver.init(g_dcCapableDevices[1])) {
+    counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+
+  // Create SRQ on receiver side
+  auto srqResult = createSRQ(*receiver.pd, 1024);
+  if (!srqResult) {
+    counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+  auto srq = std::make_unique<ibverbx::IbvSrq>(std::move(*srqResult));
+
+  // Create DCI with streams enabled
+  auto dciResult = createDCILargeSqWithStreams(
+      *sender.pd, *sender.cq, kDciSqDepth, logNumConcurrent);
+  if (!dciResult) {
+    // DCI Streams not supported on this HW — skip
+    counters["skipped"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+  auto dci = std::make_unique<ibverbx::IbvQp>(std::move(*dciResult));
+
+  // Get extended QP interface
+  auto* exQp = ibverbx::ibvSymbols.ibv_internal_qp_to_qp_ex(dci->qp());
+  auto* dvQp = ibverbx::ibvSymbols.mlx5dv_internal_qp_ex_from_ibv_qp_ex(exQp);
+  if (!exQp || !dvQp) {
+    counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+
+  // Transition DCI to RTS
+  auto dciTrans = transitionDCIToRts(*dci, kPortNum, ibverbx::IBV_MTU_4096);
+  if (!dciTrans) {
+    counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+
+  // Create DCT on receiver side
+  auto dctResult = createDCT(*receiver.pd, *receiver.cq, *srq);
+  if (!dctResult) {
+    counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+  auto dct = std::make_unique<ibverbx::IbvQp>(std::move(*dctResult));
+
+  // Transition DCT to RTR
+  auto dctTrans = transitionDCTToRtr(*dct, kPortNum, ibverbx::IBV_MTU_4096);
+  if (!dctTrans) {
+    counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+
+  // Allocate sender buffer and MR
+  std::vector<uint8_t> senderBuf(msgSize, 0xAA);
+  auto accessFlags = static_cast<ibverbx::ibv_access_flags>(
+      ibverbx::IBV_ACCESS_LOCAL_WRITE | ibverbx::IBV_ACCESS_REMOTE_WRITE |
+      ibverbx::IBV_ACCESS_REMOTE_READ);
+  auto senderMrResult =
+      sender.pd->regMr(senderBuf.data(), senderBuf.size(), accessFlags);
+  if (!senderMrResult) {
+    counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+    return;
+  }
+  auto senderMr = std::make_unique<ibverbx::IbvMr>(std::move(*senderMrResult));
+
+  ibverbx::ibv_sge sge{};
+  sge.addr = reinterpret_cast<uint64_t>(senderBuf.data());
+  sge.length = static_cast<uint32_t>(msgSize);
+  sge.lkey = senderMr->mr()->lkey;
+
+  // Create N-1 receiver buffers, MRs, business cards, and AHs
+  std::vector<std::vector<uint8_t>> recvBufs(numReceivers);
+  std::vector<std::unique_ptr<ibverbx::IbvMr>> recvMrs;
+  std::vector<DcBusinessCard> recvCards;
+  std::vector<std::unique_ptr<ibverbx::IbvAh>> ahs;
+
+  for (int i = 0; i < numReceivers; ++i) {
+    recvBufs[i].resize(msgSize, 0x00);
+    auto mrResult =
+        receiver.pd->regMr(recvBufs[i].data(), recvBufs[i].size(), accessFlags);
+    if (!mrResult) {
+      counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+      return;
+    }
+    recvMrs.push_back(std::make_unique<ibverbx::IbvMr>(std::move(*mrResult)));
+
+    DcBusinessCard card{};
+    card.mtu = 5;
+    card.dctNum = dct->qp()->qp_num;
+    card.port = kPortNum;
+    card.subnetPrefix = receiver.gid.global.subnet_prefix;
+    card.interfaceId = receiver.gid.global.interface_id;
+    card.rank = i;
+    card.remoteAddr = reinterpret_cast<uint64_t>(recvBufs[i].data());
+    card.rkey = recvMrs.back()->mr()->rkey;
+    recvCards.push_back(card);
+
+    auto ahResult = createAddressHandle(*sender.pd, card);
+    if (!ahResult) {
+      counters["error"] = folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+      return;
+    }
+    ahs.push_back(std::make_unique<ibverbx::IbvAh>(std::move(*ahResult)));
+  }
+
+  // Number of concurrent streams
+  int numStreams = 1 << logNumConcurrent;
+
+  // Batch size: cap by SQ depth and CQ depth
+  int batch = std::max(1, std::min(kDciSqDepth, kSharedCqDepth / numReceivers));
+
+  // Warmup
+  for (int w = 0; w < kWarmupIters; ++w) {
+    int rem = numReceivers;
+    int idx = 0;
+    while (rem > 0) {
+      int b = std::min(rem, batch);
+      for (int j = 0; j < b; ++j) {
+        uint16_t streamId = static_cast<uint16_t>(idx % numStreams);
+        if (postDcRdmaWriteStream(
+                exQp, dvQp, *ahs[idx], recvCards[idx], sge, idx, streamId) !=
+            0) {
+          counters["error"] =
+              folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+          return;
+        }
+        idx++;
+      }
+      if (!pollCqBusySpin(sender.cq->cq(), b)) {
+        counters["error"] =
+            folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+        return;
+      }
+      rem -= b;
+    }
+  }
+
+  // Timed iterations
+  auto start = std::chrono::high_resolution_clock::now();
+  std::chrono::nanoseconds totalPostNs{0};
+  std::chrono::nanoseconds totalPollNs{0};
+
+  for (uint32_t iter = 0; iter < iters; ++iter) {
+    int remaining = numReceivers;
+    int idx = 0;
+    while (remaining > 0) {
+      int thisBatch = std::min(remaining, batch);
+
+      auto postStart = std::chrono::high_resolution_clock::now();
+      for (int j = 0; j < thisBatch; ++j) {
+        uint16_t streamId = static_cast<uint16_t>(idx % numStreams);
+        if (postDcRdmaWriteStream(
+                exQp, dvQp, *ahs[idx], recvCards[idx], sge, idx, streamId) !=
+            0) {
+          counters["error"] =
+              folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+          return;
+        }
+        idx++;
+      }
+      auto postEnd = std::chrono::high_resolution_clock::now();
+      totalPostNs += (postEnd - postStart);
+
+      auto pollStart = std::chrono::high_resolution_clock::now();
+      if (!pollCqBusySpin(sender.cq->cq(), thisBatch)) {
+        counters["error"] =
+            folly::UserMetric(1, folly::UserMetric::Type::METRIC);
+        return;
+      }
+      auto pollEnd = std::chrono::high_resolution_clock::now();
+      totalPollNs += (pollEnd - pollStart);
+
+      remaining -= thisBatch;
+    }
+  }
+
+  auto end = std::chrono::high_resolution_clock::now();
+  double elapsedUs =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(end - start)
+          .count() /
+      1000.0;
+
+  double avgLatencyUs = elapsedUs / iters;
+  double avgPostUs = totalPostNs.count() / 1000.0 / iters;
+  double avgPollUs = totalPollNs.count() / 1000.0 / iters;
+  double bandwidthGBps =
+      (msgSize * numReceivers * iters / 1e9) / (elapsedUs / 1e6);
+
+  counters["latency_us"] =
+      folly::UserMetric(avgLatencyUs, folly::UserMetric::Type::METRIC);
+  counters["post_us"] =
+      folly::UserMetric(avgPostUs, folly::UserMetric::Type::METRIC);
+  counters["poll_us"] =
+      folly::UserMetric(avgPollUs, folly::UserMetric::Type::METRIC);
+  counters["bw_gbps"] =
+      folly::UserMetric(bandwidthGBps, folly::UserMetric::Type::METRIC);
+  counters["batch"] = folly::UserMetric(batch, folly::UserMetric::Type::METRIC);
+  counters["N"] = folly::UserMetric(numPeers, folly::UserMetric::Type::METRIC);
+  counters["num_streams"] =
+      folly::UserMetric(numStreams, folly::UserMetric::Type::METRIC);
+  recordRawResult(
+      benchName,
+      static_cast<int>(numPeers),
+      avgLatencyUs,
+      avgPostUs,
+      avgPollUs,
+      bandwidthGBps,
+      batch,
+      msgSize,
+      1); // 1 DCI with streams
+}
+
+// Wrappers: DC with streams, varying concurrent stream counts
+static void
+dcStreams4(uint32_t iters, size_t numPeers, folly::UserCounters& counters) {
+  dcStreamsScalabilityCore(
+      iters,
+      numPeers,
+      kTotalInputSize / numPeers,
+      2, // log2(4) = 2
+      counters,
+      "dcStreams_4");
+}
+static void
+dcStreams16(uint32_t iters, size_t numPeers, folly::UserCounters& counters) {
+  dcStreamsScalabilityCore(
+      iters,
+      numPeers,
+      kTotalInputSize / numPeers,
+      4, // log2(16) = 4
+      counters,
+      "dcStreams_16");
 }
 
 // ---------------------------------------------------------------------------
@@ -1364,6 +1739,51 @@ REGISTER_SCALABILITY_BENCH(dcMultiDci16, N256, 256);
 REGISTER_SCALABILITY_BENCH(dcMultiDci16, N512, 512);
 REGISTER_SCALABILITY_BENCH(dcMultiDci16, N1024, 1024);
 REGISTER_SCALABILITY_BENCH(dcMultiDci16, N2048, 2048);
+
+BENCHMARK_DRAW_LINE();
+
+// DC Streams (4 concurrent streams, 1 DCI)
+REGISTER_SCALABILITY_BENCH(dcStreams4, N2, 2);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N4, 4);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N8, 8);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N16, 16);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N32, 32);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N64, 64);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N128, 128);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N256, 256);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N512, 512);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N1024, 1024);
+REGISTER_SCALABILITY_BENCH(dcStreams4, N2048, 2048);
+
+BENCHMARK_DRAW_LINE();
+
+// DC Streams (16 concurrent streams, 1 DCI)
+REGISTER_SCALABILITY_BENCH(dcStreams16, N2, 2);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N4, 4);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N8, 8);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N16, 16);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N32, 32);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N64, 64);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N128, 128);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N256, 256);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N512, 512);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N1024, 1024);
+REGISTER_SCALABILITY_BENCH(dcStreams16, N2048, 2048);
+
+BENCHMARK_DRAW_LINE();
+
+// DC Multi-DCI (4 DCIs) + Streams (4 concurrent streams per DCI)
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N2, 2);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N4, 4);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N8, 8);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N16, 16);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N32, 32);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N64, 64);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N128, 128);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N256, 256);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N512, 512);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N1024, 1024);
+REGISTER_SCALABILITY_BENCH(dcMultiDci4Streams4, N2048, 2048);
 
 BENCHMARK_DRAW_LINE();
 
