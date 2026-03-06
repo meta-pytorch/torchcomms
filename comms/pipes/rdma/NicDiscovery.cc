@@ -3,7 +3,8 @@
 #include "comms/pipes/rdma/NicDiscovery.h"
 
 #include <cuda_runtime.h>
-#include <glog/logging.h>
+#include <spdlog/spdlog.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 #include <dirent.h>
@@ -106,7 +107,20 @@ std::vector<std::string> buildAncestorChain(const std::string& normalizedPcie) {
 
 } // namespace
 
-// Static methods
+// Free functions
+
+int getCurrentNumaNode() {
+  unsigned cpu = 0;
+  unsigned node = 0;
+  if (syscall(SYS_getcpu, &cpu, &node, nullptr) == 0) {
+    return static_cast<int>(node);
+  }
+  return -1;
+}
+
+// =============================================================================
+// NicDiscovery (base class)
+// =============================================================================
 
 std::string NicDiscovery::normalizePcieAddress(const std::string& pciBusId) {
   std::string result = pciBusId;
@@ -114,17 +128,6 @@ std::string NicDiscovery::normalizePcieAddress(const std::string& pciBusId) {
     c = std::tolower(static_cast<unsigned char>(c));
   }
   return result;
-}
-
-std::string NicDiscovery::getCudaPciBusId(int cudaDevice) {
-  char busId[32];
-  cudaError_t err = cudaDeviceGetPCIBusId(busId, sizeof(busId), cudaDevice);
-  if (err != cudaSuccess) {
-    throw std::runtime_error(
-        "Failed to get CUDA device PCIe bus ID: " +
-        std::string(cudaGetErrorString(err)));
-  }
-  return std::string(busId);
 }
 
 int NicDiscovery::getNumaNodeForPcie(const std::string& pciBusId) {
@@ -169,99 +172,16 @@ std::string NicDiscovery::getPcieForIbDev(const char* devName) {
   return path;
 }
 
-std::pair<PathType, int> NicDiscovery::computePathType(
-    const std::string& nicPcie,
-    int nicNuma) const {
-  // If different NUMA nodes, it's PATH_SYS
-  if (gpuNumaNode_ >= 0 && nicNuma >= 0 && gpuNumaNode_ != nicNuma) {
-    return {PathType::SYS, -1};
-  }
-
-  // Normalize NIC address and build its chain
-  std::string nicNormalized = normalizePcieAddress(nicPcie);
-  std::vector<std::string> nicChain = buildAncestorChain(nicNormalized);
-
-  // Find common ancestor
-  int nicHops = 0;
-  for (const auto& ancestor : nicChain) {
-    if (gpuAncestors_.count(ancestor)) {
-      // Found common ancestor
-      // Count hops from GPU to this ancestor
-      int gpuHops = 0;
-      for (const auto& g : gpuAncestorChain_) {
-        if (g == ancestor) {
-          break;
-        }
-        gpuHops++;
-      }
-
-      int totalHops = gpuHops + nicHops;
-
-      // Heuristic based on PCI topology depth:
-      // - 2 hops (GPU->switch->NIC) = PIX (same switch)
-      // - 3-4 hops = PXB (multiple switches, same NUMA)
-      // - More = PHB (through host bridge)
-      if (totalHops <= 2) {
-        return {PathType::PIX, totalHops};
-      }
-      if (totalHops <= 4) {
-        return {PathType::PXB, totalHops};
-      }
-      return {PathType::PHB, totalHops};
-    }
-    nicHops++;
-  }
-
-  // No common ancestor found in PCI tree
-  if (gpuNumaNode_ >= 0 && gpuNumaNode_ == nicNuma) {
-    // Same NUMA node but different PCI domains
-    int nhops =
-        static_cast<int>(gpuAncestorChain_.size() + nicChain.size()) + 2;
-    return {PathType::NODE, nhops};
-  }
-  return {PathType::SYS, -1};
-}
-
-void NicDiscovery::initGpuTopology() {
-  // Skip if already initialized
-  if (!gpuPciBusId_.empty()) {
-    return;
-  }
-
-  // Get GPU PCIe bus ID
-  gpuPciBusId_ = getCudaPciBusId(cudaDevice_);
-  gpuPcieNormalized_ = normalizePcieAddress(gpuPciBusId_);
-
-  // Build GPU ancestor chain for topology comparison (O(1) lookups later)
-  gpuAncestorChain_ = buildAncestorChain(gpuPcieNormalized_);
-  gpuAncestors_ = std::unordered_set<std::string>(
-      gpuAncestorChain_.begin(), gpuAncestorChain_.end());
-
-  // Get GPU NUMA node using pre-normalized address
-  std::string numaPath =
-      "/sys/bus/pci/devices/" + gpuPcieNormalized_ + "/numa_node";
-  std::ifstream numaFile(numaPath);
-  if (numaFile.is_open()) {
-    numaFile >> gpuNumaNode_;
-  }
-
-  LOG(INFO) << "NicDiscovery: GPU " << cudaDevice_ << " PCIe " << gpuPciBusId_
-            << " NUMA " << gpuNumaNode_;
-}
-
-NicDiscovery::NicDiscovery(int cudaDevice, const std::string& ibHcaEnv)
-    : cudaDevice_(cudaDevice), ibHcaParser_(ibHcaEnv) {
+NicDiscovery::NicDiscovery(const std::string& ibHcaEnv)
+    : ibHcaParser_(ibHcaEnv) {
   if (!ibHcaParser_.empty()) {
-    LOG(INFO) << "NicDiscovery: IB HCA filter with "
-              << ibHcaParser_.entries().size() << " entries";
+    spdlog::info(
+        "NicDiscovery: IB HCA filter with {} entries",
+        ibHcaParser_.entries().size());
   }
-  discover();
 }
 
 void NicDiscovery::discover() {
-  // Initialize GPU topology for auto-discovery
-  initGpuTopology();
-
   auto devices = listIbDevices();
   if (devices.empty()) {
     throw std::runtime_error("No IB devices found");
@@ -272,8 +192,8 @@ void NicDiscovery::discover() {
   for (const auto& devName : devices) {
     // Skip NICs that don't pass the HCA filter
     if (!ibHcaParser_.matches(devName)) {
-      LOG(INFO) << "NicDiscovery: skipping NIC " << devName
-                << " due to IB HCA filter";
+      spdlog::info(
+          "NicDiscovery: skipping NIC {} due to IB HCA filter", devName);
       continue;
     }
 
@@ -289,9 +209,14 @@ void NicDiscovery::discover() {
     int nicNuma = getNumaNodeForIbDev(devName.c_str());
     auto [pathType, nhops] = computePathType(nicPcie, nicNuma);
 
-    LOG(INFO) << "NicDiscovery: NIC " << devName << " PCIe=" << nicPcie
-              << " NUMA=" << nicNuma << " path=" << pathTypeToString(pathType)
-              << " nhops=" << nhops << " bandwidth=" << bandwidth << " Gb/s";
+    spdlog::info(
+        "NicDiscovery: NIC {} PCIe={} NUMA={} path={} nhops={} bandwidth={} Gb/s",
+        devName,
+        nicPcie,
+        nicNuma,
+        pathTypeToString(pathType),
+        nhops,
+        bandwidth);
 
     candidates_.push_back(
         NicCandidate{devName, nicPcie, pathType, bandwidth, nicNuma, nhops});
@@ -318,19 +243,159 @@ void NicDiscovery::discover() {
       });
 
   // Log sorted candidates for debugging
-  LOG(INFO) << "NicDiscovery: NIC candidates after sorting:";
+  spdlog::info("NicDiscovery: NIC candidates after sorting:");
   for (size_t i = 0; i < candidates_.size(); i++) {
-    LOG(INFO) << "  [" << i << "] " << candidates_[i].name
-              << " path=" << pathTypeToString(candidates_[i].pathType)
-              << " bandwidth=" << candidates_[i].bandwidthGbps << " Gb/s"
-              << " nhops=" << candidates_[i].nhops;
+    spdlog::info(
+        "  [{}] {} path={} bandwidth={} Gb/s nhops={}",
+        i,
+        candidates_[i].name,
+        pathTypeToString(candidates_[i].pathType),
+        candidates_[i].bandwidthGbps,
+        candidates_[i].nhops);
   }
 
   const NicCandidate& best = candidates_[0];
-  LOG(INFO) << "NicDiscovery: best candidate NIC " << best.name << " for GPU "
-            << gpuPciBusId_ << " (path=" << pathTypeToString(best.pathType)
-            << ", bandwidth=" << best.bandwidthGbps << " Gb/s)"
-            << " (numa=" << best.numaNode << ", nhops=" << best.nhops << ")";
+  spdlog::info(
+      "NicDiscovery: best candidate NIC {} for {} (path={}, bandwidth={} Gb/s) (numa={}, nhops={})",
+      best.name,
+      anchorDescription(),
+      pathTypeToString(best.pathType),
+      best.bandwidthGbps,
+      best.numaNode,
+      best.nhops);
+}
+
+// =============================================================================
+// GpuNicDiscovery
+// =============================================================================
+
+std::string GpuNicDiscovery::getCudaPciBusId(int cudaDevice) {
+  char busId[32];
+  cudaError_t err = cudaDeviceGetPCIBusId(busId, sizeof(busId), cudaDevice);
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        "Failed to get CUDA device PCIe bus ID: " +
+        std::string(cudaGetErrorString(err)));
+  }
+  return std::string(busId);
+}
+
+GpuNicDiscovery::GpuNicDiscovery(int cudaDevice, const std::string& ibHcaEnv)
+    : NicDiscovery(ibHcaEnv), cudaDevice_(cudaDevice) {
+  initGpuTopology();
+  discover();
+}
+
+void GpuNicDiscovery::initGpuTopology() {
+  anchorPciBusId_ = getCudaPciBusId(cudaDevice_);
+  std::string normalized = normalizePcieAddress(anchorPciBusId_);
+
+  // Build ancestor chain for topology comparison (O(1) lookups later)
+  anchorAncestorChain_ = buildAncestorChain(normalized);
+  anchorAncestors_ = std::unordered_set<std::string>(
+      anchorAncestorChain_.begin(), anchorAncestorChain_.end());
+
+  // Get NUMA node using pre-normalized address
+  std::string numaPath = "/sys/bus/pci/devices/" + normalized + "/numa_node";
+  std::ifstream numaFile(numaPath);
+  if (numaFile.is_open()) {
+    numaFile >> anchorNumaNode_;
+  }
+
+  spdlog::info(
+      "NicDiscovery: GPU {} PCIe {} NUMA {}",
+      cudaDevice_,
+      anchorPciBusId_,
+      anchorNumaNode_);
+}
+
+std::pair<PathType, int> GpuNicDiscovery::computePathType(
+    const std::string& nicPcie,
+    int nicNuma) const {
+  // If different NUMA nodes, it's PATH_SYS
+  if (anchorNumaNode_ >= 0 && nicNuma >= 0 && anchorNumaNode_ != nicNuma) {
+    return {PathType::SYS, -1};
+  }
+
+  // Normalize NIC address and build its chain
+  std::string nicNormalized = normalizePcieAddress(nicPcie);
+  std::vector<std::string> nicChain = buildAncestorChain(nicNormalized);
+
+  // Find common ancestor
+  int nicHops = 0;
+  for (const auto& ancestor : nicChain) {
+    if (anchorAncestors_.count(ancestor)) {
+      // Found common ancestor
+      // Count hops from GPU to this ancestor
+      int gpuHops = 0;
+      for (const auto& g : anchorAncestorChain_) {
+        if (g == ancestor) {
+          break;
+        }
+        gpuHops++;
+      }
+
+      int totalHops = gpuHops + nicHops;
+
+      // Heuristic based on PCI topology depth:
+      // - 2 hops (GPU->switch->NIC) = PIX (same switch)
+      // - 3-4 hops = PXB (multiple switches, same NUMA)
+      // - More = PHB (through host bridge)
+      if (totalHops <= 2) {
+        return {PathType::PIX, totalHops};
+      }
+      if (totalHops <= 4) {
+        return {PathType::PXB, totalHops};
+      }
+      return {PathType::PHB, totalHops};
+    }
+    nicHops++;
+  }
+
+  // No common ancestor found in PCI tree
+  if (anchorNumaNode_ >= 0 && anchorNumaNode_ == nicNuma) {
+    // Same NUMA node but different PCI domains
+    int nhops =
+        static_cast<int>(anchorAncestorChain_.size() + nicChain.size()) + 2;
+    return {PathType::NODE, nhops};
+  }
+  return {PathType::SYS, -1};
+}
+
+std::string GpuNicDiscovery::anchorDescription() const {
+  return "GPU " + anchorPciBusId_;
+}
+
+// =============================================================================
+// CpuNicDiscovery
+// =============================================================================
+
+CpuNicDiscovery::CpuNicDiscovery(int numaNode, const std::string& ibHcaEnv)
+    : NicDiscovery(ibHcaEnv) {
+  std::string numaPath =
+      "/sys/devices/system/node/node" + std::to_string(numaNode);
+  if (access(numaPath.c_str(), F_OK) != 0) {
+    throw std::invalid_argument(
+        "Invalid NUMA node " + std::to_string(numaNode) + ": " + numaPath +
+        " does not exist");
+  }
+  anchorNumaNode_ = numaNode;
+  spdlog::info(
+      "NicDiscovery: CPU-anchored discovery, NUMA node {}", anchorNumaNode_);
+  discover();
+}
+
+std::pair<PathType, int> CpuNicDiscovery::computePathType(
+    const std::string& /* nicPcie */,
+    int nicNuma) const {
+  if (anchorNumaNode_ >= 0 && nicNuma >= 0 && anchorNumaNode_ == nicNuma) {
+    return {PathType::NODE, -1};
+  }
+  return {PathType::SYS, -1};
+}
+
+std::string CpuNicDiscovery::anchorDescription() const {
+  return "CPU NUMA " + std::to_string(anchorNumaNode_);
 }
 
 } // namespace comms::pipes

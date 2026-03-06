@@ -9,6 +9,7 @@
 #define NCCL_CPUSET_H_
 
 #include "nccl.h"
+#include "os.h"
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>

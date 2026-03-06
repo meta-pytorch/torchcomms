@@ -13,7 +13,7 @@
 #include <infiniband/verbs.h>
 
 #include <doca_gpunetio_host.h>
-#include "comms/ctran/interfaces/IBootstrap.h"
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/pipes/IbgdaBuffer.h"
 
 // Forward declarations for device types (defined in .cuh files)
@@ -250,7 +250,7 @@ class MultipeerIbgdaTransport {
   MultipeerIbgdaTransport(
       int myRank,
       int nRanks,
-      std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+      std::shared_ptr<meta::comms::IBootstrap> bootstrap,
       const MultipeerIbgdaTransportConfig& config);
 
   /**
@@ -385,7 +385,7 @@ class MultipeerIbgdaTransport {
   const int nRanks_{0};
 
   // Bootstrap for collective operations
-  std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap_;
+  std::shared_ptr<meta::comms::IBootstrap> bootstrap_;
 
   // Configuration
   MultipeerIbgdaTransportConfig config_;

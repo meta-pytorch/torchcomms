@@ -7,6 +7,7 @@
 
 #include "core.h"
 #include "graph.h"
+#include "os.h"
 #include "topo.h"
 #include "comm.h"
 #include "net.h"

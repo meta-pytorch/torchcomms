@@ -5,7 +5,7 @@
 namespace meta::comms {
 
 IpcMemHandler::IpcMemHandler(
-    std::shared_ptr<ctran::bootstrap::IBootstrap> commBootstrap,
+    std::shared_ptr<IBootstrap> commBootstrap,
     int32_t selfRank,
     int32_t nRanks)
     : commBootstrap_(std::move(commBootstrap)),

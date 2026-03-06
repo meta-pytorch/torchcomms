@@ -23,7 +23,7 @@ namespace ctran {
     }                                                                 \
   } while (0)
 
-void CtranTcpDm::bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap) {
+void CtranTcpDm::bootstrapPrepare(meta::comms::IBootstrap* bootstrap) {
   folly::SocketAddress ifAddrSockAddr;
   sockaddr_in6 sin6{};
   auto dev = netdev_->bootstrapIface();

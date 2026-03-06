@@ -2,20 +2,35 @@
 
 #include "comms/pipes/MultiPeerNvlTransport.h"
 
+#include <cuda_runtime.h>
 #include <vector>
 
 #include "comms/pipes/MultiPeerDeviceTransport.cuh"
+#include "comms/pipes/P2pSelfTransportDevice.cuh"
+#include "comms/pipes/Transport.cuh"
 #include "comms/pipes/window/DeviceWindowMemory.cuh"
-#include "comms/pipes/window/DeviceWindowSignal.cuh"
 #include "comms/pipes/window/WindowMemory.h"
 #include "comms/utils/checks.h"
 
 namespace comms::pipes {
 
+namespace {
+// Helper macro for CUDA error checking
+#define CUDACHECK(cmd)                                                   \
+  do {                                                                   \
+    cudaError_t e = cmd;                                                 \
+    if (e != cudaSuccess) {                                              \
+      throw std::runtime_error(                                          \
+          std::string("CUDA error: ") + cudaGetErrorString(e) + " at " + \
+          __FILE__ + ":" + std::to_string(__LINE__));                    \
+    }                                                                    \
+  } while (0)
+} // namespace
+
 MultiPeerNvlTransport::MultiPeerNvlTransport(
     int myRank,
     int nRanks,
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultiPeerNvlTransportConfig& multiPeerNvlTransportConfig)
     : myRank_(myRank),
       nRanks_(nRanks),
@@ -63,6 +78,12 @@ MultiPeerNvlTransport::MultiPeerNvlTransport(
   stateBufferHandler_ = std::make_unique<GpuMemHandler>(
       bootstrap_, myRank_, nRanks_, totalChunkStateBufferSize, memSharingMode_);
 
+  // Allocate device memory for Transport array (nRanks elements)
+  // This array is populated in exchange() after peer buffer pointers are
+  // available. Uses DeviceBuffer instead of raw cudaMalloc for RAII.
+  transportsDevice_ =
+      std::make_unique<meta::comms::DeviceBuffer>(nRanks_ * sizeof(Transport));
+
   // Initialize state buffer to READY_TO_SEND for all pipeline slots
   auto statePtr =
       static_cast<ChunkState*>(stateBufferHandler_->getLocalDeviceMemPtr());
@@ -91,9 +112,47 @@ void MultiPeerNvlTransport::exchange() {
   dataBufferHandler_->exchangeMemPtrs();
   stateBufferHandler_->exchangeMemPtrs();
   signalBufferHandler_->exchangeMemPtrs();
+
+  // Build Transport array with P2pNvlTransportDevice stored by value
+  auto* transports_d = static_cast<Transport*>(transportsDevice_->get());
+  for (int rank = 0; rank < nRanks_; ++rank) {
+    if (rank == myRank_) {
+      // Self transport for local copies
+      P2pSelfTransportDevice selfDevice{};
+      Transport hostTransport{selfDevice};
+      CUDACHECK(cudaMemcpy(
+          &transports_d[rank],
+          &hostTransport,
+          sizeof(Transport),
+          cudaMemcpyHostToDevice));
+    } else {
+      // P2P NVL transport - store by value in Transport
+      P2pNvlTransportDevice nvlDevice = buildP2pTransportDevice(rank);
+      Transport hostTransport{nvlDevice};
+      CUDACHECK(cudaMemcpy(
+          &transports_d[rank],
+          &hostTransport,
+          sizeof(Transport),
+          cudaMemcpyHostToDevice));
+    }
+  }
 }
 
-P2pNvlTransportDevice MultiPeerNvlTransport::getP2pTransportDevice(
+P2pNvlTransportDevice* MultiPeerNvlTransport::getP2pTransportDevice(
+    int peerRank) {
+  // Return pointer to the P2pNvlTransportDevice stored in the Transport union
+  if (peerRank == myRank_) {
+    throw std::runtime_error("Cannot get P2P transport for self rank");
+  }
+  auto* transports_d = static_cast<Transport*>(transportsDevice_->get());
+  return &transports_d[peerRank].p2p_nvl;
+}
+
+Transport* MultiPeerNvlTransport::getTransportsArray() {
+  return static_cast<Transport*>(transportsDevice_->get());
+}
+
+P2pNvlTransportDevice MultiPeerNvlTransport::buildP2pTransportDevice(
     int peerRank) {
   // Buffer Layout Example (4 ranks, buffer size X per peer):
   //
@@ -203,29 +262,41 @@ MultiPeerDeviceTransport MultiPeerNvlTransport::getMultiPeerDeviceTransport(
 }
 
 void MultiPeerNvlTransport::initializeTransportsArray() {
-  // Allocate device memory for Transport objects using DeviceBuffer
+  // NOTE: This function is for legacy lazy initialization via
+  // getDeviceTransports(). The main initialization path is in exchange() which
+  // populates transportsDevice_.
+  //
+  // If transportsDevice_ is already allocated (from constructor), this function
+  // just returns as the arrays were already set up in exchange().
+  if (transportsDevice_) {
+    return;
+  }
+
+  // Fallback: allocate and initialize if not already done
   transportsDevice_ =
       std::make_unique<meta::comms::DeviceBuffer>(nRanks_ * sizeof(Transport));
 
-  // Build host-side Transport array, then batch copy to device
-  // Note: We use move semantics since Transport is non-copyable
-  std::vector<Transport> hostTransports;
-  hostTransports.reserve(nRanks_);
+  // Build Transport array with P2pNvlTransportDevice stored by value
+  auto* transports_d = static_cast<Transport*>(transportsDevice_->get());
   for (int rank = 0; rank < nRanks_; ++rank) {
     if (rank == myRank_) {
-      hostTransports.emplace_back(P2pSelfTransportDevice());
+      P2pSelfTransportDevice selfDevice{};
+      Transport hostTransport{selfDevice};
+      CUDACHECK(cudaMemcpy(
+          &transports_d[rank],
+          &hostTransport,
+          sizeof(Transport),
+          cudaMemcpyHostToDevice));
     } else {
-      hostTransports.emplace_back(getP2pTransportDevice(rank));
+      P2pNvlTransportDevice nvlDevice = buildP2pTransportDevice(rank);
+      Transport hostTransport{nvlDevice};
+      CUDACHECK(cudaMemcpy(
+          &transports_d[rank],
+          &hostTransport,
+          sizeof(Transport),
+          cudaMemcpyHostToDevice));
     }
   }
-
-  // Single batched memcpy for all Transport objects
-  // This works because Transport is designed for byte-copy (see Transport.cuh)
-  CUDA_CHECK(cudaMemcpy(
-      transportsDevice_->get(),
-      hostTransports.data(),
-      nRanks_ * sizeof(Transport),
-      cudaMemcpyDefault));
 }
 
 } // namespace comms::pipes

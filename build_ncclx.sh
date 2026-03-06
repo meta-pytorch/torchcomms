@@ -185,13 +185,15 @@ function build_third_party {
     fi
   fi
 
-  # TODO: migrate out all dependencies for feedstock
   if [[ -z "${NCCL_FEEDSTOCK_BUILD}" ]]; then
     build_fb_oss_library "https://github.com/facebookincubator/fizz.git" "$third_party_tag" fizz "-DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF"
     build_fb_oss_library "https://github.com/facebook/mvfst" "$third_party_tag" quic
     build_fb_oss_library "https://github.com/facebook/wangle.git" "$third_party_tag" wangle "-DBUILD_TESTS=OFF"
+    build_fb_oss_library "https://github.com/facebook/fbthrift.git" "$third_party_tag" thrift
+  else
+    # TODO: use feedstock fbthrift instead of github fbthrift for feedstock build
+    build_fb_oss_library "https://github.com/facebook/fbthrift.git" main thrift
   fi
-  build_fb_oss_library "https://github.com/facebook/fbthrift.git" "$third_party_tag" thrift
   popd
 }
 
@@ -305,6 +307,18 @@ THRIFT_SERVICE_LDFLAGS=(
   "-l:libthrift-core.a"
   "-l:libthriftanyrep.a"
   "-l:libthriftcpp2.a"
+)
+
+# libthrift_dynamic_value.a and libthrift_path.a are only available in fbthrift main branch
+# (used by feedstock build), not in the pinned v2026.01.19.00 tag (used by OSS build)
+if [[ -n "${NCCL_FEEDSTOCK_BUILD}" ]]; then
+  THRIFT_SERVICE_LDFLAGS+=(
+    "-l:libthrift_dynamic_value.a"
+    "-l:libthrift_path.a"
+  )
+fi
+
+THRIFT_SERVICE_LDFLAGS+=(
   "-l:libthriftmetadata.a"
   "-l:libthriftprotocol.a"
   "-l:libthrifttype.a"

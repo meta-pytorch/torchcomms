@@ -15,6 +15,14 @@
 #include <ctime>
 #include <mutex>
 
+#if !defined(NCCL_OS_LINUX) && !defined(NCCL_OS_WINDOWS)
+#if defined(_WIN32) || defined(_WIN64)
+#define NCCL_OS_WINDOWS
+#else
+#define NCCL_OS_LINUX
+#endif
+#endif
+
 #ifdef NCCL_OS_WINDOWS
 #include <windows.h>
 #include <winsock2.h>

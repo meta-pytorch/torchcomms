@@ -13,6 +13,7 @@ option(USE_RCCL "Whether to build RCCL or not" OFF)
 option(USE_RCCLX "Whether to build RCCLX or not" OFF)
 option(USE_XCCL "Whether to build XCCL or not" OFF)
 option(USE_TRANSPORT "Whether to build TRANSPORT or not" ON)
+option(USE_TRITON "Whether to build Triton device bitcode or not" OFF)
 option(BUILD_TESTS "Whether to build tests or not" OFF)
 message(STATUS "  USE_NCCL : ${USE_NCCL}")
 message(STATUS "  USE_NCCLX : ${USE_NCCLX}")
@@ -21,6 +22,7 @@ message(STATUS "  USE_RCCL  : ${USE_RCCL}")
 message(STATUS "  USE_RCCLX  : ${USE_RCCLX}")
 message(STATUS "  USE_XCCL  : ${USE_XCCL}")
 message(STATUS "  USE_TRANSPORT  : ${USE_TRANSPORT}")
+message(STATUS "  USE_TRITON     : ${USE_TRITON}")
 message(STATUS "  BUILD_TESTS    : ${BUILD_TESTS}")
 
 if(NOT DEFINED ENV{TORCH_CUDA_ARCH_LIST})
@@ -64,11 +66,19 @@ file(GLOB TORCHCOMMS_SOURCES "comms/torchcomms/*.cpp")
 file(GLOB TORCHCOMMS_PYTHON_SOURCES "comms/torchcomms/*Py.cpp")
 file(GLOB HOOKS_SOURCES "comms/torchcomms/hooks/*.cpp")
 file(GLOB HOOKS_PYTHON_SOURCES "comms/torchcomms/hooks/*Py.cpp")
+file(GLOB UTILS_SOURCES "comms/torchcomms/utils/*.cpp")
 
 list(REMOVE_ITEM TORCHCOMMS_SOURCES ${TORCHCOMMS_PYTHON_SOURCES})
 list(REMOVE_ITEM HOOKS_SOURCES ${HOOKS_PYTHON_SOURCES})
 
+# Separate BackendWrapperPy.cpp and StoreManagerPy.cpp from other Python sources
+set(BACKEND_WRAPPER_PYTHON_SOURCES "comms/torchcomms/BackendWrapperPy.cpp")
+set(STORE_MANAGER_PYTHON_SOURCES "comms/torchcomms/StoreManagerPy.cpp")
+list(REMOVE_ITEM TORCHCOMMS_PYTHON_SOURCES ${BACKEND_WRAPPER_PYTHON_SOURCES})
+list(REMOVE_ITEM TORCHCOMMS_PYTHON_SOURCES ${STORE_MANAGER_PYTHON_SOURCES})
+
 list(APPEND TORCHCOMMS_SOURCES ${HOOKS_SOURCES})
+list(APPEND TORCHCOMMS_SOURCES ${UTILS_SOURCES})
 list(APPEND TORCHCOMMS_PYTHON_SOURCES ${HOOKS_PYTHON_SOURCES})
 
 # Set include directories
@@ -144,6 +154,50 @@ target_link_libraries(torchcomms_comms PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+# Extension: torchcomms._backend_wrapper
+add_library(torchcomms_backend_wrapper MODULE ${BACKEND_WRAPPER_PYTHON_SOURCES})
+set_target_properties(torchcomms_backend_wrapper PROPERTIES
+    PREFIX ""  # No 'lib' prefix for Python extension
+    OUTPUT_NAME "_backend_wrapper"
+    SUFFIX ".${Python3_SOABI}.so"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms"
+)
+target_include_directories(torchcomms_backend_wrapper PRIVATE
+    ${ROOT}
+    ${CONDA_INCLUDE}
+    ${Python3_INCLUDE_DIRS}
+)
+target_compile_features(torchcomms_backend_wrapper PRIVATE cxx_std_20)
+target_link_directories(torchcomms_backend_wrapper PRIVATE ${CONDA_LIB})
+target_link_libraries(torchcomms_backend_wrapper PRIVATE
+    ${TORCH_LIBRARIES}
+    ${TORCH_PYTHON_LIB}
+    torchcomms
+    nlohmann_json::nlohmann_json
+)
+
+# Extension: torchcomms._store_manager
+add_library(torchcomms_store_manager MODULE ${STORE_MANAGER_PYTHON_SOURCES})
+set_target_properties(torchcomms_store_manager PROPERTIES
+    PREFIX ""  # No 'lib' prefix for Python extension
+    OUTPUT_NAME "_store_manager"
+    SUFFIX ".${Python3_SOABI}.so"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms"
+)
+target_include_directories(torchcomms_store_manager PRIVATE
+    ${ROOT}
+    ${CONDA_INCLUDE}
+    ${Python3_INCLUDE_DIRS}
+)
+target_compile_features(torchcomms_store_manager PRIVATE cxx_std_20)
+target_link_directories(torchcomms_store_manager PRIVATE ${CONDA_LIB})
+target_link_libraries(torchcomms_store_manager PRIVATE
+    ${TORCH_LIBRARIES}
+    ${TORCH_PYTHON_LIB}
+    torchcomms
+    nlohmann_json::nlohmann_json
+)
+
 if (USE_NCCL)
     include(comms/torchcomms/nccl/CMakeLists.txt)
 endif()
@@ -165,6 +219,9 @@ endif()
 if (USE_TRANSPORT)
     include(comms/torchcomms/transport/CMakeLists.txt)
 endif()
+if (USE_TRITON)
+    include(comms/torchcomms/triton/CMakeLists.txt)
+endif()
 include(comms/torchcomms/hooks/fr/CMakeLists.txt)
 
 # Install targets to Python package structure
@@ -172,6 +229,12 @@ install(TARGETS torchcomms
     LIBRARY DESTINATION .
 )
 install(TARGETS torchcomms_comms
+    LIBRARY DESTINATION .
+)
+install(TARGETS torchcomms_backend_wrapper
+    LIBRARY DESTINATION .
+)
+install(TARGETS torchcomms_store_manager
     LIBRARY DESTINATION .
 )
 

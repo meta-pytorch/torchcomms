@@ -35,7 +35,7 @@
 #include "comms/ctran/Ctran.h"
 #include "meta/commstate/FactoryCommStateX.h"
 #include "comms/ctran/commstate/CommStateX.h"
-#include "comms/ctran/interfaces/IBootstrap.h"
+#include "comms/common/bootstrap/IBootstrap.h"
 #include "comms/ctran/utils/Utils.h"
 #include "comms/ctran/utils/SkipDestroyUtil.h"
 #include "comms/utils/commSpecs.h"

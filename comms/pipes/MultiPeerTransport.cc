@@ -34,7 +34,7 @@ MultiPeerTransport::MultiPeerTransport(
     int myRank,
     int nRanks,
     int deviceId,
-    std::shared_ptr<ctran::bootstrap::IBootstrap> bootstrap,
+    std::shared_ptr<meta::comms::IBootstrap> bootstrap,
     const MultiPeerTransportConfig& config)
     : myRank_(myRank),
       nRanks_(nRanks),
@@ -115,7 +115,7 @@ bool MultiPeerTransport::is_ibgda_peer(int peerRank) const {
   return typePerRank_[peerRank] == TransportType::P2P_IBGDA;
 }
 
-P2pNvlTransportDevice MultiPeerTransport::get_p2p_nvl_transport_device(
+P2pNvlTransportDevice* MultiPeerTransport::get_p2p_nvl_transport_device(
     int globalPeerRank) const {
   if (!nvlTransport_) {
     throw std::runtime_error(
@@ -180,7 +180,8 @@ void MultiPeerTransport::build_device_handle() {
 
       case TransportType::P2P_NVL: {
         int nvlLocal = globalToNvlLocal_.at(r);
-        auto nvlDev = nvlTransport_->getP2pTransportDevice(nvlLocal);
+        P2pNvlTransportDevice nvlDev =
+            nvlTransport_->buildP2pTransportDevice(nvlLocal);
         new (&transportsHost[r]) Transport(nvlDev);
         break;
       }

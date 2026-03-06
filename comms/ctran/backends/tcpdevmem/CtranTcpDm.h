@@ -121,7 +121,7 @@ class CtranTcpDm {
 
   commResult_t connectPeer(int peerRank);
 
-  void bootstrapPrepare(ctran::bootstrap::IBootstrap* bootstrap);
+  void bootstrapPrepare(meta::comms::IBootstrap* bootstrap);
   void bootstrapAddRecvPeer(
       int peerRank,
       ::comms::tcp_devmem::CommunicatorInterface* comm);

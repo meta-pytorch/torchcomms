@@ -10,7 +10,7 @@ from typing import Any
 
 import torch
 from torch.monitor import _WaitCounter
-from torchcomms._comms import TorchComm
+from torchcomms import TorchComm
 
 
 class _Serialization:
@@ -107,7 +107,7 @@ def all_gather_object(
 
     .. warning::
         Object collectives have a number of serious performance and scalability
-        limitations.  See :ref:`object_collectives` for details.
+        limitations.
 
     .. warning::
         :func:`all_gather_object` uses ``pickle`` module implicitly, which is
@@ -212,7 +212,7 @@ def gather_object(
 
     .. warning::
         Object collectives have a number of serious performance and scalability
-        limitations.  See :ref:`object_collectives` for details.
+        limitations.
 
     .. warning::
         :func:`gather_object` uses ``pickle`` module implicitly, which is
@@ -326,7 +326,7 @@ def send_object_list(
 
     .. warning::
         Object collectives have a number of serious performance and scalability
-        limitations.  See :ref:`object_collectives` for details.
+        limitations.
 
     .. warning::
         :func:`send_object_list` uses ``pickle`` module implicitly, which
@@ -415,7 +415,7 @@ def recv_object_list(
 
     .. warning::
         Object collectives have a number of serious performance and scalability
-        limitations.  See :ref:`object_collectives` for details.
+        limitations.
 
     .. warning::
         :func:`recv_object_list` uses ``pickle`` module implicitly, which
@@ -513,7 +513,7 @@ def broadcast_object_list(
 
     .. warning::
         Object collectives have a number of serious performance and scalability
-        limitations.  See :ref:`object_collectives` for details.
+        limitations.
 
     .. warning::
         :func:`broadcast_object_list` uses ``pickle`` module implicitly, which
@@ -624,7 +624,7 @@ def scatter_object_list(
 
     .. warning::
         Object collectives have a number of serious performance and scalability
-        limitations.  See :ref:`object_collectives` for details.
+        limitations.
 
     .. warning::
         :func:`scatter_object_list` uses ``pickle`` module implicitly, which

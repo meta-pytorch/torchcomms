@@ -8,9 +8,9 @@
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommLogging.hpp"
-#include "comms/torchcomms/TorchCommUtils.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLX.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
+#include "comms/torchcomms/utils/Utils.hpp"
 #include "nccl.h" // @manual
 
 namespace torch::comms {
@@ -136,7 +136,7 @@ void TorchCommNCCLXBootstrap::createStore(std::string_view name) {
     if (!is_tcp_store_enabled) {
       throw std::runtime_error("No way to exchange unique ID");
     }
-    store_ = StoreManager::get().getStore(
+    store_ = StoreManager::get().createPrefixedStore(
         TorchCommNCCLX::kBackendName, name, timeout_);
     created_internal_store_ = true;
   }
