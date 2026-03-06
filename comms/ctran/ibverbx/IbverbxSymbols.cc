@@ -398,6 +398,24 @@ void linked_mlx5dv_wr_set_dc_addr(
       remote_dctn,
       remote_dc_key);
 }
+
+void linked_mlx5dv_wr_set_dc_addr_stream(
+    struct mlx5dv_qp_ex* mqp,
+    struct ibv_ah* ah,
+    uint32_t remote_dctn,
+    uint64_t remote_dc_key,
+    uint16_t stream_id) {
+  mlx5dv_wr_set_dc_addr_stream(
+      reinterpret_cast<::mlx5dv_qp_ex*>(mqp),
+      reinterpret_cast<::ibv_ah*>(ah),
+      remote_dctn,
+      remote_dc_key,
+      stream_id);
+}
+
+int linked_mlx5dv_dci_stream_id_reset(struct ibv_qp* qp, uint16_t stream_id) {
+  return mlx5dv_dci_stream_id_reset(reinterpret_cast<::ibv_qp*>(qp), stream_id);
+}
 #endif
 
 // Wrapper functions for extended QP operations
@@ -505,6 +523,10 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
   symbols.ibv_internal_wr_set_sge_list = &linked_wr_set_sge_list;
   symbols.ibv_internal_wr_complete = &linked_wr_complete;
   symbols.mlx5dv_internal_wr_set_dc_addr = &linked_mlx5dv_wr_set_dc_addr;
+  symbols.mlx5dv_internal_wr_set_dc_addr_stream =
+      &linked_mlx5dv_wr_set_dc_addr_stream;
+  symbols.mlx5dv_internal_dci_stream_id_reset =
+      &linked_mlx5dv_dci_stream_id_reset;
 
   return 0;
 #else
@@ -659,6 +681,11 @@ int buildIbvSymbols(IbvSymbols& symbols, const std::string& ibv_path) {
       "mlx5dv_reg_dmabuf_mr",
       symbols.mlx5dv_internal_reg_dmabuf_mr,
       "MLX5_1.25");
+  // Cherry-pick the mlx5dv_dci_stream_id_reset API from MLX5 1.21
+  LOAD_MLX5DV_SYM_VERSION(
+      "mlx5dv_dci_stream_id_reset",
+      symbols.mlx5dv_internal_dci_stream_id_reset,
+      "MLX5_1.21");
 
   // all symbols were loaded successfully, dismiss guard
   guard.dismiss();

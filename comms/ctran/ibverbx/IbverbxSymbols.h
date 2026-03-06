@@ -179,6 +179,17 @@ struct IbvSymbols {
       struct ibv_ah* ah,
       uint32_t remote_dctn,
       uint64_t remote_dc_key) = nullptr;
+
+  /* DCI Streams support */
+  void (*mlx5dv_internal_wr_set_dc_addr_stream)(
+      struct mlx5dv_qp_ex* mqp,
+      struct ibv_ah* ah,
+      uint32_t remote_dctn,
+      uint64_t remote_dc_key,
+      uint16_t stream_id) = nullptr;
+  int (*mlx5dv_internal_dci_stream_id_reset)(
+      struct ibv_qp* qp,
+      uint16_t stream_id) = nullptr;
 };
 
 extern IbvSymbols ibvSymbols;
