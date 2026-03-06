@@ -107,7 +107,7 @@ void MultipeerIbgdaTransport::initDocaGpu() {
         std::string(cudaGetErrorString(cudaErr)));
   }
 
-  gpuPciBusId_ = NicDiscovery::getCudaPciBusId(config_.cudaDevice);
+  gpuPciBusId_ = GpuNicDiscovery::getCudaPciBusId(config_.cudaDevice);
 
   LOG(INFO) << "MultipeerIbgdaTransport: GPU " << config_.cudaDevice << " PCIe "
             << gpuPciBusId_;
@@ -139,7 +139,7 @@ void MultipeerIbgdaTransport::openIbDevice() {
 
   // Priority 2: Auto-discovery if no config override
   if (nicDeviceName_.empty()) {
-    NicDiscovery discovery(config_.cudaDevice, config_.ibHca);
+    auto discovery = GpuNicDiscovery(config_.cudaDevice, config_.ibHca);
     const auto& candidates = discovery.getCandidates();
     nicDeviceName_ = candidates[0].name;
     LOG(INFO) << "MultipeerIbgdaTransport: using NIC " << nicDeviceName_
