@@ -42,13 +42,15 @@ void launchBarrierBenchKernel(
   // Create local and remote state with barrier buffers
   LocalState localState{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(localBarrier, numBarriers),
   };
   RemoteState remoteState{
       .dataBuffer = nullptr,
-      .stateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .senderStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
+      .receiverStateBuffer = DeviceSpan<ChunkState>(nullptr, 0),
       .signalBuffer = DeviceSpan<SignalState>(nullptr, 0),
       .barrierBuffer = DeviceSpan<BarrierState>(remoteBarrier, numBarriers),
   };

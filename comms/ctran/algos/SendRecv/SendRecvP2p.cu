@@ -34,7 +34,7 @@ __device__ __forceinline__ void recvImpl(
   }
 }
 
-__global__ void ncclKernelSendRecvP2p(
+__global__ __launch_bounds__(512, 1) void ncclKernelSendRecvP2p(
     int* flag,
     CtranAlgoDeviceState* devState, // TODO: this is not needed for now, but
                                     // maybe needed for fault-tolerance

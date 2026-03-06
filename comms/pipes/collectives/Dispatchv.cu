@@ -4,6 +4,7 @@
 #include "comms/pipes/collectives/Dispatchv.h"
 
 #include "comms/pipes/Checks.h"
+#include "comms/pipes/P2pNvlTransportDevice.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 
 namespace comms::pipes {

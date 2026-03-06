@@ -42,6 +42,19 @@ void testThreadSoloGroup(
     int numBlocks,
     int blockSize);
 
+// Kernel: testStridedLocalityKernel
+// Tests that for_each_item_strided assigns work items in a strided
+// fashion. Each group writes its group_id to all work items it processes.
+// The CPU then verifies that item K is assigned to group (K % total_groups),
+// confirming strided assignment.
+void testStridedLocality(
+    uint32_t* groupIds_d,
+    uint32_t numItems,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize,
+    SyncScope scope);
+
 // Tests make_block_group() - where all threads in a block form one group
 // Verifies:
 // - group_id == blockIdx.x
@@ -97,7 +110,7 @@ void testWeightedPartition(
     int blockSize,
     SyncScope scope);
 
-// Tests partition_interleaved(num_partitions) - round-robin partition
+// Tests partition_interleaved(num_partitions) - interleaved partition
 // Verifies:
 // - Each group gets partition_id = group_id % num_partitions
 // - subgroup.group_id is renumbered as group_id / num_partitions

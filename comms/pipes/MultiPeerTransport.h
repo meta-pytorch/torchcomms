@@ -131,9 +131,10 @@ class MultiPeerTransport {
 
   /**
    * @param globalPeerRank Global rank of the NVL peer.
-   * @return P2pNvlTransportDevice handle (by value) for the given peer.
+   * @return Pointer to P2pNvlTransportDevice on device memory for the given
+   * peer.
    */
-  P2pNvlTransportDevice get_p2p_nvl_transport_device(int globalPeerRank) const;
+  P2pNvlTransportDevice* get_p2p_nvl_transport_device(int globalPeerRank) const;
 
   /**
    * @param globalPeerRank Global rank of the IBGDA peer.

@@ -74,7 +74,7 @@ class P2pSendRecvMultipleBenchmarkFixture : public MpiBaseTestFixture {
 
   // Run send/recv benchmark - returns latency in microseconds
   float runSendRecvBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
+      comms::pipes::P2pNvlTransportDevice* p2p,
       const BenchmarkConfig& config) {
     DeviceBuffer sendBuff(config.nBytes);
     DeviceBuffer recvBuff(config.nBytes);
@@ -140,7 +140,7 @@ class P2pSendRecvMultipleBenchmarkFixture : public MpiBaseTestFixture {
 
   // Run send_multiple/recv_multiple benchmark - returns latency in microseconds
   float runSendRecvMultipleBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
+      comms::pipes::P2pNvlTransportDevice* p2p,
       const BenchmarkConfig& config,
       int numChunks) {
     DeviceBuffer sendBuff(config.nBytes);

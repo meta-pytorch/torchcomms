@@ -23,26 +23,58 @@ struct ThreadGroup;
  *
  * STATES:
  * =======
- *   READY_TO_SEND (-1) : Buffer is empty, sender can write
+ *   READY_TO_SEND (-1) : Buffer is ready for sender to write
  *   READY_TO_RECV (N)  : Buffer has data from step N, receiver can read
+ *   UNREADY (-2)       : Buffer is in transition (local-only, group-visible)
  *
- * STATE MACHINE:
- * ==============
+ * STATE MACHINE (Single State Mode):
+ * ==================================
  *                      ready_to_recv(stepId)
  *    ┌───────────────┐ ─────────────────────▶ ┌───────────────┐
  *    │ READY_TO_SEND │                        │ READY_TO_RECV │
  *    │     (-1)      │ ◀───────────────────── │   (stepId)    │
  *    └───────────────┘      ready_to_send()   └───────────────┘
  *
- * SENDER WORKFLOW:
+ * STATE MACHINE (Dual State Mode - senderStateBuffer):
+ * ====================================================
+ *   init: READY_TO_SEND (-1)
+ *                        unready()
+ *    ┌───────────────┐ ─────────────────────▶ ┌───────────────┐
+ *    │ READY_TO_SEND │                        │   UNREADY     │
+ *    │     (-1)      │ ◀───────────────────── │    (-2)       │
+ *    └───────────────┘   ready_to_send()      └───────────────┘
+ *                        (from receiver)
+ *
+ * STATE MACHINE (Dual State Mode - receiverStateBuffer):
+ * ======================================================
+ *   init: UNREADY (-2)
+ *                      ready_to_recv(stepId)
+ *    ┌───────────────┐ ─────────────────────▶ ┌───────────────┐
+ *    │   UNREADY     │                        │ READY_TO_RECV │
+ *    │    (-2)       │ ◀───────────────────── │   (stepId)    │
+ *    └───────────────┘       unready()        └───────────────┘
+ *
+ * SENDER WORKFLOW (Single State):
  *   1. wait_ready_to_send()      - Block until state == READY_TO_SEND
  *   2. [copy data to buffer]
  *   3. ready_to_recv(stepId)    - Transition to READY_TO_RECV
  *
- * RECEIVER WORKFLOW:
+ * RECEIVER WORKFLOW (Single State):
  *   1. wait_ready_to_recv(stepId) - Block until state == stepId
  *   2. [copy data from buffer]
  *   3. ready_to_send()           - Transition to READY_TO_SEND
+ *
+ * SENDER WORKFLOW (Dual State):
+ *   1. wait_ready_to_send()      - Wait for READY_TO_SEND on senderState
+ *   2. [copy data to peer buffer]
+ *   3. unready()                 - Mark local senderState as UNREADY
+ *   4. ready_to_recv(stepId)     - Signal peer's receiverState via NVLink
+ *
+ * RECEIVER WORKFLOW (Dual State):
+ *   1. wait_ready_to_recv(stepId) - Wait for stepId on receiverState
+ *   2. [copy data from buffer]
+ *   3. unready()                  - Mark local receiverState as UNREADY
+ *   4. ready_to_send()            - Signal peer's senderState via NVLink
  *
  * CALL INDEX FOR MULTI-CALL SAFETY:
  * ==================================
@@ -78,6 +110,7 @@ struct ThreadGroup;
  */
 struct alignas(128) ChunkState {
   static constexpr int32_t READY_TO_SEND = -1;
+  static constexpr int32_t UNREADY = -2;
 
   int32_t value_; // 4 bytes - sync state (stepId or READY_TO_SEND)
   uint32_t call_index_; // 4 bytes - call disambiguation for multi-call safety
@@ -140,24 +173,56 @@ struct alignas(128) ChunkState {
    * ready_to_recv - Signal that data is ready for receiver
    *
    * Transitions state from READY_TO_SEND to READY_TO_RECV.
-   * Syncs all threads, then leader writes call_index and stepId.
+   * Syncs all threads (unless skip_sync=true), then leader writes call_index
+   * and stepId.
    *
    * @param group ThreadGroup for cooperative processing
    * @param stepId The step identifier for this data
    * @param call_index Call index for multi-call disambiguation
+   * @param skip_sync If true, skip the group.sync() before writing. Use this
+   *                  when calling immediately after unready() which already
+   *                  performed the sync. Default: false.
    */
-  __device__ __forceinline__ void
-  ready_to_recv(ThreadGroup& group, std::size_t stepId, uint32_t call_index);
+  __device__ __forceinline__ void ready_to_recv(
+      ThreadGroup& group,
+      std::size_t stepId,
+      uint32_t call_index,
+      bool skip_sync = false);
 
   /**
    * ready_to_send - Signal that buffer can be reused by sender
    *
    * Transitions state from READY_TO_RECV to READY_TO_SEND.
-   * Syncs all threads, then leader writes READY_TO_SEND.
+   * Syncs all threads (unless skip_sync=true), then leader writes
+   * READY_TO_SEND.
+   *
+   * @param group ThreadGroup for cooperative processing
+   * @param skip_sync If true, skip the group.sync() before writing. Use this
+   *                  when calling immediately after unready() which already
+   *                  performed the sync. Default: false.
+   */
+  __device__ __forceinline__ void ready_to_send(
+      ThreadGroup& group,
+      bool skip_sync = false);
+
+  /**
+   * unready - Mark chunk state as UNREADY (local-only, group-visible)
+   *
+   * Sets the state to UNREADY (-2) using a plain write (not release-store).
+   * This is faster than release-store but only guarantees visibility within
+   * the same thread group after group.sync().
+   *
+   * USAGE: Called by sender after send and before signaling receiver,
+   * or by receiver after read and before signaling sender. This prevents
+   * the same side from re-executing before the other side has completed.
+   *
+   * REQUIRES: Caller must use for_each_item_strided to ensure the same
+   * chunk is always assigned to the same thread group. Without this,
+   * the UNREADY write may not be visible to other groups.
    *
    * @param group ThreadGroup for cooperative processing
    */
-  __device__ __forceinline__ void ready_to_send(ThreadGroup& group);
+  __device__ __forceinline__ void unready(ThreadGroup& group);
 
   /**
    * write_metadata - Write metadata fields (leader only)
@@ -253,8 +318,11 @@ __device__ __forceinline__ void ChunkState::wait_ready_to_recv(
 __device__ __forceinline__ void ChunkState::ready_to_recv(
     ThreadGroup& group,
     std::size_t stepId,
-    uint32_t call_index) {
-  group.sync();
+    uint32_t call_index,
+    bool skip_sync) {
+  if (!skip_sync) {
+    group.sync();
+  }
   if (group.is_leader()) {
     // Write call_index BEFORE release-store of value_.
     // This ensures receiver sees call_index after acquire-load of value_.
@@ -263,10 +331,21 @@ __device__ __forceinline__ void ChunkState::ready_to_recv(
   }
 }
 
-__device__ __forceinline__ void ChunkState::ready_to_send(ThreadGroup& group) {
-  group.sync();
+__device__ __forceinline__ void ChunkState::ready_to_send(
+    ThreadGroup& group,
+    bool skip_sync) {
+  if (!skip_sync) {
+    group.sync();
+  }
   if (group.is_leader()) {
     store(READY_TO_SEND);
+  }
+}
+
+__device__ __forceinline__ void ChunkState::unready(ThreadGroup& group) {
+  group.sync();
+  if (group.is_leader()) {
+    value_ = UNREADY;
   }
 }
 

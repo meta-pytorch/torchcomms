@@ -73,7 +73,7 @@ class P2pSendRecvOneBenchmarkFixture : public MpiBaseTestFixture {
 
   // Run send/recv benchmark - returns latency in microseconds
   float runSendRecvBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
+      comms::pipes::P2pNvlTransportDevice* p2p,
       const BenchmarkConfig& config) {
     DeviceBuffer sendBuff(config.nBytes);
     DeviceBuffer recvBuff(config.nBytes);
@@ -139,7 +139,7 @@ class P2pSendRecvOneBenchmarkFixture : public MpiBaseTestFixture {
 
   // Run send_one/recv_one benchmark - returns latency in microseconds
   float runSendRecvOneBenchmark(
-      comms::pipes::P2pNvlTransportDevice& p2p,
+      comms::pipes::P2pNvlTransportDevice* p2p,
       const BenchmarkConfig& config) {
     DeviceBuffer sendBuff(config.nBytes);
     DeviceBuffer recvBuff(config.nBytes);
