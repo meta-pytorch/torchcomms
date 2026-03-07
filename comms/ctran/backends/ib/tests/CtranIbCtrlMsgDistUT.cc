@@ -77,10 +77,10 @@ TEST_F(CtranIbCtrlMsgTest, CtrlMsg) {
       reqs.resize(3, CtranIbRequest());
       smsgs.resize(3, ControlMsg(ControlMsgType::IB_EXPORT_MEM));
       // send two msgs to rank 1
-      smsgs[0].ibExp.remoteAddr = 99;
-      smsgs[0].ibExp.rkeys[0] = recvRank0;
-      smsgs[0].ibExp.rkeys[1] = recvRank0;
-      smsgs[0].ibExp.nKeys = 2;
+      smsgs[0].ibDesc.remoteAddr = 99;
+      smsgs[0].ibDesc.rkeys[0] = recvRank0;
+      smsgs[0].ibDesc.rkeys[1] = recvRank0;
+      smsgs[0].ibDesc.nKeys = 2;
       COMMCHECK_TEST(ctranIb->isendCtrlMsg(
           smsgs[0].type, &smsgs[0], sizeof(smsgs[0]), recvRank0, reqs[0]));
 
@@ -89,19 +89,19 @@ TEST_F(CtranIbCtrlMsgTest, CtrlMsg) {
       // arrived in order
       sleep(2);
 
-      smsgs[1].ibExp.remoteAddr = 100;
-      smsgs[1].ibExp.rkeys[0] = recvRank0;
-      smsgs[1].ibExp.rkeys[1] = recvRank0;
-      smsgs[1].ibExp.nKeys = 2;
+      smsgs[1].ibDesc.remoteAddr = 100;
+      smsgs[1].ibDesc.rkeys[0] = recvRank0;
+      smsgs[1].ibDesc.rkeys[1] = recvRank0;
+      smsgs[1].ibDesc.nKeys = 2;
 
       COMMCHECK_TEST(ctranIb->isendCtrlMsg(
           smsgs[1].type, &smsgs[1], sizeof(smsgs[1]), recvRank0, reqs[1]));
 
       // send one msg to rank 2
-      smsgs[2].ibExp.remoteAddr = 101;
-      smsgs[2].ibExp.rkeys[0] = recvRank1;
-      smsgs[2].ibExp.rkeys[1] = recvRank1;
-      smsgs[2].ibExp.nKeys = 2;
+      smsgs[2].ibDesc.remoteAddr = 101;
+      smsgs[2].ibDesc.rkeys[0] = recvRank1;
+      smsgs[2].ibDesc.rkeys[1] = recvRank1;
+      smsgs[2].ibDesc.nKeys = 2;
       COMMCHECK_TEST(ctranIb->isendCtrlMsg(
           smsgs[2].type, &smsgs[2], sizeof(smsgs[2]), recvRank1, reqs[2]));
     } else if (this->globalRank == recvRank0) {
@@ -126,19 +126,19 @@ TEST_F(CtranIbCtrlMsgTest, CtrlMsg) {
     }
 
     if (this->globalRank == recvRank0) {
-      EXPECT_EQ(rmsg0.ibExp.rkeys[0], recvRank0);
-      EXPECT_EQ(rmsg0.ibExp.rkeys[1], recvRank0);
-      EXPECT_EQ(rmsg0.ibExp.nKeys, 2);
-      EXPECT_EQ(rmsg0.ibExp.remoteAddr, 99);
-      EXPECT_EQ(rmsg1.ibExp.rkeys[0], recvRank0);
-      EXPECT_EQ(rmsg1.ibExp.rkeys[1], recvRank0);
-      EXPECT_EQ(rmsg1.ibExp.nKeys, 2);
-      EXPECT_EQ(rmsg1.ibExp.remoteAddr, 100);
+      EXPECT_EQ(rmsg0.ibDesc.rkeys[0], recvRank0);
+      EXPECT_EQ(rmsg0.ibDesc.rkeys[1], recvRank0);
+      EXPECT_EQ(rmsg0.ibDesc.nKeys, 2);
+      EXPECT_EQ(rmsg0.ibDesc.remoteAddr, 99);
+      EXPECT_EQ(rmsg1.ibDesc.rkeys[0], recvRank0);
+      EXPECT_EQ(rmsg1.ibDesc.rkeys[1], recvRank0);
+      EXPECT_EQ(rmsg1.ibDesc.nKeys, 2);
+      EXPECT_EQ(rmsg1.ibDesc.remoteAddr, 100);
     } else if (this->globalRank == recvRank1) {
-      EXPECT_EQ(rmsg0.ibExp.rkeys[0], recvRank1);
-      EXPECT_EQ(rmsg0.ibExp.rkeys[1], recvRank1);
-      EXPECT_EQ(rmsg0.ibExp.nKeys, 2);
-      EXPECT_EQ(rmsg0.ibExp.remoteAddr, 101);
+      EXPECT_EQ(rmsg0.ibDesc.rkeys[0], recvRank1);
+      EXPECT_EQ(rmsg0.ibDesc.rkeys[1], recvRank1);
+      EXPECT_EQ(rmsg0.ibDesc.nKeys, 2);
+      EXPECT_EQ(rmsg0.ibDesc.remoteAddr, 101);
     }
   } catch (const std::bad_alloc& _) {
     GTEST_SKIP() << "IB backend not enabled. Skip test";

@@ -15,8 +15,6 @@
 #include "comms/ctran/regcache/IpcRegCacheBase.h"
 #include "comms/ctran/utils/CtranIpc.h"
 
-constexpr int CTRAN_MAX_IB_DEVICES_PER_RANK{2};
-
 /**
  * Define all control message types used in CTran backends.
  *
@@ -76,24 +74,6 @@ struct CtranIbConfig {
   int64_t trafficClass{NCCL_IB_TC};
 };
 
-struct CmsgIbExportMem {
-  uint64_t remoteAddr{0};
-  std::array<uint32_t, CTRAN_MAX_IB_DEVICES_PER_RANK> rkeys{};
-  int nKeys{0};
-
-  static const std::string name;
-
-  CmsgIbExportMem() {};
-  std::string toString() const {
-    std::stringstream ss;
-    ss << "[" << name << "] remoteAddr: 0x" << std::hex << remoteAddr;
-    for (int i = 0; i < nKeys; i++) {
-      ss << ", rkeys[" << i << "]: " << std::dec << rkeys[i];
-    }
-    return ss.str();
-  }
-};
-
 /**
  * Packet structure of control message transferred by underlying backend.
  */
@@ -102,7 +82,7 @@ struct ControlMsg {
   union {
     struct ctran::regcache::IpcDesc ipcDesc;
     struct ctran::regcache::IpcRelease ipcRls;
-    struct CmsgIbExportMem ibExp;
+    struct ctran::regcache::IBDesc ibDesc;
   };
 
   AuxData_t<DefaultAuxType> aux; // Used to store the remote aux data
@@ -124,7 +104,7 @@ struct ControlMsg {
         ipcRls = ctran::regcache::IpcRelease{};
         break;
       case ControlMsgType::IB_EXPORT_MEM:
-        ibExp = CmsgIbExportMem{};
+        ibDesc = ctran::regcache::IBDesc{};
         break;
       default:
         break;
@@ -141,7 +121,7 @@ struct ControlMsg {
         ss << ipcRls.toString();
         break;
       case ControlMsgType::IB_EXPORT_MEM:
-        ss << ibExp.toString();
+        ss << ibDesc.toString();
         break;
       case ControlMsgType::SYNC:
         ss << "SYNC";
