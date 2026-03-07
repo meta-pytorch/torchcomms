@@ -1,4 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
+# patternlint-disable fbcode-nonempty-init-py
 
 import os
 
