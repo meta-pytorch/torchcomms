@@ -1,4 +1,3 @@
-
 # XCCL Backend in TorchComms
 
 The **XCCL backend** in **TorchComms** enables high‑performance distributed computing on **Intel® GPUs** for both **scale‑up** (single-node, multi‑GPU) and **scale‑out** (multi‑node) environments. In PyTorch, the device type used for Intel GPUs is **`xpu`**.
