@@ -17,7 +17,7 @@ __global__ void p2pSend(
     Timeout timeout) {
   timeout.start();
   auto group = make_thread_group(groupScope);
-  p2p->send(group, srcBuff, nBytes, 0, timeout);
+  p2p->send(group, srcBuff, nBytes, timeout);
 }
 
 __global__ void p2pRecv(
@@ -28,7 +28,7 @@ __global__ void p2pRecv(
     Timeout timeout) {
   timeout.start();
   auto group = make_thread_group(groupScope);
-  p2p->recv(group, dstBuff, nBytes, 0, timeout);
+  p2p->recv(group, dstBuff, nBytes, timeout);
 }
 
 __global__ void p2pSendTimed(
@@ -92,9 +92,9 @@ __global__ void p2pBidirectional(
   // Partition groups into 2: half for send, half for recv
   auto [partition_id, subgroup] = group.partition_interleaved(2);
   if (partition_id == 0) {
-    p2p->send(subgroup, sendBuff, nBytes, 0, timeout);
+    p2p->send(subgroup, sendBuff, nBytes, timeout);
   } else {
-    p2p->recv(subgroup, recvBuff, nBytes, 0, timeout);
+    p2p->recv(subgroup, recvBuff, nBytes, timeout);
   }
 }
 
@@ -116,41 +116,6 @@ __global__ void p2pSignalBenchKernel(
     p2p->wait_signal_until_threadgroup(
         group, signal_id, CmpOp::CMP_EQ, static_cast<uint64_t>(step));
   }
-}
-
-__global__ void p2pSendOne(
-    P2pNvlTransportDevice p2p,
-    void* srcBuff,
-    std::size_t nBytes,
-    SyncScope groupScope) {
-  auto group = make_thread_group(groupScope);
-  p2p.send_one(group, srcBuff, nBytes);
-}
-
-__global__ void
-p2pRecvOne(P2pNvlTransportDevice p2p, void* dstBuff, SyncScope groupScope) {
-  auto group = make_thread_group(groupScope);
-  std::size_t nbytes;
-  p2p.recv_one(group, dstBuff, &nbytes);
-}
-
-__global__ void p2pSendMultiple(
-    P2pNvlTransportDevice p2p,
-    void* srcBuff,
-    DeviceSpan<const std::size_t> chunkSizes,
-    DeviceSpan<const std::size_t> chunkIndices,
-    SyncScope groupScope) {
-  auto group = make_thread_group(groupScope);
-  p2p.send_multiple(group, srcBuff, chunkSizes, chunkIndices);
-}
-
-__global__ void p2pRecvMultiple(
-    P2pNvlTransportDevice p2p,
-    void* dstBuff,
-    DeviceSpan<std::size_t> chunkSizes,
-    SyncScope groupScope) {
-  auto group = make_thread_group(groupScope);
-  p2p.recv_multiple(group, dstBuff, chunkSizes);
 }
 
 } // namespace comms::pipes::benchmark
