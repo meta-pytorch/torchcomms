@@ -449,17 +449,12 @@ class MultiPeerDeviceTransport {
    * @param group ThreadGroup for cooperative processing
    * @param srcbuff Source buffer (local GPU memory)
    * @param nbytes Number of bytes to send
-   * @param call_index Index for multiple concurrent calls (default: 0)
    */
-  __device__ __forceinline__ void send(
-      int target_rank,
-      ThreadGroup& group,
-      void* srcbuff,
-      std::size_t nbytes,
-      uint32_t call_index = 0) {
+  __device__ __forceinline__ void
+  send(int target_rank, ThreadGroup& group, void* srcbuff, std::size_t nbytes) {
     DEVICE_WINDOW_SIGNAL_CHECK_RANK(target_rank, nRanks_);
     DEVICE_WINDOW_SIGNAL_CHECK_NOT_SELF(target_rank, myRank_);
-    transports_[target_rank].p2p_nvl.send(group, srcbuff, nbytes, call_index);
+    transports_[target_rank].p2p_nvl.send(group, srcbuff, nbytes);
   }
 
   /**
@@ -472,17 +467,12 @@ class MultiPeerDeviceTransport {
    * @param group ThreadGroup for cooperative processing
    * @param dstbuff Destination buffer (local GPU memory)
    * @param nbytes Number of bytes to receive
-   * @param call_index Index for multiple concurrent calls (default: 0)
    */
-  __device__ __forceinline__ void recv(
-      int target_rank,
-      ThreadGroup& group,
-      void* dstbuff,
-      std::size_t nbytes,
-      uint32_t call_index = 0) {
+  __device__ __forceinline__ void
+  recv(int target_rank, ThreadGroup& group, void* dstbuff, std::size_t nbytes) {
     DEVICE_WINDOW_SIGNAL_CHECK_RANK(target_rank, nRanks_);
     DEVICE_WINDOW_SIGNAL_CHECK_NOT_SELF(target_rank, myRank_);
-    transports_[target_rank].p2p_nvl.recv(group, dstbuff, nbytes, call_index);
+    transports_[target_rank].p2p_nvl.recv(group, dstbuff, nbytes);
   }
 
   // ===========================================================================

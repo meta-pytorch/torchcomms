@@ -202,14 +202,12 @@ __device__ __forceinline__ void all_to_allv(
         group_per_peer,
         static_cast<char*>(const_cast<void*>(sendbuff_d)) + send_info.offset,
         send_info.nbytes,
-        0, // call_index
         timeout);
   } else {
     transport.p2p_nvl.recv(
         group_per_peer,
         static_cast<char*>(recvbuff_d) + recv_info.offset,
         recv_info.nbytes,
-        0, // call_index
         timeout);
   }
 
