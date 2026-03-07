@@ -25,11 +25,11 @@
 #include <gloo/transport/unbound_buffer.h>
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual
 
-#include "comms/torchcomms/StoreManager.hpp"
 #include "comms/torchcomms/TorchCommFactory.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/gloo/GlooStore.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/StoreManager.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
@@ -344,23 +344,39 @@ void TorchCommGloo::init(
       std::make_shared<::gloo::rendezvous::Context>(rank_, comm_size_);
   context->setTimeout(options.timeout);
 
-  auto store = options.store;
-  if (!store) {
-    store = StoreManager::get().createPrefixedStore(
-        TorchCommGloo::kBackendName, name, options.timeout);
+  // If the caller sets the "persistent_store" hint to true, the store
+  // is used directly without duping.  Defaults to false.
+  bool persistentStore = kDefaultPersistentStore;
+  if (options.hints.contains("persistent_store")) {
+    persistentStore = string_to_bool(options.hints.at("persistent_store"));
+  }
+  if (options.store) {
+    if (persistentStore) {
+      // Caller guarantees the store will outlive the communicator —
+      // use it directly without duping.
+      store_ = options.store;
+    } else {
+      // Dup so we don't hold on to the caller's store.
+      store_ = dupTCPStore(options.store, options.timeout);
+    }
+  } else {
+    // No store provided — create a bootstrap store on MASTER_PORT
+    // and dup it so we don't hold the port for the communicator's
+    // lifetime.
+    auto bootstrapStore = createTCPStore(options.timeout);
+    store_ = dupTCPStore(bootstrapStore, options.timeout);
   }
 
   if (rank_ == 0) {
-    int64_t initCount = store->add("init_count", 1);
+    int64_t initCount = store_->add("init_count", 1);
     TORCH_INTERNAL_ASSERT(
         initCount == 1, "detected multiple communicators on same store!");
   }
 
-  auto connectStore = std::make_shared<GlooStore>(store);
+  auto connectStore = std::make_shared<GlooStore>(store_);
   context->connectFullMesh(connectStore, gloo_device);
 
   context_ = std::move(context);
-  store_ = std::move(store);
 
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
@@ -1652,6 +1668,7 @@ std::shared_ptr<TorchCommBackend> TorchCommGloo::split(
 
   CommOptions new_options = options;
   new_options.store = new_store;
+  new_options.hints["persistent_store"] = "true";
 
   new_torchcomm->init(device_, new_name, new_options);
 

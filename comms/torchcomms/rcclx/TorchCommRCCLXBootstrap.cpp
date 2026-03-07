@@ -6,9 +6,9 @@
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include "rccl.h" // @manual
 
-#include "comms/torchcomms/StoreManager.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/rcclx/TorchCommRCCLX.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/StoreManager.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
@@ -134,8 +134,7 @@ ncclUniqueId TorchCommRCCLXBootstrap::exchangeUniqueIdStore() {
 
 ncclUniqueId TorchCommRCCLXBootstrap::exchangeUniqueIdTCPStore(
     std::string_view name) {
-  store_ = StoreManager::get().createPrefixedStore(
-      TorchCommRCCLX::kBackendName, name, timeout_);
+  store_ = createTCPStore(timeout_);
   created_internal_store_ = true;
 
   return exchangeUniqueIdStore();
