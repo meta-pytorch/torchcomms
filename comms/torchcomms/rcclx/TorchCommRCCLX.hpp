@@ -20,7 +20,6 @@
 #include "comms/torchcomms/TorchComm.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include "comms/torchcomms/TorchCommBackend.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include "comms/torchcomms/TorchCommBatch.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rcclx/HipApi.hpp" // @manual
 #include "comms/torchcomms/rcclx/RcclxApi.hpp" // @manual
 #include "comms/torchcomms/rcclx/TorchWorkRCCLX.hpp" // @manual
@@ -419,7 +418,6 @@ class TorchCommRCCLX : public TorchCommBackend,
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
-  std::shared_ptr<TorchCommTracing> tracing_;
   bool high_priority_stream_{false};
   std::string name_;
 };
