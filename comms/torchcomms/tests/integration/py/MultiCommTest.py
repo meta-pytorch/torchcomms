@@ -20,7 +20,6 @@ def store_deletion_barrier(torchcomm):
     torchcomm.barrier(False)
 
     # Synchronize based on device type
-    device = torchcomm.get_device()
     if torch.accelerator.is_available():
         # Calculate device index as rank % num_devices and synchronize
         rank = torchcomm.get_rank()
