@@ -14,9 +14,9 @@
 #include <ATen/ATen.h>
 #include <cuda_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <vector>
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXPersistentRequest.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 
 namespace torch::comms {
 

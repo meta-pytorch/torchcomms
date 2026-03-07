@@ -26,10 +26,10 @@
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual
 
 #include "comms/torchcomms/TorchCommFactory.hpp"
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/gloo/GlooStore.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/StoreManager.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
@@ -378,7 +378,7 @@ void TorchCommGloo::init(
 
   context_ = std::move(context);
 
-  TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
+  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   TC_LOG(INFO, this) << "TorchCommGloo initialized for rank: " << rank_;
 }
@@ -436,8 +436,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::send(
     throw std::runtime_error("Cannot send to self");
   }
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "send", dst, tensor, tensor);
+  TracingGuard tracingGuard(name_, comm_size_, "send", dst, tensor, tensor);
 
   // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
@@ -479,8 +478,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::recv(
     throw std::runtime_error("Cannot recv from self");
   }
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "recv", src, tensor, tensor);
+  TracingGuard tracingGuard(name_, comm_size_, "recv", src, tensor, tensor);
 
   // Convert tensor to CPU for Gloo compatibility
   auto tensorCPU = tensor.to(at::kCPU);
@@ -547,7 +545,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::batch_op_issue(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "batch_op_issue",
@@ -674,7 +672,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::broadcast(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "broadcast", root, tensor, tensor);
 
   auto tensorCPU = tensor.to(at::kCPU);
@@ -715,7 +713,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   auto tensorCPU = tensor.to(at::kCPU);
@@ -761,8 +759,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "reduce", root, tensor, tensor);
+  TracingGuard tracingGuard(name_, comm_size_, "reduce", root, tensor, tensor);
 
   auto tensorCPU = tensor.to(at::kCPU);
   auto opCPU = convertReduceOpToCPU(op);
@@ -823,7 +820,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
 
   auto tensorCPU = tensor.to(at::kCPU);
@@ -894,7 +891,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_v(
     ensureTensorContiguous(t);
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
   auto tensorCPU = tensor.to(at::kCPU);
@@ -963,7 +960,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_gather_single(
         "Output tensor size must be input_size * comm_size for all_gather_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_single", rank_, input, output);
 
   auto inputCPU = input.to(at::kCPU);
@@ -1023,7 +1020,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
 
   // Concatenate input tensors
@@ -1054,7 +1051,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_v(
     ensureTensorContiguous(t);
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
   std::vector<at::Tensor> inputListCPU;
@@ -1132,7 +1129,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::reduce_scatter_single(
         "Input tensor size must be output_size * comm_size for reduce_scatter_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   // Convert tensors to CPU (noop if already on CPU)
@@ -1198,7 +1195,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_single(
         "Tensor size must be divisible by comm_size for all_to_all_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   // Convert tensors to CPU
@@ -1276,7 +1273,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all_v_single(
         "Sum of output_split_sizes exceeds output tensor size for all_to_all_v_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   auto inputCPU = input.to(at::kCPU);
@@ -1354,7 +1351,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::all_to_all(
     ensureTensorContiguous(output_tensor_list[i]);
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "all_to_all",
@@ -1429,7 +1426,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::barrier(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
-  TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
+  TracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
 
   return createWork(
       [options, context = context_, tag = nextTag()]() {
@@ -1469,7 +1466,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::scatter(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "scatter", root, input_tensor_list, {output_tensor});
 
   auto outputCPU = output_tensor.to(at::kCPU);
@@ -1545,7 +1542,7 @@ c10::intrusive_ptr<TorchWork> TorchCommGloo::gather(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "gather", root, {input_tensor}, output_tensor_list);
 
   auto inputCPU = input_tensor.to(at::kCPU);
