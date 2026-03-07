@@ -11,32 +11,6 @@
 
 namespace torch::comms {
 
-// TODO: remove once other backends were migrated to TorchCommTracingGuard.
-class TorchCommTracing {
- public:
-  TorchCommTracing(std::string name, int comm_size, int rank)
-      : name_(std::move(name)), comm_size_(comm_size), rank_(rank) {}
-
-  void recordEvent(std::string_view collective_name);
-  void recordEventWithInputOutput(
-      std::string_view collective_name,
-      int collective_rank,
-      const std::vector<at::Tensor>& input_tensor_list,
-      const std::vector<at::Tensor>& output_tensor_list);
-  void recordEventWithInputOutput(
-      std::string_view collective_name,
-      int collective_rank,
-      const std::vector<at::Tensor>& input_tensor_list,
-      const std::vector<at::Tensor>& output_tensor_list,
-      const std::vector<int64_t>& in_split_sizes,
-      const std::vector<int64_t>& out_split_sizes);
-
- private:
-  std::string name_;
-  int comm_size_;
-  int rank_;
-};
-
 class TorchCommTracingGuard {
  public:
   TorchCommTracingGuard(
