@@ -1,7 +1,9 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # Extension: torchcomms.hooks.fr._fr
 file(GLOB TORCHCOMMS_FR_SOURCES "comms/torchcomms/hooks/fr/FlightRecorder.cpp")
-file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES "comms/torchcomms/hooks/fr/FlightRecorderPy.cpp")
+file(GLOB TORCHCOMMS_FR_PYTHON_SOURCES
+    "comms/torchcomms/hooks/fr/FlightRecorderPy.cpp"
+)
 
 add_library(torchcomms_fr MODULE
     ${TORCHCOMMS_FR_SOURCES}
@@ -11,7 +13,8 @@ set_target_properties(torchcomms_fr PROPERTIES
     PREFIX ""
     OUTPUT_NAME "_fr"
     SUFFIX ".${Python3_SOABI}.so"
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms/hooks/fr"
+    LIBRARY_OUTPUT_DIRECTORY
+        "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms/hooks/fr"
 )
 target_include_directories(torchcomms_fr PRIVATE
     ${ROOT}
