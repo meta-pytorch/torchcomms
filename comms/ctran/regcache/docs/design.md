@@ -188,15 +188,21 @@ The segment uses reference counting (`SegmentStateMnger`): each
 `cacheSegment` call increments the refcount, and `freeSegment`
 decrements it. The segment is only actually freed when the refcount
 reaches zero. If the segment handle is not found (already freed),
-`freeSegment` returns `commInvalidUsage`.
+`freeSegment` is a no-op and returns success.
+
+An optional `forceFree` parameter (default `false`) bypasses the
+refcount check and always frees the segment. `globalDeregister` uses
+`forceFree=true` because the underlying physical memory is about to be
+freed, so the segment must be removed from cache regardless of how many
+communicators have cached it.
 
 ```
-freeSegment(segHdl) -> freed, regElems
+freeSegment(segHdl, forceFree=false) -> freed, regElems
 
   1. Acquire both segmentsAvl_ and regElemsMaps_ locks
   2. Lookup Segment from AVL handle
-     - Not found -> return commInvalidUsage (error)
-  3. askFree() -> decrement refCount
+     - Not found -> return (freed=false, commSuccess)
+  3. If !forceFree: askFree() -> decrement refCount
      - refCount > 0 -> return (freed=false, commSuccess)
   4. Collect all RegElems via segToRegElemsMap
   5. Transfer ownership from regHdlToElemMap to output vector

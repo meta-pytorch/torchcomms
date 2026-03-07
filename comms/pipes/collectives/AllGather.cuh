@@ -181,7 +181,6 @@ __device__ __forceinline__ void all_gather(
         group_per_peer,
         static_cast<char*>(const_cast<void*>(sendbuff_d)),
         sendcount,
-        0, // call_index
         timeout);
   } else {
     // Receive peer's data into my recvbuff at appropriate offset
@@ -189,7 +188,6 @@ __device__ __forceinline__ void all_gather(
         group_per_peer,
         static_cast<char*>(recvbuff_d) + recv_offset,
         sendcount,
-        0, // call_index
         timeout);
   }
 

@@ -28,8 +28,16 @@ getValidatedNcclWin(ncclWindow_t win, ncclWin** outWin, const char* funcName) {
 
 } // namespace
 
-namespace ncclx {
-
+NCCL_API(
+    ncclResult_t,
+    ncclPutSignal,
+    const void* origin_buff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t target_disp,
+    ncclWindow_t win,
+    cudaStream_t stream);
 ncclResult_t ncclPutSignal(
     const void* origin_buff,
     size_t count,
@@ -51,6 +59,16 @@ ncclResult_t ncclPutSignal(
       true));
 }
 
+NCCL_API(
+    ncclResult_t,
+    ncclPut,
+    const void* origin_buff,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    size_t target_disp,
+    ncclWindow_t win,
+    cudaStream_t stream);
 ncclResult_t ncclPut(
     const void* origin_buff,
     size_t count,
@@ -72,6 +90,16 @@ ncclResult_t ncclPut(
       false));
 }
 
+NCCL_API(
+    ncclResult_t,
+    ncclGet,
+    void* target_buff,
+    size_t target_disp,
+    size_t count,
+    ncclDataType_t datatype,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
 ncclResult_t ncclGet(
     void* target_buff,
     size_t target_disp,
@@ -94,12 +122,26 @@ ncclResult_t ncclGet(
       stream));
 }
 
+NCCL_API(
+    ncclResult_t,
+    ncclWaitSignal,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
 ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
   ncclWin* ncclWinPtr = nullptr;
   NCCLCHECK(getValidatedNcclWin(win, &ncclWinPtr, "ncclWaitSignal"));
   return metaCommToNccl(ctranWaitSignal(peer, ncclWinPtr->ctranWindow, stream));
 }
 
+NCCL_API(
+    ncclResult_t,
+    ncclSignal,
+    size_t signalDisp,
+    uint64_t signalVal,
+    int peer,
+    ncclWindow_t win,
+    cudaStream_t stream);
 ncclResult_t ncclSignal(
     size_t signalDisp,
     uint64_t signalVal,
@@ -110,5 +152,3 @@ ncclResult_t ncclSignal(
   NCCLCHECK(getValidatedNcclWin(win, &ncclWinPtr, "ncclSignal"));
   return metaCommToNccl(ctranSignal(peer, ncclWinPtr->ctranWindow, stream));
 }
-
-} // namespace ncclx
