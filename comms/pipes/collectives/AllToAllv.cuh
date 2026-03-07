@@ -166,7 +166,10 @@ __device__ __forceinline__ void all_to_allv(
     }
 #endif
 
-    transport.self.put(group_per_peer, dst, src, send_info.nbytes);
+    // Only one partition is active for self-copy
+    if (partition_id == 0) {
+      transport.self.put(group_per_peer, dst, src, send_info.nbytes);
+    }
     return;
   }
 
