@@ -254,6 +254,7 @@ class CtranPersistentRequest {
     ALLGATHER_P,
     ALLTOALL_DEDUP,
     ALLTOALL_P,
+    ALLTOALLV_P,
     ALLTOALLV_DEDUP,
   };
 

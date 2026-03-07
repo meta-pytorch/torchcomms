@@ -426,6 +426,10 @@ bool collTraceRecordCtranKernelInfo(
       // FIXME: need pass in arguments; a placeholder to pass build for now
       break;
     }
+    case KernelConfig::KernelType::ALLTOALLVP: {
+      coll.opName = "AllToAllvP";
+      break;
+    }
     case KernelConfig::KernelType::BROADCAST_UNPACK:
     case KernelConfig::KernelType::BROADCAST: {
       coll.opName = "Broadcast";
@@ -555,6 +559,10 @@ bool collTraceRecordCtranCollective(
     case OpElem::ALLTOALLV_DYNAMIC_SPLIT_NON_CONTIG_P:
       coll.opName = "AllToAllvDynamicSplitNonContigP";
       break;
+    case OpElem::ALLTOALLVP: {
+      coll.opName = "AllToAllvP";
+      break;
+    }
     case OpElem::BROADCAST:
       coll.opName = "Broadcast";
       coll.sendbuff = gpeOp.broadcast.sendbuff;

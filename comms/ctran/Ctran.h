@@ -412,6 +412,28 @@ commResult_t AllToAllPExec(
 
 commResult_t AllToAllPDestroy(CtranPersistentRequest* request);
 
+/* Persistent alltoallv. */
+bool allToAllvPSupport(CtranComm* comm);
+
+commResult_t allToAllvPInit(
+    void* recvbuff,
+    const size_t maxRecvCount,
+    commDataType_t datatype,
+    CtranComm* comm,
+    cudaStream_t stream,
+    CtranPersistentRequest*& request);
+
+commResult_t allToAllvPExec(
+    const void* sendbuff,
+    const size_t sendcounts[],
+    const size_t sdispls[],
+    const size_t recvcounts[],
+    const size_t rdispls[],
+    commDataType_t datatype,
+    CtranPersistentRequest* request);
+
+commResult_t allToAllvPDestroy(CtranPersistentRequest* request);
+
 // Global pointer-based memory registration (does not require a comm).
 // If forceReg is true, registration happens even in async/lazy mode.
 commResult_t
