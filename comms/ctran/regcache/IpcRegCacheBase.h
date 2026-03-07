@@ -2,6 +2,7 @@
 #pragma once
 
 #include <fmt/core.h>
+#include <array>
 #include <cstring>
 #include <string>
 
@@ -9,8 +10,27 @@
 #include "comms/ctran/utils/CtranIpc.h"
 #include "comms/utils/commSpecs.h"
 
+// FIXME(alvinyc): move this IB constant to CtranIbBase.h once CtranIb doesn't
+// depend on CtranCtrl and CtranCtrl is removed
+constexpr int CTRAN_MAX_IB_DEVICES_PER_RANK{2};
+
 namespace ctran {
 namespace regcache {
+
+struct IBDesc {
+  uint64_t remoteAddr{0};
+  std::array<uint32_t, CTRAN_MAX_IB_DEVICES_PER_RANK> rkeys{};
+  int nKeys{0};
+
+  std::string toString() const {
+    std::string s =
+        fmt::format("[IB_EXPORT_MEM] remoteAddr: 0x{:x}", remoteAddr);
+    for (int i = 0; i < nKeys; i++) {
+      s += fmt::format(", rkeys[{}]: {}", i, rkeys[i]);
+    }
+    return s;
+  }
+};
 
 struct IpcDesc {
   ctran::utils::CtranIpcDesc desc;

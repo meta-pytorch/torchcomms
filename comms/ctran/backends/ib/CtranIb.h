@@ -734,9 +734,9 @@ class CtranIb {
   static inline commResult_t
   exportMemImpl(const void* buf, void* ibRegElem, ControlMsg& msg) {
     msg.setType(ControlMsgType::IB_EXPORT_MEM);
-    msg.ibExp.remoteAddr = reinterpret_cast<uint64_t>(buf);
-    msg.ibExp.nKeys = NCCL_CTRAN_IB_DEVICES_PER_RANK;
-    ctran::ib::getRemoteKeysImpl(ibRegElem, msg.ibExp.rkeys);
+    msg.ibDesc.remoteAddr = reinterpret_cast<uint64_t>(buf);
+    msg.ibDesc.nKeys = NCCL_CTRAN_IB_DEVICES_PER_RANK;
+    ctran::ib::getRemoteKeysImpl(ibRegElem, msg.ibDesc.rkeys);
 
     return commSuccess;
   }
@@ -745,11 +745,11 @@ class CtranIb {
       void** buf,
       CtranIbRemoteAccessKey* key,
       const ControlMsg& msg) {
-    (*buf) = reinterpret_cast<void*>(msg.ibExp.remoteAddr);
+    (*buf) = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
     for (int device = 0; device < NCCL_CTRAN_IB_DEVICES_PER_RANK; device++) {
-      key->rkeys[device] = msg.ibExp.rkeys[device];
+      key->rkeys[device] = msg.ibDesc.rkeys[device];
     }
-    key->nKeys = msg.ibExp.nKeys;
+    key->nKeys = msg.ibDesc.nKeys;
     return commSuccess;
   }
 

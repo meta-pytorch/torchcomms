@@ -176,10 +176,10 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     // Sender puts the data to rank 1 using remote addr and rkey received in
     // previous irecvCtrlMsg
     if (this->globalRank == sendRank) {
-      void* remoteBuf = reinterpret_cast<void*>(msg.ibExp.remoteAddr);
+      void* remoteBuf = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
       CtranIbRemoteAccessKey key{};
-      for (int i = 0; i < msg.ibExp.nKeys; i++) {
-        key.rkeys[i] = msg.ibExp.rkeys[i];
+      for (int i = 0; i < msg.ibDesc.nKeys; i++) {
+        key.rkeys[i] = msg.ibDesc.rkeys[i];
       }
 
       for (int i = 0; i < numPuts; i++) {
@@ -357,10 +357,10 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     // Receiver gets the data to rank 1 using remote addr and rkey received in
     // previous irecvCtrlMsg
     if (this->globalRank == dstRank) {
-      void* remoteBuf = reinterpret_cast<void*>(msg.ibExp.remoteAddr);
+      void* remoteBuf = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
       CtranIbRemoteAccessKey key{};
-      for (int i = 0; i < msg.ibExp.nKeys; i++) {
-        key.rkeys[i] = msg.ibExp.rkeys[i];
+      for (int i = 0; i < msg.ibDesc.nKeys; i++) {
+        key.rkeys[i] = msg.ibDesc.rkeys[i];
       }
 
       for (int i = 0; i < numGets; i++) {
@@ -564,10 +564,10 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
     // puts
     std::vector<std::unique_ptr<CtranIbRequest>> requests;
     if (this->globalRank == sendRank) {
-      void* remoteBuf = reinterpret_cast<void*>(msg.ibExp.remoteAddr);
+      void* remoteBuf = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
       CtranIbRemoteAccessKey key{};
-      for (int i = 0; i < msg.ibExp.nKeys; i++) {
-        key.rkeys[i] = msg.ibExp.rkeys[i];
+      for (int i = 0; i < msg.ibDesc.nKeys; i++) {
+        key.rkeys[i] = msg.ibDesc.rkeys[i];
       }
 
       CtranIbRequest fallbackPutReq;
@@ -802,10 +802,10 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
       // Atomic FAdd testing
       int finalSum = numOps * (numRanks - 1);
       if (this->globalRank != dstRank) {
-        void* remoteBuf = reinterpret_cast<void*>(msg.ibExp.remoteAddr);
+        void* remoteBuf = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
         CtranIbRemoteAccessKey key{};
-        for (int i = 0; i < msg.ibExp.nKeys; i++) {
-          key.rkeys[i] = msg.ibExp.rkeys[i];
+        for (int i = 0; i < msg.ibDesc.nKeys; i++) {
+          key.rkeys[i] = msg.ibDesc.rkeys[i];
         }
         for (int i = 0; i < numOps; i++) {
           atomicReq = CtranIbRequest();
@@ -851,10 +851,10 @@ class CtranIbTest : public ctran::CtranDistTestFixture {
       }
     } else {
       // Atomic Set testing
-      void* remoteBuf = reinterpret_cast<void*>(msg.ibExp.remoteAddr);
+      void* remoteBuf = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
       CtranIbRemoteAccessKey key{};
-      for (int i = 0; i < msg.ibExp.nKeys; i++) {
-        key.rkeys[i] = msg.ibExp.rkeys[i];
+      for (int i = 0; i < msg.ibDesc.nKeys; i++) {
+        key.rkeys[i] = msg.ibDesc.rkeys[i];
       }
       for (int i = 0; i < numOps; i++) {
         // In every iteration, all senders atomic-set the same address in the
@@ -1011,9 +1011,9 @@ TEST_F(CtranIbTest, InitializeWithoutComm) {
 
   CtranIbEpochRAII epochRAII(ctranIb.get());
 
-  smsg.ibExp.remoteAddr = 99;
-  smsg.ibExp.rkeys[0] = 1;
-  smsg.ibExp.nKeys = 1;
+  smsg.ibDesc.remoteAddr = 99;
+  smsg.ibDesc.rkeys[0] = 1;
+  smsg.ibDesc.nKeys = 1;
   SocketServerAddr remoteAddr;
   if (this->globalRank == 0) {
     remoteAddr.port = qpServerAddrs[1].port;
@@ -1035,8 +1035,8 @@ TEST_F(CtranIbTest, InitializeWithoutComm) {
   waitIbReq(req, ctranIb);
 
   if (this->globalRank == 1) {
-    EXPECT_EQ(rmsg.ibExp.rkeys[0], smsg.ibExp.rkeys[0]);
-    EXPECT_EQ(rmsg.ibExp.remoteAddr, smsg.ibExp.remoteAddr);
+    EXPECT_EQ(rmsg.ibDesc.rkeys[0], smsg.ibDesc.rkeys[0]);
+    EXPECT_EQ(rmsg.ibDesc.remoteAddr, smsg.ibDesc.remoteAddr);
   }
 }
 
@@ -1131,9 +1131,9 @@ TEST_F(CtranIbTest, ExportMem) {
 
     COMMCHECK_TEST(CtranIb::exportMem(buf, handle, msg));
     EXPECT_EQ(msg.type, ControlMsgType::IB_EXPORT_MEM);
-    EXPECT_EQ(msg.ibExp.remoteAddr, reinterpret_cast<uint64_t>(buf));
+    EXPECT_EQ(msg.ibDesc.remoteAddr, reinterpret_cast<uint64_t>(buf));
     auto mrs = reinterpret_cast<std::vector<ibverbx::ibv_mr*>*>(handle);
-    EXPECT_EQ(msg.ibExp.rkeys[0], (*mrs).at(0)->rkey);
+    EXPECT_EQ(msg.ibDesc.rkeys[0], (*mrs).at(0)->rkey);
 
     auto ibRemoteAccesskeys = CtranIb::getRemoteAccessKey(handle);
     EXPECT_EQ(ibRemoteAccesskeys.nKeys, NCCL_CTRAN_IB_DEVICES_PER_RANK);
@@ -1193,13 +1193,13 @@ TEST_F(CtranIbTest, MatchAnyCtrlMsg) {
       auto& rmsg = rmsgs[i];
       auto& req = reqs[i];
       smsg.setType(ControlMsgType::IB_EXPORT_MEM);
-      smsg.ibExp.remoteAddr = 99;
-      smsg.ibExp.rkeys[0] = i + 1;
-      smsg.ibExp.nKeys = 1;
+      smsg.ibDesc.remoteAddr = 99;
+      smsg.ibDesc.rkeys[0] = i + 1;
+      smsg.ibDesc.nKeys = 1;
       rmsg.setType(ControlMsgType::UNSPECIFIED);
-      rmsg.ibExp.remoteAddr = 0;
-      rmsg.ibExp.rkeys[0] = 0;
-      rmsg.ibExp.nKeys = 1;
+      rmsg.ibDesc.remoteAddr = 0;
+      rmsg.ibDesc.rkeys[0] = 0;
+      rmsg.ibDesc.nKeys = 1;
 
       if (this->globalRank == 0) {
         COMMCHECK_TEST(
@@ -1218,9 +1218,9 @@ TEST_F(CtranIbTest, MatchAnyCtrlMsg) {
       if (this->globalRank == 1) {
         auto& rmsg = rmsgs[i];
         EXPECT_EQ(rmsg.type, ControlMsgType::IB_EXPORT_MEM);
-        EXPECT_EQ(rmsg.ibExp.rkeys[0], i + 1);
-        EXPECT_EQ(rmsg.ibExp.remoteAddr, 99);
-        EXPECT_EQ(rmsg.ibExp.nKeys, 1);
+        EXPECT_EQ(rmsg.ibDesc.rkeys[0], i + 1);
+        EXPECT_EQ(rmsg.ibDesc.remoteAddr, 99);
+        EXPECT_EQ(rmsg.ibDesc.nKeys, 1);
       }
     }
   } catch (const std::bad_alloc&) {
@@ -1239,8 +1239,8 @@ commResult_t testCtrlMsgCb(int peer, void* msgPtr, void* ctx) {
 
   auto msg = reinterpret_cast<ControlMsg*>(msgPtr);
   EXPECT_EQ(msg->type, ControlMsgType::IB_EXPORT_MEM);
-  EXPECT_EQ(msg->ibExp.rkeys[0], testRkey);
-  EXPECT_EQ(msg->ibExp.remoteAddr, testRemoteAddr);
+  EXPECT_EQ(msg->ibDesc.rkeys[0], testRkey);
+  EXPECT_EQ(msg->ibDesc.remoteAddr, testRemoteAddr);
   return commSuccess;
 }
 } // namespace
@@ -1261,9 +1261,9 @@ TEST_F(CtranIbTest, CbCtrlMsg) {
 
     CtranIbEpochRAII epochRAII(ctranIb.get());
 
-    smsg.ibExp.remoteAddr = testRemoteAddr;
-    smsg.ibExp.rkeys[0] = testRkey;
-    smsg.ibExp.nKeys = 1;
+    smsg.ibDesc.remoteAddr = testRemoteAddr;
+    smsg.ibDesc.rkeys[0] = testRkey;
+    smsg.ibDesc.nKeys = 1;
     if (this->globalRank == 0) {
       COMMCHECK_TEST(
           ctranIb->isendCtrlMsg(smsg.type, &smsg, sizeof(smsg), 1, req));
@@ -1663,10 +1663,10 @@ TEST_F(CtranIbTest, MultiPutTrafficProfiler) {
           }
 
           void* remoteBuf =
-              reinterpret_cast<void*>(recvMsgs[i].ibExp.remoteAddr);
+              reinterpret_cast<void*>(recvMsgs[i].ibDesc.remoteAddr);
           CtranIbRemoteAccessKey remoteKey{};
-          for (int j = 0; j < recvMsgs[i].ibExp.nKeys; j++) {
-            remoteKey.rkeys[j] = recvMsgs[i].ibExp.rkeys[j];
+          for (int j = 0; j < recvMsgs[i].ibDesc.nKeys; j++) {
+            remoteKey.rkeys[j] = recvMsgs[i].ibDesc.rkeys[j];
           }
 
           putReqs[i] = CtranIbRequest();
@@ -1819,7 +1819,7 @@ TEST_F(CtranIbTest, InvalidMemoryWaitNotify) {
 
     // Use invalid rkey (corrupted)
     CtranIbRemoteAccessKey invalidKey{};
-    for (int i = 0; i < msg.ibExp.nKeys; i++) {
+    for (int i = 0; i < msg.ibDesc.nKeys; i++) {
       invalidKey.rkeys[i] = 0xbadbeef; // Invalid rkey
     }
 
@@ -2209,9 +2209,9 @@ TEST_F(CtranIbTest, CtrlMsgAndPreConnect) {
 
     CtranIbEpochRAII epochRAII(ctranIb.get());
 
-    smsg.ibExp.remoteAddr = 99;
-    smsg.ibExp.rkeys[0] = 1;
-    smsg.ibExp.nKeys = 1;
+    smsg.ibDesc.remoteAddr = 99;
+    smsg.ibDesc.rkeys[0] = 1;
+    smsg.ibDesc.nKeys = 1;
     if (this->globalRank == sendRank) {
       COMMCHECK_TEST(
           ctranIb->isendCtrlMsg(smsg.type, &smsg, sizeof(smsg), recvRank, req));
@@ -2225,9 +2225,9 @@ TEST_F(CtranIbTest, CtrlMsgAndPreConnect) {
     waitIbReq(req, ctranIb);
 
     if (this->globalRank == recvRank) {
-      EXPECT_EQ(rmsg.ibExp.remoteAddr, smsg.ibExp.remoteAddr);
-      EXPECT_EQ(rmsg.ibExp.nKeys, smsg.ibExp.nKeys);
-      EXPECT_EQ(rmsg.ibExp.rkeys[0], smsg.ibExp.rkeys[0]);
+      EXPECT_EQ(rmsg.ibDesc.remoteAddr, smsg.ibDesc.remoteAddr);
+      EXPECT_EQ(rmsg.ibDesc.nKeys, smsg.ibDesc.nKeys);
+      EXPECT_EQ(rmsg.ibDesc.rkeys[0], smsg.ibDesc.rkeys[0]);
     }
 
     // pre-connect the peer
@@ -2318,10 +2318,10 @@ TEST_P(CtranIbTestParam, InvalidIputFastNotify) {
   waitIbReq(ctrlReq, ctranIb);
 
   if (this->globalRank == sendRank) {
-    void* remoteBuf = reinterpret_cast<void*>(msg.ibExp.remoteAddr);
+    void* remoteBuf = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
     CtranIbRemoteAccessKey key{};
-    for (int i = 0; i < msg.ibExp.nKeys; i++) {
-      key.rkeys[i] = msg.ibExp.rkeys[i];
+    for (int i = 0; i < msg.ibDesc.nKeys; i++) {
+      key.rkeys[i] = msg.ibDesc.rkeys[i];
     }
 
     // Failure case 1: the bufsize is larger than maxWqeSize
@@ -2485,10 +2485,10 @@ TEST_P(CtranIbTestParam, GpuMemPutNoSignalMixedFastRegular) {
 
   const int numFastPuts = NCCL_CTRAN_IB_QP_MAX_MSGS, numPuts = 1000;
   if (this->globalRank == sendRank) {
-    void* remoteBuf = reinterpret_cast<void*>(msg.ibExp.remoteAddr);
+    void* remoteBuf = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
     CtranIbRemoteAccessKey key{};
-    for (int i = 0; i < msg.ibExp.nKeys; i++) {
-      key.rkeys[i] = msg.ibExp.rkeys[i];
+    for (int i = 0; i < msg.ibDesc.nKeys; i++) {
+      key.rkeys[i] = msg.ibDesc.rkeys[i];
     }
 
     for (int i = 0; i < numFastPuts; i++) {
@@ -2586,10 +2586,10 @@ TEST_P(CtranIbTestParam, GpuMemPutNotifyLastMixedFastRegular) {
 
   const int numFastPuts = NCCL_CTRAN_IB_QP_MAX_MSGS, numPuts = 1000;
   if (this->globalRank == sendRank) {
-    void* remoteBuf = reinterpret_cast<void*>(msg.ibExp.remoteAddr);
+    void* remoteBuf = reinterpret_cast<void*>(msg.ibDesc.remoteAddr);
     CtranIbRemoteAccessKey key{};
-    for (int i = 0; i < msg.ibExp.nKeys; i++) {
-      key.rkeys[i] = msg.ibExp.rkeys[i];
+    for (int i = 0; i < msg.ibDesc.nKeys; i++) {
+      key.rkeys[i] = msg.ibDesc.rkeys[i];
     }
 
     for (int i = 0; i < numFastPuts; i++) {
