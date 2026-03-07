@@ -191,8 +191,7 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
         with self.create_comms(1):
             pass
 
-        env = self.make_subprocess_env(sentinel_var)
-        result = self.run_subprocess(env)
+        result = self.run_subprocess(sentinel_var)
 
         rank, _ = get_rank_and_size()
         if rank != 0:

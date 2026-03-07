@@ -2,22 +2,13 @@
 #include "comms/torchcomms/StoreManager.hpp"
 
 #include <comms/torchcomms/TorchCommLogging.hpp>
-#include <torch/csrc/distributed/c10d/FileStore.hpp> // @manual=//caffe2:torch-cpp-cpu
-#include <torch/csrc/distributed/c10d/PrefixStore.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
 
-namespace {
-c10::intrusive_ptr<c10d::Store> createRoot(
-    const std::chrono::milliseconds& timeout) {
-  const char* store_path = std::getenv("TORCHCOMM_STORE_PATH");
-  if (store_path) {
-    TC_LOG(INFO) << "Creating root FileStore at " << store_path;
-    return c10::make_intrusive<c10d::FileStore>(store_path, -1);
-  }
-
+c10::intrusive_ptr<c10d::Store> createTCPStore(
+    std::chrono::milliseconds timeout) {
   const char* master_addr_env = std::getenv("MASTER_ADDR");
   TORCH_INTERNAL_ASSERT(
       master_addr_env != nullptr, "MASTER_ADDR env is not set");
@@ -39,33 +30,47 @@ c10::intrusive_ptr<c10d::Store> createRoot(
 
   return c10::make_intrusive<c10d::TCPStore>(host, opts);
 }
-} // namespace
 
-StoreManager& StoreManager::get() {
-  static StoreManager storeManager;
-  return storeManager;
-}
-
-c10::intrusive_ptr<c10d::Store> StoreManager::createPrefixedStore(
-    std::string_view backendName,
-    std::string_view commName,
+c10::intrusive_ptr<c10d::Store> dupTCPStore(
+    const c10::intrusive_ptr<c10d::Store>& store,
     std::chrono::milliseconds timeout) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  std::string prefix =
-      fmt::format("torchcomm(backend={},name={})", backendName, commName);
+  const char* master_addr_env = std::getenv("MASTER_ADDR");
+  TORCH_INTERNAL_ASSERT(
+      master_addr_env != nullptr, "MASTER_ADDR env is not set");
+  std::string host{master_addr_env};
 
-  // Prevent prefix reuse to avoid key collisions in the underlying store.
-  // Each communicator should have a unique namespace.
-  if (storeNames_.contains(prefix)) {
-    throw std::runtime_error("Store prefix has been reused for: " + prefix);
+  auto [rank, comm_size] = query_ranksize();
+  (void)comm_size;
+
+  const std::string key = "dup_store_port";
+
+  if (rank == 0) {
+    c10d::TCPStoreOptions opts;
+    opts.port = 0;
+    opts.isServer = true;
+    opts.waitWorkers = false;
+    opts.useLibUV = true;
+    opts.timeout = timeout;
+    auto newStore = c10::make_intrusive<c10d::TCPStore>(host, opts);
+
+    std::string portStr = std::to_string(newStore->getPort());
+    store->set(key, std::vector<uint8_t>(portStr.begin(), portStr.end()));
+
+    return newStore;
   }
-  storeNames_.insert(prefix);
 
-  if (!root_) {
-    root_ = createRoot(timeout);
-  }
+  store->wait({key}, timeout);
+  auto portVec = store->get(key);
+  uint16_t port = static_cast<uint16_t>(
+      std::stoi(std::string(portVec.begin(), portVec.end())));
 
-  return c10::make_intrusive<c10d::PrefixStore>(prefix, root_->clone());
+  c10d::TCPStoreOptions opts;
+  opts.port = port;
+  opts.isServer = false;
+  opts.waitWorkers = false;
+  opts.useLibUV = true;
+  opts.timeout = timeout;
+  return c10::make_intrusive<c10d::TCPStore>(host, opts);
 }
 
 } // namespace torch::comms
