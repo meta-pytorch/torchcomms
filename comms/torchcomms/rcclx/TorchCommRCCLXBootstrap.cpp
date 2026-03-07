@@ -134,8 +134,7 @@ ncclUniqueId TorchCommRCCLXBootstrap::exchangeUniqueIdStore() {
 
 ncclUniqueId TorchCommRCCLXBootstrap::exchangeUniqueIdTCPStore(
     std::string_view name) {
-  store_ = StoreManager::get().createPrefixedStore(
-      TorchCommRCCLX::kBackendName, name, timeout_);
+  store_ = createTCPStore(timeout_);
   created_internal_store_ = true;
 
   return exchangeUniqueIdStore();

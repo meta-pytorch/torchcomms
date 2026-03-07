@@ -13,19 +13,11 @@ using namespace torch::comms;
 
 PYBIND11_MODULE(_store_manager, m) {
   m.def(
-      "_create_prefixed_store",
-      [](const std::string& backend_name,
-         const std::string& name,
-         std::chrono::milliseconds timeout) {
-        return StoreManager::get().createPrefixedStore(
-            backend_name, name, timeout);
-      },
+      "_create_tcp_store",
+      [](std::chrono::milliseconds timeout) { return createTCPStore(timeout); },
       R"(
-      Return a new store object that's unique to the given backend and
-      communicator name.
+      Return a new TCPStore from MASTER_ADDR / MASTER_PORT env vars.
       )",
-      py::arg("backend_name"),
-      py::arg("name"),
       py::arg("timeout") = std::chrono::milliseconds(60000),
       py::call_guard<py::gil_scoped_release>());
 }
