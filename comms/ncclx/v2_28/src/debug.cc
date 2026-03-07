@@ -495,6 +495,14 @@ void ncclResetDebugInit() {
   ncclResetDebugInitInternal();
 }
 
+size_t ncclGetErrorStackSize() {
+  return ::meta::comms::logger::getErrorStackSize();
+}
+
+void ncclTruncateErrorStack(size_t size) {
+  ::meta::comms::logger::truncateErrorStack(size);
+}
+
 NCCL_PARAM(SetThreadName, "SET_THREAD_NAME", 0);
 
 void ncclSetThreadName(pthread_t thread, const char *fmt, ...) {

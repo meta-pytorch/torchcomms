@@ -65,6 +65,10 @@ const char* getLastCommsError();
 
 void appendErrorToStack(std::string error);
 
+std::size_t getErrorStackSize();
+
+void truncateErrorStack(std::size_t size);
+
 class NcclLogFormatter : public folly::LogFormatter {
  public:
   NcclLogFormatter(

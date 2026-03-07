@@ -361,6 +361,17 @@ void appendErrorToStack(std::string error) {
   lastCommsError.wlock()->lastErrorStack.push_back(std::move(error));
 }
 
+std::size_t getErrorStackSize() {
+  return lastCommsError.rlock()->lastErrorStack.size();
+}
+
+void truncateErrorStack(std::size_t size) {
+  auto locked = lastCommsError.wlock();
+  if (size < locked->lastErrorStack.size()) {
+    locked->lastErrorStack.resize(size);
+  }
+}
+
 NcclLogFormatter::NcclLogFormatter(
     std::string prefix,
     std::function<int(void)> threadContextFn)
