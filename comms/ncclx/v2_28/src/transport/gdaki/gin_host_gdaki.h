@@ -7,12 +7,13 @@
 #ifndef _GIN_HOST_GDAKI_H_
 #define _GIN_HOST_GDAKI_H_
 
+#ifndef DOCA_VERBS_USE_META_THIRD_PARTY
 #ifndef DOCA_VERBS_USE_CUDA_WRAPPER
 #define DOCA_VERBS_USE_CUDA_WRAPPER
 #endif
-
 #ifndef DOCA_VERBS_USE_NET_WRAPPER
 #define DOCA_VERBS_USE_NET_WRAPPER
+#endif
 #endif
 
 #include <stdbool.h>
