@@ -1,5 +1,6 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 # pyre-strict
+# patternlint-disable fbcode-nonempty-init-py
 
 from typing import Any, Callable
 

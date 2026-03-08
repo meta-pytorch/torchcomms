@@ -10,7 +10,7 @@ namespace torch::comms {
 // Forward declaration
 class TorchWork;
 
-using TorchCommWinAccessType = enum {
+enum class TorchCommWinAccessType {
   WIN_ACCESS_TYPE_UNIFIED = 0,
   WIN_ACCESS_TYPE_SEPARATE = 1,
 };
