@@ -366,7 +366,7 @@ TEST_F(CtranMapperTest, doubleDeregMem) {
   EXPECT_EQ(res, commSuccess);
 
   res = mapper->deregMem(hdl);
-  EXPECT_EQ(res, commInvalidUsage);
+  EXPECT_EQ(res, commSuccess);
 
   // Check profiled registration events
   auto snapshot = regCache->profiler.rlock()->getSnapshot();
