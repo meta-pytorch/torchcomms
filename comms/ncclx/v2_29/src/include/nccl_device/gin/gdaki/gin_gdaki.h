@@ -9,21 +9,27 @@
 #define _NCCL_DEVICE_GIN_GDAKI_H_
 
 #include <cstdint>
-#ifndef DOCA_VERBS_USE_CUDA_WRAPPER
-#define DOCA_VERBS_USE_CUDA_WRAPPER
-#endif
-
-#ifndef DOCA_VERBS_USE_NET_WRAPPER
-#define DOCA_VERBS_USE_NET_WRAPPER
-#endif
 
 #ifdef NCCL_DEVICE_GIN_GDAKI_ENABLE_DEBUG
 #define DOCA_GPUNETIO_VERBS_ENABLE_DEBUG 1
 #endif
 
+#ifndef DOCA_VERBS_USE_META_THIRD_PARTY
+#ifndef DOCA_VERBS_USE_CUDA_WRAPPER
+#define DOCA_VERBS_USE_CUDA_WRAPPER
+#endif
+#ifndef DOCA_VERBS_USE_NET_WRAPPER
+#define DOCA_VERBS_USE_NET_WRAPPER
+#endif
+#endif
+
 #include "../gin_device_common.h"
 #include "gin_gdaki_device_host_common.h"
+#ifdef DOCA_VERBS_USE_META_THIRD_PARTY
+#include "doca_gpunetio_device.h"
+#else
 #include "transport/net_ib/gdaki/doca-gpunetio/include/doca_gpunetio_device.h"
+#endif
 
 #ifdef NCCL_DEVICE_GIN_GDAKI_ENABLE_DEBUG
 #include <stdio.h>
