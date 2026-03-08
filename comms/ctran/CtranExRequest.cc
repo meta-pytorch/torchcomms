@@ -102,8 +102,8 @@ void CtranExRequestImpl::atComplete(CtranExRequest* req) {
       // copy received buffer info to user specified pointers
       if (recvCtrl.msg.type == ControlMsgType::IB_EXPORT_MEM) {
         *(recvCtrl.rBuf) =
-            reinterpret_cast<void*>(recvCtrl.msg.ibExp.remoteAddr);
-        *(recvCtrl.rKey) = recvCtrl.msg.ibExp.rkeys[0];
+            reinterpret_cast<void*>(recvCtrl.msg.ibDesc.remoteAddr);
+        *(recvCtrl.rKey) = recvCtrl.msg.ibDesc.rkeys[0];
       }
       break;
     default:

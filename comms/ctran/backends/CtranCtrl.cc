@@ -4,8 +4,6 @@
 #include "comms/ctran/utils/Checks.h"
 #include "comms/utils/logger/LogUtils.h"
 
-const std::string CmsgIbExportMem::name = "IB_EXPORT_MEM";
-
 commResult_t CtranCtrlManager::regCb(int type, ContrlMsgCbFn fn, void* ctx) {
   if (this->hasCb(type)) {
     CLOGF(
