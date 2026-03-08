@@ -1359,7 +1359,7 @@ class CtranMapper : public ctran::regcache::IpcExportClient {
       req.sendCtrl.msg = sendCtrlMsg;
       auto& msg = req.sendCtrl.msg;
       req.peer = peer;
-      msg.ibExp.remoteAddr = reinterpret_cast<uint64_t>(bufs[peer]);
+      msg.ibDesc.remoteAddr = reinterpret_cast<uint64_t>(bufs[peer]);
       msg.aux = reqs[idx - 1].aux;
       CLOGF_TRACE(
           COLL,

@@ -103,9 +103,9 @@ TEST_F(CtranSocketTest, InitializeWithoutComm) {
   ControlMsg rmsg(ControlMsgType::IB_EXPORT_MEM);
   CtranSocketRequest req;
 
-  smsg.ibExp.remoteAddr = 99;
-  smsg.ibExp.rkeys[0] = 1;
-  smsg.ibExp.nKeys = 1;
+  smsg.ibDesc.remoteAddr = 99;
+  smsg.ibDesc.rkeys[0] = 1;
+  smsg.ibDesc.nKeys = 1;
   SocketServerAddr remoteAddr;
   if (globalRank == 0) {
     remoteAddr.port = serverAddrs[1].port;
@@ -122,8 +122,8 @@ TEST_F(CtranSocketTest, InitializeWithoutComm) {
   waitSocketReq(req, ctranSock);
 
   if (globalRank == 1) {
-    EXPECT_EQ(rmsg.ibExp.rkeys[0], smsg.ibExp.rkeys[0]);
-    EXPECT_EQ(rmsg.ibExp.remoteAddr, smsg.ibExp.remoteAddr);
+    EXPECT_EQ(rmsg.ibDesc.rkeys[0], smsg.ibDesc.rkeys[0]);
+    EXPECT_EQ(rmsg.ibDesc.remoteAddr, smsg.ibDesc.remoteAddr);
   }
 }
 
@@ -137,8 +137,8 @@ commResult_t testCtrlMsgCb(int peer, void* msgPtr, void* ctx) {
   EXPECT_EQ(peer, 0);
   auto msg = reinterpret_cast<ControlMsg*>(msgPtr);
   EXPECT_EQ(msg->type, ControlMsgType::IB_EXPORT_MEM);
-  EXPECT_EQ(msg->ibExp.rkeys[0], testRkey);
-  EXPECT_EQ(msg->ibExp.remoteAddr, testRemoteAddr);
+  EXPECT_EQ(msg->ibDesc.rkeys[0], testRkey);
+  EXPECT_EQ(msg->ibDesc.remoteAddr, testRemoteAddr);
   return commSuccess;
 }
 } // namespace
@@ -157,9 +157,9 @@ TEST_F(CtranSocketTest, CbCtrlMsg) {
   CtranSocketRequest req;
   ControlMsg smsg(ControlMsgType::IB_EXPORT_MEM);
 
-  smsg.ibExp.remoteAddr = testRemoteAddr;
-  smsg.ibExp.rkeys[0] = testRkey;
-  smsg.ibExp.nKeys = 1;
+  smsg.ibDesc.remoteAddr = testRemoteAddr;
+  smsg.ibDesc.rkeys[0] = testRkey;
+  smsg.ibDesc.nKeys = 1;
   if (this->globalRank == 0) {
     COMMCHECK_TEST(ctranSock->isendCtrlMsg(smsg, 1, req));
 
@@ -199,9 +199,9 @@ TEST_F(CtranSocketTest, CtrlMsg) {
     reqs.resize(3, CtranSocketRequest());
     smsgs.resize(3, ControlMsg(ControlMsgType::IB_EXPORT_MEM));
     // send two msgs to rank 1
-    smsgs[0].ibExp.remoteAddr = 99;
-    smsgs[0].ibExp.rkeys[0] = recvRank0;
-    smsgs[0].ibExp.nKeys = 1;
+    smsgs[0].ibDesc.remoteAddr = 99;
+    smsgs[0].ibDesc.rkeys[0] = recvRank0;
+    smsgs[0].ibDesc.nKeys = 1;
     COMMCHECK_TEST(ctranSock->isendCtrlMsg(smsgs[0], recvRank0, reqs[0]));
 
     // let recvRank0 connected via ListenThread first; thus the next
@@ -209,16 +209,16 @@ TEST_F(CtranSocketTest, CtrlMsg) {
     // in order
     sleep(2);
 
-    smsgs[1].ibExp.remoteAddr = 100;
-    smsgs[1].ibExp.rkeys[0] = recvRank0;
-    smsgs[1].ibExp.nKeys = 1;
+    smsgs[1].ibDesc.remoteAddr = 100;
+    smsgs[1].ibDesc.rkeys[0] = recvRank0;
+    smsgs[1].ibDesc.nKeys = 1;
 
     COMMCHECK_TEST(ctranSock->isendCtrlMsg(smsgs[1], recvRank0, reqs[1]));
 
     // send one msg to rank 2
-    smsgs[2].ibExp.remoteAddr = 101;
-    smsgs[2].ibExp.rkeys[0] = recvRank1;
-    smsgs[2].ibExp.nKeys = 1;
+    smsgs[2].ibDesc.remoteAddr = 101;
+    smsgs[2].ibDesc.rkeys[0] = recvRank1;
+    smsgs[2].ibDesc.nKeys = 1;
     COMMCHECK_TEST(ctranSock->isendCtrlMsg(smsgs[2], recvRank1, reqs[2]));
   } else if (globalRank == recvRank0) {
     reqs.resize(2, CtranSocketRequest());
@@ -238,13 +238,13 @@ TEST_F(CtranSocketTest, CtrlMsg) {
   }
 
   if (globalRank == recvRank0) {
-    EXPECT_EQ(rmsg0.ibExp.rkeys[0], recvRank0);
-    EXPECT_EQ(rmsg0.ibExp.remoteAddr, 99);
-    EXPECT_EQ(rmsg1.ibExp.rkeys[0], recvRank0);
-    EXPECT_EQ(rmsg1.ibExp.remoteAddr, 100);
+    EXPECT_EQ(rmsg0.ibDesc.rkeys[0], recvRank0);
+    EXPECT_EQ(rmsg0.ibDesc.remoteAddr, 99);
+    EXPECT_EQ(rmsg1.ibDesc.rkeys[0], recvRank0);
+    EXPECT_EQ(rmsg1.ibDesc.remoteAddr, 100);
   } else if (globalRank == recvRank1) {
-    EXPECT_EQ(rmsg0.ibExp.rkeys[0], recvRank1);
-    EXPECT_EQ(rmsg0.ibExp.remoteAddr, 101);
+    EXPECT_EQ(rmsg0.ibDesc.rkeys[0], recvRank1);
+    EXPECT_EQ(rmsg0.ibDesc.remoteAddr, 101);
   }
 }
 
@@ -265,17 +265,17 @@ TEST_F(CtranSocketTest, AllGather) {
     auto& rreq = rreqs[i];
     auto& rmsg = rmsgs[i];
     rmsg.setType(ControlMsgType::IB_EXPORT_MEM);
-    rmsg.ibExp.remoteAddr = 0;
-    rmsg.ibExp.rkeys[0] = 0;
-    rmsg.ibExp.nKeys = 1;
+    rmsg.ibDesc.remoteAddr = 0;
+    rmsg.ibDesc.rkeys[0] = 0;
+    rmsg.ibDesc.nKeys = 1;
     COMMCHECK_TEST(ctranSock->irecvCtrlMsg(rmsg, i, rreq));
     // post send request
     auto& sreq = sreqs[i];
     auto& smsg = smsgs[i];
     smsg.setType(ControlMsgType::IB_EXPORT_MEM);
-    smsg.ibExp.remoteAddr = 99;
-    smsg.ibExp.rkeys[0] = globalRank;
-    smsg.ibExp.nKeys = 1;
+    smsg.ibDesc.remoteAddr = 99;
+    smsg.ibDesc.rkeys[0] = globalRank;
+    smsg.ibDesc.nKeys = 1;
     COMMCHECK_TEST(ctranSock->isendCtrlMsg(smsg, i, sreq));
   }
   for (int i = 0; i < numRanks; i++) {
@@ -292,8 +292,8 @@ TEST_F(CtranSocketTest, AllGather) {
       continue;
     }
     auto& rmsg = rmsgs[i];
-    EXPECT_EQ(rmsg.ibExp.rkeys[0], i);
-    EXPECT_EQ(rmsg.ibExp.remoteAddr, 99);
+    EXPECT_EQ(rmsg.ibDesc.rkeys[0], i);
+    EXPECT_EQ(rmsg.ibDesc.remoteAddr, 99);
   }
 }
 TEST_F(CtranSocketTest, MatchAnyCtrlMsg) {
@@ -312,13 +312,13 @@ TEST_F(CtranSocketTest, MatchAnyCtrlMsg) {
     auto& rmsg = rmsgs[i];
     auto& req = reqs[i];
     smsg.setType(ControlMsgType::IB_EXPORT_MEM);
-    smsg.ibExp.remoteAddr = 99;
-    smsg.ibExp.rkeys[0] = i + 1;
-    smsg.ibExp.nKeys = 1;
+    smsg.ibDesc.remoteAddr = 99;
+    smsg.ibDesc.rkeys[0] = i + 1;
+    smsg.ibDesc.nKeys = 1;
     rmsg.setType(ControlMsgType::UNSPECIFIED);
-    rmsg.ibExp.remoteAddr = 0;
-    rmsg.ibExp.rkeys[0] = 0;
-    rmsg.ibExp.nKeys = 1;
+    rmsg.ibDesc.remoteAddr = 0;
+    rmsg.ibDesc.rkeys[0] = 0;
+    rmsg.ibDesc.nKeys = 1;
 
     if (globalRank == 0) {
       COMMCHECK_TEST(ctranSock->isendCtrlMsg(smsg, 1, req));
@@ -335,8 +335,8 @@ TEST_F(CtranSocketTest, MatchAnyCtrlMsg) {
     if (globalRank == 1) {
       auto& rmsg = rmsgs[i];
       EXPECT_EQ(rmsg.type, ControlMsgType::IB_EXPORT_MEM);
-      EXPECT_EQ(rmsg.ibExp.rkeys[0], i + 1);
-      EXPECT_EQ(rmsg.ibExp.remoteAddr, 99);
+      EXPECT_EQ(rmsg.ibDesc.rkeys[0], i + 1);
+      EXPECT_EQ(rmsg.ibDesc.remoteAddr, 99);
     }
   }
 }
@@ -363,9 +363,9 @@ TEST_F(CtranSocketTest, CtrlMsgAndPreConnect) {
     COMMCHECK_TEST(ctranSock->preConnect(peerRanks));
   }
 
-  smsg.ibExp.remoteAddr = 99;
-  smsg.ibExp.rkeys[0] = 1;
-  smsg.ibExp.nKeys = 1;
+  smsg.ibDesc.remoteAddr = 99;
+  smsg.ibDesc.rkeys[0] = 1;
+  smsg.ibDesc.nKeys = 1;
   if (globalRank == sendRank) {
     COMMCHECK_TEST(ctranSock->isendCtrlMsg(smsg, recvRank, req));
   } else if (globalRank == recvRank) {
@@ -377,8 +377,8 @@ TEST_F(CtranSocketTest, CtrlMsgAndPreConnect) {
   waitSocketReq(req, ctranSock);
 
   if (globalRank == recvRank) {
-    EXPECT_EQ(rmsg.ibExp.rkeys[0], smsg.ibExp.rkeys[0]);
-    EXPECT_EQ(rmsg.ibExp.remoteAddr, smsg.ibExp.remoteAddr);
+    EXPECT_EQ(rmsg.ibDesc.rkeys[0], smsg.ibDesc.rkeys[0]);
+    EXPECT_EQ(rmsg.ibDesc.remoteAddr, smsg.ibDesc.remoteAddr);
   }
 }
 
