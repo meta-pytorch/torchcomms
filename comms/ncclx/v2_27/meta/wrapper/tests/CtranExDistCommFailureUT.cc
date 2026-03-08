@@ -121,8 +121,8 @@ INSTANTIATE_TEST_SUITE_P(
     CtranExCommFailureTest,
     CtranExCommFailureParamFixture,
     ::testing::Values(TestWaitType::TEST, TestWaitType::WAIT),
-    [&](const testing::TestParamInfo<CtranExCommFailureParamFixture::ParamType>&
-            info) {
+    [&](const ::testing::TestParamInfo<
+        CtranExCommFailureParamFixture::ParamType>& info) {
       const std::string waitType =
           info.param == TestWaitType::TEST ? "Test" : "Wait";
       return waitType;
