@@ -79,6 +79,9 @@ void ncclResetDebugInit();
 
 void ncclSetMyThreadLoggingName(std::string_view name);
 
+size_t ncclGetErrorStackSize();
+void ncclTruncateErrorStack(size_t size);
+
 #define NCCL_NAMED_THREAD_START(threadName)       \
   do {                                            \
     ncclSetMyThreadLoggingName(threadName);       \

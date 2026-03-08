@@ -29,10 +29,13 @@ class topoTest : public ::testing::Test {
 
 TEST_F(topoTest, defaultTopoXmlNotFound) {
   folly::test::TemporaryFile dumpXmlFile;
+  // Capture error state before calling ncclTopoGetSystem.
+  auto lastErrBefore = std::string(ncclGetLastError(mockComm));
   auto res = ncclTopoGetSystem(mockComm, nullptr, dumpXmlFile.path().c_str());
   EXPECT_EQ(res, ncclSuccess);
   auto lastErr = std::string(ncclGetLastError(mockComm));
-  EXPECT_TRUE(lastErr.empty());
+  // ncclTopoGetSystem should not modify the error state when returning success.
+  EXPECT_EQ(lastErr, lastErrBefore);
   // print the dump xml file
   std::ifstream dumpXml(dumpXmlFile.path().c_str());
   std::string dumpXmlStr(
