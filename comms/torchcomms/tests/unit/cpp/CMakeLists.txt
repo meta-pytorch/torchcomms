@@ -13,6 +13,9 @@ FetchContent_MakeAvailable(googletest)
 
 enable_testing()
 
+# Test utilities (e.g., CudaGraphTestUtils)
+add_subdirectory(${ROOT}/comms/utils/test_utils ${CMAKE_CURRENT_BINARY_DIR}/test_utils)
+
 # Build the dummy test backend as a shared library for dynamic loading tests
 add_library(dummy_test_backend SHARED
     DummyTorchCommBackend.cpp
