@@ -1415,6 +1415,10 @@ static std::mutex netMutex;
 
 ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** system, const char* dumpXmlFile) {
   ncclResult_t ret = ncclSuccess;
+  // Save error stack size so we can restore it if this function succeeds,
+  // preventing transient topology detection warnings from polluting the
+  // error state visible to callers.
+  size_t savedErrorStackSize = ncclGetErrorStackSize();
   struct ncclXml* xml;
   char* mem = NULL;
   int* localRanks = NULL;
@@ -1541,6 +1545,9 @@ ncclResult_t ncclTopoGetSystem(struct ncclComm* comm, struct ncclTopoSystem** sy
   if (dumpXmlFile == NULL) NCCLCHECKGOTO(ncclTopoGetSystemFromXml(xml, system, getHostHash()), ret, fail);
 
 exit:
+  if (ret == ncclSuccess) {
+    ncclTruncateErrorStack(savedErrorStackSize);
+  }
   if (!comm->MNNVL && localRanks) free(localRanks);
   if (mem) free(mem);
   free(xml);
