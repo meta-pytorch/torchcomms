@@ -380,8 +380,21 @@ class MultipeerIbgdaTransport {
   doca_verbs_ah_attr* ahAttr_{nullptr};
   union ibv_gid localGid_{};
 
-  // High-level QPs (one per peer)
-  std::vector<doca_gpu_verbs_qp_hl*> qpHlList_;
+  // QP groups (one per peer): main QP + companion QP with shared UAR.
+  // The companion QP is created with core_direct=true (required for WAIT WQE).
+  std::vector<doca_gpu_verbs_qp_group_hl*> qpGroupHlList_;
+
+  // Self-loop responder companion QPs (one per peer, passive endpoints)
+  // These are connected to the active companion QPs in each group,
+  // forming loopback pairs for counter-based completion tracking.
+  std::vector<doca_gpu_verbs_qp_hl*> loopbackCompanionQpHlList_;
+
+  // Sink buffer for RDMA atomic return values (discarded).
+  // DOCA's OPCODE_ATOMIC_FA requires a local address for the fetch-add
+  // return value. We don't need it, so we use a small "sink" buffer.
+  void* sinkBuffer_{nullptr};
+  std::size_t sinkBufferSize_{0};
+  ibv_mr* sinkMr_{nullptr};
 
   // User-registered buffers (maps ptr -> ibv_mr*)
   std::unordered_map<void*, ibv_mr*> registeredBuffers_;

@@ -1021,6 +1021,127 @@ TEST_F(MultipeerIbgdaTransportTestFixture, SignalOnly) {
 }
 
 // =============================================================================
+// Put + Signal + Counter Test - Tests companion QP counter-based completion
+// =============================================================================
+
+TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalCounter) {
+  if (numRanks != 2) {
+    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
+    return;
+  }
+
+  const std::size_t nbytes = 64 * 1024;
+  const int numBlocks = 1;
+  const int blockSize = 32;
+
+  try {
+    auto transport = createTransport();
+
+    int peerRank = (globalRank == 0) ? 1 : 0;
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+
+    // Data buffer
+    DeviceBuffer dataBuffer(nbytes);
+    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
+    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
+    auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    // Signal buffer (remote, exchanged)
+    DeviceBuffer signalBuffer(sizeof(uint64_t));
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, sizeof(uint64_t)));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), sizeof(uint64_t));
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
+    // Counter buffer (local only, no exchange — companion QP writes to self)
+    DeviceBuffer counterBuffer(sizeof(uint64_t));
+    CUDACHECK_TEST(cudaMemset(counterBuffer.get(), 0, sizeof(uint64_t)));
+    auto localCounterBuf =
+        transport->registerBuffer(counterBuffer.get(), sizeof(uint64_t));
+
+    P2pIbgdaTransportDevice* peerTransportPtr =
+        transport->getP2pTransportDevice(peerRank);
+
+    if (globalRank == 0) {
+      // Sender: fill buffer with pattern, barrier, put+signal+counter
+      test::fillBufferWithPattern(
+          dataBuffer.get(),
+          nbytes,
+          static_cast<uint8_t>(0xAB),
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      test::testPutSignalCounter(
+          peerTransportPtr,
+          localDataBuf,
+          remoteDataBuf,
+          nbytes,
+          remoteSignalBuf,
+          0,
+          1, // signalId=0, signalVal=1
+          localCounterBuf,
+          0,
+          1, // counterId=0, counterVal=1
+          numBlocks,
+          blockSize);
+
+      // Wait for local counter to confirm NIC completion
+      test::testWaitCounter(
+          static_cast<uint64_t*>(counterBuffer.get()),
+          0,
+          1, // counterId=0, expectedVal=1
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      // Verify counter value on host
+      uint64_t h_counter = 0;
+      CUDACHECK_TEST(cudaMemcpy(
+          &h_counter,
+          counterBuffer.get(),
+          sizeof(uint64_t),
+          cudaMemcpyDeviceToHost));
+      EXPECT_GE(h_counter, 1u)
+          << "Counter should be >= 1 after companion QP loopback";
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+    } else {
+      CUDACHECK_TEST(cudaMemset(dataBuffer.get(), 0, nbytes));
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Receiver: wait for signal, verify data
+      test::testWaitSignal(
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          1,
+          numBlocks,
+          blockSize);
+      CUDACHECK_TEST(cudaDeviceSynchronize());
+
+      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+      // Verify data arrived correctly
+      int errorCount = 0;
+      test::verifyBufferPattern(
+          dataBuffer.get(),
+          nbytes,
+          static_cast<uint8_t>(0xAB),
+          &errorCount,
+          numBlocks,
+          blockSize);
+      EXPECT_EQ(errorCount, 0) << "PutSignalCounter: data corruption detected";
+    }
+  } catch (const std::exception& e) {
+    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
+  }
+}
+
 // =============================================================================
 // Reset Signal Test - Tests resetting signals for reuse
 // =============================================================================

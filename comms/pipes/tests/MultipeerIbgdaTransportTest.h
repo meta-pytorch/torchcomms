@@ -236,6 +236,23 @@ void verifyBufferPattern(
     int blockSize);
 
 /**
+ * Test kernel: Reset a remote signal slot to zero
+ *
+ * Uses RDMA inline write to set the remote signal to zero.
+ *
+ * @param deviceTransportPtr Pointer to P2pIbgdaTransportDevice in device
+ * memory
+ * @param remoteSignalBuf Remote signal buffer (with rkey)
+ * @param signalId Signal slot index
+ */
+void testResetSignal(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    int signalId,
+    int numBlocks,
+    int blockSize);
+
+/**
  * Test kernel: Wait for ready signal, then put data with signal
  *
  * Sender waits for the receiver's ready signal (volatile spin on local
@@ -338,6 +355,38 @@ void testAllToAllWait(
     uint64_t* localSignalBuf,
     int* peerRanks,
     int numPeers,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: Put data + signal remote + counter via companion QP
+ *
+ * Uses put_signal_counter_remote() to write data, signal the remote peer,
+ * and increment a local counter via companion QP loopback.
+ */
+void testPutSignalCounter(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localDataBuf,
+    const IbgdaRemoteBuffer& remoteDataBuf,
+    std::size_t nbytes,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    int signalId,
+    uint64_t signalVal,
+    const IbgdaLocalBuffer& localCounterBuf,
+    int counterId,
+    uint64_t counterVal,
+    int numBlocks,
+    int blockSize);
+
+/**
+ * Test kernel: Wait for local counter to reach expected value
+ *
+ * GPU thread spins on volatile counter until it reaches expectedVal.
+ */
+void testWaitCounter(
+    uint64_t* counterBuf,
+    int counterId,
+    uint64_t expectedVal,
     int numBlocks,
     int blockSize);
 
