@@ -150,6 +150,71 @@ struct ThreadGroup {
   }
 
   /**
+   * to_warp_group - Convert this ThreadGroup to warp-scoped subgroups
+   *
+   * If already warp-scoped (scope=WARP, group_size=32), returns *this.
+   * Otherwise, splits each group into group_size/WARP_SIZE warp subgroups with
+   * correctly renumbered global IDs. Note that WARP_SIZE is platform
+   * dependent.
+   *
+   * DIFFERENCE FROM make_warp_group():
+   * ==================================
+   * make_warp_group() is a factory that creates warp groups from raw kernel
+   * launch parameters (blockIdx, blockDim, gridDim) — always kernel-wide.
+   * to_warp_group() is a conversion that decomposes *this* group into warp
+   * subgroups, preserving any prior partitioning or subsetting. Use
+   * make_warp_group() at kernel entry; use to_warp_group() to decompose a
+   * coarser group (block, multiwarp, partition subgroup) into warps mid-kernel.
+   *
+   * REQUIREMENTS:
+   * - group_size must be >= 32 and a multiple of 32
+   * - Traps if group_size < 32 (e.g., THREAD scope cannot form warps)
+   *
+   * EXAMPLE 1 (block group → warps):
+   * =================================
+   *   auto block = make_block_group();   // group_size=256, total_groups=4
+   *   auto warp = block.to_warp_group(); // group_size=32, total_groups=32
+   *
+   * EXAMPLE 2 (partitioned group → warps, where make_warp_group differs):
+   * =====================================================================
+   *   auto block = make_block_group();         // total_groups=4
+   *   auto [pid, sub] = block.partition(2);    // sub: total_groups=2
+   *   auto warp = sub.to_warp_group();         // total_groups=16 (correct)
+   *   // make_warp_group() would give total_groups=32 (ignores partition)
+   *
+   * @return Warp-scoped ThreadGroup with renumbered group_id/total_groups
+   */
+  __device__ inline ThreadGroup to_warp_group() const {
+#ifdef __CUDA_ARCH__
+    if (scope == SyncScope::WARP && group_size == kWarpSize) {
+      return *this;
+    }
+
+    if (group_size < kWarpSize || group_size % kWarpSize != 0) {
+      printf(
+          "to_warp_group: group_size (%u) must be >= %u and a multiple of %u\n",
+          group_size,
+          kWarpSize,
+          kWarpSize);
+      __trap();
+    }
+
+    uint32_t warps_per_group = group_size / kWarpSize;
+    uint32_t warp_in_group = thread_id_in_group / kWarpSize;
+    uint32_t lane_id = thread_id_in_group % kWarpSize;
+
+    return ThreadGroup{
+        .thread_id_in_group = lane_id,
+        .group_size = kWarpSize,
+        .group_id = group_id * warps_per_group + warp_in_group,
+        .total_groups = total_groups * warps_per_group,
+        .scope = SyncScope::WARP};
+#else
+    return ThreadGroup{};
+#endif
+  }
+
+  /**
    * broadcast - Broadcast a value from the group leader to all
    *             threads in the group
    *
@@ -709,6 +774,22 @@ __device__ inline ThreadGroup make_thread_solo() {
 #endif
 }
 
+/**
+ * make_warp_group - Create a ThreadGroup where each warp (32 threads)
+ *                   forms one group
+ *
+ * Each warp in the kernel becomes an independent group. Uses raw kernel
+ * launch parameters (blockIdx, blockDim, gridDim) to compute global
+ * warp IDs across the entire grid.
+ *
+ * Example with 4 blocks × 256 threads:
+ *   - total_groups = 32 (4 blocks × 8 warps/block)
+ *   - group_size = 32
+ *   - Each warp processes work items independently
+ *
+ * See also: to_warp_group() — converts an existing (possibly partitioned)
+ * ThreadGroup into warp subgroups, preserving group context.
+ */
 __device__ inline ThreadGroup make_warp_group() {
 #ifdef __CUDA_ARCH__
   uint32_t warps_per_block = blockDim.x / comms::device::kWarpSize;

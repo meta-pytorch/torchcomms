@@ -176,4 +176,27 @@ __global__ void testBlockClusterSyncKernel(
     uint32_t* syncResults,
     uint32_t* errorCount);
 
+// to_warp_group() basic conversion test.
+// Verifies group_id and total_groups renumbering, plus device-side checks
+// for thread_id_in_group, group_size, and scope.
+void testToWarpGroup(
+    uint32_t* groupIds_d,
+    uint32_t* totalGroupsOut_d,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize,
+    SyncScope scope);
+
+// partition() followed by to_warp_group() test.
+// Verifies that to_warp_group() preserves partition context
+// (unlike make_warp_group() which ignores partitions).
+void testPartitionThenToWarpGroup(
+    uint32_t* warpGroupIds_d,
+    uint32_t* warpTotalGroups_d,
+    uint32_t* partitionIds_d,
+    uint32_t numPartitions,
+    uint32_t* errorCount_d,
+    int numBlocks,
+    int blockSize);
+
 } // namespace comms::pipes::test
