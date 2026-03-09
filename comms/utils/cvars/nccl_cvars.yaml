@@ -2509,7 +2509,7 @@ cvars:
 
  - name        : NCCL_COMMSMONITOR_ENABLE
    type        : bool
-   default     : false
+   default     : true
    description : |-
      Enable comms monitor to monitor the creation and destruction of NCCL
      communicators. This is required to be enabled for ncclCommDumpAll to
