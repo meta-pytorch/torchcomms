@@ -18,6 +18,8 @@
 
 namespace torch::comms {
 
+constexpr bool kDefaultPersistentStore = false;
+
 class TorchCommGloo : public TorchCommBackend,
                       public std::enable_shared_from_this<TorchCommGloo> {
  public:

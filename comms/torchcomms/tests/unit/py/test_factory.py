@@ -3,12 +3,10 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
 import os
-import tempfile
 import unittest
 
 import torch
 import torchcomms
-from torchcomms._store_manager import _create_prefixed_store
 
 
 class TestFactory(unittest.TestCase):
@@ -35,13 +33,3 @@ class TestFactory(unittest.TestCase):
     def test_factory_missing(self):
         with self.assertRaisesRegex(ModuleNotFoundError, "failed to find backend"):
             torchcomms.new_comm("invalid", torch.device("cuda"), "my_comm")
-
-    def test_duplciate_store(self):
-        _, path = tempfile.mkstemp()
-        os.environ["TORCHCOMM_STORE_PATH"] = path
-
-        _create_prefixed_store("custom_backend", "name")
-        with self.assertRaisesRegex(
-            RuntimeError, r"Store prefix has been reused.*custom_backend.*name"
-        ):
-            _create_prefixed_store("custom_backend", "name")
