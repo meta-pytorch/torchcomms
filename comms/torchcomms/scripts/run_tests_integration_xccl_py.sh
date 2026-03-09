@@ -25,6 +25,7 @@ run_tests () {
         BroadcastTest.py
         DDPCommTest.py
         DeviceMeshTest.py
+        DPTPCommTest.py
         FSDPCommTest.py
         GatherTest.py
         MultiCommTest.py
