@@ -1,0 +1,3 @@
+# pyre-strict
+class TorchCommXCCL: ...
+
