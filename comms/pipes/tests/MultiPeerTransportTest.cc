@@ -48,7 +48,6 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
         .ibgdaConfig =
             {
                 .cudaDevice = localRank,
-                .signalCount = 4,
             },
     };
     auto bootstrap = std::make_shared<MpiBootstrap>();

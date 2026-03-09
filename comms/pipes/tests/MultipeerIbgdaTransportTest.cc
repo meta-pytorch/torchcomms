@@ -39,11 +39,9 @@ class MultipeerIbgdaTransportTestFixture : public MpiBaseTestFixture {
   }
 
   // Helper: Create transport with default config
-  std::unique_ptr<MultipeerIbgdaTransport> createTransport(
-      std::size_t signalCount = 1) {
+  std::unique_ptr<MultipeerIbgdaTransport> createTransport() {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .signalCount = signalCount,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -109,10 +107,19 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
 
-    // Collectively exchange buffer info to get remote buffer handles
+    // Collectively exchange data buffer info
     auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    // Allocate and register signal buffer (1 slot)
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
 
     XLOGF(
         INFO,
@@ -137,11 +144,12 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       // Perform RDMA put with signal
-      test::testPutSignal(
+      test::testPutAndSignal(
           peerTransportPtr,
           localDataBuf,
           remoteDataBuf,
           nbytes,
+          remoteSignalBuf,
           0, // signal id
           1, // signal value
           numBlocks,
@@ -159,9 +167,8 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
 
       // Wait for signal from sender
       test::testWaitSignal(
-          peerTransportPtr,
+          static_cast<uint64_t*>(signalBuffer.get()),
           0, // signal id
-          IbgdaCmpOp::GE, // comparison operation
           1, // expected signal
           numBlocks,
           blockSize);
@@ -218,110 +225,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalBasic) {
 }
 
 // =============================================================================
-// Put/Signal Non-Adaptive Basic Test - Tests fused put+signal operation
-// =============================================================================
-
-TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalNonAdaptiveBasic) {
-  if (numRanks != 2) {
-    XLOGF(WARNING, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
-    return;
-  }
-
-  const std::size_t nbytes = 64 * 1024; // 64KB transfer
-  const int numBlocks = 1;
-  const int blockSize = 32;
-  const int peerRank = (globalRank == 0) ? 1 : 0;
-  const uint8_t testPattern = 0xCD;
-
-  try {
-    auto transport = createTransport();
-
-    // Allocate and register user-owned data buffer
-    DeviceBuffer dataBuffer(nbytes);
-    auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
-
-    // Collectively exchange buffer info to get remote buffer handles
-    auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
-    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
-    auto remoteDataBuf = remoteDataBufs[peerIndex];
-
-    // Get peer transport for explicit peer selection
-    P2pIbgdaTransportDevice* peerTransportPtr =
-        transport->getP2pTransportDevice(peerRank);
-
-    if (globalRank == 0) {
-      // Rank 0: Sender
-      test::fillBufferWithPattern(
-          localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      // Perform RDMA put with signal using non-adaptive (fused) operation
-      test::testPutSignalNonAdaptive(
-          peerTransportPtr,
-          localDataBuf,
-          remoteDataBuf,
-          nbytes,
-          0, // signal id
-          1, // signal value
-          numBlocks,
-          blockSize);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-    } else {
-      // Rank 1: Receiver
-      CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      // Wait for signal from sender
-      test::testWaitSignal(
-          peerTransportPtr,
-          0, // signal id
-          IbgdaCmpOp::GE,
-          1, // expected signal
-          numBlocks,
-          blockSize);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-
-      MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-      // Verify received data
-      DeviceBuffer errorCountBuf(sizeof(int));
-      auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
-      CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
-
-      test::verifyBufferPattern(
-          localDataBuf.ptr,
-          nbytes,
-          testPattern,
-          d_errorCount,
-          numBlocks,
-          blockSize);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-
-      int h_errorCount = 0;
-      CUDACHECK_TEST(cudaMemcpy(
-          &h_errorCount, d_errorCount, sizeof(int), cudaMemcpyDeviceToHost));
-
-      EXPECT_EQ(h_errorCount, 0)
-          << "Rank " << globalRank << ": Found " << h_errorCount
-          << " byte mismatches out of " << nbytes
-          << " bytes (non-adaptive put_signal)";
-    }
-  } catch (const std::exception& e) {
-    GTEST_SKIP() << "IBGDA transport not available: " << e.what();
-  }
-
-  XLOGF(INFO, "Rank {}: PutSignalNonAdaptiveBasic test completed", globalRank);
-}
-
-// =============================================================================
 // Group-Level Put/Signal Basic Test - Verifies group-collaborative RDMA
-// transfer
 // =============================================================================
 
 TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
@@ -330,72 +234,68 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
     return;
   }
 
-  // 64KB total, split across 32 lanes = 2KB per lane
   const std::size_t nbytes = 64 * 1024;
   const int numBlocks = 1;
-  const int blockSize = 32; // kWarpSize (1 warp)
+  const int blockSize = 32;
   const int peerRank = (globalRank == 0) ? 1 : 0;
-  const uint8_t testPattern = 0x47; // 'G' for group
+  const uint8_t testPattern = 0x47;
 
   try {
     auto transport = createTransport();
 
-    // Allocate and register user-owned data buffer
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
-
-    // Collectively exchange buffer info to get remote buffer handles
     auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Get peer transport for explicit peer selection
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
-      // Rank 0: Sender
-      // Fill local buffer with test pattern
       test::fillBufferWithPattern(
           localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Perform group-collaborative RDMA put with signal
-      test::testPutSignalGroup(
+      test::testPutAndSignalGroup(
           peerTransportPtr,
           localDataBuf,
           remoteDataBuf,
           nbytes,
-          0, // signal id
-          1, // signal value
+          remoteSignalBuf,
+          0,
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     } else {
-      // Rank 1: Receiver
-      // Clear local buffer
       CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Wait for signal from sender
       test::testWaitSignal(
-          peerTransportPtr,
-          0, // signal id
-          IbgdaCmpOp::GE, // comparison operation
-          1, // expected signal
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Verify received data
       DeviceBuffer errorCountBuf(sizeof(int));
       auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
@@ -415,7 +315,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
 
       EXPECT_EQ(h_errorCount, 0) << "Rank " << globalRank << ": Found "
                                  << h_errorCount << " byte mismatches out of "
-                                 << nbytes << " bytes (group put_signal)";
+                                 << nbytes << " bytes (group put+signal)";
     }
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
@@ -425,7 +325,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBasic) {
 }
 
 // =============================================================================
-// Multi-Warp Group Put/Signal Test - put_signal_group_global with warp groups
+// Multi-Warp Group Put/Signal Test
 // =============================================================================
 
 TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
@@ -434,78 +334,71 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
     return;
   }
 
-  // Use an irregular size that is NOT evenly divisible by the number of warps
-  // (16) or by the warp size (32), to exercise remainder handling in both
-  // put_signal_group_global's per-group chunking and put_signal_group_local's
-  // per-thread chunking. 65000 / 16 warps = 4062 rem 8; 4062 / 32 threads =
-  // 126 rem 30
   const std::size_t nbytes = 65000;
   const int numBlocks = 4;
-  const int blockSize = 128; // 4 warps per block → 16 warps total
+  const int blockSize = 128;
   const int numWarps = numBlocks * (blockSize / 32);
   const int peerRank = (globalRank == 0) ? 1 : 0;
-  const uint8_t testPattern = 0x4D; // 'M' for multi-warp
+  const uint8_t testPattern = 0x4D;
 
   try {
     auto transport = createTransport();
 
-    // Allocate and register user-owned data buffer
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
-
-    // Collectively exchange buffer info to get remote buffer handles
     auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Get peer transport for explicit peer selection
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
-      // Rank 0: Sender
-      // Fill local buffer with test pattern
       test::fillBufferWithPattern(
           localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // put_signal_group_global partitions data across 16 warps, each
-      // signals with signalVal=1. Total accumulated signal = 16 × 1 = 16
-      test::testPutSignalGroupMultiWarp(
+      // Each warp signals with 1, total = numWarps
+      test::testPutAndSignalGroupMultiWarp(
           peerTransportPtr,
           localDataBuf,
           remoteDataBuf,
           nbytes,
-          0, // signal id
-          1, // signal value per warp
+          remoteSignalBuf,
+          0,
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     } else {
-      // Rank 1: Receiver
-      // Clear local buffer
       CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Wait for accumulated signal from all warps (16 × 1 = 16)
+      // Wait for accumulated signal from all warps
       test::testWaitSignal(
-          peerTransportPtr,
-          0, // signal id
-          IbgdaCmpOp::GE, // comparison operation
-          numWarps, // expected signal: 16 warps × signalVal 1
-          1, // numBlocks for wait kernel
-          32); // blockSize for wait kernel
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          numWarps, // expected signal: 16 warps × 1
+          1,
+          32);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Verify received data
       DeviceBuffer errorCountBuf(sizeof(int));
       auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
@@ -526,7 +419,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
       EXPECT_EQ(h_errorCount, 0)
           << "Rank " << globalRank << ": Found " << h_errorCount
           << " byte mismatches out of " << nbytes
-          << " bytes (multi-warp put_signal_group_global)";
+          << " bytes (multi-warp put_group_global)";
     }
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
@@ -536,7 +429,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupMultiWarp) {
 }
 
 // =============================================================================
-// Block-Scope Group Put/Signal Test - put_signal_group_global with block groups
+// Block-Scope Group Put/Signal Test
 // =============================================================================
 
 TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
@@ -545,77 +438,70 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
     return;
   }
 
-  // Use an irregular size that is NOT evenly divisible by the number of blocks
-  // (4) or by the block size (256), to exercise remainder handling in both
-  // put_signal_group_global's per-group chunking and put_signal_group_local's
-  // per-thread chunking. 65003 / 4 blocks = 16250 rem 3; 16253 / 256 threads =
-  // 63 rem 125
   const std::size_t nbytes = 65003;
   const int numBlocks = 4;
-  const int blockSize = 256; // block-scope groups
+  const int blockSize = 256;
   const int peerRank = (globalRank == 0) ? 1 : 0;
-  const uint8_t testPattern = 0x62; // 'b' for block
+  const uint8_t testPattern = 0x62;
 
   try {
     auto transport = createTransport();
 
-    // Allocate and register user-owned data buffer
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
-
-    // Collectively exchange buffer info to get remote buffer handles
     auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Get peer transport for explicit peer selection
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
-      // Rank 0: Sender
-      // Fill local buffer with test pattern
       test::fillBufferWithPattern(
           localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // put_signal_group_global partitions data across 4 blocks, each
-      // signals with signalVal=1. Total accumulated signal = 4 × 1 = 4
-      test::testPutSignalGroupBlock(
+      // Each block signals with 1, total = numBlocks
+      test::testPutAndSignalGroupBlock(
           peerTransportPtr,
           localDataBuf,
           remoteDataBuf,
           nbytes,
-          0, // signal id
-          1, // signal value per block
+          remoteSignalBuf,
+          0,
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     } else {
-      // Rank 1: Receiver
-      // Clear local buffer
       CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Wait for accumulated signal from all blocks (4 × 1 = 4)
+      // Wait for accumulated signal from all blocks
       test::testWaitSignal(
-          peerTransportPtr,
-          0, // signal id
-          IbgdaCmpOp::GE, // comparison operation
-          numBlocks, // expected signal: 4 blocks × signalVal 1
-          1, // numBlocks for wait kernel
-          32); // blockSize for wait kernel
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          numBlocks, // expected: 4 blocks × 1
+          1,
+          32);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Verify received data
       DeviceBuffer errorCountBuf(sizeof(int));
       auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
@@ -636,7 +522,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
       EXPECT_EQ(h_errorCount, 0)
           << "Rank " << globalRank << ": Found " << h_errorCount
           << " byte mismatches out of " << nbytes
-          << " bytes (block-scope put_signal_group_global)";
+          << " bytes (block-scope put_group_global)";
     }
   } catch (const std::exception& e) {
     GTEST_SKIP() << "IBGDA transport not available: " << e.what();
@@ -646,7 +532,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalGroupBlock) {
 }
 
 // =============================================================================
-// Multiple Transfers Test - Tests repeated put_signal operations
+// Multiple Transfer Sizes Test
 // =============================================================================
 
 struct TransferSizeParams {
@@ -687,65 +573,65 @@ TEST_P(TransferSizeTestFixture, PutSignal) {
   try {
     MultipeerIbgdaTransportConfig config{
         .cudaDevice = localRank,
-        .signalCount = 1,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultipeerIbgdaTransport transport(globalRank, numRanks, bootstrap, config);
     transport.exchange();
 
-    // Allocate and register user-owned data buffer
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport.registerBuffer(dataBuffer.get(), nbytes);
-
-    // Collectively exchange buffer info to get remote buffer handles
     auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Get peer transport for explicit peer selection
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport.registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport.getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
-      // Sender
       test::fillBufferWithPattern(
           localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      test::testPutSignal(
+      test::testPutAndSignal(
           peerTransportPtr,
           localDataBuf,
           remoteDataBuf,
           nbytes,
-          0, // signal id
-          1, // signal value
+          remoteSignalBuf,
+          0,
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     } else {
-      // Receiver
       CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       test::testWaitSignal(
-          peerTransportPtr,
-          0, // signal id
-          IbgdaCmpOp::GE, // comparison operation
-          1, // expected signal
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Verify all bytes
       DeviceBuffer errorCountBuf(sizeof(int));
       auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
@@ -802,14 +688,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
     return;
   }
 
-  // For bidirectional transfer using a single shared buffer per peer,
-  // we need to sequence the transfers carefully:
-  // 1. Rank 0 sends first, Rank 1 receives and verifies
-  // 2. Then Rank 1 sends, Rank 0 receives and verifies
-  // This avoids the race condition where RDMA overwrites destroy data
-  // before it can be sent back.
-
-  const std::size_t nbytes = 256 * 1024; // 256KB
+  const std::size_t nbytes = 256 * 1024;
   const int numBlocks = 2;
   const int blockSize = 64;
   const int peerRank = (globalRank == 0) ? 1 : 0;
@@ -819,16 +698,20 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
   try {
     auto transport = createTransport();
 
-    // Allocate and register user-owned data buffer
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
-
-    // Collectively exchange buffer info to get remote buffer handles
     auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Get peer transport for explicit peer selection
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport->getP2pTransportDevice(peerRank);
 
@@ -837,12 +720,10 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
 
     // Phase 1: Rank 0 sends to Rank 1
     if (globalRank == 0) {
-      // Fill local buffer with rank 0's pattern
       test::fillBufferWithPattern(
           localDataBuf.ptr, nbytes, rank0Pattern, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
     } else {
-      // Clear buffer to receive
       CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
       CUDACHECK_TEST(cudaDeviceSynchronize());
     }
@@ -850,27 +731,26 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     if (globalRank == 0) {
-      test::testPutSignal(
+      test::testPutAndSignal(
           peerTransportPtr,
           localDataBuf,
           remoteDataBuf,
           nbytes,
-          0, // signal id
-          1, // signal value
+          remoteSignalBuf,
+          0,
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
     } else {
       test::testWaitSignal(
-          peerTransportPtr,
-          0, // signal id
-          IbgdaCmpOp::GE, // comparison operation
-          1, // expected signal
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
-      // Verify Rank 1 received Rank 0's pattern
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
       test::verifyBufferPattern(
           localDataBuf.ptr,
@@ -892,13 +772,12 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     // Phase 2: Rank 1 sends to Rank 0
+    // Reset signal buffer for phase 2 (signal value was 1, now we wait for 2)
     if (globalRank == 1) {
-      // Fill local buffer with rank 1's pattern
       test::fillBufferWithPattern(
           localDataBuf.ptr, nbytes, rank1Pattern, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
     } else {
-      // Clear buffer to receive
       CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
       CUDACHECK_TEST(cudaDeviceSynchronize());
     }
@@ -906,27 +785,26 @@ TEST_F(MultipeerIbgdaTransportTestFixture, Bidirectional) {
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     if (globalRank == 1) {
-      test::testPutSignal(
+      test::testPutAndSignal(
           peerTransportPtr,
           localDataBuf,
           remoteDataBuf,
           nbytes,
-          0, // signal id
-          2, // Use signal value 2 for phase 2
+          remoteSignalBuf,
+          0,
+          1, // cumulative: now signal = 2
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
     } else {
       test::testWaitSignal(
-          peerTransportPtr,
-          0, // signal id
-          IbgdaCmpOp::GE, // comparison operation
-          2, // expected signal
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          2, // wait for cumulative signal >= 2
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
-      // Verify Rank 0 received Rank 1's pattern
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
       test::verifyBufferPattern(
           localDataBuf.ptr,
@@ -964,7 +842,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, StressTest) {
     return;
   }
 
-  const std::size_t nbytes = 128 * 1024; // 128KB
+  const std::size_t nbytes = 128 * 1024;
   const int numIterations = 100;
   const int numBlocks = 2;
   const int blockSize = 64;
@@ -973,16 +851,20 @@ TEST_F(MultipeerIbgdaTransportTestFixture, StressTest) {
   try {
     auto transport = createTransport();
 
-    // Allocate and register user-owned data buffer
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
-
-    // Collectively exchange buffer info to get remote buffer handles
     auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Get peer transport for explicit peer selection
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport->getP2pTransportDevice(peerRank);
 
@@ -992,44 +874,43 @@ TEST_F(MultipeerIbgdaTransportTestFixture, StressTest) {
       const uint8_t testPattern = static_cast<uint8_t>(iter % 256);
 
       if (globalRank == 0) {
-        // Sender
         test::fillBufferWithPattern(
             localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-        test::testPutSignal(
+        // Signal value = iter+1 (cumulative via atomic fetch-add)
+        test::testPutAndSignal(
             peerTransportPtr,
             localDataBuf,
             remoteDataBuf,
             nbytes,
-            0, // signal id
-            iter + 1, // signal value
+            remoteSignalBuf,
+            0,
+            iter + 1,
             numBlocks,
             blockSize);
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
       } else {
-        // Receiver
         CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0xFF, nbytes));
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
+        // Wait for cumulative signal >= iter+1
         test::testWaitSignal(
-            peerTransportPtr,
-            0, // signal id
-            IbgdaCmpOp::GE, // comparison operation
-            iter + 1, // expected signal
+            static_cast<uint64_t*>(signalBuffer.get()),
+            0,
+            iter + 1,
             numBlocks,
             blockSize);
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-        // Verify
         DeviceBuffer errorCountBuf(sizeof(int));
         auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
         CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
@@ -1086,49 +967,49 @@ TEST_F(MultipeerIbgdaTransportTestFixture, SignalOnly) {
   try {
     auto transport = createTransport();
 
-    // For SignalOnly test, use explicit peer selection
     int peerRank = (globalRank == 0) ? 1 : 0;
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+
+    // Allocate and register signal buffer
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
-      // Sender: Send signal only (no data)
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       test::testSignalOnly(
-          peerTransportPtr,
-          0, // signal id
-          42, // signal value
-          numBlocks,
-          blockSize);
+          peerTransportPtr, remoteSignalBuf, 0, 42, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     } else {
-      // Receiver: Wait for signal
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       test::testWaitSignal(
-          peerTransportPtr,
-          0, // signal id
-          IbgdaCmpOp::GE, // comparison
-          42, // expected signal
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          42,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Verify signal value
-      DeviceBuffer resultBuf(sizeof(uint64_t));
-      auto* d_result = static_cast<uint64_t*>(resultBuf.get());
-
-      test::testReadSignal(peerTransportPtr, 0, d_result, numBlocks, blockSize);
-      CUDACHECK_TEST(cudaDeviceSynchronize());
-
+      // Verify signal value via host-side read
       uint64_t h_result = 0;
       CUDACHECK_TEST(cudaMemcpy(
-          &h_result, d_result, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+          &h_result,
+          signalBuffer.get(),
+          sizeof(uint64_t),
+          cudaMemcpyDeviceToHost));
 
       EXPECT_GE(h_result, 42u) << "Signal value should be >= 42";
     }
@@ -1139,6 +1020,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, SignalOnly) {
   XLOGF(INFO, "Rank {}: SignalOnly test completed", globalRank);
 }
 
+// =============================================================================
 // =============================================================================
 // Reset Signal Test - Tests resetting signals for reuse
 // =============================================================================
@@ -1156,65 +1038,61 @@ TEST_F(MultipeerIbgdaTransportTestFixture, ResetSignal) {
   try {
     auto transport = createTransport();
 
-    // For ResetSignal test, use explicit peer selection
     int peerRank = (globalRank == 0) ? 1 : 0;
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+
+    const std::size_t signalBufSize = sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport->getP2pTransportDevice(peerRank);
 
     for (int iter = 0; iter < numIterations; iter++) {
       if (globalRank == 0) {
-        // Sender
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
         // Send signal
         test::testSignalOnly(
-            peerTransportPtr,
-            0, // signal id
-            1, // signal value (always 1)
-            numBlocks,
-            blockSize);
+            peerTransportPtr, remoteSignalBuf, 0, 1, numBlocks, blockSize);
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-        // Reset the receiver's signal for next iteration
-        test::testResetSignal(peerTransportPtr, 0, numBlocks, blockSize);
-        CUDACHECK_TEST(cudaDeviceSynchronize());
-
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
       } else {
-        // Receiver
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-        // Wait for signal (always expecting 1 since sender resets)
+        // Wait for signal (always expecting 1 since we reset each iteration)
         test::testWaitSignal(
-            peerTransportPtr,
-            0, // signal id
-            IbgdaCmpOp::GE,
-            1, // expected value
+            static_cast<uint64_t*>(signalBuffer.get()),
+            0,
+            1,
             numBlocks,
             blockSize);
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
         MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-        // Wait for sender to reset our signal
-        MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-        // Verify signal was reset to 0
-        DeviceBuffer resultBuf(sizeof(uint64_t));
-        auto* d_result = static_cast<uint64_t*>(resultBuf.get());
-
-        test::testReadSignal(
-            peerTransportPtr, 0, d_result, numBlocks, blockSize);
+        // Reset own signal buffer for next iteration
+        CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
         CUDACHECK_TEST(cudaDeviceSynchronize());
 
+        // Verify signal was reset to 0
         uint64_t h_result = 1; // Initialize to non-zero
         CUDACHECK_TEST(cudaMemcpy(
-            &h_result, d_result, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+            &h_result,
+            signalBuffer.get(),
+            sizeof(uint64_t),
+            cudaMemcpyDeviceToHost));
 
         EXPECT_EQ(h_result, 0u)
             << "Iteration " << iter << ": Signal should be reset to 0";
+
+        MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
       }
     }
   } catch (const std::exception& e) {
@@ -1243,30 +1121,32 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultipleSignalSlots) {
   const int blockSize = 32;
 
   try {
-    // Create transport with multiple signal slots
-    MultipeerIbgdaTransportConfig config{
-        .cudaDevice = localRank,
-        .signalCount = static_cast<std::size_t>(numSignals),
-    };
+    auto transport = createTransport();
 
-    auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    MultipeerIbgdaTransport transport(globalRank, numRanks, bootstrap, config);
-    transport.exchange();
-
-    // For MultipleSignalSlots test, use explicit peer selection
     int peerRank = (globalRank == 0) ? 1 : 0;
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+
+    // Allocate signal buffer with multiple slots
+    const std::size_t signalBufSize = numSignals * sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
-        transport.getP2pTransportDevice(peerRank);
+        transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
-      // Sender: Send signals to different slots
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       for (int i = 0; i < numSignals; i++) {
         test::testSignalOnly(
             peerTransportPtr,
-            i, // signal id
-            static_cast<uint64_t>(i + 1) * 10, // unique value per slot
+            remoteSignalBuf,
+            i,
+            static_cast<uint64_t>(i + 1) * 10,
             numBlocks,
             blockSize);
       }
@@ -1274,15 +1154,13 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultipleSignalSlots) {
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     } else {
-      // Receiver: Wait for signals on each slot
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       for (int i = 0; i < numSignals; i++) {
         test::testWaitSignal(
-            peerTransportPtr,
-            i, // signal id
-            IbgdaCmpOp::GE,
-            static_cast<uint64_t>(i + 1) * 10, // expected value
+            static_cast<uint64_t*>(signalBuffer.get()),
+            i,
+            static_cast<uint64_t>(i + 1) * 10,
             numBlocks,
             blockSize);
       }
@@ -1290,23 +1168,19 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultipleSignalSlots) {
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Verify each signal slot has the correct value
+      // Verify each signal slot via host-side read
+      std::vector<uint64_t> h_signals(numSignals);
+      CUDACHECK_TEST(cudaMemcpy(
+          h_signals.data(),
+          signalBuffer.get(),
+          signalBufSize,
+          cudaMemcpyDeviceToHost));
+
       for (int i = 0; i < numSignals; i++) {
-        DeviceBuffer resultBuf(sizeof(uint64_t));
-        auto* d_result = static_cast<uint64_t*>(resultBuf.get());
-
-        test::testReadSignal(
-            peerTransportPtr, i, d_result, numBlocks, blockSize);
-        CUDACHECK_TEST(cudaDeviceSynchronize());
-
-        uint64_t h_result = 0;
-        CUDACHECK_TEST(cudaMemcpy(
-            &h_result, d_result, sizeof(uint64_t), cudaMemcpyDeviceToHost));
-
         uint64_t expected = static_cast<uint64_t>(i + 1) * 10;
-        EXPECT_GE(h_result, expected)
+        EXPECT_GE(h_signals[i], expected)
             << "Signal slot " << i << ": expected >= " << expected << ", got "
-            << h_result;
+            << h_signals[i];
       }
     }
   } catch (const std::exception& e) {
@@ -1317,7 +1191,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, MultipleSignalSlots) {
 }
 
 // =============================================================================
-// Put Signal Wait For Ready Test - Sender waits for receiver's ready signal
+// Put Signal Wait For Ready Test
 // =============================================================================
 
 TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
@@ -1326,51 +1200,54 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
     return;
   }
 
-  // This test uses 2 signal slots:
-  // - Signal 0: "ready" signal from receiver to sender
-  // - Signal 1: "data" signal from sender to receiver
-  const std::size_t nbytes = 64 * 1024; // 64KB transfer
+  const std::size_t nbytes = 64 * 1024;
   const int numBlocks = 1;
   const int blockSize = 32;
   const int peerRank = (globalRank == 0) ? 1 : 0;
   const uint8_t testPattern = 0x55;
 
   try {
-    // Need 2 signal slots for ready + data signals
-    auto transport = createTransport(2);
+    auto transport = createTransport();
 
-    // Allocate and register user-owned data buffer
     DeviceBuffer dataBuffer(nbytes);
     auto localDataBuf = transport->registerBuffer(dataBuffer.get(), nbytes);
-
-    // Collectively exchange buffer info to get remote buffer handles
     auto remoteDataBufs = transport->exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
 
-    // Get peer transport for explicit peer selection
+    // 2 signal slots: slot 0 = ready, slot 1 = data
+    const std::size_t signalBufSize = 2 * sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport->getP2pTransportDevice(peerRank);
 
     if (globalRank == 0) {
       // Rank 0: Sender
-      // Fill local buffer with test pattern
       test::fillBufferWithPattern(
           localDataBuf.ptr, nbytes, testPattern, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Wait for receiver's "ready" signal, then put data with "data" signal
-      test::testWaitReadyThenPutSignal(
+      // Wait for receiver's "ready" signal on local slot 0,
+      // then put data + signal completion on remote slot 1
+      test::testWaitReadyThenPutAndSignal(
           peerTransportPtr,
           localDataBuf,
           remoteDataBuf,
           nbytes,
-          0, // readySignalId - wait on this
-          1, // readySignalVal - wait for this value
-          1, // dataSignalId - signal on this
-          1, // dataSignalVal - send this value
+          static_cast<uint64_t*>(signalBuffer.get()),
+          0,
+          1, // readySignalId, readySignalVal
+          remoteSignalBuf,
+          1,
+          1, // dataSignalId, dataSignalVal
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
@@ -1378,34 +1255,27 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
     } else {
       // Rank 1: Receiver
-      // Clear local buffer
       CUDACHECK_TEST(cudaMemset(localDataBuf.ptr, 0, nbytes));
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Send "ready" signal to sender indicating buffer is ready
+      // Send "ready" signal to sender (remote slot 0)
       test::testSignalOnly(
-          peerTransportPtr,
-          0, // signal id (ready signal)
-          1, // signal value
-          numBlocks,
-          blockSize);
+          peerTransportPtr, remoteSignalBuf, 0, 1, numBlocks, blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
-      // Wait for "data" signal from sender
+      // Wait for "data" signal from sender (local slot 1)
       test::testWaitSignal(
-          peerTransportPtr,
-          1, // signal id (data signal)
-          IbgdaCmpOp::GE,
-          1, // expected signal
+          static_cast<uint64_t*>(signalBuffer.get()),
+          1,
+          1,
           numBlocks,
           blockSize);
       CUDACHECK_TEST(cudaDeviceSynchronize());
 
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-      // Verify received data
       DeviceBuffer errorCountBuf(sizeof(int));
       auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
@@ -1435,7 +1305,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, PutSignalWaitForReady) {
 }
 
 // =============================================================================
-// Bidirectional Concurrent Test - Both ranks do put_signal and wait_signal
+// Bidirectional Concurrent Test
 // =============================================================================
 
 TEST_F(MultipeerIbgdaTransportTestFixture, BidirectionalConcurrent) {
@@ -1444,20 +1314,9 @@ TEST_F(MultipeerIbgdaTransportTestFixture, BidirectionalConcurrent) {
     return;
   }
 
-  // This test launches a kernel with 2 threads on each rank:
-  // - Thread 0: does put_signal to send data to peer
-  // - Thread 1: does wait_signal to receive data from peer
-  //
-  // Both ranks send and receive concurrently, testing true bidirectional
-  // communication.
-  //
-  // Signal layout (2 slots per peer):
-  // - Signal 0: used by rank 0 to signal rank 1
-  // - Signal 1: used by rank 1 to signal rank 0
-
-  const std::size_t nbytes = 64 * 1024; // 64KB transfer
+  const std::size_t nbytes = 64 * 1024;
   const int numBlocks = 1;
-  const int blockSize = 2; // 2 threads: one for put, one for wait
+  const int blockSize = 2;
   const int peerRank = (globalRank == 0) ? 1 : 0;
   const uint8_t rank0Pattern = 0xAA;
   const uint8_t rank1Pattern = 0xBB;
@@ -1465,62 +1324,61 @@ TEST_F(MultipeerIbgdaTransportTestFixture, BidirectionalConcurrent) {
   const uint8_t peerPattern = (globalRank == 0) ? rank1Pattern : rank0Pattern;
 
   try {
-    // Need 2 signal slots
-    auto transport = createTransport(2);
+    auto transport = createTransport();
 
-    // Allocate separate send and receive buffers
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+
     DeviceBuffer sendBuffer(nbytes);
     DeviceBuffer recvBuffer(nbytes);
 
     auto localSendBuf = transport->registerBuffer(sendBuffer.get(), nbytes);
     auto localRecvBuf = transport->registerBuffer(recvBuffer.get(), nbytes);
-
-    // Exchange buffer info - each rank registers its recv buffer for remote
-    // writes
     auto remoteRecvBufs = transport->exchangeBuffer(localRecvBuf);
-    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto peerRecvBuf = remoteRecvBufs[peerIndex];
 
-    // Get peer transport
+    // 2 signal slots
+    const std::size_t signalBufSize = 2 * sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
+
     P2pIbgdaTransportDevice* peerTransportPtr =
         transport->getP2pTransportDevice(peerRank);
 
-    // Fill send buffer with my pattern
     test::fillBufferWithPattern(
         localSendBuf.ptr, nbytes, myPattern, numBlocks, 32);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
-    // Clear receive buffer
     CUDACHECK_TEST(cudaMemset(localRecvBuf.ptr, 0, nbytes));
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    // Determine signal IDs based on rank
     // Rank 0 sends on signal 0, receives on signal 1
     // Rank 1 sends on signal 1, receives on signal 0
     int sendSignalId = globalRank;
     int recvSignalId = peerRank;
 
-    // Launch bidirectional kernel:
-    // - Thread 0 does put_signal (sends data to peer's recv buffer)
-    // - Thread 1 does wait_signal (waits for data from peer)
-    test::testBidirectionalPutWait(
+    test::testBidirectionalPutAndWait(
         peerTransportPtr,
         localSendBuf,
         peerRecvBuf,
         nbytes,
+        remoteSignalBuf,
         sendSignalId,
-        1, // sendSignalVal
+        1,
+        static_cast<uint64_t*>(signalBuffer.get()),
         recvSignalId,
-        1, // recvSignalVal
+        1,
         numBlocks,
         blockSize);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    // Verify received data matches peer's pattern
     DeviceBuffer errorCountBuf(sizeof(int));
     auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
     CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
@@ -1555,42 +1413,34 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
     return;
   }
 
-  // This test uses the partition API to parallelize communication across peers:
-  //   [peer_id, per_peer_group] = group.partition(numPeers);
-  //
-  // Each rank sends unique data to all peers and receives data from all peers
-  // concurrently using a single kernel launch.
-  //
-  // Buffer layout: Single large buffer split into per-peer chunks
-  // - sendBuffer: [chunk_for_peer0 | chunk_for_peer1 | ... ]
-  // - recvBuffer: [chunk_from_peer0 | chunk_from_peer1 | ... ]
-
   const int numPeers = numRanks - 1;
-  const std::size_t bytesPerPeer = 64 * 1024; // 64KB per peer
+  const std::size_t bytesPerPeer = 64 * 1024;
   const std::size_t totalBytes = bytesPerPeer * numPeers;
-  // Need at least numPeers blocks so partition() works (num_partitions <=
-  // total_groups)
   const int numBlocks = numPeers;
-  const int blockSize = 32; // At least 2 threads per block for send/recv
+  const int blockSize = 32;
 
   try {
-    // Create transport with enough signal slots for all ranks
-    // (we use peerRank as signal ID, which ranges from 0 to numRanks-1)
-    auto transport = createTransport(static_cast<std::size_t>(numRanks));
+    auto transport = createTransport();
 
-    // Allocate single send and receive buffers (split into per-peer chunks)
     DeviceBuffer sendBuffer(totalBytes);
     DeviceBuffer recvBuffer(totalBytes);
 
     auto localSendBuf = transport->registerBuffer(sendBuffer.get(), totalBytes);
     auto localRecvBuf = transport->registerBuffer(recvBuffer.get(), totalBytes);
-
-    // Single collective exchange for the receive buffer
     auto remoteRecvBufs = transport->exchangeBuffer(localRecvBuf);
 
-    // Build per-peer buffer views and transport pointers
+    // Allocate signal buffer: numRanks slots (peerRank as signal ID)
+    const std::size_t signalBufSize = numRanks * sizeof(uint64_t);
+    DeviceBuffer signalBuffer(signalBufSize);
+    CUDACHECK_TEST(cudaMemset(signalBuffer.get(), 0, signalBufSize));
+    auto localSignalBuf =
+        transport->registerBuffer(signalBuffer.get(), signalBufSize);
+    auto remoteSignalBufs = transport->exchangeBuffer(localSignalBuf);
+
+    // Build per-peer arrays
     std::vector<IbgdaLocalBuffer> localSendBufsPerPeer(numPeers);
     std::vector<IbgdaRemoteBuffer> peerRecvBufs(numPeers);
+    std::vector<IbgdaRemoteBuffer> peerRemoteSignalBufs(numPeers);
     std::vector<P2pIbgdaTransportDevice*> peerTransports(numPeers);
     std::vector<int> peerRanksVec(numPeers);
 
@@ -1598,27 +1448,23 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
       int peerRank = (peerIndex < globalRank) ? peerIndex : (peerIndex + 1);
       peerRanksVec[peerIndex] = peerRank;
 
-      // Local send buffer chunk for this peer
       localSendBufsPerPeer[peerIndex] =
           localSendBuf.subBuffer(peerIndex * bytesPerPeer);
 
-      // Remote receive buffer chunk - peer writes to their slot in our buffer
-      // Peer's peerIndex for us determines where they write
       int ourIndexOnPeer =
           (globalRank < peerRank) ? globalRank : (globalRank - 1);
       peerRecvBufs[peerIndex] =
           remoteRecvBufs[peerIndex].subBuffer(ourIndexOnPeer * bytesPerPeer);
 
+      peerRemoteSignalBufs[peerIndex] = remoteSignalBufs[peerIndex];
       peerTransports[peerIndex] = transport->getP2pTransportDevice(peerRank);
     }
 
-    // Fill send buffer with unique pattern per rank
     const uint8_t myPattern = static_cast<uint8_t>(0x30 + globalRank);
     test::fillBufferWithPattern(
         localSendBuf.ptr, totalBytes, myPattern, 4, 128);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
-    // Clear receive buffer
     CUDACHECK_TEST(cudaMemset(localRecvBuf.ptr, 0, totalBytes));
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -1626,6 +1472,7 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
     DeviceBuffer d_peerTransports(numPeers * sizeof(P2pIbgdaTransportDevice*));
     DeviceBuffer d_localSendBufs(numPeers * sizeof(IbgdaLocalBuffer));
     DeviceBuffer d_peerRecvBufs(numPeers * sizeof(IbgdaRemoteBuffer));
+    DeviceBuffer d_remoteSignalBufs(numPeers * sizeof(IbgdaRemoteBuffer));
     DeviceBuffer d_peerRanks(numPeers * sizeof(int));
 
     CUDACHECK_TEST(cudaMemcpy(
@@ -1644,6 +1491,11 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
         numPeers * sizeof(IbgdaRemoteBuffer),
         cudaMemcpyHostToDevice));
     CUDACHECK_TEST(cudaMemcpy(
+        d_remoteSignalBufs.get(),
+        peerRemoteSignalBufs.data(),
+        numPeers * sizeof(IbgdaRemoteBuffer),
+        cudaMemcpyHostToDevice));
+    CUDACHECK_TEST(cudaMemcpy(
         d_peerRanks.get(),
         peerRanksVec.data(),
         numPeers * sizeof(int),
@@ -1651,12 +1503,11 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    // All ranks send data to all peers using partition() API
     test::testAllToAll(
         static_cast<P2pIbgdaTransportDevice**>(d_peerTransports.get()),
         static_cast<IbgdaLocalBuffer*>(d_localSendBufs.get()),
         static_cast<IbgdaRemoteBuffer*>(d_peerRecvBufs.get()),
-        static_cast<int*>(d_peerRanks.get()),
+        static_cast<IbgdaRemoteBuffer*>(d_remoteSignalBufs.get()),
         globalRank,
         bytesPerPeer,
         numPeers,
@@ -1664,7 +1515,6 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
         blockSize);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
-    // Barrier to ensure all sends are complete before verifying data
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     // Verify received data from each peer
@@ -1677,7 +1527,6 @@ TEST_F(MultipeerIbgdaTransportTestFixture, AllToAll) {
       auto* d_errorCount = static_cast<int*>(errorCountBuf.get());
       CUDACHECK_TEST(cudaMemset(d_errorCount, 0, sizeof(int)));
 
-      // Verify the chunk in our receive buffer from this peer
       void* recvChunk =
           static_cast<char*>(localRecvBuf.ptr) + peerIndex * bytesPerPeer;
       test::verifyBufferPattern(

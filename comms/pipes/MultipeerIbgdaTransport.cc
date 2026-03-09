@@ -257,59 +257,16 @@ void MultipeerIbgdaTransport::openIbDevice() {
 }
 
 void MultipeerIbgdaTransport::allocateResources() {
-  const int numPeers = nRanks_ - 1;
-
-  signalBufferSize_ = config_.signalCount * sizeof(uint64_t) * numPeers;
-
-  // Allocate GPU memory for signal buffer (transport-managed)
-  void* signalBufferCpu = nullptr;
-  doca_error_t err = doca_gpu_mem_alloc(
-      docaGpu_,
-      signalBufferSize_,
-      4096,
-      DOCA_GPU_MEM_TYPE_GPU,
-      &signalBuffer_,
-      &signalBufferCpu);
-  checkDocaError(err, "Failed to allocate GPU signal buffer");
-
-  // Zero-initialize signal buffer
-  cudaError_t cudaErr = cudaMemset(signalBuffer_, 0, signalBufferSize_);
-  if (cudaErr != cudaSuccess) {
-    throw std::runtime_error("Failed to zero signal buffer");
-  }
+  // Signal buffers are now caller-owned (window layer).
+  // No transport-managed buffers to allocate.
 }
 
 void MultipeerIbgdaTransport::registerMemory() {
-  int accessFlags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE |
-      IBV_ACCESS_REMOTE_READ | IBV_ACCESS_REMOTE_ATOMIC;
-
-  // Register signal buffer
-  // Try DMABUF registration first, fall back to regular reg_mr
-  int dmabufFd = -1;
-  doca_error_t err =
-      doca_gpu_dmabuf_fd(docaGpu_, signalBuffer_, signalBufferSize_, &dmabufFd);
-  if (err == DOCA_SUCCESS && dmabufFd >= 0) {
-    signalMr_ = ibv_reg_dmabuf_mr(
-        ibvPd_,
-        0,
-        signalBufferSize_,
-        reinterpret_cast<uint64_t>(signalBuffer_),
-        dmabufFd,
-        accessFlags);
-  }
-  if (!signalMr_) {
-    signalMr_ =
-        ibv_reg_mr(ibvPd_, signalBuffer_, signalBufferSize_, accessFlags);
-    if (!signalMr_) {
-      throw std::runtime_error("Failed to register signal memory region");
-    }
-  }
-
-  LOG(INFO) << "MultipeerIbgdaTransport: registered signal buffer"
-            << " lkey=" << signalMr_->lkey << " rkey=" << signalMr_->rkey;
+  // Signal buffers are now caller-owned (window layer).
+  // No transport-managed buffers to register.
 }
 
-void MultipeerIbgdaTransport::createQps() {
+void MultipeerIbgdaTransport::createQpGroups() {
   const int numPeers = nRanks_ - 1;
   qpHlList_.resize(numPeers, nullptr);
 
@@ -359,6 +316,10 @@ void MultipeerIbgdaTransport::createQps() {
     LOG(INFO) << "MultipeerIbgdaTransport: created QP " << i
               << " qpn=" << doca_verbs_qp_get_qpn(qpHlList_[i]->qp);
   }
+}
+
+void MultipeerIbgdaTransport::createLoopbackCompanionQps() {
+  // Companion QPs are added in a subsequent diff.
 }
 
 void MultipeerIbgdaTransport::connectQp(
@@ -487,10 +448,6 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
   if (nRanks < 2) {
     throw std::invalid_argument("Need at least 2 ranks");
   }
-  if (config.signalCount == 0) {
-    throw std::invalid_argument("signalCount must be > 0");
-  }
-
   try {
     // Initialize DOCA GPU context
     initDocaGpu();
@@ -498,14 +455,8 @@ MultipeerIbgdaTransport::MultipeerIbgdaTransport(
     // Open IB device and create PD
     openIbDevice();
 
-    // Allocate GPU memory
-    allocateResources();
-
-    // Register memory for RDMA
-    registerMemory();
-
     // Create high-level QPs
-    createQps();
+    createQpGroups();
   } catch (const std::exception&) {
     // Destructor won't run for a partially-constructed object, so clean up
     // all resources allocated by the init methods above.
@@ -541,18 +492,6 @@ void MultipeerIbgdaTransport::cleanup() {
     ibv_dereg_mr(mr);
   }
   registeredBuffers_.clear();
-
-  // Destroy signal MR
-  if (signalMr_) {
-    ibv_dereg_mr(signalMr_);
-    signalMr_ = nullptr;
-  }
-
-  // Free signal buffer (transport-managed)
-  if (signalBuffer_ != nullptr) {
-    doca_gpu_mem_free(docaGpu_, signalBuffer_);
-    signalBuffer_ = nullptr;
-  }
 
   // Destroy AH attributes
   if (ahAttr_ != nullptr) {
@@ -599,8 +538,6 @@ void MultipeerIbgdaTransport::exchange() {
   IbgdaTransportExchInfoAll& myInfo = allInfo[myRank_];
   memcpy(myInfo.gid, localGid_.raw, sizeof(myInfo.gid));
   myInfo.gidIndex = gidIndex_;
-  myInfo.signalAddr = reinterpret_cast<uint64_t>(signalBuffer_);
-  myInfo.signalRkey = HostRKey(signalMr_->rkey);
   myInfo.mtu = localMtu_;
 
   // Query port for LID (IB only)
@@ -636,7 +573,7 @@ void MultipeerIbgdaTransport::exchange() {
         "MultipeerIbgdaTransport::exchange allGather failed");
   }
 
-  // Convert allGather results to per-peer IbgdaExchInfo
+  // Convert allGather results to per-peer IbgdaTransportExchInfo
   // For each peer, extract their info and the QPN they use to connect to me
   peerExchInfo_.resize(numPeers);
   for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
@@ -646,28 +583,19 @@ void MultipeerIbgdaTransport::exchange() {
     // Extract transport info
     // The QPN we need is the one peer uses to connect to us:
     // peerInfo.qpnForRank[myRank_]
-    peerExchInfo_[peerIndex].transport.qpn = peerInfo.qpnForRank[myRank_];
-    memcpy(
-        peerExchInfo_[peerIndex].transport.gid,
-        peerInfo.gid,
-        sizeof(peerInfo.gid));
-    peerExchInfo_[peerIndex].transport.gidIndex = peerInfo.gidIndex;
-    peerExchInfo_[peerIndex].transport.lid = peerInfo.lid;
-    peerExchInfo_[peerIndex].transport.mtu = peerInfo.mtu;
-
-    // Extract signal buffer info
-    peerExchInfo_[peerIndex].signal.addr = peerInfo.signalAddr;
-    peerExchInfo_[peerIndex].signal.rkey = peerInfo.signalRkey;
+    peerExchInfo_[peerIndex].qpn = peerInfo.qpnForRank[myRank_];
+    memcpy(peerExchInfo_[peerIndex].gid, peerInfo.gid, sizeof(peerInfo.gid));
+    peerExchInfo_[peerIndex].gidIndex = peerInfo.gidIndex;
+    peerExchInfo_[peerIndex].lid = peerInfo.lid;
+    peerExchInfo_[peerIndex].mtu = peerInfo.mtu;
 
     LOG(INFO) << "MultipeerIbgdaTransport: received from peer " << peerRank
-              << " qpn=" << peerExchInfo_[peerIndex].transport.qpn
-              << " signalAddr=0x" << std::hex
-              << peerExchInfo_[peerIndex].signal.addr << std::dec;
+              << " qpn=" << peerExchInfo_[peerIndex].qpn;
   }
 
   // Connect QPs to peers
   for (int peerIndex = 0; peerIndex < numPeers; peerIndex++) {
-    connectQp(qpHlList_[peerIndex], peerExchInfo_[peerIndex].transport);
+    connectQp(qpHlList_[peerIndex], peerExchInfo_[peerIndex]);
   }
 
   // Build device transports on GPU
@@ -679,28 +607,7 @@ void MultipeerIbgdaTransport::exchange() {
         doca_gpu_verbs_get_qp_dev(qpHlList_[i]->qp_gverbs, &gpuQp);
     checkDocaError(err, "Failed to get GPU QP handle");
 
-    // Local signal buffer: use my peer index i for my own buffer layout
-    std::size_t localSignalOffset = i * config_.signalCount * sizeof(uint64_t);
-
-    // Remote signal buffer: use the peer's index for ME, not my index
-    // for the peer. The remote rank partitions its signal buffer using
-    // its own peer indexing (skip-self), so the slice reserved for us
-    // is at the index the remote rank assigns to myRank_.
-    int peerRank = peerIndexToRank(i);
-    int myIndexOnPeer = (myRank_ < peerRank) ? myRank_ : (myRank_ - 1);
-    std::size_t remoteSignalOffset =
-        myIndexOnPeer * config_.signalCount * sizeof(uint64_t);
-
-    auto* remoteSignalPtr = reinterpret_cast<void*>( // NOLINT(performance-no-int-to-ptr)
-        peerExchInfo_[i].signal.addr + remoteSignalOffset);
-
-    buildParams[i] = P2pIbgdaTransportBuildParams{
-        gpuQp,
-        IbgdaLocalBuffer(
-            static_cast<char*>(signalBuffer_) + localSignalOffset,
-            HostLKey(signalMr_->lkey)),
-        IbgdaRemoteBuffer(remoteSignalPtr, peerExchInfo_[i].signal.rkey),
-        static_cast<int>(config_.signalCount)};
+    buildParams[i] = P2pIbgdaTransportBuildParams{gpuQp};
   }
 
   peerTransportsGpu_ = buildDeviceTransportsOnGpu(buildParams.data(), numPeers);

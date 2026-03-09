@@ -35,24 +35,15 @@ namespace comms::pipes {
  *
  *     int myRank = transport.myRank;
  *     int nRanks = transport.nRanks;
- *     constexpr int kSignalId = 0;
- *     constexpr uint64_t kSignalVal = 1;
  *
  *     // Send to all peers
  *     for (int rank = 0; rank < nRanks; rank++) {
  *       if (rank == myRank) continue;
  *
  *       auto& p2p = transport.get(rank);
- *       auto work = p2p.put_signal(
- *           localBufs[myRank], remoteBufs[rank], nbytes,
- *           kSignalId, kSignalVal);
+ *       auto work = p2p.put(
+ *           localBufs[myRank], remoteBufs[rank], nbytes);
  *       p2p.wait_local(work);
- *     }
- *
- *     // Wait for all peers to send to us
- *     for (int rank = 0; rank < nRanks; rank++) {
- *       if (rank == myRank) continue;
- *       transport.get(rank).wait_signal(kSignalId, IbgdaCmpOp::GE, kSignalVal);
  *     }
  *   }
  *
