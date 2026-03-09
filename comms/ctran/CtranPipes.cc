@@ -53,7 +53,6 @@ commResult_t ctranInitializePipes(CtranComm* comm) {
       config.ibgdaConfig.ibHca = std::move(hcaStr);
     }
     config.ibgdaConfig.dataBufferSize = NCCL_CTRAN_IBGDA_DATA_BUFFER_SIZE;
-    config.ibgdaConfig.signalCount = NCCL_CTRAN_IBGDA_SIGNAL_COUNT;
     config.ibgdaConfig.qpDepth = NCCL_CTRAN_IBGDA_QP_DEPTH;
     if (NCCL_IB_TIMEOUT != NCCL_IB_TIMEOUT_DEFAULTCVARVALUE) {
       config.ibgdaConfig.timeout = static_cast<uint8_t>(NCCL_IB_TIMEOUT);

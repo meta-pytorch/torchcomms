@@ -8,35 +8,23 @@
 
 namespace comms::pipes::benchmark {
 
+// Maximum number of peers supported by multi-peer kernels.
+constexpr int kMaxPeers = 128;
+
 // Single-shot kernel implementations for correctness verification.
-// Each kernel does exactly one put_signal + wait_local, no warmup, no loop.
+// Each kernel does exactly one put + signal + wait_local, no warmup, no loop.
 
 __global__ void ibgdaPutSignalWaitLocalKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
-    int signalId,
-    uint64_t signalVal) {
+    IbgdaRemoteBuffer remoteSignalBuf,
+    int signalId) {
   auto group = make_block_group();
   if (group.is_global_leader()) {
-    auto work =
-        transport->put_signal(localBuf, remoteBuf, nbytes, signalId, signalVal);
-    transport->wait_local(work);
-  }
-}
-
-__global__ void ibgdaPutSignalNonAdaptiveWaitLocalKernel(
-    P2pIbgdaTransportDevice* transport,
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    std::size_t nbytes,
-    int signalId,
-    uint64_t signalVal) {
-  auto group = make_block_group();
-  if (group.is_global_leader()) {
-    auto work = transport->put_signal_non_adaptive(
-        localBuf, remoteBuf, nbytes, signalId, signalVal);
+    auto work = transport->put_signal(
+        localBuf, remoteBuf, nbytes, remoteSignalBuf, signalId, 1);
     transport->wait_local(work);
   }
 }
@@ -78,6 +66,7 @@ __global__ void ibgdaPutSignalWaitLocalBatchKernel(
     IbgdaLocalBuffer localBuf,
     IbgdaRemoteBuffer remoteBuf,
     std::size_t nbytes,
+    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     int numIters,
     unsigned long long* totalCycles) {
@@ -85,8 +74,8 @@ __global__ void ibgdaPutSignalWaitLocalBatchKernel(
   if (group.is_global_leader()) {
     // Warmup - do a few iterations to warm up the path
     for (int i = 0; i < 10; i++) {
-      auto work =
-          transport->put_signal(localBuf, remoteBuf, nbytes, signalId, 1);
+      auto work = transport->put_signal(
+          localBuf, remoteBuf, nbytes, remoteSignalBuf, signalId, 1);
       transport->wait_local(work);
     }
 
@@ -94,39 +83,8 @@ __global__ void ibgdaPutSignalWaitLocalBatchKernel(
     unsigned long long startCycle = clock64();
 
     for (int i = 0; i < numIters; i++) {
-      auto work =
-          transport->put_signal(localBuf, remoteBuf, nbytes, signalId, 1);
-      transport->wait_local(work);
-    }
-
-    unsigned long long endCycle = clock64();
-    *totalCycles = endCycle - startCycle;
-  }
-}
-
-__global__ void ibgdaPutSignalNonAdaptiveWaitLocalBatchKernel(
-    P2pIbgdaTransportDevice* transport,
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    std::size_t nbytes,
-    int signalId,
-    int numIters,
-    unsigned long long* totalCycles) {
-  auto group = make_block_group();
-  if (group.is_global_leader()) {
-    // Warmup - do a few iterations to warm up the path
-    for (int i = 0; i < 10; i++) {
-      auto work = transport->put_signal_non_adaptive(
-          localBuf, remoteBuf, nbytes, signalId, 1);
-      transport->wait_local(work);
-    }
-
-    // Timed iterations using GPU cycle counter
-    unsigned long long startCycle = clock64();
-
-    for (int i = 0; i < numIters; i++) {
-      auto work = transport->put_signal_non_adaptive(
-          localBuf, remoteBuf, nbytes, signalId, 1);
+      auto work = transport->put_signal(
+          localBuf, remoteBuf, nbytes, remoteSignalBuf, signalId, 1);
       transport->wait_local(work);
     }
 
@@ -137,6 +95,7 @@ __global__ void ibgdaPutSignalNonAdaptiveWaitLocalBatchKernel(
 
 __global__ void ibgdaSignalOnlyBatchKernel(
     P2pIbgdaTransportDevice* transport,
+    IbgdaRemoteBuffer remoteSignalBuf,
     int signalId,
     int numIters,
     unsigned long long* totalCycles) {
@@ -144,7 +103,7 @@ __global__ void ibgdaSignalOnlyBatchKernel(
   if (group.is_global_leader()) {
     // Warmup - do a few iterations to warm up the path
     for (int i = 0; i < 10; i++) {
-      auto work = transport->signal(signalId, 1);
+      auto work = transport->signal_remote(remoteSignalBuf, signalId, 1);
       transport->wait_local(work);
     }
 
@@ -152,7 +111,7 @@ __global__ void ibgdaSignalOnlyBatchKernel(
     unsigned long long startCycle = clock64();
 
     for (int i = 0; i < numIters; i++) {
-      auto work = transport->signal(signalId, 1);
+      auto work = transport->signal_remote(remoteSignalBuf, signalId, 1);
       transport->wait_local(work);
     }
 
@@ -163,33 +122,18 @@ __global__ void ibgdaSignalOnlyBatchKernel(
 
 // Launch wrapper implementations
 
-// Single-shot launchers for correctness verification (exactly 1 put_signal)
+// Single-shot launchers for correctness verification (exactly 1 put+signal)
 
 void launchIbgdaPutSignalSingle(
     P2pIbgdaTransportDevice* transport,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     cudaStream_t stream) {
   ibgdaPutSignalWaitLocalKernel<<<1, 32, 0, stream>>>(
-      transport, localBuf, remoteBuf, nbytes, signalId, 1);
-  cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    throw std::runtime_error(
-        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
-  }
-}
-
-void launchIbgdaPutSignalNonAdaptiveSingle(
-    P2pIbgdaTransportDevice* transport,
-    const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
-    std::size_t nbytes,
-    int signalId,
-    cudaStream_t stream) {
-  ibgdaPutSignalNonAdaptiveWaitLocalKernel<<<1, 32, 0, stream>>>(
-      transport, localBuf, remoteBuf, nbytes, signalId, 1);
+      transport, localBuf, remoteBuf, nbytes, remoteSignalBuf, signalId);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -216,35 +160,31 @@ void launchIbgdaPutSignalWaitLocalBatch(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     int numIters,
     unsigned long long* totalCycles,
     cudaStream_t stream) {
   ibgdaPutSignalWaitLocalBatchKernel<<<1, 32, 0, stream>>>(
-      transport, localBuf, remoteBuf, nbytes, signalId, numIters, totalCycles);
-}
-
-void launchIbgdaPutSignalNonAdaptiveWaitLocalBatch(
-    P2pIbgdaTransportDevice* transport,
-    const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
-    std::size_t nbytes,
-    int signalId,
-    int numIters,
-    unsigned long long* totalCycles,
-    cudaStream_t stream) {
-  ibgdaPutSignalNonAdaptiveWaitLocalBatchKernel<<<1, 32, 0, stream>>>(
-      transport, localBuf, remoteBuf, nbytes, signalId, numIters, totalCycles);
+      transport,
+      localBuf,
+      remoteBuf,
+      nbytes,
+      remoteSignalBuf,
+      signalId,
+      numIters,
+      totalCycles);
 }
 
 void launchIbgdaSignalOnlyBatch(
     P2pIbgdaTransportDevice* transport,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     int numIters,
     unsigned long long* totalCycles,
     cudaStream_t stream) {
   ibgdaSignalOnlyBatchKernel<<<1, 32, 0, stream>>>(
-      transport, signalId, numIters, totalCycles);
+      transport, remoteSignalBuf, signalId, numIters, totalCycles);
 }
 
 } // namespace comms::pipes::benchmark

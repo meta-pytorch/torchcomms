@@ -16,21 +16,14 @@ namespace comms::pipes::benchmark {
 
 /**
  * Single-shot launchers for correctness verification.
- * Each launches exactly one put_signal + wait_local, no warmup, no loop.
+ * Each launches exactly one put + signal + wait_local, no warmup, no loop.
  */
 void launchIbgdaPutSignalSingle(
     P2pIbgdaTransportDevice* transport,
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
-    int signalId,
-    cudaStream_t stream);
-
-void launchIbgdaPutSignalNonAdaptiveSingle(
-    P2pIbgdaTransportDevice* transport,
-    const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
-    std::size_t nbytes,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     cudaStream_t stream);
 
@@ -52,9 +45,10 @@ void launchIbgdaPutWaitLocalBatch(
     cudaStream_t stream);
 
 /**
- * Launch batched kernel: Multiple put_signal+wait_local iterations
+ * Launch batched kernel: Multiple put+signal+wait_local iterations
  *
- * Uses separate put + signal operations, which is safe for adaptive routing.
+ * Uses separate put + signal_remote_with_fence, which is safe for adaptive
+ * routing.
  *
  * @param totalCycles Output: total GPU cycles for numIters operations
  */
@@ -63,23 +57,7 @@ void launchIbgdaPutSignalWaitLocalBatch(
     const IbgdaLocalBuffer& localBuf,
     const IbgdaRemoteBuffer& remoteBuf,
     std::size_t nbytes,
-    int signalId,
-    int numIters,
-    unsigned long long* totalCycles,
-    cudaStream_t stream);
-
-/**
- * Launch batched kernel: Multiple put_signal_non_adaptive+wait_local iterations
- *
- * Uses fused put_signal operation - faster but unsafe with adaptive routing.
- *
- * @param totalCycles Output: total GPU cycles for numIters operations
- */
-void launchIbgdaPutSignalNonAdaptiveWaitLocalBatch(
-    P2pIbgdaTransportDevice* transport,
-    const IbgdaLocalBuffer& localBuf,
-    const IbgdaRemoteBuffer& remoteBuf,
-    std::size_t nbytes,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     int numIters,
     unsigned long long* totalCycles,
@@ -92,6 +70,7 @@ void launchIbgdaPutSignalNonAdaptiveWaitLocalBatch(
  */
 void launchIbgdaSignalOnlyBatch(
     P2pIbgdaTransportDevice* transport,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
     int signalId,
     int numIters,
     unsigned long long* totalCycles,

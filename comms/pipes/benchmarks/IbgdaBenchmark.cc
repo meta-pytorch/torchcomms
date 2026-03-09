@@ -114,51 +114,13 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
     return ss.str();
   }
 
-  // Run put_signal_non_adaptive + wait_local benchmark using batched kernel
-  // Populates latencyUs, excludes kernel launch overhead
-  void runPutSignalNonAdaptiveBenchmark(
-      P2pIbgdaTransportDevice* deviceTransportPtr,
-      const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
-      const IbgdaBenchmarkConfig& config,
-      unsigned long long* d_totalCycles,
-      float& latencyUs) {
-    constexpr int kSignalId = 0;
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-
-    // Only rank 0 (sender) runs the batched benchmark
-    if (globalRank == 0) {
-      launchIbgdaPutSignalNonAdaptiveWaitLocalBatch(
-          deviceTransportPtr,
-          localBuf,
-          remoteBuf,
-          config.nBytes,
-          kSignalId,
-          kIbgdaBatchIters,
-          d_totalCycles,
-          stream_);
-      CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
-
-      unsigned long long totalCycles;
-      CUDA_CHECK_VOID(cudaMemcpy(
-          &totalCycles,
-          d_totalCycles,
-          sizeof(unsigned long long),
-          cudaMemcpyDeviceToHost));
-
-      latencyUs = cyclesToUs(totalCycles) / kIbgdaBatchIters;
-    }
-
-    MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
-  }
-
-  // Run put_signal (adaptive-safe) + wait_local benchmark using batched kernel
-  // Populates latencyUs, excludes kernel launch overhead
+  // Run put + signal_remote_with_fence + fence benchmark using batched
+  // kernel. Populates latencyUs, excludes kernel launch overhead
   void runPutSignalBenchmark(
       P2pIbgdaTransportDevice* deviceTransportPtr,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
+      const IbgdaRemoteBuffer& remoteSignalBuf,
       const IbgdaBenchmarkConfig& config,
       unsigned long long* d_totalCycles,
       float& latencyUs) {
@@ -173,6 +135,7 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
           localBuf,
           remoteBuf,
           config.nBytes,
+          remoteSignalBuf,
           kSignalId,
           kIbgdaBatchIters,
           d_totalCycles,
@@ -257,9 +220,9 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
   cudaStream_t stream_{};
   float clockRateGHz_{0.0f};
 
-  // Verify that a put_signal method correctly transfers data to the remote
+  // Verify that a put+signal method correctly transfers data to the remote
   // peer. Fills the sender's buffer with fillPattern, zeros the receiver's
-  // buffer, runs exactly one put_signal, then checks the receiver's buffer.
+  // buffer, runs exactly one put+signal, then checks the receiver's buffer.
   template <typename LaunchFn>
   void verifyPutDataCorrectness(
       LaunchFn launchFn,
@@ -268,6 +231,7 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
+      const IbgdaRemoteBuffer& remoteSignalBuf,
       uint8_t fillPattern,
       const std::string& methodName) {
     constexpr int kSignalId = 0;
@@ -282,10 +246,16 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
     CUDA_CHECK_VOID(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    // Sender: exactly one put_signal (no warmup, no loop)
+    // Sender: exactly one put+signal (no warmup, no loop)
     if (globalRank == 0) {
       launchFn(
-          deviceTransportPtr, localBuf, remoteBuf, nbytes, kSignalId, stream_);
+          deviceTransportPtr,
+          localBuf,
+          remoteBuf,
+          nbytes,
+          remoteSignalBuf,
+          kSignalId,
+          stream_);
       CUDA_CHECK_VOID(cudaStreamSynchronize(stream_));
     }
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -320,7 +290,7 @@ class IbgdaBenchmarkFixture : public MpiBaseTestFixture {
 };
 
 TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
-  // Measures raw RDMA Write latency (put + wait_local)
+  // Measures raw RDMA Write latency (put + fence)
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -339,7 +309,6 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
   try {
     MultipeerIbgdaTransportConfig transportConfig{
         .cudaDevice = localRank,
-        .signalCount = 1,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -420,7 +389,7 @@ TEST_F(IbgdaBenchmarkFixture, PutWaitLocal) {
 }
 
 TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
-  // Measures RDMA Write + atomic signal latency (put_signal + wait_local)
+  // Measures RDMA Write + atomic signal latency (put + signal + fence)
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
     return;
@@ -440,7 +409,6 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
   try {
     MultipeerIbgdaTransportConfig transportConfig{
         .cudaDevice = localRank,
-        .signalCount = 1,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -455,6 +423,14 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
     auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    // Allocate and exchange signal buffer (1 signal slot)
+    DeviceBuffer signalBuffer(sizeof(uint64_t));
+    CUDA_CHECK_VOID(cudaMemset(signalBuffer.get(), 0, sizeof(uint64_t)));
+    auto localSignalBuf =
+        transport.registerBuffer(signalBuffer.get(), sizeof(uint64_t));
+    auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
 
     P2pIbgdaTransportDevice* deviceTransportPtr =
         transport.getP2pTransportDevice(peerRank);
@@ -479,6 +455,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalWaitLocal) {
             localDataBuf,
             remoteDataBuf,
             config.nBytes,
+            remoteSignalBuf,
             kSignalId,
             kIbgdaBatchIters,
             d_totalCycles,
@@ -535,13 +512,22 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
   try {
     MultipeerIbgdaTransportConfig transportConfig{
         .cudaDevice = localRank,
-        .signalCount = 1,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
     MultipeerIbgdaTransport transport(
         globalRank, numRanks, bootstrap, transportConfig);
     transport.exchange();
+
+    int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
+
+    // Allocate and exchange signal buffer (1 signal slot)
+    DeviceBuffer signalBuffer(sizeof(uint64_t));
+    CUDA_CHECK_VOID(cudaMemset(signalBuffer.get(), 0, sizeof(uint64_t)));
+    auto localSignalBuf =
+        transport.registerBuffer(signalBuffer.get(), sizeof(uint64_t));
+    auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
 
     P2pIbgdaTransportDevice* deviceTransportPtr =
         transport.getP2pTransportDevice(peerRank);
@@ -564,6 +550,7 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
     if (globalRank == 0) {
       launchIbgdaSignalOnlyBatch(
           deviceTransportPtr,
+          remoteSignalBuf,
           kSignalId,
           kIbgdaBatchIters,
           d_totalCycles,
@@ -598,10 +585,9 @@ TEST_F(IbgdaBenchmarkFixture, SignalOnly) {
   }
 }
 
-// 2-way comparison: put_signal vs put_signal_non_adaptive
-// put_signal            = put + signal_with_fence     (NIC-level fence,
-// adaptive safe) put_signal_non_adaptive = fused put_signal WQE      (no fence,
-// NOT adaptive safe)
+// 2-way comparison: put+signal_remote_with_fence vs put+signal_remote
+// Fence    = put + signal_remote_with_fence (NIC-level fence, adaptive safe)
+// NonAdapt = put + signal_remote            (no fence, NOT adaptive safe)
 TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
   if (numRanks != 2) {
     XLOGF(INFO, "Skipping test: requires exactly 2 ranks, got {}", numRanks);
@@ -636,7 +622,6 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
   try {
     MultipeerIbgdaTransportConfig transportConfig{
         .cudaDevice = localRank,
-        .signalCount = 1,
     };
 
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
@@ -650,6 +635,14 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
     auto remoteDataBufs = transport.exchangeBuffer(localDataBuf);
     int peerIndex = (peerRank < globalRank) ? peerRank : (peerRank - 1);
     auto remoteDataBuf = remoteDataBufs[peerIndex];
+
+    // Allocate and exchange signal buffer (1 signal slot)
+    DeviceBuffer signalBuffer(sizeof(uint64_t));
+    CUDA_CHECK_VOID(cudaMemset(signalBuffer.get(), 0, sizeof(uint64_t)));
+    auto localSignalBuf =
+        transport.registerBuffer(signalBuffer.get(), sizeof(uint64_t));
+    auto remoteSignalBufs = transport.exchangeBuffer(localSignalBuf);
+    auto remoteSignalBuf = remoteSignalBufs[peerIndex];
 
     P2pIbgdaTransportDevice* deviceTransportPtr =
         transport.getP2pTransportDevice(peerRank);
@@ -675,67 +668,38 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
           localDataBuf,
           remoteDataBuf,
           cfg.nBytes,
+          remoteSignalBuf,
           static_cast<uint8_t>(basePattern + 1),
-          "put_signal [" + cfg.name + "]");
-
-      verifyPutDataCorrectness(
-          launchIbgdaPutSignalNonAdaptiveSingle,
-          deviceTransportPtr,
-          dataBuffer.get(),
-          localDataBuf,
-          remoteDataBuf,
-          cfg.nBytes,
-          static_cast<uint8_t>(basePattern + 2),
-          "put_signal_non_adaptive [" + cfg.name + "]");
+          "put+signal_remote_with_fence [" + cfg.name + "]");
     }
 
     if (globalRank == 0) {
       XLOGF(
           INFO,
           "\n================================================================================");
-      XLOGF(INFO, "    put_signal vs put_signal_non_adaptive");
+      XLOGF(INFO, "    put+signal_remote_with_fence latency");
       XLOGF(INFO, "    (Using batched kernels - no kernel launch overhead)");
       XLOGF(
           INFO,
           "================================================================================");
-      XLOGF(
-          INFO,
-          "{:>10} {:>18} {:>18}",
-          "Size",
-          "Fence Lat (us)",
-          "NonAdapt Lat (us)");
-      XLOGF(
-          INFO,
-          "--------------------------------------------------------------------------------");
+      XLOGF(INFO, "{:>10} {:>18}", "Size", "Fence Lat (us)");
+      XLOGF(INFO, "------------------------------");
     }
 
     for (const auto& config : configs) {
       float fenceLatency = 0.0f;
-      float nonAdaptiveLatency = 0.0f;
 
       runPutSignalBenchmark(
           deviceTransportPtr,
           localDataBuf,
           remoteDataBuf,
+          remoteSignalBuf,
           config,
           d_totalCycles,
           fenceLatency);
 
-      runPutSignalNonAdaptiveBenchmark(
-          deviceTransportPtr,
-          localDataBuf,
-          remoteDataBuf,
-          config,
-          d_totalCycles,
-          nonAdaptiveLatency);
-
       if (globalRank == 0) {
-        XLOGF(
-            INFO,
-            "{:>10} {:>18.2f} {:>18.2f}",
-            config.name,
-            fenceLatency,
-            nonAdaptiveLatency);
+        XLOGF(INFO, "{:>10} {:>18.2f}", config.name, fenceLatency);
       }
     }
 
@@ -745,10 +709,7 @@ TEST_F(IbgdaBenchmarkFixture, PutSignalComparison) {
           "================================================================================");
       XLOGF(
           INFO,
-          "Fence    = put_signal              (put + signal_with_fence, NIC-level fence, adaptive safe)");
-      XLOGF(
-          INFO,
-          "NonAdapt = put_signal_non_adaptive (fused put_signal WQE, no fence, NOT adaptive safe)");
+          "Fence = put + signal_remote_with_fence (NIC-level fence, adaptive safe)");
       XLOGF(
           INFO,
           "================================================================================\n");

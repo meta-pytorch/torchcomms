@@ -93,21 +93,23 @@ INSTANTIATE_TEST_SUITE_P(
         RankMappingTestCase{3, 4, {0, 1, 2}}));
 
 // =============================================================================
-// Signal Buffer Offset Test
+// Peer-Index Offset Test
 //
 // Verifies the invariant that for every pair of ranks (A, B):
-//   A's remoteSignalOffset for B == B's localSignalOffset for A
+//   A's remote offset for B == B's local offset for A
 //
-// This ensures that when rank A RDMA-writes to rank B's signal buffer,
-// it targets the slot that rank B actually reads for rank A. The bug
-// fixed in D93259521 was using the sender's peer index for the remote
-// offset instead of the receiver's peer index for the sender.
+// This ensures that when rank A RDMA-writes to rank B's per-peer buffer
+// (signal inbox, counter buffer, etc.), it targets the slot that rank B
+// actually reads for rank A. The bug fixed in D93259521 was using the
+// sender's peer index for the remote offset instead of the receiver's
+// peer index for the sender.
 //
-// The offset logic mirrors MultipeerIbgdaTransport::exchange():
+// The offset logic is used by the window layer for per-peer signal/counter
+// buffers and mirrors the skip-self rank-to-peer-index mapping:
 //   rankToPeerIndex(rank, myRank) = (rank < myRank) ? rank : (rank - 1)
 //   peerIndexToRank(idx, myRank)  = (idx < myRank) ? idx : (idx + 1)
-//   localSignalOffset(i)  = i * signalCount * sizeof(uint64_t)
-//   remoteSignalOffset(i) = myIndexOnPeer * signalCount * sizeof(uint64_t)
+//   localOffset(i)  = i * slotCount * sizeof(uint64_t)
+//   remoteOffset(i) = myIndexOnPeer * slotCount * sizeof(uint64_t)
 //     where myIndexOnPeer = rankToPeerIndex(myRank, peerRank)
 // =============================================================================
 
@@ -125,12 +127,12 @@ int peer_index_to_rank(int idx, int myRank) {
 
 } // namespace
 
-class SignalOffsetTest : public ::testing::TestWithParam<int> {};
+class PeerIndexOffsetTest : public ::testing::TestWithParam<int> {};
 
-TEST_P(SignalOffsetTest, RemoteOffsetMatchesLocalSlot) {
+TEST_P(PeerIndexOffsetTest, RemoteOffsetMatchesLocalSlot) {
   const int nRanks = GetParam();
   const int numPeers = nRanks - 1;
-  const std::size_t signalCount = 1;
+  const std::size_t slotCount = 1;
 
   // For every rank acting as sender...
   for (int myRank = 0; myRank < nRanks; myRank++) {
@@ -139,16 +141,16 @@ TEST_P(SignalOffsetTest, RemoteOffsetMatchesLocalSlot) {
       int peerRank = peer_index_to_rank(i, myRank);
 
       // Sender's local offset for peer index i
-      std::size_t localOffset = i * signalCount * sizeof(uint64_t);
+      std::size_t localOffset = i * slotCount * sizeof(uint64_t);
 
       // Sender's remote offset: where to RDMA-write on the peer's buffer
       int myIndexOnPeer = rank_to_peer_index(myRank, peerRank);
-      std::size_t remoteOffset = myIndexOnPeer * signalCount * sizeof(uint64_t);
+      std::size_t remoteOffset = myIndexOnPeer * slotCount * sizeof(uint64_t);
 
       // The peer's local offset for us must match our remote offset
       int peersIndexForUs = rank_to_peer_index(myRank, peerRank);
       std::size_t peersLocalOffset =
-          peersIndexForUs * signalCount * sizeof(uint64_t);
+          peersIndexForUs * slotCount * sizeof(uint64_t);
 
       EXPECT_EQ(remoteOffset, peersLocalOffset)
           << "Rank " << myRank << " -> Rank " << peerRank
@@ -162,7 +164,7 @@ TEST_P(SignalOffsetTest, RemoteOffsetMatchesLocalSlot) {
       int peersPeerIndex = rank_to_peer_index(myRank, peerRank);
       int peersMyIndexOnUs = rank_to_peer_index(peerRank, myRank);
       std::size_t peersRemoteOffset =
-          peersMyIndexOnUs * signalCount * sizeof(uint64_t);
+          peersMyIndexOnUs * slotCount * sizeof(uint64_t);
 
       EXPECT_EQ(peersRemoteOffset, localOffset)
           << "Rank " << peerRank << " -> Rank " << myRank
@@ -174,25 +176,24 @@ TEST_P(SignalOffsetTest, RemoteOffsetMatchesLocalSlot) {
   }
 }
 
-// Test with multiple signalCount values to verify scaling
-TEST_P(SignalOffsetTest, MultipleSignalSlots) {
+// Test with multiple slot counts to verify scaling
+TEST_P(PeerIndexOffsetTest, MultipleSlotCounts) {
   const int nRanks = GetParam();
   const int numPeers = nRanks - 1;
 
-  for (std::size_t signalCount : {1, 4, 16}) {
+  for (std::size_t slotCount : {1, 4, 16}) {
     for (int myRank = 0; myRank < nRanks; myRank++) {
       for (int i = 0; i < numPeers; i++) {
         int peerRank = peer_index_to_rank(i, myRank);
         int myIndexOnPeer = rank_to_peer_index(myRank, peerRank);
 
-        std::size_t remoteOffset =
-            myIndexOnPeer * signalCount * sizeof(uint64_t);
-        std::size_t peersLocalOffset = rank_to_peer_index(myRank, peerRank) *
-            signalCount * sizeof(uint64_t);
+        std::size_t remoteOffset = myIndexOnPeer * slotCount * sizeof(uint64_t);
+        std::size_t peersLocalOffset =
+            rank_to_peer_index(myRank, peerRank) * slotCount * sizeof(uint64_t);
 
         EXPECT_EQ(remoteOffset, peersLocalOffset)
-            << "signalCount=" << signalCount << " Rank " << myRank
-            << " -> Rank " << peerRank;
+            << "slotCount=" << slotCount << " Rank " << myRank << " -> Rank "
+            << peerRank;
       }
     }
   }
@@ -200,7 +201,7 @@ TEST_P(SignalOffsetTest, MultipleSignalSlots) {
 
 INSTANTIATE_TEST_SUITE_P(
     MultipeerIbgdaDeviceTransport,
-    SignalOffsetTest,
+    PeerIndexOffsetTest,
     ::testing::Values(2, 3, 4, 8),
     [](const ::testing::TestParamInfo<int>& info) {
       return std::to_string(info.param) + "Ranks";

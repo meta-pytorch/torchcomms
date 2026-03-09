@@ -17,12 +17,8 @@ P2pIbgdaTransportDevice* buildDeviceTransportsOnGpu(
   hostTransports.reserve(numPeers);
 
   for (int i = 0; i < numPeers; ++i) {
-    // Buffers already have keys in network byte order
     hostTransports.emplace_back(
-        params[i].gpuQp,
-        params[i].localSignalBuf,
-        params[i].remoteSignalBuf,
-        params[i].numSignals);
+        params[i].gpuQp, params[i].companionGpuQp, params[i].sinkLkey);
   }
 
   // Allocate GPU memory

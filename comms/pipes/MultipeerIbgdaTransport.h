@@ -67,12 +67,8 @@ struct MultipeerIbgdaTransportConfig {
   std::string ibHca;
 
   // Per-peer data buffer size in bytes.
-  // This determines the maximum transfer size per put_signal call.
+  // This determines the maximum transfer size per put call.
   std::size_t dataBufferSize{0};
-
-  // Number of signal slots per peer.
-  // Each slot is a 64-bit counter for signaling.
-  std::size_t signalCount{1};
 
   // Queue pair depth (number of outstanding WQEs per peer).
   // Higher values allow more pipelining but use more memory.
@@ -140,17 +136,6 @@ struct IbgdaTransportExchInfo {
 };
 
 /**
- * Combined exchange information for RDMA connection setup.
- *
- * This struct bundles transport and signal buffer information for convenient
- * exchange during the bootstrap phase.
- */
-struct IbgdaExchInfo {
-  IbgdaTransportExchInfo transport;
-  IbgdaBufferExchInfo signal;
-};
-
-/**
  * Maximum number of ranks supported for allGather-based exchange.
  * This limit exists because we use fixed-size arrays for QPN exchange.
  */
@@ -160,7 +145,7 @@ constexpr int kMaxRanksForAllGather = 128;
  * Transport exchange info for allGather-based exchange.
  *
  * Each rank contributes this structure containing:
- * - Common connection info (GID, lid, signal buffer) shared with all peers
+ * - Common connection info (GID, lid) shared with all peers
  * - Per-target QPNs: qpnForRank[j] = QPN this rank uses to connect to rank j
  */
 struct IbgdaTransportExchInfoAll {
@@ -168,8 +153,6 @@ struct IbgdaTransportExchInfoAll {
   uint8_t gid[16]{};
   int gidIndex{0};
   uint16_t lid{0};
-  uint64_t signalAddr{0};
-  HostRKey signalRkey{0};
 
   // Port active MTU.
   enum ibv_mtu mtu { IBV_MTU_4096 };
@@ -196,7 +179,7 @@ struct IbgdaTransportExchInfoAll {
  *   │  MultipeerIbgdaTransport (this class)                               │
  *   │  ├── IbvDevice (RDMA device management)                             │
  *   │  ├── IbvPd (Protection Domain)                                      │
- *   │  ├── IbvMr[] (Memory regions - data + signal per peer)              │
+ *   │  ├── IbvMr[] (Memory regions - data per peer)                       │
  *   │  ├── doca_gpu (GPU context for DOCA)                                │
  *   │  ├── doca_gpu_verbs_qp[] (High-level QPs per peer)                  │
  *   │  └── IBootstrap (Collective exchange)                               │
@@ -206,9 +189,7 @@ struct IbgdaTransportExchInfoAll {
  *   │  MultipeerIbgdaDeviceTransport (returned by getDeviceTransport())   │
  *   │  └── P2pIbgdaTransportDevice[] (per-peer handles)                   │
  *   │      ├── doca_gpu_dev_verbs_qp* (GPU QP handle)                     │
- *   │      ├── IbgdaLocalBuffer (local signal buffer)                     │
- *   │      ├── IbgdaRemoteBuffer (remote signal buffer)                   │
- *   │      └── put_signal() / wait_signal() device methods                │
+ *   │      └── put() / wait_local() device methods                        │
  *   └─────────────────────────────────────────────────────────────────────┘
  *
  * USAGE:
@@ -218,7 +199,6 @@ struct IbgdaTransportExchInfoAll {
  *   MultipeerIbgdaTransportConfig config{
  *       .cudaDevice = 0,
  *       .dataBufferSize = 1 << 20,  // 1 MB per peer
- *       .signalCount = 1,
  *   };
  *   MultipeerIbgdaTransport transport(myRank, nRanks, bootstrap, config);
  *   transport.exchange();  // Collective - all ranks must call
@@ -372,7 +352,8 @@ class MultipeerIbgdaTransport {
   void openIbDevice();
   void allocateResources();
   void registerMemory();
-  void createQps();
+  void createQpGroups();
+  void createLoopbackCompanionQps();
   void cleanup();
   void connectQp(
       doca_gpu_verbs_qp_hl* qpHl,
@@ -402,13 +383,6 @@ class MultipeerIbgdaTransport {
   // High-level QPs (one per peer)
   std::vector<doca_gpu_verbs_qp_hl*> qpHlList_;
 
-  // GPU memory (signal buffer is transport-managed)
-  void* signalBuffer_{nullptr};
-  std::size_t signalBufferSize_{0};
-
-  // Memory regions for signal buffer
-  ibv_mr* signalMr_{nullptr};
-
   // User-registered buffers (maps ptr -> ibv_mr*)
   std::unordered_map<void*, ibv_mr*> registeredBuffers_;
 
@@ -423,7 +397,7 @@ class MultipeerIbgdaTransport {
   std::size_t peerTransportSize_{0};
 
   // Exchange info received from peers
-  std::vector<IbgdaExchInfo> peerExchInfo_;
+  std::vector<IbgdaTransportExchInfo> peerExchInfo_;
 };
 
 } // namespace comms::pipes
