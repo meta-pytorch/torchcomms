@@ -657,20 +657,30 @@ class P2pNvlTransportDevice {
    * @param group   ThreadGroup (auto-converted to warp scope)
    * @param src     Local source buffer (16-byte aligned)
    * @param nbytes  Total bytes (must be a multiple of 16)
-   * @param flag_value Step identifier (positive) for flag signaling
+   * @param flag_value Flag value (positive) for flag signaling
    * @param timeout Timeout for flag polling
+   * @param poll_ready When true (default), poll for READY_TO_WRITE before each
+   *                   batch. Set to false for single-step callers where each
+   *                   packet slot is used exactly once per call.
    */
   __device__ __forceinline__ void ll128_send(
       const ThreadGroup& group,
       const char* src,
       size_t nbytes,
       int64_t flag_value,
-      const Timeout& timeout = Timeout()) {
+      const Timeout& timeout = Timeout(),
+      bool poll_ready = true) {
 #ifdef __CUDA_ARCH__
     PIPES_DEVICE_CHECK(remoteState_.ll128Buffer != nullptr);
     PIPES_DEVICE_CHECK(can_use_ll128(src, nbytes));
     comms::pipes::ll128_send(
-        group, src, nbytes, remoteState_.ll128Buffer, flag_value, timeout);
+        group,
+        src,
+        nbytes,
+        remoteState_.ll128Buffer,
+        flag_value,
+        timeout,
+        poll_ready);
 #endif
   }
 

@@ -50,7 +50,7 @@ __global__ void ll128_multi_step_combined_kernel(
     char* dst,
     size_t nbytes,
     Ll128Packet* ll128_buf,
-    int64_t start_step_id,
+    int64_t start_flag_value,
     int num_steps) {
   auto group = make_warp_group();
   auto [partition_id, subgroup] = group.partition_interleaved(2);
@@ -61,12 +61,14 @@ __global__ void ll128_multi_step_combined_kernel(
   if (partition_id == 0) {
     // Sender warps
     for (int i = 0; i < num_steps; i++) {
-      ll128_send(subgroup, src, nbytes, ll128_buf, start_step_id + i, timeout);
+      ll128_send(
+          subgroup, src, nbytes, ll128_buf, start_flag_value + i, timeout);
     }
   } else {
     // Receiver warps
     for (int i = 0; i < num_steps; i++) {
-      ll128_recv(subgroup, dst, nbytes, ll128_buf, start_step_id + i, timeout);
+      ll128_recv(
+          subgroup, dst, nbytes, ll128_buf, start_flag_value + i, timeout);
     }
   }
 }
@@ -137,6 +139,98 @@ void test_ll128_forward(
 
   ll128_forward_kernel<<<num_blocks, block_size>>>(
       dst_d, nbytes, local_ll128_buf, remote_ll128_buf, flag_value);
+  PIPES_KERNEL_LAUNCH_CHECK();
+  PIPES_CUDA_CHECK(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// Multi-step 3-role kernel — send → forward → recv in a single launch via
+// partition_interleaved(3) for warp-level role assignment.
+// Partition 0: senders, partition 1: forwarders, partition 2: receivers.
+// The receiver is necessary because ll128_forward polls remote_ll128_buf for
+// READY_TO_WRITE before each store. Without a receiver ACKing remote_ll128_buf,
+// the forwarder deadlocks on step 2+.
+// =============================================================================
+
+__global__ void ll128_multi_step_send_forward_recv_kernel(
+    const char* src,
+    char* fwd_dst,
+    char* recv_dst,
+    size_t nbytes,
+    Ll128Packet* ll128_buf_a,
+    Ll128Packet* ll128_buf_b,
+    int64_t start_flag_value,
+    int num_steps) {
+  auto group = make_warp_group();
+  auto [partition_id, subgroup] = group.partition_interleaved(3);
+  Timeout timeout;
+  timeout.start();
+
+  if (partition_id == 0) {
+    // Sender warps: write src → ll128_buf_a
+    for (int i = 0; i < num_steps; i++) {
+      ll128_send(
+          subgroup, src, nbytes, ll128_buf_a, start_flag_value + i, timeout);
+    }
+  } else if (partition_id == 1) {
+    // Forwarder warps: read ll128_buf_a → ll128_buf_b + copy to fwd_dst
+    for (int i = 0; i < num_steps; i++) {
+      ll128_forward(
+          subgroup,
+          fwd_dst,
+          nbytes,
+          ll128_buf_a,
+          ll128_buf_b,
+          start_flag_value + i,
+          timeout);
+    }
+  } else {
+    // Receiver warps: read ll128_buf_b → recv_dst (ACKs ll128_buf_b)
+    for (int i = 0; i < num_steps; i++) {
+      ll128_recv(
+          subgroup,
+          recv_dst,
+          nbytes,
+          ll128_buf_b,
+          start_flag_value + i,
+          timeout);
+    }
+  }
+}
+
+// =============================================================================
+// Host-callable wrappers (continued)
+// =============================================================================
+
+void test_ll128_multi_step_forward(
+    const char* src_d,
+    char* fwd_dst_d,
+    char* recv_dst_d,
+    size_t nbytes,
+    Ll128Packet* ll128_buf_a,
+    Ll128Packet* ll128_buf_b,
+    int64_t start_flag_value,
+    int num_steps,
+    int num_blocks,
+    int block_size) {
+  // Initialize both LL128 buffers to READY_TO_WRITE
+  size_t buf_size = ll128_buffer_size(nbytes);
+  PIPES_CUDA_CHECK(cudaMemset(ll128_buf_a, kLl128MemsetInitByte, buf_size));
+  PIPES_CUDA_CHECK(cudaMemset(ll128_buf_b, kLl128MemsetInitByte, buf_size));
+  PIPES_CUDA_CHECK(cudaDeviceSynchronize());
+
+  // Launch with 3 * num_blocks total blocks so each role gets
+  // num_blocks * warps_per_block warps via partition_interleaved(3).
+  int total_blocks = 3 * num_blocks;
+  ll128_multi_step_send_forward_recv_kernel<<<total_blocks, block_size>>>(
+      src_d,
+      fwd_dst_d,
+      recv_dst_d,
+      nbytes,
+      ll128_buf_a,
+      ll128_buf_b,
+      start_flag_value,
+      num_steps);
   PIPES_KERNEL_LAUNCH_CHECK();
   PIPES_CUDA_CHECK(cudaDeviceSynchronize());
 }
