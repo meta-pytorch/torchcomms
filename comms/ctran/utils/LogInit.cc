@@ -46,7 +46,7 @@ void initCtranLoggingImpl() {
               meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
           .threadContextFn = []() {
             int cudaDev = -1;
-            cudaGetDevice(&cudaDev);
+            (void)cudaGetDevice(&cudaDev);
             return cudaDev;
           }});
   // Init logging for CTRAN header
@@ -60,7 +60,7 @@ void initCtranLoggingImpl() {
               meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
           .threadContextFn = []() {
             int cudaDev = -1;
-            cudaGetDevice(&cudaDev);
+            (void)cudaGetDevice(&cudaDev);
             return cudaDev;
           }});
 #if defined(USE_ROCM)
@@ -74,7 +74,7 @@ void initCtranLoggingImpl() {
               meta::comms::logger::getLoggerDebugLevel(NCCL_DEBUG)),
           .threadContextFn = []() {
             int cudaDev = -1;
-            cudaGetDevice(&cudaDev);
+            (void)cudaGetDevice(&cudaDev);
             return cudaDev;
           }});
 #endif
