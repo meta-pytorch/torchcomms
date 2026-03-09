@@ -6,6 +6,7 @@ file(GLOB_RECURSE UTILS_SOURCES
     "*.cc"
 )
 list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/tests/.*")
+list(FILTER UTILS_SOURCES EXCLUDE REGEX ".*/test_utils/.*")
 
 add_library(utils OBJECT
     ${UTILS_SOURCES}
