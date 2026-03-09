@@ -161,10 +161,10 @@ __global__ void multiPeerSendRecvAllPeersKernel(
 
   if (partition_id == 0) {
     transport.send(
-        peer_rank, group_per_peer, srcBuffs[peer_idx], nbytesPerPeer, peer_idx);
+        peer_rank, group_per_peer, srcBuffs[peer_idx], nbytesPerPeer);
   } else {
     transport.recv(
-        peer_rank, group_per_peer, dstBuffs[peer_idx], nbytesPerPeer, peer_idx);
+        peer_rank, group_per_peer, dstBuffs[peer_idx], nbytesPerPeer);
   }
 }
 
