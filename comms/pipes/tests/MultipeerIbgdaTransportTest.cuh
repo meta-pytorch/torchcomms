@@ -124,4 +124,26 @@ __global__ void allToAllWaitKernel(
     int* peerRanks,
     int numPeers);
 
+__global__ void putSignalCounterKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localDataBuf,
+    IbgdaRemoteBuffer remoteDataBuf,
+    std::size_t nbytes,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    int signalId,
+    uint64_t signalVal,
+    IbgdaLocalBuffer localCounterBuf,
+    int counterId,
+    uint64_t counterVal);
+
+__global__ void resetSignalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    int signalId);
+
+__global__ void waitCounterKernel(
+    volatile uint64_t* counterBuf,
+    int counterId,
+    uint64_t expectedVal);
+
 } // namespace comms::pipes::test

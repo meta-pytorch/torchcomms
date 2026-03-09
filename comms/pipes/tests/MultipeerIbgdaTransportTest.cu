@@ -55,7 +55,7 @@ void testPutAndSignal(
 }
 
 // =============================================================================
-// Kernel: Group-collaborative put + signal (warp group)
+// Kernel: Warp-group-collaborative put + signal
 // =============================================================================
 
 __global__ void putAndSignalGroupKernel(
@@ -116,8 +116,10 @@ __global__ void putAndSignalGroupMultiWarpKernel(
     int signalId,
     uint64_t signalVal) {
   auto group = make_warp_group();
+
   auto work = transport->put_signal_group_global(
       group, localBuf, remoteBuf, nbytes, remoteSignalBuf, signalId, signalVal);
+
   if (group.is_leader()) {
     transport->wait_local(work);
   }
@@ -308,6 +310,10 @@ void testSignalOnly(
   }
 }
 
+// =============================================================================
+// Kernel: Put only (no signal)
+// =============================================================================
+
 __global__ void putOnlyKernel(
     P2pIbgdaTransportDevice* transport,
     IbgdaLocalBuffer localBuf,
@@ -336,7 +342,6 @@ void testPutOnly(
   }
 }
 
-// =============================================================================
 // =============================================================================
 // Kernel: Fill buffer with pattern
 // =============================================================================
@@ -398,6 +403,36 @@ void verifyBufferPattern(
       nbytes,
       expectedBaseValue,
       errorCount);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+// =============================================================================
+// Kernel: Reset signal
+// =============================================================================
+
+__global__ void resetSignalKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    int signalId) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    // reset_signal is now synchronous (includes fences and wait internally)
+    transport->reset_signal(remoteSignalBuf, signalId);
+  }
+}
+
+void testResetSignal(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    int signalId,
+    int numBlocks,
+    int blockSize) {
+  resetSignalKernel<<<numBlocks, blockSize>>>(
+      deviceTransportPtr, remoteSignalBuf, signalId);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
@@ -617,6 +652,97 @@ void testAllToAllWait(
     int blockSize) {
   allToAllWaitKernel<<<numBlocks, blockSize>>>(
       localSignalBuf, peerRanks, numPeers);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+// =============================================================================
+// Kernel: Put data + signal remote + counter via companion QP
+// =============================================================================
+
+__global__ void putSignalCounterKernel(
+    P2pIbgdaTransportDevice* transport,
+    IbgdaLocalBuffer localDataBuf,
+    IbgdaRemoteBuffer remoteDataBuf,
+    std::size_t nbytes,
+    IbgdaRemoteBuffer remoteSignalBuf,
+    int signalId,
+    uint64_t signalVal,
+    IbgdaLocalBuffer localCounterBuf,
+    int counterId,
+    uint64_t counterVal) {
+  auto group = make_block_group();
+  if (group.is_global_leader()) {
+    transport->put_signal_counter_remote(
+        localDataBuf,
+        remoteDataBuf,
+        nbytes,
+        remoteSignalBuf,
+        signalId,
+        signalVal,
+        localCounterBuf,
+        counterId,
+        counterVal);
+  }
+}
+
+void testPutSignalCounter(
+    P2pIbgdaTransportDevice* deviceTransportPtr,
+    const IbgdaLocalBuffer& localDataBuf,
+    const IbgdaRemoteBuffer& remoteDataBuf,
+    std::size_t nbytes,
+    const IbgdaRemoteBuffer& remoteSignalBuf,
+    int signalId,
+    uint64_t signalVal,
+    const IbgdaLocalBuffer& localCounterBuf,
+    int counterId,
+    uint64_t counterVal,
+    int numBlocks,
+    int blockSize) {
+  putSignalCounterKernel<<<numBlocks, blockSize>>>(
+      deviceTransportPtr,
+      localDataBuf,
+      remoteDataBuf,
+      nbytes,
+      remoteSignalBuf,
+      signalId,
+      signalVal,
+      localCounterBuf,
+      counterId,
+      counterVal);
+  cudaError_t err = cudaGetLastError();
+  if (err != cudaSuccess) {
+    throw std::runtime_error(
+        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
+  }
+}
+
+// =============================================================================
+// Kernel: Wait for local counter to reach expected value (volatile spin)
+// =============================================================================
+
+__global__ void waitCounterKernel(
+    volatile uint64_t* counterBuf,
+    int counterId,
+    uint64_t expectedVal) {
+  if (threadIdx.x == 0 && blockIdx.x == 0) {
+    volatile uint64_t* ctr = counterBuf + counterId;
+    while (*ctr < expectedVal) {
+    }
+  }
+}
+
+void testWaitCounter(
+    uint64_t* counterBuf,
+    int counterId,
+    uint64_t expectedVal,
+    int numBlocks,
+    int blockSize) {
+  waitCounterKernel<<<numBlocks, blockSize>>>(
+      counterBuf, counterId, expectedVal);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(
