@@ -105,11 +105,12 @@ and determines the current state:
                                  ▼                        │
                        ┌──────────────────┐               │
             ┌─────────►│    COMPLETED     │───────────────┘
-            │          │  (between replays │
-            │          │   or coll done)   │
+            │          │ (between replays │
+            │          │  or coll done)   │
             │          └────────┬─────────┘
             │                   │ end = notReady
             │                   │ start = notReady
+            │                   │ timer NOT set
             │                   ▼
             │          ┌──────────────────┐
             │          │   NOT REACHED    │
@@ -118,6 +119,11 @@ and determines the current state:
             │          │   this coll)     │
             │          └────────┬─────────┘
             │                   │ start = success
+            │                   │  ── OR ──
+            │                   │ both notReady
+            │                   │ but timer set
+            │                   │ (events reset by
+            │                   │  queued replay)
             │                   ▼
   end =     │          ┌──────────────────┐
   success   │          │   IN PROGRESS    │  elapsed > timeout
@@ -128,8 +134,13 @@ and determines the current state:
 
 State detection (no enum — derived from event queries each poll):
 - **COMPLETED**: `end_event` query returns `cudaSuccess` → reset timer
-- **NOT REACHED**: both `start_event` and `end_event` return `cudaErrorNotReady` → reset timer
-- **IN PROGRESS**: `start_event` returns `cudaSuccess`, `end_event` returns `cudaErrorNotReady` → start/continue timer; if elapsed > timeout, return TIMEOUT
+- **NOT REACHED**: both events return `cudaErrorNotReady` AND timer is not set → collective hasn't started
+- **IN PROGRESS**: either `start_event` returns `cudaSuccess` (normal), or both events return `cudaErrorNotReady` but the timer is already set (events were reset by a queued `cudaGraphLaunch` while the previous replay's collective is hanging) → start/continue timer; if elapsed > timeout, return TIMEOUT
+
+The "timer already set" distinction handles the case where a new `cudaGraphLaunch`
+is submitted while a collective is hanging. The new replay is queued behind the
+hang, so the replay counter does not increment and events flip to notReady. Without
+this check, the watchdog would misinterpret this as "not reached" and kill the timer.
 
 ### Replay Boundary Detection
 
