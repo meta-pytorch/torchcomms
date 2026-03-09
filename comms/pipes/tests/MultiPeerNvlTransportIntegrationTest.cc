@@ -1624,9 +1624,9 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
   int peerRank = (globalRank == 0) ? 1 : 0;
   const int testValue = 0xCD + globalRank;
 
-  // Get the P2pNvlTransportDevice to access IPC-mapped remote buffers
+  // Get a host-side P2pNvlTransportDevice to access IPC-mapped remote buffers
   // The transport's remoteState_.dataBuffer is already IPC-mapped
-  auto p2pTransport = transport->getP2pTransportDevice(peerRank);
+  auto p2pTransport = transport->buildP2pTransportDevice(peerRank);
 
   // POINTER RELATIONSHIP CLARIFICATION:
   //
