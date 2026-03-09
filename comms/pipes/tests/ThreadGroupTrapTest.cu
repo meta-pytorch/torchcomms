@@ -68,4 +68,25 @@ void testPartitionMorePartitionsThanGroups(
   // No kernel launch check here - this test expects the kernel to trap
 }
 
+// =============================================================================
+// Invalid to_warp_group() Test (group_size < 32)
+// =============================================================================
+
+__global__ void testToWarpGroupTrapKernel() {
+  auto solo = make_thread_solo();
+
+  // This should trigger a trap because group_size == 1 (< 32)
+  auto warp = solo.to_warp_group();
+
+  // Suppress unused variable warning (we won't reach here due to trap)
+  (void)warp;
+}
+
+void testToWarpGroupTrap(int numBlocks, int blockSize) {
+  testToWarpGroupTrapKernel<<< // NOLINT(facebook-cuda-safe-kernel-call-check)
+      numBlocks,
+      blockSize>>>();
+  // No kernel launch check here - this test expects the kernel to trap
+}
+
 } // namespace comms::pipes::test
