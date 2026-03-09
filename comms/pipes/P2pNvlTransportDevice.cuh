@@ -8,10 +8,12 @@
 #include "comms/pipes/BarrierState.cuh"
 #include "comms/pipes/ChunkState.cuh"
 #include "comms/pipes/CopyUtils.cuh"
+#include "comms/pipes/DeviceCheck.cuh"
 #include "comms/pipes/DeviceSpan.cuh"
 #include "comms/pipes/SignalState.cuh"
 #include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Timeout.cuh"
+#include "comms/pipes/ll128/Ll128Ops.cuh"
 
 namespace comms::pipes {
 
@@ -29,6 +31,7 @@ struct LocalState {
   DeviceSpan<ChunkState> stateBuffer;
   DeviceSpan<SignalState> signalBuffer;
   DeviceSpan<BarrierState> barrierBuffer;
+  Ll128Packet* ll128Buffer{nullptr};
 };
 
 /**
@@ -45,6 +48,7 @@ struct RemoteState {
   DeviceSpan<ChunkState> stateBuffer;
   DeviceSpan<SignalState> signalBuffer;
   DeviceSpan<BarrierState> barrierBuffer;
+  Ll128Packet* ll128Buffer{nullptr};
 };
 
 /**
@@ -636,6 +640,104 @@ class P2pNvlTransportDevice {
 
     // Ensure all threads wait for leader to complete barrier
     group.sync();
+  }
+
+  // ===========================================================================
+  // LL128 Protocol Operations
+  // ===========================================================================
+
+  /**
+   * ll128_send — Send data to peer's LL128 buffer via NVLink.
+   *
+   * Packs user data into LL128 packets and volatile-stores them to the
+   * peer's LL128 buffer with inline flag signaling.
+   *
+   * PRECONDITION: ll128BufferSize > 0 in transport config.
+   *
+   * @param group   ThreadGroup (auto-converted to warp scope)
+   * @param src     Local source buffer (16-byte aligned)
+   * @param nbytes  Total bytes (must be a multiple of 16)
+   * @param flag_value Step identifier (positive) for flag signaling
+   * @param timeout Timeout for flag polling
+   */
+  __device__ __forceinline__ void ll128_send(
+      const ThreadGroup& group,
+      const char* src,
+      size_t nbytes,
+      int64_t flag_value,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    PIPES_DEVICE_CHECK(remoteState_.ll128Buffer != nullptr);
+    PIPES_DEVICE_CHECK(can_use_ll128(src, nbytes));
+    comms::pipes::ll128_send(
+        group, src, nbytes, remoteState_.ll128Buffer, flag_value, timeout);
+#endif
+  }
+
+  /**
+   * ll128_recv — Receive data from local LL128 buffer.
+   *
+   * Polls the local LL128 buffer (written remotely by peer), reads
+   * payload to output buffer, and ACKs with READY_TO_WRITE.
+   *
+   * PRECONDITION: ll128BufferSize > 0 in transport config.
+   *
+   * @param group   ThreadGroup (auto-converted to warp scope)
+   * @param dst     Local output buffer (16-byte aligned)
+   * @param nbytes  Total bytes (must be a multiple of 16)
+   * @param flag_value Expected flag value to wait for
+   * @param timeout Timeout for flag polling
+   */
+  __device__ __forceinline__ void ll128_recv(
+      const ThreadGroup& group,
+      char* dst,
+      size_t nbytes,
+      int64_t flag_value,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
+    PIPES_DEVICE_CHECK(can_use_ll128(dst, nbytes));
+    comms::pipes::ll128_recv(
+        group, dst, nbytes, localState_.ll128Buffer, flag_value, timeout);
+#endif
+  }
+
+  /**
+   * ll128_forward — Receive from predecessor and forward to successor.
+   *
+   * Reads from this transport's local LL128 buffer (predecessor wrote here),
+   * forwards to successor_transport's remote LL128 buffer, copies payload
+   * to local output, and ACKs predecessor.
+   *
+   * PRECONDITION: ll128BufferSize > 0 in both this and successor transport.
+   *
+   * @param group                ThreadGroup (auto-converted to warp scope)
+   * @param dst                  Local output buffer (16-byte aligned)
+   * @param nbytes               Total bytes (must be a multiple of 16)
+   * @param successor_transport  Transport for the successor peer
+   * @param flag_value              Expected/forwarded flag value
+   * @param timeout              Timeout for flag polling
+   */
+  __device__ __forceinline__ void ll128_forward(
+      const ThreadGroup& group,
+      char* dst,
+      size_t nbytes,
+      const P2pNvlTransportDevice& successor_transport,
+      int64_t flag_value,
+      const Timeout& timeout = Timeout()) {
+#ifdef __CUDA_ARCH__
+    PIPES_DEVICE_CHECK(localState_.ll128Buffer != nullptr);
+    PIPES_DEVICE_CHECK(successor_transport.remoteState_.ll128Buffer != nullptr);
+    PIPES_DEVICE_CHECK(can_use_ll128(dst, nbytes));
+    comms::pipes::ll128_forward(
+        group,
+        dst,
+        nbytes,
+        localState_.ll128Buffer,
+        successor_transport.remoteState_.ll128Buffer,
+        flag_value,
+        timeout);
+#endif
   }
 
  private:

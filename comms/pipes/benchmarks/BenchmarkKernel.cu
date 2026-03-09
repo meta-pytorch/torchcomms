@@ -118,4 +118,86 @@ __global__ void p2pSignalBenchKernel(
   }
 }
 
+__global__ void p2pSendOne(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
+  p2p.send_one(group, srcBuff, nBytes);
+}
+
+__global__ void
+p2pRecvOne(P2pNvlTransportDevice p2p, void* dstBuff, SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
+  std::size_t nbytes;
+  p2p.recv_one(group, dstBuff, &nbytes);
+}
+
+__global__ void p2pSendMultiple(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    DeviceSpan<const std::size_t> chunkSizes,
+    DeviceSpan<const std::size_t> chunkIndices,
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
+  p2p.send_multiple(group, srcBuff, chunkSizes, chunkIndices);
+}
+
+__global__ void p2pRecvMultiple(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    DeviceSpan<std::size_t> chunkSizes,
+    SyncScope groupScope) {
+  auto group = make_thread_group(groupScope);
+  p2p.recv_multiple(group, dstBuff, chunkSizes);
+}
+
+__global__ void p2pLl128Send(
+    P2pNvlTransportDevice p2p,
+    void* srcBuff,
+    std::size_t nBytes,
+    int64_t flagValue,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_warp_group();
+  p2p.ll128_send(
+      group, static_cast<const char*>(srcBuff), nBytes, flagValue, timeout);
+}
+
+__global__ void p2pLl128Recv(
+    P2pNvlTransportDevice p2p,
+    void* dstBuff,
+    std::size_t nBytes,
+    int64_t flagValue,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_warp_group();
+  p2p.ll128_recv(
+      group, static_cast<char*>(dstBuff), nBytes, flagValue, timeout);
+}
+
+__global__ void p2pLl128Bidirectional(
+    P2pNvlTransportDevice p2p,
+    void* sendBuff,
+    void* recvBuff,
+    std::size_t nBytes,
+    int64_t flagValue,
+    Timeout timeout) {
+  timeout.start();
+  auto group = make_warp_group();
+  auto [partition_id, subgroup] = group.partition_interleaved(2);
+  if (partition_id == 0) {
+    p2p.ll128_send(
+        subgroup,
+        static_cast<const char*>(sendBuff),
+        nBytes,
+        flagValue,
+        timeout);
+  } else {
+    p2p.ll128_recv(
+        subgroup, static_cast<char*>(recvBuff), nBytes, flagValue, timeout);
+  }
+}
+
 } // namespace comms::pipes::benchmark
