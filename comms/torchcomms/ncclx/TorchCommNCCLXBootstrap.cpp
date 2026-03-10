@@ -291,17 +291,20 @@ void populateNcclConfigFromHints(
 
 bool TorchCommNCCLXBootstrap::useFastInit(ncclConfig_t config) {
   if (isFastInitEnable(config)) {
+    // Use raw dynamic_cast instead of c10::dynamic_intrusive_pointer_cast
+    // because the latter has a refcount leak when the cast fails (the
+    // by-value intrusive_ptr parameter is release()'d before the cast,
+    // and if dynamic_cast returns nullptr, the original pointer is lost
+    // without decrementing the refcount).
     bool isTcpStore = [this]() {
       if (store_ == nullptr) {
         return false;
       }
-      if (auto store =
-              c10::dynamic_intrusive_pointer_cast<c10d::PrefixStore>(store_)) {
-        return c10::dynamic_intrusive_pointer_cast<c10d::TCPStore>(
-                   store->getUnderlyingNonPrefixStore()) != nullptr;
+      if (auto* prefixStore = dynamic_cast<c10d::PrefixStore*>(store_.get())) {
+        return dynamic_cast<c10d::TCPStore*>(
+                   prefixStore->getUnderlyingNonPrefixStore().get()) != nullptr;
       }
-      return c10::dynamic_intrusive_pointer_cast<c10d::TCPStore>(store_) !=
-          nullptr;
+      return dynamic_cast<c10d::TCPStore*>(store_.get()) != nullptr;
     }();
     if (!isTcpStore) {
       throw std::invalid_argument("TcpStore is required for fast init");
