@@ -14,8 +14,6 @@
 namespace comms::pipes {
 
 // Forward declarations for multi-peer device transport types
-class MultiPeerDeviceTransport;
-class WindowMemory;
 struct Transport;
 
 /**
@@ -43,7 +41,7 @@ struct MultiPeerNvlTransportConfig {
 
   // Number of P2P signal slots per peer for chunk-level pipeline coordination.
   // Used by signalBufferHandler_ and P2pNvlTransportDevice for send()/recv().
-  // This is separate from WindowMemoryConfig.signalCount (inbox model).
+  // This is separate from WindowConfig.peerSignalCount (inbox model).
   // Typical: 1-num of blocks for most workloads.
   std::size_t p2pSignalCount{1};
 };
@@ -175,7 +173,7 @@ class MultiPeerNvlTransport {
    * @note The returned pointer is valid until this MultiPeerNvlTransport is
    * destroyed
    */
-  P2pNvlTransportDevice* getP2pTransportDevice(int peerRank);
+  P2pNvlTransportDevice getP2pTransportDevice(int peerRank);
 
   /**
    * getTransportsArray - Get preallocated Transport array on device memory
@@ -226,29 +224,6 @@ class MultiPeerNvlTransport {
   P2pNvlTransportDevice buildP2pTransportDevice(int peerRank);
 
   /**
-   * getMultiPeerDeviceTransport - Get unified device handle for all peers
-   *
-   * Returns a MultiPeerDeviceTransport that provides:
-   * - DeviceWindowSignal with inbox semantics (all peers write to this rank's
-   * inbox)
-   * - DeviceWindowBarrier for multi-peer synchronization
-   * - Peer-indexed send/recv operations
-   *
-   * PRECONDITION: exchange() must have been called by all ranks first.
-   * PRECONDITION: wm.exchange() must have been called by all ranks first.
-   *
-   * The returned device handle is designed for multi-peer collective operations
-   * where a single kernel needs to communicate with multiple peers.
-   *
-   * @param wm WindowMemory providing sync primitives (signal, barrier)
-   * @return MultiPeerDeviceTransport handle for use in CUDA kernels
-   *
-   * @note Thread-safe after exchange() completes
-   * @note The returned handle is copyable and can be passed to multiple kernels
-   */
-  MultiPeerDeviceTransport getMultiPeerDeviceTransport(const WindowMemory& wm);
-
-  /**
    * getDeviceTransports - Get device-accessible array of Transport objects
    *
    * Returns a DeviceSpan of Transport objects indexed by global rank.
@@ -287,7 +262,7 @@ class MultiPeerNvlTransport {
 
  private:
   // ==========================================================================
-  // Lazy initialization helpers for getMultiPeerDeviceTransport()
+  // Private helpers
   // ==========================================================================
 
   // Initialize transports array on device (both P2P and SELF transports)
@@ -309,7 +284,7 @@ class MultiPeerNvlTransport {
   std::unique_ptr<GpuMemHandler> signalBufferHandler_;
 
   // Device-accessible Transport array for multi-peer transport
-  // Allocated on device and populated in getMultiPeerDeviceTransport()
+  // Allocated on device and populated in initializeTransportsArray()
   // Uses DeviceBuffer instead of GpuMemHandler since no exchange is needed
   std::unique_ptr<meta::comms::DeviceBuffer> transportsDevice_;
 

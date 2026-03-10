@@ -34,6 +34,7 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
   void SetUp() override {
     MpiBaseTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
+    detectLocalSize();
   }
 
   std::unique_ptr<MultiPeerTransport> create_transport_states() {
@@ -54,6 +55,60 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
     return std::make_unique<MultiPeerTransport>(
         globalRank, numRanks, localRank, bootstrap, config);
   }
+
+  // Verify exchangeNvlBuffer mappedPtrs: self entry == localBuf,
+  // peer entries non-null and readable.
+  void verifyMappedPtrs(
+      const MultiPeerTransport& t,
+      const std::vector<void*>& mappedPtrs,
+      void* localBuf) {
+    ASSERT_EQ(static_cast<int>(mappedPtrs.size()), t.nvl_n_ranks());
+    EXPECT_EQ(mappedPtrs[t.nvl_local_rank()], localBuf);
+
+    for (int rank = 0; rank < t.nvl_n_ranks(); ++rank) {
+      if (rank == t.nvl_local_rank()) {
+        continue;
+      }
+      ASSERT_NE(mappedPtrs[rank], nullptr)
+          << "mapped ptr for NVL rank " << rank << " is null";
+
+      char peerByte = 0;
+      CUDACHECK_TEST(
+          cudaMemcpy(&peerByte, mappedPtrs[rank], 1, cudaMemcpyDeviceToHost));
+      EXPECT_NE(peerByte, 0)
+          << "peer data at NVL rank " << rank << " should be non-zero";
+    }
+  }
+
+  // Returns true if NVL peers span more than one host (MNNVL topology).
+  bool nvlSpansMultipleHosts(const MultiPeerTransport& t) {
+    return t.nvl_n_ranks() > localSize_;
+  }
+
+ private:
+  void detectLocalSize() {
+    char myHostname[64]{};
+    gethostname(myHostname, sizeof(myHostname));
+
+    std::vector<char> allHostnames(numRanks * 64);
+    MPI_Allgather(
+        myHostname,
+        64,
+        MPI_BYTE,
+        allHostnames.data(),
+        64,
+        MPI_BYTE,
+        MPI_COMM_WORLD);
+
+    localSize_ = 0;
+    for (int r = 0; r < numRanks; ++r) {
+      if (std::strcmp(myHostname, &allHostnames[r * 64]) == 0) {
+        ++localSize_;
+      }
+    }
+  }
+
+  int localSize_{0};
 };
 
 // Verify that topology discovery correctly classifies peers as NVL or IBGDA.
@@ -124,13 +179,12 @@ TEST_F(MultiPeerTransportTestFixture, HostNvlAccessor) {
   states->exchange();
 
   int peerRank = (globalRank == 0) ? 1 : 0;
-  auto* p2p = states->get_p2p_nvl_transport_device(peerRank);
+  auto p2p = states->get_p2p_nvl_transport_device(peerRank);
 
-  // The returned pointer points to device memory inside the Transport array.
-  // We can only verify it's non-null here; actual functionality is tested
-  // by device-side tests (P2pNvlTransportTest, AllToAllvTest, etc.).
-  EXPECT_NE(p2p, nullptr) << "Rank " << globalRank
-                          << ": NVL transport device pointer is null";
+  // The returned device handle is constructed by value.
+  // We can verify it was constructed without throwing; actual functionality
+  // is tested by device-side tests (P2pNvlTransportTest, AllToAllvTest, etc.).
+  (void)p2p;
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -199,6 +253,157 @@ TEST_F(MultiPeerTransportTestFixture, HostIbgdaAccessorForNvlPeer) {
   auto* ibgdaDev = states->get_p2p_ibgda_transport_device(peerRank);
   EXPECT_NE(ibgdaDev, nullptr)
       << "IBGDA transport should be accessible for NVL peer " << peerRank;
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// cudaIpc path — skips on MNNVL where NVL peers span hosts.
+TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferCudaMalloc) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = create_transport_states();
+  transport->exchange();
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP() << "No NVL peers available";
+  }
+  if (nvlSpansMultipleHosts(*transport)) {
+    GTEST_SKIP() << "cudaIpc does not work across hosts; "
+                 << "NVL domain spans multiple hosts (MNNVL). "
+                 << "Use ExchangeNvlBufferFabric for cross-host NVL exchange.";
+  }
+
+  const size_t nbytes = 4096;
+  void* localBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&localBuf, nbytes));
+  CUDACHECK_TEST(cudaMemset(localBuf, globalRank + 1, nbytes));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+  verifyMappedPtrs(*transport, mappedPtrs, localBuf);
+
+  transport->unmapNvlBuffers(mappedPtrs);
+  CUDACHECK_TEST(cudaFree(localBuf));
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// Verifies exchange + unmap round-trip works twice (no state leaks).
+TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferMultipleRoundTrips) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = create_transport_states();
+  transport->exchange();
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP() << "No NVL peers available";
+  }
+  if (nvlSpansMultipleHosts(*transport)) {
+    GTEST_SKIP() << "cudaIpc does not work across hosts; "
+                 << "NVL domain spans multiple hosts (MNNVL).";
+  }
+
+  const size_t nbytes = 1024;
+  for (int iter = 0; iter < 2; ++iter) {
+    void* localBuf = nullptr;
+    CUDACHECK_TEST(cudaMalloc(&localBuf, nbytes));
+    CUDACHECK_TEST(cudaMemset(localBuf, iter + 1, nbytes));
+    CUDACHECK_TEST(cudaDeviceSynchronize());
+
+    MPI_Barrier(MPI_COMM_WORLD);
+
+    auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+    EXPECT_EQ(static_cast<int>(mappedPtrs.size()), transport->nvl_n_ranks());
+    for (int rank = 0; rank < transport->nvl_n_ranks(); ++rank) {
+      EXPECT_NE(mappedPtrs[rank], nullptr);
+    }
+
+    transport->unmapNvlBuffers(mappedPtrs);
+    CUDACHECK_TEST(cudaFree(localBuf));
+
+    MPI_Barrier(MPI_COMM_WORLD);
+  }
+}
+
+// Fabric handle path — mimics ncclMemAlloc on GB200/GB300.
+TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferFabric) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+  if (!GpuMemHandler::isFabricHandleSupported()) {
+    GTEST_SKIP() << "Fabric handles not supported on this GPU/CUDA version";
+  }
+
+  auto transport = create_transport_states();
+  transport->exchange();
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP() << "No NVL peers available";
+  }
+
+#if CUDART_VERSION >= 12030
+  const size_t requestedSize = 4096;
+
+  int cudaDev = 0;
+  CUdevice cuDev;
+  CUDACHECK_TEST(cudaGetDevice(&cudaDev));
+  ASSERT_EQ(cuDeviceGet(&cuDev, cudaDev), CUDA_SUCCESS);
+
+  CUmemAllocationProp prop = {};
+  prop.type = CU_MEM_ALLOCATION_TYPE_PINNED;
+  prop.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  prop.requestedHandleTypes = CU_MEM_HANDLE_TYPE_FABRIC;
+
+  int rdmaFlag = 0;
+  cuDeviceGetAttribute(
+      &rdmaFlag,
+      CU_DEVICE_ATTRIBUTE_GPU_DIRECT_RDMA_WITH_CUDA_VMM_SUPPORTED,
+      cuDev);
+  if (rdmaFlag) {
+    prop.allocFlags.gpuDirectRDMACapable = 1;
+  }
+
+  size_t granularity = 0;
+  ASSERT_EQ(
+      cuMemGetAllocationGranularity(
+          &granularity, &prop, CU_MEM_ALLOC_GRANULARITY_MINIMUM),
+      CUDA_SUCCESS);
+  size_t allocSize =
+      ((requestedSize + granularity - 1) / granularity) * granularity;
+
+  CUmemGenericAllocationHandle allocHandle;
+  ASSERT_EQ(cuMemCreate(&allocHandle, allocSize, &prop, 0), CUDA_SUCCESS);
+
+  CUdeviceptr devPtr = 0;
+  ASSERT_EQ(
+      cuMemAddressReserve(&devPtr, allocSize, granularity, 0, 0), CUDA_SUCCESS);
+  ASSERT_EQ(cuMemMap(devPtr, allocSize, 0, allocHandle, 0), CUDA_SUCCESS);
+
+  CUmemAccessDesc accessDesc = {};
+  accessDesc.location = {CU_MEM_LOCATION_TYPE_DEVICE, cuDev};
+  accessDesc.flags = CU_MEM_ACCESS_FLAGS_PROT_READWRITE;
+  ASSERT_EQ(cuMemSetAccess(devPtr, allocSize, &accessDesc, 1), CUDA_SUCCESS);
+
+  void* localBuf = reinterpret_cast<void*>(devPtr);
+  CUDACHECK_TEST(cudaMemset(localBuf, globalRank + 1, requestedSize));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, requestedSize);
+  verifyMappedPtrs(*transport, mappedPtrs, localBuf);
+
+  transport->unmapNvlBuffers(mappedPtrs);
+  cuMemUnmap(devPtr, allocSize);
+  cuMemAddressFree(devPtr, allocSize);
+  cuMemRelease(allocHandle);
+#endif
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
