@@ -277,21 +277,48 @@ void TorchCommXCCL::finalize() {
   // Wait for all pending work objects to complete and get final status
   auto work_status = workq_.finalize();
 
-  if (work_status == TorchWorkXCCL::WorkStatus::NOT_STARTED ||
-      work_status == TorchWorkXCCL::WorkStatus::INPROGRESS) {
+  if (comm_state_ == CommState::ERROR) {
+    onecclResult_t asyncErr = onecclSuccess;
+    onecclResult_t res = xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+    if (res != onecclSuccess) {
+      TC_LOG(WARNING) << "commGetAsyncError returned " << res;
+      asyncErr = res;
+    }
+    if (asyncErr == onecclSuccess) {
+      asyncErr = onecclSystemError;
+    }
+    XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
+    abortXcclComm();
+    throw xcclException;
+  }
+
+  if (comm_state_ == CommState::TIMEOUT) {
+    abortXcclComm();
+    throw std::runtime_error("Work timed out during finalize");
+  }
+
+  if (work_status == TorchWork::WorkStatus::NOT_STARTED ||
+      work_status == TorchWork::WorkStatus::INPROGRESS) {
     throw std::runtime_error(
         "WorkQ finalize returned in progress or not started state");
   }
 
   // Update comm_state_ based on the work status
-  if (work_status == TorchWorkXCCL::WorkStatus::TIMEDOUT) {
+  if (work_status == TorchWork::WorkStatus::TIMEDOUT) {
     comm_state_ = CommState::TIMEOUT;
     abortXcclComm();
     throw std::runtime_error("Work timed out during finalize");
-  } else if (work_status == TorchWorkXCCL::WorkStatus::ERROR) {
+  } else if (work_status == TorchWork::WorkStatus::ERROR) {
     comm_state_ = CommState::ERROR;
-    onecclResult_t asyncErr;
-    xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+    onecclResult_t asyncErr = onecclSuccess;
+    onecclResult_t res = xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+    if (res != onecclSuccess) {
+      TC_LOG(WARNING) << "commGetAsyncError returned " << res;
+      asyncErr = res;
+    }
+    if (asyncErr == onecclSuccess) {
+      asyncErr = onecclSystemError;
+    }
     XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
     abortXcclComm();
     throw xcclException;
@@ -349,11 +376,14 @@ void TorchCommXCCL::finalize() {
 
 void TorchCommXCCL::abortXcclComm() {
   if (xccl_comm_) {
-    xccl_api_->commAbort(xccl_comm_);
+    onecclResult_t res = xccl_api_->commAbort(xccl_comm_);
+    if (res != onecclSuccess) {
+      TC_LOG(WARNING) << "commAbort returned " << res;
+    }
     xccl_comm_ = nullptr;
   }
   if (options_.abort_process_on_timeout_or_error) {
-    TC_LOG(ERROR) << "Aborting process due to timeout";
+    TC_LOG(ERROR) << "Aborting process due to error or timeout";
     abort();
   }
 }
@@ -675,6 +705,14 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
+  // oneCCL bug skips premul sum if comm_size is 1, so handle it here
+  // We do this before getOperationStream so that the internal stream
+  // waits for this operation to complete if async_op is true.
+  // TODO: remove this workaround when oneCCL bug is fixed
+  if (comm_size_ == 1 && op == ReduceOp::RedOpType::PREMUL_SUM) {
+    applyPreMulFactor(tensor, op);
+  }
+
   xpuStream_t stream = getOperationStream(async_op);
   auto work = async_op
       ? createWork(
@@ -697,8 +735,8 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
     return work;
   }
 
-  // PreMulSum/AVG are not fully supported yet so we convert all PreMulSum/AVG
-  // ops to SUM and apply workarounds manually.
+  // PreMulSum/AVG are not fully supported yet so we convert all
+  // PreMulSum/AVG ops to SUM and apply workarounds manually.
   //
   // PREMUL_SUM issue: https://github.com/uxlfoundation/oneCCL/issues/196
   // AVG issue: https://github.com/uxlfoundation/oneCCL/issues/195
@@ -707,8 +745,10 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   // reductions natively.
   const auto maybe_new_op = [&]() -> ReduceOp {
     if (op == ReduceOp::RedOpType::PREMUL_SUM) {
-      c10::StreamGuard guard(stream);
-      applyPreMulFactor(tensor, op);
+      if (comm_size_ != 1) {
+        c10::StreamGuard guard(stream);
+        applyPreMulFactor(tensor, op);
+      }
       return ReduceOp(ReduceOp::RedOpType::SUM);
     } else if (op == ReduceOp::RedOpType::AVG) {
       return ReduceOp(ReduceOp::RedOpType::SUM);
