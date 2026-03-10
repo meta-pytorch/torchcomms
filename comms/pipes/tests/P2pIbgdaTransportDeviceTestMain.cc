@@ -59,84 +59,15 @@ class P2pIbgdaTransportDeviceTestFixture : public ::testing::Test {
 // =============================================================================
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, DeviceConstruction) {
-  // Test that transport can be copied to device and accessed there
-
-  // Create mock buffers for signal data
-  char localSignalData[64];
-  char remoteSignalData[64];
-  IbgdaLocalBuffer localBuf(localSignalData, NetworkLKey(0xAAAA));
-  IbgdaRemoteBuffer remoteBuf(remoteSignalData, NetworkRKey(0xBBBB));
-
-  runAndVerify([&](bool* d_success) {
-    runTestP2pTransportConstruction(localBuf, remoteBuf, d_success);
-  });
+  // Test that transport can be constructed on device with null QP
+  runAndVerify(
+      [](bool* d_success) { runTestP2pTransportConstruction(d_success); });
 }
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, DefaultConstruction) {
   // Test that default-constructed transport has null values
   runAndVerify([](bool* d_success) {
     runTestP2pTransportDefaultConstruction(d_success);
-  });
-}
-
-TEST_F(P2pIbgdaTransportDeviceTestFixture, NumSignalsDefault) {
-  // Test default numSignals (should be 1)
-  char localSignalData[64];
-  char remoteSignalData[64];
-  IbgdaLocalBuffer localBuf(localSignalData, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(remoteSignalData, NetworkRKey(0x2222));
-
-  // When numSignals is not specified, default is 1
-  DeviceBuffer successBuf(sizeof(bool));
-  auto* d_success = static_cast<bool*>(successBuf.get());
-
-  bool initSuccess = true;
-  CUDACHECK_TEST(cudaMemcpy(
-      d_success, &initSuccess, sizeof(bool), cudaMemcpyHostToDevice));
-
-  // numSignals = 1 (default)
-  runTestP2pTransportNumSignals(localBuf, remoteBuf, 1, d_success);
-  CUDACHECK_TEST(cudaDeviceSynchronize());
-
-  bool success = false;
-  CUDACHECK_TEST(
-      cudaMemcpy(&success, d_success, sizeof(bool), cudaMemcpyDeviceToHost));
-  EXPECT_TRUE(success) << "Default numSignals should be 1";
-}
-
-// Parameterized test for different numSignals values
-class NumSignalsTestFixture : public P2pIbgdaTransportDeviceTestFixture,
-                              public ::testing::WithParamInterface<int> {};
-
-TEST_P(NumSignalsTestFixture, NumSignalsAccessor) {
-  int numSignals = GetParam();
-
-  char localSignalData[512]; // Enough for multiple signals
-  char remoteSignalData[512];
-  IbgdaLocalBuffer localBuf(localSignalData, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(remoteSignalData, NetworkRKey(0x2222));
-
-  runAndVerify([&](bool* d_success) {
-    runTestP2pTransportNumSignals(localBuf, remoteBuf, numSignals, d_success);
-  });
-}
-
-INSTANTIATE_TEST_SUITE_P(
-    NumSignalsVariations,
-    NumSignalsTestFixture,
-    ::testing::Values(1, 2, 4, 8, 16, 32));
-
-TEST_F(P2pIbgdaTransportDeviceTestFixture, SignalPointerArithmetic) {
-  // Test that signal pointer arithmetic works correctly for multi-signal setup
-  const int numSignals = 4;
-  char localSignalData[numSignals * sizeof(uint64_t)];
-  char remoteSignalData[numSignals * sizeof(uint64_t)];
-  IbgdaLocalBuffer localBuf(localSignalData, NetworkLKey(0x3333));
-  IbgdaRemoteBuffer remoteBuf(remoteSignalData, NetworkRKey(0x4444));
-
-  runAndVerify([&](bool* d_success) {
-    runTestP2pTransportSignalPointerArithmetic(
-        localBuf, remoteBuf, numSignals, d_success);
   });
 }
 
@@ -159,13 +90,11 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, ReadSignal) {
       numSignals * sizeof(uint64_t),
       cudaMemcpyHostToDevice));
 
-  // Create buffers pointing to device memory
+  // Create buffer pointing to device memory
   IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x5555));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x6666));
 
   runAndVerify([&](bool* d_success) {
-    runTestP2pTransportReadSignal(
-        d_signalBuf, localBuf, remoteBuf, numSignals, d_success);
+    runTestP2pTransportReadSignal(d_signalBuf, localBuf, numSignals, d_success);
   });
 }
 
@@ -174,8 +103,9 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, IbgdaWorkConstruction) {
   runAndVerify([](bool* d_success) { runTestIbgdaWork(d_success); });
 }
 
-TEST_F(P2pIbgdaTransportDeviceTestFixture, BufferSubBufferWithTransport) {
-  // Test that sub-buffers work correctly with transport construction
+TEST_F(P2pIbgdaTransportDeviceTestFixture, BufferSubBuffer) {
+  // Test that sub-buffers work correctly (pointer arithmetic and key
+  // preservation)
   const size_t offset = 32;
   char localSignalData[128];
   char remoteSignalData[128];
@@ -195,61 +125,14 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, BufferSubBufferWithTransport) {
   // Verify keys are preserved
   EXPECT_EQ(subLBuf.lkey, baseLBuf.lkey);
   EXPECT_EQ(subRBuf.rkey, baseRBuf.rkey);
-
-  // Test transport construction with sub-buffers
-  runAndVerify([&](bool* d_success) {
-    runTestP2pTransportConstruction(subLBuf, subRBuf, d_success);
-  });
 }
 
 // =============================================================================
 // wait_signal Tests
-// These tests verify the spin-wait logic for each comparison operation.
+// These tests verify the spin-wait logic for GE (>=) comparison.
 // Signal buffers are pre-set to values that satisfy the condition so
 // wait_signal returns immediately without blocking.
 // =============================================================================
-
-TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalEQ) {
-  // Test wait_signal with EQ comparison
-  const uint64_t targetValue = 42;
-
-  // Allocate device memory for signal buffer
-  DeviceBuffer signalBuf(sizeof(uint64_t));
-  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
-
-  // Pre-set signal to targetValue so EQ condition is satisfied
-  CUDACHECK_TEST(cudaMemcpy(
-      d_signalBuf, &targetValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
-
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
-
-  runAndVerify([&](bool* d_success) {
-    runTestWaitSignalEQ(
-        d_signalBuf, localBuf, remoteBuf, targetValue, d_success);
-  });
-}
-
-TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalNE) {
-  // Test wait_signal with NE comparison
-  const uint64_t signalValue = 100;
-  const uint64_t targetValue = 42; // Different from signalValue
-
-  DeviceBuffer signalBuf(sizeof(uint64_t));
-  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
-
-  // Pre-set signal to signalValue (which != targetValue) so NE is satisfied
-  CUDACHECK_TEST(cudaMemcpy(
-      d_signalBuf, &signalValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
-
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
-
-  runAndVerify([&](bool* d_success) {
-    runTestWaitSignalNE(
-        d_signalBuf, localBuf, remoteBuf, signalValue, targetValue, d_success);
-  });
-}
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalGE_Equal) {
   // Test wait_signal with GE comparison when signal == target
@@ -263,11 +146,9 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalGE_Equal) {
       d_signalBuf, &signalValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
 
   IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
 
   runAndVerify([&](bool* d_success) {
-    runTestWaitSignalGE(
-        d_signalBuf, localBuf, remoteBuf, signalValue, targetValue, d_success);
+    runTestWaitSignalGE(d_signalBuf, localBuf, targetValue, d_success);
   });
 }
 
@@ -283,91 +164,9 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalGE_Greater) {
       d_signalBuf, &signalValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
 
   IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
 
   runAndVerify([&](bool* d_success) {
-    runTestWaitSignalGE(
-        d_signalBuf, localBuf, remoteBuf, signalValue, targetValue, d_success);
-  });
-}
-
-TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalGT) {
-  // Test wait_signal with GT comparison
-  const uint64_t signalValue = 100;
-  const uint64_t targetValue = 50; // Less than signal
-
-  DeviceBuffer signalBuf(sizeof(uint64_t));
-  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
-
-  CUDACHECK_TEST(cudaMemcpy(
-      d_signalBuf, &signalValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
-
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
-
-  runAndVerify([&](bool* d_success) {
-    runTestWaitSignalGT(
-        d_signalBuf, localBuf, remoteBuf, signalValue, targetValue, d_success);
-  });
-}
-
-TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalLE_Equal) {
-  // Test wait_signal with LE comparison when signal == target
-  const uint64_t signalValue = 50;
-  const uint64_t targetValue = 50; // Equal
-
-  DeviceBuffer signalBuf(sizeof(uint64_t));
-  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
-
-  CUDACHECK_TEST(cudaMemcpy(
-      d_signalBuf, &signalValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
-
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
-
-  runAndVerify([&](bool* d_success) {
-    runTestWaitSignalLE(
-        d_signalBuf, localBuf, remoteBuf, signalValue, targetValue, d_success);
-  });
-}
-
-TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalLE_Less) {
-  // Test wait_signal with LE comparison when signal < target
-  const uint64_t signalValue = 25;
-  const uint64_t targetValue = 50; // Greater than signal
-
-  DeviceBuffer signalBuf(sizeof(uint64_t));
-  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
-
-  CUDACHECK_TEST(cudaMemcpy(
-      d_signalBuf, &signalValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
-
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
-
-  runAndVerify([&](bool* d_success) {
-    runTestWaitSignalLE(
-        d_signalBuf, localBuf, remoteBuf, signalValue, targetValue, d_success);
-  });
-}
-
-TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalLT) {
-  // Test wait_signal with LT comparison
-  const uint64_t signalValue = 25;
-  const uint64_t targetValue = 50; // Greater than signal
-
-  DeviceBuffer signalBuf(sizeof(uint64_t));
-  auto* d_signalBuf = static_cast<uint64_t*>(signalBuf.get());
-
-  CUDACHECK_TEST(cudaMemcpy(
-      d_signalBuf, &signalValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
-
-  IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
-
-  runAndVerify([&](bool* d_success) {
-    runTestWaitSignalLT(
-        d_signalBuf, localBuf, remoteBuf, signalValue, targetValue, d_success);
+    runTestWaitSignalGE(d_signalBuf, localBuf, targetValue, d_success);
   });
 }
 
@@ -390,16 +189,17 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalMultipleSlots) {
       cudaMemcpyHostToDevice));
 
   IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x3333));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x4444));
 
   runAndVerify([&](bool* d_success) {
     runTestWaitSignalMultipleSlots(
-        d_signalBuf, localBuf, remoteBuf, numSignals, d_success);
+        d_signalBuf, localBuf, numSignals, d_success);
   });
 }
 
 TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalZeroValue) {
   // Test wait_signal with zero value (edge case)
+  // For uint64_t, any value >= 0 is always true, so this should pass
+  // immediately
   const uint64_t targetValue = 0;
 
   DeviceBuffer signalBuf(sizeof(uint64_t));
@@ -409,11 +209,9 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalZeroValue) {
   CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
 
   IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
 
   runAndVerify([&](bool* d_success) {
-    runTestWaitSignalEQ(
-        d_signalBuf, localBuf, remoteBuf, targetValue, d_success);
+    runTestWaitSignalGE(d_signalBuf, localBuf, targetValue, d_success);
   });
 }
 
@@ -428,11 +226,9 @@ TEST_F(P2pIbgdaTransportDeviceTestFixture, WaitSignalMaxValue) {
       d_signalBuf, &targetValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
 
   IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
 
   runAndVerify([&](bool* d_success) {
-    runTestWaitSignalEQ(
-        d_signalBuf, localBuf, remoteBuf, targetValue, d_success);
+    runTestWaitSignalGE(d_signalBuf, localBuf, targetValue, d_success);
   });
 }
 
@@ -521,10 +317,9 @@ TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalTimeoutTraps) {
   CUDACHECK_TEST(cudaMemset(d_signalBuf, 0, sizeof(uint64_t)));
 
   IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
 
   // 10ms timeout - should trigger quickly
-  runTestWaitSignalTimeout(d_signalBuf, localBuf, remoteBuf, 0, 10);
+  runTestWaitSignalTimeout(d_signalBuf, localBuf, 0, 10);
 
   cudaError_t err = cudaGetLastError();
   EXPECT_TRUE(isExpectedTrapError(err))
@@ -543,7 +338,6 @@ TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalNoTimeoutWhenSatisfied) {
       d_signalBuf, &signalValue, sizeof(uint64_t), cudaMemcpyHostToDevice));
 
   IbgdaLocalBuffer localBuf(d_signalBuf, NetworkLKey(0x1111));
-  IbgdaRemoteBuffer remoteBuf(d_signalBuf, NetworkRKey(0x2222));
 
   DeviceBuffer successBuf(sizeof(bool));
   auto* d_success = static_cast<bool*>(successBuf.get());
@@ -552,8 +346,7 @@ TEST_F(P2pIbgdaWaitSignalTimeoutTest, WaitSignalNoTimeoutWhenSatisfied) {
       d_success, &initSuccess, sizeof(bool), cudaMemcpyHostToDevice));
 
   // 1000ms timeout - kernel should complete well before this
-  runTestWaitSignalNoTimeout(
-      d_signalBuf, localBuf, remoteBuf, 0, 1000, d_success);
+  runTestWaitSignalNoTimeout(d_signalBuf, localBuf, 0, 1000, d_success);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   bool success = false;
