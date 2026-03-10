@@ -210,25 +210,29 @@ GraphEventTracker::CheckResult GraphEventTracker::checkAll() {
         // end is notReady — this is the first incomplete collective on this
         // stream. All subsequent collectives on this stream cannot have
         // started, so we can skip them.
-        if (start_status == cudaSuccess) {
-          // Collective in progress — start or continue timing
-          if (!entry.start_completed_time.has_value()) {
+        if (!entry.start_completed_time.has_value()) {
+          if (start_status == cudaSuccess) {
+            // observation of collective in progress — start timer
             entry.start_completed_time = std::chrono::steady_clock::now();
+          } else {
+            // collective NEVER started — skip timer logic
+            break;
           }
-          auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-              std::chrono::steady_clock::now() -
-              entry.start_completed_time.value());
-          if (entry.timeout.count() >= 0 && elapsed > entry.timeout) {
-            TC_LOG(ERROR, comm_)
-                << "Graph monitor: collective TIMED OUT for graph " << graph_id
-                << " collective " << i << " on rank " << comm_->getRank()
-                << " - elapsed " << elapsed.count() << "ms > timeout "
-                << entry.timeout.count() << "ms";
-            return CheckResult::TIMEOUT;
-          }
-        } else {
-          // Both notReady — replay hasn't reached this collective yet
-          entry.start_completed_time.reset();
+        }
+
+        // active timer. either started now, continued from a
+        // previous poll, or preserved after events were reset by a
+        // queued cudaGraphLaunch.
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() -
+            entry.start_completed_time.value());
+        if (entry.timeout.count() >= 0 && elapsed > entry.timeout) {
+          TC_LOG(ERROR, comm_)
+              << "Graph monitor: collective TIMED OUT for graph " << graph_id
+              << " collective " << i << " on rank " << comm_->getRank()
+              << " - elapsed " << elapsed.count() << "ms > timeout "
+              << entry.timeout.count() << "ms";
+          return CheckResult::TIMEOUT;
         }
         break;
       }
