@@ -397,9 +397,10 @@ TEST_F(MultiCommTest, ThreeCommsMixedStore) {
   std::vector<std::unique_ptr<TorchCommTestWrapper>> wrappers;
   std::vector<std::shared_ptr<torch::comms::TorchComm>> comms;
 
-  // Create a shared store for the first two communicators
-  auto store1 = createStore();
-  auto store2 = createStore();
+  // Create a single store and wrap with prefixes to avoid port conflicts
+  auto store = createStore();
+  auto store1 = wrapPrefixStore("comm1", store);
+  auto store2 = wrapPrefixStore("comm2", store);
 
   // Create first communicator using the store
   wrappers.push_back(std::make_unique<TorchCommTestWrapper>(store1));
@@ -411,6 +412,7 @@ TEST_F(MultiCommTest, ThreeCommsMixedStore) {
 
   destroyStoreAndSyncStream(std::move(store1), comms[0]);
   destroyStoreAndSyncStream(std::move(store2), comms[1]);
+  destroyStoreAndSyncStream(std::move(store), comms[0]);
 
   // Create third communicator using no store
   wrappers.push_back(std::make_unique<TorchCommTestWrapper>());
