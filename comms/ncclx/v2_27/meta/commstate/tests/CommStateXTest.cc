@@ -11,6 +11,7 @@
 #include "comms/testinfra/TestUtils.h"
 
 #include "comms/ctran/commstate/CommStateX.h"
+#include "meta/NcclxConfig.h"
 #include "param.h" // @manual
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -40,7 +41,9 @@ static void fillDummyComm(ncclComm& comm, int numNvlDomain = 1) {
   comm.nRanks = 16;
   comm.cudaDev = 0;
   comm.commHash = 123456789;
-  comm.config.commDesc = "default_pg:0";
+  auto* ncclxCfg = new ncclx::Config();
+  ncclxCfg->commDesc = "default_pg:0";
+  comm.config.ncclxConfig = ncclxCfg;
 
   comm.localRank = 0;
   comm.localRanks = 8 / numNvlDomain; // local ranks in the same NVL domain
@@ -102,7 +105,7 @@ TEST(CommStateXTest, CreateVNodeFromNcclComm) {
   EXPECT_EQ(state->nLocalRanks(), nLocalRanks);
   EXPECT_EQ(state->nNodes(), comm.nRanks / nLocalRanks);
   EXPECT_EQ(state->commHash(), comm.commHash);
-  EXPECT_EQ(state->commDesc(), comm.config.commDesc);
+  EXPECT_EQ(state->commDesc(), NCCLX_CONFIG_FIELD(comm.config, commDesc));
   for (int i = 0; i < state->nRanks(); ++i) {
     EXPECT_EQ(state->node(i), i / nLocalRanks);
   }
@@ -146,7 +149,7 @@ TEST(CommStateXTest, CreateNoLocalFromNcclComm) {
   EXPECT_EQ(state->nLocalRanks(), 1);
   EXPECT_EQ(state->nNodes(), comm.nRanks);
   EXPECT_EQ(state->commHash(), comm.commHash);
-  EXPECT_EQ(state->commDesc(), comm.config.commDesc);
+  EXPECT_EQ(state->commDesc(), NCCLX_CONFIG_FIELD(comm.config, commDesc));
   for (int i = 0; i < state->nRanks(); ++i) {
     EXPECT_EQ(state->node(i), i);
   }
@@ -182,7 +185,7 @@ TEST_P(CommStateXNcclCommTestParamFixture, CreateFromNcclComm) {
   EXPECT_EQ(state->nRanks(), comm.nRanks);
   EXPECT_EQ(state->cudaDev(), comm.cudaDev);
   EXPECT_EQ(state->commHash(), comm.commHash);
-  EXPECT_EQ(state->commDesc(), comm.config.commDesc);
+  EXPECT_EQ(state->commDesc(), NCCLX_CONFIG_FIELD(comm.config, commDesc));
   EXPECT_EQ(state->localRank(), comm.localRank);
   EXPECT_EQ(state->nLocalRanks(), comm.localRanks);
   for (int i = 0; i < state->nRanks(); ++i) {

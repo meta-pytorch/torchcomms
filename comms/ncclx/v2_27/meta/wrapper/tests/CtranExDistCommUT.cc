@@ -69,7 +69,9 @@ TEST_F(CtranExCommTest, TestNonBlockingThrow) {
   ncclComm_t nonBlockingComm;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = 0;
-  config.commDesc = "nonBlockingParent";
+  ncclx::Hints nbHints;
+  nbHints.set("commDesc", "nonBlockingParent");
+  config.hints = &nbHints;
   ncclUniqueId id;
   // get NCCL unique ID at rank 0 and broadcast it to all others
   if (globalRank == 0) {
