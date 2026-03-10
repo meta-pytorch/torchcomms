@@ -53,7 +53,7 @@ class DebugExtTest : public ::testing::Test {
 TEST_F(DebugExtTest, TestWarnLogToLimit) {
   initEnv();
   NCCL_DEBUG = "WARN";
-  NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULT;
+  NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
   initLogging();
   constexpr int logCount = 3;
   constexpr int iterCount = 10;
@@ -80,7 +80,7 @@ TEST_F(DebugExtTest, TestWarnLogToLimit) {
 TEST_F(DebugExtTest, TestWarnLogBelowLimit) {
   initEnv();
   NCCL_DEBUG = "WARN";
-  NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULT;
+  NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
   initLogging();
   constexpr int logCount = 20;
   constexpr int iterCount = 10;
@@ -101,7 +101,7 @@ TEST_F(DebugExtTest, TestWarnLogBelowLimit) {
 TEST_F(DebugExtTest, TestThreeSeperateWarnLog) {
   initEnv();
   NCCL_DEBUG = "WARN";
-  NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULT;
+  NCCL_DEBUG_FILE = NCCL_DEBUG_FILE_DEFAULTCVARVALUE;
   initLogging();
   constexpr int logCount = 3;
   constexpr int iterCount = 10;
