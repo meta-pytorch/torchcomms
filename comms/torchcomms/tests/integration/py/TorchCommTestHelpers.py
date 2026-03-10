@@ -174,6 +174,11 @@ def create_store():
     return PrefixStore(f"test_comm_{NEXT_STORE_ID}", _root_store)
 
 
+def wrap_prefix_store(name, store):
+    """Wrap a store with a PrefixStore using the given name."""
+    return PrefixStore(name, store)
+
+
 def verify_tensor_equality(
     output: torch.Tensor,
     expected: Union[torch.Tensor, int, float],
