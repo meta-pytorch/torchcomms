@@ -57,6 +57,17 @@ elseif(EXISTS "${NCCLX_INCLUDE}/nccl_device/gin/gdaki/doca_gpunetio"
         SYMBOLIC)
 endif()
 
+# CUDA 13 removed texture_fetch_functions.h (deprecated texture reference API).
+# Clang's __clang_cuda_runtime_wrapper.h unconditionally includes it, causing a
+# fatal error. Provide an empty stub so clang's wrapper resolves the include.
+# Torchcomms device code does not use texture references.
+if(NOT EXISTS "${CUDA_PATH}/include/texture_fetch_functions.h")
+    file(WRITE "${TRITON_TMPINC}/texture_fetch_functions.h"
+        "// Empty stub: texture_fetch_functions.h was removed in CUDA 13.\n"
+        "// Provided for clang CUDA wrapper compatibility.\n")
+    message(STATUS "  Created texture_fetch_functions.h stub for CUDA 13+ compatibility")
+endif()
+
 set(TRITON_BC_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/comms/torchcomms/triton/fb/libtorchcomms_device.bc")
 
 # Ensure output directory exists
@@ -77,6 +88,8 @@ add_custom_command(
         -fcuda-flush-denormals-to-zero
         "--cuda-path=${CUDA_PATH}"
         -isystem "${CUDA_PATH}/include"
+        -isystem "${CUDA_PATH}/include/cccl"
+        -isystem "${CONDA_INCLUDE}/cccl"
         "-I${TRITON_SRC}/ir_include"
         "-I${TRITON_TMPINC}"
         "-I${NCCLX_INCLUDE}"

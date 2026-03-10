@@ -9,8 +9,7 @@
 #include <string>
 #include <vector>
 
-#include "comms/pipes/MultiPeerDeviceTransport.cuh"
-#include "comms/pipes/MultiPeerNvlTransport.h"
+#include "comms/pipes/MultiPeerTransport.h"
 #include "comms/pipes/tests/MultiPeerNvlTransportIntegrationTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
 #include "comms/pipes/window/WindowMemory.h"
@@ -67,33 +66,41 @@ class MultiPeerNvlTransportIntegrationTestFixture : public MpiBaseTestFixture {
     MpiBaseTestFixture::TearDown();
   }
 
-  // Bundle that keeps transport and window memory alive together.
-  // WindowMemory must outlive any device objects extracted from it.
+  // Bundle that keeps transport and window memory alive.
   struct TransportBundle {
-    std::unique_ptr<MultiPeerNvlTransport> transport;
+    std::unique_ptr<MultiPeerTransport> transport;
     std::unique_ptr<WindowMemory> windowMemory;
-    MultiPeerDeviceTransport device;
+    test::TestDeviceBundle bundle;
   };
 
   // Helper to create a configured transport and get the
-  // MultiPeerDeviceTransport
+  // TestDeviceBundle
   TransportBundle createTransport(
-      const MultiPeerNvlTransportConfig& config,
+      const MultiPeerNvlTransportConfig& nvlConfig,
       const WindowMemoryConfig& wmConfig = {}) {
     auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-    auto transport = std::make_unique<MultiPeerNvlTransport>(
-        globalRank, numRanks, bootstrap, config);
+    MultiPeerTransportConfig config{
+        .nvlConfig = nvlConfig,
+    };
+    auto transport = std::make_unique<MultiPeerTransport>(
+        globalRank, numRanks, localRank, bootstrap, config);
+    transport->exchange();
+
     auto wm = std::make_unique<WindowMemory>(
         globalRank, numRanks, bootstrap, wmConfig);
-    transport->exchange();
     wm->exchange();
-    auto device = transport->getMultiPeerDeviceTransport(*wm);
-    return {std::move(transport), std::move(wm), device};
+
+    test::TestDeviceBundle bundle{
+        transport->get_device_handle(),
+        wm->getDeviceWindowSignal(),
+        wm->getDeviceWindowBarrier(),
+    };
+    return {std::move(transport), std::move(wm), bundle};
   }
 };
 
 // =============================================================================
-// getMultiPeerDeviceTransport() End-to-End Test
+// MultiPeerDeviceTransport Construction End-to-End Test
 // =============================================================================
 
 TEST_F(
@@ -105,14 +112,14 @@ TEST_F(
       .pipelineDepth = kDefaultPipelineDepth,
   };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config);
 
   // Allocate result buffer on device
   DeviceBuffer resultsBuffer(3 * sizeof(int));
   auto results_d = static_cast<int*>(resultsBuffer.get());
 
   // Call test kernel to verify accessors
-  test::testMultiPeerDeviceTransportAccessors(device, results_d);
+  test::testMultiPeerDeviceTransportAccessors(bundle, results_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   // Copy results back to host
@@ -127,7 +134,7 @@ TEST_F(
 
   XLOGF(
       INFO,
-      "Rank {}: getMultiPeerDeviceTransport test completed (rank={}, nRanks={}, numPeers={})",
+      "Rank {}: MultiPeerDeviceTransport construction test completed (rank={}, nRanks={}, numPeers={})",
       globalRank,
       results_h[0],
       results_h[1],
@@ -135,14 +142,14 @@ TEST_F(
 }
 
 // =============================================================================
-// Repeated getMultiPeerDeviceTransport() Calls
+// Repeated MultiPeerDeviceTransport Construction Calls
 // =============================================================================
 
 TEST_F(
     MultiPeerNvlTransportIntegrationTestFixture,
     GetMultiPeerDeviceTransportRepeated) {
-  // Test that getMultiPeerDeviceTransport() can be called multiple times
-  // and returns consistent results (tests lazy initialization)
+  // Test that TestDeviceBundle can be constructed multiple times
+  // and returns consistent results
   MultiPeerNvlTransportConfig config{
       .dataBufferSize = kDefaultDataBufferSize,
       .chunkSize = kDefaultChunkSize,
@@ -150,15 +157,23 @@ TEST_F(
   };
 
   auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  MultiPeerTransportConfig transportConfig{
+      .nvlConfig = config,
+  };
+  MultiPeerTransport mpt(
+      globalRank, numRanks, localRank, bootstrap, transportConfig);
+  mpt.exchange();
+
   WindowMemory wm(globalRank, numRanks, bootstrap, WindowMemoryConfig{});
-  transport.exchange();
   wm.exchange();
 
-  // Call getMultiPeerDeviceTransport() multiple times
-  auto device1 = transport.getMultiPeerDeviceTransport(wm);
-  auto device2 = transport.getMultiPeerDeviceTransport(wm);
-  auto device3 = transport.getMultiPeerDeviceTransport(wm);
+  // Construct TestDeviceBundle multiple times
+  auto handle = mpt.get_device_handle();
+  auto sig = wm.getDeviceWindowSignal();
+  auto bar = wm.getDeviceWindowBarrier();
+  test::TestDeviceBundle bundle1{handle, sig, bar};
+  test::TestDeviceBundle bundle2{handle, sig, bar};
+  test::TestDeviceBundle bundle3{handle, sig, bar};
 
   // Allocate result buffers
   DeviceBuffer results1Buffer(3 * sizeof(int));
@@ -169,9 +184,9 @@ TEST_F(
   auto results2_d = static_cast<int*>(results2Buffer.get());
   auto results3_d = static_cast<int*>(results3Buffer.get());
 
-  test::testMultiPeerDeviceTransportAccessors(device1, results1_d);
-  test::testMultiPeerDeviceTransportAccessors(device2, results2_d);
-  test::testMultiPeerDeviceTransportAccessors(device3, results3_d);
+  test::testMultiPeerDeviceTransportAccessors(bundle1, results1_d);
+  test::testMultiPeerDeviceTransportAccessors(bundle2, results2_d);
+  test::testMultiPeerDeviceTransportAccessors(bundle3, results3_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   std::vector<int> results1_h(3), results2_h(3), results3_h(3);
@@ -184,13 +199,13 @@ TEST_F(
 
   // All calls should return the same values
   EXPECT_EQ(results1_h, results2_h)
-      << "Repeated getMultiPeerDeviceTransport calls returned different values";
+      << "Repeated TestDeviceBundle constructions returned different values";
   EXPECT_EQ(results1_h, results3_h)
-      << "Repeated getMultiPeerDeviceTransport calls returned different values";
+      << "Repeated TestDeviceBundle constructions returned different values";
 
   XLOGF(
       INFO,
-      "Rank {}: Repeated getMultiPeerDeviceTransport test completed",
+      "Rank {}: Repeated TestDeviceBundle construction test completed",
       globalRank);
 }
 
@@ -208,8 +223,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWait) {
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -223,7 +241,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWait) {
   // Synchronize before starting
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-  test::testSignalWait(device, peerRank, 0, isSignaler, result_d);
+  test::testSignalWait(bundle, peerRank, 0, isSignaler, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -257,10 +275,10 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSignalWait) {
       .pipelineDepth = 4,
   };
   WindowMemoryConfig wmConfig{
-      .signalCount = kDefaultSignalCount, // Need 2 slots for bidirectional
+      .signalCount = kDefaultSignalCount,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -279,7 +297,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSignalWait) {
 
   // Phase 1: Rank 0 signals slot 0, Rank 1 waits on slot 0
   test::testSignalWait(
-      device, peerRank, kPhase1SignalSlot, globalRank == 0, result1_d);
+      bundle, peerRank, kPhase1SignalSlot, globalRank == 0, result1_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -287,7 +305,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSignalWait) {
   // Phase 2: Rank 1 signals slot 1, Rank 0 waits on slot 1
   // Using different slot to avoid signal value accumulation
   test::testSignalWait(
-      device, peerRank, kPhase2SignalSlot, globalRank == 1, result2_d);
+      bundle, peerRank, kPhase2SignalSlot, globalRank == 1, result2_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -315,8 +333,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, Barrier) {
       .chunkSize = 1024,
       .pipelineDepth = 4,
   };
+  WindowMemoryConfig wmConfig{
+      .barrierCount = 1,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   DeviceBuffer resultBuffer(sizeof(int));
   auto result_d = static_cast<int*>(resultBuffer.get());
@@ -324,7 +345,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, Barrier) {
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-  test::testBarrier(device, 0, result_d);
+  test::testBarrier(bundle, 0, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -353,8 +374,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierPeer) {
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .barrierCount = 1,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -365,7 +389,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierPeer) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
   // Both ranks call barrier_peer with each other's rank
-  test::testBarrierPeer(device, peerRank, 0, result_d);
+  test::testBarrierPeer(bundle, peerRank, 0, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -401,7 +425,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SendRecv) {
       .pipelineDepth = 4,
   };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config);
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP()
+        << "No NVL peers (same-GPU or no NVLink); skipping NVL send/recv test";
+  }
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   const size_t numInts = nbytes / sizeof(int);
@@ -422,7 +451,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SendRecv) {
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testSinglePeerSend(device, peerRank, src_d, nbytes, 4, 128);
+    test::testSinglePeerSend(bundle, peerRank, src_d, nbytes, 4, 128);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -432,7 +461,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SendRecv) {
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testSinglePeerRecv(device, peerRank, dst_d, nbytes, 4, 128);
+    test::testSinglePeerRecv(bundle, peerRank, dst_d, nbytes, 4, 128);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -466,7 +495,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSendRecv) {
       .pipelineDepth = 4,
   };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config);
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP()
+        << "No NVL peers (same-GPU or no NVLink); skipping NVL send/recv test";
+  }
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   const size_t numInts = nbytes / sizeof(int);
@@ -489,19 +523,19 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BidirectionalSendRecv) {
 
   // Rank 0 sends then receives, Rank 1 receives then sends
   if (globalRank == 0) {
-    test::testSinglePeerSend(device, peerRank, send_d, nbytes, 4, 128);
+    test::testSinglePeerSend(bundle, peerRank, send_d, nbytes, 4, 128);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testSinglePeerRecv(device, peerRank, recv_d, nbytes, 4, 128);
+    test::testSinglePeerRecv(bundle, peerRank, recv_d, nbytes, 4, 128);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   } else {
-    test::testSinglePeerRecv(device, peerRank, recv_d, nbytes, 4, 128);
+    test::testSinglePeerRecv(bundle, peerRank, recv_d, nbytes, 4, 128);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testSinglePeerSend(device, peerRank, send_d, nbytes, 4, 128);
+    test::testSinglePeerSend(bundle, peerRank, send_d, nbytes, 4, 128);
     CUDACHECK_TEST(cudaDeviceSynchronize());
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
   }
@@ -535,7 +569,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarriers) {
       .barrierCount = kNumBarrierSlots,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   const int numIterations = 10;
 
@@ -551,7 +585,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarriers) {
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testBarrier(device, slotIdx, result_d);
+    test::testBarrier(bundle, slotIdx, result_d);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -589,7 +623,12 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SendRecvStress) {
       .pipelineDepth = kDefaultPipelineDepth,
   };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config);
+
+  if (transport->nvl_peer_ranks().empty()) {
+    GTEST_SKIP()
+        << "No NVL peers (same-GPU or no NVLink); skipping NVL send/recv test";
+  }
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   const size_t numInts = kSmallTransferSize / sizeof(int);
@@ -610,7 +649,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SendRecvStress) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       test::testSinglePeerSend(
-          device,
+          bundle,
           peerRank,
           src_d,
           kSmallTransferSize,
@@ -625,7 +664,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SendRecvStress) {
       MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
       test::testSinglePeerRecv(
-          device,
+          bundle,
           peerRank,
           dst_d,
           kSmallTransferSize,
@@ -677,7 +716,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleSignalSlots) {
       .signalCount = numSignalSlots,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -691,7 +730,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleSignalSlots) {
 
     // Alternate which rank signals vs waits for each slot
     bool isSignaler = ((globalRank + slotIdx) % 2 == 0);
-    test::testSignalWait(device, peerRank, slotIdx, isSignaler, result_d);
+    test::testSignalWait(bundle, peerRank, slotIdx, isSignaler, result_d);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -727,7 +766,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, ConcurrentSignalSlots) {
       .signalCount = numSignalSlots,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -747,7 +786,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, ConcurrentSignalSlots) {
   for (int slotIdx = 0; slotIdx < numSignalSlots; ++slotIdx) {
     bool isSignaler = (globalRank == 0);
     test::testSignalWait(
-        device, peerRank, slotIdx, isSignaler, results_d[slotIdx]);
+        bundle, peerRank, slotIdx, isSignaler, results_d[slotIdx]);
   }
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
@@ -785,7 +824,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarrierSlots) {
       .barrierCount = numBarrierSlots,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   // Test each barrier slot
   for (int slotIdx = 0; slotIdx < numBarrierSlots; ++slotIdx) {
@@ -795,7 +834,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MultipleBarrierSlots) {
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testBarrier(device, slotIdx, result_d);
+    test::testBarrier(bundle, slotIdx, result_d);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -828,7 +867,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierSlotStress) {
       .barrierCount = numBarrierSlots,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   DeviceBuffer resultBuffer(sizeof(int));
   auto result_d = static_cast<int*>(resultBuffer.get());
@@ -840,7 +879,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierSlotStress) {
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testBarrier(device, slotIdx, result_d);
+    test::testBarrier(bundle, slotIdx, result_d);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -877,7 +916,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMonotonicCounters) {
       .barrierCount = 1, // Single barrier slot, reused via monotonic counters
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   DeviceBuffer resultBuffer(sizeof(int));
   auto result_d = static_cast<int*>(resultBuffer.get());
@@ -887,7 +926,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMonotonicCounters) {
 
   // Launch a single kernel that performs kNumPhases barrier synchronizations
   // on the same slot. Counters accumulate monotonically — no reset needed.
-  test::testBarrierMonotonic(device, 0, kNumPhases, result_d);
+  test::testBarrierMonotonic(bundle, 0, kNumPhases, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -924,7 +963,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMultiBlockStress) {
       .barrierCount = kNumBarrierSlots,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   DeviceBuffer resultsBuffer(kNumBlocks * sizeof(int));
   auto results_d = static_cast<int*>(resultsBuffer.get());
@@ -933,7 +972,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, BarrierMultiBlockStress) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
   test::testBarrierMultiBlockStress(
-      device, kNumBarrierSlots, results_d, kNumBlocks);
+      bundle, kNumBarrierSlots, results_d, kNumBlocks);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -982,7 +1021,7 @@ TEST_F(
       .barrierCount = numBarrierSlots,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -994,7 +1033,7 @@ TEST_F(
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testSignalWait(device, peerRank, 0, globalRank == 0, result_d);
+    test::testSignalWait(bundle, peerRank, 0, globalRank == 0, result_d);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1013,7 +1052,7 @@ TEST_F(
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testBarrier(device, 0, result_d);
+    test::testBarrier(bundle, 0, result_d);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1033,7 +1072,7 @@ TEST_F(
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
     test::testSignalWait(
-        device, peerRank, numSignalSlots - 1, globalRank == 1, result_d);
+        bundle, peerRank, numSignalSlots - 1, globalRank == 1, result_d);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1052,7 +1091,7 @@ TEST_F(
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
-    test::testBarrier(device, numBarrierSlots - 1, result_d);
+    test::testBarrier(bundle, numBarrierSlots - 1, result_d);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1092,7 +1131,7 @@ TEST_F(
       .signalCount = kMultiSlotSignalCount,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -1105,7 +1144,7 @@ TEST_F(
   // Rank 0 signals on all slots, Rank 1 waits
   bool isSignaler = (globalRank == 0);
   test::testConcurrentSignalMultiBlock(
-      device,
+      bundle,
       peerRank,
       kMultiSlotSignalCount,
       isSignaler,
@@ -1150,7 +1189,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalResetBetweenPhases) {
       .signalCount = kMultiSlotSignalCount,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   constexpr int kSignalSlot = 0;
@@ -1167,7 +1206,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalResetBetweenPhases) {
 
     // Alternate which rank signals each phase
     bool isSignaler = ((globalRank + phase) % 2 == 0);
-    test::testSignalWait(device, peerRank, kSignalSlot, isSignaler, result_d);
+    test::testSignalWait(bundle, peerRank, kSignalSlot, isSignaler, result_d);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1216,7 +1255,7 @@ TEST_F(
       .signalCount = kNumSignalSlots,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -1230,7 +1269,7 @@ TEST_F(
     // Alternate sender/receiver each iteration
     bool isSignaler = ((globalRank + iter) % 2 == 0);
     test::testConcurrentSignalMultiBlock(
-        device, peerRank, kNumSignalSlots, isSignaler, results_d, kNumBlocks);
+        bundle, peerRank, kNumSignalSlots, isSignaler, results_d, kNumBlocks);
     CUDACHECK_TEST(cudaDeviceSynchronize());
 
     MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1280,7 +1319,7 @@ TEST_F(
       .signalCount = kNumSignalSlots,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -1293,7 +1332,7 @@ TEST_F(
   // Rank 0 signals, Rank 1 waits - each warp uses different slot
   bool isSignaler = (globalRank == 0);
   test::testConcurrentSignalWaitMultiWarp(
-      device, peerRank, kNumSignalSlots, isSignaler, results_d, kWarpsPerBlock);
+      bundle, peerRank, kNumSignalSlots, isSignaler, results_d, kWarpsPerBlock);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1329,14 +1368,14 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, TransportAccessorTypes) {
       .pipelineDepth = kDefaultPipelineDepth,
   };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config);
 
   // Allocate result buffer: [numPeers, selfType, peer0Type, peer1Type, ...]
   DeviceBuffer resultsBuffer((1 + numRanks) * sizeof(int));
   auto results_d = static_cast<int*>(resultsBuffer.get());
   CUDACHECK_TEST(cudaMemset(results_d, 0, (1 + numRanks) * sizeof(int)));
 
-  test::testTransportTypes(device, results_d);
+  test::testTransportTypes(bundle, results_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   std::vector<int> results_h(1 + numRanks);
@@ -1373,8 +1412,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalAll) {
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   constexpr int kSignalerRank = 0;
   constexpr int kSignalIdx = 0;
@@ -1386,7 +1428,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalAll) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
   // Rank 0 signals all peers, all other ranks wait for signal from rank 0
-  test::testSignalAll(device, kSignalerRank, kSignalIdx, result_d);
+  test::testSignalAll(bundle, kSignalerRank, kSignalIdx, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1406,6 +1448,58 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalAll) {
 }
 
 // =============================================================================
+// signal_all() + read_signal() Aggregate Test (all ranks signal and read)
+// =============================================================================
+
+TEST_F(
+    MultiPeerNvlTransportIntegrationTestFixture,
+    SignalAllAggregateDistributed) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires at least 2 ranks, got " << numRanks;
+  }
+
+  MultiPeerNvlTransportConfig config{
+      .dataBufferSize = kDefaultDataBufferSize,
+      .chunkSize = kDefaultChunkSize,
+      .pipelineDepth = kDefaultPipelineDepth,
+  };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
+
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
+
+  constexpr int kSignalIdx = 0;
+
+  DeviceBuffer resultBuffer(sizeof(uint64_t));
+  auto result_d = static_cast<uint64_t*>(resultBuffer.get());
+  CUDACHECK_TEST(cudaMemset(result_d, 0, sizeof(uint64_t)));
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  // All ranks signal all peers, then read aggregate via group-level API
+  test::testSignalAllAggregateDistributed(bundle, kSignalIdx, result_d);
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
+
+  uint64_t result_h = 0;
+  CUDACHECK_TEST(cudaMemcpy(
+      &result_h, result_d, sizeof(uint64_t), cudaMemcpyDeviceToHost));
+
+  EXPECT_EQ(result_h, static_cast<uint64_t>(numRanks - 1))
+      << "read_signal() aggregate on rank " << globalRank
+      << " should equal numRanks-1 (" << (numRanks - 1) << ")";
+
+  XLOGF(
+      INFO,
+      "Rank {}: signal_all() aggregate test completed (aggregate={}, expected={})",
+      globalRank,
+      result_h,
+      numRanks - 1);
+}
+
+// =============================================================================
 // wait_signal_from_all() Test
 // =============================================================================
 
@@ -1419,8 +1513,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromAll) {
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   constexpr int kTargetRank = 0;
   constexpr int kSignalIdx = 0;
@@ -1432,7 +1529,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromAll) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
   // All peers signal rank 0, rank 0 waits for signals from all peers
-  test::testWaitSignalFromAll(device, kTargetRank, kSignalIdx, result_d);
+  test::testWaitSignalFromAll(bundle, kTargetRank, kSignalIdx, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1465,8 +1562,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitWithCmpEq) {
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   constexpr int kSignalIdx = 0;
@@ -1481,7 +1581,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitWithCmpEq) {
   // Rank 0 signals with exact value using SIGNAL_SET, Rank 1 waits with CMP_EQ
   bool isSignaler = (globalRank == 0);
   test::testWaitWithCmpEq(
-      device, peerRank, kSignalIdx, kExpectedValue, isSignaler, result_d);
+      bundle, peerRank, kSignalIdx, kExpectedValue, isSignaler, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1514,8 +1614,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MonotonicWaitValues) {
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   constexpr int kSignalIdx = 0;
@@ -1531,7 +1634,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, MonotonicWaitValues) {
   // signal(1), wait_for(1), signal(1), wait_for(2), etc.
   bool isSignaler = (globalRank == 0);
   test::testMonotonicWaitValues(
-      device, peerRank, kSignalIdx, kNumIterations, isSignaler, result_d);
+      bundle, peerRank, kSignalIdx, kNumIterations, isSignaler, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1564,8 +1667,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWithSet) {
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   constexpr int kSignalIdx = 0;
@@ -1580,7 +1686,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWithSet) {
   // Rank 0 signals using SIGNAL_SET, Rank 1 waits for the set value
   bool isSignaler = (globalRank == 0);
   test::testSignalWithSet(
-      device, peerRank, kSignalIdx, kSetValue, isSignaler, result_d);
+      bundle, peerRank, kSignalIdx, kSetValue, isSignaler, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1619,14 +1725,14 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
       .signalCount = kDefaultSignalCount,
   };
 
-  auto [transport, wm, device] = createTransport(config, wmConfig);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   const int testValue = 0xCD + globalRank;
 
-  // Get the P2pNvlTransportDevice to access IPC-mapped remote buffers
+  // Get a host-side P2pNvlTransportDevice to access IPC-mapped remote buffers
   // The transport's remoteState_.dataBuffer is already IPC-mapped
-  auto p2pTransport = transport->getP2pTransportDevice(peerRank);
+  auto p2pTransport = transport->get_p2p_nvl_transport_device(peerRank);
 
   // POINTER RELATIONSHIP CLARIFICATION:
   //
@@ -1674,7 +1780,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, PutSignalOperation) {
   // remoteDataBuffer points to peer's local data buffer (via IPC)
   // So rank 0's remoteDataBuffer points to rank 1's localDataBuffer
   test::testPutOperation(
-      device,
+      bundle,
       peerRank,
       isWriter ? remoteDataBuffer : nullptr, // Write to peer's buffer via IPC
       isWriter ? localSrc_d : nullptr, // Source is our local data
@@ -1729,8 +1835,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromPeer) {
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
   constexpr int kSignalIdx = 0;
@@ -1744,7 +1853,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, WaitSignalFromPeer) {
   // Rank 0 signals, Rank 1 waits using wait_signal_from
   bool isSignaler = (globalRank == 0);
   test::testWaitSignalFromPeer(
-      device, peerRank, kSignalIdx, isSignaler, result_d);
+      bundle, peerRank, kSignalIdx, isSignaler, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1778,8 +1887,11 @@ TEST_F(
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   constexpr int kTargetRank = 0;
   constexpr int kSignalIdx = 0;
@@ -1792,7 +1904,7 @@ TEST_F(
 
   // All peers signal rank 0 with different values, rank 0 verifies isolation
   test::testWaitSignalFromMultiPeerIsolation(
-      device, kTargetRank, kSignalIdx, result_d);
+      bundle, kTargetRank, kSignalIdx, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1827,8 +1939,11 @@ TEST_F(
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   constexpr int kTargetRank = 0;
   constexpr int kSignalIdx = 0;
@@ -1841,7 +1956,7 @@ TEST_F(
 
   // All peers signal rank 0, rank 0 verifies both accumulated and per-peer
   test::testWaitSignalAndWaitSignalFromBothWork(
-      device, kTargetRank, kSignalIdx, result_d);
+      bundle, kTargetRank, kSignalIdx, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
@@ -1874,8 +1989,11 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWaitBlockScope) {
       .chunkSize = kDefaultChunkSize,
       .pipelineDepth = kDefaultPipelineDepth,
   };
+  WindowMemoryConfig wmConfig{
+      .signalCount = kDefaultSignalCount,
+  };
 
-  auto [transport, wm, device] = createTransport(config);
+  auto [transport, windowMemory, bundle] = createTransport(config, wmConfig);
 
   int peerRank = (globalRank == 0) ? 1 : 0;
 
@@ -1890,7 +2008,7 @@ TEST_F(MultiPeerNvlTransportIntegrationTestFixture, SignalWaitBlockScope) {
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));
 
   // Uses BLOCK scope - exercises non-WARP fallback path in wait_signal()
-  test::testSignalWaitBlockScope(device, peerRank, 0, isSignaler, result_d);
+  test::testSignalWaitBlockScope(bundle, peerRank, 0, isSignaler, result_d);
   CUDACHECK_TEST(cudaDeviceSynchronize());
 
   MPI_CHECK(MPI_Barrier(MPI_COMM_WORLD));

@@ -6,7 +6,6 @@
 #include <folly/logging/xlog.h>
 
 #include "comms/pipes/MultiPeerNvlTransport.h"
-#include "comms/pipes/P2pSelfTransportDevice.cuh"
 #include "comms/pipes/collectives/AllGather.cuh"
 #include "comms/pipes/tests/AllGatherTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
@@ -117,32 +116,11 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   transport.exchange();
   XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
 
-  // Get transport devices for all peer ranks
-  P2pSelfTransportDevice selfTransport;
-
-  // Create transport array: rank 0, rank 1, ..., rank N-1
-  // For my rank, use SelfTransportDevice; for others, use P2pNvlTransportDevice
-  std::vector<Transport> h_transports;
-  h_transports.reserve(numRanks);
-
-  for (int rank = 0; rank < numRanks; rank++) {
-    if (rank == globalRank) {
-      h_transports.emplace_back(selfTransport);
-    } else {
-      h_transports.emplace_back(transport.getP2pTransportDevice(rank));
-    }
-  }
-
-  // Copy transports to device
-  DeviceBuffer d_transports(sizeof(Transport) * numRanks);
-  CUDACHECK_TEST(cudaMemcpy(
-      d_transports.get(),
-      h_transports.data(),
-      sizeof(Transport) * numRanks,
-      cudaMemcpyHostToDevice));
-
+  // Use preallocated Transport array from MultiPeerNvlTransport
+  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
+  // peers)
   DeviceSpan<Transport> transports_span(
-      static_cast<Transport*>(d_transports.get()), numRanks);
+      transport.getTransportsArray(), numRanks);
 
   // Allocate send and recv buffers
   // sendbuff: numIntsPerRank ints (my local data)
@@ -334,27 +312,11 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
 
-  P2pSelfTransportDevice selfTransport;
-  std::vector<Transport> h_transports;
-  h_transports.reserve(numRanks);
-
-  for (int rank = 0; rank < numRanks; rank++) {
-    if (rank == globalRank) {
-      h_transports.emplace_back(selfTransport);
-    } else {
-      h_transports.emplace_back(transport.getP2pTransportDevice(rank));
-    }
-  }
-
-  DeviceBuffer d_transports(sizeof(Transport) * numRanks);
-  CUDACHECK_TEST(cudaMemcpy(
-      d_transports.get(),
-      h_transports.data(),
-      sizeof(Transport) * numRanks,
-      cudaMemcpyHostToDevice));
-
+  // Use preallocated Transport array from MultiPeerNvlTransport
+  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
+  // peers)
   DeviceSpan<Transport> transports_span(
-      static_cast<Transport*>(d_transports.get()), numRanks);
+      transport.getTransportsArray(), numRanks);
 
   DeviceBuffer sendBuffer(sendcount);
   DeviceBuffer recvBuffer(recvBufferSize);

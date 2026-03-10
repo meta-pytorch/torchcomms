@@ -7,7 +7,7 @@
 
 #include <nccl.h>
 #include "comms/ctran/Ctran.h"
-#include "comms/ctran/mapper/CtranMapperRegMem.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -64,7 +64,7 @@ TEST_P(CommRegisterTestParam, RegularUsage) {
   }
 
   // Cleanup cached segments in global cache before we test memory leak
-  auto regCache = CtranMapperRegCache::getInstance();
+  auto regCache = ctran::RegCache::getInstance();
   EXPECT_EQ(regCache->destroy(), commSuccess);
 
   testFreeBuf(buf, nbytes, memType);
@@ -131,7 +131,8 @@ INSTANTIATE_TEST_SUITE_P(
         // CTRAN_MIN_REGISTRATION_SIZE)
         std::make_tuple(1, kMemNcclMemAlloc, NCCL_CTRAN_REGISTER::eager),
         std::make_tuple(1, kMemNcclMemAlloc, NCCL_CTRAN_REGISTER::lazy)),
-    [&](const testing::TestParamInfo<CommRegisterTestParam::ParamType>& info) {
+    [&](const ::testing::TestParamInfo<CommRegisterTestParam::ParamType>&
+            info) {
       return std::to_string(std::get<0>(info.param)) + "bytes_" +
           testMemAllocTypeToStr(std::get<1>(info.param)) + "_" +
           testCtranRegisterModeToStr(std::get<2>(info.param));

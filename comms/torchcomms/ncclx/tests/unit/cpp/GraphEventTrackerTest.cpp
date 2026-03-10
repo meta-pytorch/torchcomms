@@ -754,6 +754,52 @@ TEST_F(GraphEventTrackerTest, DestroyAllIgnoresReleasedFlag) {
       << "end event was not destroyed by destroyAll";
 }
 
+TEST_F(GraphEventTrackerTest, EventResetByReplayDefeatsTimeout) {
+  setupCCAExpectations(0, 0, 1);
+
+  EXPECT_DEATH(
+      {
+        cuda_mock_->setupDefaultBehaviors();
+        nccl_mock_->setupDefaultBehaviors();
+
+        auto options = createAbortModeOptions(std::chrono::milliseconds(100));
+        auto comm = createMockedTorchComm();
+        comm->init(*device_, "test_event_reset_defeats_timeout", options);
+
+        setupGraphCaptureMocks();
+        auto events = setupGraphCaptureEvents();
+        setupEventRecordMocks();
+
+        auto tensor = createTestTensor({10, 10});
+        auto work = comm->send(tensor, 1, true);
+
+        switchToReplayMode();
+
+        std::atomic<bool> events_reset{false};
+
+        ON_CALL(*cuda_mock_, eventQuery(events.start))
+            .WillByDefault(Invoke([&events_reset](cudaEvent_t) -> cudaError_t {
+              return events_reset.load(std::memory_order_relaxed)
+                  ? cudaErrorNotReady
+                  : cudaSuccess;
+            }));
+        ON_CALL(*cuda_mock_, eventQuery(events.end))
+            .WillByDefault(Return(cudaErrorNotReady));
+
+        // wait for watchdog poll to observe the collective
+        // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+
+        // simulate new replay submission
+        events_reset.store(true, std::memory_order_relaxed);
+
+        // wait for another watchdog poll -- should timeout
+        // NOLINTNEXTLINE(facebook-hte-BadCall-sleep_for)
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+      },
+      "Graph monitor: collective TIMED OUT for graph");
+}
+
 // ============================================================================
 // TENSOR LIFETIME TESTS IN GRAPH CAPTURE MODE
 // ============================================================================

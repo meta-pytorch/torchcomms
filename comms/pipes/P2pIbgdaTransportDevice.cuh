@@ -2,18 +2,19 @@
 
 #pragma once
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 
+#include <device/doca_gpunetio_dev_verbs_counter.cuh>
 #include <device/doca_gpunetio_dev_verbs_onesided.cuh>
 
 #include "comms/pipes/DocaVerbsUtils.cuh"
 #include "comms/pipes/IbgdaBuffer.h"
+#include "comms/pipes/ThreadGroup.cuh"
 #include "comms/pipes/Timeout.cuh"
 
 namespace comms::pipes {
-
-// IbgdaSignalOp and IbgdaCmpOp are defined in IbgdaBuffer.h
 
 /**
  * IbgdaWork - Wrapper for DOCA GPU verbs operation handle
@@ -22,7 +23,7 @@ namespace comms::pipes {
  * and a cleaner interface for tracking RDMA operation completion.
  *
  * The work handle represents a pending RDMA operation and can be used
- * with wait_local() to synchronize on local completion.
+ * with wait_local() to synchronize on local NIC completion.
  */
 struct IbgdaWork {
   doca_gpu_dev_verbs_ticket_t value{0};
@@ -37,42 +38,28 @@ struct IbgdaWork {
  * P2pIbgdaTransportDevice - Device-side per-peer RDMA transport handle
  *
  * Provides GPU-initiated RDMA operations using DOCA GPUNetIO high-level APIs.
- * Each instance represents a connection to a single peer and contains:
- * - GPU QP handle for issuing RDMA operations
- * - Local and remote signal buffer arrays for synchronization
- *
- * SIGNAL ID-BASED API:
- * ====================
- * All signal operations use a signal_id (integer index) to identify which
- * signal slot to operate on. This design is consistent with torchcomms
- * device API and allows multiple independent signal channels per peer.
- *
- * Signal buffer layout:
- * - localSignalBuf_: Base pointer to array of uint64_t signals
- * - remoteSignalBuf_: Base pointer to peer's signal array
- * - Each signal_id indexes into these arrays: buf[signal_id]
+ * Each instance represents a connection to a single peer and contains a
+ * GPU QP handle for issuing RDMA operations.
  *
  * EXECUTION SCOPE:
  * ================
  * Thread-Level APIs:
- *   put(), put_signal(), put_signal_non_adaptive(),
- *   signal(), signal_with_fence(), wait_local()
+ *   put(), wait_local(), fence()
  *   - Each thread posts its own independent RDMA operation
  *   - Supports multi-chunk transfers (size >
  * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE)
  *
  * Group-Level APIs (public):
  *   Group-local (data already partitioned per group):
- *     put_group_local(), put_signal_group_local()
+ *     put_group_local()
  *     - Accept a ThreadGroup and partition a single group's data chunk across
  *       group threads
  *     - All ThreadGroup sizes are supported (WARP, MULTIWARP, BLOCK, etc.)
- *     - group_size == 1: falls back to thread-level put() / put_signal()
+ *     - group_size == 1: falls back to thread-level put()
  *     - group_size > 1: uses put_group_impl() with manual WQE construction
- *     - The leader issues the fenced signal and broadcasts the ticket
  *
  *   Group-global (data shared across all groups):
- *     put_group_global(), put_signal_group_global()
+ *     put_group_global()
  *     - Accept a ThreadGroup and a global data buffer shared by all groups
  *     - First partitions data across groups (last group picks up remainder),
  *       then calls the group-local API on each group's chunk
@@ -84,6 +71,10 @@ struct IbgdaWork {
  *   - Leader reserves WQE slots, broadcasts base index, all threads prepare
  *     WQEs, leader marks ready and rings doorbell
  */
+// Default timeout for internal synchronous waits (e.g., reset_signal).
+// 10 billion cycles ≈ 5-7 seconds on typical GPU clocks (~1.5-1.8 GHz).
+inline constexpr uint64_t kDefaultDeviceTimeoutCycles = 10'000'000'000ULL;
+
 class P2pIbgdaTransportDevice {
  public:
   P2pIbgdaTransportDevice() = default;
@@ -92,103 +83,29 @@ class P2pIbgdaTransportDevice {
    * Constructor
    *
    * @param qp GPU QP handle for RDMA operations
-   * @param localSignalBuf Base pointer to local signal buffer array
-   * @param remoteSignalBuf Base pointer to remote signal buffer array
-   * @param numSignals Number of signal slots in the buffer arrays
    */
   __host__ __device__ P2pIbgdaTransportDevice(
       doca_gpu_dev_verbs_qp* qp,
-      const IbgdaLocalBuffer& localSignalBuf,
-      const IbgdaRemoteBuffer& remoteSignalBuf,
-      int numSignals = 1)
-      : qp_(qp),
-        localSignalBuf_(localSignalBuf),
-        remoteSignalBuf_(remoteSignalBuf),
-        numSignals_(numSignals) {
-    // Sanity check: numSignals must be positive
-    if (numSignals <= 0) {
-#ifdef __CUDA_ARCH__
-      printf(
-          "P2pIbgdaTransportDevice: invalid numSignals (%d), must be > 0\n",
-          numSignals);
-      __trap();
-#endif
-    }
-  }
+      doca_gpu_dev_verbs_qp* companionQp = nullptr,
+      NetworkLKey sinkLkey = NetworkLKey{})
+      : qp_(qp), companionQp_(companionQp), sinkLkey_(sinkLkey) {}
 
   /**
-   * put_signal - RDMA Write with fenced atomic signal (adaptive routing safe)
+   * put - RDMA Write without signal (non-blocking)
    *
-   * Performs an RDMA Write from local buffer to remote buffer, followed by
-   * an atomic fetch-add on the remote signal buffer at signal_id with the
-   * IBV_SEND_FENCE flag set on the signal's WQE. The fence flag instructs
-   * the NIC to complete all prior WQEs (the data write) before processing
-   * the signal WQE, providing adaptive-routing safety without GPU-side CQ
-   * polling overhead — the fence is handled entirely in NIC hardware.
-   *
-   * MEMORY ORDERING:
-   * The IBV_SEND_FENCE flag (DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_FENCE) on the
-   * signal WQE ensures the NIC does not begin processing the atomic signal
-   * until all prior posted WQEs have completed. This is a NIC-level
-   * ordering guarantee that avoids the need for GPU-side CQ polling.
-   *
-   * PERFORMANCE NOTE:
-   * This avoids the GPU-side CQ polling overhead of wait_local(), making it
-   * faster than the old put + wait_local + signal approach while maintaining
-   * the same correctness guarantees. Use put_signal_non_adaptive() only for
-   * networks with deterministic routing where no fence is needed.
+   * Performs an RDMA Write from local buffer to remote buffer.
+   * Returns immediately with a work handle for optional completion tracking.
    *
    * @param localBuf Source buffer in local GPU memory
    * @param remoteBuf Destination buffer in remote GPU memory
    * @param nbytes Number of bytes to transfer
-   * @param signalId Index into the signal buffer array
-   * @param signalVal Value to atomically add to remote signal buffer
-   *
-   * @return IbgdaWork for tracking signal completion via wait_local()
-   */
-  __device__ IbgdaWork put_signal(
-      const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes,
-      int signalId,
-      uint64_t signalVal) {
-    checkSignalId(signalId, "put_signal");
-    put(localBuf, remoteBuf, nbytes);
-    return signal_with_fence(signalId, signalVal);
-  }
-
-  /**
-   * put_signal_non_adaptive - RDMA Write with atomic signal as single operation
-   *
-   * Performs an RDMA Write from local buffer to remote buffer, followed by
-   * an atomic fetch-add on the remote signal buffer at signal_id as a single
-   * fused operation. Returns immediately with a ticket for completion tracking.
-   *
-   * WARNING - ADAPTIVE ROUTING:
-   * On networks with adaptive routing, the data and signal may take different
-   * paths and the signal could arrive before the data, causing the receiver
-   * to read stale data. Use put_signal() for networks with adaptive routing.
-   *
-   * MEMORY ORDERING:
-   * Relies on the NIC's internal ordering guarantees for compound operations.
-   * The atomic signal is issued after the data write at the sender NIC, but
-   * arrival order at the receiver depends on network path consistency.
-   *
-   * @param localBuf Source buffer in local GPU memory
-   * @param remoteBuf Destination buffer in remote GPU memory
-   * @param nbytes Number of bytes to transfer
-   * @param signalId Index into the signal buffer array
-   * @param signalVal Value to atomically add to remote signal buffer
    *
    * @return IbgdaWork for tracking local completion via wait_local()
    */
-  __device__ IbgdaWork put_signal_non_adaptive(
-      const IbgdaLocalBuffer& localBuf,
+  __device__ IbgdaWork
+  put(const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes,
-      int signalId,
-      uint64_t signalVal) {
-    checkSignalId(signalId, "put_signal_non_adaptive");
+      std::size_t nbytes) {
     doca_gpu_dev_verbs_ticket_t ticket;
 
     doca_gpu_dev_verbs_addr localAddr = {
@@ -197,26 +114,12 @@ class P2pIbgdaTransportDevice {
     doca_gpu_dev_verbs_addr remoteAddr = {
         .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
         .key = remoteBuf.rkey.value};
-    doca_gpu_dev_verbs_addr localSignalAddr = {
-        .addr = reinterpret_cast<uint64_t>(getLocalSignalPtr(signalId)),
-        .key = localSignalBuf_.lkey.value};
-    doca_gpu_dev_verbs_addr remoteSignalAddr = {
-        .addr = reinterpret_cast<uint64_t>(getRemoteSignalPtr(signalId)),
-        .key = remoteSignalBuf_.rkey.value};
 
-    doca_gpu_dev_verbs_put_signal<
-        DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
+    doca_gpu_dev_verbs_put<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
         DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
-        qp_,
-        remoteAddr,
-        localAddr,
-        nbytes,
-        remoteSignalAddr,
-        localSignalAddr,
-        signalVal,
-        &ticket);
+        qp_, remoteAddr, localAddr, nbytes, &ticket);
 
     return IbgdaWork(ticket);
   }
@@ -264,77 +167,6 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
-   * put_signal_group_local - Group-collaborative RDMA Write with fenced signal
-   *                          (group-local data, adaptive routing safe)
-   *
-   * Accepts a ThreadGroup and a single data chunk that belongs to this group,
-   * partitions the data across group threads, issues collaborative RDMA
-   * writes, and the leader issues a fenced atomic signal. The signal ticket
-   * is broadcast to all threads via group.broadcast<uint64_t>().
-   *
-   * All ThreadGroup sizes are supported:
-   * - group_size == 1: falls back to thread-level put() + signal_with_fence()
-   * - group_size > 1: uses put_group_impl(), leader issues fenced signal,
-   *   and broadcasts the ticket to all threads
-   *
-   * REQUIREMENTS:
-   * - All threads in the group must call this function collectively
-   *
-   * MEMORY ORDERING:
-   * The leader uses signal_with_fence() which sets IBV_SEND_FENCE on the
-   * signal WQE, ensuring the NIC completes all prior data WQEs before
-   * processing the signal. This is adaptive routing safe.
-   *
-   * @param group ThreadGroup describing the calling group
-   * @param localBuf Source buffer in local GPU memory (this group's chunk)
-   * @param remoteBuf Destination buffer in remote GPU memory (this group's
-   * chunk)
-   * @param nbytes Number of bytes to transfer (partitioned across lanes)
-   * @param signalId Index into the signal buffer array
-   * @param signalVal Value to atomically add to remote signal buffer
-   *
-   * @return IbgdaWork for tracking signal completion via wait_local()
-   *         (same ticket broadcast to all threads in group)
-   */
-  __device__ IbgdaWork put_signal_group_local(
-      ThreadGroup& group,
-      const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes,
-      int signalId,
-      uint64_t signalVal) {
-    checkSignalId(signalId, "put_signal_group_local");
-
-    std::size_t chunkSize = nbytes / group.group_size;
-    std::size_t offset = group.thread_id_in_group * chunkSize;
-    // Last thread picks up any remainder bytes
-    std::size_t laneBytes = (group.thread_id_in_group == group.group_size - 1)
-        ? (nbytes - offset)
-        : chunkSize;
-
-    IbgdaLocalBuffer laneBuf = localBuf.subBuffer(offset);
-    IbgdaRemoteBuffer laneRemoteBuf = remoteBuf.subBuffer(offset);
-
-    if (group.group_size == 1) {
-      put(laneBuf, laneRemoteBuf, laneBytes);
-      return signal_with_fence(signalId, signalVal);
-    }
-
-    // Group-collaborative put (put_group_impl already syncs at the end)
-    put_group_impl(group, laneBuf, laneRemoteBuf, laneBytes);
-
-    // Leader issues fenced signal, broadcast ticket to all threads
-    uint64_t signalTicket = 0;
-    if (group.is_leader()) {
-      IbgdaWork signalWork = signal_with_fence(signalId, signalVal);
-      signalTicket = signalWork.value;
-    }
-    signalTicket = group.broadcast<uint64_t>(signalTicket);
-
-    return IbgdaWork(signalTicket);
-  }
-
-  /**
    * put_group_global - Group-collaborative RDMA Write (global data)
    *
    * Accepts a ThreadGroup and a global data buffer shared by all groups.
@@ -372,42 +204,113 @@ class P2pIbgdaTransportDevice {
     return put_group_local(group, groupLocalBuf, groupRemoteBuf, groupBytes);
   }
 
+  // ===========================================================================
+  // Compound Put + Signal APIs (caller-provided signal buffers)
+  // ===========================================================================
+
   /**
-   * put_signal_group_global - Group-collaborative RDMA Write with fenced signal
-   *                           (global data, adaptive routing safe)
+   * put_signal - RDMA Write with fenced atomic signal (adaptive routing safe)
    *
-   * Accepts a ThreadGroup and a global data buffer shared by all groups.
-   * Partitions the data across groups (last group picks up remainder),
-   * then calls put_signal_group_local() on each group's chunk.
+   * Compound operation: data write + fenced atomic signal in a single call.
+   * The NIC fence ensures the data write completes before the signal is sent.
+   * No wait_local() is needed between put and signal.
    *
-   * Each group's call to put_signal_group_local() issues an atomic fetch-add
-   * signal, so the total accumulated signal is (total_groups * signalVal).
+   * @param localBuf Source buffer in local GPU memory
+   * @param remoteBuf Destination buffer in remote GPU memory
+   * @param nbytes Number of bytes to transfer
+   * @param remoteSignalBuf Remote signal buffer (caller-owned)
+   * @param signalId Index into the remote signal buffer (uint64_t units)
+   * @param signalVal Value to atomically add to remote signal buffer
+   * @return IbgdaWork for tracking signal completion via wait_local()
+   */
+  __device__ IbgdaWork put_signal(
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& remoteSignalBuf,
+      int signalId,
+      uint64_t signalVal) {
+    put(localBuf, remoteBuf, nbytes);
+    return signal_remote_with_fence(remoteSignalBuf, signalId, signalVal);
+  }
+
+  /**
+   * put_signal_group_local - Group-collaborative RDMA Write with fenced signal
+   * (group-local data, adaptive routing safe)
    *
-   * REQUIREMENTS:
-   * - All threads in the group must call this function collectively
+   * Partitions data across group threads, issues collaborative RDMA writes,
+   * then the leader issues a fenced atomic signal. The signal ticket is
+   * broadcast to all threads.
    *
    * @param group ThreadGroup describing the calling group
-   * @param localBuf Source buffer in local GPU memory (global, shared by all
-   *   groups)
-   * @param remoteBuf Destination buffer in remote GPU memory (global, shared
-   *   by all groups)
-   * @param nbytes Total number of bytes to transfer (partitioned across groups,
-   *   then across lanes within each group)
-   * @param signalId Index into the signal buffer array
-   * @param signalVal Value to atomically add to remote signal buffer (per
-   * group)
-   *
+   * @param localBuf Source buffer in local GPU memory (this group's chunk)
+   * @param remoteBuf Destination buffer in remote GPU memory (this group's
+   * chunk)
+   * @param nbytes Number of bytes to transfer (partitioned across lanes)
+   * @param remoteSignalBuf Remote signal buffer (caller-owned)
+   * @param signalId Index into the remote signal buffer
+   * @param signalVal Value to atomically add to remote signal buffer
    * @return IbgdaWork for tracking signal completion via wait_local()
-   *         (same ticket broadcast to all threads in group)
+   */
+  __device__ IbgdaWork put_signal_group_local(
+      ThreadGroup& group,
+      const IbgdaLocalBuffer& localBuf,
+      const IbgdaRemoteBuffer& remoteBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& remoteSignalBuf,
+      int signalId,
+      uint64_t signalVal) {
+    std::size_t chunkSize = nbytes / group.group_size;
+    std::size_t offset = group.thread_id_in_group * chunkSize;
+    std::size_t laneBytes = (group.thread_id_in_group == group.group_size - 1)
+        ? (nbytes - offset)
+        : chunkSize;
+
+    IbgdaLocalBuffer laneBuf = localBuf.subBuffer(offset);
+    IbgdaRemoteBuffer laneRemoteBuf = remoteBuf.subBuffer(offset);
+
+    if (group.group_size == 1) {
+      put(laneBuf, laneRemoteBuf, laneBytes);
+      return signal_remote_with_fence(remoteSignalBuf, signalId, signalVal);
+    }
+
+    put_group_impl(group, laneBuf, laneRemoteBuf, laneBytes);
+
+    uint64_t signalTicket = 0;
+    if (group.is_leader()) {
+      IbgdaWork signalWork =
+          signal_remote_with_fence(remoteSignalBuf, signalId, signalVal);
+      signalTicket = signalWork.value;
+    }
+    signalTicket = group.broadcast<uint64_t>(signalTicket);
+    return IbgdaWork(signalTicket);
+  }
+
+  /**
+   * put_signal_group_global - Group-collaborative RDMA Write with fenced signal
+   * (global data, adaptive routing safe)
+   *
+   * Partitions data across groups, then calls put_signal_group_local().
+   * Each group issues an atomic fetch-add signal, so the total accumulated
+   * signal is (total_groups * signalVal).
+   *
+   * @param group ThreadGroup describing the calling group
+   * @param localBuf Source buffer (global, shared by all groups)
+   * @param remoteBuf Destination buffer (global, shared by all groups)
+   * @param nbytes Total bytes to transfer (partitioned across groups)
+   * @param remoteSignalBuf Remote signal buffer (caller-owned)
+   * @param signalId Index into the remote signal buffer
+   * @param signalVal Value to atomically add per group
+   * @return IbgdaWork for tracking signal completion via wait_local()
    */
   __device__ IbgdaWork put_signal_group_global(
       ThreadGroup& group,
       const IbgdaLocalBuffer& localBuf,
       const IbgdaRemoteBuffer& remoteBuf,
       std::size_t nbytes,
+      const IbgdaRemoteBuffer& remoteSignalBuf,
       int signalId,
       uint64_t signalVal) {
-    // Partition across groups; last group picks up remainder
     std::size_t chunkPerGroup = nbytes / group.total_groups;
     std::size_t groupOffset = group.group_id * chunkPerGroup;
     std::size_t groupBytes = (group.group_id == group.total_groups - 1)
@@ -418,125 +321,163 @@ class P2pIbgdaTransportDevice {
     IbgdaRemoteBuffer groupRemoteBuf = remoteBuf.subBuffer(groupOffset);
 
     return put_signal_group_local(
-        group, groupLocalBuf, groupRemoteBuf, groupBytes, signalId, signalVal);
+        group,
+        groupLocalBuf,
+        groupRemoteBuf,
+        groupBytes,
+        remoteSignalBuf,
+        signalId,
+        signalVal);
   }
 
-  /**
-   * put - RDMA Write without signal (non-blocking)
-   *
-   * Performs an RDMA Write from local buffer to remote buffer.
-   * Returns immediately with a work handle for optional completion tracking.
-   *
-   * @param localBuf Source buffer in local GPU memory
-   * @param remoteBuf Destination buffer in remote GPU memory
-   * @param nbytes Number of bytes to transfer
-   *
-   * @return IbgdaWork for tracking local completion via wait_local()
-   */
-  __device__ IbgdaWork
-  put(const IbgdaLocalBuffer& localBuf,
-      const IbgdaRemoteBuffer& remoteBuf,
-      std::size_t nbytes) {
-    doca_gpu_dev_verbs_ticket_t ticket;
-
-    doca_gpu_dev_verbs_addr localAddr = {
-        .addr = reinterpret_cast<uint64_t>(localBuf.ptr),
-        .key = localBuf.lkey.value};
-    doca_gpu_dev_verbs_addr remoteAddr = {
-        .addr = reinterpret_cast<uint64_t>(remoteBuf.ptr),
-        .key = remoteBuf.rkey.value};
-
-    doca_gpu_dev_verbs_put<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
-        DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
-        qp_, remoteAddr, localAddr, nbytes, &ticket);
-
-    return IbgdaWork(ticket);
-  }
+  // ===========================================================================
+  // Local Signal Operations (caller-provided local signal buffer)
+  // ===========================================================================
 
   /**
-   * signal - Send atomic signal only
+   * wait_signal - Wait for remote signal arrival
    *
-   * Performs an atomic operation on the remote signal buffer at the
-   * specified signal_id. Useful for pure synchronization.
+   * Spin-waits on a local signal buffer at signalId until (value >= expected).
+   * Provides "acquire" semantics — once the signal is seen, all prior remote
+   * writes are visible.
    *
-   * @param signalId Index into the signal buffer array
-   * @param signalVal Value to use for the atomic operation
-   * @param op Signal operation type (ADD or SET). Defaults to ADD.
-   *           Note: SET is not yet supported by DOCA GPUNetIO.
-   *
-   * @return IbgdaWork for tracking local completion via wait_local()
+   * @param localSignalBuf Local signal buffer (caller-owned)
+   * @param signalId Index into the signal buffer (uint64_t units)
+   * @param expected Value to wait for (uses >= comparison)
+   * @param timeout Optional timeout (default: disabled, infinite wait)
    */
-  __device__ IbgdaWork signal(
+  __device__ void wait_signal(
+      const IbgdaLocalBuffer& localSignalBuf,
       int signalId,
-      uint64_t signalVal,
-      IbgdaSignalOp op = IbgdaSignalOp::ADD) {
-    checkSignalId(signalId, "signal");
-    // Only ADD is supported by DOCA GPUNetIO currently.
-    // Trap if caller passes SET (or any future unsupported operation).
-    if (op != IbgdaSignalOp::ADD) {
-      printf(
-          "P2pIbgdaTransportDevice::signal: unsupported IbgdaSignalOp (%d), only ADD is supported\n",
-          static_cast<int>(op));
-      __trap();
+      uint64_t expected,
+      const Timeout& timeout = Timeout()) {
+    volatile uint64_t* sig =
+        static_cast<volatile uint64_t*>(localSignalBuf.ptr) + signalId;
+    while (*sig < expected) {
+      TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
+          timeout,
+          "wait_signal(GE): signalId=%d, expected>=%llu, current=%llu",
+          signalId,
+          static_cast<unsigned long long>(expected),
+          static_cast<unsigned long long>(*sig));
     }
+    __threadfence_system();
+  }
+
+  /**
+   * read_signal - Read current signal value (non-blocking)
+   *
+   * @param localSignalBuf Local signal buffer (caller-owned)
+   * @param signalId Index into the signal buffer (uint64_t units)
+   * @return Current signal value
+   */
+  __device__ uint64_t
+  read_signal(const IbgdaLocalBuffer& localSignalBuf, int signalId) const {
+    volatile uint64_t* sig =
+        static_cast<volatile uint64_t*>(localSignalBuf.ptr) + signalId;
+    return *sig;
+  }
+
+  /**
+   * reset_signal - Reset a remote signal slot to zero via RDMA inline write
+   *
+   * Uses RDMA inline write to set the remote signal to zero. Includes a
+   * fence before the write to ensure all prior RDMA operations have been
+   * sent, and waits for the write to complete before returning.
+   *
+   * @param remoteSignalBuf Remote signal buffer (caller-owned)
+   * @param signalId Index into the signal buffer (uint64_t units)
+   */
+  __device__ void reset_signal(
+      const IbgdaRemoteBuffer& remoteSignalBuf,
+      int signalId) {
+    fence();
 
     doca_gpu_dev_verbs_ticket_t ticket;
+    doca_gpu_dev_verbs_addr remoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(
+            static_cast<uint64_t*>(remoteSignalBuf.ptr) + signalId),
+        .key = remoteSignalBuf.rkey.value};
 
-    doca_gpu_dev_verbs_addr localSignalAddr = {
-        .addr = reinterpret_cast<uint64_t>(getLocalSignalPtr(signalId)),
-        .key = localSignalBuf_.lkey.value};
-    doca_gpu_dev_verbs_addr remoteSignalAddr = {
-        .addr = reinterpret_cast<uint64_t>(getRemoteSignalPtr(signalId)),
-        .key = remoteSignalBuf_.rkey.value};
+    doca_gpu_dev_verbs_p<
+        uint64_t,
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
+        qp_, remoteAddr, static_cast<uint64_t>(0), &ticket);
+
+    Timeout timeout(kDefaultDeviceTimeoutCycles);
+    timeout.start();
+    wait_local(IbgdaWork(ticket), timeout);
+  }
+
+  // ===========================================================================
+  // Remote Signal / Counter Operations (for window-owned buffers)
+  // ===========================================================================
+  //
+  // These methods use this transport's QP but caller-provided buffer info.
+  // The window owns the signal/counter buffers; the transport provides the QP.
+
+  /**
+   * signal_remote - RDMA atomic to a caller-provided remote signal buffer
+   *
+   * Uses this transport's main QP to post an RDMA atomic fetch-add to
+   * an arbitrary remote buffer. The caller provides the remote buffer info
+   * (rkey + addr) — typically from the window's IBGDA signal inbox.
+   *
+   * @param remoteBuf Remote signal buffer (window-owned, RDMA-registered)
+   * @param signalId Index into the remote signal buffer (uint64_t units)
+   * @param value Value to atomically add
+   * @return IbgdaWork for tracking local completion
+   */
+  __device__ IbgdaWork signal_remote(
+      const IbgdaRemoteBuffer& remoteBuf,
+      int signalId,
+      uint64_t value) {
+    doca_gpu_dev_verbs_ticket_t ticket;
+
+    doca_gpu_dev_verbs_addr remoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(
+            static_cast<uint64_t*>(remoteBuf.ptr) + signalId),
+        .key = remoteBuf.rkey.value};
+    doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = sinkLkey_.value};
 
     doca_gpu_dev_verbs_signal<
         DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
-        qp_, remoteSignalAddr, localSignalAddr, signalVal, &ticket);
+        qp_, remoteAddr, sinkAddr, value, &ticket);
 
     return IbgdaWork(ticket);
   }
 
   /**
-   * signal_with_fence - Send atomic signal with NIC-level fence
+   * signal_remote_with_fence - RDMA atomic with NIC-level fence to remote
+   * buffer
    *
-   * Performs an atomic fetch-add on the remote signal buffer at the
-   * specified signal_id, with the IBV_SEND_FENCE flag set on the WQE.
-   * The fence flag instructs the NIC to complete all prior posted WQEs
-   * before processing this atomic operation.
+   * Same as signal_remote() but with IBV_SEND_FENCE flag on the WQE.
+   * The NIC will complete all prior WQEs before processing this atomic.
    *
-   * This provides the same ordering guarantee as wait_local() + signal()
-   * but avoids the GPU-side CQ polling overhead. The fence is handled
-   * entirely by the NIC hardware.
-   *
-   * @param signalId Index into the signal buffer array
-   * @param signalVal Value to use for the atomic operation
-   *
-   * @return IbgdaWork for tracking local completion via wait_local()
+   * @param remoteBuf Remote signal buffer (window-owned, RDMA-registered)
+   * @param signalId Index into the remote signal buffer (uint64_t units)
+   * @param value Value to atomically add
+   * @return IbgdaWork for tracking local completion
    */
-  __device__ IbgdaWork signal_with_fence(int signalId, uint64_t signalVal) {
-    checkSignalId(signalId, "signal_with_fence");
+  __device__ IbgdaWork signal_remote_with_fence(
+      const IbgdaRemoteBuffer& remoteBuf,
+      int signalId,
+      uint64_t value) {
+    doca_gpu_dev_verbs_addr remoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(
+            static_cast<uint64_t*>(remoteBuf.ptr) + signalId),
+        .key = remoteBuf.rkey.value};
+    doca_gpu_dev_verbs_addr sinkAddr = {.addr = 0, .key = sinkLkey_.value};
 
-    doca_gpu_dev_verbs_ticket_t ticket;
-
-    doca_gpu_dev_verbs_addr localSignalAddr = {
-        .addr = reinterpret_cast<uint64_t>(getLocalSignalPtr(signalId)),
-        .key = localSignalBuf_.lkey.value};
-    doca_gpu_dev_verbs_addr remoteSignalAddr = {
-        .addr = reinterpret_cast<uint64_t>(getRemoteSignalPtr(signalId)),
-        .key = remoteSignalBuf_.rkey.value};
-
-    // Reserve a WQE slot and prepare an atomic fetch-add with fence flag
     uint64_t wqe_idx = doca_gpu_dev_verbs_reserve_wq_slots<
         DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(qp_, 1);
 
     struct doca_gpu_dev_verbs_wqe* wqe_ptr =
         doca_gpu_dev_verbs_get_wqe_ptr(qp_, wqe_idx);
 
-    // Use FENCE flag: NIC will complete all prior WQEs before this one
     doca_gpu_dev_verbs_wqe_prepare_atomic(
         qp_,
         wqe_ptr,
@@ -545,12 +486,12 @@ class P2pIbgdaTransportDevice {
         static_cast<doca_gpu_dev_verbs_wqe_ctrl_flags>(
             DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_CQ_UPDATE |
             DOCA_GPUNETIO_IB_MLX5_WQE_CTRL_FENCE),
-        remoteSignalAddr.addr,
-        remoteSignalAddr.key,
-        localSignalAddr.addr,
-        localSignalAddr.key,
+        remoteAddr.addr,
+        remoteAddr.key,
+        sinkAddr.addr,
+        sinkAddr.key,
         sizeof(uint64_t),
-        signalVal,
+        value,
         0);
 
     doca_gpu_dev_verbs_mark_wqes_ready<
@@ -565,191 +506,159 @@ class P2pIbgdaTransportDevice {
   }
 
   /**
+   * put_signal_counter_remote - Data write + remote signal + local counter
+   *
+   * Compound operation using main QP (data + signal) and companion QP
+   * (counter):
+   * 1. Main QP: RDMA Write data to remote buffer
+   * 2. Main QP: RDMA Atomic fetch-add to remote signal buffer
+   * 3. Companion QP: WAIT on main QP completion, then RDMA Atomic fetch-add
+   *    to LOCAL counter buffer (loopback for NIC completion tracking)
+   *
+   * All buffer addresses are caller-provided (window-owned).
+   *
+   * @param localDataBuf Source data buffer (local GPU memory)
+   * @param remoteDataBuf Destination data buffer (remote GPU memory)
+   * @param nbytes Number of data bytes to transfer
+   * @param remoteSignalBuf Remote signal buffer (window-owned)
+   * @param signalId Signal slot index
+   * @param signalVal Signal value to atomically add
+   * @param localCounterBuf Local counter buffer (window-owned)
+   * @param counterId Counter slot index
+   * @param counterVal Counter value to atomically add (typically 1)
+   */
+  __device__ void put_signal_counter_remote(
+      const IbgdaLocalBuffer& localDataBuf,
+      const IbgdaRemoteBuffer& remoteDataBuf,
+      std::size_t nbytes,
+      const IbgdaRemoteBuffer& remoteSignalBuf,
+      int signalId,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& localCounterBuf,
+      int counterId,
+      uint64_t counterVal) {
+    doca_gpu_dev_verbs_addr laddr = {
+        .addr = reinterpret_cast<uint64_t>(localDataBuf.ptr),
+        .key = localDataBuf.lkey.value};
+    doca_gpu_dev_verbs_addr raddr = {
+        .addr = reinterpret_cast<uint64_t>(remoteDataBuf.ptr),
+        .key = remoteDataBuf.rkey.value};
+
+    doca_gpu_dev_verbs_addr sigRemoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(
+            static_cast<uint64_t*>(remoteSignalBuf.ptr) + signalId),
+        .key = remoteSignalBuf.rkey.value};
+    doca_gpu_dev_verbs_addr sigSinkAddr = {.addr = 0, .key = sinkLkey_.value};
+
+    doca_gpu_dev_verbs_addr counterRemoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(
+            static_cast<uint64_t*>(localCounterBuf.ptr) + counterId),
+        .key = localCounterBuf.lkey.value};
+    doca_gpu_dev_verbs_addr counterSinkAddr = {
+        .addr = 0, .key = sinkLkey_.value};
+
+    doca_gpu_dev_verbs_put_signal_counter<
+        DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
+        qp_,
+        raddr,
+        laddr,
+        nbytes,
+        sigRemoteAddr,
+        sigSinkAddr,
+        signalVal,
+        companionQp_,
+        counterRemoteAddr,
+        counterSinkAddr,
+        counterVal);
+  }
+
+  /**
+   * signal_counter_remote - Remote signal + local counter (no data write)
+   *
+   * Compound operation: signal a remote peer + track local completion via
+   * counter. Same as put_signal_counter_remote but without the data write.
+   *
+   * @param remoteSignalBuf Remote signal buffer (window-owned)
+   * @param signalId Signal slot index
+   * @param signalVal Signal value to atomically add
+   * @param localCounterBuf Local counter buffer (window-owned)
+   * @param counterId Counter slot index
+   * @param counterVal Counter value to atomically add (typically 1)
+   */
+  __device__ void signal_counter_remote(
+      const IbgdaRemoteBuffer& remoteSignalBuf,
+      int signalId,
+      uint64_t signalVal,
+      const IbgdaLocalBuffer& localCounterBuf,
+      int counterId,
+      uint64_t counterVal) {
+    doca_gpu_dev_verbs_addr sigRemoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(
+            static_cast<uint64_t*>(remoteSignalBuf.ptr) + signalId),
+        .key = remoteSignalBuf.rkey.value};
+    doca_gpu_dev_verbs_addr sigSinkAddr = {.addr = 0, .key = sinkLkey_.value};
+
+    doca_gpu_dev_verbs_addr counterRemoteAddr = {
+        .addr = reinterpret_cast<uint64_t>(
+            static_cast<uint64_t*>(localCounterBuf.ptr) + counterId),
+        .key = localCounterBuf.lkey.value};
+    doca_gpu_dev_verbs_addr counterSinkAddr = {
+        .addr = 0, .key = sinkLkey_.value};
+
+    doca_gpu_dev_verbs_signal_counter<
+        DOCA_GPUNETIO_VERBS_SIGNAL_OP_ADD,
+        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(
+        qp_,
+        sigRemoteAddr,
+        sigSinkAddr,
+        signalVal,
+        companionQp_,
+        counterRemoteAddr,
+        counterSinkAddr,
+        counterVal);
+  }
+
+  /**
    * wait_local - Wait for local completion of an RDMA operation
    *
    * Blocks until the RDMA operation identified by the work handle has completed
-   * locally. This means the data has been handed off to the remote NIC, but
-   * does NOT guarantee arrival at the remote HBM.
+   * locally. This means the data has been handed off to the NIC, but does NOT
+   * guarantee arrival at the remote HBM.
    *
-   * For remote completion guarantee, use wait_signal() on the receiver side.
+   * Unlike fence(), this polls the CQ directly at the work handle's WQE index
+   * without posting a NOP WQE, making it cheaper for single-operation waits.
    *
-   * @param work Work handle returned from put_signal(), put(), or signal()
+   * Supports an optional timeout to prevent infinite hangs. When a timeout
+   * is provided and expires, the kernel traps with an error message.
+   *
+   * @param work Work handle returned from put(), signal_remote(), etc.
+   * @param timeout Optional timeout (default: no timeout, infinite wait)
    */
-  __device__ void wait_local(const IbgdaWork& work) {
-    doca_gpu_dev_verbs_wait<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp_, work.value);
-  }
-
-  /**
-   * wait_signal - Wait for remote signal arrival
-   *
-   * Spin-waits on the local signal buffer at signal_id until the comparison
-   * condition is satisfied. This provides "acquire" semantics - once the
-   * signal is seen, all prior remote writes are visible.
-   *
-   * An optional Timeout parameter controls how long to wait before trapping.
-   * The default Timeout() (disabled) waits indefinitely with zero overhead.
-   * When enabled, the timeout adds one well-predicted branch per spin
-   * iteration. On expiry, prints a diagnostic message and calls __trap().
-   *
-   * IMPORTANT: The caller must call timeout.start() before calling this
-   * method. The Timeout object captures the GPU clock at start() and
-   * checks against the precomputed deadline in each spin iteration.
-   *
-   * @param signalId Index into the signal buffer array
-   * @param cmp Comparison operation to use
-   * @param value Value to compare against
-   * @param timeout Timeout config (default: disabled, infinite wait)
-   */
-  __device__ void wait_signal(
-      int signalId,
-      IbgdaCmpOp cmp,
-      uint64_t value,
-      const Timeout& timeout = Timeout()) {
-    checkSignalId(signalId, "wait_signal");
-    volatile uint64_t* sig =
-        reinterpret_cast<volatile uint64_t*>(getLocalSignalPtr(signalId));
-
-    switch (cmp) {
-      case IbgdaCmpOp::EQ:
-        while (*sig != value) {
+  __device__ void wait_local(
+      const IbgdaWork& work,
+      Timeout timeout = Timeout()) {
+    if (!timeout.isEnabled()) {
+      doca_gpu_dev_verbs_wait<
+          DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+          DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp_, work.value);
+    } else {
+      int status;
+      do {
+        status = doca_gpu_dev_verbs_poll_one_cq_at<
+            DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU>(
+            doca_gpu_dev_verbs_qp_get_cq_sq(qp_), work.value);
+        if (status == EBUSY) {
           TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
               timeout,
-              "wait_signal(EQ): signalId=%d, expected=%llu, current=%llu",
-              signalId,
-              static_cast<unsigned long long>(value),
-              static_cast<unsigned long long>(*sig));
+              "P2pIbgdaTransportDevice::wait_local timed out "
+              "(ticket=%llu)",
+              static_cast<unsigned long long>(work.value));
         }
-        break;
-      case IbgdaCmpOp::NE:
-        while (*sig == value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "wait_signal(NE): signalId=%d, unwanted=%llu, current=%llu",
-              signalId,
-              static_cast<unsigned long long>(value),
-              static_cast<unsigned long long>(*sig));
-        }
-        break;
-      case IbgdaCmpOp::LT:
-        while (*sig >= value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "wait_signal(LT): signalId=%d, threshold=%llu, current=%llu",
-              signalId,
-              static_cast<unsigned long long>(value),
-              static_cast<unsigned long long>(*sig));
-        }
-        break;
-      case IbgdaCmpOp::LE:
-        while (*sig > value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "wait_signal(LE): signalId=%d, threshold=%llu, current=%llu",
-              signalId,
-              static_cast<unsigned long long>(value),
-              static_cast<unsigned long long>(*sig));
-        }
-        break;
-      case IbgdaCmpOp::GT:
-        while (*sig <= value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "wait_signal(GT): signalId=%d, threshold=%llu, current=%llu",
-              signalId,
-              static_cast<unsigned long long>(value),
-              static_cast<unsigned long long>(*sig));
-        }
-        break;
-      case IbgdaCmpOp::GE:
-        while (*sig < value) {
-          TIMEOUT_TRAP_IF_EXPIRED_SINGLE(
-              timeout,
-              "wait_signal(GE): signalId=%d, expected>=%llu, current=%llu",
-              signalId,
-              static_cast<unsigned long long>(value),
-              static_cast<unsigned long long>(*sig));
-        }
-        break;
+      } while (status == EBUSY);
     }
-    __threadfence_system();
-  }
-
-  /**
-   * read_signal - Read current signal value
-   *
-   * Non-blocking read of the local signal buffer value at signal_id.
-   *
-   * @param signalId Index into the signal buffer array
-   * @return Current signal value
-   */
-  __device__ uint64_t read_signal(int signalId) const {
-    checkSignalId(signalId, "read_signal");
-    volatile uint64_t* sig =
-        reinterpret_cast<volatile uint64_t*>(getLocalSignalPtr(signalId));
-    return *sig;
-  }
-
-  /**
-   * reset_signal - Reset remote peer's signal buffer to zero
-   *
-   * Performs an RDMA write to reset the remote signal at signal_id to zero.
-   * This is a sender-side operation - only the sender should reset the signal
-   * after the receiver has consumed the data.
-   *
-   * ORDERING GUARANTEES:
-   * This function inserts fences before and after the reset to ensure correct
-   * ordering with other RDMA operations:
-   * - Pre-fence: Ensures all prior operations (e.g., put_signal) are processed
-   *   by the NIC before the reset is issued
-   * - Post-fence: Ensures the reset completes before any subsequent operations
-   *
-   * This prevents packet reordering issues where a reset could overtake prior
-   * operations on the network and arrive at the remote peer first.
-   *
-   * Typical flow:
-   * 1. Sender: put_signal() - write data and signal receiver
-   * 2. Receiver: wait_signal() - wait for signal and read data
-   * 3. Sender: reset_signal() - reset for next iteration (fenced)
-   *
-   * @param signalId Index into the signal buffer array
-   */
-  __device__ void reset_signal(int signalId) {
-    checkSignalId(signalId, "reset_signal");
-
-    // Fence before reset: ensure all prior operations are processed by NIC
-    fence();
-
-    // Prepare local signal value to write (0)
-    volatile uint64_t* localSig =
-        reinterpret_cast<volatile uint64_t*>(getLocalSignalPtr(signalId));
-    *localSig = 0;
-    __threadfence_system();
-
-    // Issue the reset RDMA write
-    doca_gpu_dev_verbs_ticket_t ticket;
-
-    doca_gpu_dev_verbs_addr localSignalAddr = {
-        .addr = reinterpret_cast<uint64_t>(getLocalSignalPtr(signalId)),
-        .key = localSignalBuf_.lkey.value};
-    doca_gpu_dev_verbs_addr remoteSignalAddr = {
-        .addr = reinterpret_cast<uint64_t>(getRemoteSignalPtr(signalId)),
-        .key = remoteSignalBuf_.rkey.value};
-
-    doca_gpu_dev_verbs_put<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO,
-        DOCA_GPUNETIO_VERBS_EXEC_SCOPE_THREAD>(
-        qp_, remoteSignalAddr, localSignalAddr, sizeof(uint64_t), &ticket);
-
-    // Wait for reset to complete locally
-    doca_gpu_dev_verbs_wait<
-        DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
-        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp_, ticket);
-
-    // Fence after reset: ensure reset is processed before subsequent operations
-    fence();
   }
 
   /**
@@ -757,8 +666,7 @@ class P2pIbgdaTransportDevice {
    *
    * Issues a NOP WQE and waits for it to complete. Since WQEs are processed
    * in order by the NIC, when the NOP completes, all prior WQEs have been
-   * processed. This is useful before reset_signal to ensure prior operations
-   * have been sent to the remote peer before the reset.
+   * processed.
    *
    * Note: This only ensures local NIC completion, not remote arrival.
    * For remote completion guarantees, use signal-based synchronization.
@@ -769,21 +677,8 @@ class P2pIbgdaTransportDevice {
         DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp_);
   }
 
-  // Getters for buffer info (useful for advanced operations)
-  __host__ __device__ const IbgdaLocalBuffer& getLocalSignalBuffer() const {
-    return localSignalBuf_;
-  }
-
-  __host__ __device__ const IbgdaRemoteBuffer& getRemoteSignalBuffer() const {
-    return remoteSignalBuf_;
-  }
-
   __host__ __device__ doca_gpu_dev_verbs_qp* getQp() const {
     return qp_;
-  }
-
-  __host__ __device__ int getNumSignals() const {
-    return numSignals_;
   }
 
  private:
@@ -796,7 +691,7 @@ class P2pIbgdaTransportDevice {
    * then the leader marks all WQEs ready and rings the doorbell.
    *
    * Per-lane parameters (laneBuf, laneRemoteBuf, laneBytes) should already
-   * be computed by the caller (put_group_local / put_signal_group_local).
+   * be computed by the caller (put_group_local).
    * Per-lane size constraint: laneBytes <=
    * DOCA_GPUNETIO_VERBS_MAX_TRANSFER_SIZE.
    *
@@ -861,41 +756,9 @@ class P2pIbgdaTransportDevice {
     return IbgdaWork(wqe_idx);
   }
 
-  /**
-   * Check signalId bounds and trap if out of range.
-   * Only active in device code for better debuggability.
-   */
-  __device__ void checkSignalId(int signalId, const char* funcName) const {
-    if (signalId < 0 || signalId >= numSignals_) {
-      printf(
-          "P2pIbgdaTransportDevice::%s: signalId (%d) out of range [0, %d)\n",
-          funcName,
-          signalId,
-          numSignals_);
-      __trap();
-    }
-  }
-
-  /**
-   * Get pointer to local signal at index
-   */
-  __host__ __device__ __forceinline__ void* getLocalSignalPtr(
-      int signalId) const {
-    return static_cast<uint64_t*>(localSignalBuf_.ptr) + signalId;
-  }
-
-  /**
-   * Get pointer to remote signal at index
-   */
-  __host__ __device__ __forceinline__ void* getRemoteSignalPtr(
-      int signalId) const {
-    return static_cast<uint64_t*>(remoteSignalBuf_.ptr) + signalId;
-  }
-
   doca_gpu_dev_verbs_qp* qp_{nullptr};
-  IbgdaLocalBuffer localSignalBuf_;
-  IbgdaRemoteBuffer remoteSignalBuf_;
-  int numSignals_{1};
+  doca_gpu_dev_verbs_qp* companionQp_{nullptr};
+  NetworkLKey sinkLkey_{};
 };
 
 } // namespace comms::pipes

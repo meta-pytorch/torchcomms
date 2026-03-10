@@ -19,9 +19,8 @@ class P2pIbgdaTransportDevice;
  */
 struct P2pIbgdaTransportBuildParams {
   doca_gpu_dev_verbs_qp* gpuQp{nullptr};
-  IbgdaLocalBuffer localSignalBuf;
-  IbgdaRemoteBuffer remoteSignalBuf;
-  int numSignals{1};
+  doca_gpu_dev_verbs_qp* companionGpuQp{nullptr};
+  NetworkLKey sinkLkey{};
 };
 
 /**

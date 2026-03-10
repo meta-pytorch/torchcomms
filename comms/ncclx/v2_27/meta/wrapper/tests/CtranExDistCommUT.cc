@@ -6,6 +6,7 @@
 
 #include <stdlib.h>
 #include "comms/ctran/CtranEx.h"
+#include "comms/ctran/regcache/RegCache.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/wrapper/CtranExComm.h"
@@ -20,7 +21,7 @@ class CtranExCommTest : public CtranExBaseTest {
   void SetUp() override {
     CtranExBaseTest::SetUp();
 
-    regCache_ = CtranMapperRegCache::getInstance();
+    regCache_ = RegCache::getInstance();
     ASSERT_NE(regCache_, nullptr);
   }
 
@@ -56,7 +57,7 @@ class CtranExCommTest : public CtranExBaseTest {
     return errs;
   }
 
-  std::shared_ptr<CtranMapperRegCache> regCache_{nullptr};
+  std::shared_ptr<RegCache> regCache_{nullptr};
 };
 
 TEST_F(CtranExCommTest, Initialized) {
@@ -316,7 +317,7 @@ INSTANTIATE_TEST_SUITE_P(
         ::testing::Values(kTestInPlace, kTestOutOfPlace),
         // concurrentColl
         ::testing::Values(true)),
-    [&](const testing::TestParamInfo<CtranExCommBroadcastFixture::ParamType>&
+    [&](const ::testing::TestParamInfo<CtranExCommBroadcastFixture::ParamType>&
             info) {
       return std::to_string(std::get<0>(info.param)) + "int_" +
           testInPlaceTypeToStr(std::get<1>(info.param)) + "_concurrentColl_" +

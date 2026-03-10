@@ -344,23 +344,54 @@ void TorchCommGloo::init(
       std::make_shared<::gloo::rendezvous::Context>(rank_, comm_size_);
   context->setTimeout(options.timeout);
 
-  auto store = options.store;
-  if (!store) {
-    store = StoreManager::get().createPrefixedStore(
-        TorchCommGloo::kBackendName, name, options.timeout);
+  // If the caller sets the "persistent_store" hint to true, the store
+  // is used directly without duping.  Defaults to false.
+  bool persistentStore = kDefaultPersistentStore;
+  if (options.hints.contains("persistent_store")) {
+    persistentStore = string_to_bool(options.hints.at("persistent_store"));
+  }
+  // bootstrapStore keeps the bootstrap TCPStore alive until all ranks
+  // have finished the port exchange inside dupPrefixStore.  We release
+  // it after a barrier below.
+  c10::intrusive_ptr<c10d::Store> bootstrapStore;
+
+  if (options.store) {
+    if (persistentStore) {
+      // Caller guarantees the store will outlive the communicator —
+      // use it directly without duping.
+      store_ = options.store;
+    } else {
+      // Dup so we don't hold on to the caller's store.
+      bootstrapStore = options.store;
+      store_ = dupPrefixStore(name_, bootstrapStore, options.timeout);
+    }
+  } else {
+    // No store provided — create a bootstrap store on MASTER_PORT,
+    // dup it so we don't hold the port for the communicator's
+    // lifetime, and wrap with a prefix to avoid key collisions.
+    bootstrapStore = createPrefixStore(name_, options.timeout);
+    store_ = dupPrefixStore(name_, bootstrapStore, options.timeout);
   }
 
   if (rank_ == 0) {
-    int64_t initCount = store->add("init_count", 1);
+    int64_t initCount = store_->add("init_count", 1);
     TORCH_INTERNAL_ASSERT(
         initCount == 1, "detected multiple communicators on same store!");
   }
 
-  auto connectStore = std::make_shared<GlooStore>(store);
+  auto connectStore = std::make_shared<GlooStore>(store_);
   context->connectFullMesh(connectStore, gloo_device);
 
   context_ = std::move(context);
-  store_ = std::move(store);
+
+  // Barrier to ensure all ranks have finished the store exchange,
+  // then release the bootstrap store so MASTER_PORT is freed.
+  {
+    gloo::BarrierOptions opts(context_);
+    opts.setTimeout(options.timeout);
+    gloo::barrier(opts);
+  }
+  bootstrapStore.reset();
 
   TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
@@ -1652,6 +1683,7 @@ std::shared_ptr<TorchCommBackend> TorchCommGloo::split(
 
   CommOptions new_options = options;
   new_options.store = new_store;
+  new_options.hints["persistent_store"] = "true";
 
   new_torchcomm->init(device_, new_name, new_options);
 

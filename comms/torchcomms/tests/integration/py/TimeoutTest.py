@@ -40,7 +40,7 @@ def _run_eager_timeout_scenario() -> None:
         device,
         name="eager_timeout_subprocess_comm",
         abort_process_on_timeout_or_error=True,
-        timeout=timedelta(milliseconds=1),
+        timeout=timedelta(seconds=1),
     )
 
     if rank == 0:
@@ -66,7 +66,7 @@ def _run_eager_timeout_after_success_scenario() -> None:
         device,
         name="eager_timeout_after_success_subprocess_comm",
         abort_process_on_timeout_or_error=True,
-        timeout=timedelta(milliseconds=1),
+        timeout=timedelta(seconds=1),
     )
 
     # First barrier: all ranks participate, should succeed.
@@ -191,8 +191,7 @@ class TestTimeout(CudaGraphTestBase, FatalStateTestMixin):
         with self.create_comms(1):
             pass
 
-        env = self.make_subprocess_env(sentinel_var)
-        result = self.run_subprocess(env)
+        result = self.run_subprocess(sentinel_var)
 
         rank, _ = get_rank_and_size()
         if rank != 0:
