@@ -5,6 +5,7 @@
  ************************************************************************/
 
 #include "comm.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "info.h"
 #include "bootstrap.h"
 #define ENABLE_TIMER 0
@@ -115,7 +116,9 @@ ncclResult_t ncclTransportCheckP2pType(struct ncclComm* comm, bool* isAllDirectP
   }
   *isAllDirectP2p = supportFlag;
   *directMode = directFlag;
-  if (comm->rank == 0) INFO(NCCL_INIT, "commDesc: %s Check P2P Type intraNodeP2pSupport %d directMode %d", ctran::utils::parseCommDesc(comm->config.commDesc), supportFlag, directFlag);
+  if (comm->rank == 0) {
+    INFO(NCCL_INIT, "commDesc: %s Check P2P Type intraNodeP2pSupport %d directMode %d", ctran::utils::parseCommDesc(NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()), supportFlag, directFlag);
+  }
   return ncclSuccess;
 }
 

@@ -9,6 +9,7 @@
 #include "comms/testinfra/TestsDistUtils.h"
 
 #include "comm.h"
+#include "meta/NcclxConfig.h"
 #include "nccl.h"
 
 #include "comms/utils/cvars/nccl_cvars.h"
@@ -43,10 +44,14 @@ class NcclxLazyConnectTestFixture : public NcclxBaseTestFixture {
     NcclxBaseTestFixture::TearDown();
   }
 
+  ncclx::Hints splitCommHints_;
+
   void splitComm(ncclComm_t* newChildComm) {
     ncclComm_t childComm;
     ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
-    childCommConfig.commDesc = "child_communicator";
+    splitCommHints_ = ncclx::Hints();
+    splitCommHints_.set("commDesc", "child_communicator");
+    childCommConfig.hints = &splitCommHints_;
     // split rootComm into two communicators, in round-robin fashion
     // e.g. 8-rank rootComm ->
     //        ranks 0, 2, 4, 6 form 1st childComm
@@ -520,16 +525,18 @@ TEST_P(NcclxLazyConnectTestFixture, ChildCommLazyConfig) {
   // channels
   ncclComm_t childComm = nullptr;
   ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
-  childCommConfig.lazyConnect = 1;
-  childCommConfig.lazySetupChannels = 1;
+  ncclx::Hints lazyHints;
+  lazyHints.set("lazyConnect", "1");
+  lazyHints.set("lazySetupChannels", "1");
+  childCommConfig.hints = &lazyHints;
   NCCLCHECK_TEST(
       ncclCommSplit(rootComm, 0, globalRank, &childComm, &childCommConfig));
   ASSERT_NE(nullptr, childComm);
 
   // child comm should always have lazy connect and setup channels enabled and
   // not allocate any channels
-  EXPECT_EQ(childComm->config.lazyConnect, 1);
-  EXPECT_EQ(childComm->config.lazySetupChannels, 1);
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(childComm->config, lazyConnect));
+  EXPECT_TRUE(NCCLX_CONFIG_FIELD(childComm->config, lazySetupChannels));
   for (int a = 0; a < NCCL_NUM_ALGORITHMS; a++) {
     EXPECT_FALSE(childComm->initAlgoChannels[a]);
   }

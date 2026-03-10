@@ -70,7 +70,9 @@ TEST_P(CommWithCtranTestParam, CtranEnableByHint) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
   const auto commDescStr = fmt::format("{}-{}", kNcclUtCommDesc, "useCtran");
-  config.commDesc = commDescStr.c_str();
+  ncclx::Hints ctranHints;
+  ctranHints.set("commDesc", commDescStr);
+  config.hints = &ctranHints;
 
   // Enable by hint
   ASSERT_EQ(

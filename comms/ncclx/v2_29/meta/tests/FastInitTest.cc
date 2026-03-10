@@ -11,6 +11,7 @@
 #include "comm.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
+#include "meta/NcclxConfig.h"
 #include "nccl.h"
 
 void printCommStateX(const ncclComm& comm) {
@@ -40,10 +41,14 @@ void validateCtranInitialization(
   EXPECT_EQ(comm->commHash, comm->ctranComm_->statex_->commHash());
 }
 
-ncclConfig_t ncclConfigInitHelper(bool enableFastInitConfig) {
+ncclConfig_t ncclConfigInitHelper(
+    bool enableFastInitConfig,
+    ncclx::Hints& hints) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   if (enableFastInitConfig) {
-    config.fastInitMode = NCCL_FAST_INIT_MODE_RING;
+    hints = ncclx::Hints();
+    hints.set("fastInitMode", std::to_string(NCCL_FAST_INIT_MODE_RING));
+    config.hints = &hints;
   }
   return config;
 }
@@ -57,7 +62,8 @@ ncclResult_t ncclCommInitRankConfigHelper(
   if (!enableFastInitConfig) {
     return ncclCommInitRankConfig(comm, nRanks, commId, myRank, nullptr);
   } else {
-    ncclConfig_t config = ncclConfigInitHelper(enableFastInitConfig);
+    ncclx::Hints hints;
+    ncclConfig_t config = ncclConfigInitHelper(enableFastInitConfig, hints);
     return ncclCommInitRankConfig(comm, nRanks, commId, myRank, &config);
   }
 }
@@ -138,17 +144,28 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
   validateCtranInitialization(rootComm, globalRank, numRanks, localRank);
 
   ncclComm_t childComm = nullptr;
-  ncclConfig_t childCommConfig = ncclConfigInitHelper(enableFastInitConfig);
+  ncclx::Hints fastInitHints;
+  ncclConfig_t childCommConfig =
+      ncclConfigInitHelper(enableFastInitConfig, fastInitHints);
   int color = globalRank % 2;
   std::string childCommDesc = "child_communicator_" + std::to_string(color);
-  childCommConfig.commDesc = childCommDesc.c_str();
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
   for (int i = 0; i < groupSize; ++i) {
     *(groupRanks + i) = 2 * i + globalRank % 2;
   }
-  childCommConfig.splitGroupRanks = groupRanks;
-  childCommConfig.splitGroupSize = groupSize;
+  ncclx::Hints splitHints;
+  splitHints.set("commDesc", childCommDesc);
+  {
+    std::string ranksStr;
+    for (int i = 0; i < groupSize; ++i) {
+      if (i > 0)
+        ranksStr += ",";
+      ranksStr += std::to_string(groupRanks[i]);
+    }
+    splitHints.set("splitGroupRanks", ranksStr);
+  }
+  childCommConfig.hints = &splitHints;
   NCCLCHECK_TEST(ncclCommSplit(
       rootComm, color, globalRank / 2, &childComm, &childCommConfig));
   ASSERT_NE(nullptr, childComm);
@@ -166,7 +183,9 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplit) {
   EXPECT_EQ(statex1->nLocalRanks(), localSize / 2);
 
   ncclComm expectedComm;
-  expectedComm.config.commDesc = childCommConfig.commDesc;
+  auto* ncclxCfg = new ncclx::Config();
+  ncclxCfg->commDesc = childCommDesc;
+  expectedComm.config.ncclxConfig = ncclxCfg;
   setCtranCommBase(&expectedComm);
 
   expectedComm.ctranComm_->statex_ = std::make_unique<ncclx::CommStateX>(
@@ -204,17 +223,28 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitDuplicateGroups) {
   }
 
   // child comm config
-  ncclConfig_t childCommConfig = ncclConfigInitHelper(enableFastInitConfig);
+  ncclx::Hints fastInitHints;
+  ncclConfig_t childCommConfig =
+      ncclConfigInitHelper(enableFastInitConfig, fastInitHints);
   int color = globalRank % 2;
   std::string childCommDesc = "child_communicator_" + std::to_string(color);
-  childCommConfig.commDesc = childCommDesc.c_str();
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
   for (int i = 0; i < groupSize; ++i) {
     *(groupRanks + i) = 2 * i + globalRank % 2;
   }
-  childCommConfig.splitGroupRanks = groupRanks;
-  childCommConfig.splitGroupSize = groupSize;
+  ncclx::Hints dupSplitHints;
+  dupSplitHints.set("commDesc", childCommDesc);
+  {
+    std::string ranksStr;
+    for (int i = 0; i < groupSize; ++i) {
+      if (i > 0)
+        ranksStr += ",";
+      ranksStr += std::to_string(groupRanks[i]);
+    }
+    dupSplitHints.set("splitGroupRanks", ranksStr);
+  }
+  childCommConfig.hints = &dupSplitHints;
 
   ncclComm_t childComm1 = nullptr;
   NCCLCHECK_TEST(ncclCommSplit(
@@ -302,15 +332,26 @@ TEST_P(NcclxBaseTestFixture, ChildCommAllGather) {
   }
 
   ncclComm_t childComm = nullptr;
-  ncclConfig_t childCommConfig = ncclConfigInitHelper(enableFastInitConfig);
-  childCommConfig.commDesc = "child_communicator";
+  ncclx::Hints fastInitHints;
+  ncclConfig_t childCommConfig =
+      ncclConfigInitHelper(enableFastInitConfig, fastInitHints);
   int groupSize = rootComm->ctranComm_->statex_.get()->nRanks() / 2;
   int* groupRanks = new int[groupSize];
   for (int i = 0; i < groupSize; ++i) {
     *(groupRanks + i) = 2 * i + globalRank % 2;
   }
-  childCommConfig.splitGroupRanks = groupRanks;
-  childCommConfig.splitGroupSize = groupSize;
+  ncclx::Hints childAgHints;
+  childAgHints.set("commDesc", "child_communicator");
+  {
+    std::string ranksStr;
+    for (int i = 0; i < groupSize; ++i) {
+      if (i > 0)
+        ranksStr += ",";
+      ranksStr += std::to_string(groupRanks[i]);
+    }
+    childAgHints.set("splitGroupRanks", ranksStr);
+  }
+  childCommConfig.hints = &childAgHints;
   NCCLCHECK_TEST(ncclCommSplit(
       rootComm, globalRank % 2, globalRank / 2, &childComm, &childCommConfig));
   ASSERT_NE(nullptr, childComm);
@@ -358,10 +399,14 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitNoColor) {
   ncclComm_t rootComm = nullptr;
   ncclComm_t childComm = NCCL_COMM_NULL;
   ncclUniqueId commId;
-  ncclConfig_t rootConfig = ncclConfigInitHelper(enableFastInitConfig);
-  rootConfig.commDesc = "root_communicator";
-  ncclConfig_t childConfig = ncclConfigInitHelper(enableFastInitConfig);
-  childConfig.commDesc = "child_communicator";
+  ncclx::Hints fastInitHints;
+  ncclConfig_t rootConfig =
+      ncclConfigInitHelper(enableFastInitConfig, fastInitHints);
+  ncclx::Hints rootHints;
+  rootHints.set("commDesc", "root_communicator");
+  rootConfig.hints = &rootHints;
+  ncclConfig_t childConfig =
+      ncclConfigInitHelper(enableFastInitConfig, fastInitHints);
 
   NCCLCHECK_TEST(ncclCommInitRankConfig(
       &rootComm, numRanks, commId, globalRank, &rootConfig));
@@ -375,12 +420,23 @@ TEST_P(NcclxBaseTestFixture, NcclCommSplitNoColor) {
   EXPECT_EQ(statex->nRanks(), numRanks);
 
   // set up childConfig for split
-  childConfig.splitGroupSize = numRanks / 2;
-  std::vector<int> groupRanks(childConfig.splitGroupSize);
-  childConfig.splitGroupRanks = groupRanks.data();
-  for (int i = 0; i < childConfig.splitGroupSize; ++i) {
+  int splitGroupSize = numRanks / 2;
+  std::vector<int> groupRanks(splitGroupSize);
+  for (int i = 0; i < splitGroupSize; ++i) {
     groupRanks.at(i) = i * 2 + 1;
   }
+  ncclx::Hints childNoColorHints;
+  childNoColorHints.set("commDesc", "child_communicator");
+  {
+    std::string ranksStr;
+    for (int i = 0; i < splitGroupSize; ++i) {
+      if (i > 0)
+        ranksStr += ",";
+      ranksStr += std::to_string(groupRanks[i]);
+    }
+    childNoColorHints.set("splitGroupRanks", ranksStr);
+  }
+  childConfig.hints = &childNoColorHints;
   // do ncclCommSplit: even ranks have no color
   if (globalRank % 2 == 0) {
     NCCLCHECK_TEST(ncclCommSplit(
@@ -417,16 +473,23 @@ TEST_P(NcclxBaseTestFixture, NcclCommInitWithDifferentCommDesc) {
   ncclUniqueId commId1, commId2;
 
   // Create first comm with commDesc "comm_desc_1"
-  ncclConfig_t config1 = ncclConfigInitHelper(enableFastInitConfig);
-  config1.commDesc = "comm_desc_1";
+  ncclx::Hints fastInitHints;
+  ncclConfig_t config1 =
+      ncclConfigInitHelper(enableFastInitConfig, fastInitHints);
+  ncclx::Hints hints1;
+  hints1.set("commDesc", "comm_desc_1");
+  config1.hints = &hints1;
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&comm1, numRanks, commId1, globalRank, &config1));
   ASSERT_NE(nullptr, comm1);
   validateCtranInitialization(comm1, globalRank, numRanks, localRank);
 
   // Create second comm with commDesc "comm_desc_2"
-  ncclConfig_t config2 = ncclConfigInitHelper(enableFastInitConfig);
-  config2.commDesc = "comm_desc_2";
+  ncclConfig_t config2 =
+      ncclConfigInitHelper(enableFastInitConfig, fastInitHints);
+  ncclx::Hints hints2;
+  hints2.set("commDesc", "comm_desc_2");
+  config2.hints = &hints2;
   NCCLCHECK_TEST(
       ncclCommInitRankConfig(&comm2, numRanks, commId2, globalRank, &config2));
   ASSERT_NE(nullptr, comm2);

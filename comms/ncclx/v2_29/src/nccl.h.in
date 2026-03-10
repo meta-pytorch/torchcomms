@@ -48,6 +48,7 @@ extern "C" {
 #define NCCL_COMM_DUMP
 #define NCCL_COMM_GET_UNIQUE_HASH
 #define NCCL_COLLTRACE_CUDA_GRAPH_COMPATIBLE
+#define NCCLX_CONFIG_SUPPORTED
 
 /* Opaque handle to communicator */
 typedef struct ncclComm* ncclComm_t;
@@ -166,6 +167,16 @@ typedef struct ncclConfig_v22800 {
 
   // control the fast init features
   int fastInitMode{NCCL_CONFIG_UNDEF_INT};
+
+  // Opaque pointer to an ncclx::Hints object.  When non-null, NCCLX
+  // will read key-value pairs from this object and apply them to
+  // config fields that are still at their undefined defaults.
+  void* hints{NCCL_CONFIG_UNDEF_PTR};
+
+  // Internal field — do not access directly.  This would be private
+  // if ncclConfig_t were a C++ class.  Populated by NCCLX during
+  // communicator creation; users must not read or write this field.
+  void* ncclxConfig{NCCL_CONFIG_UNDEF_PTR};
 } ncclConfig_t;
 
 /* Config initializer must be assigned to initialize config structure when it is created.
@@ -197,6 +208,8 @@ typedef struct ncclConfig_v22800 {
   NCCL_CONFIG_UNDEF_INT,                    /* lazyConnect */           \
   NCCL_CONFIG_UNDEF_INT,                    /* lazySetupChannels */     \
   NCCL_CONFIG_UNDEF_INT,                    /* fastInitMode */          \
+  NCCL_CONFIG_UNDEF_PTR,                    /* hints */                  \
+  NCCL_CONFIG_UNDEF_PTR,                    /* ncclxConfig */            \
 }
 
 /* This struct will be used by ncclGroupSimulateEnd() API to query information about simulation. */
