@@ -168,14 +168,14 @@ TorchCommXCCL::RedOpRAII TorchCommXCCL::getXcclReduceOp(
   }
 }
 
-void TorchCommXCCL::checkWorkQueue() {
-  TorchWorkXCCL::WorkStatus status = workq_.garbageCollect();
+void TorchCommXCCL::checkWorkQueue(bool isMainThread) {
+  TorchWork::WorkStatus status = workq_.garbageCollect(isMainThread);
 
   switch (status) {
-    case TorchWorkXCCL::WorkStatus::TIMEDOUT:
+    case TorchWork::WorkStatus::TIMEDOUT:
       comm_state_ = CommState::TIMEOUT;
       break;
-    case TorchWorkXCCL::WorkStatus::ERROR:
+    case TorchWork::WorkStatus::ERROR:
       comm_state_ = CommState::ERROR;
       break;
     default:
@@ -184,8 +184,8 @@ void TorchCommXCCL::checkWorkQueue() {
   }
 }
 
-// The timeout thread cannot make XCCL calls.  The only XPU call it can make
-// it xpuEventQuery.
+// The timeout thread cannot make XCCL calls. The only XPU call it can make is
+// xpuEventQuery via the work status checks.
 void TorchCommXCCL::timeoutWatchdog() noexcept {
   TC_LOG(INFO) << "Timeout thread starting for rank: " << rank_;
   while (!shutdown_) {
@@ -203,7 +203,7 @@ void TorchCommXCCL::timeoutWatchdog() noexcept {
     }
 
     // Check work objects for completion or timeout
-    checkWorkQueue();
+    checkWorkQueue(false);
     if (comm_state_ != CommState::NORMAL &&
         options_.abort_process_on_timeout_or_error) {
       // Log the error and abort the process.  We cannot abort the XCCL
@@ -231,7 +231,7 @@ void TorchCommXCCL::checkInitialized() const {
 
 void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
   // First, check work queue status
-  checkWorkQueue();
+  checkWorkQueue(true);
 
   if (comm_state_ == CommState::TIMEOUT) {
     //    abortXcclComm(); // cannot abort oneCCL communicator
@@ -242,8 +242,15 @@ void TorchCommXCCL::checkAndAbortIfTimedOutOrError() {
       throw std::runtime_error("XCCL operation timed out");
     }
   } else if (comm_state_ == CommState::ERROR) {
-    onecclResult_t asyncErr;
-    xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+    onecclResult_t asyncErr = onecclSuccess;
+    onecclResult_t res = xccl_api_->commGetAsyncError(xccl_comm_, &asyncErr);
+    if (res != onecclSuccess) {
+      TC_LOG(WARNING) << "commGetAsyncError returned " << res;
+      asyncErr = res;
+    }
+    if (asyncErr == onecclSuccess) {
+      asyncErr = onecclSystemError;
+    }
     XCCLException xcclException(*xccl_api_, "XCCL Async Error", asyncErr);
     //    abortXcclComm(); // cannot abort oneCCL communicator
     if (options_.abort_process_on_timeout_or_error) {

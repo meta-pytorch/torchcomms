@@ -72,3 +72,7 @@ target_compile_options(torchcomms_comms_xccl PRIVATE ${XCCL_COMPILE_OPTIONS})
 install(TARGETS torchcomms_comms_xccl
     LIBRARY DESTINATION .
 )
+
+if (BUILD_TESTS)
+    add_subdirectory(comms/torchcomms/xccl/tests/unit/cpp)
+endif()

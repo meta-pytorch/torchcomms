@@ -212,7 +212,7 @@ class TorchCommXCCL : public TorchCommBackend,
     return device_;
   }
 
- protected:
+ public:
   // Event management for friend classes
   xpuEvent_t getEvent();
   void returnEvent(xpuEvent_t&& event);
@@ -238,6 +238,12 @@ class TorchCommXCCL : public TorchCommBackend,
       const at::Tensor& inputTensor);
 
   void checkRankRange(int rank) const;
+
+  // Work tracking per stream
+  TorchWorkXCCLQueue workq_;
+
+  std::optional<xpuEvent_t>
+      dependency_event_; // Pre-allocated event for stream dependencies
 
  private:
   // Helper that automatically cleans up premul sums.
@@ -279,7 +285,7 @@ class TorchCommXCCL : public TorchCommBackend,
   void timeoutWatchdog() noexcept;
   void checkInitialized() const;
   void checkAndAbortIfTimedOutOrError();
-  void checkWorkQueue();
+  void checkWorkQueue(bool isMainThread = true);
   void enqueueWork(c10::intrusive_ptr<TorchWorkXCCL> work, xpuStream_t stream);
   xpuStream_t getOperationStream(bool async_op);
   void ensureTensorContiguous(const at::Tensor& tensor);
@@ -290,10 +296,7 @@ class TorchCommXCCL : public TorchCommBackend,
   int comm_size_{};
   int rank_{};
   CommOptions options_;
-  size_t max_event_pool_size_{};
   std::optional<xpuStream_t> internal_stream_; // Initialized in init()
-  std::optional<xpuEvent_t>
-      dependency_event_; // Pre-allocated event for stream dependencies
   void* barrier_buffer_{}; // Pre-allocated XPU buffer for barrier operations
   enum class InitializationState {
     UNINITIALIZED,
@@ -311,16 +314,17 @@ class TorchCommXCCL : public TorchCommBackend,
   std::queue<xpuEvent_t> event_pool_;
   std::mutex event_pool_mutex_;
 
-  // Work tracking per stream
-  TorchWorkXCCLQueue workq_;
-
   // Timeout monitoring
   std::thread timeout_thread_;
   std::atomic<bool> shutdown_;
   std::condition_variable timeout_cv_;
   std::mutex timeout_mutex_;
 
+ protected:
+  size_t max_event_pool_size_{};
   bool high_priority_stream_{false};
+
+ private:
   std::string name_;
   std::string backend_version_{"unknown"};
 };
