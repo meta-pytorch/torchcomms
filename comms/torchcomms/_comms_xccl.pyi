@@ -1,1 +1,1 @@
-xccl/_comms_xccl.pyi
+comms/torchcomms/xccl/_comms_xccl.pyi
