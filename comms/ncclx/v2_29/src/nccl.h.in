@@ -1025,6 +1025,7 @@ namespace ncclx {
  * One-side put operation from a local buffer to a remote peer's pre-allocated
  * and registered buffer within a NCCL window.
  */
+__attribute__ ((visibility("default")))
 ncclResult_t ncclPutSignal(
     const void* originBuff,
     size_t count,
@@ -1038,6 +1039,7 @@ ncclResult_t ncclPutSignal(
  * One-side put operation from a local buffer to a remote peer's pre-allocated
  * and registered buffer within a NCCL window. Without signaling.
  */
+ __attribute__ ((visibility("default")))
 ncclResult_t ncclPut(
     const void* originBuff,
     size_t count,
@@ -1051,6 +1053,7 @@ ncclResult_t ncclPut(
  * One-side get operation from a remote peer's pre-allocated and registered buffer
  * to a local buffer within a NCCL window. Without signaling.
  */
+__attribute__ ((visibility("default")))
 ncclResult_t ncclGet(
     void* targetBuff,
     size_t targetDisp,
@@ -1063,11 +1066,13 @@ ncclResult_t ncclGet(
 /*
  * Wait for a signal from remote peer to complete the put operation.
  */
+ __attribute__ ((visibility("default")))
 ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream);
 
 /*
  * Signal a remote peer given the local signal displacement and value.
  */
+ __attribute__ ((visibility("default")))
 ncclResult_t ncclSignal(
     size_t signalDisp,
     uint64_t signalVal,
