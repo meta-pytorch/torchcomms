@@ -7,9 +7,11 @@
 #include <unordered_map>
 #include <vector>
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 
 #include "comms/common/bootstrap/IBootstrap.h"
+#include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/MultiPeerNvlTransport.h"
 #include "comms/pipes/MultipeerIbgdaTransport.h"
 #include "comms/pipes/P2pSelfTransportDevice.cuh"
@@ -117,6 +119,12 @@ class MultiPeerTransport {
     return ibgdaPeerRanks_;
   }
 
+  /** @return NVL bootstrap adapter for NVL-scoped collective ops.
+   *  Used by HostWindow for GpuMemHandler NVL exchange. */
+  std::shared_ptr<meta::comms::IBootstrap> nvl_bootstrap() const {
+    return nvlBootstrapAdapter_;
+  }
+
   /** @return This rank's local index within the NVL peer group. */
   int nvl_local_rank() const {
     return nvlLocalRank_;
@@ -134,7 +142,7 @@ class MultiPeerTransport {
    * @return Pointer to P2pNvlTransportDevice on device memory for the given
    * peer.
    */
-  P2pNvlTransportDevice* get_p2p_nvl_transport_device(int globalPeerRank) const;
+  P2pNvlTransportDevice get_p2p_nvl_transport_device(int globalPeerRank) const;
 
   /**
    * @param globalPeerRank Global rank of the IBGDA peer.
@@ -164,14 +172,14 @@ class MultiPeerTransport {
    * @return IbgdaLocalBuffer with valid lkey for local RDMA operations
    * @throws std::runtime_error if no IBGDA transport or registration fails
    */
-  IbgdaLocalBuffer registerIbgdaBuffer(void* ptr, size_t size);
+  IbgdaLocalBuffer localRegisterIbgdaBuffer(void* ptr, size_t size);
 
   /**
    * Deregister a previously registered IBGDA buffer.
    *
    * @param ptr Pointer to the buffer to deregister
    */
-  void deregisterIbgdaBuffer(void* ptr);
+  void localDeregisterIbgdaBuffer(void* ptr);
 
   /**
    * Collectively exchange IBGDA buffer info with all peers.
@@ -179,38 +187,32 @@ class MultiPeerTransport {
    * COLLECTIVE OPERATION: All ranks MUST call this with their local buffer.
    * Returns remote buffer info for all IBGDA peers.
    *
-   * @param localBuf Local buffer registered with registerIbgdaBuffer()
+   * @param localBuf Local buffer registered with localRegisterIbgdaBuffer()
    * @return Vector of remote buffers, one per IBGDA peer (size = nRanks - 1)
    */
   std::vector<IbgdaRemoteBuffer> exchangeIbgdaBuffer(
       const IbgdaLocalBuffer& localBuf);
 
-  // --- NVL recv buffer IPC exchange (for zero-copy variant) ---
-
   /**
-   * Collectively exchange NVL buffer pointers within the NVL peer group.
+   * Collectively exchange a user-provided GPU buffer with NVL peers via IPC.
    *
-   * COLLECTIVE OPERATION: All NVL ranks MUST call this with their local buffer.
-   * Uses GpuMemHandler's IPC exchange pattern (cudaIpcGetMemHandle /
-   * cudaIpcOpenMemHandle or fabric handles on GB200).
+   * COLLECTIVE OPERATION: All NVL ranks MUST call this with their buffer.
+   * Supports both cudaMalloc'd and cuMem-allocated buffers (e.g. from
+   * ncclMemAlloc). For cuMem buffers, the allocation must have been created
+   * with CU_MEM_HANDLE_TYPE_FABRIC.
    *
-   * The returned vector is indexed by NVL peer index (not global rank).
-   * Use nvl_peer_ranks() to map NVL indices to global ranks.
-   *
-   * @param localBuf Local GPU buffer pointer (allocated with cudaMalloc or
-   * similar)
+   * @param localPtr GPU pointer (cudaMalloc or ncclMemAlloc)
    * @param size Size of the buffer in bytes
-   * @return Vector of IPC-mapped peer buffer pointers (size = nvlNRanks_)
-   *         Entry at nvlLocalRank_ is localBuf (not IPC-mapped).
+   * @return Vector of mapped peer pointers (size = nvlNRanks_), indexed by
+   *         NVL local rank. Self entry is the original localPtr. Other entries
+   *         are IPC-mapped pointers to peer buffers.
    */
-  std::vector<void*> exchangeNvlBuffer(void* localBuf, size_t size);
+  std::vector<void*> exchangeNvlBuffer(void* localPtr, std::size_t size);
 
   /**
-   * Unmap previously exchanged NVL buffers.
+   * Unmap NVL IPC-mapped peer buffers obtained from exchangeNvlBuffer().
    *
-   * Call this before freeing the local buffer to clean up IPC mappings.
-   *
-   * @param mappedPtrs Vector returned from exchangeNvlBuffer()
+   * @param mappedPtrs Vector returned by exchangeNvlBuffer()
    */
   void unmapNvlBuffers(const std::vector<void*>& mappedPtrs);
 
@@ -242,6 +244,25 @@ class MultiPeerTransport {
   // --- Private helpers ---
   void build_device_handle();
   void free_device_handle();
+
+  // Memory type detection for exchangeNvlBuffer dual-path support.
+  enum class NvlMemMode { kCudaIpc, kFabric };
+  NvlMemMode detectNvlMemMode(void* ptr) const;
+
+  // Fabric handle exchange helpers
+  std::vector<void*> exchangeNvlBufferCudaIpc(void* localPtr);
+  std::vector<void*> exchangeNvlBufferFabric(void* localPtr, std::size_t size);
+
+  // Track NVL exchange state for proper cleanup in unmapNvlBuffers
+  struct NvlExchangeRecord {
+    NvlMemMode mode;
+    // Fabric-only state for cleanup:
+    std::vector<CUdeviceptr> fabricPeerPtrs;
+    std::vector<CUmemGenericAllocationHandle> fabricPeerAllocHandles;
+    std::vector<size_t> fabricPeerSizes;
+  };
+  // Keyed by the mappedPtrs vector's data pointer (first element address)
+  std::unordered_map<void*, NvlExchangeRecord> nvlExchangeRecords_;
 };
 
 } // namespace comms::pipes

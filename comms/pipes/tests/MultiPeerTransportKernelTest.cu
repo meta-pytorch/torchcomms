@@ -110,7 +110,7 @@ __global__ void test_ibgda_accessor_kernel(
   if (tid < static_cast<uint32_t>(handle.nRanks)) {
     if (handle.get_type(tid) == TransportType::P2P_IBGDA) {
       auto& ibgda = handle.get_ibgda(tid);
-      output_d[tid] = ibgda.getNumSignals();
+      output_d[tid] = (ibgda.getQp() != nullptr) ? 1 : 0;
     } else {
       output_d[tid] = -1;
     }
