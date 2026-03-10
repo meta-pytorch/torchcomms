@@ -10,6 +10,7 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import (
     create_store,
     TorchCommTestWrapper,
     verify_tensor_equality,
+    wrap_prefix_store,
 )
 
 
@@ -349,9 +350,10 @@ class MultiCommTest(unittest.TestCase):
         wrappers = []
         comms = []
 
-        # Create a shared store for the first two communicators
-        store1 = create_store()
-        store2 = create_store()
+        # Create a single store and wrap with prefixes to avoid port conflicts
+        store = create_store()
+        store1 = wrap_prefix_store("comm1", store)
+        store2 = wrap_prefix_store("comm2", store)
 
         # Create first communicator using the store
         wrappers.append(TorchCommTestWrapper(store=store1))
@@ -361,7 +363,11 @@ class MultiCommTest(unittest.TestCase):
         wrappers.append(TorchCommTestWrapper(store=store2))
         comms.append(wrappers[-1].get_torchcomm())
 
-        # Cleanup our store
+        # Cleanup stores
+        store1 = None
+        store2 = None
+        store_deletion_barrier(comms[0])
+        store = None
         store_deletion_barrier(comms[0])
 
         # Create third communicator with no store
