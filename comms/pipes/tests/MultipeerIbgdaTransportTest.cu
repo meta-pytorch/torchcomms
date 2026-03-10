@@ -55,7 +55,7 @@ void testPutAndSignal(
 }
 
 // =============================================================================
-// Kernel: Warp-group-collaborative put + signal
+// Kernel: Group-collaborative put + signal (warp group)
 // =============================================================================
 
 __global__ void putAndSignalGroupKernel(
@@ -105,6 +105,7 @@ void testPutAndSignalGroup(
 
 // =============================================================================
 // Kernel: Multi-warp group-collaborative put + signal
+// Multiple warps use put_group_global, each leader signals
 // =============================================================================
 
 __global__ void putAndSignalGroupMultiWarpKernel(
@@ -403,36 +404,6 @@ void verifyBufferPattern(
       nbytes,
       expectedBaseValue,
       errorCount);
-  cudaError_t err = cudaGetLastError();
-  if (err != cudaSuccess) {
-    throw std::runtime_error(
-        std::string("Kernel launch failed: ") + cudaGetErrorString(err));
-  }
-}
-
-// =============================================================================
-// Kernel: Reset signal
-// =============================================================================
-
-__global__ void resetSignalKernel(
-    P2pIbgdaTransportDevice* transport,
-    IbgdaRemoteBuffer remoteSignalBuf,
-    int signalId) {
-  auto group = make_block_group();
-  if (group.is_global_leader()) {
-    // reset_signal is now synchronous (includes fences and wait internally)
-    transport->reset_signal(remoteSignalBuf, signalId);
-  }
-}
-
-void testResetSignal(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
-    int signalId,
-    int numBlocks,
-    int blockSize) {
-  resetSignalKernel<<<numBlocks, blockSize>>>(
-      deviceTransportPtr, remoteSignalBuf, signalId);
   cudaError_t err = cudaGetLastError();
   if (err != cudaSuccess) {
     throw std::runtime_error(

@@ -28,7 +28,7 @@ void launchIbgdaPutSignalSingle(
     cudaStream_t stream);
 
 /**
- * Launch batched kernel: Multiple put+wait_local iterations in a single kernel
+ * Launch batched kernel: Multiple put+wait_local iterations
  *
  * This avoids per-operation kernel launch overhead and uses GPU cycle counters
  * for accurate timing of raw RDMA operations.

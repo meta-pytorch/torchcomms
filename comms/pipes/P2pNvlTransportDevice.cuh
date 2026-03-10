@@ -314,6 +314,14 @@ class P2pNvlTransportDevice {
       std::size_t nbytes,
       const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
+    if (options_.dataBufferSize == 0) {
+      printf(
+          "P2pNvlTransportDevice::send() requires staging buffer"
+          " (dataBufferSize > 0) at %s:%d\n",
+          __FILE__,
+          __LINE__);
+      __trap();
+    }
     char* src = reinterpret_cast<char*>(srcbuff);
 
     // REMOTE-WRITE PATTERN:
@@ -416,6 +424,14 @@ class P2pNvlTransportDevice {
       std::size_t nbytes,
       const Timeout& timeout = Timeout()) {
 #ifdef __CUDA_ARCH__
+    if (options_.dataBufferSize == 0) {
+      printf(
+          "P2pNvlTransportDevice::recv() requires staging buffer"
+          " (dataBufferSize > 0) at %s:%d\n",
+          __FILE__,
+          __LINE__);
+      __trap();
+    }
     char* dst = reinterpret_cast<char*>(dstbuff);
 
     // REMOTE-WRITE PATTERN:
