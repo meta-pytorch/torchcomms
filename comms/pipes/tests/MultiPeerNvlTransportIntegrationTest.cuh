@@ -5,34 +5,77 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "comms/pipes/MultiPeerDeviceTransport.cuh"
+#include "comms/pipes/MultiPeerDeviceHandle.cuh"
+#include "comms/pipes/window/DeviceWindowBarrier.cuh"
+#include "comms/pipes/window/DeviceWindowMemory.cuh"
+#include "comms/pipes/window/DeviceWindowSignal.cuh"
 
 namespace comms::pipes::test {
 
 /**
- * Test kernel: Verify MultiPeerDeviceTransport accessors on device
+ * TestDeviceBundle - Temporary test-local device-side bundle
  *
- * @param transport The MultiPeerDeviceTransport to test
+ * Bundles MultiPeerDeviceHandle + DeviceWindowSignal + DeviceWindowBarrier
+ * into a single struct for passing to test kernels. This replaces the
+ * deleted MultiPeerDeviceTransport and will be replaced by DeviceWindow
+ * in the next diff in the stack.
+ *
+ * All method signatures match the old MultiPeerDeviceTransport API so
+ * kernel code changes are minimal.
+ */
+struct TestDeviceBundle {
+  MultiPeerDeviceHandle handle;
+  DeviceWindowSignal signal;
+  DeviceWindowBarrier barrier;
+
+#ifdef __CUDACC__
+  __host__ __device__ int rank() const {
+    return handle.myRank;
+  }
+
+  __host__ __device__ int n_ranks() const {
+    return handle.nRanks;
+  }
+
+  __host__ __device__ int num_peers() const {
+    return handle.nRanks - 1;
+  }
+
+  __host__ __device__ int rank_to_peer_index(int rank) const {
+    return (rank < handle.myRank) ? rank : (rank - 1);
+  }
+
+  __device__ __forceinline__ MultiPeerDeviceHandle& get_handle() {
+    return handle;
+  }
+
+  __device__ __forceinline__ const MultiPeerDeviceHandle& get_handle() const {
+    return handle;
+  }
+#endif
+};
+
+/**
+ * Test kernel: Verify TestDeviceBundle accessors on device
+ *
+ * @param bundle The TestDeviceBundle to test
  * @param results Output array: [0]=rank, [1]=nRanks, [2]=numPeers
  */
 void testMultiPeerDeviceTransportAccessors(
-    const MultiPeerDeviceTransport& transport,
+    const TestDeviceBundle& bundle,
     int* results);
 
 /**
  * Test kernel: Signal from one rank to another and wait for it
  *
- * Uses inbox-model signaling: rank signals to peer's inbox, peer waits on own
- * inbox.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The target rank to signal/wait from
  * @param signalIdx The signal slot index to use
  * @param isSignaler If true, this rank signals; if false, this rank waits
  * @param result Output: 1 if successful, 0 if failed
  */
 void testSignalWait(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int signalIdx,
     bool isSignaler,
@@ -41,21 +84,16 @@ void testSignalWait(
 /**
  * Test kernel: Execute barrier across all ranks
  *
- * This tests that the barrier correctly synchronizes all ranks.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param barrierIdx The barrier slot index to use
  * @param result Output: 1 if barrier completed successfully
  */
-void testBarrier(
-    MultiPeerDeviceTransport& transport,
-    int barrierIdx,
-    int* result);
+void testBarrier(TestDeviceBundle& bundle, int barrierIdx, int* result);
 
 /**
  * Test kernel: Send data from this rank to a single peer
  *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The destination rank
  * @param srcBuff Source buffer containing data to send
  * @param nbytes Number of bytes to send
@@ -63,7 +101,7 @@ void testBarrier(
  * @param blockSize Threads per block
  */
 void testSinglePeerSend(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     void* srcBuff,
     std::size_t nbytes,
@@ -73,7 +111,7 @@ void testSinglePeerSend(
 /**
  * Test kernel: Receive data from a single peer to this rank
  *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The source rank
  * @param dstBuff Destination buffer for received data
  * @param nbytes Number of bytes to receive
@@ -81,7 +119,7 @@ void testSinglePeerSend(
  * @param blockSize Threads per block
  */
 void testSinglePeerRecv(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     void* dstBuff,
     std::size_t nbytes,
@@ -91,11 +129,7 @@ void testSinglePeerRecv(
 /**
  * Test kernel: Parallel send/recv to all peers using partition
  *
- * Uses partition_interleaved to split warps between send and recv work,
- * then further partitions across peers. This avoids deadlocks that can occur
- * when send and recv are done sequentially.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param srcBuffs Array of source buffers, one per peer
  * @param dstBuffs Array of destination buffers, one per peer
  * @param nbytesPerPeer Number of bytes to transfer per peer
@@ -103,7 +137,7 @@ void testSinglePeerRecv(
  * @param blockSize Threads per block
  */
 void testMultiPeerSendRecvAllPeers(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     void** srcBuffs,
     void** dstBuffs,
     std::size_t nbytesPerPeer,
@@ -113,17 +147,14 @@ void testMultiPeerSendRecvAllPeers(
 /**
  * Test kernel: Concurrent signal/barrier using multiple blocks
  *
- * Each block uses different signal/barrier slots concurrently
- * to verify no races or deadlocks.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The target rank to signal/wait from
  * @param numSlots Number of slots to test concurrently
  * @param isSignaler If true, this rank signals; if false, waits
  * @param results Output array: results[blockIdx] = 1 if successful
  */
 void testConcurrentSignalMultiBlock(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int numSlots,
     bool isSignaler,
@@ -133,23 +164,15 @@ void testConcurrentSignalMultiBlock(
 /**
  * Test kernel: Verify transport type accessors
  *
- * Checks that get_peer_transport() and get_self_transport() return correct
- * transport types for self vs peer.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param results Output array: [0]=numPeers, [1..nRanks]=transport types
  */
-void testTransportTypes(
-    const MultiPeerDeviceTransport& transport,
-    int* results);
+void testTransportTypes(const TestDeviceBundle& bundle, int* results);
 
 /**
  * Test kernel: Concurrent signal/wait from multiple warps within a block
  *
- * Each warp uses a different signal slot to verify thread-safety of
- * signal operations when multiple warps operate concurrently.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The target rank to signal/wait from
  * @param numSlots Number of signal slots (should be >= warps per block)
  * @param isSignaler If true, this rank signals; if false, waits
@@ -157,7 +180,7 @@ void testTransportTypes(
  * @param warpsPerBlock Number of warps per block
  */
 void testConcurrentSignalWaitMultiWarp(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int numSlots,
     bool isSignaler,
@@ -167,33 +190,39 @@ void testConcurrentSignalWaitMultiWarp(
 /**
  * Test kernel: signal_all() signals all peers at once
  *
- * Tests that signal_all() correctly signals all peers (excluding self).
- * One rank signals, all other ranks wait for the signal.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param signalerRank The rank that will call signal_all()
  * @param signalIdx The signal slot index to use
  * @param result Output: 1 if successful
  */
 void testSignalAll(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int signalerRank,
     int signalIdx,
     int* result);
 
 /**
+ * Test kernel: signal_all() + read_signal() aggregate across all ranks
+ *
+ * @param bundle The TestDeviceBundle to use
+ * @param signalIdx The signal slot index to use
+ * @param result Output: aggregate signal value read by this rank
+ */
+void testSignalAllAggregateDistributed(
+    TestDeviceBundle& bundle,
+    int signalIdx,
+    uint64_t* result);
+
+/**
  * Test kernel: wait_signal_from_all() barrier-like synchronization
  *
- * Tests that wait_signal_from_all() correctly waits for signals from
- * all peers. All peers signal one rank, that rank waits for all.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The rank that will call wait_signal_from_all()
  * @param signalIdx The signal slot index to use
  * @param result Output: 1 if successful
  */
 void testWaitSignalFromAll(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int signalIdx,
     int* result);
@@ -201,10 +230,7 @@ void testWaitSignalFromAll(
 /**
  * Test kernel: Wait with CMP_EQ comparison operation
  *
- * Tests exact equality comparison (vs CMP_GE which is more commonly used).
- * Signals with exact value, waits with CMP_EQ.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The target rank to signal/wait from
  * @param signalIdx The signal slot index to use
  * @param expectedValue The value to signal and wait for
@@ -212,7 +238,7 @@ void testWaitSignalFromAll(
  * @param result Output: 1 if successful
  */
 void testWaitWithCmpEq(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int signalIdx,
     uint64_t expectedValue,
@@ -222,11 +248,7 @@ void testWaitWithCmpEq(
 /**
  * Test kernel: Monotonically increasing wait values pattern
  *
- * Tests the recommended pattern of using monotonically increasing wait
- * values (signal 1, wait for 1, signal 1, wait for 2, etc.) across
- * multiple iterations.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The target rank to signal/wait from
  * @param signalIdx The signal slot index to use
  * @param numIterations Number of iterations to perform
@@ -234,7 +256,7 @@ void testWaitWithCmpEq(
  * @param result Output: 1 if all iterations successful
  */
 void testMonotonicWaitValues(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int signalIdx,
     int numIterations,
@@ -244,9 +266,7 @@ void testMonotonicWaitValues(
 /**
  * Test kernel: SIGNAL_SET operation in multi-GPU context
  *
- * Tests that SIGNAL_SET correctly overwrites values in multi-GPU signaling.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The target rank to signal/wait from
  * @param signalIdx The signal slot index to use
  * @param setValue The value to SET
@@ -254,7 +274,7 @@ void testMonotonicWaitValues(
  * @param result Output: 1 if successful
  */
 void testSignalWithSet(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int signalIdx,
     uint64_t setValue,
@@ -264,16 +284,13 @@ void testSignalWithSet(
 /**
  * Test kernel: Barrier with monotonic counters across multiple phases
  *
- * Tests that a single barrier slot works across multiple phases via
- * counter accumulation (no reset needed).
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param barrierIdx The barrier slot index to use
  * @param numPhases Number of barrier phases to execute
  * @param result Output: 1 if successful
  */
 void testBarrierMonotonic(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int barrierIdx,
     int numPhases,
     int* result);
@@ -281,16 +298,13 @@ void testBarrierMonotonic(
 /**
  * Test kernel: Multi-block barrier stress test
  *
- * Each block performs a barrier synchronization using a different slot.
- * Tests concurrent barrier operations from multiple blocks.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param numSlots Number of barrier slots to use
  * @param results Output array: results[blockIdx] = 1 if successful
  * @param numBlocks Number of blocks to launch
  */
 void testBarrierMultiBlockStress(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int numSlots,
     int* results,
     int numBlocks);
@@ -298,16 +312,13 @@ void testBarrierMultiBlockStress(
 /**
  * Test kernel: Two-sided barrier with a specific peer
  *
- * Tests barrier_peer() which synchronizes with a single peer rather than
- * all ranks. Both ranks must call barrier_peer() with each other's rank.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The target rank to synchronize with
  * @param barrierIdx The barrier slot index to use
  * @param result Output: 1 if successful
  */
 void testBarrierPeer(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int barrierIdx,
     int* result);
@@ -315,7 +326,7 @@ void testBarrierPeer(
 /**
  * Test kernel: Test the put() operation
  *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank Target rank
  * @param remoteDst Remote destination buffer
  * @param localSrc Local source buffer
@@ -325,7 +336,7 @@ void testBarrierPeer(
  * @param result Output: 1 if successful
  */
 void testPutOperation(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     void* remoteDst,
     const void* localSrc,
@@ -337,17 +348,14 @@ void testPutOperation(
 /**
  * Test kernel: wait_signal_from() basic per-peer signal/wait
  *
- * Rank 0 signals rank 1, rank 1 uses wait_signal_from(0, ...) to wait
- * for the specific peer's signal. Verifies read_signal_from() as well.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param peerRank The peer rank to signal/wait from
  * @param signalIdx The signal slot index to use
  * @param isSignaler If true, this rank signals; if false, waits
  * @param result Output: 1 if successful
  */
 void testWaitSignalFromPeer(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int peerRank,
     int signalIdx,
     bool isSignaler,
@@ -356,17 +364,13 @@ void testWaitSignalFromPeer(
 /**
  * Test kernel: wait_signal_from() per-peer isolation
  *
- * All peers signal one target rank with different values using SIGNAL_SET.
- * Target calls wait_signal_from() for each peer individually, verifying
- * each peer's sub-slot has the correct independent value.
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The rank that all peers signal and that verifies isolation
  * @param signalIdx The signal slot index to use
  * @param result Output: 1 if successful
  */
 void testWaitSignalFromMultiPeerIsolation(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int signalIdx,
     int* result);
@@ -374,17 +378,13 @@ void testWaitSignalFromMultiPeerIsolation(
 /**
  * Test kernel: Both wait_signal() and wait_signal_from() work together
  *
- * All peers signal rank 0 with SIGNAL_ADD, 1. Rank 0 verifies:
- * - wait_signal(signal_id, CMP_GE, nRanks-1) succeeds (accumulated sum)
- * - wait_signal_from(peer, signal_id, CMP_GE, 1) succeeds for each peer
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The rank that waits for all signals
  * @param signalIdx The signal slot index to use
  * @param result Output: 1 if successful
  */
 void testWaitSignalAndWaitSignalFromBothWork(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int signalIdx,
     int* result);
@@ -392,18 +392,14 @@ void testWaitSignalAndWaitSignalFromBothWork(
 /**
  * Test kernel: Signal/Wait using BLOCK scope (exercises fallback path)
  *
- * Same as testSignalWait but uses make_block_group() instead of
- * make_warp_group() to exercise the non-WARP fallback code path in
- * DeviceWindowSignal::wait_signal().
- *
- * @param transport The MultiPeerDeviceTransport to use
+ * @param bundle The TestDeviceBundle to use
  * @param targetRank The target rank to signal/wait from
  * @param signalIdx The signal slot index to use
  * @param isSignaler If true, this rank signals; if false, this rank waits
  * @param result Output: 1 if successful, 0 if failed
  */
 void testSignalWaitBlockScope(
-    MultiPeerDeviceTransport& transport,
+    TestDeviceBundle& bundle,
     int targetRank,
     int signalIdx,
     bool isSignaler,

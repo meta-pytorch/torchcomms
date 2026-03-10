@@ -228,9 +228,9 @@ TEST_F(MultiPeerTransportMultiNodeFixture, HostAccessorsMultiNode) {
   // functionality.
   ASSERT_FALSE(states->nvl_peer_ranks().empty());
   for (int r : states->nvl_peer_ranks()) {
-    auto* p2p = states->get_p2p_nvl_transport_device(r);
-    EXPECT_NE(p2p, nullptr)
-        << "NVL transport device pointer null for peer " << r;
+    auto p2p = states->get_p2p_nvl_transport_device(r);
+    // Verify we can construct a device handle without throwing
+    (void)p2p;
   }
 
   // IBGDA is universal — accessor works for ALL non-self peers.
