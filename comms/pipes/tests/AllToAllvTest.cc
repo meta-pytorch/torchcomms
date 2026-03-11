@@ -115,12 +115,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   transport.exchange();
   XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
 
-  // Get transport devices for all peer ranks
-  // Use preallocated Transport array from MultiPeerNvlTransport
-  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
-  // peers)
-  DeviceSpan<Transport> transports_span(
-      transport.getTransportsArray(), numRanks);
+  auto transports_span = transport.getDeviceTransports();
 
   // Allocate send and recv buffers based on test parameters
   DeviceBuffer sendBuffer(bufferSize);
@@ -350,12 +345,7 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   transport.exchange();
   XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
 
-  // Get transport devices for all peer ranks
-  // Use preallocated Transport array from MultiPeerNvlTransport
-  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
-  // peers)
-  DeviceSpan<Transport> transports_span(
-      transport.getTransportsArray(), numRanks);
+  auto transports_span = transport.getDeviceTransports();
 
   // Calculate variable chunk sizes using symmetric formula
   // Rank i sends to rank j: (i + j + 1) * base_ints * sizeof(int32_t) bytes
