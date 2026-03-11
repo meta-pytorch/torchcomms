@@ -1,11 +1,16 @@
 // (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
 
+#include <cstring>
+
+#include <unistd.h>
+
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
-#include <folly/logging/xlog.h>
 
+#include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
 #include "comms/pipes/Transport.cuh"
@@ -19,12 +24,7 @@ using namespace meta::comms;
 namespace comms::pipes::tests {
 
 /**
- * Single-node test fixture for MultiPeerTransport (nnodes=1, ppn=4).
- *
- * All ranks run on the same host, so every peer is NVLink-connected.
- * Use this fixture to test basic transport construction, exchange,
- * topology queries, and device handle generation in a homogeneous
- * NVL-only environment.
+ * Test fixture for MultiPeerTransport.
  *
  * For multi-node tests that exercise mixed NVL + IBGDA topology
  * (cross-node peers), see MultiPeerTransportMultiNodeTest.cc.
@@ -37,7 +37,7 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
     detectLocalSize();
   }
 
-  std::unique_ptr<MultiPeerTransport> create_transport_states() {
+  std::unique_ptr<MultiPeerTransport> createTransport() {
     MultiPeerTransportConfig config{
         .nvlConfig =
             {
@@ -51,9 +51,18 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
                 .cudaDevice = localRank,
             },
     };
-    auto bootstrap = std::make_shared<MpiBootstrap>();
     return std::make_unique<MultiPeerTransport>(
-        globalRank, numRanks, localRank, bootstrap, config);
+        globalRank,
+        numRanks,
+        localRank,
+        std::make_shared<MpiBootstrap>(),
+        config);
+  }
+
+  // Returns true when NVL peers span multiple hosts (MNNVL).
+  // cudaIpc is host-local and cannot cross host boundaries.
+  bool nvlSpansMultipleHosts(const MultiPeerTransport& t) const {
+    return t.nvl_n_ranks() > localSize_;
   }
 
   // Verify exchangeNvlBuffer mappedPtrs: self entry == localBuf,
@@ -78,11 +87,6 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
       EXPECT_NE(peerByte, 0)
           << "peer data at NVL rank " << rank << " should be non-zero";
     }
-  }
-
-  // Returns true if NVL peers span more than one host (MNNVL topology).
-  bool nvlSpansMultipleHosts(const MultiPeerTransport& t) {
-    return t.nvl_n_ranks() > localSize_;
   }
 
  private:
@@ -111,148 +115,103 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
   int localSize_{0};
 };
 
-// Verify that topology discovery correctly classifies peers as NVL or IBGDA.
-// With nnodes=1, ppn=2, both ranks are on the same node so the peer should
-// be NVL (assuming GPUs support P2P access).
 TEST_F(MultiPeerTransportTestFixture, TopologyDiscovery) {
   if (numRanks < 2) {
     GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
   }
 
-  auto states = create_transport_states();
+  auto transport = createTransport();
+  int peer = (globalRank == 0) ? 1 : 0;
 
-  // On same node, peer should be NVL
-  int peerRank = (globalRank == 0) ? 1 : 0;
-  EXPECT_TRUE(states->is_nvl_peer(peerRank))
-      << "Rank " << globalRank << " expected peer " << peerRank
-      << " to be NVL (same node)";
-
-  // Self should be SELF
-  EXPECT_EQ(states->get_transport_type(globalRank), TransportType::SELF);
-  EXPECT_EQ(states->get_transport_type(peerRank), TransportType::P2P_NVL);
-
-  // Check peer rank vectors
-  EXPECT_FALSE(states->nvl_peer_ranks().empty());
-  // IBGDA is universal — it covers all non-self peers
-  EXPECT_EQ(static_cast<int>(states->ibgda_peer_ranks().size()), numRanks - 1);
-
-  XLOGF(
-      INFO,
-      "Rank {}: {} NVL peers, {} IBGDA peers",
-      globalRank,
-      states->nvl_peer_ranks().size(),
-      states->ibgda_peer_ranks().size());
+  EXPECT_EQ(transport->get_transport_type(globalRank), TransportType::SELF);
+  EXPECT_EQ(transport->get_transport_type(peer), TransportType::P2P_NVL);
+  EXPECT_FALSE(transport->nvl_peer_ranks().empty());
+  EXPECT_EQ(
+      static_cast<int>(transport->ibgda_peer_ranks().size()), numRanks - 1);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-// Verify self transport type is always SELF regardless of rank count.
 TEST_F(MultiPeerTransportTestFixture, SelfTransportType) {
-  auto states = create_transport_states();
-  EXPECT_EQ(states->get_transport_type(globalRank), TransportType::SELF);
-  EXPECT_EQ(states->my_rank(), globalRank);
-  EXPECT_EQ(states->n_ranks(), numRanks);
+  auto transport = createTransport();
+  EXPECT_EQ(transport->get_transport_type(globalRank), TransportType::SELF);
+  EXPECT_EQ(transport->my_rank(), globalRank);
+  EXPECT_EQ(transport->n_ranks(), numRanks);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-// Verify exchange() completes without error on all ranks.
 TEST_F(MultiPeerTransportTestFixture, ExchangeSucceeds) {
   if (numRanks < 2) {
     GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
   }
 
-  auto states = create_transport_states();
-  EXPECT_NO_THROW(states->exchange());
+  auto transport = createTransport();
+  EXPECT_NO_THROW(transport->exchange());
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-// Verify host-side NVL transport accessor returns valid device pointer after
-// exchange.
 TEST_F(MultiPeerTransportTestFixture, HostNvlAccessor) {
   if (numRanks < 2) {
     GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
   }
 
-  auto states = create_transport_states();
-  states->exchange();
+  auto transport = createTransport();
+  transport->exchange();
 
-  int peerRank = (globalRank == 0) ? 1 : 0;
-  auto p2p = states->get_p2p_nvl_transport_device(peerRank);
-
-  // The returned device handle is constructed by value.
-  // We can verify it was constructed without throwing; actual functionality
-  // is tested by device-side tests (P2pNvlTransportTest, AllToAllvTest, etc.).
-  (void)p2p;
+  int peer = (globalRank == 0) ? 1 : 0;
+  auto p2p = transport->get_p2p_nvl_transport_device(peer);
+  EXPECT_NE(p2p.getLocalState().dataBuffer, nullptr);
+  EXPECT_NE(p2p.getRemoteState().dataBuffer, nullptr);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-// Verify the self transport accessor returns a valid (trivial) object.
 TEST_F(MultiPeerTransportTestFixture, SelfAccessor) {
-  auto states = create_transport_states();
-  auto selfTransport = states->get_p2p_self_transport_device();
-  // P2pSelfTransportDevice is stateless, just verify it constructs
-  (void)selfTransport;
+  auto transport = createTransport();
+  (void)transport->get_p2p_self_transport_device();
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-// Verify getDeviceHandle() returns a handle with correct metadata
-// after exchange.
 TEST_F(MultiPeerTransportTestFixture, DeviceHandleMetadata) {
   if (numRanks < 2) {
     GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
   }
 
-  auto states = create_transport_states();
-  states->exchange();
+  auto transport = createTransport();
+  transport->exchange();
 
-  auto handle = states->get_device_handle();
+  auto handle = transport->get_device_handle();
   EXPECT_EQ(handle.myRank, globalRank);
   EXPECT_EQ(handle.nRanks, numRanks);
-
-  // Unified transport array should have one entry per rank
-  EXPECT_FALSE(handle.transports.empty());
   EXPECT_EQ(handle.transports.size(), static_cast<uint32_t>(numRanks));
-
-  // On single-node with NVL peers, numNvlPeers should be positive
   EXPECT_GT(handle.numNvlPeers, 0);
-
-  // IBGDA is universal — all non-self peers
   EXPECT_EQ(handle.numIbPeers, numRanks - 1);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-// Verify getDeviceHandle() throws before exchange() is called.
 TEST_F(MultiPeerTransportTestFixture, DeviceHandleBeforeExchange) {
-  auto states = create_transport_states();
-  EXPECT_THROW(states->get_device_handle(), std::runtime_error);
+  auto transport = createTransport();
+  EXPECT_THROW(transport->get_device_handle(), std::runtime_error);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
 
-// Verify that IBGDA transport is accessible even for an NVL peer.
-// This is the key capability: IBGDA is universal, NVL is the preferred overlay.
 TEST_F(MultiPeerTransportTestFixture, HostIbgdaAccessorForNvlPeer) {
   if (numRanks < 2) {
     GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
   }
 
-  auto states = create_transport_states();
-  states->exchange();
+  auto transport = createTransport();
+  transport->exchange();
 
-  int peerRank = (globalRank == 0) ? 1 : 0;
-
-  // Peer is NVL, but IBGDA should also be accessible
-  ASSERT_TRUE(states->is_nvl_peer(peerRank));
-  EXPECT_TRUE(states->has_ibgda(peerRank));
-
-  auto* ibgdaDev = states->get_p2p_ibgda_transport_device(peerRank);
-  EXPECT_NE(ibgdaDev, nullptr)
-      << "IBGDA transport should be accessible for NVL peer " << peerRank;
+  int peer = (globalRank == 0) ? 1 : 0;
+  ASSERT_TRUE(transport->is_nvl_peer(peer));
+  EXPECT_TRUE(transport->has_ibgda(peer));
+  EXPECT_NE(transport->get_p2p_ibgda_transport_device(peer), nullptr);
 
   MPI_Barrier(MPI_COMM_WORLD);
 }
@@ -263,7 +222,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferCudaMalloc) {
     GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
   }
 
-  auto transport = create_transport_states();
+  auto transport = createTransport();
   transport->exchange();
 
   if (transport->nvl_peer_ranks().empty()) {
@@ -298,7 +257,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferMultipleRoundTrips) {
     GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
   }
 
-  auto transport = create_transport_states();
+  auto transport = createTransport();
   transport->exchange();
 
   if (transport->nvl_peer_ranks().empty()) {
@@ -340,7 +299,7 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferFabric) {
     GTEST_SKIP() << "Fabric handles not supported on this GPU/CUDA version";
   }
 
-  auto transport = create_transport_states();
+  auto transport = createTransport();
   transport->exchange();
 
   if (transport->nvl_peer_ranks().empty()) {

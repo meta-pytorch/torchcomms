@@ -18,6 +18,9 @@ std::string getDtypeName(at::ScalarType dtype);
 std::string getOpName(const torch::comms::ReduceOp& op);
 std::tuple<int, int> getRankAndSize();
 c10::intrusive_ptr<c10d::Store> createStore();
+c10::intrusive_ptr<c10d::Store> wrapPrefixStore(
+    const std::string& name,
+    c10::intrusive_ptr<c10d::Store> store);
 void destroyStore(
     c10::intrusive_ptr<c10d::Store>&& store,
     const std::shared_ptr<torch::comms::TorchComm>& torchcomm);

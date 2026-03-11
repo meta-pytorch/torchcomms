@@ -6,6 +6,7 @@
  *************************************************************************/
 
 #include "nccl.h"
+#include "meta/NcclxConfig.h" // @manual
 #include "channel.h"
 #include "nvmlwrap.h"
 #include "gdrwrap.h"
@@ -23,7 +24,12 @@
 #include "compiler.h"
 #include "profiler.h"
 #include "mnnvl.h"
+#include <algorithm>
+#include <memory>
+#include <sstream>
+#include <string>
 #include <sys/stat.h>
+#include <vector>
 #include "param.h"
 #include "nvtx_payload_schemas.h"
 #include "utils.h"
@@ -279,9 +285,11 @@ void ncclCommPushCudaGdrFree(struct ncclComm* comm, void* handle) {
 
 // Free NCCLX-specific resources
 static void ncclxCommFree(ncclComm_t comm) {
-  if (comm->config.ncclAllGatherAlgo) {
-    free((void*)comm->config.ncclAllGatherAlgo);
-  }
+  // Free the canonical ncclx::Config
+  auto* ncclxCfg =
+      static_cast<ncclx::Config*>(comm->config.ncclxConfig);
+  delete ncclxCfg;
+  comm->config.ncclxConfig = nullptr;
 }
 
 static ncclResult_t commFree(ncclComm_t comm) {
@@ -1091,9 +1099,9 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   timers[TIMER_INIT_ALLGATHER] = clockNano() - timers[TIMER_INIT_ALLGATHER];
 
   // Check for lazy channel setup support
-  comm->lazySetupChannels = comm->cuMemSupport && comm->config.lazySetupChannels;
+  comm->lazySetupChannels = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazySetupChannels);
   // Check for runtime connect support
-  comm->runtimeConn = comm->cuMemSupport && comm->config.lazyConnect;
+  comm->runtimeConn = comm->cuMemSupport && NCCLX_CONFIG_FIELD(comm->config, lazyConnect);
 
   if (comm->runtimeConn == 0 && comm->lazySetupChannels == 1) {
     WARN("NCCL_RUNTIME_CONNECT is disabled but NCCL_LAZY_SETUP_CHANNELS is enabled, full lazy connect features will still be used");
@@ -1480,7 +1488,7 @@ static ncclResult_t initTransportsRank(struct ncclComm* comm, struct ncclComm* p
   if (comm->lazySetupChannels) {
     INFO(
         NCCL_INIT,
-        "commDesc: %s NCCL_LAZY_SETUP_CHANNELS=true, initializing minimal required channels at runtime when needed", ctran::utils::parseCommDesc(comm->config.commDesc));
+        "commDesc: %s NCCL_LAZY_SETUP_CHANNELS=true, initializing minimal required channels at runtime when needed", ctran::utils::parseCommDesc(NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()));
     // cache the ring info to be used for setupChannel later when needed
     comm->rings = std::vector<int>(rings, rings + nranks * MAXCHANNELS);
   } else if (comm->runtimeConn) {
@@ -1750,14 +1758,14 @@ static ncclResult_t ncclxCommGetSplitInfo(struct ncclComm* comm, struct ncclComm
     return ncclSuccess;
   }
   CHECKABORT(
-      comm && comm->config.splitGroupRanks && comm->config.splitGroupSize > 0,
-      "Empty comm or undefined config of splitGroupRanks or splitGroupSize passed to ncclxCommGetSplitInfo");
+      comm && !NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).empty(),
+      "Empty comm or undefined config of splitGroupRanks passed to ncclxCommGetSplitInfo");
 
-  *nRanksRet = comm->config.splitGroupSize;
+  *nRanksRet = static_cast<int>(NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).size());
   *myRankRet = -1;
-  for (int i = 0; i < comm->config.splitGroupSize; i++) {
-    parentRanksRet[i] = comm->config.splitGroupRanks[i];
-    if (parent->rank == comm->config.splitGroupRanks[i]) {
+  for (size_t i = 0; i < NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks).size(); i++) {
+    parentRanksRet[i] = NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks)[i];
+    if (parent->rank == NCCLX_CONFIG_FIELD(comm->config, splitGroupRanks)[i]) {
       *myRankRet = i;
     }
   }
@@ -1801,7 +1809,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     if (job->excludeRanksCount) {
       NCCLCHECKGOTO(getParentRanks(job->parent->nRanks, job->parent->rank, job->excludeRanksList, job->excludeRanksCount, &job->nranks, &job->myrank, parentRanks), res, fail);
     } else {
-      if (isFastInitRingMode(job->parent->config.fastInitMode)) {
+      if (isFastInitRingMode(NCCLX_CONFIG_FIELD(job->parent->config, fastInitMode))) {
         NCCLCHECKGOTO(ncclxCommGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
       } else {
         NCCLCHECKGOTO(commGetSplitInfo(comm, job->parent, job->color, job->key, &job->nranks, &job->myrank, parentRanks), res, fail);
@@ -1830,7 +1838,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
     // GROW or NORMAL INIT: use bootstrapInit
     // [Meta] Fast-init mode won't get unique commId for different communicators
     // use ctran helper function to generate unique hash
-    if (isFastInitRingMode(comm->config.fastInitMode)) {
+    if (isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
       comm->commHash = commIdHash = ctran::utils::generateCommHash(job->nranks);
     }
     if (job->isGrow) {
@@ -1859,7 +1867,7 @@ static ncclResult_t ncclCommInitRankFunc(struct ncclAsyncJob* job_) {
   // init this communicator's  Logger fields
   comm->logMetaData.commId = commIdHash;
   comm->logMetaData.commHash = comm->commHash;
-  comm->logMetaData.commDesc = comm->config.commDesc ? comm->config.commDesc : "undefined";
+  comm->logMetaData.commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc);
   comm->logMetaData.rank = comm->rank;
   comm->logMetaData.nRanks = comm->nRanks;
 
@@ -2173,84 +2181,157 @@ static ncclResult_t envConfigOverride(ncclComm_t comm) {
   return ret;
 }
 
-static void ncclxCopyCommConfig(ncclComm_t childComm, ncclComm_t parnet) {
-  childComm->config.ncclAllGatherAlgo = parnet->config.ncclAllGatherAlgo
-      ? strdup(parnet->config.ncclAllGatherAlgo)
-      : nullptr;
-}
-
-static ncclResult_t copyCommConfig(ncclComm_t childComm, ncclComm_t parnet) {
-  memcpy(&childComm->config, &parnet->config, sizeof(ncclConfig_t));
-  ncclxCopyCommConfig(childComm, parnet);
+static ncclResult_t copyCommConfig(ncclComm_t childComm, ncclComm_t parent) {
+  memcpy(&childComm->config, &parent->config, sizeof(ncclConfig_t));
+  if (parent->config.ncclxConfig) {
+    childComm->config.ncclxConfig = new ncclx::Config(
+        *static_cast<ncclx::Config*>(parent->config.ncclxConfig));
+  }
   NCCLCHECK(envConfigOverride(childComm));
   return ncclSuccess;
 }
 
-static void ncclxParseCommConfig(
-    ncclConfig_t* internalConfigPtr,
-    ncclComm_t comm) {
-  /* set default communicator description */
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      commDesc,
-      NCCL_CONFIG_UNDEF_PTR,
-      "undefined",
-      "Comm description",
-      "%s");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      splitGroupRanks,
-      NCCL_CONFIG_UNDEF_PTR,
-      nullptr,
-      "splitGroupRanks in communicator",
-      "%p");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      splitGroupSize,
-      NCCL_CONFIG_UNDEF_INT,
-      0,
-      "splitGroupSize in communicator",
-      "%d");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      ncclAllGatherAlgo,
-      NCCL_CONFIG_UNDEF_PTR,
-      "undefined",
-      "ncclAllGatherAlgo",
-      "%s");
-  /* Set default lazy features: Honor user-specified config first.
-   * If not set, use environment variable. */
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      lazyConnect,
-      NCCL_CONFIG_UNDEF_INT,
-      NCCL_RUNTIME_CONNECT,
-      "lazyConnect",
-      "%d");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      lazySetupChannels,
-      NCCL_CONFIG_UNDEF_INT,
-      NCCL_LAZY_SETUP_CHANNELS,
-      "lazySetupChannels",
-      "%d");
-  NCCL_CONFIG_DEFAULT(
-      internalConfigPtr,
-      fastInitMode,
-      NCCL_CONFIG_UNDEF_INT,
-      NCCL_FAST_INIT_MODE_DEFAULT,
-      "fastInitMode",
-      "%d");
+ncclResult_t ncclxParseCommConfig(ncclConfig_t* config) {
+  // Already created? (idempotent)
+  if (config->ncclxConfig != NCCL_CONFIG_UNDEF_PTR &&
+      config->ncclxConfig != nullptr) {
+    return ncclSuccess;
+  }
 
-  comm->config.commDesc = internalConfigPtr->commDesc;
-  comm->config.splitGroupRanks = internalConfigPtr->splitGroupRanks;
-  comm->config.splitGroupSize = internalConfigPtr->splitGroupSize;
-  comm->config.ncclAllGatherAlgo = internalConfigPtr->ncclAllGatherAlgo
-      ? strdup(internalConfigPtr->ncclAllGatherAlgo)
-      : nullptr;
-  comm->config.lazyConnect = internalConfigPtr->lazyConnect;
-  comm->config.lazySetupChannels = internalConfigPtr->lazySetupChannels;
-  comm->config.fastInitMode = internalConfigPtr->fastInitMode;
+  // Read hints (if any)
+  ncclx::Hints* hints = nullptr;
+  if (config->hints != NCCL_CONFIG_UNDEF_PTR &&
+      config->hints != nullptr) {
+    hints = static_cast<ncclx::Hints*>(config->hints);
+  }
+
+  // Check if a hint key is present
+  auto hasHint = [&](const char* key) -> bool {
+    if (!hints) {
+      return false;
+    }
+    std::string val;
+    return hints->get(key, val) == ncclSuccess;
+  };
+
+  // Detect conflicts: a field must not be set in both the flat
+  // ncclConfig_t (old format) and hints (new format).
+  bool conflict = false;
+  auto checkPtrConflict = [&](const char* key,
+                              const void* flatVal) {
+    if (flatVal != nullptr && hasHint(key)) {
+      WARN("NCCLX config field '%s' set in both ncclConfig_t and "
+           "hints; use one or the other, not both", key);
+      conflict = true;
+    }
+  };
+  auto checkIntConflict = [&](const char* key, int flatVal) {
+    if (flatVal != NCCL_CONFIG_UNDEF_INT && hasHint(key)) {
+      WARN("NCCLX config field '%s' set in both ncclConfig_t and "
+           "hints; use one or the other, not both", key);
+      conflict = true;
+    }
+  };
+
+  checkPtrConflict("commDesc", config->commDesc);
+  checkPtrConflict("splitGroupRanks", config->splitGroupRanks);
+  checkPtrConflict("ncclAllGatherAlgo", config->ncclAllGatherAlgo);
+  checkIntConflict("lazyConnect", config->lazyConnect);
+  checkIntConflict("lazySetupChannels", config->lazySetupChannels);
+  checkIntConflict("fastInitMode", config->fastInitMode);
+
+  if (conflict) {
+    return ncclInvalidArgument;
+  }
+
+  auto ncclxCfg = std::make_unique<ncclx::Config>();
+
+  // Helper: read bool from flat int field (old), hint (new), or
+  // default.  Accepts 0/1, yes/no, true/false, y/n, t/f (case
+  // insensitive) when reading from hints.
+  auto getBool = [&](const char* key, int flatVal, bool def) -> bool {
+    if (flatVal != NCCL_CONFIG_UNDEF_INT) {
+      return flatVal != 0;
+    }
+    if (hints) {
+      std::string val;
+      if (hints->get(key, val) == ncclSuccess) {
+        std::string lower(val.size(), '\0');
+        std::transform(val.begin(), val.end(), lower.begin(), ::tolower);
+        if (lower == "1" || lower == "yes" || lower == "true" ||
+            lower == "y" || lower == "t") {
+          return true;
+        }
+        if (lower == "0" || lower == "no" || lower == "false" ||
+            lower == "n" || lower == "f") {
+          return false;
+        }
+        return std::stoi(val) != 0;
+      }
+    }
+    return def;
+  };
+
+  // Helper: read string from flat field (old), hint (new), or
+  // default.
+  auto getStr = [&](const char* key, const char* flatVal,
+                    const char* def) -> std::string {
+    if (flatVal != nullptr) {
+      return flatVal;
+    }
+    if (hints) {
+      std::string val;
+      if (hints->get(key, val) == ncclSuccess) {
+        return val;
+      }
+    }
+    return def ? def : "";
+  };
+
+  // Helper: read comma-separated int array from hint, or use flat
+  // field pointer directly.
+  auto getIntArray = [&](const char* key, int* flatVal,
+                         int flatSize) -> std::vector<int> {
+    if (flatVal != nullptr) {
+      return std::vector<int>(flatVal, flatVal + flatSize);
+    }
+    if (!hints) {
+      return {};
+    }
+    std::string val;
+    if (hints->get(key, val) != ncclSuccess) {
+      return {};
+    }
+    std::vector<int> elems;
+    std::istringstream ss(val);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+      elems.push_back(std::stoi(tok));
+    }
+    return elems;
+  };
+
+  ncclxCfg->commDesc =
+      getStr("commDesc", config->commDesc, "undefined");
+  ncclxCfg->splitGroupRanks = getIntArray(
+      "splitGroupRanks", config->splitGroupRanks,
+      config->splitGroupSize != NCCL_CONFIG_UNDEF_INT
+          ? config->splitGroupSize : 0);
+  ncclxCfg->ncclAllGatherAlgo =
+      getStr("ncclAllGatherAlgo", config->ncclAllGatherAlgo,
+             "undefined");
+  ncclxCfg->lazyConnect =
+      getBool("lazyConnect", config->lazyConnect,
+              NCCL_RUNTIME_CONNECT);
+  ncclxCfg->lazySetupChannels =
+      getBool("lazySetupChannels", config->lazySetupChannels,
+              NCCL_LAZY_SETUP_CHANNELS);
+  ncclxCfg->fastInitMode =
+      getBool("fastInitMode", config->fastInitMode,
+              NCCL_FAST_INIT_MODE_DEFAULT);
+
+  config->ncclxConfig = ncclxCfg.release();
+  return ncclSuccess;
 }
 
 static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
@@ -2401,8 +2482,6 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
   NCCL_CONFIG_DEFAULT(internalConfigPtr, nChannelsPerNetPeer, NCCL_CONFIG_UNDEF_INT,
                       NCCL_CONFIG_UNDEF_INT, "nChannelsPerNetPeer", "%d");
 
-  ncclxParseCommConfig(internalConfigPtr, comm);
-
   NCCL_CONFIG_DEFAULT(internalConfigPtr, nvlinkCentricSched, NCCL_CONFIG_UNDEF_INT, 0, "nvlinkCentricSched", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, graphUsageMode, NCCL_CONFIG_UNDEF_INT, 2, "graphUsageMode", "%d");
   NCCL_CONFIG_DEFAULT(internalConfigPtr, numRmaCtx, NCCL_CONFIG_UNDEF_INT, 1, "numRmaCtx", "%d");
@@ -2424,6 +2503,8 @@ static ncclResult_t parseCommConfig(ncclComm_t comm, ncclConfig_t *config) {
   comm->config.nvlinkCentricSched = internalConfigPtr->nvlinkCentricSched;
   comm->config.graphUsageMode = internalConfigPtr->graphUsageMode;
   comm->config.numRmaCtx = internalConfigPtr->numRmaCtx;
+  NCCLCHECK(ncclxParseCommConfig(internalConfigPtr));
+  comm->config.ncclxConfig = internalConfigPtr->ncclxConfig;
   NCCLCHECKGOTO(envConfigOverride(comm), ret, fail);
 
 exit:
@@ -2488,7 +2569,11 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   comm->usePatAvg_ = ncclx::commUsePatAvg();
   comm->noLocal_ = ncclx::commNoLocal();
   INFO(NCCL_INIT, "CommInit comm %p commHash 0x%lx commDesc %s useCtran %d usePatAvg %d noLocal %d: %s %s %s",
-       comm, getHash(commId->internal, NCCL_UNIQUE_ID_BYTES), ctran::utils::parseCommDesc(config->commDesc),
+       comm, getHash(commId->internal, NCCL_UNIQUE_ID_BYTES),
+       ctran::utils::parseCommDesc(
+           (config->ncclxConfig != NCCL_CONFIG_UNDEF_PTR &&
+            config->ncclxConfig != nullptr)
+               ? NCCLX_CONFIG_FIELD(*config, commDesc).c_str() : "undefined"),
        comm->useCtran_, comm->usePatAvg_, comm->noLocal_, ncclx::getCommUseCtranConfig().c_str(),
        ncclx::getCommUsePatAvgConfig().c_str(), ncclx::getCommNoLocalConfig().c_str());
   *comm->abortFlagRefCount = 1;
@@ -2512,7 +2597,7 @@ static ncclResult_t ncclCommInitRankDev(ncclComm_t* newcomm, int nranks, int nId
   memcpy(job->commId, commId, nId * NCCL_UNIQUE_ID_BYTES);
 
   commIdEnv = ncclGetEnv("NCCL_COMM_ID");
-  if (commIdEnv && myrank == 0 && !isFastInitRingMode(comm->config.fastInitMode)) {
+  if (commIdEnv && myrank == 0 && !isFastInitRingMode(NCCLX_CONFIG_FIELD(comm->config, fastInitMode))) {
     INFO(NCCL_ENV, "NCCL_COMM_ID set by environment to %s", commIdEnv);
     if (nId > 1) {
       INFO(NCCL_INIT | NCCL_ENV, "NCCL_COMM_ID cannot be used with more than one ncclUniqueId");
@@ -2645,9 +2730,19 @@ ncclResult_t ncclCommInitRankConfig(ncclComm_t *newcomm, int nranks, ncclUniqueI
 
   NCCLCHECK(ncclInitEnv());
 
+  // Apply hints early so that config fields are populated before any
+  // field-specific reads below (e.g., fastInitMode).
+  if (config) {
+    NCCLCHECK(ncclxParseCommConfig(config));
+  }
+
   char allZeroUniqueId[NCCL_UNIQUE_ID_BYTES] = {0};
   bool uniqueIdIsInitialized = memcmp(commId.internal, allZeroUniqueId, NCCL_UNIQUE_ID_BYTES) != 0;
-  int fastInitMode = config ? config->fastInitMode : NCCL_FAST_INIT_MODE_DEFAULT;
+  bool fastInitMode = false;
+  if (config && config->ncclxConfig != NCCL_CONFIG_UNDEF_PTR &&
+      config->ncclxConfig != nullptr) {
+    fastInitMode = NCCLX_CONFIG_FIELD(*config, fastInitMode);
+  }
   if (isFastInitRingMode(fastInitMode)) {
     // in meta-fast-init mode, we don't need commId
     if (uniqueIdIsInitialized) {
@@ -3046,7 +3141,7 @@ static void commAbortLog(ncclComm_t comm, const std::string& abortScope) {
         "comm %p commHash %lx commDesc %s rank %d nRanks %d cudaDev %d busId %lx - Abort %s",
         comm,
         comm->commHash,
-        comm->config.commDesc,
+        NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str(),
         comm->rank,
         comm->nRanks,
         comm->cudaDev,
@@ -3179,7 +3274,7 @@ static ncclResult_t ncclCommInitChildComm(ncclComm_t comm, ncclComm_t* newcomm, 
     childComm->usePatAvg_ = ncclx::commUsePatAvg();
     childComm->noLocal_ = ncclx::commNoLocal();
     INFO(NCCL_INIT, "CommSplit comm %p commDesc %s useCtran %d usePatAvg %d noLocal %d: %s %s %s",
-        childComm, ctran::utils::parseCommDesc(childComm->config.commDesc),
+        childComm, ctran::utils::parseCommDesc(NCCLX_CONFIG_FIELD(childComm->config, commDesc).c_str()),
         childComm->useCtran_, childComm->usePatAvg_, childComm->noLocal_, ncclx::getCommUseCtranConfig().c_str(),
         ncclx::getCommUsePatAvgConfig().c_str(), ncclx::getCommNoLocalConfig().c_str());
   }

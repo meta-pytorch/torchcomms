@@ -236,23 +236,6 @@ void verifyBufferPattern(
     int blockSize);
 
 /**
- * Test kernel: Reset a remote signal slot to zero
- *
- * Uses RDMA inline write to set the remote signal to zero.
- *
- * @param deviceTransportPtr Pointer to P2pIbgdaTransportDevice in device
- * memory
- * @param remoteSignalBuf Remote signal buffer (with rkey)
- * @param signalId Signal slot index
- */
-void testResetSignal(
-    P2pIbgdaTransportDevice* deviceTransportPtr,
-    const IbgdaRemoteBuffer& remoteSignalBuf,
-    int signalId,
-    int numBlocks,
-    int blockSize);
-
-/**
  * Test kernel: Wait for ready signal, then put data with signal
  *
  * Sender waits for the receiver's ready signal (volatile spin on local

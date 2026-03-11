@@ -3,26 +3,27 @@
 #include "comms/pipes/tests/MultiPeerNvlTransportIntegrationTest.cuh"
 
 #include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/window/DeviceWindow.cuh"
 #include "comms/testinfra/TestXPlatUtils.h"
 
 namespace comms::pipes::test {
 
 // =============================================================================
-// TestDeviceBundle Accessors Test
+// DeviceWindow Accessors Test
 // =============================================================================
 
 __global__ void multiPeerDeviceTransportAccessorsKernel(
-    const TestDeviceBundle& bundle,
+    const DeviceWindow& dw,
     int* results) {
-  results[0] = bundle.rank();
-  results[1] = bundle.n_ranks();
-  results[2] = bundle.num_peers();
+  results[0] = dw.rank();
+  results[1] = dw.n_ranks();
+  results[2] = dw.num_peers();
 }
 
 void testMultiPeerDeviceTransportAccessors(
-    const TestDeviceBundle& bundle,
+    const DeviceWindow& dw,
     int* results) {
-  multiPeerDeviceTransportAccessorsKernel<<<1, 1>>>(bundle, results);
+  multiPeerDeviceTransportAccessorsKernel<<<1, 1>>>(dw, results);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -31,7 +32,7 @@ void testMultiPeerDeviceTransportAccessors(
 // =============================================================================
 
 __global__ void signalWaitKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     bool isSignaler,
@@ -39,23 +40,21 @@ __global__ void signalWaitKernel(
   auto group = make_warp_group();
 
   if (isSignaler) {
-    bundle.signal.signal_peer(
-        group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    dw.signal_peer(group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
     *result = 1;
   } else {
-    bundle.signal.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
     *result = 1;
   }
 }
 
 void testSignalWait(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     bool isSignaler,
     int* result) {
-  signalWaitKernel<<<1, 32>>>(
-      bundle, targetRank, signalIdx, isSignaler, result);
+  signalWaitKernel<<<1, 32>>>(dw, targetRank, signalIdx, isSignaler, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -63,17 +62,16 @@ void testSignalWait(
 // Barrier Test
 // =============================================================================
 
-__global__ void
-barrierKernel(TestDeviceBundle bundle, int barrierIdx, int* result) {
+__global__ void barrierKernel(DeviceWindow& dw, int barrierIdx, int* result) {
   auto group = make_warp_group();
 
-  bundle.barrier.barrier(group, barrierIdx);
+  dw.barrier(group, barrierIdx);
 
   *result = 1;
 }
 
-void testBarrier(TestDeviceBundle& bundle, int barrierIdx, int* result) {
-  barrierKernel<<<1, 32>>>(bundle, barrierIdx, result);
+void testBarrier(DeviceWindow& dw, int barrierIdx, int* result) {
+  barrierKernel<<<1, 32>>>(dw, barrierIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -82,44 +80,42 @@ void testBarrier(TestDeviceBundle& bundle, int barrierIdx, int* result) {
 // =============================================================================
 
 __global__ void singlePeerSendKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int peerRank,
     void* srcBuff,
     std::size_t nbytes) {
   auto group = make_warp_group();
-  bundle.handle.get_nvl(peerRank).send(group, srcBuff, nbytes);
+  dw.get_handle().get_nvl(peerRank).send(group, srcBuff, nbytes);
 }
 
 void testSinglePeerSend(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int peerRank,
     void* srcBuff,
     std::size_t nbytes,
     int numBlocks,
     int blockSize) {
-  singlePeerSendKernel<<<numBlocks, blockSize>>>(
-      bundle, peerRank, srcBuff, nbytes);
+  singlePeerSendKernel<<<numBlocks, blockSize>>>(dw, peerRank, srcBuff, nbytes);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
 __global__ void singlePeerRecvKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int peerRank,
     void* dstBuff,
     std::size_t nbytes) {
   auto group = make_warp_group();
-  bundle.handle.get_nvl(peerRank).recv(group, dstBuff, nbytes);
+  dw.get_handle().get_nvl(peerRank).recv(group, dstBuff, nbytes);
 }
 
 void testSinglePeerRecv(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int peerRank,
     void* dstBuff,
     std::size_t nbytes,
     int numBlocks,
     int blockSize) {
-  singlePeerRecvKernel<<<numBlocks, blockSize>>>(
-      bundle, peerRank, dstBuff, nbytes);
+  singlePeerRecvKernel<<<numBlocks, blockSize>>>(dw, peerRank, dstBuff, nbytes);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -128,14 +124,14 @@ void testSinglePeerRecv(
 // =============================================================================
 
 __global__ void multiPeerSendRecvAllPeersKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     void** srcBuffs,
     void** dstBuffs,
     std::size_t nbytesPerPeer) {
   auto group = make_warp_group();
 
-  int myRank = bundle.rank();
-  int numPeers = bundle.num_peers();
+  int myRank = dw.rank();
+  int numPeers = dw.num_peers();
 
   // Partition into send and recv groups (interleaved for SM balance)
   auto [partition_id, send_recv_group] = group.partition_interleaved(2);
@@ -148,23 +144,23 @@ __global__ void multiPeerSendRecvAllPeersKernel(
   int peer_rank = peer_idx < myRank ? peer_idx : peer_idx + 1;
 
   if (partition_id == 0) {
-    bundle.handle.get_nvl(peer_rank).send(
+    dw.get_handle().get_nvl(peer_rank).send(
         group_per_peer, srcBuffs[peer_idx], nbytesPerPeer);
   } else {
-    bundle.handle.get_nvl(peer_rank).recv(
+    dw.get_handle().get_nvl(peer_rank).recv(
         group_per_peer, dstBuffs[peer_idx], nbytesPerPeer);
   }
 }
 
 void testMultiPeerSendRecvAllPeers(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     void** srcBuffs,
     void** dstBuffs,
     std::size_t nbytesPerPeer,
     int numBlocks,
     int blockSize) {
   multiPeerSendRecvAllPeersKernel<<<numBlocks, blockSize>>>(
-      bundle, srcBuffs, dstBuffs, nbytesPerPeer);
+      dw, srcBuffs, dstBuffs, nbytesPerPeer);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -173,7 +169,7 @@ void testMultiPeerSendRecvAllPeers(
 // =============================================================================
 
 __global__ void concurrentSignalMultiBlockKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int numSlots,
     bool isSignaler,
@@ -184,10 +180,9 @@ __global__ void concurrentSignalMultiBlockKernel(
   auto slotId = blockIdx.x % numSlots;
 
   if (isSignaler) {
-    bundle.signal.signal_peer(
-        group, targetRank, slotId, SignalOp::SIGNAL_ADD, 1);
+    dw.signal_peer(group, targetRank, slotId, SignalOp::SIGNAL_ADD, 1);
   } else {
-    bundle.signal.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
   }
 
   // Record success for this block
@@ -197,14 +192,14 @@ __global__ void concurrentSignalMultiBlockKernel(
 }
 
 void testConcurrentSignalMultiBlock(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int numSlots,
     bool isSignaler,
     int* results,
     int numBlocks) {
   concurrentSignalMultiBlockKernel<<<numBlocks, 32>>>(
-      bundle, targetRank, numSlots, isSignaler, results);
+      dw, targetRank, numSlots, isSignaler, results);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -213,7 +208,7 @@ void testConcurrentSignalMultiBlock(
 // =============================================================================
 
 __global__ void putOperationKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     void* remoteDst,
     const void* localSrc,
@@ -224,18 +219,9 @@ __global__ void putOperationKernel(
   auto group = make_warp_group();
 
   if (isWriter) {
-    // put_signal: put + sync + signal_peer
-    bundle.handle.get_nvl(targetRank)
-        .put(
-            group,
-            static_cast<char*>(remoteDst),
-            static_cast<const char*>(localSrc),
-            nbytes);
-    group.sync();
-    bundle.signal.signal_peer(
-        group, targetRank, signalId, SignalOp::SIGNAL_ADD, 1);
+    dw.put_signal(targetRank, group, remoteDst, localSrc, nbytes, signalId, 1);
   } else {
-    bundle.signal.wait_signal(group, signalId, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, signalId, CmpOp::CMP_GE, 1);
   }
 
   if (threadIdx.x == 0) {
@@ -244,7 +230,7 @@ __global__ void putOperationKernel(
 }
 
 void testPutOperation(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     void* remoteDst,
     const void* localSrc,
@@ -253,14 +239,7 @@ void testPutOperation(
     bool isWriter,
     int* result) {
   putOperationKernel<<<1, 32>>>(
-      bundle,
-      targetRank,
-      remoteDst,
-      localSrc,
-      nbytes,
-      signalId,
-      isWriter,
-      result);
+      dw, targetRank, remoteDst, localSrc, nbytes, signalId, isWriter, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -268,27 +247,26 @@ void testPutOperation(
 // Transport Types Test
 // =============================================================================
 
-__global__ void transportTypesKernel(
-    const TestDeviceBundle& bundle,
-    int* results) {
+__global__ void transportTypesKernel(const DeviceWindow& dw, int* results) {
   // Output numPeers in results[0]
-  results[0] = bundle.num_peers();
+  results[0] = dw.num_peers();
 
   // Self transport type
-  int myRank = bundle.rank();
-  results[1 + myRank] = static_cast<int>(bundle.handle.transports[myRank].type);
+  int myRank = dw.rank();
+  results[1 + myRank] =
+      static_cast<int>(dw.get_handle().transports[myRank].type);
 
   // Peer transport types
-  int nRanks = bundle.n_ranks();
+  int nRanks = dw.n_ranks();
   for (int r = 0; r < nRanks; ++r) {
     if (r == myRank)
       continue;
-    results[1 + r] = static_cast<int>(bundle.handle.transports[r].type);
+    results[1 + r] = static_cast<int>(dw.get_handle().transports[r].type);
   }
 }
 
-void testTransportTypes(const TestDeviceBundle& bundle, int* results) {
-  transportTypesKernel<<<1, 1>>>(bundle, results);
+void testTransportTypes(const DeviceWindow& dw, int* results) {
+  transportTypesKernel<<<1, 1>>>(dw, results);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -297,7 +275,7 @@ void testTransportTypes(const TestDeviceBundle& bundle, int* results) {
 // =============================================================================
 
 __global__ void concurrentSignalWaitMultiWarpKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int numSlots,
     bool isSignaler,
@@ -319,10 +297,9 @@ __global__ void concurrentSignalWaitMultiWarpKernel(
   int slotId = warpIdx % numSlots;
 
   if (isSignaler) {
-    bundle.signal.signal_peer(
-        group, targetRank, slotId, SignalOp::SIGNAL_ADD, 1);
+    dw.signal_peer(group, targetRank, slotId, SignalOp::SIGNAL_ADD, 1);
   } else {
-    bundle.signal.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, slotId, CmpOp::CMP_GE, 1);
   }
 
   // Record success for this warp
@@ -332,7 +309,7 @@ __global__ void concurrentSignalWaitMultiWarpKernel(
 }
 
 void testConcurrentSignalWaitMultiWarp(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int numSlots,
     bool isSignaler,
@@ -340,7 +317,7 @@ void testConcurrentSignalWaitMultiWarp(
     int warpsPerBlock) {
   int blockSize = warpsPerBlock * 32; // 32 threads per warp
   concurrentSignalWaitMultiWarpKernel<<<1, blockSize>>>(
-      bundle, targetRank, numSlots, isSignaler, results, warpsPerBlock);
+      dw, targetRank, numSlots, isSignaler, results, warpsPerBlock);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -349,28 +326,28 @@ void testConcurrentSignalWaitMultiWarp(
 // =============================================================================
 
 __global__ void signalAllKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int signalerRank,
     int signalIdx,
     int* result) {
   auto group = make_warp_group();
-  int myRank = bundle.rank();
+  int myRank = dw.rank();
 
   if (myRank == signalerRank) {
-    bundle.signal.signal_all(group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    dw.signal_all(group, signalIdx, SignalOp::SIGNAL_ADD, 1);
   } else {
-    bundle.signal.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
   }
 
   *result = 1;
 }
 
 void testSignalAll(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int signalerRank,
     int signalIdx,
     int* result) {
-  signalAllKernel<<<1, 32>>>(bundle, signalerRank, signalIdx, result);
+  signalAllKernel<<<1, 32>>>(dw, signalerRank, signalIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -379,29 +356,29 @@ void testSignalAll(
 // =============================================================================
 
 __global__ void signalAllAggregateDistributedKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow dw,
     int signalIdx,
     uint64_t* result) {
   auto group = make_warp_group();
 
   // Every rank signals all peers with value 1
-  bundle.signal.signal_all(group, signalIdx, SignalOp::SIGNAL_ADD, 1);
+  dw.signal_all(group, signalIdx, SignalOp::SIGNAL_ADD, 1);
 
   // Wait until aggregate reaches nRanks-1 (all peers have signaled us)
-  bundle.signal.wait_signal(
-      group, signalIdx, CmpOp::CMP_GE, bundle.num_peers());
+  dw.wait_signal(
+      group, signalIdx, CmpOp::CMP_GE, dw.num_peers(), Timeout(10000000000ULL));
 
   // Read aggregate (thread-level API)
   if (group.is_leader()) {
-    *result = bundle.signal.read_signal(signalIdx);
+    *result = dw.read_signal(signalIdx);
   }
 }
 
 void testSignalAllAggregateDistributed(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int signalIdx,
     uint64_t* result) {
-  signalAllAggregateDistributedKernel<<<1, 32>>>(bundle, signalIdx, result);
+  signalAllAggregateDistributedKernel<<<1, 32>>>(dw, signalIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -410,30 +387,29 @@ void testSignalAllAggregateDistributed(
 // =============================================================================
 
 __global__ void waitSignalFromAllKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     int* result) {
   auto group = make_warp_group();
-  int myRank = bundle.rank();
+  int myRank = dw.rank();
 
   if (myRank == targetRank) {
-    int nRanks = bundle.n_ranks();
-    bundle.signal.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
+    int nRanks = dw.n_ranks();
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
   } else {
-    bundle.signal.signal_peer(
-        group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    dw.signal_peer(group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
   }
 
   *result = 1;
 }
 
 void testWaitSignalFromAll(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     int* result) {
-  waitSignalFromAllKernel<<<1, 32>>>(bundle, targetRank, signalIdx, result);
+  waitSignalFromAllKernel<<<1, 32>>>(dw, targetRank, signalIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -442,7 +418,7 @@ void testWaitSignalFromAll(
 // =============================================================================
 
 __global__ void waitWithCmpEqKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     uint64_t expectedValue,
@@ -451,24 +427,24 @@ __global__ void waitWithCmpEqKernel(
   auto group = make_warp_group();
 
   if (isSignaler) {
-    bundle.signal.signal_peer(
+    dw.signal_peer(
         group, targetRank, signalIdx, SignalOp::SIGNAL_SET, expectedValue);
   } else {
-    bundle.signal.wait_signal(group, signalIdx, CmpOp::CMP_EQ, expectedValue);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_EQ, expectedValue);
   }
 
   *result = 1;
 }
 
 void testWaitWithCmpEq(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     uint64_t expectedValue,
     bool isSignaler,
     int* result) {
   waitWithCmpEqKernel<<<1, 32>>>(
-      bundle, targetRank, signalIdx, expectedValue, isSignaler, result);
+      dw, targetRank, signalIdx, expectedValue, isSignaler, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -477,7 +453,7 @@ void testWaitWithCmpEq(
 // =============================================================================
 
 __global__ void monotonicWaitValuesKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     int numIterations,
@@ -487,10 +463,9 @@ __global__ void monotonicWaitValuesKernel(
 
   for (int i = 0; i < numIterations; ++i) {
     if (isSignaler) {
-      bundle.signal.signal_peer(
-          group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+      dw.signal_peer(group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
     } else {
-      bundle.signal.wait_signal(group, signalIdx, CmpOp::CMP_GE, i + 1);
+      dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, i + 1);
     }
     group.sync();
   }
@@ -499,14 +474,14 @@ __global__ void monotonicWaitValuesKernel(
 }
 
 void testMonotonicWaitValues(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     int numIterations,
     bool isSignaler,
     int* result) {
   monotonicWaitValuesKernel<<<1, 32>>>(
-      bundle, targetRank, signalIdx, numIterations, isSignaler, result);
+      dw, targetRank, signalIdx, numIterations, isSignaler, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -515,7 +490,7 @@ void testMonotonicWaitValues(
 // =============================================================================
 
 __global__ void signalWithSetKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     uint64_t setValue,
@@ -524,24 +499,24 @@ __global__ void signalWithSetKernel(
   auto group = make_warp_group();
 
   if (isSignaler) {
-    bundle.signal.signal_peer(
+    dw.signal_peer(
         group, targetRank, signalIdx, SignalOp::SIGNAL_SET, setValue);
   } else {
-    bundle.signal.wait_signal(group, signalIdx, CmpOp::CMP_GE, setValue);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, setValue);
   }
 
   *result = 1;
 }
 
 void testSignalWithSet(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     uint64_t setValue,
     bool isSignaler,
     int* result) {
   signalWithSetKernel<<<1, 32>>>(
-      bundle, targetRank, signalIdx, setValue, isSignaler, result);
+      dw, targetRank, signalIdx, setValue, isSignaler, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -550,14 +525,14 @@ void testSignalWithSet(
 // =============================================================================
 
 __global__ void barrierMonotonicKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int barrierIdx,
     int numPhases,
     int* result) {
   auto group = make_warp_group();
 
   for (int phase = 0; phase < numPhases; ++phase) {
-    bundle.barrier.barrier(group, barrierIdx);
+    dw.barrier(group, barrierIdx);
   }
 
   if (threadIdx.x == 0) {
@@ -566,11 +541,11 @@ __global__ void barrierMonotonicKernel(
 }
 
 void testBarrierMonotonic(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int barrierIdx,
     int numPhases,
     int* result) {
-  barrierMonotonicKernel<<<1, 32>>>(bundle, barrierIdx, numPhases, result);
+  barrierMonotonicKernel<<<1, 32>>>(dw, barrierIdx, numPhases, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -578,15 +553,13 @@ void testBarrierMonotonic(
 // Barrier Multi-Block Stress Test
 // =============================================================================
 
-__global__ void barrierMultiBlockStressKernel(
-    TestDeviceBundle bundle,
-    int numSlots,
-    int* results) {
+__global__ void
+barrierMultiBlockStressKernel(DeviceWindow& dw, int numSlots, int* results) {
   auto group = make_warp_group();
 
   uint32_t slotId = blockIdx.x % numSlots;
 
-  bundle.barrier.barrier(group, slotId);
+  dw.barrier(group, slotId);
 
   if (threadIdx.x == 0) {
     results[blockIdx.x] = 1;
@@ -594,11 +567,11 @@ __global__ void barrierMultiBlockStressKernel(
 }
 
 void testBarrierMultiBlockStress(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int numSlots,
     int* results,
     int numBlocks) {
-  barrierMultiBlockStressKernel<<<numBlocks, 32>>>(bundle, numSlots, results);
+  barrierMultiBlockStressKernel<<<numBlocks, 32>>>(dw, numSlots, results);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -607,15 +580,13 @@ void testBarrierMultiBlockStress(
 // =============================================================================
 
 __global__ void barrierPeerKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int barrierIdx,
     int* result) {
   auto group = make_warp_group();
 
-  // DeviceWindowBarrier::barrier_peer takes peer_index, not global rank
-  int peer_index = bundle.rank_to_peer_index(targetRank);
-  bundle.barrier.barrier_peer(peer_index, group, barrierIdx);
+  dw.barrier_peer(targetRank, group, barrierIdx);
 
   if (threadIdx.x == 0) {
     *result = 1;
@@ -623,11 +594,11 @@ __global__ void barrierPeerKernel(
 }
 
 void testBarrierPeer(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int barrierIdx,
     int* result) {
-  barrierPeerKernel<<<1, 32>>>(bundle, targetRank, barrierIdx, result);
+  barrierPeerKernel<<<1, 32>>>(dw, targetRank, barrierIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -636,7 +607,7 @@ void testBarrierPeer(
 // =============================================================================
 
 __global__ void waitSignalFromPeerKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int peerRank,
     int signalIdx,
     bool isSignaler,
@@ -644,12 +615,10 @@ __global__ void waitSignalFromPeerKernel(
   auto group = make_warp_group();
 
   if (isSignaler) {
-    bundle.signal.signal_peer(
-        group, peerRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    dw.signal_peer(group, peerRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
   } else {
-    bundle.signal.wait_signal_from(
-        group, peerRank, signalIdx, CmpOp::CMP_GE, 1);
-    uint64_t val = bundle.signal.read_signal_from(peerRank, signalIdx);
+    dw.wait_signal_from(group, peerRank, signalIdx, CmpOp::CMP_GE, 1);
+    uint64_t val = dw.read_signal_from(peerRank, signalIdx);
     if (val < 1) {
       *result = 0;
       return;
@@ -660,13 +629,13 @@ __global__ void waitSignalFromPeerKernel(
 }
 
 void testWaitSignalFromPeer(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int peerRank,
     int signalIdx,
     bool isSignaler,
     int* result) {
   waitSignalFromPeerKernel<<<1, 32>>>(
-      bundle, peerRank, signalIdx, isSignaler, result);
+      dw, peerRank, signalIdx, isSignaler, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -675,13 +644,13 @@ void testWaitSignalFromPeer(
 // =============================================================================
 
 __global__ void waitSignalFromMultiPeerIsolationKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     int* result) {
   auto group = make_warp_group();
-  int myRank = bundle.rank();
-  int nRanks = bundle.n_ranks();
+  int myRank = dw.rank();
+  int nRanks = dw.n_ranks();
 
   if (myRank == targetRank) {
     for (int r = 0; r < nRanks; ++r) {
@@ -689,9 +658,8 @@ __global__ void waitSignalFromMultiPeerIsolationKernel(
         continue;
       }
       uint64_t expectedValue = static_cast<uint64_t>(r + 1);
-      bundle.signal.wait_signal_from(
-          group, r, signalIdx, CmpOp::CMP_GE, expectedValue);
-      uint64_t val = bundle.signal.read_signal_from(r, signalIdx);
+      dw.wait_signal_from(group, r, signalIdx, CmpOp::CMP_GE, expectedValue);
+      uint64_t val = dw.read_signal_from(r, signalIdx);
       if (val != expectedValue) {
         *result = 0;
         return;
@@ -699,7 +667,7 @@ __global__ void waitSignalFromMultiPeerIsolationKernel(
     }
   } else {
     uint64_t signalValue = static_cast<uint64_t>(myRank + 1);
-    bundle.signal.signal_peer(
+    dw.signal_peer(
         group, targetRank, signalIdx, SignalOp::SIGNAL_SET, signalValue);
   }
 
@@ -707,12 +675,12 @@ __global__ void waitSignalFromMultiPeerIsolationKernel(
 }
 
 void testWaitSignalFromMultiPeerIsolation(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     int* result) {
   waitSignalFromMultiPeerIsolationKernel<<<1, 32>>>(
-      bundle, targetRank, signalIdx, result);
+      dw, targetRank, signalIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -721,38 +689,37 @@ void testWaitSignalFromMultiPeerIsolation(
 // =============================================================================
 
 __global__ void waitSignalAndWaitSignalFromBothWorkKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     int* result) {
   auto group = make_warp_group();
-  int myRank = bundle.rank();
-  int nRanks = bundle.n_ranks();
+  int myRank = dw.rank();
+  int nRanks = dw.n_ranks();
 
   if (myRank == targetRank) {
-    bundle.signal.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, nRanks - 1);
 
     for (int r = 0; r < nRanks; ++r) {
       if (r == myRank) {
         continue;
       }
-      bundle.signal.wait_signal_from(group, r, signalIdx, CmpOp::CMP_GE, 1);
+      dw.wait_signal_from(group, r, signalIdx, CmpOp::CMP_GE, 1);
     }
   } else {
-    bundle.signal.signal_peer(
-        group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    dw.signal_peer(group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
   }
 
   *result = 1;
 }
 
 void testWaitSignalAndWaitSignalFromBothWork(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     int* result) {
   waitSignalAndWaitSignalFromBothWorkKernel<<<1, 32>>>(
-      bundle, targetRank, signalIdx, result);
+      dw, targetRank, signalIdx, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 
@@ -761,7 +728,7 @@ void testWaitSignalAndWaitSignalFromBothWork(
 // =============================================================================
 
 __global__ void signalWaitBlockScopeKernel(
-    TestDeviceBundle bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     bool isSignaler,
@@ -769,13 +736,12 @@ __global__ void signalWaitBlockScopeKernel(
   auto group = make_block_group(); // Uses SyncScope::BLOCK
 
   if (isSignaler) {
-    bundle.signal.signal_peer(
-        group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
+    dw.signal_peer(group, targetRank, signalIdx, SignalOp::SIGNAL_ADD, 1);
     if (threadIdx.x == 0) {
       *result = 1;
     }
   } else {
-    bundle.signal.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
+    dw.wait_signal(group, signalIdx, CmpOp::CMP_GE, 1);
     if (threadIdx.x == 0) {
       *result = 1;
     }
@@ -783,14 +749,14 @@ __global__ void signalWaitBlockScopeKernel(
 }
 
 void testSignalWaitBlockScope(
-    TestDeviceBundle& bundle,
+    DeviceWindow& dw,
     int targetRank,
     int signalIdx,
     bool isSignaler,
     int* result) {
   // Launch with 1 block of 128 threads (BLOCK scope = all 128 threads in block)
   signalWaitBlockScopeKernel<<<1, 128>>>(
-      bundle, targetRank, signalIdx, isSignaler, result);
+      dw, targetRank, signalIdx, isSignaler, result);
   CUDACHECK_TEST(cudaGetLastError());
 }
 

@@ -136,11 +136,6 @@ __global__ void putSignalCounterKernel(
     int counterId,
     uint64_t counterVal);
 
-__global__ void resetSignalKernel(
-    P2pIbgdaTransportDevice* transport,
-    IbgdaRemoteBuffer remoteSignalBuf,
-    int signalId);
-
 __global__ void waitCounterKernel(
     volatile uint64_t* counterBuf,
     int counterId,

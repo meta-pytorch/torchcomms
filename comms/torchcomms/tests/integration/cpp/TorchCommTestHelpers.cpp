@@ -1,6 +1,7 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/tests/integration/cpp/TorchCommTestHelpers.h"
+#include "torch/csrc/distributed/c10d/PrefixStore.hpp" // @manual=//caffe2:torch-cpp-cpu
 #include "torch/csrc/distributed/c10d/TCPStore.hpp" // @manual=//caffe2:torch-cpp-cpu
 
 #include "comms/torchcomms/TorchCommLogging.hpp"
@@ -141,6 +142,12 @@ c10::intrusive_ptr<c10d::Store> createStore() {
   opts.useLibUV = true;
   opts.timeout = std::chrono::milliseconds(60000);
   return c10::make_intrusive<c10d::TCPStore>(std::string{host}, opts);
+}
+
+c10::intrusive_ptr<c10d::Store> wrapPrefixStore(
+    const std::string& name,
+    c10::intrusive_ptr<c10d::Store> store) {
+  return c10::make_intrusive<c10d::PrefixStore>(name, store);
 }
 
 void destroyStore(

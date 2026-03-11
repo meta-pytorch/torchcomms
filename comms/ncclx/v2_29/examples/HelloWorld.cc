@@ -10,7 +10,9 @@ int main(int argc, char* argv[]) {
   cudaStream_t stream;
   int* userBuff = NULL;
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.commDesc = "example_pg";
+  ncclx::Hints hints;
+  hints.set("commDesc", "example_pg");
+  config.hints = &hints;
 
   ncclUniqueId ncclId;
   NCCLCHECK(ncclGetUniqueId(&ncclId));

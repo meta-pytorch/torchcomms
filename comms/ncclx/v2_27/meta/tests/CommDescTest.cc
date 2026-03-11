@@ -10,6 +10,7 @@
 #include "comm.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
+#include "meta/NcclxConfig.h"
 #include "nccl.h"
 
 class commDescTest : public ::testing::Test {
@@ -32,7 +33,7 @@ TEST_F(commDescTest, getUndefinedCommDesc) {
   NcclCommRAII comm(this->globalRank, this->numRanks, this->localRank);
   ASSERT_NE(nullptr, static_cast<ncclComm_t>(comm));
 
-  EXPECT_STREQ(comm->config.commDesc, "nccl_ut");
+  EXPECT_EQ(NCCLX_CONFIG_FIELD(comm->config, commDesc), "nccl_ut");
 }
 
 TEST_F(commDescTest, getDefinedCommDesc) {
@@ -46,14 +47,16 @@ TEST_F(commDescTest, getDefinedCommDesc) {
 
   ncclComm_t comm;
   ncclConfig_t inputConfig = NCCL_CONFIG_INITIALIZER;
-  inputConfig.commDesc = "test_description";
+  ncclx::Hints hints;
+  hints.set("commDesc", "test_description");
+  inputConfig.hints = &hints;
 
   NCCLCHECK_TEST(ncclCommInitRankConfig(
       &comm, numRanks, ncclId, globalRank, &inputConfig));
   ASSERT_NE(nullptr, comm);
 
-  EXPECT_STRNE(comm->config.commDesc, "undefined");
-  EXPECT_STREQ(comm->config.commDesc, inputConfig.commDesc);
+  EXPECT_NE(NCCLX_CONFIG_FIELD(comm->config, commDesc), "undefined");
+  EXPECT_EQ(NCCLX_CONFIG_FIELD(comm->config, commDesc), "test_description");
 
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
@@ -71,7 +74,9 @@ TEST_F(commDescTest, InvalidPointerAccess) {
   ncclConfig_t inputConfig = NCCL_CONFIG_INITIALIZER;
   const char* commDescConst = "test_description";
   char* commDesc = strdup(commDescConst);
-  inputConfig.commDesc = commDesc;
+  ncclx::Hints hints;
+  hints.set("commDesc", commDesc);
+  inputConfig.hints = &hints;
 
   NCCLCHECK_TEST(ncclCommInitRankConfig(
       &comm, numRanks, ncclId, globalRank, &inputConfig));
@@ -79,8 +84,8 @@ TEST_F(commDescTest, InvalidPointerAccess) {
 
   free(commDesc);
 
-  EXPECT_STRNE(comm->config.commDesc, "undefined");
-  EXPECT_STREQ(comm->config.commDesc, commDescConst);
+  EXPECT_NE(NCCLX_CONFIG_FIELD(comm->config, commDesc), "undefined");
+  EXPECT_EQ(NCCLX_CONFIG_FIELD(comm->config, commDesc), commDescConst);
 
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }

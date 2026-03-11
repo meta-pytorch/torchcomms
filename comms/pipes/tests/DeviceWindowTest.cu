@@ -1,0 +1,570 @@
+// (c) Meta Platforms, Inc. and affiliates. Confidential and proprietary.
+
+#include "comms/pipes/tests/DeviceWindowTest.cuh"
+
+#include <algorithm>
+#include <memory>
+#include <vector>
+
+#include "comms/pipes/ThreadGroup.cuh"
+#include "comms/pipes/Transport.cuh"
+#include "comms/pipes/window/DeviceWindow.cuh"
+#include "comms/testinfra/TestXPlatUtils.h"
+#include "comms/utils/CudaRAII.h"
+
+namespace comms::pipes::test {
+
+// Helper: build a minimal NVL-only DeviceWindow for unit tests.
+// All IBGDA params are zeroed/null since these tests run NVL-only.
+struct NvlOnlyDeviceWindowBuffers {
+  std::unique_ptr<meta::comms::DeviceBuffer> nvlPeerSignalInboxBuf;
+  std::unique_ptr<meta::comms::DeviceBuffer> nvlPeerSignalSpansBuf;
+  std::unique_ptr<meta::comms::DeviceBuffer> peerIndexMapsBuf;
+  std::unique_ptr<meta::comms::DeviceBuffer> transportsBuf;
+
+  DeviceWindow create(int myRank, int nRanks, int peerSignalCount) {
+    int nPeers = nRanks - 1;
+
+    // Transports array (needed for handle_.get_type dispatching)
+    transportsBuf = std::make_unique<meta::comms::DeviceBuffer>(
+        std::max(1, nRanks) * sizeof(Transport));
+    CUDACHECK_TEST(cudaMemset(
+        transportsBuf->get(), 0, std::max(1, nRanks) * sizeof(Transport)));
+    auto* transportsPtr = static_cast<Transport*>(transportsBuf->get());
+    for (int i = 0; i < nRanks; ++i) {
+      TransportType type =
+          (i == myRank) ? TransportType::SELF : TransportType::P2P_NVL;
+      CUDACHECK_TEST(cudaMemcpy(
+          &transportsPtr[i].type,
+          &type,
+          sizeof(TransportType),
+          cudaMemcpyHostToDevice));
+    }
+
+    // NVL per-peer signal inbox: nPeers * peerSignalCount entries
+    std::size_t peerInboxSlots =
+        static_cast<std::size_t>(std::max(1, nPeers)) * peerSignalCount;
+    nvlPeerSignalInboxBuf = std::make_unique<meta::comms::DeviceBuffer>(
+        peerInboxSlots * sizeof(SignalState));
+    CUDACHECK_TEST(cudaMemset(
+        nvlPeerSignalInboxBuf->get(), 0, peerInboxSlots * sizeof(SignalState)));
+
+    // NVL per-peer signal spans: build on host, copy to device.
+    // Each span[i] points to inbox + i * peerSignalCount with size
+    // peerSignalCount.
+    nvlPeerSignalSpansBuf = std::make_unique<meta::comms::DeviceBuffer>(
+        std::max(1, nPeers) * sizeof(DeviceSpan<SignalState>));
+    {
+      auto* inboxBase = static_cast<SignalState*>(nvlPeerSignalInboxBuf->get());
+      std::vector<DeviceSpan<SignalState>> hostSpans(std::max(1, nPeers));
+      for (int i = 0; i < nPeers; ++i) {
+        new (&hostSpans[i]) DeviceSpan<SignalState>(
+            inboxBase + i * peerSignalCount, peerSignalCount);
+      }
+      CUDACHECK_TEST(cudaMemcpy(
+          nvlPeerSignalSpansBuf->get(),
+          hostSpans.data(),
+          std::max(1, nPeers) * sizeof(DeviceSpan<SignalState>),
+          cudaMemcpyHostToDevice));
+    }
+
+    // Pre-computed peer index maps: rankToNvlPeerIndex only
+    // (IBGDA uses rank_to_peer_index() arithmetic, no table needed)
+    peerIndexMapsBuf = std::make_unique<meta::comms::DeviceBuffer>(
+        std::max(1, nRanks) * sizeof(int));
+    {
+      std::vector<int> nvlMap(nRanks, -1);
+      int nvlIdx = 0;
+      for (int r = 0; r < nRanks; ++r) {
+        if (r != myRank) {
+          nvlMap[r] = nvlIdx++;
+        }
+      }
+      auto* base = static_cast<int*>(peerIndexMapsBuf->get());
+      CUDACHECK_TEST(cudaMemcpy(
+          base, nvlMap.data(), nRanks * sizeof(int), cudaMemcpyHostToDevice));
+    }
+
+    // Build DeviceWindow field-by-field.
+    // DeviceSpan has deleted copy-assignment, so we use placement new.
+    DeviceWindow dw{};
+    new (&dw.handle_) MultiPeerDeviceHandle{
+        myRank,
+        nRanks,
+        DeviceSpan<Transport>(transportsPtr, nRanks),
+        nPeers,
+        0};
+    dw.nNvlPeers_ = nPeers;
+    dw.nIbgdaPeers_ = 0;
+    dw.peerSignalCount_ = peerSignalCount;
+
+    auto* indexBase = static_cast<int*>(peerIndexMapsBuf->get());
+    new (&dw.rankToNvlPeerIndex_) DeviceSpan<int>(indexBase, nRanks);
+
+    new (&dw.nvlPeerSignalInbox_) DeviceSpan<SignalState>(
+        static_cast<SignalState*>(nvlPeerSignalInboxBuf->get()),
+        static_cast<std::size_t>(nPeers) * peerSignalCount);
+    new (&dw.nvlPeerSignalSpans_) DeviceSpan<DeviceSpan<SignalState>>(
+        static_cast<DeviceSpan<SignalState>*>(nvlPeerSignalSpansBuf->get()),
+        nPeers);
+
+    return dw;
+  }
+};
+
+// =============================================================================
+// DeviceWindow Construction Test
+// =============================================================================
+
+__global__ void deviceWindowConstructionKernel(DeviceWindow dw, int* results) {
+  results[0] = dw.rank();
+  results[1] = dw.n_ranks();
+  results[2] = dw.num_nvl_peers();
+}
+
+void testDeviceWindowConstruction(
+    int myRank,
+    int nRanks,
+    int signalCount,
+    int* results) {
+  NvlOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, signalCount);
+
+  deviceWindowConstructionKernel<<<1, 1>>>(dw, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// DeviceWindow Basic Accessors Test
+// =============================================================================
+
+__global__ void deviceWindowBasicAccessorsKernel(
+    DeviceWindow dw,
+    int* results) {
+  results[0] = dw.rank();
+  results[1] = dw.n_ranks();
+}
+
+void testDeviceWindowBasicAccessors(int myRank, int nRanks, int* results) {
+  NvlOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, 1);
+
+  deviceWindowBasicAccessorsKernel<<<1, 1>>>(dw, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// Self-Transport Put Test
+// =============================================================================
+
+__global__ void selfTransportPutKernel(
+    Transport* transport,
+    char* dst_d,
+    const char* src_d,
+    std::size_t nbytes) {
+  auto group = make_warp_group();
+  transport->self.put(group, dst_d, src_d, nbytes);
+}
+
+void testSelfTransportPut(
+    void* transport_d,
+    char* dst_d,
+    const char* src_d,
+    std::size_t nbytes,
+    int numBlocks,
+    int blockSize) {
+  selfTransportPutKernel<<<numBlocks, blockSize>>>(
+      static_cast<Transport*>(transport_d), dst_d, src_d, nbytes);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// Get Transport Type Test
+// =============================================================================
+
+__global__ void getTransportTypeKernel(Transport* transport, int* results) {
+  results[0] = (transport->type == TransportType::SELF) ? 1 : 0;
+}
+
+void testGetTransportType(void* transport_d, int* results) {
+  getTransportTypeKernel<<<1, 1>>>(
+      static_cast<Transport*>(transport_d), results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// Peer Iteration Helpers Test
+// =============================================================================
+
+__global__ void peerIterationHelpersKernel(DeviceWindow dw, int* results) {
+  results[0] = dw.num_peers();
+
+  int numPeers = dw.num_peers();
+  for (int i = 0; i < numPeers; ++i) {
+    results[1 + i] = dw.peer_index_to_rank(i);
+  }
+}
+
+void testPeerIterationHelpers(int myRank, int nRanks, int* results) {
+  NvlOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, 1);
+
+  peerIterationHelpersKernel<<<1, 1>>>(dw, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// Peer Index Conversion Roundtrip Test
+// =============================================================================
+
+__global__ void peerIndexConversionRoundtripKernel(
+    DeviceWindow dw,
+    int nRanks,
+    int myRank,
+    int* results) {
+  int numPeers = dw.num_peers();
+  int idx = 0;
+
+  results[idx++] = numPeers;
+
+  for (int rank = 0; rank < nRanks; ++rank) {
+    if (rank == myRank) {
+      continue;
+    }
+    results[idx++] = dw.rank_to_peer_index(rank);
+  }
+
+  for (int rank = 0; rank < nRanks; ++rank) {
+    if (rank == myRank) {
+      continue;
+    }
+    int peerIdx = dw.rank_to_peer_index(rank);
+    results[idx++] = dw.peer_index_to_rank(peerIdx);
+  }
+
+  for (int i = 0; i < numPeers; ++i) {
+    int rank = dw.peer_index_to_rank(i);
+    results[idx++] = dw.rank_to_peer_index(rank);
+  }
+
+  results[idx++] = static_cast<int>(dw.get_handle().transports[myRank].type);
+
+  for (int rank = 0; rank < nRanks; ++rank) {
+    if (rank == myRank)
+      continue;
+    results[idx++] = static_cast<int>(dw.get_handle().transports[rank].type);
+  }
+}
+
+void testPeerIndexConversionRoundtrip(int myRank, int nRanks, int* results) {
+  NvlOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, 1);
+
+  peerIndexConversionRoundtripKernel<<<1, 1>>>(dw, nRanks, myRank, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// DeviceWindow NVL Signal Write+Read Test
+// =============================================================================
+
+__global__ void deviceSignalWriteReadKernel(
+    DeviceWindow dw,
+    int targetPeerRank,
+    int signalId,
+    uint64_t* results) {
+  auto group = make_block_group();
+
+  dw.signal_peer(group, targetPeerRank, signalId);
+
+  if (group.is_global_leader()) {
+    results[0] = dw.read_signal_from(targetPeerRank, signalId);
+    results[1] = dw.read_signal(signalId);
+  }
+}
+
+void testDeviceWindowSignalWriteRead(
+    int myRank,
+    int nRanks,
+    int signalCount,
+    int targetPeerRank,
+    int signalId,
+    uint64_t* results) {
+  NvlOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, signalCount);
+
+  deviceSignalWriteReadKernel<<<1, 32>>>(dw, targetPeerRank, signalId, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// DeviceWindow read_signal Test
+// =============================================================================
+
+__global__ void readSignalKernel(
+    DeviceWindow dw,
+    int targetPeerRank,
+    int signalId,
+    uint64_t* results) {
+  auto group = make_block_group();
+
+  // Signal a peer (thread-level, from leader)
+  if (group.is_global_leader()) {
+    dw.signal_peer(targetPeerRank, signalId, SignalOp::SIGNAL_ADD, 3);
+  }
+  group.sync();
+
+  // Read aggregate (thread-level API)
+  if (group.is_leader()) {
+    results[0] = dw.read_signal(signalId);
+  }
+}
+
+void testDeviceWindowReadSignalGroup(
+    int myRank,
+    int nRanks,
+    int signalCount,
+    uint64_t* results) {
+  NvlOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, signalCount);
+
+  // Signal peer rank 1 on signal slot 0
+  int targetPeerRank = (myRank == 0) ? 1 : 0;
+  int signalId = 0;
+  readSignalKernel<<<1, 32>>>(dw, targetPeerRank, signalId, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// DeviceWindow NVL Put via Generic API Test
+// =============================================================================
+
+__global__ void nvlPutKernel(
+    DeviceWindow dw,
+    int targetPeerRank,
+    char* remoteDst,
+    const char* localSrc,
+    std::size_t nbytes) {
+  auto group = make_block_group();
+  dw.put(targetPeerRank, group, remoteDst, localSrc, nbytes);
+}
+
+void testDeviceWindowNvlPut(
+    int myRank,
+    int nRanks,
+    char* dst_d,
+    const char* src_d,
+    std::size_t nbytes) {
+  NvlOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, 1);
+
+  int targetPeerRank = (myRank == 0) ? 1 : 0;
+  nvlPutKernel<<<4, 256>>>(dw, targetPeerRank, dst_d, src_d, nbytes);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// DeviceWindow signal_all + read_signal Aggregate Test
+// =============================================================================
+
+__global__ void
+signalAllAggregateKernel(DeviceWindow dw, int signalId, uint64_t* results) {
+  auto group = make_block_group();
+
+  // signal_all signals every peer with value 1
+  dw.signal_all(group, signalId, SignalOp::SIGNAL_ADD, 1);
+
+  // Read aggregate via thread-level API from leader
+  if (group.is_global_leader()) {
+    results[0] = dw.read_signal(signalId);
+  }
+}
+
+void testDeviceWindowSignalAllAggregate(
+    int myRank,
+    int nRanks,
+    int signalCount,
+    int signalId,
+    uint64_t* results) {
+  NvlOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, signalCount);
+
+  signalAllAggregateKernel<<<1, 32>>>(dw, signalId, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// IBGDA-Only DeviceWindow Helper
+// =============================================================================
+
+// Helper: build a DeviceWindow with IBGDA-only peers for unit tests.
+// The IBGDA inbox is a flat uint64_t array (no real NIC/QP needed).
+// This lets us test read_signal_from / read_signal on the IBGDA path
+// by writing known values directly into the local inbox.
+struct IbgdaOnlyDeviceWindowBuffers {
+  std::unique_ptr<meta::comms::DeviceBuffer> ibgdaPeerSignalInboxBuf;
+  std::unique_ptr<meta::comms::DeviceBuffer> ibgdaPeerSignalRemoteBufsBuf;
+  std::unique_ptr<meta::comms::DeviceBuffer> peerIndexMapsBuf;
+  std::unique_ptr<meta::comms::DeviceBuffer> transportsBuf;
+
+  DeviceWindow create(int myRank, int nRanks, int peerSignalCount) {
+    int nPeers = nRanks - 1;
+
+    // Transports array: all peers are IBGDA
+    transportsBuf = std::make_unique<meta::comms::DeviceBuffer>(
+        std::max(1, nRanks) * sizeof(Transport));
+    CUDACHECK_TEST(cudaMemset(
+        transportsBuf->get(), 0, std::max(1, nRanks) * sizeof(Transport)));
+    auto* transportsPtr = static_cast<Transport*>(transportsBuf->get());
+    for (int i = 0; i < nRanks; ++i) {
+      TransportType type =
+          (i == myRank) ? TransportType::SELF : TransportType::P2P_IBGDA;
+      CUDACHECK_TEST(cudaMemcpy(
+          &transportsPtr[i].type,
+          &type,
+          sizeof(TransportType),
+          cudaMemcpyHostToDevice));
+    }
+
+    // IBGDA per-peer signal inbox: nPeers * peerSignalCount uint64_t slots
+    std::size_t inboxSlots =
+        static_cast<std::size_t>(std::max(1, nPeers)) * peerSignalCount;
+    ibgdaPeerSignalInboxBuf = std::make_unique<meta::comms::DeviceBuffer>(
+        inboxSlots * sizeof(uint64_t));
+    CUDACHECK_TEST(cudaMemset(
+        ibgdaPeerSignalInboxBuf->get(), 0, inboxSlots * sizeof(uint64_t)));
+
+    // IBGDA remote bufs (dummy — no real QP, but needed for DeviceSpan)
+    ibgdaPeerSignalRemoteBufsBuf = std::make_unique<meta::comms::DeviceBuffer>(
+        std::max(1, nPeers) * sizeof(IbgdaRemoteBuffer));
+    CUDACHECK_TEST(cudaMemset(
+        ibgdaPeerSignalRemoteBufsBuf->get(),
+        0,
+        std::max(1, nPeers) * sizeof(IbgdaRemoteBuffer)));
+
+    // Pre-computed peer index maps (NVL only; IBGDA uses rank_to_peer_index())
+    peerIndexMapsBuf = std::make_unique<meta::comms::DeviceBuffer>(
+        std::max(1, nRanks) * sizeof(int));
+    {
+      std::vector<int> nvlMap(nRanks, -1);
+      auto* base = static_cast<int*>(peerIndexMapsBuf->get());
+      CUDACHECK_TEST(cudaMemcpy(
+          base, nvlMap.data(), nRanks * sizeof(int), cudaMemcpyHostToDevice));
+    }
+
+    DeviceWindow dw{};
+    new (&dw.handle_) MultiPeerDeviceHandle{
+        myRank,
+        nRanks,
+        DeviceSpan<Transport>(transportsPtr, nRanks),
+        0,
+        nPeers};
+    dw.nNvlPeers_ = 0;
+    dw.nIbgdaPeers_ = nPeers;
+    dw.peerSignalCount_ = peerSignalCount;
+
+    auto* indexBase = static_cast<int*>(peerIndexMapsBuf->get());
+    new (&dw.rankToNvlPeerIndex_) DeviceSpan<int>(indexBase, nRanks);
+
+    dw.ibgdaPeerSignalInbox_ =
+        static_cast<uint64_t*>(ibgdaPeerSignalInboxBuf->get());
+    new (&dw.ibgdaPeerSignalRemoteBufs_) DeviceSpan<IbgdaRemoteBuffer>(
+        static_cast<IbgdaRemoteBuffer*>(ibgdaPeerSignalRemoteBufsBuf->get()),
+        nPeers);
+
+    return dw;
+  }
+
+  // Get host-accessible pointer to the raw inbox for seeding test values
+  uint64_t* getInboxPtr() {
+    return static_cast<uint64_t*>(ibgdaPeerSignalInboxBuf->get());
+  }
+};
+
+// =============================================================================
+// IBGDA Signal: read_signal_from + read_signal Test
+// =============================================================================
+
+__global__ void ibgdaSignalReadKernel(
+    DeviceWindow dw,
+    int sourceRank,
+    int signalId,
+    uint64_t* results) {
+  results[0] = dw.read_signal_from(sourceRank, signalId);
+  results[1] = dw.read_signal(signalId);
+}
+
+void testIbgdaSignalRead(
+    int myRank,
+    int nRanks,
+    int signalCount,
+    int sourceRank,
+    int signalId,
+    uint64_t seedValue,
+    uint64_t* results) {
+  IbgdaOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, signalCount);
+
+  // Seed the inbox: write seedValue at the slot for (sourceRank, signalId).
+  // The skip-self peer index for sourceRank is:
+  int peerIdx = (sourceRank < myRank) ? sourceRank : (sourceRank - 1);
+  int slot = peerIdx * signalCount + signalId;
+  CUDACHECK_TEST(cudaMemcpy(
+      bufs.getInboxPtr() + slot,
+      &seedValue,
+      sizeof(uint64_t),
+      cudaMemcpyHostToDevice));
+
+  ibgdaSignalReadKernel<<<1, 1>>>(dw, sourceRank, signalId, results);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+// =============================================================================
+// IBGDA Signal: Multi-peer aggregate read_signal Test
+// =============================================================================
+
+__global__ void ibgdaSignalAggregateReadKernel(
+    DeviceWindow dw,
+    int signalId,
+    uint64_t* result) {
+  *result = dw.read_signal(signalId);
+}
+
+void testIbgdaSignalAggregateRead(
+    int myRank,
+    int nRanks,
+    int signalCount,
+    int signalId,
+    const uint64_t* peerValues,
+    int nPeers,
+    uint64_t* result) {
+  IbgdaOnlyDeviceWindowBuffers bufs;
+  auto dw = bufs.create(myRank, nRanks, signalCount);
+
+  // Seed the inbox for each peer at the given signalId
+  for (int i = 0; i < nPeers; ++i) {
+    int slot = i * signalCount + signalId;
+    CUDACHECK_TEST(cudaMemcpy(
+        bufs.getInboxPtr() + slot,
+        &peerValues[i],
+        sizeof(uint64_t),
+        cudaMemcpyHostToDevice));
+  }
+
+  ibgdaSignalAggregateReadKernel<<<1, 1>>>(dw, signalId, result);
+  CUDACHECK_TEST(cudaGetLastError());
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+}
+
+} // namespace comms::pipes::test

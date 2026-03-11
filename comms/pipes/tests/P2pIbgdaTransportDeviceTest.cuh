@@ -8,32 +8,11 @@
 
 namespace comms::pipes::tests {
 
-// Wrapper function to launch test kernel (defined in .cu, called from .cc)
-// This function creates a P2pIbgdaTransportDevice on the device with the given
-// buffers and verifies its accessors work correctly.
-void runTestP2pTransportConstruction(
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    bool* d_success);
+// Test transport construction on device (null QP)
+void runTestP2pTransportConstruction(bool* d_success);
 
 // Test default construction - all members should be initialized to null/zero
 void runTestP2pTransportDefaultConstruction(bool* d_success);
-
-// Test getNumSignals accessor with various values
-void runTestP2pTransportNumSignals(
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    int numSignals,
-    bool* d_success);
-
-// Test signal pointer arithmetic - verify correct offsets for multi-signal
-// setup This tests the internal getLocalSignalPtr/getRemoteSignalPtr logic by
-// checking buffer accessors return pointers at expected offsets.
-void runTestP2pTransportSignalPointerArithmetic(
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    int numSignals,
-    bool* d_success);
 
 // Test read_signal returns the value at the correct signal slot.
 // This writes known values to the signal buffer and verifies read_signal
@@ -41,7 +20,6 @@ void runTestP2pTransportSignalPointerArithmetic(
 void runTestP2pTransportReadSignal(
     uint64_t* d_signalBuf,
     IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
     int numSignals,
     bool* d_success);
 
@@ -49,67 +27,16 @@ void runTestP2pTransportReadSignal(
 void runTestIbgdaWork(bool* d_success);
 
 // =============================================================================
-// wait_signal tests - Test each comparison operation
+// wait_signal tests - Test GE (>=) comparison (only supported operation)
 // These tests pre-set the signal buffer to a value that satisfies the condition
 // so wait_signal returns immediately without blocking.
 // =============================================================================
-
-// Test wait_signal with EQ (equal) comparison
-// Pre-sets signal to targetValue, waits for EQ targetValue
-void runTestWaitSignalEQ(
-    uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    uint64_t targetValue,
-    bool* d_success);
-
-// Test wait_signal with NE (not equal) comparison
-// Pre-sets signal to a value != targetValue, waits for NE targetValue
-void runTestWaitSignalNE(
-    uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    uint64_t signalValue,
-    uint64_t targetValue,
-    bool* d_success);
 
 // Test wait_signal with GE (greater or equal) comparison
 // Pre-sets signal to a value >= targetValue, waits for GE targetValue
 void runTestWaitSignalGE(
     uint64_t* d_signalBuf,
     IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    uint64_t signalValue,
-    uint64_t targetValue,
-    bool* d_success);
-
-// Test wait_signal with GT (greater than) comparison
-// Pre-sets signal to a value > targetValue, waits for GT targetValue
-void runTestWaitSignalGT(
-    uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    uint64_t signalValue,
-    uint64_t targetValue,
-    bool* d_success);
-
-// Test wait_signal with LE (less or equal) comparison
-// Pre-sets signal to a value <= targetValue, waits for LE targetValue
-void runTestWaitSignalLE(
-    uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    uint64_t signalValue,
-    uint64_t targetValue,
-    bool* d_success);
-
-// Test wait_signal with LT (less than) comparison
-// Pre-sets signal to a value < targetValue, waits for LT targetValue
-void runTestWaitSignalLT(
-    uint64_t* d_signalBuf,
-    IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
-    uint64_t signalValue,
     uint64_t targetValue,
     bool* d_success);
 
@@ -118,7 +45,6 @@ void runTestWaitSignalLT(
 void runTestWaitSignalMultipleSlots(
     uint64_t* d_signalBuf,
     IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
     int numSignals,
     bool* d_success);
 
@@ -165,7 +91,6 @@ void runTestPutGroupPartitioningBlock(bool* d_success);
 void runTestWaitSignalTimeout(
     uint64_t* d_signalBuf,
     IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
     int device,
     uint32_t timeout_ms);
 
@@ -174,7 +99,6 @@ void runTestWaitSignalTimeout(
 void runTestWaitSignalNoTimeout(
     uint64_t* d_signalBuf,
     IbgdaLocalBuffer localBuf,
-    IbgdaRemoteBuffer remoteBuf,
     int device,
     uint32_t timeout_ms,
     bool* d_success);
