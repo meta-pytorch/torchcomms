@@ -11,9 +11,9 @@
 
 namespace torch::comms {
 
-class TorchCommTracingGuard {
+class TracingGuard {
  public:
-  TorchCommTracingGuard(
+  TracingGuard(
       std::string_view comm_name,
       int comm_size,
       std::string_view collective_name,
@@ -21,7 +21,7 @@ class TorchCommTracingGuard {
       const std::vector<at::Tensor>& input_tensor_list = {},
       const std::vector<at::Tensor>& output_tensor_list = {});
 
-  TorchCommTracingGuard(
+  TracingGuard(
       std::string_view comm_name,
       int comm_size,
       std::string_view collective_name,

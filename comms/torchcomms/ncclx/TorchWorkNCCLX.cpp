@@ -4,8 +4,8 @@
 #include <ATen/ThreadLocalState.h>
 #include <ATen/cuda/CUDAContext.h>
 #include "TorchCommNCCLX.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
-#include "comms/torchcomms/TorchCommTracing.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 
 namespace torch::comms {
 
@@ -239,7 +239,7 @@ void TorchWorkNCCLX::wait() {
     return;
   }
 
-  TorchCommTracingGuard g(
+  TracingGuard g(
       std::string(comm_->getCommName()),
       comm_->getSize(),
       "wait",

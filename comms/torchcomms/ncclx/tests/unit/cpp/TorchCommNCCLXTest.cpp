@@ -943,7 +943,7 @@ TEST_F(TorchCommNCCLXTest, HighPriorityStreamCreation) {
     setupCCAExpectations(1, 2, 1);
 
     auto options = CommOptions();
-    options.hints["torchcomm::ncclx::high_priority_stream"] = "true";
+    options.hints[std::string(kHintHighPriorityStream)] = "true";
     options.store = store_;
     auto comm = createMockedTorchComm();
 

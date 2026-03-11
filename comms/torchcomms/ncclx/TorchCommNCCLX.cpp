@@ -16,27 +16,14 @@
 #include <torch/csrc/cuda/CUDAPluggableAllocator.h> // @manual=//caffe2:torch-cpp-cuda
 
 #include "comms/torchcomms/TorchCommFactory.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/ncclx/TorchCommNCCLXBootstrap.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
 
 namespace {
-// Hint key prefix and names for NCCLX backend configuration
-constexpr std::string_view kHintPrefix = "torchcomm::ncclx::";
-constexpr std::string_view kHintHighPriorityStream =
-    "torchcomm::ncclx::high_priority_stream";
-constexpr std::string_view kHintMaxEventPoolSize =
-    "torchcomm::ncclx::max_event_pool_size";
-constexpr std::string_view kHintGarbageCollectIntervalMs =
-    "torchcomm::ncclx::garbage_collect_interval_ms";
-constexpr std::string_view kHintEnableCudaGraphSupport =
-    "torchcomm::ncclx::enable_cuda_graph_support";
-constexpr std::string_view kHintGraphTimeoutCheckIntervalMs =
-    "torchcomm::ncclx::graph_timeout_check_interval_ms";
-
 // Helper function to validate that metadata tensors are int64_t (torch.int64)
 void validateInt64Dtype(const at::Tensor& tensor, std::string_view name) {
   if (tensor.scalar_type() != at::kLong) {
@@ -182,16 +169,9 @@ void TorchCommNCCLX::init(
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
-  for (auto const& [key, val] : options_.hints) {
-    if (key.starts_with(kHintPrefix)) {
-      if (key == kHintHighPriorityStream) {
-        high_priority_stream_ = string_to_bool(val);
-      } else {
-        throw std::runtime_error("Unrecognized hint " + key);
-      }
-    } else {
-      // Ignore keys that do not start with "torchcomm::ncclx::"
-    }
+  if (options_.hints.contains(std::string(kHintHighPriorityStream))) {
+    high_priority_stream_ =
+        string_to_bool(options_.hints.at(std::string(kHintHighPriorityStream)));
   }
 
   // Create internal stream
@@ -280,7 +260,7 @@ void TorchCommNCCLX::init(
       nccl_api_->commCount(nccl_comm_, &comm_size_),
       "NCCLX Count failed");
 
-  TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
+  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommNCCLX::timeoutWatchdog, this);
@@ -485,8 +465,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::send(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "send", dst, tensor, tensor);
+  TracingGuard tracingGuard(name_, comm_size_, "send", dst, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   graph_event_tracker_.initOnGraphStart(stream);
@@ -531,8 +510,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::recv(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "recv", src, tensor, tensor);
+  TracingGuard tracingGuard(name_, comm_size_, "recv", src, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   graph_event_tracker_.initOnGraphStart(stream);
@@ -593,7 +571,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::batch_op_issue(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "batch_op_issue",
@@ -679,7 +657,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::broadcast(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "broadcast", rank_, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -726,7 +704,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -775,8 +753,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce(
   checkAndAbortIfTimedOutOrError();
   ensureTensorContiguous(tensor);
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "reduce", root, tensor, tensor);
+  TracingGuard tracingGuard(name_, comm_size_, "reduce", root, tensor, tensor);
 
   cudaStream_t stream = getOperationStream(async_op);
   graph_event_tracker_.initOnGraphStart(stream);
@@ -839,7 +816,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -921,7 +898,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_v(
   for (const auto& t : tensor_list) {
     ensureTensorContiguous(t);
   }
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -995,7 +972,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_gather_single(
         "Output tensor size must be input_size * comm_size for all_gather_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -1054,7 +1031,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -1140,7 +1117,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_v(
     ensureTensorContiguous(t);
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -1231,7 +1208,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::reduce_scatter_single(
         "Input tensor size must be output_size * comm_size for reduce_scatter_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -1290,7 +1267,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_single(
         "Tensor size must be divisible by comm_size for all_to_all_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -1370,7 +1347,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all_v_single(
         "Sum of output_split_sizes exceeds output tensor size for all_to_all_v_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -1455,7 +1432,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::all_to_all(
     ensureTensorContiguous(output_tensor_list[i]);
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "all_to_all",
@@ -1547,7 +1524,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_dispatch(
   validateInt64Dtype(
       output_chunk_sizes_per_rank, "output_chunk_sizes_per_rank");
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "alltoallv_dynamic_dispatch",
@@ -1645,7 +1622,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dynamic_combine(
   validateInt64Dtype(input_chunk_indices, "input_chunk_indices");
   validateInt64Dtype(input_chunk_count_per_rank, "input_chunk_count_per_rank");
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "alltoallv_dynamic_combine",
@@ -1750,7 +1727,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_exec(
   validateIntDtype(forward_indices, "forward_indices");
   validateIntDtype(recv_indices, "recv_indices");
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "alltoallv_dedup_exec",
@@ -1812,7 +1789,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::alltoallv_dedup_combine(
   validateIntDtype(forward_indices, "forward_indices");
   validateIntDtype(recv_indices, "recv_indices");
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "alltoallv_dedup_combine",
@@ -1856,7 +1833,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::barrier(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
-  TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
+  TracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
 
   cudaStream_t stream = getOperationStream(async_op);
   graph_event_tracker_.initOnGraphStart(stream);
@@ -1915,7 +1892,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::scatter(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "scatter", root, input_tensor_list, {output_tensor});
 
   cudaStream_t stream = getOperationStream(async_op);
@@ -2019,7 +1996,7 @@ c10::intrusive_ptr<TorchWork> TorchCommNCCLX::gather(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "gather", root, {input_tensor}, output_tensor_list);
 
   cudaStream_t stream = getOperationStream(async_op);

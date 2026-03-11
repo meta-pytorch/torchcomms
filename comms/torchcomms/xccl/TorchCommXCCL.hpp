@@ -18,12 +18,16 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/device/xpu/XpuApi.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/xccl/TorchWorkXCCL.hpp"
 #include "comms/torchcomms/xccl/XcclApi.hpp"
 
 namespace torch::comms {
+
+// Hint key names for XCCL backend configuration
+constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 
 constexpr size_t kMaxEventPoolSize = 1000;
 

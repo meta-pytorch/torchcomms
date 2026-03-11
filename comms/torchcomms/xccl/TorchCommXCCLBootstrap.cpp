@@ -2,8 +2,9 @@
 #include <ATen/xpu/XPUContext.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
 #include <exception>
-#include "comms/torchcomms/StoreManager.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include <set>
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/StoreManager.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
@@ -192,6 +193,14 @@ void TorchCommXCCLBootstrap::cleanupTCPStore(onecclComm_t xccl_comm) {
   }
 }
 
+// TorchComm-layer hint keys that are consumed by the backend init code
+// (TorchCommXCCL::init), not by onecclConfig.  Skip them here to avoid
+// spurious "unsupported hint" warnings.
+static const std::set<std::string> kTorchCommLayerHints = {
+    std::string(kHintHighPriorityStream),
+    std::string(kHintMaxEventPoolSize),
+};
+
 // Helper function to populate XCCL config from hints
 void populateXcclConfigFromHints(
     onecclConfig_t& config,
@@ -204,7 +213,9 @@ void populateXcclConfigFromHints(
   // it.
 
   for (const auto& [key, val] : options.hints) {
-    if (key == "blocking") {
+    if (kTorchCommLayerHints.count(key)) {
+      continue;
+    } else if (key == "blocking") {
       config.blocking = std::stoi(val);
       TC_LOG(INFO) << "[comm=" << name
                    << "] Setting config.blocking=" << config.blocking;
