@@ -10,7 +10,10 @@
 #include <unordered_map>
 #include <vector>
 
-#include <infiniband/verbs.h>
+#include "comms/ctran/ibverbx/IbvDevice.h"
+#include "comms/ctran/ibverbx/IbvMr.h"
+#include "comms/ctran/ibverbx/IbvPd.h"
+#include "comms/ctran/ibverbx/Ibvcore.h"
 
 #include <doca_gpunetio_host.h>
 #include "comms/common/bootstrap/IBootstrap.h"
@@ -132,7 +135,7 @@ struct IbgdaTransportExchInfo {
   uint16_t lid{0};
 
   // Port active MTU. Used to negotiate path MTU: min(local, remote).
-  enum ibv_mtu mtu { IBV_MTU_4096 };
+  enum ibverbx::ibv_mtu mtu{ibverbx::IBV_MTU_4096};
 };
 
 /**
@@ -155,7 +158,7 @@ struct IbgdaTransportExchInfoAll {
   uint16_t lid{0};
 
   // Port active MTU.
-  enum ibv_mtu mtu { IBV_MTU_4096 };
+  enum ibverbx::ibv_mtu mtu{ibverbx::IBV_MTU_4096};
 
   // Per-target-rank QPNs
   // qpnForRank[j] = QPN that this rank uses to connect to rank j
@@ -374,11 +377,11 @@ class MultipeerIbgdaTransport {
   // DOCA GPU context
   doca_gpu* docaGpu_{nullptr};
 
-  // IB verbs resources (raw rdma-core)
-  ibv_context* ibvCtx_{nullptr};
-  ibv_pd* ibvPd_{nullptr};
+  // IB verbs resources (ibverbx RAII objects)
+  std::optional<ibverbx::IbvDevice> ibvDevice_;
+  std::optional<ibverbx::IbvPd> ibvPd_;
   doca_verbs_ah_attr* ahAttr_{nullptr};
-  union ibv_gid localGid_{};
+  union ibverbx::ibv_gid localGid_{};
 
   // QP groups (one per peer): main QP + companion QP with shared UAR.
   // The companion QP is created with core_direct=true (required for WAIT WQE).
@@ -394,16 +397,16 @@ class MultipeerIbgdaTransport {
   // return value. We don't need it, so we use a small "sink" buffer.
   void* sinkBuffer_{nullptr};
   std::size_t sinkBufferSize_{0};
-  ibv_mr* sinkMr_{nullptr};
+  std::optional<ibverbx::IbvMr> sinkMr_;
 
-  // User-registered buffers (maps ptr -> ibv_mr*)
-  std::unordered_map<void*, ibv_mr*> registeredBuffers_;
+  // User-registered buffers (RAII — automatically deregistered on erase/clear)
+  std::unordered_map<void*, ibverbx::IbvMr> registeredBuffers_;
 
   // GPU PCIe bus ID and NIC device name
   std::string gpuPciBusId_;
   std::string nicDeviceName_;
   int gidIndex_{3}; // Default GID index
-  enum ibv_mtu localMtu_ { IBV_MTU_4096 };
+  enum ibverbx::ibv_mtu localMtu_{ibverbx::IBV_MTU_4096};
 
   // Per-peer device transports (GPU accessible)
   P2pIbgdaTransportDevice* peerTransportsGpu_{nullptr};
