@@ -307,7 +307,7 @@ ncclResult_t ncclCommWindowRegister_impl(ncclComm_t comm, void* buff, size_t siz
 exit:
   ncclGroupErrCheck(ret);
   NCCLCHECK(ret = ncclGroupEndInternal());
-  cudaSetDevice(saveDev);
+  (void)cudaSetDevice(saveDev);
   return ret;
 fail:
   free(*win);

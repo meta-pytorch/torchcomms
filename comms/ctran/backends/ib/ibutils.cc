@@ -141,7 +141,7 @@ void IbUtils::linkDownSetTimeout(const std::string& devName, const int port) {
   timeoutThread_ = std::thread{[=, this]() {
     // Set cuda device for the thread so that logging can correctly
     // identify the local rank of the thread.
-    cudaSetDevice(device);
+    (void)cudaSetDevice(device);
     commNamedThreadStart("IBtimeoutHandler");
     timeoutHandler(this, std::chrono::milliseconds(timeoutMs), devName, port);
   }};
