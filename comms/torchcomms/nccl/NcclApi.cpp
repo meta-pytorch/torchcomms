@@ -2,7 +2,7 @@
 
 #include "comms/torchcomms/nccl/NcclApi.hpp"
 #include <fmt/core.h>
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 namespace torch::comms {
 
