@@ -359,26 +359,26 @@ static void p2pCopyKernel2Dst(
 // Benchmark Registration Helper Macros
 //------------------------------------------------------------------------------
 
-// Helper macro to register benchmarks for all group counts for a given size
-#define REGISTER_COPY_BENCH_FOR_SIZE(func, sizeMB)     \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_1b, sizeMB * 1024 * 1024, 1);   \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_2b, sizeMB * 1024 * 1024, 2);   \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_4b, sizeMB * 1024 * 1024, 4);   \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_8b, sizeMB * 1024 * 1024, 8);   \
-  BENCHMARK_MULTI_PARAM_COUNTERS(                      \
-      func, sizeMB##MB_16b, sizeMB * 1024 * 1024, 16); \
-  BENCHMARK_MULTI_PARAM_COUNTERS(func, sizeMB##MB_32b, sizeMB * 1024 * 1024, 32)
+// Helper macro to register benchmarks for all block counts at a given size.
+// sizeKB is in KB; label is a human-readable tag (e.g. 256KB, 4MB).
+#define REGISTER_COPY_BENCH_FOR_SIZE(func, label, sizeKB)                    \
+  BENCHMARK_MULTI_PARAM_COUNTERS(func, label##_1b, (sizeKB) * 1024ULL, 1);   \
+  BENCHMARK_MULTI_PARAM_COUNTERS(func, label##_2b, (sizeKB) * 1024ULL, 2);   \
+  BENCHMARK_MULTI_PARAM_COUNTERS(func, label##_4b, (sizeKB) * 1024ULL, 4);   \
+  BENCHMARK_MULTI_PARAM_COUNTERS(func, label##_8b, (sizeKB) * 1024ULL, 8);   \
+  BENCHMARK_MULTI_PARAM_COUNTERS(func, label##_16b, (sizeKB) * 1024ULL, 16); \
+  BENCHMARK_MULTI_PARAM_COUNTERS(func, label##_32b, (sizeKB) * 1024ULL, 32)
 
-// Helper macro to register benchmarks for all standard sizes
-#define REGISTER_COPY_BENCH_ALL_SIZES(func) \
-  REGISTER_COPY_BENCH_FOR_SIZE(func, 4);    \
-  REGISTER_COPY_BENCH_FOR_SIZE(func, 8);    \
-  REGISTER_COPY_BENCH_FOR_SIZE(func, 16);   \
-  REGISTER_COPY_BENCH_FOR_SIZE(func, 32)
+// Register benchmarks for all sizes (sub-MB + standard MB)
+#define REGISTER_COPY_BENCH_ALL_SIZES(func)        \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 256KB, 256);  \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 512KB, 512);  \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 1MB, 1024);   \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 2MB, 2048);   \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 4MB, 4096);   \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 8MB, 8192);   \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 16MB, 16384); \
+  REGISTER_COPY_BENCH_FOR_SIZE(func, 32MB, 32768)
 
 //------------------------------------------------------------------------------
 // Benchmark Registration
