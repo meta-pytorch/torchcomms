@@ -187,7 +187,7 @@ __device__ __forceinline__ void _progressSend(
       tmpSendBuf,
       roundArgs.numel);
 
-  ctranKernCopy<T>(
+  ctranKernCopyRaw<T>(
       send_data, tmpSendBuf, roundArgs.numel, blockIdx.x, gridDim.x);
 
   // Notify host side its completion
@@ -222,7 +222,7 @@ __device__ __forceinline__ void _progressRevSend(
   T* tmpSendBufRev =
       getBufAtByteOffset<T>(args.tmpSendBufRev, tmpChunkId * args.chunkSize);
 
-  ctranKernCopy<T>(
+  ctranKernCopyRaw<T>(
       recv_data, tmpSendBufRev, roundArgs.numel, blockIdx.x, gridDim.x);
 
   complete(args.revSendCopySync, blockIdx.x, round);
@@ -265,13 +265,16 @@ __device__ __forceinline__ void _progressRevRecv(
 
   if (isRevFwd) {
     // Copy to both forward send buffer and output
-    ctranKernCopy<T>(
-        tmpRecvBufRev, tmpSendBufRev, roundArgs.numel, blockIdx.x, gridDim.x);
-    ctranKernCopy<T>(
-        tmpRecvBufRev, recv_data, roundArgs.numel, blockIdx.x, gridDim.x);
+    ctranKernCopyMultiDestRaw<T>(
+        tmpRecvBufRev,
+        tmpSendBufRev,
+        recv_data,
+        roundArgs.numel,
+        blockIdx.x,
+        gridDim.x);
   } else {
     // Last reverse step: copy to output only
-    ctranKernCopy<T>(
+    ctranKernCopyRaw<T>(
         tmpRecvBufRev, recv_data, roundArgs.numel, blockIdx.x, gridDim.x);
   }
 
