@@ -6,7 +6,7 @@
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <torch/csrc/utils/pybind.h>
 
-#include "comms/torchcomms/StoreManager.hpp"
+#include "comms/torchcomms/utils/StoreManager.hpp"
 
 namespace py = pybind11;
 using namespace torch::comms;
