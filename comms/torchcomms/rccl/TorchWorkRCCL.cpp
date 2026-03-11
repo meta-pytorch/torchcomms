@@ -2,9 +2,9 @@
 
 #include "comms/torchcomms/rccl/TorchWorkRCCL.hpp"
 #include <ATen/hip/HIPContext.h> // @manual
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/rccl/TorchCommRCCL.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 
 namespace torch::comms {
 
@@ -154,7 +154,7 @@ void TorchWorkRCCL::wait() {
     return;
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       std::string(comm_->getCommName()),
       comm_->getSize(),
       "wait",
