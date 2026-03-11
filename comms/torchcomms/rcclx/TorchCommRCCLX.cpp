@@ -198,7 +198,7 @@ void TorchCommRCCLX::init(
       "Failed to allocate barrier buffer");
 
   max_event_pool_size_ =
-      options_.getHint<size_t>(kHintMaxEventPoolSize, kMaxEventPoolSize);
+      options_.getHint<size_t>(kHintMaxEventPoolSize, kDefaultMaxEventPoolSize);
 
   // Give up our internal reference to the store object here.  The caller
   // would still need to keep a reference to the store object till the init
