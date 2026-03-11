@@ -1,6 +1,7 @@
 #include "comms/torchcomms/xccl/TorchWorkXCCL.hpp"
 #include <ATen/xpu/XPUContext.h>
 #include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCL.hpp"
 
 namespace torch::comms {
@@ -162,7 +163,7 @@ void TorchWorkXCCL::wait() {
     return;
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       std::string(comm_->getCommName()),
       comm_->getSize(),
       "wait",
