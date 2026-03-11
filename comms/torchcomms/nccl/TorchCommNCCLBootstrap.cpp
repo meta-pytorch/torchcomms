@@ -194,8 +194,8 @@ void TorchCommNCCLBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
 // (TorchCommNCCL::init), not by ncclConfig.  Skip them here to avoid
 // spurious "unsupported hint" warnings.
 static const std::set<std::string> kTorchCommLayerHints = {
-    "high_priority_stream",
-    "max_event_pool_size",
+    std::string(kHintHighPriorityStream),
+    std::string(kHintMaxEventPoolSize),
 };
 
 // Helper function to populate NCCL config from hints
