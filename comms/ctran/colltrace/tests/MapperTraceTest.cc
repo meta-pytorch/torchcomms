@@ -3,6 +3,9 @@
 #include "comms/ctran/colltrace/MapperTrace.h"
 #include "comms/ctran/mapper/CtranMapperTypes.h"
 
+#include <atomic>
+#include <thread>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include <memory>
@@ -662,6 +665,51 @@ TEST_F(MapperTraceTest, TwoThreadsLogging) {
   // As long as the program doesn't crash, we can assume that there is no race
   normalLoggingThread.join();
   abnormalLoggingThread.join();
+}
+
+TEST_F(MapperTraceTest, ConcurrentDumpAndRecord) {
+  // Use a small buffer to force frequent overwrites across collectives
+  constexpr int kSmallMaxEvents = 16;
+  constexpr int kNumCollectives = 10000;
+  constexpr int kEventsPerCollective = 10;
+
+  // Recreate mapperTrace with small buffer
+  mapperTrace = std::make_unique<MapperTrace>(kSmallMaxEvents);
+
+  std::atomic<bool> done{false};
+
+  auto dumpThread = std::thread([&]() {
+    while (!done.load(std::memory_order_relaxed)) {
+      auto dump = mapperTrace->dump();
+    }
+  });
+
+  auto gpeThread = std::thread([&]() {
+    auto mockColl = std::make_shared<MockCollRecord>();
+    EXPECT_CALL(*mockColl, getCollId()).WillRepeatedly(Return(123));
+
+    for (int i = 0; i < kNumCollectives; ++i) {
+      mapperTrace->recordMapperEvent(CollStart{mockColl});
+      for (int j = 0; j < kEventsPerCollective; ++j) {
+        CtranMapperRequest req;
+        PutStart putStart{
+            .sendBuffer = nullptr,
+            .remoteBuffer = nullptr,
+            .length = 100,
+            .peerRank = j % 8,
+            .sourceHandle = nullptr,
+            .remoteAccessKey = {},
+            .req = &req,
+        };
+        mapperTrace->recordMapperEvent(putStart);
+      }
+      mapperTrace->recordMapperEvent(CollEnd{});
+    }
+    done.store(true, std::memory_order_relaxed);
+  });
+
+  gpeThread.join();
+  dumpThread.join();
 }
 
 int main(int argc, char** argv) {
