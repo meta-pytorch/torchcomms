@@ -24,18 +24,15 @@
 namespace torch::comms {
 
 namespace {
-// Hint key prefix and names for NCCLX backend configuration
-constexpr std::string_view kHintPrefix = "torchcomm::ncclx::";
-constexpr std::string_view kHintHighPriorityStream =
-    "torchcomm::ncclx::high_priority_stream";
-constexpr std::string_view kHintMaxEventPoolSize =
-    "torchcomm::ncclx::max_event_pool_size";
+// Hint key names for NCCLX backend configuration
+constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 constexpr std::string_view kHintGarbageCollectIntervalMs =
-    "torchcomm::ncclx::garbage_collect_interval_ms";
+    "garbage_collect_interval_ms";
 constexpr std::string_view kHintEnableCudaGraphSupport =
-    "torchcomm::ncclx::enable_cuda_graph_support";
+    "enable_cuda_graph_support";
 constexpr std::string_view kHintGraphTimeoutCheckIntervalMs =
-    "torchcomm::ncclx::graph_timeout_check_interval_ms";
+    "graph_timeout_check_interval_ms";
 
 // Helper function to validate that metadata tensors are int64_t (torch.int64)
 void validateInt64Dtype(const at::Tensor& tensor, std::string_view name) {
@@ -182,16 +179,9 @@ void TorchCommNCCLX::init(
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
-  for (auto const& [key, val] : options_.hints) {
-    if (key.starts_with(kHintPrefix)) {
-      if (key == kHintHighPriorityStream) {
-        high_priority_stream_ = string_to_bool(val);
-      } else {
-        throw std::runtime_error("Unrecognized hint " + key);
-      }
-    } else {
-      // Ignore keys that do not start with "torchcomm::ncclx::"
-    }
+  if (options_.hints.contains(std::string(kHintHighPriorityStream))) {
+    high_priority_stream_ =
+        string_to_bool(options_.hints.at(std::string(kHintHighPriorityStream)));
   }
 
   // Create internal stream

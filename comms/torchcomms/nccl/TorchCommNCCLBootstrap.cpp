@@ -4,6 +4,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <fmt/core.h>
 #include <torch/csrc/distributed/c10d/TCPStore.hpp> // @manual
+#include <set>
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
 #include "comms/torchcomms/utils/StoreManager.hpp"
@@ -189,6 +190,14 @@ void TorchCommNCCLBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
   }
 }
 
+// TorchComm-layer hint keys that are consumed by the backend init code
+// (TorchCommNCCL::init), not by ncclConfig.  Skip them here to avoid
+// spurious "unsupported hint" warnings.
+static const std::set<std::string> kTorchCommLayerHints = {
+    "high_priority_stream",
+    "max_event_pool_size",
+};
+
 // Helper function to populate NCCL config from hints
 void populateNcclConfigFromHints(
     ncclConfig_t& config,
@@ -200,7 +209,9 @@ void populateNcclConfigFromHints(
   // ncclCommInitRankConfig call, so we use .c_str() directly.
 
   for (const auto& [key, val] : options.hints) {
-    if (key == "blocking") {
+    if (kTorchCommLayerHints.count(key)) {
+      continue;
+    } else if (key == "blocking") {
       config.blocking = std::stoi(val);
       TC_LOG(INFO) << "[comm=" << name
                    << "] Setting config.blocking=" << config.blocking;

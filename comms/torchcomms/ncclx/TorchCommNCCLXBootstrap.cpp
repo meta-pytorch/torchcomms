@@ -1,5 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
+#include <set>
 #include <stdexcept>
 
 #include <ATen/cuda/CUDAContext.h>
@@ -201,6 +202,17 @@ void TorchCommNCCLXBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
   }
 }
 
+// TorchComm-layer hint keys that are consumed by the backend init code
+// (TorchCommNCCLX::init), not by ncclConfig.  Skip them here to avoid
+// spurious "unsupported hint" warnings.
+static const std::set<std::string> kTorchCommLayerHints = {
+    "high_priority_stream",
+    "max_event_pool_size",
+    "garbage_collect_interval_ms",
+    "enable_cuda_graph_support",
+    "graph_timeout_check_interval_ms",
+};
+
 // Helper function to populate NCCL config from hints
 void populateNcclConfigFromHints(
     ncclConfig_t& config,
@@ -211,7 +223,9 @@ void populateNcclConfigFromHints(
   // strings only need to be valid for the duration of the
   // ncclCommInitRankConfig call, so we use .c_str() directly.
   for (const auto& [key, val] : options.hints) {
-    if (key == "blocking") {
+    if (kTorchCommLayerHints.count(key)) {
+      continue;
+    } else if (key == "blocking") {
       config.blocking = std::stoi(val);
       TC_LOG(INFO, nullptr) << "[comm=" << name
                             << "] Setting config.blocking=" << config.blocking;
