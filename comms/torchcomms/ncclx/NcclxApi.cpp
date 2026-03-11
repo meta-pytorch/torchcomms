@@ -494,6 +494,16 @@ ncclResult_t DefaultNcclxApi::devCommDestroy(
     const ncclDevComm_t* devComm) {
   return ncclDevCommDestroy(comm, devComm);
 }
+
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 28, 0)
+ncclResult_t DefaultNcclxApi::winGetPeerDevicePointer(
+    NcclxWindow win,
+    size_t offset,
+    int peer,
+    void** outPtr) {
+  return ncclGetPeerDevicePointer(win, offset, peer, outPtr);
+}
+#endif
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
 
 } // namespace torch::comms
