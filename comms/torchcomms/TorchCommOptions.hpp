@@ -9,6 +9,7 @@
 #include <torch/csrc/distributed/c10d/Store.hpp> // @manual=//caffe2:torch-cpp-cpu
 #include <chrono>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 
 namespace torch::comms {
@@ -154,6 +155,11 @@ class CommOptions {
   CommOptions();
 
   bool operator==(const CommOptions& other) const;
+
+  // Look up a hint by key and convert to the requested type.
+  // Returns default_value if the key is not present.
+  template <typename T>
+  T getHint(std::string_view key, const T& default_value) const;
 };
 
 class PutOptions {
