@@ -47,21 +47,30 @@ TEST_F(AlgoConfigUT, SendRecvAlgoHintOverride) {
   ASSERT_EQ(getSendRecvAlgo(), NCCL_SENDRECV_ALGO::orig);
 
   // set/reset multiple times
+  std::unordered_map<enum NCCL_SENDRECV_ALGO, const char*> overrideAlgos = {
+      {NCCL_SENDRECV_ALGO::ctran, "ctran"},
+      {NCCL_SENDRECV_ALGO::ctzcopy, "ctzcopy"},
+      {NCCL_SENDRECV_ALGO::ctstaged, "ctstaged"},
+      {NCCL_SENDRECV_ALGO::ctp2p, "ctp2p"},
+  };
+
   const int iter = 10;
   for (int i = 0; i < iter; i++) {
-    ASSERT_TRUE(ncclx::setGlobalHint(hintName, "ctran"));
+    for (auto& [algo, hintVal] : overrideAlgos) {
+      ASSERT_TRUE(ncclx::setGlobalHint(hintName, hintVal));
 
-    auto getHintVal = ncclx::getGlobalHint(hintName);
-    ASSERT_TRUE(getHintVal.has_value());
-    ASSERT_EQ(getHintVal.value(), "ctran");
+      auto getHintVal = ncclx::getGlobalHint(hintName);
+      ASSERT_TRUE(getHintVal.has_value());
+      ASSERT_EQ(getHintVal.value(), hintVal);
 
-    ASSERT_EQ(getSendRecvAlgo(), NCCL_SENDRECV_ALGO::ctran);
+      ASSERT_EQ(getSendRecvAlgo(), algo);
 
-    ASSERT_TRUE(ncclx::resetGlobalHint(hintName));
-    getHintVal = ncclx::getGlobalHint(hintName);
-    ASSERT_FALSE(getHintVal.has_value());
+      ASSERT_TRUE(ncclx::resetGlobalHint(hintName));
+      getHintVal = ncclx::getGlobalHint(hintName);
+      ASSERT_FALSE(getHintVal.has_value());
 
-    ASSERT_EQ(getSendRecvAlgo(), NCCL_SENDRECV_ALGO::orig);
+      ASSERT_EQ(getSendRecvAlgo(), NCCL_SENDRECV_ALGO::orig);
+    }
   }
 }
 
