@@ -76,7 +76,7 @@ class TorchCommWindow {
     return win_size_;
   }
 
-  // Returns the registered tensor buffer, if any.
+  // Returns the registered tensor buffer, or nullopt in graph capture mode.
   std::optional<at::Tensor> get_tensor() const {
     return buf_tensor_;
   }
@@ -88,9 +88,8 @@ class TorchCommWindow {
   //  while the communicator operates on the GPU. However, if both are using the
   //  GPU, they should reside on the same device.
   size_t win_size_{0};
-  // Store a copy of the user-provided tensor buffer to ensure its storage
-  // remains valid for the lifetime of the window. This prevents use-after-free
-  // issues by holding a reference count on the tensor's storage.
+  // Holds a reference to the registered tensor to keep its storage alive.
+  // Nullopt in graph capture mode (non-owned buffer); see tensor_register docs.
   std::optional<at::Tensor> buf_tensor_;
   at::ScalarType buf_dtype_{at::kFloat};
   c10::Device buf_device_{c10::kCUDA};
