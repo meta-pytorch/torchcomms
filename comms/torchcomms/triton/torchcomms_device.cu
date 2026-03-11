@@ -163,6 +163,15 @@ __device__ int torchcomms_wait_signal(
   return win->wait_signal(signal_id, CmpOp::GE, expected_value);
 }
 
+__device__ int torchcomms_wait_signal_from(
+    void* win_ptr,
+    int peer,
+    int signal_id,
+    unsigned long long expected_value) {
+  auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
+  return win->wait_signal_from(peer, signal_id, CmpOp::GE, expected_value);
+}
+
 __device__ unsigned long long torchcomms_read_signal(
     void* win_ptr,
     int signal_id) {
@@ -237,6 +246,18 @@ __device__ void* torchcomms_base(void* win_ptr) {
 __device__ unsigned long long torchcomms_size(void* win_ptr) {
   auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
   return static_cast<unsigned long long>(win->size());
+}
+
+// =============================================================================
+// NVLink Address Query
+// Thread-scope (idempotent) — all 128 threads call these; result is the same
+// as if only one thread called. ncclGetPeerPointer computes a flat LSA address
+// from constant fields in the window struct — no side effects, no atomics.
+// =============================================================================
+
+__device__ void* torchcomms_get_nvlink_address(void* win_ptr, int peer) {
+  auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
+  return ncclGetPeerPointer(win->window(), 0, peer);
 }
 
 } // extern "C"

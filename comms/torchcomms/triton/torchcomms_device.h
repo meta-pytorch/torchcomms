@@ -112,6 +112,14 @@ __device__ int torchcomms_wait_signal(
     int signal_id,
     unsigned long long expected_value);
 
+// Wait for signal from a specific peer to reach expected value (>=)
+// Returns: 0 on success, negative on error
+__device__ int torchcomms_wait_signal_from(
+    TorchCommsWindowHandle win,
+    int peer,
+    int signal_id,
+    unsigned long long expected_value);
+
 // Read current signal value
 __device__ unsigned long long torchcomms_read_signal(
     TorchCommsWindowHandle win,
@@ -172,6 +180,19 @@ __device__ void* torchcomms_base(TorchCommsWindowHandle win);
 
 // Get window size in bytes
 __device__ unsigned long long torchcomms_size(TorchCommsWindowHandle win);
+
+// =============================================================================
+// NVLink Address Query
+// Thread-scope (idempotent) — all 128 threads call these; same result from any
+// count.
+// =============================================================================
+
+// Get the NVLink-mapped device pointer for a peer's window memory.
+// Returns the direct NVLink address that can be used for load/store operations,
+// or nullptr (0) if the peer is not NVLink-accessible.
+__device__ void* torchcomms_get_nvlink_address(
+    TorchCommsWindowHandle win,
+    int peer);
 
 #ifdef __cplusplus
 }
