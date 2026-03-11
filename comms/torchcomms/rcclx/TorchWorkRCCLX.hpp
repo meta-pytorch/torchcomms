@@ -10,8 +10,8 @@
 #include <ATen/ATen.h>
 #include <hip_runtime.h> // @manual=third-party//cuda:cuda-lazy
 #include <vector>
-#include "comms/torchcomms/TorchCommTracing.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 #include "comms/torchcomms/TorchWork.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
+#include "comms/torchcomms/utils/TracingGuard.hpp" // @manual=//comms/torchcomms:torchcomms-headers-cpp
 
 namespace torch::comms {
 
