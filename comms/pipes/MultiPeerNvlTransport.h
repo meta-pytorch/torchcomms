@@ -176,29 +176,6 @@ class MultiPeerNvlTransport {
   P2pNvlTransportDevice getP2pTransportDevice(int peerRank);
 
   /**
-   * getTransportsArray - Get preallocated Transport array on device memory
-   *
-   * Returns a pointer to the device-side Transport array containing all
-   * transport handles (P2pSelfTransportDevice for self, P2pNvlTransportDevice
-   * for all peers). This array can be passed directly to CUDA kernels for
-   * all-to-all communication patterns without per-launch H2D copies.
-   *
-   * PRECONDITION: exchange() must have been called by all ranks first.
-   *
-   * Array layout: [Transport for rank 0, Transport for rank 1, ..., Transport
-   * for rank nRanks-1]
-   * - transports_d_[myRank_] contains P2pSelfTransportDevice
-   * - transports_d_[peerRank] contains P2pNvlTransportDevice for peer
-   *
-   * @return Pointer to Transport array on device memory (size = nRanks)
-   *
-   * @note Thread-safe after exchange() completes
-   * @note The returned pointer is valid until this MultiPeerNvlTransport is
-   * destroyed
-   */
-  Transport* getTransportsArray();
-
-  /**
    * getNRanks - Get total number of ranks
    *
    * @return Total number of ranks in the communicator

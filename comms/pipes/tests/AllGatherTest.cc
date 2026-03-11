@@ -116,11 +116,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   transport.exchange();
   XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
 
-  // Use preallocated Transport array from MultiPeerNvlTransport
-  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
-  // peers)
-  DeviceSpan<Transport> transports_span(
-      transport.getTransportsArray(), numRanks);
+  auto transports_span = transport.getDeviceTransports();
 
   // Allocate send and recv buffers
   // sendbuff: numIntsPerRank ints (my local data)
@@ -312,11 +308,7 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
   MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
   transport.exchange();
 
-  // Use preallocated Transport array from MultiPeerNvlTransport
-  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
-  // peers)
-  DeviceSpan<Transport> transports_span(
-      transport.getTransportsArray(), numRanks);
+  auto transports_span = transport.getDeviceTransports();
 
   DeviceBuffer sendBuffer(sendcount);
   DeviceBuffer recvBuffer(recvBufferSize);
