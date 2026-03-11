@@ -1,6 +1,10 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
 #include "comms/torchcomms/TorchCommOptions.hpp"
+
+#include <sstream>
+#include <type_traits>
+
 #include "comms/torchcomms/utils/Utils.hpp"
 
 namespace torch::comms {
@@ -26,5 +30,37 @@ bool CommOptions::operator==(const CommOptions& other) const {
           other.abort_process_on_timeout_or_error &&
       timeout == other.timeout && hints == other.hints);
 }
+
+template <typename T>
+T CommOptions::getHint(std::string_view key, const T& default_value) const {
+  auto it = hints.find(std::string(key));
+  if (it == hints.end()) {
+    return default_value;
+  }
+  const auto& value = it->second;
+  if constexpr (std::is_same_v<T, bool>) {
+    return string_to_bool(value);
+  } else if constexpr (std::is_same_v<T, std::string>) {
+    return value;
+  } else if constexpr (std::is_unsigned_v<T>) {
+    return static_cast<T>(std::stoull(value));
+  } else {
+    T result;
+    std::istringstream ss(value);
+    ss >> result;
+    if (ss.fail() || !ss.eof()) {
+      throw std::invalid_argument(
+          "Invalid hint value for key '" + std::string(key) + "': " + value);
+    }
+    return result;
+  }
+}
+
+template bool CommOptions::getHint<bool>(std::string_view, const bool&) const;
+template size_t CommOptions::getHint<size_t>(std::string_view, const size_t&)
+    const;
+template std::string CommOptions::getHint<std::string>(
+    std::string_view,
+    const std::string&) const;
 
 } // namespace torch::comms

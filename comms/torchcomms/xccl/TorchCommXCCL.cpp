@@ -6,7 +6,8 @@
 #include <stdexcept>
 #include <string>
 #include "comms/torchcomms/TorchCommFactory.hpp"
-#include "comms/torchcomms/TorchCommLogging.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/utils/Utils.hpp"
 #include "comms/torchcomms/xccl/TorchCommXCCLBootstrap.hpp"
 
@@ -183,17 +184,8 @@ void TorchCommXCCL::init(
           std::to_string(device_.index()));
 
   // Read hints and store them
-  for (auto const& [key, val] : options_.hints) {
-    if (key.starts_with("torchcomm::xccl::")) {
-      if (key == "torchcomm::xccl::high_priority_stream") {
-        high_priority_stream_ = string_to_bool(val);
-      } else {
-        throw std::runtime_error("Unrecognized hint " + key);
-      }
-    } else {
-      // Ignore keys that do not start with "torchcomm::xccl::"
-    }
-  }
+  high_priority_stream_ =
+      options_.getHint<bool>(kHintHighPriorityStream, false);
 
   // Create internal stream
   int stream_priority = 0;
@@ -228,12 +220,8 @@ void TorchCommXCCL::init(
       xpu_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  if (options_.hints.contains("torchcomm::xccl::max_event_pool_size")) {
-    max_event_pool_size_ =
-        std::stoull(options_.hints.at("torchcomm::xccl::max_event_pool_size"));
-  } else {
-    max_event_pool_size_ = kMaxEventPoolSize;
-  }
+  max_event_pool_size_ =
+      options_.getHint<size_t>(kHintMaxEventPoolSize, kMaxEventPoolSize);
 
   // Give up our internal reference to the store object here.  The caller
   // would still need to keep a reference to the store object till the init
@@ -258,7 +246,7 @@ void TorchCommXCCL::init(
     throw std::runtime_error("XCCL commCount failed");
   }
 
-  TorchCommTracingGuard tracingGuard(name_, comm_size_, "init", rank_);
+  TracingGuard tracingGuard(name_, comm_size_, "init", rank_);
 
   // Start timeout watchdog thread
   timeout_thread_ = std::thread(&TorchCommXCCL::timeoutWatchdog, this);
@@ -421,8 +409,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::send(
   ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "send", dst, tensor, tensor);
+  TracingGuard tracingGuard(name_, comm_size_, "send", dst, tensor, tensor);
 
   xpuStream_t stream = getOperationStream(async_op);
   auto work = async_op
@@ -472,8 +459,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::recv(
   ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "recv", src, tensor, tensor);
+  TracingGuard tracingGuard(name_, comm_size_, "recv", src, tensor, tensor);
 
   xpuStream_t stream = getOperationStream(async_op);
   auto work = createWork(
@@ -540,7 +526,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::batch_op_issue(
 
   checkAllTensorsOnXPUorCPU(input_tensors, output_tensors);
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "batch_op_issue",
@@ -632,7 +618,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::broadcast(
   checkAllTensorsOnXPUorCPU({tensor});
   checkRankRange(root);
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "broadcast", root, tensor, tensor);
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -686,7 +672,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_reduce(
   ensureTensorContiguous(tensor);
   checkAllTensorsOnXPUorCPU({tensor});
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_reduce", rank_, tensor, tensor);
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -781,8 +767,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce(
   checkAllTensorsOnXPUorCPU({tensor});
   checkRankRange(root);
 
-  TorchCommTracingGuard tracingGuard(
-      name_, comm_size_, "reduce", root, tensor, tensor);
+  TracingGuard tracingGuard(name_, comm_size_, "reduce", root, tensor, tensor);
 
   xpuStream_t stream = getOperationStream(async_op);
 
@@ -886,7 +871,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_gather", rank_, tensor_list, {tensor});
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -973,7 +958,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_v(
     ensureTensorContiguous(t);
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_v", rank_, tensor_list, {tensor});
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -1064,7 +1049,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_gather_single(
         "Output tensor size must be input_size * comm_size for all_gather_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_gather_single", rank_, input, output);
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -1135,7 +1120,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter", rank_, input_list, {output});
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -1260,7 +1245,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_v(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_v", rank_, input_list, {output});
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -1375,7 +1360,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::reduce_scatter_single(
         "Input tensor size must be output_size * comm_size for reduce_scatter_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "reduce_scatter_single", rank_, input, output);
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -1478,7 +1463,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_single(
         "Tensor size must be divisible by comm_size for all_to_all_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_single", rank_, input, output);
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -1572,7 +1557,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all_v_single(
         "Sum of output_split_sizes exceeds output tensor size for all_to_all_v_single");
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "all_to_all_v_single", rank_, input, output);
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -1728,7 +1713,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::all_to_all(
     ensureTensorContiguous(output_tensor_list[i]);
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_,
       comm_size_,
       "all_to_all",
@@ -1834,7 +1819,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::barrier(
   checkInitialized();
   checkAndAbortIfTimedOutOrError();
 
-  TorchCommTracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
+  TracingGuard tracingGuard(name_, comm_size_, "barrier", rank_);
   xpuStream_t stream = getOperationStream(async_op);
   auto work = createWork(
       stream, getOperationTimeout(options.timeout, options_.timeout));
@@ -1894,7 +1879,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::scatter(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "scatter", root, input_tensor_list, {output_tensor});
 
   xpuStream_t stream = getOperationStream(async_op);
@@ -2036,7 +2021,7 @@ c10::intrusive_ptr<TorchWork> TorchCommXCCL::gather(
     }
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       name_, comm_size_, "gather", root, {input_tensor}, output_tensor_list);
 
   xpuStream_t stream = getOperationStream(async_op);

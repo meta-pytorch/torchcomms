@@ -1,11 +1,11 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 // NCCL Device Backend - Static Method Implementations
 
-#include "comms/torchcomms/TorchCommLogging.hpp"
 #include "comms/torchcomms/device/DeviceBackendTraits.hpp"
 #include "comms/torchcomms/device/TorchCommDeviceWindow.hpp"
 #include "comms/torchcomms/device/cuda/CudaApi.hpp"
 #include "comms/torchcomms/ncclx/NcclxApi.hpp"
+#include "comms/torchcomms/utils/Logging.hpp"
 
 #include <memory>
 #include <stdexcept>
