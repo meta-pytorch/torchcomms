@@ -456,6 +456,29 @@ TorchCommWindowNCCLX<Backend>::get_device_window(
   return device_window_.get();
 }
 
+#if NCCL_VERSION_CODE >= NCCL_VERSION(2, 28, 0)
+template <typename Backend>
+void* TorchCommWindowNCCLX<Backend>::get_nvlink_address(
+    int peer,
+    size_t offset) {
+  checkCommAndThrow();
+
+  if (nccl_orig_win_ == nullptr) {
+    throw std::runtime_error(
+        "[TorchCommWindowNCCLX]: NCCL orig window not initialized. "
+        "Call tensor_register first.");
+  }
+
+  void* outPtr = nullptr;
+  CHECK_EQ(
+      nccl_api_->winGetPeerDevicePointer(nccl_orig_win_, offset, peer, &outPtr),
+      ncclSuccess)
+      << "[TorchCommWindowNCCLX]: ncclGetPeerDevicePointer failed";
+
+  return outPtr;
+}
+#endif
+
 #endif // TORCHCOMMS_HAS_NCCL_DEVICE_API
 
 // =============================================================================
