@@ -197,8 +197,8 @@ void TorchCommXCCLBootstrap::cleanupTCPStore(onecclComm_t xccl_comm) {
 // (TorchCommXCCL::init), not by onecclConfig.  Skip them here to avoid
 // spurious "unsupported hint" warnings.
 static const std::set<std::string> kTorchCommLayerHints = {
-    "high_priority_stream",
-    "max_event_pool_size",
+    std::string(kHintHighPriorityStream),
+    std::string(kHintMaxEventPoolSize),
 };
 
 // Helper function to populate XCCL config from hints

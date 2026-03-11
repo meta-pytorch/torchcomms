@@ -31,12 +31,6 @@ using c10::hip::HIPCachingAllocator::TraceEntry;
 
 namespace torch::comms {
 
-namespace {
-// Hint key names for RCCLX backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
-constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
-} // namespace
-
 ncclResult_t RCCLXException::getResult() const {
   return result_;
 }

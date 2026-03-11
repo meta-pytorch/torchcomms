@@ -27,6 +27,16 @@
 
 namespace torch::comms {
 
+// Hint key names for NCCLX backend configuration
+constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
+constexpr std::string_view kHintGarbageCollectIntervalMs =
+    "garbage_collect_interval_ms";
+constexpr std::string_view kHintEnableCudaGraphSupport =
+    "enable_cuda_graph_support";
+constexpr std::string_view kHintGraphTimeoutCheckIntervalMs =
+    "graph_timeout_check_interval_ms";
+
 // Maximum number of CUDA events to keep in the event pool. Events are recycled
 // to avoid repeated cudaEventCreate/cudaEventDestroy calls. 1000 events should
 // be sufficient for most workloads while keeping memory overhead reasonable.

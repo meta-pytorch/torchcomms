@@ -184,9 +184,9 @@ void TorchCommXCCL::init(
           std::to_string(device_.index()));
 
   // Read hints and store them
-  if (options_.hints.contains("high_priority_stream")) {
+  if (options_.hints.contains(std::string(kHintHighPriorityStream))) {
     high_priority_stream_ =
-        string_to_bool(options_.hints.at("high_priority_stream"));
+        string_to_bool(options_.hints.at(std::string(kHintHighPriorityStream)));
   }
 
   // Create internal stream
@@ -222,9 +222,9 @@ void TorchCommXCCL::init(
       xpu_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  if (options_.hints.contains("max_event_pool_size")) {
+  if (options_.hints.contains(std::string(kHintMaxEventPoolSize))) {
     max_event_pool_size_ =
-        std::stoull(options_.hints.at("max_event_pool_size"));
+        std::stoull(options_.hints.at(std::string(kHintMaxEventPoolSize)));
   } else {
     max_event_pool_size_ = kMaxEventPoolSize;
   }
