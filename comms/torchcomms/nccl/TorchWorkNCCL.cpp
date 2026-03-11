@@ -2,9 +2,9 @@
 
 #include "comms/torchcomms/nccl/TorchWorkNCCL.hpp"
 #include <ATen/cuda/CUDAContext.h>
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/nccl/TorchCommNCCL.hpp"
 #include "comms/torchcomms/utils/Logging.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 
 namespace torch::comms {
 
@@ -167,7 +167,7 @@ void TorchWorkNCCL::wait() {
     return;
   }
 
-  TorchCommTracingGuard tracingGuard(
+  TracingGuard tracingGuard(
       std::string(comm_->getCommName()),
       comm_->getSize(),
       "wait",

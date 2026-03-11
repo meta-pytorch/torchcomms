@@ -18,8 +18,8 @@
 #include "comms/torchcomms/TorchComm.hpp"
 #include "comms/torchcomms/TorchCommBackend.hpp"
 #include "comms/torchcomms/TorchCommBatch.hpp"
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/device/xpu/XpuApi.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 #include "comms/torchcomms/xccl/TorchWorkXCCL.hpp"
 #include "comms/torchcomms/xccl/XcclApi.hpp"
 

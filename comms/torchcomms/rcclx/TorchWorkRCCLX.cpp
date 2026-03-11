@@ -150,7 +150,7 @@ void TorchWorkRCCLX::wait() {
     return;
   }
 
-  TorchCommTracingGuard g(
+  TracingGuard g(
       std::string(comm_->getCommName()),
       comm_->getSize(),
       "wait",
