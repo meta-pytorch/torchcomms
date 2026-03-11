@@ -14,6 +14,7 @@
 #include "bootstrap.h"
 
 #include "comms/ctran/Ctran.h"
+#include "meta/algoconf/AlgoConfig.h"
 #include "meta/transport/transportExt.h"
 #include "meta/transport/transportConnect.h"
 #include "meta/transport/transportProxy.h"
@@ -692,7 +693,7 @@ ncclResult_t ncclGroupEndInternal(ncclSimInfo_t* simInfo) {
 
   if ((--ncclGroupDepth) > 0) goto exit;
 
-  NCCLCHECKGOTO(metaCommToNccl(ctranGroupEndHook()), ret, fail);
+  NCCLCHECKGOTO(metaCommToNccl(ctranGroupEndHook(ncclx::algoconf::getSendRecvAlgo())), ret, fail);
 
   if ((ret = ncclGroupError) != ncclSuccess) goto fail;
 
