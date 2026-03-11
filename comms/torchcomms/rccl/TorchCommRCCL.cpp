@@ -20,12 +20,9 @@
 namespace torch::comms {
 
 namespace {
-// Hint key prefix and names for RCCL backend configuration
-constexpr std::string_view kHintPrefix = "torchcomm::rccl::";
-constexpr std::string_view kHintHighPriorityStream =
-    "torchcomm::rccl::high_priority_stream";
-constexpr std::string_view kHintMaxEventPoolSize =
-    "torchcomm::rccl::max_event_pool_size";
+// Hint key names for RCCL backend configuration
+constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 } // namespace
 
 ncclResult_t RCCLException::getResult() const {
@@ -155,18 +152,10 @@ void TorchCommRCCL::init(
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
-  for (const auto& hint : options_.hints) {
-    const std::string& key = hint.first;
-    const std::string& val = hint.second;
-    if (key.starts_with(kHintPrefix)) {
-      if (key == kHintHighPriorityStream) {
-        high_priority_stream_ = string_to_bool(val);
-      } else {
-        throw std::runtime_error("Unrecognized hint " + key);
-      }
-    } else {
-      // Ignore keys that do not start with "torchcomm::rccl::"
-    }
+  if (options_.hints.find(std::string(kHintHighPriorityStream)) !=
+      options_.hints.end()) {
+    high_priority_stream_ =
+        string_to_bool(options_.hints.at(std::string(kHintHighPriorityStream)));
   }
 
   // Create internal stream
