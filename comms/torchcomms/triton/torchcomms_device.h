@@ -112,6 +112,14 @@ __device__ int torchcomms_wait_signal(
     int signal_id,
     unsigned long long expected_value);
 
+// Wait for signal from a specific peer to reach expected value (>=)
+// Returns: 0 on success, negative on error
+__device__ int torchcomms_wait_signal_from(
+    TorchCommsWindowHandle win,
+    int peer,
+    int signal_id,
+    unsigned long long expected_value);
+
 // Read current signal value
 __device__ unsigned long long torchcomms_read_signal(
     TorchCommsWindowHandle win,

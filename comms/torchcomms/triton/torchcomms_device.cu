@@ -163,6 +163,15 @@ __device__ int torchcomms_wait_signal(
   return win->wait_signal(signal_id, CmpOp::GE, expected_value);
 }
 
+__device__ int torchcomms_wait_signal_from(
+    void* win_ptr,
+    int peer,
+    int signal_id,
+    unsigned long long expected_value) {
+  auto* win = reinterpret_cast<DeviceWindow*>(win_ptr);
+  return win->wait_signal_from(peer, signal_id, CmpOp::GE, expected_value);
+}
+
 __device__ unsigned long long torchcomms_read_signal(
     void* win_ptr,
     int signal_id) {
