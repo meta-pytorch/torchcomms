@@ -315,6 +315,12 @@ Args:
 Raises:
     RuntimeError: If tensor is not contiguous or a buffer is already registered.
 
+Note:
+    In CUDA graph capture mode, the window holds a **non-owned** reference to the
+    underlying buffer — it does not prevent the tensor from being deallocated.
+    The caller must ensure the tensor remains alive for the entire lifetime of
+    the window, and the window must not outlive the CUDA graph it was captured in.
+
 Example:
 
 .. code-block:: python
@@ -369,7 +375,9 @@ Returns:
 Get the registered tensor buffer, if any.
 
 Returns:
-    Optional[torch.Tensor]: The registered tensor, or None if no tensor is registered.
+    Optional[torch.Tensor]: The registered tensor, or ``None`` if no tensor is
+    registered or if the window was created in CUDA graph capture mode (where
+    the buffer is non-owned).
 
       )")
       .def_property_readonly(

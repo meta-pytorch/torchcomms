@@ -159,6 +159,69 @@ TEST_F(TorchCommWindowNCCLXTest, WindowOperationsAfterFinalizeThrowException) {
 }
 
 // =============================================================================
+// Graph Capture Mode Tests
+// =============================================================================
+//
+// These tests verify that tensor_register() skips storing buf_tensor_ in
+// graph capture mode to save memory, while still storing it in normal mode.
+
+TEST_F(
+    TorchCommWindowNCCLXTest,
+    TensorRegisterSkipsBufTensorInGraphCaptureMode) {
+  // Verifies: In graph capture mode, tensor_register() does NOT store
+  // buf_tensor_ so the tensor can be released to save memory.
+  setupRankAndSize(0, 2);
+  setupCCAExpectations(1, 2, 1);
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  EXPECT_NO_THROW(
+      comm->init(*device_, "test_graph_buf_tensor", default_options_));
+
+  // Simulate graph capture mode: streamIsCapturing returns Active
+  ON_CALL(*cuda_mock_, streamIsCapturing(_, _))
+      .WillByDefault(DoAll(
+          SetArgPointee<1>(cudaStreamCaptureStatusActive),
+          Return(cudaSuccess)));
+
+  auto tensor = createTestTensor({10, 10});
+  auto win = comm->new_window();
+  win->tensor_register(tensor);
+
+  // In graph capture mode, get_tensor() should return nullopt
+  EXPECT_FALSE(win->get_tensor().has_value())
+      << "buf_tensor_ should not be stored in graph capture mode";
+
+  EXPECT_NO_THROW(comm->finalize());
+}
+
+TEST_F(TorchCommWindowNCCLXTest, TensorRegisterStoresBufTensorInNormalMode) {
+  // Verifies: In normal (non-graph-capture) mode, tensor_register() stores
+  // buf_tensor_ as usual.
+  setupRankAndSize(0, 2);
+  setupCCAExpectations(1, 2, 1);
+  auto comm = createMockedTorchComm();
+
+  cuda_mock_->setupDefaultBehaviors();
+  nccl_mock_->setupDefaultBehaviors();
+
+  EXPECT_NO_THROW(
+      comm->init(*device_, "test_normal_buf_tensor", default_options_));
+
+  auto tensor = createTestTensor({10, 10});
+  auto win = comm->new_window();
+  win->tensor_register(tensor);
+
+  // In normal mode, get_tensor() should return the tensor
+  EXPECT_TRUE(win->get_tensor().has_value())
+      << "buf_tensor_ should be stored in normal mode";
+
+  EXPECT_NO_THROW(comm->finalize());
+}
+
+// =============================================================================
 // Device API Tests for get_device_window()
 // =============================================================================
 //
