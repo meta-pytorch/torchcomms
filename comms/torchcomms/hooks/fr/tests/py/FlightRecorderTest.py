@@ -35,6 +35,8 @@ from torchcomms.tests.integration.py.TorchCommTestHelpers import get_rank_and_si
 
 class TestFlightRecorderHook(unittest.TestCase):
     """Test FlightRecorderHook for tracking collective operations."""
+    backend = os.environ["TEST_BACKEND"]
+    device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
 
     def test_create_flight_recorder(self) -> None:
         """Test creating a FlightRecorderHook."""
@@ -73,11 +75,9 @@ class TestFlightRecorderHook(unittest.TestCase):
         This verifies that size() returns the number of entries in the
         current epoch, not the total entries in the underlying buffer.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_size_reset",
             timeout=timedelta(seconds=300),
         )
@@ -89,7 +89,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         self.assertEqual(recorder.size(), 0)
 
         # Run a collective operation
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
         comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
         # Size should be 1 after one operation
@@ -165,14 +165,14 @@ class TestFlightRecorderHook(unittest.TestCase):
         self.assertIsInstance(entry["retired"], bool)
         self.assertIsInstance(entry["timeout_ms"], int)
 
-        # Validate profiling_name format (uses nccl: prefix as expected by FR analyzer)
+        # Validate profiling_name format (uses backend: prefix as expected by FR analyzer)
         self.assertIsInstance(entry["profiling_name"], str)
         self.assertGreater(
             len(entry["profiling_name"]), 0, "profiling_name should not be empty"
         )
         self.assertTrue(
-            entry["profiling_name"].startswith("nccl:"),
-            f"profiling_name should start with 'nccl:', got: {entry['profiling_name']}",
+            entry["profiling_name"].startswith(f"{self.backend}:"),
+            f"profiling_name should start with '{self.backend}:', got: {entry['profiling_name']}",
         )
 
         # Validate time_created_ns is positive
@@ -209,11 +209,9 @@ class TestFlightRecorderHook(unittest.TestCase):
             gloo backend is not available.
         """
         # Create communicator
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name=comm_name,
             timeout=timedelta(seconds=300),
         )
@@ -222,7 +220,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.register_with_comm(comm)
 
         # Run a collective operation to generate entries
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
         comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
         # Parse the JSON output
@@ -338,11 +336,9 @@ class TestFlightRecorderHook(unittest.TestCase):
         and then performing more operations, only the post-reset operations
         are recorded.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_comm_reset",
             timeout=timedelta(seconds=300),
         )
@@ -351,7 +347,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.register_with_comm(comm)
 
         # Run 5 collective operations
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
         for _ in range(5):
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
@@ -396,11 +392,9 @@ class TestFlightRecorderHook(unittest.TestCase):
         Verifies that when buffer is full, reset works correctly and
         subsequent operations are properly recorded.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_comm_buffer_full",
             timeout=timedelta(seconds=300),
         )
@@ -411,7 +405,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.register_with_comm(comm)
 
         # Fill the buffer completely
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
         for _ in range(buffer_size):
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
@@ -444,7 +438,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         # Verify all entries are valid
         for entry in entries:
             self._validate_entry_format(entry)
-            self.assertEqual(entry["profiling_name"], "nccl:all_reduce")
+            self.assertEqual(entry["profiling_name"], f"{self.backend}:all_reduce")
 
         recorder.unregister()
         comm.finalize()
@@ -455,11 +449,9 @@ class TestFlightRecorderHook(unittest.TestCase):
         Verifies that after filling buffer, resetting, and adding fewer
         entries than buffer size, only new entries are returned.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_comm_partial",
             timeout=timedelta(seconds=300),
         )
@@ -469,7 +461,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.register_with_comm(comm)
 
         # Fill the buffer completely
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
         for _ in range(buffer_size):
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
@@ -504,11 +496,9 @@ class TestFlightRecorderHook(unittest.TestCase):
         Verifies that multiple resets work correctly and each reset
         properly clears the previous entries.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_comm_multi_reset",
             timeout=timedelta(seconds=300),
         )
@@ -516,7 +506,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder = FlightRecorderHook(max_entries=100, isolated=True)
         recorder.register_with_comm(comm)
 
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
 
         # First batch: 2 entries
         for _ in range(2):
@@ -563,11 +553,9 @@ class TestFlightRecorderHook(unittest.TestCase):
         Verifies that the flight recorder correctly captures different
         types of collective operations with proper metadata.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_comm_multi_ops",
             timeout=timedelta(seconds=300),
         )
@@ -576,7 +564,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.register_with_comm(comm)
 
         # Perform different collective operations
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
 
         # All-reduce
         comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
@@ -602,8 +590,8 @@ class TestFlightRecorderHook(unittest.TestCase):
             self._validate_entry_format(entry)
             # Verify profiling name is one of the expected operations
             self.assertTrue(
-                entry["profiling_name"].startswith("nccl:"),
-                f"profiling_name should start with 'nccl:', got: {entry['profiling_name']}",
+                entry["profiling_name"].startswith(f"{self.backend}:"),
+                f"profiling_name should start with '{self.backend}:', got: {entry['profiling_name']}",
             )
 
         recorder.unregister()
@@ -615,11 +603,9 @@ class TestFlightRecorderHook(unittest.TestCase):
         Verifies that entries are returned in the correct order based on
         their sequence IDs and timestamps.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_comm_ordering",
             timeout=timedelta(seconds=300),
         )
@@ -628,7 +614,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.register_with_comm(comm)
 
         # Perform several operations
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
         num_ops = 5
         for _ in range(num_ops):
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
@@ -670,11 +656,9 @@ class TestFlightRecorderHook(unittest.TestCase):
 
         Verifies that input/output sizes and dtypes are properly recorded.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_comm_sizes",
             timeout=timedelta(seconds=300),
         )
@@ -683,8 +667,8 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.register_with_comm(comm)
 
         # Create tensors with specific sizes and dtypes
-        tensor_float = torch.rand(3, 4, device=device, dtype=torch.float32)
-        tensor_int = torch.randint(0, 100, (5, 6), device=device, dtype=torch.int64)
+        tensor_float = torch.rand(3, 4, device=self.device, dtype=torch.float32)
+        tensor_int = torch.randint(0, 100, (5, 6), device=self.device, dtype=torch.int64)
 
         # All-reduce float tensor
         comm.all_reduce(tensor_float, op=torchcomms.ReduceOp.SUM, async_op=False)
@@ -718,11 +702,9 @@ class TestFlightRecorderHook(unittest.TestCase):
         Verifies that operations are only recorded when the recorder
         is enabled.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_comm_enable_disable",
             timeout=timedelta(seconds=300),
         )
@@ -737,7 +719,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         self.assertTrue(recorder.is_enabled())
 
         # Perform operation
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
         comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
         # Should have recorded the operation
@@ -757,11 +739,9 @@ class TestFlightRecorderHook(unittest.TestCase):
         Verifies that dump_file writes valid trace data to the file path
         configured via the TORCHCOMM_FR_DUMP_TEMP_FILE environment variable.
         """
-        backend = os.environ["TEST_BACKEND"]
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
         comm = torchcomms.new_comm(
-            backend=backend,
-            device=device,
+            backend=self.backend,
+            device=self.device,
             name="test_comm_dump_file",
             timeout=timedelta(seconds=300),
         )
@@ -770,7 +750,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         recorder.register_with_comm(comm)
 
         # Perform some collective operations to generate entries
-        t = torch.rand(10, 10, device=device)
+        t = torch.rand(10, 10, device=self.device)
         for _ in range(3):
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
@@ -822,7 +802,7 @@ class TestFlightRecorderHook(unittest.TestCase):
                     self.assertIn("state", entry)
 
                     # Validate profiling_name is for all_reduce
-                    self.assertEqual(entry["profiling_name"], "nccl:all_reduce")
+                    self.assertEqual(entry["profiling_name"], f"{self.backend}:all_reduce")
 
             finally:
                 # Restore the original environment variables
@@ -848,13 +828,12 @@ class TestFlightRecorderHook(unittest.TestCase):
         """
         import threading
 
-        backend = os.environ["TEST_BACKEND"]
+        if self.backend == "xccl":
+            self.skipTest("XCCL backend does not support abort hooks")
 
         rank, size = get_rank_and_size()
         if size < 2:
             self.skipTest("This test requires at least 2 ranks")
-
-        device = torch.device(os.environ.get("TEST_DEVICE", "cuda"))
 
         trace_dir = "/tmp/fr_thread_crash_test_traces"
         os.makedirs(trace_dir, exist_ok=True)
@@ -871,7 +850,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         ) -> None:
             """Run a collective in a thread, optionally exiting early to simulate crash."""
             try:
-                t = torch.rand(10, 10, device=device)
+                t = torch.rand(10, 10, device=self.device)
                 if should_exit_early:
                     return
                 comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
@@ -880,8 +859,8 @@ class TestFlightRecorderHook(unittest.TestCase):
 
         try:
             comm = torchcomms.new_comm(
-                backend=backend,
-                device=device,
+                backend=self.backend,
+                device=self.device,
                 name="test_comm_thread_crash",
                 timeout=timedelta(milliseconds=2000),
                 abort_process_on_timeout_or_error=False,
@@ -890,7 +869,7 @@ class TestFlightRecorderHook(unittest.TestCase):
             recorder = FlightRecorderHook(max_entries=100, isolated=True)
             recorder.register_with_comm(comm)
 
-            t = torch.rand(10, 10, device=device)
+            t = torch.rand(10, 10, device=self.device)
             comm.all_reduce(t, op=torchcomms.ReduceOp.SUM, async_op=False)
 
             should_crash = rank == 0
@@ -931,7 +910,7 @@ class TestFlightRecorderHook(unittest.TestCase):
             )
 
             has_all_reduce = any(
-                entry.get("profiling_name") == "nccl:all_reduce" for entry in entries
+                entry.get("profiling_name") == f"{self.backend}:all_reduce" for entry in entries
             )
             self.assertTrue(has_all_reduce, "Trace should contain all_reduce entry")
 
