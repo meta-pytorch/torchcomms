@@ -13,7 +13,10 @@
 #include "comms/ctran/gpe/tests/CtranGpeUTKernels.h"
 #include "comms/ctran/tests/CtranTestUtils.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-
+#if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
+#include <cupti.h>
+#include "comms/utils/test_utils/CudaGraphTestUtils.h"
+#endif
 class CtranGpeTest : public ::testing::Test {
  public:
   CtranGpe* gpe;
@@ -295,6 +298,1169 @@ TEST_F(CtranGpeTest, SubmitOnlyKernel) {
   CUDACHECK_TEST(cudaStreamDestroy(stream));
 }
 
+#if not defined(__HIP_PLATFORM_AMD__) and not defined(__HIP_PLATFORM_HCC__)
+// Verify multi-stream kernel submissions produce a valid captured graph.
+// Kernels launch on user streams (streamA, streamB). Cross-stream ordering
+// is enforced via execModeSyncEvent_ record/wait nodes. The graph should
+// contain 2 kernel nodes with kernelA -> kernelB (event ordering edge).
+//
+TEST_F(CtranGpeTest, SubmitOpKernelMultiStreamGraphCapture) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t primaryStream;
+  CUDACHECK_TEST(cudaStreamCreate(&primaryStream));
+
+  cudaStream_t streamA, streamB;
+  CUDACHECK_TEST(cudaStreamCreate(&streamA));
+  CUDACHECK_TEST(cudaStreamCreate(&streamB));
+
+  cudaEvent_t forkEvent, joinEventA, joinEventB;
+  CUDACHECK_TEST(cudaEventCreate(&forkEvent));
+  CUDACHECK_TEST(cudaEventCreate(&joinEventA));
+  CUDACHECK_TEST(cudaEventCreate(&joinEventB));
+
+  constexpr int kVal = 42;
+  int* bufA = nullptr;
+  int* bufB = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&bufA, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMalloc(&bufB, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(bufA, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(bufB, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = kVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(primaryStream, cudaStreamCaptureModeRelaxed));
+
+  CUDACHECK_TEST(cudaEventRecord(forkEvent, primaryStream));
+  CUDACHECK_TEST(cudaStreamWaitEvent(streamA, forkEvent, 0));
+  CUDACHECK_TEST(cudaStreamWaitEvent(streamB, forkEvent, 0));
+
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamA,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        bufA, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    auto res = gpe->submit(
+        std::move(emptyOps),
+        nullptr,
+        config,
+        reinterpret_cast<void*>(CtranGpeTestKernel));
+    ASSERT_EQ(res, commSuccess);
+  }
+
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamB,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        bufB, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    auto res = gpe->submit(
+        std::move(emptyOps),
+        nullptr,
+        config,
+        reinterpret_cast<void*>(CtranGpeTestKernel));
+    ASSERT_EQ(res, commSuccess);
+  }
+
+  CUDACHECK_TEST(cudaEventRecord(joinEventA, streamA));
+  CUDACHECK_TEST(cudaEventRecord(joinEventB, streamB));
+  CUDACHECK_TEST(cudaStreamWaitEvent(primaryStream, joinEventA, 0));
+  CUDACHECK_TEST(cudaStreamWaitEvent(primaryStream, joinEventB, 0));
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(primaryStream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  // Verify graph topology: 2 GPE kernels on user streams (streamA, streamB).
+  // Cross-stream ordering via execModeSyncEvent_ record/wait nodes ensures
+  // kernelA -> kernelB.
+  // Each kernel should have a WAIT(E)/RECORD(E) pair from the guard.
+  {
+    auto topo = getGraphTopology(graph);
+    auto kernelNodes = topo.nodesOfType(cudaGraphNodeTypeKernel);
+    ASSERT_EQ(kernelNodes.size(), 2);
+
+    auto kernelA = kernelNodes[0];
+    auto kernelB = kernelNodes[1];
+    EXPECT_TRUE(topo.hasPath(kernelA, kernelB))
+        << "kernelB must transitively depend on kernelA";
+    EXPECT_FALSE(topo.hasPath(kernelB, kernelA))
+        << "kernelA must NOT depend on kernelB (would be a cycle)";
+
+    // Each kernel gets a WAIT(E)/RECORD(E) pair from the guard.
+    // User fork/join use regular cudaEventRecord/cudaStreamWaitEvent
+    // which create graph edges, not event nodes — so they don't
+    // contribute to the WAIT/RECORD node counts.
+    auto waitNodes = topo.nodesOfType(cudaGraphNodeTypeWaitEvent);
+    auto recordNodes = topo.nodesOfType(cudaGraphNodeTypeEventRecord);
+    EXPECT_EQ(waitNodes.size(), kernelNodes.size())
+        << "Each kernel should have one guard WAIT(E) node";
+    EXPECT_EQ(recordNodes.size(), kernelNodes.size())
+        << "Each kernel should have one guard RECORD(E) node";
+  }
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, primaryStream));
+  CUDACHECK_TEST(cudaStreamSynchronize(primaryStream));
+
+  std::vector<int> hostA(count, 0);
+  std::vector<int> hostB(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostA.data(), bufA, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      hostB.data(), bufB, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(hostA, testing::Each(kVal));
+  EXPECT_THAT(hostB, testing::Each(kVal));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaEventDestroy(forkEvent));
+  CUDACHECK_TEST(cudaEventDestroy(joinEventA));
+  CUDACHECK_TEST(cudaEventDestroy(joinEventB));
+  CUDACHECK_TEST(cudaFree(bufA));
+  CUDACHECK_TEST(cudaFree(bufB));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(primaryStream));
+  CUDACHECK_TEST(cudaStreamDestroy(streamA));
+  CUDACHECK_TEST(cudaStreamDestroy(streamB));
+}
+
+// RAII helper to count cudaStreamWaitEvent calls via CUPTI callback API.
+class CuptiWaitEventCounter {
+ public:
+  CuptiWaitEventCounter() {
+    auto cb = [](void* userdata,
+                 CUpti_CallbackDomain domain,
+                 CUpti_CallbackId cbid,
+                 const CUpti_CallbackData* cbdata) {
+      if (domain == CUPTI_CB_DOMAIN_RUNTIME_API &&
+          cbid == CUPTI_RUNTIME_TRACE_CBID_cudaStreamWaitEvent_v3020 &&
+          cbdata->callbackSite == CUPTI_API_ENTER) {
+        reinterpret_cast<std::atomic<int>*>(userdata)->fetch_add(1);
+      }
+    };
+    CHECK_EQ(
+        cuptiSubscribe(
+            &subscriber_, reinterpret_cast<CUpti_CallbackFunc>(+cb), &count_),
+        CUPTI_SUCCESS);
+    CHECK_EQ(
+        cuptiEnableCallback(
+            1,
+            subscriber_,
+            CUPTI_CB_DOMAIN_RUNTIME_API,
+            CUPTI_RUNTIME_TRACE_CBID_cudaStreamWaitEvent_v3020),
+        CUPTI_SUCCESS);
+  }
+
+  ~CuptiWaitEventCounter() {
+    cuptiUnsubscribe(subscriber_);
+  }
+
+  int count() const {
+    return count_.load();
+  }
+
+ private:
+  std::atomic<int> count_{0};
+  CUpti_SubscriberHandle subscriber_;
+};
+
+// Verify eager same-stream fast path: consecutive submits on the same
+// stream skip cudaStreamWaitEvent entirely (0 acquire calls per submit).
+TEST_F(CtranGpeTest, EagerSameStreamOrdering) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  constexpr int kVal1 = 11;
+  constexpr int kVal2 = 22;
+  constexpr int kVal3 = 33;
+  int* buf = nullptr;
+  int* valPtr1 = nullptr;
+  int* valPtr2 = nullptr;
+  int* valPtr3 = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr1, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr2, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr3, sizeof(int)));
+  *valPtr1 = kVal1;
+  *valPtr2 = kVal2;
+  *valPtr3 = kVal3;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CuptiWaitEventCounter waitCounter;
+
+  // Three consecutive submits on the same stream
+  for (auto* valPtr : {valPtr1, valPtr2, valPtr3}) {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  // Same-stream fast path: no cudaStreamWaitEvent calls
+  EXPECT_EQ(waitCounter.count(), 0)
+      << "Same-stream eager submits should skip cudaStreamWaitEvent";
+
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Last kernel wrote kVal3
+  std::vector<int> host(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      host.data(), buf, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(host, testing::Each(kVal3));
+
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr1));
+  CUDACHECK_TEST(cudaFreeHost(valPtr2));
+  CUDACHECK_TEST(cudaFreeHost(valPtr3));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+// Verify eager cross-stream path: submits on alternating streams must
+// call cudaStreamWaitEvent to enforce ordering.
+TEST_F(CtranGpeTest, EagerCrossStreamOrdering) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t streamA, streamB;
+  CUDACHECK_TEST(cudaStreamCreate(&streamA));
+  CUDACHECK_TEST(cudaStreamCreate(&streamB));
+
+  constexpr int kVal1 = 11;
+  constexpr int kVal2 = 22;
+  int* buf = nullptr;
+  int* valPtr1 = nullptr;
+  int* valPtr2 = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr1, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr2, sizeof(int)));
+  *valPtr1 = kVal1;
+  *valPtr2 = kVal2;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CuptiWaitEventCounter waitCounter;
+
+  // Submit on streamA then streamB (cross-stream)
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, streamA, "dummyAlgo", 0);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr1, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, streamB, "dummyAlgo", 1);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr2, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  // Cross-stream: cudaStreamWaitEvent must have been called
+  EXPECT_GT(waitCounter.count(), 0)
+      << "Cross-stream eager submits must call cudaStreamWaitEvent";
+
+  CUDACHECK_TEST(cudaStreamSynchronize(streamA));
+  CUDACHECK_TEST(cudaStreamSynchronize(streamB));
+
+  // Last kernel wrote kVal2
+  std::vector<int> host(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      host.data(), buf, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(host, testing::Each(kVal2));
+
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr1));
+  CUDACHECK_TEST(cudaFreeHost(valPtr2));
+  CUDACHECK_TEST(cudaStreamDestroy(streamA));
+  CUDACHECK_TEST(cudaStreamDestroy(streamB));
+}
+
+// Verify that each kernel captured into a graph gets exactly one
+// WAIT(E)/RECORD(E) pair from the guard. This test captures a single kernel
+// on a single stream with no user fork/join, so the only event nodes in the
+// graph are from the guard.
+TEST_F(CtranGpeTest, GraphCaptureGuardWaitRecordPerKernel) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  int* buf = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = 42;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", 0);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  {
+    auto topo = getGraphTopology(graph);
+    auto kernelNodes = topo.nodesOfType(cudaGraphNodeTypeKernel);
+    ASSERT_EQ(kernelNodes.size(), 1);
+
+    // No user fork/join — only guard event nodes.
+    // Each kernel should have exactly 1 WAIT(E) + 1 RECORD(E).
+    auto waitNodes = topo.nodesOfType(cudaGraphNodeTypeWaitEvent);
+    auto recordNodes = topo.nodesOfType(cudaGraphNodeTypeEventRecord);
+    EXPECT_EQ(waitNodes.size(), 1)
+        << "Guard should add 1 WAIT(E) node per kernel";
+    EXPECT_EQ(recordNodes.size(), 1)
+        << "Guard should add 1 RECORD(E) node per kernel";
+  }
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  std::vector<int> host(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      host.data(), buf, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(host, testing::Each(42));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+// Verify that consecutive same-stream submits followed by a cross-stream
+// submit produce correct ordering. Same-stream kernels (kernelA1, kernelA2)
+// get implicit stream ordering on streamA. Cross-stream ordering to kernelB
+// on streamB is enforced via execModeSyncEvent_ record/wait nodes.
+//
+// Host call order:
+//
+//   gpe->submit(streamA, kernelA1)   // first submit on streamA
+//   gpe->submit(streamA, kernelA2)   // second submit on streamA (same stream)
+//   gpe->submit(streamB, kernelB)    // cross-stream submit
+//
+// kernelA1 -> kernelA2 (implicit, same stream)
+// kernelA2 -> kernelB  (event ordering)
+//
+TEST_F(CtranGpeTest, GraphCaptureSameStreamThenCrossStream) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t primaryStream;
+  CUDACHECK_TEST(cudaStreamCreate(&primaryStream));
+  cudaStream_t streamA, streamB;
+  CUDACHECK_TEST(cudaStreamCreate(&streamA));
+  CUDACHECK_TEST(cudaStreamCreate(&streamB));
+
+  cudaEvent_t forkEvent, joinEventA, joinEventB;
+  CUDACHECK_TEST(cudaEventCreate(&forkEvent));
+  CUDACHECK_TEST(cudaEventCreate(&joinEventA));
+  CUDACHECK_TEST(cudaEventCreate(&joinEventB));
+
+  constexpr int kVal1 = 11;
+  constexpr int kVal2 = 22;
+  constexpr int kValB = 33;
+  int* bufA = nullptr;
+  int* bufB = nullptr;
+  int* valPtr1 = nullptr;
+  int* valPtr2 = nullptr;
+  int* valPtrB = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&bufA, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMalloc(&bufB, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(bufA, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(bufB, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr1, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr2, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtrB, sizeof(int)));
+  *valPtr1 = kVal1;
+  *valPtr2 = kVal2;
+  *valPtrB = kValB;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(primaryStream, cudaStreamCaptureModeRelaxed));
+
+  CUDACHECK_TEST(cudaEventRecord(forkEvent, primaryStream));
+  CUDACHECK_TEST(cudaStreamWaitEvent(streamA, forkEvent, 0));
+  CUDACHECK_TEST(cudaStreamWaitEvent(streamB, forkEvent, 0));
+
+  // First submit on streamA — writes kVal1 to bufA
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamA,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        bufA, valPtr1, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  // Second submit on streamA (same stream) — overwrites bufA with kVal2
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamA,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        bufA, valPtr2, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  // Cross-stream submit on streamB — writes kValB to bufB
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamB,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        bufB, valPtrB, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  CUDACHECK_TEST(cudaEventRecord(joinEventA, streamA));
+  CUDACHECK_TEST(cudaEventRecord(joinEventB, streamB));
+  CUDACHECK_TEST(cudaStreamWaitEvent(primaryStream, joinEventA, 0));
+  CUDACHECK_TEST(cudaStreamWaitEvent(primaryStream, joinEventB, 0));
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(primaryStream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  // Verify graph topology: 3 GPE kernels on user streams.
+  // kernelA1 -> kernelA2 (implicit, same stream)
+  // kernelA2 -> kernelB  (event ordering, cross-stream)
+  // Each kernel should have a WAIT(E)/RECORD(E) pair from the guard.
+  {
+    auto topo = getGraphTopology(graph);
+    auto kernelNodes = topo.nodesOfType(cudaGraphNodeTypeKernel);
+    ASSERT_EQ(kernelNodes.size(), 3);
+
+    auto kernelA1 = kernelNodes[0];
+    auto kernelA2 = kernelNodes[1];
+    auto kernelB = kernelNodes[2];
+
+    // kernelA1 -> kernelA2 (implicit, same user stream)
+    EXPECT_TRUE(topo.hasPath(kernelA1, kernelA2))
+        << "kernelA2 must depend on kernelA1";
+
+    // kernelA2 -> kernelB (event ordering, cross-stream)
+    EXPECT_TRUE(topo.hasPath(kernelA2, kernelB))
+        << "kernelB must depend on kernelA2";
+
+    // Transitively: kernelA1 -> kernelA2 -> kernelB
+    EXPECT_TRUE(topo.hasPath(kernelA1, kernelB))
+        << "kernelB must transitively depend on kernelA1";
+
+    // Each kernel gets a WAIT(E)/RECORD(E) pair from the guard.
+    // User fork/join use regular cudaEventRecord/cudaStreamWaitEvent
+    // which create graph edges, not event nodes.
+    auto waitNodes = topo.nodesOfType(cudaGraphNodeTypeWaitEvent);
+    auto recordNodes = topo.nodesOfType(cudaGraphNodeTypeEventRecord);
+    EXPECT_EQ(waitNodes.size(), kernelNodes.size())
+        << "Each kernel should have one guard WAIT(E) node";
+    EXPECT_EQ(recordNodes.size(), kernelNodes.size())
+        << "Each kernel should have one guard RECORD(E) node";
+  }
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, primaryStream));
+  CUDACHECK_TEST(cudaStreamSynchronize(primaryStream));
+
+  // bufA should have kVal2 (second kernel overwrites first)
+  std::vector<int> hostA(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostA.data(), bufA, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(hostA, testing::Each(kVal2));
+
+  // bufB should have kValB
+  std::vector<int> hostB(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostB.data(), bufB, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(hostB, testing::Each(kValB));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaEventDestroy(forkEvent));
+  CUDACHECK_TEST(cudaEventDestroy(joinEventA));
+  CUDACHECK_TEST(cudaEventDestroy(joinEventB));
+  CUDACHECK_TEST(cudaFree(bufA));
+  CUDACHECK_TEST(cudaFree(bufB));
+  CUDACHECK_TEST(cudaFreeHost(valPtr1));
+  CUDACHECK_TEST(cudaFreeHost(valPtr2));
+  CUDACHECK_TEST(cudaFreeHost(valPtrB));
+  CUDACHECK_TEST(cudaStreamDestroy(primaryStream));
+  CUDACHECK_TEST(cudaStreamDestroy(streamA));
+  CUDACHECK_TEST(cudaStreamDestroy(streamB));
+}
+
+// Verify that non-GPE work enqueued on a user stream between two submit()
+// calls does not create false dependencies. Kernels launch on their
+// respective user streams. The memset on streamA is ordered after kernelA
+// (implicit stream ordering) but does not create a false dependency on
+// kernelB (which is on streamB, ordered via event after kernelA).
+//
+// Host call order:
+//
+//   gpe->submit(streamA, kernelA)
+//   cudaMemsetAsync(nonGpeBuf, ..., streamA)   <-- non-GPE work on user stream
+//   gpe->submit(streamB, kernelB)
+//
+// kernelA -> kernelB (event ordering, cross-stream).
+// memset on streamA, after kernelA (implicit), independent of kernelB.
+//
+TEST_F(CtranGpeTest, GraphCaptureNonGpeWorkBetweenSubmits) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t primaryStream;
+  CUDACHECK_TEST(cudaStreamCreate(&primaryStream));
+  cudaStream_t streamA, streamB;
+  CUDACHECK_TEST(cudaStreamCreate(&streamA));
+  CUDACHECK_TEST(cudaStreamCreate(&streamB));
+
+  cudaEvent_t forkEvent, joinEventA, joinEventB;
+  CUDACHECK_TEST(cudaEventCreate(&forkEvent));
+  CUDACHECK_TEST(cudaEventCreate(&joinEventA));
+  CUDACHECK_TEST(cudaEventCreate(&joinEventB));
+
+  constexpr int kVal = 55;
+  int* bufA = nullptr;
+  int* bufB = nullptr;
+  int* nonGpeBuf = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&bufA, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMalloc(&bufB, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMalloc(&nonGpeBuf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(bufA, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(bufB, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(nonGpeBuf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = kVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(
+      cudaStreamBeginCapture(primaryStream, cudaStreamCaptureModeRelaxed));
+
+  CUDACHECK_TEST(cudaEventRecord(forkEvent, primaryStream));
+  CUDACHECK_TEST(cudaStreamWaitEvent(streamA, forkEvent, 0));
+  CUDACHECK_TEST(cudaStreamWaitEvent(streamB, forkEvent, 0));
+
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamA,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        bufA, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  CUDACHECK_TEST(
+      cudaMemsetAsync(nonGpeBuf, 0xFF, sizeof(int) * count, streamA));
+
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamB,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        bufB, valPtr, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  CUDACHECK_TEST(cudaEventRecord(joinEventA, streamA));
+  CUDACHECK_TEST(cudaEventRecord(joinEventB, streamB));
+  CUDACHECK_TEST(cudaStreamWaitEvent(primaryStream, joinEventA, 0));
+  CUDACHECK_TEST(cudaStreamWaitEvent(primaryStream, joinEventB, 0));
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(primaryStream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  // Verify graph topology: 2 GPE kernels on user streams + memset on
+  // streamA. Cross-stream ordering via event ensures kernelA -> kernelB.
+  // The memset is on streamA after kernelA but independent of kernelB.
+  {
+    auto topo = getGraphTopology(graph);
+    auto kernelNodes = topo.nodesOfType(cudaGraphNodeTypeKernel);
+    ASSERT_EQ(kernelNodes.size(), 2);
+
+    auto kernelA = kernelNodes[0];
+    auto kernelB = kernelNodes[1];
+
+    // kernelB must depend on kernelA (event ordering, cross-stream)
+    EXPECT_TRUE(topo.hasPath(kernelA, kernelB))
+        << "kernelB must transitively depend on kernelA";
+  }
+
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, primaryStream));
+  CUDACHECK_TEST(cudaStreamSynchronize(primaryStream));
+
+  std::vector<int> hostA(count, 0);
+  std::vector<int> hostB(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostA.data(), bufA, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  CUDACHECK_TEST(cudaMemcpy(
+      hostB.data(), bufB, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(hostA, testing::Each(kVal));
+  EXPECT_THAT(hostB, testing::Each(kVal));
+
+  std::vector<int> hostNonGpe(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostNonGpe.data(),
+      nonGpeBuf,
+      sizeof(int) * count,
+      cudaMemcpyDeviceToHost));
+
+  EXPECT_THAT(hostNonGpe, testing::Each(static_cast<int>(0xFFFFFFFF)));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaEventDestroy(forkEvent));
+  CUDACHECK_TEST(cudaEventDestroy(joinEventA));
+  CUDACHECK_TEST(cudaEventDestroy(joinEventB));
+  CUDACHECK_TEST(cudaFree(bufA));
+  CUDACHECK_TEST(cudaFree(bufB));
+  CUDACHECK_TEST(cudaFree(nonGpeBuf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(primaryStream));
+  CUDACHECK_TEST(cudaStreamDestroy(streamA));
+  CUDACHECK_TEST(cudaStreamDestroy(streamB));
+}
+
+// Verify ordering between graph replay and subsequent eager submissions.
+// The captured kernel launches on the user stream and its doRelease adds
+// an execModeSyncEvent_ record node to the graph. At replay time, this
+// records execModeSyncEvent_. A subsequent non-capture doAcquire waits on
+// execModeSyncEvent_ before launching on the user stream.
+//
+// Host call order:
+//   1. Eager kernel A (writes kVal1 to buf) on streamA
+//   2. Capture kernel B (writes kVal2 to buf) on streamA
+//   3. Replay graph on streamA
+//   4. Eager kernel C (writes kVal3 to buf) on streamB
+//   5. Sync and verify buf == kVal3 (C ran after graph replay)
+//
+TEST_F(CtranGpeTest, GraphReplayThenEagerOrdering) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t streamA, streamB;
+  CUDACHECK_TEST(cudaStreamCreate(&streamA));
+  CUDACHECK_TEST(cudaStreamCreate(&streamB));
+
+  constexpr int kVal1 = 11;
+  constexpr int kVal2 = 22;
+  constexpr int kVal3 = 33;
+  int* buf = nullptr;
+  int* valPtr1 = nullptr;
+  int* valPtr2 = nullptr;
+  int* valPtr3 = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr1, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr2, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr3, sizeof(int)));
+  *valPtr1 = kVal1;
+  *valPtr2 = kVal2;
+  *valPtr3 = kVal3;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Step 1: Eager kernel A on streamA — writes kVal1 to buf
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamA,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr1, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+  CUDACHECK_TEST(cudaStreamSynchronize(streamA));
+
+  // Step 2: Capture kernel B on streamA — writes kVal2 to buf
+  cudaGraph_t graph;
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaStreamBeginCapture(streamA, cudaStreamCaptureModeRelaxed));
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamA,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr2, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+  CUDACHECK_TEST(cudaStreamEndCapture(streamA, &graph));
+  ASSERT_NE(graph, nullptr);
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  // Step 3: Replay graph on streamA
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, streamA));
+
+  // Step 4: Eager kernel C on streamB — writes kVal3 to buf.
+  // The unified event ensures C waits on the graph replay of B.
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamB,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr3, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  // Step 5: Sync and verify
+  CUDACHECK_TEST(cudaStreamSynchronize(streamB));
+
+  std::vector<int> host(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      host.data(), buf, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(host, testing::Each(kVal3));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr1));
+  CUDACHECK_TEST(cudaFreeHost(valPtr2));
+  CUDACHECK_TEST(cudaFreeHost(valPtr3));
+  CUDACHECK_TEST(cudaStreamDestroy(streamA));
+  CUDACHECK_TEST(cudaStreamDestroy(streamB));
+}
+
+// Verify ordering between eager submissions and subsequent graph replay.
+// The first capture sets everCaptured_. The eager kernel's doRelease records
+// execModeSyncEvent_ on the user stream. When the graph is replayed, its
+// WAIT node (with cudaEventWaitExternal) waits on execModeSyncEvent_'s
+// live state.
+//
+// Host call order:
+//   1. Capture kernel A (writes kVal1 to buf) on streamA
+//   2. Eager kernel B (writes kVal2 to buf) on streamA
+//   3. Replay graph on streamA (should wait on B via cudaEventWaitExternal)
+//   4. Sync and verify buf == kVal1 (graph replay ran after B)
+//
+TEST_F(CtranGpeTest, EagerThenGraphReplayOrdering) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t streamA;
+  CUDACHECK_TEST(cudaStreamCreate(&streamA));
+
+  constexpr int kVal1 = 11;
+  constexpr int kVal2 = 22;
+  int* buf = nullptr;
+  int* valPtr1 = nullptr;
+  int* valPtr2 = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr1, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr2, sizeof(int)));
+  *valPtr1 = kVal1;
+  *valPtr2 = kVal2;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Step 1: Capture kernel A on streamA — writes kVal1 to buf
+  cudaGraph_t graph;
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaStreamBeginCapture(streamA, cudaStreamCaptureModeRelaxed));
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamA,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr1, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+  CUDACHECK_TEST(cudaStreamEndCapture(streamA, &graph));
+  ASSERT_NE(graph, nullptr);
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  // Step 2: Eager kernel B on streamA — writes kVal2 to buf
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER,
+        streamA,
+        "dummyAlgo",
+        dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr2, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  // Step 3: Replay graph on streamA. The cudaEventWaitExternal flag in the
+  // graph's WAIT node ensures it waits on B's event recording at replay time.
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, streamA));
+  CUDACHECK_TEST(cudaStreamSynchronize(streamA));
+
+  // Step 4: Verify buf == kVal1 (graph replay of A ran last, after B)
+  std::vector<int> host(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      host.data(), buf, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(host, testing::Each(kVal1));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr1));
+  CUDACHECK_TEST(cudaFreeHost(valPtr2));
+  CUDACHECK_TEST(cudaStreamDestroy(streamA));
+}
+
+// Verify ordering: Replay -> Eager -> Replay.
+// The eager submit must wait on the first replay, and the second replay
+// must wait on the eager submit. Each transition exercises the cross-mode
+// bridge in alternating directions.
+//
+// Host call order:
+//   1. Capture kernel A (writes kVal1) into a graph
+//   2. Replay graph (buf = kVal1)
+//   3. Eager kernel B (writes kVal2, should overwrite kVal1)
+//   4. Replay graph again (buf = kVal1, should overwrite kVal2)
+//   5. Verify buf == kVal1
+//
+TEST_F(CtranGpeTest, ReplayEagerReplayOrdering) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  constexpr int kVal1 = 11;
+  constexpr int kVal2 = 22;
+  int* buf = nullptr;
+  int* valPtr1 = nullptr;
+  int* valPtr2 = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr1, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr2, sizeof(int)));
+  *valPtr1 = kVal1;
+  *valPtr2 = kVal2;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Step 1: Capture kernel A — writes kVal1
+  cudaGraph_t graph;
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr1, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  // Step 2: First replay — buf = kVal1
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+
+  // Step 3: Eager kernel B — writes kVal2 (must wait on first replay)
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr2, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  // Step 4: Second replay — buf = kVal1 (must wait on eager B)
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Step 5: Verify buf == kVal1 (second replay ran last)
+  std::vector<int> host(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      host.data(), buf, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(host, testing::Each(kVal1));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr1));
+  CUDACHECK_TEST(cudaFreeHost(valPtr2));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+
+// Verify ordering: Eager -> Replay -> Eager.
+// The replay must wait on the first eager submit, and the second eager
+// submit must wait on the replay. Each transition exercises the cross-mode
+// bridge in alternating directions.
+//
+// Host call order:
+//   1. Capture kernel A (writes kVal1) into a graph
+//   2. Eager kernel B (writes kVal2)
+//   3. Replay graph (buf = kVal1, should overwrite kVal2)
+//   4. Eager kernel C (writes kVal3, should overwrite kVal1)
+//   5. Verify buf == kVal3
+//
+TEST_F(CtranGpeTest, EagerReplayEagerOrdering) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  constexpr int kVal1 = 11;
+  constexpr int kVal2 = 22;
+  constexpr int kVal3 = 33;
+  int* buf = nullptr;
+  int* valPtr1 = nullptr;
+  int* valPtr2 = nullptr;
+  int* valPtr3 = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr1, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr2, sizeof(int)));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr3, sizeof(int)));
+  *valPtr1 = kVal1;
+  *valPtr2 = kVal2;
+  *valPtr3 = kVal3;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Step 1: Capture kernel A — writes kVal1
+  cudaGraph_t graph;
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr1, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  // Step 2: Eager kernel B — writes kVal2
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr2, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  // Step 3: Replay graph — buf = kVal1 (must wait on eager B)
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+
+  // Step 4: Eager kernel C — writes kVal3 (must wait on replay)
+  {
+    std::vector<std::unique_ptr<struct OpElem>> emptyOps;
+    constexpr uint64_t dummyOpCount = 0;
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr3, commInt8, count, dummyDevState_d, &config.args);
+    ASSERT_EQ(
+        gpe->submit(
+            std::move(emptyOps),
+            nullptr,
+            config,
+            reinterpret_cast<void*>(CtranGpeTestKernel)),
+        commSuccess);
+  }
+
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Step 5: Verify buf == kVal3 (second eager ran last)
+  std::vector<int> host(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      host.data(), buf, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(host, testing::Each(kVal3));
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr1));
+  CUDACHECK_TEST(cudaFreeHost(valPtr2));
+  CUDACHECK_TEST(cudaFreeHost(valPtr3));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
+#endif
+
 TEST_F(CtranGpeTest, SubmitCustomKernArgs) {
   auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
   cudaStream_t stream;
@@ -417,8 +1583,8 @@ TEST_F(CtranGpeTest, SubmitKernelWithStartAndExit) {
   // NOTE: we have no good way to drain the GPE thread activities in
   // startAndExit mode. Thus, we simply busy wait till all flags have been
   // returned. If leak happens, the test will timeout.
-  while (gpe->numInUseKernelFlags() > 0)
-    ;
+  while (gpe->numInUseKernelFlags() > 0) {
+  }
 }
 
 TEST_F(CtranGpeKernelTest, SubmitKernelWithKElems) {
