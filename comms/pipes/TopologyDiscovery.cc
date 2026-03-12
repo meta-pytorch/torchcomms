@@ -97,6 +97,8 @@ TopologyResult TopologyDiscovery::classify(
   const auto& peerAccessFn = peerAccessFn_;
 
   // Handle MnnvlMode (following NCCL's NCCL_MNNVL_ENABLE semantics).
+  // Env vars (NCCL_MNNVL_ENABLE, NCCL_P2P_DISABLE) are read by the caller
+  // (e.g. CtranPipes) and passed via TopologyConfig fields.
   if (topoConfig.mnnvlMode == MnnvlMode::kDisabled) {
     if (myInfo.fabricInfo.available) {
       LOG(INFO) << "TopologyDiscovery: rank " << myRank
@@ -155,7 +157,10 @@ TopologyResult TopologyDiscovery::classify(
     }
 
     // Tier 1: MNNVL fabric match (GB200 cross-host NVLink).
-    if (myInfo.fabricInfo.available && allInfo[r].fabricInfo.available &&
+    // Skipped when p2pDisable is true (NCCL_P2P_DISABLE=1 disables all
+    // NVLink connectivity, matching NCCL's PATH_LOC semantics).
+    if (!topoConfig.p2pDisable && myInfo.fabricInfo.available &&
+        allInfo[r].fabricInfo.available &&
         sizeof(myInfo.fabricInfo.clusterUuid) >= NvmlFabricInfo::kUuidLen &&
         std::memcmp(
             myInfo.fabricInfo.clusterUuid,
@@ -167,7 +172,7 @@ TopologyResult TopologyDiscovery::classify(
     }
 
     // Tier 2: Same hostname + peer access check.
-    if (peerAccessFn &&
+    if (!topoConfig.p2pDisable && peerAccessFn &&
         std::strncmp(
             myInfo.hostname, allInfo[r].hostname, sizeof(myInfo.hostname)) ==
             0) {
