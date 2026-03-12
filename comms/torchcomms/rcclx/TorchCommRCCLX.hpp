@@ -31,7 +31,7 @@ namespace torch::comms {
 constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
 constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
 
-constexpr size_t kMaxEventPoolSize = 1000;
+constexpr size_t kDefaultMaxEventPoolSize = 1000;
 
 // Custom exception class for better error handling
 class RCCLXException : public std::exception {
