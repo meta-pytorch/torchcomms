@@ -464,7 +464,6 @@ ncclResult_t reserveReqBufs(
             bool reserved = true;
             auto res = comm->memCache->reserve(key.value());
             if (res == commInProgress && skipReconnect) {
-              // wait until the buffer is reserved if skipReconnect is true
               while (res == commInProgress) {
                 comm->transportProxy_->progress();
                 res = comm->memCache->reserve(key.value());
@@ -486,7 +485,6 @@ ncclResult_t reserveReqBufs(
             bool reserved = true;
             auto res = comm->memCache->reserve(key.value());
             if (res == commInProgress && skipReconnect) {
-              // wait until the buffer is reserved if skipReconnect is true
               while (res == commInProgress) {
                 comm->transportProxy_->progress();
                 res = comm->memCache->reserve(key.value());
@@ -755,8 +753,27 @@ ncclResult_t addP2PBufKeysToKernelPlan(
     if (!peerInfoMap->contains(peerRank)) {
       peerInfoMap->insert({peerRank, std::make_unique<ncclxPeerReConnInfo>()});
     }
-    // toggle the channel mask to reserve the buffer later
-    if (key.has_value()) {
+    // Determine if this channel has a buffer that needs tracking, using
+    // stable transport properties (transportComm, conn.flags) that are
+    // NOT affected by resetTransport. This avoids a race where
+    // conn->connected is temporarily 0 during reconnect on the worker
+    // thread while plan creation runs on the main thread.
+    bool shouldTrack = false;
+    if (comm->channels[channelId].peers) {
+      auto conn = isSend
+          ? &comm->channels[channelId].peers[peerRank]->send[connIndex]
+          : &comm->channels[channelId].peers[peerRank]->recv[connIndex];
+      if (conn->transportComm) {
+        struct ncclTransportComm* p2pTcomm = isSend
+            ? &ncclTransports[TRANSPORT_P2P]->send
+            : &ncclTransports[TRANSPORT_P2P]->recv;
+        bool isP2p = (conn->transportComm == p2pTcomm);
+        // P2P WRITE send has no buffer; everything else does
+        shouldTrack =
+            isP2p && !(isSend && (conn->conn.flags & NCCL_P2P_WRITE));
+      }
+    }
+    if (shouldTrack) {
       peerInfoMap->at(peerRank)->mark(isSend, channelId, connIndex, algorithm);
     }
   }
