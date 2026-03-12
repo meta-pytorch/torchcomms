@@ -675,7 +675,7 @@ private:
         struct ncclPatPeer* peer = ((struct ncclPatPeer*)recvPeers)+tid;
         struct ncclConnInfo* conn = peer->conn = ncclShmem.channel.peers[recvPeer]->recv+connIndexRecv;
         peer->step = conn->step;
-        peer->buff = conn->buffs[NCCL_PROTO_SIMPLE];
+        peer->buff = (void*)conn->buffs[NCCL_PROTO_SIMPLE];
         peer->stepCache = loadStepValue(peer->tailPtr = conn->tail);
         peer->headPtr = conn->head;
         peer->accSize = 0;
@@ -686,7 +686,7 @@ private:
         conn = peer->conn = ncclShmem.channel.peers[sendPeer]->send+connIndexSend;
         peer->step = conn->step;
         peer->connFifo = conn->connFifo;
-        peer->buff = conn->buffs[NCCL_PROTO_SIMPLE];
+        peer->buff = (void*)conn->buffs[NCCL_PROTO_SIMPLE];
         peer->stepCache = loadStepValue(peer->headPtr = conn->head);
         peer->tailPtr = conn->tail;
         peer->accSize = 0;
