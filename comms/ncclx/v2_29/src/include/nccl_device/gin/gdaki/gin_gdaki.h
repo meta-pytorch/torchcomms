@@ -28,7 +28,7 @@
 #ifdef DOCA_VERBS_USE_META_THIRD_PARTY
 #include "doca_gpunetio_device.h"
 #else
-#include "transport/net_ib/gdaki/doca-gpunetio/include/doca_gpunetio_device.h"
+#include "doca_gpunetio/doca_gpunetio_device.h"
 #endif
 
 #ifdef NCCL_DEVICE_GIN_GDAKI_ENABLE_DEBUG
