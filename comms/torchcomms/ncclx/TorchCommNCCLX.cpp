@@ -56,7 +56,28 @@ void validateIntDtype(const at::Tensor& tensor, std::string_view name) {
   }
 }
 
+std::atomic<int> g_graphTimeoutMonitoringState{-1};
+
 } // namespace
+
+bool isGraphTimeoutMonitoringEnabled() {
+  int state = g_graphTimeoutMonitoringState.load(std::memory_order_relaxed);
+  if (state < 0) {
+    const char* env = std::getenv("TORCHCOMM_NCCLX_GRAPH_TIMEOUT_MONITORING");
+    bool enabled = true;
+    if (env != nullptr) {
+      std::string val(env);
+      enabled = (val != "0" && val != "false");
+    }
+    state = enabled ? 1 : 0;
+    g_graphTimeoutMonitoringState.store(state, std::memory_order_relaxed);
+  }
+  return state == 1;
+}
+
+void resetGraphTimeoutMonitoringCacheForTest() {
+  g_graphTimeoutMonitoringState.store(-1, std::memory_order_relaxed);
+}
 
 TorchCommNCCLX::TorchCommNCCLX()
     : nccl_comm_(nullptr),

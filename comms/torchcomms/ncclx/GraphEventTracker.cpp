@@ -72,11 +72,15 @@ void GraphEventTracker::maybeInitGraphState(
   SharedCallbackState* shared = allocateCallbackState();
   state.shared_ = shared;
 
-  // Set up replay counter — host node fires on each replay
-  CUDA_CHECK(
-      api,
-      api->launchHostFunc(stream, replayCallback, &shared->replay_counter),
-      "Failed to launch replay counter host func");
+  // Set up replay counter — host node fires on each replay.
+  // Only installed when timeout monitoring is enabled; the cleanup callback
+  // is always installed for GraphState lifecycle management.
+  if (isGraphTimeoutMonitoringEnabled()) {
+    CUDA_CHECK(
+        api,
+        api->launchHostFunc(stream, replayCallback, &shared->replay_counter),
+        "Failed to launch replay counter host func");
+  }
 
   // Set up deferred cleanup via a CUDA user object — when the graph is
   // destroyed, the callback sets the released flag; the watchdog's next
@@ -110,10 +114,14 @@ void GraphEventTracker::addEntry(TorchWorkNCCLX* work) {
 
   // Transfer start/end event ownership from the work object, grouped by stream.
   auto [it, inserted] = graphs_.try_emplace(current_graph_id_);
-  it->second.stream_entries[work->stream_].emplace_back(
-      work->start_event_, work->end_event_, work->timeout_ms_);
-  work->start_event_ = nullptr;
-  work->end_event_ = nullptr;
+
+  // Create timeout tracking entry only when events are available
+  if (work->start_event_ && work->end_event_) {
+    it->second.stream_entries[work->stream_].emplace_back(
+        work->start_event_, work->end_event_, work->timeout_ms_);
+    work->start_event_ = nullptr;
+    work->end_event_ = nullptr;
+  }
 
   // Transfer CPU tensors from the work object to the graph state.
   // These tensors (e.g., CPU pointer tensors used by alltoallv_dynamic_dispatch
