@@ -4,7 +4,6 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
-
 namespace meta::comms {
 
 // RAII helper for device buffer pointers
@@ -66,6 +65,50 @@ class CudaEvent {
 
  private:
   cudaEvent_t event_{nullptr};
+};
+
+// RAII guard that sets the calling thread's CUDA stream capture interaction
+// mode and restores the previous mode on destruction.
+//
+// Two constructors:
+//   1. Standalone — calls cudaThreadExchangeStreamCaptureMode directly.
+//   2. Mockable — accepts any object with threadExchangeStreamCaptureMode(),
+//      captured via template at construction time. No hard dependency on the
+//      API type.
+//
+// Usage:
+//   // standalone
+//   StreamCaptureModeGuard guard{cudaStreamCaptureModeRelaxed};
+//
+//   // mockable (e.g. torchcomms CudaApi)
+//   StreamCaptureModeGuard guard{api, cudaStreamCaptureModeRelaxed};
+class StreamCaptureModeGuard {
+ public:
+  using ExchangeFn = cudaError_t (*)(void*, cudaStreamCaptureMode*);
+
+  explicit StreamCaptureModeGuard(cudaStreamCaptureMode desiredMode);
+
+  template <typename Api>
+  StreamCaptureModeGuard(Api* api, cudaStreamCaptureMode desiredMode)
+      : ctx_(api),
+        exchangeFn_([](void* ctx, cudaStreamCaptureMode* mode) {
+          return static_cast<Api*>(ctx)->threadExchangeStreamCaptureMode(mode);
+        }),
+        prevMode_(desiredMode) {
+    exchangeFn_(ctx_, &prevMode_);
+  }
+
+  ~StreamCaptureModeGuard();
+
+  StreamCaptureModeGuard(const StreamCaptureModeGuard&) = delete;
+  StreamCaptureModeGuard& operator=(const StreamCaptureModeGuard&) = delete;
+  StreamCaptureModeGuard(StreamCaptureModeGuard&&) = delete;
+  StreamCaptureModeGuard& operator=(StreamCaptureModeGuard&&) = delete;
+
+ private:
+  void* ctx_{nullptr};
+  ExchangeFn exchangeFn_{nullptr};
+  cudaStreamCaptureMode prevMode_;
 };
 
 } // namespace meta::comms
