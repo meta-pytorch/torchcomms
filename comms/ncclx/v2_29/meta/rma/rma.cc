@@ -30,7 +30,7 @@ getValidatedNcclWin(ncclWindow_t win, ncclWin** outWin, const char* funcName) {
 
 namespace ncclx {
 
-ncclResult_t ncclPutSignal(
+__attribute__((visibility("default"))) ncclResult_t ncclPutSignal(
     const void* origin_buff,
     size_t count,
     ncclDataType_t datatype,
@@ -51,7 +51,7 @@ ncclResult_t ncclPutSignal(
       true));
 }
 
-ncclResult_t ncclPut(
+__attribute__((visibility("default"))) ncclResult_t ncclPut(
     const void* origin_buff,
     size_t count,
     ncclDataType_t datatype,
@@ -72,7 +72,7 @@ ncclResult_t ncclPut(
       false));
 }
 
-ncclResult_t ncclGet(
+__attribute__((visibility("default"))) ncclResult_t ncclGet(
     void* target_buff,
     size_t target_disp,
     size_t count,
@@ -94,13 +94,14 @@ ncclResult_t ncclGet(
       stream));
 }
 
-ncclResult_t ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
+__attribute__((visibility("default"))) ncclResult_t
+ncclWaitSignal(int peer, ncclWindow_t win, cudaStream_t stream) {
   ncclWin* ncclWinPtr = nullptr;
   NCCLCHECK(getValidatedNcclWin(win, &ncclWinPtr, "ncclWaitSignal"));
   return metaCommToNccl(ctranWaitSignal(peer, ncclWinPtr->ctranWindow, stream));
 }
 
-ncclResult_t ncclSignal(
+__attribute__((visibility("default"))) ncclResult_t ncclSignal(
     size_t signalDisp,
     uint64_t signalVal,
     int peer,
