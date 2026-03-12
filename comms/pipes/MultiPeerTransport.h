@@ -206,8 +206,11 @@ class MultiPeerTransport {
    *
    * COLLECTIVE OPERATION: All NVL ranks MUST call this with their buffer.
    * Supports both cudaMalloc'd and cuMem-allocated buffers (e.g. from
-   * ncclMemAlloc). For cuMem buffers, the allocation must have been created
-   * with CU_MEM_HANDLE_TYPE_FABRIC.
+   * ncclMemAlloc). Three exchange paths are auto-detected:
+   * - cudaMalloc buffers: cudaIpcMemHandle path
+   * - cuMem with CU_MEM_HANDLE_TYPE_FABRIC: fabric handle path
+   * - cuMem with CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR (no fabric):
+   *   POSIX FD path via pidfd_getfd (Linux 5.6+, intra-host only)
    *
    * @param localPtr GPU pointer (cudaMalloc or ncclMemAlloc)
    * @param size Size of the buffer in bytes
@@ -256,21 +259,25 @@ class MultiPeerTransport {
   void build_device_handle();
   void free_device_handle();
 
-  // Memory type detection for exchangeNvlBuffer dual-path support.
-  enum class NvlMemMode { kCudaIpc, kFabric };
+  // Memory type detection for exchangeNvlBuffer tri-path support.
+  enum class NvlMemMode { kCudaIpc, kFabric, kPosixFd };
   NvlMemMode detectNvlMemMode(void* ptr) const;
 
-  // Fabric handle exchange helpers
+  // Handle exchange helpers
   std::vector<void*> exchangeNvlBufferCudaIpc(void* localPtr);
   std::vector<void*> exchangeNvlBufferFabric(void* localPtr, std::size_t size);
+  std::vector<void*> exchangeNvlBufferPosixFd(void* localPtr, std::size_t size);
 
   // Track NVL exchange state for proper cleanup in unmapNvlBuffers
   struct NvlExchangeRecord {
     NvlMemMode mode;
-    // Fabric-only state for cleanup:
-    std::vector<CUdeviceptr> fabricPeerPtrs;
-    std::vector<CUmemGenericAllocationHandle> fabricPeerAllocHandles;
-    std::vector<size_t> fabricPeerSizes;
+    // cuMem state for cleanup (used by kFabric and kPosixFd paths):
+    std::vector<CUdeviceptr> cuMemPeerPtrs;
+    std::vector<CUmemGenericAllocationHandle> cuMemPeerAllocHandles;
+    std::vector<size_t> cuMemPeerSizes;
+    // POSIX FD exported by this rank — kept open until unmap so that peers
+    // can complete pidfd_getfd imports before the fd is closed.
+    int localExportedFd{-1};
   };
   // Keyed by the mappedPtrs vector's data pointer (first element address)
   std::unordered_map<void*, NvlExchangeRecord> nvlExchangeRecords_;
