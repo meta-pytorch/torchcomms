@@ -192,6 +192,16 @@ CommsMaybe<CollTraceDump> CommDumpPlugin::dump() noexcept {
   auto readLockedCollTraceDump =
       collTraceDump_.rlock(config_.dumpLockAcquireTimeout);
 
+  if (readLockedCollTraceDump.isNull()) {
+    XLOG_FIRST_N(
+        ERR,
+        2,
+        "Failed to acquire read lock for collTraceDump_ in CommDumpPlugin dump");
+    return folly::makeUnexpected(CommsError(
+        "Failed to acquire read lock for collTraceDump_ in CommDumpPlugin dump",
+        commInternalError));
+  }
+
   // Create a copy of the current state of collTraceDump_
   CollTraceDump dumpCopy = *readLockedCollTraceDump;
 

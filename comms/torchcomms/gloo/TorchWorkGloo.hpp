@@ -3,8 +3,8 @@
 #pragma once
 
 #include <ATen/ATen.h>
-#include "comms/torchcomms/TorchCommTracing.hpp"
 #include "comms/torchcomms/TorchWork.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 
 namespace torch::comms {
 

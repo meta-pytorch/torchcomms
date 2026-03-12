@@ -593,6 +593,15 @@ static ncclResult_t symLocalWindowCreate(
   struct ncclDevrState* devr = &comm->devrState;
   struct ncclDevrLocalWindow* win;
 
+  // Get the full underlying CUDA allocation range. On aarch64 SMMU (e.g. GB300),
+  // IB memory registration requires the full allocation base and size — registering
+  // a sub-range of a cuMem allocation fails because the SMMU page tables need the
+  // complete mapping. This mirrors what the symmetric path does at line 772.
+  CUdeviceptr allocBase = 0;
+  size_t allocSize = 0;
+  CUCHECK(cuMemGetAddressRange(&allocBase, &allocSize, reinterpret_cast<CUdeviceptr>(userPtr)));
+  size_t ginOffset = reinterpret_cast<CUdeviceptr>(userPtr) - allocBase;
+
   win = (struct ncclDevrLocalWindow*)malloc(sizeof(struct ncclDevrLocalWindow));
   memset(win, 0, sizeof(*win));
   win->memory = nullptr;   // No ncclDevrMemory for local-only windows
@@ -602,9 +611,11 @@ static ncclResult_t symLocalWindowCreate(
   win->winFlags = winFlags;
   win->localRegHandle = localReg;
 
-  // Register with GIN using local-only registration (no allGather).
-  // GIN must already be connected via parent comm.
-  NCCLCHECK(ncclGinRegisterLocal(comm, userPtr, userSize, win->ginHostWins, win->ginDevWins));
+  // Register the FULL allocation with GIN (not just the tensor sub-range).
+  // On aarch64 SMMU (GB300), ibv_reg_mr_iova2 and DMA-BUF registration fail
+  // for sub-ranges of cuMem allocations. The device kernel uses ginOffset4K
+  // to address the tensor's position within the registered MR.
+  NCCLCHECK(ncclGinRegisterLocal(comm, reinterpret_cast<void*>(allocBase), allocSize, win->ginHostWins, win->ginDevWins));
 
   struct ncclWindow_vidmem* winDev;
   struct ncclWindow_vidmem* winDevHost;
@@ -619,7 +630,7 @@ static ncclResult_t symLocalWindowCreate(
   winDevHost->lsaRank = devr->lsaSelf;
   winDevHost->worldRank = comm->rank;
   winDevHost->winHost = (void*)win;
-  winDevHost->ginOffset4K = 0;  // Offset within local buffer
+  winDevHost->ginOffset4K = ginOffset>>12;  // Offset of tensor within registered MR
   for (int i = 0; i < NCCL_GIN_MAX_CONTEXTS; i++) {
     winDevHost->ginWins[i] = win->ginDevWins[i];
   }

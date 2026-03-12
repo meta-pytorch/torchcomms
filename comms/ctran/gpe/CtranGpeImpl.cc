@@ -58,20 +58,65 @@ CtranGpe::Impl::Impl() {
 
   this->gpeKernelSyncPool =
       std::make_unique<GpeKernelSyncPool>(NCCL_CTRAN_NUM_GPE_KERNEL_SYNCS);
-
-  FB_CUDACHECKTHROW_EX(
-      cudaEventCreateWithFlags(&execEvent_, cudaEventDisableTiming),
-      comm->logMetaData_);
-  FB_CUDACHECKTHROW_EX(
-      cudaStreamCreateWithFlags(&execOrderStream_, cudaStreamNonBlocking),
-      comm->logMetaData_);
-
-  return;
 }
 
-CtranGpe::Impl::~Impl() {
-  FB_CUDACHECKTHROW_EX(cudaEventDestroy(execEvent_), comm->logMetaData_);
-  FB_CUDACHECKTHROW_EX(cudaStreamDestroy(execOrderStream_), comm->logMetaData_);
+CtranGpe::Impl::~Impl() = default;
+
+void OrderedWorkStreamGuard::init(const CommLogData& logMetaData) {
+  logMetaData_ = &logMetaData;
+  FB_CUDACHECKTHROW_EX(
+      cudaEventCreateWithFlags(&execModeSyncEvent_, cudaEventDisableTiming),
+      logMetaData);
+}
+
+OrderedWorkStreamGuard::~OrderedWorkStreamGuard() {
+  FB_CHECKABORT(
+      logMetaData_ != nullptr,
+      "OrderedWorkStreamGuard destroyed without init()");
+  FB_CUDACHECKTHROW_EX(cudaEventDestroy(execModeSyncEvent_), *logMetaData_);
+}
+
+OrderedWorkStreamGuard::Scope::Scope(
+    OrderedWorkStreamGuard& guard,
+    cudaStream_t userStream,
+    const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo)
+    : guard_(&guard), userStream_(userStream), captureInfo_(captureInfo) {
+  status_ = guard_->doAcquire(userStream_, captureInfo_);
+}
+
+OrderedWorkStreamGuard::Scope::~Scope() {
+  if (guard_) {
+    guard_->doRelease(userStream_, captureInfo_);
+  }
+}
+
+OrderedWorkStreamGuard::Scope::Scope(Scope&& other) noexcept
+    : guard_(other.guard_),
+      userStream_(other.userStream_),
+      captureInfo_(other.captureInfo_),
+      status_(other.status_) {
+  other.guard_ = nullptr;
+}
+
+OrderedWorkStreamGuard::Scope& OrderedWorkStreamGuard::Scope::operator=(
+    Scope&& other) noexcept {
+  if (this != &other) {
+    if (guard_) {
+      guard_->doRelease(userStream_, captureInfo_);
+    }
+    guard_ = other.guard_;
+    userStream_ = other.userStream_;
+    captureInfo_ = other.captureInfo_;
+    status_ = other.status_;
+    other.guard_ = nullptr;
+  }
+  return *this;
+}
+
+OrderedWorkStreamGuard::Scope OrderedWorkStreamGuard::acquire(
+    cudaStream_t userStream,
+    const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo) {
+  return Scope(*this, userStream, captureInfo);
 }
 
 struct cmdCbPlan {
@@ -95,19 +140,83 @@ void CUDART_CB CtranGpe::Impl::cmdDestroy(void* data) {
   delete cmd;
 }
 
-commResult_t CtranGpe::Impl::preKernelLaunch(cudaStream_t curStream) {
-  // check if we can skip stream wait when posting kernels on the same stream
-  if (curStream == lastUserStream_) {
-    return commSuccess;
+commResult_t OrderedWorkStreamGuard::doAcquire(
+    cudaStream_t userStream,
+    const utils::cudagraph::StreamCaptureInfo& captureInfo) {
+  const bool isCapturing = captureInfo.status == cudaStreamCaptureStatusActive;
+
+  bool isNewCapture = isCapturing && captureInfo.id != lastCaptureId_;
+  if (isNewCapture) {
+    lastCaptureId_ = captureInfo.id;
+    everCaptured_ = true;
   }
-  lastUserStream_ = curStream;
-  // wait on previously enqueued CTRAN kernels
-  return streamWaitStream(curStream, execOrderStream_, execEvent_);
+
+  auto doWait = [&]() -> commResult_t {
+#if defined(__HIP_PLATFORM_AMD__)
+    unsigned int flags =
+        isCapturing ? hipEventWaitExternal : hipEventWaitDefault;
+#else
+    unsigned int flags =
+        isCapturing ? cudaEventWaitExternal : cudaEventWaitDefault;
+#endif
+    FB_CUDACHECK(cudaStreamWaitEvent(userStream, execModeSyncEvent_, flags));
+    return commSuccess;
+  };
+
+  if (lastUserStream_ == nullptr) {
+    if (isCapturing) {
+      return doWait();
+    }
+    return commSuccess; // first submit ever
+  }
+
+  if (userStream == lastUserStream_ && lastWasCaptured_ == isCapturing &&
+      !isCapturing) {
+    return commSuccess; // same stream, same mode, no capture -- ordering
+                        // implicit
+  }
+
+  if (isCapturing && !isNewCapture && lastWasCaptured_) {
+    // Intra-capture cross-stream: add the RECORD node from the previous
+    // doRelease as a capture dependency of this stream. This creates an
+    // explicit graph edge, since cudaStreamWaitEvent cannot see RECORD
+    // nodes added via cudaGraphAddEventRecordNode.
+#if defined(__HIP_PLATFORM_AMD__)
+    FB_CUDACHECK(cudaStreamUpdateCaptureDependencies(
+        userStream, &lastRecordNode_, 1, hipStreamAddCaptureDependencies));
+#elif CUDART_VERSION >= 13000
+    FB_CUDACHECK(cudaStreamUpdateCaptureDependencies(
+        userStream,
+        &lastRecordNode_,
+        nullptr,
+        1,
+        cudaStreamAddCaptureDependencies));
+#else
+    FB_CUDACHECK(cudaStreamUpdateCaptureDependencies(
+        userStream, &lastRecordNode_, 1, cudaStreamAddCaptureDependencies));
+#endif
+  }
+
+  return doWait();
 }
 
-commResult_t CtranGpe::Impl::postKernelLaunch(cudaStream_t curStream) {
-  // add sync point execOrderStream_ to block future CTRAN kernels
-  return streamWaitStream(execOrderStream_, curStream, execEvent_);
+commResult_t OrderedWorkStreamGuard::doRelease(
+    cudaStream_t userStream,
+    const utils::cudagraph::StreamCaptureInfo& captureInfo) {
+  const bool isCapturing = captureInfo.status == cudaStreamCaptureStatusActive;
+
+  if (!isCapturing) {
+    FB_CUDACHECK(cudaEventRecord(execModeSyncEvent_, userStream));
+  } else {
+    FB_COMMCHECK(
+        utils::cudagraph::addEventRecordNodeToCapture(
+            userStream, captureInfo.g, execModeSyncEvent_, &lastRecordNode_));
+  }
+
+  lastUserStream_ = userStream;
+  lastWasCaptured_ = isCapturing;
+
+  return commSuccess;
 }
 
 commResult_t CtranGpe::Impl::submit(
@@ -200,6 +309,9 @@ commResult_t CtranGpe::Impl::submit(
       utils::cudagraph::getStreamCaptureInfo(
           kernelConfig.stream, streamCaptureInfo));
 
+  cudaStream_t launchStream = kernelConfig.stream;
+  std::optional<OrderedWorkStreamGuard::Scope> wsScope;
+
   size_t opGroupSize = 0;
   // Enqueue op to gpeThread if any op is appended
   if (!opGroup.empty()) {
@@ -232,6 +344,7 @@ commResult_t CtranGpe::Impl::submit(
               reinterpret_cast<void*>(plan),
               cmdCb,
               cmdDestroy,
+              kernelConfig.stream,
               streamCaptureInfo),
           res,
           fail);
@@ -240,12 +353,10 @@ commResult_t CtranGpe::Impl::submit(
     }
   }
 
-  // FIXME: the multi-stream order enforcement is not compatible with cuda graph
-  // capture; disable it under cuda graph capture as a workaround. We'd need
-  // proper fix to support the compatibility.
-  if (streamCaptureInfo.status != cudaStreamCaptureStatusActive &&
-      !kernelConfig.canConcurrent) {
-    FB_COMMCHECK(preKernelLaunch(kernelConfig.stream));
+  if (!kernelConfig.canConcurrent) {
+    wsScope = ws_.acquire(kernelConfig.stream, streamCaptureInfo);
+    FB_COMMCHECK(wsScope->status());
+    launchStream = wsScope->stream();
   }
 
   if (NCCL_CTRAN_ENALBE_CLUSTER_KERNEL_LAUNCH) {
@@ -283,7 +394,7 @@ commResult_t CtranGpe::Impl::submit(
     launchConfig.blockDimZ = blocks.z;
     launchConfig.attrs = launchAttrs;
     launchConfig.numAttrs = attrs;
-    launchConfig.hStream = kernelConfig.stream;
+    launchConfig.hStream = launchStream;
     CUfunction cuFn;
     FB_CUDACHECKGOTO(cudaGetFuncBySymbol(&cuFn, ncclKernel), res, fail);
     CLOGF_TRACE(COLL, "CTranGPE: submit {}", kernelConfig.toString());
@@ -329,7 +440,7 @@ commResult_t CtranGpe::Impl::submit(
             blocks,
             kernelArgs.data(),
             sharedMemBytes,
-            kernelConfig.stream),
+            launchStream),
         res,
         fail);
   }
@@ -352,7 +463,7 @@ commResult_t CtranGpe::Impl::submit(
           CHECKSUM_NUM_THREAD,
           args.data(),
           0,
-          kernelConfig.stream);
+          launchStream);
       if (res != cudaSuccess && checksumItem != nullptr) {
         // Do not return error if the internal checksum fails
         CLOGF(WARN, "CTranGPE: Failed to launch checksum kernel");
@@ -366,13 +477,8 @@ commResult_t CtranGpe::Impl::submit(
     }
   }
 
-  // FIXME: the multi-stream order enforcement is not compatible with cuda graph
-  // capture; disable it under cuda graph capture as a workaround. We'd need
-  // proper fix to support the compatibility.
-  if (streamCaptureInfo.status != cudaStreamCaptureStatusActive &&
-      !kernelConfig.canConcurrent) {
-    FB_COMMCHECK(postKernelLaunch(kernelConfig.stream));
-  }
+  // early release
+  wsScope.reset();
 
   if (colltraceHandle != nullptr) {
     colltraceHandle->trigger(CollTraceHandleTriggerState::AfterEnqueueKernel);
@@ -438,6 +544,7 @@ commResult_t CtranGpe::Impl::submitHost(
 }
 
 void CtranGpe::Impl::start() {
+  ws_.init(comm->logMetaData_);
   thread_ = std::thread([this] { gpeThreadFn(); });
 }
 

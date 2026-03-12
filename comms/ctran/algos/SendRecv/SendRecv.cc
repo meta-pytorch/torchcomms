@@ -101,8 +101,8 @@ commResult_t ctranRecv(
 }
 
 commResult_t ctranGroupEndHook(
+    enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout) {
-  auto algo = NCCL_SENDRECV_ALGO;
   // By default, use zero-copy kernel for sendrecv.
   if (algo == NCCL_SENDRECV_ALGO::ctran) {
     algo = NCCL_SENDRECV_ALGO::ctzcopy;

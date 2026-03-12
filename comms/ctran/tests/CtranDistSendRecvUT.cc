@@ -198,7 +198,7 @@ class CtranTestFixture : public NcclxBaseTest, public CtranBaseTest {
 
       // Indicating end of group
       commGroupDepth--;
-      EXPECT_EQ(ctranGroupEndHook(), commSuccess);
+      EXPECT_EQ(ctranGroupEndHook(NCCL_SENDRECV_ALGO), commSuccess);
       CUDACHECK_TEST(cudaStreamSynchronize(stream));
 
       if (doSendRecv) {

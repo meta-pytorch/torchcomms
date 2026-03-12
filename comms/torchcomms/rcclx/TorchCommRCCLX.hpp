@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -26,7 +27,11 @@
 
 namespace torch::comms {
 
-constexpr size_t kMaxEventPoolSize = 1000;
+// Hint key names for RCCLX backend configuration
+constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
+constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
+
+constexpr size_t kDefaultMaxEventPoolSize = 1000;
 
 // Custom exception class for better error handling
 class RCCLXException : public std::exception {
