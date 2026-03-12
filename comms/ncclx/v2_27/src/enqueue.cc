@@ -195,8 +195,8 @@ static void finishPlan(struct ncclComm* comm, struct ncclKernelPlan* plan) {
           comm,
           plan->channelMask,
           std::move(plan->peerReconnInfoMap),
-          plan->channelsReadyPtr)));
-    plan->kernelArgs->channelsReadyPtr = plan->channelsReadyPtr;
+          plan->channelsDoorBell)));
+    plan->kernelArgs->channelsDoorBell = plan->channelsDoorBell;
   }
 
   // Put batches into the kernel arguments. The first batch for each channel
@@ -1451,8 +1451,8 @@ ncclResult_t ncclLaunchPrepare(struct ncclComm* comm) {
         plan->bufKeys.reserve(nChannels * nPeers * 2);
         NCCLCHECKIGNORE(
           metaCommToNccl(
-            comm->transportProxy_->getNextChannelsReadyPtr(
-              &plan->channelsReadyPtr)));
+            comm->transportProxy_->getNextChannelDoorBell(
+              &plan->channelsDoorBell)));
       }
 
       if (planner->isSymColl) {

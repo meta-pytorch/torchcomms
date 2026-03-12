@@ -941,6 +941,72 @@ TEST_P(NcclxMemDistTestFixture, overlapMultipleColl) {
   NCCLCHECK_TEST(ncclCommDestroy(childComm3));
   NCCLCHECK_TEST(ncclCommDestroy(comm));
 }
+TEST_P(NcclxMemDistTestFixture, overlapStressTest) {
+  int nChildComms = 10;
+  for (int i = 0; i < nChildComms + 1; ++i) {
+    createBufs(); // each communicator has 1 buffer
+  }
+  for (int i = 0; i < nChildComms + 1; ++i) {
+    createStream(); // each stream has 1 buffer
+  }
+  std::vector<std::string> commDescs;
+
+  NCCLCHECK_TEST(
+      ncclCommInitRankConfig(&comm, numRanks, ncclUid, globalRank, &config));
+  ASSERT_NE(nullptr, comm);
+  std::vector<ncclComm_t> childComms;
+
+  // create nChildComms child comms, duplicate of comm
+  auto totalRanks = comm->ctranComm_->statex_.get()->nRanks();
+  size_t count = getDefaultCount();
+  for (int i = 0; i < nChildComms + 1; ++i) {
+    prepBuffer(&sendBufs.at(i), count * (i + 1), comm->rank);
+    prepBuffer(&recvBufs.at(i), count * (i + 1), comm->rank);
+  }
+  for (int i = 0; i < nChildComms; ++i) {
+    ncclComm_t childComm = nullptr;
+    ncclConfig_t childCommConfig = NCCL_CONFIG_INITIALIZER;
+    commDescs.push_back(fmt::format("{}:{}", "child_communicator", i));
+    childCommConfig.commDesc = commDescs.at(i).c_str();
+    splitChildComm(&childComm, totalRanks, &childCommConfig);
+    ASSERT_NE(nullptr, childComm);
+    childComms.push_back(childComm);
+  }
+
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  // Run standard allreduce across all communicators
+  int numIters = 30;
+  for (int i = 0; i < numIters; ++i) {
+    for (int j = 0; j < nChildComms + 1; ++j) {
+      EXPECT_EQ(
+          ncclAllReduce(
+              sendBufs.at(j),
+              recvBufs.at(j),
+              count * (j + 1),
+              ncclInt,
+              ncclSum,
+              (j == 0) ? comm : childComms.at(j - 1),
+              streams.at(j)),
+          ncclSuccess);
+    }
+    if (globalRank == 0) {
+      std::cout << "[Host] Iteration " << i << " completed" << std::endl;
+    }
+    // skip checking results for now, just test sharing buffer logic robustness
+  }
+  for (int j = 0; j < nChildComms + 1; j++) {
+    CUDACHECK_TEST(cudaStreamSynchronize(streams.at(j)));
+    if (globalRank == 0) {
+      std::cout << "[Host] Stream " << j << " completed" << std::endl;
+    }
+  }
+
+  for (int j = 0; j < nChildComms; j++) {
+    NCCLCHECK_TEST(ncclCommDestroy(childComms.at(j)));
+  }
+  NCCLCHECK_TEST(ncclCommDestroy(comm));
+}
 
 INSTANTIATE_TEST_SUITE_P(
     MyTestSuite,

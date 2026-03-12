@@ -345,7 +345,14 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
   // do better when we know all threads are querying the same bitmask.
   if (tid < MAXCHANNELS && (args->channelMask & (1ull<<tid))) {
     int n = __popcll(args->channelMask & ((1ull<<tid)-1));
-    if (blockIdx.x == n) ncclShmem.channelId = tid;
+    if (blockIdx.x == n) {
+      ncclShmem.channelId = tid;
+      if (args->comm->buffsShared) {
+        while (!(ld_acquire_sys_global(args->channelsDoorBell + tid))) {
+          __nanosleep(10);
+        }
+      }
+    }
   }
   __syncthreads(); // publish ncclShmem.{args, channelId}
   /* set abort flag to 0 */
@@ -381,19 +388,6 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     } break;
   }
   __syncthreads(); // publish ncclShmem
-  
-  // wait CPU transport proxy thread signals that resources are ready
-  if (ncclShmem.comm.buffsShared) {
-    if (tid == 0) {
-      volatile uint64_t* flag = ncclShmem.args.channelsReadyPtr;
-      auto channelBit = (1ull << ncclShmem.channelId);
-      while (!(*flag & channelBit)) {
-        __nanosleep(10);
-      }
-    }
-    __syncthreads();
-  }
-
   while (ncclShmem.aborted == 0) {
     profiler(START);
     if (0 <= SpecializedFnId && ncclShmem.funcId == (unsigned)SpecializedFnId) {
@@ -413,10 +407,9 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
   if (ncclShmem.comm.buffsShared) {
     __syncthreads();
     if (tid == 0) {
-      auto channelBit = (1ull << ncclShmem.channelId);
-      // Each block associates with a different channel, use an amotic op to flip the corresponding bit,
+      // Each block associates with a different channel, to flip the corresponding flag,
       // so CPU thread can reuse the flag once all blocks/channels consume the flag.
-      atomicXor_system((unsigned long long*)(ncclShmem.args.channelsReadyPtr), channelBit);
+      st_release_sys_global(ncclShmem.args.channelsDoorBell + ncclShmem.channelId, 0);
     }
   }
   profiler(FINI);
