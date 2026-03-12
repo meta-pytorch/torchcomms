@@ -31,16 +31,10 @@ inline commResult_t addHostNode(
     void* data,
     cudaHostFn_t execCallback,
     cudaHostFn_t destroyCallback,
+    cudaStream_t stream,
     StreamCaptureInfo& info) {
-  cudaHostNodeParams hostParams;
-  hostParams.fn = execCallback;
-  hostParams.userData = reinterpret_cast<void*>(data);
+  FB_CUDACHECK(cudaLaunchHostFunc(stream, execCallback, data));
   cudaUserObject_t object;
-  cudaGraphNode_t hostNode;
-
-  FB_CUDACHECK(
-      cudaGraphAddHostNode(&hostNode, info.g, nullptr, 0, &hostParams));
-
   FB_CUDACHECK(cudaUserObjectCreate(
       &object, objectPtr, destroyCallback, 1, cudaUserObjectNoDestructorSync));
 
