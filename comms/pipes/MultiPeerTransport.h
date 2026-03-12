@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -31,6 +32,10 @@ struct MultiPeerTransportConfig {
   // MNNVL topology overrides for UUID and clique ID.
   // See TopologyConfig for field-level documentation.
   TopologyConfig topoConfig;
+
+  // When true, IBGDA transport is never constructed and all non-self peers
+  // are routed over NVLink. Requires all ranks in the same NVL domain.
+  bool disableIb{false};
 };
 
 /**
@@ -56,12 +61,15 @@ struct MultiPeerTransportConfig {
  */
 class MultiPeerTransport {
  public:
+  /// When topo is provided, bypasses TopologyDiscovery and uses the
+  /// pre-computed topology directly (primarily for unit testing).
   MultiPeerTransport(
       int myRank,
       int nRanks,
       int deviceId,
       std::shared_ptr<meta::comms::IBootstrap> bootstrap,
-      const MultiPeerTransportConfig& config);
+      const MultiPeerTransportConfig& config,
+      std::optional<TopologyResult> topo = std::nullopt);
 
   ~MultiPeerTransport();
 
@@ -91,7 +99,7 @@ class MultiPeerTransport {
   /** @return True if IBGDA transport is available for peerRank (all non-self).
    */
   bool has_ibgda(int peerRank) const {
-    return peerRank != myRank_;
+    return ibgdaTransport_ != nullptr && peerRank != myRank_;
   }
 
   /** @return True if IBGDA is the preferred transport (no NVL available). */
@@ -242,6 +250,9 @@ class MultiPeerTransport {
   bool deviceHandleBuilt_{false};
 
   // --- Private helpers ---
+  void initFromTopology(
+      TopologyResult topo,
+      const MultiPeerTransportConfig& config);
   void build_device_handle();
   void free_device_handle();
 
