@@ -13,6 +13,7 @@
 
 #include <fmt/core.h>
 
+#include "comms/pipes/DocaHostUtils.h"
 #include "comms/pipes/MultipeerIbgdaDeviceTransport.cuh"
 #include "comms/pipes/MultipeerIbgdaTransportCuda.cuh"
 #include "comms/pipes/rdma/NicDiscovery.h"
@@ -284,7 +285,7 @@ void MultipeerIbgdaTransport::registerMemory() {
   // This matches GIN's gdakiRegMr() pattern (gin_host_gdaki.cc).
   int sinkDmabufFd = -1;
   doca_error_t err =
-      doca_gpu_dmabuf_fd(docaGpu_, sinkBuffer_, sinkBufferSize_, &sinkDmabufFd);
+      getDmaBufFdAligned(docaGpu_, sinkBuffer_, sinkBufferSize_, &sinkDmabufFd);
   if (err == DOCA_SUCCESS && sinkDmabufFd >= 0) {
     // ibv_reg_dmabuf_mr: 4th param is iova — set to 0 for zero-based MR
     auto dmabufResult = ibvPd_->regDmabufMr(
@@ -799,7 +800,7 @@ IbgdaLocalBuffer MultipeerIbgdaTransport::registerBuffer(
   // Try DMABUF registration first, fall back to regular reg_mr
   std::optional<ibverbx::IbvMr> mrOpt;
   int dmabufFd = -1;
-  doca_error_t err = doca_gpu_dmabuf_fd(docaGpu_, ptr, size, &dmabufFd);
+  doca_error_t err = getDmaBufFdAligned(docaGpu_, ptr, size, &dmabufFd);
   if (err == DOCA_SUCCESS && dmabufFd >= 0) {
     auto result = ibvPd_->regDmabufMr(
         0,
