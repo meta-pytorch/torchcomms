@@ -57,10 +57,10 @@ jobs:
             gpu-arch-type: "cuda"
             gpu-arch-version: "12.8"
             torch-version: "stable"
-          # - runs-on: "linux.g5.12xlarge.nvidia.gpu"
-          #   gpu-arch-type: "cuda"
-          #   gpu-arch-version: "12.8"
-          #   torch-version: "nightly"
+          - runs-on: "linux.g5.12xlarge.nvidia.gpu"
+            gpu-arch-type: "cuda"
+            gpu-arch-version: "12.8"
+            torch-version: "nightly"
 
     uses: pytorch/test-infra/.github/workflows/linux_job_v2.yml@main
     permissions:
