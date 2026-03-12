@@ -44,9 +44,11 @@ target_include_directories(TorchCommOptionsTest PRIVATE
 target_compile_features(TorchCommOptionsTest PRIVATE cxx_std_20)
 target_link_libraries(TorchCommOptionsTest PRIVATE
     torchcomms
-    ${TORCH_LIBRARIES}
     GTest::gtest_main
     GTest::gmock
+)
+target_link_options(TorchCommOptionsTest PRIVATE
+    "LINKER:--allow-shlib-undefined"
 )
 
 # TorchCommFactoryTest - factory and backend tests
@@ -63,6 +65,9 @@ target_link_libraries(TorchCommFactoryTest PRIVATE
     ${TORCH_LIBRARIES}
     GTest::gtest_main
     GTest::gmock
+)
+target_link_options(TorchCommFactoryTest PRIVATE
+    "LINKER:--allow-shlib-undefined"
 )
 
 # Add dependency so dummy backend is built before factory test runs
