@@ -70,7 +70,7 @@ def main() -> None:
     # Calculate device ID
     num_devices = torch.accelerator.device_count()
     device_id = rank % num_devices
-    target_device = torch.device(f"{device}:{device_id}")
+    target_device = torch.device(f"{device.type}:{device_id}")
 
     print(f"Rank {rank}/{world_size}: Running on device {device_id}")
 

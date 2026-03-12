@@ -202,11 +202,11 @@ class TestFlightRecorderHook(unittest.TestCase):
         self,
         comm_name: str,
     ) -> tuple[FlightRecorderHook, dict, typing.Any]:
-        """Create a FlightRecorderHook with real entries from a gloo communicator.
+        """Create a FlightRecorderHook with real entries from a communicator.
 
         Returns:
             Tuple of (recorder, parsed_json_data, comm) or raises SkipTest if
-            gloo backend is not available.
+            the specified backend is not available.
         """
         # Create communicator
         comm = torchcomms.new_comm(
@@ -829,7 +829,7 @@ class TestFlightRecorderHook(unittest.TestCase):
         import threading
 
         if self.backend == "xccl":
-            self.skipTest("XCCL backend does not support abort hooks")
+            self.skipTest("XCCL backend does not support comm abort")
 
         rank, size = get_rank_and_size()
         if size < 2:
