@@ -169,10 +169,8 @@ void TorchCommNCCLX::init(
       fmt::format("Failed to get memory info for device {}", device_.index()));
 
   // Read hints and store them
-  if (options_.hints.contains(std::string(kHintHighPriorityStream))) {
-    high_priority_stream_ =
-        string_to_bool(options_.hints.at(std::string(kHintHighPriorityStream)));
-  }
+  high_priority_stream_ =
+      options_.getHint<bool>(kHintHighPriorityStream, false);
 
   // Create internal stream
   //
@@ -211,32 +209,14 @@ void TorchCommNCCLX::init(
       cuda_api_->malloc(&barrier_buffer_, sizeof(float)),
       "Failed to allocate barrier buffer");
 
-  const auto kHintMaxEventPoolSizeKey = std::string(kHintMaxEventPoolSize);
-  if (options_.hints.contains(kHintMaxEventPoolSizeKey)) {
-    configs_.max_event_pool_size_ =
-        std::stoull(options_.hints.at(kHintMaxEventPoolSizeKey));
-  }
-
-  const auto kHintGarbageCollectIntervalMsKey =
-      std::string(kHintGarbageCollectIntervalMs);
-  if (options_.hints.contains(kHintGarbageCollectIntervalMsKey)) {
-    configs_.garbage_collect_interval_ms_ =
-        std::stoull(options_.hints.at(kHintGarbageCollectIntervalMsKey));
-  }
-
-  const auto kHintEnableCudaGraphSupportKey =
-      std::string(kHintEnableCudaGraphSupport);
-  if (options_.hints.contains(kHintEnableCudaGraphSupportKey)) {
-    configs_.enable_cuda_graph_support_ =
-        string_to_bool(options_.hints.at(kHintEnableCudaGraphSupportKey));
-  }
-
-  const auto kHintGraphTimeoutCheckIntervalMsKey =
-      std::string(kHintGraphTimeoutCheckIntervalMs);
-  if (options_.hints.contains(kHintGraphTimeoutCheckIntervalMsKey)) {
-    configs_.graph_timeout_check_interval_ms_ =
-        std::stoull(options_.hints.at(kHintGraphTimeoutCheckIntervalMsKey));
-  }
+  configs_.max_event_pool_size_ =
+      options_.getHint<size_t>(kHintMaxEventPoolSize, kDefaultMaxEventPoolSize);
+  configs_.garbage_collect_interval_ms_ = options_.getHint<size_t>(
+      kHintGarbageCollectIntervalMs, kDefaultGarbageCollectIntervalMs);
+  configs_.enable_cuda_graph_support_ = options_.getHint<bool>(
+      kHintEnableCudaGraphSupport, kDefaultEnableCudaGraphSupport);
+  configs_.graph_timeout_check_interval_ms_ = options_.getHint<size_t>(
+      kHintGraphTimeoutCheckIntervalMs, kDefaultGraphTimeoutCheckIntervalMs);
 
   // Give up our internal reference to the store object here.  The caller
   // would still need to keep a reference to the store object till the init
