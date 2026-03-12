@@ -45,4 +45,20 @@ inline RankTopologyInfo make_mnnvl_rank_info(
   return info;
 }
 
+/// Build a TopologyResult where only the given NVL ranks are reachable.
+/// Self (myRank) is always included in globalToNvlLocal.
+inline TopologyResult makeTopology(
+    int myRank,
+    const std::vector<int>& nvlPeers) {
+  TopologyResult topo;
+  topo.nvlPeerRanks = nvlPeers;
+
+  int nvlIdx = 0;
+  topo.globalToNvlLocal[myRank] = nvlIdx++;
+  for (int peer : nvlPeers) {
+    topo.globalToNvlLocal[peer] = nvlIdx++;
+  }
+  return topo;
+}
+
 } // namespace comms::pipes::tests
