@@ -344,6 +344,7 @@ commResult_t CtranGpe::Impl::submit(
               reinterpret_cast<void*>(plan),
               cmdCb,
               cmdDestroy,
+              kernelConfig.stream,
               streamCaptureInfo),
           res,
           fail);

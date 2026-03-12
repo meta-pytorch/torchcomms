@@ -1459,6 +1459,115 @@ TEST_F(CtranGpeTest, EagerReplayEagerOrdering) {
   CUDACHECK_TEST(cudaFreeHost(valPtr3));
   CUDACHECK_TEST(cudaStreamDestroy(stream));
 }
+
+// Verify that graph capture with a non-empty opGroup matches eager-mode
+// ordering: the host node (GPE cmdEnqueue) executes before the kernel.
+//
+// In eager mode, submit() calls cmdEnqueue() then cudaLaunchKernel() — the
+// cmd is in the GPE queue before the kernel can start. During capture,
+// addHostNode() uses cudaLaunchHostFunc on the captured stream, which
+// places the host node before the kernel in stream order, matching this.
+//
+// On replay:
+//   1. Host node fires cmdCb — enqueues cmd to GPE thread (fast: lock+push)
+//   2. Kernel starts, sets KERNEL_STARTED
+//   3. GPE thread dequeues cmd, sees KERNEL_STARTED, runs algo func
+//   4. GPE thread signals KERNEL_TERMINATE
+//   5. Kernel completes
+//
+TEST_F(CtranGpeTest, GraphCaptureWithHostNode) {
+  auto gpe = std::unique_ptr<CtranGpe>(new CtranGpe(cudaDev, dummyComm));
+  cudaStream_t stream;
+  CUDACHECK_TEST(cudaStreamCreate(&stream));
+
+  constexpr int kVal = 77;
+  int* buf = nullptr;
+  int* valPtr = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&buf, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMemset(buf, 0, sizeof(int) * count));
+  CUDACHECK_TEST(cudaMallocHost(&valPtr, sizeof(int)));
+  *valPtr = kVal;
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  CUDACHECK_TEST(cudaStreamBeginCapture(stream, cudaStreamCaptureModeRelaxed));
+
+  {
+    uint64_t dummyOpCount = 100;
+    std::vector<std::unique_ptr<struct OpElem>> ops;
+    auto& op = ops.emplace_back(
+        std::make_unique<OpElem>(
+            OpElem::opType::RECV, dummyComm, dummyOpCount));
+    op->recv.recvbuff = nullptr;
+    op->recv.count = 0;
+    op->recv.datatype = commInt8;
+    op->recv.peerRank = 0;
+
+    auto config = KernelConfig(
+        KernelConfig::KernelType::ALLGATHER, stream, "dummyAlgo", dummyOpCount);
+    ctranKernelSetAllGatherArgs(
+        buf, valPtr, commInt8, count, dummyDevState_d, &config.args);
+
+    auto res = gpe->submit(
+        std::move(ops),
+        &CtranGpeTestAlgoFunc,
+        config,
+        reinterpret_cast<void*>(CtranGpeTestKernel));
+    ASSERT_EQ(res, commSuccess);
+  }
+
+  cudaGraph_t graph;
+  CUDACHECK_TEST(cudaStreamEndCapture(stream, &graph));
+  ASSERT_NE(graph, nullptr);
+
+  // Matches eager mode: host node (cmdEnqueue) before kernel node.
+  // cudaLaunchHostFunc on the captured stream produces this ordering.
+  {
+    auto topo = getGraphTopology(graph);
+    auto hostNodes = topo.nodesOfType(cudaGraphNodeTypeHost);
+    auto kernelNodes = topo.nodesOfType(cudaGraphNodeTypeKernel);
+
+    ASSERT_EQ(hostNodes.size(), 1) << "Expected 1 host node from addHostNode";
+    ASSERT_EQ(kernelNodes.size(), 1) << "Expected 1 kernel node from submit";
+
+    auto hostNode = hostNodes[0];
+    auto kernelNode = kernelNodes[0];
+
+    // Host node must precede kernel node, matching eager-mode ordering
+    // where cmdEnqueue completes before cudaLaunchKernel is called.
+    EXPECT_TRUE(topo.hasPath(hostNode, kernelNode))
+        << "kernel must depend on host node (eager-mode ordering)";
+  }
+
+  // Instantiate and replay to verify functional correctness:
+  // the kernel writes expected values AND the GPE algo func runs via the
+  // host node callback.
+  cudaGraphExec_t graphExec;
+  CUDACHECK_TEST(cudaGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0));
+
+  testing::internal::CaptureStdout();
+
+  CUDACHECK_TEST(cudaGraphLaunch(graphExec, stream));
+  CUDACHECK_TEST(cudaStreamSynchronize(stream));
+
+  // Verify kernel wrote the expected values
+  std::vector<int> hostBuf(count, 0);
+  CUDACHECK_TEST(cudaMemcpy(
+      hostBuf.data(), buf, sizeof(int) * count, cudaMemcpyDeviceToHost));
+  EXPECT_THAT(hostBuf, testing::Each(kVal));
+
+  // Verify GPE algo func was called via the host node callback
+  std::string output = testing::internal::GetCapturedStdout();
+  EXPECT_THAT(output, testing::HasSubstr(kExpectedOutput));
+
+  // Expect flag is returned after kernel finish
+  EXPECT_EQ(gpe->numInUseKernelFlags(), 0);
+
+  CUDACHECK_TEST(cudaGraphExecDestroy(graphExec));
+  CUDACHECK_TEST(cudaGraphDestroy(graph));
+  CUDACHECK_TEST(cudaFree(buf));
+  CUDACHECK_TEST(cudaFreeHost(valPtr));
+  CUDACHECK_TEST(cudaStreamDestroy(stream));
+}
 #endif
 
 TEST_F(CtranGpeTest, SubmitCustomKernArgs) {
