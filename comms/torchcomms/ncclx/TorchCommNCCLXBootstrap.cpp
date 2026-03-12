@@ -206,11 +206,11 @@ void TorchCommNCCLXBootstrap::cleanupTCPStore(ncclComm_t nccl_comm) {
 // (TorchCommNCCLX::init), not by ncclConfig.  Skip them here to avoid
 // spurious "unsupported hint" warnings.
 static const std::set<std::string> kTorchCommLayerHints = {
-    "high_priority_stream",
-    "max_event_pool_size",
-    "garbage_collect_interval_ms",
-    "enable_cuda_graph_support",
-    "graph_timeout_check_interval_ms",
+    std::string(kHintHighPriorityStream),
+    std::string(kHintMaxEventPoolSize),
+    std::string(kHintGarbageCollectIntervalMs),
+    std::string(kHintEnableCudaGraphSupport),
+    std::string(kHintGraphTimeoutCheckIntervalMs),
 };
 
 // Helper function to populate NCCL config from hints

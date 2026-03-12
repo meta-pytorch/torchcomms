@@ -24,16 +24,6 @@
 namespace torch::comms {
 
 namespace {
-// Hint key names for NCCLX backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
-constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
-constexpr std::string_view kHintGarbageCollectIntervalMs =
-    "garbage_collect_interval_ms";
-constexpr std::string_view kHintEnableCudaGraphSupport =
-    "enable_cuda_graph_support";
-constexpr std::string_view kHintGraphTimeoutCheckIntervalMs =
-    "graph_timeout_check_interval_ms";
-
 // Helper function to validate that metadata tensors are int64_t (torch.int64)
 void validateInt64Dtype(const at::Tensor& tensor, std::string_view name) {
   if (tensor.scalar_type() != at::kLong) {

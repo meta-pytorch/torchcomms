@@ -19,12 +19,6 @@
 
 namespace torch::comms {
 
-namespace {
-// Hint key names for RCCL backend configuration
-constexpr std::string_view kHintHighPriorityStream = "high_priority_stream";
-constexpr std::string_view kHintMaxEventPoolSize = "max_event_pool_size";
-} // namespace
-
 ncclResult_t RCCLException::getResult() const {
   return result_;
 }
