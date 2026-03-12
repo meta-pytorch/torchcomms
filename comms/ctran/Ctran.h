@@ -67,8 +67,10 @@ void ctranSendRecvCleanOpGroup();
 
 commResult_t ctranGroupEndHook(
     std::deque<OpElem*>& opGroup,
+    enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 commResult_t ctranGroupEndHook(
+    enum NCCL_SENDRECV_ALGO algo,
     std::optional<std::chrono::milliseconds> timeout = std::nullopt);
 
 bool ctranAllGatherSupport(CtranComm* comm, enum NCCL_ALLGATHER_ALGO algo);

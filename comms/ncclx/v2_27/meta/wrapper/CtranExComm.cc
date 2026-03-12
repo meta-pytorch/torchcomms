@@ -2,7 +2,6 @@
 
 #include "checks.h"
 #include "comm.h"
-#include "meta/NcclxConfig.h" // @manual
 
 #include "comms/ctran/Ctran.h"
 #include "comms/ctran/CtranEx.h"
@@ -28,23 +27,15 @@ CtranExComm::CtranExComm(const ncclComm_t comm, const std::string& commDesc) {
   comm_ = NCCL_COMM_NULL;
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  config.blocking = 1; // Ensure communicator is fully created upon return
-
-  ncclx::Hints hints;
-  hints.set("commDesc", commDesc);
+  config.commDesc = commDesc.c_str();
   std::vector<int> globalRanks =
       comm->ctranComm_->statex_->commRanksToWorldRanksRef();
-  std::string ranksStr;
-  for (size_t i = 0; i < globalRanks.size(); ++i) {
-    if (i > 0) {
-      ranksStr += ",";
-    }
-    ranksStr += std::to_string(globalRanks[i]);
-  }
-  hints.set("splitGroupRanks", ranksStr);
-  hints.set("lazyConnect", "1");
-  hints.set("lazySetupChannels", "1");
-  config.hints = &hints;
+  config.splitGroupRanks = globalRanks.data();
+  config.splitGroupSize = comm->ctranComm_->statex_->nRanks();
+  config.blocking = 1; // Ensure communicator is fully created upon return
+  // Enable lazy features to avoid allocating extra resources from baseline NCCL
+  config.lazyConnect = 1;
+  config.lazySetupChannels = 1;
 
   // if parent comm is non-blocking, ncclCommSplit will be non-blocking
   // as well which would lead to undefined behavior. Adding a throw here to
@@ -53,7 +44,7 @@ CtranExComm::CtranExComm(const ncclComm_t comm, const std::string& commDesc) {
     CLOGF(
         ERR,
         "CTRAN-EX: parent communicator {} is non-blocking, which will cause CtranExComm commSplit to fail.",
-        NCCLX_CONFIG_FIELD(comm->config, commDesc));
+        comm->config.commDesc);
     throw std::runtime_error("CTRAN-EX: parent communicator is non-blocking");
   }
 

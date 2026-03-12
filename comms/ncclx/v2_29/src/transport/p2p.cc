@@ -7,7 +7,6 @@
 
 #include "checks.h"
 #include "comm.h"
-#include "meta/NcclxConfig.h" // @manual
 #include "graph.h"
 #include "utils.h"
 #include "shmutils.h"
@@ -266,7 +265,7 @@ ncclResult_t ncclP2pAllocateShareableBuffer(size_t size, int refcount, ncclIpcDe
       CUDACHECK(res);
     }
   }
-  INFO(NCCL_P2P|NCCL_ALLOC, "commDesc: %s Allocated shareable buffer %p size %zu ipcDesc %p for %s", ctran::utils::parseCommDesc(NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()), *ptr, size, ipcDesc, callsite);
+  INFO(NCCL_P2P|NCCL_ALLOC, "commDesc: %s Allocated shareable buffer %p size %zu ipcDesc %p for %s", ctran::utils::parseCommDesc(comm->config.commDesc), *ptr, size, ipcDesc, callsite);
 
   return ncclSuccess;
 }

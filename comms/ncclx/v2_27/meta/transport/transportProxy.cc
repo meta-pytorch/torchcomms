@@ -3,7 +3,6 @@
 // TODO: Migrate to comms/ctran/utils/Alloc.h once we implement
 // "ncclCuMemHostAlloc" equivalent
 #include "alloc.h"
-#include "meta/NcclxConfig.h" // @manual
 
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Utils.h"
@@ -180,7 +179,7 @@ commResult_t TransportProxy::enqueuePrepRequest(
       COLL,
       "{}: Enqueued request to prepare resources for current kernel plan: "
       "opCount={} (comm->opCount={}),channelMask={:x}, channelsReadyPtr={}({:#x})",
-      NCCLX_CONFIG_FIELD(comm->config, commDesc),
+      comm->config.commDesc,
       opCount,
       comm->opCount,
       channelMask,
@@ -261,8 +260,7 @@ void TransportProxy::testAny() {
           COLL,
           "Releasing {} bufKeys for comm {}",
           req->bufKeys.size(),
-          ctran::utils::parseCommDesc(
-              NCCLX_CONFIG_FIELD(req->comm->config, commDesc).c_str()));
+          ctran::utils::parseCommDesc(req->comm->config.commDesc));
       syncFlagPool_.push_back(ptr);
       req->state = commSuccess;
       CLOGF_SUBSYS(
@@ -321,7 +319,7 @@ void TransportProxy::prepResources(std::shared_ptr<TransportRequest> req) {
       INFO,
       COLL,
       "{}: Transport is ready for reqCount={}, req->channelMask={:x}, req->channelsReadyPtr={:x} ({:#x})",
-      NCCLX_CONFIG_FIELD(req->comm->config, commDesc),
+      req->comm->config.commDesc,
       req->opCount,
       req->channelMask,
       *req->channelsReadyPtr,

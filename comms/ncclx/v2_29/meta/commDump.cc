@@ -8,7 +8,6 @@
 #include <folly/json/json.h>
 
 #include "comm.h"
-#include "meta/NcclxConfig.h" // @manual
 #include "nccl.h"
 
 #include "comms/ctran/colltrace/MapperTrace.h"
@@ -96,7 +95,7 @@ static void dumpCommInfo(
   map["nRanks"] = std::to_string(comm->nRanks);
   map["localRanks"] = std::to_string(comm->localRanks);
   map["nNodes"] = std::to_string(comm->nNodes);
-  map["commDesc"] = toQuotedString(NCCLX_CONFIG_FIELD(comm->config, commDesc));
+  map["commDesc"] = toQuotedString(comm->config.commDesc);
 }
 
 static void dumpCommInfo(
@@ -236,7 +235,7 @@ __attribute__((visibility("default"))) ncclResult_t ncclCommDump(
         comm->rank,
         fmt::ptr(comm),
         comm->commHash,
-        NCCLX_CONFIG_FIELD(comm->config, commDesc));
+        comm->config.commDesc);
 
     dumpCommInfo(comm, map);
     if (NCCL_COLLTRACE_USE_NEW_COLLTRACE) {

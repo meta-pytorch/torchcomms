@@ -1,6 +1,6 @@
 // Copyright (c) Meta Platforms, Inc. and affiliates.
 
-#include "comms/torchcomms/TorchCommTracing.hpp"
+#include "comms/torchcomms/utils/TracingGuard.hpp"
 
 #include <string>
 #include <string_view>
@@ -17,7 +17,7 @@ namespace torch::comms {
 // tensor sizes, data types, and split sizes for variable-length collectives.
 // This information is used by PyTorch's PARAM_COMMS tracing to track and
 // analyze distributed communication patterns.
-std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
+std::shared_ptr<torch::ParamCommsDebugInfo> TracingGuard::getDebugInfo(
     std::string_view comm_name,
     int comm_size,
     std::string_view collective_name,
@@ -57,7 +57,7 @@ std::shared_ptr<torch::ParamCommsDebugInfo> TorchCommTracingGuard::getDebugInfo(
       comm_size);
 }
 
-void TorchCommTracingGuard::initializeTracingCommon(
+void TracingGuard::initializeTracingCommon(
     std::string_view comm_name,
     int comm_size,
     std::string_view collective_name,
@@ -109,7 +109,7 @@ void TorchCommTracingGuard::initializeTracingCommon(
   }
 }
 
-TorchCommTracingGuard::TorchCommTracingGuard(
+TracingGuard::TracingGuard(
     std::string_view comm_name,
     int comm_size,
     std::string_view collective_name,
@@ -129,7 +129,7 @@ TorchCommTracingGuard::TorchCommTracingGuard(
       {output_tensor});
 }
 
-TorchCommTracingGuard::TorchCommTracingGuard(
+TracingGuard::TracingGuard(
     std::string_view comm_name,
     int comm_size,
     std::string_view collective_name,

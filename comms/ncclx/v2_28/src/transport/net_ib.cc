@@ -2944,6 +2944,11 @@ ncclResult_t ncclGinIbGdakiListen(void* ctx, int dev, void* opaqueHandle, void**
 ncclResult_t ncclGinIbGdakiCreateContext(void* collComm, int nSignals, int nCounters, void **ginCtx, ncclNetDeviceHandle_v11_t** devHandle) {
   struct ncclGinIbCollComm* cComm = (struct ncclGinIbCollComm*)collComm;
 
+  // Share net_ib's ibv_context with GDAKI so it can register cudaMalloc memory
+  // on aarch64 SMMU (GB300). Without this, GDAKI opens its own ibv_context which
+  // cannot register cudaMalloc memory via nvidia-peermem on SMMU platforms.
+  cComm->ibvCtx = ncclIbDevs[ncclGinIbGdakiDevIndexes[cComm->dev]].context;
+
   NCCLCHECK(ncclGinGdakiCreateContext(cComm, nSignals, nCounters, ginCtx, devHandle));
 
   return ncclSuccess;
