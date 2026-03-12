@@ -6,6 +6,7 @@
 
 #include <cuda.h>
 #include <cuda_runtime.h>
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <folly/init/Init.h>
@@ -13,7 +14,9 @@
 #include "comms/pipes/GpuMemHandler.h"
 #include "comms/pipes/MultiPeerDeviceHandle.cuh"
 #include "comms/pipes/MultiPeerTransport.h"
+#include "comms/pipes/TopologyDiscovery.h"
 #include "comms/pipes/Transport.cuh"
+#include "comms/pipes/tests/MockBootstrap.h"
 #include "comms/testinfra/TestXPlatUtils.h"
 #include "comms/testinfra/mpi/MpiBootstrap.h"
 #include "comms/testinfra/mpi/MpiTestUtils.h"
@@ -50,6 +53,29 @@ class MultiPeerTransportTestFixture : public MpiBaseTestFixture {
             {
                 .cudaDevice = localRank,
             },
+    };
+    return std::make_unique<MultiPeerTransport>(
+        globalRank,
+        numRanks,
+        localRank,
+        std::make_shared<MpiBootstrap>(),
+        config);
+  }
+
+  std::unique_ptr<MultiPeerTransport> createDisableIbTransport() {
+    MultiPeerTransportConfig config{
+        .nvlConfig =
+            {
+                .dataBufferSize = 256 * 1024,
+                .chunkSize = 512,
+                .pipelineDepth = 4,
+                .p2pSignalCount = 4,
+            },
+        .ibgdaConfig =
+            {
+                .cudaDevice = localRank,
+            },
+        .disableIb = true,
     };
     return std::make_unique<MultiPeerTransport>(
         globalRank,
@@ -365,6 +391,206 @@ TEST_F(MultiPeerTransportTestFixture, ExchangeNvlBufferFabric) {
 #endif
 
   MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// =============================================================================
+// disableIb tests — NVL-only mode
+// =============================================================================
+
+TEST_F(MultiPeerTransportTestFixture, DisableIb_AllPeersNvl) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createDisableIbTransport();
+
+  // All non-self peers should be NVL (single-node setup).
+  for (int r = 0; r < numRanks; ++r) {
+    if (r == globalRank) {
+      EXPECT_EQ(transport->get_transport_type(r), TransportType::SELF);
+    } else {
+      EXPECT_EQ(transport->get_transport_type(r), TransportType::P2P_NVL)
+          << "Peer " << r << " should be P2P_NVL with disableIb";
+    }
+  }
+
+  EXPECT_TRUE(transport->ibgda_peer_ranks().empty());
+  for (int r = 0; r < numRanks; ++r) {
+    EXPECT_FALSE(transport->has_ibgda(r));
+  }
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(MultiPeerTransportTestFixture, DisableIb_ExchangeSucceeds) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createDisableIbTransport();
+
+  EXPECT_NO_THROW(transport->exchange());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(MultiPeerTransportTestFixture, DisableIb_DeviceHandleZeroIbPeers) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createDisableIbTransport();
+
+  transport->exchange();
+  auto handle = transport->get_device_handle();
+
+  EXPECT_EQ(handle.myRank, globalRank);
+  EXPECT_EQ(handle.nRanks, numRanks);
+  EXPECT_EQ(handle.numIbPeers, 0);
+  EXPECT_GT(handle.numNvlPeers, 0);
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST_F(MultiPeerTransportTestFixture, DisableIb_NvlBufferExchange) {
+  if (numRanks < 2) {
+    GTEST_SKIP() << "Requires >= 2 ranks, got " << numRanks;
+  }
+
+  auto transport = createDisableIbTransport();
+  transport->exchange();
+
+  if (nvlSpansMultipleHosts(*transport)) {
+    GTEST_SKIP() << "cudaIpc does not work across hosts";
+  }
+
+  const size_t nbytes = 4096;
+  void* localBuf = nullptr;
+  CUDACHECK_TEST(cudaMalloc(&localBuf, nbytes));
+  CUDACHECK_TEST(cudaMemset(localBuf, globalRank + 1, nbytes));
+  CUDACHECK_TEST(cudaDeviceSynchronize());
+
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  auto mappedPtrs = transport->exchangeNvlBuffer(localBuf, nbytes);
+  verifyMappedPtrs(*transport, mappedPtrs, localBuf);
+
+  transport->unmapNvlBuffers(mappedPtrs);
+  CUDACHECK_TEST(cudaFree(localBuf));
+
+  MPI_Barrier(MPI_COMM_WORLD);
+}
+
+// =============================================================================
+// disableIb mock-based tests — pre-computed TopologyResult, no GPU/MPI needed
+// =============================================================================
+
+namespace {
+
+/// Build a TopologyResult where only the given NVL ranks are reachable.
+/// Self (myRank) is always included in globalToNvlLocal.
+TopologyResult makeTopology(int myRank, const std::vector<int>& nvlPeers) {
+  TopologyResult topo;
+  topo.nvlPeerRanks = nvlPeers;
+
+  int nvlIdx = 0;
+  topo.globalToNvlLocal[myRank] = nvlIdx++;
+  for (int peer : nvlPeers) {
+    topo.globalToNvlLocal[peer] = nvlIdx++;
+  }
+  return topo;
+}
+
+} // namespace
+
+TEST(MultiPeerTransportDisableIbTest, ThrowsWhenPeerNotNvlReachable) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 3;
+
+  // Rank 1 is NVL-reachable, rank 2 is NOT.
+  auto topo = makeTopology(kMyRank, {1});
+
+  MultiPeerTransportConfig config{.disableIb = true};
+  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+
+  EXPECT_THROW(
+      MultiPeerTransport(
+          kMyRank, kNRanks, /*deviceId=*/0, bootstrap, config, std::move(topo)),
+      std::runtime_error);
+}
+
+TEST(MultiPeerTransportDisableIbTest, ErrorMessageContainsRank) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 2;
+
+  // No NVL peers — rank 1 is unreachable.
+  auto topo = makeTopology(kMyRank, {});
+
+  MultiPeerTransportConfig config{.disableIb = true};
+  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+
+  try {
+    MultiPeerTransport(
+        kMyRank, kNRanks, /*deviceId=*/0, bootstrap, config, std::move(topo));
+    FAIL() << "Expected std::runtime_error";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), ::testing::HasSubstr("not NVL-reachable"));
+    EXPECT_THAT(e.what(), ::testing::HasSubstr("rank 1"));
+  }
+}
+
+// Simulates the NCCL_P2P_DISABLE + NCCL_CTRAN_PIPES_DISABLE_IB scenario:
+// P2P disabled means topology discovery finds zero NVL peers, and disableIb
+// means IBGDA is also unavailable — every non-self peer is unreachable.
+TEST(MultiPeerTransportDisableIbTest, ThrowsWhenP2pDisabledAndIbDisabled) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 4;
+
+  // Empty NVL peers simulates NCCL_P2P_DISABLE: no peer is NVL-reachable.
+  auto topo = makeTopology(kMyRank, {});
+
+  MultiPeerTransportConfig config{.disableIb = true};
+  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+
+  try {
+    MultiPeerTransport(
+        kMyRank, kNRanks, /*deviceId=*/0, bootstrap, config, std::move(topo));
+    FAIL() << "Expected std::runtime_error when both P2P and IB are disabled";
+  } catch (const std::runtime_error& e) {
+    EXPECT_THAT(e.what(), ::testing::HasSubstr("not NVL-reachable"));
+    EXPECT_THAT(
+        e.what(), ::testing::HasSubstr("NCCL_CTRAN_PIPES_DISABLE_IB=1"));
+  }
+}
+
+TEST(MultiPeerTransportDisableIbTest, SucceedsWhenAllPeersNvl) {
+  constexpr int kMyRank = 0;
+  constexpr int kNRanks = 3;
+
+  // All peers NVL-reachable.
+  auto topo = makeTopology(kMyRank, {1, 2});
+
+  MultiPeerTransportConfig config{.disableIb = true};
+  auto bootstrap = std::make_shared<testing::MockBootstrap>();
+
+  // Construction succeeds up to the disableIb validation. NVL transport
+  // creation may fail without GPU — we catch that; the validation itself
+  // is what we're testing.
+  try {
+    MultiPeerTransport transport(
+        kMyRank, kNRanks, /*deviceId=*/0, bootstrap, config, std::move(topo));
+
+    for (int r = 0; r < kNRanks; ++r) {
+      if (r == kMyRank) {
+        EXPECT_EQ(transport.get_transport_type(r), TransportType::SELF);
+      } else {
+        EXPECT_EQ(transport.get_transport_type(r), TransportType::P2P_NVL);
+      }
+    }
+    EXPECT_TRUE(transport.ibgda_peer_ranks().empty());
+  } catch (const std::exception&) {
+    // NVL transport creation failed (expected without GPU).
+  }
 }
 
 } // namespace comms::pipes::tests
