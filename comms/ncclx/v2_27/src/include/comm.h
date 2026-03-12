@@ -298,7 +298,8 @@ struct ncclKernelPlan {
   // buffer keys used in plan, used to reserve and release buffers
   std::vector<std::string> bufKeys;
   // pointer to be used to synchronize with the kernel for the current plan
-  uint64_t* channelsReadyPtr{nullptr};
+  // fixed size region of MAXCHANNELS ints
+  uint64_t* channelsDoorBell{nullptr};
 };
 
 ////////////////////////////////////////////////////////////////////////////////

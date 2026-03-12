@@ -3,6 +3,7 @@
 // TODO: Migrate to comms/ctran/utils/Alloc.h once we implement
 // "ncclCuMemHostAlloc" equivalent
 #include "alloc.h"
+#include "gdrwrap.h"
 
 #include "comms/ctran/utils/Checks.h"
 #include "comms/ctran/utils/Utils.h"
@@ -63,8 +64,8 @@ commResult_t tranportProxyShutdown(struct ncclComm* comm) {
 TransportProxy::TransportProxy(struct ncclComm* comm) : parentComm_(comm) {
   NCCLCHECKIGNORE(
       ncclCuMemHostAlloc((void**)&syncPoolPtr_, nullptr, kDefaultSyncPoolSize));
-  size_t nFlags = kDefaultSyncPoolSize / sizeof(uint64_t);
-  for (int elemOffset = 0; elemOffset < nFlags; elemOffset++) {
+  size_t nFlags = kDefaultSyncPoolSize / (sizeof(uint64_t) * MAXCHANNELS);
+  for (int elemOffset = 0; elemOffset < nFlags; elemOffset += MAXCHANNELS) {
     syncFlagPool_.push_back(syncPoolPtr_ + elemOffset);
   }
   if (getTransportProxyMode() != NCCL_USE_TRANSPORT_PROXY::none) {
@@ -132,22 +133,20 @@ inline bool TransportProxy::canSkipPrepBufs(ncclComm* comm, uint64_t opCount) {
   return false;
 }
 
-commResult_t TransportProxy::getNextChannelsReadyPtr(
-    uint64_t** channelsReadyPtr) {
+commResult_t TransportProxy::getNextChannelDoorBell(uint64_t** ptrToDoorBell) {
   std::unique_lock<std::mutex> lock(mutex_);
   if (syncFlagPool_.empty()) {
     FB_ERRORTHROW(
         commInternalError, "No available sync flag in transport worker thread");
   }
-  auto ptr = syncFlagPool_.front();
+  uint64_t* ptr = syncFlagPool_.front();
   syncFlagPool_.pop_front();
-
-  *channelsReadyPtr = ptr;
+  *ptrToDoorBell = ptr;
 
   CLOGF_SUBSYS(
       INFO,
       COLL,
-      "Transport proxy thread: get next sync flag pointer {:x}",
+      "Transport proxy thread: get next sync flag pointer {:#x}",
       (uintptr_t)ptr);
 
   return commSuccess;
@@ -157,7 +156,7 @@ commResult_t TransportProxy::enqueuePrepRequest(
     ncclComm* comm,
     uint64_t channelMask,
     std::shared_ptr<void> peerReconnInfoMap,
-    uint64_t* channelsReadyPtr) {
+    uint64_t* channelsDoorBell) {
   std::unique_lock<std::mutex> lock(mutex_);
 
   auto opCount = incrOpCount(comm->commHash);
@@ -168,7 +167,7 @@ commResult_t TransportProxy::enqueuePrepRequest(
       channelMask,
       opCount,
       peerReconnInfoMap,
-      channelsReadyPtr,
+      channelsDoorBell,
       (canSkipPrepBufs(comm, opCount)) ? commSuccess : commInProgress);
 
   reqQueue_.push_back(req);
@@ -178,13 +177,14 @@ commResult_t TransportProxy::enqueuePrepRequest(
       INFO,
       COLL,
       "{}: Enqueued request to prepare resources for current kernel plan: "
-      "opCount={} (comm->opCount={}),channelMask={:x}, channelsReadyPtr={}({:#x})",
+      "opCount={} (comm->opCount={}),channelMask={:x}, channelsReady={}({:#x})",
       comm->config.commDesc,
       opCount,
       comm->opCount,
       channelMask,
-      *channelsReadyPtr,
-      (uintptr_t)channelsReadyPtr);
+      countReadyChannels(
+          reinterpret_cast<volatile uint64_t*>(channelsDoorBell)),
+      (uintptr_t)channelsDoorBell);
 
   return commSuccess;
 }
@@ -252,8 +252,10 @@ void TransportProxy::testAny() {
   // Once collective kernel complete the work and reset the flag, release the
   // buffers and move the flag back to the pool to reuse.
   for (const auto& req : activeOps_) {
-    auto ptr = req->channelsReadyPtr;
-    if (*ptr == 0) {
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    uint64_t* doorbell = req->channelsDoorBell;
+    if (countReadyChannels(reinterpret_cast<volatile uint64_t*>(doorbell)) ==
+        0) {
       FB_COMMCHECKTHROW(req->comm->memCache->release(req->bufKeys));
       CLOGF_SUBSYS(
           INFO,
@@ -261,13 +263,13 @@ void TransportProxy::testAny() {
           "Releasing {} bufKeys for comm {}",
           req->bufKeys.size(),
           ctran::utils::parseCommDesc(req->comm->config.commDesc));
-      syncFlagPool_.push_back(ptr);
+      syncFlagPool_.push_back(doorbell);
       req->state = commSuccess;
       CLOGF_SUBSYS(
           INFO,
           COLL,
           "Garbage collect sync flag pointer {:x}, {} collectives in progress",
-          (uintptr_t)ptr,
+          (uintptr_t)doorbell,
           activeOps_.size());
     }
   }
@@ -313,8 +315,6 @@ void TransportProxy::prepResources(std::shared_ptr<TransportRequest> req) {
   }
   // Update the mask to signal the NCCL kernel that transport resources are
   // ready to start collectives
-  *req->channelsReadyPtr = req->channelMask;
-
   CLOGF_SUBSYS(
       INFO,
       COLL,
@@ -322,10 +322,12 @@ void TransportProxy::prepResources(std::shared_ptr<TransportRequest> req) {
       req->comm->config.commDesc,
       req->opCount,
       req->channelMask,
-      *req->channelsReadyPtr,
-      (uintptr_t)req->channelsReadyPtr);
+      *req->channelsDoorBell,
+      (uintptr_t)req->channelsDoorBell);
   {
     std::lock_guard<std::mutex> lock(mutex_);
+    markReadyChannels(req->channelsDoorBell, req->channelMask);
+    wc_store_fence();
     // reset the state to indicate in-progress of collective kernel
     req->state = commInProgress;
     activeOps_.push_back(req);
