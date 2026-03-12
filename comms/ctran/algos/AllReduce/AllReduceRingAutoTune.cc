@@ -27,6 +27,13 @@ inline size_t getArchMaxBDP(GpuArch arch) {
   }
 }
 
+inline size_t getMaxBDP(GpuArch arch) {
+  if (NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP > 0) {
+    return static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP);
+  }
+  return getArchMaxBDP(arch);
+}
+
 // Round n to the nearest power of 2. Ties (exact midpoint) round up.
 // Returns 1 for n <= 1.
 size_t roundToNearestPow2(size_t n) {
@@ -45,10 +52,9 @@ size_t roundToNearestPow2(size_t n) {
 
 PipelineParams
 getAutoTunedPipeline(size_t messageBytes, int nRanks, GpuArch arch) {
-  size_t maxBDP = getArchMaxBDP(arch);
-  if (NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP > 0) {
-    maxBDP = static_cast<size_t>(NCCL_CTRAN_ALLREDUCE_RING_AUTO_TUNE_MAX_BDP);
-  }
+  // TODO(T259485262): remove this legacy constant from best AutoTune v1 perf
+  const size_t maxBDP = getMaxBDP(arch);
+  const size_t stagingBufSize = getStagingBufSize();
 
   static constexpr size_t kMinChunkSize = 1;
   static constexpr size_t kMaxChunkSize = 16ULL * 1024 * 1024;
@@ -97,12 +103,18 @@ getAutoTunedPipeline(size_t messageBytes, int nRanks, GpuArch arch) {
   // Round nRanks up to nearest pow2 so that chunkSize (partitionMessageBytes /
   // numChunks) is always a power-of-2, guaranteeing typeSize alignment and
   // exact BDP fit. For pow2 ranks (the common case) this is a no-op.
-  size_t numChunks =
-      pipelineDepth * roundToNearestPow2(static_cast<size_t>(nRanks));
+  const size_t nShards = roundToNearestPow2(static_cast<size_t>(nRanks));
+  size_t numChunks = pipelineDepth * nShards;
   size_t chunkSize = partitionMessageBytes / numChunks;
   chunkSize = std::clamp(chunkSize, kMinChunkSize, kMaxChunkSize);
   numChunks =
       std::max((partitionMessageBytes + chunkSize - 1) / chunkSize, 1UL);
+
+  const size_t scaleDown =
+      (partitionMessageBytes + stagingBufSize - 1) / stagingBufSize;
+  if (partitionMessageBytes > stagingBufSize) {
+    numChunks = std::max(numChunks / scaleDown, size_t{1});
+  }
 
   return {chunkSize, numChunks};
 }
