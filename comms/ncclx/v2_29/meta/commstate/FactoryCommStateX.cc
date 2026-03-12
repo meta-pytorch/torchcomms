@@ -150,9 +150,13 @@ ncclResult_t initCtranCommStatexFromNcclComm(
   try {
     if (ncclComm->noLocal_) {
       ctranComm->statex_->initRankTopologyNolocal();
-    } else {
+    }
+#ifdef BUILD_META_INTERNAL
+    else {
+      // Meta-internal: overwrite topology info from NCCL_TOPO_FILE_PATH.
       ctranComm->statex_->initRankStatesTopology(ctranComm->bootstrap_.get());
     }
+#endif // BUILD_META_INTERNAL
 
     NCCLCHECK(initNvlFabricTopologies(ncclComm, ctranComm));
 
