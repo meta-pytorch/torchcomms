@@ -9,4 +9,3 @@ dist/
 .third-party-cache
 torch_compile_debug/
 Testing/
-build_tests/
