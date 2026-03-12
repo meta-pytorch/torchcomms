@@ -68,9 +68,7 @@ TEST_P(CommWithNoLocalTestParam, NoLocalEnableByHint) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
   const auto commDescStr = fmt::format("{}-{}", kNcclUtCommDesc, "noLocal");
-  ncclx::Hints noLocalHints;
-  noLocalHints.set("commDesc", commDescStr);
-  config.hints = &noLocalHints;
+  config.commDesc = commDescStr.c_str();
 
   // Enable by hint
   ASSERT_EQ(
