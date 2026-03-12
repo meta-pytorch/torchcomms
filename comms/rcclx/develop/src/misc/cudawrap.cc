@@ -279,13 +279,13 @@ static void initOnceFunc() {
    * This is a workaround needed in CUDA 12.2 and CUDA 12.3 which is fixed in 12.4. */
   if (ncclCuMemSupported && ncclCuMemHostEnable() && 12020 <= driverVersion && driverVersion <= 12030) {
     int deviceCnt, saveDevice;
-    cudaGetDevice(&saveDevice);
-    cudaGetDeviceCount(&deviceCnt);
+    (void)cudaGetDevice(&saveDevice);
+    (void)cudaGetDeviceCount(&deviceCnt);
     for (int i = 0; i < deviceCnt; ++i) {
-      cudaSetDevice(i);
-      cudaFree(NULL);
+      (void)cudaSetDevice(i);
+      (void)cudaFree(NULL);
     }
-    cudaSetDevice(saveDevice);
+    (void)cudaSetDevice(saveDevice);
   }
   initResult = ret;
   return;

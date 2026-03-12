@@ -21,6 +21,8 @@
 #include "comms/ctran/utils/ExtUtils.h"
 #include "comms/ctran/utils/PinnedHostPool.h"
 
+struct CommLogData;
+
 struct KernelFlagItem {
   using Self = KernelFlagItem;
 
@@ -184,6 +186,61 @@ commResult_t allocGpeKernelSyncs(
     int nworkers,
     std::vector<ctran::algos::GpeKernelSync*>& gpeKernelSyncs);
 
+class OrderedWorkStreamGuard {
+ public:
+  ~OrderedWorkStreamGuard();
+
+  void init(const CommLogData& logMetaData);
+
+  class Scope {
+   public:
+    Scope(
+        OrderedWorkStreamGuard& guard,
+        cudaStream_t userStream,
+        const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
+    ~Scope();
+
+    Scope(const Scope&) = delete;
+    Scope& operator=(const Scope&) = delete;
+    Scope(Scope&& other) noexcept;
+    Scope& operator=(Scope&& other) noexcept;
+
+    commResult_t status() const {
+      return status_;
+    }
+    cudaStream_t stream() const {
+      return userStream_;
+    }
+
+   private:
+    OrderedWorkStreamGuard* guard_;
+    cudaStream_t userStream_;
+    ctran::utils::cudagraph::StreamCaptureInfo captureInfo_;
+    commResult_t status_;
+  };
+
+  Scope acquire(
+      cudaStream_t userStream,
+      const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
+
+ private:
+  commResult_t doAcquire(
+      cudaStream_t userStream,
+      const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
+  commResult_t doRelease(
+      cudaStream_t userStream,
+      const ctran::utils::cudagraph::StreamCaptureInfo& captureInfo);
+
+  cudaEvent_t execModeSyncEvent_{};
+  unsigned long long lastCaptureId_{0};
+  bool everCaptured_{false};
+  cudaStream_t lastUserStream_{nullptr};
+  bool lastWasCaptured_{false};
+  cudaGraphNode_t lastRecordNode_{};
+
+  const CommLogData* logMetaData_{nullptr};
+};
+
 class CtranGpe::Impl {
  public:
   Impl();
@@ -227,12 +284,6 @@ class CtranGpe::Impl {
     return commSuccess;
   }
 
-  // Maintain execution order between
-  // user streams before launching Ctran kernel,
-  commResult_t preKernelLaunch(cudaStream_t curStream);
-  // Ensure future work waits on just launched Ctran kernel
-  commResult_t postKernelLaunch(cudaStream_t curStream);
-
   CtranComm* comm{nullptr};
 
   std::unique_ptr<KernelElemPool> kernelElemPool;
@@ -250,14 +301,7 @@ class CtranGpe::Impl {
   folly::Synchronized<CmdQueue, std::mutex> cmdQueue_;
   std::condition_variable cmdQueueCv_;
   std::thread thread_;
-  // Internal event and stream used to manage execution order of Ctran kernels
-  // if multiple streams are used to submit ops
-  cudaEvent_t execEvent_;
-  cudaStream_t execOrderStream_;
-  // record the most recent user stream to allow a fast path bypass stream
-  // ordering
-  cudaStream_t lastUserStream_;
-
+  OrderedWorkStreamGuard ws_;
   // Main function called by the GPE thread. It waits and handles any  commands
   // submitted to cmdQueue until the TERMINATE command is received.
   void gpeThreadFn();

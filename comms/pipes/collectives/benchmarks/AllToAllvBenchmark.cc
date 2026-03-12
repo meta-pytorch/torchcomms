@@ -241,11 +241,7 @@ class AllToAllvBenchmarkFixture : public meta::comms::BenchmarkTestFixture {
     MultiPeerNvlTransport transport(globalRank, nranks, bootstrap, nvlConfig);
     transport.exchange();
 
-    // Get preallocated transport array from MultiPeerNvlTransport
-    // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
-    // peers)
-    DeviceSpan<Transport> transports_span(
-        transport.getTransportsArray(), nranks);
+    auto transports_span = transport.getDeviceTransports();
 
     // Create chunk info arrays (equal size for all peers)
     std::vector<ChunkInfo> h_send_chunks, h_recv_chunks;

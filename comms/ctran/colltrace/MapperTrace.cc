@@ -28,10 +28,9 @@ void MapperTrace::CurCollInfo::clear() {
   readIndex = 0;
 }
 
-MapperTrace::MapperTrace()
-    : eventHistory_(), maxEventCount_(NCCL_MAPPERTRACE_EVENT_RECORD_MAX) {
-  eventHistory_.reserve(NCCL_MAPPERTRACE_EVENT_RECORD_MAX);
-}
+MapperTrace::MapperTrace(uint64_t maxEventCount)
+    : eventHistory_(std::make_unique<MapperEvent[]>(maxEventCount)),
+      maxEventCount_(maxEventCount) {}
 
 // TODO: Move it to TraceUtils.h. Currently we couldn't put it there due to
 // circular dependency with EventMgr.h
@@ -207,14 +206,14 @@ std::string MapperRequestEventInfo::serialize(bool quoted) const {
 MapperTrace::Dump MapperTrace::dump() {
   return curCollInfoLocked_.withWLock([this](CurCollInfo& curCollInfo) {
     auto eventHistorySize =
-        eventHistorySizeAtomic_.load(std::memory_order_relaxed);
+        eventHistorySizeAtomic_.load(std::memory_order_acquire);
 
     while (curCollInfo.readIndex < eventHistorySize) {
       std::visit(
           [this, &curCollInfo](auto&& event) {
             this->recordMapperEventImpl(event, curCollInfo);
           },
-          eventHistory_.at(curCollInfo.readIndex));
+          eventHistory_[curCollInfo.readIndex]);
       curCollInfo.readIndex += 1;
     }
     MapperTrace::Dump dump = {
@@ -226,7 +225,7 @@ MapperTrace::Dump MapperTrace::dump() {
     for (auto& [_, eventIndex] : curCollInfo.unfinishedRequests) {
       dump.unfinishedRequests.emplace_back(
           MapperRequestEventInfo{
-              .event = eventHistory_.at(eventIndex),
+              .event = eventHistory_[eventIndex],
               .seqNum = eventIndex,
           });
     }
@@ -262,7 +261,7 @@ void MapperTrace::recordMapperEventImpl(
     CurCollInfo& curCollInfo) {
   // Reset curCollInfo
   curCollInfo.clear();
-  eventHistorySizeAtomic_.store(0, std::memory_order_relaxed);
+  eventHistorySizeAtomic_.store(0, std::memory_order_release);
 }
 
 void MapperTrace::recordMapperEventImpl(
@@ -293,7 +292,7 @@ void MapperTrace::recordMapperEventImpl(
         eventIndex);
     return;
   }
-  const auto& reqEvent = eventHistory_.at(eventIndex);
+  const auto& reqEvent = eventHistory_[eventIndex];
   if (std::holds_alternative<PutStart>(reqEvent)) {
     auto peerRank = std::get<PutStart>(reqEvent).peerRank;
     curCollInfo.putFinishedByPeer[peerRank] += 1;

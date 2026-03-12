@@ -27,6 +27,12 @@ inline const std::string algoValToStr(enum NCCL_SENDRECV_ALGO val) {
 inline void algoStrToVal(const std::string& str, enum NCCL_SENDRECV_ALGO& val) {
   if (str == "ctran") {
     val = NCCL_SENDRECV_ALGO::ctran;
+  } else if (str == "ctzcopy") {
+    val = NCCL_SENDRECV_ALGO::ctzcopy;
+  } else if (str == "ctstaged") {
+    val = NCCL_SENDRECV_ALGO::ctstaged;
+  } else if (str == "ctp2p") {
+    val = NCCL_SENDRECV_ALGO::ctp2p;
   } else {
     val = NCCL_SENDRECV_ALGO::orig;
   }

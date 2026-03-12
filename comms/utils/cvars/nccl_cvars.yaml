@@ -1716,6 +1716,15 @@ cvars:
      Chunk size in bytes for NVL transport in Pipes MultiPeerTransport.
      Controls the granularity of parallel copy operations over NVLink.
 
+ - name        : NCCL_CTRAN_PIPES_DISABLE_IB
+   type        : bool
+   default     : false
+   description : |-
+     Disable IBGDA transport in Pipes MultiPeerTransport. When set to true,
+     IBGDA transport is never constructed and all non-self peers are assumed
+     to be NVL-connected. All data movement and sync operations go over
+     NVLink. Requires that all ranks are in the same NVL domain.
+
  - name        : NCCL_CTRAN_IBGDA_QP_DEPTH
    type        : uint64_t
    default     : 128

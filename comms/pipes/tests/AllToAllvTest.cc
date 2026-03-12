@@ -10,9 +10,8 @@
 #include "comms/pipes/collectives/AllToAllv.cuh"
 #include "comms/pipes/tests/AllToAllvTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
+#include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/testinfra/mpi/MpiBootstrap.h"
-#include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
 using namespace meta::comms;
@@ -58,15 +57,11 @@ void printDeviceBuffer(
 }
 } // namespace
 
-class AllToAllvTestFixture : public MpiBaseTestFixture {
+class AllToAllvTestFixture : public BenchmarkTestFixture {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    BenchmarkTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-
-  void TearDown() override {
-    MpiBaseTestFixture::TearDown();
   }
 };
 
@@ -100,7 +95,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
       numIntsPerRank);
 
   // Configuration for P2pNvlTransport - dynamically sized based on test params
-  const size_t totalInts = numIntsPerRank * numRanks;
+  const size_t totalInts = numIntsPerRank * worldSize;
   const size_t bufferSize = totalInts * sizeof(int32_t);
 
   MultiPeerNvlTransportConfig config{
@@ -110,17 +105,11 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   };
 
   // Create transport and exchange IPC handles
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  MultiPeerNvlTransport transport(globalRank, worldSize, bootstrap, config);
   transport.exchange();
   XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
 
-  // Get transport devices for all peer ranks
-  // Use preallocated Transport array from MultiPeerNvlTransport
-  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
-  // peers)
-  DeviceSpan<Transport> transports_span(
-      transport.getTransportsArray(), numRanks);
+  auto transports_span = transport.getDeviceTransports();
 
   // Allocate send and recv buffers based on test parameters
   DeviceBuffer sendBuffer(bufferSize);
@@ -136,7 +125,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   // Rank 1: To peer 0: 1000,1001,1002,1003  To peer 1: 1100,1101,1102,1103
   // Rank 2: To peer 0: 2000,2001,2002,2003  To peer 1: 2100,2101,2102,2103
   std::vector<int32_t> h_send_init(totalInts);
-  for (int peer = 0; peer < numRanks; peer++) {
+  for (int peer = 0; peer < worldSize; peer++) {
     for (size_t i = 0; i < numIntsPerRank; i++) {
       int32_t value = globalRank * 1000 + peer * 100 + static_cast<int32_t>(i);
       h_send_init[peer * numIntsPerRank + i] = value;
@@ -152,7 +141,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   std::vector<ChunkInfo> h_send_chunk_infos;
   std::vector<ChunkInfo> h_recv_chunk_infos;
 
-  for (int rank = 0; rank < numRanks; rank++) {
+  for (int rank = 0; rank < worldSize; rank++) {
     size_t offset = rank * numIntsPerRank * sizeof(int32_t);
     size_t nbytes = numIntsPerRank * sizeof(int32_t);
     h_send_chunk_infos.emplace_back(offset, nbytes);
@@ -160,40 +149,40 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   }
 
   // Copy chunk infos to device
-  DeviceBuffer d_send_chunk_infos(sizeof(ChunkInfo) * numRanks);
-  DeviceBuffer d_recv_chunk_infos(sizeof(ChunkInfo) * numRanks);
+  DeviceBuffer d_send_chunk_infos(sizeof(ChunkInfo) * worldSize);
+  DeviceBuffer d_recv_chunk_infos(sizeof(ChunkInfo) * worldSize);
   CUDACHECK_TEST(cudaMemcpy(
       d_send_chunk_infos.get(),
       h_send_chunk_infos.data(),
-      sizeof(ChunkInfo) * numRanks,
+      sizeof(ChunkInfo) * worldSize,
       cudaMemcpyHostToDevice));
   CUDACHECK_TEST(cudaMemcpy(
       d_recv_chunk_infos.get(),
       h_recv_chunk_infos.data(),
-      sizeof(ChunkInfo) * numRanks,
+      sizeof(ChunkInfo) * worldSize,
       cudaMemcpyHostToDevice));
 
   // Create DeviceSpans
   DeviceSpan<ChunkInfo> send_chunk_infos(
-      static_cast<ChunkInfo*>(d_send_chunk_infos.get()), numRanks);
+      static_cast<ChunkInfo*>(d_send_chunk_infos.get()), worldSize);
   DeviceSpan<ChunkInfo> recv_chunk_infos(
-      static_cast<ChunkInfo*>(d_recv_chunk_infos.get()), numRanks);
+      static_cast<ChunkInfo*>(d_recv_chunk_infos.get()), worldSize);
 
   // Barrier to ensure all ranks are ready
-  MPI_Barrier(MPI_COMM_WORLD);
+  bootstrap->barrierAll();
 
   // Debug: Print send and recv buffers before all_to_allv
   printDeviceBuffer(
       "Send buffer BEFORE",
       sendBuffer.get(),
       globalRank,
-      numRanks,
+      worldSize,
       numIntsPerRank);
   printDeviceBuffer(
       "Recv buffer BEFORE",
       recvBuffer.get(),
       globalRank,
-      numRanks,
+      worldSize,
       numIntsPerRank);
 
   XLOGF(DBG1, "Rank {}: calling all_to_allv", globalRank);
@@ -203,7 +192,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
       recvBuffer.get(),
       sendBuffer.get(),
       globalRank,
-      numRanks,
+      worldSize,
       transports_span,
       send_chunk_infos,
       recv_chunk_infos,
@@ -217,7 +206,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
       "Recv buffer AFTER",
       recvBuffer.get(),
       globalRank,
-      numRanks,
+      worldSize,
       numIntsPerRank);
 
   // Verify received data
@@ -233,7 +222,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
   int h_errorCount = 0;
 
   // Verify on host for easier debugging
-  for (int peer = 0; peer < numRanks; peer++) {
+  for (int peer = 0; peer < worldSize; peer++) {
     for (size_t i = 0; i < numIntsPerRank; i++) {
       int32_t expected =
           peer * 1000 + globalRank * 100 + static_cast<int32_t>(i);
@@ -263,7 +252,7 @@ TEST_P(AllToAllvEqualSizeTest, AllToAllvEqualSize) {
                              << h_errorCount << " verification errors";
 
   // Barrier to ensure all ranks have completed
-  MPI_Barrier(MPI_COMM_WORLD);
+  bootstrap->barrierAll();
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -309,7 +298,7 @@ class AllToAllvUnequalSizeTest
       public ::testing::WithParamInterface<AllToAllvUnequalSizeParams> {};
 
 // Test all_to_allv with variable chunk sizes per peer
-// Sizes are symmetric: rank i→j size == rank j→i size
+// Sizes are symmetric: rank i->j size == rank j->i size
 TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   const auto& params = GetParam();
   const int numBlocks = params.numBlocks;
@@ -326,15 +315,16 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
       base_ints);
 
   // Calculate max buffer size needed for any rank
-  // Max size happens at the highest rank pair: (numRanks-1 + numRanks-1 + 1) *
-  // base_ints * sizeof(int32_t) Total for one rank = sum of (globalRank + rank
-  // + 1) for rank in [0, numRanks)
-  //                    = numRanks * globalRank + sum(rank) + numRanks
-  //                    = numRanks * globalRank + numRanks*(numRanks-1)/2 +
-  //                    numRanks
-  // Worst case (highest rank): numRanks * (numRanks-1) +
-  // numRanks*(numRanks-1)/2 + numRanks
-  size_t max_total_ints = numRanks * (2 * numRanks - 1 + 1) / 2 * base_ints;
+  // Max size happens at the highest rank pair: (worldSize-1 + worldSize-1 + 1)
+  // * base_ints * sizeof(int32_t) Total for one rank = sum of (globalRank +
+  // rank
+  // + 1) for rank in [0, worldSize)
+  //                    = worldSize * globalRank + sum(rank) + worldSize
+  //                    = worldSize * globalRank + worldSize*(worldSize-1)/2 +
+  //                    worldSize
+  // Worst case (highest rank): worldSize * (worldSize-1) +
+  // worldSize*(worldSize-1)/2 + worldSize
+  size_t max_total_ints = worldSize * (2 * worldSize - 1 + 1) / 2 * base_ints;
   size_t max_buffer_size = max_total_ints * sizeof(int32_t);
 
   // Configuration for P2pNvlTransport - use dynamic buffer size
@@ -345,28 +335,22 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   };
 
   // Create transport and exchange IPC handles
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  MultiPeerNvlTransport transport(globalRank, worldSize, bootstrap, config);
   transport.exchange();
   XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
 
-  // Get transport devices for all peer ranks
-  // Use preallocated Transport array from MultiPeerNvlTransport
-  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
-  // peers)
-  DeviceSpan<Transport> transports_span(
-      transport.getTransportsArray(), numRanks);
+  auto transports_span = transport.getDeviceTransports();
 
   // Calculate variable chunk sizes using symmetric formula
   // Rank i sends to rank j: (i + j + 1) * base_ints * sizeof(int32_t) bytes
-  // This ensures: rank i→j size == rank j→i size
+  // This ensures: rank i->j size == rank j->i size
   std::vector<ChunkInfo> h_send_chunk_infos;
   std::vector<ChunkInfo> h_recv_chunk_infos;
 
   size_t send_offset = 0;
   size_t recv_offset = 0;
 
-  for (int rank = 0; rank < numRanks; rank++) {
+  for (int rank = 0; rank < worldSize; rank++) {
     // Symmetric size calculation
     size_t num_ints = (globalRank + rank + 1) * base_ints;
     size_t nbytes = num_ints * sizeof(int32_t);
@@ -402,7 +386,7 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   // Fill send buffer with pattern: rank * 1000 + peer * 100 + position
   std::vector<int32_t> h_send_init(sendBufferSize / sizeof(int32_t));
   size_t int_offset = 0;
-  for (int peer = 0; peer < numRanks; peer++) {
+  for (int peer = 0; peer < worldSize; peer++) {
     size_t num_ints = (globalRank + peer + 1) * base_ints;
     for (size_t i = 0; i < num_ints; i++) {
       h_send_init[int_offset + i] =
@@ -417,26 +401,26 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
       cudaMemcpyHostToDevice));
 
   // Copy chunk infos to device
-  DeviceBuffer d_send_chunk_infos(sizeof(ChunkInfo) * numRanks);
-  DeviceBuffer d_recv_chunk_infos(sizeof(ChunkInfo) * numRanks);
+  DeviceBuffer d_send_chunk_infos(sizeof(ChunkInfo) * worldSize);
+  DeviceBuffer d_recv_chunk_infos(sizeof(ChunkInfo) * worldSize);
   CUDACHECK_TEST(cudaMemcpy(
       d_send_chunk_infos.get(),
       h_send_chunk_infos.data(),
-      sizeof(ChunkInfo) * numRanks,
+      sizeof(ChunkInfo) * worldSize,
       cudaMemcpyHostToDevice));
   CUDACHECK_TEST(cudaMemcpy(
       d_recv_chunk_infos.get(),
       h_recv_chunk_infos.data(),
-      sizeof(ChunkInfo) * numRanks,
+      sizeof(ChunkInfo) * worldSize,
       cudaMemcpyHostToDevice));
 
   DeviceSpan<ChunkInfo> send_chunk_infos(
-      static_cast<ChunkInfo*>(d_send_chunk_infos.get()), numRanks);
+      static_cast<ChunkInfo*>(d_send_chunk_infos.get()), worldSize);
   DeviceSpan<ChunkInfo> recv_chunk_infos(
-      static_cast<ChunkInfo*>(d_recv_chunk_infos.get()), numRanks);
+      static_cast<ChunkInfo*>(d_recv_chunk_infos.get()), worldSize);
 
   // Barrier to ensure all ranks are ready
-  MPI_Barrier(MPI_COMM_WORLD);
+  bootstrap->barrierAll();
 
   XLOGF(DBG1, "Rank {}: calling all_to_allv with variable sizes", globalRank);
 
@@ -445,7 +429,7 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
       recvBuffer.get(),
       sendBuffer.get(),
       globalRank,
-      numRanks,
+      worldSize,
       transports_span,
       send_chunk_infos,
       recv_chunk_infos,
@@ -466,7 +450,7 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
   int h_errorCount = 0;
   int_offset = 0;
 
-  for (int peer = 0; peer < numRanks; peer++) {
+  for (int peer = 0; peer < worldSize; peer++) {
     size_t num_ints = (globalRank + peer + 1) * base_ints;
     for (size_t i = 0; i < num_ints; i++) {
       int32_t expected =
@@ -498,7 +482,7 @@ TEST_P(AllToAllvUnequalSizeTest, AllToAllvUnequalSize) {
                              << h_errorCount << " verification errors";
 
   // Barrier to ensure all ranks have completed
-  MPI_Barrier(MPI_COMM_WORLD);
+  bootstrap->barrierAll();
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -538,7 +522,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

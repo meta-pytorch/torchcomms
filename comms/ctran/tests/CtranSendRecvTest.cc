@@ -120,7 +120,7 @@ class CtranSendRecvTest : public CtranIntraProcessFixture {
               state.ctranComm.get(),
               state.stream));
     }
-    EXPECT_EQ(commSuccess, ctranGroupEndHook(timeout));
+    EXPECT_EQ(commSuccess, ctranGroupEndHook(NCCL_SENDRECV_ALGO, timeout));
 
     // ensure async execution completion and no error
     EXPECT_EQ(cudaSuccess, cudaStreamSynchronize(state.stream));

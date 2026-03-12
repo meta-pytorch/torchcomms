@@ -3,7 +3,6 @@
 #include "bootstrap.h"
 #include "channel.h"
 #include "group.h"
-#include "meta/NcclxConfig.h" // @manual
 #include "p2p.h"
 #include "transport.h"
 
@@ -45,8 +44,7 @@ ncclResult_t transportRingConnect(struct ncclComm* comm, int nChannels) {
     INFO(
         NCCL_INIT,
         "commDesc: %s set up P2P connections for rings with %s on channel %d",
-        ctran::utils::parseCommDesc(
-            NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+        ctran::utils::parseCommDesc(comm->config.commDesc),
         ringSummary.toString().c_str(),
         c);
   }
@@ -79,8 +77,7 @@ ncclResult_t transportRingConnect(struct ncclComm* comm, int nChannels) {
   INFO(
       NCCL_INIT,
       "commDesc: %s connected rings from channel %d to %d, use ring PXN %d GDR %d",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+      ctran::utils::parseCommDesc(comm->config.commDesc),
       comm->algoConnectedChannels[NCCL_ALGO_RING],
       nChannels - 1,
       comm->useNetPXN,
@@ -111,8 +108,7 @@ ncclResult_t transportTreeConnect(struct ncclComm* comm, int nChannels) {
     INFO(
         NCCL_INIT,
         "commDesc: %s set up P2P connections for tree downward connections with %s on channel %d",
-        ctran::utils::parseCommDesc(
-            NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+        ctran::utils::parseCommDesc(comm->config.commDesc),
         treeUpwardSummary.toString().c_str(),
         c);
     connectionSummary treeDownwardSummary;
@@ -128,8 +124,7 @@ ncclResult_t transportTreeConnect(struct ncclComm* comm, int nChannels) {
     INFO(
         NCCL_INIT,
         "commDesc: %s set up P2P connections for tree upward connections with %s on channel %d",
-        ctran::utils::parseCommDesc(
-            NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+        ctran::utils::parseCommDesc(comm->config.commDesc),
         treeDownwardSummary.toString().c_str(),
         c);
   }
@@ -137,8 +132,7 @@ ncclResult_t transportTreeConnect(struct ncclComm* comm, int nChannels) {
   INFO(
       NCCL_INIT,
       "commDesc: %s connected Trees from channel %d to %d",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+      ctran::utils::parseCommDesc(comm->config.commDesc),
       comm->algoConnectedChannels[NCCL_ALGO_TREE],
       nChannels - 1);
   comm->algoConnectedChannels[NCCL_ALGO_TREE] = nChannels;
@@ -169,8 +163,7 @@ ncclResult_t transportPatConnect(struct ncclComm* comm, int nChannels) {
       INFO(
           NCCL_INIT,
           "commDesc: %s set up P2P connections for RS binomial trees with %s on channel %d",
-          ctran::utils::parseCommDesc(
-              NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+          ctran::utils::parseCommDesc(comm->config.commDesc),
           rsSummary.toString().c_str(),
           c);
     }
@@ -190,8 +183,7 @@ ncclResult_t transportPatConnect(struct ncclComm* comm, int nChannels) {
       INFO(
           NCCL_INIT,
           "commDesc: %s set up P2P connections for AG binomial trees with %s on channel %d",
-          ctran::utils::parseCommDesc(
-              NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+          ctran::utils::parseCommDesc(comm->config.commDesc),
           agSummary.toString().c_str(),
           c);
     }
@@ -200,8 +192,7 @@ ncclResult_t transportPatConnect(struct ncclComm* comm, int nChannels) {
   INFO(
       NCCL_INIT,
       "commDesc %s connected binomial trees channel from %d to %d",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+      ctran::utils::parseCommDesc(comm->config.commDesc),
       comm->algoConnectedChannels[NCCL_ALGO_PAT],
       nChannels - 1);
   comm->algoConnectedChannels[NCCL_ALGO_PAT] = nChannels;
@@ -253,8 +244,7 @@ bool algoNeedConnect(struct ncclComm* comm, struct ncclTaskColl* task) {
     INFO(
         NCCL_INIT,
         "commDesc: %s commHash: %lx needs nChannels=%d (%d initialized) for op %s with %lu bytes using algo %s and protocol %s, (%d channels connected) %d total channels will be connected for this algo",
-        ctran::utils::parseCommDesc(
-            NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+        ctran::utils::parseCommDesc(comm->config.commDesc),
         comm->commHash,
         task->nMaxChannels,
         comm->nChannelsReady,
@@ -285,8 +275,7 @@ void p2pNeedConnect(
   INFO(
       NCCL_INIT,
       "commDesc %s: commHash: %lx Channel-%d try %s connection setup for peer %d, nMaxChannelsNeedInit: %d",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+      ctran::utils::parseCommDesc(comm->config.commDesc),
       comm->commHash,
       channelId,
       isSendNotRecv ? "send" : "recv",
@@ -302,8 +291,7 @@ ncclResult_t devCommSetupChannels(ncclComm_t comm) {
   INFO(
       NCCL_INIT,
       "commDesc: %s commHash: %lx devCommSetupChannels: copy channels' metadata, comm->nChannelsReady=%d",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+      ctran::utils::parseCommDesc(comm->config.commDesc),
       comm->commHash,
       comm->nChannelsReady);
   auto sampleGuardBegin = EVENTS_SCUBA_UTIL_SAMPLE_GUARD("INIT");
@@ -372,8 +360,7 @@ ncclResult_t setupChannels(struct ncclComm* comm, int maxNchannels) {
   INFO(
       NCCL_INIT,
       "commDesc: %s: commHash: %lx setup %d channels and copy metadata to GPU from channel %d to %d",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()),
+      ctran::utils::parseCommDesc(comm->config.commDesc),
       comm->commHash,
       (maxNchannels - comm->nChannelsReady),
       comm->nChannelsReady,
@@ -650,7 +637,7 @@ ncclResult_t transportReConnect(
         ALLOC,
         "{}: comm {} re-connected all peers for current plan",
         __func__,
-        NCCLX_CONFIG_FIELD(comm->config, commDesc));
+        comm->config.commDesc);
     reqBufKeys.insert(
         reqBufKeys.end(),
         comm->connSetupBufKeys.begin(),
@@ -781,8 +768,7 @@ ncclResult_t p2pPreconnect(struct ncclComm* comm) {
   INFO(
       NCCL_INIT,
       "commDesc: %s new p2p send/recv needs to connect",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()));
+      ctran::utils::parseCommDesc(comm->config.commDesc));
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (CPU_COUNT(&comm->cpuAffinity)) {
     sched_setaffinity(0, sizeof(cpu_set_t), &comm->cpuAffinity);
@@ -801,8 +787,7 @@ ncclResult_t p2pPreconnect(struct ncclComm* comm) {
   INFO(
       NCCL_INIT,
       "commDesc: %s new p2p send/recv finished preconnect",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()));
+      ctran::utils::parseCommDesc(comm->config.commDesc));
   return ncclSuccess;
 }
 
@@ -813,8 +798,7 @@ ncclResult_t collPreconnect(
   INFO(
       NCCL_INIT,
       "commDesc: %s new collective needs to connect",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()));
+      ctran::utils::parseCommDesc(comm->config.commDesc));
   CUDACHECK(cudaSetDevice(comm->cudaDev));
   if (CPU_COUNT(&comm->cpuAffinity)) {
     sched_setaffinity(0, sizeof(cpu_set_t), &comm->cpuAffinity);
@@ -873,8 +857,7 @@ ncclResult_t collPreconnect(
   INFO(
       NCCL_INIT,
       "commDesc: %s new collective finished preconnect",
-      ctran::utils::parseCommDesc(
-          NCCLX_CONFIG_FIELD(comm->config, commDesc).c_str()));
+      ctran::utils::parseCommDesc(comm->config.commDesc));
 
   return ret;
 }

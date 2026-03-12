@@ -344,13 +344,23 @@ static inline T gdaki_round_up(T x, T y) {
   return ((x + y - 1) / y) * y;
 }
 
-static ncclResult_t gdakiFindDevice(char *ibDevName, struct ibv_device **outIbDev) {
+static ncclResult_t __attribute__((unused)) gdakiFindDevice(char *ibDevName, struct ibv_device **outIbDev) {
   ncclResult_t status = ncclSuccess;
   int numOfDevice;
   struct ibv_device **devList = nullptr;
   struct ibv_device *ibDev = nullptr;
 
   assert(ibDevName != nullptr);
+
+  // NCCL_IB_DATA_DIRECT=1 appends "_dma" to device names (e.g. "mlx5_0_dma"),
+  // but kernel verbs only knows "mlx5_0". Strip the suffix before comparing.
+  static const char dmaSuffix[] = "_dma";
+  static const size_t sufLen = strlen(dmaSuffix);
+  size_t nameLen = strlen(ibDevName);
+  size_t cmpLen = nameLen;
+  if (nameLen > sufLen && strcmp(ibDevName + nameLen - sufLen, dmaSuffix) == 0) {
+    cmpLen = nameLen - sufLen;
+  }
 
   NCCLCHECK(wrap_ibv_get_device_list(&devList, &numOfDevice));
 
@@ -362,13 +372,14 @@ static ncclResult_t gdakiFindDevice(char *ibDevName, struct ibv_device **outIbDe
 
   for (int i = 0; i < numOfDevice; ++i) {
     struct ibv_device *ibDev_ = devList[i];
-    if (!strcmp(wrap_ibv_get_device_name(ibDev_), ibDevName)) {
+    const char *kernelName = wrap_ibv_get_device_name(ibDev_);
+    if (strlen(kernelName) == cmpLen && strncmp(kernelName, ibDevName, cmpLen) == 0) {
       ibDev = ibDev_;
       break;
     }
   }
   if (!ibDev) {
-    WARN("IB device %s not found", ibDevName);
+    WARN("IB device %s not found (cmpLen=%zu)", ibDevName, cmpLen);
     status = ncclInvalidArgument;
     goto fail;
   }
@@ -584,11 +595,10 @@ ncclResult_t ncclGinGdakiCreateContext(void *collComm, int nSignals, int nCounte
 
   DOCACHECKGOTO(doca_gpu_create(pciBusId, &gdaki_ctx->gdev), docaStatus, status, out);
 
-  // Find the IB/RoCE device by name
-  NCCLCHECKGOTO(gdakiFindDevice(props.name, &gdaki_ctx->ib_dev), status, out);
-
-  // Open the IB context
-  NCCLCHECKGOTO(wrap_ibv_open_device(&gdaki_ctx->ib_ctx, gdaki_ctx->ib_dev), status, out);
+  // Use net_ib's shared ibv_context (set by ncclGinIbGdakiCreateContext).
+  // This is required on aarch64 SMMU platforms (e.g. GB300) where a separately
+  // opened ibv_context cannot register cudaMalloc memory via nvidia-peermem.
+  gdaki_ctx->ib_ctx = (struct ibv_context *)cComm->ibvCtx;
 
   // Allocate the protection domain
   NCCLCHECKGOTO(wrap_ibv_alloc_pd(&gdaki_ctx->ib_pd, gdaki_ctx->ib_ctx), status, out);
@@ -933,7 +943,7 @@ ncclResult_t ncclGinGdakiDestroyContext(void *ginCtx) {
     DOCACHECK(doca_gpu_destroy(gdaki_ctx->gdev));
   }
   if (gdaki_ctx->ib_pd) NCCLCHECK(wrap_ibv_dealloc_pd(gdaki_ctx->ib_pd));
-  if (gdaki_ctx->ib_ctx) NCCLCHECK(wrap_ibv_close_device(gdaki_ctx->ib_ctx));
+  // ib_ctx is borrowed from net_ib (cComm->ibvCtx), do not close it here.
 
   if (gdaki_ctx->devHandle) free(gdaki_ctx->devHandle);
 

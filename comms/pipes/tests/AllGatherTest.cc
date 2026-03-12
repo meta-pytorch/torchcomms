@@ -9,14 +9,12 @@
 #include "comms/pipes/collectives/AllGather.cuh"
 #include "comms/pipes/tests/AllGatherTest.cuh"
 #include "comms/pipes/tests/Utils.cuh"
+#include "comms/testinfra/BenchmarkTestFixture.h"
 #include "comms/testinfra/TestXPlatUtils.h"
-#include "comms/testinfra/mpi/MpiBootstrap.h"
-#include "comms/testinfra/mpi/MpiTestUtils.h"
 #include "comms/utils/CudaRAII.h"
 
+using meta::comms::BenchmarkTestFixture;
 using meta::comms::DeviceBuffer;
-using meta::comms::MpiBaseTestFixture;
-using meta::comms::MPIEnvironmentBase;
 
 namespace comms::pipes {
 
@@ -59,15 +57,11 @@ void printDeviceBuffer(
 }
 } // namespace
 
-class AllGatherTestFixture : public MpiBaseTestFixture {
+class AllGatherTestFixture : public BenchmarkTestFixture {
  protected:
   void SetUp() override {
-    MpiBaseTestFixture::SetUp();
+    BenchmarkTestFixture::SetUp();
     CUDACHECK_TEST(cudaSetDevice(localRank));
-  }
-
-  void TearDown() override {
-    MpiBaseTestFixture::TearDown();
   }
 };
 
@@ -102,7 +96,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
 
   // Configuration for P2pNvlTransport
   const size_t sendcount = numIntsPerRank * sizeof(int32_t);
-  const size_t recvBufferSize = numRanks * sendcount;
+  const size_t recvBufferSize = worldSize * sendcount;
 
   MultiPeerNvlTransportConfig config{
       .dataBufferSize = std::max(size_t(2048), recvBufferSize), // At least 2KB
@@ -111,25 +105,20 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   };
 
   // Create transport and exchange IPC handles
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  MultiPeerNvlTransport transport(globalRank, worldSize, bootstrap, config);
   transport.exchange();
   XLOGF(DBG1, "Rank {} created transport and exchanged IPC", globalRank);
 
-  // Use preallocated Transport array from MultiPeerNvlTransport
-  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
-  // peers)
-  DeviceSpan<Transport> transports_span(
-      transport.getTransportsArray(), numRanks);
+  auto transports_span = transport.getDeviceTransports();
 
   // Allocate send and recv buffers
   // sendbuff: numIntsPerRank ints (my local data)
-  // recvbuff: numRanks * numIntsPerRank ints (gathered data from all ranks)
+  // recvbuff: worldSize * numIntsPerRank ints (gathered data from all ranks)
   DeviceBuffer sendBuffer(sendcount);
   DeviceBuffer recvBuffer(recvBufferSize);
 
   // Initialize recv buffer with -1
-  const size_t totalRecvInts = numRanks * numIntsPerRank;
+  const size_t totalRecvInts = worldSize * numIntsPerRank;
   test::fillBuffer(reinterpret_cast<int*>(recvBuffer.get()), -1, totalRecvInts);
 
   // Fill send buffer: each rank fills with pattern based on rank ID and
@@ -144,7 +133,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
       sendBuffer.get(), h_send_init.data(), sendcount, cudaMemcpyHostToDevice));
 
   // Barrier to ensure all ranks are ready
-  MPI_Barrier(MPI_COMM_WORLD);
+  bootstrap->barrierAll();
 
   // Debug: Print send buffer before all_gather
   XLOGF(DBG1, "Rank {}: Send buffer (my data): ", globalRank);
@@ -168,7 +157,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
       "Recv buffer BEFORE",
       recvBuffer.get(),
       globalRank,
-      numRanks,
+      worldSize,
       numIntsPerRank);
 
   XLOGF(DBG1, "Rank {}: calling all_gather", globalRank);
@@ -179,7 +168,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
       sendBuffer.get(),
       sendcount,
       globalRank,
-      numRanks,
+      worldSize,
       transports_span,
       numBlocks,
       blockSize);
@@ -191,7 +180,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
       "Recv buffer AFTER",
       recvBuffer.get(),
       globalRank,
-      numRanks,
+      worldSize,
       numIntsPerRank);
 
   // Verify received data
@@ -208,7 +197,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
   int h_errorCount = 0;
 
   // Verify on host for easier debugging
-  for (int sourceRank = 0; sourceRank < numRanks; sourceRank++) {
+  for (int sourceRank = 0; sourceRank < worldSize; sourceRank++) {
     for (size_t i = 0; i < numIntsPerRank; i++) {
       int32_t expected = sourceRank * 1000 + static_cast<int32_t>(i);
       int32_t actual = h_recv_after[sourceRank * numIntsPerRank + i];
@@ -237,7 +226,7 @@ TEST_P(AllGatherTest, AllGatherBasic) {
                              << h_errorCount << " verification errors";
 
   // Barrier to ensure all ranks have completed
-  MPI_Barrier(MPI_COMM_WORLD);
+  bootstrap->barrierAll();
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -300,7 +289,7 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
       numIntsPerRank);
 
   const size_t sendcount = numIntsPerRank * sizeof(int32_t);
-  const size_t recvBufferSize = numRanks * sendcount;
+  const size_t recvBufferSize = worldSize * sendcount;
 
   MultiPeerNvlTransportConfig config{
       .dataBufferSize = std::max(size_t(8 * 1024 * 1024), recvBufferSize),
@@ -308,20 +297,15 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
       .pipelineDepth = 4,
   };
 
-  auto bootstrap = std::make_shared<meta::comms::MpiBootstrap>();
-  MultiPeerNvlTransport transport(globalRank, numRanks, bootstrap, config);
+  MultiPeerNvlTransport transport(globalRank, worldSize, bootstrap, config);
   transport.exchange();
 
-  // Use preallocated Transport array from MultiPeerNvlTransport
-  // (includes P2pSelfTransportDevice for self and P2pNvlTransportDevice for
-  // peers)
-  DeviceSpan<Transport> transports_span(
-      transport.getTransportsArray(), numRanks);
+  auto transports_span = transport.getDeviceTransports();
 
   DeviceBuffer sendBuffer(sendcount);
   DeviceBuffer recvBuffer(recvBufferSize);
 
-  const size_t totalRecvInts = numRanks * numIntsPerRank;
+  const size_t totalRecvInts = worldSize * numIntsPerRank;
   test::fillBuffer(reinterpret_cast<int*>(recvBuffer.get()), -1, totalRecvInts);
 
   // Fill send buffer with pattern
@@ -332,14 +316,14 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
   CUDACHECK_TEST(cudaMemcpy(
       sendBuffer.get(), h_send_init.data(), sendcount, cudaMemcpyHostToDevice));
 
-  MPI_Barrier(MPI_COMM_WORLD);
+  bootstrap->barrierAll();
 
   test::testAllGather(
       recvBuffer.get(),
       sendBuffer.get(),
       sendcount,
       globalRank,
-      numRanks,
+      worldSize,
       transports_span,
       numBlocks,
       blockSize);
@@ -355,7 +339,7 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
       cudaMemcpyDeviceToHost));
 
   int h_errorCount = 0;
-  for (int sourceRank = 0; sourceRank < numRanks; sourceRank++) {
+  for (int sourceRank = 0; sourceRank < worldSize; sourceRank++) {
     for (size_t i = 0; i < numIntsPerRank; i++) {
       int32_t expected = sourceRank * 1000000 + static_cast<int32_t>(i);
       int32_t actual = h_recv_after[sourceRank * numIntsPerRank + i];
@@ -378,7 +362,7 @@ TEST_P(AllGatherLargeTest, AllGatherLarge) {
   EXPECT_EQ(h_errorCount, 0) << "Rank " << globalRank << " found "
                              << h_errorCount << " verification errors";
 
-  MPI_Barrier(MPI_COMM_WORLD);
+  bootstrap->barrierAll();
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -408,7 +392,7 @@ INSTANTIATE_TEST_SUITE_P(
 
 int main(int argc, char* argv[]) {
   ::testing::InitGoogleTest(&argc, argv);
-  ::testing::AddGlobalTestEnvironment(new MPIEnvironmentBase);
+  ::testing::AddGlobalTestEnvironment(new meta::comms::BenchmarkEnvironment());
   folly::Init init(&argc, &argv);
   return RUN_ALL_TESTS();
 }

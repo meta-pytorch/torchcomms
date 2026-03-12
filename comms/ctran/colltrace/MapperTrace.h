@@ -189,17 +189,18 @@ class MapperTrace {
     if (!shouldMapperTraceCurrentThread) {
       return;
     }
-    auto nextIndex = eventHistorySizeAtomic_.load(std::memory_order_relaxed);
-    if (nextIndex == NCCL_MAPPERTRACE_EVENT_RECORD_MAX) {
+    auto nextIndex = eventHistorySizeAtomic_.load(std::memory_order_acquire);
+    if (nextIndex >= static_cast<int64_t>(maxEventCount_)) {
       return;
     }
-    eventHistory_.emplace_back(std::move(event));
+    eventHistory_[nextIndex] = std::move(event);
     eventHistorySizeAtomic_.store(nextIndex + 1, std::memory_order_release);
   }
 
   void registerBeforeCollEndCallback(std::function<void()> callback);
 
-  MapperTrace();
+  explicit MapperTrace(
+      uint64_t maxEventCount = NCCL_MAPPERTRACE_EVENT_RECORD_MAX);
 
  private:
   // Valid for only the current collective.
@@ -221,9 +222,9 @@ class MapperTrace {
   // Any variables in this block should not be modified by other threads.
   // And don't forget to align the next variable to the next cache line.
   alignas(folly::hardware_destructive_interference_size)
-      std::vector<MapperEvent> eventHistory_;
+      std::unique_ptr<MapperEvent[]> eventHistory_;
   std::atomic<int64_t> eventHistorySizeAtomic_{0};
-  const uint64_t maxEventCount_{NCCL_MAPPERTRACE_EVENT_RECORD_MAX};
+  const uint64_t maxEventCount_;
 
   // End of recordMapperEvent exclusive resources.
   // Align the next variable to the next cache line.
