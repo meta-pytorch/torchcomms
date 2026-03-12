@@ -28,6 +28,9 @@ constexpr int kHopLimit = 255;
 // depth since they only carry WAIT + atomic operations (2 WQEs per round).
 constexpr uint32_t kCompanionQpDepth = 32;
 
+// IB port number.
+constexpr uint8_t kPortNumber = 1;
+
 // Convert ibverbx::ibv_mtu enum to doca_verbs_mtu_size enum.
 doca_verbs_mtu_size ibv_mtu_to_doca_mtu(enum ibverbx::ibv_mtu ibvMtu) {
   switch (ibvMtu) {
@@ -192,19 +195,21 @@ void MultipeerIbgdaTransport::openIbDevice() {
           << gidStr;
 
   // Query port to determine link layer (IB vs Ethernet)
-  auto portResult = ibvDevice_->queryPort(1);
+  auto portResult = ibvDevice_->queryPort(kPortNumber);
   if (portResult.hasError()) {
     throw std::runtime_error("Failed to query port attributes");
   }
   auto& portAttr = *portResult;
 
-  VLOG(1) << "MultipeerIbgdaTransport: port 1 state=" << portAttr.state
+  VLOG(1) << "MultipeerIbgdaTransport: port " << kPortNumber
+          << " state=" << portAttr.state
           << " link_layer=" << (int)portAttr.link_layer << " (1=IB, 2=Ethernet)"
           << " active_mtu=" << portAttr.active_mtu;
 
   if (portAttr.state != ibverbx::IBV_PORT_ACTIVE) {
     throw std::runtime_error(
-        "Port 1 is not active (state=" + std::to_string(portAttr.state) + ")");
+        "Port " + std::to_string(kPortNumber) +
+        " is not active (state=" + std::to_string(portAttr.state) + ")");
   }
 
   // Store local port MTU for negotiation during connectQp
@@ -410,7 +415,7 @@ void MultipeerIbgdaTransport::connectQp(
   checkDocaError(err, "Failed to set remote GID");
 
   // Query port for IB-specific parameters
-  auto portResult2 = ibvDevice_->queryPort(1);
+  auto portResult2 = ibvDevice_->queryPort(kPortNumber);
   if (portResult2.hasError()) {
     LOG(WARNING) << "Failed to query port for IB-specific parameters";
   } else if (portResult2->link_layer == ibverbx::IBV_LINK_LAYER_INFINIBAND) {
@@ -632,7 +637,7 @@ void MultipeerIbgdaTransport::exchange() {
   myInfo.mtu = localMtu_;
 
   // Query port for LID (IB only)
-  auto exchPortResult = ibvDevice_->queryPort(1);
+  auto exchPortResult = ibvDevice_->queryPort(kPortNumber);
   if (exchPortResult.hasError()) {
     LOG(WARNING) << "Failed to query port for LID";
   } else {
@@ -699,7 +704,7 @@ void MultipeerIbgdaTransport::exchange() {
     selfInfo.mtu = localMtu_;
 
     // Query port for local LID (IB fabrics)
-    auto loopbackPortResult = ibvDevice_->queryPort(1);
+    auto loopbackPortResult = ibvDevice_->queryPort(kPortNumber);
     if (!loopbackPortResult.hasError()) {
       selfInfo.lid = loopbackPortResult->lid;
     }
