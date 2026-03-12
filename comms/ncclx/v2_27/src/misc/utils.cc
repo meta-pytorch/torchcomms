@@ -67,8 +67,8 @@ ncclResult_t getHostName(char* hostname, int maxlen, const char delim) {
   return ncclSuccess;
 }
 
-bool isFastInitRingMode(bool fastInitMode) {
-  return fastInitMode || NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid;
+bool isFastInitRingMode(int fastInitMode) {
+  return fastInitMode == NCCL_FAST_INIT_MODE_RING || NCCL_FASTINIT_MODE == NCCL_FASTINIT_MODE::ring_hybrid;
 }
 
 static uint64_t hostHashValue = 0;

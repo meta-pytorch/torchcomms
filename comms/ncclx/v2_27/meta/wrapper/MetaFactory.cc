@@ -8,7 +8,6 @@
 #include "comms/ctran/window/WinHintUtils.h"
 #include "comms/utils/checks.h"
 #include "comms/utils/commSpecs.h"
-#include "meta/NcclxConfig.h" // @manual
 #include "meta/wrapper/MetaFactory.h"
 
 using namespace ctran;
@@ -216,9 +215,8 @@ meta::comms::Hints ncclToMetaComm(const ncclx::Hints& hints) {
 ctranConfig makeCtranConfigFrom(ncclComm* comm) {
   struct ctranConfig tconfig = {
       .blocking = comm->config.blocking,
-      .commDesc = NCCLX_CONFIG_FIELD(comm->config, commDesc),
-      .ncclAllGatherAlgo =
-          NCCLX_CONFIG_FIELD(comm->config, ncclAllGatherAlgo).c_str(),
+      .commDesc = comm->config.commDesc ? comm->config.commDesc : "undefined",
+      .ncclAllGatherAlgo = comm->config.ncclAllGatherAlgo,
   };
   return tconfig;
 }

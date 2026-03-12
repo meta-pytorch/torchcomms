@@ -8,7 +8,6 @@
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
 #include "meta/comms-monitor/CommsMonitor.h"
-#include "nccl.h"
 
 using namespace ncclx::comms_monitor;
 
@@ -121,9 +120,8 @@ TEST_F(CommsMonitorDist, testCommSplit) {
   EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 1);
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints splitHints;
-  splitHints.set("commDesc", "split_comm");
-  config.hints = &splitHints;
+  const std::string commDest = "split_comm";
+  config.commDesc = commDest.c_str();
 
   ncclComm_t splitComm;
 
@@ -142,9 +140,8 @@ TEST_F(CommsMonitorDist, testCommSplitNoColor) {
   EXPECT_EQ(CommsMonitor::getNumOfCommMonitoring(), 1);
 
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
-  ncclx::Hints noColorHints;
-  noColorHints.set("commDesc", "split_comm");
-  config.hints = &noColorHints;
+  const std::string commDest = "split_comm";
+  config.commDesc = commDest.c_str();
 
   ncclComm_t splitComm;
 

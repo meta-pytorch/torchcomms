@@ -12,7 +12,6 @@
 #include "comm.h"
 #include "comms/testinfra/TestUtils.h"
 #include "comms/testinfra/TestsDistUtils.h"
-#include "meta/NcclxConfig.h"
 #include "nccl.h"
 
 #include "comms/utils/StrUtils.h"
@@ -174,9 +173,7 @@ TEST_F(CommDumpTest, SingleComm) {
   EXPECT_EQ(dump.count("node"), 1);
   EXPECT_EQ(dump["node"], std::to_string(this->comm->node));
   EXPECT_EQ(dump.count("commDesc"), 1);
-  EXPECT_EQ(
-      dump["commDesc"],
-      toQuotedString(NCCLX_CONFIG_FIELD(this->comm->config, commDesc)));
+  EXPECT_EQ(dump["commDesc"], toQuotedString(this->comm->config.commDesc));
 
   EXPECT_EQ(dump.count("nRanks"), 1);
   EXPECT_EQ(dump["nRanks"], std::to_string(this->comm->nRanks));

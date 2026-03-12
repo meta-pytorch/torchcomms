@@ -82,9 +82,7 @@ TEST_P(CommWithPatAvgTestParam, PatAvgEnableByHintWithModes) {
   ncclConfig_t config = NCCL_CONFIG_INITIALIZER;
   config.blocking = blockingInit ? 1 : 0;
   const auto commDescStr = fmt::format("{}-{}", kNcclUtCommDesc, "usePatAvg");
-  ncclx::Hints patAvgHints;
-  patAvgHints.set("commDesc", commDescStr);
-  config.hints = &patAvgHints;
+  config.commDesc = commDescStr.c_str();
 
   // Enable by hint
   ASSERT_EQ(
